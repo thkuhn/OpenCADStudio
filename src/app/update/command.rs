@@ -2229,6 +2229,54 @@ pub(super) fn on_tab_close(&mut self, idx: usize) -> Task<Message> {
                                             );
                                         }
                                     }
+                                    "wall_height" | "wall_thickness" | "wall_material" => {
+                                        // AEC wall properties live in `WALL`
+                                        // XDATA, not entity fields — read the
+                                        // current record, patch the edited
+                                        // value and write the whole record
+                                        // back via the shared `wall_record`
+                                        // layout (same helper the interactive
+                                        // `AEC_WALL` draw command uses).
+                                        let wall = self.tabs[i]
+                                            .scene
+                                            .document
+                                            .get_entity(handle)
+                                            .and_then(crate::modules::aec::commands::wall_from_entity);
+                                        if let Some(mut wall) = wall {
+                                            match field {
+                                                "wall_height" => {
+                                                    if let Some(v) =
+                                                        crate::entities::common::parse_f64(&val)
+                                                    {
+                                                        if v > 0.0 {
+                                                            wall.height = v;
+                                                        }
+                                                    }
+                                                }
+                                                "wall_thickness" => {
+                                                    if let Some(v) =
+                                                        crate::entities::common::parse_f64(&val)
+                                                    {
+                                                        if v > 0.0 {
+                                                            wall.thickness = v;
+                                                        }
+                                                    }
+                                                }
+                                                _ => {
+                                                    wall.material_ref = if val.trim().is_empty() {
+                                                        None
+                                                    } else {
+                                                        Some(val.trim().to_string())
+                                                    };
+                                                }
+                                            }
+                                            crate::modules::aec::commands::write_wall_properties(
+                                                &mut self.tabs[i].scene.document,
+                                                handle,
+                                                &wall,
+                                            );
+                                        }
+                                    }
                                     _ => {
                                         if crate::scene::model::solid_history::is_primitive_property(
                                             field,

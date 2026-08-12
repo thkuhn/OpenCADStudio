@@ -410,6 +410,36 @@ impl OpenCADStudio {
                         }
                     }
 
+                    // AEC wall — only entities carrying an `OPENCAD_AEC`/`WALL`
+                    // XDATA record get this section, so ordinary polylines are
+                    // left untouched. Edits are written back through the same
+                    // `wall_record` layout used by the interactive `AEC_WALL`
+                    // draw command (see `on_prop_geom_commit`'s "wall_*" arms).
+                    if let Some(wall) = crate::modules::aec::commands::wall_from_entity(entity) {
+                        sections.push(crate::scene::model::object::PropSection {
+                            title: t!("Wall").into_owned(),
+                            props: vec![
+                                crate::entities::common::edit_prop(
+                                    t!("Height").as_ref(),
+                                    "wall_height",
+                                    wall.height,
+                                ),
+                                crate::entities::common::edit_prop(
+                                    t!("Thickness").as_ref(),
+                                    "wall_thickness",
+                                    wall.thickness,
+                                ),
+                                crate::scene::model::object::Property {
+                                    label: t!("Material").into_owned(),
+                                    field: "wall_material",
+                                    value: crate::scene::model::object::PropValue::EditText(
+                                        wall.material_ref.clone().unwrap_or_default(),
+                                    ),
+                                },
+                            ],
+                        });
+                    }
+
                     {
                         let doc = &self.tabs[i].scene.document;
                         let common = entity.common();

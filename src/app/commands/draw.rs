@@ -788,14 +788,20 @@ impl OpenCADStudio {
             }
 
             // ── AEC commands (Architecture / basic BIM) ────────────────────
-            // Immediate scaffold commands — create entities + XDATA without
-            // multi-click CadCommand interaction (matches former plugin behaviour).
+            // AEC_WALL is an interactive multi-point CadCommand (like PLINE);
+            // the rest remain immediate scaffold commands — create entities +
+            // XDATA without multi-click interaction (former plugin behaviour).
             "AEC_WALL" => {
-                crate::modules::aec::commands::aec_wall(
-                    &mut self.tabs[i].scene,
-                    &mut self.command_line,
+                use crate::modules::aec::commands::WallCommand;
+                // Register the APPID up front: the interactive command has no
+                // document access while collecting points, so XDATA is
+                // embedded directly on the entities it builds.
+                crate::modules::aec::commands::ensure_wall_app_id(
+                    &mut self.tabs[i].scene.document,
                 );
-                self.tabs[i].dirty = true;
+                let new_cmd = WallCommand::new();
+                self.command_line.push_info(&new_cmd.prompt());
+                self.tabs[i].active_cmd = Some(Box::new(new_cmd));
             }
             "AEC_ROOM" => {
                 crate::modules::aec::commands::aec_room(
