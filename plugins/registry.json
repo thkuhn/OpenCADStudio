@@ -18,5 +18,10 @@
     "repo": "KevinGriffin-new/opencad-landsurvey-plugin",
     "name": "Land Survey",
     "description": "Survey points, PNEZD & LandXML import, TIN surfaces, earthwork volumes, COGO, and coordinate transforms (RTS / Helmert / resection)."
+  },
+  {
+    "repo": "HakanSeven12/opencad-aec-plugin",
+    "name": "AEC",
+    "description": "Basic-BIM architecture tools: parametric walls & rooms, storey management, room-schedule tables, and IFC4 export (AEC_WALL, AEC_ROOM, AEC_STOREY, AEC_ROOMSCHEDULE, AEC_IFCEXPORT)."
   }
 ]
