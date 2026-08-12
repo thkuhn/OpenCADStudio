@@ -787,6 +787,43 @@ impl OpenCADStudio {
                 }
             }
 
+            // ── AEC commands (Architecture / basic BIM) ────────────────────
+            // Immediate scaffold commands — create entities + XDATA without
+            // multi-click CadCommand interaction (matches former plugin behaviour).
+            "AEC_WALL" => {
+                crate::modules::aec::commands::aec_wall(
+                    &mut self.tabs[i].scene,
+                    &mut self.command_line,
+                );
+                self.tabs[i].dirty = true;
+            }
+            "AEC_ROOM" => {
+                crate::modules::aec::commands::aec_room(
+                    &mut self.tabs[i].scene,
+                    &mut self.command_line,
+                );
+                self.tabs[i].dirty = true;
+            }
+            "AEC_STOREY" => {
+                crate::modules::aec::commands::aec_storey(
+                    &mut self.tabs[i].scene,
+                    &mut self.command_line,
+                );
+            }
+            "AEC_ROOMSCHEDULE" => {
+                crate::modules::aec::commands::aec_room_schedule(
+                    &mut self.tabs[i].scene,
+                    &mut self.command_line,
+                );
+                self.tabs[i].dirty = true;
+            }
+            "AEC_IFCEXPORT" => {
+                crate::modules::aec::commands::aec_ifc_export(
+                    &mut self.tabs[i].scene,
+                    &mut self.command_line,
+                );
+            }
+
             // ── Model commands (3D primitives) ─────────────────────────────
             "BOX" | "WEDGE" | "CYLINDER" | "CONE" | "SPHERE" | "TORUS" => {
                 use crate::modules::model::primitive_cmd::PrimitiveCommand;

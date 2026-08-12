@@ -15,6 +15,7 @@ pub fn all_modules() -> Vec<Box<dyn CadModule>> {
     vec![
         Box::new(super::draw::DrawModule),
         Box::new(super::model::ModelModule),
+        Box::new(super::aec::AecModule),
         Box::new(super::insert::InsertModule),
         Box::new(super::annotate::AnnotateModule),
         Box::new(super::view::ViewModule),

@@ -24,6 +24,7 @@ pub use ocs_plugin_api::ribbon::{
 
 // ── Module declarations ───────────────────────────────────────────────────
 
+pub mod aec;
 pub mod annotate;
 pub mod draw;
 pub mod insert;
