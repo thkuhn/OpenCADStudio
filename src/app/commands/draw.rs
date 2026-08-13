@@ -755,7 +755,7 @@ impl OpenCADStudio {
             }
 
             "ERASE" => {
-                let handles: Vec<_> = self.tabs[i]
+                let mut handles: Vec<_> = self.tabs[i]
                     .scene
                     .selected_entities()
                     .into_iter()
@@ -768,6 +768,10 @@ impl OpenCADStudio {
                     self.command_line.push_info(&cmd.prompt());
                     self.tabs[i].active_cmd = Some(Box::new(cmd));
                 } else {
+                    crate::modules::aec::commands::expand_with_wall_derived_handles(
+                        &self.tabs[i].scene,
+                        &mut handles,
+                    );
                     let n = handles.len();
                     let delta_safe = self.delta_erase_safe(i, &handles);
                     let pending = self.begin_undo(i, "ERASE", handles.len(), delta_safe);
@@ -815,6 +819,13 @@ impl OpenCADStudio {
                     &mut self.tabs[i].scene,
                     &mut self.command_line,
                 );
+            }
+            "AEC_WALL_REFRESH" => {
+                crate::modules::aec::commands::aec_wall_refresh(
+                    &mut self.tabs[i].scene,
+                    &mut self.command_line,
+                );
+                self.tabs[i].dirty = true;
             }
             "AEC_ROOMSCHEDULE" => {
                 crate::modules::aec::commands::aec_room_schedule(

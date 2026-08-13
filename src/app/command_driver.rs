@@ -1696,6 +1696,23 @@ impl OpenCADStudio {
                     self.tabs[i].last_draw_anchor = Some(handle);
                 }
                 if finish {
+                    // AEC wall: the just-finished axis polyline carries
+                    // WALL/WALL_V2 XDATA, so rebuild its visible
+                    // contour/hatch/solid representation now that the final
+                    // geometry (and dimensions) are committed.
+                    let is_wall = self.tabs[i]
+                        .scene
+                        .document
+                        .get_entity(handle)
+                        .is_some_and(|e| {
+                            crate::modules::aec::commands::wall_thickness_and_height(e).is_some()
+                        });
+                    if is_wall {
+                        let _ = crate::modules::aec::commands::regenerate_wall_representation(
+                            &mut self.tabs[i].scene,
+                            handle,
+                        );
+                    }
                     self.finish_live_entity_history(i, handle);
                     self.tabs[i].scene.clear_preview_wire();
                     self.tabs[i].active_cmd = None;

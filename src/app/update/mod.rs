@@ -4111,8 +4111,12 @@ impl OpenCADStudio {
                 }
                 let i = self.active_tab;
                 self.tabs[i].scene.selection.borrow_mut().context_menu = None;
-                let handles: Vec<_> = self.tabs[i].scene.selected.iter().cloned().collect();
+                let mut handles: Vec<_> = self.tabs[i].scene.selected.iter().cloned().collect();
                 if !handles.is_empty() {
+                    crate::modules::aec::commands::expand_with_wall_derived_handles(
+                        &self.tabs[i].scene,
+                        &mut handles,
+                    );
                     // Erase is delta-safe unless a target is in a group (group
                     // cleanup rewrites document.objects).
                     let delta_safe = self.delta_erase_safe(i, &handles);

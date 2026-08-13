@@ -13,6 +13,7 @@ use crate::modules::{CadModule, IconKind, ModuleEvent, RibbonGroup, RibbonItem, 
 pub struct AecModule;
 
 const WALL_ICON: &[u8] = include_bytes!("../../../assets/icons/box3d.svg");
+const WALL_REFRESH_ICON: &[u8] = include_bytes!("../../../assets/icons/sync.svg");
 const ROOM_ICON: &[u8] = include_bytes!("../../../assets/icons/array_rect.svg");
 const SCHEDULE_ICON: &[u8] = include_bytes!("../../../assets/icons/table.svg");
 const STOREY_ICON: &[u8] = include_bytes!("../../../assets/icons/layers/panel.svg");
@@ -44,9 +45,14 @@ impl CadModule for AecModule {
             vec![
                 RibbonGroup {
                     title: "Walls",
-                    tools: vec![RibbonItem::LargeTool(tool(
-                        "AEC_WALL", "Wall", WALL_ICON,
-                    ))],
+                    tools: vec![
+                        RibbonItem::LargeTool(tool("AEC_WALL", "Wall", WALL_ICON)),
+                        RibbonItem::LargeTool(tool(
+                            "AEC_WALL_REFRESH",
+                            "Refresh Walls",
+                            WALL_REFRESH_ICON,
+                        )),
+                    ],
                 },
                 RibbonGroup {
                     title: "Styles",

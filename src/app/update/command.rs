@@ -2275,6 +2275,10 @@ pub(super) fn on_tab_close(&mut self, idx: usize) -> Task<Message> {
                                                 handle,
                                                 &wall,
                                             );
+                                            let _ = crate::modules::aec::commands::regenerate_wall_representation(
+                                                &mut self.tabs[i].scene,
+                                                handle,
+                                            );
                                         }
                                     }
                                     _ => {
