@@ -251,6 +251,36 @@ impl OpenCADStudio {
                             .map(|m| (m.id.as_str(), m.name.as_str()))
                             .collect()
                     }).unwrap_or_default();
+                    let all_layer_names: Vec<String> = self.tabs[self.active_tab]
+                        .scene
+                        .document
+                        .layers
+                        .iter()
+                        .map(|l| l.name.clone())
+                        .collect();
+                    let mut linetypes: Vec<String> = self.tabs[self.active_tab]
+                        .scene
+                        .document
+                        .line_types
+                        .iter()
+                        .map(|lt| {
+                            if lt.name.is_empty() {
+                                "ByLayer".to_string()
+                            } else {
+                                lt.name.clone()
+                            }
+                        })
+                        .collect();
+                    if !self.aec_style_manager_material_line_type.trim().is_empty()
+                        && !linetypes.iter().any(|name| {
+                            name.eq_ignore_ascii_case(&self.aec_style_manager_material_line_type)
+                        })
+                    {
+                        linetypes.push(self.aec_style_manager_material_line_type.clone());
+                    }
+                    if !linetypes.iter().any(|name| name.eq_ignore_ascii_case("Continuous")) {
+                        linetypes.push("Continuous".to_string());
+                    }
                     let effective_layers = self.aec_style_library.as_ref().and_then(|lib| {
                         let id = self.aec_style_manager_wall_style_editing_id.as_ref()
                             .or(self.aec_style_manager_selected_wall_style.as_ref())?;
@@ -273,6 +303,8 @@ impl OpenCADStudio {
                             hatch: &self.aec_style_manager_material_hatch,
                             color: &self.aec_style_manager_material_color,
                             line_type: &self.aec_style_manager_material_line_type,
+                            color_picker_open: self.aec_style_manager_material_color_picker_open,
+                            linetypes: linetypes.clone(),
                         },
                         crate::ui::window::aec_style_manager::WallStyleFormState {
                             open: self.aec_style_manager_wall_style_form_open,
@@ -282,6 +314,7 @@ impl OpenCADStudio {
                             layers: &self.aec_style_manager_wall_style_layers,
                             all_wall_styles,
                             all_materials,
+                            all_layer_names,
                             effective_layers,
                         },
                         self.aec_style_manager_wall_style_sort,

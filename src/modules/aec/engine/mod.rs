@@ -16,6 +16,7 @@ pub mod style;
 pub mod wall;
 pub mod wall_style;
 
+pub use geometry::{get_offset_directions, Polygon2D};
 pub use ifc::Scene;
 pub use library::StyleLibrary;
 pub use loop_detection::find_closed_loop;

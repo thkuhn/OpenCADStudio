@@ -27,6 +27,19 @@ pub struct Layer {
     pub thickness: f64,
     /// Functional role of this layer.
     pub function: LayerFunction,
+    /// Optional horizontal gap before this layer (air space).
+    #[serde(default)]
+    pub gap_before: f64,
+    /// Optional vertical offset from the wall's base.
+    #[serde(default)]
+    pub bottom_offset: f64,
+    /// Optional vertical offset from the wall's top.
+    #[serde(default)]
+    pub top_offset: f64,
+    /// Optional override of the drawing layer this layer's contour/hatch
+    /// entities are placed on. `None` falls back to the wall's own layer.
+    #[serde(default)]
+    pub layer_override: Option<String>,
 }
 
 /// A style defining the layered buildup of a wall.
@@ -98,6 +111,10 @@ mod tests {
             material_id: mat_id.to_string(),
             thickness: thick,
             function: LayerFunction::Structural,
+            gap_before: 0.0,
+            bottom_offset: 0.0,
+            top_offset: 0.0,
+            layer_override: None,
         }
     }
 

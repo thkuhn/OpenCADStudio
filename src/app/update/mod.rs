@@ -1881,6 +1881,10 @@ impl OpenCADStudio {
                                 }
                                 crate::modules::aec::engine::wall_style::LayerFunction::Other(s) => s.clone(),
                             },
+                            gap_before: l.gap_before.to_string(),
+                            bottom_offset: l.bottom_offset.to_string(),
+                            top_offset: l.top_offset.to_string(),
+                            layer_override: l.layer_override.clone().unwrap_or_default(),
                         })
                         .collect();
                     self.aec_style_manager_wall_style_form_open = true;
@@ -1923,6 +1927,10 @@ impl OpenCADStudio {
                         material_id,
                         thickness: "0.1".to_string(),
                         function: "Structural".to_string(),
+                        gap_before: "0.0".to_string(),
+                        bottom_offset: "0.0".to_string(),
+                        top_offset: "0.0".to_string(),
+                        layer_override: String::new(),
                     });
                 Task::none()
             }
@@ -1947,6 +1955,30 @@ impl OpenCADStudio {
             Message::AecStyleManagerWallStyleLayerFunctionChanged(index, function) => {
                 if let Some(layer) = self.aec_style_manager_wall_style_layers.get_mut(index) {
                     layer.function = function;
+                }
+                Task::none()
+            }
+            Message::AecStyleManagerWallStyleLayerGapChanged(index, gap) => {
+                if let Some(layer) = self.aec_style_manager_wall_style_layers.get_mut(index) {
+                    layer.gap_before = gap;
+                }
+                Task::none()
+            }
+            Message::AecStyleManagerWallStyleLayerBottomOffsetChanged(index, offset) => {
+                if let Some(layer) = self.aec_style_manager_wall_style_layers.get_mut(index) {
+                    layer.bottom_offset = offset;
+                }
+                Task::none()
+            }
+            Message::AecStyleManagerWallStyleLayerTopOffsetChanged(index, offset) => {
+                if let Some(layer) = self.aec_style_manager_wall_style_layers.get_mut(index) {
+                    layer.top_offset = offset;
+                }
+                Task::none()
+            }
+            Message::AecStyleManagerWallStyleLayerOverrideChanged(index, layer_name) => {
+                if let Some(layer) = self.aec_style_manager_wall_style_layers.get_mut(index) {
+                    layer.layer_override = layer_name;
                 }
                 Task::none()
             }
@@ -2044,6 +2076,14 @@ impl OpenCADStudio {
                         material_id: lb.material_id.clone(),
                         thickness,
                         function,
+                        gap_before: lb.gap_before.parse::<f64>().unwrap_or(0.0),
+                        bottom_offset: lb.bottom_offset.parse::<f64>().unwrap_or(0.0),
+                        top_offset: lb.top_offset.parse::<f64>().unwrap_or(0.0),
+                        layer_override: if lb.layer_override.trim().is_empty() {
+                            None
+                        } else {
+                            Some(lb.layer_override.trim().to_string())
+                        },
                     });
                 }
 
@@ -2120,6 +2160,25 @@ impl OpenCADStudio {
             }
             Message::AecStyleManagerMaterialLineTypeChanged(value) => {
                 self.aec_style_manager_material_line_type = value;
+                Task::none()
+            }
+            Message::AecStyleManagerMaterialColorPickerToggle => {
+                self.aec_style_manager_material_color_picker_open =
+                    !self.aec_style_manager_material_color_picker_open;
+                Task::none()
+            }
+            Message::AecStyleManagerMaterialColorPicked(color) => {
+                self.aec_style_manager_material_color_picker_open = false;
+                let [r, g, b, _] = match color {
+                    acadrust::types::Color::Rgb { r, g, b } => [r, g, b, 255u8],
+                    acadrust::types::Color::Index(i) => {
+                        let (r, g, b) = acadrust::types::aci_table::aci_to_rgb(i)
+                            .unwrap_or((255, 255, 255));
+                        [r, g, b, 255]
+                    }
+                    _ => [255, 255, 255, 255],
+                };
+                self.aec_style_manager_material_color = format!("#{r:02X}{g:02X}{b:02X}");
                 Task::none()
             }
             Message::AecStyleManagerMaterialSave => {

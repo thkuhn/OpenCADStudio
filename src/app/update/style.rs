@@ -1149,6 +1149,9 @@ pub(super) fn on_text_style_dialog_open(&mut self) -> Task<Message> {
                     Some(crate::app::ColorPickTarget::MText) => {
                         Some(Message::MTextColorChanged(color))
                     }
+                    Some(crate::app::ColorPickTarget::AecMaterial) => {
+                        Some(Message::AecStyleManagerMaterialColorPicked(color))
+                    }
                     Some(crate::app::ColorPickTarget::Ribbon) => {
                         Some(Message::RibbonColorChanged(color))
                     }

@@ -105,6 +105,14 @@ pub struct AecLayerBuffer {
     pub thickness: String,
     /// Function enum as a display string (Structural, Insulation, Finish, Other).
     pub function: String,
+    /// Horizontal gap-before string (parsed to f64 on save).
+    pub gap_before: String,
+    /// Bottom vertical offset string (parsed to f64 on save).
+    pub bottom_offset: String,
+    /// Top vertical offset string (parsed to f64 on save).
+    pub top_offset: String,
+    /// Optional drawing-layer override (empty string = use default behavior).
+    pub layer_override: String,
 }
 
 /// How the AEC Style Manager orders the "Wall Styles" master list.
@@ -986,6 +994,8 @@ pub(super) struct OpenCADStudio {
     aec_style_manager_material_hatch: String,
     aec_style_manager_material_color: String,
     aec_style_manager_material_line_type: String,
+    /// Whether the material form's colour-picker popup is expanded.
+    aec_style_manager_material_color_picker_open: bool,
 
     /// Id of the wall style currently being edited, if the edit buffer holds
     /// an existing wall style (`None` while composing a new/unsaved one).
@@ -1281,6 +1291,8 @@ pub enum ColorPickTarget {
     LayerState(usize),
     /// The MText editor's selection (or global) colour.
     MText,
+    /// The AEC Style Manager's material edit form line colour.
+    AecMaterial,
 }
 
 /// Table records the clipboard entities depend on, snapshotted from the source
@@ -2153,6 +2165,10 @@ pub enum Message {
     AecStyleManagerMaterialColorChanged(String),
     /// Line-type field changed in the material edit form.
     AecStyleManagerMaterialLineTypeChanged(String),
+    /// Opens/closes the material edit form's colour-picker popup.
+    AecStyleManagerMaterialColorPickerToggle,
+    /// A colour was chosen in the material edit form's colour picker.
+    AecStyleManagerMaterialColorPicked(acadrust::types::Color),
     /// "Save" pressed in the material edit form — upserts and persists.
     AecStyleManagerMaterialSave,
     /// "Delete" pressed for the currently selected material.
@@ -2166,6 +2182,15 @@ pub enum Message {
     AecStyleManagerWallStyleLayerMaterialChanged(usize, String),
     AecStyleManagerWallStyleLayerThicknessChanged(usize, String),
     AecStyleManagerWallStyleLayerFunctionChanged(usize, String),
+    /// Horizontal gap-before field changed for the layer at `index`.
+    AecStyleManagerWallStyleLayerGapChanged(usize, String),
+    /// Bottom vertical offset field changed for the layer at `index`.
+    AecStyleManagerWallStyleLayerBottomOffsetChanged(usize, String),
+    /// Top vertical offset field changed for the layer at `index`.
+    AecStyleManagerWallStyleLayerTopOffsetChanged(usize, String),
+    /// Optional drawing-layer override changed for the layer at `index`
+    /// (empty string = use default behavior).
+    AecStyleManagerWallStyleLayerOverrideChanged(usize, String),
     /// Moves the layer at `index` one position up (towards the outside).
     AecStyleManagerWallStyleLayerMoveUp(usize),
     /// Moves the layer at `index` one position down (towards the inside).
@@ -3411,6 +3436,7 @@ impl OpenCADStudio {
             aec_style_manager_material_hatch: String::new(),
             aec_style_manager_material_color: String::new(),
             aec_style_manager_material_line_type: String::new(),
+            aec_style_manager_material_color_picker_open: false,
             aec_style_manager_wall_style_editing_id: None,
             aec_style_manager_wall_style_form_open: false,
             aec_style_manager_wall_style_name: String::new(),

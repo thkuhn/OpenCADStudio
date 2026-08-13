@@ -429,10 +429,13 @@ impl OpenCADStudio {
                             ),
                         ];
 
-                        for (material_name, thickness, function) in &wall_v2.layers {
-                            let thickness_str = crate::entities::common::format_length(*thickness);
-                            let layer_info =
-                                format!("{} — {} ({})", material_name, thickness_str, function);
+                        for layer in &wall_v2.layers {
+                            let thickness_str =
+                                crate::entities::common::format_length(layer.thickness);
+                            let layer_info = format!(
+                                "{} — {} ({})",
+                                layer.material, thickness_str, layer.function
+                            );
                             props.push(crate::entities::common::ro_prop(
                                 t!("Layer").as_ref(),
                                 "wall_layer",

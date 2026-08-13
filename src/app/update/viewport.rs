@@ -2900,6 +2900,23 @@ impl OpenCADStudio {
                     self.tabs[i].scene.preview_hidden.remove(&handle);
                 }
                 self.tabs[i].scene.clear_preview_wire();
+                // AEC wall axes moved/stretched via a grip need their
+                // derived contour/hatch/solid representation rebuilt.
+                for &handle in &handles {
+                    let is_wall = self.tabs[i]
+                        .scene
+                        .document
+                        .get_entity(handle)
+                        .is_some_and(|e| {
+                            crate::modules::aec::commands::wall_thickness_and_height(e).is_some()
+                        });
+                    if is_wall {
+                        let _ = crate::modules::aec::commands::regenerate_wall_representation(
+                            &mut self.tabs[i].scene,
+                            handle,
+                        );
+                    }
+                }
                 let changes: Vec<_> = handles
                     .into_iter()
                     .map(|handle| (handle, crate::scene::ChangeKind::Modified))
@@ -3724,6 +3741,17 @@ impl OpenCADStudio {
                         bounds,
                         |point| self.cursor_model_point(i, &edit_cam, point, bounds),
                     );
+                    // A lasso pick on a wall's derived contour/hatch/solid
+                    // resolves to the wall axis.
+                    let handles: Vec<_> = handles
+                        .into_iter()
+                        .map(|h| {
+                            crate::modules::aec::commands::resolve_wall_package(
+                                &self.tabs[i].scene,
+                                h,
+                            )
+                        })
+                        .collect();
                     // Accumulate like the box path (issue #83): plain
                     // lasso adds, Shift+lasso removes. An empty lasso
                     // leaves the current selection untouched so a stray
@@ -3847,6 +3875,15 @@ impl OpenCADStudio {
                         });
                         // Selection filter: drop a pick whose type is excluded.
                         let hit = hit.filter(|&h| self.tabs[i].scene.passes_selection_filter(h));
+                        // A click on a wall's derived contour/hatch/solid
+                        // resolves to the wall axis, so selecting/moving it
+                        // acts on the actual wall entity.
+                        let hit = hit.map(|h| {
+                            crate::modules::aec::commands::resolve_wall_package(
+                                &self.tabs[i].scene,
+                                h,
+                            )
+                        });
                         if let Some(handle) = hit {
                             // Individual picks accumulate (issue #47):
                             // each plain click adds to the selection,

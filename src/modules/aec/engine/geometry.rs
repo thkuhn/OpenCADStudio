@@ -55,6 +55,72 @@ pub fn volume(points: &Polygon2D, height: f64) -> f64 {
     area(points) * height
 }
 
+/// Pre-calculates the offset direction and miter scale for each vertex of an
+/// open polyline.
+pub fn get_offset_directions(points: &[(f64, f64)]) -> Vec<(f64, f64)> {
+    let n = points.len();
+    let mut directions = Vec::with_capacity(n);
+    if n < 2 {
+        for _ in 0..n {
+            directions.push((0.0, 0.0));
+        }
+        return directions;
+    }
+
+    for i in 0..n {
+        let dir = if i == 0 {
+            // Start point: perpendicular to first segment.
+            let (x0, y0) = points[0];
+            let (x1, y1) = points[1];
+            normal(x0, y0, x1, y1)
+        } else if i == n - 1 {
+            // End point: perpendicular to last segment.
+            let (x0, y0) = points[n - 2];
+            let (x1, y1) = points[n - 1];
+            normal(x0, y0, x1, y1)
+        } else {
+            // Interior point: angle bisector of normals.
+            let (x0, y0) = points[i - 1];
+            let (x1, y1) = points[i];
+            let (x2, y2) = points[i + 1];
+
+            let n1 = normal(x0, y0, x1, y1);
+            let n2 = normal(x1, y1, x2, y2);
+
+            let bx = n1.0 + n2.0;
+            let by = n1.1 + n2.1;
+            let b_len = (bx * bx + by * by).sqrt();
+
+            if b_len < 1e-9 {
+                // Parallel or anti-parallel.
+                n1
+            } else {
+                let bx = bx / b_len;
+                let by = by / b_len;
+                // miter_scale = 1 / cos(half_angle) = 1 / (n1 dot bisector)
+                let dot = n1.0 * bx + n1.1 * by;
+                let scale = 1.0 / dot;
+                (bx * scale, by * scale)
+            }
+        };
+        directions.push(dir);
+    }
+
+    directions
+}
+
+/// Returns the unit normal (-dy, dx) of the segment from (x0, y0) to (x1, y1).
+pub fn normal(x0: f64, y0: f64, x1: f64, y1: f64) -> (f64, f64) {
+    let dx = x1 - x0;
+    let dy = y1 - y0;
+    let len = (dx * dx + dy * dy).sqrt();
+    if len < 1e-9 {
+        (0.0, 0.0)
+    } else {
+        (-dy / len, dx / len)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -20,6 +20,19 @@ use crate::modules::aec::engine::material::Material;
 use crate::modules::aec::engine::wall_style::WallStyle;
 use crate::t;
 
+/// Parses a `"#RRGGBB"` (or bare `RRGGBB`) hex string into a true colour,
+/// falling back to white for anything that doesn't parse — the material
+/// form's colour swatch always needs *some* colour to show.
+fn hex_to_acad_color(hex: &str) -> acadrust::types::Color {
+    let digits = hex.trim().trim_start_matches('#');
+    let value = u32::from_str_radix(digits, 16).unwrap_or(0xFFFFFF);
+    acadrust::types::Color::Rgb {
+        r: ((value >> 16) & 0xFF) as u8,
+        g: ((value >> 8) & 0xFF) as u8,
+        b: (value & 0xFF) as u8,
+    }
+}
+
 fn muted(theme: &Theme) -> iced::widget::text::Style {
     iced::widget::text::Style {
         color: Some(theme.palette().background.base.text.scale_alpha(0.65)),
@@ -99,6 +112,11 @@ pub struct MaterialFormState<'a> {
     pub hatch: &'a str,
     pub color: &'a str,
     pub line_type: &'a str,
+    /// Whether the colour-picker popup below the swatch is expanded.
+    pub color_picker_open: bool,
+    /// Linetype options offered by the dropdown (document linetypes plus any
+    /// custom value already stored on the material).
+    pub linetypes: Vec<String>,
 }
 
 /// Edit-buffer fields for the wall-style form, owned by `App` and borrowed
@@ -113,6 +131,8 @@ pub struct WallStyleFormState<'a> {
     pub all_wall_styles: Vec<(&'a str, &'a str)>,
     /// All materials (id, name) for the layer picklist.
     pub all_materials: Vec<(&'a str, &'a str)>,
+    /// Document drawing-layer names, for the optional per-layer override picklist.
+    pub all_layer_names: Vec<String>,
     /// Resolved inheritance result for preview.
     pub effective_layers: Vec<crate::modules::aec::engine::wall_style::Layer>,
 }
@@ -122,6 +142,7 @@ fn layer_row<'a>(
     layer_count: usize,
     buffer: &'a crate::app::AecLayerBuffer,
     all_materials: &[(&'a str, &'a str)],
+    all_layer_names: &[String],
 ) -> Element<'a, Message> {
     let functions: Vec<String> = vec![
         "Structural".to_string(),
@@ -163,12 +184,46 @@ fn layer_row<'a>(
             .on_input(move |v| Message::AecStyleManagerWallStyleLayerThicknessChanged(index, v))
             .size(11)
             .width(60),
+        text_input("gap", &buffer.gap_before)
+            .on_input(move |v| Message::AecStyleManagerWallStyleLayerGapChanged(index, v))
+            .size(11)
+            .width(50),
+        text_input("bottom", &buffer.bottom_offset)
+            .on_input(move |v| Message::AecStyleManagerWallStyleLayerBottomOffsetChanged(index, v))
+            .size(11)
+            .width(50),
+        text_input("top", &buffer.top_offset)
+            .on_input(move |v| Message::AecStyleManagerWallStyleLayerTopOffsetChanged(index, v))
+            .size(11)
+            .width(50),
         pick_list(Some(buffer.function.clone()), functions, |func: &String| {
             func.clone()
         })
         .on_select(move |func| Message::AecStyleManagerWallStyleLayerFunctionChanged(index, func))
         .text_size(11)
         .width(100),
+        {
+            let default_label = t!("(Default)").into_owned();
+            let options: Vec<String> = std::iter::once(default_label.clone())
+                .chain(all_layer_names.iter().cloned())
+                .collect();
+            let selected = if buffer.layer_override.is_empty() {
+                default_label.clone()
+            } else {
+                buffer.layer_override.clone()
+            };
+            pick_list(Some(selected), options, move |name: &String| name.clone())
+                .on_select(move |name: String| {
+                    let value = if name == default_label {
+                        String::new()
+                    } else {
+                        name
+                    };
+                    Message::AecStyleManagerWallStyleLayerOverrideChanged(index, value)
+                })
+                .text_size(11)
+                .width(110)
+        },
         button(text(t!("Remove")).size(10))
             .style(button::danger)
             .padding([2, 4])
@@ -383,19 +438,34 @@ pub fn view_window<'a>(
             ]
             .spacing(8),
             row![
-                text(t!("Line color (hex)")).size(10).style(muted).width(100),
-                text_input("#RRGGBB", material_form.color)
-                    .on_input(Message::AecStyleManagerMaterialColorChanged)
-                    .size(11)
-                    .padding([4, 6]),
+                text(t!("Line color")).size(10).style(muted).width(100),
+                container(crate::ui::color_select::color_selector(
+                    hex_to_acad_color(material_form.color),
+                    material_form.color_picker_open,
+                    crate::ui::color_select::ColorExtras {
+                        by_layer: false,
+                        by_block: false,
+                    },
+                    Message::AecStyleManagerMaterialColorPicked,
+                    Message::AecStyleManagerMaterialColorPickerToggle,
+                    Message::OpenColorWindow(
+                        crate::app::ColorPickTarget::AecMaterial,
+                        hex_to_acad_color(material_form.color),
+                    ),
+                ))
+                .width(180),
             ]
             .spacing(8),
             row![
                 text(t!("Line type")).size(10).style(muted).width(100),
-                text_input("", material_form.line_type)
-                    .on_input(Message::AecStyleManagerMaterialLineTypeChanged)
-                    .size(11)
-                    .padding([4, 6]),
+                pick_list(
+                    Some(material_form.line_type.to_string()),
+                    material_form.linetypes.clone(),
+                    |value: &String| value.clone(),
+                )
+                .on_select(Message::AecStyleManagerMaterialLineTypeChanged)
+                .text_size(11)
+                .width(180),
             ]
             .spacing(8),
             actions,
@@ -443,12 +513,13 @@ pub fn view_window<'a>(
             .unwrap_or_else(|| none_label.into_owned());
 
         let all_materials_ref = &wall_style_form.all_materials;
+        let all_layer_names_ref = &wall_style_form.all_layer_names;
         let layer_count = wall_style_form.layers.len();
         let layer_rows: Vec<Element<'_, Message>> = wall_style_form
             .layers
             .iter()
             .enumerate()
-            .map(|(i, lb)| layer_row(i, layer_count, lb, all_materials_ref))
+            .map(|(i, lb)| layer_row(i, layer_count, lb, all_materials_ref, all_layer_names_ref))
             .collect();
 
         let mut detail_col = column![
@@ -523,6 +594,9 @@ pub fn view_window<'a>(
                     row![
                         text(mat_name).size(10).width(150),
                         text(format!("{:.2}", l.thickness)).size(10).width(60),
+                        text(format!("{:.2}", l.gap_before)).size(10).width(50),
+                        text(format!("{:.2}", l.bottom_offset)).size(10).width(50),
+                        text(format!("{:.2}", l.top_offset)).size(10).width(50),
                         text(format!("{:?}", l.function)).size(10).width(100),
                     ]
                     .spacing(4)
