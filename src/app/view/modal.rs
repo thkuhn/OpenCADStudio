@@ -237,8 +237,8 @@ impl OpenCADStudio {
             }
             super::super::ModalKind::AecStyleManager => sized_flow(
                 ex,
-                720,
-                420,
+                960,
+                520,
                 |flow| {
                     let all_wall_styles = self.aec_style_library.as_ref().map(|lib| {
                         lib.wall_styles.iter()
@@ -304,6 +304,7 @@ impl OpenCADStudio {
                             color: &self.aec_style_manager_material_color,
                             line_type: &self.aec_style_manager_material_line_type,
                             color_picker_open: self.aec_style_manager_material_color_picker_open,
+                            hatch_picker_open: self.aec_style_manager_material_hatch_picker_open,
                             linetypes: linetypes.clone(),
                         },
                         crate::ui::window::aec_style_manager::WallStyleFormState {
@@ -312,6 +313,7 @@ impl OpenCADStudio {
                             name: &self.aec_style_manager_wall_style_name,
                             parent_id: self.aec_style_manager_wall_style_parent.as_deref(),
                             layers: &self.aec_style_manager_wall_style_layers,
+                            drag_index: self.aec_style_manager_wall_style_drag_index,
                             all_wall_styles,
                             all_materials,
                             all_layer_names,

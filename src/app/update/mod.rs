@@ -1994,6 +1994,32 @@ impl OpenCADStudio {
                 }
                 Task::none()
             }
+            Message::AecStyleManagerWallStyleLayerDragStart(index) => {
+                // Click-based "pick up / drop here" reordering: arms the
+                // dragged row so a later drag-over on another row swaps it
+                // into place. Clicking the already-armed row's handle again
+                // cancels the drag (matches the toggle feel of `PaneMoveStart`).
+                if self.aec_style_manager_wall_style_drag_index == Some(index) {
+                    self.aec_style_manager_wall_style_drag_index = None;
+                } else if index < self.aec_style_manager_wall_style_layers.len() {
+                    self.aec_style_manager_wall_style_drag_index = Some(index);
+                }
+                Task::none()
+            }
+            Message::AecStyleManagerWallStyleLayerDragOver(target) => {
+                if let Some(from) = self.aec_style_manager_wall_style_drag_index.take() {
+                    let len = self.aec_style_manager_wall_style_layers.len();
+                    if from != target && from < len && target < len {
+                        let layer = self.aec_style_manager_wall_style_layers.remove(from);
+                        self.aec_style_manager_wall_style_layers.insert(target, layer);
+                    }
+                }
+                Task::none()
+            }
+            Message::AecStyleManagerWallStyleLayerDragEnd => {
+                self.aec_style_manager_wall_style_drag_index = None;
+                Task::none()
+            }
             Message::AecStyleManagerWallStyleSortToggle => {
                 self.aec_style_manager_wall_style_sort =
                     self.aec_style_manager_wall_style_sort.toggled();
@@ -2152,6 +2178,16 @@ impl OpenCADStudio {
             }
             Message::AecStyleManagerMaterialHatchChanged(value) => {
                 self.aec_style_manager_material_hatch = value;
+                Task::none()
+            }
+            Message::AecStyleManagerMaterialHatchPickerToggle => {
+                self.aec_style_manager_material_hatch_picker_open =
+                    !self.aec_style_manager_material_hatch_picker_open;
+                Task::none()
+            }
+            Message::AecStyleManagerMaterialHatchSelected(name) => {
+                self.aec_style_manager_material_hatch = name;
+                self.aec_style_manager_material_hatch_picker_open = false;
                 Task::none()
             }
             Message::AecStyleManagerMaterialColorChanged(value) => {

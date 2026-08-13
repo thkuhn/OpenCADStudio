@@ -83,8 +83,8 @@ impl fmt::Display for SelectionGroup {
 }
 
 #[derive(Clone)]
-struct HatchPatternPreview {
-    pattern: crate::scene::model::hatch_model::HatchPattern,
+pub(crate) struct HatchPatternPreview {
+    pub(crate) pattern: crate::scene::model::hatch_model::HatchPattern,
 }
 
 impl canvas::Program<Message> for HatchPatternPreview {
@@ -166,7 +166,7 @@ impl canvas::Program<Message> for HatchPatternPreview {
     }
 }
 
-fn hatch_preview_scale(pattern: &crate::scene::model::hatch_model::HatchPattern) -> f32 {
+pub(crate) fn hatch_preview_scale(pattern: &crate::scene::model::hatch_model::HatchPattern) -> f32 {
     use crate::scene::model::hatch_model::HatchPattern;
 
     let HatchPattern::Pattern(families) = pattern else {

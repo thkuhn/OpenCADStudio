@@ -996,6 +996,8 @@ pub(super) struct OpenCADStudio {
     aec_style_manager_material_line_type: String,
     /// Whether the material form's colour-picker popup is expanded.
     aec_style_manager_material_color_picker_open: bool,
+    /// Whether the material form's visual hatch-pattern picker is expanded.
+    aec_style_manager_material_hatch_picker_open: bool,
 
     /// Id of the wall style currently being edited, if the edit buffer holds
     /// an existing wall style (`None` while composing a new/unsaved one).
@@ -1006,6 +1008,10 @@ pub(super) struct OpenCADStudio {
     aec_style_manager_wall_style_name: String,
     aec_style_manager_wall_style_parent: Option<String>,
     aec_style_manager_wall_style_layers: Vec<AecLayerBuffer>,
+    /// Index of the layer row currently "picked up" for a click-based
+    /// drag-and-drop reorder (armed by its drag handle, dropped by clicking
+    /// another row's drag handle); `None` when no drag is in progress.
+    aec_style_manager_wall_style_drag_index: Option<usize>,
     /// How the "Wall Styles" master list is ordered: alphabetically by name,
     /// or hierarchically (parents before children, siblings grouped).
     aec_style_manager_wall_style_sort: AecWallStyleSort,
@@ -2161,6 +2167,10 @@ pub enum Message {
     AecStyleManagerMaterialNameChanged(String),
     /// Hatch-pattern field changed in the material edit form.
     AecStyleManagerMaterialHatchChanged(String),
+    /// Opens/closes the material edit form's visual hatch-pattern picker.
+    AecStyleManagerMaterialHatchPickerToggle,
+    /// A hatch pattern was chosen in the material edit form's visual picker.
+    AecStyleManagerMaterialHatchSelected(String),
     /// Line-color hex field changed in the material edit form.
     AecStyleManagerMaterialColorChanged(String),
     /// Line-type field changed in the material edit form.
@@ -2195,6 +2205,17 @@ pub enum Message {
     AecStyleManagerWallStyleLayerMoveUp(usize),
     /// Moves the layer at `index` one position down (towards the inside).
     AecStyleManagerWallStyleLayerMoveDown(usize),
+    /// Drag handle pressed on the layer row at `index` — arms a pending
+    /// reorder ("pick up"); a click on a different row's handle drops it
+    /// there. This is a click-based approximation of drag-and-drop, since
+    /// `iced`'s `mouse_area` in this version has no hover/enter callbacks
+    /// suitable for continuous drag tracking.
+    AecStyleManagerWallStyleLayerDragStart(usize),
+    /// Drop target clicked while a layer is armed for reordering — moves
+    /// the armed layer to this index and disarms.
+    AecStyleManagerWallStyleLayerDragOver(usize),
+    /// Cancels an armed drag-reorder without moving anything.
+    AecStyleManagerWallStyleLayerDragEnd,
     AecStyleManagerWallStyleSave,
     AecStyleManagerWallStyleDelete,
     /// Toggles the "Wall Styles" master-list ordering between Name/Hierarchy.
@@ -3437,11 +3458,13 @@ impl OpenCADStudio {
             aec_style_manager_material_color: String::new(),
             aec_style_manager_material_line_type: String::new(),
             aec_style_manager_material_color_picker_open: false,
+            aec_style_manager_material_hatch_picker_open: false,
             aec_style_manager_wall_style_editing_id: None,
             aec_style_manager_wall_style_form_open: false,
             aec_style_manager_wall_style_name: String::new(),
             aec_style_manager_wall_style_parent: None,
             aec_style_manager_wall_style_layers: Vec::new(),
+            aec_style_manager_wall_style_drag_index: None,
             aec_style_manager_wall_style_sort: AecWallStyleSort::default(),
             scale_manager_selected: String::new(),
             scale_manager_paper_buf: String::new(),

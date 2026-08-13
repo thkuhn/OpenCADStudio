@@ -10,7 +10,8 @@
 //! storage.
 
 use iced::widget::{
-    button, column, container, pick_list, row, scrollable, text, text_input, Space,
+    button, canvas, column, container, mouse_area, pick_list, row, scrollable, text, text_input,
+    Space,
 };
 use iced::{Border, Element, Fill, Theme};
 
@@ -114,6 +115,8 @@ pub struct MaterialFormState<'a> {
     pub line_type: &'a str,
     /// Whether the colour-picker popup below the swatch is expanded.
     pub color_picker_open: bool,
+    /// Whether the visual hatch-pattern picker below the field is expanded.
+    pub hatch_picker_open: bool,
     /// Linetype options offered by the dropdown (document linetypes plus any
     /// custom value already stored on the material).
     pub linetypes: Vec<String>,
@@ -127,6 +130,9 @@ pub struct WallStyleFormState<'a> {
     pub name: &'a str,
     pub parent_id: Option<&'a str>,
     pub layers: &'a [crate::app::AecLayerBuffer],
+    /// Index of the layer row currently armed for a click-based
+    /// drag-and-drop reorder (`None` when no drag is in progress).
+    pub drag_index: Option<usize>,
     /// All other wall styles (id, name) for the parent picklist, excluding self.
     pub all_wall_styles: Vec<(&'a str, &'a str)>,
     /// All materials (id, name) for the layer picklist.
@@ -137,12 +143,103 @@ pub struct WallStyleFormState<'a> {
     pub effective_layers: Vec<crate::modules::aec::engine::wall_style::Layer>,
 }
 
+/// Fixed column widths for `layer_row`, reused by `layer_header_row` so the
+/// header titles line up exactly with the cells below.
+const LAYER_COL_REORDER_W: f32 = 22.0;
+const LAYER_COL_MATERIAL_W: f32 = 150.0;
+const LAYER_COL_THICKNESS_W: f32 = 60.0;
+const LAYER_COL_GAP_W: f32 = 50.0;
+const LAYER_COL_OFFSET_W: f32 = 50.0;
+const LAYER_COL_FUNCTION_W: f32 = 100.0;
+const LAYER_COL_OVERRIDE_W: f32 = 110.0;
+
+/// Header row above the wall-style layer list, matching `layer_row`'s
+/// current column order and widths (reorder/drag handle, material,
+/// thickness, gap, bottom/top offset, function, layer override, delete).
+fn layer_header_row<'a>() -> Element<'a, Message> {
+    row![
+        text("").width(LAYER_COL_REORDER_W),
+        text(t!("Material")).size(10).style(muted).width(LAYER_COL_MATERIAL_W),
+        text(t!("Thickness")).size(10).style(muted).width(LAYER_COL_THICKNESS_W),
+        text(t!("Gap")).size(10).style(muted).width(LAYER_COL_GAP_W),
+        text(t!("Bottom Offset")).size(10).style(muted).width(LAYER_COL_OFFSET_W),
+        text(t!("Top Offset")).size(10).style(muted).width(LAYER_COL_OFFSET_W),
+        text(t!("Function")).size(10).style(muted).width(LAYER_COL_FUNCTION_W),
+        text(t!("Layer Override")).size(10).style(muted).width(LAYER_COL_OVERRIDE_W),
+        text(t!("")).width(60),
+    ]
+    .spacing(4)
+    .into()
+}
+
+/// Simplified toggle-open picker for the material form's hatch pattern
+/// field: a button showing the current pattern name (mirroring the
+/// colour-picker toggle button used for `Line color` just below it), which
+/// expands into a small grid of pattern-name + preview-canvas cards. Reuses
+/// `crate::ui::properties::HatchPatternPreview`/`filtered_hatch_patterns`,
+/// the same rendering the HATCH command's own pattern picker uses, so the
+/// preview look is consistent across the app.
+fn hatch_pattern_field<'a>(current: &'a str, open: bool) -> Element<'a, Message> {
+    let head = button(
+        row![
+            text(if current.is_empty() { "SOLID" } else { current }).size(11),
+            Space::new(),
+            if open {
+                text("▲").size(9)
+            } else {
+                text("▼").size(9)
+            },
+        ]
+        .align_y(iced::Center),
+    )
+    .on_press(Message::AecStyleManagerMaterialHatchPickerToggle)
+    .style(button::subtle)
+    .padding([4, 6])
+    .width(180);
+
+    if !open {
+        return head.into();
+    }
+
+    let mut grid = column![].spacing(4);
+    let patterns = crate::ui::properties::filtered_hatch_patterns("");
+    for pair in patterns.chunks(2) {
+        let mut cards = row![].spacing(4);
+        for entry in pair {
+            let selected = current.eq_ignore_ascii_case(&entry.name);
+            let name = entry.name.clone();
+            let preview = canvas(crate::ui::properties::HatchPatternPreview {
+                pattern: entry.gpu.clone(),
+            })
+            .width(70)
+            .height(36);
+            let card = button(
+                column![
+                    preview,
+                    text(crate::ui::text_util::elide(&entry.name, 12)).size(9),
+                ]
+                .spacing(2)
+                .align_x(iced::Center),
+            )
+            .on_press(Message::AecStyleManagerMaterialHatchSelected(name))
+            .style(if selected { button::primary } else { button::subtle })
+            .padding(3)
+            .width(84);
+            cards = cards.push(card);
+        }
+        grid = grid.push(cards);
+    }
+
+    column![head, scrollable(grid).height(180)].spacing(4).into()
+}
+
 fn layer_row<'a>(
     index: usize,
     layer_count: usize,
     buffer: &'a crate::app::AecLayerBuffer,
     all_materials: &[(&'a str, &'a str)],
     all_layer_names: &[String],
+    drag_index: Option<usize>,
 ) -> Element<'a, Message> {
     let functions: Vec<String> = vec![
         "Structural".to_string(),
@@ -168,8 +265,29 @@ fn layer_row<'a>(
         down_button = down_button.on_press(Message::AecStyleManagerWallStyleLayerMoveDown(index));
     }
 
+    // Drag handle: a click-based "pick up / drop here" approximation of
+    // drag-and-drop (see `Message::AecStyleManagerWallStyleLayerDragStart`
+    // doc-comment). `mouse_area` is used only for its `Grab` cursor hint
+    // (matching the existing pane-move handle in `controls.rs`); the actual
+    // arm/drop transition happens on click via a plain button so it behaves
+    // predictably without needing hover/enter callbacks.
+    let armed = drag_index == Some(index);
+    let handle = mouse_area(
+        button(text("⠿").size(12))
+            .style(if armed { button::primary } else { button::subtle })
+            .padding([2, 6])
+            .on_press(if armed {
+                Message::AecStyleManagerWallStyleLayerDragEnd
+            } else if drag_index.is_some() {
+                Message::AecStyleManagerWallStyleLayerDragOver(index)
+            } else {
+                Message::AecStyleManagerWallStyleLayerDragStart(index)
+            }),
+    )
+    .interaction(iced::mouse::Interaction::Grab);
+
     row![
-        column![up_button, down_button].spacing(2),
+        column![handle, up_button, down_button].spacing(2).width(LAYER_COL_REORDER_W),
         pick_list(selected_material_id, material_ids, move |id: &String| {
             material_names
                 .iter()
@@ -431,10 +549,7 @@ pub fn view_window<'a>(
             .spacing(8),
             row![
                 text(t!("Hatch pattern")).size(10).style(muted).width(100),
-                text_input("", material_form.hatch)
-                    .on_input(Message::AecStyleManagerMaterialHatchChanged)
-                    .size(11)
-                    .padding([4, 6]),
+                hatch_pattern_field(material_form.hatch, material_form.hatch_picker_open),
             ]
             .spacing(8),
             row![
@@ -515,11 +630,14 @@ pub fn view_window<'a>(
         let all_materials_ref = &wall_style_form.all_materials;
         let all_layer_names_ref = &wall_style_form.all_layer_names;
         let layer_count = wall_style_form.layers.len();
+        let drag_index = wall_style_form.drag_index;
         let layer_rows: Vec<Element<'_, Message>> = wall_style_form
             .layers
             .iter()
             .enumerate()
-            .map(|(i, lb)| layer_row(i, layer_count, lb, all_materials_ref, all_layer_names_ref))
+            .map(|(i, lb)| {
+                layer_row(i, layer_count, lb, all_materials_ref, all_layer_names_ref, drag_index)
+            })
             .collect();
 
         let mut detail_col = column![
@@ -562,6 +680,7 @@ pub fn view_window<'a>(
                     .padding([2, 8]),
             ]
             .spacing(8),
+            layer_header_row(),
             container(scrollable(column(layer_rows).spacing(4)).height(150))
                 .style(|theme: &Theme| container::Style {
                     border: Border {
