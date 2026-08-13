@@ -4,15 +4,24 @@
 //! Kept dependency-light (std + the rest of the crate) so the math stays
 //! unit-testable without UI or command-line coupling.
 
+pub mod contour;
 pub mod geometry;
 pub mod ifc;
+pub mod library;
 pub mod loop_detection;
+pub mod material;
 pub mod room;
 pub mod storey;
+pub mod style;
 pub mod wall;
+pub mod wall_style;
 
 pub use ifc::Scene;
+pub use library::StyleLibrary;
 pub use loop_detection::find_closed_loop;
+pub use material::Material;
 pub use room::Room;
 pub use storey::Storey;
+pub use style::Style;
 pub use wall::Wall;
+pub use wall_style::WallStyle;

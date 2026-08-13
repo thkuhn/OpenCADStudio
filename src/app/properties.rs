@@ -415,7 +415,36 @@ impl OpenCADStudio {
                     // left untouched. Edits are written back through the same
                     // `wall_record` layout used by the interactive `AEC_WALL`
                     // draw command (see `on_prop_geom_commit`'s "wall_*" arms).
-                    if let Some(wall) = crate::modules::aec::commands::wall_from_entity(entity) {
+                    if let Some(wall_v2) = crate::modules::aec::commands::wall_v2_from_entity(entity) {
+                        let mut props = vec![
+                            crate::entities::common::ro_prop(
+                                t!("Height").as_ref(),
+                                "wall_height",
+                                crate::entities::common::format_length(wall_v2.height),
+                            ),
+                            crate::entities::common::ro_prop(
+                                t!("Style").as_ref(),
+                                "wall_style",
+                                wall_v2.style_id.clone(),
+                            ),
+                        ];
+
+                        for (material_name, thickness, function) in &wall_v2.layers {
+                            let thickness_str = crate::entities::common::format_length(*thickness);
+                            let layer_info =
+                                format!("{} — {} ({})", material_name, thickness_str, function);
+                            props.push(crate::entities::common::ro_prop(
+                                t!("Layer").as_ref(),
+                                "wall_layer",
+                                layer_info,
+                            ));
+                        }
+
+                        sections.push(crate::scene::model::object::PropSection {
+                            title: t!("Wall Layers").into_owned(),
+                            props,
+                        });
+                    } else if let Some(wall) = crate::modules::aec::commands::wall_from_entity(entity) {
                         sections.push(crate::scene::model::object::PropSection {
                             title: t!("Wall").into_owned(),
                             props: vec![

@@ -18,7 +18,12 @@ use crate::command::{CadCommand, CmdOption, CmdResult, WorkingPlane};
 use crate::scene::Scene;
 use crate::ui::command_line::CommandLine;
 
-use super::engine::{self, find_closed_loop, Room, Storey, Wall};
+use super::engine::{
+    self, find_closed_loop, Room, Storey, StyleLibrary, Wall,
+};
+use super::engine::library::{default_library_path, from_toml};
+use super::engine::wall_style::{effective_layers, LayerFunction};
+use std::collections::HashMap;
 
 /// APPID used for all AEC XDATA records (must stay stable for round-trip).
 pub const AEC_APPID: &str = "OPENCAD_AEC";
@@ -76,7 +81,7 @@ fn collect_wall_segments(doc: &CadDocument) -> Vec<((f64, f64), (f64, f64))> {
         };
         let is_wall = matches!(
             read_aec_record(entity).and_then(|r| r.values.first()),
-            Some(XDataValue::String(kind)) if kind == "WALL"
+            Some(XDataValue::String(kind)) if kind == "WALL" || kind == "WALL_V2"
         );
         if !is_wall {
             continue;
@@ -112,6 +117,191 @@ fn wall_record(wall: &Wall) -> ExtendedDataRecord {
     record
 }
 
+/// In-memory representation of a `WALL_V2` record.
+#[derive(Debug, Clone, PartialEq)]
+pub struct WallV2 {
+    pub style_id: String,
+    pub height: f64,
+    pub storey_id: u32,
+    pub layers: Vec<(String, f64, String)>,
+}
+
+impl WallV2 {
+    pub fn total_thickness(&self) -> f64 {
+        self.layers.iter().map(|(_, t, _)| *t).sum()
+    }
+}
+
+/// Build a `WALL_V2` XDATA record's values.
+pub fn wall_v2_record(
+    style_id: &str,
+    height: f64,
+    storey_id: u32,
+    layers: &[(String, f64, String)],
+) -> Vec<XDataValue> {
+    let mut values = Vec::new();
+    values.push(XDataValue::String("WALL_V2".to_string()));
+    values.push(XDataValue::String(style_id.to_string()));
+    values.push(XDataValue::Distance(height));
+    values.push(XDataValue::Integer32(storey_id as i32));
+    values.push(XDataValue::Integer32(layers.len() as i32));
+    for (mat, thick, func) in layers {
+        values.push(XDataValue::String(mat.clone()));
+        values.push(XDataValue::Distance(*thick));
+        values.push(XDataValue::String(func.clone()));
+    }
+    values
+}
+
+/// Parse a `WALL_V2` XDATA record back into a [`WallV2`].
+pub fn wall_v2_from_entity(entity: &EntityType) -> Option<WallV2> {
+    let record = read_aec_record(entity)?;
+    let v = &record.values;
+    if v.len() < 5 {
+        return None;
+    }
+    let XDataValue::String(kind) = &v[0] else {
+        return None;
+    };
+    if kind != "WALL_V2" {
+        return None;
+    }
+
+    let style_id = if let XDataValue::String(s) = &v[1] {
+        s.clone()
+    } else {
+        return None;
+    };
+    let height = if let XDataValue::Distance(d) = v[2] {
+        d
+    } else {
+        return None;
+    };
+    let storey_id = if let XDataValue::Integer32(i) = v[3] {
+        i as u32
+    } else {
+        return None;
+    };
+    let layer_count = if let XDataValue::Integer32(i) = v[4] {
+        i as usize
+    } else {
+        return None;
+    };
+
+    if v.len() < 5 + layer_count * 3 {
+        return None;
+    }
+
+    let mut layers = Vec::with_capacity(layer_count);
+    for i in 0..layer_count {
+        let base = 5 + i * 3;
+        let mat = if let XDataValue::String(s) = &v[base] {
+            s.clone()
+        } else {
+            return None;
+        };
+        let thick = if let XDataValue::Distance(d) = v[base + 1] {
+            d
+        } else {
+            return None;
+        };
+        let func = if let XDataValue::String(s) = &v[base + 2] {
+            s.clone()
+        } else {
+            return None;
+        };
+        layers.push((mat, thick, func));
+    }
+
+    Some(WallV2 {
+        style_id,
+        height,
+        storey_id,
+        layers,
+    })
+}
+
+/// Unified helper to get total thickness, height, and storey_id for any wall entity
+/// (supports both `WALL` and `WALL_V2`).
+pub fn wall_thickness_and_height(entity: &EntityType) -> Option<(f64, f64, u32)> {
+    let record = read_aec_record(entity)?;
+    match record.values.first() {
+        Some(XDataValue::String(kind)) if kind == "WALL" => {
+            let wall = wall_from_entity(entity)?;
+            Some((wall.thickness, wall.height, wall.storey_id))
+        }
+        Some(XDataValue::String(kind)) if kind == "WALL_V2" => {
+            let wall = wall_v2_from_entity(entity)?;
+            Some((wall.total_thickness(), wall.height, wall.storey_id))
+        }
+        _ => None,
+    }
+}
+
+/// Parameters for a 3D extrusion of a wall layer.
+///
+/// Contains the 2D footprint (a closed polygon loop) and the height
+/// to extrude it by.
+#[derive(Debug, Clone, PartialEq)]
+pub struct WallLayerExtrusion {
+    pub footprint: Vec<(f64, f64)>,
+    pub height: f64,
+}
+
+/// Extracts a wall's centerline points from its [`LwPolyline`] geometry and
+/// computes parallel boundary lines for each layer.
+///
+/// Returns N+1 boundary lines for N layers.
+pub fn wall_layer_contour_polylines(
+    wall_entity: &EntityType,
+    layers: &[(String, f64, String)],
+) -> Vec<Vec<(f64, f64)>> {
+    let EntityType::LwPolyline(pl) = wall_entity else {
+        return Vec::new();
+    };
+    let centerline: Vec<(f64, f64)> = pl
+        .vertices
+        .iter()
+        .map(|v| (v.location.x, v.location.y))
+        .collect();
+    let thicknesses: Vec<f64> = layers.iter().map(|(_, t, _)| *t).collect();
+    engine::contour::layer_contours(&centerline, &thicknesses)
+}
+
+/// Produces the parameters needed to create an extruded solid for each wall layer.
+///
+/// This implementation uses the "layer footprint" approach: it builds a closed
+/// 2D polygon per layer by combining consecutive boundary offsets and returns
+/// it along with the wall height.
+///
+/// Scoping Decision: This function returns plain data ([`WallLayerExtrusion`]).
+/// A future step can wire this to the host's `Solid3D` entity creation calls
+/// (e.g., using `sweep_model::extruded`).
+pub fn wall_layer_extrusions(
+    wall_entity: &EntityType,
+    layers: &[(String, f64, String)],
+    height: f64,
+) -> Vec<WallLayerExtrusion> {
+    let boundaries = wall_layer_contour_polylines(wall_entity, layers);
+    if boundaries.is_empty() || boundaries.len() < 2 {
+        return Vec::new();
+    }
+
+    let mut extrusions = Vec::with_capacity(layers.len());
+    for i in 0..layers.len() {
+        let b1 = &boundaries[i];
+        let b2 = &boundaries[i + 1];
+
+        // Create a closed loop: forward along b1, then backward along b2.
+        let mut footprint = Vec::with_capacity(b1.len() + b2.len());
+        footprint.extend(b1.iter().cloned());
+        footprint.extend(b2.iter().rev().cloned());
+
+        extrusions.push(WallLayerExtrusion { footprint, height });
+    }
+    extrusions
+}
+
 /// Parse a `WALL` XDATA record back into a [`Wall`] (inverse of
 /// [`wall_record`]). Returns `None` if `entity` isn't `WALL`-tagged or the
 /// record doesn't have the expected shape.
@@ -130,6 +320,15 @@ pub fn wall_from_entity(entity: &EntityType) -> Option<Wall> {
                     Some(material.clone())
                 },
                 storey_id: *storey_id as u32,
+            })
+        }
+        [XDataValue::String(kind), ..] if kind == "WALL_V2" => {
+            let v2 = wall_v2_from_entity(entity)?;
+            Some(Wall {
+                thickness: v2.total_thickness(),
+                height: v2.height,
+                material_ref: v2.layers.first().map(|(m, _, _)| m.clone()),
+                storey_id: v2.storey_id,
             })
         }
         _ => None,
@@ -162,6 +361,8 @@ const DEFAULT_WALL_THICKNESS: f64 = 0.2;
 enum WallPhase {
     /// Collecting click points, like `PLINE`.
     Drawing,
+    /// Point chain finished; waiting for a style selection.
+    AskStyle,
     /// Point chain finished; waiting for a height value on the command line.
     AskHeight,
     /// Height entered; waiting for a thickness value on the command line.
@@ -178,16 +379,35 @@ pub struct WallCommand {
     plane: WorkingPlane,
     wall: Wall,
     phase: WallPhase,
+    library: Option<StyleLibrary>,
+    style_id: Option<String>,
+    resolved_layers: Option<Vec<(String, f64, String)>>,
 }
 
 impl WallCommand {
     pub fn new() -> Self {
+        let library = (|| {
+            let path = default_library_path();
+            if !path.exists() {
+                return None;
+            }
+            let content = std::fs::read_to_string(path).ok()?;
+            from_toml(&content).ok()
+        })();
+
+        Self::new_with_library(library)
+    }
+
+    pub fn new_with_library(library: Option<StyleLibrary>) -> Self {
         Self {
             vertices: Vec::new(),
             live_handle: None,
             plane: WorkingPlane::default(),
             wall: Wall::new(DEFAULT_WALL_THICKNESS, DEFAULT_WALL_HEIGHT, 0),
             phase: WallPhase::Drawing,
+            library,
+            style_id: None,
+            resolved_layers: None,
         }
     }
 
@@ -211,6 +431,12 @@ impl WallCommand {
         if self.live_handle.is_none() {
             return CmdResult::Cancel;
         }
+        if let Some(lib) = &self.library {
+            if !lib.wall_styles.is_empty() {
+                self.phase = WallPhase::AskStyle;
+                return CmdResult::NeedPoint;
+            }
+        }
         self.phase = WallPhase::AskHeight;
         CmdResult::NeedPoint
     }
@@ -225,10 +451,19 @@ impl WallCommand {
             pl.add_vertex(LwVertex::new(Vector2::new(local.x, local.y)));
         }
         let mut entity = self.plane.place_entity(EntityType::LwPolyline(pl));
+
+        let record = if let (Some(style_id), Some(layers)) = (&self.style_id, &self.resolved_layers) {
+            let mut rec = ExtendedDataRecord::new(AEC_APPID);
+            rec.values = wall_v2_record(style_id, self.wall.height, self.wall.storey_id, layers);
+            rec
+        } else {
+            wall_record(&self.wall)
+        };
+
         entity
             .common_mut()
             .extended_data
-            .add_record(wall_record(&self.wall));
+            .add_record(record);
         Some(entity)
     }
 
@@ -277,6 +512,12 @@ impl CadCommand for WallCommand {
             WallPhase::Drawing => {
                 format!("AEC_WALL  Next pt  [{}pts]:", self.vertices.len())
             }
+            WallPhase::AskStyle => {
+                let styles = self.library.as_ref().map(|l| &l.wall_styles).unwrap();
+                let names: Vec<_> = styles.iter().map(|s| s.style.name.as_str()).collect();
+                let default = names.first().copied().unwrap_or("");
+                format!("AEC_WALL  Select wall style [{}] <{}>:", names.join("/"), default)
+            }
             WallPhase::AskHeight => {
                 format!("AEC_WALL  Specify wall height <{DEFAULT_WALL_HEIGHT}>:")
             }
@@ -290,6 +531,16 @@ impl CadCommand for WallCommand {
         match self.phase {
             WallPhase::Drawing if self.vertices.is_empty() => Vec::new(),
             WallPhase::Drawing => vec![CmdOption::new("Undo", "U"), CmdOption::enter("Done")],
+            WallPhase::AskStyle => {
+                if let Some(lib) = &self.library {
+                    lib.wall_styles
+                        .iter()
+                        .map(|s| CmdOption::new(&s.style.name, &s.style.name))
+                        .collect()
+                } else {
+                    Vec::new()
+                }
+            }
             WallPhase::AskHeight | WallPhase::AskThickness => Vec::new(),
         }
     }
@@ -314,7 +565,7 @@ impl CadCommand for WallCommand {
     fn on_enter(&mut self) -> CmdResult {
         match self.phase {
             WallPhase::Drawing => self.start_dimension_prompt(),
-            WallPhase::AskHeight | WallPhase::AskThickness => {
+            WallPhase::AskStyle | WallPhase::AskHeight | WallPhase::AskThickness => {
                 self.on_text_input("").unwrap_or(CmdResult::Cancel)
             }
         }
@@ -346,10 +597,64 @@ impl CadCommand for WallCommand {
                 "U" | "UNDO" => Some(self.undo_last_vertex()),
                 _ => None,
             },
+            WallPhase::AskStyle => {
+                let lib = self.library.as_ref()?;
+                let selected = if text.trim().is_empty() {
+                    lib.wall_styles.first()
+                } else {
+                    lib.wall_styles.iter().find(|s| {
+                        s.style.name.eq_ignore_ascii_case(text.trim())
+                            || s.style.id.eq_ignore_ascii_case(text.trim())
+                    })
+                };
+
+                if let Some(style) = selected {
+                    self.style_id = Some(style.style.id.clone());
+
+                    // Resolve layers
+                    let mut style_map = HashMap::new();
+                    for s in &lib.wall_styles {
+                        style_map.insert(s.style.id.clone(), s.clone());
+                    }
+
+                    if let Ok(layers) = effective_layers(&style_map, &style.style.id) {
+                        let mut resolved = Vec::new();
+                        for layer in layers {
+                            let mat_name = lib
+                                .materials
+                                .iter()
+                                .find(|m| m.id == layer.material_id)
+                                .map(|m| m.name.clone())
+                                .unwrap_or_else(|| layer.material_id.clone());
+
+                            let func_str = match &layer.function {
+                                LayerFunction::Structural => "Structural".to_string(),
+                                LayerFunction::Insulation => "Insulation".to_string(),
+                                LayerFunction::Finish => "Finish".to_string(),
+                                LayerFunction::Other(s) => s.clone(),
+                            };
+                            resolved.push((mat_name, layer.thickness, func_str));
+                        }
+                        self.resolved_layers = Some(resolved);
+                    }
+
+                    // Style doesn't have height, so go to AskHeight
+                    self.phase = WallPhase::AskHeight;
+                    Some(CmdResult::NeedPoint)
+                } else {
+                    // Invalid style name, stay here
+                    Some(CmdResult::NeedPoint)
+                }
+            }
             WallPhase::AskHeight => {
                 self.wall.height = Self::parse_dimension(text, DEFAULT_WALL_HEIGHT);
-                self.phase = WallPhase::AskThickness;
-                Some(CmdResult::NeedPoint)
+                if self.style_id.is_some() {
+                    // We have a style, so we skip AskThickness
+                    Some(self.sync_live(true))
+                } else {
+                    self.phase = WallPhase::AskThickness;
+                    Some(CmdResult::NeedPoint)
+                }
             }
             WallPhase::AskThickness => {
                 self.wall.thickness = Self::parse_dimension(text, DEFAULT_WALL_THICKNESS);
@@ -502,32 +807,17 @@ pub fn aec_ifc_export(scene: &mut Scene, command_line: &mut CommandLine) {
             continue;
         };
         match record.values.first() {
-            Some(XDataValue::String(kind)) if kind == "WALL" => {
-                // 0: "WALL", 1: thick, 2: height, 3: mat, 4: storey_id
-                if record.values.len() >= 5 {
-                    let thickness = if let XDataValue::Distance(d) = record.values[1] {
-                        d
+            Some(XDataValue::String(kind)) if kind == "WALL" || kind == "WALL_V2" => {
+                if let Some((thickness, height, storey_id)) = wall_thickness_and_height(entity) {
+                    let material_ref = if kind == "WALL" {
+                        if let Some(XDataValue::String(s)) = record.values.get(3) {
+                            if s.is_empty() { None } else { Some(s.clone()) }
+                        } else { None }
                     } else {
-                        0.2
-                    };
-                    let height = if let XDataValue::Distance(d) = record.values[2] {
-                        d
-                    } else {
-                        2.8
-                    };
-                    let material_ref = if let XDataValue::String(s) = &record.values[3] {
-                        if s.is_empty() {
-                            None
-                        } else {
-                            Some(s.clone())
-                        }
-                    } else {
-                        None
-                    };
-                    let storey_id = if let XDataValue::Integer32(i) = record.values[4] {
-                        i as u32
-                    } else {
-                        0
+                        // For V2, just take the first layer's material as representative for IFC export for now
+                        if let Some(XDataValue::String(s)) = record.values.get(5) {
+                            if s.is_empty() { None } else { Some(s.clone()) }
+                        } else { None }
                     };
                     ifc_scene.walls.push(Wall {
                         thickness,
@@ -879,5 +1169,236 @@ mod wall_command_tests {
         // The AEC_ROOM segment collector still sees this wall after the edit.
         let segments = collect_wall_segments(&scene.document);
         assert_eq!(segments.len(), 1);
+    }
+
+    #[test]
+    fn wall_v2_round_trip() {
+        let layers = vec![
+            ("Finish".to_string(), 0.02, "Finish".to_string()),
+            ("Brick".to_string(), 0.10, "Structural".to_string()),
+            ("Finish".to_string(), 0.02, "Finish".to_string()),
+        ];
+        let values = wall_v2_record("style1", 3.0, 1, &layers);
+        let pl = LwPolyline::new();
+        let mut entity = EntityType::LwPolyline(pl);
+        let mut record = ExtendedDataRecord::new(AEC_APPID);
+        record.values = values;
+        entity.common_mut().extended_data.add_record(record);
+
+        let wall = wall_v2_from_entity(&entity).expect("Should parse WALL_V2");
+        assert_eq!(wall.style_id, "style1");
+        assert_eq!(wall.height, 3.0);
+        assert_eq!(wall.storey_id, 1);
+        assert_eq!(wall.layers.len(), 3);
+        assert_eq!(wall.layers[1].0, "Brick");
+        assert_eq!(wall.layers[1].1, 0.10);
+        assert_eq!(wall.layers[1].2, "Structural");
+        assert_eq!(wall.total_thickness(), 0.14);
+    }
+
+    #[test]
+    fn wall_v2_from_entity_returns_none_for_legacy_wall() {
+        let w = Wall {
+            thickness: 0.2,
+            height: 2.8,
+            material_ref: Some("Concrete".to_string()),
+            storey_id: 1,
+        };
+        let pl = LwPolyline::new();
+        let mut entity = EntityType::LwPolyline(pl);
+        entity.common_mut().extended_data.add_record(wall_record(&w));
+
+        assert!(wall_v2_from_entity(&entity).is_none());
+    }
+
+    #[test]
+    fn wall_thickness_and_height_supports_both_versions() {
+        let pl_v1 = LwPolyline::new();
+        let mut e_v1 = EntityType::LwPolyline(pl_v1);
+        let w1 = Wall {
+            thickness: 0.2,
+            height: 2.8,
+            material_ref: None,
+            storey_id: 0,
+        };
+        e_v1.common_mut().extended_data.add_record(wall_record(&w1));
+
+        let res1 = wall_thickness_and_height(&e_v1).expect("Should read V1");
+        assert_eq!(res1, (0.2, 2.8, 0));
+
+        let pl_v2 = LwPolyline::new();
+        let mut e_v2 = EntityType::LwPolyline(pl_v2);
+        let layers = vec![("Mat".to_string(), 0.15, "Func".to_string())];
+        let mut rec2 = ExtendedDataRecord::new(AEC_APPID);
+        rec2.values = wall_v2_record("style2", 3.2, 2, &layers);
+        e_v2.common_mut().extended_data.add_record(rec2);
+
+        let res2 = wall_thickness_and_height(&e_v2).expect("Should read V2");
+        assert_eq!(res2, (0.15, 3.2, 2));
+    }
+
+    #[test]
+    fn aec_room_detects_a_closed_loop_from_mixed_wall_versions() {
+        use crate::ui::command_line::CommandLine;
+
+        let mut scene = Scene::new();
+        let corners = [
+            DVec3::new(0.0, 0.0, 0.0),
+            DVec3::new(4.0, 0.0, 0.0),
+            DVec3::new(4.0, 3.0, 0.0),
+            DVec3::new(0.0, 3.0, 0.0),
+            DVec3::new(0.0, 0.0, 0.0),
+        ];
+
+        for (i, pair) in corners.windows(2).enumerate() {
+            let mut pl = LwPolyline::new();
+            pl.add_vertex(LwVertex::new(Vector2::new(pair[0].x, pair[0].y)));
+            pl.add_vertex(LwVertex::new(Vector2::new(pair[1].x, pair[1].y)));
+            let mut entity = EntityType::LwPolyline(pl);
+
+            let record = if i % 2 == 0 {
+                // Version 1
+                let w = Wall {
+                    thickness: 0.2,
+                    height: 2.8,
+                    material_ref: None,
+                    storey_id: 0,
+                };
+                wall_record(&w)
+            } else {
+                // Version 2
+                let layers = vec![("Brick".to_string(), 0.2, "Structural".to_string())];
+                let mut r = ExtendedDataRecord::new(AEC_APPID);
+                r.values = wall_v2_record("style1", 2.8, 0, &layers);
+                r
+            };
+            entity.common_mut().extended_data.add_record(record);
+            scene.add_entity(entity);
+        }
+
+        let mut command_line = CommandLine::default();
+        aec_room(&mut scene, &mut command_line);
+
+        let room_record = scene
+            .document
+            .entities()
+            .filter_map(read_aec_record)
+            .find(|r| matches!(r.values.first(), Some(XDataValue::String(k)) if k == "ROOM"))
+            .expect("aec_room should have written a ROOM xdata record");
+        let area = match room_record.values.get(2) {
+            Some(XDataValue::Real(a)) => *a,
+            _ => panic!("ROOM record should carry an area value"),
+        };
+        assert!((area - 12.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn wall_command_with_library_uses_ask_style_and_finalizes_v2() {
+        use crate::modules::aec::engine::material::Material;
+        use crate::modules::aec::engine::style::Style;
+        use crate::modules::aec::engine::wall_style::{Layer, LayerFunction, WallStyle};
+
+        let material = Material::new(
+            "brick_id".to_string(),
+            "Brick Material".to_string(),
+            "ANSI31".to_string(),
+            0xFF0000,
+            "Continuous".to_string(),
+        );
+        let style = WallStyle {
+            style: Style {
+                id: "style1".to_string(),
+                name: "Standard Wall".to_string(),
+                object_kind: "Wall".to_string(),
+                parent_style_id: None,
+            },
+            layers: vec![Layer {
+                material_id: "brick_id".to_string(),
+                thickness: 0.25,
+                function: LayerFunction::Structural,
+            }],
+        };
+        let lib = StyleLibrary {
+            materials: vec![material],
+            wall_styles: vec![style],
+        };
+
+        let mut cmd = WallCommand::new_with_library(Some(lib));
+        cmd.on_point(DVec3::new(0.0, 0.0, 0.0));
+        cmd.on_point(DVec3::new(5.0, 0.0, 0.0));
+        let handle = Handle::new(100);
+        cmd.set_live_handle(handle);
+
+        // Finish point chain -> AskStyle
+        assert!(matches!(cmd.on_enter(), CmdResult::NeedPoint));
+        assert!(cmd.prompt().contains("Select wall style"));
+
+        // Select style -> AskHeight
+        match cmd.on_text_input("Standard Wall") {
+            Some(CmdResult::NeedPoint) => {}
+            _ => panic!("Expected style selection to move to AskHeight"),
+        }
+        assert!(cmd.prompt().contains("height"));
+
+        // Enter height -> Finalize V2
+        match cmd.on_text_input("3.0") {
+            Some(CmdResult::UpdateLiveEntity {
+                entity: EntityType::LwPolyline(pl),
+                finish,
+                ..
+            }) => {
+                assert!(finish);
+                let record = pl.common.extended_data.get_record(AEC_APPID).unwrap();
+                assert_eq!(record.values[0], XDataValue::String("WALL_V2".to_string()));
+                assert_eq!(record.values[1], XDataValue::String("style1".to_string()));
+                assert!(
+                    matches!(record.values[2], XDataValue::Distance(h) if (h - 3.0).abs() < 1e-9)
+                );
+                // Material name "Brick Material" should be used, not "brick_id"
+                assert_eq!(
+                    record.values[5],
+                    XDataValue::String("Brick Material".to_string())
+                );
+                assert!(
+                    matches!(record.values[6], XDataValue::Distance(t) if (t - 0.25).abs() < 1e-9)
+                );
+                assert_eq!(
+                    record.values[7],
+                    XDataValue::String("Structural".to_string())
+                );
+            }
+            _ => panic!("Expected height entry to finalize wall with V2 record"),
+        }
+    }
+
+    #[test]
+    fn wall_command_with_no_library_falls_back_to_v1_record() {
+        let mut cmd = WallCommand::new_with_library(None);
+        cmd.on_point(DVec3::new(0.0, 0.0, 0.0));
+        cmd.on_point(DVec3::new(5.0, 0.0, 0.0));
+        let handle = Handle::new(101);
+        cmd.set_live_handle(handle);
+
+        // Finish point chain -> AskHeight (skipping AskStyle)
+        assert!(matches!(cmd.on_enter(), CmdResult::NeedPoint));
+        assert!(cmd.prompt().contains("height"));
+
+        // Enter height -> AskThickness
+        cmd.on_text_input("2.8");
+        assert!(cmd.prompt().contains("thickness"));
+
+        // Enter thickness -> Finalize V1
+        match cmd.on_text_input("0.2") {
+            Some(CmdResult::UpdateLiveEntity {
+                entity: EntityType::LwPolyline(pl),
+                finish,
+                ..
+            }) => {
+                assert!(finish);
+                let record = pl.common.extended_data.get_record(AEC_APPID).unwrap();
+                assert_eq!(record.values[0], XDataValue::String("WALL".to_string()));
+            }
+            _ => panic!("Expected thickness entry to finalize wall with V1 record"),
+        }
     }
 }
