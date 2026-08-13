@@ -1950,6 +1950,23 @@ impl OpenCADStudio {
                 }
                 Task::none()
             }
+            Message::AecStyleManagerWallStyleLayerMoveUp(index) => {
+                if index > 0 && index < self.aec_style_manager_wall_style_layers.len() {
+                    self.aec_style_manager_wall_style_layers.swap(index - 1, index);
+                }
+                Task::none()
+            }
+            Message::AecStyleManagerWallStyleLayerMoveDown(index) => {
+                if index + 1 < self.aec_style_manager_wall_style_layers.len() {
+                    self.aec_style_manager_wall_style_layers.swap(index, index + 1);
+                }
+                Task::none()
+            }
+            Message::AecStyleManagerWallStyleSortToggle => {
+                self.aec_style_manager_wall_style_sort =
+                    self.aec_style_manager_wall_style_sort.toggled();
+                Task::none()
+            }
             Message::AecStyleManagerWallStyleSave => {
                 let name = self.aec_style_manager_wall_style_name.trim().to_string();
                 if name.is_empty() {

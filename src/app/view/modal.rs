@@ -284,6 +284,7 @@ impl OpenCADStudio {
                             all_materials,
                             effective_layers,
                         },
+                        self.aec_style_manager_wall_style_sort,
                         flow,
                     )
                 },

@@ -107,6 +107,34 @@ pub struct AecLayerBuffer {
     pub function: String,
 }
 
+/// How the AEC Style Manager orders the "Wall Styles" master list.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum AecWallStyleSort {
+    /// Alphabetically by display name.
+    #[default]
+    Name,
+    /// Parents listed before their children, siblings grouped together.
+    Hierarchy,
+}
+
+impl AecWallStyleSort {
+    /// Toggles between the two supported orderings.
+    pub fn toggled(self) -> Self {
+        match self {
+            AecWallStyleSort::Name => AecWallStyleSort::Hierarchy,
+            AecWallStyleSort::Hierarchy => AecWallStyleSort::Name,
+        }
+    }
+
+    /// Short label shown on the toggle button.
+    pub fn label(self) -> &'static str {
+        match self {
+            AecWallStyleSort::Name => "Name",
+            AecWallStyleSort::Hierarchy => "Hierarchy",
+        }
+    }
+}
+
 /// Operator the Quick Select filter applies between an entity's
 /// property value and the user-typed test value.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -968,6 +996,9 @@ pub(super) struct OpenCADStudio {
     aec_style_manager_wall_style_name: String,
     aec_style_manager_wall_style_parent: Option<String>,
     aec_style_manager_wall_style_layers: Vec<AecLayerBuffer>,
+    /// How the "Wall Styles" master list is ordered: alphabetically by name,
+    /// or hierarchically (parents before children, siblings grouped).
+    aec_style_manager_wall_style_sort: AecWallStyleSort,
 
     // ── Annotation-scale Manager ──────────────────────────────────────────
     scale_manager_selected: String,
@@ -2135,8 +2166,14 @@ pub enum Message {
     AecStyleManagerWallStyleLayerMaterialChanged(usize, String),
     AecStyleManagerWallStyleLayerThicknessChanged(usize, String),
     AecStyleManagerWallStyleLayerFunctionChanged(usize, String),
+    /// Moves the layer at `index` one position up (towards the outside).
+    AecStyleManagerWallStyleLayerMoveUp(usize),
+    /// Moves the layer at `index` one position down (towards the inside).
+    AecStyleManagerWallStyleLayerMoveDown(usize),
     AecStyleManagerWallStyleSave,
     AecStyleManagerWallStyleDelete,
+    /// Toggles the "Wall Styles" master-list ordering between Name/Hierarchy.
+    AecStyleManagerWallStyleSortToggle,
     /// ViewCube-local cursor movement, tagged with the floating viewport that
     /// owned the overlay when the event was produced (`None` = Model layout).
     CursorMoved(Point, Option<acadrust::Handle>),
@@ -3379,6 +3416,7 @@ impl OpenCADStudio {
             aec_style_manager_wall_style_name: String::new(),
             aec_style_manager_wall_style_parent: None,
             aec_style_manager_wall_style_layers: Vec::new(),
+            aec_style_manager_wall_style_sort: AecWallStyleSort::default(),
             scale_manager_selected: String::new(),
             scale_manager_paper_buf: String::new(),
             scale_manager_drawing_buf: String::new(),

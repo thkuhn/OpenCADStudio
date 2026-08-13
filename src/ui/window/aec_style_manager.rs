@@ -119,6 +119,7 @@ pub struct WallStyleFormState<'a> {
 
 fn layer_row<'a>(
     index: usize,
+    layer_count: usize,
     buffer: &'a crate::app::AecLayerBuffer,
     all_materials: &[(&'a str, &'a str)],
 ) -> Element<'a, Message> {
@@ -137,7 +138,17 @@ fn layer_row<'a>(
         Some(buffer.material_id.clone())
     };
 
+    let mut up_button = button(text("▲").size(10)).padding([2, 6]);
+    if index > 0 {
+        up_button = up_button.on_press(Message::AecStyleManagerWallStyleLayerMoveUp(index));
+    }
+    let mut down_button = button(text("▼").size(10)).padding([2, 6]);
+    if index + 1 < layer_count {
+        down_button = down_button.on_press(Message::AecStyleManagerWallStyleLayerMoveDown(index));
+    }
+
     row![
+        column![up_button, down_button].spacing(2),
         pick_list(selected_material_id, material_ids, move |id: &String| {
             material_names
                 .iter()
@@ -167,6 +178,49 @@ fn layer_row<'a>(
     .into()
 }
 
+/// Orders wall styles either alphabetically by name, or hierarchically —
+/// roots first (styles with no parent, or whose parent id doesn't resolve),
+/// each followed immediately by its descendants, siblings sorted by name at
+/// every level.
+fn ordered_wall_styles<'a>(
+    library: &'a StyleLibrary,
+    sort: crate::app::AecWallStyleSort,
+) -> Vec<&'a WallStyle> {
+    if sort == crate::app::AecWallStyleSort::Name {
+        let mut styles: Vec<&'a WallStyle> = library.wall_styles.iter().collect();
+        styles.sort_by(|a, b| a.style.name.to_lowercase().cmp(&b.style.name.to_lowercase()));
+        return styles;
+    }
+
+    let mut children: std::collections::HashMap<&str, Vec<&'a WallStyle>> =
+        std::collections::HashMap::new();
+    let mut roots: Vec<&'a WallStyle> = Vec::new();
+    for ws in &library.wall_styles {
+        match &ws.style.parent_style_id {
+            Some(pid) if library.wall_styles.iter().any(|other| &other.style.id == pid) => {
+                children.entry(pid.as_str()).or_default().push(ws);
+            }
+            _ => roots.push(ws),
+        }
+    }
+    roots.sort_by(|a, b| a.style.name.to_lowercase().cmp(&b.style.name.to_lowercase()));
+    for siblings in children.values_mut() {
+        siblings.sort_by(|a, b| a.style.name.to_lowercase().cmp(&b.style.name.to_lowercase()));
+    }
+
+    let mut ordered = Vec::with_capacity(library.wall_styles.len());
+    let mut stack: Vec<&'a WallStyle> = roots.into_iter().rev().collect();
+    while let Some(ws) = stack.pop() {
+        ordered.push(ws);
+        if let Some(kids) = children.get(ws.style.id.as_str()) {
+            for kid in kids.iter().rev() {
+                stack.push(kid);
+            }
+        }
+    }
+    ordered
+}
+
 /// Renders the two-pane manager view for the given library, or a placeholder
 /// message if none has been loaded yet.
 pub fn view_window<'a>(
@@ -176,6 +230,7 @@ pub fn view_window<'a>(
     selected_wall_style: Option<&'a str>,
     material_form: MaterialFormState<'a>,
     wall_style_form: WallStyleFormState<'a>,
+    wall_style_sort: crate::app::AecWallStyleSort,
     sizing: crate::ui::modal::ModalSizing,
 ) -> Element<'a, Message> {
     let Some(library) = library else {
@@ -197,9 +252,8 @@ pub fn view_window<'a>(
         })
         .collect();
 
-    let wall_style_rows: Vec<Element<'_, Message>> = library
-        .wall_styles
-        .iter()
+    let wall_style_rows: Vec<Element<'_, Message>> = ordered_wall_styles(library, wall_style_sort)
+        .into_iter()
         .filter(|ws| query.is_empty() || ws.style.name.to_lowercase().contains(&query))
         .map(|wall_style| {
             let is_selected = selected_wall_style == Some(wall_style.style.id.as_str());
@@ -225,9 +279,21 @@ pub fn view_window<'a>(
         master_list.push(column(material_rows).spacing(2))
     };
 
-    master_list = master_list
-        .push(Space::new().height(8))
-        .push(section_title(t!("Wall Styles")));
+    let wall_styles_header = row![
+        container(text(t!("Wall Styles")).size(11).style(muted)).padding([4, 2]),
+        Space::new().width(Fill),
+        button(
+            text(crate::tf!("Sort: {mode}", mode = wall_style_sort.label()).into_owned())
+                .size(10)
+        )
+        .style(button::subtle)
+        .padding([2, 6])
+        .on_press(Message::AecStyleManagerWallStyleSortToggle),
+    ]
+    .spacing(4)
+    .align_y(iced::alignment::Vertical::Center);
+
+    master_list = master_list.push(Space::new().height(8)).push(wall_styles_header);
     master_list = if wall_style_rows.is_empty() {
         master_list.push(no_matches())
     } else {
@@ -377,11 +443,12 @@ pub fn view_window<'a>(
             .unwrap_or_else(|| none_label.into_owned());
 
         let all_materials_ref = &wall_style_form.all_materials;
+        let layer_count = wall_style_form.layers.len();
         let layer_rows: Vec<Element<'_, Message>> = wall_style_form
             .layers
             .iter()
             .enumerate()
-            .map(|(i, lb)| layer_row(i, lb, all_materials_ref))
+            .map(|(i, lb)| layer_row(i, layer_count, lb, all_materials_ref))
             .collect();
 
         let mut detail_col = column![
@@ -506,4 +573,78 @@ pub fn view_window<'a>(
         .width(sizing.width)
         .height(sizing.height)
         .into()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::app::AecWallStyleSort;
+    use crate::modules::aec::engine::style::Style;
+
+    fn wall_style(id: &str, name: &str, parent: Option<&str>) -> WallStyle {
+        WallStyle {
+            style: Style {
+                id: id.to_string(),
+                name: name.to_string(),
+                object_kind: "Wall".to_string(),
+                parent_style_id: parent.map(|p| p.to_string()),
+            },
+            layers: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn name_sort_is_alphabetical_case_insensitive() {
+        let lib = StyleLibrary {
+            materials: Vec::new(),
+            wall_styles: vec![
+                wall_style("c", "charlie", None),
+                wall_style("a", "Alpha", None),
+                wall_style("b", "bravo", None),
+            ],
+        };
+        let names: Vec<&str> = ordered_wall_styles(&lib, AecWallStyleSort::Name)
+            .iter()
+            .map(|ws| ws.style.name.as_str())
+            .collect();
+        assert_eq!(names, vec!["Alpha", "bravo", "charlie"]);
+    }
+
+    #[test]
+    fn hierarchy_sort_groups_children_directly_after_their_parent() {
+        let lib = StyleLibrary {
+            materials: Vec::new(),
+            wall_styles: vec![
+                wall_style("child_b", "Child B", Some("root")),
+                wall_style("root2", "Root Z", None),
+                wall_style("root", "Root A", None),
+                wall_style("child_a", "Child A", Some("root")),
+                wall_style("grandchild", "Grandchild", Some("child_a")),
+            ],
+        };
+        let ids: Vec<&str> = ordered_wall_styles(&lib, AecWallStyleSort::Hierarchy)
+            .iter()
+            .map(|ws| ws.style.id.as_str())
+            .collect();
+        // Roots sorted by name (Root A before Root Z); "root"'s children
+        // (sorted by name: Child A, Child B) follow immediately, with
+        // "child_a"'s own child ("grandchild") nested right after it.
+        assert_eq!(
+            ids,
+            vec!["root", "child_a", "grandchild", "child_b", "root2"]
+        );
+    }
+
+    #[test]
+    fn hierarchy_sort_treats_dangling_parent_reference_as_root() {
+        let lib = StyleLibrary {
+            materials: Vec::new(),
+            wall_styles: vec![wall_style("orphan", "Orphan", Some("missing_parent"))],
+        };
+        let ids: Vec<&str> = ordered_wall_styles(&lib, AecWallStyleSort::Hierarchy)
+            .iter()
+            .map(|ws| ws.style.id.as_str())
+            .collect();
+        assert_eq!(ids, vec!["orphan"]);
+    }
 }
