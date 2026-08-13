@@ -17,6 +17,8 @@ const ROOM_ICON: &[u8] = include_bytes!("../../../assets/icons/array_rect.svg");
 const SCHEDULE_ICON: &[u8] = include_bytes!("../../../assets/icons/table.svg");
 const STOREY_ICON: &[u8] = include_bytes!("../../../assets/icons/layers/panel.svg");
 const IFC_ICON: &[u8] = include_bytes!("../../../assets/icons/cui_export.svg");
+const MATERIAL_ICON: &[u8] = include_bytes!("../../../assets/icons/hatch/hatch_cross.svg");
+const STYLE_ICON: &[u8] = include_bytes!("../../../assets/icons/hatch/hatch_lines.svg");
 
 /// Helper to declare a ribbon tool that fires a named command.
 fn tool(id: &'static str, label: &'static str, icon: &'static [u8]) -> ToolDef {
@@ -45,6 +47,17 @@ impl CadModule for AecModule {
                     tools: vec![RibbonItem::LargeTool(tool(
                         "AEC_WALL", "Wall", WALL_ICON,
                     ))],
+                },
+                RibbonGroup {
+                    title: "Styles",
+                    tools: vec![
+                        RibbonItem::LargeTool(tool(
+                            "AEC_MATERIAL",
+                            "Material",
+                            MATERIAL_ICON,
+                        )),
+                        RibbonItem::LargeTool(tool("AEC_STYLE", "Wall Style", STYLE_ICON)),
+                    ],
                 },
                 RibbonGroup {
                     title: "Rooms",

@@ -21,8 +21,10 @@ use crate::ui::command_line::CommandLine;
 use super::engine::{
     self, find_closed_loop, Room, Storey, StyleLibrary, Wall,
 };
-use super::engine::library::{default_library_path, from_toml};
-use super::engine::wall_style::{effective_layers, LayerFunction};
+use super::engine::library::load_or_seed;
+use super::engine::material::Material;
+use super::engine::style::Style;
+use super::engine::wall_style::{effective_layers, Layer, LayerFunction, WallStyle};
 use std::collections::HashMap;
 
 /// APPID used for all AEC XDATA records (must stay stable for round-trip).
@@ -386,16 +388,11 @@ pub struct WallCommand {
 
 impl WallCommand {
     pub fn new() -> Self {
-        let library = (|| {
-            let path = default_library_path();
-            if !path.exists() {
-                return None;
-            }
-            let content = std::fs::read_to_string(path).ok()?;
-            from_toml(&content).ok()
-        })();
-
-        Self::new_with_library(library)
+        // Always load a usable library: `load_or_seed` transparently creates
+        // a small default library (materials + wall styles) on first use so
+        // the style-selection prompt has something to offer without
+        // requiring the user to define materials/styles first.
+        Self::new_with_library(Some(engine::library::load_or_seed()))
     }
 
     pub fn new_with_library(library: Option<StyleLibrary>) -> Self {
@@ -672,6 +669,438 @@ impl CadCommand for WallCommand {
     }
 }
 
+/// Converts a [`LayerFunction`] to the plain string used in XDATA/dispatch.
+fn layer_function_to_str(f: &LayerFunction) -> String {
+    match f {
+        LayerFunction::Structural => "Structural".to_string(),
+        LayerFunction::Insulation => "Insulation".to_string(),
+        LayerFunction::Finish => "Finish".to_string(),
+        LayerFunction::Other(s) => s.clone(),
+    }
+}
+
+/// Parses a plain string (as entered on the command line) into a
+/// [`LayerFunction`], defaulting to `Structural` for empty input and falling
+/// back to `Other(..)` for anything unrecognized.
+fn parse_layer_function(s: &str) -> LayerFunction {
+    match s.trim() {
+        "" | "Structural" | "structural" => LayerFunction::Structural,
+        "Insulation" | "insulation" => LayerFunction::Insulation,
+        "Finish" | "finish" => LayerFunction::Finish,
+        other => LayerFunction::Other(other.to_string()),
+    }
+}
+
+/// Turns a human-entered name into a stable, filesystem/XDATA-safe id
+/// (lowercase, non-alphanumeric runs collapsed to `_`).
+fn slugify(name: &str) -> String {
+    let mut slug = String::new();
+    let mut last_was_sep = true; // suppress a leading separator
+    for c in name.trim().chars() {
+        if c.is_alphanumeric() {
+            slug.push(c.to_ascii_lowercase());
+            last_was_sep = false;
+        } else if !last_was_sep {
+            slug.push('_');
+            last_was_sep = true;
+        }
+    }
+    while slug.ends_with('_') {
+        slug.pop();
+    }
+    if slug.is_empty() {
+        "item".to_string()
+    } else {
+        slug
+    }
+}
+
+/// Step of an in-progress `AEC_MATERIAL` command.
+enum MaterialStep {
+    Name,
+    Hatch { name: String },
+    Color { name: String, hatch: String },
+    LineType { name: String, hatch: String, color: u32 },
+}
+
+/// `AEC_MATERIAL` — create (or update) a material in the AEC style library,
+/// prompting step by step for name, hatch pattern, line color and line type.
+pub struct MaterialCommand {
+    step: MaterialStep,
+}
+
+impl MaterialCommand {
+    #[allow(clippy::new_without_default)]
+    pub fn new() -> Self {
+        Self {
+            step: MaterialStep::Name,
+        }
+    }
+}
+
+impl CadCommand for MaterialCommand {
+    fn name(&self) -> &'static str {
+        "AEC_MATERIAL"
+    }
+
+    fn prompt(&self) -> String {
+        match &self.step {
+            MaterialStep::Name => "AEC_MATERIAL  Enter material name:".to_string(),
+            MaterialStep::Hatch { .. } => {
+                "AEC_MATERIAL  Enter hatch pattern <ANSI31>:".to_string()
+            }
+            MaterialStep::Color { .. } => {
+                "AEC_MATERIAL  Enter line color as hex RRGGBB <000000>:".to_string()
+            }
+            MaterialStep::LineType { .. } => {
+                "AEC_MATERIAL  Enter line type <Continuous>:".to_string()
+            }
+        }
+    }
+
+    fn wants_text_input(&self) -> bool {
+        true
+    }
+
+    fn on_point(&mut self, _pt: DVec3) -> CmdResult {
+        CmdResult::NeedPoint
+    }
+
+    fn on_text_input(&mut self, text: &str) -> Option<CmdResult> {
+        let t = text.trim();
+        match &self.step {
+            MaterialStep::Name => {
+                if t.is_empty() {
+                    // A material needs a name; keep prompting.
+                    return Some(CmdResult::NeedPoint);
+                }
+                self.step = MaterialStep::Hatch {
+                    name: t.to_string(),
+                };
+                Some(CmdResult::NeedPoint)
+            }
+            MaterialStep::Hatch { name } => {
+                let hatch = if t.is_empty() {
+                    "ANSI31".to_string()
+                } else {
+                    t.to_string()
+                };
+                self.step = MaterialStep::Color {
+                    name: name.clone(),
+                    hatch,
+                };
+                Some(CmdResult::NeedPoint)
+            }
+            MaterialStep::Color { name, hatch } => {
+                let color = u32::from_str_radix(t.trim_start_matches('#'), 16).unwrap_or(0);
+                self.step = MaterialStep::LineType {
+                    name: name.clone(),
+                    hatch: hatch.clone(),
+                    color,
+                };
+                Some(CmdResult::NeedPoint)
+            }
+            MaterialStep::LineType { name, hatch, color } => {
+                let line_type = if t.is_empty() {
+                    "Continuous".to_string()
+                } else {
+                    t.to_string()
+                };
+                Some(CmdResult::Dispatch(format!(
+                    "AEC_MATERIAL_ADD {name}|{hatch}|{color:06X}|{line_type}"
+                )))
+            }
+        }
+    }
+
+    fn on_enter(&mut self) -> CmdResult {
+        self.on_text_input("").unwrap_or(CmdResult::Cancel)
+    }
+
+    fn on_escape(&mut self) -> CmdResult {
+        CmdResult::Cancel
+    }
+}
+
+/// `AEC_MATERIAL_ADD name|hatch|color_hex|line_type` — the non-interactive
+/// handler `MaterialCommand` dispatches to once all fields are collected;
+/// upserts the material (by name → stable id) into the style library and
+/// persists it.
+pub fn aec_material_add(command_line: &mut CommandLine, args: &str) {
+    let parts: Vec<&str> = args.split('|').collect();
+    let [name, hatch, color_hex, line_type] = parts.as_slice() else {
+        command_line.push_error("AEC_MATERIAL_ADD: malformed arguments.");
+        return;
+    };
+    let color = u32::from_str_radix(color_hex, 16).unwrap_or(0);
+    let id = format!("mat_{}", slugify(name));
+
+    let mut lib = load_or_seed();
+    lib.upsert_material(Material::new(
+        id,
+        name.to_string(),
+        hatch.to_string(),
+        color,
+        line_type.to_string(),
+    ));
+    match engine::library::save_to_default_path(&lib) {
+        Ok(()) => command_line.push_info(&format!(
+            "AEC: Material '{name}' saved (hatch {hatch}, color #{color:06X}, linetype {line_type})."
+        )),
+        Err(e) => command_line.push_error(&format!("AEC_MATERIAL: failed to save library: {e}")),
+    }
+}
+
+/// Step of an in-progress `AEC_STYLE` command.
+enum StyleStep {
+    Name,
+    Parent {
+        name: String,
+    },
+    /// Collecting layers; `layers` accumulates `(material_name, thickness, function)`.
+    LayerMaterial {
+        name: String,
+        parent: Option<String>,
+        layers: Vec<(String, f64, LayerFunction)>,
+    },
+    LayerThickness {
+        name: String,
+        parent: Option<String>,
+        layers: Vec<(String, f64, LayerFunction)>,
+        material: String,
+    },
+    LayerFunctionStep {
+        name: String,
+        parent: Option<String>,
+        layers: Vec<(String, f64, LayerFunction)>,
+        material: String,
+        thickness: f64,
+    },
+}
+
+/// `AEC_STYLE` — create (or update) a wall style in the AEC style library:
+/// name, optional parent style (for single-parent inheritance), then a loop
+/// collecting material/thickness/function per layer (blank material name
+/// ends the loop).
+pub struct StyleCommand {
+    step: StyleStep,
+}
+
+impl StyleCommand {
+    #[allow(clippy::new_without_default)]
+    pub fn new() -> Self {
+        Self {
+            step: StyleStep::Name,
+        }
+    }
+
+    fn finish(name: &str, parent: &Option<String>, layers: &[(String, f64, LayerFunction)]) -> CmdResult {
+        let parent_part = parent.clone().unwrap_or_default();
+        let layers_part = layers
+            .iter()
+            .map(|(mat, thick, func)| format!("{mat}:{thick}:{}", layer_function_to_str(func)))
+            .collect::<Vec<_>>()
+            .join(";");
+        CmdResult::Dispatch(format!("AEC_STYLE_ADD {name}|{parent_part}|{layers_part}"))
+    }
+}
+
+impl CadCommand for StyleCommand {
+    fn name(&self) -> &'static str {
+        "AEC_STYLE"
+    }
+
+    fn prompt(&self) -> String {
+        match &self.step {
+            StyleStep::Name => "AEC_STYLE  Enter wall style name:".to_string(),
+            StyleStep::Parent { .. } => {
+                "AEC_STYLE  Enter parent style name (blank = none):".to_string()
+            }
+            StyleStep::LayerMaterial { layers, .. } => format!(
+                "AEC_STYLE  Add layer {} — material name (blank = finish style):",
+                layers.len() + 1
+            ),
+            StyleStep::LayerThickness { material, .. } => {
+                format!("AEC_STYLE  Layer '{material}' — thickness <0.2>:")
+            }
+            StyleStep::LayerFunctionStep { material, .. } => format!(
+                "AEC_STYLE  Layer '{material}' — function [Structural/Insulation/Finish] <Structural>:"
+            ),
+        }
+    }
+
+    fn wants_text_input(&self) -> bool {
+        true
+    }
+
+    fn on_point(&mut self, _pt: DVec3) -> CmdResult {
+        CmdResult::NeedPoint
+    }
+
+    fn on_text_input(&mut self, text: &str) -> Option<CmdResult> {
+        let t = text.trim();
+        match &self.step {
+            StyleStep::Name => {
+                if t.is_empty() {
+                    return Some(CmdResult::NeedPoint);
+                }
+                self.step = StyleStep::Parent {
+                    name: t.to_string(),
+                };
+                Some(CmdResult::NeedPoint)
+            }
+            StyleStep::Parent { name } => {
+                let parent = if t.is_empty() {
+                    None
+                } else {
+                    Some(t.to_string())
+                };
+                self.step = StyleStep::LayerMaterial {
+                    name: name.clone(),
+                    parent,
+                    layers: Vec::new(),
+                };
+                Some(CmdResult::NeedPoint)
+            }
+            StyleStep::LayerMaterial { name, parent, layers } => {
+                if t.is_empty() {
+                    // No (more) layers: finish, possibly inheriting layers from
+                    // the parent style if none were entered here.
+                    return Some(Self::finish(name, parent, layers));
+                }
+                self.step = StyleStep::LayerThickness {
+                    name: name.clone(),
+                    parent: parent.clone(),
+                    layers: layers.clone(),
+                    material: t.to_string(),
+                };
+                Some(CmdResult::NeedPoint)
+            }
+            StyleStep::LayerThickness {
+                name,
+                parent,
+                layers,
+                material,
+            } => {
+                let thickness = WallCommand::parse_dimension(t, 0.2);
+                self.step = StyleStep::LayerFunctionStep {
+                    name: name.clone(),
+                    parent: parent.clone(),
+                    layers: layers.clone(),
+                    material: material.clone(),
+                    thickness,
+                };
+                Some(CmdResult::NeedPoint)
+            }
+            StyleStep::LayerFunctionStep {
+                name,
+                parent,
+                layers,
+                material,
+                thickness,
+            } => {
+                let function = parse_layer_function(t);
+                let mut layers = layers.clone();
+                layers.push((material.clone(), *thickness, function));
+                self.step = StyleStep::LayerMaterial {
+                    name: name.clone(),
+                    parent: parent.clone(),
+                    layers,
+                };
+                Some(CmdResult::NeedPoint)
+            }
+        }
+    }
+
+    fn on_enter(&mut self) -> CmdResult {
+        self.on_text_input("").unwrap_or(CmdResult::Cancel)
+    }
+
+    fn on_escape(&mut self) -> CmdResult {
+        CmdResult::Cancel
+    }
+}
+
+/// `AEC_STYLE_ADD name|parent|mat1:thick1:func1;mat2:thick2:func2...` — the
+/// non-interactive handler `StyleCommand` dispatches to once all fields are
+/// collected; upserts the wall style (by name → stable id) into the style
+/// library and persists it. An empty layer list inherits layers from the
+/// parent style at resolution time (see `effective_layers`).
+pub fn aec_style_add(command_line: &mut CommandLine, args: &str) {
+    let mut parts = args.splitn(3, '|');
+    let (Some(name), Some(parent_raw), Some(layers_raw)) =
+        (parts.next(), parts.next(), parts.next())
+    else {
+        command_line.push_error("AEC_STYLE_ADD: malformed arguments.");
+        return;
+    };
+
+    let mut lib = load_or_seed();
+
+    let parent_style_id = if parent_raw.is_empty() {
+        None
+    } else {
+        match lib
+            .wall_styles
+            .iter()
+            .find(|s| s.style.name.eq_ignore_ascii_case(parent_raw))
+        {
+            Some(p) => Some(p.style.id.clone()),
+            None => {
+                command_line.push_error(&format!(
+                    "AEC_STYLE: unknown parent style '{parent_raw}', creating without a parent."
+                ));
+                None
+            }
+        }
+    };
+
+    let mut layers = Vec::new();
+    if !layers_raw.is_empty() {
+        for entry in layers_raw.split(';') {
+            let fields: Vec<&str> = entry.splitn(3, ':').collect();
+            let [mat_name, thick_str, func_str] = fields.as_slice() else {
+                continue;
+            };
+            let material_id = lib
+                .materials
+                .iter()
+                .find(|m| m.name.eq_ignore_ascii_case(mat_name))
+                .map(|m| m.id.clone())
+                .unwrap_or_else(|| format!("mat_{}", slugify(mat_name)));
+            let thickness: f64 = thick_str.parse().unwrap_or(0.2);
+            layers.push(Layer {
+                material_id,
+                thickness,
+                function: parse_layer_function(func_str),
+            });
+        }
+    }
+
+    let id = format!("style_{}", slugify(name));
+    lib.upsert_wall_style(WallStyle {
+        style: Style {
+            id,
+            name: name.to_string(),
+            object_kind: "Wall".to_string(),
+            parent_style_id,
+        },
+        layers,
+    });
+
+    match engine::library::save_to_default_path(&lib) {
+        Ok(()) => command_line.push_info(&format!(
+            "AEC: Wall style '{name}' saved with {} layer(s).",
+            lib.wall_styles
+                .iter()
+                .find(|s| s.style.name == name)
+                .map(|s| s.layers.len())
+                .unwrap_or(0)
+        )),
+        Err(e) => command_line.push_error(&format!("AEC_STYLE: failed to save library: {e}")),
+    }
+}
+
 /// `AEC_ROOM` — detect a closed wall loop (or demo rectangle) + ROOM XDATA.
 pub fn aec_room(scene: &mut Scene, command_line: &mut CommandLine) {
     let wall_segments = collect_wall_segments(&scene.document);
@@ -888,7 +1317,7 @@ mod wall_command_tests {
 
     #[test]
     fn first_point_only_waits_for_the_next_one() {
-        let mut cmd = WallCommand::new();
+        let mut cmd = WallCommand::new_with_library(None);
         assert!(matches!(
             cmd.on_point(DVec3::new(0.0, 0.0, 0.0)),
             CmdResult::NeedPoint
@@ -897,7 +1326,7 @@ mod wall_command_tests {
 
     #[test]
     fn second_point_commits_a_two_vertex_wall_polyline_with_xdata() {
-        let mut cmd = WallCommand::new();
+        let mut cmd = WallCommand::new_with_library(None);
         assert!(matches!(
             cmd.on_point(DVec3::new(0.0, 0.0, 0.0)),
             CmdResult::NeedPoint
@@ -913,7 +1342,7 @@ mod wall_command_tests {
 
     #[test]
     fn later_points_update_the_same_live_polyline_as_a_wall_chain() {
-        let mut cmd = WallCommand::new();
+        let mut cmd = WallCommand::new_with_library(None);
         cmd.on_point(DVec3::new(0.0, 0.0, 0.0));
         let committed = cmd.on_point(DVec3::new(5.0, 0.0, 0.0));
         let entity = match committed {
@@ -943,7 +1372,7 @@ mod wall_command_tests {
 
     #[test]
     fn undo_drops_the_last_vertex_and_removes_the_live_entity_below_two_points() {
-        let mut cmd = WallCommand::new();
+        let mut cmd = WallCommand::new_with_library(None);
         cmd.on_point(DVec3::new(0.0, 0.0, 0.0));
         cmd.on_point(DVec3::new(5.0, 0.0, 0.0));
         cmd.set_live_handle(Handle::new(3));
@@ -958,12 +1387,12 @@ mod wall_command_tests {
     fn enter_after_the_point_chain_starts_the_height_prompt_instead_of_finalizing() {
         let handle = Handle::new(11);
 
-        let mut enter_cmd = WallCommand::new();
+        let mut enter_cmd = WallCommand::new_with_library(None);
         enter_cmd.set_live_handle(handle);
         assert!(matches!(enter_cmd.on_enter(), CmdResult::NeedPoint));
         assert!(enter_cmd.prompt().contains("height"));
 
-        let mut escape_cmd = WallCommand::new();
+        let mut escape_cmd = WallCommand::new_with_library(None);
         escape_cmd.set_live_handle(handle);
         assert!(matches!(escape_cmd.on_escape(), CmdResult::NeedPoint));
         assert!(escape_cmd.prompt().contains("height"));
@@ -972,7 +1401,7 @@ mod wall_command_tests {
     #[test]
     fn height_then_thickness_prompt_writes_entered_values_and_finalizes() {
         let handle = Handle::new(11);
-        let mut cmd = WallCommand::new();
+        let mut cmd = WallCommand::new_with_library(None);
         cmd.on_point(DVec3::new(0.0, 0.0, 0.0));
         cmd.on_point(DVec3::new(5.0, 0.0, 0.0));
         cmd.set_live_handle(handle);
@@ -1011,7 +1440,7 @@ mod wall_command_tests {
     #[test]
     fn empty_height_and_thickness_prompts_fall_back_to_defaults() {
         let handle = Handle::new(4);
-        let mut cmd = WallCommand::new();
+        let mut cmd = WallCommand::new_with_library(None);
         cmd.on_point(DVec3::new(0.0, 0.0, 0.0));
         cmd.on_point(DVec3::new(5.0, 0.0, 0.0));
         cmd.set_live_handle(handle);
@@ -1057,7 +1486,7 @@ mod wall_command_tests {
         ];
 
         for pair in corners.windows(2) {
-            let mut cmd = WallCommand::new();
+            let mut cmd = WallCommand::new_with_library(None);
             let committed = match cmd.on_point(pair[0]) {
                 CmdResult::NeedPoint => cmd.on_point(pair[1]),
                 other => other,
@@ -1110,7 +1539,7 @@ mod wall_command_tests {
     /// fields for a WALL-tagged entity.
     #[test]
     fn wall_from_entity_reads_back_a_finalized_wall_record() {
-        let mut cmd = WallCommand::new();
+        let mut cmd = WallCommand::new_with_library(None);
         cmd.on_point(DVec3::new(0.0, 0.0, 0.0));
         cmd.on_point(DVec3::new(5.0, 0.0, 0.0));
         cmd.set_live_handle(Handle::new(9));
@@ -1145,7 +1574,7 @@ mod wall_command_tests {
     #[test]
     fn write_wall_properties_updates_the_wall_xdata_in_place() {
         let mut scene = Scene::new();
-        let mut cmd = WallCommand::new();
+        let mut cmd = WallCommand::new_with_library(None);
         cmd.on_point(DVec3::new(0.0, 0.0, 0.0));
         let entity = match cmd.on_point(DVec3::new(5.0, 0.0, 0.0)) {
             CmdResult::CommitLiveEntity(e) => e,
@@ -1400,5 +1829,142 @@ mod wall_command_tests {
             }
             _ => panic!("Expected thickness entry to finalize wall with V1 record"),
         }
+    }
+
+    #[test]
+    fn material_command_collects_fields_and_dispatches_add_command() {
+        let mut cmd = MaterialCommand::new();
+        assert!(cmd.prompt().contains("name"));
+
+        assert!(matches!(
+            cmd.on_text_input("Sichtbeton"),
+            Some(CmdResult::NeedPoint)
+        ));
+        assert!(cmd.prompt().contains("hatch"));
+
+        assert!(matches!(
+            cmd.on_text_input(""), // blank -> default hatch
+            Some(CmdResult::NeedPoint)
+        ));
+        assert!(cmd.prompt().contains("color"));
+
+        assert!(matches!(
+            cmd.on_text_input("A0A0A0"),
+            Some(CmdResult::NeedPoint)
+        ));
+        assert!(cmd.prompt().contains("line type"));
+
+        match cmd.on_text_input("") {
+            Some(CmdResult::Dispatch(dispatch)) => {
+                assert_eq!(
+                    dispatch,
+                    "AEC_MATERIAL_ADD Sichtbeton|ANSI31|A0A0A0|Continuous"
+                );
+            }
+            _ => panic!("expected the final field to dispatch AEC_MATERIAL_ADD"),
+        }
+    }
+
+    #[test]
+    fn material_command_requires_a_non_empty_name() {
+        let mut cmd = MaterialCommand::new();
+        assert!(matches!(cmd.on_text_input(""), Some(CmdResult::NeedPoint)));
+        // Still on the name step.
+        assert!(cmd.prompt().contains("name") && !cmd.prompt().contains("hatch"));
+    }
+
+    #[test]
+    fn style_command_collects_two_layers_and_dispatches_add_command() {
+        let mut cmd = StyleCommand::new();
+        assert!(cmd.prompt().contains("name"));
+
+        assert!(matches!(
+            cmd.on_text_input("Testwand"),
+            Some(CmdResult::NeedPoint)
+        ));
+        assert!(cmd.prompt().contains("parent"));
+
+        assert!(matches!(
+            cmd.on_text_input(""), // no parent
+            Some(CmdResult::NeedPoint)
+        ));
+        assert!(cmd.prompt().contains("material name"));
+
+        // Layer 1
+        assert!(matches!(
+            cmd.on_text_input("Putz"),
+            Some(CmdResult::NeedPoint)
+        ));
+        assert!(matches!(
+            cmd.on_text_input("0.015"),
+            Some(CmdResult::NeedPoint)
+        ));
+        assert!(matches!(
+            cmd.on_text_input("Finish"),
+            Some(CmdResult::NeedPoint)
+        ));
+
+        // Layer 2
+        assert!(matches!(
+            cmd.on_text_input("Mauerwerk"),
+            Some(CmdResult::NeedPoint)
+        ));
+        assert!(matches!(
+            cmd.on_text_input("0.24"),
+            Some(CmdResult::NeedPoint)
+        ));
+        assert!(matches!(
+            cmd.on_text_input("Structural"),
+            Some(CmdResult::NeedPoint)
+        ));
+
+        // Blank material name ends the layer loop and dispatches.
+        match cmd.on_text_input("") {
+            Some(CmdResult::Dispatch(dispatch)) => {
+                assert_eq!(
+                    dispatch,
+                    "AEC_STYLE_ADD Testwand||Putz:0.015:Finish;Mauerwerk:0.24:Structural"
+                );
+            }
+            _ => panic!("expected the final blank layer entry to dispatch AEC_STYLE_ADD"),
+        }
+    }
+
+    #[test]
+    fn style_command_with_no_layers_dispatches_empty_layer_list_for_inheritance() {
+        let mut cmd = StyleCommand::new();
+        cmd.on_text_input("Kind Wand");
+        cmd.on_text_input("Standard Wall"); // parent
+
+        match cmd.on_text_input("") {
+            Some(CmdResult::Dispatch(dispatch)) => {
+                assert_eq!(dispatch, "AEC_STYLE_ADD Kind Wand|Standard Wall|");
+            }
+            _ => panic!("expected an empty layer list to still dispatch AEC_STYLE_ADD"),
+        }
+    }
+
+    #[test]
+    fn layer_function_round_trips_through_its_plain_string_form() {
+        for f in [
+            LayerFunction::Structural,
+            LayerFunction::Insulation,
+            LayerFunction::Finish,
+        ] {
+            let s = layer_function_to_str(&f);
+            assert_eq!(parse_layer_function(&s), f);
+        }
+        assert_eq!(parse_layer_function(""), LayerFunction::Structural);
+        assert_eq!(
+            parse_layer_function("Custom"),
+            LayerFunction::Other("Custom".to_string())
+        );
+    }
+
+    #[test]
+    fn slugify_normalizes_names_into_stable_ids() {
+        assert_eq!(slugify("Wand Stahlbeton 20cm"), "wand_stahlbeton_20cm");
+        assert_eq!(slugify("  spaced  out  "), "spaced_out");
+        assert_eq!(slugify(""), "item");
     }
 }

@@ -829,6 +829,26 @@ impl OpenCADStudio {
                     &mut self.command_line,
                 );
             }
+            "AEC_MATERIAL" => {
+                use crate::modules::aec::commands::MaterialCommand;
+                let new_cmd = MaterialCommand::new();
+                self.command_line.push_info(&new_cmd.prompt());
+                self.tabs[i].active_cmd = Some(Box::new(new_cmd));
+            }
+            cmd if cmd.starts_with("AEC_MATERIAL_ADD ") => {
+                let args = cmd["AEC_MATERIAL_ADD ".len()..].to_string();
+                crate::modules::aec::commands::aec_material_add(&mut self.command_line, &args);
+            }
+            "AEC_STYLE" => {
+                use crate::modules::aec::commands::StyleCommand;
+                let new_cmd = StyleCommand::new();
+                self.command_line.push_info(&new_cmd.prompt());
+                self.tabs[i].active_cmd = Some(Box::new(new_cmd));
+            }
+            cmd if cmd.starts_with("AEC_STYLE_ADD ") => {
+                let args = cmd["AEC_STYLE_ADD ".len()..].to_string();
+                crate::modules::aec::commands::aec_style_add(&mut self.command_line, &args);
+            }
 
             // ── Model commands (3D primitives) ─────────────────────────────
             "BOX" | "WEDGE" | "CYLINDER" | "CONE" | "SPHERE" | "TORUS" => {

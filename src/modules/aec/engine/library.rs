@@ -1,7 +1,8 @@
 //! AEC Style Library for persisting materials and wall styles.
 
 use crate::modules::aec::engine::material::Material;
-use crate::modules::aec::engine::wall_style::WallStyle;
+use crate::modules::aec::engine::style::Style;
+use crate::modules::aec::engine::wall_style::{Layer, LayerFunction, WallStyle};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
@@ -12,6 +13,136 @@ pub struct StyleLibrary {
     pub materials: Vec<Material>,
     /// List of available wall styles.
     pub wall_styles: Vec<WallStyle>,
+}
+
+impl StyleLibrary {
+    /// An empty library (no materials, no wall styles).
+    pub fn empty() -> Self {
+        Self {
+            materials: Vec::new(),
+            wall_styles: Vec::new(),
+        }
+    }
+
+    /// Inserts or replaces (by `id`) a material.
+    pub fn upsert_material(&mut self, material: Material) {
+        if let Some(existing) = self.materials.iter_mut().find(|m| m.id == material.id) {
+            *existing = material;
+        } else {
+            self.materials.push(material);
+        }
+    }
+
+    /// Inserts or replaces (by `style.id`) a wall style.
+    pub fn upsert_wall_style(&mut self, wall_style: WallStyle) {
+        if let Some(existing) = self
+            .wall_styles
+            .iter_mut()
+            .find(|s| s.style.id == wall_style.style.id)
+        {
+            *existing = wall_style;
+        } else {
+            self.wall_styles.push(wall_style);
+        }
+    }
+}
+
+/// Builds a small, ready-to-use default library so `AEC_WALL`'s style
+/// selection has something to offer out of the box, without requiring the
+/// user to define materials/styles first via `AEC_MATERIAL`/`AEC_STYLE`.
+pub fn seed_default_library() -> StyleLibrary {
+    let masonry = Material::new(
+        "mat_masonry".to_string(),
+        "Mauerwerk".to_string(),
+        "ANSI31".to_string(),
+        0x8B7355,
+        "Continuous".to_string(),
+    );
+    let concrete = Material::new(
+        "mat_concrete".to_string(),
+        "Stahlbeton".to_string(),
+        "AR-CONC".to_string(),
+        0x888888,
+        "Continuous".to_string(),
+    );
+    let insulation = Material::new(
+        "mat_insulation".to_string(),
+        "Daemmung".to_string(),
+        "ANSI37".to_string(),
+        0xFFDD88,
+        "Continuous".to_string(),
+    );
+    let plaster = Material::new(
+        "mat_plaster".to_string(),
+        "Putz".to_string(),
+        "SOLID".to_string(),
+        0xFFFFFF,
+        "Continuous".to_string(),
+    );
+
+    let masonry_wall = WallStyle {
+        style: Style {
+            id: "style_masonry".to_string(),
+            name: "Wand Mauerwerk 24cm".to_string(),
+            object_kind: "Wall".to_string(),
+            parent_style_id: None,
+        },
+        layers: vec![Layer {
+            material_id: masonry.id.clone(),
+            thickness: 0.24,
+            function: LayerFunction::Structural,
+        }],
+    };
+
+    let concrete_wall = WallStyle {
+        style: Style {
+            id: "style_concrete_20".to_string(),
+            name: "Wand Stahlbeton 20cm".to_string(),
+            object_kind: "Wall".to_string(),
+            parent_style_id: None,
+        },
+        layers: vec![Layer {
+            material_id: concrete.id.clone(),
+            thickness: 0.20,
+            function: LayerFunction::Structural,
+        }],
+    };
+
+    let insulated_wall = WallStyle {
+        style: Style {
+            id: "style_insulated_ext".to_string(),
+            name: "Aussenwand gedaemmt".to_string(),
+            object_kind: "Wall".to_string(),
+            parent_style_id: None,
+        },
+        layers: vec![
+            Layer {
+                material_id: plaster.id.clone(),
+                thickness: 0.015,
+                function: LayerFunction::Finish,
+            },
+            Layer {
+                material_id: masonry.id.clone(),
+                thickness: 0.175,
+                function: LayerFunction::Structural,
+            },
+            Layer {
+                material_id: insulation.id.clone(),
+                thickness: 0.14,
+                function: LayerFunction::Insulation,
+            },
+            Layer {
+                material_id: plaster.id.clone(),
+                thickness: 0.015,
+                function: LayerFunction::Finish,
+            },
+        ],
+    };
+
+    StyleLibrary {
+        materials: vec![masonry, concrete, insulation, plaster],
+        wall_styles: vec![masonry_wall, concrete_wall, insulated_wall],
+    }
 }
 
 /// Serializes the library to a string.
@@ -53,6 +184,48 @@ pub fn default_library_path() -> PathBuf {
     p.push("OpenCADStudio");
     p.push("aec_styles.toml");
     p
+}
+
+/// Persists `lib` to [`default_library_path`], creating parent directories
+/// as needed. On `wasm32` there is no local filesystem to persist to, so
+/// this is a no-op there.
+pub fn save_to_default_path(lib: &StyleLibrary) -> Result<(), String> {
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let path = default_library_path();
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+        }
+        let content = to_toml(lib)?;
+        return std::fs::write(&path, content).map_err(|e| e.to_string());
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        let _ = lib;
+        Ok(())
+    }
+}
+
+/// Loads the library from [`default_library_path`], or — if it does not
+/// exist yet — creates it from [`seed_default_library`] and persists it, so
+/// `AEC_WALL`'s style selection always has something to offer without
+/// requiring the user to define materials/styles first. On `wasm32` there
+/// is no local filesystem, so this always returns an in-memory seed.
+pub fn load_or_seed() -> StyleLibrary {
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let path = default_library_path();
+        if path.exists() {
+            if let Ok(content) = std::fs::read_to_string(&path) {
+                if let Ok(lib) = from_toml(&content) {
+                    return lib;
+                }
+            }
+        }
+    }
+    let seed = seed_default_library();
+    let _ = save_to_default_path(&seed);
+    seed
 }
 
 #[cfg(test)]
