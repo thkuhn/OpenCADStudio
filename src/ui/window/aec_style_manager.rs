@@ -9,7 +9,9 @@
 //! render/edit directly from this state instead of introducing parallel
 //! storage.
 
-use iced::widget::{button, column, container, row, scrollable, text, text_input, Space};
+use iced::widget::{
+    button, column, container, pick_list, row, scrollable, text, text_input, Space,
+};
 use iced::{Border, Element, Fill, Theme};
 
 use crate::app::Message;
@@ -99,6 +101,72 @@ pub struct MaterialFormState<'a> {
     pub line_type: &'a str,
 }
 
+/// Edit-buffer fields for the wall-style form, owned by `App` and borrowed
+/// here for rendering.
+pub struct WallStyleFormState<'a> {
+    pub open: bool,
+    pub is_new: bool,
+    pub name: &'a str,
+    pub parent_id: Option<&'a str>,
+    pub layers: &'a [crate::app::AecLayerBuffer],
+    /// All other wall styles (id, name) for the parent picklist, excluding self.
+    pub all_wall_styles: Vec<(&'a str, &'a str)>,
+    /// All materials (id, name) for the layer picklist.
+    pub all_materials: Vec<(&'a str, &'a str)>,
+    /// Resolved inheritance result for preview.
+    pub effective_layers: Vec<crate::modules::aec::engine::wall_style::Layer>,
+}
+
+fn layer_row<'a>(
+    index: usize,
+    buffer: &'a crate::app::AecLayerBuffer,
+    all_materials: &[(&'a str, &'a str)],
+) -> Element<'a, Message> {
+    let functions: Vec<String> = vec![
+        "Structural".to_string(),
+        "Insulation".to_string(),
+        "Finish".to_string(),
+        "Other".to_string(),
+    ];
+
+    let material_ids: Vec<String> = all_materials.iter().map(|(id, _)| id.to_string()).collect();
+    let material_names = all_materials.to_vec();
+    let selected_material_id = if buffer.material_id.is_empty() {
+        None
+    } else {
+        Some(buffer.material_id.clone())
+    };
+
+    row![
+        pick_list(selected_material_id, material_ids, move |id: &String| {
+            material_names
+                .iter()
+                .find(|(mid, _)| mid == id)
+                .map(|(_, name)| name.to_string())
+                .unwrap_or_else(|| id.clone())
+        })
+        .on_select(move |id| Message::AecStyleManagerWallStyleLayerMaterialChanged(index, id))
+        .text_size(11)
+        .width(150),
+        text_input("", &buffer.thickness)
+            .on_input(move |v| Message::AecStyleManagerWallStyleLayerThicknessChanged(index, v))
+            .size(11)
+            .width(60),
+        pick_list(Some(buffer.function.clone()), functions, |func: &String| {
+            func.clone()
+        })
+        .on_select(move |func| Message::AecStyleManagerWallStyleLayerFunctionChanged(index, func))
+        .text_size(11)
+        .width(100),
+        button(text(t!("Remove")).size(10))
+            .style(button::danger)
+            .padding([2, 4])
+            .on_press(Message::AecStyleManagerWallStyleLayerRemove(index)),
+    ]
+    .spacing(4)
+    .into()
+}
+
 /// Renders the two-pane manager view for the given library, or a placeholder
 /// message if none has been loaded yet.
 pub fn view_window<'a>(
@@ -107,6 +175,7 @@ pub fn view_window<'a>(
     selected_material: Option<&'a str>,
     selected_wall_style: Option<&'a str>,
     material_form: MaterialFormState<'a>,
+    wall_style_form: WallStyleFormState<'a>,
     sizing: crate::ui::modal::ModalSizing,
 ) -> Element<'a, Message> {
     let Some(library) = library else {
@@ -172,10 +241,14 @@ pub fn view_window<'a>(
                     .on_input(Message::AecStyleManagerFilter)
                     .size(11)
                     .padding([5, 8]),
-                button(text(t!("New")).size(11))
+                button(text(t!("+Mat")).size(11))
                     .style(button::subtle)
                     .padding([5, 9])
                     .on_press(Message::AecStyleManagerMaterialNew),
+                button(text(t!("+Wall")).size(11))
+                    .style(button::subtle)
+                    .padding([5, 9])
+                    .on_press(Message::AecStyleManagerWallStyleNew),
             ]
             .spacing(6),
             container(scrollable(master_list).height(sizing.height))
@@ -263,6 +336,137 @@ pub fn view_window<'a>(
         ]
         .spacing(7)
         .into()
+    } else if wall_style_form.open {
+        let form_title = if wall_style_form.is_new {
+            t!("New Wall Style")
+        } else {
+            t!("Wall Style")
+        };
+        let mut actions = row![button(text(t!("Save")).size(11))
+            .style(button::primary)
+            .padding([5, 12])
+            .on_press(Message::AecStyleManagerWallStyleSave)]
+        .spacing(8);
+        if !wall_style_form.is_new {
+            actions = actions.push(
+                button(text(t!("Delete")).size(11))
+                    .style(button::danger)
+                    .padding([5, 12])
+                    .on_press(Message::AecStyleManagerWallStyleDelete),
+            );
+        }
+
+        let none_label = t!("(None)");
+        let parent_options: Vec<String> = std::iter::once(none_label.clone().into_owned())
+            .chain(
+                wall_style_form
+                    .all_wall_styles
+                    .iter()
+                    .map(|(_, name)| name.to_string()),
+            )
+            .collect();
+        let selected_parent = wall_style_form
+            .parent_id
+            .and_then(|pid| {
+                wall_style_form
+                    .all_wall_styles
+                    .iter()
+                    .find(|(id, _)| id == &pid)
+                    .map(|(_, name)| name.to_string())
+            })
+            .unwrap_or_else(|| none_label.into_owned());
+
+        let all_materials_ref = &wall_style_form.all_materials;
+        let layer_rows: Vec<Element<'_, Message>> = wall_style_form
+            .layers
+            .iter()
+            .enumerate()
+            .map(|(i, lb)| layer_row(i, lb, all_materials_ref))
+            .collect();
+
+        let mut detail_col = column![
+            text(form_title).size(13),
+            row![
+                text(t!("Name")).size(10).style(muted).width(100),
+                text_input("", wall_style_form.name)
+                    .on_input(Message::AecStyleManagerWallStyleNameChanged)
+                    .size(11)
+                    .padding([4, 6]),
+            ]
+            .spacing(8),
+            row![
+                text(t!("Based on")).size(10).style(muted).width(100),
+                pick_list(Some(selected_parent), parent_options, |name: &String| {
+                    name.clone()
+                })
+                .on_select(move |name| {
+                    let none_label = t!("(None)");
+                    let id = if name == none_label {
+                        None
+                    } else {
+                        wall_style_form
+                            .all_wall_styles
+                            .iter()
+                            .find(|(_, n)| n == &name)
+                            .map(|(id, _)| id.to_string())
+                    };
+                    Message::AecStyleManagerWallStyleParentChanged(id)
+                })
+                .text_size(11)
+                .width(Fill),
+            ]
+            .spacing(8),
+            row![
+                text(t!("Layers")).size(10).style(muted),
+                Space::new(),
+                button(text(t!("Add Layer")).size(10))
+                    .on_press(Message::AecStyleManagerWallStyleLayerAdd)
+                    .padding([2, 8]),
+            ]
+            .spacing(8),
+            container(scrollable(column(layer_rows).spacing(4)).height(150))
+                .style(|theme: &Theme| container::Style {
+                    border: Border {
+                        color: theme.palette().background.neutral.color,
+                        width: 1.0,
+                        radius: 3.0.into(),
+                    },
+                    ..Default::default()
+                })
+                .padding(4),
+        ]
+        .spacing(7);
+
+        if !wall_style_form.effective_layers.is_empty() {
+            detail_col = detail_col.push(Space::new().height(8)).push(
+                text(t!("Effective Buildup (Preview)"))
+                    .size(10)
+                    .style(muted),
+            );
+            let preview_rows: Vec<Element<'_, Message>> = wall_style_form
+                .effective_layers
+                .iter()
+                .map(|l| {
+                    let mat_name = wall_style_form
+                        .all_materials
+                        .iter()
+                        .find(|(id, _)| id == &l.material_id)
+                        .map(|(_, n)| n.to_string())
+                        .unwrap_or_else(|| l.material_id.clone());
+                    row![
+                        text(mat_name).size(10).width(150),
+                        text(format!("{:.2}", l.thickness)).size(10).width(60),
+                        text(format!("{:?}", l.function)).size(10).width(100),
+                    ]
+                    .spacing(4)
+                    .into()
+                })
+                .collect();
+            detail_col = detail_col
+                .push(container(column(preview_rows).spacing(2)).padding(4));
+        }
+
+        detail_col.push(Space::new().height(8)).push(actions).into()
     } else if let Some(wall_style) = selected_wall_style {
         column![
             text(t!("Wall Style")).size(13),

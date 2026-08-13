@@ -52,6 +52,13 @@ impl StyleLibrary {
         self.materials.retain(|m| m.id != id);
         self.materials.len() != before
     }
+
+    /// Removes a wall style by `id`. Returns `true` if a wall style was removed.
+    pub fn remove_wall_style(&mut self, id: &str) -> bool {
+        let before = self.wall_styles.len();
+        self.wall_styles.retain(|s| s.style.id != id);
+        self.wall_styles.len() != before
+    }
 }
 
 /// Builds a small, ready-to-use default library so `AEC_WALL`'s style
@@ -301,5 +308,26 @@ mod tests {
         assert!(lib.remove_material("mat1"));
         assert!(lib.materials.is_empty());
         assert!(!lib.remove_material("mat1"));
+    }
+
+    #[test]
+    fn test_remove_wall_style() {
+        let wall_style = WallStyle {
+            style: Style {
+                id: "style1".to_string(),
+                name: "Style 1".to_string(),
+                object_kind: "Wall".to_string(),
+                parent_style_id: None,
+            },
+            layers: Vec::new(),
+        };
+        let mut lib = StyleLibrary {
+            materials: Vec::new(),
+            wall_styles: vec![wall_style],
+        };
+
+        assert!(lib.remove_wall_style("style1"));
+        assert!(lib.wall_styles.is_empty());
+        assert!(!lib.remove_wall_style("style1"));
     }
 }

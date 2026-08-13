@@ -240,6 +240,27 @@ impl OpenCADStudio {
                 720,
                 420,
                 |flow| {
+                    let all_wall_styles = self.aec_style_library.as_ref().map(|lib| {
+                        lib.wall_styles.iter()
+                            .filter(|ws| Some(&ws.style.id) != self.aec_style_manager_wall_style_editing_id.as_ref())
+                            .map(|ws| (ws.style.id.as_str(), ws.style.name.as_str()))
+                            .collect()
+                    }).unwrap_or_default();
+                    let all_materials = self.aec_style_library.as_ref().map(|lib| {
+                        lib.materials.iter()
+                            .map(|m| (m.id.as_str(), m.name.as_str()))
+                            .collect()
+                    }).unwrap_or_default();
+                    let effective_layers = self.aec_style_library.as_ref().and_then(|lib| {
+                        let id = self.aec_style_manager_wall_style_editing_id.as_ref()
+                            .or(self.aec_style_manager_selected_wall_style.as_ref())?;
+                        let styles_map: std::collections::HashMap<_, _> = lib.wall_styles.iter().map(|w| (w.style.id.clone(), w.clone())).collect();
+                        crate::modules::aec::engine::wall_style::effective_layers(
+                            &styles_map,
+                            id
+                        ).ok()
+                    }).unwrap_or_default();
+
                     crate::ui::window::aec_style_manager::view_window(
                         self.aec_style_library.as_ref(),
                         &self.aec_style_manager_filter,
@@ -252,6 +273,16 @@ impl OpenCADStudio {
                             hatch: &self.aec_style_manager_material_hatch,
                             color: &self.aec_style_manager_material_color,
                             line_type: &self.aec_style_manager_material_line_type,
+                        },
+                        crate::ui::window::aec_style_manager::WallStyleFormState {
+                            open: self.aec_style_manager_wall_style_form_open,
+                            is_new: self.aec_style_manager_wall_style_editing_id.is_none(),
+                            name: &self.aec_style_manager_wall_style_name,
+                            parent_id: self.aec_style_manager_wall_style_parent.as_deref(),
+                            layers: &self.aec_style_manager_wall_style_layers,
+                            all_wall_styles,
+                            all_materials,
+                            effective_layers,
                         },
                         flow,
                     )

@@ -1825,6 +1825,9 @@ impl OpenCADStudio {
                 self.aec_style_manager_selected_wall_style = None;
                 self.aec_style_manager_material_editing_id = None;
                 self.aec_style_manager_material_form_open = false;
+                self.aec_style_manager_wall_style_editing_id = None;
+                self.aec_style_manager_wall_style_form_open = false;
+                self.aec_style_manager_wall_style_layers.clear();
                 self.active_modal = Some(super::ModalKind::AecStyleManager);
                 Task::none()
             }
@@ -1851,10 +1854,228 @@ impl OpenCADStudio {
                 Task::none()
             }
             Message::AecStyleManagerSelectWallStyle(id) => {
+                if let Some(wall_style) = self
+                    .aec_style_library
+                    .as_ref()
+                    .and_then(|lib| lib.wall_styles.iter().find(|w| w.style.id == id))
+                {
+                    self.aec_style_manager_wall_style_editing_id = Some(wall_style.style.id.clone());
+                    self.aec_style_manager_wall_style_name = wall_style.style.name.clone();
+                    self.aec_style_manager_wall_style_parent =
+                        wall_style.style.parent_style_id.clone();
+                    self.aec_style_manager_wall_style_layers = wall_style
+                        .layers
+                        .iter()
+                        .map(|l| crate::app::AecLayerBuffer {
+                            material_id: l.material_id.clone(),
+                            thickness: l.thickness.to_string(),
+                            function: match &l.function {
+                                crate::modules::aec::engine::wall_style::LayerFunction::Structural => {
+                                    "Structural".to_string()
+                                }
+                                crate::modules::aec::engine::wall_style::LayerFunction::Insulation => {
+                                    "Insulation".to_string()
+                                }
+                                crate::modules::aec::engine::wall_style::LayerFunction::Finish => {
+                                    "Finish".to_string()
+                                }
+                                crate::modules::aec::engine::wall_style::LayerFunction::Other(s) => s.clone(),
+                            },
+                        })
+                        .collect();
+                    self.aec_style_manager_wall_style_form_open = true;
+                }
                 self.aec_style_manager_selected_wall_style = Some(id);
                 self.aec_style_manager_selected_material = None;
                 self.aec_style_manager_material_form_open = false;
                 self.aec_style_manager_material_editing_id = None;
+                Task::none()
+            }
+            Message::AecStyleManagerWallStyleNew => {
+                self.aec_style_manager_selected_material = None;
+                self.aec_style_manager_selected_wall_style = None;
+                self.aec_style_manager_wall_style_editing_id = None;
+                self.aec_style_manager_wall_style_name.clear();
+                self.aec_style_manager_wall_style_parent = None;
+                self.aec_style_manager_wall_style_layers.clear();
+                self.aec_style_manager_wall_style_form_open = true;
+                self.aec_style_manager_material_form_open = false;
+                self.aec_style_manager_material_editing_id = None;
+                Task::none()
+            }
+            Message::AecStyleManagerWallStyleNameChanged(value) => {
+                self.aec_style_manager_wall_style_name = value;
+                Task::none()
+            }
+            Message::AecStyleManagerWallStyleParentChanged(value) => {
+                self.aec_style_manager_wall_style_parent = value;
+                Task::none()
+            }
+            Message::AecStyleManagerWallStyleLayerAdd => {
+                let material_id = self
+                    .aec_style_library
+                    .as_ref()
+                    .and_then(|lib| lib.materials.first())
+                    .map(|m| m.id.clone())
+                    .unwrap_or_default();
+                self.aec_style_manager_wall_style_layers
+                    .push(crate::app::AecLayerBuffer {
+                        material_id,
+                        thickness: "0.1".to_string(),
+                        function: "Structural".to_string(),
+                    });
+                Task::none()
+            }
+            Message::AecStyleManagerWallStyleLayerRemove(index) => {
+                if index < self.aec_style_manager_wall_style_layers.len() {
+                    self.aec_style_manager_wall_style_layers.remove(index);
+                }
+                Task::none()
+            }
+            Message::AecStyleManagerWallStyleLayerMaterialChanged(index, material_id) => {
+                if let Some(layer) = self.aec_style_manager_wall_style_layers.get_mut(index) {
+                    layer.material_id = material_id;
+                }
+                Task::none()
+            }
+            Message::AecStyleManagerWallStyleLayerThicknessChanged(index, thickness) => {
+                if let Some(layer) = self.aec_style_manager_wall_style_layers.get_mut(index) {
+                    layer.thickness = thickness;
+                }
+                Task::none()
+            }
+            Message::AecStyleManagerWallStyleLayerFunctionChanged(index, function) => {
+                if let Some(layer) = self.aec_style_manager_wall_style_layers.get_mut(index) {
+                    layer.function = function;
+                }
+                Task::none()
+            }
+            Message::AecStyleManagerWallStyleSave => {
+                let name = self.aec_style_manager_wall_style_name.trim().to_string();
+                if name.is_empty() {
+                    self.command_line.push_error(
+                        crate::t!("AEC Style Manager: wall style name cannot be empty.").as_ref(),
+                    );
+                    return Task::none();
+                }
+
+                let id = self
+                    .aec_style_manager_wall_style_editing_id
+                    .clone()
+                    .unwrap_or_else(|| {
+                        format!("style_{}", crate::modules::aec::commands::slugify(&name))
+                    });
+
+                // Cycle detection before saving
+                if let Some(parent_id) = &self.aec_style_manager_wall_style_parent {
+                    if parent_id == &id {
+                        self.command_line.push_error(
+                            crate::t!("AEC Style Manager: a wall style cannot be its own parent.")
+                                .as_ref(),
+                        );
+                        return Task::none();
+                    }
+
+                    if let Some(lib) = &self.aec_style_library {
+                        // Create a temporary style map for resolve_chain
+                        let mut styles = std::collections::HashMap::new();
+                        for ws in &lib.wall_styles {
+                            if ws.style.id != id {
+                                styles.insert(ws.style.id.clone(), ws.style.clone());
+                            }
+                        }
+                        // Insert the proposed state
+                        styles.insert(
+                            id.clone(),
+                            crate::modules::aec::engine::style::Style {
+                                id: id.clone(),
+                                name: name.clone(),
+                                object_kind: "Wall".to_string(),
+                                parent_style_id: Some(parent_id.clone()),
+                            },
+                        );
+
+                        if let Err(crate::modules::aec::engine::style::StyleError::CycleDetected) =
+                            crate::modules::aec::engine::style::resolve_chain(&styles, &id)
+                        {
+                            self.command_line.push_error(
+                                crate::t!("AEC Style Manager: cycle detected in wall style inheritance.").as_ref()
+                            );
+                            return Task::none();
+                        }
+                    }
+                }
+
+                let mut layers = Vec::new();
+                for lb in self.aec_style_manager_wall_style_layers.iter() {
+                    let thickness = lb.thickness.parse::<f64>().unwrap_or(0.0);
+                    let function = match lb.function.as_str() {
+                        "Structural" => {
+                            crate::modules::aec::engine::wall_style::LayerFunction::Structural
+                        }
+                        "Insulation" => {
+                            crate::modules::aec::engine::wall_style::LayerFunction::Insulation
+                        }
+                        "Finish" => crate::modules::aec::engine::wall_style::LayerFunction::Finish,
+                        other => {
+                            crate::modules::aec::engine::wall_style::LayerFunction::Other(
+                                other.to_string(),
+                            )
+                        }
+                    };
+                    layers.push(crate::modules::aec::engine::wall_style::Layer {
+                        material_id: lb.material_id.clone(),
+                        thickness,
+                        function,
+                    });
+                }
+
+                let wall_style = crate::modules::aec::engine::wall_style::WallStyle {
+                    style: crate::modules::aec::engine::style::Style {
+                        id: id.clone(),
+                        name,
+                        object_kind: "Wall".to_string(),
+                        parent_style_id: self.aec_style_manager_wall_style_parent.clone(),
+                    },
+                    layers,
+                };
+
+                let lib = self
+                    .aec_style_library
+                    .get_or_insert_with(crate::modules::aec::engine::library::StyleLibrary::empty);
+                lib.upsert_wall_style(wall_style);
+
+                match crate::modules::aec::engine::library::save_to_default_path(lib) {
+                    Ok(()) => self
+                        .command_line
+                        .push_info(crate::t!("AEC Style Manager: wall style saved.").as_ref()),
+                    Err(e) => self.command_line.push_error(
+                        crate::tf!("AEC Style Manager: failed to save library: {e}").as_ref(),
+                    ),
+                }
+
+                self.aec_style_manager_selected_wall_style = Some(id.clone());
+                self.aec_style_manager_wall_style_editing_id = Some(id);
+                Task::none()
+            }
+            Message::AecStyleManagerWallStyleDelete => {
+                if let Some(id) = self.aec_style_manager_selected_wall_style.clone() {
+                    if let Some(lib) = self.aec_style_library.as_mut() {
+                        lib.remove_wall_style(&id);
+                        match crate::modules::aec::engine::library::save_to_default_path(lib) {
+                            Ok(()) => self.command_line.push_info(
+                                crate::t!("AEC Style Manager: wall style deleted.").as_ref(),
+                            ),
+                            Err(e) => self.command_line.push_error(
+                                crate::tf!("AEC Style Manager: failed to save library: {e}")
+                                    .as_ref(),
+                            ),
+                        }
+                    }
+                }
+                self.aec_style_manager_selected_wall_style = None;
+                self.aec_style_manager_wall_style_editing_id = None;
+                self.aec_style_manager_wall_style_form_open = false;
                 Task::none()
             }
             Message::AecStyleManagerMaterialNew => {

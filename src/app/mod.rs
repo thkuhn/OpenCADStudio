@@ -96,6 +96,17 @@ pub struct GripPendingValue {
     pub label: &'static str,
 }
 
+/// Edit-buffer row for a wall-style layer in the AEC Style Manager.
+#[derive(Clone, Debug)]
+pub struct AecLayerBuffer {
+    /// Selected material id.
+    pub material_id: String,
+    /// Thickness string (parsed to f64 on save).
+    pub thickness: String,
+    /// Function enum as a display string (Structural, Insulation, Finish, Other).
+    pub function: String,
+}
+
 /// Operator the Quick Select filter applies between an entity's
 /// property value and the user-typed test value.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -947,6 +958,16 @@ pub(super) struct OpenCADStudio {
     aec_style_manager_material_hatch: String,
     aec_style_manager_material_color: String,
     aec_style_manager_material_line_type: String,
+
+    /// Id of the wall style currently being edited, if the edit buffer holds
+    /// an existing wall style (`None` while composing a new/unsaved one).
+    aec_style_manager_wall_style_editing_id: Option<String>,
+    /// Whether the wall style edit form is visible.
+    aec_style_manager_wall_style_form_open: bool,
+    /// Edit-buffer fields for the wall style form (name/parent/layers).
+    aec_style_manager_wall_style_name: String,
+    aec_style_manager_wall_style_parent: Option<String>,
+    aec_style_manager_wall_style_layers: Vec<AecLayerBuffer>,
 
     // ── Annotation-scale Manager ──────────────────────────────────────────
     scale_manager_selected: String,
@@ -2105,6 +2126,17 @@ pub enum Message {
     AecStyleManagerMaterialSave,
     /// "Delete" pressed for the currently selected material.
     AecStyleManagerMaterialDelete,
+
+    AecStyleManagerWallStyleNew,
+    AecStyleManagerWallStyleNameChanged(String),
+    AecStyleManagerWallStyleParentChanged(Option<String>),
+    AecStyleManagerWallStyleLayerAdd,
+    AecStyleManagerWallStyleLayerRemove(usize),
+    AecStyleManagerWallStyleLayerMaterialChanged(usize, String),
+    AecStyleManagerWallStyleLayerThicknessChanged(usize, String),
+    AecStyleManagerWallStyleLayerFunctionChanged(usize, String),
+    AecStyleManagerWallStyleSave,
+    AecStyleManagerWallStyleDelete,
     /// ViewCube-local cursor movement, tagged with the floating viewport that
     /// owned the overlay when the event was produced (`None` = Model layout).
     CursorMoved(Point, Option<acadrust::Handle>),
@@ -3342,6 +3374,11 @@ impl OpenCADStudio {
             aec_style_manager_material_hatch: String::new(),
             aec_style_manager_material_color: String::new(),
             aec_style_manager_material_line_type: String::new(),
+            aec_style_manager_wall_style_editing_id: None,
+            aec_style_manager_wall_style_form_open: false,
+            aec_style_manager_wall_style_name: String::new(),
+            aec_style_manager_wall_style_parent: None,
+            aec_style_manager_wall_style_layers: Vec::new(),
             scale_manager_selected: String::new(),
             scale_manager_paper_buf: String::new(),
             scale_manager_drawing_buf: String::new(),
