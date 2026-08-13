@@ -1816,6 +1816,154 @@ impl OpenCADStudio {
                 self.active_modal = Some(super::ModalKind::LayerStateManager);
                 Task::none()
             }
+            Message::AecStyleManagerOpen => {
+                self.ribbon.close_dropdown();
+                self.aec_style_library =
+                    Some(crate::modules::aec::engine::library::load_or_seed());
+                self.aec_style_manager_filter.clear();
+                self.aec_style_manager_selected_material = None;
+                self.aec_style_manager_selected_wall_style = None;
+                self.aec_style_manager_material_editing_id = None;
+                self.aec_style_manager_material_form_open = false;
+                self.active_modal = Some(super::ModalKind::AecStyleManager);
+                Task::none()
+            }
+            Message::AecStyleManagerFilter(value) => {
+                self.aec_style_manager_filter = value;
+                Task::none()
+            }
+            Message::AecStyleManagerSelectMaterial(id) => {
+                if let Some(material) = self
+                    .aec_style_library
+                    .as_ref()
+                    .and_then(|lib| lib.materials.iter().find(|m| m.id == id))
+                {
+                    self.aec_style_manager_material_editing_id = Some(material.id.clone());
+                    self.aec_style_manager_material_name = material.name.clone();
+                    self.aec_style_manager_material_hatch = material.hatch_pattern.clone();
+                    self.aec_style_manager_material_color =
+                        format!("#{:06X}", material.line_color);
+                    self.aec_style_manager_material_line_type = material.line_type.clone();
+                    self.aec_style_manager_material_form_open = true;
+                }
+                self.aec_style_manager_selected_material = Some(id);
+                self.aec_style_manager_selected_wall_style = None;
+                Task::none()
+            }
+            Message::AecStyleManagerSelectWallStyle(id) => {
+                self.aec_style_manager_selected_wall_style = Some(id);
+                self.aec_style_manager_selected_material = None;
+                self.aec_style_manager_material_form_open = false;
+                self.aec_style_manager_material_editing_id = None;
+                Task::none()
+            }
+            Message::AecStyleManagerMaterialNew => {
+                self.aec_style_manager_selected_material = None;
+                self.aec_style_manager_selected_wall_style = None;
+                self.aec_style_manager_material_editing_id = None;
+                self.aec_style_manager_material_name.clear();
+                self.aec_style_manager_material_hatch.clear();
+                self.aec_style_manager_material_color = "#FFFFFF".to_string();
+                self.aec_style_manager_material_line_type = "Continuous".to_string();
+                self.aec_style_manager_material_form_open = true;
+                Task::none()
+            }
+            Message::AecStyleManagerMaterialNameChanged(value) => {
+                self.aec_style_manager_material_name = value;
+                Task::none()
+            }
+            Message::AecStyleManagerMaterialHatchChanged(value) => {
+                self.aec_style_manager_material_hatch = value;
+                Task::none()
+            }
+            Message::AecStyleManagerMaterialColorChanged(value) => {
+                self.aec_style_manager_material_color = value;
+                Task::none()
+            }
+            Message::AecStyleManagerMaterialLineTypeChanged(value) => {
+                self.aec_style_manager_material_line_type = value;
+                Task::none()
+            }
+            Message::AecStyleManagerMaterialSave => {
+                let name = self.aec_style_manager_material_name.trim().to_string();
+                if name.is_empty() {
+                    self.command_line.push_error(
+                        crate::t!("AEC Style Manager: material name cannot be empty.").as_ref(),
+                    );
+                    return Task::none();
+                }
+                let hatch = if self.aec_style_manager_material_hatch.trim().is_empty() {
+                    "SOLID".to_string()
+                } else {
+                    self.aec_style_manager_material_hatch.trim().to_string()
+                };
+                let color_hex = self
+                    .aec_style_manager_material_color
+                    .trim()
+                    .trim_start_matches('#');
+                let color = u32::from_str_radix(color_hex, 16).unwrap_or(0);
+                let line_type = if self.aec_style_manager_material_line_type.trim().is_empty() {
+                    "Continuous".to_string()
+                } else {
+                    self.aec_style_manager_material_line_type.trim().to_string()
+                };
+                let id = self
+                    .aec_style_manager_material_editing_id
+                    .clone()
+                    .unwrap_or_else(|| {
+                        format!("mat_{}", crate::modules::aec::commands::slugify(&name))
+                    });
+                let render_material_ref = self
+                    .aec_style_library
+                    .as_ref()
+                    .and_then(|lib| lib.materials.iter().find(|m| m.id == id))
+                    .and_then(|m| m.render_material_ref.clone());
+
+                let material = crate::modules::aec::engine::material::Material {
+                    id: id.clone(),
+                    name,
+                    hatch_pattern: hatch,
+                    line_color: color,
+                    line_type,
+                    render_material_ref,
+                };
+
+                let lib = self
+                    .aec_style_library
+                    .get_or_insert_with(crate::modules::aec::engine::library::StyleLibrary::empty);
+                lib.upsert_material(material);
+                match crate::modules::aec::engine::library::save_to_default_path(lib) {
+                    Ok(()) => self
+                        .command_line
+                        .push_info(crate::t!("AEC Style Manager: material saved.").as_ref()),
+                    Err(e) => self.command_line.push_error(
+                        crate::tf!("AEC Style Manager: failed to save library: {e}").as_ref(),
+                    ),
+                }
+                self.aec_style_manager_selected_material = Some(id.clone());
+                self.aec_style_manager_material_editing_id = Some(id);
+                Task::none()
+            }
+            Message::AecStyleManagerMaterialDelete => {
+                if let Some(id) = self.aec_style_manager_selected_material.clone() {
+                    if let Some(lib) = self.aec_style_library.as_mut() {
+                        lib.remove_material(&id);
+                        match crate::modules::aec::engine::library::save_to_default_path(lib) {
+                            Ok(()) => self.command_line.push_info(
+                                crate::t!("AEC Style Manager: material deleted.").as_ref(),
+                            ),
+                            Err(e) => self.command_line.push_error(
+                                crate::tf!("AEC Style Manager: failed to save library: {e}")
+                                    .as_ref(),
+                            ),
+                        }
+                    }
+                }
+                self.aec_style_manager_selected_material = None;
+                self.aec_style_manager_material_editing_id = None;
+                self.aec_style_manager_material_form_open = false;
+                Task::none()
+            }
             // ── Layer Translator (#624) ──────────────────────────────────
             Message::LayerTranslatorLoad => Task::perform(
                 crate::io::pick_layer_standard_path(),

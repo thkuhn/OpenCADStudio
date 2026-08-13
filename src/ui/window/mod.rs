@@ -1,4 +1,5 @@
 pub mod about;
+pub mod aec_style_manager;
 pub mod block_palette;
 pub mod layout_manager;
 pub mod layer_state_manager;

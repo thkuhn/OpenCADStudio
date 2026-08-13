@@ -45,6 +45,13 @@ impl StyleLibrary {
             self.wall_styles.push(wall_style);
         }
     }
+
+    /// Removes a material by `id`. Returns `true` if a material was removed.
+    pub fn remove_material(&mut self, id: &str) -> bool {
+        let before = self.materials.len();
+        self.materials.retain(|m| m.id != id);
+        self.materials.len() != before
+    }
 }
 
 /// Builds a small, ready-to-use default library so `AEC_WALL`'s style
@@ -275,5 +282,24 @@ mod tests {
         let deserialized = from_toml(&serialized).expect("Deserialization failed");
 
         assert_eq!(lib, deserialized);
+    }
+
+    #[test]
+    fn test_remove_material() {
+        let material = Material::new(
+            "mat1".to_string(),
+            "Material 1".to_string(),
+            "HATCH1".to_string(),
+            0xFF0000,
+            "Continuous".to_string(),
+        );
+        let mut lib = StyleLibrary {
+            materials: vec![material],
+            wall_styles: Vec::new(),
+        };
+
+        assert!(lib.remove_material("mat1"));
+        assert!(lib.materials.is_empty());
+        assert!(!lib.remove_material("mat1"));
     }
 }

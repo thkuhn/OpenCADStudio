@@ -57,6 +57,11 @@ impl CadModule for AecModule {
                             MATERIAL_ICON,
                         )),
                         RibbonItem::LargeTool(tool("AEC_STYLE", "Wall Style", STYLE_ICON)),
+                        RibbonItem::LargeTool(tool(
+                            "AEC_STYLEMANAGER",
+                            "Style Manager",
+                            STYLE_ICON,
+                        )),
                     ],
                 },
                 RibbonGroup {

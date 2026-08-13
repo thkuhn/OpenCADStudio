@@ -693,7 +693,7 @@ fn parse_layer_function(s: &str) -> LayerFunction {
 
 /// Turns a human-entered name into a stable, filesystem/XDATA-safe id
 /// (lowercase, non-alphanumeric runs collapsed to `_`).
-fn slugify(name: &str) -> String {
+pub(crate) fn slugify(name: &str) -> String {
     let mut slug = String::new();
     let mut last_was_sep = true; // suppress a leading separator
     for c in name.trim().chars() {

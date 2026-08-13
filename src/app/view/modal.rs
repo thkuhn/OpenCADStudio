@@ -47,6 +47,7 @@ impl OpenCADStudio {
             Some(K::SaveDialog) => crate::tr!("modal", "save-drawing-as"),
             Some(K::Recovery) => crate::tr!("modal", "recovery-report"),
             Some(K::RecoveryPrompt) => crate::tr!("modal", "recovery-prompt"),
+            Some(K::AecStyleManager) => t!("AEC Style Manager").into_owned(),
             None => String::new(),
         }
     }
@@ -234,6 +235,28 @@ impl OpenCADStudio {
                     crate::ui::window::drawing_units::view_window(state, flow)
                 })
             }
+            super::super::ModalKind::AecStyleManager => sized_flow(
+                ex,
+                720,
+                420,
+                |flow| {
+                    crate::ui::window::aec_style_manager::view_window(
+                        self.aec_style_library.as_ref(),
+                        &self.aec_style_manager_filter,
+                        self.aec_style_manager_selected_material.as_deref(),
+                        self.aec_style_manager_selected_wall_style.as_deref(),
+                        crate::ui::window::aec_style_manager::MaterialFormState {
+                            open: self.aec_style_manager_material_form_open,
+                            is_new: self.aec_style_manager_material_editing_id.is_none(),
+                            name: &self.aec_style_manager_material_name,
+                            hatch: &self.aec_style_manager_material_hatch,
+                            color: &self.aec_style_manager_material_color,
+                            line_type: &self.aec_style_manager_material_line_type,
+                        },
+                        flow,
+                    )
+                },
+            ),
             super::super::ModalKind::LayerStateManager => {
                 let states = self.tabs[self.active_tab].scene.document.layer_states();
                 sized_flow(

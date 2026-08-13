@@ -926,6 +926,28 @@ pub(super) struct OpenCADStudio {
     layer_state_edit_filter: String,
     layer_state_edit_color_open: Option<usize>,
 
+    // ── AEC Style Manager ─────────────────────────────────────────────────
+    /// Loaded (or seeded) on `AEC_STYLEMANAGER`; holds the materials + wall
+    /// styles the manager shell will browse/edit in a later step.
+    aec_style_library: Option<crate::modules::aec::engine::library::StyleLibrary>,
+    /// Filter text applied to both the material and wall-style master lists.
+    aec_style_manager_filter: String,
+    /// Currently selected material id (if any), by `Material::id`.
+    aec_style_manager_selected_material: Option<String>,
+    /// Currently selected wall style id (if any), by `Style::id`.
+    aec_style_manager_selected_wall_style: Option<String>,
+    /// Id of the material currently being edited, if the edit buffer holds
+    /// an existing material (`None` while composing a new/unsaved one).
+    aec_style_manager_material_editing_id: Option<String>,
+    /// Whether the material edit form is visible (set by selecting a
+    /// material or pressing "New"; cleared on Save/Delete/deselect).
+    aec_style_manager_material_form_open: bool,
+    /// Edit-buffer fields for the material form (name/hatch/color/line type).
+    aec_style_manager_material_name: String,
+    aec_style_manager_material_hatch: String,
+    aec_style_manager_material_color: String,
+    aec_style_manager_material_line_type: String,
+
     // ── Annotation-scale Manager ──────────────────────────────────────────
     scale_manager_selected: String,
     scale_manager_paper_buf: String,
@@ -1579,6 +1601,10 @@ pub enum ModalKind {
     /// Add / remove the annotation scales a single selected object has a
     /// per-object representation for.
     AnnoObjectScale,
+    /// AEC Style Manager — browse/edit the materials + wall styles stored in
+    /// the AEC style library (`AEC_STYLEMANAGER`). Empty shell for now; the
+    /// view/edit content is added by a later step.
+    AecStyleManager,
 }
 
 /// A property group controlled by a layer state's restore mask.
@@ -2055,6 +2081,30 @@ pub enum Message {
     LayerStateEditorFilter(String),
     LayerStateEditorSave,
     LayerStateEditorCancel,
+    // ── AEC Style Manager (`AEC_STYLEMANAGER`) ───────────────────────────
+    /// Load (or seed) the AEC style library into app state and open the
+    /// manager modal shell.
+    AecStyleManagerOpen,
+    /// Filter text changed in the AEC Style Manager's master lists.
+    AecStyleManagerFilter(String),
+    /// A material row was selected in the AEC Style Manager.
+    AecStyleManagerSelectMaterial(String),
+    /// A wall style row was selected in the AEC Style Manager.
+    AecStyleManagerSelectWallStyle(String),
+    /// "New" pressed in the material panel — opens a blank material edit form.
+    AecStyleManagerMaterialNew,
+    /// Name field changed in the material edit form.
+    AecStyleManagerMaterialNameChanged(String),
+    /// Hatch-pattern field changed in the material edit form.
+    AecStyleManagerMaterialHatchChanged(String),
+    /// Line-color hex field changed in the material edit form.
+    AecStyleManagerMaterialColorChanged(String),
+    /// Line-type field changed in the material edit form.
+    AecStyleManagerMaterialLineTypeChanged(String),
+    /// "Save" pressed in the material edit form — upserts and persists.
+    AecStyleManagerMaterialSave,
+    /// "Delete" pressed for the currently selected material.
+    AecStyleManagerMaterialDelete,
     /// ViewCube-local cursor movement, tagged with the floating viewport that
     /// owned the overlay when the event was produced (`None` = Model layout).
     CursorMoved(Point, Option<acadrust::Handle>),
@@ -3282,6 +3332,16 @@ impl OpenCADStudio {
             layer_state_edit_draft: None,
             layer_state_edit_filter: String::new(),
             layer_state_edit_color_open: None,
+            aec_style_library: None,
+            aec_style_manager_filter: String::new(),
+            aec_style_manager_selected_material: None,
+            aec_style_manager_selected_wall_style: None,
+            aec_style_manager_material_editing_id: None,
+            aec_style_manager_material_form_open: false,
+            aec_style_manager_material_name: String::new(),
+            aec_style_manager_material_hatch: String::new(),
+            aec_style_manager_material_color: String::new(),
+            aec_style_manager_material_line_type: String::new(),
             scale_manager_selected: String::new(),
             scale_manager_paper_buf: String::new(),
             scale_manager_drawing_buf: String::new(),
