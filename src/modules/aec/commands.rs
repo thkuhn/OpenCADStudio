@@ -427,6 +427,7 @@ pub fn wall_thickness_and_height(entity: &EntityType) -> Option<(f64, f64, u32)>
 pub struct WallLayerExtrusion {
     pub footprint: Vec<(f64, f64)>,
     pub height: f64,
+    pub base_offset: f64,
 }
 
 /// Extracts a wall's centerline points from its [`LwPolyline`] geometry and
@@ -469,13 +470,21 @@ pub fn wall_layer_extrusions(
     }
 
     let mut extrusions = Vec::with_capacity(layers.len());
-    for (b1, b2) in boundaries {
+    for (i, (b1, b2)) in boundaries.into_iter().enumerate() {
         // Create a closed loop: forward along b1, then backward along b2.
         let mut footprint = Vec::with_capacity(b1.len() + b2.len());
         footprint.extend(b1.iter().cloned());
         footprint.extend(b2.iter().rev().cloned());
 
-        extrusions.push(WallLayerExtrusion { footprint, height });
+        let layer = &layers[i];
+        let effective_height = (height - layer.bottom_offset - layer.top_offset).max(0.0);
+        let base_offset = layer.bottom_offset;
+
+        extrusions.push(WallLayerExtrusion {
+            footprint,
+            height: effective_height,
+            base_offset,
+        });
     }
     extrusions
 }
@@ -715,7 +724,20 @@ pub fn regenerate_wall_representation(
         // Extruded solid for this layer.
         if let Some(ext) = extrusions.get(i) {
             if ext.height.abs() > 1e-9 {
-                if let Some(body) = crate::scene::model::sweep_model::extruded(&contour_entity, ext.height) {
+                let to_extrude = if ext.base_offset.abs() > 1e-9 {
+                    let mut clone = contour_entity.clone();
+                    if let EntityType::LwPolyline(ref mut pl) = clone {
+                        pl.elevation = ext.base_offset;
+                    }
+                    Some(clone)
+                } else {
+                    None
+                };
+                let entity_to_use = to_extrude.as_ref().unwrap_or(&contour_entity);
+
+                if let Some(body) =
+                    crate::scene::model::sweep_model::extruded(entity_to_use, ext.height)
+                {
                     let mut s3d = acadrust::entities::Solid3D::new();
                     s3d.wires = crate::scene::model::solid_model::edge_wires(&body);
                     let solid_handle = scene.add_entity(EntityType::Solid3D(s3d));
@@ -2809,5 +2831,70 @@ mod wall_command_tests {
             _ => panic!("ROOM record should carry an area value"),
         };
         assert!((area - 12.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn wall_layer_extrusions_calculates_offsets_and_effective_height() {
+        let mut pl = LwPolyline::new();
+        pl.add_vertex(LwVertex::new(Vector2::new(0.0, 0.0)));
+        pl.add_vertex(LwVertex::new(Vector2::new(10.0, 0.0)));
+        let entity = EntityType::LwPolyline(pl);
+        let layers = vec![WallLayer {
+            material: "brick".to_string(),
+            thickness: 0.2,
+            function: "Structural".to_string(),
+            gap_before: 0.0,
+            bottom_offset: 0.5,
+            top_offset: 0.3,
+            layer_override: None,
+        }];
+        let height = 3.0;
+        let extrusions = wall_layer_extrusions(&entity, &layers, height);
+        assert_eq!(extrusions.len(), 1);
+        assert!((extrusions[0].height - 2.2).abs() < 1e-9); // 3.0 - 0.5 - 0.3 = 2.2
+        assert!((extrusions[0].base_offset - 0.5).abs() < 1e-9);
+    }
+
+    #[test]
+    fn regenerate_wall_representation_respects_vertical_offsets() {
+        use acadrust::types::Vector2;
+        let mut scene = Scene::new();
+        let mut pl = LwPolyline::new();
+        pl.add_vertex(LwVertex::new(Vector2::new(0.0, 0.0)));
+        pl.add_vertex(LwVertex::new(Vector2::new(5.0, 0.0)));
+        let mut entity = EntityType::LwPolyline(pl);
+        let mut layer = wl("Concrete", 0.2, "Structural");
+        layer.bottom_offset = 0.5;
+        layer.top_offset = 0.3;
+        let layers = vec![layer];
+        let mut record = ExtendedDataRecord::new(AEC_APPID);
+        record.values = wall_v2_record("style1", 3.0, 0, &layers, &[], WallJustification::Center);
+        entity.common_mut().extended_data.add_record(record);
+        let wall_handle = scene.add_entity(entity);
+
+        regenerate_wall_representation(&mut scene, wall_handle)
+            .expect("regeneration should succeed");
+
+        let wall = wall_v2_from_entity(scene.document.get_entity(wall_handle).unwrap()).unwrap();
+
+        let mut saw_bottom_z = false;
+        let mut saw_top_z = false;
+        for h in wall.derived_handles {
+            let e = scene.document.get_entity(h).unwrap();
+            if let EntityType::Solid3D(s3d) = e {
+                for wire in &s3d.wires {
+                    for pt in &wire.points {
+                        if (pt.z - 0.5).abs() < 1e-9 {
+                            saw_bottom_z = true;
+                        }
+                        if (pt.z - 2.7).abs() < 1e-9 {
+                            saw_top_z = true;
+                        }
+                    }
+                }
+            }
+        }
+        assert!(saw_bottom_z, "solid should have wires at Z=0.5");
+        assert!(saw_top_z, "solid should have wires at Z=2.7");
     }
 }

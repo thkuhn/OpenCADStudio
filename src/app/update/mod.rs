@@ -2129,9 +2129,62 @@ impl OpenCADStudio {
                 lib.upsert_wall_style(wall_style);
 
                 match crate::modules::aec::engine::library::save_to_default_path(lib) {
-                    Ok(()) => self
-                        .command_line
-                        .push_info(crate::t!("AEC Style Manager: wall style saved.").as_ref()),
+                    Ok(()) => {
+                        self.command_line
+                            .push_info(crate::t!("AEC Style Manager: wall style saved.").as_ref());
+
+                        let tab = &mut self.tabs[self.active_tab];
+                        let style_map: std::collections::HashMap<
+                            String,
+                            crate::modules::aec::engine::style::Style,
+                        > = lib
+                            .wall_styles
+                            .iter()
+                            .map(|ws| (ws.style.id.clone(), ws.style.clone()))
+                            .collect();
+
+                        let mut affected_handles = Vec::new();
+                        for entity in tab.scene.document.entities() {
+                            if let Some(wall) =
+                                crate::modules::aec::commands::wall_v2_from_entity(entity)
+                            {
+                                if wall.style_id == id {
+                                    affected_handles.push(entity.common().handle);
+                                } else if let Ok(chain) =
+                                    crate::modules::aec::engine::style::resolve_chain(
+                                        &style_map,
+                                        &wall.style_id,
+                                    )
+                                {
+                                    if chain.contains(&id) {
+                                        affected_handles.push(entity.common().handle);
+                                    }
+                                }
+                            }
+                        }
+
+                        let mut updated_count = 0;
+                        for handle in affected_handles {
+                            if crate::modules::aec::commands::regenerate_wall_representation(
+                                &mut tab.scene,
+                                handle,
+                            )
+                            .is_ok()
+                            {
+                                updated_count += 1;
+                            }
+                        }
+
+                        if updated_count > 0 {
+                            tab.scene.bump_geometry();
+                            self.command_line.push_info(
+                                crate::tf!(
+                                    "AEC Style Manager: updated {updated_count} wall(s) using this style."
+                                )
+                                .as_ref(),
+                            );
+                        }
+                    }
                     Err(e) => self.command_line.push_error(
                         crate::tf!("AEC Style Manager: failed to save library: {e}").as_ref(),
                     ),
