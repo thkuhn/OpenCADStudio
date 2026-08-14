@@ -987,6 +987,9 @@ pub(super) struct OpenCADStudio {
     pub aec_style_picker_filter: String,
     /// Currently highlighted ID in the AEC Style Picker (material ID, style ID, or layer name).
     pub aec_style_picker_selection: Option<String>,
+    /// Target wall entity handle(s) for `StylePickerTarget::WallPropertiesStyle`
+    /// (one per selected wall; more than one when editing a multi-selection).
+    pub aec_style_picker_wall_handles: Vec<acadrust::Handle>,
     /// Id of the material currently being edited, if the edit buffer holds
     /// an existing material (`None` while composing a new/unsaved one).
     aec_style_manager_material_editing_id: Option<String>,
@@ -1640,8 +1643,12 @@ pub enum StylePickerTarget {
     LayerMaterial(usize),
     /// Selecting a layer override for a specific layer index.
     LayerOverride(usize),
-    /// Selecting a new style for an existing wall entity in the properties panel.
-    WallPropertiesStyle(acadrust::Handle),
+    /// Selecting a new style for one or more existing wall entities in the
+    /// properties panel. The actual target handle(s) are kept separately in
+    /// `App::aec_style_picker_wall_handles` (more than one handle vector
+    /// element when editing a multi-selection) since `ModalKind`/this enum
+    /// must stay `Copy`.
+    WallPropertiesStyle,
 }
 
 /// Which in-canvas modal dialog is currently open (Plan B). At most one shows
@@ -2249,6 +2256,10 @@ pub enum Message {
     AecStyleManagerWallStyleSortToggle,
     /// Open the AEC Style Picker for a specific target.
     AecStylePickerOpen(StylePickerTarget),
+    /// Open the AEC Style Picker for the `WallPropertiesStyle` target,
+    /// carrying the (one or more) wall entity handles to write the picked
+    /// style back to.
+    AecStylePickerOpenForWallProperties(Vec<acadrust::Handle>),
     /// Live search filter change in the AEC Style Picker.
     AecStylePickerFilterChanged(String),
     /// Selection/highlight change in the AEC Style Picker.
@@ -3488,6 +3499,7 @@ impl OpenCADStudio {
             aec_style_manager_selected_wall_style: None,
             aec_style_picker_filter: String::new(),
             aec_style_picker_selection: None,
+            aec_style_picker_wall_handles: Vec::new(),
             aec_style_manager_material_editing_id: None,
             aec_style_manager_material_form_open: false,
             aec_style_manager_material_name: String::new(),

@@ -86,6 +86,32 @@ fn write_wall_derived_tag(scene: &mut Scene, handle: Handle, axis_handle: Handle
     write_aec_record(&mut scene.document, handle, record);
 }
 
+/// Overwrites only the `height` field of a wall's `WALL_V2` XDATA record,
+/// keeping `style_id`/`layers`/`storey_id`/`derived_handles`/`justification` intact.
+/// Used by the Properties panel's editable "Height" row (single or
+/// multi-selected walls).
+pub fn write_wall_v2_height(scene: &mut Scene, wall_handle: Handle, height: f64) -> bool {
+    let Some(entity) = scene.document.get_entity(wall_handle) else {
+        return false;
+    };
+    let Some(mut wall_v2) = wall_v2_from_entity(entity) else {
+        return false;
+    };
+    wall_v2.height = height;
+    let mut record = ExtendedDataRecord::new(AEC_APPID);
+    for v in wall_v2_record(
+        &wall_v2.style_id,
+        wall_v2.height,
+        wall_v2.storey_id,
+        &wall_v2.layers,
+        &wall_v2.derived_handles,
+        wall_v2.justification,
+    ) {
+        record.add_value(v);
+    }
+    write_aec_record(&mut scene.document, wall_handle, record)
+}
+
 /// Overwrites only the layer-snapshot portion of a wall's `WALL_V2` XDATA record,
 /// keeping `style_id`/`height`/`storey_id`/`derived_handles`/`justification` intact.
 pub fn write_wall_v2_layers(scene: &mut Scene, wall_handle: Handle, layers: Vec<WallLayer>) -> bool {

@@ -2105,6 +2105,79 @@ pub(super) fn build_selection_groups(
     groups
 }
 
+/// Builds the "Wall"/"Wall Layers" property section for a single entity, if
+/// it carries an `OPENCAD_AEC` `WALL`/`WALL_V2` XDATA record. Shared between
+/// the single-selection panel and multi-selection aggregation so wall
+/// properties (style, height) are available and editable regardless of how
+/// many walls are selected at once.
+pub(super) fn wall_prop_section(
+    entity: &EntityType,
+    style_library: Option<&crate::modules::aec::engine::library::StyleLibrary>,
+) -> Option<crate::scene::model::object::PropSection> {
+    if let Some(wall_v2) = crate::modules::aec::commands::wall_v2_from_entity(entity) {
+        let style_name = style_library
+            .and_then(|lib| lib.wall_styles.iter().find(|ws| ws.style.id == wall_v2.style_id))
+            .map(|ws| ws.style.name.clone())
+            .unwrap_or_else(|| wall_v2.style_id.clone());
+
+        let mut props = vec![
+            crate::entities::common::edit_prop(
+                t!("Height").as_ref(),
+                "wall_height",
+                wall_v2.height,
+            ),
+            crate::scene::model::object::Property {
+                label: t!("Style").into_owned(),
+                field: "wall_style",
+                value: crate::scene::model::object::PropValue::Picker {
+                    value: style_name,
+                    handles: vec![entity.common().handle],
+                },
+            },
+        ];
+
+        for layer in &wall_v2.layers {
+            let thickness_str = crate::entities::common::format_length(layer.thickness);
+            let layer_info = format!("{} — {} ({})", layer.material, thickness_str, layer.function);
+            props.push(crate::entities::common::ro_prop(
+                t!("Layer").as_ref(),
+                "wall_layer",
+                layer_info,
+            ));
+        }
+
+        Some(crate::scene::model::object::PropSection {
+            title: t!("Wall Layers").into_owned(),
+            props,
+        })
+    } else {
+        crate::modules::aec::commands::wall_from_entity(entity).map(|wall| {
+            crate::scene::model::object::PropSection {
+                title: t!("Wall").into_owned(),
+                props: vec![
+                    crate::entities::common::edit_prop(
+                        t!("Height").as_ref(),
+                        "wall_height",
+                        wall.height,
+                    ),
+                    crate::entities::common::edit_prop(
+                        t!("Thickness").as_ref(),
+                        "wall_thickness",
+                        wall.thickness,
+                    ),
+                    crate::scene::model::object::Property {
+                        label: t!("Material").into_owned(),
+                        field: "wall_material",
+                        value: crate::scene::model::object::PropValue::EditText(
+                            wall.material_ref.clone().unwrap_or_default(),
+                        ),
+                    },
+                ],
+            }
+        })
+    }
+}
+
 pub(super) fn aggregate_sections(
     selected: &[(Handle, &EntityType)],
     text_style_names: &[String],
@@ -2115,7 +2188,14 @@ pub(super) fn aggregate_sections(
 
     let mut all_sections: Vec<Vec<crate::scene::model::object::PropSection>> = selected
         .iter()
-        .map(|(handle, entity)| dispatch::properties_sectioned(*handle, entity, text_style_names))
+        .map(|(handle, entity)| {
+            let mut sections =
+                dispatch::properties_sectioned(*handle, entity, text_style_names);
+            if let Some(wall_section) = wall_prop_section(entity, style_library) {
+                sections.push(wall_section);
+            }
+            sections
+        })
         .collect();
 
     let mut result = all_sections.remove(0);

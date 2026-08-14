@@ -2165,6 +2165,17 @@ impl OpenCADStudio {
                 self.active_modal = Some(crate::app::ModalKind::AecStylePicker { target });
                 Task::none()
             }
+            Message::AecStylePickerOpenForWallProperties(handles) => {
+                self.aec_style_library =
+                    Some(crate::modules::aec::engine::library::load_or_seed());
+                self.aec_style_picker_filter.clear();
+                self.aec_style_picker_selection = None;
+                self.aec_style_picker_wall_handles = handles;
+                self.active_modal = Some(crate::app::ModalKind::AecStylePicker {
+                    target: crate::app::StylePickerTarget::WallPropertiesStyle,
+                });
+                Task::none()
+            }
             Message::AecStylePickerFilterChanged(v) => {
                 self.aec_style_picker_filter = v;
                 Task::none()
@@ -2184,22 +2195,22 @@ impl OpenCADStudio {
                             } else {
                                 Some(selection)
                             };
-                            self.active_modal = None;
+                            self.active_modal = Some(crate::app::ModalKind::AecWallStyleManager);
                             return self.update(Message::AecStyleManagerWallStyleParentChanged(id));
                         }
                         crate::app::StylePickerTarget::LayerMaterial(index) => {
-                            self.active_modal = None;
+                            self.active_modal = Some(crate::app::ModalKind::AecWallStyleManager);
                             return self.update(Message::AecStyleManagerWallStyleLayerMaterialChanged(
                                 index, selection,
                             ));
                         }
                         crate::app::StylePickerTarget::LayerOverride(index) => {
-                            self.active_modal = None;
+                            self.active_modal = Some(crate::app::ModalKind::AecWallStyleManager);
                             return self.update(Message::AecStyleManagerWallStyleLayerOverrideChanged(
                                 index, selection,
                             ));
                         }
-                        crate::app::StylePickerTarget::WallPropertiesStyle(handle) => {
+                        crate::app::StylePickerTarget::WallPropertiesStyle => {
                             self.active_modal = None;
                             let Some(lib) = &self.aec_style_library else {
                                 return Task::none();
@@ -2245,66 +2256,69 @@ impl OpenCADStudio {
                             let i = self.active_tab;
                             self.push_undo_snapshot(i, "CHPROP");
 
-                            let mut record = acadrust::xdata::ExtendedDataRecord::new(
-                                crate::modules::aec::commands::AEC_APPID,
-                            );
+                            let handles = self.aec_style_picker_wall_handles.clone();
+                            for handle in handles {
+                                let mut record = acadrust::xdata::ExtendedDataRecord::new(
+                                    crate::modules::aec::commands::AEC_APPID,
+                                );
 
-                            if let Some(entity) = self.tabs[i].scene.document.get_entity(handle) {
-                                if let Some(mut wall_v2) =
-                                    crate::modules::aec::commands::wall_v2_from_entity(entity)
-                                {
-                                    wall_v2.style_id = selection.clone();
-                                    wall_v2.layers = wall_layers;
+                                if let Some(entity) = self.tabs[i].scene.document.get_entity(handle) {
+                                    if let Some(mut wall_v2) =
+                                        crate::modules::aec::commands::wall_v2_from_entity(entity)
+                                    {
+                                        wall_v2.style_id = selection.clone();
+                                        wall_v2.layers = wall_layers.clone();
 
-                                    record.values = crate::modules::aec::commands::wall_v2_record(
-                                        &wall_v2.style_id,
-                                        wall_v2.height,
-                                        wall_v2.storey_id,
-                                        &wall_v2.layers,
-                                        &wall_v2.derived_handles,
-                                        wall_v2.justification,
-                                    );
+                                        record.values = crate::modules::aec::commands::wall_v2_record(
+                                            &wall_v2.style_id,
+                                            wall_v2.height,
+                                            wall_v2.storey_id,
+                                            &wall_v2.layers,
+                                            &wall_v2.derived_handles,
+                                            wall_v2.justification,
+                                        );
+                                    }
+                                }
+
+                                if !record.values.is_empty() {
+                                    let app_handle = self.tabs[i]
+                                        .scene
+                                        .document
+                                        .app_ids
+                                        .get(crate::modules::aec::commands::AEC_APPID)
+                                        .map(|a| a.handle.value());
+
+                                    if let Some(entity) =
+                                        self.tabs[i].scene.document.get_entity_mut(handle)
+                                    {
+                                        let xd = &mut entity.common_mut().extended_data;
+                                        let kept: Vec<_> = xd
+                                            .records()
+                                            .iter()
+                                            .filter(|r| {
+                                                r.application_name
+                                                    != crate::modules::aec::commands::AEC_APPID
+                                            })
+                                            .cloned()
+                                            .collect();
+                                        xd.clear();
+                                        for r in kept {
+                                            xd.add_record(r);
+                                        }
+                                        xd.add_record(record);
+                                        if let Some(ah) = app_handle {
+                                            xd.raw_dwg_eed.retain(|(a, _)| *a != ah);
+                                        }
+
+                                        let _ = crate::modules::aec::commands::regenerate_wall_representation(
+                                            &mut self.tabs[i].scene,
+                                            handle,
+                                        );
+                                        self.tabs[i].dirty = true;
+                                    }
                                 }
                             }
-
-                            if !record.values.is_empty() {
-                                let app_handle = self.tabs[i]
-                                    .scene
-                                    .document
-                                    .app_ids
-                                    .get(crate::modules::aec::commands::AEC_APPID)
-                                    .map(|a| a.handle.value());
-
-                                if let Some(entity) =
-                                    self.tabs[i].scene.document.get_entity_mut(handle)
-                                {
-                                    let xd = &mut entity.common_mut().extended_data;
-                                    let kept: Vec<_> = xd
-                                        .records()
-                                        .iter()
-                                        .filter(|r| {
-                                            r.application_name
-                                                != crate::modules::aec::commands::AEC_APPID
-                                        })
-                                        .cloned()
-                                        .collect();
-                                    xd.clear();
-                                    for r in kept {
-                                        xd.add_record(r);
-                                    }
-                                    xd.add_record(record);
-                                    if let Some(ah) = app_handle {
-                                        xd.raw_dwg_eed.retain(|(a, _)| *a != ah);
-                                    }
-
-                                    let _ = crate::modules::aec::commands::regenerate_wall_representation(
-                                        &mut self.tabs[i].scene,
-                                        handle,
-                                    );
-                                    self.tabs[i].dirty = true;
-                                    self.refresh_properties();
-                                }
-                            }
+                            self.refresh_properties();
                         }
                     }
                 }

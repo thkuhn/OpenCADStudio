@@ -36,13 +36,13 @@ pub fn view_window<'a>(
         crate::app::StylePickerTarget::WallStyleParent => t!("Select Parent Style"),
         crate::app::StylePickerTarget::LayerMaterial(_) => t!("Select Material"),
         crate::app::StylePickerTarget::LayerOverride(_) => t!("Select Layer Override"),
-        crate::app::StylePickerTarget::WallPropertiesStyle(_) => t!("Select Wall Style"),
+        crate::app::StylePickerTarget::WallPropertiesStyle => t!("Select Wall Style"),
     };
 
     let query = filter.trim().to_lowercase();
 
     let content: Element<'_, Message> = match target {
-        crate::app::StylePickerTarget::WallStyleParent | crate::app::StylePickerTarget::WallPropertiesStyle(_) => {
+        crate::app::StylePickerTarget::WallStyleParent | crate::app::StylePickerTarget::WallPropertiesStyle => {
             let tree = library.wall_style_tree();
             
             // If filtering, identify which nodes must remain visible (matches + their parents).
@@ -155,7 +155,7 @@ pub fn view_window<'a>(
             if matches!(
                 target,
                 crate::app::StylePickerTarget::WallStyleParent
-                    | crate::app::StylePickerTarget::WallPropertiesStyle(_)
+                    | crate::app::StylePickerTarget::WallPropertiesStyle
             ) {
                 if let Some(selected_id) = selection {
                     let styles_map: std::collections::HashMap<_, _> = library

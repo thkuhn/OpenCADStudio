@@ -47,8 +47,9 @@ pub enum PropValue {
     /// tag carried here, not the row's `&'static str` field.
     AttrText { tag: String, value: String },
     /// A value that can be changed via an external picker.
-    /// Carries the current display value and the entity handle for routing.
-    Picker { value: String, handle: Handle },
+    /// Carries the current display value and the entity handle(s) to apply
+    /// the picked value to (more than one when editing a multi-selection).
+    Picker { value: String, handles: Vec<Handle> },
 }
 
 /// A single property row in the Properties panel.
