@@ -47,7 +47,9 @@ impl OpenCADStudio {
             Some(K::SaveDialog) => crate::tr!("modal", "save-drawing-as"),
             Some(K::Recovery) => crate::tr!("modal", "recovery-report"),
             Some(K::RecoveryPrompt) => crate::tr!("modal", "recovery-prompt"),
-            Some(K::AecStyleManager) => t!("AEC Style Manager").into_owned(),
+            Some(K::AecMaterialManager) => t!("AEC Material Manager").into_owned(),
+            Some(K::AecWallStyleManager) => t!("AEC Wall Style Manager").into_owned(),
+            Some(K::AecStylePicker { .. }) => t!("AEC Style Picker").into_owned(),
             None => String::new(),
         }
     }
@@ -235,29 +237,30 @@ impl OpenCADStudio {
                     crate::ui::window::drawing_units::view_window(state, flow)
                 })
             }
-            super::super::ModalKind::AecStyleManager => sized_flow(
+            super::super::ModalKind::AecStylePicker { target } => {
+                let all_layer_names: Vec<String> = self.tabs[self.active_tab]
+                    .scene
+                    .document
+                    .layers
+                    .iter()
+                    .map(|l| l.name.clone())
+                    .collect();
+                sized_flow(ex, 500, 500, move |flow| {
+                    crate::ui::window::aec_style_picker::view_window(
+                        self.aec_style_library.as_ref(),
+                        target,
+                        &self.aec_style_picker_filter,
+                        self.aec_style_picker_selection.as_deref(),
+                        all_layer_names.clone(),
+                        flow,
+                    )
+                })
+            }
+            super::super::ModalKind::AecMaterialManager => sized_flow(
                 ex,
-                960,
-                520,
-                |flow| {
-                    let all_wall_styles = self.aec_style_library.as_ref().map(|lib| {
-                        lib.wall_styles.iter()
-                            .filter(|ws| Some(&ws.style.id) != self.aec_style_manager_wall_style_editing_id.as_ref())
-                            .map(|ws| (ws.style.id.as_str(), ws.style.name.as_str()))
-                            .collect()
-                    }).unwrap_or_default();
-                    let all_materials = self.aec_style_library.as_ref().map(|lib| {
-                        lib.materials.iter()
-                            .map(|m| (m.id.as_str(), m.name.as_str()))
-                            .collect()
-                    }).unwrap_or_default();
-                    let all_layer_names: Vec<String> = self.tabs[self.active_tab]
-                        .scene
-                        .document
-                        .layers
-                        .iter()
-                        .map(|l| l.name.clone())
-                        .collect();
+                700,
+                400,
+                |_| {
                     let mut linetypes: Vec<String> = self.tabs[self.active_tab]
                         .scene
                         .document
@@ -281,6 +284,52 @@ impl OpenCADStudio {
                     if !linetypes.iter().any(|name| name.eq_ignore_ascii_case("Continuous")) {
                         linetypes.push("Continuous".to_string());
                     }
+
+                    static EMPTY_LIB: std::sync::OnceLock<
+                        crate::modules::aec::engine::library::StyleLibrary,
+                    > = std::sync::OnceLock::new();
+                    crate::ui::window::aec_material_manager::view_window(
+                        self.aec_style_library.as_ref().unwrap_or(EMPTY_LIB.get_or_init(crate::modules::aec::engine::library::StyleLibrary::empty)),
+                        self.aec_style_manager_selected_material.as_deref(),
+                        &self.aec_style_manager_filter,
+                        crate::ui::window::aec_material_manager::MaterialFormState {
+                            open: self.aec_style_manager_material_form_open,
+                            is_new: self.aec_style_manager_material_editing_id.is_none(),
+                            name: &self.aec_style_manager_material_name,
+                            hatch: &self.aec_style_manager_material_hatch,
+                            color: &self.aec_style_manager_material_color,
+                            line_type: &self.aec_style_manager_material_line_type,
+                            color_picker_open: self.aec_style_manager_material_color_picker_open,
+                            hatch_picker_open: self.aec_style_manager_material_hatch_picker_open,
+                            linetypes,
+                        },
+                    )
+                },
+            ),
+            super::super::ModalKind::AecWallStyleManager => sized_flow(
+                ex,
+                1100,
+                550,
+                |_| {
+                    let all_wall_styles = self.aec_style_library.as_ref().map(|lib| {
+                        lib.wall_styles.iter()
+                            .filter(|ws| Some(&ws.style.id) != self.aec_style_manager_wall_style_editing_id.as_ref())
+                            .map(|ws| (ws.style.id.as_str(), ws.style.name.as_str()))
+                            .collect()
+                    }).unwrap_or_default();
+                    let all_materials = self.aec_style_library.as_ref().map(|lib| {
+                        lib.materials.iter()
+                            .map(|m| (m.id.as_str(), m.name.as_str()))
+                            .collect()
+                    }).unwrap_or_default();
+                    let all_layer_names: Vec<String> = self.tabs[self.active_tab]
+                        .scene
+                        .document
+                        .layers
+                        .iter()
+                        .map(|l| l.name.clone())
+                        .collect();
+
                     let effective_layers = self.aec_style_library.as_ref().and_then(|lib| {
                         let id = self.aec_style_manager_wall_style_editing_id.as_ref()
                             .or(self.aec_style_manager_selected_wall_style.as_ref())?;
@@ -291,23 +340,15 @@ impl OpenCADStudio {
                         ).ok()
                     }).unwrap_or_default();
 
-                    crate::ui::window::aec_style_manager::view_window(
-                        self.aec_style_library.as_ref(),
-                        &self.aec_style_manager_filter,
-                        self.aec_style_manager_selected_material.as_deref(),
+                    static EMPTY_LIB: std::sync::OnceLock<
+                        crate::modules::aec::engine::library::StyleLibrary,
+                    > = std::sync::OnceLock::new();
+
+                    crate::ui::window::aec_wall_style_manager::view_window(
+                        self.aec_style_library.as_ref().unwrap_or(EMPTY_LIB.get_or_init(crate::modules::aec::engine::library::StyleLibrary::empty)),
                         self.aec_style_manager_selected_wall_style.as_deref(),
-                        crate::ui::window::aec_style_manager::MaterialFormState {
-                            open: self.aec_style_manager_material_form_open,
-                            is_new: self.aec_style_manager_material_editing_id.is_none(),
-                            name: &self.aec_style_manager_material_name,
-                            hatch: &self.aec_style_manager_material_hatch,
-                            color: &self.aec_style_manager_material_color,
-                            line_type: &self.aec_style_manager_material_line_type,
-                            color_picker_open: self.aec_style_manager_material_color_picker_open,
-                            hatch_picker_open: self.aec_style_manager_material_hatch_picker_open,
-                            linetypes: linetypes.clone(),
-                        },
-                        crate::ui::window::aec_style_manager::WallStyleFormState {
+                        &self.aec_style_manager_filter,
+                        crate::ui::window::aec_wall_style_manager::WallStyleFormState {
                             open: self.aec_style_manager_wall_style_form_open,
                             is_new: self.aec_style_manager_wall_style_editing_id.is_none(),
                             name: &self.aec_style_manager_wall_style_name,
@@ -319,8 +360,6 @@ impl OpenCADStudio {
                             all_layer_names,
                             effective_layers,
                         },
-                        self.aec_style_manager_wall_style_sort,
-                        flow,
                     )
                 },
             ),

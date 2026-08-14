@@ -1,6 +1,7 @@
 // Shared value types used by the dispatch and grip systems.
 
 use acadrust::types::{Color as AcadColor, LineWeight};
+use acadrust::Handle;
 use glam::DVec3;
 
 /// The kind of value held by a property row.
@@ -45,6 +46,9 @@ pub enum PropValue {
     /// an editable text_input. Unlike the other rows the routing key is the
     /// tag carried here, not the row's `&'static str` field.
     AttrText { tag: String, value: String },
+    /// A value that can be changed via an external picker.
+    /// Carries the current display value and the entity handle for routing.
+    Picker { value: String, handle: Handle },
 }
 
 /// A single property row in the Properties panel.

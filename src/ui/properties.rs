@@ -770,6 +770,9 @@ impl PropertiesPanel {
                 render_annotative_scale_row(label, val)
             }
             PropValue::ReadOnly(val) => render_ro_row(label, val),
+            PropValue::Picker { value, handle } => {
+                render_picker_row(label, prop.field, value, *handle)
+            }
             PropValue::HatchPatternChoice(current) => {
                 self.render_hatch_pattern_row(label, current)
             }
@@ -1650,7 +1653,10 @@ fn coord_suffix(label: &str) -> Option<(&str, usize)> {
 /// labelled "<Base> X", "<Base> Y" and optionally "<Base> Z". 0/1 = no group.
 fn coord_group_len(props: &[crate::scene::model::object::Property], idx: usize) -> usize {
     let groupable = |p: &crate::scene::model::object::Property| {
-        matches!(p.value, PropValue::EditText(_) | PropValue::ReadOnly(_))
+        matches!(
+            p.value,
+            PropValue::EditText(_) | PropValue::ReadOnly(_) | PropValue::Picker { .. }
+        )
     };
     let Some((base, 0)) = coord_suffix(&props[idx].label) else {
         return 0;
@@ -1689,7 +1695,9 @@ fn coord_component(label: &str) -> &'static str {
 /// EditText / ReadOnly — see `coord_group_len`).
 fn prop_text_value(prop: &crate::scene::model::object::Property) -> String {
     match &prop.value {
-        PropValue::EditText(s) | PropValue::ReadOnly(s) => s.clone(),
+        PropValue::EditText(s) | PropValue::ReadOnly(s) | PropValue::Picker { value: s, .. } => {
+            s.clone()
+        }
         _ => String::new(),
     }
 }

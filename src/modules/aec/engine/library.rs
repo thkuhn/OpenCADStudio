@@ -15,6 +15,14 @@ pub struct StyleLibrary {
     pub wall_styles: Vec<WallStyle>,
 }
 
+/// A node in a hierarchical wall-style tree.
+pub struct TreeNode<'a> {
+    /// The wall style at this node.
+    pub style: &'a WallStyle,
+    /// Indentation depth (0 for roots).
+    pub depth: usize,
+}
+
 impl StyleLibrary {
     /// An empty library (no materials, no wall styles).
     pub fn empty() -> Self {
@@ -58,6 +66,42 @@ impl StyleLibrary {
         let before = self.wall_styles.len();
         self.wall_styles.retain(|s| s.style.id != id);
         self.wall_styles.len() != before
+    }
+
+    /// Returns all wall styles in a hierarchical tree order: roots first,
+    /// each followed immediately by its descendants, siblings sorted by name.
+    pub fn wall_style_tree(&self) -> Vec<TreeNode<'_>> {
+        let mut children: std::collections::HashMap<&str, Vec<&WallStyle>> =
+            std::collections::HashMap::new();
+        let mut roots: Vec<&WallStyle> = Vec::new();
+        for ws in &self.wall_styles {
+            match &ws.style.parent_style_id {
+                Some(pid) if self.wall_styles.iter().any(|other| &other.style.id == pid) => {
+                    children.entry(pid.as_str()).or_default().push(ws);
+                }
+                _ => roots.push(ws),
+            }
+        }
+        roots.sort_by(|a, b| a.style.name.to_lowercase().cmp(&b.style.name.to_lowercase()));
+        for siblings in children.values_mut() {
+            siblings.sort_by(|a, b| a.style.name.to_lowercase().cmp(&b.style.name.to_lowercase()));
+        }
+
+        let mut ordered = Vec::with_capacity(self.wall_styles.len());
+        let mut stack: Vec<(&WallStyle, usize)> = roots
+            .into_iter()
+            .rev()
+            .map(|ws| (ws, 0))
+            .collect();
+        while let Some((ws, depth)) = stack.pop() {
+            ordered.push(TreeNode { style: ws, depth });
+            if let Some(kids) = children.get(ws.style.id.as_str()) {
+                for kid in kids.iter().rev() {
+                    stack.push((kid, depth + 1));
+                }
+            }
+        }
+        ordered
     }
 }
 
@@ -361,5 +405,65 @@ mod tests {
         assert!(lib.remove_wall_style("style1"));
         assert!(lib.wall_styles.is_empty());
         assert!(!lib.remove_wall_style("style1"));
+    }
+
+    #[test]
+    fn test_wall_style_tree() {
+        let mut lib = StyleLibrary::empty();
+        let s1 = WallStyle {
+            style: Style {
+                id: "s1".to_string(),
+                name: "Style A".to_string(),
+                object_kind: "Wall".to_string(),
+                parent_style_id: None,
+            },
+            layers: vec![],
+        };
+        let s2 = WallStyle {
+            style: Style {
+                id: "s2".to_string(),
+                name: "Style B".to_string(),
+                object_kind: "Wall".to_string(),
+                parent_style_id: Some("s1".to_string()),
+            },
+            layers: vec![],
+        };
+        let s3 = WallStyle {
+            style: Style {
+                id: "s3".to_string(),
+                name: "Style C".to_string(),
+                object_kind: "Wall".to_string(),
+                parent_style_id: Some("s1".to_string()),
+            },
+            layers: vec![],
+        };
+        let s4 = WallStyle {
+            style: Style {
+                id: "s4".to_string(),
+                name: "Style D".to_string(),
+                object_kind: "Wall".to_string(),
+                parent_style_id: Some("orphan".to_string()),
+            },
+            layers: vec![],
+        };
+
+        lib.wall_styles = vec![s1, s2, s3, s4];
+        let tree = lib.wall_style_tree();
+
+        assert_eq!(tree.len(), 4);
+
+        // s1 (root)
+        assert_eq!(tree[0].style.style.id, "s1");
+        assert_eq!(tree[0].depth, 0);
+
+        // s1 children sorted by name: s2 (Style B) then s3 (Style C)
+        assert_eq!(tree[1].style.style.id, "s2");
+        assert_eq!(tree[1].depth, 1);
+        assert_eq!(tree[2].style.style.id, "s3");
+        assert_eq!(tree[2].depth, 1);
+
+        // s4 (orphaned parent is root)
+        assert_eq!(tree[3].style.style.id, "s4");
+        assert_eq!(tree[3].depth, 0);
     }
 }

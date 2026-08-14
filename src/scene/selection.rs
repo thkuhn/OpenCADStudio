@@ -491,6 +491,7 @@ impl Scene {
                                     ])
                                 }
                                 PropValue::AttrText { .. } => QSelectValueEditor::Text,
+                                PropValue::Picker { .. } => QSelectValueEditor::Text,
                                 PropValue::Stepper { .. }
                                 | PropValue::ColorVaries
                                 | PropValue::LwVaries => continue,
@@ -625,6 +626,7 @@ impl Scene {
                     PropValue::BoolToggle { value, .. } => value.to_string(),
                     PropValue::AttrText { value, .. } => value,
                     PropValue::Stepper { display, .. } => display,
+                    PropValue::Picker { value, .. } => value,
                     PropValue::ColorVaries | PropValue::LwVaries => return None,
                 })
             }

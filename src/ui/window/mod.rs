@@ -1,5 +1,9 @@
 pub mod about;
 pub mod aec_style_manager;
+pub mod aec_material_manager;
+pub mod aec_wall_style_manager;
+pub mod aec_style_picker;
+pub(crate) mod aec_ui_util;
 pub mod block_palette;
 pub mod layout_manager;
 pub mod layer_state_manager;

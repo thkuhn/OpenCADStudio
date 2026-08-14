@@ -860,8 +860,11 @@ impl OpenCADStudio {
                 let args = cmd["AEC_STYLE_ADD ".len()..].to_string();
                 crate::modules::aec::commands::aec_style_add(&mut self.command_line, &args);
             }
+            "AEC_MATERIALMANAGER" => {
+                return Some(Task::done(Message::AecMaterialManagerOpen));
+            }
             "AEC_STYLEMANAGER" => {
-                return Some(Task::done(Message::AecStyleManagerOpen));
+                return Some(Task::done(Message::AecWallStyleManagerOpen));
             }
 
             // ── Model commands (3D primitives) ─────────────────────────────

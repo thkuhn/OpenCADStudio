@@ -416,17 +416,25 @@ impl OpenCADStudio {
                     // `wall_record` layout used by the interactive `AEC_WALL`
                     // draw command (see `on_prop_geom_commit`'s "wall_*" arms).
                     if let Some(wall_v2) = crate::modules::aec::commands::wall_v2_from_entity(entity) {
+                        let style_name = self.aec_style_library.as_ref()
+                            .and_then(|lib| lib.wall_styles.iter().find(|ws| ws.style.id == wall_v2.style_id))
+                            .map(|ws| ws.style.name.clone())
+                            .unwrap_or_else(|| wall_v2.style_id.clone());
+
                         let mut props = vec![
                             crate::entities::common::ro_prop(
                                 t!("Height").as_ref(),
                                 "wall_height",
                                 crate::entities::common::format_length(wall_v2.height),
                             ),
-                            crate::entities::common::ro_prop(
-                                t!("Style").as_ref(),
-                                "wall_style",
-                                wall_v2.style_id.clone(),
-                            ),
+                            crate::scene::model::object::Property {
+                                label: t!("Style").into_owned(),
+                                field: "wall_style",
+                                value: crate::scene::model::object::PropValue::Picker {
+                                    value: style_name,
+                                    handle: entity.common().handle,
+                                },
+                            },
                         ];
 
                         for layer in &wall_v2.layers {

@@ -983,6 +983,10 @@ pub(super) struct OpenCADStudio {
     aec_style_manager_selected_material: Option<String>,
     /// Currently selected wall style id (if any), by `Style::id`.
     aec_style_manager_selected_wall_style: Option<String>,
+    /// Filter text for the AEC Style Picker modal.
+    pub aec_style_picker_filter: String,
+    /// Currently highlighted ID in the AEC Style Picker (material ID, style ID, or layer name).
+    pub aec_style_picker_selection: Option<String>,
     /// Id of the material currently being edited, if the edit buffer holds
     /// an existing material (`None` while composing a new/unsaved one).
     aec_style_manager_material_editing_id: Option<String>,
@@ -1626,6 +1630,20 @@ impl ClipboardDeps {
     }
 }
 
+/// Target context for the AEC Style Picker modal, identifying which field
+/// the selected style/material/layer should be written back to.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum StylePickerTarget {
+    /// Selecting a parent style for a wall style being edited.
+    WallStyleParent,
+    /// Selecting a material for a specific layer index.
+    LayerMaterial(usize),
+    /// Selecting a layer override for a specific layer index.
+    LayerOverride(usize),
+    /// Selecting a new style for an existing wall entity in the properties panel.
+    WallPropertiesStyle(acadrust::Handle),
+}
+
 /// Which in-canvas modal dialog is currently open (Plan B). At most one shows
 /// at a time; dialog-specific data lives in its own fields. Closed via the
 /// modal's ✕ (`Message::CloseModal`).
@@ -1674,7 +1692,14 @@ pub enum ModalKind {
     /// AEC Style Manager — browse/edit the materials + wall styles stored in
     /// the AEC style library (`AEC_STYLEMANAGER`). Empty shell for now; the
     /// view/edit content is added by a later step.
-    AecStyleManager,
+    AecMaterialManager,
+    AecWallStyleManager,
+    /// AEC Style Picker — hierarchical modal for selecting wall styles,
+    /// materials, or layer overrides.
+    AecStylePicker {
+        /// Which field is being picked for.
+        target: StylePickerTarget,
+    },
 }
 
 /// A property group controlled by a layer state's restore mask.
@@ -2154,7 +2179,8 @@ pub enum Message {
     // ── AEC Style Manager (`AEC_STYLEMANAGER`) ───────────────────────────
     /// Load (or seed) the AEC style library into app state and open the
     /// manager modal shell.
-    AecStyleManagerOpen,
+    AecMaterialManagerOpen,
+    AecWallStyleManagerOpen,
     /// Filter text changed in the AEC Style Manager's master lists.
     AecStyleManagerFilter(String),
     /// A material row was selected in the AEC Style Manager.
@@ -2217,9 +2243,18 @@ pub enum Message {
     /// Cancels an armed drag-reorder without moving anything.
     AecStyleManagerWallStyleLayerDragEnd,
     AecStyleManagerWallStyleSave,
+    AecStyleManagerWallStyleSaveAndApply,
     AecStyleManagerWallStyleDelete,
     /// Toggles the "Wall Styles" master-list ordering between Name/Hierarchy.
     AecStyleManagerWallStyleSortToggle,
+    /// Open the AEC Style Picker for a specific target.
+    AecStylePickerOpen(StylePickerTarget),
+    /// Live search filter change in the AEC Style Picker.
+    AecStylePickerFilterChanged(String),
+    /// Selection/highlight change in the AEC Style Picker.
+    AecStylePickerSelect(String),
+    /// Confirm selection in the AEC Style Picker.
+    AecStylePickerConfirm,
     /// ViewCube-local cursor movement, tagged with the floating viewport that
     /// owned the overlay when the event was produced (`None` = Model layout).
     CursorMoved(Point, Option<acadrust::Handle>),
@@ -3451,6 +3486,8 @@ impl OpenCADStudio {
             aec_style_manager_filter: String::new(),
             aec_style_manager_selected_material: None,
             aec_style_manager_selected_wall_style: None,
+            aec_style_picker_filter: String::new(),
+            aec_style_picker_selection: None,
             aec_style_manager_material_editing_id: None,
             aec_style_manager_material_form_open: false,
             aec_style_manager_material_name: String::new(),
