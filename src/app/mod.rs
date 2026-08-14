@@ -977,6 +977,12 @@ pub(super) struct OpenCADStudio {
     /// Loaded (or seeded) on `AEC_STYLEMANAGER`; holds the materials + wall
     /// styles the manager shell will browse/edit in a later step.
     aec_style_library: Option<crate::modules::aec::engine::library::StyleLibrary>,
+    /// Style id of the last wall finished via `AEC_WALL` this session, used
+    /// to pre-fill the live Properties-panel style field on the next call.
+    aec_last_wall_style_id: Option<String>,
+    /// Height of the last wall finished via `AEC_WALL` this session, used to
+    /// pre-fill the live Properties-panel height field on the next call.
+    aec_last_wall_height: Option<f64>,
     /// Filter text applied to both the material and wall-style master lists.
     aec_style_manager_filter: String,
     /// Currently selected material id (if any), by `Material::id`.
@@ -2267,6 +2273,12 @@ pub enum Message {
     AecStylePickerOpenForActiveCommand,
     /// Live change of a property field on the active command.
     ActiveCommandLivePropertyChanged(&'static str, crate::command::LiveFieldValue),
+    /// Raw text typed into a live numeric command-property field (buffered,
+    /// not yet applied — mirrors `PropGeomInput` for regular entity fields).
+    ActiveCommandLiveTextInput(&'static str, String),
+    /// Enter pressed on a live numeric command-property field: parse the
+    /// buffered text and apply it (mirrors `PropGeomCommit`).
+    ActiveCommandLiveTextCommit(&'static str),
     /// Live search filter change in the AEC Style Picker.
     AecStylePickerFilterChanged(String),
     /// Selection/highlight change in the AEC Style Picker.
@@ -3501,6 +3513,8 @@ impl OpenCADStudio {
             layer_state_edit_filter: String::new(),
             layer_state_edit_color_open: None,
             aec_style_library: None,
+            aec_last_wall_style_id: None,
+            aec_last_wall_height: None,
             aec_style_manager_filter: String::new(),
             aec_style_manager_selected_material: None,
             aec_style_manager_selected_wall_style: None,

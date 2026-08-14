@@ -804,6 +804,11 @@ impl PropertiesPanel {
                 prop_row_widget(label, ti.into())
             }
             LiveFieldValue::Number(n) => {
+                // Store the raw typed text in `edit_buf` on every keystroke
+                // (like `render_edit_row`'s geometry fields) and only parse +
+                // apply on Enter — applying on every keystroke would snap an
+                // in-progress value like "3." back to the last valid number
+                // and make it impossible to type a decimal point.
                 let fallback = format!("{n}");
                 let display = self
                     .edit_buf
@@ -811,13 +816,8 @@ impl PropertiesPanel {
                     .map(|v| v.as_str())
                     .unwrap_or(fallback.as_str());
                 let ti = text_input("", display)
-                    .on_input(move |v| {
-                        let parsed = v.parse::<f64>().unwrap_or(*n);
-                        Message::ActiveCommandLivePropertyChanged(
-                            field,
-                            LiveFieldValue::Number(parsed),
-                        )
-                    })
+                    .on_input(move |v| Message::ActiveCommandLiveTextInput(field, v))
+                    .on_submit(Message::ActiveCommandLiveTextCommit(field))
                     .size(FONT_SZ)
                     .style(text_input_style)
                     .padding([3, 6])

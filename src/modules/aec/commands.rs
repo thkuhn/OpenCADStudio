@@ -873,6 +873,11 @@ pub struct WallCommand {
     resolved_layers: Option<Vec<WallLayer>>,
     justification: WallJustification,
     ctrl_was_down: bool,
+    /// Set once the wall height was explicitly edited via the live
+    /// Properties-panel field while drawing; when both this and `style_id`
+    /// are set, the point chain can finish immediately without the
+    /// command-line style/height/thickness fallback prompts.
+    height_live_set: bool,
 }
 
 impl WallCommand {
@@ -896,7 +901,54 @@ impl WallCommand {
             resolved_layers: None,
             justification: WallJustification::Center,
             ctrl_was_down: false,
+            height_live_set: false,
         }
+    }
+
+    /// Like [`Self::new`], but pre-fills the style/height with the given
+    /// session defaults (typically the values used by the last wall
+    /// finished this session) instead of the hardcoded fallback defaults.
+    pub fn new_with_defaults(last_style_id: Option<&str>, last_height: Option<f64>) -> Self {
+        let mut cmd = Self::new();
+        if let Some(h) = last_height {
+            cmd.wall.height = h;
+            cmd.height_live_set = true;
+        }
+        if let Some(id) = last_style_id {
+            if let Some(lib) = &cmd.library {
+                if let Some(style) = lib.wall_styles.iter().find(|s| s.style.id == id) {
+                    let mut style_map = HashMap::new();
+                    for s in &lib.wall_styles {
+                        style_map.insert(s.style.id.clone(), s.clone());
+                    }
+                    if let Ok(layers) = effective_layers(&style_map, &style.style.id) {
+                        let resolved = layers
+                            .into_iter()
+                            .map(|layer| {
+                                let mat_name = lib
+                                    .materials
+                                    .iter()
+                                    .find(|m| m.id == layer.material_id)
+                                    .map(|m| m.name.clone())
+                                    .unwrap_or_else(|| layer.material_id.clone());
+                                WallLayer {
+                                    material: mat_name,
+                                    thickness: layer.thickness,
+                                    function: layer_function_to_str(&layer.function),
+                                    gap_before: layer.gap_before,
+                                    bottom_offset: layer.bottom_offset,
+                                    top_offset: layer.top_offset,
+                                    layer_override: layer.layer_override.clone(),
+                                }
+                            })
+                            .collect();
+                        cmd.style_id = Some(style.style.id.clone());
+                        cmd.resolved_layers = Some(resolved);
+                    }
+                }
+            }
+        }
+        cmd
     }
 
     /// Parse a command-line value, falling back to `default` for an empty
@@ -916,17 +968,24 @@ impl WallCommand {
     /// is done; returns the result that keeps the command active for the
     /// command-line follow-up.
     fn start_dimension_prompt(&mut self) -> CmdResult {
+        // Enter/Escape are global "finalize" keys in this app and fire even
+        // while the user is typing in the live Properties-panel height field
+        // (see `sync_live_if_previewable`) before a second point has been
+        // placed. There's nothing to finalize yet in that case — keep the
+        // command running instead of cancelling the whole wall.
+        if self.vertices.len() < 2 {
+            return CmdResult::NeedPoint;
+        }
         if self.live_handle.is_none() {
             return CmdResult::Cancel;
         }
-        if let Some(lib) = &self.library {
-            if !lib.wall_styles.is_empty() {
-                self.phase = WallPhase::AskStyle;
-                return CmdResult::NeedPoint;
-            }
-        }
-        self.phase = WallPhase::AskHeight;
-        CmdResult::NeedPoint
+        // Style/height are always visible and editable in the live
+        // Properties-panel section shown while this command is drawing (see
+        // `live_properties`/`apply_live_property`), so the point chain can
+        // finish immediately with whatever is currently set (defaults if the
+        // user never touched the panel) instead of repeating the same
+        // choices as command-line prompts.
+        self.sync_live(true)
     }
 
     fn build_entity(&self) -> Option<EntityType> {
@@ -1000,6 +1059,18 @@ impl WallCommand {
             (Some(entity), None) => CmdResult::CommitLiveEntity(entity),
             (None, _) => CmdResult::Cancel,
         }
+    }
+
+    /// Like [`Self::sync_live`], but used for edits coming from the live
+    /// Properties-panel fields (style/height), which can legitimately fire
+    /// before there is anything to preview yet (e.g. only the start point has
+    /// been placed). In that case there is no live entity to update/cancel —
+    /// just keep the command running and wait for the next point.
+    fn sync_live_if_previewable(&self, finish: bool) -> CmdResult {
+        if self.vertices.len() < 2 {
+            return CmdResult::NeedPoint;
+        }
+        self.sync_live(finish)
     }
 
     fn undo_last_vertex(&mut self) -> CmdResult {
@@ -1304,11 +1375,12 @@ impl CadCommand for WallCommand {
                     self.resolved_layers = Some(resolved);
                 }
 
-                self.sync_live(false)
+                self.sync_live_if_previewable(false)
             }
             ("wall_height", LiveFieldValue::Number(h)) => {
                 self.wall.height = h;
-                self.sync_live(false)
+                self.height_live_set = true;
+                self.sync_live_if_previewable(false)
             }
             _ => CmdResult::NeedPoint,
         }
@@ -2115,45 +2187,41 @@ mod wall_command_tests {
     }
 
     #[test]
-    fn enter_after_the_point_chain_starts_the_height_prompt_instead_of_finalizing() {
-        let handle = Handle::new(11);
-
+    fn enter_before_two_points_keeps_the_command_running() {
+        // Enter/Escape are global "finalize" keys that can fire while the
+        // user is still only editing the live height/style panel fields
+        // before the axis has a second point — there is nothing to finalize
+        // yet, so the command must stay alive instead of cancelling.
         let mut enter_cmd = WallCommand::new_with_library(None);
-        enter_cmd.set_live_handle(handle);
         assert!(matches!(enter_cmd.on_enter(), CmdResult::NeedPoint));
-        assert!(enter_cmd.prompt().contains("height"));
 
         let mut escape_cmd = WallCommand::new_with_library(None);
-        escape_cmd.set_live_handle(handle);
         assert!(matches!(escape_cmd.on_escape(), CmdResult::NeedPoint));
-        assert!(escape_cmd.prompt().contains("height"));
+
+        let mut one_point_cmd = WallCommand::new_with_library(None);
+        one_point_cmd.on_point(DVec3::new(0.0, 0.0, 0.0));
+        assert!(matches!(one_point_cmd.on_enter(), CmdResult::NeedPoint));
     }
 
     #[test]
-    fn height_then_thickness_prompt_writes_entered_values_and_finalizes() {
+    fn enter_after_the_point_chain_finalizes_immediately_with_defaults() {
+        // Height/thickness are always visible+editable in the live
+        // Properties-panel section while drawing (see `live_properties`), so
+        // Enter after the point chain finalizes right away with whatever is
+        // currently set (defaults, if the panel wasn't touched), instead of
+        // falling back to separate command-line height/thickness prompts.
         let handle = Handle::new(11);
         let mut cmd = WallCommand::new_with_library(None);
         cmd.on_point(DVec3::new(0.0, 0.0, 0.0));
         cmd.on_point(DVec3::new(5.0, 0.0, 0.0));
         cmd.set_live_handle(handle);
 
-        // Finish the point chain -> height prompt.
-        assert!(matches!(cmd.on_enter(), CmdResult::NeedPoint));
-
-        // Height entered -> thickness prompt.
-        match cmd.on_text_input("3.5") {
-            Some(CmdResult::NeedPoint) => {}
-            _ => panic!("expected height entry to move to the thickness prompt"),
-        }
-        assert!(cmd.prompt().contains("thickness"));
-
-        // Thickness entered -> final wall XDATA + finalize.
-        match cmd.on_text_input("0.3") {
-            Some(CmdResult::UpdateLiveEntity {
+        match cmd.on_enter() {
+            CmdResult::UpdateLiveEntity {
                 handle: updated,
                 entity: EntityType::LwPolyline(pl),
                 finish,
-            }) => {
+            } => {
                 assert_eq!(updated, handle);
                 assert!(finish);
                 let record = pl
@@ -2161,24 +2229,29 @@ mod wall_command_tests {
                     .extended_data
                     .get_record(AEC_APPID)
                     .expect("finalized wall should carry WALL xdata");
-                assert!(matches!(record.values[1], XDataValue::Distance(t) if (t - 0.3).abs() < 1e-9));
-                assert!(matches!(record.values[2], XDataValue::Distance(h) if (h - 3.5).abs() < 1e-9));
+                assert!(
+                    matches!(record.values[1], XDataValue::Distance(t) if (t - DEFAULT_WALL_THICKNESS).abs() < 1e-9)
+                );
+                assert!(
+                    matches!(record.values[2], XDataValue::Distance(h) if (h - DEFAULT_WALL_HEIGHT).abs() < 1e-9)
+                );
             }
-            _ => panic!("expected thickness entry to finalize the live wall"),
+            _ => panic!("expected Enter after the point chain to finalize the live wall"),
         }
     }
 
     #[test]
-    fn empty_height_and_thickness_prompts_fall_back_to_defaults() {
+    fn live_height_edit_before_enter_finalizes_with_the_edited_value() {
+        use crate::command::LiveFieldValue;
+
         let handle = Handle::new(4);
         let mut cmd = WallCommand::new_with_library(None);
         cmd.on_point(DVec3::new(0.0, 0.0, 0.0));
         cmd.on_point(DVec3::new(5.0, 0.0, 0.0));
         cmd.set_live_handle(handle);
-        cmd.on_enter();
 
-        // Bare Enter on the height prompt (empty text) keeps the default.
-        cmd.on_enter();
+        cmd.apply_live_property("wall_height", LiveFieldValue::Number(3.5));
+
         match cmd.on_enter() {
             CmdResult::UpdateLiveEntity {
                 entity: EntityType::LwPolyline(pl),
@@ -2190,11 +2263,9 @@ mod wall_command_tests {
                 assert!(
                     matches!(record.values[1], XDataValue::Distance(t) if (t - DEFAULT_WALL_THICKNESS).abs() < 1e-9)
                 );
-                assert!(
-                    matches!(record.values[2], XDataValue::Distance(h) if (h - DEFAULT_WALL_HEIGHT).abs() < 1e-9)
-                );
+                assert!(matches!(record.values[2], XDataValue::Distance(h) if (h - 3.5).abs() < 1e-9));
             }
-            _ => panic!("expected default height/thickness to finalize the live wall"),
+            _ => panic!("expected the live-edited height to finalize the live wall"),
         }
     }
 
@@ -2270,19 +2341,20 @@ mod wall_command_tests {
     /// fields for a WALL-tagged entity.
     #[test]
     fn wall_from_entity_reads_back_a_finalized_wall_record() {
+        use crate::command::LiveFieldValue;
+
         let mut cmd = WallCommand::new_with_library(None);
         cmd.on_point(DVec3::new(0.0, 0.0, 0.0));
         cmd.on_point(DVec3::new(5.0, 0.0, 0.0));
         cmd.set_live_handle(Handle::new(9));
-        cmd.on_enter();
-        cmd.on_text_input("3.5");
-        let entity = match cmd.on_text_input("0.3") {
-            Some(CmdResult::UpdateLiveEntity { entity, .. }) => entity,
-            _ => panic!("expected thickness entry to finalize the live wall"),
+        cmd.apply_live_property("wall_height", LiveFieldValue::Number(3.5));
+        let entity = match cmd.on_enter() {
+            CmdResult::UpdateLiveEntity { entity, .. } => entity,
+            _ => panic!("expected Enter to finalize the live wall"),
         };
 
         let wall = wall_from_entity(&entity).expect("finalized entity should read back as a Wall");
-        assert!((wall.thickness - 0.3).abs() < 1e-9);
+        assert!((wall.thickness - DEFAULT_WALL_THICKNESS).abs() < 1e-9);
         assert!((wall.height - 3.5).abs() < 1e-9);
         assert!(wall.material_ref.is_none());
     }
@@ -2454,6 +2526,7 @@ mod wall_command_tests {
 
     #[test]
     fn wall_command_with_library_uses_ask_style_and_finalizes_v2() {
+        use crate::command::LiveFieldValue;
         use crate::modules::aec::engine::material::Material;
         use crate::modules::aec::engine::style::Style;
         use crate::modules::aec::engine::wall_style::{Layer, LayerFunction, WallStyle};
@@ -2493,24 +2566,22 @@ mod wall_command_tests {
         let handle = Handle::new(100);
         cmd.set_live_handle(handle);
 
-        // Finish point chain -> AskStyle
-        assert!(matches!(cmd.on_enter(), CmdResult::NeedPoint));
-        assert!(cmd.prompt().contains("Select wall style"));
+        // Style/height are picked live via the Properties-panel fields while
+        // drawing (see `apply_live_property`), so Enter after the point
+        // chain finalizes immediately with a V2 record — no more separate
+        // command-line AskStyle/AskHeight prompts.
+        cmd.apply_live_property(
+            "wall_style",
+            LiveFieldValue::Picker("style1".to_string()),
+        );
+        cmd.apply_live_property("wall_height", LiveFieldValue::Number(3.0));
 
-        // Select style -> AskHeight
-        match cmd.on_text_input("Standard Wall") {
-            Some(CmdResult::NeedPoint) => {}
-            _ => panic!("Expected style selection to move to AskHeight"),
-        }
-        assert!(cmd.prompt().contains("height"));
-
-        // Enter height -> Finalize V2
-        match cmd.on_text_input("3.0") {
-            Some(CmdResult::UpdateLiveEntity {
+        match cmd.on_enter() {
+            CmdResult::UpdateLiveEntity {
                 entity: EntityType::LwPolyline(pl),
                 finish,
                 ..
-            }) => {
+            } => {
                 assert!(finish);
                 let record = pl.common.extended_data.get_record(AEC_APPID).unwrap();
                 assert_eq!(record.values[0], XDataValue::String("WALL_V2".to_string()));
@@ -2531,7 +2602,7 @@ mod wall_command_tests {
                     XDataValue::String("Structural".to_string())
                 );
             }
-            _ => panic!("Expected height entry to finalize wall with V2 record"),
+            _ => panic!("Expected Enter to finalize wall with V2 record"),
         }
     }
 
@@ -2625,26 +2696,21 @@ mod wall_command_tests {
         let handle = Handle::new(101);
         cmd.set_live_handle(handle);
 
-        // Finish point chain -> AskHeight (skipping AskStyle)
-        assert!(matches!(cmd.on_enter(), CmdResult::NeedPoint));
-        assert!(cmd.prompt().contains("height"));
-
-        // Enter height -> AskThickness
-        cmd.on_text_input("2.8");
-        assert!(cmd.prompt().contains("thickness"));
-
-        // Enter thickness -> Finalize V1
-        match cmd.on_text_input("0.2") {
-            Some(CmdResult::UpdateLiveEntity {
+        // With no style library, Enter after the point chain finalizes
+        // immediately with a plain V1 WALL record using the current
+        // height/thickness defaults (also editable live via the Properties
+        // panel, see `apply_live_property`).
+        match cmd.on_enter() {
+            CmdResult::UpdateLiveEntity {
                 entity: EntityType::LwPolyline(pl),
                 finish,
                 ..
-            }) => {
+            } => {
                 assert!(finish);
                 let record = pl.common.extended_data.get_record(AEC_APPID).unwrap();
                 assert_eq!(record.values[0], XDataValue::String("WALL".to_string()));
             }
-            _ => panic!("Expected thickness entry to finalize wall with V1 record"),
+            _ => panic!("Expected Enter to finalize wall with V1 record"),
         }
     }
 

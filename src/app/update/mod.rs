@@ -2195,6 +2195,42 @@ impl OpenCADStudio {
                 if let Some(r) = result {
                     let task = self.apply_cmd_result(r);
                     self.refresh_active_cmd_preview(i);
+                    // Rebuild the Properties panel so the just-applied value
+                    // (e.g. a new height, or the resolved style name) is
+                    // reflected immediately instead of appearing to have no
+                    // effect.
+                    self.refresh_properties();
+                    return task;
+                }
+                Task::none()
+            }
+            Message::ActiveCommandLiveTextInput(field, value) => {
+                self.tabs[self.active_tab]
+                    .properties
+                    .edit_buf
+                    .insert(field.to_string(), value);
+                Task::none()
+            }
+            Message::ActiveCommandLiveTextCommit(field) => {
+                let i = self.active_tab;
+                let Some(raw) = self.tabs[i].properties.edit_buf.remove(field) else {
+                    return Task::none();
+                };
+                let Ok(parsed) = raw.trim().parse::<f64>() else {
+                    // Invalid text (e.g. left mid-edit) — drop the buffer so
+                    // the field reverts to showing the command's real value.
+                    return Task::none();
+                };
+                let result = self.tabs[i].active_cmd.as_mut().map(|c| {
+                    c.apply_live_property(
+                        field,
+                        crate::command::LiveFieldValue::Number(parsed),
+                    )
+                });
+                if let Some(r) = result {
+                    let task = self.apply_cmd_result(r);
+                    self.refresh_active_cmd_preview(i);
+                    self.refresh_properties();
                     return task;
                 }
                 Task::none()
@@ -2355,8 +2391,10 @@ impl OpenCADStudio {
                             if let Some(r) = result {
                                 let task = self.apply_cmd_result(r);
                                 self.refresh_active_cmd_preview(i);
+                                self.refresh_properties();
                                 return task;
                             }
+                            self.refresh_properties();
                             return Task::none();
                         }
                     }

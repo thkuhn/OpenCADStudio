@@ -803,7 +803,10 @@ impl OpenCADStudio {
                 crate::modules::aec::commands::ensure_wall_app_id(
                     &mut self.tabs[i].scene.document,
                 );
-                let new_cmd = WallCommand::new();
+                let new_cmd = WallCommand::new_with_defaults(
+                    self.aec_last_wall_style_id.as_deref(),
+                    self.aec_last_wall_height,
+                );
                 self.command_line.push_info(&new_cmd.prompt());
                 self.tabs[i].active_cmd = Some(Box::new(new_cmd));
             }

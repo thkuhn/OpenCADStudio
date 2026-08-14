@@ -1712,6 +1712,23 @@ impl OpenCADStudio {
                             &mut self.tabs[i].scene,
                             handle,
                         );
+                        // Remember the just-used style/height as the session
+                        // default so the next AEC_WALL starts pre-filled
+                        // with them in the live Properties-panel section
+                        // instead of always falling back to hardcoded
+                        // defaults.
+                        if let Some(entity) = self.tabs[i].scene.document.get_entity(handle) {
+                            if let Some(v2) =
+                                crate::modules::aec::commands::wall_v2_from_entity(entity)
+                            {
+                                self.aec_last_wall_style_id = Some(v2.style_id.clone());
+                                self.aec_last_wall_height = Some(v2.height);
+                            } else if let Some(w) =
+                                crate::modules::aec::commands::wall_from_entity(entity)
+                            {
+                                self.aec_last_wall_height = Some(w.height);
+                            }
+                        }
                     }
                     self.finish_live_entity_history(i, handle);
                     self.tabs[i].scene.clear_preview_wire();

@@ -236,6 +236,11 @@ impl OpenCADStudio {
         if self.tabs[i].active_cmd.is_some() {
             self.tabs[i].last_cmd = Some(cmd.to_string());
             self.sync_dyn_fields();
+            // A newly-active interactive command may expose its own live,
+            // editable properties (e.g. AEC_WALL's style/height while
+            // drawing) — refresh the Properties panel now so they appear
+            // immediately, without waiting for a selection change.
+            self.refresh_properties();
             self.focus_cmd_input()
         } else {
             Task::none()
