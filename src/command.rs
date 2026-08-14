@@ -2029,6 +2029,14 @@ pub trait CadCommand: Send {
     fn apply_live_property(&mut self, _field_id: &str, _value: LiveFieldValue) -> CmdResult {
         CmdResult::NeedPoint
     }
+
+    /// The stable identifier (not the display label) currently backing a
+    /// `LiveFieldValue::Picker` field returned by [`Self::live_properties`],
+    /// e.g. a wall style's id. Used to pre-select/highlight the current
+    /// value when opening a picker dialog for that field. Default: none.
+    fn live_property_id(&self, _field_id: &str) -> Option<String> {
+        None
+    }
 }
 
 // ── Autocomplete registry ─────────────────────────────────────────────────

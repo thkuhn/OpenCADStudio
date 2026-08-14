@@ -878,6 +878,10 @@ pub struct WallCommand {
     /// are set, the point chain can finish immediately without the
     /// command-line style/height/thickness fallback prompts.
     height_live_set: bool,
+    /// Set when the user tried to finish the wall (Enter/Escape) while a
+    /// style selection was mandatory but not made yet; `prompt()` shows a
+    /// hint until a style is picked.
+    no_style_warning: bool,
 }
 
 impl WallCommand {
@@ -902,6 +906,7 @@ impl WallCommand {
             justification: WallJustification::Center,
             ctrl_was_down: false,
             height_live_set: false,
+            no_style_warning: false,
         }
     }
 
@@ -964,6 +969,17 @@ impl WallCommand {
         }
     }
 
+    /// True once a style library with at least one wall style is loaded, in
+    /// which case a wall style selection is mandatory before finishing (there
+    /// is something to choose, so silently falling back to a styleless V1
+    /// wall would be surprising). No library / an empty library means there
+    /// is nothing to pick, so the plain height/thickness V1 wall stays valid.
+    fn requires_style_selection(&self) -> bool {
+        self.library
+            .as_ref()
+            .is_some_and(|lib| !lib.wall_styles.is_empty())
+    }
+
     /// Begin prompting for the wall's height/thickness once the point chain
     /// is done; returns the result that keeps the command active for the
     /// command-line follow-up.
@@ -978,6 +994,13 @@ impl WallCommand {
         }
         if self.live_handle.is_none() {
             return CmdResult::Cancel;
+        }
+        if self.style_id.is_none() && self.requires_style_selection() {
+            // Refuse to finish without an assigned wall style; keep the
+            // command running so the point chain/preview isn't lost, and
+            // surface the hint via `prompt()` (NeedPoint re-prints it).
+            self.no_style_warning = true;
+            return CmdResult::NeedPoint;
         }
         // Style/height are always visible and editable in the live
         // Properties-panel section shown while this command is drawing (see
@@ -1105,6 +1128,10 @@ impl CadCommand for WallCommand {
                     "AEC_WALL  Specify start point (Justification: {}):",
                     self.justification.as_str()
                 )
+            }
+            WallPhase::Drawing if self.no_style_warning => {
+                "AEC_WALL  Please select a wall style in the Properties panel before finishing."
+                    .to_string()
             }
             WallPhase::Drawing => {
                 format!(
@@ -1324,6 +1351,13 @@ impl CadCommand for WallCommand {
         })
     }
 
+    fn live_property_id(&self, field_id: &str) -> Option<String> {
+        match field_id {
+            "wall_style" => self.style_id.clone(),
+            _ => None,
+        }
+    }
+
     fn apply_live_property(
         &mut self,
         field_id: &str,
@@ -1345,6 +1379,7 @@ impl CadCommand for WallCommand {
                 };
 
                 self.style_id = Some(style.style.id.clone());
+                self.no_style_warning = false;
 
                 let mut style_map = HashMap::new();
                 for s in &lib.wall_styles {
@@ -2686,6 +2721,64 @@ mod wall_command_tests {
 
         let live = cmd.live_properties().expect("still drawing");
         assert!(matches!(&live.fields[0].value, LiveFieldValue::Picker(s) if s == "Standard Wall"));
+    }
+
+    #[test]
+    fn wall_command_refuses_to_finish_without_a_style_when_styles_are_available() {
+        use crate::modules::aec::engine::material::Material;
+        use crate::modules::aec::engine::style::Style;
+        use crate::modules::aec::engine::wall_style::{Layer, LayerFunction, WallStyle};
+
+        let material = Material::new(
+            "brick_id".to_string(),
+            "Brick Material".to_string(),
+            "ANSI31".to_string(),
+            0xFF0000,
+            "Continuous".to_string(),
+        );
+        let style = WallStyle {
+            style: Style {
+                id: "style1".to_string(),
+                name: "Standard Wall".to_string(),
+                object_kind: "Wall".to_string(),
+                parent_style_id: None,
+            },
+            layers: vec![Layer {
+                material_id: "brick_id".to_string(),
+                thickness: 0.25,
+                function: LayerFunction::Structural,
+                gap_before: 0.0,
+                bottom_offset: 0.0,
+                top_offset: 0.0,
+                layer_override: None,
+            }],
+        };
+        let lib = StyleLibrary {
+            materials: vec![material],
+            wall_styles: vec![style],
+        };
+
+        let mut cmd = WallCommand::new_with_library(Some(lib));
+        cmd.on_point(DVec3::new(0.0, 0.0, 0.0));
+        cmd.on_point(DVec3::new(5.0, 0.0, 0.0));
+        cmd.set_live_handle(Handle::new(202));
+
+        // No style picked yet -> Enter must not finalize; it must keep the
+        // command running and surface a hint instead.
+        assert!(matches!(cmd.on_enter(), CmdResult::NeedPoint));
+        assert!(cmd.prompt().to_lowercase().contains("style"));
+
+        // Picking a style afterwards clears the warning and lets Enter
+        // finalize normally.
+        cmd.apply_live_property(
+            "wall_style",
+            crate::command::LiveFieldValue::Picker("style1".to_string()),
+        );
+        assert!(!cmd.prompt().to_lowercase().contains("please select"));
+        match cmd.on_enter() {
+            CmdResult::UpdateLiveEntity { finish, .. } => assert!(finish),
+            _ => panic!("expected Enter to finalize once a style was picked"),
+        }
     }
 
     #[test]

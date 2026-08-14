@@ -2169,7 +2169,17 @@ impl OpenCADStudio {
                 self.aec_style_library =
                     Some(crate::modules::aec::engine::library::load_or_seed());
                 self.aec_style_picker_filter.clear();
-                self.aec_style_picker_selection = None;
+                // Pre-select/highlight the style already assigned to the
+                // (first) wall being edited, so the picker doesn't reopen
+                // with nothing highlighted even though a style is in use.
+                self.aec_style_picker_selection = handles.first().and_then(|h| {
+                    self.tabs[self.active_tab]
+                        .scene
+                        .document
+                        .get_entity(*h)
+                        .and_then(crate::modules::aec::commands::wall_v2_from_entity)
+                        .map(|v2| v2.style_id)
+                });
                 self.aec_style_picker_wall_handles = handles;
                 self.active_modal = Some(crate::app::ModalKind::AecStylePicker {
                     target: crate::app::StylePickerTarget::WallPropertiesStyle,
@@ -2180,7 +2190,13 @@ impl OpenCADStudio {
                 self.aec_style_library =
                     Some(crate::modules::aec::engine::library::load_or_seed());
                 self.aec_style_picker_filter.clear();
-                self.aec_style_picker_selection = None;
+                // Pre-select/highlight the style currently set on the
+                // in-progress wall (if any) instead of always starting with
+                // nothing highlighted.
+                self.aec_style_picker_selection = self.tabs[self.active_tab]
+                    .active_cmd
+                    .as_ref()
+                    .and_then(|c| c.live_property_id("wall_style"));
                 self.active_modal = Some(crate::app::ModalKind::AecStylePicker {
                     target: crate::app::StylePickerTarget::ActiveCommand,
                 });
