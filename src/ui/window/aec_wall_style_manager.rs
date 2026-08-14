@@ -51,7 +51,7 @@ pub fn view_window<'a>(
                 || node.style.style.id.to_lowercase().contains(&filter_lower)
         })
         .map(|node| {
-            wall_style_tree_row(node.style, node.depth, selected_id == Some(&node.style.style.id))
+            wall_style_tree_row(node.style, node.depth, selected_id == Some(node.style.style.id.as_str()))
         })
         .collect();
 
