@@ -1608,6 +1608,26 @@ impl CmdOption {
     }
 }
 
+#[derive(Clone, Debug, PartialEq)]
+pub enum LiveFieldValue {
+    Text(String),
+    Number(f64),
+    Picker(String),
+}
+
+#[derive(Clone, Debug)]
+pub struct LiveCommandField {
+    pub label: String,
+    pub field_id: &'static str,
+    pub value: LiveFieldValue,
+}
+
+#[derive(Clone, Debug)]
+pub struct LiveCommandProperties {
+    pub title: String,
+    pub fields: Vec<LiveCommandField>,
+}
+
 pub trait CadCommand: Send {
     /// Short name shown in the command line prompt, e.g. `"LINE"`.
     #[allow(dead_code)]
@@ -1995,6 +2015,19 @@ pub trait CadCommand: Send {
     /// value formatted; the command's own `on_text_input` parses it back.
     fn dyn_live_value(&self, _cursor: DVec3) -> Option<f64> {
         None
+    }
+
+    /// Return editable "Live Properties" to show in the Properties panel while
+    /// this command is active. Default: none.
+    fn live_properties(&self) -> Option<LiveCommandProperties> {
+        None
+    }
+
+    /// Update a live property by ID. The command should update its internal state
+    /// and return the result (e.g. `CmdResult::UpdateLiveEntity` to refresh preview).
+    /// Default: no-op.
+    fn apply_live_property(&mut self, _field_id: &str, _value: LiveFieldValue) -> CmdResult {
+        CmdResult::NeedPoint
     }
 }
 

@@ -494,7 +494,8 @@ impl Scene {
                                 PropValue::Picker { .. } => QSelectValueEditor::Text,
                                 PropValue::Stepper { .. }
                                 | PropValue::ColorVaries
-                                | PropValue::LwVaries => continue,
+                                | PropValue::LwVaries
+                                | PropValue::Live(_) => continue,
                             }
                         };
                         out.push(choice(prop.field, prop.label, editor));
@@ -628,6 +629,7 @@ impl Scene {
                     PropValue::Stepper { display, .. } => display,
                     PropValue::Picker { value, .. } => value,
                     PropValue::ColorVaries | PropValue::LwVaries => return None,
+                    PropValue::Live(_) => return None,
                 })
             }
         }

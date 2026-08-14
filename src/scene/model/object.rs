@@ -3,6 +3,7 @@
 use acadrust::types::{Color as AcadColor, LineWeight};
 use acadrust::Handle;
 use glam::DVec3;
+use crate::command::LiveFieldValue;
 
 /// The kind of value held by a property row.
 #[derive(Clone, Debug, PartialEq)]
@@ -50,6 +51,8 @@ pub enum PropValue {
     /// Carries the current display value and the entity handle(s) to apply
     /// the picked value to (more than one when editing a multi-selection).
     Picker { value: String, handles: Vec<Handle> },
+    /// Live property for the active command.
+    Live(LiveFieldValue),
 }
 
 /// A single property row in the Properties panel.

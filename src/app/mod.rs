@@ -1649,6 +1649,9 @@ pub enum StylePickerTarget {
     /// element when editing a multi-selection) since `ModalKind`/this enum
     /// must stay `Copy`.
     WallPropertiesStyle,
+    /// Selecting a new style for the currently active interactive command
+    /// (e.g. while drawing a wall).
+    ActiveCommand,
 }
 
 /// Which in-canvas modal dialog is currently open (Plan B). At most one shows
@@ -2260,6 +2263,10 @@ pub enum Message {
     /// carrying the (one or more) wall entity handles to write the picked
     /// style back to.
     AecStylePickerOpenForWallProperties(Vec<acadrust::Handle>),
+    /// Open the AEC Style Picker for the currently active interactive command.
+    AecStylePickerOpenForActiveCommand,
+    /// Live change of a property field on the active command.
+    ActiveCommandLivePropertyChanged(&'static str, crate::command::LiveFieldValue),
     /// Live search filter change in the AEC Style Picker.
     AecStylePickerFilterChanged(String),
     /// Selection/highlight change in the AEC Style Picker.

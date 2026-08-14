@@ -777,6 +777,69 @@ impl PropertiesPanel {
                 self.render_hatch_pattern_row(label, current)
             }
             PropValue::AttrText { tag, value } => self.render_attr_row(tag, value),
+            PropValue::Live(live_value) => self.render_live_row(label, prop.field, live_value),
+        }
+    }
+
+    // ── Live command property row (text/number/picker) ─────────────────────
+
+    fn render_live_row<'a>(
+        &'a self,
+        label: &'a str,
+        field: &'static str,
+        value: &'a crate::command::LiveFieldValue,
+    ) -> Element<'a, Message> {
+        use crate::command::LiveFieldValue;
+        match value {
+            LiveFieldValue::Text(s) => {
+                let display = self.edit_buf.get(field).map(|v| v.as_str()).unwrap_or(s);
+                let ti = text_input("", display)
+                    .on_input(move |v| {
+                        Message::ActiveCommandLivePropertyChanged(field, LiveFieldValue::Text(v))
+                    })
+                    .size(FONT_SZ)
+                    .style(text_input_style)
+                    .padding([3, 6])
+                    .width(Length::Fill);
+                prop_row_widget(label, ti.into())
+            }
+            LiveFieldValue::Number(n) => {
+                let fallback = format!("{n}");
+                let display = self
+                    .edit_buf
+                    .get(field)
+                    .map(|v| v.as_str())
+                    .unwrap_or(fallback.as_str());
+                let ti = text_input("", display)
+                    .on_input(move |v| {
+                        let parsed = v.parse::<f64>().unwrap_or(*n);
+                        Message::ActiveCommandLivePropertyChanged(
+                            field,
+                            LiveFieldValue::Number(parsed),
+                        )
+                    })
+                    .size(FONT_SZ)
+                    .style(text_input_style)
+                    .padding([3, 6])
+                    .width(Length::Fill);
+                prop_row_widget(label, ti.into())
+            }
+            LiveFieldValue::Picker(s) => {
+                let btn = button(
+                    row![
+                        text(crate::ui::text_util::elide(s, 20)).size(FONT_SZ),
+                        Space::new().width(Length::Fill),
+                        text("...").size(FONT_SZ),
+                    ]
+                    .padding([0, 4])
+                    .align_y(iced::Alignment::Center),
+                )
+                .on_press(Message::AecStylePickerOpenForActiveCommand)
+                .style(button::subtle)
+                .padding(0)
+                .width(Length::Fill);
+                prop_row_widget(label, btn.into())
+            }
         }
     }
 

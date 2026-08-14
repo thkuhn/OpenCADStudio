@@ -2176,6 +2176,29 @@ impl OpenCADStudio {
                 });
                 Task::none()
             }
+            Message::AecStylePickerOpenForActiveCommand => {
+                self.aec_style_library =
+                    Some(crate::modules::aec::engine::library::load_or_seed());
+                self.aec_style_picker_filter.clear();
+                self.aec_style_picker_selection = None;
+                self.active_modal = Some(crate::app::ModalKind::AecStylePicker {
+                    target: crate::app::StylePickerTarget::ActiveCommand,
+                });
+                Task::none()
+            }
+            Message::ActiveCommandLivePropertyChanged(field, value) => {
+                let i = self.active_tab;
+                let result = self.tabs[i]
+                    .active_cmd
+                    .as_mut()
+                    .map(|c| c.apply_live_property(field, value));
+                if let Some(r) = result {
+                    let task = self.apply_cmd_result(r);
+                    self.refresh_active_cmd_preview(i);
+                    return task;
+                }
+                Task::none()
+            }
             Message::AecStylePickerFilterChanged(v) => {
                 self.aec_style_picker_filter = v;
                 Task::none()
@@ -2319,6 +2342,22 @@ impl OpenCADStudio {
                                 }
                             }
                             self.refresh_properties();
+                        }
+                        crate::app::StylePickerTarget::ActiveCommand => {
+                            let i = self.active_tab;
+                            let result = self.tabs[i].active_cmd.as_mut().map(|c| {
+                                c.apply_live_property(
+                                    "wall_style",
+                                    crate::command::LiveFieldValue::Picker(selection.clone()),
+                                )
+                            });
+                            self.active_modal = None;
+                            if let Some(r) = result {
+                                let task = self.apply_cmd_result(r);
+                                self.refresh_active_cmd_preview(i);
+                                return task;
+                            }
+                            return Task::none();
                         }
                     }
                 }

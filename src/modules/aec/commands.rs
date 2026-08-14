@@ -1218,6 +1218,101 @@ impl CadCommand for WallCommand {
             None
         }
     }
+
+    fn live_properties(&self) -> Option<crate::command::LiveCommandProperties> {
+        use crate::command::{LiveCommandField, LiveCommandProperties, LiveFieldValue};
+
+        if self.phase != WallPhase::Drawing {
+            return None;
+        }
+
+        let style_name = match &self.style_id {
+            Some(id) => self
+                .library
+                .as_ref()
+                .and_then(|lib| lib.wall_styles.iter().find(|ws| &ws.style.id == id))
+                .map(|ws| ws.style.name.clone())
+                .unwrap_or_else(|| id.clone()),
+            None => String::new(),
+        };
+
+        Some(LiveCommandProperties {
+            title: crate::t!("Wall").into_owned(),
+            fields: vec![
+                LiveCommandField {
+                    label: crate::t!("Style").into_owned(),
+                    field_id: "wall_style",
+                    value: LiveFieldValue::Picker(style_name),
+                },
+                LiveCommandField {
+                    label: crate::t!("Height").into_owned(),
+                    field_id: "wall_height",
+                    value: LiveFieldValue::Number(self.wall.height),
+                },
+            ],
+        })
+    }
+
+    fn apply_live_property(
+        &mut self,
+        field_id: &str,
+        value: crate::command::LiveFieldValue,
+    ) -> CmdResult {
+        use crate::command::LiveFieldValue;
+
+        match (field_id, value) {
+            ("wall_style", LiveFieldValue::Picker(style_id)) => {
+                let Some(lib) = &self.library else {
+                    return CmdResult::NeedPoint;
+                };
+                let Some(style) = lib
+                    .wall_styles
+                    .iter()
+                    .find(|s| s.style.id == style_id)
+                else {
+                    return CmdResult::NeedPoint;
+                };
+
+                self.style_id = Some(style.style.id.clone());
+
+                let mut style_map = HashMap::new();
+                for s in &lib.wall_styles {
+                    style_map.insert(s.style.id.clone(), s.clone());
+                }
+
+                if let Ok(layers) = effective_layers(&style_map, &style.style.id) {
+                    let mut resolved = Vec::new();
+                    for layer in layers {
+                        let mat_name = lib
+                            .materials
+                            .iter()
+                            .find(|m| m.id == layer.material_id)
+                            .map(|m| m.name.clone())
+                            .unwrap_or_else(|| layer.material_id.clone());
+
+                        let func_str = layer_function_to_str(&layer.function);
+                        resolved.push(WallLayer {
+                            material: mat_name,
+                            thickness: layer.thickness,
+                            function: func_str,
+                            gap_before: layer.gap_before,
+                            bottom_offset: layer.bottom_offset,
+                            top_offset: layer.top_offset,
+                            layer_override: layer.layer_override.clone(),
+                        });
+                    }
+                    self.resolved_layers = Some(resolved);
+                }
+
+                self.sync_live(false)
+            }
+            ("wall_height", LiveFieldValue::Number(h)) => {
+                self.wall.height = h;
+                self.sync_live(false)
+            }
+            _ => CmdResult::NeedPoint,
+        }
+    }
 }
 
 /// Converts a [`LayerFunction`] to the plain string used in XDATA/dispatch.
@@ -2438,6 +2533,88 @@ mod wall_command_tests {
             }
             _ => panic!("Expected height entry to finalize wall with V2 record"),
         }
+    }
+
+    #[test]
+    fn wall_command_live_properties_reports_style_and_height_while_drawing() {
+        use crate::command::LiveFieldValue;
+
+        let mut cmd = WallCommand::new_with_library(None);
+        // Still in the Drawing phase (no points yet): live_properties should
+        // be available with the default height and an empty style name.
+        let live = cmd.live_properties().expect("Drawing phase should expose live properties");
+        assert_eq!(live.title, "Wall");
+        assert_eq!(live.fields.len(), 2);
+        assert_eq!(live.fields[0].field_id, "wall_style");
+        assert_eq!(live.fields[1].field_id, "wall_height");
+        assert!(matches!(&live.fields[1].value, LiveFieldValue::Number(h) if (*h - DEFAULT_WALL_HEIGHT).abs() < 1e-9));
+
+        cmd.on_point(DVec3::new(0.0, 0.0, 0.0));
+        cmd.on_point(DVec3::new(5.0, 0.0, 0.0));
+        cmd.set_live_handle(Handle::new(200));
+
+        cmd.apply_live_property("wall_height", LiveFieldValue::Number(3.5));
+        assert!((cmd.wall.height - 3.5).abs() < 1e-9);
+
+        let live_after = cmd.live_properties().expect("still drawing");
+        assert!(matches!(&live_after.fields[1].value, LiveFieldValue::Number(h) if (*h - 3.5).abs() < 1e-9));
+    }
+
+    #[test]
+    fn wall_command_apply_live_property_updates_style_and_resolved_layers() {
+        use crate::command::LiveFieldValue;
+        use crate::modules::aec::engine::material::Material;
+        use crate::modules::aec::engine::style::Style;
+        use crate::modules::aec::engine::wall_style::{Layer, LayerFunction, WallStyle};
+
+        let material = Material::new(
+            "brick_id".to_string(),
+            "Brick Material".to_string(),
+            "ANSI31".to_string(),
+            0xFF0000,
+            "Continuous".to_string(),
+        );
+        let style = WallStyle {
+            style: Style {
+                id: "style1".to_string(),
+                name: "Standard Wall".to_string(),
+                object_kind: "Wall".to_string(),
+                parent_style_id: None,
+            },
+            layers: vec![Layer {
+                material_id: "brick_id".to_string(),
+                thickness: 0.25,
+                function: LayerFunction::Structural,
+                gap_before: 0.0,
+                bottom_offset: 0.0,
+                top_offset: 0.0,
+                layer_override: None,
+            }],
+        };
+        let lib = StyleLibrary {
+            materials: vec![material],
+            wall_styles: vec![style],
+        };
+
+        let mut cmd = WallCommand::new_with_library(Some(lib));
+        cmd.on_point(DVec3::new(0.0, 0.0, 0.0));
+        cmd.on_point(DVec3::new(5.0, 0.0, 0.0));
+        cmd.set_live_handle(Handle::new(201));
+
+        cmd.apply_live_property(
+            "wall_style",
+            LiveFieldValue::Picker("style1".to_string()),
+        );
+
+        assert_eq!(cmd.style_id.as_deref(), Some("style1"));
+        let layers = cmd.resolved_layers.clone().expect("style pick should resolve layers");
+        assert_eq!(layers.len(), 1);
+        assert_eq!(layers[0].material, "Brick Material");
+        assert!((layers[0].thickness - 0.25).abs() < 1e-9);
+        assert_eq!(layers[0].function, "Structural");
+
+        let live = cmd.live_properties().expect("still drawing");
+        assert!(matches!(&live.fields[0].value, LiveFieldValue::Picker(s) if s == "Standard Wall"));
     }
 
     #[test]

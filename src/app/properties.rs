@@ -134,7 +134,38 @@ impl OpenCADStudio {
         crate::scene::view::dispatch::set_prop_current_vertex(prop_vertex);
 
         let annotation_scale_handle = self.tabs[i].scene.displayed_annotation_scale_handle();
-        let new_panel = {
+        let live_props = self.tabs[i]
+            .active_cmd
+            .as_ref()
+            .and_then(|c| c.live_properties());
+        let new_panel = if let Some(live_props) = live_props {
+            use crate::scene::model::object::{PropSection, PropValue, Property};
+
+            let props: Vec<Property> = live_props
+                .fields
+                .iter()
+                .map(|f| Property {
+                    label: f.label.clone(),
+                    field: f.field_id,
+                    value: PropValue::Live(f.value.clone()),
+                })
+                .collect();
+            let section = PropSection {
+                title: live_props.title.clone(),
+                props,
+            };
+            ui::PropertiesPanel {
+                sections: vec![section],
+                title: live_props.title,
+                layer_combo: iced::widget::combo_box::State::new(layer_names.clone()),
+                linetype_combo: iced::widget::combo_box::State::new(linetype_items.clone()),
+                lineweight_combo: iced::widget::combo_box::State::new(
+                    ui::properties::lw_options(),
+                ),
+                linetype_items,
+                ..Default::default()
+            }
+        } else {
             let selected = self.tabs[i].scene.selected_entities();
             let mut panel = match selected.len() {
                 0 => {
