@@ -15,6 +15,7 @@ use acadrust::{CadDocument, EntityType, Handle};
 use glam::DVec3;
 
 use crate::command::{CadCommand, CmdOption, CmdResult, WorkingPlane};
+use crate::scene::model::wire_model::WireModel;
 use crate::scene::Scene;
 use crate::ui::command_line::CommandLine;
 
@@ -1327,6 +1328,70 @@ impl CadCommand for WallCommand {
             // live feedback.
         }
         self.ctrl_was_down = ctrl;
+    }
+
+    fn on_preview_wires(&mut self, pt: DVec3) -> Vec<WireModel> {
+        if self.phase != WallPhase::Drawing || self.vertices.is_empty() {
+            return vec![];
+        }
+
+        // Axis rubber band: pending segment from the last placed point to
+        // the cursor (the committed vertices already render as the live
+        // axis polyline, same convention as `PlineCommand::on_mouse_move`).
+        let last_world = *self.vertices.last().unwrap();
+        let axis_wire = WireModel::solid(
+            "rubber_band_axis".into(),
+            vec![
+                last_world.as_vec3().to_array(),
+                pt.as_vec3().to_array(),
+            ],
+            WireModel::CYAN,
+            false,
+        );
+        let mut wires = vec![axis_wire];
+
+        // Outline rubber band: the wall's outer contour, computed on the
+        // committed vertices plus the not-yet-placed cursor point, so the
+        // outline is visible and follows the cursor from the first point
+        // onward — even before a wall style has been chosen (falls back to
+        // the default thickness, same as `build_contour_entity`).
+        let mut temp_vertices = self.vertices.clone();
+        temp_vertices.push(pt);
+        if temp_vertices.len() >= 2 {
+            let total_thickness: f64 = match self.resolved_layers.as_ref() {
+                Some(layers) if !layers.is_empty() => {
+                    layers.iter().map(|l| l.thickness + l.gap_before).sum()
+                }
+                _ => self.wall.thickness,
+            };
+            let centerline_offset = self.justification.offset(total_thickness);
+            let points: Vec<(f64, f64)> = temp_vertices
+                .iter()
+                .map(|p| {
+                    let local = self.plane.to_local(*p);
+                    (local.x, local.y)
+                })
+                .collect();
+            let contour_points =
+                engine::contour::outer_contour(&points, total_thickness, centerline_offset);
+            if !contour_points.is_empty() {
+                let mut world_pts: Vec<[f32; 3]> = contour_points
+                    .iter()
+                    .map(|&(x, y)| self.plane.to_world(DVec3::new(x, y, 0.0)).as_vec3().to_array())
+                    .collect();
+                if let Some(first) = world_pts.first().copied() {
+                    world_pts.push(first);
+                }
+                wires.push(WireModel::solid(
+                    "rubber_band_contour".into(),
+                    world_pts,
+                    WireModel::CYAN,
+                    false,
+                ));
+            }
+        }
+
+        wires
     }
 
     fn on_point(&mut self, pt: DVec3) -> CmdResult {
@@ -3992,6 +4057,38 @@ mod wall_command_tests {
         // the far endpoint (0,0) stays put.
         assert!(axis.iter().any(|p| (p.x - 8.0).abs() < 1e-9 && p.y.abs() < 1e-9));
         assert!(axis.iter().any(|p| p.x.abs() < 1e-9 && p.y.abs() < 1e-9));
+
+        // Both the 2D (contour/hatch) and 3D (solid) derived representation
+        // must reflect the new, extended axis length — not just the axis
+        // polyline itself.
+        let wall = wall_v2_from_entity(scene.document.get_entity(wall_handle).unwrap()).unwrap();
+        let mut max_x_2d: f64 = 0.0;
+        let mut max_x_3d: f64 = 0.0;
+        for h in &wall.derived_handles {
+            match scene.document.get_entity(*h).unwrap() {
+                EntityType::LwPolyline(pl) => {
+                    for v in &pl.vertices {
+                        max_x_2d = max_x_2d.max(v.location.x);
+                    }
+                }
+                EntityType::Solid3D(s3d) => {
+                    for wire in &s3d.wires {
+                        for pt in &wire.points {
+                            max_x_3d = max_x_3d.max(pt.x as f64);
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+        assert!(
+            max_x_2d > 7.9,
+            "2D contour should extend to the new endpoint, got max_x={max_x_2d}"
+        );
+        assert!(
+            max_x_3d > 7.9,
+            "3D solid should extend to the new endpoint, got max_x={max_x_3d}"
+        );
     }
 
     #[test]
