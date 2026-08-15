@@ -35,3 +35,5 @@ __pycache__/
 
 # Claude Code local preview/dev-server config
 .claude/launch.json
+
+.idea
