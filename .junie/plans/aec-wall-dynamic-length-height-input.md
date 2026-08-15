@@ -107,3 +107,12 @@ All three Step 5 additions work correctly together and existing wall functionali
 - Run `cargo test --lib aec` to confirm all previously passing wall tests remain green alongside the new ones.
 - Run `cargo build --lib` to confirm the codebase compiles cleanly.
 - Manually verify (via code review of the wiring, consistent with prior sessions' verification approach) that the context-menu `Reverse Direction` entry and hover highlight behave correctly end to end in the running application.
+
+### ✓ Step 9: Make "Wall Extend" default to extend-to-wall with an explicit point mode
+Previously `AEC_WALLEXTEND` defaulted to an ambiguous auto-detect (miss → point extend), which behaved like "extend to point" by default and didn't show a proper point-snap preview. Changed so the default is "extend to wall" (with the existing wall mouse-over highlight), and "extend to point" (with the normal point-snap preview) is only entered via an explicit `Point`/`Wall` command-line option toggle.
+- Replaced the internal `target_is_wall: bool` auto-detect flag on `WallExtendCommand` (`src/modules/aec/commands.rs`) with an explicit `WallExtendMode { ToWall, ToPoint }`, defaulting to `ToWall`.
+- In `ToWall` mode: `needs_entity_pick()` stays `true` and `entity_pick_highlights_hover()` stays `true`, so the target wall lights up on hover exactly as before; a miss or re-click on the source wall no longer silently falls back to a point extend — it just keeps waiting.
+- In `ToPoint` mode (entered via typing `P`/the `Point` option): `needs_entity_pick()` returns `false`, so the viewport falls back to the normal point-picking flow with its usual point-snap preview (same as e.g. `LINE`/`PLINE`), and `on_point` dispatches the existing `PT|` path.
+- Typing `W` while in `ToPoint` mode switches back to `ToWall` mode.
+- Updated/added unit tests: removed the now-invalid "empty click falls back to point extend" test (replaced with "empty click stays in ToWall mode, no fallback"), added a test that switching to `Point` mode via `on_text_input` and then picking a point dispatches `PT|`.
+- `cargo test --lib aec`: 114 passed, 0 failed. `cargo build --bin OpenCADStudio`: succeeded (only pre-existing warnings).

@@ -2944,17 +2944,28 @@ pub fn aec_walljoin_do(scene: &mut Scene, command_line: &mut CommandLine, args: 
     }
 }
 
-/// `AEC_WALLEXTEND` — interactive front-end: pick a wall, then either click a
-/// target point (extends the nearer axis endpoint to it) or click another wall
-/// (extends to the L-/T-intersection of the two axes, reusing
-/// [`join::join_wall_axes`]). Typing `W` still forces an explicit target-wall
-/// pick for discoverability, but is no longer required for the common case:
-/// once the source wall is selected every click is tried as an entity pick
-/// first, and only a miss falls back to the point-projection path. Delegates
-/// the actual write to [`aec_wallextend_do`] via [`CmdResult::Dispatch`].
+/// Target-acquisition mode for [`WallExtendCommand`], selectable via the
+/// `Point`/`Wall` command-line option once the source wall is picked.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum WallExtendMode {
+    /// Default: extend to the intersection with another wall's axis.
+    /// The wall under the cursor is highlighted like any other entity pick.
+    ToWall,
+    /// Extend to an explicitly-typed/snapped point. Behaves like the normal
+    /// point-picking flow (with the usual point-snap preview), not an
+    /// entity pick.
+    ToPoint,
+}
+
+/// `AEC_WALLEXTEND` — interactive front-end: pick a wall, then either extend
+/// it to another wall's axis intersection (default `ToWall` mode, reusing
+/// [`join::join_wall_axes`]) or to an explicit point (`ToPoint` mode,
+/// switched into via the `Point` command option and back via `Wall`).
+/// Delegates the actual write to [`aec_wallextend_do`] via
+/// [`CmdResult::Dispatch`].
 pub struct WallExtendCommand {
     wall: Option<Handle>,
-    target_is_wall: bool,
+    mode: WallExtendMode,
 }
 
 impl WallExtendCommand {
@@ -2962,7 +2973,7 @@ impl WallExtendCommand {
     pub fn new() -> Self {
         Self {
             wall: None,
-            target_is_wall: false,
+            mode: WallExtendMode::ToWall,
         }
     }
 }
@@ -2975,44 +2986,56 @@ impl CadCommand for WallExtendCommand {
     fn prompt(&self) -> String {
         if self.wall.is_none() {
             "AEC_WALLEXTEND  Select wall to extend:".to_string()
-        } else if self.target_is_wall {
-            "AEC_WALLEXTEND  Select target wall:".to_string()
-        } else {
+        } else if self.mode == WallExtendMode::ToPoint {
             "AEC_WALLEXTEND  Specify extend point or [Wall]:".to_string()
+        } else {
+            "AEC_WALLEXTEND  Select target wall or [Point]:".to_string()
         }
     }
 
     fn options(&self) -> Vec<CmdOption> {
-        if self.wall.is_some() && !self.target_is_wall {
-            vec![CmdOption::new("Wall", "W")]
-        } else {
-            Vec::new()
+        if self.wall.is_none() {
+            return Vec::new();
+        }
+        match self.mode {
+            WallExtendMode::ToWall => vec![CmdOption::new("Point", "P")],
+            WallExtendMode::ToPoint => vec![CmdOption::new("Wall", "W")],
         }
     }
 
     fn wants_text_input(&self) -> bool {
-        self.wall.is_some() && !self.target_is_wall
+        self.wall.is_some()
     }
 
     fn on_text_input(&mut self, text: &str) -> Option<CmdResult> {
-        if self.wall.is_some() && !self.target_is_wall && text.trim().eq_ignore_ascii_case("w") {
-            self.target_is_wall = true;
+        if self.wall.is_none() {
+            return None;
+        }
+        let text = text.trim();
+        if self.mode == WallExtendMode::ToWall && text.eq_ignore_ascii_case("p") {
+            self.mode = WallExtendMode::ToPoint;
+            return Some(CmdResult::NeedPoint);
+        }
+        if self.mode == WallExtendMode::ToPoint && text.eq_ignore_ascii_case("w") {
+            self.mode = WallExtendMode::ToWall;
             return Some(CmdResult::NeedPoint);
         }
         None
     }
 
     fn needs_entity_pick(&self) -> bool {
-        // Always entity-pick: first for the wall to extend, then again so a
-        // click on another wall auto-detects the WALL|target path. Empty
-        // space is reported as a null handle and falls back to on_point.
-        true
+        // Entity-pick for the initial wall-to-extend selection, and again
+        // while in `ToWall` mode so the target wall gets the normal rollover
+        // highlight. In `ToPoint` mode we fall back to plain point-picking
+        // so the usual point-snap preview is shown instead.
+        self.wall.is_none() || self.mode == WallExtendMode::ToWall
     }
 
-    /// Highlight while awaiting the target (point or wall) after the source
-    /// wall has been selected — not during the initial source-wall pick.
+    /// Highlight the wall under the cursor only while awaiting a target wall
+    /// pick — not during the initial source-wall pick, and not in `ToPoint`
+    /// mode (where the normal point-snap preview takes over instead).
     fn entity_pick_highlights_hover(&self) -> bool {
-        self.wall.is_some()
+        self.wall.is_some() && self.mode == WallExtendMode::ToWall
     }
 
     /// Restrict the rollover highlight to wall packages (axis or derived).
@@ -3021,41 +3044,32 @@ impl CadCommand for WallExtendCommand {
     }
 
     fn on_entity_pick(&mut self, handle: Handle, pt: DVec3) -> CmdResult {
-        if handle.is_null() {
-            // Miss: once a source wall is selected and we're not in forced
-            // Wall mode, fall back to the point-projection path.
-            if self.wall.is_some() && !self.target_is_wall {
-                return self.on_point(pt);
-            }
-            return CmdResult::NeedPoint;
-        }
         if self.wall.is_none() {
-            self.wall = Some(handle);
-            CmdResult::NeedPoint
-        } else {
-            let wall = self.wall.unwrap();
-            // Same entity as the source wall: in auto-detect mode treat the
-            // click as a point extend; in forced Wall mode keep waiting.
-            if handle == wall {
-                if !self.target_is_wall {
-                    return self.on_point(pt);
-                }
+            if handle.is_null() {
                 return CmdResult::NeedPoint;
             }
-            // Any other entity pick is treated as a target wall. The DO
-            // handler runs resolve_wall_package so a click on a derived
-            // contour/hatch/solid of another wall still joins correctly.
-            CmdResult::Dispatch(format!(
-                "AEC_WALLEXTEND_DO {}|WALL|{}",
-                wall.value(),
-                handle.value()
-            ))
+            self.wall = Some(handle);
+            return CmdResult::NeedPoint;
         }
+        let wall = self.wall.unwrap();
+        // In `ToWall` mode a miss or a click back on the source wall itself
+        // doesn't extend anything — the user must pick a *different* wall,
+        // or switch to `ToPoint` mode explicitly via the option.
+        if handle.is_null() || handle == wall {
+            return CmdResult::NeedPoint;
+        }
+        // The DO handler runs resolve_wall_package so a click on a derived
+        // contour/hatch/solid of another wall still joins correctly.
+        CmdResult::Dispatch(format!(
+            "AEC_WALLEXTEND_DO {}|WALL|{}",
+            wall.value(),
+            handle.value()
+        ))
     }
 
     fn on_point(&mut self, pt: DVec3) -> CmdResult {
         if let Some(wall) = self.wall {
-            if !self.target_is_wall {
+            if self.mode == WallExtendMode::ToPoint {
                 return CmdResult::Dispatch(format!(
                     "AEC_WALLEXTEND_DO {}|PT|{}|{}|{}",
                     wall.value(),
@@ -5040,21 +5054,39 @@ mod wall_command_tests {
     }
 
     #[test]
-    fn wall_extend_command_empty_click_falls_back_to_point_extend() {
+    fn wall_extend_command_empty_click_stays_in_to_wall_mode() {
         // A null-handle pick (empty space) after the source wall is selected
-        // must fall back to the PT| point-projection path.
+        // must NOT fall back to a point extend in the default `ToWall`
+        // mode — the user must pick a different wall or switch to `Point`
+        // mode explicitly.
         let mut cmd = WallExtendCommand::new();
         let source = Handle::new(10);
         let _ = cmd.on_entity_pick(source, DVec3::ZERO);
 
-        match cmd.on_entity_pick(Handle::NULL, DVec3::new(8.0, 2.0, 0.0)) {
+        assert!(matches!(
+            cmd.on_entity_pick(Handle::NULL, DVec3::new(8.0, 2.0, 0.0)),
+            CmdResult::NeedPoint
+        ));
+    }
+
+    #[test]
+    fn wall_extend_command_point_mode_dispatches_pt_after_switch() {
+        // Typing `P` switches to `ToPoint` mode; a subsequent point pick
+        // must dispatch the PT| point-projection path.
+        let mut cmd = WallExtendCommand::new();
+        let source = Handle::new(10);
+        let _ = cmd.on_entity_pick(source, DVec3::ZERO);
+        assert!(matches!(cmd.on_text_input("P"), Some(CmdResult::NeedPoint)));
+        assert!(!cmd.needs_entity_pick());
+
+        match cmd.on_point(DVec3::new(8.0, 2.0, 0.0)) {
             CmdResult::Dispatch(s) => {
                 assert!(
                     s.starts_with(&format!("AEC_WALLEXTEND_DO {}|PT|", source.value())),
-                    "expected PT| fallback dispatch, got {s}"
+                    "expected PT| dispatch, got {s}"
                 );
             }
-            _ => panic!("expected PT| dispatch on empty click"),
+            _ => panic!("expected PT| dispatch after switching to Point mode"),
         }
     }
 
