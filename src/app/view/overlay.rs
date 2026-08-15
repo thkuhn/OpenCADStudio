@@ -1073,6 +1073,14 @@ pub(super) fn viewport_context_menu_overlay(
                     t!("Reverse Direction").into_owned(),
                     Message::Command("AEC_WALLREVERSE".to_string()),
                 ));
+                items.push(item(
+                    t!("Add Window").into_owned(),
+                    Message::Command("AEC_WINDOW".to_string()),
+                ));
+                items.push(item(
+                    t!("Add Door").into_owned(),
+                    Message::Command("AEC_DOOR".to_string()),
+                ));
 
                 let wj_caret = if justification_open {
                     crate::ui::icons::themed_arrow_down(9.0)

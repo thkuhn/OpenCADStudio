@@ -226,10 +226,16 @@ fn wall_style_form_view<'a>(wall_style_form: WallStyleFormState<'a>) -> Element<
                     .find(|(id, _)| *id == l.material_id)
                     .map(|(_, name)| name.to_string())
                     .unwrap_or_else(|| l.material_id.clone());
+                let thick_label = match &l.thickness {
+                    crate::modules::aec::engine::wall_style::LayerValue::Fixed(v) => {
+                        format!("{v:.2}")
+                    }
+                    crate::modules::aec::engine::wall_style::LayerValue::Formula(s) => s.clone(),
+                };
                 row![
                     Space::new().width(LAYER_COL_REORDER_W),
                     text(mat_name).size(11).width(LAYER_COL_MATERIAL_W),
-                    text(format!("{:.2}", l.thickness))
+                    text(thick_label)
                         .size(11)
                         .width(LAYER_COL_THICKNESS_W),
                     text(format!("{:.2}", l.gap_before))
@@ -369,10 +375,33 @@ fn layer_row<'a>(
             .padding([4, 6])
             .width(LAYER_COL_MATERIAL_W)
         },
-        text_input("", &buffer.thickness)
-            .on_input(move |v| Message::AecStyleManagerWallStyleLayerThicknessChanged(index, v))
-            .size(11)
-            .width(LAYER_COL_THICKNESS_W),
+        {
+            // Accept either a number or an arithmetic formula (e.g. "BB * 0.5").
+            // Invalid formulas are flagged with a danger-styled field; they still
+            // remain editable and are validated again on save.
+            let thickness_invalid = {
+                let parsed =
+                    crate::modules::aec::engine::wall_style::LayerValue::parse_str(&buffer.thickness);
+                match parsed {
+                    crate::modules::aec::engine::wall_style::LayerValue::Fixed(_) => false,
+                    crate::modules::aec::engine::wall_style::LayerValue::Formula(ref f) => {
+                        let vars = crate::modules::aec::engine::wall_style::wall_vars(1.0);
+                        crate::modules::aec::engine::expr::eval_formula(f, &vars).is_err()
+                    }
+                }
+            };
+            let input = text_input("", &buffer.thickness)
+                .on_input(move |v| {
+                    Message::AecStyleManagerWallStyleLayerThicknessChanged(index, v)
+                })
+                .size(11)
+                .width(LAYER_COL_THICKNESS_W);
+            if thickness_invalid {
+                input.style(invalid_thickness_style)
+            } else {
+                input
+            }
+        },
         text_input("gap", &buffer.gap_before)
             .on_input(move |v| Message::AecStyleManagerWallStyleLayerGapChanged(index, v))
             .size(11)
@@ -420,4 +449,12 @@ fn layer_row<'a>(
     .spacing(8)
     .align_y(iced::Center)
     .into()
+}
+
+/// Danger border for thickness fields whose formula fails validation.
+fn invalid_thickness_style(theme: &Theme, status: text_input::Status) -> text_input::Style {
+    let danger = theme.palette().danger.base.color;
+    let mut style = text_input::default(theme, status);
+    style.border.color = danger;
+    style
 }

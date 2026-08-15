@@ -1,9 +1,11 @@
 //! AEC Wall Style definitions.
 
+use crate::modules::aec::engine::expr::eval_formula;
 use crate::modules::aec::engine::material::MaterialId;
 use crate::modules::aec::engine::style::{resolve_chain, Style, StyleError, StyleId};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::fmt;
 
 /// The functional role of a wall layer.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -18,13 +20,84 @@ pub enum LayerFunction {
     Other(String),
 }
 
+/// Thickness of a wall style layer: a fixed number or an arithmetic formula.
+///
+/// Serialized untagged so existing libraries that store a bare JSON number
+/// keep loading as [`LayerValue::Fixed`]. A JSON string becomes
+/// [`LayerValue::Formula`].
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum LayerValue {
+    /// Constant thickness in drawing units.
+    Fixed(f64),
+    /// Arithmetic expression over wall variables (e.g. `"BB * 0.5"`).
+    Formula(String),
+}
+
+impl LayerValue {
+    /// Returns the fixed value, or `default` when this is a formula.
+    ///
+    /// Intended for UI/summary paths that need a plain number without wall
+    /// context (style editors, rough totals). Formulas contribute `default`
+    /// (typically `0.0`) rather than attempting evaluation.
+    pub fn as_fixed_or(&self, default: f64) -> f64 {
+        match self {
+            LayerValue::Fixed(v) => *v,
+            LayerValue::Formula(_) => default,
+        }
+    }
+
+    /// Parse a user-entered thickness string.
+    ///
+    /// A value that parses as a full `f64` becomes [`LayerValue::Fixed`];
+    /// anything else (non-empty) becomes [`LayerValue::Formula`]. Empty
+    /// input is treated as `Fixed(0.0)`.
+    pub fn parse_str(s: &str) -> Self {
+        let t = s.trim();
+        if t.is_empty() {
+            return LayerValue::Fixed(0.0);
+        }
+        if let Ok(v) = t.parse::<f64>() {
+            LayerValue::Fixed(v)
+        } else {
+            LayerValue::Formula(t.to_string())
+        }
+    }
+
+    /// Resolve this value against `vars`.
+    ///
+    /// Fixed values return immediately. Formulas go through
+    /// [`eval_formula`]; on failure returns `Err` (caller chooses fallback).
+    pub fn resolve(&self, vars: &HashMap<String, f64>) -> Result<f64, String> {
+        match self {
+            LayerValue::Fixed(v) => Ok(*v),
+            LayerValue::Formula(s) => eval_formula(s, vars),
+        }
+    }
+}
+
+impl fmt::Display for LayerValue {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            LayerValue::Fixed(v) => write!(f, "{v}"),
+            LayerValue::Formula(s) => write!(f, "{s}"),
+        }
+    }
+}
+
+impl From<f64> for LayerValue {
+    fn from(v: f64) -> Self {
+        LayerValue::Fixed(v)
+    }
+}
+
 /// A single layer within a wall buildup.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Layer {
     /// Identifier of the material for this layer.
     pub material_id: MaterialId,
-    /// Thickness of the layer in drawing units.
-    pub thickness: f64,
+    /// Thickness of the layer (fixed number or formula).
+    pub thickness: LayerValue,
     /// Functional role of this layer.
     pub function: LayerFunction,
     /// Optional horizontal gap before this layer (air space).
@@ -51,6 +124,67 @@ pub struct WallStyle {
     /// List of layers from exterior to interior.
     /// An empty list means "inherits parent's layers".
     pub layers: Vec<Layer>,
+}
+
+/// A wall-style layer after formula resolution.
+///
+/// `thickness` is always a concrete `f64` suitable for geometry. When a
+/// formula fails to evaluate, `thickness` is the safe fallback `0.0` and
+/// `formula_error` carries the validation message for UI/diagnostics.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ResolvedLayer {
+    pub material_id: MaterialId,
+    pub thickness: f64,
+    pub function: LayerFunction,
+    pub gap_before: f64,
+    pub bottom_offset: f64,
+    pub top_offset: f64,
+    pub layer_override: Option<String>,
+    /// Present when `LayerValue::Formula` failed; thickness is then `0.0`.
+    pub formula_error: Option<String>,
+}
+
+/// Build the standard wall-variable map. Currently exposes:
+/// - `"BB"`: wall base / total width in drawing units.
+pub fn wall_vars(bb: f64) -> HashMap<String, f64> {
+    let mut vars = HashMap::new();
+    vars.insert("BB".to_string(), bb);
+    vars
+}
+
+/// Approximate base width from style layers using only fixed thicknesses
+/// (formulas contribute `0.0`). Used when no concrete wall width is known yet.
+pub fn base_width_from_layers(layers: &[Layer]) -> f64 {
+    layers
+        .iter()
+        .map(|l| l.thickness.as_fixed_or(0.0) + l.gap_before)
+        .sum()
+}
+
+/// Resolve each layer's [`LayerValue`] against `vars`.
+///
+/// Invalid formulas fall back to thickness `0.0` and set
+/// [`ResolvedLayer::formula_error`] — never panics.
+pub fn resolve_layer_values(layers: &[Layer], vars: &HashMap<String, f64>) -> Vec<ResolvedLayer> {
+    layers
+        .iter()
+        .map(|layer| {
+            let (thickness, formula_error) = match layer.thickness.resolve(vars) {
+                Ok(v) => (v, None),
+                Err(e) => (0.0, Some(e)),
+            };
+            ResolvedLayer {
+                material_id: layer.material_id.clone(),
+                thickness,
+                function: layer.function.clone(),
+                gap_before: layer.gap_before,
+                bottom_offset: layer.bottom_offset,
+                top_offset: layer.top_offset,
+                layer_override: layer.layer_override.clone(),
+                formula_error,
+            }
+        })
+        .collect()
 }
 
 /// Resolves the effective layers for a wall style by traversing the inheritance chain.
@@ -90,6 +224,30 @@ pub fn effective_layers(
     Ok(vec![])
 }
 
+/// Like [`effective_layers`], then resolves each layer's thickness against
+/// `vars` (see [`resolve_layer_values`]).
+///
+/// Callers should populate `vars` with at least `"BB"` (wall base width),
+/// typically via [`wall_vars`]. When the wall's overall width is not yet
+/// known, use [`base_width_from_layers`] on the unresolved effective layers.
+pub fn effective_layers_for_wall(
+    wall_styles: &HashMap<StyleId, WallStyle>,
+    id: &StyleId,
+    vars: &HashMap<String, f64>,
+) -> Result<Vec<ResolvedLayer>, StyleError> {
+    let layers = effective_layers(wall_styles, id)?;
+    Ok(resolve_layer_values(&layers, vars))
+}
+
+/// Convenience: resolve effective layers using `"BB" = bb`.
+pub fn effective_layers_for_wall_bb(
+    wall_styles: &HashMap<StyleId, WallStyle>,
+    id: &StyleId,
+    bb: f64,
+) -> Result<Vec<ResolvedLayer>, StyleError> {
+    effective_layers_for_wall(wall_styles, id, &wall_vars(bb))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -98,7 +256,7 @@ mod tests {
         WallStyle {
             style: Style {
                 id: id.to_string(),
-                name: format!("Wall Style {}", id),
+                name: format!("Wall Style {id}"),
                 object_kind: "Wall".to_string(),
                 parent_style_id: parent.map(|s| s.to_string()),
             },
@@ -109,7 +267,19 @@ mod tests {
     fn create_layer(mat_id: &str, thick: f64) -> Layer {
         Layer {
             material_id: mat_id.to_string(),
-            thickness: thick,
+            thickness: LayerValue::Fixed(thick),
+            function: LayerFunction::Structural,
+            gap_before: 0.0,
+            bottom_offset: 0.0,
+            top_offset: 0.0,
+            layer_override: None,
+        }
+    }
+
+    fn create_formula_layer(mat_id: &str, formula: &str) -> Layer {
+        Layer {
+            material_id: mat_id.to_string(),
+            thickness: LayerValue::Formula(formula.to_string()),
             function: LayerFunction::Structural,
             gap_before: 0.0,
             bottom_offset: 0.0,
@@ -156,14 +326,8 @@ mod tests {
     #[test]
     fn test_empty_inheritance() {
         let mut styles = HashMap::new();
-        styles.insert(
-            "A".to_string(),
-            create_wall_style("A", None, vec![]),
-        );
-        styles.insert(
-            "B".to_string(),
-            create_wall_style("B", Some("A"), vec![]),
-        );
+        styles.insert("A".to_string(), create_wall_style("A", None, vec![]));
+        styles.insert("B".to_string(), create_wall_style("B", Some("A"), vec![]));
 
         let layers = effective_layers(&styles, &"B".to_string()).unwrap();
         assert!(layers.is_empty());
@@ -183,5 +347,127 @@ mod tests {
 
         let result = effective_layers(&styles, &"A".to_string());
         assert_eq!(result, Err(StyleError::CycleDetected));
+    }
+
+    #[test]
+    fn layer_value_serde_fixed_number_roundtrip() {
+        let json = "0.24";
+        let v: LayerValue = serde_json::from_str(json).unwrap();
+        assert_eq!(v, LayerValue::Fixed(0.24));
+        // bare number still deserializes when embedded in a Layer
+        let layer_json = r#"{
+            "material_id": "m",
+            "thickness": 0.175,
+            "function": "Structural"
+        }"#;
+        let layer: Layer = serde_json::from_str(layer_json).unwrap();
+        assert_eq!(layer.thickness, LayerValue::Fixed(0.175));
+    }
+
+    #[test]
+    fn layer_value_serde_formula_string() {
+        let json = r#""BB * 0.5""#;
+        let v: LayerValue = serde_json::from_str(json).unwrap();
+        assert_eq!(v, LayerValue::Formula("BB * 0.5".to_string()));
+    }
+
+    #[test]
+    fn fixed_value_styles_unaffected_after_resolution() {
+        let mut styles = HashMap::new();
+        let layers = vec![
+            create_layer("a", 0.1),
+            create_layer("b", 0.2),
+            create_layer("c", 0.05),
+        ];
+        styles.insert(
+            "s".to_string(),
+            create_wall_style("s", None, layers.clone()),
+        );
+
+        let bb = base_width_from_layers(&layers);
+        assert!((bb - 0.35).abs() < 1e-12);
+
+        let resolved = effective_layers_for_wall_bb(&styles, &"s".to_string(), bb).unwrap();
+        assert_eq!(resolved.len(), 3);
+        assert!((resolved[0].thickness - 0.1).abs() < 1e-12);
+        assert!((resolved[1].thickness - 0.2).abs() < 1e-12);
+        assert!((resolved[2].thickness - 0.05).abs() < 1e-12);
+        assert!(resolved.iter().all(|r| r.formula_error.is_none()));
+
+        // Same geometry inputs as pre-formula pipeline: (thickness, gap)
+        let geometry: Vec<(f64, f64)> = resolved
+            .iter()
+            .map(|r| (r.thickness, r.gap_before))
+            .collect();
+        let expected: Vec<(f64, f64)> = layers
+            .iter()
+            .map(|l| (l.thickness.as_fixed_or(0.0), l.gap_before))
+            .collect();
+        assert_eq!(geometry, expected);
+    }
+
+    #[test]
+    fn bb_formula_resolves_for_different_base_widths() {
+        let mut styles = HashMap::new();
+        styles.insert(
+            "s".to_string(),
+            create_wall_style(
+                "s",
+                None,
+                vec![
+                    create_layer("fixed", 0.1),
+                    create_formula_layer("half", "BB * 0.5"),
+                ],
+            ),
+        );
+
+        let r1 = effective_layers_for_wall_bb(&styles, &"s".to_string(), 0.4).unwrap();
+        assert!((r1[0].thickness - 0.1).abs() < 1e-12);
+        assert!((r1[1].thickness - 0.2).abs() < 1e-12);
+        assert!(r1[1].formula_error.is_none());
+
+        let r2 = effective_layers_for_wall_bb(&styles, &"s".to_string(), 0.8).unwrap();
+        assert!((r2[0].thickness - 0.1).abs() < 1e-12);
+        assert!((r2[1].thickness - 0.4).abs() < 1e-12);
+        assert_ne!(r1[1].thickness, r2[1].thickness);
+    }
+
+    #[test]
+    fn invalid_formula_falls_back_and_reports_error() {
+        let mut styles = HashMap::new();
+        styles.insert(
+            "s".to_string(),
+            create_wall_style(
+                "s",
+                None,
+                vec![
+                    create_layer("ok", 0.2),
+                    create_formula_layer("bad_var", "UNKNOWN * 2"),
+                    create_formula_layer("bad_syntax", "BB *"),
+                    create_formula_layer("div0", "BB / 0"),
+                ],
+            ),
+        );
+
+        let resolved = effective_layers_for_wall_bb(&styles, &"s".to_string(), 0.4).unwrap();
+        assert!((resolved[0].thickness - 0.2).abs() < 1e-12);
+        assert!(resolved[0].formula_error.is_none());
+
+        for bad in &resolved[1..] {
+            assert_eq!(bad.thickness, 0.0, "invalid formula must fall back to 0.0");
+            assert!(
+                bad.formula_error.is_some(),
+                "invalid formula must surface an error"
+            );
+        }
+    }
+
+    #[test]
+    fn as_fixed_or_helper() {
+        assert_eq!(LayerValue::Fixed(1.5).as_fixed_or(0.0), 1.5);
+        assert_eq!(
+            LayerValue::Formula("BB".into()).as_fixed_or(0.0),
+            0.0
+        );
     }
 }

@@ -7,7 +7,7 @@
 
 use std::sync::Mutex;
 
-use acadrust::entities::{LwPolyline, LwVertex, Table};
+use acadrust::entities::{LwPolyline, LwVertex, Point, Table};
 use acadrust::tables::AppId;
 use acadrust::types::{Vector2, Vector3};
 use acadrust::xdata::{ExtendedDataRecord, XDataValue};
@@ -26,7 +26,10 @@ use super::engine::{
 use super::engine::library::load_or_seed;
 use super::engine::material::Material;
 use super::engine::style::Style;
-use super::engine::wall_style::{effective_layers, Layer, LayerFunction, WallStyle};
+use super::engine::wall_style::{
+    base_width_from_layers, effective_layers_for_wall_bb, Layer, LayerFunction, LayerValue,
+    ResolvedLayer, WallStyle,
+};
 use std::collections::HashMap;
 
 /// APPID used for all AEC XDATA records (must stay stable for round-trip).
@@ -576,31 +579,92 @@ pub struct WallLayerExtrusion {
     pub base_offset: f64,
 }
 
-/// Extracts a wall's centerline points from its [`LwPolyline`] geometry and
-/// computes parallel boundary lines for each layer.
-///
-/// Returns N+1 boundary lines for N layers.
-pub fn wall_layer_contour_polylines(
-    wall_entity: &EntityType,
-    layers: &[WallLayer],
-) -> Vec<(Vec<(f64, f64)>, Vec<(f64, f64)>)> {
+/// Extract open-axis centerline points and per-vertex LWPOLYLINE bulges from a
+/// wall axis entity. Returns empty vectors when `wall_entity` is not an
+/// `LwPolyline`.
+fn wall_axis_points_and_bulges(wall_entity: &EntityType) -> (Vec<(f64, f64)>, Vec<f64>) {
     let EntityType::LwPolyline(pl) = wall_entity else {
-        return Vec::new();
+        return (Vec::new(), Vec::new());
     };
     let centerline: Vec<(f64, f64)> = pl
         .vertices
         .iter()
         .map(|v| (v.location.x, v.location.y))
         .collect();
+    let bulges: Vec<f64> = pl.vertices.iter().map(|v| v.bulge).collect();
+    (centerline, bulges)
+}
+
+/// Extracts a wall's centerline points from its [`LwPolyline`] geometry and
+/// computes parallel boundary lines for each layer.
+///
+/// Returns one `(inner, outer)` boundary pair per layer. Prefer
+/// [`wall_layer_footprints`] / [`engine::representation::build_wall_representation`]
+/// when closed per-layer polygons are enough — this pair form is kept for
+/// callers that still need the raw offset polylines (tests, miter diagnostics).
+///
+/// Axis bulges (arc segments) are honoured via
+/// [`engine::contour::layer_contours_with_bulges`].
+pub fn wall_layer_contour_polylines(
+    wall_entity: &EntityType,
+    layers: &[WallLayer],
+) -> Vec<(Vec<(f64, f64)>, Vec<(f64, f64)>)> {
+    let (centerline, bulges) = wall_axis_points_and_bulges(wall_entity);
+    if centerline.len() < 2 {
+        return Vec::new();
+    }
     let layer_data: Vec<(f64, f64)> = layers.iter().map(|l| (l.thickness, l.gap_before)).collect();
-    engine::contour::layer_contours(&centerline, &layer_data)
+    engine::contour::layer_contours_with_bulges(&centerline, &bulges, &layer_data)
+        .into_iter()
+        .map(|(a, b)| (a.points, b.points))
+        .collect()
+}
+
+/// Closed per-layer footprints for a wall axis entity, derived via the shared
+/// [`engine::representation::WallRepresentation`] builder.
+///
+/// Axis is assumed already justification-shifted (centerline_offset = 0),
+/// matching how walls are persisted after draw. Axis bulges are forwarded so
+/// curved walls produce arc-aware offset footprints.
+pub fn wall_layer_footprints(
+    wall_entity: &EntityType,
+    layers: &[WallLayer],
+) -> Vec<Vec<(f64, f64)>> {
+    wall_layer_footprints_with_bulges(wall_entity, layers)
+        .into_iter()
+        .map(|(pts, _)| pts)
+        .collect()
+}
+
+/// Like [`wall_layer_footprints`], but also returns per-vertex bulges for each
+/// closed footprint (LWPOLYLINE convention) so derived contour entities can
+/// keep arc segments exact.
+pub fn wall_layer_footprints_with_bulges(
+    wall_entity: &EntityType,
+    layers: &[WallLayer],
+) -> Vec<(Vec<(f64, f64)>, Vec<f64>)> {
+    let (centerline, bulges) = wall_axis_points_and_bulges(wall_entity);
+    if centerline.len() < 2 {
+        return Vec::new();
+    }
+    let layer_data: Vec<(f64, f64)> = layers.iter().map(|l| (l.thickness, l.gap_before)).collect();
+    let repr = engine::representation::build_wall_representation_with_bulges(
+        &centerline,
+        &bulges,
+        &layer_data,
+        0.0,
+    );
+    repr.layer_contours_2d
+        .into_iter()
+        .zip(repr.layer_contour_bulges.into_iter())
+        .collect()
 }
 
 /// Produces the parameters needed to create an extruded solid for each wall layer.
 ///
 /// This implementation uses the "layer footprint" approach: it builds a closed
-/// 2D polygon per layer by combining consecutive boundary offsets and returns
-/// it along with the wall height.
+/// 2D polygon per layer via [`engine::representation::build_wall_representation`]
+/// and returns it along with the wall height.
 ///
 /// Scoping Decision: This function returns plain data ([`WallLayerExtrusion`]).
 /// A future step can wire this to the host's `Solid3D` entity creation calls
@@ -610,18 +674,13 @@ pub fn wall_layer_extrusions(
     layers: &[WallLayer],
     height: f64,
 ) -> Vec<WallLayerExtrusion> {
-    let boundaries = wall_layer_contour_polylines(wall_entity, layers);
-    if boundaries.is_empty() {
+    let footprints = wall_layer_footprints(wall_entity, layers);
+    if footprints.is_empty() {
         return Vec::new();
     }
 
     let mut extrusions = Vec::with_capacity(layers.len());
-    for (i, (b1, b2)) in boundaries.into_iter().enumerate() {
-        // Create a closed loop: forward along b1, then backward along b2.
-        let mut footprint = Vec::with_capacity(b1.len() + b2.len());
-        footprint.extend(b1.iter().cloned());
-        footprint.extend(b2.iter().rev().cloned());
-
+    for (i, footprint) in footprints.into_iter().enumerate() {
         let layer = &layers[i];
         let effective_height = (height - layer.bottom_offset - layer.top_offset).max(0.0);
         let base_offset = layer.bottom_offset;
@@ -770,6 +829,40 @@ pub fn regenerate_wall_representation_with_corner(
     corner_override: Option<(usize, DVec3)>,
     join_miter: Option<&engine::miter::JoinMiterContext>,
 ) -> Result<Vec<Handle>, WallRegenError> {
+    regenerate_wall_representation_inner(
+        scene,
+        wall_handle,
+        corner_override,
+        join_miter,
+        None,
+    )
+}
+
+/// Like [`regenerate_wall_representation_with_corner`], but takes precomputed
+/// per-layer miter footprints (from N-way junction resolution). `None` entries
+/// fall back to `corner_override` / base contours exactly as unmatched layers do.
+pub fn regenerate_wall_representation_with_precomputed_miters(
+    scene: &mut Scene,
+    wall_handle: Handle,
+    corner_override: Option<(usize, DVec3)>,
+    mitered_footprints: &[Option<Vec<(f64, f64)>>],
+) -> Result<Vec<Handle>, WallRegenError> {
+    regenerate_wall_representation_inner(
+        scene,
+        wall_handle,
+        corner_override,
+        None,
+        Some(mitered_footprints),
+    )
+}
+
+fn regenerate_wall_representation_inner(
+    scene: &mut Scene,
+    wall_handle: Handle,
+    corner_override: Option<(usize, DVec3)>,
+    join_miter: Option<&engine::miter::JoinMiterContext>,
+    precomputed_miters: Option<&[Option<Vec<(f64, f64)>>]>,
+) -> Result<Vec<Handle>, WallRegenError> {
     let Some(entity) = scene.document.get_entity(wall_handle) else {
         return Err(WallRegenError::NotAWall);
     };
@@ -817,17 +910,45 @@ pub fn regenerate_wall_representation_with_corner(
         .cloned()
         .ok_or(WallRegenError::NotAWall)?;
 
-    // Base contours from the true (persisted) axis. Corner extension is only
-    // applied as a per-layer fallback when a join miter can't match layers.
-    let base_contours = wall_layer_contour_polylines(&axis_entity, &layers);
-    if base_contours.is_empty() {
+    // Base footprints from the true (persisted) axis via the shared
+    // WallRepresentation builder. Corner extension is only applied as a
+    // per-layer fallback when a join miter can't match layers.
+    let base_footprints_with_bulges = wall_layer_footprints_with_bulges(&axis_entity, &layers);
+    if base_footprints_with_bulges.is_empty() {
         if is_v2 {
             let _ = set_wall_v2_derived_handles(scene, wall_handle, &[]);
         }
         return Err(WallRegenError::NoContours);
     }
+    let base_footprints: Vec<Vec<(f64, f64)>> = base_footprints_with_bulges
+        .iter()
+        .map(|(pts, _)| pts.clone())
+        .collect();
+    let base_footprint_bulges: Vec<Vec<f64>> = base_footprints_with_bulges
+        .iter()
+        .map(|(_, b)| b.clone())
+        .collect();
 
-    // Fallback contours: axis with a single vertex pushed past the join into
+    // Openings hosted by this wall — used to split 2D contours/hatches into
+    // disconnected pieces. 3D solids stay uncut in this step (deferred).
+    let wall_openings = openings_for_host_wall(scene, wall_handle);
+    let opening_cut_layers: Option<Vec<Vec<Vec<(f64, f64)>>>> = if wall_openings.is_empty() {
+        None
+    } else {
+        let (centerline, bulges) = wall_axis_points_and_bulges(&axis_entity);
+        let layer_data: Vec<(f64, f64)> =
+            layers.iter().map(|l| (l.thickness, l.gap_before)).collect();
+        let repr = engine::representation::build_wall_representation_with_openings(
+            &centerline,
+            &bulges,
+            &layer_data,
+            0.0,
+            &wall_openings,
+        );
+        Some(repr.cut_layer_pieces_2d)
+    };
+
+    // Fallback footprints: axis with a single vertex pushed past the join into
     // the other wall's footprint (legacy corner-overlap path).
     let mut extended_axis_entity = axis_entity.clone();
     let has_corner_override = if let (Some((idx, pos)), EntityType::LwPolyline(pl)) =
@@ -842,8 +963,8 @@ pub fn regenerate_wall_representation_with_corner(
     } else {
         false
     };
-    let extended_contours = if has_corner_override {
-        wall_layer_contour_polylines(&extended_axis_entity, &layers)
+    let extended_footprints = if has_corner_override {
+        wall_layer_footprints(&extended_axis_entity, &layers)
     } else {
         Vec::new()
     };
@@ -869,9 +990,14 @@ pub fn regenerate_wall_representation_with_corner(
         })
         .collect();
 
-    // Pre-compute per-layer mitered footprints when a join context is present.
+    // Pre-compute per-layer mitered footprints when a join context is present,
+    // or use caller-supplied N-way junction footprints.
     let mitered_footprints: Vec<Option<Vec<(f64, f64)>>> =
-        if let Some(ctx) = join_miter {
+        if let Some(pre) = precomputed_miters {
+            let mut v = pre.to_vec();
+            v.resize(layers.len(), None);
+            v
+        } else if let Some(ctx) = join_miter {
             engine::miter::mitered_layer_footprints(
                 &self_axis_2d,
                 &self_layer_data,
@@ -900,44 +1026,47 @@ pub fn regenerate_wall_representation_with_corner(
         let mat_name = &layer.material;
         // Prefer a true per-layer miter when the join helper could match this
         // layer index against the other wall; otherwise fall back to the
-        // corner-extended contour (or the plain base contour).
-        let footprint: Vec<(f64, f64)> =
+        // corner-extended footprint (or the plain base footprint) from
+        // WallRepresentation.
+        // Prefer a true per-layer miter / corner-extended footprint when
+        // available (those paths are still straight-only). Otherwise use the
+        // bulge-aware base footprint so curved axes keep exact offset arcs.
+        // With openings and no miter/corner override, emit one 2D contour+hatch
+        // per disconnected piece (through-cut splits the band).
+        let uncut_footprint: (Vec<(f64, f64)>, Vec<f64>) =
             if let Some(Some(mitered)) = mitered_footprints.get(i) {
-                mitered.clone()
-            } else if let Some((b1, b2)) = extended_contours.get(i) {
-                let mut fp = Vec::with_capacity(b1.len() + b2.len());
-                fp.extend(b1.iter().copied());
-                fp.extend(b2.iter().rev().copied());
-                fp
+                (mitered.clone(), vec![0.0; mitered.len()])
+            } else if let Some(fp) = extended_footprints.get(i) {
+                (fp.clone(), vec![0.0; fp.len()])
             } else {
-                let (b1, b2) = &base_contours[i];
-                let mut fp = Vec::with_capacity(b1.len() + b2.len());
-                fp.extend(b1.iter().copied());
-                fp.extend(b2.iter().rev().copied());
-                fp
+                (
+                    base_footprints[i].clone(),
+                    base_footprint_bulges
+                        .get(i)
+                        .cloned()
+                        .unwrap_or_else(|| vec![0.0; base_footprints[i].len()]),
+                )
             };
-        if footprint.len() < 3 {
-            continue;
-        }
 
-        // Visible closed contour polyline for this layer.
-        let mut pl = LwPolyline::new();
-        for &(x, y) in &footprint {
-            pl.add_vertex(LwVertex::new(Vector2::new(x, y)));
-        }
-        pl.is_closed = true;
-        let contour_entity = EntityType::LwPolyline(pl);
-        let contour_handle = scene.add_entity(contour_entity.clone());
-        if let Some(layer_name) = layer.layer_override.as_deref().filter(|s| !s.is_empty()) {
-            scene.ensure_layer(layer_name);
-            if let Some(e) = scene.document.get_entity_mut(contour_handle) {
-                e.as_entity_mut().set_layer(layer_name.to_string());
-            }
-        }
-        write_wall_derived_tag(scene, contour_handle, wall_handle);
-        new_derived.push(contour_handle);
+        let use_opening_cuts = mitered_footprints.get(i).and_then(|o| o.as_ref()).is_none()
+            && extended_footprints.get(i).is_none()
+            && opening_cut_layers.is_some();
 
-        // Material-driven hatch over the same footprint.
+        let pieces_2d: Vec<(Vec<(f64, f64)>, Vec<f64>)> = if use_opening_cuts {
+            opening_cut_layers
+                .as_ref()
+                .and_then(|cuts| cuts.get(i))
+                .map(|pieces| {
+                    pieces
+                        .iter()
+                        .map(|p| (p.clone(), vec![0.0; p.len()]))
+                        .collect()
+                })
+                .unwrap_or_else(|| vec![uncut_footprint.clone()])
+        } else {
+            vec![uncut_footprint.clone()]
+        };
+
         let material = library.materials.iter().find(|m| &m.id == mat_name);
         let pattern_name = material
             .map(|m| m.hatch_pattern.clone())
@@ -946,7 +1075,6 @@ pub fn regenerate_wall_representation_with_corner(
         let color = material
             .map(|m| wall_hatch_color(m.line_color))
             .unwrap_or([0.6, 0.6, 0.6, 0.85]);
-        let (rel, origin, wcs) = pack_wall_ring(&footprint);
         let families = crate::scene::model::hatch_patterns::find(&pattern_name)
             .and_then(|e| {
                 if let crate::scene::model::hatch_model::HatchPattern::Pattern(f) = &e.gpu {
@@ -956,52 +1084,91 @@ pub fn regenerate_wall_representation_with_corner(
                 }
             })
             .unwrap_or_default();
-        let hatch_model = crate::scene::model::hatch_model::HatchModel {
-            boundary: std::sync::Arc::new(rel),
-            pattern: crate::scene::model::hatch_model::HatchPattern::Pattern(families),
-            name: pattern_name,
-            color,
-            aci: 0,
-            line_weight_px: 1.0,
-            angle_offset: 0.0,
-            scale: 1.0,
-            world_origin: origin,
-            boundary_wcs: Some(std::sync::Arc::new(wcs)),
-            draw_depth: 0.0,
-        };
-        let hatch_handle = scene.add_hatch(hatch_model);
-        if let Some(layer_name) = layer.layer_override.as_deref().filter(|s| !s.is_empty()) {
-            scene.ensure_layer(layer_name);
-            if let Some(e) = scene.document.get_entity_mut(hatch_handle) {
-                e.as_entity_mut().set_layer(layer_name.to_string());
+
+        // 2D contour + hatch for each remaining piece after openings.
+        for (footprint, footprint_bulges) in &pieces_2d {
+            if footprint.len() < 3 {
+                continue;
             }
+
+            let mut pl = LwPolyline::new();
+            for (idx, &(x, y)) in footprint.iter().enumerate() {
+                let bulge = footprint_bulges.get(idx).copied().unwrap_or(0.0);
+                pl.add_vertex(LwVertex::with_bulge(Vector2::new(x, y), bulge));
+            }
+            pl.is_closed = true;
+            let contour_entity = EntityType::LwPolyline(pl);
+            let contour_handle = scene.add_entity(contour_entity);
+            if let Some(layer_name) = layer.layer_override.as_deref().filter(|s| !s.is_empty()) {
+                scene.ensure_layer(layer_name);
+                if let Some(e) = scene.document.get_entity_mut(contour_handle) {
+                    e.as_entity_mut().set_layer(layer_name.to_string());
+                }
+            }
+            write_wall_derived_tag(scene, contour_handle, wall_handle);
+            new_derived.push(contour_handle);
+
+            let (rel, origin, wcs) = pack_wall_ring(footprint);
+            let hatch_model = crate::scene::model::hatch_model::HatchModel {
+                boundary: std::sync::Arc::new(rel),
+                pattern: crate::scene::model::hatch_model::HatchPattern::Pattern(families.clone()),
+                name: pattern_name.clone(),
+                color,
+                aci: 0,
+                line_weight_px: 1.0,
+                angle_offset: 0.0,
+                scale: 1.0,
+                world_origin: origin,
+                boundary_wcs: Some(std::sync::Arc::new(wcs)),
+                draw_depth: 0.0,
+            };
+            let hatch_handle = scene.add_hatch(hatch_model);
+            if let Some(layer_name) = layer.layer_override.as_deref().filter(|s| !s.is_empty()) {
+                scene.ensure_layer(layer_name);
+                if let Some(e) = scene.document.get_entity_mut(hatch_handle) {
+                    e.as_entity_mut().set_layer(layer_name.to_string());
+                }
+            }
+            write_wall_derived_tag(scene, hatch_handle, wall_handle);
+            new_derived.push(hatch_handle);
         }
-        write_wall_derived_tag(scene, hatch_handle, wall_handle);
-        new_derived.push(hatch_handle);
 
-        // Extruded solid for this layer.
-        if let Some(ext) = extrusions.get(i) {
-            if ext.height.abs() > 1e-9 {
-                let to_extrude = if ext.base_offset.abs() > 1e-9 {
-                    let mut clone = contour_entity.clone();
-                    if let EntityType::LwPolyline(ref mut pl) = clone {
-                        pl.elevation = ext.base_offset;
+        // Extruded solid for this layer — intentionally uses the *uncut*
+        // footprint. Per-sill/head 3D boolean cutting of openings is deferred
+        // (Step 4 deliverable is tested 2D cutting).
+        let (footprint, footprint_bulges) = &uncut_footprint;
+        if footprint.len() >= 3 {
+            let mut pl = LwPolyline::new();
+            for (idx, &(x, y)) in footprint.iter().enumerate() {
+                let bulge = footprint_bulges.get(idx).copied().unwrap_or(0.0);
+                pl.add_vertex(LwVertex::with_bulge(Vector2::new(x, y), bulge));
+            }
+            pl.is_closed = true;
+            let contour_entity = EntityType::LwPolyline(pl);
+
+            if let Some(ext) = extrusions.get(i) {
+                if ext.height.abs() > 1e-9 {
+                    let to_extrude = if ext.base_offset.abs() > 1e-9 {
+                        let mut clone = contour_entity.clone();
+                        if let EntityType::LwPolyline(ref mut pl) = clone {
+                            pl.elevation = ext.base_offset;
+                        }
+                        Some(clone)
+                    } else {
+                        None
+                    };
+                    let entity_to_use = to_extrude.as_ref().unwrap_or(&contour_entity);
+
+                    if let Some(body) =
+                        crate::scene::model::sweep_model::extruded(entity_to_use, ext.height)
+                    {
+                        let mut s3d = acadrust::entities::Solid3D::new();
+                        s3d.wires = crate::scene::model::solid_model::edge_wires(&body);
+                        let solid_handle = scene.add_entity(EntityType::Solid3D(s3d));
+                        scene.register_solid_model(solid_handle, body);
+                        write_wall_derived_tag(scene, solid_handle, wall_handle);
+                        new_derived.push(solid_handle);
                     }
-                    Some(clone)
-                } else {
-                    None
-                };
-                let entity_to_use = to_extrude.as_ref().unwrap_or(&contour_entity);
-
-                if let Some(body) =
-                    crate::scene::model::sweep_model::extruded(entity_to_use, ext.height)
-                {
-                    let mut s3d = acadrust::entities::Solid3D::new();
-                    s3d.wires = crate::scene::model::solid_model::edge_wires(&body);
-                    let solid_handle = scene.add_entity(EntityType::Solid3D(s3d));
-                    scene.register_solid_model(solid_handle, body);
-                    write_wall_derived_tag(scene, solid_handle, wall_handle);
-                    new_derived.push(solid_handle);
                 }
             }
         }
@@ -1193,31 +1360,9 @@ impl WallCommand {
         if let Some(id) = last_style_id {
             if let Some(lib) = &cmd.library {
                 if let Some(style) = lib.wall_styles.iter().find(|s| s.style.id == id) {
-                    let mut style_map = HashMap::new();
-                    for s in &lib.wall_styles {
-                        style_map.insert(s.style.id.clone(), s.clone());
-                    }
-                    if let Ok(layers) = effective_layers(&style_map, &style.style.id) {
-                        let resolved = layers
-                            .into_iter()
-                            .map(|layer| {
-                                let mat_name = lib
-                                    .materials
-                                    .iter()
-                                    .find(|m| m.id == layer.material_id)
-                                    .map(|m| m.name.clone())
-                                    .unwrap_or_else(|| layer.material_id.clone());
-                                WallLayer {
-                                    material: mat_name,
-                                    thickness: layer.thickness,
-                                    function: layer_function_to_str(&layer.function),
-                                    gap_before: layer.gap_before,
-                                    bottom_offset: layer.bottom_offset,
-                                    top_offset: layer.top_offset,
-                                    layer_override: layer.layer_override.clone(),
-                                }
-                            })
-                            .collect();
+                    if let Some(resolved) =
+                        resolve_wall_style_layers(lib, &style.style.id, None)
+                    {
                         cmd.style_id = Some(style.style.id.clone());
                         cmd.resolved_layers = Some(resolved);
                     }
@@ -1344,16 +1489,17 @@ impl WallCommand {
             return None;
         }
         // Follow the same thickness fallback as `build_entity`: once a style
-        // is picked, use its resolved layers' total thickness; before that
-        // (or if there are no layers), fall back to the default wall
-        // thickness so the outline preview always follows the cursor,
-        // regardless of whether a style has been chosen yet.
-        let total_thickness: f64 = match self.resolved_layers.as_ref() {
-            Some(layers) if !layers.is_empty() => {
-                layers.iter().map(|l| l.thickness + l.gap_before).sum()
-            }
-            _ => self.wall.thickness,
+        // is picked, use its resolved layers; before that (or if there are no
+        // layers), fall back to a single default-thickness layer so the outline
+        // preview always follows the cursor.
+        let layer_data: Vec<(f64, f64)> = match self.resolved_layers.as_ref() {
+            Some(layers) if !layers.is_empty() => layers
+                .iter()
+                .map(|l| (l.thickness, l.gap_before))
+                .collect(),
+            _ => vec![(self.wall.thickness, 0.0)],
         };
+        let total_thickness: f64 = layer_data.iter().map(|(t, g)| t + g).sum();
         let centerline_offset = self.justification.offset(total_thickness);
 
         let points: Vec<(f64, f64)> = self.vertices
@@ -1364,12 +1510,17 @@ impl WallCommand {
             })
             .collect();
 
-        let contour_points =
-            engine::contour::outer_contour(&points, total_thickness, centerline_offset);
+        // Shared WallRepresentation path — outer_contour_2d is produced by the
+        // existing contour helpers, so the live draw outline is unchanged.
+        let repr = engine::representation::build_wall_representation(
+            &points,
+            &layer_data,
+            centerline_offset,
+        );
 
         let mut pl = LwPolyline::new();
         pl.is_closed = true;
-        for (x, y) in contour_points {
+        for (x, y) in repr.outer_contour_2d {
             pl.add_vertex(LwVertex::new(Vector2::new(x, y)));
         }
 
@@ -1530,20 +1681,22 @@ impl CadCommand for WallCommand {
         );
         let mut wires = vec![axis_wire];
 
-        // Outline rubber band: the wall's outer contour, computed on the
-        // committed vertices plus the not-yet-placed cursor point, so the
-        // outline is visible and follows the cursor from the first point
-        // onward — even before a wall style has been chosen (falls back to
-        // the default thickness, same as `build_contour_entity`).
+        // Outline rubber band: the wall's outer contour via the shared
+        // WallRepresentation builder, computed on the committed vertices plus
+        // the not-yet-placed cursor point. Same thickness/justification fallback
+        // as `build_contour_entity` so the outline tracks the cursor from the
+        // first point onward, including before a style is chosen.
         let mut temp_vertices = self.vertices.clone();
         temp_vertices.push(pt);
         if temp_vertices.len() >= 2 {
-            let total_thickness: f64 = match self.resolved_layers.as_ref() {
-                Some(layers) if !layers.is_empty() => {
-                    layers.iter().map(|l| l.thickness + l.gap_before).sum()
-                }
-                _ => self.wall.thickness,
+            let layer_data: Vec<(f64, f64)> = match self.resolved_layers.as_ref() {
+                Some(layers) if !layers.is_empty() => layers
+                    .iter()
+                    .map(|l| (l.thickness, l.gap_before))
+                    .collect(),
+                _ => vec![(self.wall.thickness, 0.0)],
             };
+            let total_thickness: f64 = layer_data.iter().map(|(t, g)| t + g).sum();
             let centerline_offset = self.justification.offset(total_thickness);
             let points: Vec<(f64, f64)> = temp_vertices
                 .iter()
@@ -1552,10 +1705,16 @@ impl CadCommand for WallCommand {
                     (local.x, local.y)
                 })
                 .collect();
-            let contour_points =
-                engine::contour::outer_contour(&points, total_thickness, centerline_offset);
-            if !contour_points.is_empty() {
-                let mut world_pts: Vec<[f32; 3]> = contour_points
+            // Full outer contour (not drag_ghost) so justification stays correct
+            // and the rubber-band matches the committed contour entity.
+            let repr = engine::representation::build_wall_representation(
+                &points,
+                &layer_data,
+                centerline_offset,
+            );
+            if !repr.outer_contour_2d.is_empty() {
+                let mut world_pts: Vec<[f32; 3]> = repr
+                    .outer_contour_2d
                     .iter()
                     .map(|&(x, y)| self.plane.to_world(DVec3::new(x, y, 0.0)).as_vec3().to_array())
                     .collect();
@@ -1656,41 +1815,8 @@ impl CadCommand for WallCommand {
 
                 if let Some(style) = selected {
                     self.style_id = Some(style.style.id.clone());
-
-                    // Resolve layers
-                    let mut style_map = HashMap::new();
-                    for s in &lib.wall_styles {
-                        style_map.insert(s.style.id.clone(), s.clone());
-                    }
-
-                    if let Ok(layers) = effective_layers(&style_map, &style.style.id) {
-                        let mut resolved = Vec::new();
-                        for layer in layers {
-                            let mat_name = lib
-                                .materials
-                                .iter()
-                                .find(|m| m.id == layer.material_id)
-                                .map(|m| m.name.clone())
-                                .unwrap_or_else(|| layer.material_id.clone());
-
-                            let func_str = match &layer.function {
-                                LayerFunction::Structural => "Structural".to_string(),
-                                LayerFunction::Insulation => "Insulation".to_string(),
-                                LayerFunction::Finish => "Finish".to_string(),
-                                LayerFunction::Other(s) => s.clone(),
-                            };
-                            resolved.push(WallLayer {
-                                material: mat_name,
-                                thickness: layer.thickness,
-                                function: func_str,
-                                gap_before: layer.gap_before,
-                                bottom_offset: layer.bottom_offset,
-                                top_offset: layer.top_offset,
-                                layer_override: layer.layer_override.clone(),
-                            });
-                        }
-                        self.resolved_layers = Some(resolved);
-                    }
+                    self.resolved_layers =
+                        resolve_wall_style_layers(lib, &style.style.id, None);
 
                     // Style doesn't have height, so go to AskHeight
                     self.phase = WallPhase::AskHeight;
@@ -1788,35 +1914,8 @@ impl CadCommand for WallCommand {
 
                 self.style_id = Some(style.style.id.clone());
                 self.no_style_warning = false;
-
-                let mut style_map = HashMap::new();
-                for s in &lib.wall_styles {
-                    style_map.insert(s.style.id.clone(), s.clone());
-                }
-
-                if let Ok(layers) = effective_layers(&style_map, &style.style.id) {
-                    let mut resolved = Vec::new();
-                    for layer in layers {
-                        let mat_name = lib
-                            .materials
-                            .iter()
-                            .find(|m| m.id == layer.material_id)
-                            .map(|m| m.name.clone())
-                            .unwrap_or_else(|| layer.material_id.clone());
-
-                        let func_str = layer_function_to_str(&layer.function);
-                        resolved.push(WallLayer {
-                            material: mat_name,
-                            thickness: layer.thickness,
-                            function: func_str,
-                            gap_before: layer.gap_before,
-                            bottom_offset: layer.bottom_offset,
-                            top_offset: layer.top_offset,
-                            layer_override: layer.layer_override.clone(),
-                        });
-                    }
-                    self.resolved_layers = Some(resolved);
-                }
+                self.resolved_layers =
+                    resolve_wall_style_layers(lib, &style.style.id, None);
 
                 self.sync_live_if_previewable(false)
             }
@@ -1837,6 +1936,98 @@ fn layer_function_to_str(f: &LayerFunction) -> String {
         LayerFunction::Insulation => "Insulation".to_string(),
         LayerFunction::Finish => "Finish".to_string(),
         LayerFunction::Other(s) => s.clone(),
+    }
+}
+
+/// Resolve a wall style's effective layers into concrete [`WallLayer`]s.
+///
+/// Formula thicknesses are evaluated with `"BB"` = `bb` when provided, otherwise
+/// the sum of fixed layer thicknesses (+ gaps) from the style
+/// ([`base_width_from_layers`]). Invalid formulas fall back to `0.0` thickness
+/// (see [`ResolvedLayer::formula_error`]).
+///
+/// When `use_material_names` is true, material fields store the library display
+/// name; otherwise the raw material id is kept (properties/style-picker path).
+pub fn resolve_wall_style_layers(
+    lib: &StyleLibrary,
+    style_id: &str,
+    bb: Option<f64>,
+) -> Option<Vec<WallLayer>> {
+    resolve_wall_style_layers_ex(lib, style_id, bb, true)
+}
+
+/// Same as [`resolve_wall_style_layers`] but keeps material ids instead of names.
+pub fn resolve_wall_style_layers_ids(
+    lib: &StyleLibrary,
+    style_id: &str,
+    bb: Option<f64>,
+) -> Option<Vec<WallLayer>> {
+    resolve_wall_style_layers_ex(lib, style_id, bb, false)
+}
+
+fn resolve_wall_style_layers_ex(
+    lib: &StyleLibrary,
+    style_id: &str,
+    bb: Option<f64>,
+    use_material_names: bool,
+) -> Option<Vec<WallLayer>> {
+    let style_map: HashMap<String, WallStyle> = lib
+        .wall_styles
+        .iter()
+        .map(|s| (s.style.id.clone(), s.clone()))
+        .collect();
+
+    // Need unresolved layers first when BB is not supplied.
+    let unresolved = super::engine::wall_style::effective_layers(&style_map, &style_id.to_string())
+        .ok()?;
+    let bb = bb.unwrap_or_else(|| base_width_from_layers(&unresolved));
+    let resolved = effective_layers_for_wall_bb(&style_map, &style_id.to_string(), bb).ok()?;
+
+    Some(
+        resolved
+            .into_iter()
+            .map(|layer| {
+                if use_material_names {
+                    resolved_layer_to_wall_layer(lib, layer)
+                } else {
+                    resolved_layer_to_wall_layer_raw(layer)
+                }
+            })
+            .collect(),
+    )
+}
+
+/// Map a [`ResolvedLayer`] to a runtime [`WallLayer`], preferring the library
+/// material display name when available.
+fn resolved_layer_to_wall_layer(lib: &StyleLibrary, layer: ResolvedLayer) -> WallLayer {
+    let mat_name = lib
+        .materials
+        .iter()
+        .find(|m| m.id == layer.material_id)
+        .map(|m| m.name.clone())
+        .unwrap_or_else(|| layer.material_id.clone());
+    WallLayer {
+        material: mat_name,
+        thickness: layer.thickness,
+        function: layer_function_to_str(&layer.function),
+        gap_before: layer.gap_before,
+        bottom_offset: layer.bottom_offset,
+        top_offset: layer.top_offset,
+        layer_override: layer.layer_override,
+    }
+}
+
+/// Like [`resolved_layer_to_wall_layer`] but keeps `material_id` as the material
+/// string (used by the properties/style-picker paths that store ids).
+fn resolved_layer_to_wall_layer_raw(layer: ResolvedLayer) -> WallLayer {
+    WallLayer {
+        material: layer.material_id,
+        thickness: layer.thickness,
+        function: layer_function_to_str(&layer.function),
+        gap_before: layer.gap_before,
+        bottom_offset: layer.bottom_offset,
+        top_offset: layer.top_offset,
+        layer_override: layer.layer_override,
     }
 }
 
@@ -2229,7 +2420,7 @@ pub fn aec_style_add(command_line: &mut CommandLine, args: &str) {
                 .find(|m| m.name.eq_ignore_ascii_case(mat_name))
                 .map(|m| m.id.clone())
                 .unwrap_or_else(|| format!("mat_{}", slugify(mat_name)));
-            let thickness: f64 = thick_str.parse().unwrap_or(0.2);
+            let thickness = LayerValue::parse_str(thick_str);
             layers.push(Layer {
                 material_id,
                 thickness,
@@ -2724,13 +2915,39 @@ pub fn find_wall_to_auto_join(
 }
 
 /// Attempt automatic L/T joins for `wall_handle` against nearby walls (up to
-/// one join per endpoint). Returns every axis + derived handle touched so
-/// callers can refresh 2D and 3D in one `bump_entities` call. Never errors —
+/// one join per endpoint). When 3+ walls meet at a shared point, resolves the
+/// full junction together (N-way miter); otherwise falls back to pairwise
+/// [`join_two_walls_in_document`]. Returns every axis + derived handle touched
+/// so callers can refresh 2D and 3D in one `bump_entities` call. Never errors —
 /// failed/no-candidate joins are silent no-ops.
 pub fn try_auto_join_nearby_walls(scene: &mut Scene, wall_handle: Handle) -> Vec<Handle> {
     let mut touched = Vec::new();
     let mut excluding = vec![wall_handle];
-    // At most two joins (start endpoint + end endpoint against different walls).
+
+    // Prefer multi-wall junction resolution when 3+ walls already cluster at
+    // an endpoint of `wall_handle` (or a nearby through-hit).
+    let junction_touched = try_join_multi_wall_junctions(scene, wall_handle);
+    if !junction_touched.is_empty() {
+        touched.extend(junction_touched.iter().copied());
+        // Walls already rebuilt via the junction path shouldn't be pairwise-
+        // joined again in this pass.
+        for h in &junction_touched {
+            if *h != wall_handle && !excluding.contains(h) {
+                // Only treat axis handles as exclusions (derived handles are
+                // also in the touched list).
+                if scene
+                    .document
+                    .get_entity(*h)
+                    .is_some_and(is_wall_axis_xdata)
+                {
+                    excluding.push(*h);
+                }
+            }
+        }
+    }
+
+    // Pairwise fallback for remaining simple 2-wall L/T joins (at most two:
+    // start endpoint + end endpoint against different walls).
     for _ in 0..2 {
         let Some(other) = find_wall_to_auto_join(scene, wall_handle, &excluding) else {
             break;
@@ -2752,6 +2969,171 @@ pub fn try_auto_join_nearby_walls(scene: &mut Scene, wall_handle: Handle) -> Vec
     touched
 }
 
+/// Collect every wall axis handle in the document (excluding derived geometry).
+fn all_wall_axis_handles(scene: &Scene) -> Vec<Handle> {
+    scene
+        .document
+        .entities()
+        .filter(|e| is_wall_axis_xdata(e))
+        .map(|e| e.common().handle)
+        .collect()
+}
+
+/// Detect multi-wall junctions involving `wall_handle` and resolve them with
+/// N-way miter. Returns touched handles (empty when no multi-wall junction).
+fn try_join_multi_wall_junctions(scene: &mut Scene, wall_handle: Handle) -> Vec<Handle> {
+    let handles = all_wall_axis_handles(scene);
+    if handles.len() < 3 {
+        return Vec::new();
+    }
+    let axes: Vec<Vec<DVec3>> = handles
+        .iter()
+        .map(|h| get_wall_vertices(scene, *h))
+        .collect();
+    let axis_refs: Vec<&[DVec3]> = axes.iter().map(|a| a.as_slice()).collect();
+    let junctions = join::detect_junctions(&axis_refs, join::JUNCTION_TOLERANCE);
+
+    let self_idx = handles.iter().position(|h| *h == wall_handle);
+    let Some(self_idx) = self_idx else {
+        return Vec::new();
+    };
+
+    let mut touched = Vec::new();
+    for junc in junctions.into_iter().filter(|j| j.is_multi_wall()) {
+        if !junc.participants.iter().any(|p| p.wall_index == self_idx) {
+            continue;
+        }
+        // Restrict the participant set to walls in this junction.
+        let part_handles: Vec<Handle> = junc
+            .participants
+            .iter()
+            .map(|p| handles[p.wall_index])
+            .collect();
+        if let Ok(t) = join_junction_in_document(scene, &part_handles) {
+            touched.extend(t);
+        }
+    }
+    touched.sort_by_key(|h| h.value());
+    touched.dedup();
+    touched
+}
+
+/// Snap all participants of a multi-wall junction to the shared point and
+/// rebuild every endpoint wall with N-way mitered layer footprints.
+///
+/// `handles` are the wall axis handles participating in the junction (order
+/// does not matter). Returns every touched axis + derived handle.
+pub fn join_junction_in_document(
+    scene: &mut Scene,
+    handles: &[Handle],
+) -> Result<Vec<Handle>, JoinError> {
+    if handles.len() < 2 {
+        return Err(JoinError::Degenerate);
+    }
+    let axes: Vec<Vec<DVec3>> = handles
+        .iter()
+        .map(|h| get_wall_vertices(scene, *h))
+        .collect();
+    if axes.iter().any(|a| a.len() < 2) {
+        return Err(JoinError::Degenerate);
+    }
+    let axis_refs: Vec<&[DVec3]> = axes.iter().map(|a| a.as_slice()).collect();
+    // Use a slightly looser tol than pure geometry equality so near-miss
+    // endpoints from interactive drawing still cluster (snap radius scale).
+    let tol = join::JUNCTION_TOLERANCE.max(1e-4);
+    let junctions = join::detect_junctions(&axis_refs, tol);
+    let Some(junc) = junctions
+        .into_iter()
+        .filter(|j| j.is_multi_wall())
+        .max_by_key(|j| j.participants.len())
+    else {
+        return Err(JoinError::NoIntersection);
+    };
+
+    // Snap endpoint participants.
+    let snapped = join::apply_junction_to_axes(&axis_refs, &junc);
+    for p in &junc.participants {
+        if matches!(p.role, join::JunctionRole::Endpoint(_)) {
+            update_wall_vertices(scene, handles[p.wall_index], &snapped[p.wall_index]);
+        }
+    }
+
+    // Build 2D axes + layers for miter (index = original wall index in `handles`).
+    let axes_2d: Vec<Vec<(f64, f64)>> = snapped
+        .iter()
+        .map(|a| a.iter().map(|p| (p.x, p.y)).collect())
+        .collect();
+    let layers: Vec<Vec<engine::miter::MiterLayer>> = handles
+        .iter()
+        .map(|h| wall_layer_data(scene, *h))
+        .collect();
+
+    // Remap junction.participants wall_index (already into `handles`) → geoms.
+    let geoms = engine::miter::junction_wall_geoms(&junc, &axes_2d, &layers);
+    // junction_wall_geoms expects axes/layers indexed by participant.wall_index.
+    // Our junc was built from `handles`/`axes` directly, so wall_index is into
+    // those slices — correct.
+    let all_fps = engine::miter::mitered_junction_layer_footprints(&junc, &geoms);
+
+    // Max thickness among participants — used for corner_override fallback.
+    let thicknesses: Vec<f64> = handles
+        .iter()
+        .map(|h| {
+            scene
+                .document
+                .get_entity(*h)
+                .and_then(wall_thickness_and_height)
+                .map(|(t, _, _)| t)
+                .unwrap_or(0.0)
+        })
+        .collect();
+    let max_other_half = |self_i: usize| -> f64 {
+        thicknesses
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| *i != self_i)
+            .map(|(_, t)| t * 0.5)
+            .fold(0.0_f64, f64::max)
+    };
+
+    let mut touched = Vec::new();
+    // `all_fps` is aligned with `junc.participants` / `geoms`, not raw handles.
+    for (pi, part) in junc.participants.iter().enumerate() {
+        let h = handles[part.wall_index];
+        let axis = &snapped[part.wall_index];
+        let fps = all_fps.get(pi).map(|v| v.as_slice()).unwrap_or(&[]);
+
+        let override_pt = match part.role {
+            join::JunctionRole::Endpoint(end_idx) => {
+                let half = max_other_half(part.wall_index);
+                if half > 0.0 {
+                    Some((end_idx, extended_endpoint(axis, end_idx, half)))
+                } else {
+                    None
+                }
+            }
+            join::JunctionRole::Through(_) => None,
+        };
+
+        // Endpoint walls get precomputed miters; through-walls just refresh.
+        let result = if matches!(part.role, join::JunctionRole::Endpoint(_)) {
+            regenerate_wall_representation_with_precomputed_miters(
+                scene, h, override_pt, fps,
+            )
+        } else {
+            regenerate_wall_representation(scene, h)
+        };
+        match result {
+            Ok(t) => touched.extend(t),
+            Err(_) => touched.push(h),
+        }
+    }
+
+    touched.sort_by_key(|h| h.value());
+    touched.dedup();
+    Ok(touched)
+}
+
 /// Collect every handle that must be bumped after a wall edit: the axis plus
 /// its current `derived_handles` (contour/hatch/solid). Used when a caller
 /// needs the full package without regenerating.
@@ -2770,6 +3152,10 @@ pub fn wall_package_handles(scene: &Scene, wall_handle: Handle) -> Vec<Handle> {
 /// The handle set always includes both axes plus every newly created derived
 /// entity so callers can refresh 2D (resident wires/hatches) and 3D (meshes)
 /// together.
+///
+/// After the pairwise axis join, if a third (or more) wall already meets at
+/// the join point the full junction is re-resolved with N-way miters so
+/// pairwise overwrites cannot leave inconsistent footprints.
 pub fn join_two_walls_in_document(
     scene: &mut Scene,
     h_a: Handle,
@@ -2811,6 +3197,45 @@ pub fn join_two_walls_in_document(
 
             update_wall_vertices(scene, h_a, &new_a);
             update_wall_vertices(scene, h_b, &new_b);
+
+            // If other walls already meet at this join point, escalate to
+            // N-way junction resolution so miters stay consistent.
+            let join_pt = end_a
+                .map(|i| new_a[i])
+                .or_else(|| end_b.map(|i| new_b[i]))
+                .or_else(|| {
+                    // T with A as through: join sits at B's moved end.
+                    end_b.map(|i| new_b[i])
+                });
+            if let Some(pt) = join_pt {
+                let mut participants = vec![h_a, h_b];
+                for entity in scene.document.entities() {
+                    let h = entity.common().handle;
+                    if h == h_a || h == h_b || !is_wall_axis_xdata(entity) {
+                        continue;
+                    }
+                    let axis = get_wall_vertices(scene, h);
+                    if axis.len() < 2 {
+                        continue;
+                    }
+                    let end_hit = [axis[0], *axis.last().unwrap()]
+                        .iter()
+                        .any(|e| e.distance(pt) <= join::JUNCTION_TOLERANCE.max(1e-4));
+                    let through_hit = (0..axis.len() - 1).any(|i| {
+                        let d = point_to_segment_dist_2d(pt, axis[i], axis[i + 1]);
+                        d <= join::JUNCTION_TOLERANCE.max(1e-4)
+                            && axis[i].distance(pt) > join::JUNCTION_TOLERANCE
+                            && axis[i + 1].distance(pt) > join::JUNCTION_TOLERANCE
+                    });
+                    if end_hit || through_hit {
+                        participants.push(h);
+                    }
+                }
+                if participants.len() >= 3 {
+                    let touched = join_junction_in_document(scene, &participants)?;
+                    return Ok((kind, touched));
+                }
+            }
 
             let mut touched = Vec::new();
 
@@ -3347,6 +3772,281 @@ pub fn aec_wallreverse_do(scene: &mut Scene, command_line: &mut CommandLine, arg
     }
 }
 
+// ── Wall openings (window / door) ──────────────────────────────────────────
+
+/// Build an `OPENING` XDATA record for a standalone opening entity.
+fn opening_record(opening: &engine::openings::Opening) -> ExtendedDataRecord {
+    let mut record = ExtendedDataRecord::new(AEC_APPID);
+    record.add_value(XDataValue::String("OPENING".to_string()));
+    record.add_value(XDataValue::Handle(opening.host_wall));
+    record.add_value(XDataValue::Distance(opening.distance_along_axis));
+    record.add_value(XDataValue::Distance(opening.width));
+    record.add_value(XDataValue::Distance(opening.height));
+    record.add_value(XDataValue::Distance(opening.sill_height));
+    record.add_value(XDataValue::String(opening.kind.as_str().to_string()));
+    record
+}
+
+/// Parse an `OPENING` XDATA record. `handle` is the entity that carries it.
+pub fn opening_from_entity(entity: &EntityType, handle: Handle) -> Option<engine::openings::Opening> {
+    let record = read_aec_record(entity)?;
+    let v = &record.values;
+    if v.len() < 7 {
+        return None;
+    }
+    let XDataValue::String(kind) = &v[0] else {
+        return None;
+    };
+    if kind != "OPENING" {
+        return None;
+    }
+    let host_wall = match &v[1] {
+        XDataValue::Handle(h) => *h,
+        _ => return None,
+    };
+    let distance_along_axis = match v[2] {
+        XDataValue::Distance(d) => d,
+        _ => return None,
+    };
+    let width = match v[3] {
+        XDataValue::Distance(d) => d,
+        _ => return None,
+    };
+    let height = match v[4] {
+        XDataValue::Distance(d) => d,
+        _ => return None,
+    };
+    let sill_height = match v[5] {
+        XDataValue::Distance(d) => d,
+        _ => return None,
+    };
+    let opening_kind = match &v[6] {
+        XDataValue::String(s) => engine::openings::OpeningKind::from_str(s),
+        _ => engine::openings::OpeningKind::Window,
+    };
+    Some(engine::openings::Opening {
+        handle,
+        host_wall,
+        distance_along_axis,
+        width,
+        height,
+        sill_height,
+        kind: opening_kind,
+    })
+}
+
+/// All openings in the document whose `host_wall` resolves to `wall_handle`.
+pub fn openings_for_host_wall(scene: &Scene, wall_handle: Handle) -> Vec<engine::openings::Opening> {
+    let wall_handle = resolve_wall_package(scene, wall_handle);
+    let mut out = Vec::new();
+    for entity in scene.document.entities() {
+        let handle = entity.common().handle;
+        if let Some(o) = opening_from_entity(entity, handle) {
+            let host = resolve_wall_package(scene, o.host_wall);
+            if host == wall_handle {
+                out.push(o);
+            }
+        }
+    }
+    out
+}
+
+/// Place a window/door opening on `wall_handle` at world point `pt`.
+///
+/// Creates a POINT entity carrying `OPENING` XDATA and regenerates the host
+/// wall's 2D representation so the opening cut appears. Returns the new
+/// opening handle plus every wall-derived handle touched.
+pub fn place_wall_opening(
+    scene: &mut Scene,
+    wall_handle: Handle,
+    pt: DVec3,
+    kind: engine::openings::OpeningKind,
+) -> Result<(Handle, Vec<Handle>), String> {
+    let wall_handle = resolve_wall_package(scene, wall_handle);
+    if !is_wall_pick_target(scene, wall_handle) {
+        return Err("select a wall entity".into());
+    }
+    let axis = get_wall_vertices(scene, wall_handle);
+    if axis.len() < 2 {
+        return Err("wall axis is degenerate".into());
+    }
+    let axis_2d: Vec<(f64, f64)> = axis.iter().map(|v| (v.x, v.y)).collect();
+    let distance = engine::openings::distance_along_axis_from_point(&axis_2d, (pt.x, pt.y))
+        .ok_or_else(|| "could not project point onto wall axis".to_string())?;
+
+    let placeholder = engine::openings::Opening {
+        handle: Handle::NULL,
+        host_wall: wall_handle,
+        distance_along_axis: distance,
+        width: match kind {
+            engine::openings::OpeningKind::Window => engine::openings::DEFAULT_WINDOW_WIDTH,
+            engine::openings::OpeningKind::Door => engine::openings::DEFAULT_DOOR_WIDTH,
+        },
+        height: match kind {
+            engine::openings::OpeningKind::Window => engine::openings::DEFAULT_WINDOW_HEIGHT,
+            engine::openings::OpeningKind::Door => engine::openings::DEFAULT_DOOR_HEIGHT,
+        },
+        sill_height: match kind {
+            engine::openings::OpeningKind::Window => engine::openings::DEFAULT_WINDOW_SILL,
+            engine::openings::OpeningKind::Door => engine::openings::DEFAULT_DOOR_SILL,
+        },
+        kind,
+    };
+
+    // Anchor the POINT at the projected axis location (not the raw click).
+    let (anchor, _) = engine::openings::point_and_tangent_at_distance(&axis_2d, distance)
+        .unwrap_or(((pt.x, pt.y), (1.0, 0.0)));
+    let point_entity = EntityType::Point(Point::at(Vector3::new(anchor.0, anchor.1, 0.0)));
+    let opening_handle = scene.add_entity(point_entity);
+
+    let mut opening = placeholder;
+    opening.handle = opening_handle;
+    write_aec_record(&mut scene.document, opening_handle, opening_record(&opening));
+
+    let mut touched = match regenerate_wall_representation(scene, wall_handle) {
+        Ok(t) => t,
+        Err(_) => vec![wall_handle],
+    };
+    touched.push(opening_handle);
+    touched.sort_by_key(|h| h.value());
+    touched.dedup();
+    Ok((opening_handle, touched))
+}
+
+/// `AEC_WINDOW` / `AEC_DOOR` — pick a wall, then a point along it to place
+/// an opening with default dimensions.
+pub struct WallOpeningCommand {
+    kind: engine::openings::OpeningKind,
+    wall: Option<Handle>,
+}
+
+impl WallOpeningCommand {
+    #[allow(clippy::new_without_default)]
+    pub fn new_window() -> Self {
+        Self {
+            kind: engine::openings::OpeningKind::Window,
+            wall: None,
+        }
+    }
+
+    #[allow(clippy::new_without_default)]
+    pub fn new_door() -> Self {
+        Self {
+            kind: engine::openings::OpeningKind::Door,
+            wall: None,
+        }
+    }
+}
+
+impl CadCommand for WallOpeningCommand {
+    fn name(&self) -> &'static str {
+        match self.kind {
+            engine::openings::OpeningKind::Window => "AEC_WINDOW",
+            engine::openings::OpeningKind::Door => "AEC_DOOR",
+        }
+    }
+
+    fn prompt(&self) -> String {
+        let tag = self.name();
+        if self.wall.is_none() {
+            format!("{tag}  Select wall:")
+        } else {
+            format!("{tag}  Specify point along wall:")
+        }
+    }
+
+    fn needs_entity_pick(&self) -> bool {
+        self.wall.is_none()
+    }
+
+    fn entity_pick_highlights_hover(&self) -> bool {
+        self.wall.is_none()
+    }
+
+    fn entity_pick_hover_highlights_handle(&self, scene: &Scene, handle: Handle) -> bool {
+        is_wall_pick_target(scene, handle)
+    }
+
+    fn on_entity_pick(&mut self, handle: Handle, _pt: DVec3) -> CmdResult {
+        if handle.is_null() {
+            return CmdResult::NeedPoint;
+        }
+        self.wall = Some(handle);
+        CmdResult::NeedPoint
+    }
+
+    fn on_point(&mut self, pt: DVec3) -> CmdResult {
+        let Some(wall) = self.wall else {
+            return CmdResult::NeedPoint;
+        };
+        let kind_flag = match self.kind {
+            engine::openings::OpeningKind::Window => "W",
+            engine::openings::OpeningKind::Door => "D",
+        };
+        CmdResult::Dispatch(format!(
+            "AEC_WALLOPENING_DO {}|{}|{},{},{}",
+            wall.value(),
+            kind_flag,
+            pt.x,
+            pt.y,
+            pt.z
+        ))
+    }
+
+    fn on_enter(&mut self) -> CmdResult {
+        CmdResult::Cancel
+    }
+}
+
+/// `AEC_WALLOPENING_DO handle|W|x,y,z` or `...|D|x,y,z` — non-interactive
+/// handler dispatched by [`WallOpeningCommand`].
+pub fn aec_wallopening_do(scene: &mut Scene, command_line: &mut CommandLine, args: &str) {
+    let parts: Vec<&str> = args.split('|').collect();
+    if parts.len() != 3 {
+        command_line.push_error("AEC_WALLOPENING: malformed arguments.");
+        return;
+    }
+    let Ok(wall_val) = parts[0].parse::<u64>() else {
+        command_line.push_error("AEC_WALLOPENING: malformed wall handle.");
+        return;
+    };
+    let kind = match parts[1] {
+        "D" | "d" | "Door" | "door" => engine::openings::OpeningKind::Door,
+        _ => engine::openings::OpeningKind::Window,
+    };
+    let xyz: Vec<&str> = parts[2].split(',').collect();
+    if xyz.len() < 2 {
+        command_line.push_error("AEC_WALLOPENING: malformed point.");
+        return;
+    }
+    let Ok(x) = xyz[0].parse::<f64>() else {
+        command_line.push_error("AEC_WALLOPENING: malformed point.");
+        return;
+    };
+    let Ok(y) = xyz[1].parse::<f64>() else {
+        command_line.push_error("AEC_WALLOPENING: malformed point.");
+        return;
+    };
+    let z = xyz.get(2).and_then(|s| s.parse::<f64>().ok()).unwrap_or(0.0);
+
+    match place_wall_opening(scene, Handle::new(wall_val), DVec3::new(x, y, z), kind) {
+        Ok((_opening, touched)) => {
+            let changes: Vec<_> = touched
+                .into_iter()
+                .map(|h| (h, crate::scene::ChangeKind::Modified))
+                .collect();
+            if !changes.is_empty() {
+                scene.bump_entities(&changes);
+            }
+            let label = kind.as_str();
+            command_line.push_info(&format!("AEC: {label} opening placed."));
+        }
+        Err(e) => {
+            command_line.push_error(&format!("AEC_WALLOPENING: {e}"));
+        }
+    }
+}
+
 #[cfg(test)]
 mod wall_command_tests {
     use super::*;
@@ -3827,7 +4527,7 @@ mod wall_command_tests {
             },
             layers: vec![Layer {
                 material_id: "brick_id".to_string(),
-                thickness: 0.25,
+                thickness: LayerValue::Fixed(0.25),
                 function: LayerFunction::Structural,
                 gap_before: 0.0,
                 bottom_offset: 0.0,
@@ -3945,7 +4645,7 @@ mod wall_command_tests {
             },
             layers: vec![Layer {
                 material_id: "brick_id".to_string(),
-                thickness: 0.25,
+                thickness: LayerValue::Fixed(0.25),
                 function: LayerFunction::Structural,
                 gap_before: 0.0,
                 bottom_offset: 0.0,
@@ -4001,7 +4701,7 @@ mod wall_command_tests {
             },
             layers: vec![Layer {
                 material_id: "brick_id".to_string(),
-                thickness: 0.25,
+                thickness: LayerValue::Fixed(0.25),
                 function: LayerFunction::Structural,
                 gap_before: 0.0,
                 bottom_offset: 0.0,
@@ -4330,7 +5030,7 @@ mod wall_command_tests {
                 },
                 layers: vec![Layer {
                     material_id: "Concrete".to_string(),
-                    thickness: 0.2,
+                    thickness: LayerValue::Fixed(0.2),
                     function: LayerFunction::Structural,
                     gap_before: 0.0,
                     bottom_offset: 0.0,
@@ -4351,7 +5051,7 @@ mod wall_command_tests {
                 layers: vec![
                     Layer {
                         material_id: "Brick".to_string(),
-                        thickness: 0.1,
+                        thickness: LayerValue::Fixed(0.1),
                         function: LayerFunction::Finish,
                         gap_before: 0.0,
                         bottom_offset: 0.0,
@@ -4360,7 +5060,7 @@ mod wall_command_tests {
                     },
                     Layer {
                         material_id: "Insulation".to_string(),
-                        thickness: 0.06,
+                        thickness: LayerValue::Fixed(0.06),
                         function: LayerFunction::Insulation,
                         gap_before: 0.0,
                         bottom_offset: 0.0,
@@ -4372,7 +5072,12 @@ mod wall_command_tests {
         );
 
         let new_style_id = "style2".to_string();
-        let layers = effective_layers(&wall_styles, &new_style_id).expect("style2 should resolve");
+        let bb = super::engine::wall_style::base_width_from_layers(
+            &super::engine::wall_style::effective_layers(&wall_styles, &new_style_id)
+                .expect("style2 should resolve"),
+        );
+        let layers = effective_layers_for_wall_bb(&wall_styles, &new_style_id, bb)
+            .expect("style2 should resolve");
         let wall_layers: Vec<WallLayer> = layers
             .into_iter()
             .map(|l| WallLayer {
@@ -5796,5 +6501,145 @@ mod wall_command_tests {
             cmd.entity_pick_highlights_hover(),
             "highlight while awaiting target"
         );
+    }
+
+    #[test]
+    fn formula_layer_resolution_feeds_identical_geometry_for_fixed_styles() {
+        // Fixed-only style must produce the same contour geometry through the
+        // formula-aware resolver as through a hand-built WallLayer stack.
+        let lib = engine::library::seed_default_library();
+        let style_id = "style_insulated_ext";
+        let resolved = resolve_wall_style_layers(&lib, style_id, None).expect("resolve");
+        assert_eq!(resolved.len(), 4);
+        assert!((resolved[0].thickness - 0.015).abs() < 1e-12);
+        assert!((resolved[1].thickness - 0.175).abs() < 1e-12);
+        assert!((resolved[2].thickness - 0.14).abs() < 1e-12);
+        assert!((resolved[3].thickness - 0.015).abs() < 1e-12);
+
+        let centerline = vec![(0.0, 0.0), (5.0, 0.0)];
+        let layer_data: Vec<(f64, f64)> = resolved
+            .iter()
+            .map(|l| (l.thickness, l.gap_before))
+            .collect();
+        let contours = engine::contour::layer_contours(&centerline, &layer_data);
+        assert_eq!(contours.len(), 4);
+
+        // Hand-built equivalent (pre-formula path).
+        let manual = vec![
+            (0.015, 0.0),
+            (0.175, 0.0),
+            (0.14, 0.0),
+            (0.015, 0.0),
+        ];
+        let manual_contours = engine::contour::layer_contours(&centerline, &manual);
+        assert_eq!(contours.len(), manual_contours.len());
+        for (a, b) in contours.iter().zip(manual_contours.iter()) {
+            assert_eq!(a.0.len(), b.0.len());
+            for (p1, p2) in a.0.iter().zip(b.0.iter()) {
+                assert!((p1.0 - p2.0).abs() < 1e-9 && (p1.1 - p2.1).abs() < 1e-9);
+            }
+            for (p1, p2) in a.1.iter().zip(b.1.iter()) {
+                assert!((p1.0 - p2.0).abs() < 1e-9 && (p1.1 - p2.1).abs() < 1e-9);
+            }
+        }
+    }
+
+    #[test]
+    fn bb_formula_style_changes_resolved_thickness_with_base_width() {
+        let mut lib = StyleLibrary::empty();
+        lib.materials.push(Material::new(
+            "mat_a".into(),
+            "A".into(),
+            "SOLID".into(),
+            0xFFFFFF,
+            "Continuous".into(),
+        ));
+        lib.upsert_wall_style(WallStyle {
+            style: Style {
+                id: "style_bb".into(),
+                name: "BB half".into(),
+                object_kind: "Wall".into(),
+                parent_style_id: None,
+            },
+            layers: vec![
+                Layer {
+                    material_id: "mat_a".into(),
+                    thickness: LayerValue::Fixed(0.1),
+                    function: LayerFunction::Structural,
+                    gap_before: 0.0,
+                    bottom_offset: 0.0,
+                    top_offset: 0.0,
+                    layer_override: None,
+                },
+                Layer {
+                    material_id: "mat_a".into(),
+                    thickness: LayerValue::Formula("BB * 0.5".into()),
+                    function: LayerFunction::Insulation,
+                    gap_before: 0.0,
+                    bottom_offset: 0.0,
+                    top_offset: 0.0,
+                    layer_override: None,
+                },
+            ],
+        });
+
+        let r1 = resolve_wall_style_layers(&lib, "style_bb", Some(0.4)).unwrap();
+        let r2 = resolve_wall_style_layers(&lib, "style_bb", Some(0.8)).unwrap();
+        assert!((r1[1].thickness - 0.2).abs() < 1e-12);
+        assert!((r2[1].thickness - 0.4).abs() < 1e-12);
+
+        let centerline = vec![(0.0, 0.0), (3.0, 0.0)];
+        let c1 = engine::contour::layer_contours(
+            &centerline,
+            &r1.iter().map(|l| (l.thickness, l.gap_before)).collect::<Vec<_>>(),
+        );
+        let c2 = engine::contour::layer_contours(
+            &centerline,
+            &r2.iter().map(|l| (l.thickness, l.gap_before)).collect::<Vec<_>>(),
+        );
+        // Different BB must produce different outer extents.
+        let y_max = |cs: &[(Vec<(f64, f64)>, Vec<(f64, f64)>)]| {
+            cs.iter()
+                .flat_map(|(a, b)| a.iter().chain(b.iter()))
+                .map(|(_, y)| y.abs())
+                .fold(0.0_f64, f64::max)
+        };
+        assert!(
+            (y_max(&c1) - y_max(&c2)).abs() > 1e-6,
+            "formula BB must affect geometry extents"
+        );
+    }
+
+    #[test]
+    fn invalid_formula_style_falls_back_without_panic() {
+        let mut lib = StyleLibrary::empty();
+        lib.materials.push(Material::new(
+            "mat_a".into(),
+            "A".into(),
+            "SOLID".into(),
+            0xFFFFFF,
+            "Continuous".into(),
+        ));
+        lib.upsert_wall_style(WallStyle {
+            style: Style {
+                id: "style_bad".into(),
+                name: "Bad formula".into(),
+                object_kind: "Wall".into(),
+                parent_style_id: None,
+            },
+            layers: vec![Layer {
+                material_id: "mat_a".into(),
+                thickness: LayerValue::Formula("NOT_A_VAR / 0".into()),
+                function: LayerFunction::Structural,
+                gap_before: 0.0,
+                bottom_offset: 0.0,
+                top_offset: 0.0,
+                layer_override: None,
+            }],
+        });
+
+        let resolved = resolve_wall_style_layers(&lib, "style_bad", Some(0.3)).unwrap();
+        assert_eq!(resolved.len(), 1);
+        assert_eq!(resolved[0].thickness, 0.0);
     }
 }

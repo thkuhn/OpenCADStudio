@@ -166,8 +166,22 @@ impl OpenCADStudio {
         }
 
         let mut layers = Vec::new();
-        for lb in self.aec_style_manager_wall_style_layers.iter() {
-            let thickness = lb.thickness.parse::<f64>().unwrap_or(0.0);
+        let mut formula_warnings = Vec::new();
+        for (idx, lb) in self.aec_style_manager_wall_style_layers.iter().enumerate() {
+            let thickness =
+                crate::modules::aec::engine::wall_style::LayerValue::parse_str(&lb.thickness);
+            if let crate::modules::aec::engine::wall_style::LayerValue::Formula(ref formula) =
+                thickness
+            {
+                // Validate with a dummy BB so the user gets feedback without
+                // blocking save (runtime still falls back safely).
+                let vars = crate::modules::aec::engine::wall_style::wall_vars(1.0);
+                if let Err(e) =
+                    crate::modules::aec::engine::expr::eval_formula(formula, &vars)
+                {
+                    formula_warnings.push(format!("layer {}: {e}", idx + 1));
+                }
+            }
             let function = match lb.function.as_str() {
                 "Structural" => crate::modules::aec::engine::wall_style::LayerFunction::Structural,
                 "Insulation" => crate::modules::aec::engine::wall_style::LayerFunction::Insulation,
@@ -189,6 +203,11 @@ impl OpenCADStudio {
                     Some(lb.layer_override.trim().to_string())
                 },
             });
+        }
+        for w in formula_warnings {
+            self.command_line.push_error(
+                crate::tf!("AEC Style Manager: invalid thickness formula ({w})").as_ref(),
+            );
         }
 
         let wall_style = crate::modules::aec::engine::wall_style::WallStyle {
@@ -2000,6 +2019,7 @@ impl OpenCADStudio {
                         .iter()
                         .map(|l| crate::app::AecLayerBuffer {
                             material_id: l.material_id.clone(),
+                            // Display fixed numbers and formula strings alike.
                             thickness: l.thickness.to_string(),
                             function: match &l.function {
                                 crate::modules::aec::engine::wall_style::LayerFunction::Structural => {
@@ -2291,42 +2311,12 @@ impl OpenCADStudio {
                                 return Task::none();
                             };
 
-                            let wall_styles_map: std::collections::HashMap<_, _> = lib
-                                .wall_styles
-                                .iter()
-                                .map(|ws| (ws.style.id.clone(), ws.clone()))
-                                .collect();
-                            let layers =
-                                crate::modules::aec::engine::wall_style::effective_layers(
-                                    &wall_styles_map,
-                                    &selection,
-                                )
-                                .unwrap_or_default();
-                            let wall_layers: Vec<_> = layers
-                                .into_iter()
-                                .map(|l| crate::modules::aec::commands::WallLayer {
-                                    material: l.material_id.clone(),
-                                    thickness: l.thickness,
-                                    function: match &l.function {
-                                        crate::modules::aec::engine::wall_style::LayerFunction::Structural => {
-                                            "Structural".to_string()
-                                        }
-                                        crate::modules::aec::engine::wall_style::LayerFunction::Insulation => {
-                                            "Insulation".to_string()
-                                        }
-                                        crate::modules::aec::engine::wall_style::LayerFunction::Finish => {
-                                            "Finish".to_string()
-                                        }
-                                        crate::modules::aec::engine::wall_style::LayerFunction::Other(s) => {
-                                            s.clone()
-                                        }
-                                    },
-                                    gap_before: l.gap_before,
-                                    bottom_offset: l.bottom_offset,
-                                    top_offset: l.top_offset,
-                                    layer_override: l.layer_override.clone(),
-                                })
-                                .collect();
+                            let wall_layers = crate::modules::aec::commands::resolve_wall_style_layers_ids(
+                                lib,
+                                &selection,
+                                None,
+                            )
+                            .unwrap_or_default();
 
                             let i = self.active_tab;
                             self.push_undo_snapshot(i, "CHPROP");
@@ -2468,35 +2458,24 @@ impl OpenCADStudio {
                             if let Some(wall) =
                                 crate::modules::aec::commands::wall_v2_from_entity(entity)
                             {
-                                if let Ok(effective) =
-                                    crate::modules::aec::engine::wall_style::effective_layers(
-                                        &wall_style_map,
+                                // Prefer the wall's current total thickness as BB so
+                                // formula layers scale with the placed wall width;
+                                // fall back to style fixed-sum when empty.
+                                let bb = {
+                                    let t = wall.total_thickness();
+                                    if t > 0.0 {
+                                        Some(t)
+                                    } else {
+                                        None
+                                    }
+                                };
+                                if let Some(wall_layers) =
+                                    crate::modules::aec::commands::resolve_wall_style_layers_ids(
+                                        &lib,
                                         &wall.style_id,
+                                        bb,
                                     )
                                 {
-                                    let wall_layers: Vec<_> = effective
-                                        .into_iter()
-                                        .map(|l| crate::modules::aec::commands::WallLayer {
-                                            material: l.material_id,
-                                            thickness: l.thickness,
-                                            function: match l.function {
-                                                crate::modules::aec::engine::wall_style::LayerFunction::Structural => {
-                                                    "Structural".to_string()
-                                                }
-                                                crate::modules::aec::engine::wall_style::LayerFunction::Insulation => {
-                                                    "Insulation".to_string()
-                                                }
-                                                crate::modules::aec::engine::wall_style::LayerFunction::Finish => {
-                                                    "Finish".to_string()
-                                                }
-                                                crate::modules::aec::engine::wall_style::LayerFunction::Other(s) => s,
-                                            },
-                                            gap_before: l.gap_before,
-                                            bottom_offset: l.bottom_offset,
-                                            top_offset: l.top_offset,
-                                            layer_override: l.layer_override,
-                                        })
-                                        .collect();
                                     crate::modules::aec::commands::write_wall_v2_layers(
                                         &mut tab.scene,
                                         handle,

@@ -1,15 +1,19 @@
-//! Per-layer miter geometry for L/T wall joins.
+//! Per-layer miter geometry for L/T and N-way wall joins.
 //!
-//! Given two joined wall axes and their material-layer stacks, this module
+//! Given joined wall axes and their material-layer stacks, this module
 //! computes a diagonal miter line at the shared corner and clips each wall's
 //! matching layer footprint against it. Layers are paired first by
 //! `material`/`function` equality, then by closest cumulative offset-from-axis
 //! for ties or remaining unmatched candidates; layers that still cannot be
 //! uniquely resolved return `None` so the caller can fall back to the
 //! single-vertex `corner_override` path.
+//!
+//! Multi-wall junctions (3+ walls at one point) are handled by
+//! [`mitered_junction_layer_footprints`], which orders participants by angle
+//! and miters each endpoint wall against its angular neighbors.
 
 use super::contour::layer_contours;
-use super::join::JoinKind;
+use super::join::{JoinKind, Junction, JunctionRole};
 
 /// One wall layer as consumed by the miter matcher: geometry plus optional
 /// identity fields used for cross-wall pairing.
@@ -234,9 +238,332 @@ fn layer_center_offsets(layers: &[MiterLayer]) -> Vec<f64> {
     centers
 }
 
-/// Build a closed footprint for one layer of wall A, with the joined end
-/// replaced by the diagonal miter against wall B's matching layer.
-fn miter_one_layer(
+/// One wall's geometry at a multi-wall junction (axis already snapped).
+#[derive(Debug, Clone)]
+pub struct JunctionWallGeom {
+    pub axis: Vec<(f64, f64)>,
+    pub layers: Vec<MiterLayer>,
+    /// `Some(end_idx)` when this wall ends at the junction; `None` for a
+    /// through-wall (T stem target) that only participates as a miter partner.
+    pub end: Option<usize>,
+}
+
+/// Resolve per-layer mitered footprints for every wall at a multi-wall junction.
+///
+/// Endpoint walls are ordered by outgoing angle around the junction. Each is
+/// mitered against its two angular neighbors (reusing [`match_layer_indices`]
+/// pairwise). Through-walls only act as miter targets and receive an all-`None`
+/// result (rectangular fallback at the caller). When a layer cannot be matched
+/// on either side the entry stays `None` (single-vertex `corner_override`).
+///
+/// `walls` must be aligned with `junction.participants` (same length/order) —
+/// typically built after [`super::join::apply_junction_to_axes`].
+pub fn mitered_junction_layer_footprints(
+    junction: &Junction,
+    walls: &[JunctionWallGeom],
+) -> Vec<Vec<Option<Vec<(f64, f64)>>>> {
+    let n = walls.len();
+    let mut out: Vec<Vec<Option<Vec<(f64, f64)>>>> = walls
+        .iter()
+        .map(|w| vec![None; w.layers.len()])
+        .collect();
+    if n == 0 || junction.participants.len() != n {
+        return out;
+    }
+
+    // Fast path: fewer than 2 endpoint walls → nothing to miter together.
+    let endpoint_indices: Vec<usize> = walls
+        .iter()
+        .enumerate()
+        .filter_map(|(i, w)| w.end.map(|_| i))
+        .collect();
+    if endpoint_indices.is_empty() {
+        return out;
+    }
+
+    // Two-wall (or one endpoint + through) → reuse pairwise helper.
+    if n == 2 || (endpoint_indices.len() == 1 && n == 2) {
+        for &ei in &endpoint_indices {
+            let other = 1 - ei;
+            let self_w = &walls[ei];
+            let other_w = &walls[other];
+            let Some(end_a) = self_w.end else { continue };
+            let kind = if other_w.end.is_some() {
+                JoinKind::L
+            } else {
+                JoinKind::T
+            };
+            out[ei] = mitered_layer_footprints(
+                &self_w.axis,
+                &self_w.layers,
+                end_a,
+                &other_w.axis,
+                &other_w.layers,
+                other_w.end,
+                kind,
+            );
+        }
+        return out;
+    }
+
+    // Build axis refs for ray ordering (DVec3-less 2D → temporary DVec3 via join helpers).
+    // junction_rays expects &[&[DVec3]]; we work purely in 2D here and sort by angle ourselves.
+    let jp = (junction.point.x, junction.point.y);
+    let rays = ordered_junction_rays_2d(jp, walls);
+    if rays.len() < 2 {
+        return out;
+    }
+
+    // Pre-compute contours per wall.
+    let contours: Vec<Vec<(Vec<(f64, f64)>, Vec<(f64, f64)>)>> = walls
+        .iter()
+        .map(|w| {
+            let geom: Vec<(f64, f64)> = w.layers.iter().map(MiterLayer::as_geom).collect();
+            layer_contours(&w.axis, &geom)
+        })
+        .collect();
+
+    // For each ray that belongs to an endpoint wall, miter against angular neighbors.
+    // Multiple rays can reference the same through-wall participant; endpoint walls
+    // have exactly one ray.
+    for (ri, ray) in rays.iter().enumerate() {
+        let wi = ray.wall_index;
+        let Some(end_a) = walls[wi].end else {
+            // Through-wall ray: not rebuilding its own footprint.
+            continue;
+        };
+        let n_rays = rays.len();
+        let prev = &rays[(ri + n_rays - 1) % n_rays];
+        let next = &rays[(ri + 1) % n_rays];
+        // Skip self-adjacent (shouldn't happen with ≥2 distinct rays).
+        if prev.wall_index == wi && next.wall_index == wi {
+            continue;
+        }
+
+        // b1 = negative-offset side = CW / right of leave dir → prev in CCW order.
+        // b2 = positive-offset side = CCW / left of leave dir → next in CCW order.
+        let right_w = prev.wall_index;
+        let left_w = next.wall_index;
+
+        let pair_right = match_layer_indices(&walls[wi].layers, &walls[right_w].layers);
+        let pair_left = match_layer_indices(&walls[wi].layers, &walls[left_w].layers);
+
+        for li in 0..walls[wi].layers.len() {
+            if li >= contours[wi].len() {
+                out[wi][li] = None;
+                continue;
+            }
+            let (ref a_b1, ref a_b2) = contours[wi][li];
+
+            // Resolve each side independently; if only one neighbor matches,
+            // miter both sides against that neighbor (same as pairwise).
+            let right_j = pair_right.get(li).copied().flatten();
+            let left_j = pair_left.get(li).copied().flatten();
+
+            let fp = match (right_j, left_j) {
+                (Some(rj), Some(_lj)) if right_w == left_w => {
+                    // Both neighbors are the same wall (classic T against through).
+                    if rj >= contours[right_w].len() {
+                        None
+                    } else {
+                        let (ref b_b1, ref b_b2) = contours[right_w][rj];
+                        miter_one_layer(
+                            a_b1,
+                            a_b2,
+                            end_a,
+                            b_b1,
+                            b_b2,
+                            walls[right_w].end,
+                            &walls[wi].axis,
+                            &walls[right_w].axis,
+                        )
+                    }
+                }
+                (Some(rj), Some(lj)) => {
+                    if rj >= contours[right_w].len() || lj >= contours[left_w].len() {
+                        None
+                    } else {
+                        let (ref r_b1, ref r_b2) = contours[right_w][rj];
+                        let (ref l_b1, ref l_b2) = contours[left_w][lj];
+                        let ends_r = miter_end_points(
+                            a_b1,
+                            a_b2,
+                            end_a,
+                            r_b1,
+                            r_b2,
+                            walls[right_w].end,
+                            &walls[wi].axis,
+                            &walls[right_w].axis,
+                        );
+                        let ends_l = miter_end_points(
+                            a_b1,
+                            a_b2,
+                            end_a,
+                            l_b1,
+                            l_b2,
+                            walls[left_w].end,
+                            &walls[wi].axis,
+                            &walls[left_w].axis,
+                        );
+                        match (ends_r, ends_l) {
+                            // b1 from right neighbor, b2 from left neighbor.
+                            (Some((new_a1, _)), Some((_, new_a2))) => {
+                                Some(rebuild_footprint(a_b1, a_b2, end_a, new_a1, new_a2))
+                            }
+                            (Some((new_a1, new_a2)), None) => {
+                                Some(rebuild_footprint(a_b1, a_b2, end_a, new_a1, new_a2))
+                            }
+                            (None, Some((new_a1, new_a2))) => {
+                                Some(rebuild_footprint(a_b1, a_b2, end_a, new_a1, new_a2))
+                            }
+                            _ => None,
+                        }
+                    }
+                }
+                (Some(rj), None) => {
+                    if rj >= contours[right_w].len() {
+                        None
+                    } else {
+                        let (ref b_b1, ref b_b2) = contours[right_w][rj];
+                        miter_one_layer(
+                            a_b1,
+                            a_b2,
+                            end_a,
+                            b_b1,
+                            b_b2,
+                            walls[right_w].end,
+                            &walls[wi].axis,
+                            &walls[right_w].axis,
+                        )
+                    }
+                }
+                (None, Some(lj)) => {
+                    if lj >= contours[left_w].len() {
+                        None
+                    } else {
+                        let (ref b_b1, ref b_b2) = contours[left_w][lj];
+                        miter_one_layer(
+                            a_b1,
+                            a_b2,
+                            end_a,
+                            b_b1,
+                            b_b2,
+                            walls[left_w].end,
+                            &walls[wi].axis,
+                            &walls[left_w].axis,
+                        )
+                    }
+                }
+                (None, None) => None,
+            };
+
+            out[wi][li] = fp.filter(|p| p.len() >= 3);
+        }
+    }
+
+    out
+}
+
+/// Build [`JunctionWallGeom`] list aligned with `junction.participants` from
+/// already-snapped axis polylines (`axes[wall_index]`) and layer stacks.
+pub fn junction_wall_geoms(
+    junction: &Junction,
+    axes: &[Vec<(f64, f64)>],
+    layers: &[Vec<MiterLayer>],
+) -> Vec<JunctionWallGeom> {
+    junction
+        .participants
+        .iter()
+        .map(|p| {
+            let axis = axes
+                .get(p.wall_index)
+                .cloned()
+                .unwrap_or_default();
+            let ly = layers
+                .get(p.wall_index)
+                .cloned()
+                .unwrap_or_default();
+            let end = match p.role {
+                JunctionRole::Endpoint(e) => Some(e),
+                JunctionRole::Through(_) => None,
+            };
+            JunctionWallGeom {
+                axis,
+                layers: ly,
+                end,
+            }
+        })
+        .collect()
+}
+
+#[derive(Clone, Copy)]
+struct Ray2 {
+    wall_index: usize,
+    angle: f64,
+}
+
+/// CCW-sorted outgoing rays at a junction (through-walls contribute two).
+fn ordered_junction_rays_2d(jp: (f64, f64), walls: &[JunctionWallGeom]) -> Vec<Ray2> {
+    let mut rays = Vec::new();
+    for (wi, w) in walls.iter().enumerate() {
+        if w.axis.len() < 2 {
+            continue;
+        }
+        if let Some(end) = w.end {
+            if end >= w.axis.len() {
+                continue;
+            }
+            let interior = if end == 0 { 1 } else { end - 1 };
+            let dx = w.axis[interior].0 - jp.0;
+            let dy = w.axis[interior].1 - jp.1;
+            let len = (dx * dx + dy * dy).sqrt();
+            if len < 1e-12 {
+                continue;
+            }
+            rays.push(Ray2 {
+                wall_index: wi,
+                angle: dy.atan2(dx),
+            });
+        } else {
+            // Through-wall: find segment closest to junction and emit two rays.
+            let mut best_seg = 0usize;
+            let mut best_d = f64::INFINITY;
+            for s in 0..w.axis.len() - 1 {
+                let d = point_seg_dist(jp, w.axis[s], w.axis[s + 1]);
+                if d < best_d {
+                    best_d = d;
+                    best_seg = s;
+                }
+            }
+            for target in [w.axis[best_seg], w.axis[best_seg + 1]] {
+                let dx = target.0 - jp.0;
+                let dy = target.1 - jp.1;
+                let len = (dx * dx + dy * dy).sqrt();
+                if len < 1e-12 {
+                    continue;
+                }
+                rays.push(Ray2 {
+                    wall_index: wi,
+                    angle: dy.atan2(dx),
+                });
+            }
+        }
+    }
+    rays.sort_by(|a, b| {
+        a.angle
+            .partial_cmp(&b.angle)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+    // Drop consecutive duplicate angles from the same wall.
+    rays.dedup_by(|a, b| {
+        a.wall_index == b.wall_index && (a.angle - b.angle).abs() < 1e-12
+    });
+    rays
+}
+
+/// Compute the two replaced end-cap points (new_a1 on b1, new_a2 on b2) for
+/// one layer of wall A against wall B — shared by pairwise and N-way paths.
+fn miter_end_points(
     a_b1: &[(f64, f64)],
     a_b2: &[(f64, f64)],
     end_a: usize,
@@ -245,7 +572,7 @@ fn miter_one_layer(
     end_b: Option<usize>,
     axis_a: &[(f64, f64)],
     axis_b: &[(f64, f64)],
-) -> Option<Vec<(f64, f64)>> {
+) -> Option<((f64, f64), (f64, f64))> {
     if a_b1.len() < 2 || a_b2.len() < 2 || a_b1.len() != a_b2.len() {
         return None;
     }
@@ -256,32 +583,16 @@ fn miter_one_layer(
         return None;
     }
 
-    // Neighbour index on A: one step toward the wall interior from the join.
     let prev_a = if end_a == 0 { 1 } else { end_a - 1 };
-
-    // Boundary lines on A at the joined end (interior point → end point,
-    // extended past the end so intersections beyond the corner are found).
     let a1_line = extended_line(a_b1[prev_a], a_b1[end_a]);
     let a2_line = extended_line(a_b2[prev_a], a_b2[end_a]);
-
-    // Boundary lines on B at the join.
     let (b1_line, b2_line) = other_boundary_lines(b_b1, b_b2, end_b, axis_a, axis_b, end_a)?;
 
-    // Four candidate intersections of A's long edges with B's long edges.
     let i_a1_b1 = intersect_lines_2d(a1_line.0, a1_line.1, b1_line.0, b1_line.1)?;
     let i_a1_b2 = intersect_lines_2d(a1_line.0, a1_line.1, b2_line.0, b2_line.1)?;
     let i_a2_b1 = intersect_lines_2d(a2_line.0, a2_line.1, b1_line.0, b1_line.1)?;
     let i_a2_b2 = intersect_lines_2d(a2_line.0, a2_line.1, b2_line.0, b2_line.1)?;
 
-    // Choose the pairing (a1↔b1 & a2↔b2) vs (a1↔b2 & a2↔b1) whose miter
-    // segment is shorter — that is the diagonal that actually closes the
-    // corner rather than the long exterior-to-exterior chord.
-    //
-    // When lengths are equal (common for equal-thickness 90° L joins), the
-    // shorter-length test is a tie. Reversing one wall flips which boundary
-    // is b1 vs b2, so the previously-correct "direct" pairing becomes the
-    // wrong diagonal. Break ties by alignment with the corner angle
-    // bisector (the true miter runs along it for equal thicknesses).
     let pair_direct = (i_a1_b1, i_a2_b2);
     let pair_cross = (i_a1_b2, i_a2_b1);
     let len_direct = dist(pair_direct.0, pair_direct.1);
@@ -306,10 +617,16 @@ fn miter_one_layer(
     } else {
         pair_cross
     };
+    Some((new_a1, new_a2))
+}
 
-    // Rebuild the closed footprint: forward along b1 with the joined end
-    // replaced by new_a1, then back along b2 with the joined end replaced by
-    // new_a2. For a 2-vertex wall this is a quad with a diagonal end-cap.
+fn rebuild_footprint(
+    a_b1: &[(f64, f64)],
+    a_b2: &[(f64, f64)],
+    end_a: usize,
+    new_a1: (f64, f64),
+    new_a2: (f64, f64),
+) -> Vec<(f64, f64)> {
     let n = a_b1.len();
     let mut footprint = Vec::with_capacity(n * 2);
     for i in 0..n {
@@ -326,7 +643,24 @@ fn miter_one_layer(
             footprint.push(a_b2[i]);
         }
     }
-    Some(footprint)
+    footprint
+}
+
+/// Build a closed footprint for one layer of wall A, with the joined end
+/// replaced by the diagonal miter against wall B's matching layer.
+fn miter_one_layer(
+    a_b1: &[(f64, f64)],
+    a_b2: &[(f64, f64)],
+    end_a: usize,
+    b_b1: &[(f64, f64)],
+    b_b2: &[(f64, f64)],
+    end_b: Option<usize>,
+    axis_a: &[(f64, f64)],
+    axis_b: &[(f64, f64)],
+) -> Option<Vec<(f64, f64)>> {
+    let (new_a1, new_a2) =
+        miter_end_points(a_b1, a_b2, end_a, b_b1, b_b2, end_b, axis_a, axis_b)?;
+    Some(rebuild_footprint(a_b1, a_b2, end_a, new_a1, new_a2))
 }
 
 /// Boundary line pair on the other wall at the join.
@@ -503,7 +837,7 @@ fn point_seg_dist(p: (f64, f64), a: (f64, f64), b: (f64, f64)) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use super::super::join::JoinKind;
+    use super::super::join::{JoinKind, JunctionParticipant};
 
     fn close(a: (f64, f64), b: (f64, f64), tol: f64) -> bool {
         dist(a, b) < tol
@@ -689,5 +1023,193 @@ mod tests {
         );
         assert_eq!(fps.iter().filter(|f| f.is_some()).count(), 1);
         assert_eq!(fps.iter().filter(|f| f.is_none()).count(), 1);
+    }
+
+    fn two_layer() -> Vec<MiterLayer> {
+        vec![
+            MiterLayer::with_id(0.1, 0.0, "Brick", "Finish"),
+            MiterLayer::with_id(0.2, 0.0, "Concrete", "Structural"),
+        ]
+    }
+
+    #[test]
+    fn x_crossing_four_walls_two_layers_all_miter() {
+        // Four walls meeting at origin, each with 2 layers. Every endpoint
+        // wall must get a consistent mitered footprint for both layers.
+        let layers = two_layer();
+        let geoms = vec![
+            JunctionWallGeom {
+                axis: vec![(0.0, 0.0), (10.0, 0.0)],
+                layers: layers.clone(),
+                end: Some(0),
+            },
+            JunctionWallGeom {
+                axis: vec![(0.0, 0.0), (0.0, 10.0)],
+                layers: layers.clone(),
+                end: Some(0),
+            },
+            JunctionWallGeom {
+                axis: vec![(0.0, 0.0), (-10.0, 0.0)],
+                layers: layers.clone(),
+                end: Some(0),
+            },
+            JunctionWallGeom {
+                axis: vec![(0.0, 0.0), (0.0, -10.0)],
+                layers: layers.clone(),
+                end: Some(0),
+            },
+        ];
+        let junction = Junction {
+            point: glam::DVec3::ZERO,
+            participants: (0..4)
+                .map(|i| JunctionParticipant {
+                    wall_index: i,
+                    role: JunctionRole::Endpoint(0),
+                })
+                .collect(),
+        };
+
+        let all = mitered_junction_layer_footprints(&junction, &geoms);
+        assert_eq!(all.len(), 4);
+        for (wi, fps) in all.iter().enumerate() {
+            assert_eq!(fps.len(), 2, "wall {wi} should have 2 layer slots");
+            for (li, fp) in fps.iter().enumerate() {
+                let poly = fp
+                    .as_ref()
+                    .unwrap_or_else(|| panic!("wall {wi} layer {li} should miter, got None"));
+                assert!(
+                    poly.len() >= 3,
+                    "wall {wi} layer {li} footprint too short: {poly:?}"
+                );
+            }
+        }
+
+        // East wall (index 0) end-cap should sit near x = +half_thickness of
+        // the outer layer stack (total 0.3 → half 0.15) after N-way miter
+        // against N and S — i.e. not left at the axis (x=0).
+        let east_outer = all[0][0].as_ref().unwrap();
+        let max_abs_x_near_origin = east_outer
+            .iter()
+            .filter(|(x, y)| x.abs() < 0.5 && y.abs() < 0.5)
+            .map(|(x, _)| x.abs())
+            .fold(0.0_f64, f64::max);
+        assert!(
+            max_abs_x_near_origin > 0.05,
+            "east wall end should leave the axis after N-way miter, got max |x|={max_abs_x_near_origin}, fp={east_outer:?}"
+        );
+    }
+
+    #[test]
+    fn t_junction_with_third_wall_two_layers() {
+        // Through wall on X, stem from +Y, third wall from NE — all meet at
+        // (5,0). Stem and third are endpoints; through is Through.
+        let layers = two_layer();
+        let geoms = vec![
+            JunctionWallGeom {
+                axis: vec![(0.0, 0.0), (10.0, 0.0)],
+                layers: layers.clone(),
+                end: None, // through
+            },
+            JunctionWallGeom {
+                axis: vec![(5.0, 0.0), (5.0, 10.0)],
+                layers: layers.clone(),
+                end: Some(0),
+            },
+            JunctionWallGeom {
+                axis: vec![(5.0, 0.0), (10.0, 5.0)],
+                layers: layers.clone(),
+                end: Some(0),
+            },
+        ];
+        let junction = Junction {
+            point: glam::DVec3::new(5.0, 0.0, 0.0),
+            participants: vec![
+                JunctionParticipant {
+                    wall_index: 0,
+                    role: JunctionRole::Through(0),
+                },
+                JunctionParticipant {
+                    wall_index: 1,
+                    role: JunctionRole::Endpoint(0),
+                },
+                JunctionParticipant {
+                    wall_index: 2,
+                    role: JunctionRole::Endpoint(0),
+                },
+            ],
+        };
+
+        let all = mitered_junction_layer_footprints(&junction, &geoms);
+        assert_eq!(all.len(), 3);
+
+        // Through-wall: no endpoint miter of its own.
+        assert!(
+            all[0].iter().all(|f| f.is_none()),
+            "through wall footprints stay None (rectangular fallback), got {:?}",
+            all[0]
+        );
+
+        // Stem and third wall: both layers should resolve.
+        for wi in [1usize, 2] {
+            assert_eq!(all[wi].len(), 2);
+            let matched = all[wi].iter().filter(|f| f.is_some()).count();
+            assert!(
+                matched >= 1,
+                "wall {wi} should miter at least one layer at the 3-way junction, got {:?}",
+                all[wi]
+            );
+            for fp in all[wi].iter().flatten() {
+                assert!(fp.len() >= 3);
+            }
+        }
+    }
+
+    #[test]
+    fn junction_two_wall_l_matches_pairwise() {
+        // N-way path with exactly two endpoint walls must agree with pairwise.
+        let layers = vec![g(0.2)];
+        let axis_a = vec![(0.0, 0.0), (10.0, 0.0)];
+        let axis_b = vec![(10.0, 0.0), (10.0, 10.0)];
+        let pairwise = mitered_layer_footprints(
+            &axis_a,
+            &layers,
+            1,
+            &axis_b,
+            &layers,
+            Some(0),
+            JoinKind::L,
+        );
+        let geoms = vec![
+            JunctionWallGeom {
+                axis: axis_a.clone(),
+                layers: layers.clone(),
+                end: Some(1),
+            },
+            JunctionWallGeom {
+                axis: axis_b.clone(),
+                layers: layers.clone(),
+                end: Some(0),
+            },
+        ];
+        let junction = Junction {
+            point: glam::DVec3::new(10.0, 0.0, 0.0),
+            participants: vec![
+                JunctionParticipant {
+                    wall_index: 0,
+                    role: JunctionRole::Endpoint(1),
+                },
+                JunctionParticipant {
+                    wall_index: 1,
+                    role: JunctionRole::Endpoint(0),
+                },
+            ],
+        };
+        let nway = mitered_junction_layer_footprints(&junction, &geoms);
+        let pa = pairwise[0].as_ref().expect("pairwise A");
+        let na = nway[0][0].as_ref().expect("nway A");
+        assert_eq!(pa.len(), na.len());
+        for (p, n) in pa.iter().zip(na.iter()) {
+            assert!(close(*p, *n, 1e-6), "mismatch pairwise={p:?} nway={n:?}");
+        }
     }
 }

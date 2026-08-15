@@ -56,6 +56,8 @@ impl CadModule for AecModule {
                         )),
                         RibbonItem::LargeTool(tool("AEC_WALLJOIN", "Join Walls", JOIN_ICON)),
                         RibbonItem::LargeTool(tool("AEC_WALLEXTEND", "Extend Wall", EXTEND_ICON)),
+                        RibbonItem::LargeTool(tool("AEC_WINDOW", "Window", WALL_ICON)),
+                        RibbonItem::LargeTool(tool("AEC_DOOR", "Door", WALL_ICON)),
                     ],
                 },
                 RibbonGroup {

@@ -2,7 +2,7 @@
 
 use crate::modules::aec::engine::material::Material;
 use crate::modules::aec::engine::style::Style;
-use crate::modules::aec::engine::wall_style::{Layer, LayerFunction, WallStyle};
+use crate::modules::aec::engine::wall_style::{LayerValue, Layer, LayerFunction, WallStyle};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
@@ -147,7 +147,7 @@ pub fn seed_default_library() -> StyleLibrary {
         },
         layers: vec![Layer {
             material_id: masonry.id.clone(),
-            thickness: 0.24,
+            thickness: LayerValue::Fixed(0.24),
             function: LayerFunction::Structural,
             gap_before: 0.0,
             bottom_offset: 0.0,
@@ -165,7 +165,7 @@ pub fn seed_default_library() -> StyleLibrary {
         },
         layers: vec![Layer {
             material_id: concrete.id.clone(),
-            thickness: 0.20,
+            thickness: LayerValue::Fixed(0.20),
             function: LayerFunction::Structural,
             gap_before: 0.0,
             bottom_offset: 0.0,
@@ -184,7 +184,7 @@ pub fn seed_default_library() -> StyleLibrary {
         layers: vec![
             Layer {
                 material_id: plaster.id.clone(),
-                thickness: 0.015,
+                thickness: LayerValue::Fixed(0.015),
                 function: LayerFunction::Finish,
                 gap_before: 0.0,
                 bottom_offset: 0.0,
@@ -193,7 +193,7 @@ pub fn seed_default_library() -> StyleLibrary {
             },
             Layer {
                 material_id: masonry.id.clone(),
-                thickness: 0.175,
+                thickness: LayerValue::Fixed(0.175),
                 function: LayerFunction::Structural,
                 gap_before: 0.0,
                 bottom_offset: 0.0,
@@ -202,7 +202,7 @@ pub fn seed_default_library() -> StyleLibrary {
             },
             Layer {
                 material_id: insulation.id.clone(),
-                thickness: 0.14,
+                thickness: LayerValue::Fixed(0.14),
                 function: LayerFunction::Insulation,
                 gap_before: 0.0,
                 bottom_offset: 0.0,
@@ -211,7 +211,7 @@ pub fn seed_default_library() -> StyleLibrary {
             },
             Layer {
                 material_id: plaster.id.clone(),
-                thickness: 0.015,
+                thickness: LayerValue::Fixed(0.015),
                 function: LayerFunction::Finish,
                 gap_before: 0.0,
                 bottom_offset: 0.0,
@@ -315,7 +315,7 @@ mod tests {
     use super::*;
     use crate::modules::aec::engine::material::Material;
     use crate::modules::aec::engine::style::Style;
-    use crate::modules::aec::engine::wall_style::{Layer, LayerFunction, WallStyle};
+    use crate::modules::aec::engine::wall_style::{Layer, LayerFunction, LayerValue, WallStyle};
 
     #[test]
     fn test_library_roundtrip() {
@@ -337,7 +337,7 @@ mod tests {
             layers: vec![
                 Layer {
                     material_id: "mat1".to_string(),
-                    thickness: 10.0,
+                    thickness: LayerValue::Fixed(10.0),
                     function: LayerFunction::Structural,
                     gap_before: 0.0,
                     bottom_offset: 0.0,
@@ -346,7 +346,7 @@ mod tests {
                 },
                 Layer {
                     material_id: "mat1".to_string(),
-                    thickness: 5.0,
+                    thickness: LayerValue::Fixed(5.0),
                     function: LayerFunction::Finish,
                     gap_before: 0.0,
                     bottom_offset: 0.0,

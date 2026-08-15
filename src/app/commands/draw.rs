@@ -884,6 +884,27 @@ impl OpenCADStudio {
                     self.tabs[i].active_cmd = Some(Box::new(cmd));
                 }
             }
+            "AEC_WINDOW" => {
+                use crate::modules::aec::commands::WallOpeningCommand;
+                let cmd = WallOpeningCommand::new_window();
+                self.command_line.push_info(&cmd.prompt());
+                self.tabs[i].active_cmd = Some(Box::new(cmd));
+            }
+            "AEC_DOOR" => {
+                use crate::modules::aec::commands::WallOpeningCommand;
+                let cmd = WallOpeningCommand::new_door();
+                self.command_line.push_info(&cmd.prompt());
+                self.tabs[i].active_cmd = Some(Box::new(cmd));
+            }
+            cmd if cmd.starts_with("AEC_WALLOPENING_DO ") => {
+                let args = cmd["AEC_WALLOPENING_DO ".len()..].to_string();
+                crate::modules::aec::commands::aec_wallopening_do(
+                    &mut self.tabs[i].scene,
+                    &mut self.command_line,
+                    &args,
+                );
+                self.tabs[i].dirty = true;
+            }
             cmd if cmd.starts_with("AEC_WALLJOIN_DO ") => {
                 let args = cmd["AEC_WALLJOIN_DO ".len()..].to_string();
                 crate::modules::aec::commands::aec_walljoin_do(

@@ -101,7 +101,8 @@ pub struct GripPendingValue {
 pub struct AecLayerBuffer {
     /// Selected material id.
     pub material_id: String,
-    /// Thickness string (parsed to f64 on save).
+    /// Thickness string: plain number or arithmetic formula (e.g. `BB * 0.5`).
+    /// Parsed to [`LayerValue`] on save.
     pub thickness: String,
     /// Function enum as a display string (Structural, Insulation, Finish, Other).
     pub function: String,

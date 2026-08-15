@@ -46,6 +46,7 @@ fontdb = "0.23"
 ttf-parser = "0.25"
 cosmic-text = "0.15"
 lyon_tessellation = "1.0.20"
+evalexpr = "13"
 
 [dev-dependencies]
 naga = { version = "27", features = ["wgsl-in"] }
