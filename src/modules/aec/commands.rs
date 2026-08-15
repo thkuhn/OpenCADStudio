@@ -752,10 +752,10 @@ pub fn regenerate_wall_representation(
 /// exact trimmed corner) is left untouched; only the *visible representation*
 /// uses the extended point.
 ///
-/// When `join_miter` is supplied, matched layers (by index from the reference
-/// axis outward) are rebuilt with a true diagonal miter against the other
-/// wall's corresponding layer; unmatched layers (different layer counts) fall
-/// back to the single-vertex `corner_override` extension.
+/// When `join_miter` is supplied, matched layers (by material/function then
+/// offset-from-axis) are rebuilt with a true diagonal miter against the other
+/// wall's corresponding layer; unmatched layers fall back to the single-vertex
+/// `corner_override` extension.
 ///
 /// Used by [`join_two_walls_in_document`] so an L/T join's two walls share a
 /// clean mitered corner instead of leaving a seam where their
@@ -857,8 +857,17 @@ pub fn regenerate_wall_representation_with_corner(
             .collect(),
         _ => Vec::new(),
     };
-    let self_layer_data: Vec<(f64, f64)> =
-        layers.iter().map(|l| (l.thickness, l.gap_before)).collect();
+    let self_layer_data: Vec<engine::miter::MiterLayer> = layers
+        .iter()
+        .map(|l| {
+            engine::miter::MiterLayer::with_id(
+                l.thickness,
+                l.gap_before,
+                l.material.clone(),
+                l.function.clone(),
+            )
+        })
+        .collect();
 
     // Pre-compute per-layer mitered footprints when a join context is present.
     let mitered_footprints: Vec<Option<Vec<(f64, f64)>>> =
@@ -2565,6 +2574,16 @@ impl CadCommand for WallJoinCommand {
         true
     }
 
+    /// Highlight only while awaiting the *second* (target) wall pick.
+    fn entity_pick_highlights_hover(&self) -> bool {
+        self.selected.len() == 1
+    }
+
+    /// Restrict the rollover highlight to wall packages (axis or derived).
+    fn entity_pick_hover_highlights_handle(&self, scene: &Scene, handle: Handle) -> bool {
+        is_wall_pick_target(scene, handle)
+    }
+
     fn on_entity_pick(&mut self, handle: Handle, _pt: DVec3) -> CmdResult {
         if handle.is_null() {
             return CmdResult::NeedPoint;
@@ -2588,23 +2607,16 @@ impl CadCommand for WallJoinCommand {
     }
 }
 
-/// Returns the index (`0` or the last vertex) of the endpoint that
-/// [`join::join_wall_axes`] moved, comparing `old` against `new`, or `None`
-/// if neither endpoint changed (shouldn't happen for a successful join, but
-/// guards against float-identical corners).
-fn changed_endpoint(old: &[DVec3], new: &[DVec3]) -> Option<usize> {
-    const TOL: f64 = 1e-9;
-    if old.is_empty() || new.len() != old.len() {
-        return None;
+/// True when `handle` resolves to a wall axis (or is itself a wall axis).
+fn is_wall_pick_target(scene: &Scene, handle: Handle) -> bool {
+    if handle.is_null() {
+        return false;
     }
-    if old[0].distance(new[0]) > TOL {
-        return Some(0);
-    }
-    let last = old.len() - 1;
-    if old[last].distance(new[last]) > TOL {
-        return Some(last);
-    }
-    None
+    let axis = resolve_wall_package(scene, handle);
+    scene
+        .document
+        .get_entity(axis)
+        .is_some_and(|e| wall_thickness_and_height(e).is_some())
 }
 
 /// The point `ext_len` further out from `axis[idx]`, continuing in the same
@@ -2766,11 +2778,15 @@ pub fn join_two_walls_in_document(
     let axis_a = get_wall_vertices(scene, h_a);
     let axis_b = get_wall_vertices(scene, h_b);
     match join::join_wall_axes(&axis_a, &axis_b) {
-        Ok((new_a, new_b, kind)) => {
+        Ok((new_a, new_b, kind, end_a, end_b)) => {
             // Corner-extension fallback (unmatched layers) plus per-layer
             // miter context (matched layers). Persisted axis vertices stay
             // exactly as join_wall_axes computed them — only the visible
             // footprint geometry changes.
+            //
+            // end_a/end_b come from the join engine (not from "which endpoint
+            // moved"): when walls are already coincident at the corner,
+            // vertices don't move but miters still need those indices.
             let thickness_a = scene
                 .document
                 .get_entity(h_a)
@@ -2781,8 +2797,6 @@ pub fn join_two_walls_in_document(
                 .get_entity(h_b)
                 .and_then(wall_thickness_and_height)
                 .map(|(t, _, _)| t);
-            let end_a = changed_endpoint(&axis_a, &new_a);
-            let end_b = changed_endpoint(&axis_b, &new_b);
             let override_a = end_a.and_then(|idx| {
                 thickness_b.map(|t| (idx, extended_endpoint(&new_a, idx, t * 0.5)))
             });
@@ -2846,9 +2860,9 @@ pub fn join_two_walls_in_document(
     }
 }
 
-/// `(thickness, gap_before)` pairs for a wall's material stack, used by the
-/// join-miter helper. Empty when `handle` isn't a wall.
-fn wall_layer_data(scene: &Scene, handle: Handle) -> Vec<(f64, f64)> {
+/// Material-stack layers for the join-miter helper (geometry + identity).
+/// Empty when `handle` isn't a wall.
+fn wall_layer_data(scene: &Scene, handle: Handle) -> Vec<engine::miter::MiterLayer> {
     let Some(entity) = scene.document.get_entity(handle) else {
         return Vec::new();
     };
@@ -2856,11 +2870,24 @@ fn wall_layer_data(scene: &Scene, handle: Handle) -> Vec<(f64, f64)> {
         return v2
             .layers
             .iter()
-            .map(|l| (l.thickness, l.gap_before))
+            .map(|l| {
+                engine::miter::MiterLayer::with_id(
+                    l.thickness,
+                    l.gap_before,
+                    l.material.clone(),
+                    l.function.clone(),
+                )
+            })
             .collect();
     }
     if let Some(wall) = wall_from_entity(entity) {
-        return vec![(wall.thickness, 0.0)];
+        let mat = wall.material_ref.clone().unwrap_or_default();
+        return vec![engine::miter::MiterLayer::with_id(
+            wall.thickness,
+            0.0,
+            mat,
+            "Structural",
+        )];
     }
     Vec::new()
 }
@@ -2980,6 +3007,17 @@ impl CadCommand for WallExtendCommand {
         // click on another wall auto-detects the WALL|target path. Empty
         // space is reported as a null handle and falls back to on_point.
         true
+    }
+
+    /// Highlight while awaiting the target (point or wall) after the source
+    /// wall has been selected — not during the initial source-wall pick.
+    fn entity_pick_highlights_hover(&self) -> bool {
+        self.wall.is_some()
+    }
+
+    /// Restrict the rollover highlight to wall packages (axis or derived).
+    fn entity_pick_hover_highlights_handle(&self, scene: &Scene, handle: Handle) -> bool {
+        is_wall_pick_target(scene, handle)
     }
 
     fn on_entity_pick(&mut self, handle: Handle, pt: DVec3) -> CmdResult {
@@ -3149,6 +3187,166 @@ pub fn aec_wallextend_do(scene: &mut Scene, command_line: &mut CommandLine, args
         }
     } else {
         command_line.push_error("AEC_WALLEXTEND: malformed arguments.");
+    }
+}
+
+/// `AEC_WALLREVERSE` — interactive front-end: pick one wall entity (derived
+/// contour/hatch/solid resolves to its axis via [`resolve_wall_package`]),
+/// then reverse its axis direction and layer-stack side assignment.
+pub struct WallReverseCommand {
+    done: bool,
+}
+
+impl WallReverseCommand {
+    #[allow(clippy::new_without_default)]
+    pub fn new() -> Self {
+        Self { done: false }
+    }
+}
+
+impl CadCommand for WallReverseCommand {
+    fn name(&self) -> &'static str {
+        "AEC_WALLREVERSE"
+    }
+
+    fn prompt(&self) -> String {
+        "AEC_WALLREVERSE  Select wall to reverse:".to_string()
+    }
+
+    fn needs_entity_pick(&self) -> bool {
+        !self.done
+    }
+
+    fn entity_pick_highlights_hover(&self) -> bool {
+        !self.done
+    }
+
+    fn entity_pick_hover_highlights_handle(&self, scene: &Scene, handle: Handle) -> bool {
+        is_wall_pick_target(scene, handle)
+    }
+
+    fn on_entity_pick(&mut self, handle: Handle, _pt: DVec3) -> CmdResult {
+        if handle.is_null() {
+            return CmdResult::NeedPoint;
+        }
+        self.done = true;
+        CmdResult::Dispatch(format!("AEC_WALLREVERSE_DO {}", handle.value()))
+    }
+
+    fn on_point(&mut self, _pt: DVec3) -> CmdResult {
+        CmdResult::NeedPoint
+    }
+
+    fn on_enter(&mut self) -> CmdResult {
+        CmdResult::Cancel
+    }
+}
+
+/// Reverse a wall's axis vertex order and mirror its layer stack so the
+/// absolute visible footprint (including which material sits on which world
+/// side) stays pixel-identical while start/end and left/right-relative-to-
+/// direction flip. Regenerates the representation and re-runs auto-join.
+///
+/// Returns every axis + derived handle touched (including any auto-joined
+/// neighbours) so callers can bump 2D/3D together.
+pub fn reverse_wall_in_document(
+    scene: &mut Scene,
+    wall_handle: Handle,
+) -> Result<Vec<Handle>, WallRegenError> {
+    let wall_handle = resolve_wall_package(scene, wall_handle);
+    let mut axis = get_wall_vertices(scene, wall_handle);
+    if axis.len() < 2 {
+        return Err(WallRegenError::NotAWall);
+    }
+
+    // Capture pre-reverse layer-contour outer bounds for callers/tests that
+    // want to assert footprint stability; the reverse itself only needs the
+    // axis + layer list transform below.
+    axis.reverse();
+    update_wall_vertices(scene, wall_handle, &axis);
+
+    // Mirror the layer stack so that after the axis-direction flip (which
+    // flips offset normals) each material remains on the same absolute side
+    // of the wall. Interior/Exterior justification swaps with the direction.
+    if let Some(entity) = scene.document.get_entity(wall_handle) {
+        if let Some(mut v2) = wall_v2_from_entity(entity) {
+            v2.layers = reverse_wall_layer_stack(&v2.layers);
+            v2.justification = match v2.justification {
+                WallJustification::Interior => WallJustification::Exterior,
+                WallJustification::Exterior => WallJustification::Interior,
+                WallJustification::Center => WallJustification::Center,
+            };
+            let mut record = ExtendedDataRecord::new(AEC_APPID);
+            for v in wall_v2_record(
+                &v2.style_id,
+                v2.height,
+                v2.storey_id,
+                &v2.layers,
+                &v2.derived_handles,
+                v2.justification,
+            ) {
+                record.add_value(v);
+            }
+            write_aec_record(&mut scene.document, wall_handle, record);
+        }
+    }
+
+    let mut touched = regenerate_wall_representation(scene, wall_handle)?;
+    let joined = try_auto_join_nearby_walls(scene, wall_handle);
+    touched.extend(joined);
+    touched.sort_by_key(|h| h.value());
+    touched.dedup();
+    Ok(touched)
+}
+
+/// Reverse the layer stack order and remap `gap_before` so the physical
+/// segment sequence (gap, thickness, gap, thickness, …) is mirrored. With
+/// an axis-direction reverse this keeps absolute material positions stable.
+fn reverse_wall_layer_stack(layers: &[WallLayer]) -> Vec<WallLayer> {
+    if layers.is_empty() {
+        return Vec::new();
+    }
+    let n = layers.len();
+    let old_gaps: Vec<f64> = layers.iter().map(|l| l.gap_before).collect();
+    let mut out: Vec<WallLayer> = layers.iter().rev().cloned().collect();
+    for j in 0..n {
+        // Original leading gap becomes the new leading gap; gaps that sat
+        // between layers i-1 and i move with the reversed adjacency.
+        out[j].gap_before = if j == 0 {
+            old_gaps[0]
+        } else {
+            old_gaps[n - j]
+        };
+    }
+    out
+}
+
+/// `AEC_WALLREVERSE_DO handle` — non-interactive handler dispatched by
+/// [`WallReverseCommand`] once a wall is picked.
+pub fn aec_wallreverse_do(scene: &mut Scene, command_line: &mut CommandLine, args: &str) {
+    let Ok(val) = args.trim().parse::<u64>() else {
+        command_line.push_error("AEC_WALLREVERSE: malformed handle.");
+        return;
+    };
+    let handle = resolve_wall_package(scene, Handle::new(val));
+    if !is_wall_pick_target(scene, handle) {
+        command_line.push_error("AEC_WALLREVERSE: select a wall entity.");
+        return;
+    }
+    match reverse_wall_in_document(scene, handle) {
+        Ok(touched) => {
+            let changes: Vec<_> = touched
+                .into_iter()
+                .map(|h| (h, crate::scene::ChangeKind::Modified))
+                .collect();
+            if !changes.is_empty() {
+                scene.bump_entities(&changes);
+            }
+            command_line.push_info("AEC_WALLREVERSE: wall direction reversed.");
+        }
+        Err(e) => {
+            command_line.push_error(&format!("AEC_WALLREVERSE: {e:?}"));
+        }
     }
 }
 
@@ -5052,7 +5250,7 @@ mod wall_command_tests {
 
         let axis_a_before = get_wall_vertices(&scene, wall_a);
         let axis_b = get_wall_vertices(&scene, wall_b);
-        let (expected_a, _, _) =
+        let (expected_a, _, _, _, _) =
             join::join_wall_axes(&axis_a_before, &axis_b).expect("axes should intersect");
 
         // Simulate the interactive path: pick source wall, then pick target
@@ -5215,5 +5413,368 @@ mod wall_command_tests {
         assert!(touched.is_empty(), "no partner → no touched handles");
         let after = get_wall_vertices(&scene, wall);
         assert_eq!(before, after, "axis must be unchanged when auto-join is a no-op");
+    }
+
+    /// Collect min/max Y of every derived LwPolyline vertex for a wall package.
+    fn wall_derived_y_bounds(scene: &Scene, wall: Handle) -> (f64, f64) {
+        let v2 = wall_v2_from_entity(scene.document.get_entity(wall).unwrap()).unwrap();
+        let mut ymin = f64::INFINITY;
+        let mut ymax = f64::NEG_INFINITY;
+        for h in &v2.derived_handles {
+            if let Some(EntityType::LwPolyline(pl)) = scene.document.get_entity(*h) {
+                for v in &pl.vertices {
+                    ymin = ymin.min(v.location.y);
+                    ymax = ymax.max(v.location.y);
+                }
+            }
+        }
+        (ymin, ymax)
+    }
+
+    #[test]
+    fn reverse_wall_preserves_footprint_and_flips_layer_side_assignment() {
+        let mut scene = Scene::new();
+        let wall = add_multi_layer_wall(&mut scene);
+        // Concrete 0.2 + Insulation 0.05, total 0.25 → y ∈ [-0.125, 0.125]
+        regenerate_wall_representation(&mut scene, wall).expect("regen");
+
+        let axis_before = get_wall_vertices(&scene, wall);
+        let layers_before = wall_v2_from_entity(scene.document.get_entity(wall).unwrap())
+            .unwrap()
+            .layers
+            .clone();
+        let (ymin_before, ymax_before) = wall_derived_y_bounds(&scene, wall);
+
+        // Contour of first layer (Concrete) should sit on the more-negative side.
+        let entity = scene.document.get_entity(wall).unwrap().clone();
+        let contours_before = wall_layer_contour_polylines(&entity, &layers_before);
+        let concrete_y_before = contours_before[0]
+            .0
+            .iter()
+            .chain(contours_before[0].1.iter())
+            .map(|(_, y)| *y)
+            .fold(f64::INFINITY, f64::min);
+
+        reverse_wall_in_document(&mut scene, wall).expect("reverse");
+
+        let axis_after = get_wall_vertices(&scene, wall);
+        assert_eq!(
+            axis_after,
+            axis_before.iter().rev().copied().collect::<Vec<_>>(),
+            "axis vertices must reverse order"
+        );
+
+        let layers_after = wall_v2_from_entity(scene.document.get_entity(wall).unwrap())
+            .unwrap()
+            .layers
+            .clone();
+        assert_eq!(layers_after.len(), layers_before.len());
+        // Layer list side-assignment flips: first material is what was last.
+        assert_eq!(layers_after[0].material, layers_before.last().unwrap().material);
+        assert_eq!(layers_after.last().unwrap().material, layers_before[0].material);
+
+        let (ymin_after, ymax_after) = wall_derived_y_bounds(&scene, wall);
+        assert!(
+            (ymin_before - ymin_after).abs() < 1e-6 && (ymax_before - ymax_after).abs() < 1e-6,
+            "outer footprint Y bounds must stay identical: before=({ymin_before},{ymax_before}) after=({ymin_after},{ymax_after})"
+        );
+
+        // Absolute material sides preserved: Concrete still on the more-negative side.
+        let entity_after = scene.document.get_entity(wall).unwrap().clone();
+        let contours_after = wall_layer_contour_polylines(&entity_after, &layers_after);
+        // After reverse, Concrete is at the end of the list (was index 0, now last).
+        let concrete_idx = layers_after
+            .iter()
+            .position(|l| l.material == "Concrete")
+            .expect("Concrete still present");
+        let concrete_y_after = contours_after[concrete_idx]
+            .0
+            .iter()
+            .chain(contours_after[concrete_idx].1.iter())
+            .map(|(_, y)| *y)
+            .fold(f64::INFINITY, f64::min);
+        assert!(
+            (concrete_y_before - concrete_y_after).abs() < 1e-6,
+            "Concrete must stay on the same absolute side: before={concrete_y_before} after={concrete_y_after}"
+        );
+    }
+
+    #[test]
+    fn reverse_wall_keeps_joined_corner_intersection() {
+        let mut scene = Scene::new();
+        // Wall A: (0,0)->(5,0). Wall B: (5,0)->(5,5) L-corner.
+        let wall_a = add_multi_layer_wall(&mut scene);
+
+        // Approach the L corner from above so join_wall_axes must extend B.
+        let mut pl_b = LwPolyline::new();
+        pl_b.add_vertex(LwVertex::new(Vector2::new(5.0, 1.0)));
+        pl_b.add_vertex(LwVertex::new(Vector2::new(5.0, 5.0)));
+        let mut entity_b = EntityType::LwPolyline(pl_b);
+        let layers_b = vec![wl("Concrete", 0.2, "Structural")];
+        let mut record_b = ExtendedDataRecord::new(AEC_APPID);
+        record_b.values =
+            wall_v2_record("style1", 3.0, 0, &layers_b, &[], WallJustification::Center);
+        entity_b.common_mut().extended_data.add_record(record_b);
+        let wall_b = scene.add_entity(entity_b);
+
+        regenerate_wall_representation(&mut scene, wall_a).expect("regen A");
+        regenerate_wall_representation(&mut scene, wall_b).expect("regen B");
+        let (_kind, _) = join_two_walls_in_document(&mut scene, wall_a, wall_b).expect("join");
+
+        let axis_a_before = get_wall_vertices(&scene, wall_a);
+        let axis_b_before = get_wall_vertices(&scene, wall_b);
+        // Record the shared corner (any vertex of A that coincides with B).
+        let corner = axis_a_before
+            .iter()
+            .find(|pa| axis_b_before.iter().any(|pb| pa.distance(*pb) < 1e-6))
+            .copied()
+            .expect("joined walls must share a corner before reverse");
+
+        reverse_wall_in_document(&mut scene, wall_a).expect("reverse A");
+
+        let axis_a = get_wall_vertices(&scene, wall_a);
+        let axis_b = get_wall_vertices(&scene, wall_b);
+        // After reverse + auto-join, the axes must still share an intersection
+        // (at the original corner or a re-joined equivalent).
+        let a_has = axis_a.iter().any(|p| p.distance(corner) < 1e-4);
+        let b_has = axis_b.iter().any(|p| p.distance(corner) < 1e-4);
+        let share = axis_a
+            .iter()
+            .any(|pa| axis_b.iter().any(|pb| pa.distance(*pb) < 1e-4));
+        assert!(
+            (a_has && b_has) || share,
+            "joined corner must remain correct after reverse; corner={corner:?} A={axis_a:?} B={axis_b:?}"
+        );
+    }
+
+    /// Helper: closed LwPolyline layer footprints for a wall package.
+    fn wall_closed_footprints(scene: &Scene, h: Handle) -> Vec<Vec<(f64, f64)>> {
+        let wall = wall_v2_from_entity(scene.document.get_entity(h).unwrap()).unwrap();
+        wall.derived_handles
+            .iter()
+            .filter_map(|dh| match scene.document.get_entity(*dh) {
+                Some(EntityType::LwPolyline(pl)) if pl.is_closed => Some(
+                    pl.vertices
+                        .iter()
+                        .map(|v| (v.location.x, v.location.y))
+                        .collect(),
+                ),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// Reversing a wall that is *already* part of a stable L-join must
+    /// re-detect the join (axes already coincident — endpoints don't move)
+    /// and rebuild *both* walls' derived geometry with true miter corners,
+    /// not plain rectangular end-caps.
+    #[test]
+    fn reverse_already_joined_wall_rebuilds_mitered_geometry_on_both() {
+        let mut scene = Scene::new();
+        // Single-layer equal walls so miter matching is unambiguous.
+        // A: (0,0)->(5,0). B approaches from above near (5,0).
+        let mut pl_a = LwPolyline::new();
+        pl_a.add_vertex(LwVertex::new(Vector2::new(0.0, 0.0)));
+        pl_a.add_vertex(LwVertex::new(Vector2::new(5.0, 0.0)));
+        let mut ent_a = EntityType::LwPolyline(pl_a);
+        let layers = vec![wl("Concrete", 0.2, "Structural")];
+        let mut rec_a = ExtendedDataRecord::new(AEC_APPID);
+        rec_a.values = wall_v2_record("s", 3.0, 0, &layers, &[], WallJustification::Center);
+        ent_a.common_mut().extended_data.add_record(rec_a);
+        let wall_a = scene.add_entity(ent_a);
+
+        let mut pl_b = LwPolyline::new();
+        pl_b.add_vertex(LwVertex::new(Vector2::new(5.0, 1.0)));
+        pl_b.add_vertex(LwVertex::new(Vector2::new(5.0, 5.0)));
+        let mut ent_b = EntityType::LwPolyline(pl_b);
+        let mut rec_b = ExtendedDataRecord::new(AEC_APPID);
+        rec_b.values = wall_v2_record("s", 3.0, 0, &layers, &[], WallJustification::Center);
+        ent_b.common_mut().extended_data.add_record(rec_b);
+        let wall_b = scene.add_entity(ent_b);
+
+        regenerate_wall_representation(&mut scene, wall_a).expect("regen A");
+        regenerate_wall_representation(&mut scene, wall_b).expect("regen B");
+        let (kind, _) = join_two_walls_in_document(&mut scene, wall_a, wall_b).expect("join");
+        assert_eq!(kind, JoinKind::L);
+
+        let axis_a_joined = get_wall_vertices(&scene, wall_a);
+        let axis_b_joined = get_wall_vertices(&scene, wall_b);
+        let corner = axis_a_joined
+            .iter()
+            .find(|pa| axis_b_joined.iter().any(|pb| pa.distance(*pb) < 1e-6))
+            .copied()
+            .expect("joined walls share a corner");
+
+        // Capture pre-reverse miter corners (equal 0.2 walls at corner (5,0):
+        // (5.1, -0.1) and (4.9, 0.1)).
+        let fps_a_before = wall_closed_footprints(&scene, wall_a);
+        let fps_b_before = wall_closed_footprints(&scene, wall_b);
+        let c1 = (corner.x + 0.1, corner.y - 0.1);
+        let c2 = (corner.x - 0.1, corner.y + 0.1);
+        let has = |fp: &[(f64, f64)], p: (f64, f64)| {
+            fp.iter()
+                .any(|(x, y)| (*x - p.0).abs() < 1e-6 && (*y - p.1).abs() < 1e-6)
+        };
+        assert!(
+            fps_a_before.iter().any(|fp| has(fp, c1) && has(fp, c2)),
+            "precondition: A must be mitered before reverse, got {fps_a_before:?}"
+        );
+        assert!(
+            fps_b_before.iter().any(|fp| has(fp, c1) && has(fp, c2)),
+            "precondition: B must be mitered before reverse, got {fps_b_before:?}"
+        );
+
+        // Reverse the *already-joined* wall A. This is the live-app scenario:
+        // join happened earlier; reverse must re-join without relying on
+        // endpoints moving.
+        let touched = reverse_wall_in_document(&mut scene, wall_a).expect("reverse A");
+
+        // Both packages must be in the touched set (B's derived geometry is
+        // regenerated too, not only A's axis/XDATA).
+        assert!(
+            touched.contains(&wall_a),
+            "touched must include reversed wall A"
+        );
+        assert!(
+            touched.contains(&wall_b),
+            "touched must include neighbour B after re-join, got {touched:?}"
+        );
+        let v2_b = wall_v2_from_entity(scene.document.get_entity(wall_b).unwrap()).unwrap();
+        for d in &v2_b.derived_handles {
+            assert!(
+                touched.contains(d),
+                "B derived handle {} must be bumped after reverse+rejoin",
+                d.value()
+            );
+        }
+
+        let axis_a = get_wall_vertices(&scene, wall_a);
+        let axis_b = get_wall_vertices(&scene, wall_b);
+        assert!(
+            axis_a.iter().any(|p| p.distance(corner) < 1e-4)
+                && axis_b.iter().any(|p| p.distance(corner) < 1e-4),
+            "corner must stay put after reverse; corner={corner:?} A={axis_a:?} B={axis_b:?}"
+        );
+        // Axis order flipped on A; the join corner vertex is now at the
+        // opposite index, but its *position* is unchanged.
+        assert!(
+            axis_a.first().unwrap().distance(corner) < 1e-4
+                || axis_a.last().unwrap().distance(corner) < 1e-4,
+            "A's join endpoint still at corner after reverse, A={axis_a:?}"
+        );
+
+        let fps_a = wall_closed_footprints(&scene, wall_a);
+        let fps_b = wall_closed_footprints(&scene, wall_b);
+        assert!(
+            fps_a.iter().any(|fp| has(fp, c1) && has(fp, c2)),
+            "A must keep mitered (non-separator) corner after reverse, got {fps_a:?}"
+        );
+        assert!(
+            fps_b.iter().any(|fp| has(fp, c1) && has(fp, c2)),
+            "B must keep mitered corner after neighbour reverse, got {fps_b:?}"
+        );
+    }
+
+    /// Absolute world-space layer center offsets must survive
+    /// axis-reverse + layer-stack mirror for an asymmetric 3-layer wall
+    /// (different thicknesses and gaps), not just outer Y bounds.
+    #[test]
+    fn reverse_wall_preserves_three_layer_world_centers() {
+        let mut scene = Scene::new();
+        let mut pl = LwPolyline::new();
+        pl.add_vertex(LwVertex::new(Vector2::new(0.0, 0.0)));
+        pl.add_vertex(LwVertex::new(Vector2::new(10.0, 0.0)));
+        let mut entity = EntityType::LwPolyline(pl);
+        // Asymmetric stack: Brick 0.1, gap 0.02, Insulation 0.05, gap 0.01, Concrete 0.2
+        let mut brick = wl("Brick", 0.1, "Finish");
+        brick.gap_before = 0.0;
+        let mut insulation = wl("Insulation", 0.05, "Insulation");
+        insulation.gap_before = 0.02;
+        let mut concrete = wl("Concrete", 0.2, "Structural");
+        concrete.gap_before = 0.01;
+        let layers = vec![brick, insulation, concrete];
+        let mut record = ExtendedDataRecord::new(AEC_APPID);
+        record.values = wall_v2_record("s3", 3.0, 0, &layers, &[], WallJustification::Center);
+        entity.common_mut().extended_data.add_record(record);
+        let wall = scene.add_entity(entity);
+
+        regenerate_wall_representation(&mut scene, wall).expect("regen");
+
+        let entity_before = scene.document.get_entity(wall).unwrap().clone();
+        let layers_before = wall_v2_from_entity(&entity_before).unwrap().layers.clone();
+        let contours_before = wall_layer_contour_polylines(&entity_before, &layers_before);
+
+        // Per-material world center offset along the axis normal (Y for a
+        // horizontal wall at Y=0): mean of the two boundary Y values.
+        let centers_before: Vec<(String, f64)> = layers_before
+            .iter()
+            .zip(contours_before.iter())
+            .map(|(layer, (b1, b2))| {
+                let y1 = b1.iter().map(|(_, y)| *y).sum::<f64>() / b1.len() as f64;
+                let y2 = b2.iter().map(|(_, y)| *y).sum::<f64>() / b2.len() as f64;
+                (layer.material.clone(), 0.5 * (y1 + y2))
+            })
+            .collect();
+
+        reverse_wall_in_document(&mut scene, wall).expect("reverse");
+
+        let entity_after = scene.document.get_entity(wall).unwrap().clone();
+        let layers_after = wall_v2_from_entity(&entity_after).unwrap().layers.clone();
+        let contours_after = wall_layer_contour_polylines(&entity_after, &layers_after);
+        assert_eq!(layers_after.len(), 3);
+        // Layer list is reversed (materials).
+        assert_eq!(layers_after[0].material, "Concrete");
+        assert_eq!(layers_after[1].material, "Insulation");
+        assert_eq!(layers_after[2].material, "Brick");
+
+        let centers_after: std::collections::HashMap<String, f64> = layers_after
+            .iter()
+            .zip(contours_after.iter())
+            .map(|(layer, (b1, b2))| {
+                let y1 = b1.iter().map(|(_, y)| *y).sum::<f64>() / b1.len() as f64;
+                let y2 = b2.iter().map(|(_, y)| *y).sum::<f64>() / b2.len() as f64;
+                (layer.material.clone(), 0.5 * (y1 + y2))
+            })
+            .collect();
+
+        for (mat, c_before) in &centers_before {
+            let c_after = centers_after
+                .get(mat)
+                .unwrap_or_else(|| panic!("material {mat} missing after reverse"));
+            assert!(
+                (c_before - c_after).abs() < 1e-9,
+                "world center of {mat} must be preserved: before={c_before} after={c_after}"
+            );
+        }
+    }
+
+    #[test]
+    fn wall_join_hover_highlight_only_during_second_pick() {
+        let cmd = WallJoinCommand::new();
+        assert!(
+            !cmd.entity_pick_highlights_hover(),
+            "no highlight during first-wall pick"
+        );
+        let mut cmd = WallJoinCommand::new();
+        let _ = cmd.on_entity_pick(Handle::new(1), DVec3::ZERO);
+        assert!(
+            cmd.entity_pick_highlights_hover(),
+            "highlight while awaiting second wall"
+        );
+    }
+
+    #[test]
+    fn wall_extend_hover_highlight_only_after_source_selected() {
+        let cmd = WallExtendCommand::new();
+        assert!(
+            !cmd.entity_pick_highlights_hover(),
+            "no highlight during source-wall pick"
+        );
+        let mut cmd = WallExtendCommand::new();
+        let _ = cmd.on_entity_pick(Handle::new(1), DVec3::ZERO);
+        assert!(
+            cmd.entity_pick_highlights_hover(),
+            "highlight while awaiting target"
+        );
     }
 }

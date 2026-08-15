@@ -1719,6 +1719,15 @@ pub trait CadCommand: Send {
         false
     }
 
+    /// When [`entity_pick_highlights_hover`] is true, the host still asks
+    /// whether this specific hovered handle should light up. Default accepts
+    /// every non-null handle (Blend/MatchProp behaviour unchanged). Commands
+    /// that only operate on a subset of entities (e.g. walls) override this
+    /// to reject the rest so non-candidates show no highlight.
+    fn entity_pick_hover_highlights_handle(&self, _scene: &Scene, _handle: Handle) -> bool {
+        true
+    }
+
     /// Called when the text editor closes, either because the user committed or cancelled the edit.
     fn on_editor_closed(&mut self, _committed: bool) -> CmdResult {
         CmdResult::Cancel

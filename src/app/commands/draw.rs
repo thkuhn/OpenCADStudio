@@ -841,6 +841,12 @@ impl OpenCADStudio {
                 self.command_line.push_info(&cmd.prompt());
                 self.tabs[i].active_cmd = Some(Box::new(cmd));
             }
+            "AEC_WALLREVERSE" => {
+                use crate::modules::aec::commands::WallReverseCommand;
+                let cmd = WallReverseCommand::new();
+                self.command_line.push_info(&cmd.prompt());
+                self.tabs[i].active_cmd = Some(Box::new(cmd));
+            }
             cmd if cmd.starts_with("AEC_WALLJOIN_DO ") => {
                 let args = cmd["AEC_WALLJOIN_DO ".len()..].to_string();
                 crate::modules::aec::commands::aec_walljoin_do(
@@ -853,6 +859,15 @@ impl OpenCADStudio {
             cmd if cmd.starts_with("AEC_WALLEXTEND_DO ") => {
                 let args = cmd["AEC_WALLEXTEND_DO ".len()..].to_string();
                 crate::modules::aec::commands::aec_wallextend_do(
+                    &mut self.tabs[i].scene,
+                    &mut self.command_line,
+                    &args,
+                );
+                self.tabs[i].dirty = true;
+            }
+            cmd if cmd.starts_with("AEC_WALLREVERSE_DO ") => {
+                let args = cmd["AEC_WALLREVERSE_DO ".len()..].to_string();
+                crate::modules::aec::commands::aec_wallreverse_do(
                     &mut self.tabs[i].scene,
                     &mut self.command_line,
                     &args,

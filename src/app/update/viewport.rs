@@ -2067,7 +2067,30 @@ impl OpenCADStudio {
                     .map(|c| c.entity_pick_highlights_hover())
                     .unwrap_or(false);
                 if highlights_hover {
-                    self.tabs[i].scene.set_hover_highlight(hovered);
+                    // Optional per-command filter (e.g. wall-only picks): when
+                    // the hovered entity is rejected, clear the highlight so
+                    // non-candidates don't light up.
+                    let filtered = match hovered {
+                        Some(h) => {
+                            let ok = self.tabs[i]
+                                .active_cmd
+                                .as_ref()
+                                .map(|c| {
+                                    c.entity_pick_hover_highlights_handle(
+                                        &self.tabs[i].scene,
+                                        h,
+                                    )
+                                })
+                                .unwrap_or(true);
+                            if ok {
+                                Some(h)
+                            } else {
+                                None
+                            }
+                        }
+                        None => None,
+                    };
+                    self.tabs[i].scene.set_hover_highlight(filtered);
                 }
                 let hover_handle = hovered.unwrap_or(acadrust::Handle::NULL);
                 let shift = self.shift_down;
