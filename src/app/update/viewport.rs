@@ -1247,6 +1247,8 @@ impl OpenCADStudio {
                 } else {
                     self.tabs[i].scene.hit_test_wires()
                 };
+            let all_wires =
+                crate::modules::aec::commands::wall_axis_snap_wires(&self.tabs[i].scene, all_wires);
             let snap_candidates = self.tabs[i].scene.interaction_candidates_near(
                 all_wires,
                 raw,
@@ -1650,6 +1652,8 @@ impl OpenCADStudio {
                 } else {
                     self.tabs[i].scene.hit_test_wires()
                 };
+            let all_wires =
+                crate::modules::aec::commands::wall_axis_snap_wires(&self.tabs[i].scene, all_wires);
             let snap_candidates = self.tabs[i].scene.interaction_candidates_near(
                 all_wires,
                 snap_cursor,
@@ -2346,6 +2350,8 @@ impl OpenCADStudio {
         } else {
             self.tabs[i].scene.hit_test_wires()
         };
+        let all_wires =
+            crate::modules::aec::commands::wall_axis_snap_wires(&self.tabs[i].scene, all_wires);
         let snap_candidates = self.tabs[i].scene.interaction_candidates_near(
             all_wires,
             raw,
@@ -3021,6 +3027,10 @@ impl OpenCADStudio {
                     } else {
                         self.tabs[i].scene.hit_test_wires()
                     };
+                let all_wires = crate::modules::aec::commands::wall_axis_snap_wires(
+                    &self.tabs[i].scene,
+                    all_wires,
+                );
                 let snap_candidates = self.tabs[i].scene.interaction_candidates_near(
                     all_wires,
                     snap_cursor,
