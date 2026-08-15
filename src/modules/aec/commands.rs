@@ -2765,8 +2765,15 @@ pub fn aec_wallextend_do(scene: &mut Scene, command_line: &mut CommandLine, args
         // instead of using it directly as the new endpoint — this preserves
         // the wall's original direction exactly, even if `pt` isn't
         // perfectly collinear (e.g. a slightly imprecise pick).
+        //
+        // The direction must be taken from the segment immediately adjacent
+        // to the endpoint being moved (i.e. the endpoint and its neighbour),
+        // NOT from the endpoint and the opposite end of the whole axis: for
+        // multi-vertex wall polylines (more than two vertices) those differ,
+        // and anchoring on the far end would bend the extended segment away
+        // from its actual direction.
         if d1 < d2 {
-            let anchor = *axis.last().unwrap();
+            let anchor = axis[1];
             let near = axis[0];
             let dir = near - anchor;
             if dir.length_squared() > 1e-12 {
@@ -2777,7 +2784,7 @@ pub fn aec_wallextend_do(scene: &mut Scene, command_line: &mut CommandLine, args
             }
         } else {
             let last = axis.len() - 1;
-            let anchor = axis[0];
+            let anchor = axis[last - 1];
             let near = axis[last];
             let dir = near - anchor;
             if dir.length_squared() > 1e-12 {
@@ -4383,6 +4390,51 @@ mod wall_command_tests {
             axis
         );
         assert!(axis.iter().any(|p| p.x.abs() < 1e-9 && p.y.abs() < 1e-9));
+    }
+
+    #[test]
+    fn aec_wallextend_do_preserves_direction_for_a_multi_vertex_bent_wall() {
+        // Regression test for a real-world root cause: for a multi-vertex
+        // (bent) wall polyline, the direction to preserve when extending an
+        // endpoint must come from the segment immediately adjacent to that
+        // endpoint, NOT from a line drawn to the opposite far end of the
+        // whole polyline (which, for a bent wall, points in a different
+        // direction and would visibly change the extended segment's angle).
+        use crate::ui::command_line::CommandLine;
+
+        let mut scene = Scene::new();
+        // A bent, 3-vertex wall axis: (0,0) -> (5,0) -> (5,5).
+        // The last segment (5,0)->(5,5) runs purely along +Y.
+        let mut pl = LwPolyline::new();
+        pl.add_vertex(LwVertex::new(Vector2::new(0.0, 0.0)));
+        pl.add_vertex(LwVertex::new(Vector2::new(5.0, 0.0)));
+        pl.add_vertex(LwVertex::new(Vector2::new(5.0, 5.0)));
+        let mut entity = EntityType::LwPolyline(pl);
+        let layers = vec![wl("Concrete", 0.2, "Structural")];
+        let mut record = ExtendedDataRecord::new(AEC_APPID);
+        record.values = wall_v2_record("style1", 3.0, 0, &layers, &[], WallJustification::Center);
+        entity.common_mut().extended_data.add_record(record);
+        let wall_handle = scene.add_entity(entity);
+
+        let mut command_line = CommandLine::default();
+
+        // Extend the (5,5) endpoint further along +Y, to (5,8).
+        aec_wallextend_do(
+            &mut scene,
+            &mut command_line,
+            &format!("{}|PT|5|8|0", wall_handle.value()),
+        );
+
+        let axis = get_wall_vertices(&scene, wall_handle);
+        assert_eq!(axis.len(), 3);
+        // The extended endpoint must stay on the last segment's direction
+        // (X=5), not bend towards the far opposite end (0,0).
+        let last = axis.last().unwrap();
+        assert!(
+            (last.x - 5.0).abs() < 1e-9 && (last.y - 8.0).abs() < 1e-9,
+            "extended endpoint should stay on the adjacent segment's direction line, got {:?}",
+            axis
+        );
     }
 
     #[test]
