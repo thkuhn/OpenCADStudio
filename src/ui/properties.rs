@@ -770,8 +770,8 @@ impl PropertiesPanel {
                 render_annotative_scale_row(label, val)
             }
             PropValue::ReadOnly(val) => render_ro_row(label, val),
-            PropValue::Picker { value, handle } => {
-                render_picker_row(label, prop.field, value, *handle)
+            PropValue::Picker { value, handles } => {
+                render_picker_row(label, value, handles.clone())
             }
             PropValue::HatchPatternChoice(current) => {
                 self.render_hatch_pattern_row(label, current)
@@ -792,7 +792,11 @@ impl PropertiesPanel {
         use crate::command::LiveFieldValue;
         match value {
             LiveFieldValue::Text(s) => {
-                let display = self.edit_buf.get(field).map(|v| v.as_str()).unwrap_or(s);
+                let display = self
+                    .edit_buf
+                    .get(&FieldKey::Geom(field))
+                    .map(|v| v.as_str())
+                    .unwrap_or(s);
                 let ti = text_input("", display)
                     .on_input(move |v| {
                         Message::ActiveCommandLivePropertyChanged(field, LiveFieldValue::Text(v))
@@ -812,7 +816,7 @@ impl PropertiesPanel {
                 let fallback = format!("{n}");
                 let display = self
                     .edit_buf
-                    .get(field)
+                    .get(&FieldKey::Geom(field))
                     .map(|v| v.as_str())
                     .unwrap_or(fallback.as_str());
                 let ti = text_input("", display)
@@ -1653,6 +1657,29 @@ fn render_stepper_row<'a>(label: &'a str, display: &'a str) -> Element<'a, Messa
     .spacing(4)
     .align_y(iced::Center);
     prop_row_widget(label, widget.into())
+}
+
+/// A picker row (e.g. wall style) that opens the AEC Style Picker modal
+/// targeting the given entity handle(s) when clicked.
+fn render_picker_row<'a>(
+    label: &'a str,
+    value: &'a str,
+    handles: Vec<acadrust::Handle>,
+) -> Element<'a, Message> {
+    let btn = button(
+        row![
+            text(crate::ui::text_util::elide(value, 20)).size(FONT_SZ),
+            Space::new().width(Length::Fill),
+            text("...").size(FONT_SZ),
+        ]
+        .padding([0, 4])
+        .align_y(iced::Alignment::Center),
+    )
+    .on_press(Message::AecStylePickerOpenForWallProperties(handles))
+    .style(button::subtle)
+    .padding(0)
+    .width(Length::Fill);
+    prop_row_widget(label, btn.into())
 }
 
 fn render_bool_row<'a>(label: &'a str, field: &'static str, value: bool) -> Element<'a, Message> {

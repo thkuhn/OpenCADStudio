@@ -463,7 +463,7 @@ impl OpenCADStudio {
                                 field: "wall_style",
                                 value: crate::scene::model::object::PropValue::Picker {
                                     value: style_name,
-                                    handle: entity.common().handle,
+                                    handles: vec![entity.common().handle],
                                 },
                             },
                         ];
@@ -1495,7 +1495,11 @@ impl OpenCADStudio {
                         .iter()
                         .map(|(handle, entity)| (*handle, entity))
                         .collect();
-                    let mut sections = aggregate_sections(&local_refs, &text_style_names);
+                    let mut sections = aggregate_sections(
+                                            &local_refs,
+                                            &text_style_names,
+                                            self.aec_style_library.as_ref(),
+                                        );
                     sections.extend(aggregate_solid_history_sections(
                         &self.tabs[i].scene.document,
                         &local_refs.iter().map(|(handle, _)| *handle).collect::<Vec<_>>(),
@@ -2101,6 +2105,8 @@ fn make_sections_read_only(
             }
             PropValue::Stepper { display, .. } => display.clone(),
             PropValue::AttrText { value, .. } => value.clone(),
+            PropValue::Picker { value, .. } => value.clone(),
+            PropValue::Live(_) => String::new(),
         };
         property.field = "locked_read_only";
         property.value = PropValue::ReadOnly(text);
@@ -2224,6 +2230,7 @@ pub(super) fn wall_prop_section(
 pub(super) fn aggregate_sections(
     selected: &[(Handle, &EntityType)],
     text_style_names: &[String],
+    style_library: Option<&crate::modules::aec::engine::library::StyleLibrary>,
 ) -> Vec<crate::scene::model::object::PropSection> {
     if selected.is_empty() {
         return vec![];

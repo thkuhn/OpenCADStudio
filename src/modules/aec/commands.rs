@@ -1110,6 +1110,7 @@ fn regenerate_wall_representation_inner(
 
             let (rel, origin, wcs) = pack_wall_ring(footprint);
             let hatch_model = crate::scene::model::hatch_model::HatchModel {
+                render_instance: None,
                 boundary: std::sync::Arc::new(rel),
                 pattern: crate::scene::model::hatch_model::HatchPattern::Pattern(families.clone()),
                 name: pattern_name.clone(),
@@ -1120,9 +1121,11 @@ fn regenerate_wall_representation_inner(
                 scale: 1.0,
                 world_origin: origin,
                 boundary_wcs: Some(std::sync::Arc::new(wcs)),
+                boundary_exterior: None,
+                boundary_sources: None,
                 draw_depth: 0.0,
             };
-            let hatch_handle = scene.add_hatch(hatch_model);
+            let hatch_handle = scene.add_hatch(hatch_model, None, None);
             if let Some(layer_name) = layer.layer_override.as_deref().filter(|s| !s.is_empty()) {
                 scene.ensure_layer(layer_name);
                 if let Some(e) = scene.document.get_entity_mut(hatch_handle) {

@@ -2244,12 +2244,16 @@ impl OpenCADStudio {
                 self.tabs[self.active_tab]
                     .properties
                     .edit_buf
-                    .insert(field.to_string(), value);
+                    .insert(crate::ui::properties::FieldKey::Geom(field), value);
                 Task::none()
             }
             Message::ActiveCommandLiveTextCommit(field) => {
                 let i = self.active_tab;
-                let Some(raw) = self.tabs[i].properties.edit_buf.remove(field) else {
+                let Some(raw) = self.tabs[i]
+                    .properties
+                    .edit_buf
+                    .remove(&crate::ui::properties::FieldKey::Geom(field))
+                else {
                     return Task::none();
                 };
                 let Ok(parsed) = raw.trim().parse::<f64>() else {
