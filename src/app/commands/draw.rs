@@ -842,36 +842,40 @@ impl OpenCADStudio {
                 self.tabs[i].active_cmd = Some(Box::new(cmd));
             }
             "AEC_WALLREVERSE" => {
-                // If exactly one wall (or its derived contour/hatch/solid) is
-                // already selected — as when invoked from the context menu on
-                // a selected wall — act on it immediately instead of making
-                // the user pick it again; the pick would otherwise silently
-                // wait for a click the context-menu flow never delivers.
+                // If one or more walls (or their derived contour/hatch/solid
+                // entities) are already selected — as when invoked from the
+                // context menu on a selection — act on all of them directly
+                // instead of making the user pick again; the pick would
+                // otherwise silently wait for a click the context-menu flow
+                // never delivers.
                 let selected_handles: Vec<acadrust::Handle> = self.tabs[i]
                     .scene
                     .selected_entities()
                     .into_iter()
                     .map(|(h, _)| h)
                     .collect();
-                let wall_handle = if selected_handles.len() == 1 {
-                    let h = crate::modules::aec::commands::resolve_wall_package(
+                let mut wall_handles: Vec<acadrust::Handle> = Vec::new();
+                for h in selected_handles {
+                    let resolved = crate::modules::aec::commands::resolve_wall_package(
                         &self.tabs[i].scene,
-                        selected_handles[0],
+                        h,
                     );
-                    if crate::modules::aec::commands::is_wall_pick_target(&self.tabs[i].scene, h) {
-                        Some(h)
-                    } else {
-                        None
+                    if crate::modules::aec::commands::is_wall_pick_target(
+                        &self.tabs[i].scene,
+                        resolved,
+                    ) && !wall_handles.contains(&resolved)
+                    {
+                        wall_handles.push(resolved);
                     }
-                } else {
-                    None
-                };
-                if let Some(h) = wall_handle {
-                    crate::modules::aec::commands::aec_wallreverse_do(
-                        &mut self.tabs[i].scene,
-                        &mut self.command_line,
-                        &h.value().to_string(),
-                    );
+                }
+                if !wall_handles.is_empty() {
+                    for h in wall_handles {
+                        crate::modules::aec::commands::aec_wallreverse_do(
+                            &mut self.tabs[i].scene,
+                            &mut self.command_line,
+                            &h.value().to_string(),
+                        );
+                    }
                     self.tabs[i].dirty = true;
                 } else {
                     use crate::modules::aec::commands::WallReverseCommand;
