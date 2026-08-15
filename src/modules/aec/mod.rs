@@ -12,16 +12,16 @@ use crate::modules::{CadModule, IconKind, ModuleEvent, RibbonGroup, RibbonItem, 
 
 pub struct AecModule;
 
-const WALL_ICON: &[u8] = include_bytes!("../../../assets/icons/box3d.svg");
-const WALL_REFRESH_ICON: &[u8] = include_bytes!("../../../assets/icons/sync.svg");
-const JOIN_ICON: &[u8] = include_bytes!("../../../assets/icons/fillet.svg");
-const EXTEND_ICON: &[u8] = include_bytes!("../../../assets/icons/extend.svg");
+const WALL_ICON: &[u8] = include_bytes!("../../../assets/icons/aec/wall_create.svg");
+const WALL_REFRESH_ICON: &[u8] = include_bytes!("../../../assets/icons/aec/wall_refresh.svg");
+const JOIN_ICON: &[u8] = include_bytes!("../../../assets/icons/aec/wall_join.svg");
+const EXTEND_ICON: &[u8] = include_bytes!("../../../assets/icons/aec/wall_extend.svg");
 const ROOM_ICON: &[u8] = include_bytes!("../../../assets/icons/array_rect.svg");
 const SCHEDULE_ICON: &[u8] = include_bytes!("../../../assets/icons/table.svg");
 const STOREY_ICON: &[u8] = include_bytes!("../../../assets/icons/layers/panel.svg");
 const IFC_ICON: &[u8] = include_bytes!("../../../assets/icons/cui_export.svg");
-const MATERIAL_ICON: &[u8] = include_bytes!("../../../assets/icons/hatch/hatch_cross.svg");
-const STYLE_ICON: &[u8] = include_bytes!("../../../assets/icons/hatch/hatch_lines.svg");
+const MATERIAL_ICON: &[u8] = include_bytes!("../../../assets/icons/aec/material_manager.svg");
+const STYLE_ICON: &[u8] = include_bytes!("../../../assets/icons/aec/wall_style_manager.svg");
 
 /// Helper to declare a ribbon tool that fires a named command.
 fn tool(id: &'static str, label: &'static str, icon: &'static [u8]) -> ToolDef {
@@ -63,12 +63,6 @@ impl CadModule for AecModule {
                 RibbonGroup {
                     title: "Styles",
                     tools: vec![
-                        RibbonItem::LargeTool(tool(
-                            "AEC_MATERIAL",
-                            "Material",
-                            MATERIAL_ICON,
-                        )),
-                        RibbonItem::LargeTool(tool("AEC_STYLE", "Wall Style", STYLE_ICON)),
                         RibbonItem::LargeTool(tool(
                             "AEC_MATERIALMANAGER",
                             "Material Manager",
