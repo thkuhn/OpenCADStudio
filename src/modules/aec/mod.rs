@@ -14,6 +14,8 @@ pub struct AecModule;
 
 const WALL_ICON: &[u8] = include_bytes!("../../../assets/icons/box3d.svg");
 const WALL_REFRESH_ICON: &[u8] = include_bytes!("../../../assets/icons/sync.svg");
+const JOIN_ICON: &[u8] = include_bytes!("../../../assets/icons/fillet.svg");
+const EXTEND_ICON: &[u8] = include_bytes!("../../../assets/icons/extend.svg");
 const ROOM_ICON: &[u8] = include_bytes!("../../../assets/icons/array_rect.svg");
 const SCHEDULE_ICON: &[u8] = include_bytes!("../../../assets/icons/table.svg");
 const STOREY_ICON: &[u8] = include_bytes!("../../../assets/icons/layers/panel.svg");
@@ -52,6 +54,8 @@ impl CadModule for AecModule {
                             "Refresh Walls",
                             WALL_REFRESH_ICON,
                         )),
+                        RibbonItem::LargeTool(tool("AEC_WALLJOIN", "Join Walls", JOIN_ICON)),
+                        RibbonItem::LargeTool(tool("AEC_WALLEXTEND", "Extend Wall", EXTEND_ICON)),
                     ],
                 },
                 RibbonGroup {

@@ -7,6 +7,7 @@
 pub mod contour;
 pub mod geometry;
 pub mod ifc;
+pub mod join;
 pub mod library;
 pub mod loop_detection;
 pub mod material;

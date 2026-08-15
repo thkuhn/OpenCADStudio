@@ -828,6 +828,35 @@ impl OpenCADStudio {
                     &mut self.tabs[i].scene,
                     &mut self.command_line,
                 );
+            }
+            "AEC_WALLJOIN" => {
+                use crate::modules::aec::commands::WallJoinCommand;
+                let cmd = WallJoinCommand::new();
+                self.command_line.push_info(&cmd.prompt());
+                self.tabs[i].active_cmd = Some(Box::new(cmd));
+            }
+            "AEC_WALLEXTEND" => {
+                use crate::modules::aec::commands::WallExtendCommand;
+                let cmd = WallExtendCommand::new();
+                self.command_line.push_info(&cmd.prompt());
+                self.tabs[i].active_cmd = Some(Box::new(cmd));
+            }
+            cmd if cmd.starts_with("AEC_WALLJOIN_DO ") => {
+                let args = cmd["AEC_WALLJOIN_DO ".len()..].to_string();
+                crate::modules::aec::commands::aec_walljoin_do(
+                    &mut self.tabs[i].scene,
+                    &mut self.command_line,
+                    &args,
+                );
+                self.tabs[i].dirty = true;
+            }
+            cmd if cmd.starts_with("AEC_WALLEXTEND_DO ") => {
+                let args = cmd["AEC_WALLEXTEND_DO ".len()..].to_string();
+                crate::modules::aec::commands::aec_wallextend_do(
+                    &mut self.tabs[i].scene,
+                    &mut self.command_line,
+                    &args,
+                );
                 self.tabs[i].dirty = true;
             }
             "AEC_ROOMSCHEDULE" => {

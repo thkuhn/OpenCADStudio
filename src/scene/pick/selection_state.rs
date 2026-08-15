@@ -33,6 +33,8 @@ pub struct SelectionState {
     pub context_menu: Option<Point>,
     /// True while the context menu's Draw Order sub-items are expanded.
     pub draworder_submenu: bool,
+    /// True while the context menu's Wall Justification sub-items are expanded.
+    pub wall_justification_submenu: bool,
     pub last_move_pos: Option<Point>,
     pub left_down: bool,
     pub left_press_pos: Option<Point>,

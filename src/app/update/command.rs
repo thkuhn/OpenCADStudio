@@ -2079,6 +2079,23 @@ pub(super) fn on_tab_close(&mut self, idx: usize) -> Task<Message> {
                                 }
                             }
                         }
+                    } else if field == "wall_justification" {
+                        // Justification pick on a WALL_V2 wall: shift the axis
+                        // sideways by the delta between the old and new
+                        // offsets (same math as `WallCommand::build_entity`)
+                        // and regenerate the contour/hatch/solid layers.
+                        let new_justification =
+                            crate::modules::aec::commands::WallJustification::from_str(&value);
+                        for &handle in &handles {
+                            if self.tabs[i].scene.is_layer_locked(handle) {
+                                continue;
+                            }
+                            crate::modules::aec::commands::change_wall_justification(
+                                &mut self.tabs[i].scene,
+                                handle,
+                                new_justification,
+                            );
+                        }
                     } else {
                         let plane = if self.tabs[i].editing_model_space() {
                             self.tabs[i].ucs_xform().working_plane()

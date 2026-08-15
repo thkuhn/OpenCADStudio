@@ -1636,23 +1636,40 @@ impl OpenCADStudio {
                     }
                 }
             }
-            CmdResult::CommitLiveEntity(entity) => {
+            CmdResult::CommitLiveEntities(entities) => {
                 let label = self.history_label_from_active_cmd(i, "ENTITY");
-                let delta_safe = self.delta_add_safe(i, &entity);
+                let mut handles = Vec::with_capacity(entities.len());
+                let mut first_handle = None;
+                
+                // For undo purposes, we use the first entity's type as a hint.
+                let delta_safe = entities.first().map(|e| self.delta_add_safe(i, e)).unwrap_or_default();
                 let pending = self.begin_undo(i, label, 1, delta_safe);
-                let handle = self.commit_entity_handle(entity);
+                
+                for entity in entities {
+                    let h = self.commit_entity_handle(entity);
+                    if let Some(h) = h {
+                        handles.push(h);
+                        if first_handle.is_none() {
+                            first_handle = Some(h);
+                        }
+                    }
+                }
+                
                 self.tabs[i].dirty = true;
                 self.tabs[i].scene.clear_preview_wire();
                 if let Some(pd) = pending {
                     self.commit_undo_delta(i, pd);
                 }
-                if let Some(h) = handle {
-                    // Keep the live document Arc unique while later vertices
-                    // replace the geometry in place. The final Arc is captured
-                    // by UpdateLiveEntity when the command completes.
-                    self.defer_live_entity_history_after(i, h);
+                
+                if !handles.is_empty() {
+                    // Keep the live document entities unique while later vertices
+                    // replace the geometry in place. The final entities are captured
+                    // by UpdateLiveEntities when the command completes.
+                    for &h in &handles {
+                        self.defer_live_entity_history_after(i, h);
+                    }
                     if let Some(cmd) = self.tabs[i].active_cmd.as_mut() {
-                        cmd.set_live_handle(h);
+                        cmd.set_live_handles(handles);
                     }
                 }
                 let prompt = self.tabs[i].active_cmd.as_ref().map(|c| c.prompt());
@@ -1660,77 +1677,80 @@ impl OpenCADStudio {
                     self.command_line.push_info(&p);
                 }
             }
-            CmdResult::UpdateLiveEntity {
-                handle,
-                entity,
+            CmdResult::UpdateLiveEntities {
+                updates,
                 finish,
             } => {
-                let tracks_draw_anchor = matches!(
-                    &entity,
-                    acadrust::EntityType::Line(_)
-                        | acadrust::EntityType::Arc(_)
-                        | acadrust::EntityType::LwPolyline(_)
-                        | acadrust::EntityType::Polyline(_)
-                        | acadrust::EntityType::Polyline2D(_)
-                        | acadrust::EntityType::Polyline3D(_)
-                );
-                // Replace the live entity's geometry in place, preserving its
-                // handle and layer (the fresh entity from the command carries
-                // defaults — a NULL handle would desync it from the document
-                // map key and drop it from rendering / hit-test). No undo
-                // snapshot — the create already pushed one, so the whole object
-                // reverts as a unit.
-                if let Some(old) = self.tabs[i].scene.document.get_entity_mut(handle) {
-                    let old_handle = old.as_entity().handle();
-                    let layer = old.as_entity().layer().to_string();
-                    let mut new = entity;
-                    new.as_entity_mut().set_handle(old_handle);
-                    new.as_entity_mut().set_layer(layer);
-                    *old = new;
-                    self.tabs[i]
-                        .scene
-                        .bump_entities(&[(handle, crate::scene::ChangeKind::Modified)]);
-                    self.tabs[i].dirty = true;
+                let mut first_handle = None;
+                for (handle, entity) in updates {
+                    if first_handle.is_none() {
+                        first_handle = Some(handle);
+                    }
+                    let tracks_draw_anchor = matches!(
+                        &entity,
+                        acadrust::EntityType::Line(_)
+                            | acadrust::EntityType::Arc(_)
+                            | acadrust::EntityType::LwPolyline(_)
+                            | acadrust::EntityType::Polyline(_)
+                            | acadrust::EntityType::Polyline2D(_)
+                            | acadrust::EntityType::Polyline3D(_)
+                    );
+                    // Replace the live entity's geometry in place, preserving its
+                    // handle and layer.
+                    if let Some(old) = self.tabs[i].scene.document.get_entity_mut(handle) {
+                        let old_handle = old.as_entity().handle();
+                        let layer = old.as_entity().layer().to_string();
+                        let mut new = entity;
+                        new.as_entity_mut().set_handle(old_handle);
+                        new.as_entity_mut().set_layer(layer);
+                        *old = new;
+                        self.tabs[i]
+                            .scene
+                            .bump_entities(&[(handle, crate::scene::ChangeKind::Modified)]);
+                        self.tabs[i].dirty = true;
+                    }
+                    if tracks_draw_anchor {
+                        self.tabs[i].last_draw_anchor = Some(handle);
+                    }
                 }
-                if tracks_draw_anchor {
-                    self.tabs[i].last_draw_anchor = Some(handle);
-                }
+
                 if finish {
-                    // AEC wall: the just-finished axis polyline carries
-                    // WALL/WALL_V2 XDATA, so rebuild its visible
-                    // contour/hatch/solid representation now that the final
-                    // geometry (and dimensions) are committed.
-                    let is_wall = self.tabs[i]
-                        .scene
-                        .document
-                        .get_entity(handle)
-                        .is_some_and(|e| {
-                            crate::modules::aec::commands::wall_thickness_and_height(e).is_some()
-                        });
-                    if is_wall {
-                        let _ = crate::modules::aec::commands::regenerate_wall_representation(
-                            &mut self.tabs[i].scene,
-                            handle,
-                        );
-                        // Remember the just-used style/height as the session
-                        // default so the next AEC_WALL starts pre-filled
-                        // with them in the live Properties-panel section
-                        // instead of always falling back to hardcoded
-                        // defaults.
-                        if let Some(entity) = self.tabs[i].scene.document.get_entity(handle) {
-                            if let Some(v2) =
-                                crate::modules::aec::commands::wall_v2_from_entity(entity)
-                            {
-                                self.aec_last_wall_style_id = Some(v2.style_id.clone());
-                                self.aec_last_wall_height = Some(v2.height);
-                            } else if let Some(w) =
-                                crate::modules::aec::commands::wall_from_entity(entity)
-                            {
-                                self.aec_last_wall_height = Some(w.height);
+                    if let Some(handle) = first_handle {
+                        // AEC wall: the just-finished axis polyline carries
+                        // WALL/WALL_V2 XDATA, so rebuild its visible
+                        // contour/hatch/solid representation now that the final
+                        // geometry (and dimensions) are committed.
+                        let is_wall = self.tabs[i]
+                            .scene
+                            .document
+                            .get_entity(handle)
+                            .is_some_and(|e| {
+                                crate::modules::aec::commands::wall_thickness_and_height(e).is_some()
+                            });
+                        if is_wall {
+                            let _ = crate::modules::aec::commands::regenerate_wall_representation(
+                                &mut self.tabs[i].scene,
+                                handle,
+                            );
+                            // Remember the just-used style/height as the session
+                            // default.
+                            if let Some(entity) = self.tabs[i].scene.document.get_entity(handle) {
+                                if let Some(v2) =
+                                    crate::modules::aec::commands::wall_v2_from_entity(entity)
+                                {
+                                    self.aec_last_wall_style_id = Some(v2.style_id.clone());
+                                    self.aec_last_wall_height = Some(v2.height);
+                                } else if let Some(w) =
+                                    crate::modules::aec::commands::wall_from_entity(entity)
+                                {
+                                    self.aec_last_wall_height = Some(w.height);
+                                }
                             }
                         }
+                        self.finish_live_entity_history(i, handle);
+                        // TODO: If we have multiple live entities, should we call finish_live_entity_history for all?
+                        // For now, AEC wall only cares about the main axis handle.
                     }
-                    self.finish_live_entity_history(i, handle);
                     self.tabs[i].scene.clear_preview_wire();
                     self.tabs[i].active_cmd = None;
                     self.tabs[i].snap_result = None;

@@ -2869,6 +2869,8 @@ pub enum Message {
     // ── Draw Order context menu ─────────────────────────────────────────
     /// Toggle the Draw Order sub-items in the viewport context menu.
     DrawOrderSubmenuToggle,
+    /// Toggle the Wall Justification sub-items in the viewport context menu.
+    WallJustificationSubmenuToggle,
     /// Begin an interactive reference-object pick to move the current
     /// selection above (`true`) or below (`false`) the picked object.
     DrawOrderPickRef(bool),

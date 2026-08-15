@@ -1386,19 +1386,18 @@ pub enum CmdResult {
     /// The host should look up the attdefs for `block_name` from the document
     /// and call `attreq_set_attdefs()` on the command, then loop on text input.
     AttreqNeeded { block_name: String },
-    /// Add a command-owned "live" entity to the document mid-command and hand
-    /// its assigned handle back to the active command via `set_live_handle()`.
+    /// Add command-owned "live" entities to the document mid-command and hand
+    /// their assigned handles back to the active command via `set_live_handles()`.
     /// One undo snapshot is pushed here, so the whole in-progress object reverts
     /// as a single unit. The command stays active. Used by PLINE so the partial
     /// polyline is a real, snappable entity while later vertices are placed.
-    CommitLiveEntity(EntityType),
-    /// Replace the geometry of the live entity `handle` in place — preserving
-    /// its layer — without pushing a new undo snapshot. When `finish` is true
-    /// the command also exits (the entity is already committed, so no separate
-    /// commit is needed).
-    UpdateLiveEntity {
-        handle: Handle,
-        entity: EntityType,
+    CommitLiveEntities(Vec<EntityType>),
+    /// Replace the geometry of live entities in place — preserving
+    /// their handles and layers — without pushing a new undo snapshot. When
+    /// `finish` is true the command also exits (the entities are already
+    /// committed, so no separate commit is needed).
+    UpdateLiveEntities {
+        updates: Vec<(Handle, EntityType)>,
         finish: bool,
     },
     /// End a command-owned live entity without replacing its already-current
@@ -1731,10 +1730,10 @@ pub trait CadCommand: Send {
         CmdResult::Cancel
     }
 
-    /// Host callback after `CmdResult::CommitLiveEntity`: records the handle the
-    /// new live entity was assigned so later `UpdateLiveEntity` results can
-    /// target it.
-    fn set_live_handle(&mut self, _handle: Handle) {}
+    /// Host callback after `CmdResult::CommitLiveEntities`: records the handles the
+    /// new live entities were assigned so later `UpdateLiveEntities` results can
+    /// target them.
+    fn set_live_handles(&mut self, _handles: Vec<Handle>) {}
 
     /// Point-click pick of domain objects (wire hit-test often misses small markers).
     fn needs_structure_point_pick(&self) -> bool {

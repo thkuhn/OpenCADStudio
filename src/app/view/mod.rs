@@ -1405,14 +1405,24 @@ impl OpenCADStudio {
         // the cursor position (canvas-relative) anchors the menu under
         // the cursor instead of drifting into window-relative space.
         if !tab.is_start {
-            let (ctx_pos, draworder_open) = {
+            let (ctx_pos, draworder_open, justification_open) = {
                 let sel = tab.scene.selection.borrow();
-                (sel.context_menu, sel.draworder_submenu)
+                (sel.context_menu, sel.draworder_submenu, sel.wall_justification_submenu)
             };
             if let Some(p) = ctx_pos {
                 let has_cmd = tab.active_cmd.is_some();
                 let has_selection = !tab.scene.selected.is_empty();
                 let isolation_active = tab.scene.is_isolation_active();
+
+                let only_walls = has_selection && tab.scene.selected.iter().all(|&h| {
+                    let resolved = crate::modules::aec::commands::resolve_wall_package(&tab.scene, h);
+                    if let Some(entity) = tab.scene.document.get_entity(resolved) {
+                        crate::modules::aec::commands::wall_v2_from_entity(entity).is_some()
+                    } else {
+                        false
+                    }
+                });
+
                 let last_cmds: Vec<String> = self
                     .command_line
                     .recent_commands
@@ -1429,6 +1439,8 @@ impl OpenCADStudio {
                     isolation_active,
                     last_cmds,
                     draworder_open,
+                    only_walls,
+                    justification_open,
                 ));
             }
         }

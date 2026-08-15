@@ -20,6 +20,7 @@ use crate::ui::command_line::CommandLine;
 
 use super::engine::{
     self, find_closed_loop, Room, Storey, StyleLibrary, Wall,
+    join::{self, JoinKind, JoinError},
 };
 use super::engine::library::load_or_seed;
 use super::engine::material::Material;
@@ -160,6 +161,27 @@ pub fn resolve_wall_package(scene: &Scene, clicked: Handle) -> Handle {
     }
 }
 
+/// Extracts vertices from a wall's axis polyline.
+fn get_wall_vertices(scene: &Scene, handle: Handle) -> Vec<DVec3> {
+    if let Some(EntityType::LwPolyline(pl)) = scene.document.get_entity(handle) {
+        pl.vertices.iter().map(|v| DVec3::new(v.location.x, v.location.y, 0.0)).collect()
+    } else {
+        Vec::new()
+    }
+}
+
+/// Updates a wall's axis polyline vertices.
+fn update_wall_vertices(scene: &mut Scene, handle: Handle, vertices: &[DVec3]) {
+    if let Some(entity) = scene.document.get_entity_mut(handle) {
+        if let EntityType::LwPolyline(pl) = entity {
+            pl.vertices = vertices
+                .iter()
+                .map(|v| acadrust::entities::LwVertex::new(acadrust::types::Vector2::new(v.x, v.y)))
+                .collect();
+        }
+    }
+}
+
 /// Collect baseline segments of every `WALL`-tagged `LwPolyline`.
 fn collect_wall_segments(doc: &CadDocument) -> Vec<((f64, f64), (f64, f64))> {
     let mut segments = Vec::new();
@@ -265,6 +287,14 @@ impl WallJustification {
             "Interior" => WallJustification::Interior,
             "Exterior" => WallJustification::Exterior,
             _ => WallJustification::Center,
+        }
+    }
+
+    pub fn offset(&self, total_thickness: f64) -> f64 {
+        match self {
+            WallJustification::Center => 0.0,
+            WallJustification::Interior => total_thickness * -0.5,
+            WallJustification::Exterior => total_thickness * 0.5,
         }
     }
 }
@@ -831,6 +861,60 @@ pub fn set_wall_v2_derived_handles(
     write_aec_record(&mut scene.document, wall_handle, record)
 }
 
+/// Changes an existing `WALL_V2` wall's justification (Interior/Center/
+/// Exterior), shifting its axis polyline sideways by the delta between the
+/// old and new justification offsets (same `WallJustification::offset` math
+/// used by [`WallCommand::build_entity`]), then regenerates its
+/// contour/hatch/solid representation. No-op (returns `false`) if
+/// `wall_handle` doesn't carry a `WALL_V2` record.
+pub fn change_wall_justification(
+    scene: &mut Scene,
+    wall_handle: Handle,
+    new_justification: WallJustification,
+) -> bool {
+    let Some(entity) = scene.document.get_entity(wall_handle) else {
+        return false;
+    };
+    let Some(v2) = wall_v2_from_entity(entity) else {
+        return false;
+    };
+
+    let total_thickness = v2.total_thickness();
+    let old_offset = v2.justification.offset(total_thickness);
+    let new_offset = new_justification.offset(total_thickness);
+    let delta = new_offset - old_offset;
+
+    if delta.abs() > 1e-9 {
+        let vertices = get_wall_vertices(scene, wall_handle);
+        if vertices.len() >= 2 {
+            let points: Vec<(f64, f64)> = vertices.iter().map(|v| (v.x, v.y)).collect();
+            let directions = engine::get_offset_directions(&points);
+            let shifted: Vec<DVec3> = points
+                .iter()
+                .zip(directions.iter())
+                .map(|(&(x, y), &(dx, dy))| DVec3::new(x + dx * delta, y + dy * delta, 0.0))
+                .collect();
+            update_wall_vertices(scene, wall_handle, &shifted);
+        }
+    }
+
+    let mut record = ExtendedDataRecord::new(AEC_APPID);
+    record.values = wall_v2_record(
+        &v2.style_id,
+        v2.height,
+        v2.storey_id,
+        &v2.layers,
+        &v2.derived_handles,
+        new_justification,
+    );
+    if !write_aec_record(&mut scene.document, wall_handle, record) {
+        return false;
+    }
+
+    let _ = regenerate_wall_representation(scene, wall_handle);
+    true
+}
+
 /// Register the `OPENCAD_AEC` APPID up front so an interactive `AEC_WALL`
 /// command can embed XDATA directly on entities it builds (it has no
 /// `&mut CadDocument` while collecting points).
@@ -844,6 +928,7 @@ const DEFAULT_WALL_HEIGHT: f64 = 2.8;
 /// Default wall thickness (metres) offered by the command-line prompt after
 /// the height has been entered.
 const DEFAULT_WALL_THICKNESS: f64 = 0.2;
+const WALL_JOIN_SNAP_RADIUS: f64 = 0.3;
 
 /// Drawing phase of an in-progress `AEC_WALL` command.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -865,6 +950,7 @@ enum WallPhase {
 pub struct WallCommand {
     vertices: Vec<DVec3>,
     live_handle: Option<Handle>,
+    live_contour_handle: Option<Handle>,
     plane: WorkingPlane,
     wall: Wall,
     phase: WallPhase,
@@ -882,6 +968,8 @@ pub struct WallCommand {
     /// style selection was mandatory but not made yet; `prompt()` shows a
     /// hint until a style is picked.
     no_style_warning: bool,
+    /// Remembers which wall handle was snapped-to for that point index.
+    snapped_wall_at_point: HashMap<usize, Handle>,
 }
 
 impl WallCommand {
@@ -897,6 +985,7 @@ impl WallCommand {
         Self {
             vertices: Vec::new(),
             live_handle: None,
+            live_contour_handle: None,
             plane: WorkingPlane::default(),
             wall: Wall::new(DEFAULT_WALL_THICKNESS, DEFAULT_WALL_HEIGHT, 0),
             phase: WallPhase::Drawing,
@@ -907,6 +996,7 @@ impl WallCommand {
             ctrl_was_down: false,
             height_live_set: false,
             no_style_warning: false,
+            snapped_wall_at_point: HashMap::new(),
         }
     }
 
@@ -1022,11 +1112,7 @@ impl WallCommand {
             self.wall.thickness
         };
 
-        let offset = match self.justification {
-            WallJustification::Center => 0.0,
-            WallJustification::Interior => total_thickness * -0.5,
-            WallJustification::Exterior => total_thickness * 0.5,
-        };
+        let offset = self.justification.offset(total_thickness);
 
         let points: Vec<(f64, f64)> = self.vertices
             .iter()
@@ -1072,14 +1158,69 @@ impl WallCommand {
         Some(entity)
     }
 
+    fn build_contour_entity(&self) -> Option<EntityType> {
+        if self.vertices.len() < 2 {
+            return None;
+        }
+        let layers = self.resolved_layers.as_ref()?;
+        if layers.is_empty() {
+            return None;
+        }
+
+        let total_thickness: f64 = layers.iter().map(|l| l.thickness + l.gap_before).sum();
+        let centerline_offset = self.justification.offset(total_thickness);
+
+        let points: Vec<(f64, f64)> = self.vertices
+            .iter()
+            .map(|pt| {
+                let local = self.plane.to_local(*pt);
+                (local.x, local.y)
+            })
+            .collect();
+
+        let contour_points =
+            engine::contour::outer_contour(&points, total_thickness, centerline_offset);
+
+        let mut pl = LwPolyline::new();
+        pl.is_closed = true;
+        for (x, y) in contour_points {
+            pl.add_vertex(LwVertex::new(Vector2::new(x, y)));
+        }
+
+        let mut entity = self.plane.place_entity(EntityType::LwPolyline(pl));
+        // Contour is a visual helper; no XDATA needed (axis carries the truth).
+        Some(entity)
+    }
+
     fn sync_live(&self, finish: bool) -> CmdResult {
-        match (self.build_entity(), self.live_handle) {
-            (Some(entity), Some(handle)) => CmdResult::UpdateLiveEntity {
-                handle,
-                entity,
-                finish,
-            },
-            (Some(entity), None) => CmdResult::CommitLiveEntity(entity),
+        let axis = self.build_entity();
+        let contour = self.build_contour_entity();
+
+        match (axis, self.live_handle) {
+            (Some(a), Some(h_axis)) => {
+                if let (Some(c), None) = (&contour, self.live_contour_handle) {
+                    // We just gained a contour (e.g. style assigned mid-draw);
+                    // replace the single axis with both axis + contour.
+                    CmdResult::ReplaceEntity(h_axis, vec![a, c.clone()])
+                } else if let (None, Some(h_contour)) = (&contour, self.live_contour_handle) {
+                    // Style removed mid-draw? Rare, but handle it by replacing
+                    // both with just the axis.
+                    CmdResult::ReplaceManyContinue(vec![(h_axis, vec![a]), (h_contour, vec![])])
+                } else {
+                    let mut updates = vec![(h_axis, a)];
+                    if let (Some(c), Some(h_contour)) = (contour, self.live_contour_handle) {
+                        updates.push((h_contour, c));
+                    }
+                    CmdResult::UpdateLiveEntities { updates, finish }
+                }
+            }
+            (Some(a), None) => {
+                let mut entities = vec![a];
+                if let Some(c) = contour {
+                    entities.push(c);
+                }
+                CmdResult::CommitLiveEntities(entities)
+            }
             (None, _) => CmdResult::Cancel,
         }
     }
@@ -1189,6 +1330,9 @@ impl CadCommand for WallCommand {
             return CmdResult::NeedPoint;
         }
         self.vertices.push(pt);
+        if self.style_id.is_none() && self.requires_style_selection() {
+            self.no_style_warning = true;
+        }
         if self.vertices.len() >= 2 {
             self.sync_live(false)
         } else {
@@ -1196,8 +1340,22 @@ impl CadCommand for WallCommand {
         }
     }
 
-    fn set_live_handle(&mut self, handle: Handle) {
-        self.live_handle = Some(handle);
+    fn set_live_handles(&mut self, handles: Vec<Handle>) {
+        self.live_handle = handles.first().copied();
+        self.live_contour_handle = handles.get(1).copied();
+    }
+
+    fn on_entity_replaced(&mut self, old: Handle, new_handles: &[Handle]) {
+        if Some(old) == self.live_handle {
+            self.live_handle = new_handles.first().copied();
+            if new_handles.len() > 1 {
+                self.live_contour_handle = Some(new_handles[1]);
+            }
+        } else if Some(old) == self.live_contour_handle {
+            if new_handles.is_empty() {
+                self.live_contour_handle = None;
+            }
+        }
     }
 
     fn on_enter(&mut self) -> CmdResult {
@@ -2131,6 +2289,292 @@ pub fn aec_ifc_export(scene: &mut Scene, command_line: &mut CommandLine) {
     command_line.push_info("(Note: Real file-save dialog is a future step)");
 }
 
+/// `AEC_WALLJOIN` — interactive front-end: pick two wall entities (clicking a
+/// derived contour/hatch/solid resolves to its axis, like every other wall
+/// selection, via [`resolve_wall_package`]), then delegate the actual
+/// geometry join to [`aec_walljoin_do`] via [`CmdResult::Dispatch`] once both
+/// picks are in — the same "gather interactively, execute non-interactively
+/// with full scene access" split used by [`MaterialCommand`]/`AEC_MATERIAL_ADD`.
+pub struct WallJoinCommand {
+    selected: Vec<Handle>,
+}
+
+impl WallJoinCommand {
+    #[allow(clippy::new_without_default)]
+    pub fn new() -> Self {
+        Self {
+            selected: Vec::new(),
+        }
+    }
+}
+
+impl CadCommand for WallJoinCommand {
+    fn name(&self) -> &'static str {
+        "AEC_WALLJOIN"
+    }
+
+    fn prompt(&self) -> String {
+        match self.selected.len() {
+            0 => "AEC_WALLJOIN  Select first wall to join:".to_string(),
+            _ => "AEC_WALLJOIN  Select second wall to join:".to_string(),
+        }
+    }
+
+    fn needs_entity_pick(&self) -> bool {
+        true
+    }
+
+    fn on_entity_pick(&mut self, handle: Handle, _pt: DVec3) -> CmdResult {
+        if handle.is_null() {
+            return CmdResult::NeedPoint;
+        }
+        self.selected.push(handle);
+        if self.selected.len() == 2 {
+            let a = self.selected[0];
+            let b = self.selected[1];
+            CmdResult::Dispatch(format!("AEC_WALLJOIN_DO {}|{}", a.value(), b.value()))
+        } else {
+            CmdResult::NeedPoint
+        }
+    }
+
+    fn on_point(&mut self, _pt: DVec3) -> CmdResult {
+        CmdResult::NeedPoint
+    }
+
+    fn on_enter(&mut self) -> CmdResult {
+        CmdResult::Cancel
+    }
+}
+
+pub fn join_two_walls_in_document(scene: &mut Scene, h_a: Handle, h_b: Handle) -> Result<JoinKind, JoinError> {
+    let axis_a = get_wall_vertices(scene, h_a);
+    let axis_b = get_wall_vertices(scene, h_b);
+    match join::join_wall_axes(&axis_a, &axis_b) {
+        Ok((new_a, new_b, kind)) => {
+            update_wall_vertices(scene, h_a, &new_a);
+            update_wall_vertices(scene, h_b, &new_b);
+            let _ = regenerate_wall_representation(scene, h_a);
+            let _ = regenerate_wall_representation(scene, h_b);
+            Ok(kind)
+        }
+        Err(e) => Err(e),
+    }
+}
+
+/// `AEC_WALLJOIN_DO handle_a|handle_b` — the non-interactive handler
+/// `WallJoinCommand` dispatches to once both walls are picked; resolves each
+/// pick to its wall axis, joins the two axes with [`join::join_wall_axes`],
+/// writes the trimmed/extended axes back and regenerates both walls'
+/// representation. Reports [`JoinError`] via the command line instead of
+/// panicking.
+pub fn aec_walljoin_do(scene: &mut Scene, command_line: &mut CommandLine, args: &str) {
+    let parts: Vec<&str> = args.split('|').collect();
+    let [a, b] = parts.as_slice() else {
+        command_line.push_error("AEC_WALLJOIN: malformed arguments.");
+        return;
+    };
+    let (Ok(a), Ok(b)) = (a.parse::<u64>(), b.parse::<u64>()) else {
+        command_line.push_error("AEC_WALLJOIN: malformed handles.");
+        return;
+    };
+    let h_a = resolve_wall_package(scene, Handle::new(a));
+    let h_b = resolve_wall_package(scene, Handle::new(b));
+    if h_a == h_b {
+        command_line.push_error("AEC_WALLJOIN: select two different walls.");
+        return;
+    }
+    let is_wall = |scene: &Scene, h: Handle| {
+        scene.document.get_entity(h).is_some_and(|e| {
+            matches!(
+                read_aec_record(e).and_then(|r| r.values.first()),
+                Some(XDataValue::String(kind)) if kind == "WALL" || kind == "WALL_V2"
+            )
+        })
+    };
+    if !is_wall(scene, h_a) || !is_wall(scene, h_b) {
+        command_line.push_error("AEC_WALLJOIN: select two wall entities.");
+        return;
+    }
+
+    match join_two_walls_in_document(scene, h_a, h_b) {
+        Ok(_kind) => {
+            command_line.push_info("AEC_WALLJOIN: walls joined.");
+        }
+        Err(e) => {
+            command_line.push_error(&format!("AEC_WALLJOIN: {}", e));
+        }
+    }
+}
+
+/// `AEC_WALLEXTEND` — interactive front-end: pick a wall, then either click a
+/// target point (extends the nearer axis endpoint to it) or type `W` to
+/// switch to picking a target wall (extends to the L-/T-intersection of the
+/// two axes, reusing [`join::join_wall_axes`]). Delegates the actual write to
+/// [`aec_wallextend_do`] via [`CmdResult::Dispatch`].
+pub struct WallExtendCommand {
+    wall: Option<Handle>,
+    target_is_wall: bool,
+}
+
+impl WallExtendCommand {
+    #[allow(clippy::new_without_default)]
+    pub fn new() -> Self {
+        Self {
+            wall: None,
+            target_is_wall: false,
+        }
+    }
+}
+
+impl CadCommand for WallExtendCommand {
+    fn name(&self) -> &'static str {
+        "AEC_WALLEXTEND"
+    }
+
+    fn prompt(&self) -> String {
+        if self.wall.is_none() {
+            "AEC_WALLEXTEND  Select wall to extend:".to_string()
+        } else {
+            "AEC_WALLEXTEND  Specify extend point or [Wall]:".to_string()
+        }
+    }
+
+    fn options(&self) -> Vec<CmdOption> {
+        if self.wall.is_some() && !self.target_is_wall {
+            vec![CmdOption::new("Wall", "W")]
+        } else {
+            Vec::new()
+        }
+    }
+
+    fn wants_text_input(&self) -> bool {
+        self.wall.is_some() && !self.target_is_wall
+    }
+
+    fn on_text_input(&mut self, text: &str) -> Option<CmdResult> {
+        if self.wall.is_some() && !self.target_is_wall && text.trim().eq_ignore_ascii_case("w") {
+            self.target_is_wall = true;
+            return Some(CmdResult::NeedPoint);
+        }
+        None
+    }
+
+    fn needs_entity_pick(&self) -> bool {
+        self.wall.is_none() || self.target_is_wall
+    }
+
+    fn on_entity_pick(&mut self, handle: Handle, _pt: DVec3) -> CmdResult {
+        if handle.is_null() {
+            return CmdResult::NeedPoint;
+        }
+        if self.wall.is_none() {
+            self.wall = Some(handle);
+            CmdResult::NeedPoint
+        } else if self.target_is_wall {
+            let wall = self.wall.unwrap();
+            CmdResult::Dispatch(format!(
+                "AEC_WALLEXTEND_DO {}|WALL|{}",
+                wall.value(),
+                handle.value()
+            ))
+        } else {
+            CmdResult::NeedPoint
+        }
+    }
+
+    fn on_point(&mut self, pt: DVec3) -> CmdResult {
+        if let Some(wall) = self.wall {
+            if !self.target_is_wall {
+                return CmdResult::Dispatch(format!(
+                    "AEC_WALLEXTEND_DO {}|PT|{}|{}|{}",
+                    wall.value(),
+                    pt.x,
+                    pt.y,
+                    pt.z
+                ));
+            }
+        }
+        CmdResult::NeedPoint
+    }
+
+    fn on_enter(&mut self) -> CmdResult {
+        CmdResult::Cancel
+    }
+}
+
+/// `AEC_WALLEXTEND_DO wall|PT|x|y|z` or `AEC_WALLEXTEND_DO wall|WALL|target`
+/// — the non-interactive handler `WallExtendCommand` dispatches to once the
+/// target is picked. Resolves the wall pick(s) to their axis, extends the
+/// nearer endpoint of `wall`'s axis (to the point, or to the intersection
+/// with `target`'s axis via [`join::join_wall_axes`]), writes it back and
+/// regenerates the wall's representation. Reports [`JoinError`] via the
+/// command line instead of panicking.
+pub fn aec_wallextend_do(scene: &mut Scene, command_line: &mut CommandLine, args: &str) {
+    let mut parts = args.splitn(2, '|');
+    let (Some(wall_str), Some(rest)) = (parts.next(), parts.next()) else {
+        command_line.push_error("AEC_WALLEXTEND: malformed arguments.");
+        return;
+    };
+    let Ok(wall_val) = wall_str.parse::<u64>() else {
+        command_line.push_error("AEC_WALLEXTEND: malformed handle.");
+        return;
+    };
+    let wall_handle = resolve_wall_package(scene, Handle::new(wall_val));
+    let mut axis = get_wall_vertices(scene, wall_handle);
+    if axis.len() < 2 {
+        command_line.push_error("AEC_WALLEXTEND: select a wall axis with at least two points.");
+        return;
+    }
+
+    if let Some(pt_args) = rest.strip_prefix("PT|") {
+        let coords: Vec<&str> = pt_args.split('|').collect();
+        let [x, y, z] = coords.as_slice() else {
+            command_line.push_error("AEC_WALLEXTEND: malformed point.");
+            return;
+        };
+        let (Ok(x), Ok(y), Ok(z)) = (x.parse::<f64>(), y.parse::<f64>(), z.parse::<f64>()) else {
+            command_line.push_error("AEC_WALLEXTEND: malformed point.");
+            return;
+        };
+        let pt = DVec3::new(x, y, z);
+        let d1 = axis[0].distance(pt);
+        let d2 = axis.last().unwrap().distance(pt);
+        if d1 < d2 {
+            axis[0] = pt;
+        } else {
+            let last = axis.len() - 1;
+            axis[last] = pt;
+        }
+        update_wall_vertices(scene, wall_handle, &axis);
+        let _ = regenerate_wall_representation(scene, wall_handle);
+        command_line.push_info("AEC_WALLEXTEND: wall extended.");
+    } else if let Some(target_str) = rest.strip_prefix("WALL|") {
+        let Ok(target_val) = target_str.parse::<u64>() else {
+            command_line.push_error("AEC_WALLEXTEND: malformed target handle.");
+            return;
+        };
+        let target_handle = resolve_wall_package(scene, Handle::new(target_val));
+        if target_handle == wall_handle {
+            command_line.push_error("AEC_WALLEXTEND: select a different target wall.");
+            return;
+        }
+        let axis_b = get_wall_vertices(scene, target_handle);
+        match join::join_wall_axes(&axis, &axis_b) {
+            Ok((new_a, _new_b, _kind)) => {
+                update_wall_vertices(scene, wall_handle, &new_a);
+                let _ = regenerate_wall_representation(scene, wall_handle);
+                command_line.push_info("AEC_WALLEXTEND: wall extended to target wall.");
+            }
+            Err(e) => {
+                command_line.push_error(&format!("AEC_WALLEXTEND: {}", e));
+            }
+        }
+    } else {
+        command_line.push_error("AEC_WALLEXTEND: malformed arguments.");
+    }
+}
+
 #[cfg(test)]
 mod wall_command_tests {
     use super::*;
@@ -2171,8 +2615,12 @@ mod wall_command_tests {
         ));
 
         match cmd.on_point(DVec3::new(5.0, 0.0, 0.0)) {
-            CmdResult::CommitLiveEntity(EntityType::LwPolyline(pl)) => {
-                assert_eq!(pl.vertices.len(), 2);
+            CmdResult::CommitLiveEntities(entities) => {
+                assert_eq!(entities.len(), 1);
+                match &entities[0] {
+                    EntityType::LwPolyline(pl) => assert_eq!(pl.vertices.len(), 2),
+                    _ => panic!("expected a live wall polyline"),
+                }
             }
             _ => panic!("second point should commit a live wall polyline"),
         }
@@ -2184,8 +2632,8 @@ mod wall_command_tests {
         cmd.on_point(DVec3::new(0.0, 0.0, 0.0));
         let committed = cmd.on_point(DVec3::new(5.0, 0.0, 0.0));
         let entity = match committed {
-            CmdResult::CommitLiveEntity(e) => e,
-            _ => panic!("expected CommitLiveEntity"),
+            CmdResult::CommitLiveEntities(mut entities) => entities.remove(0),
+            _ => panic!("expected CommitLiveEntities"),
         };
         assert!(
             wall_xdata(&entity).is_some(),
@@ -2193,15 +2641,16 @@ mod wall_command_tests {
         );
 
         let handle = Handle::new(7);
-        cmd.set_live_handle(handle);
+        cmd.set_live_handles(vec![handle]);
         match cmd.on_point(DVec3::new(5.0, 3.0, 0.0)) {
-            CmdResult::UpdateLiveEntity {
-                handle: updated,
-                entity: EntityType::LwPolyline(pl),
-                finish,
-            } => {
-                assert_eq!(updated, handle);
-                assert_eq!(pl.vertices.len(), 3);
+            CmdResult::UpdateLiveEntities { updates, finish } => {
+                assert_eq!(updates.len(), 1);
+                let (updated, entity) = &updates[0];
+                assert_eq!(*updated, handle);
+                match entity {
+                    EntityType::LwPolyline(pl) => assert_eq!(pl.vertices.len(), 3),
+                    _ => panic!("expected a live wall polyline"),
+                }
                 assert!(!finish);
             }
             _ => panic!("a third point should extend the same live wall chain"),
@@ -2213,7 +2662,7 @@ mod wall_command_tests {
         let mut cmd = WallCommand::new_with_library(None);
         cmd.on_point(DVec3::new(0.0, 0.0, 0.0));
         cmd.on_point(DVec3::new(5.0, 0.0, 0.0));
-        cmd.set_live_handle(Handle::new(3));
+        cmd.set_live_handles(vec![Handle::new(3)]);
 
         match cmd.on_text_input("U") {
             Some(CmdResult::RemoveLiveEntity(h)) => assert_eq!(h, Handle::new(3)),
@@ -2249,15 +2698,17 @@ mod wall_command_tests {
         let mut cmd = WallCommand::new_with_library(None);
         cmd.on_point(DVec3::new(0.0, 0.0, 0.0));
         cmd.on_point(DVec3::new(5.0, 0.0, 0.0));
-        cmd.set_live_handle(handle);
+        cmd.set_live_handles(vec![handle]);
 
         match cmd.on_enter() {
-            CmdResult::UpdateLiveEntity {
-                handle: updated,
-                entity: EntityType::LwPolyline(pl),
-                finish,
-            } => {
-                assert_eq!(updated, handle);
+            CmdResult::UpdateLiveEntities { updates, finish } => {
+                assert_eq!(updates.len(), 1);
+                let (updated, entity) = &updates[0];
+                assert_eq!(*updated, handle);
+                let pl = match entity {
+                    EntityType::LwPolyline(pl) => pl,
+                    _ => panic!("expected a live wall polyline"),
+                };
                 assert!(finish);
                 let record = pl
                     .common
@@ -2283,16 +2734,17 @@ mod wall_command_tests {
         let mut cmd = WallCommand::new_with_library(None);
         cmd.on_point(DVec3::new(0.0, 0.0, 0.0));
         cmd.on_point(DVec3::new(5.0, 0.0, 0.0));
-        cmd.set_live_handle(handle);
+        cmd.set_live_handles(vec![handle]);
 
         cmd.apply_live_property("wall_height", LiveFieldValue::Number(3.5));
 
         match cmd.on_enter() {
-            CmdResult::UpdateLiveEntity {
-                entity: EntityType::LwPolyline(pl),
-                finish,
-                ..
-            } => {
+            CmdResult::UpdateLiveEntities { updates, finish } => {
+                assert_eq!(updates.len(), 1);
+                let pl = match &updates[0].1 {
+                    EntityType::LwPolyline(pl) => pl,
+                    _ => panic!("expected a live wall polyline"),
+                };
                 assert!(finish);
                 let record = pl.common.extended_data.get_record(AEC_APPID).unwrap();
                 assert!(
@@ -2329,11 +2781,11 @@ mod wall_command_tests {
                 other => other,
             };
             let entity = match committed {
-                CmdResult::CommitLiveEntity(e) => e,
+                CmdResult::CommitLiveEntities(mut entities) => entities.remove(0),
                 _ => panic!("two points should commit a live wall segment"),
             };
             let handle = scene.add_entity(entity);
-            cmd.set_live_handle(handle);
+            cmd.set_live_handles(vec![handle]);
 
             // Finish the point chain, then accept default height/thickness
             // (Drawing -> AskHeight -> AskThickness -> finalize).
@@ -2341,11 +2793,11 @@ mod wall_command_tests {
             cmd.on_enter();
             let finalized = cmd.on_enter();
             match finalized {
-                CmdResult::UpdateLiveEntity {
-                    handle: h, entity, ..
-                } => {
-                    if let Some(slot) = scene.document.get_entity_mut(h) {
-                        *slot = entity;
+                CmdResult::UpdateLiveEntities { updates, .. } => {
+                    for (h, entity) in updates {
+                        if let Some(slot) = scene.document.get_entity_mut(h) {
+                            *slot = entity;
+                        }
                     }
                 }
                 _ => panic!("height/thickness prompt should finalize the wall segment"),
@@ -2381,10 +2833,10 @@ mod wall_command_tests {
         let mut cmd = WallCommand::new_with_library(None);
         cmd.on_point(DVec3::new(0.0, 0.0, 0.0));
         cmd.on_point(DVec3::new(5.0, 0.0, 0.0));
-        cmd.set_live_handle(Handle::new(9));
+        cmd.set_live_handles(vec![Handle::new(9)]);
         cmd.apply_live_property("wall_height", LiveFieldValue::Number(3.5));
         let entity = match cmd.on_enter() {
-            CmdResult::UpdateLiveEntity { entity, .. } => entity,
+            CmdResult::UpdateLiveEntities { mut updates, .. } => updates.remove(0).1,
             _ => panic!("expected Enter to finalize the live wall"),
         };
 
@@ -2415,7 +2867,7 @@ mod wall_command_tests {
         let mut cmd = WallCommand::new_with_library(None);
         cmd.on_point(DVec3::new(0.0, 0.0, 0.0));
         let entity = match cmd.on_point(DVec3::new(5.0, 0.0, 0.0)) {
-            CmdResult::CommitLiveEntity(e) => e,
+            CmdResult::CommitLiveEntities(mut entities) => entities.remove(0),
             _ => panic!("two points should commit a live wall segment"),
         };
         let handle = scene.add_entity(entity);
@@ -2599,24 +3051,35 @@ mod wall_command_tests {
         cmd.on_point(DVec3::new(0.0, 0.0, 0.0));
         cmd.on_point(DVec3::new(5.0, 0.0, 0.0));
         let handle = Handle::new(100);
-        cmd.set_live_handle(handle);
+        cmd.set_live_handles(vec![handle]);
 
         // Style/height are picked live via the Properties-panel fields while
         // drawing (see `apply_live_property`), so Enter after the point
         // chain finalizes immediately with a V2 record — no more separate
         // command-line AskStyle/AskHeight prompts.
-        cmd.apply_live_property(
+        match cmd.apply_live_property(
             "wall_style",
             LiveFieldValue::Picker("style1".to_string()),
-        );
+        ) {
+            CmdResult::ReplaceEntity(old, new_entities) => {
+                // Gaining a contour preview replaces the axis-only live
+                // entity with axis + contour; simulate the host echoing the
+                // newly assigned handles back to the command.
+                let new_handles: Vec<Handle> =
+                    (0..new_entities.len()).map(|i| Handle::new(300 + i as u64)).collect();
+                cmd.on_entity_replaced(old, &new_handles);
+            }
+            _ => panic!("expected style assignment to replace the live entity"),
+        }
         cmd.apply_live_property("wall_height", LiveFieldValue::Number(3.0));
 
         match cmd.on_enter() {
-            CmdResult::UpdateLiveEntity {
-                entity: EntityType::LwPolyline(pl),
-                finish,
-                ..
-            } => {
+            CmdResult::UpdateLiveEntities { updates, finish } => {
+                assert_eq!(updates.len(), 2);
+                let pl = match &updates[0].1 {
+                    EntityType::LwPolyline(pl) => pl,
+                    _ => panic!("expected a live wall polyline"),
+                };
                 assert!(finish);
                 let record = pl.common.extended_data.get_record(AEC_APPID).unwrap();
                 assert_eq!(record.values[0], XDataValue::String("WALL_V2".to_string()));
@@ -2657,7 +3120,7 @@ mod wall_command_tests {
 
         cmd.on_point(DVec3::new(0.0, 0.0, 0.0));
         cmd.on_point(DVec3::new(5.0, 0.0, 0.0));
-        cmd.set_live_handle(Handle::new(200));
+        cmd.set_live_handles(vec![Handle::new(200)]);
 
         cmd.apply_live_property("wall_height", LiveFieldValue::Number(3.5));
         assert!((cmd.wall.height - 3.5).abs() < 1e-9);
@@ -2705,7 +3168,7 @@ mod wall_command_tests {
         let mut cmd = WallCommand::new_with_library(Some(lib));
         cmd.on_point(DVec3::new(0.0, 0.0, 0.0));
         cmd.on_point(DVec3::new(5.0, 0.0, 0.0));
-        cmd.set_live_handle(Handle::new(201));
+        cmd.set_live_handles(vec![Handle::new(201)]);
 
         cmd.apply_live_property(
             "wall_style",
@@ -2761,7 +3224,7 @@ mod wall_command_tests {
         let mut cmd = WallCommand::new_with_library(Some(lib));
         cmd.on_point(DVec3::new(0.0, 0.0, 0.0));
         cmd.on_point(DVec3::new(5.0, 0.0, 0.0));
-        cmd.set_live_handle(Handle::new(202));
+        cmd.set_live_handles(vec![Handle::new(202)]);
 
         // No style picked yet -> Enter must not finalize; it must keep the
         // command running and surface a hint instead.
@@ -2770,13 +3233,20 @@ mod wall_command_tests {
 
         // Picking a style afterwards clears the warning and lets Enter
         // finalize normally.
-        cmd.apply_live_property(
+        match cmd.apply_live_property(
             "wall_style",
             crate::command::LiveFieldValue::Picker("style1".to_string()),
-        );
+        ) {
+            CmdResult::ReplaceEntity(old, new_entities) => {
+                let new_handles: Vec<Handle> =
+                    (0..new_entities.len()).map(|i| Handle::new(400 + i as u64)).collect();
+                cmd.on_entity_replaced(old, &new_handles);
+            }
+            _ => panic!("expected style assignment to replace the live entity"),
+        }
         assert!(!cmd.prompt().to_lowercase().contains("please select"));
         match cmd.on_enter() {
-            CmdResult::UpdateLiveEntity { finish, .. } => assert!(finish),
+            CmdResult::UpdateLiveEntities { finish, .. } => assert!(finish),
             _ => panic!("expected Enter to finalize once a style was picked"),
         }
     }
@@ -2787,18 +3257,19 @@ mod wall_command_tests {
         cmd.on_point(DVec3::new(0.0, 0.0, 0.0));
         cmd.on_point(DVec3::new(5.0, 0.0, 0.0));
         let handle = Handle::new(101);
-        cmd.set_live_handle(handle);
+        cmd.set_live_handles(vec![handle]);
 
         // With no style library, Enter after the point chain finalizes
         // immediately with a plain V1 WALL record using the current
         // height/thickness defaults (also editable live via the Properties
         // panel, see `apply_live_property`).
         match cmd.on_enter() {
-            CmdResult::UpdateLiveEntity {
-                entity: EntityType::LwPolyline(pl),
-                finish,
-                ..
-            } => {
+            CmdResult::UpdateLiveEntities { updates, finish } => {
+                assert_eq!(updates.len(), 1);
+                let pl = match &updates[0].1 {
+                    EntityType::LwPolyline(pl) => pl,
+                    _ => panic!("expected a live wall polyline"),
+                };
                 assert!(finish);
                 let record = pl.common.extended_data.get_record(AEC_APPID).unwrap();
                 assert_eq!(record.values[0], XDataValue::String("WALL".to_string()));
@@ -3452,5 +3923,96 @@ mod wall_command_tests {
         }
         // For Center justification, half of 0.5 should be at Y=0.25 and Y=-0.25
         assert!((max_y - 0.25).abs() < 1e-6);
+    }
+
+    #[test]
+    fn aec_wallextend_do_extends_to_an_explicit_point() {
+        use crate::ui::command_line::CommandLine;
+
+        let mut scene = Scene::new();
+        let wall_handle = add_multi_layer_wall(&mut scene); // axis: (0,0) -> (5,0)
+        let mut command_line = CommandLine::default();
+
+        aec_wallextend_do(
+            &mut scene,
+            &mut command_line,
+            &format!("{}|PT|8|0|0", wall_handle.value()),
+        );
+
+        let axis = get_wall_vertices(&scene, wall_handle);
+        assert_eq!(axis.len(), 2);
+        // The nearer endpoint (5,0) should have moved to the target (8,0);
+        // the far endpoint (0,0) stays put.
+        assert!(axis.iter().any(|p| (p.x - 8.0).abs() < 1e-9 && p.y.abs() < 1e-9));
+        assert!(axis.iter().any(|p| p.x.abs() < 1e-9 && p.y.abs() < 1e-9));
+    }
+
+    #[test]
+    fn aec_wallextend_do_extends_to_intersect_another_wall() {
+        use crate::ui::command_line::CommandLine;
+
+        let mut scene = Scene::new();
+        // Wall A: (0,0) -> (5,0), stopping short of Wall B's axis.
+        let wall_a = add_multi_layer_wall(&mut scene);
+        // Wall B: a "through" wall running vertically at x=8, so extending A
+        // towards it produces a T-junction trim on A only.
+        let mut pl_b = LwPolyline::new();
+        pl_b.add_vertex(LwVertex::new(Vector2::new(8.0, -5.0)));
+        pl_b.add_vertex(LwVertex::new(Vector2::new(8.0, 5.0)));
+        let mut entity_b = EntityType::LwPolyline(pl_b);
+        let mut record_b = ExtendedDataRecord::new(AEC_APPID);
+        record_b.values = wall_v2_record(
+            "style1",
+            3.0,
+            0,
+            &vec![wl("Concrete", 0.2, "Structural")],
+            &[],
+            WallJustification::Center,
+        );
+        entity_b.common_mut().extended_data.add_record(record_b);
+        let wall_b = scene.add_entity(entity_b);
+
+        let mut command_line = CommandLine::default();
+        aec_wallextend_do(
+            &mut scene,
+            &mut command_line,
+            &format!("{}|WALL|{}", wall_a.value(), wall_b.value()),
+        );
+
+        let axis_a = get_wall_vertices(&scene, wall_a);
+        // Wall A should now end exactly at the intersection with wall B's axis.
+        assert!(axis_a
+            .iter()
+            .any(|p| (p.x - 8.0).abs() < 1e-6 && p.y.abs() < 1e-6));
+        // Wall B (the "through" wall) stays unchanged.
+        let axis_b = get_wall_vertices(&scene, wall_b);
+        assert_eq!(axis_b.len(), 2);
+        assert!((axis_b[0].y - (-5.0)).abs() < 1e-9);
+        assert!((axis_b[1].y - 5.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn change_wall_justification_shifts_axis_by_expected_distance() {
+        let mut scene = Scene::new();
+        let wall_handle = add_multi_layer_wall(&mut scene); // total thickness 0.25
+        let axis_before = get_wall_vertices(&scene, wall_handle);
+        assert!(axis_before.iter().all(|p| p.y.abs() < 1e-9));
+
+        assert!(change_wall_justification(
+            &mut scene,
+            wall_handle,
+            WallJustification::Interior,
+        ));
+
+        let wall = wall_v2_from_entity(scene.document.get_entity(wall_handle).unwrap()).unwrap();
+        assert_eq!(wall.justification, WallJustification::Interior);
+
+        let axis_after = get_wall_vertices(&scene, wall_handle);
+        // Center -> Interior delta is -0.5 * total_thickness = -0.125; the
+        // offset direction for a straight horizontal axis is +Y, so the axis
+        // should have shifted to Y = -0.125.
+        for p in &axis_after {
+            assert!((p.y - (-0.125)).abs() < 1e-6);
+        }
     }
 }

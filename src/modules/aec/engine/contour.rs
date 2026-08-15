@@ -56,6 +56,45 @@ pub fn layer_contours(
     results
 }
 
+/// Computes the combined outer boundary polygon (closed) for an open polyline
+/// centerline, total thickness, and an offset from the centerline.
+///
+/// The boundary is a single closed loop formed by the two outermost parallel
+/// offset lines, capped at the ends.
+pub fn outer_contour(
+    centerline: &[(f64, f64)],
+    total_thickness: f64,
+    centerline_offset: f64,
+) -> Vec<(f64, f64)> {
+    if centerline.len() < 2 {
+        return Vec::new();
+    }
+
+    let directions = get_offset_directions(centerline);
+    let half_thickness = total_thickness * 0.5;
+
+    // Boundary 1: centerline_offset - half_thickness
+    let b1_offset = centerline_offset - half_thickness;
+    let b1: Vec<(f64, f64)> = centerline
+        .iter()
+        .zip(directions.iter())
+        .map(|(&(x, y), &(dx, dy))| (x + dx * b1_offset, y + dy * b1_offset))
+        .collect();
+
+    // Boundary 2: centerline_offset + half_thickness
+    let b2_offset = centerline_offset + half_thickness;
+    let mut b2: Vec<(f64, f64)> = centerline
+        .iter()
+        .zip(directions.iter())
+        .map(|(&(x, y), &(dx, dy))| (x + dx * b2_offset, y + dy * b2_offset))
+        .collect();
+
+    let mut result = b1;
+    b2.reverse();
+    result.extend(b2);
+    result
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -131,5 +170,41 @@ mod tests {
         // Layer 1
         assert!((contours[1].0[0].1 - 0.025).abs() < 1e-9);
         assert!((contours[1].1[0].1 - 0.125).abs() < 1e-9);
+    }
+
+    #[test]
+    fn outer_contour_straight() {
+        // Horizontal wall (0,0) -> (10,0), thickness 0.2, offset 0 (Center)
+        let centerline = vec![(0.0, 0.0), (10.0, 0.0)];
+        let poly = outer_contour(&centerline, 0.2, 0.0);
+
+        // Expected 4 points: (0, -0.1), (10, -0.1), (10, 0.1), (0, 0.1)
+        assert_eq!(poly.len(), 4);
+        assert!((poly[0].1 - (-0.1)).abs() < 1e-9);
+        assert!((poly[1].1 - (-0.1)).abs() < 1e-9);
+        assert!((poly[2].1 - 0.1).abs() < 1e-9);
+        assert!((poly[3].1 - 0.1).abs() < 1e-9);
+    }
+
+    #[test]
+    fn outer_contour_l_shape_justified() {
+        // L-bend: (0,0) -> (10,0) -> (10,10)
+        // Thickness 0.2, Interior justification (-0.1 offset)
+        let centerline = vec![(0.0, 0.0), (10.0, 0.0), (10.0, 10.0)];
+        let poly = outer_contour(&centerline, 0.2, -0.1);
+
+        // Axis is shifted by -0.1. Boundaries at -0.1 - 0.1 = -0.2 and -0.1 + 0.1 = 0.
+        // Outer loop should have 6 points (3 per side).
+        assert_eq!(poly.len(), 6);
+
+        // Check b1 (offset -0.2)
+        // Vertex 0: (0, 0) + (0, 1)*(-0.2) = (0, -0.2)
+        assert!((poly[0].0 - 0.0).abs() < 1e-9);
+        assert!((poly[0].1 - (-0.2)).abs() < 1e-9);
+
+        // Check b2 (offset 0.0)
+        // Vertex 0: (0, 0) + (0, 1)*(0) = (0, 0)
+        assert!((poly[5].0 - 0.0).abs() < 1e-9);
+        assert!((poly[5].1 - 0.0).abs() < 1e-9);
     }
 }

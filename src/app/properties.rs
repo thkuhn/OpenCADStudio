@@ -2165,6 +2165,18 @@ pub(super) fn wall_prop_section(
                     handles: vec![entity.common().handle],
                 },
             },
+            crate::scene::model::object::Property {
+                label: t!("Justification").into_owned(),
+                field: "wall_justification",
+                value: crate::scene::model::object::PropValue::Choice {
+                    selected: wall_v2.justification.as_str().to_string(),
+                    options: vec![
+                        "Interior".to_string(),
+                        "Center".to_string(),
+                        "Exterior".to_string(),
+                    ],
+                },
+            },
         ];
 
         for layer in &wall_v2.layers {

@@ -107,12 +107,11 @@ impl PlineCommand {
     fn sync_live(&self, closed: bool, finish: bool) -> CmdResult {
         let entity = self.build_entity(closed);
         match (entity, self.live_handle) {
-            (Some(e), Some(handle)) => CmdResult::UpdateLiveEntity {
-                handle,
-                entity: e,
+            (Some(e), Some(handle)) => CmdResult::UpdateLiveEntities {
+                updates: vec![(handle, e)],
                 finish,
             },
-            (Some(e), None) => CmdResult::CommitLiveEntity(e),
+            (Some(e), None) => CmdResult::CommitLiveEntities(vec![e]),
             // Fewer than 2 vertices: nothing to publish.
             (None, _) => CmdResult::Cancel,
         }
@@ -360,8 +359,8 @@ impl CadCommand for PlineCommand {
         }
     }
 
-    fn set_live_handle(&mut self, handle: Handle) {
-        self.live_handle = Some(handle);
+    fn set_live_handles(&mut self, handles: Vec<Handle>) {
+        self.live_handle = handles.first().copied();
     }
 
     fn on_enter(&mut self) -> CmdResult {
@@ -508,22 +507,27 @@ mod tests {
         ));
 
         match command.on_point(DVec3::new(10.0, 0.0, 0.0)) {
-            CmdResult::CommitLiveEntity(EntityType::LwPolyline(polyline)) => {
-                assert_eq!(polyline.vertices.len(), 2);
+            CmdResult::CommitLiveEntities(entities) => {
+                let entity = entities.first().expect("expected one entity");
+                if let EntityType::LwPolyline(pl) = entity {
+                    assert_eq!(pl.vertices.len(), 2);
+                }
             }
             _ => panic!("the first segment should create a live polyline"),
         }
 
         let handle = Handle::new(42);
-        command.set_live_handle(handle);
+        command.set_live_handles(vec![handle]);
         match command.on_point(DVec3::new(10.0, 5.0, 0.0)) {
-            CmdResult::UpdateLiveEntity {
-                handle: updated,
-                entity: EntityType::LwPolyline(polyline),
+            CmdResult::UpdateLiveEntities {
+                updates,
                 finish,
             } => {
-                assert_eq!(updated, handle);
-                assert_eq!(polyline.vertices.len(), 3);
+                let (updated, entity) = updates.first().expect("expected one update");
+                assert_eq!(*updated, handle);
+                if let EntityType::LwPolyline(polyline) = entity {
+                    assert_eq!(polyline.vertices.len(), 3);
+                }
                 assert!(!finish);
             }
             _ => panic!("later segments should update the same live polyline"),

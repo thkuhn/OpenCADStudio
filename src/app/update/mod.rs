@@ -4923,6 +4923,13 @@ impl OpenCADStudio {
                 Task::none()
             }
 
+            Message::WallJustificationSubmenuToggle => {
+                let i = self.active_tab;
+                let mut sel = self.tabs[i].scene.selection.borrow_mut();
+                sel.wall_justification_submenu = !sel.wall_justification_submenu;
+                Task::none()
+            }
+
             Message::DrawOrderPickRef(above) => {
                 let i = self.active_tab;
                 self.tabs[i].scene.selection.borrow_mut().context_menu = None;

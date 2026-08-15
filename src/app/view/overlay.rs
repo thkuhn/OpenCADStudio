@@ -948,6 +948,8 @@ pub(super) fn viewport_context_menu_overlay(
     isolation_active: bool,
     last_cmds: Vec<String>,
     draworder_open: bool,
+    only_walls: bool,
+    justification_open: bool,
 ) -> Element<'static, Message> {
     let item = |label: String, msg: Message| -> Element<'static, Message> {
         button(text(label).size(12))
@@ -1056,6 +1058,63 @@ pub(super) fn viewport_context_menu_overlay(
                     Message::DrawOrderPickRef(false),
                 ));
             }
+
+            if only_walls {
+                items.push(sep());
+                items.push(item(
+                    t!("Join Walls").into_owned(),
+                    Message::Command("AEC_WALLJOIN".to_string()),
+                ));
+                items.push(item(
+                    t!("Extend Wall").into_owned(),
+                    Message::Command("AEC_WALLEXTEND".to_string()),
+                ));
+
+                let wj_caret = if justification_open {
+                    crate::ui::icons::themed_arrow_down(9.0)
+                } else {
+                    crate::ui::icons::themed_arrow_right(9.0)
+                };
+                items.push(
+                    button(
+                        row![
+                            text(t!("Change Justification").into_owned()).size(12),
+                            iced::widget::Space::new().width(Fill),
+                            wj_caret,
+                        ]
+                        .align_y(iced::Center),
+                    )
+                    .on_press(Message::WallJustificationSubmenuToggle)
+                    .style(button::subtle)
+                    .padding([4, 12])
+                    .width(Fill)
+                    .into(),
+                );
+                if justification_open {
+                    items.push(subitem(
+                        t!("Interior").into_owned(),
+                        Message::PropGeomChoiceChanged {
+                            field: "wall_justification",
+                            value: "Interior".to_string(),
+                        },
+                    ));
+                    items.push(subitem(
+                        t!("Center").into_owned(),
+                        Message::PropGeomChoiceChanged {
+                            field: "wall_justification",
+                            value: "Center".to_string(),
+                        },
+                    ));
+                    items.push(subitem(
+                        t!("Exterior").into_owned(),
+                        Message::PropGeomChoiceChanged {
+                            field: "wall_justification",
+                            value: "Exterior".to_string(),
+                        },
+                    ));
+                }
+            }
+
             items.push(sep());
             items.push(item(
                 t!("Isolate Objects").into_owned(),
