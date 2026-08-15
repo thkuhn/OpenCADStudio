@@ -740,8 +740,8 @@ pub enum WallRegenError {
 pub fn regenerate_wall_representation(
     scene: &mut Scene,
     wall_handle: Handle,
-) -> Result<(), WallRegenError> {
-    regenerate_wall_representation_with_corner(scene, wall_handle, None)
+) -> Result<Vec<Handle>, WallRegenError> {
+    regenerate_wall_representation_with_corner(scene, wall_handle, None, None)
 }
 
 /// Like [`regenerate_wall_representation`], but lets a caller supply a
@@ -752,14 +752,24 @@ pub fn regenerate_wall_representation(
 /// exact trimmed corner) is left untouched; only the *visible representation*
 /// uses the extended point.
 ///
-/// Used by [`join_two_walls_in_document`] (Bug 4) so an L/T join's two walls
-/// overlap into the shared corner instead of leaving a seam where their
+/// When `join_miter` is supplied, matched layers (by index from the reference
+/// axis outward) are rebuilt with a true diagonal miter against the other
+/// wall's corresponding layer; unmatched layers (different layer counts) fall
+/// back to the single-vertex `corner_override` extension.
+///
+/// Used by [`join_two_walls_in_document`] so an L/T join's two walls share a
+/// clean mitered corner instead of leaving a seam where their
 /// independently-capped rectangles merely touch.
+///
+/// On success returns the axis handle plus every newly created derived
+/// (contour/hatch/solid) handle, so callers (e.g. grip-release) can bump 2D
+/// and 3D representations together.
 pub fn regenerate_wall_representation_with_corner(
     scene: &mut Scene,
     wall_handle: Handle,
     corner_override: Option<(usize, DVec3)>,
-) -> Result<(), WallRegenError> {
+    join_miter: Option<&engine::miter::JoinMiterContext>,
+) -> Result<Vec<Handle>, WallRegenError> {
     let Some(entity) = scene.document.get_entity(wall_handle) else {
         return Err(WallRegenError::NotAWall);
     };
@@ -807,34 +817,96 @@ pub fn regenerate_wall_representation_with_corner(
         .cloned()
         .ok_or(WallRegenError::NotAWall)?;
 
-    // The visible representation is built from a (possibly) corner-extended
-    // copy of the axis; the real axis entity above stays untouched.
-    let mut contour_axis_entity = axis_entity.clone();
-    if let (Some((idx, pos)), EntityType::LwPolyline(pl)) =
-        (corner_override, &mut contour_axis_entity)
-    {
-        if let Some(v) = pl.vertices.get_mut(idx) {
-            v.location = Vector2::new(pos.x, pos.y);
-        }
-    }
-
-    let contours = wall_layer_contour_polylines(&contour_axis_entity, &layers);
-    if contours.is_empty() {
+    // Base contours from the true (persisted) axis. Corner extension is only
+    // applied as a per-layer fallback when a join miter can't match layers.
+    let base_contours = wall_layer_contour_polylines(&axis_entity, &layers);
+    if base_contours.is_empty() {
         if is_v2 {
             let _ = set_wall_v2_derived_handles(scene, wall_handle, &[]);
         }
         return Err(WallRegenError::NoContours);
     }
-    let extrusions = wall_layer_extrusions(&contour_axis_entity, &layers, height);
+
+    // Fallback contours: axis with a single vertex pushed past the join into
+    // the other wall's footprint (legacy corner-overlap path).
+    let mut extended_axis_entity = axis_entity.clone();
+    let has_corner_override = if let (Some((idx, pos)), EntityType::LwPolyline(pl)) =
+        (corner_override, &mut extended_axis_entity)
+    {
+        if let Some(v) = pl.vertices.get_mut(idx) {
+            v.location = Vector2::new(pos.x, pos.y);
+            true
+        } else {
+            false
+        }
+    } else {
+        false
+    };
+    let extended_contours = if has_corner_override {
+        wall_layer_contour_polylines(&extended_axis_entity, &layers)
+    } else {
+        Vec::new()
+    };
+
+    // Self axis as plain 2D points for the miter helper.
+    let self_axis_2d: Vec<(f64, f64)> = match &axis_entity {
+        EntityType::LwPolyline(pl) => pl
+            .vertices
+            .iter()
+            .map(|v| (v.location.x, v.location.y))
+            .collect(),
+        _ => Vec::new(),
+    };
+    let self_layer_data: Vec<(f64, f64)> =
+        layers.iter().map(|l| (l.thickness, l.gap_before)).collect();
+
+    // Pre-compute per-layer mitered footprints when a join context is present.
+    let mitered_footprints: Vec<Option<Vec<(f64, f64)>>> =
+        if let Some(ctx) = join_miter {
+            engine::miter::mitered_layer_footprints(
+                &self_axis_2d,
+                &self_layer_data,
+                ctx.self_end,
+                &ctx.other_axis,
+                &ctx.other_layers,
+                ctx.other_end,
+                ctx.kind,
+            )
+        } else {
+            vec![None; layers.len()]
+        };
+
+    // Extrusion height/base come from the (possibly extended) axis so solids
+    // stay consistent with the 2D footprint chosen per layer below.
+    let extrusion_axis = if has_corner_override {
+        &extended_axis_entity
+    } else {
+        &axis_entity
+    };
+    let extrusions = wall_layer_extrusions(extrusion_axis, &layers, height);
     let library = load_or_seed();
 
     let mut new_derived: Vec<Handle> = Vec::new();
     for (i, layer) in layers.iter().enumerate() {
-        let (b1, b2) = &contours[i];
         let mat_name = &layer.material;
-        let mut footprint: Vec<(f64, f64)> = Vec::with_capacity(b1.len() + b2.len());
-        footprint.extend(b1.iter().copied());
-        footprint.extend(b2.iter().rev().copied());
+        // Prefer a true per-layer miter when the join helper could match this
+        // layer index against the other wall; otherwise fall back to the
+        // corner-extended contour (or the plain base contour).
+        let footprint: Vec<(f64, f64)> =
+            if let Some(Some(mitered)) = mitered_footprints.get(i) {
+                mitered.clone()
+            } else if let Some((b1, b2)) = extended_contours.get(i) {
+                let mut fp = Vec::with_capacity(b1.len() + b2.len());
+                fp.extend(b1.iter().copied());
+                fp.extend(b2.iter().rev().copied());
+                fp
+            } else {
+                let (b1, b2) = &base_contours[i];
+                let mut fp = Vec::with_capacity(b1.len() + b2.len());
+                fp.extend(b1.iter().copied());
+                fp.extend(b2.iter().rev().copied());
+                fp
+            };
         if footprint.len() < 3 {
             continue;
         }
@@ -929,7 +1001,10 @@ pub fn regenerate_wall_representation_with_corner(
     if is_v2 {
         let _ = set_wall_v2_derived_handles(scene, wall_handle, &new_derived);
     }
-    Ok(())
+    let mut touched = Vec::with_capacity(1 + new_derived.len());
+    touched.push(wall_handle);
+    touched.extend(new_derived.iter().copied());
+    Ok(touched)
 }
 
 /// Rewrite the `derived_handles` tail of `wall_handle`'s `WALL_V2` record,
@@ -2545,17 +2620,157 @@ fn extended_endpoint(axis: &[DVec3], idx: usize, ext_len: f64) -> DVec3 {
     axis[idx] + dir * ext_len
 }
 
-pub fn join_two_walls_in_document(scene: &mut Scene, h_a: Handle, h_b: Handle) -> Result<JoinKind, JoinError> {
+/// Shortest 2D distance from `p` to the finite segment `a`–`b`.
+fn point_to_segment_dist_2d(p: DVec3, a: DVec3, b: DVec3) -> f64 {
+    let ab = DVec3::new(b.x - a.x, b.y - a.y, 0.0);
+    let ap = DVec3::new(p.x - a.x, p.y - a.y, 0.0);
+    let len_sq = ab.length_squared();
+    if len_sq < 1e-24 {
+        return ap.length();
+    }
+    let t = (ap.dot(ab) / len_sq).clamp(0.0, 1.0);
+    let closest = DVec3::new(a.x + ab.x * t, a.y + ab.y * t, 0.0);
+    DVec3::new(p.x - closest.x, p.y - closest.y, 0.0).length()
+}
+
+/// Shortest 2D distance from `p` to any segment of the wall axis polyline.
+fn point_to_polyline_dist_2d(p: DVec3, poly: &[DVec3]) -> f64 {
+    let mut best = f64::INFINITY;
+    for pair in poly.windows(2) {
+        best = best.min(point_to_segment_dist_2d(p, pair[0], pair[1]));
+    }
+    best
+}
+
+/// True when `entity` is a wall *axis* (carries `WALL`/`WALL_V2` XDATA), not a
+/// derived contour/hatch/solid.
+fn is_wall_axis_xdata(entity: &EntityType) -> bool {
+    matches!(
+        read_aec_record(entity).and_then(|r| r.values.first()),
+        Some(XDataValue::String(kind)) if kind == "WALL" || kind == "WALL_V2"
+    )
+}
+
+/// Minimum 2D distance between either wall's endpoints and the other wall's
+/// axis polyline. Used by auto-join snap detection.
+fn wall_endpoint_to_axis_dist(axis_a: &[DVec3], axis_b: &[DVec3]) -> f64 {
+    if axis_a.len() < 2 || axis_b.len() < 2 {
+        return f64::INFINITY;
+    }
+    let mut best = f64::INFINITY;
+    for end in [axis_a[0], *axis_a.last().unwrap()] {
+        best = best.min(point_to_polyline_dist_2d(end, axis_b));
+    }
+    for end in [axis_b[0], *axis_b.last().unwrap()] {
+        best = best.min(point_to_polyline_dist_2d(end, axis_a));
+    }
+    best
+}
+
+/// Find the closest other wall axis whose geometry is within
+/// [`WALL_JOIN_SNAP_RADIUS`] of `wall_handle`'s axis and that can actually be
+/// joined (L/T intersection exists). Returns `None` when nothing is in range —
+/// a graceful no-op for callers.
+///
+/// `excluding` skips walls already being processed (the edited wall itself,
+/// plus any partners already joined in the same finalize pass).
+pub fn find_wall_to_auto_join(
+    scene: &Scene,
+    wall_handle: Handle,
+    excluding: &[Handle],
+) -> Option<Handle> {
+    let axis = get_wall_vertices(scene, wall_handle);
+    if axis.len() < 2 {
+        return None;
+    }
+    let mut best: Option<(Handle, f64)> = None;
+    for entity in scene.document.entities() {
+        let other = entity.common().handle;
+        if other == wall_handle || excluding.contains(&other) {
+            continue;
+        }
+        if !is_wall_axis_xdata(entity) {
+            continue;
+        }
+        let other_axis = get_wall_vertices(scene, other);
+        if other_axis.len() < 2 {
+            continue;
+        }
+        let dist = wall_endpoint_to_axis_dist(&axis, &other_axis);
+        if dist > WALL_JOIN_SNAP_RADIUS {
+            continue;
+        }
+        // Only accept candidates that the join engine can actually connect.
+        if join::join_wall_axes(&axis, &other_axis).is_err() {
+            continue;
+        }
+        if best.map_or(true, |(_, d)| dist < d) {
+            best = Some((other, dist));
+        }
+    }
+    best.map(|(h, _)| h)
+}
+
+/// Attempt automatic L/T joins for `wall_handle` against nearby walls (up to
+/// one join per endpoint). Returns every axis + derived handle touched so
+/// callers can refresh 2D and 3D in one `bump_entities` call. Never errors —
+/// failed/no-candidate joins are silent no-ops.
+pub fn try_auto_join_nearby_walls(scene: &mut Scene, wall_handle: Handle) -> Vec<Handle> {
+    let mut touched = Vec::new();
+    let mut excluding = vec![wall_handle];
+    // At most two joins (start endpoint + end endpoint against different walls).
+    for _ in 0..2 {
+        let Some(other) = find_wall_to_auto_join(scene, wall_handle, &excluding) else {
+            break;
+        };
+        match join_two_walls_in_document(scene, wall_handle, other) {
+            Ok((_kind, handles)) => {
+                touched.extend(handles);
+                excluding.push(other);
+            }
+            Err(_) => {
+                // Candidate looked joinable at search time but failed now
+                // (geometry race); skip it and stop rather than looping forever.
+                excluding.push(other);
+            }
+        }
+    }
+    touched.sort_by_key(|h| h.value());
+    touched.dedup();
+    touched
+}
+
+/// Collect every handle that must be bumped after a wall edit: the axis plus
+/// its current `derived_handles` (contour/hatch/solid). Used when a caller
+/// needs the full package without regenerating.
+pub fn wall_package_handles(scene: &Scene, wall_handle: Handle) -> Vec<Handle> {
+    let mut handles = vec![wall_handle];
+    if let Some(entity) = scene.document.get_entity(wall_handle) {
+        if let Some(v2) = wall_v2_from_entity(entity) {
+            handles.extend(v2.derived_handles.iter().copied());
+        }
+    }
+    handles
+}
+
+/// Join two wall axes in the document, rebuild both representations with
+/// mitered layer footprints, and return `(join_kind, every_touched_handle)`.
+/// The handle set always includes both axes plus every newly created derived
+/// entity so callers can refresh 2D (resident wires/hatches) and 3D (meshes)
+/// together.
+pub fn join_two_walls_in_document(
+    scene: &mut Scene,
+    h_a: Handle,
+    h_b: Handle,
+) -> Result<(JoinKind, Vec<Handle>), JoinError> {
     let axis_a = get_wall_vertices(scene, h_a);
     let axis_b = get_wall_vertices(scene, h_b);
     match join::join_wall_axes(&axis_a, &axis_b) {
         Ok((new_a, new_b, kind)) => {
-            // Bug 4: hint each wall's contour to extend past the shared
-            // corner into the other wall's footprint by the other wall's
-            // half thickness (a pragmatic approximation that's exact for the
-            // common Center-justified case), so the two walls' independent
-            // contours overlap at the joint instead of leaving a visible
-            // seam where they merely touch.
+            // Corner-extension fallback (unmatched layers) plus per-layer
+            // miter context (matched layers). Persisted axis vertices stay
+            // exactly as join_wall_axes computed them — only the visible
+            // footprint geometry changes.
             let thickness_a = scene
                 .document
                 .get_entity(h_a)
@@ -2566,21 +2781,88 @@ pub fn join_two_walls_in_document(scene: &mut Scene, h_a: Handle, h_b: Handle) -
                 .get_entity(h_b)
                 .and_then(wall_thickness_and_height)
                 .map(|(t, _, _)| t);
-            let override_a = changed_endpoint(&axis_a, &new_a).and_then(|idx| {
+            let end_a = changed_endpoint(&axis_a, &new_a);
+            let end_b = changed_endpoint(&axis_b, &new_b);
+            let override_a = end_a.and_then(|idx| {
                 thickness_b.map(|t| (idx, extended_endpoint(&new_a, idx, t * 0.5)))
             });
-            let override_b = changed_endpoint(&axis_b, &new_b).and_then(|idx| {
+            let override_b = end_b.and_then(|idx| {
                 thickness_a.map(|t| (idx, extended_endpoint(&new_b, idx, t * 0.5)))
             });
 
+            let layers_a = wall_layer_data(scene, h_a);
+            let layers_b = wall_layer_data(scene, h_b);
+            let axis_a_2d: Vec<(f64, f64)> = new_a.iter().map(|p| (p.x, p.y)).collect();
+            let axis_b_2d: Vec<(f64, f64)> = new_b.iter().map(|p| (p.x, p.y)).collect();
+
             update_wall_vertices(scene, h_a, &new_a);
             update_wall_vertices(scene, h_b, &new_b);
-            let _ = regenerate_wall_representation_with_corner(scene, h_a, override_a);
-            let _ = regenerate_wall_representation_with_corner(scene, h_b, override_b);
-            Ok(kind)
+
+            let mut touched = Vec::new();
+
+            // Rebuild A against B.
+            let miter_a = end_a.map(|self_end| engine::miter::JoinMiterContext {
+                self_end,
+                other_axis: axis_b_2d.clone(),
+                other_layers: layers_b.clone(),
+                other_end: end_b,
+                kind,
+            });
+            match regenerate_wall_representation_with_corner(
+                scene,
+                h_a,
+                override_a,
+                miter_a.as_ref(),
+            ) {
+                Ok(t) => touched.extend(t),
+                Err(_) => touched.push(h_a),
+            }
+
+            // Rebuild B against A. When B is the through-wall of a T (end_b is
+            // None) miter_b stays None and we just refresh its rectangular
+            // derived geometry so it stays in sync.
+            let miter_b = end_b.map(|self_end| engine::miter::JoinMiterContext {
+                self_end,
+                other_axis: axis_a_2d,
+                other_layers: layers_a,
+                other_end: end_a,
+                kind,
+            });
+            match regenerate_wall_representation_with_corner(
+                scene,
+                h_b,
+                override_b,
+                miter_b.as_ref(),
+            ) {
+                Ok(t) => touched.extend(t),
+                Err(_) => touched.push(h_b),
+            }
+
+            touched.sort_by_key(|h| h.value());
+            touched.dedup();
+            Ok((kind, touched))
         }
         Err(e) => Err(e),
     }
+}
+
+/// `(thickness, gap_before)` pairs for a wall's material stack, used by the
+/// join-miter helper. Empty when `handle` isn't a wall.
+fn wall_layer_data(scene: &Scene, handle: Handle) -> Vec<(f64, f64)> {
+    let Some(entity) = scene.document.get_entity(handle) else {
+        return Vec::new();
+    };
+    if let Some(v2) = wall_v2_from_entity(entity) {
+        return v2
+            .layers
+            .iter()
+            .map(|l| (l.thickness, l.gap_before))
+            .collect();
+    }
+    if let Some(wall) = wall_from_entity(entity) {
+        return vec![(wall.thickness, 0.0)];
+    }
+    Vec::new()
 }
 
 /// `AEC_WALLJOIN_DO handle_a|handle_b` — the non-interactive handler
@@ -2619,7 +2901,14 @@ pub fn aec_walljoin_do(scene: &mut Scene, command_line: &mut CommandLine, args: 
     }
 
     match join_two_walls_in_document(scene, h_a, h_b) {
-        Ok(_kind) => {
+        Ok((_kind, touched)) => {
+            let changes: Vec<_> = touched
+                .into_iter()
+                .map(|handle| (handle, crate::scene::ChangeKind::Modified))
+                .collect();
+            if !changes.is_empty() {
+                scene.bump_entities(&changes);
+            }
             command_line.push_info("AEC_WALLJOIN: walls joined.");
         }
         Err(e) => {
@@ -2629,10 +2918,13 @@ pub fn aec_walljoin_do(scene: &mut Scene, command_line: &mut CommandLine, args: 
 }
 
 /// `AEC_WALLEXTEND` — interactive front-end: pick a wall, then either click a
-/// target point (extends the nearer axis endpoint to it) or type `W` to
-/// switch to picking a target wall (extends to the L-/T-intersection of the
-/// two axes, reusing [`join::join_wall_axes`]). Delegates the actual write to
-/// [`aec_wallextend_do`] via [`CmdResult::Dispatch`].
+/// target point (extends the nearer axis endpoint to it) or click another wall
+/// (extends to the L-/T-intersection of the two axes, reusing
+/// [`join::join_wall_axes`]). Typing `W` still forces an explicit target-wall
+/// pick for discoverability, but is no longer required for the common case:
+/// once the source wall is selected every click is tried as an entity pick
+/// first, and only a miss falls back to the point-projection path. Delegates
+/// the actual write to [`aec_wallextend_do`] via [`CmdResult::Dispatch`].
 pub struct WallExtendCommand {
     wall: Option<Handle>,
     target_is_wall: bool,
@@ -2656,6 +2948,8 @@ impl CadCommand for WallExtendCommand {
     fn prompt(&self) -> String {
         if self.wall.is_none() {
             "AEC_WALLEXTEND  Select wall to extend:".to_string()
+        } else if self.target_is_wall {
+            "AEC_WALLEXTEND  Select target wall:".to_string()
         } else {
             "AEC_WALLEXTEND  Specify extend point or [Wall]:".to_string()
         }
@@ -2682,25 +2976,42 @@ impl CadCommand for WallExtendCommand {
     }
 
     fn needs_entity_pick(&self) -> bool {
-        self.wall.is_none() || self.target_is_wall
+        // Always entity-pick: first for the wall to extend, then again so a
+        // click on another wall auto-detects the WALL|target path. Empty
+        // space is reported as a null handle and falls back to on_point.
+        true
     }
 
-    fn on_entity_pick(&mut self, handle: Handle, _pt: DVec3) -> CmdResult {
+    fn on_entity_pick(&mut self, handle: Handle, pt: DVec3) -> CmdResult {
         if handle.is_null() {
+            // Miss: once a source wall is selected and we're not in forced
+            // Wall mode, fall back to the point-projection path.
+            if self.wall.is_some() && !self.target_is_wall {
+                return self.on_point(pt);
+            }
             return CmdResult::NeedPoint;
         }
         if self.wall.is_none() {
             self.wall = Some(handle);
             CmdResult::NeedPoint
-        } else if self.target_is_wall {
+        } else {
             let wall = self.wall.unwrap();
+            // Same entity as the source wall: in auto-detect mode treat the
+            // click as a point extend; in forced Wall mode keep waiting.
+            if handle == wall {
+                if !self.target_is_wall {
+                    return self.on_point(pt);
+                }
+                return CmdResult::NeedPoint;
+            }
+            // Any other entity pick is treated as a target wall. The DO
+            // handler runs resolve_wall_package so a click on a derived
+            // contour/hatch/solid of another wall still joins correctly.
             CmdResult::Dispatch(format!(
                 "AEC_WALLEXTEND_DO {}|WALL|{}",
                 wall.value(),
                 handle.value()
             ))
-        } else {
-            CmdResult::NeedPoint
         }
     }
 
@@ -2795,7 +3106,19 @@ pub fn aec_wallextend_do(scene: &mut Scene, command_line: &mut CommandLine, args
             }
         }
         update_wall_vertices(scene, wall_handle, &axis);
-        let _ = regenerate_wall_representation(scene, wall_handle);
+        let mut bump = match regenerate_wall_representation(scene, wall_handle) {
+            Ok(t) => t,
+            Err(_) => vec![wall_handle],
+        };
+        bump.sort_by_key(|h| h.value());
+        bump.dedup();
+        let changes: Vec<_> = bump
+            .into_iter()
+            .map(|handle| (handle, crate::scene::ChangeKind::Modified))
+            .collect();
+        if !changes.is_empty() {
+            scene.bump_entities(&changes);
+        }
         command_line.push_info("AEC_WALLEXTEND: wall extended.");
     } else if let Some(target_str) = rest.strip_prefix("WALL|") {
         let Ok(target_val) = target_str.parse::<u64>() else {
@@ -2807,11 +3130,17 @@ pub fn aec_wallextend_do(scene: &mut Scene, command_line: &mut CommandLine, args
             command_line.push_error("AEC_WALLEXTEND: select a different target wall.");
             return;
         }
-        let axis_b = get_wall_vertices(scene, target_handle);
-        match join::join_wall_axes(&axis, &axis_b) {
-            Ok((new_a, _new_b, _kind)) => {
-                update_wall_vertices(scene, wall_handle, &new_a);
-                let _ = regenerate_wall_representation(scene, wall_handle);
+        // Full join (both axes + mitered footprints) so layers visually connect
+        // at the corner, matching AEC_WALLJOIN — not a one-sided axis trim.
+        match join_two_walls_in_document(scene, wall_handle, target_handle) {
+            Ok((_kind, touched)) => {
+                let changes: Vec<_> = touched
+                    .into_iter()
+                    .map(|handle| (handle, crate::scene::ChangeKind::Modified))
+                    .collect();
+                if !changes.is_empty() {
+                    scene.bump_entities(&changes);
+                }
                 command_line.push_info("AEC_WALLEXTEND: wall extended to target wall.");
             }
             Err(e) => {
@@ -4031,7 +4360,7 @@ mod wall_command_tests {
         regenerate_wall_representation(&mut scene, wall_b)
             .expect("wall B regeneration should succeed");
 
-        let kind = join_two_walls_in_document(&mut scene, wall_a, wall_b)
+        let (kind, _touched) = join_two_walls_in_document(&mut scene, wall_a, wall_b)
             .expect("the two axes should join as an L-corner");
         assert_eq!(kind, JoinKind::L);
 
@@ -4504,5 +4833,387 @@ mod wall_command_tests {
         for p in &axis_after {
             assert!((p.y - (-0.125)).abs() < 1e-6);
         }
+    }
+
+    #[test]
+    fn wall_extend_command_auto_detects_target_wall_on_entity_pick() {
+        // Once a source wall is selected, clicking another wall (without
+        // typing W) must dispatch the WALL|target branch.
+        let mut cmd = WallExtendCommand::new();
+        assert!(cmd.needs_entity_pick());
+
+        let source = Handle::new(10);
+        let target = Handle::new(20);
+        assert!(matches!(
+            cmd.on_entity_pick(source, DVec3::ZERO),
+            CmdResult::NeedPoint
+        ));
+        assert!(cmd.needs_entity_pick());
+
+        match cmd.on_entity_pick(target, DVec3::new(8.0, 0.0, 0.0)) {
+            CmdResult::Dispatch(s) => {
+                assert_eq!(s, format!("AEC_WALLEXTEND_DO {}|WALL|{}", source.value(), target.value()));
+            }
+            _ => panic!("expected WALL| dispatch"),
+        }
+    }
+
+    #[test]
+    fn wall_extend_command_empty_click_falls_back_to_point_extend() {
+        // A null-handle pick (empty space) after the source wall is selected
+        // must fall back to the PT| point-projection path.
+        let mut cmd = WallExtendCommand::new();
+        let source = Handle::new(10);
+        let _ = cmd.on_entity_pick(source, DVec3::ZERO);
+
+        match cmd.on_entity_pick(Handle::NULL, DVec3::new(8.0, 2.0, 0.0)) {
+            CmdResult::Dispatch(s) => {
+                assert!(
+                    s.starts_with(&format!("AEC_WALLEXTEND_DO {}|PT|", source.value())),
+                    "expected PT| fallback dispatch, got {s}"
+                );
+            }
+            _ => panic!("expected PT| dispatch on empty click"),
+        }
+    }
+
+    #[test]
+    fn regenerate_wall_representation_returns_axis_and_derived_handles() {
+        let mut scene = Scene::new();
+        let wall_handle = add_multi_layer_wall(&mut scene);
+
+        let touched = regenerate_wall_representation(&mut scene, wall_handle)
+            .expect("regeneration should succeed");
+
+        assert!(
+            touched.contains(&wall_handle),
+            "returned set must include the axis handle"
+        );
+        let wall = wall_v2_from_entity(scene.document.get_entity(wall_handle).unwrap()).unwrap();
+        assert!(
+            !wall.derived_handles.is_empty(),
+            "regeneration should create derived entities"
+        );
+        for h in &wall.derived_handles {
+            assert!(
+                touched.contains(h),
+                "returned set must include derived handle {}",
+                h.value()
+            );
+        }
+        // Axis + every derived.
+        assert_eq!(touched.len(), 1 + wall.derived_handles.len());
+    }
+
+    #[test]
+    fn join_l_corner_layer_footprints_share_miter_boundary() {
+        let mut scene = Scene::new();
+        // Single-layer walls so both sides fully match for miter.
+        let mut pl_a = LwPolyline::new();
+        pl_a.add_vertex(LwVertex::new(Vector2::new(0.0, 0.0)));
+        pl_a.add_vertex(LwVertex::new(Vector2::new(5.0, 0.0)));
+        let mut ent_a = EntityType::LwPolyline(pl_a);
+        let layers = vec![wl("Concrete", 0.2, "Structural")];
+        let mut rec_a = ExtendedDataRecord::new(AEC_APPID);
+        rec_a.values = wall_v2_record("s", 3.0, 0, &layers, &[], WallJustification::Center);
+        ent_a.common_mut().extended_data.add_record(rec_a);
+        let wall_a = scene.add_entity(ent_a);
+
+        let mut pl_b = LwPolyline::new();
+        pl_b.add_vertex(LwVertex::new(Vector2::new(6.0, 1.0)));
+        pl_b.add_vertex(LwVertex::new(Vector2::new(6.0, 10.0)));
+        let mut ent_b = EntityType::LwPolyline(pl_b);
+        let mut rec_b = ExtendedDataRecord::new(AEC_APPID);
+        rec_b.values = wall_v2_record("s", 3.0, 0, &layers, &[], WallJustification::Center);
+        ent_b.common_mut().extended_data.add_record(rec_b);
+        let wall_b = scene.add_entity(ent_b);
+
+        let (kind, touched) = join_two_walls_in_document(&mut scene, wall_a, wall_b).expect("L join");
+        assert_eq!(kind, JoinKind::L);
+        assert!(touched.contains(&wall_a) && touched.contains(&wall_b));
+
+        // Persisted axes still meet exactly at the corner.
+        let axis_a = get_wall_vertices(&scene, wall_a);
+        let axis_b = get_wall_vertices(&scene, wall_b);
+        assert_eq!(*axis_a.last().unwrap(), DVec3::new(6.0, 0.0, 0.0));
+        assert_eq!(*axis_b.first().unwrap(), DVec3::new(6.0, 0.0, 0.0));
+
+        // Collect closed contour polylines (layer footprints) for both walls.
+        let contours = |scene: &Scene, h: Handle| -> Vec<Vec<(f64, f64)>> {
+            let wall = wall_v2_from_entity(scene.document.get_entity(h).unwrap()).unwrap();
+            wall.derived_handles
+                .iter()
+                .filter_map(|dh| match scene.document.get_entity(*dh) {
+                    Some(EntityType::LwPolyline(pl)) if pl.is_closed => Some(
+                        pl.vertices
+                            .iter()
+                            .map(|v| (v.location.x, v.location.y))
+                            .collect(),
+                    ),
+                    _ => None,
+                })
+                .collect()
+        };
+        let fps_a = contours(&scene, wall_a);
+        let fps_b = contours(&scene, wall_b);
+        assert!(!fps_a.is_empty() && !fps_b.is_empty());
+
+        // Expected shared miter corners for equal 0.2 walls at (6,0):
+        // (6.1, -0.1) and (5.9, 0.1).
+        let c1 = (6.1, -0.1);
+        let c2 = (5.9, 0.1);
+        let has = |fp: &[(f64, f64)], p: (f64, f64)| {
+            fp.iter()
+                .any(|(x, y)| (*x - p.0).abs() < 1e-6 && (*y - p.1).abs() < 1e-6)
+        };
+        assert!(
+            fps_a.iter().any(|fp| has(fp, c1) && has(fp, c2)),
+            "wall A footprint should contain both miter corners, got {fps_a:?}"
+        );
+        assert!(
+            fps_b.iter().any(|fp| has(fp, c1) && has(fp, c2)),
+            "wall B footprint should share the same miter corners (no gap), got {fps_b:?}"
+        );
+    }
+
+    #[test]
+    fn join_t_corner_stem_footprint_reaches_through_wall_face() {
+        let mut scene = Scene::new();
+        // Stem A approaching through wall B from above.
+        let mut pl_a = LwPolyline::new();
+        pl_a.add_vertex(LwVertex::new(Vector2::new(5.0, 1.0)));
+        pl_a.add_vertex(LwVertex::new(Vector2::new(5.0, 10.0)));
+        let mut ent_a = EntityType::LwPolyline(pl_a);
+        let layers = vec![wl("Concrete", 0.2, "Structural")];
+        let mut rec_a = ExtendedDataRecord::new(AEC_APPID);
+        rec_a.values = wall_v2_record("s", 3.0, 0, &layers, &[], WallJustification::Center);
+        ent_a.common_mut().extended_data.add_record(rec_a);
+        let wall_a = scene.add_entity(ent_a);
+
+        let mut pl_b = LwPolyline::new();
+        pl_b.add_vertex(LwVertex::new(Vector2::new(0.0, 0.0)));
+        pl_b.add_vertex(LwVertex::new(Vector2::new(10.0, 0.0)));
+        let mut ent_b = EntityType::LwPolyline(pl_b);
+        let mut rec_b = ExtendedDataRecord::new(AEC_APPID);
+        rec_b.values = wall_v2_record("s", 3.0, 0, &layers, &[], WallJustification::Center);
+        ent_b.common_mut().extended_data.add_record(rec_b);
+        let wall_b = scene.add_entity(ent_b);
+
+        let (kind, _touched) = join_two_walls_in_document(&mut scene, wall_a, wall_b).expect("T join");
+        assert_eq!(kind, JoinKind::T);
+
+        let axis_a = get_wall_vertices(&scene, wall_a);
+        assert!(
+            axis_a
+                .iter()
+                .any(|p| (p.x - 5.0).abs() < 1e-6 && p.y.abs() < 1e-6),
+            "stem axis should end on the through wall axis, got {axis_a:?}"
+        );
+
+        let wall_a_v2 = wall_v2_from_entity(scene.document.get_entity(wall_a).unwrap()).unwrap();
+        let mut max_abs_y_near_join = 0.0_f64;
+        for h in &wall_a_v2.derived_handles {
+            if let Some(EntityType::LwPolyline(pl)) = scene.document.get_entity(*h) {
+                for v in &pl.vertices {
+                    if (v.location.x - 5.0).abs() < 0.15 {
+                        max_abs_y_near_join = max_abs_y_near_join.max(v.location.y.abs());
+                    }
+                }
+            }
+        }
+        assert!(
+            max_abs_y_near_join > 0.05,
+            "stem footprint should reach the through wall's layer face, got max |y|={max_abs_y_near_join}"
+        );
+    }
+
+    #[test]
+    fn aec_wallextend_to_target_wall_matches_join_wall_axes_intersection() {
+        use crate::ui::command_line::CommandLine;
+
+        let mut scene = Scene::new();
+        // Wall A: (0,0)->(5,0); wall B vertical at x=8.
+        let wall_a = add_multi_layer_wall(&mut scene);
+        let mut pl_b = LwPolyline::new();
+        pl_b.add_vertex(LwVertex::new(Vector2::new(8.0, -5.0)));
+        pl_b.add_vertex(LwVertex::new(Vector2::new(8.0, 5.0)));
+        let mut entity_b = EntityType::LwPolyline(pl_b);
+        let mut record_b = ExtendedDataRecord::new(AEC_APPID);
+        record_b.values = wall_v2_record(
+            "style1",
+            3.0,
+            0,
+            &vec![wl("Concrete", 0.2, "Structural")],
+            &[],
+            WallJustification::Center,
+        );
+        entity_b.common_mut().extended_data.add_record(record_b);
+        let wall_b = scene.add_entity(entity_b);
+
+        let axis_a_before = get_wall_vertices(&scene, wall_a);
+        let axis_b = get_wall_vertices(&scene, wall_b);
+        let (expected_a, _, _) =
+            join::join_wall_axes(&axis_a_before, &axis_b).expect("axes should intersect");
+
+        // Simulate the interactive path: pick source wall, then pick target
+        // wall (auto-detect, no W keystroke).
+        let mut cmd = WallExtendCommand::new();
+        assert!(matches!(
+            cmd.on_entity_pick(wall_a, DVec3::new(2.0, 0.0, 0.0)),
+            CmdResult::NeedPoint
+        ));
+        let dispatch = match cmd.on_entity_pick(wall_b, DVec3::new(8.0, 0.0, 0.0)) {
+            CmdResult::Dispatch(s) => s,
+            _ => panic!("expected WALL| dispatch"),
+        };
+        let args = dispatch
+            .strip_prefix("AEC_WALLEXTEND_DO ")
+            .expect("dispatch prefix");
+        let mut command_line = CommandLine::default();
+        aec_wallextend_do(&mut scene, &mut command_line, args);
+
+        let axis_a_after = get_wall_vertices(&scene, wall_a);
+        assert_eq!(
+            axis_a_after.len(),
+            expected_a.len(),
+            "axis vertex count should match join_wall_axes"
+        );
+        for (got, exp) in axis_a_after.iter().zip(expected_a.iter()) {
+            assert!(
+                got.distance(*exp) < 1e-9,
+                "extended endpoint must match join_wall_axes intersection, got {got:?} expected {exp:?}"
+            );
+        }
+        // Must NOT be the raw click point projected onto the wall direction
+        // in a way that ignores B — the intersection is at x=8.
+        assert!(axis_a_after
+            .iter()
+            .any(|p| (p.x - 8.0).abs() < 1e-9 && p.y.abs() < 1e-9));
+        // Full join rebuilds both walls' representations (miter/T stem). For
+        // this T configuration the through-wall axis vertices stay put, but
+        // the stem must still land on x=8 and both walls keep derived handles.
+        let wall_a_v2 = wall_v2_from_entity(scene.document.get_entity(wall_a).unwrap()).unwrap();
+        let wall_b_v2 = wall_v2_from_entity(scene.document.get_entity(wall_b).unwrap()).unwrap();
+        assert!(
+            !wall_a_v2.derived_handles.is_empty() && !wall_b_v2.derived_handles.is_empty(),
+            "both walls should have regenerated derived handles after extend-join"
+        );
+    }
+
+    #[test]
+    fn find_wall_to_auto_join_picks_nearby_joinable_wall() {
+        let mut scene = Scene::new();
+        // Existing wall along X from (0,0) to (5,0).
+        let existing = add_multi_layer_wall(&mut scene);
+        regenerate_wall_representation(&mut scene, existing).expect("regen existing");
+
+        // New wall ending 0.15 m short of existing's end — within snap radius.
+        let mut pl = LwPolyline::new();
+        pl.add_vertex(LwVertex::new(Vector2::new(5.15, 3.0)));
+        pl.add_vertex(LwVertex::new(Vector2::new(5.15, 0.15)));
+        let mut entity = EntityType::LwPolyline(pl);
+        let layers = vec![wl("Concrete", 0.2, "Structural")];
+        let mut record = ExtendedDataRecord::new(AEC_APPID);
+        record.values = wall_v2_record("s", 3.0, 0, &layers, &[], WallJustification::Center);
+        entity.common_mut().extended_data.add_record(record);
+        let new_wall = scene.add_entity(entity);
+
+        let found = find_wall_to_auto_join(&scene, new_wall, &[]);
+        assert_eq!(
+            found,
+            Some(existing),
+            "should find the nearby existing wall within WALL_JOIN_SNAP_RADIUS"
+        );
+
+        // Far wall: no candidate.
+        let mut pl_far = LwPolyline::new();
+        pl_far.add_vertex(LwVertex::new(Vector2::new(50.0, 0.0)));
+        pl_far.add_vertex(LwVertex::new(Vector2::new(55.0, 0.0)));
+        let mut ent_far = EntityType::LwPolyline(pl_far);
+        let mut rec_far = ExtendedDataRecord::new(AEC_APPID);
+        rec_far.values = wall_v2_record("s", 3.0, 0, &layers, &[], WallJustification::Center);
+        ent_far.common_mut().extended_data.add_record(rec_far);
+        let far = scene.add_entity(ent_far);
+        assert!(
+            find_wall_to_auto_join(&scene, far, &[]).is_none(),
+            "far wall must not auto-join"
+        );
+
+        // Excluding the only candidate yields None.
+        assert!(find_wall_to_auto_join(&scene, new_wall, &[existing]).is_none());
+    }
+
+    #[test]
+    fn try_auto_join_nearby_walls_joins_axes_and_returns_touched_handles() {
+        let mut scene = Scene::new();
+        // Existing: (0,0)->(5,0). New wall approaches an L corner near (5,0).
+        let existing = add_multi_layer_wall(&mut scene);
+        regenerate_wall_representation(&mut scene, existing).expect("regen existing");
+
+        let mut pl = LwPolyline::new();
+        // End slightly short of the true intersection (5,0) — within snap radius.
+        pl.add_vertex(LwVertex::new(Vector2::new(5.1, 4.0)));
+        pl.add_vertex(LwVertex::new(Vector2::new(5.1, 0.1)));
+        let mut entity = EntityType::LwPolyline(pl);
+        let layers = vec![wl("Concrete", 0.2, "Structural")];
+        let mut record = ExtendedDataRecord::new(AEC_APPID);
+        record.values = wall_v2_record("s", 3.0, 0, &layers, &[], WallJustification::Center);
+        entity.common_mut().extended_data.add_record(record);
+        let new_wall = scene.add_entity(entity);
+        regenerate_wall_representation(&mut scene, new_wall).expect("regen new");
+
+        let touched = try_auto_join_nearby_walls(&mut scene, new_wall);
+        assert!(
+            !touched.is_empty(),
+            "auto-join should touch both walls' packages"
+        );
+        assert!(
+            touched.contains(&new_wall) && touched.contains(&existing),
+            "touched set must include both wall axes, got {touched:?}"
+        );
+
+        // Axes must meet at the true intersection.
+        let axis_new = get_wall_vertices(&scene, new_wall);
+        let axis_ex = get_wall_vertices(&scene, existing);
+        let meet = DVec3::new(5.1, 0.0, 0.0); // vertical at x=5.1 meets horizontal y=0
+        // join_wall_axes extends the horizontal wall end and moves the vertical end.
+        assert!(
+            axis_new
+                .iter()
+                .any(|p| p.distance(meet) < 1e-6)
+                || axis_ex.iter().any(|p| {
+                    axis_new.iter().any(|q| p.distance(*q) < 1e-6)
+                }),
+            "after auto-join the walls should share an axis intersection; new={axis_new:?} existing={axis_ex:?}"
+        );
+
+        // Both walls should still have derived representation handles.
+        for h in [new_wall, existing] {
+            let v2 = wall_v2_from_entity(scene.document.get_entity(h).unwrap()).unwrap();
+            assert!(
+                !v2.derived_handles.is_empty(),
+                "wall {} should retain derived handles after auto-join",
+                h.value()
+            );
+            for d in &v2.derived_handles {
+                assert!(
+                    touched.contains(d),
+                    "derived handle {} must be in touched set",
+                    d.value()
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn try_auto_join_nearby_walls_is_noop_when_nothing_nearby() {
+        let mut scene = Scene::new();
+        let wall = add_multi_layer_wall(&mut scene);
+        regenerate_wall_representation(&mut scene, wall).expect("regen");
+        let before = get_wall_vertices(&scene, wall);
+        let touched = try_auto_join_nearby_walls(&mut scene, wall);
+        assert!(touched.is_empty(), "no partner → no touched handles");
+        let after = get_wall_vertices(&scene, wall);
+        assert_eq!(before, after, "axis must be unchanged when auto-join is a no-op");
     }
 }

@@ -11,6 +11,7 @@ pub mod join;
 pub mod library;
 pub mod loop_detection;
 pub mod material;
+pub mod miter;
 pub mod room;
 pub mod storey;
 pub mod style;
