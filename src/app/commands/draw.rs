@@ -842,10 +842,43 @@ impl OpenCADStudio {
                 self.tabs[i].active_cmd = Some(Box::new(cmd));
             }
             "AEC_WALLREVERSE" => {
-                use crate::modules::aec::commands::WallReverseCommand;
-                let cmd = WallReverseCommand::new();
-                self.command_line.push_info(&cmd.prompt());
-                self.tabs[i].active_cmd = Some(Box::new(cmd));
+                // If exactly one wall (or its derived contour/hatch/solid) is
+                // already selected — as when invoked from the context menu on
+                // a selected wall — act on it immediately instead of making
+                // the user pick it again; the pick would otherwise silently
+                // wait for a click the context-menu flow never delivers.
+                let selected_handles: Vec<acadrust::Handle> = self.tabs[i]
+                    .scene
+                    .selected_entities()
+                    .into_iter()
+                    .map(|(h, _)| h)
+                    .collect();
+                let wall_handle = if selected_handles.len() == 1 {
+                    let h = crate::modules::aec::commands::resolve_wall_package(
+                        &self.tabs[i].scene,
+                        selected_handles[0],
+                    );
+                    if crate::modules::aec::commands::is_wall_pick_target(&self.tabs[i].scene, h) {
+                        Some(h)
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                };
+                if let Some(h) = wall_handle {
+                    crate::modules::aec::commands::aec_wallreverse_do(
+                        &mut self.tabs[i].scene,
+                        &mut self.command_line,
+                        &h.value().to_string(),
+                    );
+                    self.tabs[i].dirty = true;
+                } else {
+                    use crate::modules::aec::commands::WallReverseCommand;
+                    let cmd = WallReverseCommand::new();
+                    self.command_line.push_info(&cmd.prompt());
+                    self.tabs[i].active_cmd = Some(Box::new(cmd));
+                }
             }
             cmd if cmd.starts_with("AEC_WALLJOIN_DO ") => {
                 let args = cmd["AEC_WALLJOIN_DO ".len()..].to_string();

@@ -2608,7 +2608,7 @@ impl CadCommand for WallJoinCommand {
 }
 
 /// True when `handle` resolves to a wall axis (or is itself a wall axis).
-fn is_wall_pick_target(scene: &Scene, handle: Handle) -> bool {
+pub fn is_wall_pick_target(scene: &Scene, handle: Handle) -> bool {
     if handle.is_null() {
         return false;
     }
@@ -3265,12 +3265,17 @@ pub fn reverse_wall_in_document(
     axis.reverse();
     update_wall_vertices(scene, wall_handle, &axis);
 
-    // Mirror the layer stack so that after the axis-direction flip (which
-    // flips offset normals) each material remains on the same absolute side
-    // of the wall. Interior/Exterior justification swaps with the direction.
+    // NOTE: the axis-direction flip above already inverts the offset normal
+    // used by `layer_contours`, which on its own physically swaps every
+    // layer to the opposite absolute side of the wall (this is the intended,
+    // visible effect of "reverse direction" — same footprint, materials
+    // swapped). We must NOT also mirror/reverse the stored layer list here:
+    // doing so cancels the normal flip exactly, leaving the wall completely
+    // unchanged (a previous bug). Interior/Exterior justification still
+    // swaps with the direction since "interior"/"exterior" is direction-
+    // relative.
     if let Some(entity) = scene.document.get_entity(wall_handle) {
         if let Some(mut v2) = wall_v2_from_entity(entity) {
-            v2.layers = reverse_wall_layer_stack(&v2.layers);
             v2.justification = match v2.justification {
                 WallJustification::Interior => WallJustification::Exterior,
                 WallJustification::Exterior => WallJustification::Interior,
@@ -3297,28 +3302,6 @@ pub fn reverse_wall_in_document(
     touched.sort_by_key(|h| h.value());
     touched.dedup();
     Ok(touched)
-}
-
-/// Reverse the layer stack order and remap `gap_before` so the physical
-/// segment sequence (gap, thickness, gap, thickness, …) is mirrored. With
-/// an axis-direction reverse this keeps absolute material positions stable.
-fn reverse_wall_layer_stack(layers: &[WallLayer]) -> Vec<WallLayer> {
-    if layers.is_empty() {
-        return Vec::new();
-    }
-    let n = layers.len();
-    let old_gaps: Vec<f64> = layers.iter().map(|l| l.gap_before).collect();
-    let mut out: Vec<WallLayer> = layers.iter().rev().cloned().collect();
-    for j in 0..n {
-        // Original leading gap becomes the new leading gap; gaps that sat
-        // between layers i-1 and i move with the reversed adjacency.
-        out[j].gap_before = if j == 0 {
-            old_gaps[0]
-        } else {
-            old_gaps[n - j]
-        };
-    }
-    out
 }
 
 /// `AEC_WALLREVERSE_DO handle` — non-interactive handler dispatched by
@@ -5469,9 +5452,13 @@ mod wall_command_tests {
             .layers
             .clone();
         assert_eq!(layers_after.len(), layers_before.len());
-        // Layer list side-assignment flips: first material is what was last.
-        assert_eq!(layers_after[0].material, layers_before.last().unwrap().material);
-        assert_eq!(layers_after.last().unwrap().material, layers_before[0].material);
+        // The stored layer list itself is untouched by reverse; the axis
+        // direction flip alone is what relocates each material.
+        assert_eq!(layers_after[0].material, layers_before[0].material);
+        assert_eq!(
+            layers_after.last().unwrap().material,
+            layers_before.last().unwrap().material
+        );
 
         let (ymin_after, ymax_after) = wall_derived_y_bounds(&scene, wall);
         assert!(
@@ -5479,23 +5466,20 @@ mod wall_command_tests {
             "outer footprint Y bounds must stay identical: before=({ymin_before},{ymax_before}) after=({ymin_after},{ymax_after})"
         );
 
-        // Absolute material sides preserved: Concrete still on the more-negative side.
+        // Materials must visibly swap sides: Concrete (still layers[0]) now
+        // sits on the more-positive side, since the axis direction flip
+        // inverted the offset normal used to place it.
         let entity_after = scene.document.get_entity(wall).unwrap().clone();
         let contours_after = wall_layer_contour_polylines(&entity_after, &layers_after);
-        // After reverse, Concrete is at the end of the list (was index 0, now last).
-        let concrete_idx = layers_after
-            .iter()
-            .position(|l| l.material == "Concrete")
-            .expect("Concrete still present");
-        let concrete_y_after = contours_after[concrete_idx]
+        let concrete_y_after = contours_after[0]
             .0
             .iter()
-            .chain(contours_after[concrete_idx].1.iter())
+            .chain(contours_after[0].1.iter())
             .map(|(_, y)| *y)
             .fold(f64::INFINITY, f64::min);
         assert!(
-            (concrete_y_before - concrete_y_after).abs() < 1e-6,
-            "Concrete must stay on the same absolute side: before={concrete_y_before} after={concrete_y_after}"
+            (concrete_y_before - concrete_y_after).abs() > 1e-6,
+            "Concrete must move to the opposite absolute side after reverse: before={concrete_y_before} after={concrete_y_after}"
         );
     }
 
@@ -5675,9 +5659,10 @@ mod wall_command_tests {
         );
     }
 
-    /// Absolute world-space layer center offsets must survive
-    /// axis-reverse + layer-stack mirror for an asymmetric 3-layer wall
-    /// (different thicknesses and gaps), not just outer Y bounds.
+    /// Absolute world-space layer center offsets must mirror (negate) for
+    /// an asymmetric 3-layer wall (different thicknesses and gaps) after a
+    /// direction reverse — the stored layer list itself is untouched, only
+    /// the axis-direction flip relocates each material to the opposite side.
     #[test]
     fn reverse_wall_preserves_three_layer_world_centers() {
         let mut scene = Scene::new();
@@ -5722,10 +5707,10 @@ mod wall_command_tests {
         let layers_after = wall_v2_from_entity(&entity_after).unwrap().layers.clone();
         let contours_after = wall_layer_contour_polylines(&entity_after, &layers_after);
         assert_eq!(layers_after.len(), 3);
-        // Layer list is reversed (materials).
-        assert_eq!(layers_after[0].material, "Concrete");
+        // The stored layer list order is untouched by reverse.
+        assert_eq!(layers_after[0].material, "Brick");
         assert_eq!(layers_after[1].material, "Insulation");
-        assert_eq!(layers_after[2].material, "Brick");
+        assert_eq!(layers_after[2].material, "Concrete");
 
         let centers_after: std::collections::HashMap<String, f64> = layers_after
             .iter()
@@ -5741,9 +5726,12 @@ mod wall_command_tests {
             let c_after = centers_after
                 .get(mat)
                 .unwrap_or_else(|| panic!("material {mat} missing after reverse"));
+            // The axis-direction flip inverts the offset normal, so every
+            // material's world-space center must mirror (negate) around the
+            // axis line rather than stay put.
             assert!(
-                (c_before - c_after).abs() < 1e-9,
-                "world center of {mat} must be preserved: before={c_before} after={c_after}"
+                (c_before + c_after).abs() < 1e-9,
+                "world center of {mat} must mirror after reverse: before={c_before} after={c_after}"
             );
         }
     }
