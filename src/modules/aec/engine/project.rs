@@ -3,7 +3,7 @@
 //! A drawing remains fully usable standalone: missing project files load as
 //! an empty default project rather than erroring.
 
-use serde::{Deserialize, Deserializer, Serialize};
+use serde::{Deserialize, Serialize};
 use std::fs;
 use std::io;
 use std::path::Path;
@@ -24,28 +24,6 @@ fn new_entity_id() -> Uuid {
     Uuid::new_v4()
 }
 
-/// Deserializes an `id` field that may be either a proper UUID string (the
-/// current format) or a legacy numeric id (from `.ocsproj` files written
-/// before the switch to UUIDs). Legacy numeric ids are replaced with a fresh
-/// random UUID — they only ever served as an in-memory-unique identifier, so
-/// there is nothing meaningful to preserve, and re-minting one keeps old
-/// project files loadable instead of erroring out.
-fn deserialize_id_tolerant<'de, D>(deserializer: D) -> Result<Uuid, D::Error>
-where
-    D: Deserializer<'de>,
-{
-    #[derive(Deserialize)]
-    #[serde(untagged)]
-    enum IdOrLegacy {
-        Uuid(Uuid),
-        Legacy(u64),
-    }
-    Ok(match IdOrLegacy::deserialize(deserializer)? {
-        IdOrLegacy::Uuid(id) => id,
-        IdOrLegacy::Legacy(_) => new_entity_id(),
-    })
-}
-
 /// Top-level OpenCADStudio project (`.ocsproj` JSON).
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct ProjectFile {
@@ -56,7 +34,6 @@ pub struct ProjectFile {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Building {
     /// Stable identity, unrelated to `name` — see `new_entity_id()`.
-    #[serde(deserialize_with = "deserialize_id_tolerant")]
     pub id: Uuid,
     pub name: String,
     pub storeys: Vec<StoreyRef>,
@@ -82,7 +59,6 @@ impl Building {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct StoreyRef {
     /// Stable identity, unrelated to `name` — see `new_entity_id()`.
-    #[serde(deserialize_with = "deserialize_id_tolerant")]
     pub id: Uuid,
     pub name: String,
     pub elevation: f64,
@@ -188,33 +164,6 @@ mod tests {
         let s1 = StoreyRef::new("EG", 0.0, "a.dwg");
         let s2 = StoreyRef::new("EG", 0.0, "b.dwg");
         assert_ne!(s1.id, s2.id);
-    }
-
-    #[test]
-    fn loads_legacy_numeric_ids_by_reminting_uuids() {
-        // Simulates a `.ocsproj` written before the switch from a `u64`
-        // counter-based id to `Uuid` — must still load instead of erroring.
-        let legacy_json = r#"{
-            "buildings": [
-                {
-                    "id": 1234567890,
-                    "name": "Legacy Building",
-                    "storeys": [
-                        { "id": 1, "name": "EG", "elevation": 0.0, "drawing_path": "eg.dwg" }
-                    ]
-                }
-            ]
-        }"#;
-        let path = temp_path("legacy_numeric_ids");
-        fs::write(&path, legacy_json).expect("write legacy json");
-        let loaded = ProjectFile::load(&path).expect("legacy file should still load");
-        assert_eq!(loaded.buildings.len(), 1);
-        assert_eq!(loaded.buildings[0].name, "Legacy Building");
-        assert_eq!(loaded.buildings[0].storeys.len(), 1);
-        // Ids got re-minted as fresh UUIDs rather than erroring or staying numeric.
-        assert_ne!(loaded.buildings[0].id, Uuid::nil());
-        assert_ne!(loaded.buildings[0].storeys[0].id, Uuid::nil());
-        let _ = fs::remove_file(&path);
     }
 
     #[test]

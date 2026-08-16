@@ -312,6 +312,9 @@ fn storey_row<'a>(
                 .size(11)
                 .padding([3, 6])
                 .width(Fill),
+            button(text("…").size(11))
+                .padding([3, 8])
+                .on_press(Message::AecProjectExplorerPickEditStoreyDrawing(bid, sid)),
         ]
         .spacing(8)
         .align_y(iced::Center),

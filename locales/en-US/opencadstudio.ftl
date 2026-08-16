@@ -3185,6 +3185,20 @@ plugins =
     .view-on-github = View on GitHub
     .no-releases = no releases
 
+project-explorer =
+    .new-project = New Project
+    .open-ellipsis = Open…
+    .buildings = Buildings
+    .empty-hint = Open or create a project to browse buildings and storeys.
+    .add-building = Add Building
+    .add-storey = Add Storey
+    .building-name-placeholder = Building name
+    .adding-to-building = Adding to building "__ocs_arg_name__"
+    .select-a-building-first = Select a building first
+    .storey-drawing-placeholder = path/to/storey.dwg
+    .confirm-delete-building = Delete building "__ocs_arg_name__" and all its storeys? This cannot be undone.
+    .confirm-delete-storey = Delete storey "__ocs_arg_name__"? This cannot be undone.
+
 ui =
     .count-steps-available = __ocs_arg_count__ steps available
     .label-history = __ocs_arg_label__ history

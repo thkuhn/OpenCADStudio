@@ -3183,6 +3183,20 @@ plugins =
     .view-on-github = Auf GitHub ansehen
     .no-releases = Keine Freigaben
 
+project-explorer =
+    .new-project = Neues Projekt
+    .open-ellipsis = Öffnen…
+    .buildings = Gebäude
+    .empty-hint = Öffnen oder erstellen Sie ein Projekt, um Gebäude und Geschosse zu durchsuchen.
+    .add-building = Gebäude hinzufügen
+    .add-storey = Geschoss hinzufügen
+    .building-name-placeholder = Gebäudename
+    .adding-to-building = Wird zu Gebäude „__ocs_arg_name__“ hinzugefügt
+    .select-a-building-first = Zuerst ein Gebäude auswählen
+    .storey-drawing-placeholder = pfad/zur/zeichnung.dwg
+    .confirm-delete-building = Gebäude „__ocs_arg_name__“ und alle seine Geschosse löschen? Dies kann nicht rückgängig gemacht werden.
+    .confirm-delete-storey = Geschoss „__ocs_arg_name__“ löschen? Dies kann nicht rückgängig gemacht werden.
+
 ui =
     .count-steps-available = __ocs_arg_count__ Schritte verfügbar
     .label-history = __ocs_arg_label__ Verlauf

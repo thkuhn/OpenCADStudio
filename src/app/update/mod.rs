@@ -2377,6 +2377,40 @@ impl OpenCADStudio {
                 self.aec_project_explorer_new_storey_drawing = display;
                 Task::none()
             }
+            // `bid`/`sid` aren't needed in the result — only one storey can be
+            // selected/edited at a time, so the pick always targets the
+            // currently selected storey's edit buffer.
+            Message::AecProjectExplorerPickEditStoreyDrawing(_bid, _sid) => Task::perform(
+                async {
+                    crate::sys::file_dialog()
+                        .set_title("Select Storey Drawing")
+                        .add_filter("CAD Files", &["dwg", "dxf", "DWG", "DXF"])
+                        .add_filter("All Files", &["*"])
+                        .pick_file()
+                        .await
+                        .map(|h| crate::sys::handle_path(&h))
+                },
+                Message::AecProjectExplorerPickEditStoreyDrawingResult,
+            ),
+            Message::AecProjectExplorerPickEditStoreyDrawingResult(None) => Task::none(),
+            Message::AecProjectExplorerPickEditStoreyDrawingResult(Some(path)) => {
+                // Prefer a path relative to the project file when possible.
+                let display = if let Some(base) = self
+                    .aec_project_explorer_path
+                    .as_ref()
+                    .and_then(|p| p.parent())
+                {
+                    path.strip_prefix(base)
+                        .map(|p| p.to_path_buf())
+                        .unwrap_or_else(|_| path.clone())
+                        .to_string_lossy()
+                        .into_owned()
+                } else {
+                    path.to_string_lossy().into_owned()
+                };
+                self.aec_project_explorer_edit_storey_drawing = display;
+                Task::none()
+            }
             Message::SelectAndZoomTo(handle) => {
                 let i = self.active_tab;
                 self.tabs[i].scene.select_entity(handle, true);

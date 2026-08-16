@@ -2397,6 +2397,10 @@ pub enum Message {
     /// Pick a drawing path for the new-storey form.
     AecProjectExplorerPickStoreyDrawing,
     AecProjectExplorerPickStoreyDrawingResult(Option<std::path::PathBuf>),
+    /// Pick a drawing path while editing the storey at `(building_id, storey_id)`
+    /// — writes the result into the edit buffer, not directly into the project.
+    AecProjectExplorerPickEditStoreyDrawing(uuid::Uuid, uuid::Uuid),
+    AecProjectExplorerPickEditStoreyDrawingResult(Option<std::path::PathBuf>),
 
     /// Select an entity and zoom the viewport to it (properties handle links).
     SelectAndZoomTo(acadrust::Handle),
