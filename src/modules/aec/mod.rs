@@ -47,6 +47,14 @@ impl CadModule for AecModule {
         GROUPS.get_or_init(|| {
             vec![
                 RibbonGroup {
+                    title: "Project",
+                    tools: vec![RibbonItem::LargeTool(tool(
+                        "AEC_PROJECTEXPLORER",
+                        "Project Explorer",
+                        PROJECT_ICON,
+                    ))],
+                },
+                RibbonGroup {
                     title: "Walls",
                     tools: vec![
                         RibbonItem::LargeTool(tool("AEC_WALL", "Wall", WALL_ICON)),
@@ -89,14 +97,11 @@ impl CadModule for AecModule {
                 },
                 RibbonGroup {
                     title: "Storeys",
-                    tools: vec![
-                        RibbonItem::LargeTool(tool("AEC_STOREY", "Storey", STOREY_ICON)),
-                        RibbonItem::LargeTool(tool(
-                            "AEC_PROJECTEXPLORER",
-                            "Project Explorer",
-                            PROJECT_ICON,
-                        )),
-                    ],
+                    tools: vec![RibbonItem::LargeTool(tool(
+                        "AEC_STOREY",
+                        "Storey",
+                        STOREY_ICON,
+                    ))],
                 },
                 RibbonGroup {
                     title: "IFC",
