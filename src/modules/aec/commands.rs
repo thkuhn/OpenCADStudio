@@ -2828,6 +2828,72 @@ impl CadCommand for WallJoinCommand {
         is_wall_pick_target(scene, handle)
     }
 
+    /// N-way-aware hover preview: while awaiting the second (target) wall,
+    /// check whether joining the already-selected wall with the currently
+    /// hovered candidate would actually resolve into a 3+ way junction (i.e.
+    /// another wall already shares that corner). If so, highlight every OTHER
+    /// participant of that prospective junction with a preview wire — the
+    /// hovered handle itself is already covered by the normal single-handle
+    /// hover highlight. Plain L/T (2-wall) joins keep relying solely on that
+    /// single-handle highlight, unchanged.
+    fn entity_pick_acquire_previews(&self, scene: &Scene, handle: Handle) -> Vec<WireModel> {
+        if self.selected.len() != 1 || handle.is_null() {
+            return vec![];
+        }
+        let axis_a = resolve_wall_package(scene, self.selected[0]);
+        let axis_b = resolve_wall_package(scene, handle);
+        if axis_a.is_null() || axis_b.is_null() || axis_a == axis_b {
+            return vec![];
+        }
+
+        let handles = all_wall_axis_handles(scene);
+        let (Some(idx_a), Some(idx_b)) = (
+            handles.iter().position(|h| *h == axis_a),
+            handles.iter().position(|h| *h == axis_b),
+        ) else {
+            return vec![];
+        };
+        let axes: Vec<Vec<DVec3>> = handles
+            .iter()
+            .map(|h| get_wall_vertices(scene, *h))
+            .collect();
+        let axis_refs: Vec<&[DVec3]> = axes.iter().map(|a| a.as_slice()).collect();
+        let junctions = join::detect_junctions(&axis_refs, WALL_JOIN_SNAP_RADIUS);
+
+        for junc in junctions.into_iter().filter(|j| j.is_multi_wall()) {
+            let has_a = junc.participants.iter().any(|p| p.wall_index == idx_a);
+            let has_b = junc.participants.iter().any(|p| p.wall_index == idx_b);
+            if !has_a || !has_b {
+                continue;
+            }
+            // Only the 3+-way case gets the extra multi-wire preview.
+            let mut wires = Vec::new();
+            for p in &junc.participants {
+                let h = handles[p.wall_index];
+                if h == axis_b {
+                    continue; // already shown via the single-handle hover highlight
+                }
+                let pts: Vec<[f64; 3]> = axes[p.wall_index]
+                    .iter()
+                    .map(|v| [v.x, v.y, v.z])
+                    .collect();
+                if pts.len() < 2 {
+                    continue;
+                }
+                let mut wire = WireModel::solid_f64(
+                    format!("__walljoin_junction_preview_{}__", h.value()),
+                    pts,
+                    WireModel::HOVER,
+                    false,
+                );
+                wire.line_weight_px = wire.line_weight_px.max(2.0);
+                wires.push(wire);
+            }
+            return wires;
+        }
+        vec![]
+    }
+
     fn on_entity_pick(&mut self, handle: Handle, _pt: DVec3) -> CmdResult {
         if handle.is_null() {
             return CmdResult::NeedPoint;
@@ -2975,6 +3041,23 @@ pub fn find_wall_to_auto_join(
 /// failed/no-candidate joins are silent no-ops.
 pub fn try_auto_join_nearby_walls(scene: &mut Scene, wall_handle: Handle) -> Vec<Handle> {
     let mut touched = Vec::new();
+
+    // Step 4: Symmetric peer unlinking for walls that are no longer nearby.
+    // When a wall vertex is dragged away from a junction, its peer links and
+    // mitered footprints must be cleaned up on both sides.
+    let old_peers = engine::owner_index::peers_of(&scene.document, wall_handle);
+    let axis = get_wall_vertices(scene, wall_handle);
+    for peer in old_peers {
+        let peer_axis = get_wall_vertices(scene, peer);
+        if wall_endpoint_to_axis_dist(&axis, &peer_axis) > WALL_JOIN_SNAP_RADIUS {
+            engine::owner_index::unlink_peers(&mut scene.document, wall_handle, peer);
+            // Peer representation might be mitered against us; refresh it.
+            if let Ok(t) = regenerate_wall_representation(scene, peer) {
+                touched.extend(t);
+            }
+        }
+    }
+
     let mut excluding = vec![wall_handle];
 
     // Prefer multi-wall junction resolution when 3+ walls already cluster at
@@ -3044,7 +3127,10 @@ fn try_join_multi_wall_junctions(scene: &mut Scene, wall_handle: Handle) -> Vec<
         .map(|h| get_wall_vertices(scene, *h))
         .collect();
     let axis_refs: Vec<&[DVec3]> = axes.iter().map(|a| a.as_slice()).collect();
-    let junctions = join::detect_junctions(&axis_refs, join::JUNCTION_TOLERANCE);
+    // Step 4: Use a larger tolerance for multi-wall junctions to ensure that
+    // vertex-dragged walls still cluster with their former junction peers
+    // (up to the snap radius) so the full junction is re-resolved together.
+    let junctions = join::detect_junctions(&axis_refs, WALL_JOIN_SNAP_RADIUS);
 
     let self_idx = handles.iter().position(|h| *h == wall_handle);
     let Some(self_idx) = self_idx else {
@@ -3062,7 +3148,18 @@ fn try_join_multi_wall_junctions(scene: &mut Scene, wall_handle: Handle) -> Vec<
             .iter()
             .map(|p| handles[p.wall_index])
             .collect();
-        if let Ok(t) = join_junction_in_document(scene, &part_handles) {
+        // Use the moved wall's own (post-move) endpoint as the snap point so
+        // the rebuilt junction lands exactly where the user dragged it,
+        // rather than at the mean of all participants.
+        let snap_point = junc
+            .participants
+            .iter()
+            .find(|p| p.wall_index == self_idx)
+            .and_then(|p| match p.role {
+                join::JunctionRole::Endpoint(end_idx) => axes[self_idx].get(end_idx).copied(),
+                join::JunctionRole::Through(_) => None,
+            });
+        if let Ok(t) = join_junction_in_document(scene, &part_handles, snap_point) {
             touched.extend(t);
         }
     }
@@ -3076,9 +3173,16 @@ fn try_join_multi_wall_junctions(scene: &mut Scene, wall_handle: Handle) -> Vec<
 ///
 /// `handles` are the wall axis handles participating in the junction (order
 /// does not matter). Returns every touched axis + derived handle.
+///
+/// `snap_point`, when provided, overrides the computed junction point (which
+/// is otherwise the mean of all participating endpoints) with the given exact
+/// position, and widens the detection tolerance to `WALL_JOIN_SNAP_RADIUS` so
+/// a vertex that was just dragged (and is therefore no longer exactly
+/// coincident with its former peers) still clusters into the same junction.
 pub fn join_junction_in_document(
     scene: &mut Scene,
     handles: &[Handle],
+    snap_point: Option<DVec3>,
 ) -> Result<Vec<Handle>, JoinError> {
     if handles.len() < 2 {
         return Err(JoinError::Degenerate);
@@ -3093,15 +3197,27 @@ pub fn join_junction_in_document(
     let axis_refs: Vec<&[DVec3]> = axes.iter().map(|a| a.as_slice()).collect();
     // Use a slightly looser tol than pure geometry equality so near-miss
     // endpoints from interactive drawing still cluster (snap radius scale).
-    let tol = join::JUNCTION_TOLERANCE.max(1e-4);
+    // When a snap point is supplied (vertex-move cascade), use the larger
+    // snap radius so a just-dragged endpoint still clusters with its peers.
+    let tol = if snap_point.is_some() {
+        WALL_JOIN_SNAP_RADIUS
+    } else {
+        join::JUNCTION_TOLERANCE.max(1e-4)
+    };
     let junctions = join::detect_junctions(&axis_refs, tol);
-    let Some(junc) = junctions
-        .into_iter()
-        .filter(|j| j.is_multi_wall())
-        .max_by_key(|j| j.participants.len())
-    else {
+    let multi_wall_junctions: Vec<_> = junctions.into_iter().filter(|j| j.is_multi_wall()).collect();
+    if multi_wall_junctions.len() > 1 {
+        // Only one multi-wall junction should be present in the passed handles
+        // to avoid ambiguity in which one to rebuild. The caller must filter
+        // handles to a single junction's participants.
+        return Err(JoinError::Ambiguous);
+    }
+    let Some(mut junc) = multi_wall_junctions.into_iter().next() else {
         return Err(JoinError::NoIntersection);
     };
+    if let Some(pt) = snap_point {
+        junc.point = pt;
+    }
 
     // Snap endpoint participants.
     let snapped = join::apply_junction_to_axes(&axis_refs, &junc);
@@ -3292,7 +3408,7 @@ pub fn join_two_walls_in_document(
                     }
                 }
                 if participants.len() >= 3 {
-                    let touched = join_junction_in_document(scene, &participants)?;
+                    let touched = join_junction_in_document(scene, &participants, None)?;
                     return Ok((kind, touched));
                 }
             }
@@ -3637,13 +3753,15 @@ pub fn aec_wallextend_do(scene: &mut Scene, command_line: &mut CommandLine, args
             }
         }
         update_wall_vertices(scene, wall_handle, &axis);
-        let mut bump = match regenerate_wall_representation(scene, wall_handle) {
+        let mut touched = match regenerate_wall_representation(scene, wall_handle) {
             Ok(t) => t,
             Err(_) => vec![wall_handle],
         };
-        bump.sort_by_key(|h| h.value());
-        bump.dedup();
-        let changes: Vec<_> = bump
+        let joined = try_auto_join_nearby_walls(scene, wall_handle);
+        touched.extend(joined);
+        touched.sort_by_key(|h| h.value());
+        touched.dedup();
+        let changes: Vec<_> = touched
             .into_iter()
             .map(|handle| (handle, crate::scene::ChangeKind::Modified))
             .collect();
@@ -6795,5 +6913,184 @@ mod wall_command_tests {
         remove_wall_opening(&mut scene, o2).expect("remove door");
         assert!(engine::owner_index::children_of(&scene.document, wall).is_empty());
         assert!(openings_for_host_wall(&scene, wall).is_empty());
+    }
+
+    #[test]
+    fn two_junctions_on_one_wall_are_handled_correctly() {
+        let mut scene = Scene::new();
+        // Wall 1: horizontal along Y=0 from X=0 to X=10.
+        let mut pl1 = LwPolyline::new();
+        pl1.add_vertex(LwVertex::new(Vector2::new(0.0, 0.0)));
+        pl1.add_vertex(LwVertex::new(Vector2::new(10.0, 0.0)));
+        let mut ent1 = EntityType::LwPolyline(pl1);
+        let layers = vec![wl("Concrete", 0.2, "Structural")];
+        let mut rec1 = ExtendedDataRecord::new(AEC_APPID);
+        rec1.values = wall_record("s1", 3.0, 0, &layers, &[], WallJustification::Center);
+        ent1.common_mut().extended_data.add_record(rec1);
+        let w1 = scene.add_entity(ent1);
+        regenerate_wall_representation(&mut scene, w1).expect("regen w1");
+
+        // Junction A at (0,0): w1 + w2 + w3
+        // w2: vertical from (0,0) to (0,5)
+        let mut pl2 = LwPolyline::new();
+        pl2.add_vertex(LwVertex::new(Vector2::new(0.0, 0.0)));
+        pl2.add_vertex(LwVertex::new(Vector2::new(0.0, 5.0)));
+        let mut ent2 = EntityType::LwPolyline(pl2);
+        let mut rec2 = ExtendedDataRecord::new(AEC_APPID);
+        rec2.values = wall_record("s2", 3.0, 0, &layers, &[], WallJustification::Center);
+        ent2.common_mut().extended_data.add_record(rec2);
+        let w2 = scene.add_entity(ent2);
+        regenerate_wall_representation(&mut scene, w2).expect("regen w2");
+
+        // w3: vertical from (0,0) to (0,-5)
+        let mut pl3 = LwPolyline::new();
+        pl3.add_vertex(LwVertex::new(Vector2::new(0.0, 0.0)));
+        pl3.add_vertex(LwVertex::new(Vector2::new(0.0, -5.0)));
+        let mut ent3 = EntityType::LwPolyline(pl3);
+        let mut rec3 = ExtendedDataRecord::new(AEC_APPID);
+        rec3.values = wall_record("s3", 3.0, 0, &layers, &[], WallJustification::Center);
+        ent3.common_mut().extended_data.add_record(rec3);
+        let w3 = scene.add_entity(ent3);
+        regenerate_wall_representation(&mut scene, w3).expect("regen w3");
+
+        // Junction B at (10,0): w1 + w4 + w5
+        // w4: vertical from (10,0) to (10,5)
+        let mut pl4 = LwPolyline::new();
+        pl4.add_vertex(LwVertex::new(Vector2::new(10.0, 0.0)));
+        pl4.add_vertex(LwVertex::new(Vector2::new(10.0, 5.0)));
+        let mut ent4 = EntityType::LwPolyline(pl4);
+        let mut rec4 = ExtendedDataRecord::new(AEC_APPID);
+        rec4.values = wall_record("s4", 3.0, 0, &layers, &[], WallJustification::Center);
+        ent4.common_mut().extended_data.add_record(rec4);
+        let w4 = scene.add_entity(ent4);
+        regenerate_wall_representation(&mut scene, w4).expect("regen w4");
+
+        // w5: vertical from (10,0) to (10,-5)
+        let mut pl5 = LwPolyline::new();
+        pl5.add_vertex(LwVertex::new(Vector2::new(10.0, 0.0)));
+        pl5.add_vertex(LwVertex::new(Vector2::new(10.0, -5.0)));
+        let mut ent5 = EntityType::LwPolyline(pl5);
+        let mut rec5 = ExtendedDataRecord::new(AEC_APPID);
+        rec5.values = wall_record("s5", 3.0, 0, &layers, &[], WallJustification::Center);
+        ent5.common_mut().extended_data.add_record(rec5);
+        let w5 = scene.add_entity(ent5);
+        regenerate_wall_representation(&mut scene, w5).expect("regen w5");
+
+        // Join Junction A.
+        let junc_a_handles = vec![w1, w2, w3];
+        let touched_a = join_junction_in_document(&mut scene, &junc_a_handles, None).expect("join A");
+        assert!(touched_a.contains(&w1));
+        assert!(touched_a.contains(&w2));
+        assert!(touched_a.contains(&w3));
+
+        // Join Junction B.
+        let junc_b_handles = vec![w1, w4, w5];
+        let touched_b = join_junction_in_document(&mut scene, &junc_b_handles, None).expect("join B");
+        assert!(touched_b.contains(&w1));
+        assert!(touched_b.contains(&w4));
+        assert!(touched_b.contains(&w5));
+
+        // Assert both junctions' participants have mitered footprints.
+        for h in &[w1, w2, w3, w4, w5] {
+            let wall = wall_from_entity(scene.document.get_entity(*h).unwrap()).unwrap();
+            // N-way junction should produce derived handles for mitered layers.
+            assert!(!wall.derived_handles.is_empty(), "wall {} should have mitered footprints", h.value());
+        }
+
+        // Assert peers_of is correct.
+        let peers_w1 = engine::owner_index::peers_of(&scene.document, w1);
+        assert!(peers_w1.contains(&w2));
+        assert!(peers_w1.contains(&w3));
+        assert!(peers_w1.contains(&w4));
+        assert!(peers_w1.contains(&w5));
+        assert_eq!(peers_w1.len(), 4);
+
+        let peers_w2 = engine::owner_index::peers_of(&scene.document, w2);
+        assert_eq!(peers_w2.len(), 2);
+        assert!(peers_w2.contains(&w1));
+        assert!(peers_w2.contains(&w3));
+
+        // Test the safety guard: passing all handles at once should yield Ambiguous.
+        let all_handles = vec![w1, w2, w3, w4, w5];
+        let result = join_junction_in_document(&mut scene, &all_handles, None);
+        assert_eq!(result.err(), Some(JoinError::Ambiguous));
+    }
+
+    #[test]
+    fn vertex_move_cascades_to_full_junction() {
+        let mut scene = Scene::new();
+        // 3-way junction at (0,0).
+        // W1: (0,0) to (10,0)
+        // W2: (0,0) to (0,10)
+        // W3: (0,0) to (0,-10)
+
+        let w1 = add_multi_layer_wall(&mut scene);
+        update_wall_vertices(&mut scene, w1, &[DVec3::new(0.0, 0.0, 0.0), DVec3::new(10.0, 0.0, 0.0)]);
+        regenerate_wall_representation(&mut scene, w1).unwrap();
+
+        let w2 = add_multi_layer_wall(&mut scene);
+        update_wall_vertices(&mut scene, w2, &[DVec3::new(0.0, 0.0, 0.0), DVec3::new(0.0, 10.0, 0.0)]);
+        regenerate_wall_representation(&mut scene, w2).unwrap();
+
+        let w3 = add_multi_layer_wall(&mut scene);
+        update_wall_vertices(&mut scene, w3, &[DVec3::new(0.0, 0.0, 0.0), DVec3::new(0.0, -10.0, 0.0)]);
+        regenerate_wall_representation(&mut scene, w3).unwrap();
+
+        // Initial join.
+        join_junction_in_document(&mut scene, &[w1, w2, w3], None).unwrap();
+
+        // Move W1's endpoint at (0,0) slightly to (0.1, 0.1).
+        // This should trigger a rebuild of ALL THREE walls via try_auto_join_nearby_walls.
+        let mut axis1 = get_wall_vertices(&scene, w1);
+        axis1[0] = DVec3::new(0.1, 0.0, 0.0);
+        update_wall_vertices(&mut scene, w1, &axis1);
+        regenerate_wall_representation(&mut scene, w1).unwrap();
+        
+        let touched = try_auto_join_nearby_walls(&mut scene, w1);
+
+        // Assert all 3 walls are still joined (their ends moved to (0.1, 0.0)).
+        let axis1 = get_wall_vertices(&scene, w1);
+        assert!((axis1[0].x - 0.1).abs() < 1e-6);
+
+        // If it worked, W2 and W3 should also have their ends moved to (0.1, 0.0).
+        let axis2 = get_wall_vertices(&scene, w2);
+        let axis3 = get_wall_vertices(&scene, w3);
+
+        assert!(
+            (axis2[0].x - 0.1).abs() < 1e-6,
+            "W2 should have followed W1 move to (0.1, 0), got {:?}",
+            axis2[0]
+        );
+        assert!(
+            (axis3[0].x - 0.1).abs() < 1e-6,
+            "W3 should have followed W1 move to (0.1, 0), got {:?}",
+            axis3[0]
+        );
+        assert!(touched.contains(&w1));
+        assert!(touched.contains(&w2));
+        assert!(touched.contains(&w3));
+
+        // Assert peer links are still correct.
+        let peers1 = engine::owner_index::peers_of(&scene.document, w1);
+        assert!(peers1.contains(&w2));
+        assert!(peers1.contains(&w3));
+        assert_eq!(peers1.len(), 2);
+
+        // Now move W1 far away and assert unlinking.
+        let mut axis1 = get_wall_vertices(&scene, w1);
+        axis1[0] = DVec3::new(100.0, 100.0, 0.0);
+        axis1[1] = DVec3::new(110.0, 100.0, 0.0);
+        update_wall_vertices(&mut scene, w1, &axis1);
+        
+        let touched_far = try_auto_join_nearby_walls(&mut scene, w1);
+        
+        let peers1_far = engine::owner_index::peers_of(&scene.document, w1);
+        assert!(peers1_far.is_empty(), "W1 should be unlinked after moving far away");
+        assert!(touched_far.contains(&w2));
+        assert!(touched_far.contains(&w3));
+        
+        let peers2_far = engine::owner_index::peers_of(&scene.document, w2);
+        assert!(!peers2_far.contains(&w1));
+        assert!(peers2_far.contains(&w3)); // W2 and W3 still meet at (0.1, 0)
     }
 }

@@ -15,6 +15,13 @@
 use super::contour::layer_contours;
 use super::join::{JoinKind, Junction, JunctionRole};
 
+/// Minimum angle (5°) below which diagonal miters are rejected as degenerate.
+/// At 5°, the miter intersection distance is ~23x the layer half-offset (1/sin(2.5°)).
+/// Beyond this, numerical instability and extreme geometry extensions make
+/// the miter unreliable; we fall back to a simple corner extension.
+/// This also rejects angles near 180°, where walls are nearly collinear.
+const MIN_MITER_SINE: f64 = 0.0872; // slightly more than sin(5°)
+
 /// One wall layer as consumed by the miter matcher: geometry plus optional
 /// identity fields used for cross-wall pairing.
 #[derive(Debug, Clone, PartialEq)]
@@ -586,6 +593,44 @@ fn miter_end_points(
     let prev_a = if end_a == 0 { 1 } else { end_a - 1 };
     let a1_line = extended_line(a_b1[prev_a], a_b1[end_a]);
     let a2_line = extended_line(a_b2[prev_a], a_b2[end_a]);
+
+    // Degenerate angle check: if the walls meet at a very shallow or very
+    // sharp angle, the miter intersection point moves to infinity.
+    let la = wall_leave_dir(axis_a, end_a);
+    let lb = if let Some(eb) = end_b {
+        wall_leave_dir(axis_b, eb)
+    } else {
+        // T through-wall: use the through-axis direction near A's join.
+        let join_pt = axis_a.get(end_a).copied().unwrap_or((0.0, 0.0));
+        let mut best_seg = 0usize;
+        let mut best_d = f64::INFINITY;
+        for s in 0..axis_b.len().saturating_sub(1) {
+            let d = point_seg_dist(join_pt, axis_b[s], axis_b[s + 1]);
+            if d < best_d {
+                best_d = d;
+                best_seg = s;
+            }
+        }
+        let i0 = best_seg;
+        let i1 = best_seg + 1;
+        if i1 < axis_b.len() {
+            let dx = axis_b[i1].0 - axis_b[i0].0;
+            let dy = axis_b[i1].1 - axis_b[i0].1;
+            let len = (dx * dx + dy * dy).sqrt();
+            if len > 1e-12 {
+                (dx / len, dy / len)
+            } else {
+                (0.0, 0.0)
+            }
+        } else {
+            (0.0, 0.0)
+        }
+    };
+    let det = la.0 * lb.1 - la.1 * lb.0;
+    if det.abs() < MIN_MITER_SINE {
+        return None;
+    }
+
     let (b1_line, b2_line) = other_boundary_lines(b_b1, b_b2, end_b, axis_a, axis_b, end_a)?;
 
     let i_a1_b1 = intersect_lines_2d(a1_line.0, a1_line.1, b1_line.0, b1_line.1)?;
@@ -618,6 +663,21 @@ fn miter_end_points(
         pair_cross
     };
     Some((new_a1, new_a2))
+}
+
+/// Unit direction leaving a wall axis junction.
+fn wall_leave_dir(axis: &[(f64, f64)], end: usize) -> (f64, f64) {
+    if axis.len() < 2 || end >= axis.len() {
+        return (0.0, 0.0);
+    }
+    let prev = if end == 0 { 1 } else { end - 1 };
+    let (dx, dy) = (axis[prev].0 - axis[end].0, axis[prev].1 - axis[end].1);
+    let len = (dx * dx + dy * dy).sqrt();
+    if len < 1e-12 {
+        (0.0, 0.0)
+    } else {
+        (dx / len, dy / len)
+    }
 }
 
 fn rebuild_footprint(
@@ -767,23 +827,9 @@ fn corner_bisector_dir(
     axis_b: &[(f64, f64)],
     end_b: Option<usize>,
 ) -> (f64, f64) {
-    let leave = |axis: &[(f64, f64)], end: usize| -> (f64, f64) {
-        if axis.len() < 2 || end >= axis.len() {
-            return (0.0, 0.0);
-        }
-        let prev = if end == 0 { 1 } else { end - 1 };
-        let (dx, dy) = (axis[prev].0 - axis[end].0, axis[prev].1 - axis[end].1);
-        let len = (dx * dx + dy * dy).sqrt();
-        if len < 1e-12 {
-            (0.0, 0.0)
-        } else {
-            (dx / len, dy / len)
-        }
-    };
-
-    let la = leave(axis_a, end_a);
+    let la = wall_leave_dir(axis_a, end_a);
     let lb = if let Some(eb) = end_b {
-        leave(axis_b, eb)
+        wall_leave_dir(axis_b, eb)
     } else if axis_b.len() >= 2 {
         // T through-wall: use the through-axis direction near A's join.
         let join = axis_a.get(end_a).copied().unwrap_or((0.0, 0.0));
@@ -952,6 +998,85 @@ mod tests {
             unmatched, 1,
             "unmatched layer must fall back (None) to corner_override, got {fps:?}"
         );
+    }
+
+    #[test]
+    fn miter_degenerate_angle_5_deg_falls_back() {
+        // sin(5 deg) approx 0.087.
+        // Wall A at 0 deg: (0,0) to (10,0)
+        // Wall B at 5 deg: (0,0) to (10 * cos(5), 10 * sin(5))
+        let angle = 5.0 * std::f64::consts::PI / 180.0;
+        let axis_a = vec![(0.0, 0.0), (10.0, 0.0)];
+        let axis_b = vec![(0.0, 0.0), (10.0 * angle.cos(), 10.0 * angle.sin())];
+        let layers = vec![g(0.2)];
+
+        let fps = mitered_layer_footprints(
+            &axis_a,
+            &layers,
+            0,
+            &axis_b,
+            &layers,
+            Some(0),
+            JoinKind::L,
+        );
+        assert!(fps[0].is_none(), "5 degree join should be degenerate and fall back");
+    }
+
+    #[test]
+    fn miter_degenerate_angle_175_deg_falls_back() {
+        // sin(175 deg) = sin(5 deg) approx 0.087.
+        let angle = 175.0 * std::f64::consts::PI / 180.0;
+        let axis_a = vec![(0.0, 0.0), (10.0, 0.0)];
+        let axis_b = vec![(0.0, 0.0), (10.0 * angle.cos(), 10.0 * angle.sin())];
+        let layers = vec![g(0.2)];
+
+        let fps = mitered_layer_footprints(
+            &axis_a,
+            &layers,
+            0,
+            &axis_b,
+            &layers,
+            Some(0),
+            JoinKind::L,
+        );
+        assert!(fps[0].is_none(), "175 degree join should be degenerate and fall back");
+    }
+
+    #[test]
+    fn mitered_junction_degenerate_angles() {
+        // 3-way junction at (0,0).
+        // Wall 0: (0,0) to (10,0)  [0 deg outgoing ray]
+        // Wall 1: (0,0) to (10*cos(5), 10*sin(5)) [5 deg outgoing ray]
+        // Wall 2: (0,0) to (0, 10) [90 deg outgoing ray]
+        let a5 = 5.0 * std::f64::consts::PI / 180.0;
+        let junction = Junction {
+            point: glam::DVec3::new(0.0, 0.0, 0.0),
+            participants: vec![
+                JunctionParticipant { wall_index: 0, role: JunctionRole::Endpoint(0) },
+                JunctionParticipant { wall_index: 1, role: JunctionRole::Endpoint(0) },
+                JunctionParticipant { wall_index: 2, role: JunctionRole::Endpoint(0) },
+            ],
+        };
+        let walls = vec![
+            JunctionWallGeom { axis: vec![(0.0, 0.0), (10.0, 0.0)], layers: vec![g(0.2)], end: Some(0) },
+            JunctionWallGeom { axis: vec![(0.0, 0.0), (10.0 * a5.cos(), 10.0 * a5.sin())], layers: vec![g(0.2)], end: Some(0) },
+            JunctionWallGeom { axis: vec![(0.0, 0.0), (0.0, 10.0)], layers: vec![g(0.2)], end: Some(0) },
+        ];
+
+        let res = mitered_junction_layer_footprints(&junction, &walls);
+        // Wall 0 (0 deg) has neighbors Wall 2 (90 deg, safe) and Wall 1 (5 deg, degenerate).
+        // Wall 1 (5 deg) has neighbors Wall 0 (5 deg, degenerate) and Wall 2 (85 deg, safe).
+
+        // Wall 1's miter with Wall 0 is degenerate.
+        // It should not panic or produce NaN.
+        let fp1 = &res[1][0];
+        if let Some(fp) = fp1 {
+            for &(x, y) in fp {
+                assert!(!x.is_nan() && !y.is_nan());
+                // Miter point shouldn't be extremely far away (e.g. > 100m)
+                assert!(x.abs() < 100.0 && y.abs() < 100.0, "miter point too far: ({x}, {y})");
+            }
+        }
     }
 
     #[test]
@@ -1211,5 +1336,63 @@ mod tests {
         for (p, n) in pa.iter().zip(na.iter()) {
             assert!(close(*p, *n, 1e-6), "mismatch pairwise={p:?} nway={n:?}");
         }
+    }
+
+    #[test]
+    fn junction_mixed_layer_stacks() {
+        // 3-way junction at (0,0).
+        // Wall 0: (0,0) to (10,0). Layers: [Brick, Concrete]
+        // Wall 1: (0,0) to (0,10). Layers: [Brick, Concrete] (identical stack)
+        // Wall 2: (0,0) to (-10,0). Layers: [Concrete] (different stack)
+
+        let l_brick = MiterLayer::with_id(0.1, 0.0, "Brick", "Finish");
+        let l_concrete = MiterLayer::with_id(0.2, 0.0, "Concrete", "Structural");
+
+        let junction = Junction {
+            point: glam::DVec3::new(0.0, 0.0, 0.0),
+            participants: vec![
+                JunctionParticipant { wall_index: 0, role: JunctionRole::Endpoint(0) },
+                JunctionParticipant { wall_index: 1, role: JunctionRole::Endpoint(0) },
+                JunctionParticipant { wall_index: 2, role: JunctionRole::Endpoint(0) },
+            ],
+        };
+        let walls = vec![
+            JunctionWallGeom { axis: vec![(0.0, 0.0), (10.0, 0.0)], layers: vec![l_brick.clone(), l_concrete.clone()], end: Some(0) },
+            JunctionWallGeom { axis: vec![(0.0, 0.0), (0.0, 10.0)], layers: vec![l_brick.clone(), l_concrete.clone()], end: Some(0) },
+            JunctionWallGeom { axis: vec![(0.0, 0.0), (-10.0, 0.0)], layers: vec![l_concrete.clone()], end: Some(0) },
+        ];
+
+        let res = mitered_junction_layer_footprints(&junction, &walls);
+        // Wall 0 layers: [Brick, Concrete].
+        // Neighbor W1: [Brick, Concrete]. Both should match.
+        // Neighbor W2: [Concrete]. Only Concrete should match.
+
+        // Wall 0 layer 0 (Brick):
+        //   - matches W1 (Brick)
+        //   - no match W2
+        //   => Should miter against W1.
+        assert!(res[0][0].is_some(), "W0 layer 0 (Brick) should miter against W1");
+
+        // Wall 0 layer 1 (Concrete):
+        //   - matches W1 (Concrete)
+        //   - matches W2 (Concrete)
+        //   => Should miter against both.
+        assert!(res[0][1].is_some(), "W0 layer 1 (Concrete) should miter against W1 and W2");
+
+        // Wall 2 layer 0 (Concrete):
+        //   - matches W1 (Concrete)
+        //   - matches W0 (Concrete)
+        assert!(res[2][0].is_some(), "W2 layer 0 (Concrete) should miter against W1 and W0");
+
+        // Now test a layer that matches NO neighbor.
+        let l_glass = MiterLayer::with_id(0.05, 0.0, "Glass", "Finish");
+        let walls_mixed = vec![
+            JunctionWallGeom { axis: vec![(0.0, 0.0), (10.0, 0.0)], layers: vec![l_brick.clone(), l_glass.clone()], end: Some(0) },
+            JunctionWallGeom { axis: vec![(0.0, 0.0), (0.0, 10.0)], layers: vec![l_brick.clone()], end: Some(0) },
+            JunctionWallGeom { axis: vec![(0.0, 0.0), (-10.0, 0.0)], layers: vec![l_brick.clone()], end: Some(0) },
+        ];
+        let res_mixed = mitered_junction_layer_footprints(&junction, &walls_mixed);
+        // Wall 0 layer 1 (Glass) matches NO neighbor.
+        assert!(res_mixed[0][1].is_none(), "Wall 0 layer 1 (Glass) should fall back when no neighbor matches");
     }
 }

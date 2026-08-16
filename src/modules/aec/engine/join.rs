@@ -12,6 +12,7 @@ pub enum JoinError {
     Parallel,
     NoIntersection,
     Degenerate,
+    Ambiguous,
 }
 
 impl fmt::Display for JoinError {
@@ -20,6 +21,7 @@ impl fmt::Display for JoinError {
             JoinError::Parallel => write!(f, "Parallel axes"),
             JoinError::NoIntersection => write!(f, "No intersection found"),
             JoinError::Degenerate => write!(f, "Degenerate axis"),
+            JoinError::Ambiguous => write!(f, "Ambiguous junction set"),
         }
     }
 }
