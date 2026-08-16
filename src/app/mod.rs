@@ -1051,6 +1051,9 @@ pub(super) struct OpenCADStudio {
     aec_project_explorer_new_storey_name: String,
     aec_project_explorer_new_storey_elevation: String,
     aec_project_explorer_new_storey_drawing: String,
+    /// A pending delete awaiting user confirmation (building or storey), so a
+    /// misclick on "Delete" cannot silently drop project structure/files.
+    aec_project_explorer_pending_delete: Option<AecProjectExplorerDeleteTarget>,
 
     // ── Annotation-scale Manager ──────────────────────────────────────────
     scale_manager_selected: String,
@@ -1681,6 +1684,14 @@ pub enum StylePickerTarget {
     /// Selecting a new style for the currently active interactive command
     /// (e.g. while drawing a wall).
     ActiveCommand,
+}
+
+/// A pending delete in the AEC Project Explorer, awaiting user confirmation
+/// before the building/storey is actually removed from the project tree.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum AecProjectExplorerDeleteTarget {
+    Building(usize),
+    Storey(usize, usize),
 }
 
 /// Which in-canvas modal dialog is currently open (Plan B). At most one shows
@@ -2343,6 +2354,16 @@ pub enum Message {
     AecProjectExplorerRenameBuilding(usize, String),
     /// Rename the storey at `(building_idx, storey_idx)` (live-edited from the tree).
     AecProjectExplorerRenameStorey(usize, usize, String),
+    /// Ask for confirmation before deleting the building at this index (and
+    /// all its storeys) — sets the pending-delete state shown inline.
+    AecProjectExplorerRequestDeleteBuilding(usize),
+    /// Ask for confirmation before deleting the storey at
+    /// `(building_idx, storey_idx)`.
+    AecProjectExplorerRequestDeleteStorey(usize, usize),
+    /// User confirmed the pending delete — actually remove it.
+    AecProjectExplorerConfirmDelete,
+    /// User cancelled the pending delete — clear it without changes.
+    AecProjectExplorerCancelDelete,
     /// Append a storey to the selected building using the form buffers.
     AecProjectExplorerAddStorey,
     AecProjectExplorerNewBuildingNameChanged(String),
@@ -3618,6 +3639,7 @@ impl OpenCADStudio {
             aec_project_explorer_new_storey_name: String::new(),
             aec_project_explorer_new_storey_elevation: String::from("0.0"),
             aec_project_explorer_new_storey_drawing: String::new(),
+            aec_project_explorer_pending_delete: None,
             scale_manager_selected: String::new(),
             scale_manager_paper_buf: String::new(),
             scale_manager_drawing_buf: String::new(),

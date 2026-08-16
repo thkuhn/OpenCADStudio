@@ -1,4 +1,4 @@
-use super::{ArrowKey, Message, OpenCADStudio};
+use super::{AecProjectExplorerDeleteTarget, ArrowKey, Message, OpenCADStudio};
 use crate::scene::VIEWCUBE_DRAW_PX;
 use crate::ui::PropertiesPanel;
 use iced::time::Instant;
@@ -2161,6 +2161,47 @@ impl OpenCADStudio {
                 self.aec_project_explorer_persist_if_pathed();
                 Task::none()
             }
+            Message::AecProjectExplorerRequestDeleteBuilding(bi) => {
+                self.aec_project_explorer_pending_delete =
+                    Some(AecProjectExplorerDeleteTarget::Building(bi));
+                Task::none()
+            }
+            Message::AecProjectExplorerRequestDeleteStorey(bi, si) => {
+                self.aec_project_explorer_pending_delete =
+                    Some(AecProjectExplorerDeleteTarget::Storey(bi, si));
+                Task::none()
+            }
+            Message::AecProjectExplorerCancelDelete => {
+                self.aec_project_explorer_pending_delete = None;
+                Task::none()
+            }
+            Message::AecProjectExplorerConfirmDelete => {
+                match self.aec_project_explorer_pending_delete.take() {
+                    Some(AecProjectExplorerDeleteTarget::Building(bi)) => {
+                        if let Some(project) = self.aec_project_explorer_file.as_mut() {
+                            if bi < project.buildings.len() {
+                                project.buildings.remove(bi);
+                            }
+                        }
+                        self.aec_project_explorer_selected_building = None;
+                        self.aec_project_explorer_selected_storey = None;
+                        self.aec_project_explorer_persist_if_pathed();
+                    }
+                    Some(AecProjectExplorerDeleteTarget::Storey(bi, si)) => {
+                        if let Some(project) = self.aec_project_explorer_file.as_mut() {
+                            if let Some(building) = project.buildings.get_mut(bi) {
+                                if si < building.storeys.len() {
+                                    building.storeys.remove(si);
+                                }
+                            }
+                        }
+                        self.aec_project_explorer_selected_storey = None;
+                        self.aec_project_explorer_persist_if_pathed();
+                    }
+                    None => {}
+                }
+                Task::none()
+            }
             Message::AecProjectExplorerAddStorey => {
                 let Some(bi) = self.aec_project_explorer_selected_building else {
                     self.command_line.push_info(
@@ -2170,10 +2211,9 @@ impl OpenCADStudio {
                 };
                 let name = self.aec_project_explorer_new_storey_name.trim().to_string();
                 let drawing = self.aec_project_explorer_new_storey_drawing.trim().to_string();
-                if name.is_empty() || drawing.is_empty() {
+                if name.is_empty() {
                     self.command_line.push_info(
-                        crate::t!("AEC Project Explorer: name and drawing path are required.")
-                            .as_ref(),
+                        crate::t!("AEC Project Explorer: a storey name is required.").as_ref(),
                     );
                     return Task::none();
                 }

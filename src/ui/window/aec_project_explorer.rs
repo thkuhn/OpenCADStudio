@@ -4,7 +4,7 @@
 use iced::widget::{button, column, container, row, scrollable, text, text_input, Space};
 use iced::{Element, Fill};
 
-use crate::app::Message;
+use crate::app::{AecProjectExplorerDeleteTarget, Message};
 use crate::modules::aec::engine::project::{Building, ProjectFile, StoreyRef};
 use crate::t;
 use super::aec_ui_util::*;
@@ -23,6 +23,8 @@ pub struct ProjectExplorerState<'a> {
     pub new_storey_name: &'a str,
     pub new_storey_elevation: &'a str,
     pub new_storey_drawing: &'a str,
+    /// A delete awaiting confirmation, rendered as an inline Yes/No prompt.
+    pub pending_delete: Option<AecProjectExplorerDeleteTarget>,
 }
 
 pub fn view_window<'a>(
@@ -66,10 +68,72 @@ pub fn view_window<'a>(
         .into(),
     };
 
-    column![toolbar, body]
-        .spacing(10)
-        .padding(10)
-        .into()
+    let mut content = column![toolbar].spacing(10);
+    if let Some(bar) = delete_confirm_bar(project, state.pending_delete) {
+        content = content.push(bar);
+    }
+    content = content.push(body);
+
+    content.padding(10).into()
+}
+
+/// Inline "are you sure?" prompt shown instead of deleting immediately —
+/// removing a building/storey can affect the whole project and its files.
+fn delete_confirm_bar<'a>(
+    project: Option<&'a ProjectFile>,
+    pending: Option<AecProjectExplorerDeleteTarget>,
+) -> Option<Element<'a, Message>> {
+    let project = project?;
+    let pending = pending?;
+
+    let message = match pending {
+        AecProjectExplorerDeleteTarget::Building(bi) => {
+            let name = project
+                .buildings
+                .get(bi)
+                .map(|b| b.name.as_str())
+                .unwrap_or("?");
+            t!(
+                "Delete building \"%{name}\" and all its storeys? This cannot be undone.",
+                name = name
+            )
+            .into_owned()
+        }
+        AecProjectExplorerDeleteTarget::Storey(bi, si) => {
+            let name = project
+                .buildings
+                .get(bi)
+                .and_then(|b| b.storeys.get(si))
+                .map(|s| s.name.as_str())
+                .unwrap_or("?");
+            t!(
+                "Delete storey \"%{name}\"? This cannot be undone.",
+                name = name
+            )
+            .into_owned()
+        }
+    };
+
+    Some(
+        container(
+            row![
+                text(message).size(11),
+                Space::new().width(Fill),
+                button(text(t!("Cancel")).size(11))
+                    .padding([4, 10])
+                    .on_press(Message::AecProjectExplorerCancelDelete),
+                button(text(t!("Delete")).size(11))
+                    .style(button::danger)
+                    .padding([4, 10])
+                    .on_press(Message::AecProjectExplorerConfirmDelete),
+            ]
+            .spacing(8)
+            .align_y(iced::Center),
+        )
+        .padding(8)
+        .width(Fill)
+        .into(),
+    )
 }
 
 fn project_tree<'a>(
@@ -141,6 +205,10 @@ fn building_row<'a>(
                 .size(11)
                 .padding([3, 6])
                 .width(Fill),
+            button(text(t!("Delete")).size(10))
+                .style(button::danger)
+                .padding([3, 8])
+                .on_press(Message::AecProjectExplorerRequestDeleteBuilding(bi)),
         ]
         .spacing(8)
         .align_y(iced::Center),
@@ -202,6 +270,10 @@ fn storey_row<'a>(
                 .size(11)
                 .padding([3, 6])
                 .width(Fill),
+            button(text(t!("Delete")).size(10))
+                .style(button::danger)
+                .padding([3, 8])
+                .on_press(Message::AecProjectExplorerRequestDeleteStorey(bi, si)),
         ]
         .spacing(8)
         .align_y(iced::Center),

@@ -295,6 +295,7 @@ impl OpenCADStudio {
                         new_storey_name: &self.aec_project_explorer_new_storey_name,
                         new_storey_elevation: &self.aec_project_explorer_new_storey_elevation,
                         new_storey_drawing: &self.aec_project_explorer_new_storey_drawing,
+                        pending_delete: self.aec_project_explorer_pending_delete,
                     },
                 )
             }),
