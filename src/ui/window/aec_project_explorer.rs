@@ -242,6 +242,13 @@ fn storey_row<'a>(
     let elev = format!("{:.3}", storey.elevation);
 
     // Row + separate Open button (no nested buttons — iced dislikes that).
+    let has_drawing = !storey.drawing_path.trim().is_empty();
+    let mut open_button = button(text(t!("Open")).size(10))
+        .style(button::primary)
+        .padding([4, 8]);
+    if has_drawing {
+        open_button = open_button.on_press(Message::AecProjectExplorerOpenStorey(bid, sid));
+    }
     let label_row = row![
         button(
             row![
@@ -262,10 +269,7 @@ fn storey_row<'a>(
         .style(list_style(selected))
         .padding([6, 9])
         .width(Fill),
-        button(text(t!("Open")).size(10))
-            .style(button::primary)
-            .padding([4, 8])
-            .on_press(Message::AecProjectExplorerOpenStorey(bid, sid)),
+        open_button,
     ]
     .spacing(6)
     .align_y(iced::Center);
