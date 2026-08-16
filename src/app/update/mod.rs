@@ -135,6 +135,43 @@ impl OpenCADStudio {
         }
     }
 
+    /// Apply any not-yet-saved building/storey edit buffers (from the inline
+    /// "Speichern" rows) to the in-memory project, so the top-level "Save"
+    /// button captures everything the user typed, even if they never
+    /// pressed the per-row "Speichern" button.
+    fn aec_project_explorer_apply_pending_edits(&mut self) {
+        if let Some(bi) = self.aec_project_explorer_selected_building {
+            let name = self.aec_project_explorer_edit_building_name.clone();
+            if let Some(project) = self.aec_project_explorer_file.as_mut() {
+                if let Some(building) = project.buildings.get_mut(bi) {
+                    building.name = name;
+                }
+            }
+        }
+        if let Some((bi, si)) = self.aec_project_explorer_selected_storey {
+            let name = self.aec_project_explorer_edit_storey_name.clone();
+            let drawing = self.aec_project_explorer_edit_storey_drawing.clone();
+            let elevation = self
+                .aec_project_explorer_edit_elevation
+                .trim()
+                .parse::<f64>()
+                .ok();
+            if let Some(project) = self.aec_project_explorer_file.as_mut() {
+                if let Some(storey) = project
+                    .buildings
+                    .get_mut(bi)
+                    .and_then(|b| b.storeys.get_mut(si))
+                {
+                    storey.name = name;
+                    storey.drawing_path = drawing;
+                    if let Some(value) = elevation {
+                        storey.elevation = value;
+                    }
+                }
+            }
+        }
+    }
+
     fn aec_style_manager_wall_style_save_internal(
         &mut self,
     ) -> Option<(String, crate::modules::aec::engine::library::StyleLibrary)> {
@@ -2059,6 +2096,7 @@ impl OpenCADStudio {
                 Task::none()
             }
             Message::AecProjectExplorerSave => {
+                self.aec_project_explorer_apply_pending_edits();
                 if self.aec_project_explorer_path.is_some() {
                     self.aec_project_explorer_persist();
                     Task::none()
@@ -2081,6 +2119,7 @@ impl OpenCADStudio {
             ),
             Message::AecProjectExplorerSaveAsResult(None) => Task::none(),
             Message::AecProjectExplorerSaveAsResult(Some(path)) => {
+                self.aec_project_explorer_apply_pending_edits();
                 self.aec_project_explorer_path = Some(path);
                 self.aec_project_explorer_persist();
                 Task::none()
