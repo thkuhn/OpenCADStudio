@@ -164,7 +164,7 @@ fn project_tree<'a>(
     let sidebar = column![
         scrollable(tree).height(Fill),
         add_building_form(state.new_building_name),
-        add_storey_form(state),
+        add_storey_form(project, state),
     ]
     .spacing(10)
     .width(Fill);
@@ -330,6 +330,7 @@ fn storey_row<'a>(
 
 fn add_building_form<'a>(name: &'a str) -> Element<'a, Message> {
     column![
+        Space::new().height(6),
         section_title(t!("Add Building")),
         row![
             text_input(t!("Building name").as_ref(), name)
@@ -346,13 +347,16 @@ fn add_building_form<'a>(name: &'a str) -> Element<'a, Message> {
     .into()
 }
 
-fn add_storey_form<'a>(state: &ProjectExplorerState<'a>) -> Element<'a, Message> {
-    let building_hint = match state.selected_building {
-        Some(i) => t!("Adding to building #{n}", n = i + 1).into_owned(),
+fn add_storey_form<'a>(project: &'a ProjectFile, state: &ProjectExplorerState<'a>) -> Element<'a, Message> {
+    let building_hint = match state.selected_building.and_then(|i| project.buildings.get(i)) {
+        Some(building) => {
+            t!("Adding to building \"%{name}\"", name = building.name.as_str()).into_owned()
+        }
         None => t!("Select a building first").into_owned(),
     };
 
     column![
+        Space::new().height(6),
         section_title(t!("Add Storey")),
         text(building_hint).size(10).style(muted),
         row![
