@@ -2339,6 +2339,10 @@ pub enum Message {
     AecProjectExplorerOpenStorey(usize, usize),
     /// Append a building using the name buffer.
     AecProjectExplorerAddBuilding,
+    /// Rename the building at this index (live-edited from the tree).
+    AecProjectExplorerRenameBuilding(usize, String),
+    /// Rename the storey at `(building_idx, storey_idx)` (live-edited from the tree).
+    AecProjectExplorerRenameStorey(usize, usize, String),
     /// Append a storey to the selected building using the form buffers.
     AecProjectExplorerAddStorey,
     AecProjectExplorerNewBuildingNameChanged(String),

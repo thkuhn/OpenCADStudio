@@ -108,7 +108,7 @@ fn building_row<'a>(
     // Highlight when this building is the explicit selection (not a storey row).
     let selected = state.selected_building == Some(bi) && state.selected_storey.is_none();
 
-    button(
+    let label_row = button(
         row![
             text("▸").size(11).style(muted),
             text(building.name.as_str()).size(12),
@@ -123,7 +123,29 @@ fn building_row<'a>(
     .on_press(Message::AecProjectExplorerSelectBuilding(bi))
     .style(list_style(selected))
     .padding([6, 9])
-    .width(Fill)
+    .width(Fill);
+
+    if !selected {
+        return label_row.into();
+    }
+
+    // Selected: show an inline rename field below the row (avoids nesting a
+    // text_input inside a button, which iced doesn't support well).
+    column![
+        label_row,
+        row![
+            Space::new().width(20),
+            text(t!("Name")).size(10).style(muted),
+            text_input("", building.name.as_str())
+                .on_input(move |v| Message::AecProjectExplorerRenameBuilding(bi, v))
+                .size(11)
+                .padding([3, 6])
+                .width(Fill),
+        ]
+        .spacing(8)
+        .align_y(iced::Center),
+    ]
+    .spacing(3)
     .into()
 }
 
@@ -137,7 +159,7 @@ fn storey_row<'a>(
     let elev = format!("{:.3}", storey.elevation);
 
     // Row + separate Open button (no nested buttons — iced dislikes that).
-    row![
+    let label_row = row![
         button(
             row![
                 Space::new().width(14),
@@ -163,7 +185,28 @@ fn storey_row<'a>(
             .on_press(Message::AecProjectExplorerOpenStorey(bi, si)),
     ]
     .spacing(6)
-    .align_y(iced::Center)
+    .align_y(iced::Center);
+
+    if !selected {
+        return label_row.into();
+    }
+
+    // Selected: show an inline rename field below the row.
+    column![
+        label_row,
+        row![
+            Space::new().width(28),
+            text(t!("Name")).size(10).style(muted),
+            text_input("", storey.name.as_str())
+                .on_input(move |v| Message::AecProjectExplorerRenameStorey(bi, si, v))
+                .size(11)
+                .padding([3, 6])
+                .width(Fill),
+        ]
+        .spacing(8)
+        .align_y(iced::Center),
+    ]
+    .spacing(3)
     .into()
 }
 

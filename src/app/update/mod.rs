@@ -2139,6 +2139,28 @@ impl OpenCADStudio {
                 self.aec_project_explorer_persist_if_pathed();
                 Task::none()
             }
+            Message::AecProjectExplorerRenameBuilding(bi, name) => {
+                if let Some(project) = self.aec_project_explorer_file.as_mut() {
+                    if let Some(building) = project.buildings.get_mut(bi) {
+                        building.name = name;
+                    }
+                }
+                self.aec_project_explorer_persist_if_pathed();
+                Task::none()
+            }
+            Message::AecProjectExplorerRenameStorey(bi, si, name) => {
+                if let Some(project) = self.aec_project_explorer_file.as_mut() {
+                    if let Some(storey) = project
+                        .buildings
+                        .get_mut(bi)
+                        .and_then(|b| b.storeys.get_mut(si))
+                    {
+                        storey.name = name;
+                    }
+                }
+                self.aec_project_explorer_persist_if_pathed();
+                Task::none()
+            }
             Message::AecProjectExplorerAddStorey => {
                 let Some(bi) = self.aec_project_explorer_selected_building else {
                     self.command_line.push_info(
