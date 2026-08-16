@@ -1051,6 +1051,9 @@ pub(super) struct OpenCADStudio {
     aec_project_explorer_new_storey_name: String,
     aec_project_explorer_new_storey_elevation: String,
     aec_project_explorer_new_storey_drawing: String,
+    /// Live text buffer for the elevation field of the currently selected
+    /// storey (kept as text so intermediate typing like "3." isn't rejected).
+    aec_project_explorer_edit_elevation: String,
     /// A pending delete awaiting user confirmation (building or storey), so a
     /// misclick on "Delete" cannot silently drop project structure/files.
     aec_project_explorer_pending_delete: Option<AecProjectExplorerDeleteTarget>,
@@ -2354,6 +2357,10 @@ pub enum Message {
     AecProjectExplorerRenameBuilding(usize, String),
     /// Rename the storey at `(building_idx, storey_idx)` (live-edited from the tree).
     AecProjectExplorerRenameStorey(usize, usize, String),
+    /// Live-edit the elevation text of the storey at `(building_idx, storey_idx)`.
+    AecProjectExplorerEditStoreyElevation(usize, usize, String),
+    /// Live-edit the drawing path of the storey at `(building_idx, storey_idx)`.
+    AecProjectExplorerEditStoreyDrawing(usize, usize, String),
     /// Ask for confirmation before deleting the building at this index (and
     /// all its storeys) — sets the pending-delete state shown inline.
     AecProjectExplorerRequestDeleteBuilding(usize),
@@ -3639,6 +3646,7 @@ impl OpenCADStudio {
             aec_project_explorer_new_storey_name: String::new(),
             aec_project_explorer_new_storey_elevation: String::from("0.0"),
             aec_project_explorer_new_storey_drawing: String::new(),
+            aec_project_explorer_edit_elevation: String::new(),
             aec_project_explorer_pending_delete: None,
             scale_manager_selected: String::new(),
             scale_manager_paper_buf: String::new(),

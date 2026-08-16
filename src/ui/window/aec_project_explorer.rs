@@ -23,6 +23,8 @@ pub struct ProjectExplorerState<'a> {
     pub new_storey_name: &'a str,
     pub new_storey_elevation: &'a str,
     pub new_storey_drawing: &'a str,
+    /// Live text buffer for the elevation field of the currently selected storey.
+    pub edit_elevation: &'a str,
     /// A delete awaiting confirmation, rendered as an inline Yes/No prompt.
     pub pending_delete: Option<AecProjectExplorerDeleteTarget>,
 }
@@ -259,12 +261,12 @@ fn storey_row<'a>(
         return label_row.into();
     }
 
-    // Selected: show an inline rename field below the row.
+    // Selected: show inline fields to edit name, elevation and drawing path.
     column![
         label_row,
         row![
             Space::new().width(28),
-            text(t!("Name")).size(10).style(muted),
+            text(t!("Name")).size(10).style(muted).width(60),
             text_input("", storey.name.as_str())
                 .on_input(move |v| Message::AecProjectExplorerRenameStorey(bi, si, v))
                 .size(11)
@@ -274,6 +276,28 @@ fn storey_row<'a>(
                 .style(button::danger)
                 .padding([3, 8])
                 .on_press(Message::AecProjectExplorerRequestDeleteStorey(bi, si)),
+        ]
+        .spacing(8)
+        .align_y(iced::Center),
+        row![
+            Space::new().width(28),
+            text(t!("Elevation")).size(10).style(muted).width(60),
+            text_input("0.0", state.edit_elevation)
+                .on_input(move |v| Message::AecProjectExplorerEditStoreyElevation(bi, si, v))
+                .size(11)
+                .padding([3, 6])
+                .width(Fill),
+        ]
+        .spacing(8)
+        .align_y(iced::Center),
+        row![
+            Space::new().width(28),
+            text(t!("Drawing")).size(10).style(muted).width(60),
+            text_input("", storey.drawing_path.as_str())
+                .on_input(move |v| Message::AecProjectExplorerEditStoreyDrawing(bi, si, v))
+                .size(11)
+                .padding([3, 6])
+                .width(Fill),
         ]
         .spacing(8)
         .align_y(iced::Center),

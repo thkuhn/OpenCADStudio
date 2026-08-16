@@ -2093,6 +2093,13 @@ impl OpenCADStudio {
             Message::AecProjectExplorerSelectStorey(bi, si) => {
                 self.aec_project_explorer_selected_building = Some(bi);
                 self.aec_project_explorer_selected_storey = Some((bi, si));
+                self.aec_project_explorer_edit_elevation = self
+                    .aec_project_explorer_file
+                    .as_ref()
+                    .and_then(|p| p.buildings.get(bi))
+                    .and_then(|b| b.storeys.get(si))
+                    .map(|s| format!("{:.3}", s.elevation))
+                    .unwrap_or_default();
                 Task::none()
             }
             Message::AecProjectExplorerOpenStorey(bi, si) => {
@@ -2156,6 +2163,35 @@ impl OpenCADStudio {
                         .and_then(|b| b.storeys.get_mut(si))
                     {
                         storey.name = name;
+                    }
+                }
+                self.aec_project_explorer_persist_if_pathed();
+                Task::none()
+            }
+            Message::AecProjectExplorerEditStoreyElevation(bi, si, text) => {
+                self.aec_project_explorer_edit_elevation = text.clone();
+                if let Ok(value) = text.trim().parse::<f64>() {
+                    if let Some(project) = self.aec_project_explorer_file.as_mut() {
+                        if let Some(storey) = project
+                            .buildings
+                            .get_mut(bi)
+                            .and_then(|b| b.storeys.get_mut(si))
+                        {
+                            storey.elevation = value;
+                        }
+                    }
+                    self.aec_project_explorer_persist_if_pathed();
+                }
+                Task::none()
+            }
+            Message::AecProjectExplorerEditStoreyDrawing(bi, si, text) => {
+                if let Some(project) = self.aec_project_explorer_file.as_mut() {
+                    if let Some(storey) = project
+                        .buildings
+                        .get_mut(bi)
+                        .and_then(|b| b.storeys.get_mut(si))
+                    {
+                        storey.drawing_path = text;
                     }
                 }
                 self.aec_project_explorer_persist_if_pathed();
