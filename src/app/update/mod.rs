@@ -2183,7 +2183,24 @@ impl OpenCADStudio {
                 self.aec_style_library =
                     Some(crate::modules::aec::engine::library::load_or_seed());
                 self.aec_style_picker_filter.clear();
-                self.aec_style_picker_selection = None;
+                // Pre-select/highlight whatever is already assigned for this
+                // target so the picker doesn't reopen with nothing
+                // highlighted even though a value is already in use.
+                self.aec_style_picker_selection = match target {
+                    crate::app::StylePickerTarget::WallStyleParent => {
+                        self.aec_style_manager_wall_style_parent.clone()
+                    }
+                    crate::app::StylePickerTarget::LayerMaterial(index) => self
+                        .aec_style_manager_wall_style_layers
+                        .get(index)
+                        .map(|l| l.material_id.clone()),
+                    crate::app::StylePickerTarget::LayerOverride(index) => self
+                        .aec_style_manager_wall_style_layers
+                        .get(index)
+                        .map(|l| l.layer_override.clone()),
+                    crate::app::StylePickerTarget::WallPropertiesStyle
+                    | crate::app::StylePickerTarget::ActiveCommand => None,
+                };
                 self.active_modal = Some(crate::app::ModalKind::AecStylePicker { target });
                 Task::none()
             }
@@ -2283,6 +2300,24 @@ impl OpenCADStudio {
             }
             Message::AecStylePickerSelect(id) => {
                 self.aec_style_picker_selection = Some(id);
+                Task::none()
+            }
+            Message::AecStylePickerCancel => {
+                // Targets opened from within the Wall Style Manager return
+                // there on cancel, instead of closing the modal entirely.
+                if let Some(crate::app::ModalKind::AecStylePicker { target }) = self.active_modal
+                {
+                    if matches!(
+                        target,
+                        crate::app::StylePickerTarget::WallStyleParent
+                            | crate::app::StylePickerTarget::LayerMaterial(_)
+                            | crate::app::StylePickerTarget::LayerOverride(_)
+                    ) {
+                        self.active_modal = Some(crate::app::ModalKind::AecWallStyleManager);
+                        return Task::none();
+                    }
+                }
+                self.close_active_modal();
                 Task::none()
             }
             Message::AecStylePickerConfirm => {

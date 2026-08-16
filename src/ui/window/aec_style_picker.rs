@@ -113,9 +113,9 @@ pub fn view_window<'a>(
                 .chain(all_layer_names.into_iter())
                 .filter(|name| query.is_empty() || name.to_lowercase().contains(&query))
                 .map(|name| {
-                    let is_selected = selection == Some(name.as_str()) 
-                        || (selection.is_none() && name == default_label);
                     let value = if name == default_label { String::new() } else { name.clone() };
+                    let is_selected = selection == Some(value.as_str())
+                        || (selection.is_none() && name == default_label);
                     button(text(name).size(12))
                         .on_press(Message::AecStylePickerSelect(value))
                         .style(list_style(is_selected))
@@ -134,7 +134,7 @@ pub fn view_window<'a>(
             Space::new().width(Fill),
             button(text("✕").size(12))
                 .style(button::subtle)
-                .on_press(Message::CloseModal),
+                .on_press(Message::AecStylePickerCancel),
         ]
         .align_y(Alignment::Center),
         text_input(t!("Search...").as_ref(), filter)
@@ -247,7 +247,7 @@ pub fn view_window<'a>(
             button(text(t!("Cancel")).size(12))
                 .style(button::subtle)
                 .padding([6, 12])
-                .on_press(Message::CloseModal),
+                .on_press(Message::AecStylePickerCancel),
             button(text(t!("Select")).size(12))
                 .style(button::primary)
                 .padding([6, 12])

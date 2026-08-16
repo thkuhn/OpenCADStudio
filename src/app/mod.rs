@@ -2292,6 +2292,11 @@ pub enum Message {
     AecStylePickerSelect(String),
     /// Confirm selection in the AEC Style Picker.
     AecStylePickerConfirm,
+    /// Cancel the AEC Style Picker without applying a selection. For
+    /// targets opened from within the Wall Style Manager (parent style,
+    /// layer material, layer override) this returns to the manager instead
+    /// of closing the modal entirely.
+    AecStylePickerCancel,
     /// ViewCube-local cursor movement, tagged with the floating viewport that
     /// owned the overlay when the event was produced (`None` = Model layout).
     CursorMoved(Point, Option<acadrust::Handle>),
