@@ -2088,18 +2088,29 @@ impl OpenCADStudio {
             Message::AecProjectExplorerSelectBuilding(bi) => {
                 self.aec_project_explorer_selected_building = Some(bi);
                 self.aec_project_explorer_selected_storey = None;
+                self.aec_project_explorer_edit_building_name = self
+                    .aec_project_explorer_file
+                    .as_ref()
+                    .and_then(|p| p.buildings.get(bi))
+                    .map(|b| b.name.clone())
+                    .unwrap_or_default();
                 Task::none()
             }
             Message::AecProjectExplorerSelectStorey(bi, si) => {
                 self.aec_project_explorer_selected_building = Some(bi);
                 self.aec_project_explorer_selected_storey = Some((bi, si));
-                self.aec_project_explorer_edit_elevation = self
+                let storey = self
                     .aec_project_explorer_file
                     .as_ref()
                     .and_then(|p| p.buildings.get(bi))
-                    .and_then(|b| b.storeys.get(si))
+                    .and_then(|b| b.storeys.get(si));
+                self.aec_project_explorer_edit_storey_name =
+                    storey.map(|s| s.name.clone()).unwrap_or_default();
+                self.aec_project_explorer_edit_elevation = storey
                     .map(|s| format!("{:.3}", s.elevation))
                     .unwrap_or_default();
+                self.aec_project_explorer_edit_storey_drawing =
+                    storey.map(|s| s.drawing_path.clone()).unwrap_or_default();
                 Task::none()
             }
             Message::AecProjectExplorerOpenStorey(bi, si) => {
@@ -2146,7 +2157,12 @@ impl OpenCADStudio {
                 self.aec_project_explorer_persist_if_pathed();
                 Task::none()
             }
-            Message::AecProjectExplorerRenameBuilding(bi, name) => {
+            Message::AecProjectExplorerEditBuildingName(_bi, name) => {
+                self.aec_project_explorer_edit_building_name = name;
+                Task::none()
+            }
+            Message::AecProjectExplorerSaveBuildingEdits(bi) => {
+                let name = self.aec_project_explorer_edit_building_name.clone();
                 if let Some(project) = self.aec_project_explorer_file.as_mut() {
                     if let Some(building) = project.buildings.get_mut(bi) {
                         building.name = name;
@@ -2155,7 +2171,22 @@ impl OpenCADStudio {
                 self.aec_project_explorer_persist_if_pathed();
                 Task::none()
             }
-            Message::AecProjectExplorerRenameStorey(bi, si, name) => {
+            Message::AecProjectExplorerEditStoreyName(_bi, _si, name) => {
+                self.aec_project_explorer_edit_storey_name = name;
+                Task::none()
+            }
+            Message::AecProjectExplorerEditStoreyElevation(_bi, _si, text) => {
+                self.aec_project_explorer_edit_elevation = text;
+                Task::none()
+            }
+            Message::AecProjectExplorerEditStoreyDrawing(_bi, _si, text) => {
+                self.aec_project_explorer_edit_storey_drawing = text;
+                Task::none()
+            }
+            Message::AecProjectExplorerSaveStoreyEdits(bi, si) => {
+                let name = self.aec_project_explorer_edit_storey_name.clone();
+                let drawing = self.aec_project_explorer_edit_storey_drawing.clone();
+                let elevation = self.aec_project_explorer_edit_elevation.trim().parse::<f64>().ok();
                 if let Some(project) = self.aec_project_explorer_file.as_mut() {
                     if let Some(storey) = project
                         .buildings
@@ -2163,35 +2194,10 @@ impl OpenCADStudio {
                         .and_then(|b| b.storeys.get_mut(si))
                     {
                         storey.name = name;
-                    }
-                }
-                self.aec_project_explorer_persist_if_pathed();
-                Task::none()
-            }
-            Message::AecProjectExplorerEditStoreyElevation(bi, si, text) => {
-                self.aec_project_explorer_edit_elevation = text.clone();
-                if let Ok(value) = text.trim().parse::<f64>() {
-                    if let Some(project) = self.aec_project_explorer_file.as_mut() {
-                        if let Some(storey) = project
-                            .buildings
-                            .get_mut(bi)
-                            .and_then(|b| b.storeys.get_mut(si))
-                        {
+                        storey.drawing_path = drawing;
+                        if let Some(value) = elevation {
                             storey.elevation = value;
                         }
-                    }
-                    self.aec_project_explorer_persist_if_pathed();
-                }
-                Task::none()
-            }
-            Message::AecProjectExplorerEditStoreyDrawing(bi, si, text) => {
-                if let Some(project) = self.aec_project_explorer_file.as_mut() {
-                    if let Some(storey) = project
-                        .buildings
-                        .get_mut(bi)
-                        .and_then(|b| b.storeys.get_mut(si))
-                    {
-                        storey.drawing_path = text;
                     }
                 }
                 self.aec_project_explorer_persist_if_pathed();

@@ -1051,9 +1051,19 @@ pub(super) struct OpenCADStudio {
     aec_project_explorer_new_storey_name: String,
     aec_project_explorer_new_storey_elevation: String,
     aec_project_explorer_new_storey_drawing: String,
+    /// Live edit buffer for the name of the currently selected building —
+    /// only applied to the project when the user presses "Speichern".
+    aec_project_explorer_edit_building_name: String,
+    /// Live edit buffer for the name of the currently selected storey — only
+    /// applied to the project when the user presses "Speichern".
+    aec_project_explorer_edit_storey_name: String,
     /// Live text buffer for the elevation field of the currently selected
     /// storey (kept as text so intermediate typing like "3." isn't rejected).
+    /// Only applied to the project when the user presses "Speichern".
     aec_project_explorer_edit_elevation: String,
+    /// Live edit buffer for the drawing path of the currently selected storey
+    /// — only applied to the project when the user presses "Speichern".
+    aec_project_explorer_edit_storey_drawing: String,
     /// A pending delete awaiting user confirmation (building or storey), so a
     /// misclick on "Delete" cannot silently drop project structure/files.
     aec_project_explorer_pending_delete: Option<AecProjectExplorerDeleteTarget>,
@@ -2353,14 +2363,18 @@ pub enum Message {
     AecProjectExplorerOpenStorey(usize, usize),
     /// Append a building using the name buffer.
     AecProjectExplorerAddBuilding,
-    /// Rename the building at this index (live-edited from the tree).
-    AecProjectExplorerRenameBuilding(usize, String),
-    /// Rename the storey at `(building_idx, storey_idx)` (live-edited from the tree).
-    AecProjectExplorerRenameStorey(usize, usize, String),
-    /// Live-edit the elevation text of the storey at `(building_idx, storey_idx)`.
+    /// Live-edit the name buffer for the building at this index (not yet applied).
+    AecProjectExplorerEditBuildingName(usize, String),
+    /// Apply the building-name edit buffer to the project and persist it.
+    AecProjectExplorerSaveBuildingEdits(usize),
+    /// Live-edit the name buffer for the storey at `(building_idx, storey_idx)` (not yet applied).
+    AecProjectExplorerEditStoreyName(usize, usize, String),
+    /// Live-edit the elevation text buffer of the storey at `(building_idx, storey_idx)` (not yet applied).
     AecProjectExplorerEditStoreyElevation(usize, usize, String),
-    /// Live-edit the drawing path of the storey at `(building_idx, storey_idx)`.
+    /// Live-edit the drawing path buffer of the storey at `(building_idx, storey_idx)` (not yet applied).
     AecProjectExplorerEditStoreyDrawing(usize, usize, String),
+    /// Apply the storey name/elevation/drawing edit buffers to the project and persist them.
+    AecProjectExplorerSaveStoreyEdits(usize, usize),
     /// Ask for confirmation before deleting the building at this index (and
     /// all its storeys) — sets the pending-delete state shown inline.
     AecProjectExplorerRequestDeleteBuilding(usize),
@@ -3646,7 +3660,10 @@ impl OpenCADStudio {
             aec_project_explorer_new_storey_name: String::new(),
             aec_project_explorer_new_storey_elevation: String::from("0.0"),
             aec_project_explorer_new_storey_drawing: String::new(),
+            aec_project_explorer_edit_building_name: String::new(),
+            aec_project_explorer_edit_storey_name: String::new(),
             aec_project_explorer_edit_elevation: String::new(),
+            aec_project_explorer_edit_storey_drawing: String::new(),
             aec_project_explorer_pending_delete: None,
             scale_manager_selected: String::new(),
             scale_manager_paper_buf: String::new(),

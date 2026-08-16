@@ -23,8 +23,14 @@ pub struct ProjectExplorerState<'a> {
     pub new_storey_name: &'a str,
     pub new_storey_elevation: &'a str,
     pub new_storey_drawing: &'a str,
+    /// Live edit buffer for the name of the currently selected building.
+    pub edit_building_name: &'a str,
+    /// Live edit buffer for the name of the currently selected storey.
+    pub edit_storey_name: &'a str,
     /// Live text buffer for the elevation field of the currently selected storey.
     pub edit_elevation: &'a str,
+    /// Live edit buffer for the drawing path of the currently selected storey.
+    pub edit_storey_drawing: &'a str,
     /// A delete awaiting confirmation, rendered as an inline Yes/No prompt.
     pub pending_delete: Option<AecProjectExplorerDeleteTarget>,
 }
@@ -195,18 +201,23 @@ fn building_row<'a>(
         return label_row.into();
     }
 
-    // Selected: show an inline rename field below the row (avoids nesting a
-    // text_input inside a button, which iced doesn't support well).
+    // Selected: show an inline edit field below the row (avoids nesting a
+    // text_input inside a button, which iced doesn't support well). Changes
+    // are only applied/persisted when "Speichern" is pressed.
     column![
         label_row,
         row![
             Space::new().width(20),
             text(t!("Name")).size(10).style(muted),
-            text_input("", building.name.as_str())
-                .on_input(move |v| Message::AecProjectExplorerRenameBuilding(bi, v))
+            text_input("", state.edit_building_name)
+                .on_input(move |v| Message::AecProjectExplorerEditBuildingName(bi, v))
                 .size(11)
                 .padding([3, 6])
                 .width(Fill),
+            button(text(t!("Save")).size(10))
+                .style(button::primary)
+                .padding([3, 8])
+                .on_press(Message::AecProjectExplorerSaveBuildingEdits(bi)),
             button(text(t!("Delete")).size(10))
                 .style(button::danger)
                 .padding([3, 8])
@@ -262,13 +273,14 @@ fn storey_row<'a>(
     }
 
     // Selected: show inline fields to edit name, elevation and drawing path.
+    // Nothing is applied/persisted until "Speichern" is pressed.
     column![
         label_row,
         row![
             Space::new().width(28),
             text(t!("Name")).size(10).style(muted).width(60),
-            text_input("", storey.name.as_str())
-                .on_input(move |v| Message::AecProjectExplorerRenameStorey(bi, si, v))
+            text_input("", state.edit_storey_name)
+                .on_input(move |v| Message::AecProjectExplorerEditStoreyName(bi, si, v))
                 .size(11)
                 .padding([3, 6])
                 .width(Fill),
@@ -293,11 +305,21 @@ fn storey_row<'a>(
         row![
             Space::new().width(28),
             text(t!("Drawing")).size(10).style(muted).width(60),
-            text_input("", storey.drawing_path.as_str())
+            text_input("", state.edit_storey_drawing)
                 .on_input(move |v| Message::AecProjectExplorerEditStoreyDrawing(bi, si, v))
                 .size(11)
                 .padding([3, 6])
                 .width(Fill),
+        ]
+        .spacing(8)
+        .align_y(iced::Center),
+        row![
+            Space::new().width(28),
+            Space::new().width(60),
+            button(text(t!("Save")).size(10))
+                .style(button::primary)
+                .padding([3, 10])
+                .on_press(Message::AecProjectExplorerSaveStoreyEdits(bi, si)),
         ]
         .spacing(8)
         .align_y(iced::Center),
