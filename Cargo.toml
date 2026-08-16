@@ -47,6 +47,7 @@ ttf-parser = "0.25"
 cosmic-text = "0.15"
 lyon_tessellation = "1.0.20"
 evalexpr = "13"
+uuid = { version = "1.24.1", features = ["v4", "serde"] }
 
 [dev-dependencies]
 naga = { version = "27", features = ["wgsl-in"] }

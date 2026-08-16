@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use std::fs;
 use std::io;
 use std::path::Path;
-use std::sync::atomic::{AtomicU64, Ordering};
+use uuid::Uuid;
 
 /// Generates a unique id for a new `Building`/`StoreyRef`.
 ///
@@ -17,23 +17,11 @@ use std::sync::atomic::{AtomicU64, Ordering};
 /// identifies an element for rename/delete/select operations, independent
 /// of its current position in the list or its display name.
 ///
-/// Seeded from the current time on first use so ids stay unique-enough
-/// across process restarts, then simply incremented for the rest of the
-/// process lifetime.
-fn new_entity_id() -> u64 {
-    static NEXT_ID: AtomicU64 = AtomicU64::new(0);
-    if NEXT_ID.load(Ordering::Relaxed) == 0 {
-        use std::time::{SystemTime, UNIX_EPOCH};
-        let seed = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map(|d| d.as_nanos() as u64)
-            .unwrap_or(1)
-            .max(1);
-        // If another thread already seeded it, this just loses the race
-        // harmlessly (both values are equally valid, unique-enough seeds).
-        let _ = NEXT_ID.compare_exchange(0, seed, Ordering::Relaxed, Ordering::Relaxed);
-    }
-    NEXT_ID.fetch_add(1, Ordering::Relaxed)
+/// A random (v4) UUID is used so ids stay globally unique even across
+/// different machines/processes (e.g. project files merged/copied between
+/// users), unlike a simple process-local counter.
+fn new_entity_id() -> Uuid {
+    Uuid::new_v4()
 }
 
 /// Top-level OpenCADStudio project (`.ocsproj` JSON).
@@ -46,7 +34,7 @@ pub struct ProjectFile {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Building {
     /// Stable identity, unrelated to `name` — see `new_entity_id()`.
-    pub id: u64,
+    pub id: Uuid,
     pub name: String,
     pub storeys: Vec<StoreyRef>,
 }
@@ -62,7 +50,7 @@ impl Building {
     }
 
     /// Finds the index of the storey with the given `id`, if present.
-    pub fn storey_index(&self, id: u64) -> Option<usize> {
+    pub fn storey_index(&self, id: Uuid) -> Option<usize> {
         self.storeys.iter().position(|s| s.id == id)
     }
 }
@@ -71,7 +59,7 @@ impl Building {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct StoreyRef {
     /// Stable identity, unrelated to `name` — see `new_entity_id()`.
-    pub id: u64,
+    pub id: Uuid,
     pub name: String,
     pub elevation: f64,
     pub drawing_path: String,
@@ -91,7 +79,7 @@ impl StoreyRef {
 
 impl ProjectFile {
     /// Finds the index of the building with the given `id`, if present.
-    pub fn building_index(&self, id: u64) -> Option<usize> {
+    pub fn building_index(&self, id: Uuid) -> Option<usize> {
         self.buildings.iter().position(|b| b.id == id)
     }
 

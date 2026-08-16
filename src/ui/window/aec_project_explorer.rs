@@ -14,9 +14,9 @@ pub struct ProjectExplorerState<'a> {
     /// Absolute (or last-known) path of the loaded/saved `.ocsproj`, if any.
     pub path: Option<&'a std::path::Path>,
     /// Currently selected building, by its stable id (sidebar highlight).
-    pub selected_building: Option<u64>,
+    pub selected_building: Option<uuid::Uuid>,
     /// Currently selected storey as `(building_id, storey_id)`.
-    pub selected_storey: Option<(u64, u64)>,
+    pub selected_storey: Option<(uuid::Uuid, uuid::Uuid)>,
     /// "Add building" name buffer.
     pub new_building_name: &'a str,
     /// "Add storey" form buffers.
@@ -233,7 +233,7 @@ fn building_row<'a>(
 }
 
 fn storey_row<'a>(
-    bid: u64,
+    bid: uuid::Uuid,
     storey: &'a StoreyRef,
     state: &ProjectExplorerState<'a>,
 ) -> Element<'a, Message> {
