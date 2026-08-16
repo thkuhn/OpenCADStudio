@@ -821,12 +821,6 @@ impl OpenCADStudio {
                 );
                 self.tabs[i].dirty = true;
             }
-            "AEC_STOREY" => {
-                crate::modules::aec::commands::aec_storey(
-                    &mut self.tabs[i].scene,
-                    &mut self.command_line,
-                );
-            }
             "AEC_WALL_REFRESH" => {
                 crate::modules::aec::commands::aec_wall_refresh(
                     &mut self.tabs[i].scene,
