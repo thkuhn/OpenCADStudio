@@ -773,6 +773,9 @@ impl PropertiesPanel {
             PropValue::Picker { value, handles } => {
                 render_picker_row(label, value, handles.clone())
             }
+            PropValue::EntityRef { display, handle } => {
+                render_entity_ref_row(label, display, *handle)
+            }
             PropValue::HatchPatternChoice(current) => {
                 self.render_hatch_pattern_row(label, current)
             }
@@ -1745,7 +1748,10 @@ fn coord_group_len(props: &[crate::scene::model::object::Property], idx: usize) 
     let groupable = |p: &crate::scene::model::object::Property| {
         matches!(
             p.value,
-            PropValue::EditText(_) | PropValue::ReadOnly(_) | PropValue::Picker { .. }
+            PropValue::EditText(_)
+                | PropValue::ReadOnly(_)
+                | PropValue::Picker { .. }
+                | PropValue::EntityRef { .. }
         )
     };
     let Some((base, 0)) = coord_suffix(&props[idx].label) else {
@@ -1785,9 +1791,10 @@ fn coord_component(label: &str) -> &'static str {
 /// EditText / ReadOnly — see `coord_group_len`).
 fn prop_text_value(prop: &crate::scene::model::object::Property) -> String {
     match &prop.value {
-        PropValue::EditText(s) | PropValue::ReadOnly(s) | PropValue::Picker { value: s, .. } => {
-            s.clone()
-        }
+        PropValue::EditText(s)
+        | PropValue::ReadOnly(s)
+        | PropValue::Picker { value: s, .. }
+        | PropValue::EntityRef { display: s, .. } => s.clone(),
         _ => String::new(),
     }
 }
@@ -1899,6 +1906,28 @@ fn render_ro_row<'a>(label: &'a str, value: &'a str) -> Element<'a, Message> {
     // (carrying the full, un-truncated value) and copied with Ctrl+C.
     let field = crate::ui::read_only::field(value, FONT_SZ, Length::Fill);
     prop_row_widget(label, field)
+}
+
+/// Clickable entity-handle reference row (select + zoom on press).
+fn render_entity_ref_row<'a>(
+    label: &'a str,
+    display: &'a str,
+    handle: acadrust::Handle,
+) -> Element<'a, Message> {
+    let btn = button(
+        row![
+            text(crate::ui::text_util::elide(display, 28)).size(FONT_SZ),
+            Space::new().width(Length::Fill),
+            text("→").size(FONT_SZ),
+        ]
+        .padding([0, 4])
+        .align_y(iced::Alignment::Center),
+    )
+    .on_press(Message::SelectAndZoomTo(handle))
+    .style(button::subtle)
+    .padding(0)
+    .width(Length::Fill);
+    prop_row_widget(label, btn.into())
 }
 
 /// Build a label | widget property row.

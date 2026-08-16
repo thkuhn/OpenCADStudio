@@ -2080,7 +2080,7 @@ pub(super) fn on_tab_close(&mut self, idx: usize) -> Task<Message> {
                             }
                         }
                     } else if field == "wall_justification" {
-                        // Justification pick on a WALL_V2 wall: shift the axis
+                        // Justification pick on a WALL wall: shift the axis
                         // sideways by the delta between the old and new
                         // offsets (same math as `WallCommand::build_entity`)
                         // and regenerate the contour/hatch/solid layers.
@@ -2248,81 +2248,25 @@ pub(super) fn on_tab_close(&mut self, idx: usize) -> Task<Message> {
                                     }
                                     "wall_height" | "wall_thickness" | "wall_material" => {
                                         // AEC wall properties live in `WALL`
-                                        // (or `WALL_V2`) XDATA, not entity
-                                        // fields — read the current record,
-                                        // patch the edited value and write it
-                                        // back. `WALL_V2` walls only support
-                                        // editing the overall height here
-                                        // (thickness/material are per-layer,
-                                        // edited via the AEC Style Manager).
+                                        // XDATA. Height is editable here;
+                                        // thickness/material are per-layer and
+                                        // edited via the AEC Style Manager.
                                         if field == "wall_height" {
-                                            let is_v2 = self.tabs[i]
-                                                .scene
-                                                .document
-                                                .get_entity(handle)
-                                                .and_then(crate::modules::aec::commands::wall_v2_from_entity)
-                                                .is_some();
-                                            if is_v2 {
-                                                if let Some(v) =
-                                                    crate::entities::common::parse_f64(&val)
-                                                {
-                                                    if v > 0.0 {
-                                                        crate::modules::aec::commands::write_wall_v2_height(
-                                                            &mut self.tabs[i].scene,
-                                                            handle,
-                                                            v,
-                                                        );
-                                                        let _ = crate::modules::aec::commands::regenerate_wall_representation(
-                                                            &mut self.tabs[i].scene,
-                                                            handle,
-                                                        );
-                                                    }
-                                                }
-                                                continue;
-                                            }
-                                        }
-                                        let wall = self.tabs[i]
-                                            .scene
-                                            .document
-                                            .get_entity(handle)
-                                            .and_then(crate::modules::aec::commands::wall_from_entity);
-                                        if let Some(mut wall) = wall {
-                                            match field {
-                                                "wall_height" => {
-                                                    if let Some(v) =
-                                                        crate::entities::common::parse_f64(&val)
-                                                    {
-                                                        if v > 0.0 {
-                                                            wall.height = v;
-                                                        }
-                                                    }
-                                                }
-                                                "wall_thickness" => {
-                                                    if let Some(v) =
-                                                        crate::entities::common::parse_f64(&val)
-                                                    {
-                                                        if v > 0.0 {
-                                                            wall.thickness = v;
-                                                        }
-                                                    }
-                                                }
-                                                _ => {
-                                                    wall.material_ref = if val.trim().is_empty() {
-                                                        None
-                                                    } else {
-                                                        Some(val.trim().to_string())
-                                                    };
+                                            if let Some(v) =
+                                                crate::entities::common::parse_f64(&val)
+                                            {
+                                                if v > 0.0 {
+                                                    crate::modules::aec::commands::write_wall_height(
+                                                        &mut self.tabs[i].scene,
+                                                        handle,
+                                                        v,
+                                                    );
+                                                    let _ = crate::modules::aec::commands::regenerate_wall_representation(
+                                                        &mut self.tabs[i].scene,
+                                                        handle,
+                                                    );
                                                 }
                                             }
-                                            crate::modules::aec::commands::write_wall_properties(
-                                                &mut self.tabs[i].scene.document,
-                                                handle,
-                                                &wall,
-                                            );
-                                            let _ = crate::modules::aec::commands::regenerate_wall_representation(
-                                                &mut self.tabs[i].scene,
-                                                handle,
-                                            );
                                         }
                                     }
                                     _ => {

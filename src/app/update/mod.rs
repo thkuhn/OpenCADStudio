@@ -106,6 +106,35 @@ impl OpenCADStudio {
         self.modal_resizing = false;
     }
 
+    /// Write the in-memory project to `aec_project_explorer_path` when both are set.
+    fn aec_project_explorer_persist(&mut self) {
+        let Some(path) = self.aec_project_explorer_path.clone() else {
+            return;
+        };
+        let Some(project) = self.aec_project_explorer_file.as_ref() else {
+            return;
+        };
+        match project.save(&path) {
+            Ok(()) => {
+                self.command_line.push_output(
+                    crate::tf!("AEC Project Explorer: saved \"{}\"", path.display()).as_ref(),
+                );
+            }
+            Err(e) => {
+                self.command_line.push_error(
+                    crate::tf!("AEC Project Explorer: save failed: {e}").as_ref(),
+                );
+            }
+        }
+    }
+
+    /// Persist only when a path is already known (silent no-op otherwise).
+    fn aec_project_explorer_persist_if_pathed(&mut self) {
+        if self.aec_project_explorer_path.is_some() {
+            self.aec_project_explorer_persist();
+        }
+    }
+
     fn aec_style_manager_wall_style_save_internal(
         &mut self,
     ) -> Option<(String, crate::modules::aec::engine::library::StyleLibrary)> {
@@ -1983,6 +2012,226 @@ impl OpenCADStudio {
                 self.active_modal = Some(super::ModalKind::AecWallStyleManager);
                 Task::none()
             }
+            Message::AecProjectExplorerOpen => {
+                self.ribbon.close_dropdown();
+                self.active_modal = Some(super::ModalKind::AecProjectExplorer);
+                Task::none()
+            }
+            Message::AecProjectExplorerNew => {
+                self.aec_project_explorer_file =
+                    Some(crate::modules::aec::engine::project::ProjectFile::default());
+                self.aec_project_explorer_path = None;
+                self.aec_project_explorer_selected_building = None;
+                self.aec_project_explorer_selected_storey = None;
+                self.aec_project_explorer_new_building_name.clear();
+                self.aec_project_explorer_new_storey_name.clear();
+                self.aec_project_explorer_new_storey_elevation = "0.0".to_string();
+                self.aec_project_explorer_new_storey_drawing.clear();
+                Task::none()
+            }
+            Message::AecProjectExplorerLoad => Task::perform(
+                async {
+                    crate::sys::file_dialog()
+                        .set_title("Open Project")
+                        .add_filter("OpenCADStudio Project", &["ocsproj", "OCSPROJ"])
+                        .add_filter("All Files", &["*"])
+                        .pick_file()
+                        .await
+                        .map(|h| crate::sys::handle_path(&h))
+                },
+                Message::AecProjectExplorerLoadResult,
+            ),
+            Message::AecProjectExplorerLoadResult(None) => Task::none(),
+            Message::AecProjectExplorerLoadResult(Some(path)) => {
+                match crate::modules::aec::engine::project::ProjectFile::load(&path) {
+                    Ok(project) => {
+                        self.aec_project_explorer_file = Some(project);
+                        self.aec_project_explorer_path = Some(path);
+                        self.aec_project_explorer_selected_building = None;
+                        self.aec_project_explorer_selected_storey = None;
+                    }
+                    Err(e) => {
+                        self.command_line.push_error(
+                            crate::tf!("AEC Project Explorer: failed to load: {e}").as_ref(),
+                        );
+                    }
+                }
+                Task::none()
+            }
+            Message::AecProjectExplorerSave => {
+                if self.aec_project_explorer_path.is_some() {
+                    self.aec_project_explorer_persist();
+                    Task::none()
+                } else {
+                    self.update(Message::AecProjectExplorerSaveAs)
+                }
+            }
+            Message::AecProjectExplorerSaveAs => Task::perform(
+                async {
+                    crate::sys::file_dialog()
+                        .set_title("Save Project As")
+                        .set_file_name("project.ocsproj")
+                        .add_filter("OpenCADStudio Project", &["ocsproj", "OCSPROJ"])
+                        .add_filter("All Files", &["*"])
+                        .save_file()
+                        .await
+                        .map(|h| crate::sys::handle_path(&h))
+                },
+                Message::AecProjectExplorerSaveAsResult,
+            ),
+            Message::AecProjectExplorerSaveAsResult(None) => Task::none(),
+            Message::AecProjectExplorerSaveAsResult(Some(path)) => {
+                self.aec_project_explorer_path = Some(path);
+                self.aec_project_explorer_persist();
+                Task::none()
+            }
+            Message::AecProjectExplorerSelectBuilding(bi) => {
+                self.aec_project_explorer_selected_building = Some(bi);
+                self.aec_project_explorer_selected_storey = None;
+                Task::none()
+            }
+            Message::AecProjectExplorerSelectStorey(bi, si) => {
+                self.aec_project_explorer_selected_building = Some(bi);
+                self.aec_project_explorer_selected_storey = Some((bi, si));
+                Task::none()
+            }
+            Message::AecProjectExplorerOpenStorey(bi, si) => {
+                let Some(project) = self.aec_project_explorer_file.as_ref() else {
+                    return Task::none();
+                };
+                let Some(building) = project.buildings.get(bi) else {
+                    return Task::none();
+                };
+                let Some(storey) = building.storeys.get(si) else {
+                    return Task::none();
+                };
+                let drawing = std::path::PathBuf::from(&storey.drawing_path);
+                let resolved = if drawing.is_absolute() {
+                    drawing
+                } else if let Some(base) = self
+                    .aec_project_explorer_path
+                    .as_ref()
+                    .and_then(|p| p.parent())
+                {
+                    base.join(drawing)
+                } else {
+                    drawing
+                };
+                // Keep the explorer open; open the drawing in a new tab.
+                Task::done(Message::OpenExternal(resolved))
+            }
+            Message::AecProjectExplorerAddBuilding => {
+                let name = self.aec_project_explorer_new_building_name.trim().to_string();
+                if name.is_empty() {
+                    return Task::none();
+                }
+                let project = self
+                    .aec_project_explorer_file
+                    .get_or_insert_with(crate::modules::aec::engine::project::ProjectFile::default);
+                project.buildings.push(crate::modules::aec::engine::project::Building {
+                    name,
+                    storeys: Vec::new(),
+                });
+                let bi = project.buildings.len() - 1;
+                self.aec_project_explorer_selected_building = Some(bi);
+                self.aec_project_explorer_selected_storey = None;
+                self.aec_project_explorer_new_building_name.clear();
+                self.aec_project_explorer_persist_if_pathed();
+                Task::none()
+            }
+            Message::AecProjectExplorerAddStorey => {
+                let Some(bi) = self.aec_project_explorer_selected_building else {
+                    self.command_line.push_info(
+                        crate::t!("AEC Project Explorer: select a building first.").as_ref(),
+                    );
+                    return Task::none();
+                };
+                let name = self.aec_project_explorer_new_storey_name.trim().to_string();
+                let drawing = self.aec_project_explorer_new_storey_drawing.trim().to_string();
+                if name.is_empty() || drawing.is_empty() {
+                    self.command_line.push_info(
+                        crate::t!("AEC Project Explorer: name and drawing path are required.")
+                            .as_ref(),
+                    );
+                    return Task::none();
+                }
+                let elevation = self
+                    .aec_project_explorer_new_storey_elevation
+                    .trim()
+                    .parse::<f64>()
+                    .unwrap_or(0.0);
+                let Some(project) = self.aec_project_explorer_file.as_mut() else {
+                    return Task::none();
+                };
+                let Some(building) = project.buildings.get_mut(bi) else {
+                    return Task::none();
+                };
+                building.storeys.push(crate::modules::aec::engine::project::StoreyRef {
+                    name,
+                    elevation,
+                    drawing_path: drawing,
+                });
+                let si = building.storeys.len() - 1;
+                self.aec_project_explorer_selected_storey = Some((bi, si));
+                self.aec_project_explorer_new_storey_name.clear();
+                self.aec_project_explorer_new_storey_drawing.clear();
+                self.aec_project_explorer_persist_if_pathed();
+                Task::none()
+            }
+            Message::AecProjectExplorerNewBuildingNameChanged(v) => {
+                self.aec_project_explorer_new_building_name = v;
+                Task::none()
+            }
+            Message::AecProjectExplorerNewStoreyNameChanged(v) => {
+                self.aec_project_explorer_new_storey_name = v;
+                Task::none()
+            }
+            Message::AecProjectExplorerNewStoreyElevationChanged(v) => {
+                self.aec_project_explorer_new_storey_elevation = v;
+                Task::none()
+            }
+            Message::AecProjectExplorerNewStoreyDrawingChanged(v) => {
+                self.aec_project_explorer_new_storey_drawing = v;
+                Task::none()
+            }
+            Message::AecProjectExplorerPickStoreyDrawing => Task::perform(
+                async {
+                    crate::sys::file_dialog()
+                        .set_title("Select Storey Drawing")
+                        .add_filter("CAD Files", &["dwg", "dxf", "DWG", "DXF"])
+                        .add_filter("All Files", &["*"])
+                        .pick_file()
+                        .await
+                        .map(|h| crate::sys::handle_path(&h))
+                },
+                Message::AecProjectExplorerPickStoreyDrawingResult,
+            ),
+            Message::AecProjectExplorerPickStoreyDrawingResult(None) => Task::none(),
+            Message::AecProjectExplorerPickStoreyDrawingResult(Some(path)) => {
+                // Prefer a path relative to the project file when possible.
+                let display = if let Some(base) = self
+                    .aec_project_explorer_path
+                    .as_ref()
+                    .and_then(|p| p.parent())
+                {
+                    path.strip_prefix(base)
+                        .map(|p| p.to_path_buf())
+                        .unwrap_or_else(|_| path.clone())
+                        .to_string_lossy()
+                        .into_owned()
+                } else {
+                    path.to_string_lossy().into_owned()
+                };
+                self.aec_project_explorer_new_storey_drawing = display;
+                Task::none()
+            }
+            Message::SelectAndZoomTo(handle) => {
+                let i = self.active_tab;
+                self.tabs[i].scene.select_entity(handle, true);
+                self.tabs[i].scene.remember_current_view();
+                let _ = self.tabs[i].scene.zoom_to_entities(&[handle]);
+                Task::none()
+            }
             Message::AecStyleManagerFilter(value) => {
                 self.aec_style_manager_filter = value;
                 Task::none()
@@ -2216,7 +2465,7 @@ impl OpenCADStudio {
                         .scene
                         .document
                         .get_entity(*h)
-                        .and_then(crate::modules::aec::commands::wall_v2_from_entity)
+                        .and_then(crate::modules::aec::commands::wall_from_entity)
                         .map(|v2| v2.style_id)
                 });
                 self.aec_style_picker_wall_handles = handles;
@@ -2369,19 +2618,19 @@ impl OpenCADStudio {
                                 );
 
                                 if let Some(entity) = self.tabs[i].scene.document.get_entity(handle) {
-                                    if let Some(mut wall_v2) =
-                                        crate::modules::aec::commands::wall_v2_from_entity(entity)
+                                    if let Some(mut wall) =
+                                        crate::modules::aec::commands::wall_from_entity(entity)
                                     {
-                                        wall_v2.style_id = selection.clone();
-                                        wall_v2.layers = wall_layers.clone();
+                                        wall.style_id = selection.clone();
+                                        wall.layers = wall_layers.clone();
 
-                                        record.values = crate::modules::aec::commands::wall_v2_record(
-                                            &wall_v2.style_id,
-                                            wall_v2.height,
-                                            wall_v2.storey_id,
-                                            &wall_v2.layers,
-                                            &wall_v2.derived_handles,
-                                            wall_v2.justification,
+                                        record.values = crate::modules::aec::commands::wall_record(
+                                            &wall.style_id,
+                                            wall.height,
+                                            wall.storey_id,
+                                            &wall.layers,
+                                            &wall.derived_handles,
+                                            wall.justification,
                                         );
                                     }
                                 }
@@ -2476,7 +2725,7 @@ impl OpenCADStudio {
                     let mut affected_handles = Vec::new();
                     for entity in tab.scene.document.entities() {
                         if let Some(wall) =
-                            crate::modules::aec::commands::wall_v2_from_entity(entity)
+                            crate::modules::aec::commands::wall_from_entity(entity)
                         {
                             if wall.style_id == id {
                                 affected_handles.push(entity.common().handle);
@@ -2497,7 +2746,7 @@ impl OpenCADStudio {
                     for handle in affected_handles {
                         if let Some(entity) = tab.scene.document.get_entity(handle) {
                             if let Some(wall) =
-                                crate::modules::aec::commands::wall_v2_from_entity(entity)
+                                crate::modules::aec::commands::wall_from_entity(entity)
                             {
                                 // Prefer the wall's current total thickness as BB so
                                 // formula layers scale with the placed wall width;
@@ -2517,7 +2766,7 @@ impl OpenCADStudio {
                                         bb,
                                     )
                                 {
-                                    crate::modules::aec::commands::write_wall_v2_layers(
+                                    crate::modules::aec::commands::write_wall_layers(
                                         &mut tab.scene,
                                         handle,
                                         wall_layers,
@@ -4618,6 +4867,10 @@ impl OpenCADStudio {
                     crate::modules::aec::commands::expand_with_wall_derived_handles(
                         &self.tabs[i].scene,
                         &mut handles,
+                    );
+                    crate::modules::aec::commands::unregister_walls_from_storeys(
+                        &mut self.tabs[i].scene,
+                        &handles,
                     );
                     // Erase is delta-safe unless a target is in a group (group
                     // cleanup rewrites document.objects).

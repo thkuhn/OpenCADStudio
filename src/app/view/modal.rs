@@ -49,6 +49,7 @@ impl OpenCADStudio {
             Some(K::RecoveryPrompt) => crate::tr!("modal", "recovery-prompt"),
             Some(K::AecMaterialManager) => t!("AEC Material Manager").into_owned(),
             Some(K::AecWallStyleManager) => t!("AEC Wall Style Manager").into_owned(),
+            Some(K::AecProjectExplorer) => t!("AEC Project Explorer").into_owned(),
             Some(K::AecStylePicker { .. }) => t!("AEC Style Picker").into_owned(),
             None => String::new(),
         }
@@ -283,6 +284,20 @@ impl OpenCADStudio {
                     )
                 },
             ),
+            super::super::ModalKind::AecProjectExplorer => sized_flow(ex, 720, 520, |_| {
+                crate::ui::window::aec_project_explorer::view_window(
+                    self.aec_project_explorer_file.as_ref(),
+                    crate::ui::window::aec_project_explorer::ProjectExplorerState {
+                        path: self.aec_project_explorer_path.as_deref(),
+                        selected_building: self.aec_project_explorer_selected_building,
+                        selected_storey: self.aec_project_explorer_selected_storey,
+                        new_building_name: &self.aec_project_explorer_new_building_name,
+                        new_storey_name: &self.aec_project_explorer_new_storey_name,
+                        new_storey_elevation: &self.aec_project_explorer_new_storey_elevation,
+                        new_storey_drawing: &self.aec_project_explorer_new_storey_drawing,
+                    },
+                )
+            }),
             super::super::ModalKind::AecWallStyleManager => sized_flow(
                 ex,
                 1100,

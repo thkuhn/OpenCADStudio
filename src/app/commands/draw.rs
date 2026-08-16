@@ -772,6 +772,10 @@ impl OpenCADStudio {
                         &self.tabs[i].scene,
                         &mut handles,
                     );
+                    crate::modules::aec::commands::unregister_walls_from_storeys(
+                        &mut self.tabs[i].scene,
+                        &handles,
+                    );
                     let n = handles.len();
                     let delta_safe = self.delta_erase_safe(i, &handles);
                     let pending = self.begin_undo(i, "ERASE", handles.len(), delta_safe);
@@ -947,6 +951,9 @@ impl OpenCADStudio {
             }
             "AEC_MATERIALMANAGER" => {
                 return Some(Task::done(Message::AecMaterialManagerOpen));
+            }
+            "AEC_PROJECTEXPLORER" => {
+                return Some(Task::done(Message::AecProjectExplorerOpen));
             }
             "AEC_STYLEMANAGER" => {
                 return Some(Task::done(Message::AecWallStyleManagerOpen));

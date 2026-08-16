@@ -12,7 +12,7 @@
 
 use super::room::Room;
 use super::storey::Storey;
-use super::wall::Wall;
+use super::wall::{Wall, WallLayer};
 
 /// Everything needed to export a minimal IFC4 SPF file: the storeys (with
 /// their `storey_id`, matching the XDATA `storey_id` field), and the walls
@@ -222,8 +222,16 @@ mod tests {
 
     fn sample_scene() -> Scene {
         let storey = Storey::new("Level 1", 0.0, 3.0);
-        let mut wall = Wall::new(0.2, 2.8, 0);
-        wall.material_ref = Some("Concrete".to_string());
+        let mut wall = Wall::new("style1", 2.8, 0);
+        wall.layers.push(WallLayer {
+            material: "Concrete".to_string(),
+            thickness: 0.2,
+            function: "Structural".to_string(),
+            gap_before: 0.0,
+            bottom_offset: 0.0,
+            top_offset: 0.0,
+            layer_override: None,
+        });
         let room = Room::from_polygon(
             "Office 101",
             &[(0.0, 0.0), (4.0, 0.0), (4.0, 3.0), (0.0, 3.0)],

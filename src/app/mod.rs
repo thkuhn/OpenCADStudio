@@ -1036,6 +1036,22 @@ pub(super) struct OpenCADStudio {
     /// or hierarchically (parents before children, siblings grouped).
     aec_style_manager_wall_style_sort: AecWallStyleSort,
 
+    // ── AEC Project Explorer ──────────────────────────────────────────────
+    /// Loaded `.ocsproj` contents (if any).
+    aec_project_explorer_file: Option<crate::modules::aec::engine::project::ProjectFile>,
+    /// Path of the loaded/saved `.ocsproj` (used for relative drawing paths).
+    aec_project_explorer_path: Option<std::path::PathBuf>,
+    /// Selected building index in the explorer tree.
+    aec_project_explorer_selected_building: Option<usize>,
+    /// Selected storey as `(building_idx, storey_idx)`.
+    aec_project_explorer_selected_storey: Option<(usize, usize)>,
+    /// "Add Building" name buffer.
+    aec_project_explorer_new_building_name: String,
+    /// "Add Storey" form buffers.
+    aec_project_explorer_new_storey_name: String,
+    aec_project_explorer_new_storey_elevation: String,
+    aec_project_explorer_new_storey_drawing: String,
+
     // ── Annotation-scale Manager ──────────────────────────────────────────
     scale_manager_selected: String,
     scale_manager_paper_buf: String,
@@ -1717,6 +1733,8 @@ pub enum ModalKind {
     /// view/edit content is added by a later step.
     AecMaterialManager,
     AecWallStyleManager,
+    /// AEC Project Explorer — browse a `.ocsproj` Building → Storey tree.
+    AecProjectExplorer,
     /// AEC Style Picker — hierarchical modal for selecting wall styles,
     /// materials, or layer overrides.
     AecStylePicker {
@@ -2297,6 +2315,42 @@ pub enum Message {
     /// layer material, layer override) this returns to the manager instead
     /// of closing the modal entirely.
     AecStylePickerCancel,
+
+    // ── AEC Project Explorer (`AEC_PROJECTEXPLORER`) ──────────────────────
+    /// Open the Project Explorer modal.
+    AecProjectExplorerOpen,
+    /// Start a blank in-memory project (does not write until Save).
+    AecProjectExplorerNew,
+    /// Pick and load a `.ocsproj` file.
+    AecProjectExplorerLoad,
+    /// Result of the project-file open dialog (`None` = cancelled).
+    AecProjectExplorerLoadResult(Option<std::path::PathBuf>),
+    /// Save the current project to its known path (or Save As if none).
+    AecProjectExplorerSave,
+    /// Pick a path and save the current project.
+    AecProjectExplorerSaveAs,
+    /// Result of the project-file save dialog (`None` = cancelled).
+    AecProjectExplorerSaveAsResult(Option<std::path::PathBuf>),
+    /// Building row selected in the explorer tree.
+    AecProjectExplorerSelectBuilding(usize),
+    /// Storey row selected in the explorer tree.
+    AecProjectExplorerSelectStorey(usize, usize),
+    /// "Open" pressed on a storey row — open its drawing in a new tab.
+    AecProjectExplorerOpenStorey(usize, usize),
+    /// Append a building using the name buffer.
+    AecProjectExplorerAddBuilding,
+    /// Append a storey to the selected building using the form buffers.
+    AecProjectExplorerAddStorey,
+    AecProjectExplorerNewBuildingNameChanged(String),
+    AecProjectExplorerNewStoreyNameChanged(String),
+    AecProjectExplorerNewStoreyElevationChanged(String),
+    AecProjectExplorerNewStoreyDrawingChanged(String),
+    /// Pick a drawing path for the new-storey form.
+    AecProjectExplorerPickStoreyDrawing,
+    AecProjectExplorerPickStoreyDrawingResult(Option<std::path::PathBuf>),
+
+    /// Select an entity and zoom the viewport to it (properties handle links).
+    SelectAndZoomTo(acadrust::Handle),
     /// ViewCube-local cursor movement, tagged with the floating viewport that
     /// owned the overlay when the event was produced (`None` = Model layout).
     CursorMoved(Point, Option<acadrust::Handle>),
@@ -3552,6 +3606,14 @@ impl OpenCADStudio {
             aec_style_manager_wall_style_layers: Vec::new(),
             aec_style_manager_wall_style_drag_index: None,
             aec_style_manager_wall_style_sort: AecWallStyleSort::default(),
+            aec_project_explorer_file: None,
+            aec_project_explorer_path: None,
+            aec_project_explorer_selected_building: None,
+            aec_project_explorer_selected_storey: None,
+            aec_project_explorer_new_building_name: String::new(),
+            aec_project_explorer_new_storey_name: String::new(),
+            aec_project_explorer_new_storey_elevation: String::from("0.0"),
+            aec_project_explorer_new_storey_drawing: String::new(),
             scale_manager_selected: String::new(),
             scale_manager_paper_buf: String::new(),
             scale_manager_drawing_buf: String::new(),

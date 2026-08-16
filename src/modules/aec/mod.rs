@@ -22,6 +22,7 @@ const STOREY_ICON: &[u8] = include_bytes!("../../../assets/icons/layers/panel.sv
 const IFC_ICON: &[u8] = include_bytes!("../../../assets/icons/cui_export.svg");
 const MATERIAL_ICON: &[u8] = include_bytes!("../../../assets/icons/aec/material_manager.svg");
 const STYLE_ICON: &[u8] = include_bytes!("../../../assets/icons/aec/wall_style_manager.svg");
+const PROJECT_ICON: &[u8] = include_bytes!("../../../assets/icons/layers/panel.svg");
 
 /// Helper to declare a ribbon tool that fires a named command.
 fn tool(id: &'static str, label: &'static str, icon: &'static [u8]) -> ToolDef {
@@ -88,11 +89,14 @@ impl CadModule for AecModule {
                 },
                 RibbonGroup {
                     title: "Storeys",
-                    tools: vec![RibbonItem::LargeTool(tool(
-                        "AEC_STOREY",
-                        "Storey",
-                        STOREY_ICON,
-                    ))],
+                    tools: vec![
+                        RibbonItem::LargeTool(tool("AEC_STOREY", "Storey", STOREY_ICON)),
+                        RibbonItem::LargeTool(tool(
+                            "AEC_PROJECTEXPLORER",
+                            "Project Explorer",
+                            PROJECT_ICON,
+                        )),
+                    ],
                 },
                 RibbonGroup {
                     title: "IFC",

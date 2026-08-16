@@ -1417,7 +1417,7 @@ impl OpenCADStudio {
                 let only_walls = has_selection && tab.scene.selected.iter().all(|&h| {
                     let resolved = crate::modules::aec::commands::resolve_wall_package(&tab.scene, h);
                     if let Some(entity) = tab.scene.document.get_entity(resolved) {
-                        crate::modules::aec::commands::wall_v2_from_entity(entity).is_some()
+                        crate::modules::aec::commands::wall_from_entity(entity).is_some()
                     } else {
                         false
                     }

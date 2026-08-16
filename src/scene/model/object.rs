@@ -51,6 +51,8 @@ pub enum PropValue {
     /// Carries the current display value and the entity handle(s) to apply
     /// the picked value to (more than one when editing a multi-selection).
     Picker { value: String, handles: Vec<Handle> },
+    /// Read-only reference to another entity; clicking selects and zooms to it.
+    EntityRef { display: String, handle: Handle },
     /// Live property for the active command.
     Live(LiveFieldValue),
 }

@@ -492,7 +492,8 @@ impl Scene {
                                 }
                                 PropValue::AttrText { .. } => QSelectValueEditor::Text,
                                 PropValue::Picker { .. } => QSelectValueEditor::Text,
-                                PropValue::Stepper { .. }
+                                PropValue::EntityRef { .. }
+                                | PropValue::Stepper { .. }
                                 | PropValue::ColorVaries
                                 | PropValue::LwVaries
                                 | PropValue::Live(_) => continue,
@@ -628,6 +629,7 @@ impl Scene {
                     PropValue::AttrText { value, .. } => value,
                     PropValue::Stepper { display, .. } => display,
                     PropValue::Picker { value, .. } => value,
+                    PropValue::EntityRef { display, .. } => display,
                     PropValue::ColorVaries | PropValue::LwVaries => return None,
                     PropValue::Live(_) => return None,
                 })

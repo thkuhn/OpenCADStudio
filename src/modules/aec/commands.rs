@@ -20,9 +20,10 @@ use crate::scene::Scene;
 use crate::ui::command_line::CommandLine;
 
 use super::engine::{
-    self, find_closed_loop, Room, Storey, StyleLibrary, Wall,
+    self, find_closed_loop, Room, Storey, StyleLibrary,
     join::{self, JoinKind, JoinError},
 };
+pub use super::engine::{Wall, WallJustification, WallLayer};
 use super::engine::library::load_or_seed;
 use super::engine::material::Material;
 use super::engine::style::Style;
@@ -50,17 +51,37 @@ fn ensure_app_id(doc: &mut CadDocument) {
 }
 
 /// Attach (or replace) an `OPENCAD_AEC` XDATA record on `handle`.
+///
+/// When `record` starts with a string kind tag (e.g. `"WALL"`, `"OPENING"`),
+/// only an existing AEC record with the same tag is replaced — other AEC
+/// kinds on the same entity (notably `CHILD_HANDLES` / `JOINED_PEERS` owner
+/// indexes) are preserved. Records without a leading string tag still replace
+/// every AEC record (legacy behaviour).
 fn write_aec_record(doc: &mut CadDocument, handle: Handle, record: ExtendedDataRecord) -> bool {
     ensure_app_id(doc);
     let app_handle = doc.app_ids.get(AEC_APPID).map(|a| a.handle.value());
     let Some(entity) = doc.get_entity_mut(handle) else {
         return false;
     };
+    let tag = match record.values.first() {
+        Some(XDataValue::String(s)) => Some(s.as_str()),
+        _ => None,
+    };
     let xd = &mut entity.common_mut().extended_data;
     let kept: Vec<_> = xd
         .records()
         .iter()
-        .filter(|r| r.application_name != AEC_APPID)
+        .filter(|r| {
+            if r.application_name != AEC_APPID {
+                return true;
+            }
+            match tag {
+                Some(t) => {
+                    !matches!(r.values.first(), Some(XDataValue::String(s)) if s == t)
+                }
+                None => false,
+            }
+        })
         .cloned()
         .collect();
     xd.clear();
@@ -69,14 +90,32 @@ fn write_aec_record(doc: &mut CadDocument, handle: Handle, record: ExtendedDataR
     }
     xd.add_record(record);
     if let Some(ah) = app_handle {
-        xd.raw_dwg_eed.retain(|(a, _)| *a != ah);
+        let still_has_aec = xd.records().iter().any(|r| r.application_name == AEC_APPID);
+        if !still_has_aec {
+            xd.raw_dwg_eed.retain(|(a, _)| *a != ah);
+        }
     }
     true
 }
 
-/// Read the `OPENCAD_AEC` record on `entity`, if any.
+/// Read the primary `OPENCAD_AEC` record on `entity` (WALL / OPENING / ROOM /
+/// WALL_DERIVED / …), skipping pure index tags (`CHILD_HANDLES`,
+/// `JOINED_PEERS`) that may coexist on the same entity.
 fn read_aec_record(entity: &EntityType) -> Option<&ExtendedDataRecord> {
-    entity.common().extended_data.get_record(AEC_APPID)
+    entity.common().extended_data.records().iter().find(|r| {
+        if r.application_name != AEC_APPID {
+            return false;
+        }
+        match r.values.first() {
+            Some(XDataValue::String(s))
+                if s == engine::owner_index::CHILD_HANDLES_TAG
+                    || s == engine::owner_index::JOINED_PEERS_TAG =>
+            {
+                false
+            }
+            _ => true,
+        }
+    })
 }
 
 /// Tag `handle` as a "derived" entity of the wall axis at `axis_handle`
@@ -91,50 +130,50 @@ fn write_wall_derived_tag(scene: &mut Scene, handle: Handle, axis_handle: Handle
     write_aec_record(&mut scene.document, handle, record);
 }
 
-/// Overwrites only the `height` field of a wall's `WALL_V2` XDATA record,
+/// Overwrites only the `height` field of a wall's `WALL` XDATA record,
 /// keeping `style_id`/`layers`/`storey_id`/`derived_handles`/`justification` intact.
 /// Used by the Properties panel's editable "Height" row (single or
 /// multi-selected walls).
-pub fn write_wall_v2_height(scene: &mut Scene, wall_handle: Handle, height: f64) -> bool {
+pub fn write_wall_height(scene: &mut Scene, wall_handle: Handle, height: f64) -> bool {
     let Some(entity) = scene.document.get_entity(wall_handle) else {
         return false;
     };
-    let Some(mut wall_v2) = wall_v2_from_entity(entity) else {
+    let Some(mut wall) = wall_from_entity(entity) else {
         return false;
     };
-    wall_v2.height = height;
+    wall.height = height;
     let mut record = ExtendedDataRecord::new(AEC_APPID);
-    for v in wall_v2_record(
-        &wall_v2.style_id,
-        wall_v2.height,
-        wall_v2.storey_id,
-        &wall_v2.layers,
-        &wall_v2.derived_handles,
-        wall_v2.justification,
+    for v in wall_record(
+        &wall.style_id,
+        wall.height,
+        wall.storey_id,
+        &wall.layers,
+        &wall.derived_handles,
+        wall.justification,
     ) {
         record.add_value(v);
     }
     write_aec_record(&mut scene.document, wall_handle, record)
 }
 
-/// Overwrites only the layer-snapshot portion of a wall's `WALL_V2` XDATA record,
+/// Overwrites only the layer-snapshot portion of a wall's `WALL` XDATA record,
 /// keeping `style_id`/`height`/`storey_id`/`derived_handles`/`justification` intact.
-pub fn write_wall_v2_layers(scene: &mut Scene, wall_handle: Handle, layers: Vec<WallLayer>) -> bool {
+pub fn write_wall_layers(scene: &mut Scene, wall_handle: Handle, layers: Vec<WallLayer>) -> bool {
     let Some(entity) = scene.document.get_entity(wall_handle) else {
         return false;
     };
-    let Some(mut wall_v2) = wall_v2_from_entity(entity) else {
+    let Some(mut wall) = wall_from_entity(entity) else {
         return false;
     };
-    wall_v2.layers = layers;
+    wall.layers = layers;
     let mut record = ExtendedDataRecord::new(AEC_APPID);
-    for v in wall_v2_record(
-        &wall_v2.style_id,
-        wall_v2.height,
-        wall_v2.storey_id,
-        &wall_v2.layers,
-        &wall_v2.derived_handles,
-        wall_v2.justification,
+    for v in wall_record(
+        &wall.style_id,
+        wall.height,
+        wall.storey_id,
+        &wall.layers,
+        &wall.derived_handles,
+        wall.justification,
     ) {
         record.add_value(v);
     }
@@ -176,12 +215,11 @@ fn is_wall_derived_non_axis(scene: &Scene, handle: Handle) -> bool {
 }
 
 /// True when `handle` is the wall axis itself — the (normally invisible,
-/// `AEC_WALL_AXIS_LAYER`) `LwPolyline` carrying the `WALL`/`WALL_V2` XDATA
+/// `AEC_WALL_AXIS_LAYER`) `LwPolyline` carrying the `WALL` XDATA
 /// record. Axis entities must remain snap candidates even though their
 /// layer is turned off (Bug 2).
 fn is_wall_axis_entity(entity: &EntityType) -> bool {
-    entity.common().layer == AEC_WALL_AXIS_LAYER
-        && (wall_v2_from_entity(entity).is_some() || wall_from_entity(entity).is_some())
+    entity.common().layer == AEC_WALL_AXIS_LAYER && wall_from_entity(entity).is_some()
 }
 
 /// Snap-candidate carve-out for AEC walls (Bug 2).
@@ -260,7 +298,7 @@ fn collect_wall_segments(doc: &CadDocument) -> Vec<((f64, f64), (f64, f64))> {
         };
         let is_wall = matches!(
             read_aec_record(entity).and_then(|r| r.values.first()),
-            Some(XDataValue::String(kind)) if kind == "WALL" || kind == "WALL_V2"
+            Some(XDataValue::String(kind)) if kind == "WALL"
         );
         if !is_wall {
             continue;
@@ -281,105 +319,17 @@ fn collect_wall_segments(doc: &CadDocument) -> Vec<((f64, f64), (f64, f64))> {
     }
     segments
 }
-
-/// Build the `WALL` XDATA record for `wall` (shared by the interactive draw
-/// command and the properties-panel edit path).
-fn wall_record(wall: &Wall) -> ExtendedDataRecord {
-    let mut record = ExtendedDataRecord::new(AEC_APPID);
-    record.add_value(XDataValue::String("WALL".to_string()));
-    record.add_value(XDataValue::Distance(wall.thickness));
-    record.add_value(XDataValue::Distance(wall.height));
-    record.add_value(XDataValue::String(
-        wall.material_ref.clone().unwrap_or_default(),
-    ));
-    record.add_value(XDataValue::Integer32(wall.storey_id as i32));
-    record
-}
-
 /// Layer name used for the (invisible) wall axis / centerline reference
-/// geometry. `AEC_ROOM` / loop-detection and the `WALL_V2` XDATA carrier keep
+/// geometry. `AEC_ROOM` / loop-detection and the `WALL` XDATA carrier keep
 /// living on this layer once the visible contour/hatch/solid representation
 /// is regenerated.
 pub const AEC_WALL_AXIS_LAYER: &str = "AEC_WALL_AXIS";
-
-/// In-memory representation of a `WALL_V2` record.
-#[derive(Debug, Clone, PartialEq)]
-pub struct WallV2 {
-    pub style_id: String,
-    pub height: f64,
-    pub storey_id: u32,
-    pub layers: Vec<WallLayer>,
-    /// Handles of the contour/hatch/solid entities most recently derived
-    /// from this wall's axis, so they can be cleanly replaced or removed.
-    pub derived_handles: Vec<Handle>,
-    /// Informational field: which justification was used when drawing.
-    pub justification: WallJustification,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub struct WallLayer {
-    pub material: String,
-    pub thickness: f64,
-    pub function: String,
-    pub gap_before: f64,
-    pub bottom_offset: f64,
-    pub top_offset: f64,
-    pub layer_override: Option<String>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum WallJustification {
-    Interior,
-    Center,
-    Exterior,
-}
-
-impl WallJustification {
-    pub fn next(self) -> Self {
-        match self {
-            WallJustification::Interior => WallJustification::Center,
-            WallJustification::Center => WallJustification::Exterior,
-            WallJustification::Exterior => WallJustification::Interior,
-        }
-    }
-
-    pub fn as_str(self) -> &'static str {
-        match self {
-            WallJustification::Interior => "Interior",
-            WallJustification::Center => "Center",
-            WallJustification::Exterior => "Exterior",
-        }
-    }
-
-    pub fn from_str(s: &str) -> Self {
-        match s {
-            "Interior" => WallJustification::Interior,
-            "Exterior" => WallJustification::Exterior,
-            _ => WallJustification::Center,
-        }
-    }
-
-    pub fn offset(&self, total_thickness: f64) -> f64 {
-        match self {
-            WallJustification::Center => 0.0,
-            WallJustification::Interior => total_thickness * -0.5,
-            WallJustification::Exterior => total_thickness * 0.5,
-        }
-    }
-}
-
-impl WallV2 {
-    pub fn total_thickness(&self) -> f64 {
-        self.layers.iter().map(|l| l.thickness + l.gap_before).sum()
-    }
-}
-
-/// Build a `WALL_V2` XDATA record's values.
+/// Build a `WALL` XDATA record's values.
 ///
 /// `derived_handles` is appended as a trailing `count` + `Handle` block so
 /// records written before this field existed (no trailing block) still
 /// parse back with an empty list.
-pub fn wall_v2_record(
+pub fn wall_record(
     style_id: &str,
     height: f64,
     storey_id: u32,
@@ -388,7 +338,7 @@ pub fn wall_v2_record(
     justification: WallJustification,
 ) -> Vec<XDataValue> {
     let mut values = Vec::new();
-    values.push(XDataValue::String("WALL_V2".to_string()));
+    values.push(XDataValue::String("WALL".to_string()));
     values.push(XDataValue::String(style_id.to_string()));
     values.push(XDataValue::Distance(height));
     values.push(XDataValue::Integer32(storey_id as i32));
@@ -420,8 +370,8 @@ pub fn wall_v2_record(
     values
 }
 
-/// Parse a `WALL_V2` XDATA record back into a [`WallV2`].
-pub fn wall_v2_from_entity(entity: &EntityType) -> Option<WallV2> {
+/// Parse a `WALL` XDATA record back into a [`Wall`].
+pub fn wall_from_entity(entity: &EntityType) -> Option<Wall> {
     let record = read_aec_record(entity)?;
     let v = &record.values;
     if v.len() < 5 {
@@ -430,7 +380,7 @@ pub fn wall_v2_from_entity(entity: &EntityType) -> Option<WallV2> {
     let XDataValue::String(kind) = &v[0] else {
         return None;
     };
-    if kind != "WALL_V2" {
+    if kind != "WALL" {
         return None;
     }
 
@@ -541,7 +491,7 @@ pub fn wall_v2_from_entity(entity: &EntityType) -> Option<WallV2> {
         }
     }
 
-    Some(WallV2 {
+    Some(Wall {
         style_id,
         height,
         storey_id,
@@ -551,21 +501,10 @@ pub fn wall_v2_from_entity(entity: &EntityType) -> Option<WallV2> {
     })
 }
 
-/// Unified helper to get total thickness, height, and storey_id for any wall entity
-/// (supports both `WALL` and `WALL_V2`).
+/// Helper to get total thickness, height, and storey_id for a wall entity.
 pub fn wall_thickness_and_height(entity: &EntityType) -> Option<(f64, f64, u32)> {
-    let record = read_aec_record(entity)?;
-    match record.values.first() {
-        Some(XDataValue::String(kind)) if kind == "WALL" => {
-            let wall = wall_from_entity(entity)?;
-            Some((wall.thickness, wall.height, wall.storey_id))
-        }
-        Some(XDataValue::String(kind)) if kind == "WALL_V2" => {
-            let wall = wall_v2_from_entity(entity)?;
-            Some((wall.total_thickness(), wall.height, wall.storey_id))
-        }
-        _ => None,
-    }
+    let wall = wall_from_entity(entity)?;
+    Some((wall.total_thickness(), wall.height, wall.storey_id))
 }
 
 /// Parameters for a 3D extrusion of a wall layer.
@@ -694,46 +633,6 @@ pub fn wall_layer_extrusions(
     extrusions
 }
 
-/// Parse a `WALL` XDATA record back into a [`Wall`] (inverse of
-/// [`wall_record`]). Returns `None` if `entity` isn't `WALL`-tagged or the
-/// record doesn't have the expected shape.
-pub fn wall_from_entity(entity: &EntityType) -> Option<Wall> {
-    let record = read_aec_record(entity)?;
-    match record.values.as_slice() {
-        [XDataValue::String(kind), XDataValue::Distance(thickness), XDataValue::Distance(height), XDataValue::String(material), XDataValue::Integer32(storey_id)]
-            if kind == "WALL" =>
-        {
-            Some(Wall {
-                thickness: *thickness,
-                height: *height,
-                material_ref: if material.is_empty() {
-                    None
-                } else {
-                    Some(material.clone())
-                },
-                storey_id: *storey_id as u32,
-            })
-        }
-        [XDataValue::String(kind), ..] if kind == "WALL_V2" => {
-            let v2 = wall_v2_from_entity(entity)?;
-            Some(Wall {
-                thickness: v2.total_thickness(),
-                height: v2.height,
-                material_ref: v2.layers.first().map(|l| l.material.clone()),
-                storey_id: v2.storey_id,
-            })
-        }
-        _ => None,
-    }
-}
-
-/// Write `wall` back into `handle`'s `WALL` XDATA record, replacing the
-/// previous one (used by the properties-panel edit path). Reuses
-/// [`wall_record`] so the field layout stays in one place.
-pub fn write_wall_properties(doc: &mut CadDocument, handle: Handle, wall: &Wall) -> bool {
-    write_aec_record(doc, handle, wall_record(wall))
-}
-
 /// Register the `AEC_WALL_AXIS` layer (invisible / non-printable) if it
 /// isn't already in the document's layer table.
 pub fn ensure_wall_axis_layer(scene: &mut Scene) {
@@ -773,7 +672,7 @@ fn wall_hatch_color(rgb: u32) -> [f32; 4] {
 /// representation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WallRegenError {
-    /// `wall_handle` doesn't resolve to an entity carrying `WALL`/`WALL_V2`
+    /// `wall_handle` doesn't resolve to an entity carrying `WALL`
     /// XDATA.
     NotAWall,
     /// The wall has no material layers to build a representation from.
@@ -784,18 +683,15 @@ pub enum WallRegenError {
 }
 
 /// (Re)build the visible 2D contour + hatch and 3D solid representation for
-/// the wall at `wall_handle`, from its axis polyline + `WALL`/`WALL_V2`
+/// the wall at `wall_handle`, from its axis polyline + `WALL`
 /// XDATA.
 ///
 /// The axis polyline is moved onto the invisible `AEC_WALL_AXIS` layer (kept
 /// as reference geometry for `AEC_ROOM` / loop detection and as the XDATA
 /// carrier). Every entity handle previously recorded in `derived_handles` is
 /// erased first, so calling this repeatedly on the same wall never
-/// accumulates duplicates. `WALL` (v1) walls are treated as a single
-/// structural layer built from their `thickness`/`material_ref`; only
-/// `WALL_V2` walls persist the new derived handles (v1 records have no slot
-/// for them, so their representation is rebuilt but not tracked across
-/// calls).
+/// accumulates duplicates. Derived handles are always persisted on the
+/// wall's `WALL` XDATA record so subsequent regenerations can erase them.
 pub fn regenerate_wall_representation(
     scene: &mut Scene,
     wall_handle: Handle,
@@ -867,27 +763,10 @@ fn regenerate_wall_representation_inner(
         return Err(WallRegenError::NotAWall);
     };
 
-    let (layers, height, old_derived, is_v2) = if let Some(v2) = wall_v2_from_entity(entity) {
-        (v2.layers, v2.height, v2.derived_handles, true)
-    } else if let Some(wall) = wall_from_entity(entity) {
-        let mat = wall.material_ref.clone().unwrap_or_default();
-        (
-            vec![WallLayer {
-                material: mat,
-                thickness: wall.thickness,
-                function: "Structural".to_string(),
-                gap_before: 0.0,
-                bottom_offset: 0.0,
-                top_offset: 0.0,
-                layer_override: None,
-            }],
-            wall.height,
-            Vec::new(),
-            false,
-        )
-    } else {
+    let Some(wall) = wall_from_entity(entity) else {
         return Err(WallRegenError::NotAWall);
     };
+    let (layers, height, old_derived) = (wall.layers, wall.height, wall.derived_handles);
 
     if layers.is_empty() {
         return Err(WallRegenError::NoLayers);
@@ -915,9 +794,7 @@ fn regenerate_wall_representation_inner(
     // per-layer fallback when a join miter can't match layers.
     let base_footprints_with_bulges = wall_layer_footprints_with_bulges(&axis_entity, &layers);
     if base_footprints_with_bulges.is_empty() {
-        if is_v2 {
-            let _ = set_wall_v2_derived_handles(scene, wall_handle, &[]);
-        }
+        let _ = set_wall_derived_handles(scene, wall_handle, &[]);
         return Err(WallRegenError::NoContours);
     }
     let base_footprints: Vec<Vec<(f64, f64)>> = base_footprints_with_bulges
@@ -1177,19 +1054,19 @@ fn regenerate_wall_representation_inner(
         }
     }
 
-    if is_v2 {
-        let _ = set_wall_v2_derived_handles(scene, wall_handle, &new_derived);
-    }
+    let _ = set_wall_derived_handles(scene, wall_handle, &new_derived);
+    // Keep storey membership index in sync whenever a wall is (re)built.
+    register_wall_in_storey(scene, wall_handle);
     let mut touched = Vec::with_capacity(1 + new_derived.len());
     touched.push(wall_handle);
     touched.extend(new_derived.iter().copied());
     Ok(touched)
 }
 
-/// Rewrite the `derived_handles` tail of `wall_handle`'s `WALL_V2` record,
+/// Rewrite the `derived_handles` tail of `wall_handle`'s `WALL` record,
 /// keeping every other field unchanged. No-op (returns `false`) if the
-/// entity doesn't carry a `WALL_V2` record.
-pub fn set_wall_v2_derived_handles(
+/// entity doesn't carry a `WALL` record.
+pub fn set_wall_derived_handles(
     scene: &mut Scene,
     wall_handle: Handle,
     derived_handles: &[Handle],
@@ -1197,11 +1074,11 @@ pub fn set_wall_v2_derived_handles(
     let Some(entity) = scene.document.get_entity(wall_handle) else {
         return false;
     };
-    let Some(v2) = wall_v2_from_entity(entity) else {
+    let Some(v2) = wall_from_entity(entity) else {
         return false;
     };
     let mut record = ExtendedDataRecord::new(AEC_APPID);
-    record.values = wall_v2_record(
+    record.values = wall_record(
         &v2.style_id,
         v2.height,
         v2.storey_id,
@@ -1212,12 +1089,12 @@ pub fn set_wall_v2_derived_handles(
     write_aec_record(&mut scene.document, wall_handle, record)
 }
 
-/// Changes an existing `WALL_V2` wall's justification (Interior/Center/
+/// Changes an existing `WALL` wall's justification (Interior/Center/
 /// Exterior), shifting its axis polyline sideways by the delta between the
 /// old and new justification offsets (same `WallJustification::offset` math
 /// used by [`WallCommand::build_entity`]), then regenerates its
 /// contour/hatch/solid representation. No-op (returns `false`) if
-/// `wall_handle` doesn't carry a `WALL_V2` record.
+/// `wall_handle` doesn't carry a `WALL` record.
 pub fn change_wall_justification(
     scene: &mut Scene,
     wall_handle: Handle,
@@ -1226,7 +1103,7 @@ pub fn change_wall_justification(
     let Some(entity) = scene.document.get_entity(wall_handle) else {
         return false;
     };
-    let Some(v2) = wall_v2_from_entity(entity) else {
+    let Some(v2) = wall_from_entity(entity) else {
         return false;
     };
 
@@ -1250,7 +1127,7 @@ pub fn change_wall_justification(
     }
 
     let mut record = ExtendedDataRecord::new(AEC_APPID);
-    record.values = wall_v2_record(
+    record.values = wall_record(
         &v2.style_id,
         v2.height,
         v2.storey_id,
@@ -1303,7 +1180,10 @@ pub struct WallCommand {
     live_handle: Option<Handle>,
     live_contour_handle: Option<Handle>,
     plane: WorkingPlane,
+    /// Parametric wall metadata written on finalize (style/layers filled later).
     wall: Wall,
+    /// Fallback single-layer thickness when no style is selected.
+    thickness: f64,
     phase: WallPhase,
     library: Option<StyleLibrary>,
     style_id: Option<String>,
@@ -1338,7 +1218,8 @@ impl WallCommand {
             live_handle: None,
             live_contour_handle: None,
             plane: WorkingPlane::default(),
-            wall: Wall::new(DEFAULT_WALL_THICKNESS, DEFAULT_WALL_HEIGHT, 0),
+            wall: Wall::new(String::new(), DEFAULT_WALL_HEIGHT, 0),
+            thickness: DEFAULT_WALL_THICKNESS,
             phase: WallPhase::Drawing,
             library,
             style_id: None,
@@ -1438,7 +1319,7 @@ impl WallCommand {
         let total_thickness = if let Some(layers) = &self.resolved_layers {
             layers.iter().map(|l| l.thickness + l.gap_before).sum()
         } else {
-            self.wall.thickness
+            self.thickness
         };
 
         let offset = self.justification.offset(total_thickness);
@@ -1468,20 +1349,29 @@ impl WallCommand {
         }
         let mut entity = self.plane.place_entity(EntityType::LwPolyline(pl));
 
-        let record = if let (Some(style_id), Some(layers)) = (&self.style_id, &self.resolved_layers) {
-            let mut rec = ExtendedDataRecord::new(AEC_APPID);
-            rec.values = wall_v2_record(
-                style_id,
-                self.wall.height,
-                self.wall.storey_id,
-                layers,
-                &[],
-                self.justification,
-            );
-            rec
+        let style_id = self.style_id.clone().unwrap_or_default();
+        let layers: Vec<WallLayer> = if let Some(layers) = &self.resolved_layers {
+            layers.clone()
         } else {
-            wall_record(&self.wall)
+            vec![WallLayer {
+                material: String::new(),
+                thickness: self.thickness,
+                function: "Structural".to_string(),
+                gap_before: 0.0,
+                bottom_offset: 0.0,
+                top_offset: 0.0,
+                layer_override: None,
+            }]
         };
+        let mut record = ExtendedDataRecord::new(AEC_APPID);
+        record.values = wall_record(
+            &style_id,
+            self.wall.height,
+            self.wall.storey_id,
+            &layers,
+            &[],
+            self.justification,
+        );
 
         entity.common_mut().extended_data.add_record(record);
         Some(entity)
@@ -1500,7 +1390,7 @@ impl WallCommand {
                 .iter()
                 .map(|l| (l.thickness, l.gap_before))
                 .collect(),
-            _ => vec![(self.wall.thickness, 0.0)],
+            _ => vec![(self.thickness, 0.0)],
         };
         let total_thickness: f64 = layer_data.iter().map(|(t, g)| t + g).sum();
         let centerline_offset = self.justification.offset(total_thickness);
@@ -1697,7 +1587,7 @@ impl CadCommand for WallCommand {
                     .iter()
                     .map(|l| (l.thickness, l.gap_before))
                     .collect(),
-                _ => vec![(self.wall.thickness, 0.0)],
+                _ => vec![(self.thickness, 0.0)],
             };
             let total_thickness: f64 = layer_data.iter().map(|(t, g)| t + g).sum();
             let centerline_offset = self.justification.offset(total_thickness);
@@ -1840,7 +1730,7 @@ impl CadCommand for WallCommand {
                 }
             }
             WallPhase::AskThickness => {
-                self.wall.thickness = Self::parse_dimension(text, DEFAULT_WALL_THICKNESS);
+                self.thickness = Self::parse_dimension(text, DEFAULT_WALL_THICKNESS);
                 Some(self.sync_live(true))
             }
         }
@@ -2505,8 +2395,177 @@ pub fn aec_room(scene: &mut Scene, command_line: &mut CommandLine) {
     }
 }
 
-/// `AEC_STOREY` — append an in-memory storey and report it.
-pub fn aec_storey(_scene: &mut Scene, command_line: &mut CommandLine) {
+/// Build a `STOREY` XDATA record (id + name/elevation/height).
+fn storey_record(storey_id: u32, storey: &Storey) -> ExtendedDataRecord {
+    let mut record = ExtendedDataRecord::new(AEC_APPID);
+    record.add_value(XDataValue::String("STOREY".to_string()));
+    record.add_value(XDataValue::Integer32(storey_id as i32));
+    record.add_value(XDataValue::String(storey.name.clone()));
+    record.add_value(XDataValue::Real(storey.elevation));
+    record.add_value(XDataValue::Real(storey.height));
+    record
+}
+
+/// Parse a `STOREY` XDATA record into `(storey_id, Storey)`.
+pub fn storey_from_entity(entity: &EntityType) -> Option<(u32, Storey)> {
+    let record = read_aec_record(entity)?;
+    let v = &record.values;
+    if v.len() < 5 {
+        return None;
+    }
+    let XDataValue::String(kind) = &v[0] else {
+        return None;
+    };
+    if kind != "STOREY" {
+        return None;
+    }
+    let storey_id = match v[1] {
+        XDataValue::Integer32(i) => i as u32,
+        _ => return None,
+    };
+    let name = match &v[2] {
+        XDataValue::String(s) => s.clone(),
+        _ => return None,
+    };
+    let elevation = match v[3] {
+        XDataValue::Real(r) => r,
+        _ => return None,
+    };
+    let height = match v[4] {
+        XDataValue::Real(r) => r,
+        _ => return None,
+    };
+    Some((storey_id, Storey::new(name, elevation, height)))
+}
+
+/// Document handle of the entity carrying `STOREY` XDATA for `storey_id`.
+pub fn find_storey_handle(doc: &CadDocument, storey_id: u32) -> Option<Handle> {
+    for entity in doc.entities() {
+        if let Some((id, _)) = storey_from_entity(entity) {
+            if id == storey_id {
+                return Some(entity.common().handle);
+            }
+        }
+    }
+    None
+}
+
+/// Ensure a storey entity exists for `storey_id`. Creates a POINT carrier with
+/// `STOREY` XDATA when missing (using `storey` metadata, or a default Level N).
+pub fn ensure_storey_entity(scene: &mut Scene, storey_id: u32, storey: Option<&Storey>) -> Handle {
+    if let Some(h) = find_storey_handle(&scene.document, storey_id) {
+        return h;
+    }
+    let s = storey.cloned().unwrap_or_else(|| {
+        Storey::new(
+            format!("Level {}", storey_id + 1),
+            (storey_id as f64) * 3.0,
+            3.0,
+        )
+    });
+    let point = EntityType::Point(Point::at(Vector3::new(0.0, 0.0, s.elevation)));
+    let handle = scene.add_entity(point);
+    write_aec_record(&mut scene.document, handle, storey_record(storey_id, &s));
+    handle
+}
+
+/// Wall axis handles currently indexed as children of the storey entity.
+/// Filters `CHILD_HANDLES` down to entities that parse as `WALL`.
+pub fn walls_for_storey(scene: &Scene, storey_handle: Handle) -> Vec<Handle> {
+    let mut out = Vec::new();
+    for child in engine::owner_index::children_of(&scene.document, storey_handle) {
+        let Some(entity) = scene.document.get_entity(child) else {
+            continue;
+        };
+        if wall_from_entity(entity).is_some() {
+            out.push(child);
+        }
+    }
+    out
+}
+
+/// Register `wall_handle` under its current `storey_id` owner index.
+pub fn register_wall_in_storey(scene: &mut Scene, wall_handle: Handle) {
+    let Some(entity) = scene.document.get_entity(wall_handle) else {
+        return;
+    };
+    let Some(wall) = wall_from_entity(entity) else {
+        return;
+    };
+    let storey_h = ensure_storey_entity(scene, wall.storey_id, None);
+    engine::owner_index::add_child(&mut scene.document, storey_h, wall_handle);
+}
+
+/// Drop `wall_handle` from its current storey owner index (if any).
+pub fn unregister_wall_from_storey(scene: &mut Scene, wall_handle: Handle) {
+    let Some(entity) = scene.document.get_entity(wall_handle) else {
+        return;
+    };
+    let Some(wall) = wall_from_entity(entity) else {
+        return;
+    };
+    if let Some(storey_h) = find_storey_handle(&scene.document, wall.storey_id) {
+        engine::owner_index::remove_child(&mut scene.document, storey_h, wall_handle);
+    }
+}
+
+/// Change a wall's `storey_id`, reparenting the owner-index entry between
+/// storey entities and rewriting WALL XDATA.
+pub fn set_wall_storey(scene: &mut Scene, wall_handle: Handle, new_storey_id: u32) -> bool {
+    let Some(entity) = scene.document.get_entity(wall_handle) else {
+        return false;
+    };
+    let Some(mut wall) = wall_from_entity(entity) else {
+        return false;
+    };
+    if wall.storey_id == new_storey_id {
+        // Still ensure membership is recorded.
+        let storey_h = ensure_storey_entity(scene, new_storey_id, None);
+        engine::owner_index::add_child(&mut scene.document, storey_h, wall_handle);
+        return true;
+    }
+    if let Some(old_h) = find_storey_handle(&scene.document, wall.storey_id) {
+        engine::owner_index::remove_child(&mut scene.document, old_h, wall_handle);
+    }
+    wall.storey_id = new_storey_id;
+    let mut record = ExtendedDataRecord::new(AEC_APPID);
+    for v in wall_record(
+        &wall.style_id,
+        wall.height,
+        wall.storey_id,
+        &wall.layers,
+        &wall.derived_handles,
+        wall.justification,
+    ) {
+        record.add_value(v);
+    }
+    if !write_aec_record(&mut scene.document, wall_handle, record) {
+        return false;
+    }
+    let new_h = ensure_storey_entity(scene, new_storey_id, None);
+    engine::owner_index::add_child(&mut scene.document, new_h, wall_handle);
+    true
+}
+
+/// Before erasing entities, drop wall axes from their storey owner indexes
+/// and clear symmetric join peer links.
+pub fn unregister_walls_from_storeys(scene: &mut Scene, handles: &[Handle]) {
+    for handle in handles {
+        unregister_wall_from_storey(scene, *handle);
+        unlink_all_wall_peers(scene, *handle);
+    }
+}
+
+/// Remove `wall` from every peer's `JOINED_PEERS` list and clear its own.
+pub fn unlink_all_wall_peers(scene: &mut Scene, wall: Handle) {
+    let peers = engine::owner_index::peers_of(&scene.document, wall);
+    for peer in peers {
+        engine::owner_index::unlink_peers(&mut scene.document, wall, peer);
+    }
+}
+
+/// `AEC_STOREY` — append a storey (document entity + in-memory scaffold list).
+pub fn aec_storey(scene: &mut Scene, command_line: &mut CommandLine) {
     let mut storeys = STOREYS.lock().unwrap();
     let next_id = storeys.len() as u32;
     let new_storey = Storey::new(
@@ -2515,16 +2574,20 @@ pub fn aec_storey(_scene: &mut Scene, command_line: &mut CommandLine) {
         3.0,
     );
     storeys.push(new_storey.clone());
+    drop(storeys);
+
+    let handle = ensure_storey_entity(scene, next_id, Some(&new_storey));
+    scene.bump_geometry();
 
     command_line.push_info(&format!(
-        "AEC: Added storey '{}' at elevation {}",
+        "AEC: Added storey '{}' at elevation {} ({handle})",
         new_storey.name, new_storey.elevation
     ));
 }
 
 /// Expand an erase/delete selection with each wall's `derived_handles`
 /// (contour/hatch/solid entities generated by [`regenerate_wall_representation`])
-/// so deleting a `WALL`/`WALL_V2` entity also removes its rendered representation.
+/// so deleting a `WALL` entity also removes its rendered representation.
 ///
 /// Deduplicates and skips any handle not present in the document (already erased).
 pub fn expand_with_wall_derived_handles(scene: &Scene, handles: &mut Vec<Handle>) {
@@ -2538,12 +2601,12 @@ pub fn expand_with_wall_derived_handles(scene: &Scene, handles: &mut Vec<Handle>
         };
         let is_wall = matches!(
             record.values.first(),
-            Some(XDataValue::String(kind)) if kind == "WALL" || kind == "WALL_V2"
+            Some(XDataValue::String(kind)) if kind == "WALL"
         );
         if !is_wall {
             continue;
         }
-        if let Some(v2) = wall_v2_from_entity(entity) {
+        if let Some(v2) = wall_from_entity(entity) {
             extra.extend(v2.derived_handles.iter().copied());
         }
     }
@@ -2556,7 +2619,7 @@ pub fn expand_with_wall_derived_handles(scene: &Scene, handles: &mut Vec<Handle>
 
 /// `AEC_WALL_REFRESH` — migration path for walls created before the
 /// contour/hatch/solid representation existed: rebuild it for every
-/// `WALL`/`WALL_V2` entity in the document that doesn't already carry a
+/// `WALL` entity in the document that doesn't already carry a
 /// `derived_handles` list (new walls skip a redundant rebuild).
 pub fn aec_wall_refresh(scene: &mut Scene, command_line: &mut CommandLine) {
     let candidates: Vec<Handle> = scene
@@ -2565,10 +2628,12 @@ pub fn aec_wall_refresh(scene: &mut Scene, command_line: &mut CommandLine) {
         .filter_map(|entity| {
             let record = read_aec_record(entity)?;
             match record.values.first() {
-                Some(XDataValue::String(kind)) if kind == "WALL" => Some(entity.common().handle),
-                Some(XDataValue::String(kind)) if kind == "WALL_V2" => {
-                    let v2 = wall_v2_from_entity(entity)?;
-                    if v2.derived_handles.is_empty() {
+                Some(XDataValue::String(kind)) if kind == "WALL" => {
+                    // Skip axes that already have derived entities so a
+                    // refresh doesn't double-build representations for walls
+                    // that still hold a valid package.
+                    let wall = wall_from_entity(entity)?;
+                    if wall.derived_handles.is_empty() {
                         Some(entity.common().handle)
                     } else {
                         None
@@ -2664,24 +2729,9 @@ pub fn aec_ifc_export(scene: &mut Scene, command_line: &mut CommandLine) {
             continue;
         };
         match record.values.first() {
-            Some(XDataValue::String(kind)) if kind == "WALL" || kind == "WALL_V2" => {
-                if let Some((thickness, height, storey_id)) = wall_thickness_and_height(entity) {
-                    let material_ref = if kind == "WALL" {
-                        if let Some(XDataValue::String(s)) = record.values.get(3) {
-                            if s.is_empty() { None } else { Some(s.clone()) }
-                        } else { None }
-                    } else {
-                        // For V2, just take the first layer's material as representative for IFC export for now
-                        if let Some(XDataValue::String(s)) = record.values.get(5) {
-                            if s.is_empty() { None } else { Some(s.clone()) }
-                        } else { None }
-                    };
-                    ifc_scene.walls.push(Wall {
-                        thickness,
-                        height,
-                        material_ref,
-                        storey_id,
-                    });
+            Some(XDataValue::String(kind)) if kind == "WALL" => {
+                if let Some(wall) = wall_from_entity(entity) {
+                    ifc_scene.walls.push(wall);
                 }
             }
             Some(XDataValue::String(kind)) if kind == "ROOM" => {
@@ -2848,12 +2898,12 @@ fn point_to_polyline_dist_2d(p: DVec3, poly: &[DVec3]) -> f64 {
     best
 }
 
-/// True when `entity` is a wall *axis* (carries `WALL`/`WALL_V2` XDATA), not a
+/// True when `entity` is a wall *axis* (carries `WALL` XDATA), not a
 /// derived contour/hatch/solid.
 fn is_wall_axis_xdata(entity: &EntityType) -> bool {
     matches!(
         read_aec_record(entity).and_then(|r| r.values.first()),
-        Some(XDataValue::String(kind)) if kind == "WALL" || kind == "WALL_V2"
+        Some(XDataValue::String(kind)) if kind == "WALL"
     )
 }
 
@@ -3132,6 +3182,13 @@ pub fn join_junction_in_document(
         }
     }
 
+    // Symmetric pairwise peer links among all junction participants.
+    for i in 0..handles.len() {
+        for j in (i + 1)..handles.len() {
+            engine::owner_index::link_peers(&mut scene.document, handles[i], handles[j]);
+        }
+    }
+
     touched.sort_by_key(|h| h.value());
     touched.dedup();
     Ok(touched)
@@ -3143,7 +3200,7 @@ pub fn join_junction_in_document(
 pub fn wall_package_handles(scene: &Scene, wall_handle: Handle) -> Vec<Handle> {
     let mut handles = vec![wall_handle];
     if let Some(entity) = scene.document.get_entity(wall_handle) {
-        if let Some(v2) = wall_v2_from_entity(entity) {
+        if let Some(v2) = wall_from_entity(entity) {
             handles.extend(v2.derived_handles.iter().copied());
         }
     }
@@ -3240,6 +3297,9 @@ pub fn join_two_walls_in_document(
                 }
             }
 
+            // Symmetric peer links for the successful pairwise join.
+            engine::owner_index::link_peers(&mut scene.document, h_a, h_b);
+
             let mut touched = Vec::new();
 
             // Rebuild A against B.
@@ -3294,8 +3354,8 @@ fn wall_layer_data(scene: &Scene, handle: Handle) -> Vec<engine::miter::MiterLay
     let Some(entity) = scene.document.get_entity(handle) else {
         return Vec::new();
     };
-    if let Some(v2) = wall_v2_from_entity(entity) {
-        return v2
+    if let Some(wall) = wall_from_entity(entity) {
+        return wall
             .layers
             .iter()
             .map(|l| {
@@ -3307,15 +3367,6 @@ fn wall_layer_data(scene: &Scene, handle: Handle) -> Vec<engine::miter::MiterLay
                 )
             })
             .collect();
-    }
-    if let Some(wall) = wall_from_entity(entity) {
-        let mat = wall.material_ref.clone().unwrap_or_default();
-        return vec![engine::miter::MiterLayer::with_id(
-            wall.thickness,
-            0.0,
-            mat,
-            "Structural",
-        )];
     }
     Vec::new()
 }
@@ -3346,7 +3397,7 @@ pub fn aec_walljoin_do(scene: &mut Scene, command_line: &mut CommandLine, args: 
         scene.document.get_entity(h).is_some_and(|e| {
             matches!(
                 read_aec_record(e).and_then(|r| r.values.first()),
-                Some(XDataValue::String(kind)) if kind == "WALL" || kind == "WALL_V2"
+                Some(XDataValue::String(kind)) if kind == "WALL"
             )
         })
     };
@@ -3717,14 +3768,14 @@ pub fn reverse_wall_in_document(
     // swaps with the direction since "interior"/"exterior" is direction-
     // relative.
     if let Some(entity) = scene.document.get_entity(wall_handle) {
-        if let Some(mut v2) = wall_v2_from_entity(entity) {
+        if let Some(mut v2) = wall_from_entity(entity) {
             v2.justification = match v2.justification {
                 WallJustification::Interior => WallJustification::Exterior,
                 WallJustification::Exterior => WallJustification::Interior,
                 WallJustification::Center => WallJustification::Center,
             };
             let mut record = ExtendedDataRecord::new(AEC_APPID);
-            for v in wall_v2_record(
+            for v in wall_record(
                 &v2.style_id,
                 v2.height,
                 v2.storey_id,
@@ -3838,17 +3889,17 @@ pub fn opening_from_entity(entity: &EntityType, handle: Handle) -> Option<engine
     })
 }
 
-/// All openings in the document whose `host_wall` resolves to `wall_handle`.
+/// All openings whose host wall is `wall_handle`, looked up via the wall's
+/// `CHILD_HANDLES` owner index (no document scan).
 pub fn openings_for_host_wall(scene: &Scene, wall_handle: Handle) -> Vec<engine::openings::Opening> {
     let wall_handle = resolve_wall_package(scene, wall_handle);
     let mut out = Vec::new();
-    for entity in scene.document.entities() {
-        let handle = entity.common().handle;
-        if let Some(o) = opening_from_entity(entity, handle) {
-            let host = resolve_wall_package(scene, o.host_wall);
-            if host == wall_handle {
-                out.push(o);
-            }
+    for child in engine::owner_index::children_of(&scene.document, wall_handle) {
+        let Some(entity) = scene.document.get_entity(child) else {
+            continue;
+        };
+        if let Some(o) = opening_from_entity(entity, child) {
+            out.push(o);
         }
     }
     out
@@ -3905,6 +3956,7 @@ pub fn place_wall_opening(
     let mut opening = placeholder;
     opening.handle = opening_handle;
     write_aec_record(&mut scene.document, opening_handle, opening_record(&opening));
+    engine::owner_index::add_child(&mut scene.document, wall_handle, opening_handle);
 
     let mut touched = match regenerate_wall_representation(scene, wall_handle) {
         Ok(t) => t,
@@ -3914,6 +3966,32 @@ pub fn place_wall_opening(
     touched.sort_by_key(|h| h.value());
     touched.dedup();
     Ok((opening_handle, touched))
+}
+
+/// Remove an opening entity, drop it from the host wall's `CHILD_HANDLES`
+/// index, and regenerate the host wall. Returns touched handles (wall +
+/// former opening). No-op error when `opening_handle` is not an opening.
+pub fn remove_wall_opening(
+    scene: &mut Scene,
+    opening_handle: Handle,
+) -> Result<Vec<Handle>, String> {
+    let Some(entity) = scene.document.get_entity(opening_handle).cloned() else {
+        return Err("opening entity not found".into());
+    };
+    let Some(opening) = opening_from_entity(&entity, opening_handle) else {
+        return Err("entity is not an opening".into());
+    };
+    let wall_handle = resolve_wall_package(scene, opening.host_wall);
+    engine::owner_index::remove_child(&mut scene.document, wall_handle, opening_handle);
+    scene.erase_entities(&[opening_handle]);
+    let mut touched = match regenerate_wall_representation(scene, wall_handle) {
+        Ok(t) => t,
+        Err(_) => vec![wall_handle],
+    };
+    touched.push(opening_handle);
+    touched.sort_by_key(|h| h.value());
+    touched.dedup();
+    Ok(touched)
 }
 
 /// `AEC_WINDOW` / `AEC_DOOR` — pick a wall, then a point along it to place
@@ -4057,7 +4135,7 @@ mod wall_command_tests {
     use glam::DVec3;
 
     fn wall_xdata(entity: &EntityType) -> Option<&ExtendedDataRecord> {
-        entity.common().extended_data.get_record(AEC_APPID)
+        read_aec_record(entity)
     }
 
     fn wl(material: &str, thickness: f64, function: &str) -> WallLayer {
@@ -4189,22 +4267,10 @@ mod wall_command_tests {
                 assert_eq!(updates.len(), 2);
                 let (updated, entity) = &updates[0];
                 assert_eq!(*updated, handle);
-                let pl = match entity {
-                    EntityType::LwPolyline(pl) => pl,
-                    _ => panic!("expected a live wall polyline"),
-                };
                 assert!(finish);
-                let record = pl
-                    .common
-                    .extended_data
-                    .get_record(AEC_APPID)
-                    .expect("finalized wall should carry WALL xdata");
-                assert!(
-                    matches!(record.values[1], XDataValue::Distance(t) if (t - DEFAULT_WALL_THICKNESS).abs() < 1e-9)
-                );
-                assert!(
-                    matches!(record.values[2], XDataValue::Distance(h) if (h - DEFAULT_WALL_HEIGHT).abs() < 1e-9)
-                );
+                let wall = wall_from_entity(entity).expect("finalized wall should carry WALL xdata");
+                assert!((wall.total_thickness() - DEFAULT_WALL_THICKNESS).abs() < 1e-9);
+                assert!((wall.height - DEFAULT_WALL_HEIGHT).abs() < 1e-9);
             }
             _ => panic!("expected Enter after the point chain to finalize the live wall"),
         }
@@ -4226,16 +4292,11 @@ mod wall_command_tests {
         match cmd.on_enter() {
             CmdResult::UpdateLiveEntities { updates, finish } => {
                 assert_eq!(updates.len(), 2);
-                let pl = match &updates[0].1 {
-                    EntityType::LwPolyline(pl) => pl,
-                    _ => panic!("expected a live wall polyline"),
-                };
                 assert!(finish);
-                let record = pl.common.extended_data.get_record(AEC_APPID).unwrap();
-                assert!(
-                    matches!(record.values[1], XDataValue::Distance(t) if (t - DEFAULT_WALL_THICKNESS).abs() < 1e-9)
-                );
-                assert!(matches!(record.values[2], XDataValue::Distance(h) if (h - 3.5).abs() < 1e-9));
+                let wall = wall_from_entity(&updates[0].1)
+                    .expect("finalized wall should carry WALL xdata");
+                assert!((wall.total_thickness() - DEFAULT_WALL_THICKNESS).abs() < 1e-9);
+                assert!((wall.height - 3.5).abs() < 1e-9);
             }
             _ => panic!("expected the live-edited height to finalize the live wall"),
         }
@@ -4320,8 +4381,8 @@ mod wall_command_tests {
     }
 
     /// `wall_from_entity` is the inverse of `wall_record` — the properties
-    /// panel reads a `Wall` this way to populate the height/thickness/material
-    /// fields for a WALL-tagged entity.
+    /// panel reads a `Wall` this way to populate wall fields for a WALL-tagged
+    /// entity.
     #[test]
     fn wall_from_entity_reads_back_a_finalized_wall_record() {
         use crate::command::LiveFieldValue;
@@ -4337,9 +4398,9 @@ mod wall_command_tests {
         };
 
         let wall = wall_from_entity(&entity).expect("finalized entity should read back as a Wall");
-        assert!((wall.thickness - DEFAULT_WALL_THICKNESS).abs() < 1e-9);
+        assert!((wall.total_thickness() - DEFAULT_WALL_THICKNESS).abs() < 1e-9);
         assert!((wall.height - 3.5).abs() < 1e-9);
-        assert!(wall.material_ref.is_none());
+        assert_eq!(wall.layers.len(), 1);
     }
 
     /// A plain (non-WALL-tagged) entity must not be misread as a wall — this
@@ -4354,11 +4415,10 @@ mod wall_command_tests {
         assert!(wall_from_entity(&entity).is_none());
     }
 
-    /// `write_wall_properties` is the properties-panel writeback path: it
-    /// must reuse `wall_record`'s exact layout so `wall_from_entity` and
-    /// `collect_wall_segments`/`aec_room` keep working after an edit.
+    /// Height writeback via `write_wall_height` keeps the rest of the WALL
+    /// record intact and still visible to the room segment collector.
     #[test]
-    fn write_wall_properties_updates_the_wall_xdata_in_place() {
+    fn write_wall_height_updates_the_wall_xdata_in_place() {
         let mut scene = Scene::new();
         let mut cmd = WallCommand::new_with_library(None);
         cmd.on_point(DVec3::new(0.0, 0.0, 0.0));
@@ -4368,18 +4428,12 @@ mod wall_command_tests {
         };
         let handle = scene.add_entity(entity);
 
-        let mut wall = wall_from_entity(scene.document.get_entity(handle).unwrap())
-            .expect("committed segment should already carry WALL xdata");
-        wall.height = 3.2;
-        wall.thickness = 0.25;
-        wall.material_ref = Some("Concrete".to_string());
-        assert!(write_wall_properties(&mut scene.document, handle, &wall));
+        assert!(write_wall_height(&mut scene, handle, 3.2));
 
         let updated = wall_from_entity(scene.document.get_entity(handle).unwrap())
             .expect("entity should still read back as a wall after the edit");
         assert!((updated.height - 3.2).abs() < 1e-9);
-        assert!((updated.thickness - 0.25).abs() < 1e-9);
-        assert_eq!(updated.material_ref.as_deref(), Some("Concrete"));
+        assert!((updated.total_thickness() - DEFAULT_WALL_THICKNESS).abs() < 1e-9);
 
         // The AEC_ROOM segment collector still sees this wall after the edit.
         let segments = collect_wall_segments(&scene.document);
@@ -4387,20 +4441,20 @@ mod wall_command_tests {
     }
 
     #[test]
-    fn wall_v2_round_trip() {
+    fn wall_round_trip() {
         let layers = vec![
             wl("Finish", 0.02, "Finish"),
             wl("Brick", 0.10, "Structural"),
             wl("Finish", 0.02, "Finish"),
         ];
-        let values = wall_v2_record("style1", 3.0, 1, &layers, &[], WallJustification::Center);
+        let values = wall_record("style1", 3.0, 1, &layers, &[], WallJustification::Center);
         let pl = LwPolyline::new();
         let mut entity = EntityType::LwPolyline(pl);
         let mut record = ExtendedDataRecord::new(AEC_APPID);
         record.values = values;
         entity.common_mut().extended_data.add_record(record);
 
-        let wall = wall_v2_from_entity(&entity).expect("Should parse WALL_V2");
+        let wall = wall_from_entity(&entity).expect("Should parse WALL");
         assert_eq!(wall.style_id, "style1");
         assert_eq!(wall.height, 3.0);
         assert_eq!(wall.storey_id, 1);
@@ -4412,48 +4466,20 @@ mod wall_command_tests {
     }
 
     #[test]
-    fn wall_v2_from_entity_returns_none_for_legacy_wall() {
-        let w = Wall {
-            thickness: 0.2,
-            height: 2.8,
-            material_ref: Some("Concrete".to_string()),
-            storey_id: 1,
-        };
+    fn wall_thickness_and_height_reads_wall_record() {
         let pl = LwPolyline::new();
         let mut entity = EntityType::LwPolyline(pl);
-        entity.common_mut().extended_data.add_record(wall_record(&w));
-
-        assert!(wall_v2_from_entity(&entity).is_none());
-    }
-
-    #[test]
-    fn wall_thickness_and_height_supports_both_versions() {
-        let pl_v1 = LwPolyline::new();
-        let mut e_v1 = EntityType::LwPolyline(pl_v1);
-        let w1 = Wall {
-            thickness: 0.2,
-            height: 2.8,
-            material_ref: None,
-            storey_id: 0,
-        };
-        e_v1.common_mut().extended_data.add_record(wall_record(&w1));
-
-        let res1 = wall_thickness_and_height(&e_v1).expect("Should read V1");
-        assert_eq!(res1, (0.2, 2.8, 0));
-
-        let pl_v2 = LwPolyline::new();
-        let mut e_v2 = EntityType::LwPolyline(pl_v2);
         let layers = vec![wl("Mat", 0.15, "Func")];
-        let mut rec2 = ExtendedDataRecord::new(AEC_APPID);
-        rec2.values = wall_v2_record("style2", 3.2, 2, &layers, &[], WallJustification::Center);
-        e_v2.common_mut().extended_data.add_record(rec2);
+        let mut rec = ExtendedDataRecord::new(AEC_APPID);
+        rec.values = wall_record("style2", 3.2, 2, &layers, &[], WallJustification::Center);
+        entity.common_mut().extended_data.add_record(rec);
 
-        let res2 = wall_thickness_and_height(&e_v2).expect("Should read V2");
-        assert_eq!(res2, (0.15, 3.2, 2));
+        let res = wall_thickness_and_height(&entity).expect("Should read WALL");
+        assert_eq!(res, (0.15, 3.2, 2));
     }
 
     #[test]
-    fn aec_room_detects_a_closed_loop_from_mixed_wall_versions() {
+    fn aec_room_detects_a_closed_loop_from_walls() {
         use crate::ui::command_line::CommandLine;
 
         let mut scene = Scene::new();
@@ -4465,29 +4491,15 @@ mod wall_command_tests {
             DVec3::new(0.0, 0.0, 0.0),
         ];
 
-        for (i, pair) in corners.windows(2).enumerate() {
+        for pair in corners.windows(2) {
             let mut pl = LwPolyline::new();
             pl.add_vertex(LwVertex::new(Vector2::new(pair[0].x, pair[0].y)));
             pl.add_vertex(LwVertex::new(Vector2::new(pair[1].x, pair[1].y)));
             let mut entity = EntityType::LwPolyline(pl);
-
-            let record = if i % 2 == 0 {
-                // Version 1
-                let w = Wall {
-                    thickness: 0.2,
-                    height: 2.8,
-                    material_ref: None,
-                    storey_id: 0,
-                };
-                wall_record(&w)
-            } else {
-                // Version 2
-                let layers = vec![wl("Brick", 0.2, "Structural")];
-                let mut r = ExtendedDataRecord::new(AEC_APPID);
-                r.values = wall_v2_record("style1", 2.8, 0, &layers, &[], WallJustification::Center);
-                r
-            };
-            entity.common_mut().extended_data.add_record(record);
+            let layers = vec![wl("Brick", 0.2, "Structural")];
+            let mut r = ExtendedDataRecord::new(AEC_APPID);
+            r.values = wall_record("style1", 2.8, 0, &layers, &[], WallJustification::Center);
+            entity.common_mut().extended_data.add_record(r);
             scene.add_entity(entity);
         }
 
@@ -4508,7 +4520,7 @@ mod wall_command_tests {
     }
 
     #[test]
-    fn wall_command_with_library_uses_ask_style_and_finalizes_v2() {
+    fn wall_command_with_library_uses_ask_style_and_finalizes() {
         use crate::command::LiveFieldValue;
         use crate::modules::aec::engine::material::Material;
         use crate::modules::aec::engine::style::Style;
@@ -4578,7 +4590,7 @@ mod wall_command_tests {
                 };
                 assert!(finish);
                 let record = pl.common.extended_data.get_record(AEC_APPID).unwrap();
-                assert_eq!(record.values[0], XDataValue::String("WALL_V2".to_string()));
+                assert_eq!(record.values[0], XDataValue::String("WALL".to_string()));
                 assert_eq!(record.values[1], XDataValue::String("style1".to_string()));
                 assert!(
                     matches!(record.values[2], XDataValue::Distance(h) if (h - 3.0).abs() < 1e-9)
@@ -4914,7 +4926,7 @@ mod wall_command_tests {
 
         let mut cmd = WallCommand::new();
         cmd.justification = WallJustification::Interior;
-        cmd.wall.thickness = 0.2;
+        cmd.thickness = 0.2;
 
         cmd.on_point(DVec3::new(0.0, 0.1, 0.0));
         cmd.on_point(DVec3::new(10.0, 0.1, 0.0));
@@ -4962,38 +4974,38 @@ mod wall_command_tests {
     }
 
     #[test]
-    fn wall_v2_round_trip_with_derived_handles() {
+    fn wall_round_trip_with_derived_handles() {
         let layers = vec![wl("Concrete", 0.2, "Structural")];
         let derived = vec![Handle::new(10), Handle::new(11), Handle::new(12)];
-        let values = wall_v2_record("style1", 3.0, 0, &layers, &derived, WallJustification::Center);
+        let values = wall_record("style1", 3.0, 0, &layers, &derived, WallJustification::Center);
         let pl = LwPolyline::new();
         let mut entity = EntityType::LwPolyline(pl);
         let mut record = ExtendedDataRecord::new(AEC_APPID);
         record.values = values;
         entity.common_mut().extended_data.add_record(record);
 
-        let wall = wall_v2_from_entity(&entity).expect("Should parse WALL_V2");
+        let wall = wall_from_entity(&entity).expect("Should parse WALL");
         assert_eq!(wall.derived_handles, derived);
     }
 
     #[test]
-    fn wall_v2_without_derived_handles_tail_still_parses() {
+    fn wall_without_derived_handles_tail_still_parses() {
         // Simulate an old record written before `derived_handles` existed:
         // build it with an empty list and confirm it reads back empty, not
         // an error, keeping legacy records readable.
         let layers = vec![wl("Concrete", 0.2, "Structural")];
-        let values = wall_v2_record("style1", 3.0, 0, &layers, &[], WallJustification::Center);
+        let values = wall_record("style1", 3.0, 0, &layers, &[], WallJustification::Center);
         let pl = LwPolyline::new();
         let mut entity = EntityType::LwPolyline(pl);
         let mut record = ExtendedDataRecord::new(AEC_APPID);
         record.values = values;
         entity.common_mut().extended_data.add_record(record);
 
-        let wall = wall_v2_from_entity(&entity).expect("Should parse WALL_V2");
+        let wall = wall_from_entity(&entity).expect("Should parse WALL");
         assert!(wall.derived_handles.is_empty());
     }
 
-    /// Build a two-layer `WALL_V2` axis polyline in `scene` and return its
+    /// Build a two-layer `WALL` axis polyline in `scene` and return its
     /// handle.
     fn add_multi_layer_wall(scene: &mut Scene) -> Handle {
         let mut pl = LwPolyline::new();
@@ -5005,7 +5017,7 @@ mod wall_command_tests {
             wl("Insulation", 0.05, "Insulation"),
         ];
         let mut record = ExtendedDataRecord::new(AEC_APPID);
-        record.values = wall_v2_record("style1", 3.0, 0, &layers, &[], WallJustification::Center);
+        record.values = wall_record("style1", 3.0, 0, &layers, &[], WallJustification::Center);
         entity.common_mut().extended_data.add_record(record);
         scene.add_entity(entity)
     }
@@ -5014,7 +5026,7 @@ mod wall_command_tests {
     /// handler for `StylePickerTarget::WallPropertiesStyle` (see
     /// `src/app/update/mod.rs`): resolve `effective_layers()` for the newly
     /// chosen style from the currently loaded library, then write the new
-    /// `style_id` + resolved layer snapshot back into the wall's `WALL_V2`
+    /// `style_id` + resolved layer snapshot back into the wall's `WALL`
     /// XDATA and regenerate its representation.
     #[test]
     fn changing_wall_properties_style_updates_style_id_and_layer_snapshot() {
@@ -5099,19 +5111,19 @@ mod wall_command_tests {
             })
             .collect();
 
-        let mut wall_v2 = wall_v2_from_entity(scene.document.get_entity(wall_handle).unwrap())
-            .expect("should parse as WALL_V2");
-        wall_v2.style_id = new_style_id.clone();
-        wall_v2.layers = wall_layers.clone();
+        let mut wall = wall_from_entity(scene.document.get_entity(wall_handle).unwrap())
+            .expect("should parse as WALL");
+        wall.style_id = new_style_id.clone();
+        wall.layers = wall_layers.clone();
 
         let mut record = ExtendedDataRecord::new(AEC_APPID);
-        record.values = wall_v2_record(
-            &wall_v2.style_id,
-            wall_v2.height,
-            wall_v2.storey_id,
-            &wall_v2.layers,
-            &wall_v2.derived_handles,
-            wall_v2.justification,
+        record.values = wall_record(
+            &wall.style_id,
+            wall.height,
+            wall.storey_id,
+            &wall.layers,
+            &wall.derived_handles,
+            wall.justification,
         );
 
         let entity = scene.document.get_entity_mut(wall_handle).unwrap();
@@ -5131,8 +5143,8 @@ mod wall_command_tests {
         regenerate_wall_representation(&mut scene, wall_handle)
             .expect("regeneration should succeed after style change");
 
-        let updated = wall_v2_from_entity(scene.document.get_entity(wall_handle).unwrap())
-            .expect("should still parse as WALL_V2");
+        let updated = wall_from_entity(scene.document.get_entity(wall_handle).unwrap())
+            .expect("should still parse as WALL");
         assert_eq!(updated.style_id, "style2");
         assert_eq!(updated.layers.len(), 2);
         assert_eq!(updated.layers[0].material, "Brick");
@@ -5146,8 +5158,8 @@ mod wall_command_tests {
         regenerate_wall_representation(&mut scene, wall_handle)
             .expect("regeneration should succeed for a valid two-layer wall");
 
-        let derived = wall_v2_from_entity(scene.document.get_entity(wall_handle).unwrap())
-            .expect("should still read back as WALL_V2")
+        let derived = wall_from_entity(scene.document.get_entity(wall_handle).unwrap())
+            .expect("should still read back as WALL")
             .derived_handles;
         assert!(!derived.is_empty());
 
@@ -5190,8 +5202,8 @@ mod wall_command_tests {
         regenerate_wall_representation(&mut scene, wall_handle)
             .expect("regeneration should succeed for a valid two-layer wall");
 
-        let wall = wall_v2_from_entity(scene.document.get_entity(wall_handle).unwrap())
-            .expect("should still read back as WALL_V2");
+        let wall = wall_from_entity(scene.document.get_entity(wall_handle).unwrap())
+            .expect("should still read back as WALL");
         assert!(!wall.derived_handles.is_empty());
 
         // Sanity: the axis lives on the invisible axis layer; its derived
@@ -5254,7 +5266,7 @@ mod wall_command_tests {
         let mut entity_b = EntityType::LwPolyline(pl_b);
         let layers_b = vec![wl("Concrete", 0.3, "Structural")];
         let mut record_b = ExtendedDataRecord::new(AEC_APPID);
-        record_b.values = wall_v2_record("style1", 3.0, 0, &layers_b, &[], WallJustification::Center);
+        record_b.values = wall_record("style1", 3.0, 0, &layers_b, &[], WallJustification::Center);
         entity_b.common_mut().extended_data.add_record(record_b);
         let wall_b = scene.add_entity(entity_b);
 
@@ -5277,8 +5289,8 @@ mod wall_command_tests {
         // Wall A's contour (thickness 0.25) should reach past x=6 by (at
         // least close to) wall B's half thickness (0.15), overlapping into
         // wall B's own footprint instead of stopping flush at the corner.
-        let wall_a_v2 = wall_v2_from_entity(scene.document.get_entity(wall_a).unwrap())
-            .expect("wall A should still read back as WALL_V2");
+        let wall_a_v2 = wall_from_entity(scene.document.get_entity(wall_a).unwrap())
+            .expect("wall A should still read back as WALL");
         let max_x = wall_a_v2
             .derived_handles
             .iter()
@@ -5309,8 +5321,8 @@ mod wall_command_tests {
             "regeneration should have created new contour/hatch/solid entities"
         );
 
-        let wall = wall_v2_from_entity(scene.document.get_entity(wall_handle).unwrap())
-            .expect("wall should still be readable as WALL_V2 after regeneration");
+        let wall = wall_from_entity(scene.document.get_entity(wall_handle).unwrap())
+            .expect("wall should still be readable as WALL after regeneration");
         let derived_after_first = wall.derived_handles.clone();
         assert!(!derived_after_first.is_empty());
 
@@ -5324,8 +5336,8 @@ mod wall_command_tests {
             "regenerating twice should not duplicate derived entities"
         );
 
-        let wall2 = wall_v2_from_entity(scene.document.get_entity(wall_handle).unwrap())
-            .expect("wall should still be readable as WALL_V2 after second regeneration");
+        let wall2 = wall_from_entity(scene.document.get_entity(wall_handle).unwrap())
+            .expect("wall should still be readable as WALL after second regeneration");
         assert_eq!(wall2.derived_handles.len(), derived_after_first.len());
     }
 
@@ -5341,15 +5353,15 @@ mod wall_command_tests {
         let default_layer = wl("Insulation", 0.05, "Insulation");
         let layers = vec![overridden, default_layer];
         let mut record = ExtendedDataRecord::new(AEC_APPID);
-        record.values = wall_v2_record("style1", 3.0, 0, &layers, &[], WallJustification::Center);
+        record.values = wall_record("style1", 3.0, 0, &layers, &[], WallJustification::Center);
         entity.common_mut().extended_data.add_record(record);
         let wall_handle = scene.add_entity(entity);
 
         regenerate_wall_representation(&mut scene, wall_handle)
             .expect("regeneration should succeed for a valid two-layer wall");
 
-        let derived = wall_v2_from_entity(scene.document.get_entity(wall_handle).unwrap())
-            .expect("should still read back as WALL_V2")
+        let derived = wall_from_entity(scene.document.get_entity(wall_handle).unwrap())
+            .expect("should still read back as WALL")
             .derived_handles;
         assert!(!derived.is_empty());
 
@@ -5395,7 +5407,7 @@ mod wall_command_tests {
             let mut entity = EntityType::LwPolyline(pl);
             let layers = vec![wl("Concrete", 0.2, "Structural")];
             let mut record = ExtendedDataRecord::new(AEC_APPID);
-            record.values = wall_v2_record("style1", 2.8, 0, &layers, &[], WallJustification::Center);
+            record.values = wall_record("style1", 2.8, 0, &layers, &[], WallJustification::Center);
             entity.common_mut().extended_data.add_record(record);
             handles.push(scene.add_entity(entity));
         }
@@ -5465,14 +5477,14 @@ mod wall_command_tests {
         layer.top_offset = 0.3;
         let layers = vec![layer];
         let mut record = ExtendedDataRecord::new(AEC_APPID);
-        record.values = wall_v2_record("style1", 3.0, 0, &layers, &[], WallJustification::Center);
+        record.values = wall_record("style1", 3.0, 0, &layers, &[], WallJustification::Center);
         entity.common_mut().extended_data.add_record(record);
         let wall_handle = scene.add_entity(entity);
 
         regenerate_wall_representation(&mut scene, wall_handle)
             .expect("regeneration should succeed");
 
-        let wall = wall_v2_from_entity(scene.document.get_entity(wall_handle).unwrap()).unwrap();
+        let wall = wall_from_entity(scene.document.get_entity(wall_handle).unwrap()).unwrap();
 
         let mut saw_bottom_z = false;
         let mut saw_top_z = false;
@@ -5506,7 +5518,7 @@ mod wall_command_tests {
         let initial_layers = vec![wl("Brick", 0.1, "Structural")];
         let mut record = ExtendedDataRecord::new(AEC_APPID);
         record.values =
-            wall_v2_record("style1", 3.0, 0, &initial_layers, &[], WallJustification::Center);
+            wall_record("style1", 3.0, 0, &initial_layers, &[], WallJustification::Center);
         entity.common_mut().extended_data.add_record(record);
         let wall_handle = scene.add_entity(entity);
 
@@ -5515,12 +5527,12 @@ mod wall_command_tests {
 
         // Update layers
         let updated_layers = vec![wl("Brick", 0.5, "Structural")];
-        assert!(write_wall_v2_layers(&mut scene, wall_handle, updated_layers));
+        assert!(write_wall_layers(&mut scene, wall_handle, updated_layers));
 
         // Regenerate again
         regenerate_wall_representation(&mut scene, wall_handle).unwrap();
 
-        let wall = wall_v2_from_entity(scene.document.get_entity(wall_handle).unwrap()).unwrap();
+        let wall = wall_from_entity(scene.document.get_entity(wall_handle).unwrap()).unwrap();
         assert_eq!(wall.layers[0].thickness, 0.5);
 
         // Check geometry (thickness is reflected in Solid3D width)
@@ -5565,7 +5577,7 @@ mod wall_command_tests {
         // Both the 2D (contour/hatch) and 3D (solid) derived representation
         // must reflect the new, extended axis length — not just the axis
         // polyline itself.
-        let wall = wall_v2_from_entity(scene.document.get_entity(wall_handle).unwrap()).unwrap();
+        let wall = wall_from_entity(scene.document.get_entity(wall_handle).unwrap()).unwrap();
         let mut max_x_2d: f64 = 0.0;
         let mut max_x_3d: f64 = 0.0;
         for h in &wall.derived_handles {
@@ -5644,7 +5656,7 @@ mod wall_command_tests {
         let mut entity = EntityType::LwPolyline(pl);
         let layers = vec![wl("Concrete", 0.2, "Structural")];
         let mut record = ExtendedDataRecord::new(AEC_APPID);
-        record.values = wall_v2_record("style1", 3.0, 0, &layers, &[], WallJustification::Center);
+        record.values = wall_record("style1", 3.0, 0, &layers, &[], WallJustification::Center);
         entity.common_mut().extended_data.add_record(record);
         let wall_handle = scene.add_entity(entity);
 
@@ -5683,7 +5695,7 @@ mod wall_command_tests {
         pl_b.add_vertex(LwVertex::new(Vector2::new(8.0, 5.0)));
         let mut entity_b = EntityType::LwPolyline(pl_b);
         let mut record_b = ExtendedDataRecord::new(AEC_APPID);
-        record_b.values = wall_v2_record(
+        record_b.values = wall_record(
             "style1",
             3.0,
             0,
@@ -5726,7 +5738,7 @@ mod wall_command_tests {
             WallJustification::Interior,
         ));
 
-        let wall = wall_v2_from_entity(scene.document.get_entity(wall_handle).unwrap()).unwrap();
+        let wall = wall_from_entity(scene.document.get_entity(wall_handle).unwrap()).unwrap();
         assert_eq!(wall.justification, WallJustification::Interior);
 
         let axis_after = get_wall_vertices(&scene, wall_handle);
@@ -5810,7 +5822,7 @@ mod wall_command_tests {
             touched.contains(&wall_handle),
             "returned set must include the axis handle"
         );
-        let wall = wall_v2_from_entity(scene.document.get_entity(wall_handle).unwrap()).unwrap();
+        let wall = wall_from_entity(scene.document.get_entity(wall_handle).unwrap()).unwrap();
         assert!(
             !wall.derived_handles.is_empty(),
             "regeneration should create derived entities"
@@ -5836,7 +5848,7 @@ mod wall_command_tests {
         let mut ent_a = EntityType::LwPolyline(pl_a);
         let layers = vec![wl("Concrete", 0.2, "Structural")];
         let mut rec_a = ExtendedDataRecord::new(AEC_APPID);
-        rec_a.values = wall_v2_record("s", 3.0, 0, &layers, &[], WallJustification::Center);
+        rec_a.values = wall_record("s", 3.0, 0, &layers, &[], WallJustification::Center);
         ent_a.common_mut().extended_data.add_record(rec_a);
         let wall_a = scene.add_entity(ent_a);
 
@@ -5845,7 +5857,7 @@ mod wall_command_tests {
         pl_b.add_vertex(LwVertex::new(Vector2::new(6.0, 10.0)));
         let mut ent_b = EntityType::LwPolyline(pl_b);
         let mut rec_b = ExtendedDataRecord::new(AEC_APPID);
-        rec_b.values = wall_v2_record("s", 3.0, 0, &layers, &[], WallJustification::Center);
+        rec_b.values = wall_record("s", 3.0, 0, &layers, &[], WallJustification::Center);
         ent_b.common_mut().extended_data.add_record(rec_b);
         let wall_b = scene.add_entity(ent_b);
 
@@ -5861,7 +5873,7 @@ mod wall_command_tests {
 
         // Collect closed contour polylines (layer footprints) for both walls.
         let contours = |scene: &Scene, h: Handle| -> Vec<Vec<(f64, f64)>> {
-            let wall = wall_v2_from_entity(scene.document.get_entity(h).unwrap()).unwrap();
+            let wall = wall_from_entity(scene.document.get_entity(h).unwrap()).unwrap();
             wall.derived_handles
                 .iter()
                 .filter_map(|dh| match scene.document.get_entity(*dh) {
@@ -5907,7 +5919,7 @@ mod wall_command_tests {
         let mut ent_a = EntityType::LwPolyline(pl_a);
         let layers = vec![wl("Concrete", 0.2, "Structural")];
         let mut rec_a = ExtendedDataRecord::new(AEC_APPID);
-        rec_a.values = wall_v2_record("s", 3.0, 0, &layers, &[], WallJustification::Center);
+        rec_a.values = wall_record("s", 3.0, 0, &layers, &[], WallJustification::Center);
         ent_a.common_mut().extended_data.add_record(rec_a);
         let wall_a = scene.add_entity(ent_a);
 
@@ -5916,7 +5928,7 @@ mod wall_command_tests {
         pl_b.add_vertex(LwVertex::new(Vector2::new(10.0, 0.0)));
         let mut ent_b = EntityType::LwPolyline(pl_b);
         let mut rec_b = ExtendedDataRecord::new(AEC_APPID);
-        rec_b.values = wall_v2_record("s", 3.0, 0, &layers, &[], WallJustification::Center);
+        rec_b.values = wall_record("s", 3.0, 0, &layers, &[], WallJustification::Center);
         ent_b.common_mut().extended_data.add_record(rec_b);
         let wall_b = scene.add_entity(ent_b);
 
@@ -5931,7 +5943,7 @@ mod wall_command_tests {
             "stem axis should end on the through wall axis, got {axis_a:?}"
         );
 
-        let wall_a_v2 = wall_v2_from_entity(scene.document.get_entity(wall_a).unwrap()).unwrap();
+        let wall_a_v2 = wall_from_entity(scene.document.get_entity(wall_a).unwrap()).unwrap();
         let mut max_abs_y_near_join = 0.0_f64;
         for h in &wall_a_v2.derived_handles {
             if let Some(EntityType::LwPolyline(pl)) = scene.document.get_entity(*h) {
@@ -5960,7 +5972,7 @@ mod wall_command_tests {
         pl_b.add_vertex(LwVertex::new(Vector2::new(8.0, 5.0)));
         let mut entity_b = EntityType::LwPolyline(pl_b);
         let mut record_b = ExtendedDataRecord::new(AEC_APPID);
-        record_b.values = wall_v2_record(
+        record_b.values = wall_record(
             "style1",
             3.0,
             0,
@@ -6013,8 +6025,8 @@ mod wall_command_tests {
         // Full join rebuilds both walls' representations (miter/T stem). For
         // this T configuration the through-wall axis vertices stay put, but
         // the stem must still land on x=8 and both walls keep derived handles.
-        let wall_a_v2 = wall_v2_from_entity(scene.document.get_entity(wall_a).unwrap()).unwrap();
-        let wall_b_v2 = wall_v2_from_entity(scene.document.get_entity(wall_b).unwrap()).unwrap();
+        let wall_a_v2 = wall_from_entity(scene.document.get_entity(wall_a).unwrap()).unwrap();
+        let wall_b_v2 = wall_from_entity(scene.document.get_entity(wall_b).unwrap()).unwrap();
         assert!(
             !wall_a_v2.derived_handles.is_empty() && !wall_b_v2.derived_handles.is_empty(),
             "both walls should have regenerated derived handles after extend-join"
@@ -6035,7 +6047,7 @@ mod wall_command_tests {
         let mut entity = EntityType::LwPolyline(pl);
         let layers = vec![wl("Concrete", 0.2, "Structural")];
         let mut record = ExtendedDataRecord::new(AEC_APPID);
-        record.values = wall_v2_record("s", 3.0, 0, &layers, &[], WallJustification::Center);
+        record.values = wall_record("s", 3.0, 0, &layers, &[], WallJustification::Center);
         entity.common_mut().extended_data.add_record(record);
         let new_wall = scene.add_entity(entity);
 
@@ -6052,7 +6064,7 @@ mod wall_command_tests {
         pl_far.add_vertex(LwVertex::new(Vector2::new(55.0, 0.0)));
         let mut ent_far = EntityType::LwPolyline(pl_far);
         let mut rec_far = ExtendedDataRecord::new(AEC_APPID);
-        rec_far.values = wall_v2_record("s", 3.0, 0, &layers, &[], WallJustification::Center);
+        rec_far.values = wall_record("s", 3.0, 0, &layers, &[], WallJustification::Center);
         ent_far.common_mut().extended_data.add_record(rec_far);
         let far = scene.add_entity(ent_far);
         assert!(
@@ -6078,7 +6090,7 @@ mod wall_command_tests {
         let mut entity = EntityType::LwPolyline(pl);
         let layers = vec![wl("Concrete", 0.2, "Structural")];
         let mut record = ExtendedDataRecord::new(AEC_APPID);
-        record.values = wall_v2_record("s", 3.0, 0, &layers, &[], WallJustification::Center);
+        record.values = wall_record("s", 3.0, 0, &layers, &[], WallJustification::Center);
         entity.common_mut().extended_data.add_record(record);
         let new_wall = scene.add_entity(entity);
         regenerate_wall_representation(&mut scene, new_wall).expect("regen new");
@@ -6110,7 +6122,7 @@ mod wall_command_tests {
 
         // Both walls should still have derived representation handles.
         for h in [new_wall, existing] {
-            let v2 = wall_v2_from_entity(scene.document.get_entity(h).unwrap()).unwrap();
+            let v2 = wall_from_entity(scene.document.get_entity(h).unwrap()).unwrap();
             assert!(
                 !v2.derived_handles.is_empty(),
                 "wall {} should retain derived handles after auto-join",
@@ -6140,7 +6152,7 @@ mod wall_command_tests {
 
     /// Collect min/max Y of every derived LwPolyline vertex for a wall package.
     fn wall_derived_y_bounds(scene: &Scene, wall: Handle) -> (f64, f64) {
-        let v2 = wall_v2_from_entity(scene.document.get_entity(wall).unwrap()).unwrap();
+        let v2 = wall_from_entity(scene.document.get_entity(wall).unwrap()).unwrap();
         let mut ymin = f64::INFINITY;
         let mut ymax = f64::NEG_INFINITY;
         for h in &v2.derived_handles {
@@ -6162,7 +6174,7 @@ mod wall_command_tests {
         regenerate_wall_representation(&mut scene, wall).expect("regen");
 
         let axis_before = get_wall_vertices(&scene, wall);
-        let layers_before = wall_v2_from_entity(scene.document.get_entity(wall).unwrap())
+        let layers_before = wall_from_entity(scene.document.get_entity(wall).unwrap())
             .unwrap()
             .layers
             .clone();
@@ -6187,7 +6199,7 @@ mod wall_command_tests {
             "axis vertices must reverse order"
         );
 
-        let layers_after = wall_v2_from_entity(scene.document.get_entity(wall).unwrap())
+        let layers_after = wall_from_entity(scene.document.get_entity(wall).unwrap())
             .unwrap()
             .layers
             .clone();
@@ -6237,7 +6249,7 @@ mod wall_command_tests {
         let layers_b = vec![wl("Concrete", 0.2, "Structural")];
         let mut record_b = ExtendedDataRecord::new(AEC_APPID);
         record_b.values =
-            wall_v2_record("style1", 3.0, 0, &layers_b, &[], WallJustification::Center);
+            wall_record("style1", 3.0, 0, &layers_b, &[], WallJustification::Center);
         entity_b.common_mut().extended_data.add_record(record_b);
         let wall_b = scene.add_entity(entity_b);
 
@@ -6273,7 +6285,7 @@ mod wall_command_tests {
 
     /// Helper: closed LwPolyline layer footprints for a wall package.
     fn wall_closed_footprints(scene: &Scene, h: Handle) -> Vec<Vec<(f64, f64)>> {
-        let wall = wall_v2_from_entity(scene.document.get_entity(h).unwrap()).unwrap();
+        let wall = wall_from_entity(scene.document.get_entity(h).unwrap()).unwrap();
         wall.derived_handles
             .iter()
             .filter_map(|dh| match scene.document.get_entity(*dh) {
@@ -6303,7 +6315,7 @@ mod wall_command_tests {
         let mut ent_a = EntityType::LwPolyline(pl_a);
         let layers = vec![wl("Concrete", 0.2, "Structural")];
         let mut rec_a = ExtendedDataRecord::new(AEC_APPID);
-        rec_a.values = wall_v2_record("s", 3.0, 0, &layers, &[], WallJustification::Center);
+        rec_a.values = wall_record("s", 3.0, 0, &layers, &[], WallJustification::Center);
         ent_a.common_mut().extended_data.add_record(rec_a);
         let wall_a = scene.add_entity(ent_a);
 
@@ -6312,7 +6324,7 @@ mod wall_command_tests {
         pl_b.add_vertex(LwVertex::new(Vector2::new(5.0, 5.0)));
         let mut ent_b = EntityType::LwPolyline(pl_b);
         let mut rec_b = ExtendedDataRecord::new(AEC_APPID);
-        rec_b.values = wall_v2_record("s", 3.0, 0, &layers, &[], WallJustification::Center);
+        rec_b.values = wall_record("s", 3.0, 0, &layers, &[], WallJustification::Center);
         ent_b.common_mut().extended_data.add_record(rec_b);
         let wall_b = scene.add_entity(ent_b);
 
@@ -6363,7 +6375,7 @@ mod wall_command_tests {
             touched.contains(&wall_b),
             "touched must include neighbour B after re-join, got {touched:?}"
         );
-        let v2_b = wall_v2_from_entity(scene.document.get_entity(wall_b).unwrap()).unwrap();
+        let v2_b = wall_from_entity(scene.document.get_entity(wall_b).unwrap()).unwrap();
         for d in &v2_b.derived_handles {
             assert!(
                 touched.contains(d),
@@ -6419,14 +6431,14 @@ mod wall_command_tests {
         concrete.gap_before = 0.01;
         let layers = vec![brick, insulation, concrete];
         let mut record = ExtendedDataRecord::new(AEC_APPID);
-        record.values = wall_v2_record("s3", 3.0, 0, &layers, &[], WallJustification::Center);
+        record.values = wall_record("s3", 3.0, 0, &layers, &[], WallJustification::Center);
         entity.common_mut().extended_data.add_record(record);
         let wall = scene.add_entity(entity);
 
         regenerate_wall_representation(&mut scene, wall).expect("regen");
 
         let entity_before = scene.document.get_entity(wall).unwrap().clone();
-        let layers_before = wall_v2_from_entity(&entity_before).unwrap().layers.clone();
+        let layers_before = wall_from_entity(&entity_before).unwrap().layers.clone();
         let contours_before = wall_layer_contour_polylines(&entity_before, &layers_before);
 
         // Per-material world center offset along the axis normal (Y for a
@@ -6444,7 +6456,7 @@ mod wall_command_tests {
         reverse_wall_in_document(&mut scene, wall).expect("reverse");
 
         let entity_after = scene.document.get_entity(wall).unwrap().clone();
-        let layers_after = wall_v2_from_entity(&entity_after).unwrap().layers.clone();
+        let layers_after = wall_from_entity(&entity_after).unwrap().layers.clone();
         let contours_after = wall_layer_contour_polylines(&entity_after, &layers_after);
         assert_eq!(layers_after.len(), 3);
         // The stored layer list order is untouched by reverse.
@@ -6644,5 +6656,144 @@ mod wall_command_tests {
         let resolved = resolve_wall_style_layers(&lib, "style_bad", Some(0.3)).unwrap();
         assert_eq!(resolved.len(), 1);
         assert_eq!(resolved[0].thickness, 0.0);
+    }
+
+    #[test]
+    fn join_and_delete_maintain_symmetric_peer_links() {
+        let mut scene = Scene::new();
+        let layers = vec![wl("Concrete", 0.2, "Structural")];
+        let add_wall = |scene: &mut Scene, a: (f64, f64), b: (f64, f64)| {
+            let mut pl = LwPolyline::new();
+            pl.add_vertex(LwVertex::new(Vector2::new(a.0, a.1)));
+            pl.add_vertex(LwVertex::new(Vector2::new(b.0, b.1)));
+            let mut entity = EntityType::LwPolyline(pl);
+            let mut record = ExtendedDataRecord::new(AEC_APPID);
+            record.values = wall_record("s", 3.0, 0, &layers, &[], WallJustification::Center);
+            entity.common_mut().extended_data.add_record(record);
+            scene.add_entity(entity)
+        };
+        let ha = add_wall(&mut scene, (0.0, 0.0), (5.0, 0.0));
+        let hb = add_wall(&mut scene, (0.0, 0.0), (0.0, 5.0));
+        join_two_walls_in_document(&mut scene, ha, hb).expect("L join");
+        assert_eq!(engine::owner_index::peers_of(&scene.document, ha), vec![hb]);
+        assert_eq!(engine::owner_index::peers_of(&scene.document, hb), vec![ha]);
+
+        // Snapshot peer XDATA then unlink (simulates undo of join / disconnect).
+        let peers_before = engine::owner_index::peers_of(&scene.document, ha);
+        assert_eq!(peers_before, vec![hb]);
+        engine::owner_index::unlink_peers(&mut scene.document, ha, hb);
+        assert!(engine::owner_index::peers_of(&scene.document, ha).is_empty());
+        assert!(engine::owner_index::peers_of(&scene.document, hb).is_empty());
+        // re-join
+        join_two_walls_in_document(&mut scene, ha, hb).expect("rejoin");
+
+        let hc = add_wall(&mut scene, (2.5, -3.0), (2.5, 0.0));
+        join_two_walls_in_document(&mut scene, ha, hc).expect("T join");
+        let mut peers_a = engine::owner_index::peers_of(&scene.document, ha);
+        peers_a.sort_by_key(|h| h.value());
+        let mut expected = vec![hb, hc];
+        expected.sort_by_key(|h| h.value());
+        assert_eq!(peers_a, expected);
+
+        // Deleting ha clears it from peers.
+        unlink_all_wall_peers(&mut scene, ha);
+        assert!(engine::owner_index::peers_of(&scene.document, ha).is_empty());
+        assert!(!engine::owner_index::peers_of(&scene.document, hb).contains(&ha));
+        assert!(!engine::owner_index::peers_of(&scene.document, hc).contains(&ha));
+    }
+
+    #[test]
+    fn storey_membership_tracks_add_remove_and_reassign() {
+        let mut scene = Scene::new();
+        let s0 = ensure_storey_entity(&mut scene, 0, Some(&Storey::new("L0", 0.0, 3.0)));
+        let s1 = ensure_storey_entity(&mut scene, 1, Some(&Storey::new("L1", 3.0, 3.0)));
+        assert!(walls_for_storey(&scene, s0).is_empty());
+        assert!(walls_for_storey(&scene, s1).is_empty());
+
+        let w1 = add_multi_layer_wall(&mut scene);
+        let w2 = {
+            // second wall, same geometry template
+            let mut pl = LwPolyline::new();
+            pl.add_vertex(LwVertex::new(Vector2::new(0.0, 1.0)));
+            pl.add_vertex(LwVertex::new(Vector2::new(5.0, 1.0)));
+            let mut entity = EntityType::LwPolyline(pl);
+            let layers = vec![wl("Concrete", 0.2, "Structural")];
+            let mut record = ExtendedDataRecord::new(AEC_APPID);
+            record.values = wall_record("style1", 3.0, 0, &layers, &[], WallJustification::Center);
+            entity.common_mut().extended_data.add_record(record);
+            scene.add_entity(entity)
+        };
+
+        register_wall_in_storey(&mut scene, w1);
+        register_wall_in_storey(&mut scene, w2);
+        let mut members0 = walls_for_storey(&scene, s0);
+        members0.sort_by_key(|h| h.value());
+        let mut expected = vec![w1, w2];
+        expected.sort_by_key(|h| h.value());
+        assert_eq!(members0, expected);
+        assert!(walls_for_storey(&scene, s1).is_empty());
+
+        assert!(set_wall_storey(&mut scene, w1, 1));
+        assert_eq!(walls_for_storey(&scene, s0), vec![w2]);
+        assert_eq!(walls_for_storey(&scene, s1), vec![w1]);
+        let wall = wall_from_entity(scene.document.get_entity(w1).unwrap()).unwrap();
+        assert_eq!(wall.storey_id, 1);
+
+        unregister_wall_from_storey(&mut scene, w2);
+        assert!(walls_for_storey(&scene, s0).is_empty());
+        assert_eq!(walls_for_storey(&scene, s1), vec![w1]);
+
+        // erase-path helper clears remaining membership
+        unregister_walls_from_storeys(&mut scene, &[w1]);
+        assert!(walls_for_storey(&scene, s1).is_empty());
+    }
+
+    #[test]
+    fn placing_and_removing_opening_keeps_host_child_handles() {
+        let mut scene = Scene::new();
+        let wall = add_multi_layer_wall(&mut scene);
+        assert!(engine::owner_index::children_of(&scene.document, wall).is_empty());
+        assert!(openings_for_host_wall(&scene, wall).is_empty());
+
+        let (o1, _) = place_wall_opening(
+            &mut scene,
+            wall,
+            DVec3::new(1.5, 0.0, 0.0),
+            engine::openings::OpeningKind::Window,
+        )
+        .expect("place window");
+        let (o2, _) = place_wall_opening(
+            &mut scene,
+            wall,
+            DVec3::new(3.5, 0.0, 0.0),
+            engine::openings::OpeningKind::Door,
+        )
+        .expect("place door");
+
+        let children = engine::owner_index::children_of(&scene.document, wall);
+        assert_eq!(children, vec![o1, o2]);
+
+        let openings = openings_for_host_wall(&scene, wall);
+        assert_eq!(openings.len(), 2);
+        assert!(openings.iter().any(|o| o.handle == o1 && o.kind == engine::openings::OpeningKind::Window));
+        assert!(openings.iter().any(|o| o.handle == o2 && o.kind == engine::openings::OpeningKind::Door));
+        // host_wall XDATA still written on the opening entity
+        let o1_ent = scene.document.get_entity(o1).unwrap();
+        let parsed = opening_from_entity(o1_ent, o1).unwrap();
+        assert_eq!(parsed.host_wall, wall);
+
+        remove_wall_opening(&mut scene, o1).expect("remove window");
+        assert_eq!(
+            engine::owner_index::children_of(&scene.document, wall),
+            vec![o2]
+        );
+        let remaining = openings_for_host_wall(&scene, wall);
+        assert_eq!(remaining.len(), 1);
+        assert_eq!(remaining[0].handle, o2);
+        assert!(scene.document.get_entity(o1).is_none());
+
+        remove_wall_opening(&mut scene, o2).expect("remove door");
+        assert!(engine::owner_index::children_of(&scene.document, wall).is_empty());
+        assert!(openings_for_host_wall(&scene, wall).is_empty());
     }
 }

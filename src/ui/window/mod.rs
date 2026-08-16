@@ -2,6 +2,7 @@ pub mod about;
 pub mod aec_material_manager;
 pub mod aec_wall_style_manager;
 pub mod aec_style_picker;
+pub mod aec_project_explorer;
 pub(crate) mod aec_ui_util;
 pub mod block_palette;
 pub mod layout_manager;

@@ -1717,7 +1717,7 @@ impl OpenCADStudio {
                 if finish {
                     if let Some(handle) = first_handle {
                         // AEC wall: the just-finished axis polyline carries
-                        // WALL/WALL_V2 XDATA, so rebuild its visible
+                        // WALL/WALL XDATA, so rebuild its visible
                         // contour/hatch/solid representation now that the final
                         // geometry (and dimensions) are committed.
                         let is_wall = self.tabs[i]
@@ -1736,7 +1736,7 @@ impl OpenCADStudio {
                             // default.
                             if let Some(entity) = self.tabs[i].scene.document.get_entity(handle) {
                                 if let Some(v2) =
-                                    crate::modules::aec::commands::wall_v2_from_entity(entity)
+                                    crate::modules::aec::commands::wall_from_entity(entity)
                                 {
                                     self.aec_last_wall_style_id = Some(v2.style_id.clone());
                                     self.aec_last_wall_height = Some(v2.height);
