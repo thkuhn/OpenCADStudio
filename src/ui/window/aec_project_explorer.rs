@@ -13,10 +13,10 @@ use super::aec_ui_util::*;
 pub struct ProjectExplorerState<'a> {
     /// Absolute (or last-known) path of the loaded/saved `.ocsproj`, if any.
     pub path: Option<&'a std::path::Path>,
-    /// Currently selected building index (sidebar highlight).
-    pub selected_building: Option<usize>,
-    /// Currently selected storey as `(building_idx, storey_idx)`.
-    pub selected_storey: Option<(usize, usize)>,
+    /// Currently selected building, by its stable id (sidebar highlight).
+    pub selected_building: Option<u64>,
+    /// Currently selected storey as `(building_id, storey_id)`.
+    pub selected_storey: Option<(u64, u64)>,
     /// "Add building" name buffer.
     pub new_building_name: &'a str,
     /// "Add storey" form buffers.
@@ -95,10 +95,11 @@ fn delete_confirm_bar<'a>(
     let pending = pending?;
 
     let message = match pending {
-        AecProjectExplorerDeleteTarget::Building(bi) => {
+        AecProjectExplorerDeleteTarget::Building(bid) => {
             let name = project
                 .buildings
-                .get(bi)
+                .iter()
+                .find(|b| b.id == bid)
                 .map(|b| b.name.as_str())
                 .unwrap_or("?");
             t!(
@@ -107,11 +108,12 @@ fn delete_confirm_bar<'a>(
             )
             .into_owned()
         }
-        AecProjectExplorerDeleteTarget::Storey(bi, si) => {
+        AecProjectExplorerDeleteTarget::Storey(bid, sid) => {
             let name = project
                 .buildings
-                .get(bi)
-                .and_then(|b| b.storeys.get(si))
+                .iter()
+                .find(|b| b.id == bid)
+                .and_then(|b| b.storeys.iter().find(|s| s.id == sid))
                 .map(|s| s.name.as_str())
                 .unwrap_or("?");
             t!(
@@ -153,10 +155,10 @@ fn project_tree<'a>(
     if project.buildings.is_empty() {
         tree = tree.push(no_matches());
     } else {
-        for (bi, building) in project.buildings.iter().enumerate() {
-            tree = tree.push(building_row(bi, building, state));
-            for (si, storey) in building.storeys.iter().enumerate() {
-                tree = tree.push(storey_row(bi, si, storey, state));
+        for building in project.buildings.iter() {
+            tree = tree.push(building_row(building, state));
+            for storey in building.storeys.iter() {
+                tree = tree.push(storey_row(building.id, storey, state));
             }
         }
     }
@@ -173,12 +175,12 @@ fn project_tree<'a>(
 }
 
 fn building_row<'a>(
-    bi: usize,
     building: &'a Building,
     state: &ProjectExplorerState<'a>,
 ) -> Element<'a, Message> {
+    let bid = building.id;
     // Highlight when this building is the explicit selection (not a storey row).
-    let selected = state.selected_building == Some(bi) && state.selected_storey.is_none();
+    let selected = state.selected_building == Some(bid) && state.selected_storey.is_none();
 
     let label_row = button(
         row![
@@ -192,7 +194,7 @@ fn building_row<'a>(
         .spacing(6)
         .align_y(iced::Center),
     )
-    .on_press(Message::AecProjectExplorerSelectBuilding(bi))
+    .on_press(Message::AecProjectExplorerSelectBuilding(bid))
     .style(list_style(selected))
     .padding([6, 9])
     .width(Fill);
@@ -210,18 +212,18 @@ fn building_row<'a>(
             Space::new().width(20),
             text(t!("Name")).size(10).style(muted),
             text_input("", state.edit_building_name)
-                .on_input(move |v| Message::AecProjectExplorerEditBuildingName(bi, v))
+                .on_input(move |v| Message::AecProjectExplorerEditBuildingName(bid, v))
                 .size(11)
                 .padding([3, 6])
                 .width(Fill),
             button(text(t!("Save")).size(10))
                 .style(button::primary)
                 .padding([3, 8])
-                .on_press(Message::AecProjectExplorerSaveBuildingEdits(bi)),
+                .on_press(Message::AecProjectExplorerSaveBuildingEdits(bid)),
             button(text(t!("Delete")).size(10))
                 .style(button::danger)
                 .padding([3, 8])
-                .on_press(Message::AecProjectExplorerRequestDeleteBuilding(bi)),
+                .on_press(Message::AecProjectExplorerRequestDeleteBuilding(bid)),
         ]
         .spacing(8)
         .align_y(iced::Center),
@@ -231,12 +233,12 @@ fn building_row<'a>(
 }
 
 fn storey_row<'a>(
-    bi: usize,
-    si: usize,
+    bid: u64,
     storey: &'a StoreyRef,
     state: &ProjectExplorerState<'a>,
 ) -> Element<'a, Message> {
-    let selected = state.selected_storey == Some((bi, si));
+    let sid = storey.id;
+    let selected = state.selected_storey == Some((bid, sid));
     let elev = format!("{:.3}", storey.elevation);
 
     // Row + separate Open button (no nested buttons — iced dislikes that).
@@ -256,14 +258,14 @@ fn storey_row<'a>(
             .spacing(8)
             .align_y(iced::Center),
         )
-        .on_press(Message::AecProjectExplorerSelectStorey(bi, si))
+        .on_press(Message::AecProjectExplorerSelectStorey(bid, sid))
         .style(list_style(selected))
         .padding([6, 9])
         .width(Fill),
         button(text(t!("Open")).size(10))
             .style(button::primary)
             .padding([4, 8])
-            .on_press(Message::AecProjectExplorerOpenStorey(bi, si)),
+            .on_press(Message::AecProjectExplorerOpenStorey(bid, sid)),
     ]
     .spacing(6)
     .align_y(iced::Center);
@@ -280,14 +282,14 @@ fn storey_row<'a>(
             Space::new().width(28),
             text(t!("Name")).size(10).style(muted).width(60),
             text_input("", state.edit_storey_name)
-                .on_input(move |v| Message::AecProjectExplorerEditStoreyName(bi, si, v))
+                .on_input(move |v| Message::AecProjectExplorerEditStoreyName(bid, sid, v))
                 .size(11)
                 .padding([3, 6])
                 .width(Fill),
             button(text(t!("Delete")).size(10))
                 .style(button::danger)
                 .padding([3, 8])
-                .on_press(Message::AecProjectExplorerRequestDeleteStorey(bi, si)),
+                .on_press(Message::AecProjectExplorerRequestDeleteStorey(bid, sid)),
         ]
         .spacing(8)
         .align_y(iced::Center),
@@ -295,7 +297,7 @@ fn storey_row<'a>(
             Space::new().width(28),
             text(t!("Elevation")).size(10).style(muted).width(60),
             text_input("0.0", state.edit_elevation)
-                .on_input(move |v| Message::AecProjectExplorerEditStoreyElevation(bi, si, v))
+                .on_input(move |v| Message::AecProjectExplorerEditStoreyElevation(bid, sid, v))
                 .size(11)
                 .padding([3, 6])
                 .width(Fill),
@@ -306,7 +308,7 @@ fn storey_row<'a>(
             Space::new().width(28),
             text(t!("Drawing")).size(10).style(muted).width(60),
             text_input("", state.edit_storey_drawing)
-                .on_input(move |v| Message::AecProjectExplorerEditStoreyDrawing(bi, si, v))
+                .on_input(move |v| Message::AecProjectExplorerEditStoreyDrawing(bid, sid, v))
                 .size(11)
                 .padding([3, 6])
                 .width(Fill),
@@ -319,7 +321,7 @@ fn storey_row<'a>(
             button(text(t!("Save")).size(10))
                 .style(button::primary)
                 .padding([3, 10])
-                .on_press(Message::AecProjectExplorerSaveStoreyEdits(bi, si)),
+                .on_press(Message::AecProjectExplorerSaveStoreyEdits(bid, sid)),
         ]
         .spacing(8)
         .align_y(iced::Center),
@@ -348,7 +350,10 @@ fn add_building_form<'a>(name: &'a str) -> Element<'a, Message> {
 }
 
 fn add_storey_form<'a>(project: &'a ProjectFile, state: &ProjectExplorerState<'a>) -> Element<'a, Message> {
-    let building_hint = match state.selected_building.and_then(|i| project.buildings.get(i)) {
+    let building_hint = match state
+        .selected_building
+        .and_then(|bid| project.buildings.iter().find(|b| b.id == bid))
+    {
         Some(building) => {
             t!("Adding to building \"%{name}\"", name = building.name.as_str()).into_owned()
         }

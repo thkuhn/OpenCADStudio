@@ -1041,10 +1041,11 @@ pub(super) struct OpenCADStudio {
     aec_project_explorer_file: Option<crate::modules::aec::engine::project::ProjectFile>,
     /// Path of the loaded/saved `.ocsproj` (used for relative drawing paths).
     aec_project_explorer_path: Option<std::path::PathBuf>,
-    /// Selected building index in the explorer tree.
-    aec_project_explorer_selected_building: Option<usize>,
-    /// Selected storey as `(building_idx, storey_idx)`.
-    aec_project_explorer_selected_storey: Option<(usize, usize)>,
+    /// Selected building, identified by its stable `id` (not its position —
+    /// two buildings can share a name, so only the id disambiguates them).
+    aec_project_explorer_selected_building: Option<u64>,
+    /// Selected storey as `(building_id, storey_id)`.
+    aec_project_explorer_selected_storey: Option<(u64, u64)>,
     /// "Add Building" name buffer.
     aec_project_explorer_new_building_name: String,
     /// "Add Storey" form buffers.
@@ -1701,10 +1702,12 @@ pub enum StylePickerTarget {
 
 /// A pending delete in the AEC Project Explorer, awaiting user confirmation
 /// before the building/storey is actually removed from the project tree.
+/// Identifies targets by their stable `id`, not their list position.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum AecProjectExplorerDeleteTarget {
-    Building(usize),
-    Storey(usize, usize),
+    Building(u64),
+    /// `(building_id, storey_id)`.
+    Storey(u64, u64),
 }
 
 /// Which in-canvas modal dialog is currently open (Plan B). At most one shows
@@ -2355,32 +2358,32 @@ pub enum Message {
     AecProjectExplorerSaveAs,
     /// Result of the project-file save dialog (`None` = cancelled).
     AecProjectExplorerSaveAsResult(Option<std::path::PathBuf>),
-    /// Building row selected in the explorer tree.
-    AecProjectExplorerSelectBuilding(usize),
-    /// Storey row selected in the explorer tree.
-    AecProjectExplorerSelectStorey(usize, usize),
+    /// Building row selected in the explorer tree, by its stable id.
+    AecProjectExplorerSelectBuilding(u64),
+    /// Storey row selected in the explorer tree, as `(building_id, storey_id)`.
+    AecProjectExplorerSelectStorey(u64, u64),
     /// "Open" pressed on a storey row — open its drawing in a new tab.
-    AecProjectExplorerOpenStorey(usize, usize),
+    AecProjectExplorerOpenStorey(u64, u64),
     /// Append a building using the name buffer.
     AecProjectExplorerAddBuilding,
-    /// Live-edit the name buffer for the building at this index (not yet applied).
-    AecProjectExplorerEditBuildingName(usize, String),
+    /// Live-edit the name buffer for the building with this id (not yet applied).
+    AecProjectExplorerEditBuildingName(u64, String),
     /// Apply the building-name edit buffer to the project and persist it.
-    AecProjectExplorerSaveBuildingEdits(usize),
-    /// Live-edit the name buffer for the storey at `(building_idx, storey_idx)` (not yet applied).
-    AecProjectExplorerEditStoreyName(usize, usize, String),
-    /// Live-edit the elevation text buffer of the storey at `(building_idx, storey_idx)` (not yet applied).
-    AecProjectExplorerEditStoreyElevation(usize, usize, String),
-    /// Live-edit the drawing path buffer of the storey at `(building_idx, storey_idx)` (not yet applied).
-    AecProjectExplorerEditStoreyDrawing(usize, usize, String),
+    AecProjectExplorerSaveBuildingEdits(u64),
+    /// Live-edit the name buffer for the storey at `(building_id, storey_id)` (not yet applied).
+    AecProjectExplorerEditStoreyName(u64, u64, String),
+    /// Live-edit the elevation text buffer of the storey at `(building_id, storey_id)` (not yet applied).
+    AecProjectExplorerEditStoreyElevation(u64, u64, String),
+    /// Live-edit the drawing path buffer of the storey at `(building_id, storey_id)` (not yet applied).
+    AecProjectExplorerEditStoreyDrawing(u64, u64, String),
     /// Apply the storey name/elevation/drawing edit buffers to the project and persist them.
-    AecProjectExplorerSaveStoreyEdits(usize, usize),
-    /// Ask for confirmation before deleting the building at this index (and
+    AecProjectExplorerSaveStoreyEdits(u64, u64),
+    /// Ask for confirmation before deleting the building with this id (and
     /// all its storeys) — sets the pending-delete state shown inline.
-    AecProjectExplorerRequestDeleteBuilding(usize),
+    AecProjectExplorerRequestDeleteBuilding(u64),
     /// Ask for confirmation before deleting the storey at
-    /// `(building_idx, storey_idx)`.
-    AecProjectExplorerRequestDeleteStorey(usize, usize),
+    /// `(building_id, storey_id)`.
+    AecProjectExplorerRequestDeleteStorey(u64, u64),
     /// User confirmed the pending delete — actually remove it.
     AecProjectExplorerConfirmDelete,
     /// User cancelled the pending delete — clear it without changes.
