@@ -1012,6 +1012,12 @@ pub(super) struct OpenCADStudio {
     aec_style_manager_material_color_picker_open: bool,
     /// Whether the material form's visual hatch-pattern picker is expanded.
     aec_style_manager_material_hatch_picker_open: bool,
+    /// Line types available for the material form's line-type combo box
+    /// (name + ASCII-art preview), refreshed when the manager is opened.
+    aec_style_manager_material_linetype_items: Vec<crate::ui::properties::LinetypeItem>,
+    /// combo_box state built from `aec_style_manager_material_linetype_items`.
+    aec_style_manager_material_linetype_combo:
+        iced::widget::combo_box::State<crate::ui::properties::LinetypeItem>,
 
     /// Id of the wall style currently being edited, if the edit buffer holds
     /// an existing wall style (`None` while composing a new/unsaved one).
@@ -3532,6 +3538,8 @@ impl OpenCADStudio {
             aec_style_manager_material_line_type: String::new(),
             aec_style_manager_material_color_picker_open: false,
             aec_style_manager_material_hatch_picker_open: false,
+            aec_style_manager_material_linetype_items: Vec::new(),
+            aec_style_manager_material_linetype_combo: iced::widget::combo_box::State::new(Vec::new()),
             aec_style_manager_wall_style_editing_id: None,
             aec_style_manager_wall_style_form_open: false,
             aec_style_manager_wall_style_name: String::new(),

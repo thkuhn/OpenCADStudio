@@ -1964,6 +1964,7 @@ impl OpenCADStudio {
                 self.aec_style_manager_wall_style_editing_id = None;
                 self.aec_style_manager_wall_style_form_open = false;
                 self.aec_style_manager_wall_style_layers.clear();
+                self.refresh_aec_material_linetype_combo();
                 self.active_modal = Some(super::ModalKind::AecMaterialManager);
                 Task::none()
             }
@@ -2002,6 +2003,7 @@ impl OpenCADStudio {
                 }
                 self.aec_style_manager_selected_material = Some(id);
                 self.aec_style_manager_selected_wall_style = None;
+                self.refresh_aec_material_linetype_combo();
                 Task::none()
             }
             Message::AecStyleManagerSelectWallStyle(id) => {

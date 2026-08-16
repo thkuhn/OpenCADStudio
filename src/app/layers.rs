@@ -99,6 +99,49 @@ impl OpenCADStudio {
         self.sync_ribbon_styles();
     }
 
+    /// Rebuild the AEC Material Manager's line-type combo box (name + ASCII
+    /// art preview) from the active document's line types, plus the
+    /// currently buffered custom line-type value (if any) so it stays
+    /// selectable even when it isn't (yet) a real document line type.
+    pub(super) fn refresh_aec_material_linetype_combo(&mut self) {
+        let i = self.active_tab;
+        let mut items: Vec<ui::properties::LinetypeItem> = self.tabs[i]
+            .scene
+            .document
+            .line_types
+            .iter()
+            .map(|lt| {
+                let name = if lt.name.is_empty() {
+                    "ByLayer".to_string()
+                } else {
+                    lt.name.clone()
+                };
+                let art = crate::io::linetypes::extract_pattern(&lt.description);
+                ui::properties::LinetypeItem { name, art }
+            })
+            .collect();
+        if !self.aec_style_manager_material_line_type.trim().is_empty()
+            && !items.iter().any(|item| {
+                item.name
+                    .eq_ignore_ascii_case(&self.aec_style_manager_material_line_type)
+            })
+        {
+            items.push(ui::properties::LinetypeItem {
+                name: self.aec_style_manager_material_line_type.clone(),
+                art: String::new(),
+            });
+        }
+        if !items.iter().any(|item| item.name.eq_ignore_ascii_case("Continuous")) {
+            items.push(ui::properties::LinetypeItem {
+                name: "Continuous".to_string(),
+                art: String::new(),
+            });
+        }
+        self.aec_style_manager_material_linetype_combo =
+            iced::widget::combo_box::State::new(items.clone());
+        self.aec_style_manager_material_linetype_items = items;
+    }
+
     pub(super) fn sync_ribbon_styles(&mut self) {
         let i = self.active_tab;
         // The Start (welcome) tab has no real document — keep the Annotate

@@ -13,7 +13,7 @@ use crate::modules::aec::engine::wall_style::WallStyle;
 use crate::t;
 use super::aec_ui_util::*;
 
-const LAYER_COL_REORDER_W: f32 = 22.0;
+const LAYER_COL_REORDER_W: f32 = 74.0;
 const LAYER_COL_MATERIAL_W: f32 = 180.0;
 const LAYER_COL_THICKNESS_W: f32 = 60.0;
 const LAYER_COL_GAP_W: f32 = 50.0;
@@ -206,7 +206,12 @@ fn wall_style_form_view<'a>(wall_style_form: WallStyleFormState<'a>) -> Element<
                 },
                 ..Default::default()
             })
-            .padding(4),
+            .padding(iced::Padding {
+                top: 4.0,
+                right: 14.0,
+                bottom: 4.0,
+                left: 4.0,
+            }),
     ]
     .spacing(7);
 
@@ -324,11 +329,11 @@ fn layer_row<'a>(
         "Other".to_string(),
     ];
 
-    let mut up_button = button(text("▲").size(10)).padding([2, 6]);
+    let mut up_button = button(text("▲").size(10)).padding([2, 5]);
     if index > 0 {
         up_button = up_button.on_press(Message::AecStyleManagerWallStyleLayerMoveUp(index));
     }
-    let mut down_button = button(text("▼").size(10)).padding([2, 6]);
+    let mut down_button = button(text("▼").size(10)).padding([2, 5]);
     if index + 1 < layer_count {
         down_button = down_button.on_press(Message::AecStyleManagerWallStyleLayerMoveDown(index));
     }
@@ -349,7 +354,7 @@ fn layer_row<'a>(
     .interaction(iced::mouse::Interaction::Grab);
 
     row![
-        column![handle, up_button, down_button].spacing(2).width(LAYER_COL_REORDER_W),
+        row![handle, up_button, down_button].spacing(2).width(LAYER_COL_REORDER_W),
         {
             let label = if buffer.material_id.is_empty() {
                 t!("(None)").into_owned()

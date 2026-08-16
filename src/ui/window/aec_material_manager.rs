@@ -2,10 +2,10 @@
 //! style library (`AEC_MATERIALMANAGER`).
 
 use iced::widget::{
-    button, canvas, column, container, pick_list, row, scrollable, text, text_input,
+    button, canvas, column, combo_box, container, row, scrollable, text, text_input,
     Space,
 };
-use iced::{Border, Element, Fill, Theme};
+use iced::{Element, Fill};
 
 use crate::app::Message;
 use crate::modules::aec::engine::library::StyleLibrary;
@@ -33,8 +33,10 @@ pub struct MaterialFormState<'a> {
     pub hatch_picker_open: bool,
     /// Whether the color picker dropdown is open.
     pub color_picker_open: bool,
-    /// List of all available line types in the document.
-    pub linetypes: Vec<String>,
+    /// List of all available line types in the document (name + ASCII art).
+    pub linetype_items: &'a [crate::ui::properties::LinetypeItem],
+    /// combo_box state built from `linetype_items`.
+    pub linetype_combo: &'a combo_box::State<crate::ui::properties::LinetypeItem>,
 }
 
 pub fn view_window<'a>(
@@ -168,19 +170,40 @@ fn material_form_view<'a>(material_form: MaterialFormState<'a>) -> Element<'a, M
         .spacing(8),
         row![
             text(t!("Line type")).size(10).style(muted).width(100),
-            pick_list(
-                Some(material_form.line_type.to_string()),
-                material_form.linetypes,
-                |value: &String| value.clone(),
-            )
-            .on_select(Message::AecStyleManagerMaterialLineTypeChanged)
-            .text_size(11)
-            .width(180),
+            linetype_field(
+                material_form.line_type,
+                material_form.linetype_items,
+                material_form.linetype_combo,
+            ),
         ]
         .spacing(8),
         actions,
     ]
     .spacing(7)
+    .into()
+}
+
+fn linetype_field<'a>(
+    line_type: &'a str,
+    linetype_items: &'a [crate::ui::properties::LinetypeItem],
+    linetype_combo: &'a combo_box::State<crate::ui::properties::LinetypeItem>,
+) -> Element<'a, Message> {
+    let display = if line_type.is_empty() { "ByLayer" } else { line_type };
+    let selected = linetype_items
+        .iter()
+        .find(|item| item.name.eq_ignore_ascii_case(display))
+        .cloned();
+    combo_box(
+        linetype_combo,
+        "ByLayer",
+        selected.as_ref(),
+        |item: crate::ui::properties::LinetypeItem| {
+            Message::AecStyleManagerMaterialLineTypeChanged(item.name)
+        },
+    )
+    .size(11)
+    .padding([4, 6])
+    .width(180)
     .into()
 }
 

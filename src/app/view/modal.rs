@@ -261,30 +261,6 @@ impl OpenCADStudio {
                 700,
                 400,
                 |_| {
-                    let mut linetypes: Vec<String> = self.tabs[self.active_tab]
-                        .scene
-                        .document
-                        .line_types
-                        .iter()
-                        .map(|lt| {
-                            if lt.name.is_empty() {
-                                "ByLayer".to_string()
-                            } else {
-                                lt.name.clone()
-                            }
-                        })
-                        .collect();
-                    if !self.aec_style_manager_material_line_type.trim().is_empty()
-                        && !linetypes.iter().any(|name| {
-                            name.eq_ignore_ascii_case(&self.aec_style_manager_material_line_type)
-                        })
-                    {
-                        linetypes.push(self.aec_style_manager_material_line_type.clone());
-                    }
-                    if !linetypes.iter().any(|name| name.eq_ignore_ascii_case("Continuous")) {
-                        linetypes.push("Continuous".to_string());
-                    }
-
                     static EMPTY_LIB: std::sync::OnceLock<
                         crate::modules::aec::engine::library::StyleLibrary,
                     > = std::sync::OnceLock::new();
@@ -301,7 +277,8 @@ impl OpenCADStudio {
                             line_type: &self.aec_style_manager_material_line_type,
                             color_picker_open: self.aec_style_manager_material_color_picker_open,
                             hatch_picker_open: self.aec_style_manager_material_hatch_picker_open,
-                            linetypes,
+                            linetype_items: &self.aec_style_manager_material_linetype_items,
+                            linetype_combo: &self.aec_style_manager_material_linetype_combo,
                         },
                     )
                 },
