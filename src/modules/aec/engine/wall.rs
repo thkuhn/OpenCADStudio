@@ -23,7 +23,7 @@ pub struct Wall {
 }
 
 /// One material layer in a wall's cross-section snapshot.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Default)]
 pub struct WallLayer {
     pub material: String,
     pub thickness: f64,
@@ -32,6 +32,10 @@ pub struct WallLayer {
     pub bottom_offset: f64,
     pub top_offset: f64,
     pub layer_override: Option<String>,
+    /// Optional hatch pattern override, taking precedence over the
+    /// material's own hatch pattern when rendering this layer's 2D hatch.
+    /// Additive field (mirrors [`crate::modules::aec::engine::wall_style::Layer::hatch_override`]).
+    pub hatch_override: Option<String>,
 }
 
 /// Axis justification relative to the wall's total thickness.
@@ -119,6 +123,7 @@ mod tests {
             bottom_offset: 0.0,
             top_offset: 0.0,
             layer_override: None,
+            hatch_override: None,
         });
         assert!((wall.volume(5.0) - 2.8).abs() < 1e-9);
     }
@@ -143,6 +148,7 @@ mod tests {
                 bottom_offset: 0.0,
                 top_offset: 0.0,
                 layer_override: None,
+                hatch_override: None,
             },
             WallLayer {
                 material: "B".into(),
@@ -152,6 +158,7 @@ mod tests {
                 bottom_offset: 0.0,
                 top_offset: 0.0,
                 layer_override: None,
+                hatch_override: None,
             },
         ];
         assert!((wall.total_thickness() - 0.35).abs() < 1e-9);

@@ -274,6 +274,16 @@ impl OpenCADStudio {
                 } else {
                     Some(lb.layer_override.trim().to_string())
                 },
+                hatch_override: if lb.hatch_override.trim().is_empty() {
+                    None
+                } else {
+                    Some(lb.hatch_override.trim().to_string())
+                },
+                role_tag: if lb.role_tag.trim().is_empty() {
+                    None
+                } else {
+                    Some(lb.role_tag.trim().to_string())
+                },
             });
         }
         for w in formula_warnings {
@@ -2491,6 +2501,8 @@ impl OpenCADStudio {
                             bottom_offset: l.bottom_offset.to_string(),
                             top_offset: l.top_offset.to_string(),
                             layer_override: l.layer_override.clone().unwrap_or_default(),
+                            hatch_override: l.hatch_override.clone().unwrap_or_default(),
+                            role_tag: l.role_tag.clone().unwrap_or_default(),
                         })
                         .collect();
                     self.aec_style_manager_wall_style_form_open = true;
@@ -2537,6 +2549,8 @@ impl OpenCADStudio {
                         bottom_offset: "0.0".to_string(),
                         top_offset: "0.0".to_string(),
                         layer_override: String::new(),
+                        hatch_override: String::new(),
+                        role_tag: String::new(),
                     });
                 Task::none()
             }
@@ -2585,6 +2599,18 @@ impl OpenCADStudio {
             Message::AecStyleManagerWallStyleLayerOverrideChanged(index, layer_name) => {
                 if let Some(layer) = self.aec_style_manager_wall_style_layers.get_mut(index) {
                     layer.layer_override = layer_name;
+                }
+                Task::none()
+            }
+            Message::AecStyleManagerWallStyleLayerHatchOverrideChanged(index, hatch) => {
+                if let Some(layer) = self.aec_style_manager_wall_style_layers.get_mut(index) {
+                    layer.hatch_override = hatch;
+                }
+                Task::none()
+            }
+            Message::AecStyleManagerWallStyleLayerRoleTagChanged(index, role_tag) => {
+                if let Some(layer) = self.aec_style_manager_wall_style_layers.get_mut(index) {
+                    layer.role_tag = role_tag;
                 }
                 Task::none()
             }
@@ -2816,6 +2842,10 @@ impl OpenCADStudio {
 
                             let handles = self.aec_style_picker_wall_handles.clone();
                             for handle in handles {
+                                let handle = crate::modules::aec::commands::resolve_wall_package(
+                                    &self.tabs[i].scene,
+                                    handle,
+                                );
                                 let mut record = acadrust::xdata::ExtendedDataRecord::new(
                                     crate::modules::aec::commands::AEC_APPID,
                                 );

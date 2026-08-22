@@ -839,6 +839,29 @@ impl PropertiesPanel {
                     .width(Length::Fill);
                 prop_row_widget(label, ti.into())
             }
+            LiveFieldValue::Choice { selected, options } => {
+                let mut list = column![].spacing(1);
+                for opt in options {
+                    let value = opt.clone();
+                    let selected_opt = selected.clone();
+                    list = list.push(
+                        button(text(opt.as_str()).size(FONT_SZ))
+                            .on_press(Message::ActiveCommandLivePropertyChanged(
+                                field,
+                                LiveFieldValue::Text(value),
+                            ))
+                            .style(if opt == selected {
+                                button::primary
+                            } else {
+                                button::subtle
+                            })
+                            .padding([2, 6])
+                            .width(Length::Fill),
+                    );
+                    let _ = selected_opt;
+                }
+                prop_row_widget(label, list.into())
+            }
             LiveFieldValue::Picker(s) => {
                 let btn = button(
                     row![

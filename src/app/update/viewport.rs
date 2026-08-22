@@ -1225,6 +1225,12 @@ impl OpenCADStudio {
                 }
                 for handle in std::mem::take(&mut self.grip_preview_handles) {
                     self.tabs[i].scene.preview_hidden.remove(&handle);
+                    for pkg in crate::modules::aec::commands::expand_handles_for_wall_packages(
+                        &self.tabs[i].scene,
+                        &[handle],
+                    ) {
+                        self.tabs[i].scene.preview_hidden.remove(&pkg);
+                    }
                 }
                 // Interactive Add Vertex seeds this with the entity from
                 // before insertion so append + placement is one undo step.
@@ -1246,6 +1252,16 @@ impl OpenCADStudio {
                 for &handle in &edited_handles {
                     if !self.tabs[i].scene.meshes.contains_key(&handle) {
                         self.tabs[i].scene.preview_hidden.insert(handle);
+                    }
+                    // Hide the whole wall package so the old 2D contour does
+                    // not stay visible while the axis endpoint is dragged.
+                    for pkg in crate::modules::aec::commands::expand_handles_for_wall_packages(
+                        &self.tabs[i].scene,
+                        &[handle],
+                    ) {
+                        if !self.tabs[i].scene.meshes.contains_key(&pkg) {
+                            self.tabs[i].scene.preview_hidden.insert(pkg);
+                        }
                     }
                 }
                 let changes: Vec<_> = edited_handles
@@ -3032,7 +3048,7 @@ impl OpenCADStudio {
             self.tabs[i].active_grip = None;
             // Commit the grip drag as one undoable group, then put every
             // edited entity back into the resident tessellation.
-            let handles = std::mem::take(&mut self.grip_preview_handles);
+            let mut handles = std::mem::take(&mut self.grip_preview_handles);
             let originals = std::mem::take(&mut self.grip_originals);
             let history_originals = std::mem::take(&mut self.grip_history_originals);
             let dirty_before = self.grip_dirty_before.take().unwrap_or(self.tabs[i].dirty);
@@ -3061,27 +3077,50 @@ impl OpenCADStudio {
                 self.grip_text_slide = false;
                 for &handle in &handles {
                     self.tabs[i].scene.preview_hidden.remove(&handle);
+                    for pkg in crate::modules::aec::commands::expand_handles_for_wall_packages(
+                        &self.tabs[i].scene,
+                        &[handle],
+                    ) {
+                        self.tabs[i].scene.preview_hidden.remove(&pkg);
+                    }
                 }
                 self.tabs[i].scene.clear_preview_wire();
                 // AEC wall axes moved/stretched via a grip need their
                 // derived contour/hatch/solid representation rebuilt.
+                let mut extra_handles = Vec::new();
+                let mut refreshed_owners = std::collections::HashSet::new();
                 for &handle in &handles {
+                    let owner = crate::modules::aec::commands::resolve_wall_package(
+                        &self.tabs[i].scene,
+                        handle,
+                    );
+                    if !refreshed_owners.insert(owner) {
+                        continue;
+                    }
                     let is_wall = self.tabs[i]
                         .scene
                         .document
-                        .get_entity(handle)
+                        .get_entity(owner)
                         .is_some_and(|e| {
                             crate::modules::aec::commands::wall_thickness_and_height(e).is_some()
                         });
                     if is_wall {
-                        let _ = crate::modules::aec::commands::regenerate_wall_representation(
-                            &mut self.tabs[i].scene,
-                            handle,
+                        extra_handles.extend(
+                            crate::modules::aec::commands::refresh_wall_after_axis_edit(
+                                &mut self.tabs[i].scene,
+                                owner,
+                            ),
                         );
+                    }
+                }
+                for h in extra_handles {
+                    if !handles.contains(&h) {
+                        handles.push(h);
                     }
                 }
                 let changes: Vec<_> = handles
                     .into_iter()
+                    .filter(|h| self.tabs[i].scene.document.get_entity(*h).is_some())
                     .map(|handle| (handle, crate::scene::ChangeKind::Modified))
                     .collect();
                 self.tabs[i].scene.bump_entities(&changes);
@@ -3913,6 +3952,17 @@ impl OpenCADStudio {
                             bounds,
                             candidate_handles.as_ref(),
                         ));
+                        // A box pick on a wall's derived contour/hatch/solid
+                        // resolves to the wall axis (same as click/lasso).
+                        let handles: Vec<_> = handles
+                            .into_iter()
+                            .map(|h| {
+                                crate::modules::aec::commands::resolve_wall_package(
+                                    &self.tabs[i].scene,
+                                    h,
+                                )
+                            })
+                            .collect();
                         // Box/lasso accumulates like individual picks
                         // (issue #83): a plain box adds to the current
                         // selection, Shift+box removes the boxed

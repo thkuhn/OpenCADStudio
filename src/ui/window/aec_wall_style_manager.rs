@@ -20,6 +20,8 @@ const LAYER_COL_GAP_W: f32 = 50.0;
 const LAYER_COL_OFFSET_W: f32 = 50.0;
 const LAYER_COL_FUNCTION_W: f32 = 120.0;
 const LAYER_COL_OVERRIDE_W: f32 = 130.0;
+const LAYER_COL_ROLE_W: f32 = 110.0;
+const LAYER_COL_HATCH_W: f32 = 90.0;
 
 pub struct WallStyleFormState<'a> {
     pub open: bool,
@@ -32,6 +34,10 @@ pub struct WallStyleFormState<'a> {
     pub all_materials: Vec<(&'a str, &'a str)>,
     pub all_layer_names: Vec<String>,
     pub effective_layers: Vec<crate::modules::aec::engine::wall_style::Layer>,
+    /// Full ancestor chain (root-first) of display names for the style
+    /// being edited, based on the currently selected parent. Empty when the
+    /// style has no parent (or none is selected yet).
+    pub inheritance_chain: Vec<String>,
 }
 
 pub fn view_window<'a>(
@@ -188,6 +194,34 @@ fn wall_style_form_view<'a>(wall_style_form: WallStyleFormState<'a>) -> Element<
             .width(Fill),
         ]
         .spacing(8),
+    ]
+    .spacing(7);
+
+    if !wall_style_form.inheritance_chain.is_empty() {
+        let mut chain_row = row![
+            text(t!("Inheritance")).size(10).style(muted).width(100),
+        ]
+        .spacing(4)
+        .align_y(iced::Center);
+        for (i, name) in wall_style_form.inheritance_chain.iter().enumerate() {
+            if i > 0 {
+                chain_row = chain_row.push(text("→").size(10).style(muted));
+            }
+            chain_row = chain_row.push(text(name.clone()).size(11));
+        }
+        chain_row = chain_row.push(text("→").size(10).style(muted));
+        chain_row = chain_row.push(
+            text(if wall_style_form.name.is_empty() {
+                t!("(this style)").into_owned()
+            } else {
+                wall_style_form.name.to_string()
+            })
+            .size(11),
+        );
+        detail_col = detail_col.push(chain_row);
+    }
+
+    detail_col = detail_col.extend([
         row![
             text(t!("Layers")).size(10).style(muted),
             Space::new(),
@@ -195,7 +229,8 @@ fn wall_style_form_view<'a>(wall_style_form: WallStyleFormState<'a>) -> Element<
                 .on_press(Message::AecStyleManagerWallStyleLayerAdd)
                 .padding([2, 8]),
         ]
-        .spacing(8),
+        .spacing(8)
+        .into(),
         layer_header_row(),
         container(scrollable(column(layer_rows).spacing(4)).height(180))
             .style(|theme: &Theme| container::Style {
@@ -211,9 +246,9 @@ fn wall_style_form_view<'a>(wall_style_form: WallStyleFormState<'a>) -> Element<
                 right: 14.0,
                 bottom: 4.0,
                 left: 4.0,
-            }),
-    ]
-    .spacing(7);
+            })
+            .into(),
+    ]);
 
     if !wall_style_form.effective_layers.is_empty() {
         detail_col = detail_col.push(Space::new().height(8)).push(
@@ -308,6 +343,8 @@ fn layer_header_row<'a>() -> Element<'a, Message> {
         text(t!("Top")).size(10).style(muted).width(LAYER_COL_OFFSET_W),
         text(t!("Function")).size(10).style(muted).width(LAYER_COL_FUNCTION_W),
         text(t!("Lyr. Over.")).size(10).style(muted).width(LAYER_COL_OVERRIDE_W),
+        text(t!("Role")).size(10).style(muted).width(LAYER_COL_ROLE_W),
+        text(t!("Hatch")).size(10).style(muted).width(LAYER_COL_HATCH_W),
         Space::new().width(24), // Delete button space
     ]
     .spacing(8)
@@ -446,6 +483,14 @@ fn layer_row<'a>(
             .padding([4, 6])
             .width(LAYER_COL_OVERRIDE_W)
         },
+        text_input("role", &buffer.role_tag)
+            .on_input(move |v| Message::AecStyleManagerWallStyleLayerRoleTagChanged(index, v))
+            .size(11)
+            .width(LAYER_COL_ROLE_W),
+        text_input("hatch", &buffer.hatch_override)
+            .on_input(move |v| Message::AecStyleManagerWallStyleLayerHatchOverrideChanged(index, v))
+            .size(11)
+            .width(LAYER_COL_HATCH_W),
         button(text("✕").size(10))
             .style(button::danger)
             .on_press(Message::AecStyleManagerWallStyleLayerRemove(index))

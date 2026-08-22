@@ -3056,8 +3056,12 @@ impl Scene {
             return Arc::clone(wires);
         }
 
-        let mut highlighted: Vec<(Handle, bool)> = self
-            .selected
+        let selected_highlight =
+            crate::modules::aec::commands::expand_handles_for_wall_packages(
+                self,
+                &self.selected.iter().copied().collect::<Vec<_>>(),
+            );
+        let mut highlighted: Vec<(Handle, bool)> = selected_highlight
             .iter()
             .copied()
             .map(|handle| (handle, true))
@@ -3065,7 +3069,7 @@ impl Scene {
         highlighted.extend(
             self.hover_highlight_handles()
                 .into_iter()
-                .filter(|handle| !self.selected.contains(handle))
+                .filter(|handle| !selected_highlight.iter().any(|s| *s == *handle))
                 .map(|handle| (handle, false)),
         );
         highlighted.sort_unstable_by_key(|(handle, _)| handle.value());
@@ -3750,7 +3754,14 @@ impl Scene {
             camera_generation: self.camera_generation,
             wire_content_id,
             wire_patch,
-            selected_handles: Arc::new(self.selected.iter().copied().collect()),
+            selected_handles: Arc::new(
+                crate::modules::aec::commands::expand_handles_for_wall_packages(
+                    self,
+                    &self.selected.iter().copied().collect::<Vec<_>>(),
+                )
+                .into_iter()
+                .collect(),
+            ),
             hover_handles: Arc::new(self.hover_highlight_handles()),
             selection_generation: self.selection_generation,
             selected_sig: self.selected_set_sig(),

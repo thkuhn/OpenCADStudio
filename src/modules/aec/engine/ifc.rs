@@ -231,6 +231,7 @@ mod tests {
             bottom_offset: 0.0,
             top_offset: 0.0,
             layer_override: None,
+            hatch_override: None,
         });
         let room = Room::from_polygon(
             "Office 101",

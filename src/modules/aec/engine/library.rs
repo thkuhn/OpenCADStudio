@@ -153,6 +153,8 @@ pub fn seed_default_library() -> StyleLibrary {
             bottom_offset: 0.0,
             top_offset: 0.0,
             layer_override: None,
+            hatch_override: None,
+            role_tag: Some("Tragschale".to_string()),
         }],
     };
 
@@ -171,6 +173,8 @@ pub fn seed_default_library() -> StyleLibrary {
             bottom_offset: 0.0,
             top_offset: 0.0,
             layer_override: None,
+            hatch_override: Some("AR-CONC".to_string()),
+            role_tag: Some("Tragschale".to_string()),
         }],
     };
 
@@ -190,6 +194,8 @@ pub fn seed_default_library() -> StyleLibrary {
                 bottom_offset: 0.0,
                 top_offset: 0.0,
                 layer_override: None,
+                hatch_override: None,
+                role_tag: Some("Innenputz".to_string()),
             },
             Layer {
                 material_id: masonry.id.clone(),
@@ -199,6 +205,8 @@ pub fn seed_default_library() -> StyleLibrary {
                 bottom_offset: 0.0,
                 top_offset: 0.0,
                 layer_override: None,
+                hatch_override: None,
+                role_tag: Some("Tragschale".to_string()),
             },
             Layer {
                 material_id: insulation.id.clone(),
@@ -208,6 +216,8 @@ pub fn seed_default_library() -> StyleLibrary {
                 bottom_offset: 0.0,
                 top_offset: 0.0,
                 layer_override: None,
+                hatch_override: Some("ANSI37".to_string()),
+                role_tag: Some("Daemmschicht".to_string()),
             },
             Layer {
                 material_id: plaster.id.clone(),
@@ -216,14 +226,35 @@ pub fn seed_default_library() -> StyleLibrary {
                 gap_before: 0.0,
                 bottom_offset: 0.0,
                 top_offset: 0.0,
-                layer_override: None,
+                layer_override: Some("A-WALL-FINISH".to_string()),
+                hatch_override: None,
+                role_tag: Some("Aussenputz".to_string()),
             },
         ],
     };
 
+    // Derived style demonstrating style-manager inheritance: shares the
+    // insulated exterior wall's layer buildup (empty `layers`, resolved via
+    // `effective_layers`) but with a distinct name/id for a different
+    // context (e.g. a garden-facing facade using the same buildup).
+    let insulated_wall_variant = WallStyle {
+        style: Style {
+            id: "style_insulated_ext_garden".to_string(),
+            name: "Aussenwand gedaemmt (Gartenseite)".to_string(),
+            object_kind: "Wall".to_string(),
+            parent_style_id: Some(insulated_wall.style.id.clone()),
+        },
+        layers: vec![],
+    };
+
     StyleLibrary {
         materials: vec![masonry, concrete, insulation, plaster],
-        wall_styles: vec![masonry_wall, concrete_wall, insulated_wall],
+        wall_styles: vec![
+            masonry_wall,
+            concrete_wall,
+            insulated_wall,
+            insulated_wall_variant,
+        ],
     }
 }
 
@@ -343,6 +374,8 @@ mod tests {
                     bottom_offset: 0.0,
                     top_offset: 0.0,
                     layer_override: None,
+                    hatch_override: None,
+                    role_tag: Some("Tragschale".to_string()),
                 },
                 Layer {
                     material_id: "mat1".to_string(),
@@ -352,6 +385,8 @@ mod tests {
                     bottom_offset: 0.0,
                     top_offset: 0.0,
                     layer_override: None,
+                    hatch_override: Some("ANSI31".to_string()),
+                    role_tag: None,
                 },
             ],
         };
@@ -465,5 +500,93 @@ mod tests {
         // s4 (orphaned parent is root)
         assert_eq!(tree[3].style.style.id, "s4");
         assert_eq!(tree[3].depth, 0);
+    }
+
+    #[test]
+    fn seed_default_library_demonstrates_new_layer_attributes() {
+        let lib = seed_default_library();
+
+        // At least one layer per demo style uses `role_tag`, and at least
+        // one layer overrides its hatch pattern / drawing layer.
+        let any_role_tag = lib
+            .wall_styles
+            .iter()
+            .flat_map(|ws| ws.layers.iter())
+            .any(|l| l.role_tag.is_some());
+        let any_hatch_override = lib
+            .wall_styles
+            .iter()
+            .flat_map(|ws| ws.layers.iter())
+            .any(|l| l.hatch_override.is_some());
+        let any_layer_override = lib
+            .wall_styles
+            .iter()
+            .flat_map(|ws| ws.layers.iter())
+            .any(|l| l.layer_override.is_some());
+        assert!(any_role_tag, "expected at least one seeded layer with a role_tag");
+        assert!(
+            any_hatch_override,
+            "expected at least one seeded layer with a hatch_override"
+        );
+        assert!(
+            any_layer_override,
+            "expected at least one seeded layer with a layer_override"
+        );
+    }
+
+    #[test]
+    fn seed_default_library_includes_an_inherited_wall_style() {
+        let lib = seed_default_library();
+
+        let inherited = lib
+            .wall_styles
+            .iter()
+            .find(|ws| ws.style.parent_style_id.is_some())
+            .expect("expected at least one demo style with a parent");
+        assert!(
+            inherited.layers.is_empty(),
+            "the inherited demo style should rely on effective_layers, not duplicate the parent's buildup"
+        );
+
+        let styles: std::collections::HashMap<_, _> = lib
+            .wall_styles
+            .iter()
+            .map(|ws| (ws.style.id.clone(), ws.clone()))
+            .collect();
+        let effective = crate::modules::aec::engine::wall_style::effective_layers(
+            &styles,
+            &inherited.style.id,
+        )
+        .unwrap();
+        assert!(!effective.is_empty(), "inherited style must resolve to a non-empty buildup");
+    }
+
+    #[test]
+    fn library_without_new_layer_fields_loads_with_defaults() {
+        // Simulates a library file saved before `hatch_override`/`role_tag`
+        // existed: they must default to `None` rather than failing to load.
+        let json = r#"{
+            "materials": [],
+            "wall_styles": [
+                {
+                    "id": "style1",
+                    "name": "Style 1",
+                    "object_kind": "Wall",
+                    "parent_style_id": null,
+                    "layers": [
+                        {
+                            "material_id": "mat1",
+                            "thickness": 0.2,
+                            "function": "Structural"
+                        }
+                    ]
+                }
+            ]
+        }"#;
+        let lib = from_toml(json).expect("old-format library must still deserialize");
+        assert_eq!(lib.wall_styles.len(), 1);
+        let layer = &lib.wall_styles[0].layers[0];
+        assert_eq!(layer.hatch_override, None);
+        assert_eq!(layer.role_tag, None);
     }
 }

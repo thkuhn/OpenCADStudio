@@ -341,6 +341,30 @@ impl OpenCADStudio {
                         crate::modules::aec::engine::library::StyleLibrary,
                     > = std::sync::OnceLock::new();
 
+                    // Parent-to-child chain of display names for the style
+                    // currently being edited, so the manager can surface the
+                    // full inheritance path instead of just the immediate
+                    // parent. Built from the *pending* parent selection (not
+                    // just the saved one), so it updates live as the user
+                    // re-parents the style being edited.
+                    let inheritance_chain: Vec<String> = self.aec_style_library.as_ref().map(|lib| {
+                        let mut names = Vec::new();
+                        let mut current = self.aec_style_manager_wall_style_parent.clone();
+                        let mut visited = std::collections::HashSet::new();
+                        while let Some(id) = current {
+                            if !visited.insert(id.clone()) {
+                                break; // cycle guard; save-time validation reports the real error
+                            }
+                            let Some(ws) = lib.wall_styles.iter().find(|w| w.style.id == id) else {
+                                break;
+                            };
+                            names.push(ws.style.name.clone());
+                            current = ws.style.parent_style_id.clone();
+                        }
+                        names.reverse();
+                        names
+                    }).unwrap_or_default();
+
                     crate::ui::window::aec_wall_style_manager::view_window(
                         self.aec_style_library.as_ref().unwrap_or(EMPTY_LIB.get_or_init(crate::modules::aec::engine::library::StyleLibrary::empty)),
                         self.aec_style_manager_selected_wall_style.as_deref(),
@@ -356,6 +380,7 @@ impl OpenCADStudio {
                             all_materials,
                             all_layer_names,
                             effective_layers,
+                            inheritance_chain,
                         },
                     )
                 },

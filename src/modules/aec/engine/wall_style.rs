@@ -113,6 +113,18 @@ pub struct Layer {
     /// entities are placed on. `None` falls back to the wall's own layer.
     #[serde(default)]
     pub layer_override: Option<String>,
+    /// Optional hatch pattern override for this layer's 2D hatch, taking
+    /// precedence over the material's own hatch pattern. `None` falls back
+    /// to the material's `hatch_pattern`. Additive field: absent in older
+    /// libraries, so it defaults to `None` on load.
+    #[serde(default)]
+    pub hatch_override: Option<String>,
+    /// Optional free-text role tag shown in the Style Manager to clarify a
+    /// layer's purpose beyond its [`LayerFunction`] (e.g. "Vormauerschale",
+    /// "Luftschicht"). Purely informational; does not affect geometry.
+    /// Additive field: absent in older libraries, so it defaults to `None`.
+    #[serde(default)]
+    pub role_tag: Option<String>,
 }
 
 /// A style defining the layered buildup of a wall.
@@ -140,6 +152,8 @@ pub struct ResolvedLayer {
     pub bottom_offset: f64,
     pub top_offset: f64,
     pub layer_override: Option<String>,
+    pub hatch_override: Option<String>,
+    pub role_tag: Option<String>,
     /// Present when `LayerValue::Formula` failed; thickness is then `0.0`.
     pub formula_error: Option<String>,
 }
@@ -181,6 +195,8 @@ pub fn resolve_layer_values(layers: &[Layer], vars: &HashMap<String, f64>) -> Ve
                 bottom_offset: layer.bottom_offset,
                 top_offset: layer.top_offset,
                 layer_override: layer.layer_override.clone(),
+                hatch_override: layer.hatch_override.clone(),
+                role_tag: layer.role_tag.clone(),
                 formula_error,
             }
         })
@@ -273,6 +289,8 @@ mod tests {
             bottom_offset: 0.0,
             top_offset: 0.0,
             layer_override: None,
+            hatch_override: None,
+            role_tag: None,
         }
     }
 
@@ -285,6 +303,8 @@ mod tests {
             bottom_offset: 0.0,
             top_offset: 0.0,
             layer_override: None,
+            hatch_override: None,
+            role_tag: None,
         }
     }
 
@@ -469,5 +489,53 @@ mod tests {
             LayerValue::Formula("BB".into()).as_fixed_or(0.0),
             0.0
         );
+    }
+
+    #[test]
+    fn layer_without_new_attrs_deserializes_with_defaults() {
+        // Simulates an older saved library that predates `hatch_override`
+        // and `role_tag`: both fields must default to `None` rather than
+        // failing to deserialize.
+        let layer_json = r#"{
+            "material_id": "m",
+            "thickness": 0.1,
+            "function": "Structural",
+            "gap_before": 0.0,
+            "bottom_offset": 0.0,
+            "top_offset": 0.0,
+            "layer_override": null
+        }"#;
+        let layer: Layer = serde_json::from_str(layer_json).unwrap();
+        assert_eq!(layer.hatch_override, None);
+        assert_eq!(layer.role_tag, None);
+    }
+
+    #[test]
+    fn layer_new_attrs_roundtrip() {
+        let mut layer = create_layer("brick", 0.24);
+        layer.hatch_override = Some("ANSI32".to_string());
+        layer.role_tag = Some("Vormauerschale".to_string());
+
+        let serialized = serde_json::to_string(&layer).unwrap();
+        let deserialized: Layer = serde_json::from_str(&serialized).unwrap();
+        assert_eq!(layer, deserialized);
+        assert_eq!(deserialized.hatch_override.as_deref(), Some("ANSI32"));
+        assert_eq!(deserialized.role_tag.as_deref(), Some("Vormauerschale"));
+    }
+
+    #[test]
+    fn effective_layers_for_wall_carries_new_attrs_through_resolution() {
+        let mut styles = HashMap::new();
+        let mut layer = create_layer("brick", 0.24);
+        layer.hatch_override = Some("ANSI32".to_string());
+        layer.role_tag = Some("Vormauerschale".to_string());
+        styles.insert(
+            "s".to_string(),
+            create_wall_style("s", None, vec![layer]),
+        );
+
+        let resolved = effective_layers_for_wall_bb(&styles, &"s".to_string(), 0.24).unwrap();
+        assert_eq!(resolved[0].hatch_override.as_deref(), Some("ANSI32"));
+        assert_eq!(resolved[0].role_tag.as_deref(), Some("Vormauerschale"));
     }
 }

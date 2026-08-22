@@ -243,7 +243,19 @@ pub fn opening_footprint_2d(
     ])
 }
 
-/// Merge overlapping `[lo, hi]` intervals; input need not be sorted.
+/// Minimum meaningful axis-parameter span (in drawing units). Free spans (or
+/// gaps between merged opening intervals) narrower than this are treated as
+/// zero-width: real drawings work in metres/millimetres, so a "gap" of a
+/// fraction of a micrometre is floating-point noise from chained
+/// distance-along-axis sums, not a deliberate sliver pier between two
+/// openings. Without this, near-coincident opening edges (two openings
+/// placed edge-to-edge, or the same opening re-evaluated after a tiny axis
+/// edit) could otherwise produce a degenerate near-zero-area contour piece
+/// that survives the `area > 1e-12` filter downstream as a thin shard.
+const MIN_AXIS_SPAN: f64 = 1e-6;
+
+/// Merge overlapping (or near-touching, within [`MIN_AXIS_SPAN`]) `[lo, hi]`
+/// intervals; input need not be sorted.
 fn merge_intervals(mut intervals: Vec<(f64, f64)>) -> Vec<(f64, f64)> {
     if intervals.is_empty() {
         return intervals;
@@ -252,7 +264,7 @@ fn merge_intervals(mut intervals: Vec<(f64, f64)>) -> Vec<(f64, f64)> {
     let mut out = Vec::with_capacity(intervals.len());
     let (mut lo, mut hi) = intervals[0];
     for &(a, b) in &intervals[1..] {
-        if a <= hi + 1e-12 {
+        if a <= hi + MIN_AXIS_SPAN {
             hi = hi.max(b);
         } else {
             out.push((lo, hi));
@@ -265,6 +277,12 @@ fn merge_intervals(mut intervals: Vec<(f64, f64)>) -> Vec<(f64, f64)> {
 }
 
 /// Remaining axis spans after subtracting opening intervals from `[0, length]`.
+///
+/// Free spans (including the leading/trailing spans at the wall ends)
+/// narrower than [`MIN_AXIS_SPAN`] are dropped rather than kept as
+/// degenerate slivers — this keeps an opening placed almost flush with a
+/// wall end (or two openings placed almost edge-to-edge) from producing a
+/// near-zero-width extra piece alongside the real one.
 fn remaining_axis_spans(length: f64, openings: &[Opening]) -> Vec<(f64, f64)> {
     if length <= 1e-12 {
         return Vec::new();
@@ -285,12 +303,12 @@ fn remaining_axis_spans(length: f64, openings: &[Opening]) -> Vec<(f64, f64)> {
     let mut free = Vec::new();
     let mut cursor = 0.0;
     for (lo, hi) in blocked {
-        if lo - cursor > 1e-12 {
+        if lo - cursor > MIN_AXIS_SPAN {
             free.push((cursor, lo));
         }
         cursor = cursor.max(hi);
     }
-    if length - cursor > 1e-12 {
+    if length - cursor > MIN_AXIS_SPAN {
         free.push((cursor, length));
     }
     free
@@ -586,5 +604,111 @@ mod tests {
         let o = dummy_opening(1.0, 5.0); // wider than wall
         let pieces = subtract_rect_opening_from_band(&outer, &axis, 0.2, &o);
         assert!(pieces.is_empty());
+    }
+
+    #[test]
+    fn multiple_openings_on_one_segment_produce_three_valid_pieces() {
+        let axis = vec![(0.0, 0.0), (20.0, 0.0)];
+        let thickness = 0.2;
+        let outer = outer_contour(&axis, thickness, 0.0);
+        let uncut_area = area(&outer);
+        // Three windows spread along the wall, clearly separated.
+        let openings = vec![
+            dummy_opening(4.0, 1.0),
+            dummy_opening(10.0, 1.2),
+            dummy_opening(16.0, 0.9),
+        ];
+        let pieces = subtract_openings_from_band(&outer, &axis, thickness, &openings);
+        assert_eq!(pieces.len(), 4, "three separated openings split the band into 4 pieces");
+        for p in &pieces {
+            assert!(p.len() >= 3);
+            assert!(area(p) > 1e-9);
+        }
+        let cut_area: f64 = pieces.iter().map(|p| area(p)).sum();
+        let consumed = (1.0 + 1.2 + 0.9) * thickness;
+        assert!((cut_area - (uncut_area - consumed)).abs() < 1e-9);
+    }
+
+    #[test]
+    fn two_openings_placed_edge_to_edge_do_not_produce_a_degenerate_sliver() {
+        let axis = vec![(0.0, 0.0), (10.0, 0.0)];
+        let thickness = 0.2;
+        let outer = outer_contour(&axis, thickness, 0.0);
+        // First opening spans [4.0, 5.0]; second starts exactly where the
+        // first ends (touching, no gap) — no legitimate pier between them.
+        let a = dummy_opening(4.5, 1.0); // [4.0, 5.0]
+        let b = dummy_opening(5.5, 1.0); // [5.0, 6.0]
+        let pieces = subtract_openings_from_band(&outer, &axis, thickness, &[a, b]);
+        assert_eq!(
+            pieces.len(),
+            2,
+            "touching openings must merge into one gap, leaving only the two outer pieces"
+        );
+        for p in &pieces {
+            assert!(area(p) > 1e-6, "no degenerate sliver piece between touching openings");
+        }
+    }
+
+    #[test]
+    fn two_openings_extremely_close_merge_instead_of_leaving_a_micro_sliver() {
+        let axis = vec![(0.0, 0.0), (10.0, 0.0)];
+        let thickness = 0.2;
+        let outer = outer_contour(&axis, thickness, 0.0);
+        // Gap between the two openings is 1e-9 — floating-point noise, not a
+        // deliberate pier.
+        let a = dummy_opening(4.5, 1.0); // [4.0, 5.0]
+        let b = dummy_opening(5.0 + 1e-9 + 0.5, 1.0); // starts at ~5.0 + 1e-9
+        let pieces = subtract_openings_from_band(&outer, &axis, thickness, &[a, b]);
+        assert_eq!(pieces.len(), 2, "near-coincident opening edges must merge, not leave a sliver");
+        for p in &pieces {
+            assert!(area(p) > 1e-6);
+        }
+    }
+
+    #[test]
+    fn opening_flush_with_wall_start_leaves_no_degenerate_leading_piece() {
+        let axis = vec![(0.0, 0.0), (10.0, 0.0)];
+        let thickness = 0.2;
+        let outer = outer_contour(&axis, thickness, 0.0);
+        // Opening starts essentially at the wall's very start (span ~[0, 1.0]).
+        let o = dummy_opening(0.5 + 1e-9, 1.0);
+        let pieces = subtract_openings_from_band(&outer, &axis, thickness, &[o]);
+        assert_eq!(
+            pieces.len(),
+            1,
+            "an opening flush with the wall start should leave only the trailing piece"
+        );
+        assert!(area(&pieces[0]) > 1e-6);
+    }
+
+    #[test]
+    fn opening_over_gap_layer_splits_every_layer_including_the_gap_neighbors() {
+        use crate::modules::aec::engine::contour::{closed_layer_footprint, layer_contours_with_bulges};
+
+        let axis = vec![(0.0, 0.0), (10.0, 0.0)];
+        // Three layers: structural, an air gap (via gap_before on the third
+        // layer), and a finish layer — the opening spans full thickness so
+        // every layer (including the one preceded by the gap) must split.
+        let layers = vec![(0.2, 0.0), (0.05, 0.03), (0.1, 0.0)];
+        let total_thickness: f64 = layers.iter().map(|(t, g)| t + g).sum();
+        let opening = dummy_opening(5.0, 1.2);
+
+        for (li, _layer) in layers.iter().enumerate() {
+            let pieces = subtract_openings_from_band_with_builder(&axis, &[opening.clone()], |sub| {
+                let pairs = layer_contours_with_bulges(sub, &[], &layers);
+                pairs
+                    .get(li)
+                    .map(|(b1, b2)| closed_layer_footprint(b1, b2).points)
+                    .unwrap_or_default()
+            });
+            assert_eq!(
+                pieces.len(),
+                2,
+                "layer {li} (total thickness stack {total_thickness}) must split into 2 pieces around the opening"
+            );
+            for p in &pieces {
+                assert!(area(p) > 1e-9, "layer {li} produced a degenerate piece");
+            }
+        }
     }
 }

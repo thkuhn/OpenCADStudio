@@ -577,13 +577,17 @@ impl OpenCADStudio {
             // MOVE works from picked points, so it already relocates entities
             // in 3D; 3DMOVE is the same operation.
             "MOVE" | "3DMOVE" => {
-                let handles: Vec<_> = self.tabs[i]
+                let selected: Vec<_> = self.tabs[i]
                     .scene
                     .selected_entities()
                     .into_iter()
                     .map(|(h, _)| h)
                     .filter(|handle| !self.tabs[i].scene.is_layer_locked(*handle))
                     .collect();
+                let handles = crate::modules::aec::commands::expand_handles_for_wall_packages(
+                    &self.tabs[i].scene,
+                    &selected,
+                );
                 if handles.is_empty() {
                     use crate::modules::draw::select::SelectObjectsCommand;
                     let cmd = SelectObjectsCommand::new("MOVE");

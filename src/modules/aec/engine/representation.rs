@@ -1,13 +1,12 @@
-//! Shared per-wall 2D display representation.
+//! Shared per-wall display representation (2D + 3D extrusion paths).
 //!
-//! [`WallRepresentation`] is the single intermediate structure that holds the
-//! axis, outer contour, per-layer footprints, and a cheap drag-ghost outline
-//! for one wall. Geometry math stays in [`super::contour`] — this module only
-//! organizes the call site so Axis / Outer Contour / Layer Contours are derived
-//! together instead of via ad-hoc separate calls.
+//! [`WallRepresentation`] holds the axis, outer contour, per-layer footprints,
+//! opening-cut pieces, and a cheap drag-ghost. [`WallDisplaySet`] wraps that
+//! 2D model with per-layer 3D solid paths so regeneration writes contour,
+//! hatch, and solids from one geometry package.
 //!
-//! The 3D solid path (`sweep_model` / `solid_model`) remains a separate pipeline
-//! and is intentionally not folded into this structure.
+//! Geometry math stays in [`super::contour`]. 3D opening boolean cuts remain
+//! deferred (solids use the uncut layer footprint).
 
 use super::arc::offset_polyline_with_bulges;
 use super::contour::{
@@ -68,6 +67,77 @@ pub struct WallRepresentation {
     /// Per-layer disconnected pieces after opening subtraction. Empty outer
     /// vec, or empty per-layer entry, means use [`Self::layer_contours_2d`].
     pub cut_layer_pieces_2d: Vec<Vec<Vec<(f64, f64)>>>,
+}
+
+/// Closed 2D footprint plus extrusion parameters for one wall layer solid.
+#[derive(Debug, Clone, PartialEq)]
+pub struct WallLayerSolidPath {
+    pub footprint: Vec<(f64, f64)>,
+    pub bulges: Vec<f64>,
+    pub height: f64,
+    pub base_offset: f64,
+}
+
+/// Unified 2D + 3D display package produced from one [`WallRepresentation`].
+#[derive(Debug, Clone, PartialEq)]
+pub struct WallDisplaySet {
+    pub rep2d: WallRepresentation,
+    pub solids: Vec<WallLayerSolidPath>,
+}
+
+/// Build 3D extrusion paths from an existing 2D representation.
+///
+/// `layer_extrusion` is `(effective_height, base_offset)` per layer, aligned
+/// with [`WallRepresentation::layer_contours_2d`]. Solids always use the
+/// **uncut** layer contour (opening 3D boolean is deferred).
+pub fn solid_paths_from_representation(
+    repr: &WallRepresentation,
+    layer_extrusion: &[(f64, f64)],
+) -> Vec<WallLayerSolidPath> {
+    let n = repr.layer_contours_2d.len().min(layer_extrusion.len());
+    let mut solids = Vec::with_capacity(n);
+    for i in 0..n {
+        let footprint = repr.layer_contours_2d[i].clone();
+        let bulges = repr
+            .layer_contour_bulges
+            .get(i)
+            .cloned()
+            .unwrap_or_else(|| vec![0.0; footprint.len()]);
+        let (height, base_offset) = layer_extrusion[i];
+        solids.push(WallLayerSolidPath {
+            footprint,
+            bulges,
+            height,
+            base_offset,
+        });
+    }
+    solids
+}
+
+/// 2D representation plus matching 3D solid paths from the same contours.
+pub fn build_wall_display_set(
+    axis: &[(f64, f64)],
+    axis_bulges: &[f64],
+    layers: &[(f64, f64)],
+    centerline_offset: f64,
+    openings: &[Opening],
+    layer_extrusion: &[(f64, f64)],
+) -> WallDisplaySet {
+    let rep2d = if openings.is_empty() {
+        build_wall_representation_with_bulges(axis, axis_bulges, layers, centerline_offset)
+    } else {
+        build_wall_representation_with_openings(
+            axis,
+            axis_bulges,
+            layers,
+            centerline_offset,
+            openings,
+        )
+    };
+    // Solids from the uncut builder so opening splits do not change 3D yet.
+    let uncut = build_wall_representation_with_bulges(axis, axis_bulges, layers, centerline_offset);
+    let solids = solid_paths_from_representation(&uncut, layer_extrusion);
+    WallDisplaySet { rep2d, solids }
 }
 
 /// Build a complete [`WallRepresentation`] from an axis and layer stack.
@@ -469,6 +539,23 @@ mod tests {
         let b = build_wall_representation_with_openings(&axis, &[], &layers, 0.0, &[]);
         assert_eq!(a.outer_contour_2d, b.outer_contour_2d);
         assert!(b.cut_outer_pieces_2d.is_empty());
-        assert!(b.opening_footprints_2d.is_empty());
+    }
+
+    #[test]
+    fn build_wall_display_set_solids_match_uncut_layer_contours() {
+        use crate::modules::aec::engine::openings::Opening;
+        use acadrust::Handle;
+
+        let axis = vec![(0.0, 0.0), (10.0, 0.0)];
+        let layers = vec![(0.3, 0.0), (0.1, 0.0)];
+        let extrusion = vec![(2.7, 0.0), (2.5, 0.1)];
+        let opening = Opening::window(Handle::new(1), Handle::new(2), 5.0);
+        let set = build_wall_display_set(&axis, &[], &layers, 0.0, &[opening], &extrusion);
+        assert_eq!(set.solids.len(), 2);
+        assert_eq!(set.solids[0].height, 2.7);
+        assert_eq!(set.solids[1].base_offset, 0.1);
+        let uncut = build_wall_representation(&axis, &layers, 0.0);
+        assert_eq!(set.solids[0].footprint, uncut.layer_contours_2d[0]);
+        assert!(!set.rep2d.cut_layer_pieces_2d.is_empty());
     }
 }

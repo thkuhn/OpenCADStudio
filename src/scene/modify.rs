@@ -167,6 +167,7 @@ impl Scene {
             .copied()
             .filter(|&h| !self.is_layer_locked(h))
             .collect();
+        let handles = crate::modules::aec::commands::expand_handles_for_wall_packages(self, &handles);
         let handles = &handles[..];
         // MIRRTEXT (header.mirror_text): when false AutoCAD positions text /
         // mtext / shape by the mirror but keeps the original rotation +

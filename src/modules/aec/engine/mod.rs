@@ -31,6 +31,7 @@ pub use library::StyleLibrary;
 pub use loop_detection::find_closed_loop;
 pub use material::Material;
 pub use openings::{Opening, OpeningKind};
+pub use representation::{WallDisplaySet, WallLayerSolidPath, WallRepresentation};
 pub use room::Room;
 pub use storey::Storey;
 pub use style::Style;

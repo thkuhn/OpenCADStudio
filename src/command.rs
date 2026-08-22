@@ -1644,6 +1644,10 @@ pub enum LiveFieldValue {
     Text(String),
     Number(f64),
     Picker(String),
+    Choice {
+        selected: String,
+        options: Vec<String>,
+    },
 }
 
 #[derive(Clone, Debug)]

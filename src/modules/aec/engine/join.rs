@@ -111,26 +111,27 @@ pub fn join_wall_axes(
         }
     }
 
-    // Preference: T-junction if it's "very close" to one wall's end but definitely inside the other's segment.
-    // L-junction if it's "close" to both ends.
-    //
-    // Actually, let's use a simple distance-based choice.
-    // If we have an L-junction candidate and it's close to the actual endpoints, prefer it.
+    // Explicit End-vs-Mid classification. Near-coincident hits at a through
+    // wall's endpoint stay L (both End); a hit strictly interior to one axis
+    // with the other wall ending there is T — and the through axis is never
+    // shortened.
+    let classify = |axis: &[DVec3], isect: DVec3| -> Option<JunctionRole> {
+        classify_axis_at_point(axis, isect, END_MID_TOLERANCE)
+    };
 
     if let Some((isect, idx_a, idx_b)) = best_l {
-        // Only consider it an L-junction if the intersection is relatively close to the ends
-        // compared to a T-junction.
-        let mut use_l = true;
-        if let Some((t_isect, _, _, _)) = best_t {
-            if t_isect.distance(axis_a[idx_a]) + t_isect.distance(axis_b[idx_b])
-                > isect.distance(axis_a[idx_a]) + isect.distance(axis_b[idx_b])
-            {
-                use_l = true;
-            } else {
-                use_l = false;
-            }
-        }
-
+        let role_a = classify(axis_a, isect);
+        let role_b = classify(axis_b, isect);
+        let both_end = matches!(role_a, Some(JunctionRole::Endpoint(_)))
+            && matches!(role_b, Some(JunctionRole::Endpoint(_)));
+        // Extension L: intersection is beyond both finite axes (roles None)
+        // or one role is End and the other is an extension (None, not Mid).
+        let a_mid = matches!(role_a, Some(JunctionRole::Through(_)));
+        let b_mid = matches!(role_b, Some(JunctionRole::Through(_)));
+        let a_head = axis_overhangs_both_sides(axis_a, isect, END_MID_TOLERANCE);
+        let b_head = axis_overhangs_both_sides(axis_b, isect, END_MID_TOLERANCE);
+        // Kopfwand of a T continues past the stem on both sides — never L.
+        let use_l = (both_end || (!a_mid && !b_mid)) && !(a_head ^ b_head);
         if use_l {
             let mut new_a = axis_a.to_vec();
             new_a[idx_a] = isect;
@@ -138,21 +139,127 @@ pub fn join_wall_axes(
             new_b[idx_b] = isect;
             return Ok((new_a, new_b, JoinKind::L, Some(idx_a), Some(idx_b)));
         }
+        // Intersection classified as T via Kopfwand overhang: keep the
+        // through axis full length and snap only the stem end.
+        if a_head ^ b_head {
+            if a_head {
+                let mut new_b = axis_b.to_vec();
+                new_b[idx_b] = isect;
+                return Ok((axis_a.to_vec(), new_b, JoinKind::T, None, Some(idx_b)));
+            } else {
+                let mut new_a = axis_a.to_vec();
+                new_a[idx_a] = isect;
+                return Ok((new_a, axis_b.to_vec(), JoinKind::T, Some(idx_a), None));
+            }
+        }
     }
 
     if let Some((isect, idx_stem, _idx_through_seg, a_is_stem)) = best_t {
-        if a_is_stem {
-            let mut new_a = axis_a.to_vec();
-            new_a[idx_stem] = isect;
-            return Ok((new_a, axis_b.to_vec(), JoinKind::T, Some(idx_stem), None));
+        let (stem_axis, through_axis) = if a_is_stem {
+            (axis_a, axis_b)
         } else {
-            let mut new_b = axis_b.to_vec();
-            new_b[idx_stem] = isect;
-            return Ok((axis_a.to_vec(), new_b, JoinKind::T, None, Some(idx_stem)));
+            (axis_b, axis_a)
+        };
+        let stem_role = classify(stem_axis, isect);
+        let through_role = classify(through_axis, isect);
+        let stem_is_end = matches!(stem_role, Some(JunctionRole::Endpoint(_)) | None);
+        let through_is_mid = matches!(through_role, Some(JunctionRole::Through(_)));
+        if stem_is_end && through_is_mid {
+            if a_is_stem {
+                let mut new_a = axis_a.to_vec();
+                new_a[idx_stem] = isect;
+                return Ok((new_a, axis_b.to_vec(), JoinKind::T, Some(idx_stem), None));
+            } else {
+                let mut new_b = axis_b.to_vec();
+                new_b[idx_stem] = isect;
+                return Ok((axis_a.to_vec(), new_b, JoinKind::T, None, Some(idx_stem)));
+            }
         }
     }
 
     Err(JoinError::NoIntersection)
+}
+
+/// Always form an L-corner: snap both nearest end vertices to the
+/// intersection of the end-segment lines. Shortens or lengthens both axes.
+/// Never classifies as T, even if one wall currently overhangs the hit.
+pub fn join_wall_axes_as_l(
+    axis_a: &[DVec3],
+    axis_b: &[DVec3],
+) -> Result<(Vec<DVec3>, Vec<DVec3>, JoinKind, Option<usize>, Option<usize>), JoinError> {
+    if axis_a.len() < 2 || axis_b.len() < 2 {
+        return Err(JoinError::Degenerate);
+    }
+    let ends_a = [
+        (0, axis_a[0], axis_a[1]),
+        (axis_a.len() - 1, axis_a[axis_a.len() - 1], axis_a[axis_a.len() - 2]),
+    ];
+    let ends_b = [
+        (0, axis_b[0], axis_b[1]),
+        (axis_b.len() - 1, axis_b[axis_b.len() - 1], axis_b[axis_b.len() - 2]),
+    ];
+    let mut best: Option<(DVec3, usize, usize)> = None;
+    let mut best_dist = f64::INFINITY;
+    let mut best_idx_sum = 0usize;
+    for (idx_a, p1, p2) in ends_a {
+        for (idx_b, p3, p4) in ends_b {
+            if let Some(isect) = intersect_lines_2d(p1, p2, p3, p4) {
+                let dist = p1.distance(isect) + p3.distance(isect);
+                let idx_sum = idx_a + idx_b;
+                // On a tie (typical 2-point through wall, both ends equally
+                // far from the hit) snap the later vertices so the original
+                // start remains and the overhang past the corner is trimmed.
+                if dist < best_dist - 1e-9 || ((dist - best_dist).abs() <= 1e-9 && idx_sum > best_idx_sum)
+                {
+                    best_dist = dist;
+                    best_idx_sum = idx_sum;
+                    best = Some((isect, idx_a, idx_b));
+                }
+            }
+        }
+    }
+    let Some((isect, idx_a, idx_b)) = best else {
+        return Err(JoinError::NoIntersection);
+    };
+    let mut new_a = axis_a.to_vec();
+    new_a[idx_a] = isect;
+    let mut new_b = axis_b.to_vec();
+    new_b[idx_b] = isect;
+    Ok((new_a, new_b, JoinKind::L, Some(idx_a), Some(idx_b)))
+}
+
+/// Move only `source`'s nearer end to the intersection with `target`'s axis
+/// line(s). `target` is never shortened or lengthened.
+pub fn extend_axis_to_other(
+    source: &[DVec3],
+    target: &[DVec3],
+) -> Result<(Vec<DVec3>, usize, DVec3), JoinError> {
+    if source.len() < 2 || target.len() < 2 {
+        return Err(JoinError::Degenerate);
+    }
+    let ends = [
+        (0, source[0], source[1]),
+        (source.len() - 1, source[source.len() - 1], source[source.len() - 2]),
+    ];
+    let mut best: Option<(DVec3, usize)> = None;
+    let mut best_dist = f64::INFINITY;
+    for (idx, p1, p2) in ends {
+        for i in 0..target.len() - 1 {
+            if let Some(isect) = intersect_lines_2d(p1, p2, target[i], target[i + 1]) {
+                let dist = p1.distance(isect);
+                if dist < best_dist {
+                    best_dist = dist;
+                    best = Some((isect, idx));
+                }
+            }
+        }
+    }
+    let Some((isect, idx)) = best else {
+        return Err(JoinError::NoIntersection);
+    };
+    let mut new_source = source.to_vec();
+    new_source[idx] = isect;
+    Ok((new_source, idx, isect))
 }
 
 fn intersect_lines_2d(p1: DVec3, p2: DVec3, p3: DVec3, p4: DVec3) -> Option<DVec3> {
@@ -192,6 +299,11 @@ fn is_on_segment_interior_2d(p: DVec3, a: DVec3, b: DVec3, tol: f64) -> bool {
 
 /// Default clustering tolerance for multi-wall junction detection.
 pub const JUNCTION_TOLERANCE: f64 = 1e-6;
+
+/// Distance from an axis endpoint below which a join hit is End, not Mid.
+/// Prevents a T-stem that lands almost on a through-wall end from being
+/// classified as T (which would leave a hairline gap instead of an L miter).
+pub const END_MID_TOLERANCE: f64 = 1e-3;
 
 /// How a wall participates in a multi-wall junction.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -321,6 +433,23 @@ pub fn detect_junctions(walls: &[&[DVec3]], tol: f64) -> Vec<Junction> {
             });
         }
 
+        // A wall clustered by a nearby endpoint is still Through when the
+        // head/crossbar continues past the junction on *both* sides (T),
+        // even if that endpoint sits inside the clustering snap radius.
+        for p in &mut participants {
+            let axis = walls[p.wall_index];
+            if !axis_overhangs_both_sides(axis, point, END_MID_TOLERANCE) {
+                continue;
+            }
+            // Cluster `tol` is too loose for the interior-vs-end test
+            // (`is_on_segment_interior` would reject a 0.2 overhang).
+            if let Some(seg) = find_through_segment(point, axis, END_MID_TOLERANCE) {
+                p.role = JunctionRole::Through(seg);
+            } else if let Some(seg) = closest_segment_index(point, axis) {
+                p.role = JunctionRole::Through(seg);
+            }
+        }
+
         // Through-wall participants: junction on an interior segment.
         for (wi, axis) in walls.iter().enumerate() {
             if seen_walls[wi] || axis.len() < 2 {
@@ -378,6 +507,86 @@ fn find_through_segment(point: DVec3, axis: &[DVec3], tol: f64) -> Option<usize>
         }
     }
     None
+}
+
+fn closest_segment_index(point: DVec3, axis: &[DVec3]) -> Option<usize> {
+    if axis.len() < 2 {
+        return None;
+    }
+    let mut best = None;
+    let mut best_d = f64::INFINITY;
+    for i in 0..axis.len() - 1 {
+        let a = axis[i];
+        let b = axis[i + 1];
+        let abx = b.x - a.x;
+        let aby = b.y - a.y;
+        let len2 = abx * abx + aby * aby;
+        if len2 < 1e-24 {
+            continue;
+        }
+        let t = ((point.x - a.x) * abx + (point.y - a.y) * aby) / len2;
+        let t = t.clamp(0.0, 1.0);
+        let proj = DVec3::new(a.x + abx * t, a.y + aby * t, a.z);
+        let d = proj.distance(point);
+        if d < best_d {
+            best_d = d;
+            best = Some(i);
+        }
+    }
+    best
+}
+
+/// True when `point` lies on `axis` such that both endpoints remain at least
+/// `min_overhang` away — the Kopfwand of a T continues past the stem.
+fn axis_overhangs_both_sides(axis: &[DVec3], point: DVec3, min_overhang: f64) -> bool {
+    if axis.len() < 2 {
+        return false;
+    }
+    let start = axis[0];
+    let end = *axis.last().unwrap();
+    if start.distance(point) <= min_overhang || end.distance(point) <= min_overhang {
+        return false;
+    }
+    // Closest point on any segment must be interior, and the leftovers to
+    // both finite ends must exceed `min_overhang`.
+    let mut best_d = f64::INFINITY;
+    let mut best_on = false;
+    for i in 0..axis.len() - 1 {
+        let a = axis[i];
+        let b = axis[i + 1];
+        let abx = b.x - a.x;
+        let aby = b.y - a.y;
+        let len2 = abx * abx + aby * aby;
+        if len2 < 1e-24 {
+            continue;
+        }
+        let t = ((point.x - a.x) * abx + (point.y - a.y) * aby) / len2;
+        let t_clamped = t.clamp(0.0, 1.0);
+        let proj = DVec3::new(a.x + abx * t_clamped, a.y + aby * t_clamped, a.z);
+        let d = proj.distance(point);
+        if d < best_d {
+            best_d = d;
+            best_on = t > 0.0 && t < 1.0;
+        }
+    }
+    best_on && best_d <= min_overhang.max(1e-6)
+}
+
+/// Classify `point` against `axis`: Endpoint if within `tol` of a vertex end,
+/// Through if it lies strictly on a segment interior. `None` when the point
+/// is off the finite axis (typical of an L-extension before the ends move).
+fn classify_axis_at_point(axis: &[DVec3], point: DVec3, tol: f64) -> Option<JunctionRole> {
+    if axis.len() < 2 {
+        return None;
+    }
+    if point.distance(axis[0]) <= tol {
+        return Some(JunctionRole::Endpoint(0));
+    }
+    let last = axis.len() - 1;
+    if point.distance(axis[last]) <= tol {
+        return Some(JunctionRole::Endpoint(last));
+    }
+    find_through_segment(point, axis, tol).map(JunctionRole::Through)
 }
 
 /// Outgoing unit direction from a junction participant, used to order walls
@@ -592,6 +801,96 @@ mod tests {
     }
 
     #[test]
+    fn test_t_join_does_not_shorten_through_axis() {
+        let stem = vec![DVec3::new(4.0, 2.0, 0.0), DVec3::new(4.0, 8.0, 0.0)];
+        let through = vec![DVec3::new(0.0, 0.0, 0.0), DVec3::new(10.0, 0.0, 0.0)];
+        let (new_stem, new_through, kind, end_stem, end_through) =
+            join_wall_axes(&stem, &through).unwrap();
+        assert_eq!(kind, JoinKind::T);
+        assert_eq!(end_stem, Some(0));
+        assert_eq!(end_through, None);
+        assert_eq!(new_through, through);
+        assert_eq!(new_stem[0], DVec3::new(4.0, 0.0, 0.0));
+        assert_eq!(new_stem[1], DVec3::new(4.0, 8.0, 0.0));
+    }
+
+    #[test]
+    fn test_near_coincident_end_is_l_not_t() {
+        // Stem hits 5e-4 from the through wall's start — within END_MID_TOLERANCE.
+        let stem = vec![DVec3::new(0.0005, 1.0, 0.0), DVec3::new(0.0005, 5.0, 0.0)];
+        let through = vec![DVec3::new(0.0, 0.0, 0.0), DVec3::new(10.0, 0.0, 0.0)];
+        let (_a, _b, kind, end_a, end_b) = join_wall_axes(&stem, &through).unwrap();
+        assert_eq!(kind, JoinKind::L);
+        assert!(end_a.is_some() && end_b.is_some());
+    }
+
+    #[test]
+    fn detect_junctions_two_wall_t_marks_through_not_endpoint() {
+        let through = vec![DVec3::new(0.0, 0.0, 0.0), DVec3::new(10.0, 0.0, 0.0)];
+        let stem = vec![DVec3::new(5.0, 0.0, 0.0), DVec3::new(5.0, 10.0, 0.0)];
+        let walls: Vec<&[DVec3]> = vec![&through, &stem];
+        let junctions = detect_junctions(&walls, JUNCTION_TOLERANCE);
+        assert_eq!(junctions.len(), 1);
+        assert!(!junctions[0].is_multi_wall());
+        let roles: Vec<_> = junctions[0]
+            .participants
+            .iter()
+            .map(|p| (p.wall_index, p.role))
+            .collect();
+        assert!(
+            roles
+                .iter()
+                .any(|(wi, r)| *wi == 0 && matches!(r, JunctionRole::Through(_))),
+            "through wall must stay Through, got {roles:?}"
+        );
+        assert!(
+            roles
+                .iter()
+                .any(|(wi, r)| *wi == 1 && matches!(r, JunctionRole::Endpoint(_))),
+            "stem must be Endpoint, got {roles:?}"
+        );
+        let snapped = apply_junction_to_axes(&walls, &junctions[0]);
+        assert_eq!(snapped[0], through, "T must not shorten the through axis");
+    }
+
+    #[test]
+    fn detect_junctions_near_end_overhang_stays_t() {
+        // Kopfwand continues 0.2 past the stem — inside WALL_JOIN_SNAP_RADIUS
+        // (0.3) but still a T because it overhangs both sides.
+        let through = vec![DVec3::new(0.0, 0.0, 0.0), DVec3::new(5.2, 0.0, 0.0)];
+        let stem = vec![DVec3::new(5.0, 0.0, 0.0), DVec3::new(5.0, 4.0, 0.0)];
+        let walls: Vec<&[DVec3]> = vec![&through, &stem];
+        let junctions = detect_junctions(&walls, 0.3);
+        assert_eq!(junctions.len(), 1);
+        let roles: Vec<_> = junctions[0]
+            .participants
+            .iter()
+            .map(|p| (p.wall_index, p.role))
+            .collect();
+        assert!(
+            roles
+                .iter()
+                .any(|(wi, r)| *wi == 0 && matches!(r, JunctionRole::Through(_))),
+            "head wall must stay Through, got {roles:?}"
+        );
+        let snapped = apply_junction_to_axes(&walls, &junctions[0]);
+        assert_eq!(snapped[0], through);
+    }
+
+    #[test]
+    fn join_wall_axes_overhang_is_t_not_l() {
+        let through = vec![DVec3::new(0.0, 0.0, 0.0), DVec3::new(5.2, 0.0, 0.0)];
+        let stem = vec![DVec3::new(5.0, 1.0, 0.0), DVec3::new(5.0, 4.0, 0.0)];
+        let (new_through, new_stem, kind, end_through, end_stem) =
+            join_wall_axes(&through, &stem).unwrap();
+        assert_eq!(kind, JoinKind::T);
+        assert_eq!(end_through, None);
+        assert_eq!(end_stem, Some(0));
+        assert_eq!(new_through, through);
+        assert_eq!(new_stem[0], DVec3::new(5.0, 0.0, 0.0));
+    }
+
+    #[test]
     fn apply_junction_snaps_endpoints() {
         let a = vec![DVec3::new(0.01, 0.0, 0.0), DVec3::new(10.0, 0.0, 0.0)];
         let b = vec![DVec3::new(-0.01, 0.0, 0.0), DVec3::new(0.0, 10.0, 0.0)];
@@ -602,5 +901,29 @@ mod tests {
         let updated = apply_junction_to_axes(&walls, &junctions[0]);
         assert!(updated[0][0].distance(junctions[0].point) < 1e-12);
         assert!(updated[1][0].distance(junctions[0].point) < 1e-12);
+    }
+
+    #[test]
+    fn join_wall_axes_as_l_trims_overhang_to_corner() {
+        let through = vec![DVec3::new(0.0, 0.0, 0.0), DVec3::new(10.0, 0.0, 0.0)];
+        let stem = vec![DVec3::new(5.0, 1.0, 0.0), DVec3::new(5.0, 4.0, 0.0)];
+        let (new_a, new_b, kind, end_a, end_b) = join_wall_axes_as_l(&through, &stem).unwrap();
+        assert_eq!(kind, JoinKind::L);
+        assert_eq!(end_a, Some(1));
+        assert_eq!(end_b, Some(0));
+        assert_eq!(new_a[1], DVec3::new(5.0, 0.0, 0.0));
+        assert_eq!(new_b[0], DVec3::new(5.0, 0.0, 0.0));
+        assert_eq!(new_a[0], DVec3::new(0.0, 0.0, 0.0));
+    }
+
+    #[test]
+    fn extend_axis_to_other_does_not_change_target() {
+        let source = vec![DVec3::new(5.0, 2.0, 0.0), DVec3::new(5.0, 6.0, 0.0)];
+        let target = vec![DVec3::new(0.0, 0.0, 0.0), DVec3::new(10.0, 0.0, 0.0)];
+        let (new_source, idx, isect) = extend_axis_to_other(&source, &target).unwrap();
+        assert_eq!(idx, 0);
+        assert_eq!(isect, DVec3::new(5.0, 0.0, 0.0));
+        assert_eq!(new_source[0], isect);
+        assert_eq!(new_source[1], source[1]);
     }
 }

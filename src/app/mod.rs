@@ -116,6 +116,10 @@ pub struct AecLayerBuffer {
     pub top_offset: String,
     /// Optional drawing-layer override (empty string = use default behavior).
     pub layer_override: String,
+    /// Optional hatch pattern override (empty string = use material's own hatch).
+    pub hatch_override: String,
+    /// Optional free-text role tag shown in the manager (empty = none).
+    pub role_tag: String,
 }
 
 /// How the AEC Style Manager orders the "Wall Styles" master list.
@@ -2298,6 +2302,11 @@ pub enum Message {
     /// Optional drawing-layer override changed for the layer at `index`
     /// (empty string = use default behavior).
     AecStyleManagerWallStyleLayerOverrideChanged(usize, String),
+    /// Optional hatch pattern override changed for the layer at `index`
+    /// (empty string = use the material's own hatch pattern).
+    AecStyleManagerWallStyleLayerHatchOverrideChanged(usize, String),
+    /// Optional free-text role tag changed for the layer at `index`.
+    AecStyleManagerWallStyleLayerRoleTagChanged(usize, String),
     /// Moves the layer at `index` one position up (towards the outside).
     AecStyleManagerWallStyleLayerMoveUp(usize),
     /// Moves the layer at `index` one position down (towards the inside).

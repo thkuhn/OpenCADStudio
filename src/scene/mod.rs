@@ -4326,7 +4326,17 @@ impl Scene {
         // the overlay and remain in the selected colour.
         let contribution = |scene: &Scene, hovered: Option<Handle>| {
             hovered
-                .map(|handle| scene.handles_expanded_for_selectable_groups(&[handle]))
+                .map(|handle| {
+                    let grouped: Vec<Handle> = scene
+                        .handles_expanded_for_selectable_groups(&[handle])
+                        .into_iter()
+                        .collect();
+                    crate::modules::aec::commands::expand_handles_for_wall_packages(
+                        scene, &grouped,
+                    )
+                    .into_iter()
+                    .collect::<HashSet<_>>()
+                })
                 .unwrap_or_default()
                 .into_iter()
                 .filter(|handle| !scene.selected.contains(handle))
@@ -4344,7 +4354,15 @@ impl Scene {
     /// it to the same selectable group that a click would select.
     pub fn hover_highlight_handles(&self) -> HashSet<Handle> {
         self.hover_highlight
-            .map(|handle| self.handles_expanded_for_selectable_groups(&[handle]))
+            .map(|handle| {
+                let grouped: Vec<Handle> = self
+                    .handles_expanded_for_selectable_groups(&[handle])
+                    .into_iter()
+                    .collect();
+                crate::modules::aec::commands::expand_handles_for_wall_packages(self, &grouped)
+                    .into_iter()
+                    .collect()
+            })
             .unwrap_or_default()
     }
 

@@ -454,15 +454,25 @@ impl OpenCADStudio {
                     // left untouched. Edits are written back through the same
                     // `wall_record` layout used by the interactive `AEC_WALL`
                     // draw command (see `on_prop_geom_commit`'s "wall_*" arms).
-                    if let Some(wall_section) =
-                        wall_prop_section(entity, self.aec_style_library.as_ref())
                     {
-                        sections.push(wall_section);
-                        let wall_handle = entity.common().handle;
-                        sections.extend(wall_relation_sections(
+                        let wall_handle = crate::modules::aec::commands::resolve_wall_package(
                             &self.tabs[i].scene,
-                            wall_handle,
-                        ));
+                            handle,
+                        );
+                        let wall_entity = self.tabs[i]
+                            .scene
+                            .document
+                            .get_entity(wall_handle)
+                            .unwrap_or(entity);
+                        if let Some(wall_section) =
+                            wall_prop_section(wall_entity, self.aec_style_library.as_ref())
+                        {
+                            sections.push(wall_section);
+                            sections.extend(wall_relation_sections(
+                                &self.tabs[i].scene,
+                                wall_handle,
+                            ));
+                        }
                     }
 
                     // AEC storey entity — show metadata + owner-index members.
@@ -1789,6 +1799,11 @@ impl OpenCADStudio {
         }
         handles.retain(|handle| !self.tabs[i].scene.is_layer_locked(*handle));
         handles
+            .into_iter()
+            .map(|handle| {
+                crate::modules::aec::commands::resolve_wall_package(&self.tabs[i].scene, handle)
+            })
+            .collect()
     }
 
     pub(super) fn has_property_selection(&self, i: usize) -> bool {
@@ -1821,11 +1836,46 @@ impl OpenCADStudio {
         if context_object_changed {
             self.tabs[i].scene.poison_undo_recording();
         }
+        // Vertex / length edits on the wall axis must rebuild contour, hatch
+        // and solids; otherwise the old 2D outline stays on screen.
+        let mut display_handles = handles.to_vec();
+        let mut refreshed = rustc_hash::FxHashSet::default();
+        for &handle in handles {
+            let owner = crate::modules::aec::commands::resolve_wall_package(
+                &self.tabs[i].scene,
+                handle,
+            );
+            if !refreshed.insert(owner) {
+                continue;
+            }
+            let is_wall = self.tabs[i]
+                .scene
+                .document
+                .get_entity(owner)
+                .is_some_and(|e| {
+                    crate::modules::aec::commands::wall_thickness_and_height(e).is_some()
+                });
+            if is_wall {
+                if let Ok(touched) =
+                    crate::modules::aec::commands::regenerate_wall_representation(
+                        &mut self.tabs[i].scene,
+                        owner,
+                    )
+                {
+                    display_handles.extend(touched);
+                }
+            }
+        }
+        display_handles.retain(|h| self.tabs[i].scene.document.get_entity(*h).is_some());
+        display_handles.sort_by_key(|h| h.value());
+        display_handles.dedup();
         // Solid (ACIS) meshes bake their colour into the mesh, so a colour /
         // layer change needs an explicit recolour — re-tessellating wires
         // alone wouldn't update them.
-        self.tabs[i].scene.recolor_meshes_for_handles(handles);
-        let changes: Vec<_> = handles
+        self.tabs[i]
+            .scene
+            .recolor_meshes_for_handles(&display_handles);
+        let changes: Vec<_> = display_handles
             .iter()
             .map(|&handle| (handle, crate::scene::ChangeKind::Modified))
             .collect();
