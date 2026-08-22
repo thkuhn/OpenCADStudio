@@ -3,8 +3,9 @@ use super::{OpenCADStudio, VARIES_LABEL};
 use crate::io::linetypes;
 use crate::scene::view::dispatch;
 use crate::ui;
-use acadrust::{EntityType, Handle};
 use crate::t;
+use acadrust::types::{Transform, Vector3};
+use acadrust::{Entity, EntityType, Handle};
 
 /// Above this many selected objects the Properties panel skips per-entity
 /// property aggregation (which is O(n) per row, plus an O(n²) group filter) and
@@ -120,6 +121,13 @@ impl OpenCADStudio {
                     acadrust::EntityType::LwPolyline(polyline) => Some(polyline.vertices.len()),
                     acadrust::EntityType::Polyline2D(polyline) => Some(polyline.vertices.len()),
                     acadrust::EntityType::Leader(leader) => Some(leader.vertices.len()),
+                    acadrust::EntityType::Spline(spline) => {
+                        Some(if crate::entities::spline::shows_fit_points(spline) {
+                            spline.fit_points.len()
+                        } else {
+                            crate::entities::spline::control_vertex_count(spline)
+                        })
+                    }
                     _ => None,
                 });
             vertex_count.map_or(prop_vertex, |count| prop_vertex.min(count.saturating_sub(1)))
@@ -883,7 +891,7 @@ impl OpenCADStudio {
                             geom.props.push(crate::scene::model::object::Property {
                                 label: t!("Frozen Layers").into_owned(),
                                 field: "frozen_layers",
-                                value: crate::scene::model::object::PropValue::EditText(
+                                value: crate::scene::model::object::PropValue::PlainText(
                                     frozen_names.join(", "),
                                 ),
                             });
@@ -949,15 +957,17 @@ impl OpenCADStudio {
                             .filter(|n| !n.is_empty())
                             .collect();
                         if !dim_style_names.is_empty() {
-                            // Current style is already shown as EditText in the geom section;
+                            // Current style is already shown as text in the geom section;
                             // replace/upgrade it to a Choice if we have a list.
                             if let Some(geom) = sections.last_mut() {
-                                // Find and replace the style_name EditText with a Choice.
+                                // Replace the style name with a choice.
                                 if let Some(prop) =
                                     geom.props.iter_mut().find(|p| p.field == "style_name")
                                 {
                                     let current = match &prop.value {
-                                        crate::scene::model::object::PropValue::EditText(s) => s.clone(),
+                                        crate::scene::model::object::PropValue::PlainText(s) => {
+                                            s.clone()
+                                        }
                                         _ => String::new(),
                                     };
                                     prop.value = crate::scene::model::object::PropValue::Choice {
@@ -1013,10 +1023,8 @@ impl OpenCADStudio {
                                 .map(|br| br.units)
                                 .unwrap_or(0);
                             set_row(&mut sections, "block_unit", insunits_name(src).to_string());
-                            let host_mm = if host == 0 { 1.0 } else { insunits_to_mm(host) };
-                            let src_mm = if src == 0 { 1.0 } else { insunits_to_mm(src) };
-                            let factor = if host_mm.abs() > 1e-12 { src_mm / host_mm } else { 1.0 };
-                            set_row(&mut sections, "unit_factor", format!("{factor:.4}"));
+                            let factor = insert_unit_scale(host, src).unwrap_or(1.0);
+                            set_row(&mut sections, "unit_factor", format_unit_factor(factor));
 
                             // Name row: editable for regular blocks — pick an
                             // existing definition to re-point this reference, or
@@ -1092,7 +1100,7 @@ impl OpenCADStudio {
                                         .find(|p| p.field == "dimension_style")
                                     {
                                         let cur = match &p.value {
-                                            crate::scene::model::object::PropValue::EditText(s) => {
+                                            crate::scene::model::object::PropValue::PlainText(s) => {
                                                 s.clone()
                                             }
                                             _ => ld.dimension_style.clone(),
@@ -1270,7 +1278,8 @@ impl OpenCADStudio {
                             acadrust::EntityType::Text(_)
                             | acadrust::EntityType::MText(_)
                             | acadrust::EntityType::Insert(_)
-                            | acadrust::EntityType::Leader(_) => Some(("annotative", None)),
+                            | acadrust::EntityType::Leader(_)
+                            | acadrust::EntityType::Hatch(_) => Some(("annotative", None)),
                             acadrust::EntityType::MultiLeader(_) => {
                                 Some(("enable_annotation_scale", None))
                             }
@@ -1313,7 +1322,8 @@ impl OpenCADStudio {
                                         },
                                     ),
                                     acadrust::EntityType::Text(_)
-                                    | acadrust::EntityType::Insert(_) => set_row_value(
+                                    | acadrust::EntityType::Insert(_)
+                                    | acadrust::EntityType::Hatch(_) => set_row_value(
                                         &mut sections,
                                         "annotative",
                                         crate::scene::model::object::PropValue::BoolToggle {
@@ -1852,28 +1862,22 @@ impl OpenCADStudio {
 
         // INSUNITS: when inserting a block whose BlockRecord.units differ
         // from the host's header.insertion_units, scale the new INSERT so
-        // 1 source-unit equals the matching host length. When either side
-        // is unitless (0) AutoCAD falls back to MEASUREMENT (0 = Imperial /
-        // inches, 1 = Metric / mm); honour the same fallback.
+        // 1 source-unit equals the matching host length.
         if let acadrust::EntityType::Insert(ref mut ins) = entity {
-            let header = &self.tabs[i].scene.document.header;
-            let measurement_fallback = if header.measurement == 1 { 4 } else { 1 };
-            let host_raw = header.insertion_units;
-            let host_units = if host_raw == 0 { measurement_fallback } else { host_raw };
-            let src_raw = self.tabs[i]
+            let host_units = self.tabs[i].scene.document.header.insertion_units;
+            let src_units = self.tabs[i]
                 .scene
                 .document
                 .block_records
                 .get(&ins.block_name)
                 .map(|br| br.units)
                 .unwrap_or(0);
-            let src_units = if src_raw == 0 { measurement_fallback } else { src_raw };
-            if src_units != host_units {
-                let ratio = insunits_to_mm(src_units) / insunits_to_mm(host_units);
-                if ratio.is_finite() && (ratio - 1.0).abs() > 1e-9 {
-                    ins.set_x_scale(ratio);
-                    ins.set_y_scale(ratio);
-                    ins.set_z_scale(ratio);
+            if let Some(ratio) = insert_unit_scale(host_units, src_units) {
+                if !apply_insert_unit_scale(ins, ratio) {
+                    self.command_line.push_error(
+                        t!("INSERT unit scale is outside the supported range.").as_ref(),
+                    );
+                    return None;
                 }
             }
         }
@@ -1897,6 +1901,41 @@ impl OpenCADStudio {
             &self.tabs[i].scene.document,
             &mut entity,
         );
+
+        // Smart centre objects carry their own drawing-level creation style.
+        // Apply it after the generic ribbon style so ordinary LINE entities
+        // keep the existing path while centre lines honour their settings.
+        let center_line = acadrust::entities::CenterLineAssociation::read(
+            &entity.common().extended_data,
+        ).is_some();
+        let center_mark = acadrust::entities::CenterMarkAssociation::read(
+            &entity.common().extended_data,
+        ).is_some();
+        if center_line || center_mark {
+            let settings = self.tabs[i].scene.centerline_settings();
+            if !settings.layer.eq_ignore_ascii_case("Current") {
+                entity.common_mut().layer = settings.layer;
+            }
+            if !settings.linetype.eq_ignore_ascii_case("Current") {
+                entity.common_mut().linetype = settings.linetype;
+            }
+            entity.common_mut().linetype_scale = settings.linetype_scale;
+            let application = if center_mark {
+                acadrust::entities::CENTERMARK_XDATA_APPLICATION
+            } else {
+                acadrust::entities::CENTERLINE_XDATA_APPLICATION
+            };
+            if !self.tabs[i]
+                .scene
+                .document
+                .app_ids
+                .contains(application)
+            {
+                let mut app = acadrust::tables::AppId::new(application);
+                app.handle = self.tabs[i].scene.document.allocate_handle();
+                let _ = self.tabs[i].scene.document.app_ids.add(app);
+            }
+        }
 
         let text_style_annotative = match &entity {
             acadrust::EntityType::Text(text) => {
@@ -2037,6 +2076,7 @@ fn make_sections_read_only(
         let text = match &property.value {
             PropValue::ReadOnly(value)
             | PropValue::EditText(value)
+            | PropValue::PlainText(value)
             | PropValue::LayerChoice(value)
             | PropValue::LinetypeChoice(value)
             | PropValue::HatchPatternChoice(value) => value.clone(),
@@ -2328,6 +2368,23 @@ pub(super) fn aggregate_sections(
     for sections in all_sections {
         result = merge_sections(&result, &sections);
     }
+    // Sum the filled area while individual Area rows may still vary.
+    if selected.len() > 1
+        && selected
+            .iter()
+            .all(|(_, entity)| matches!(entity, acadrust::EntityType::Hatch(_)))
+    {
+        let total = selected
+            .iter()
+            .filter_map(|(_, entity)| match entity {
+                acadrust::EntityType::Hatch(hatch) => {
+                    Some(crate::entities::hatch::boundary_area(hatch))
+                }
+                _ => None,
+            })
+            .sum::<f64>();
+        set_row(&mut result, "cumulative_area", format!("{total:.4}"));
+    }
     result
 }
 
@@ -2434,6 +2491,9 @@ fn merge_prop_value(
         },
         (PropValue::EditText(_), PropValue::EditText(_)) => {
             PropValue::EditText(VARIES_LABEL.into())
+        }
+        (PropValue::PlainText(_), PropValue::PlainText(_)) => {
+            PropValue::PlainText(VARIES_LABEL.into())
         }
         (PropValue::ReadOnly(_), PropValue::ReadOnly(_)) => {
             PropValue::ReadOnly(VARIES_LABEL.into())
@@ -2655,35 +2715,200 @@ fn insunits_name(code: i16) -> &'static str {
         19 => "Light Years",
         20 => "Parsecs",
         21 => "US Survey Feet",
-        _ => "Unitless",
+        22 => "US Survey Inches",
+        23 => "US Survey Yards",
+        24 => "US Survey Miles",
+        0 => "Unitless",
+        _ => "Unknown",
+    }
+}
+
+/// Unit-conversion scale for a new INSERT.
+fn insert_unit_scale(host_units: i16, src_units: i16) -> Option<f64> {
+    let host_mm = insunits_to_mm(host_units)?;
+    let src_mm = insunits_to_mm(src_units)?;
+    let ratio = src_mm / host_mm;
+    if !ratio.is_finite() || (ratio - 1.0).abs() <= 1e-9 {
+        return None;
+    }
+    Some(ratio)
+}
+
+fn format_unit_factor(factor: f64) -> String {
+    let magnitude = factor.abs();
+    if magnitude > 0.0 && !(1.0e-4..1.0e7).contains(&magnitude) {
+        format!("{factor:.4e}")
+    } else {
+        format!("{factor:.4}")
     }
 }
 
 /// Convert INSUNITS (DXF group 70) to millimetres.
-/// 0 = unitless / unknown: returns 1.0 so the caller treats it as "do not scale".
-fn insunits_to_mm(code: i16) -> f64 {
-    match code {
-        1 => 25.4,            // Inches
-        2 => 304.8,           // Feet
-        3 => 1_609_344.0,     // Miles
-        4 => 1.0,             // Millimeters
-        5 => 10.0,            // Centimeters
-        6 => 1_000.0,         // Meters
-        7 => 1_000_000.0,     // Kilometers
-        8 => 0.000_025_4,     // Microinches
-        9 => 0.025_4,         // Mils
-        10 => 914.4,          // Yards
-        11 => 1.0e-7,         // Angstroms
-        12 => 1.0e-6,         // Nanometers
-        13 => 0.001,          // Microns
-        14 => 100.0,          // Decimeters
-        15 => 10_000.0,       // Decameters
-        16 => 100_000.0,      // Hectometers
-        17 => 1.0e12,         // Gigameters
-        18 => 1.496e14,       // Astronomical Units
-        19 => 9.461e18,       // Light Years
-        20 => 3.086e19,       // Parsecs
-        21 => 304.800_609_6,  // US Survey Feet
-        _ => 1.0,
+fn insunits_to_mm(code: i16) -> Option<f64> {
+    Some(match code {
+        1 => 25.4,                       // Inches
+        2 => 304.8,                      // Feet
+        3 => 1_609_344.0,                // Miles
+        4 => 1.0,                        // Millimeters
+        5 => 10.0,                       // Centimeters
+        6 => 1_000.0,                    // Meters
+        7 => 1_000_000.0,                // Kilometers
+        8 => 0.000_025_4,                // Microinches
+        9 => 0.025_4,                    // Mils
+        10 => 914.4,                     // Yards
+        11 => 1.0e-7,                    // Angstroms
+        12 => 1.0e-6,                    // Nanometers
+        13 => 0.001,                     // Microns
+        14 => 100.0,                     // Decimeters
+        15 => 10_000.0,                  // Decameters
+        16 => 100_000.0,                 // Hectometers
+        17 => 1.0e12,                    // Gigameters
+        18 => 1.495_978_707e14,          // Astronomical Units
+        19 => 9.460_730_472_580_8e18,    // Light Years
+        20 => 3.085_677_581_491_367_3e19, // Parsecs
+        21 => 1_200_000.0 / 3_937.0,     // US Survey Feet
+        22 => 100_000.0 / 3_937.0,       // US Survey Inches
+        23 => 3_600_000.0 / 3_937.0,     // US Survey Yards
+        24 => 6_336_000_000.0 / 3_937.0, // US Survey Miles
+        _ => return None,
+    })
+}
+
+fn apply_insert_unit_scale(ins: &mut acadrust::entities::Insert, ratio: f64) -> bool {
+    const MIN_INSERT_SCALE: f64 = 1.0e-12;
+    if [ins.x_scale(), ins.y_scale(), ins.z_scale()]
+        .into_iter()
+        .map(|scale| scale * ratio)
+        .any(|scale| !scale.is_finite() || scale.abs() < MIN_INSERT_SCALE)
+    {
+        return false;
+    }
+
+    let origin = ins.get_transform().apply(Vector3::ZERO);
+    ins.apply_transform(&Transform::from_translation(-origin));
+    ins.apply_transform(&Transform::from_scale(ratio));
+    ins.apply_transform(&Transform::from_translation(origin));
+    true
+}
+
+#[cfg(test)]
+mod insert_unit_scale_tests {
+    use super::{
+        apply_insert_unit_scale, format_unit_factor, insert_unit_scale, insunits_to_mm,
+    };
+    use acadrust::entities::{AttributeEntity, Insert};
+    use acadrust::types::Vector3;
+
+    const UNITLESS: i16 = 0;
+    const INCHES: i16 = 1;
+    const MILLIMETERS: i16 = 4;
+    const CENTIMETERS: i16 = 5;
+    const METERS: i16 = 6;
+
+    #[test]
+    fn unitless_block_is_inserted_as_authored() {
+        // Reported case: a unitless block with a 1000-unit edge inserted into a
+        // millimetre drawing must keep that edge, not gain a conversion factor.
+        assert_eq!(insert_unit_scale(MILLIMETERS, UNITLESS), None);
+        assert_eq!(insert_unit_scale(INCHES, UNITLESS), None);
+    }
+
+    #[test]
+    fn unitless_drawing_does_not_scale_a_measured_block() {
+        assert_eq!(insert_unit_scale(UNITLESS, METERS), None);
+        assert_eq!(insert_unit_scale(UNITLESS, INCHES), None);
+        assert_eq!(insert_unit_scale(UNITLESS, UNITLESS), None);
+    }
+
+    #[test]
+    fn matching_units_do_not_scale() {
+        assert_eq!(insert_unit_scale(METERS, METERS), None);
+    }
+
+    #[test]
+    fn unknown_units_do_not_scale() {
+        assert_eq!(insunits_to_mm(0), None);
+        assert_eq!(insunits_to_mm(25), None);
+        assert_eq!(insert_unit_scale(MILLIMETERS, 25), None);
+    }
+
+    #[test]
+    fn differing_units_convert_through_millimetres() {
+        let ratio = insert_unit_scale(MILLIMETERS, METERS).expect("metres into mm should scale");
+        assert!((ratio - 1000.0).abs() < 1e-9, "got {ratio}");
+
+        let ratio = insert_unit_scale(MILLIMETERS, INCHES).expect("inches into mm should scale");
+        assert!((ratio - 25.4).abs() < 1e-9, "got {ratio}");
+
+        let ratio = insert_unit_scale(METERS, CENTIMETERS).expect("cm into m should scale");
+        assert!((ratio - 0.01).abs() < 1e-12, "got {ratio}");
+    }
+
+    #[test]
+    fn survey_units_have_expected_ratios() {
+        let survey_foot = insunits_to_mm(21).expect("survey feet");
+        let survey_inch = insunits_to_mm(22).expect("survey inches");
+        let survey_yard = insunits_to_mm(23).expect("survey yards");
+        let survey_mile = insunits_to_mm(24).expect("survey miles");
+
+        assert!((survey_foot / survey_inch - 12.0).abs() < 1e-12);
+        assert!((survey_yard / survey_foot - 3.0).abs() < 1e-12);
+        assert!((survey_mile / survey_foot - 5280.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn astronomical_units_use_precise_si_values() {
+        assert_eq!(insunits_to_mm(18), Some(1.495_978_707e14));
+        assert_eq!(insunits_to_mm(19), Some(9.460_730_472_580_8e18));
+        assert_eq!(
+            insunits_to_mm(20),
+            Some(3.085_677_581_491_367_3e19)
+        );
+        assert_ne!(format_unit_factor(1.0e-7), "0.0000");
+    }
+
+    #[test]
+    fn applying_unit_scale_composes_with_insert_transform() {
+        let mut ins = Insert::new("Block", Vector3::new(12.0, -4.0, 3.0));
+        ins.set_x_scale(-2.0);
+        ins.set_y_scale(3.0);
+        ins.set_z_scale(-4.0);
+        ins.rotation = 0.37;
+        let insertion = ins.get_transform().apply(Vector3::ZERO);
+        let attribute_position = insertion + Vector3::new(2.0, -1.0, 0.5);
+        let mut attribute = AttributeEntity::simple("TAG", "Value");
+        attribute.insertion_point = attribute_position;
+        ins.attributes.push(attribute);
+
+        assert!(apply_insert_unit_scale(&mut ins, 25.4));
+
+        let scaled_insertion = ins.get_transform().apply(Vector3::ZERO);
+        let expected_attribute = insertion + (attribute_position - insertion) * 25.4;
+        assert!((scaled_insertion - insertion).length() < 1e-9);
+        assert!((ins.attributes[0].insertion_point - expected_attribute).length() < 1e-9);
+        assert!((ins.x_scale() + 50.8).abs() < 1e-9);
+        assert!((ins.y_scale() - 76.2).abs() < 1e-9);
+        assert!((ins.z_scale() + 101.6).abs() < 1e-9);
+    }
+
+    #[test]
+    fn applying_large_unit_scale_keeps_distant_insert_fixed() {
+        let mut ins = Insert::new("Block", Vector3::new(1.0e12, -2.0e12, 3.0e12));
+        let insertion = ins.get_transform().apply(Vector3::ZERO);
+
+        assert!(apply_insert_unit_scale(&mut ins, 1.0e20));
+
+        let scaled_insertion = ins.get_transform().apply(Vector3::ZERO);
+        assert_eq!(scaled_insertion, insertion);
+        assert_eq!(ins.x_scale(), 1.0e20);
+    }
+
+    #[test]
+    fn unsupported_tiny_unit_scale_is_not_applied() {
+        let mut ins = Insert::new("Block", Vector3::new(1.0, 2.0, 3.0));
+        let before = ins.clone();
+
+        assert!(!apply_insert_unit_scale(&mut ins, 1.0e-13));
+        assert_eq!(ins, before);
     }
 }

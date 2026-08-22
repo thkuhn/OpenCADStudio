@@ -646,7 +646,6 @@ impl BlockWireGpu {
         device: &wgpu::Device,
         wires: &[&WireModel],
         depth_map: &rustc_hash::FxHashMap<u64, [f32; 2]>,
-        mesh_names: &rustc_hash::FxHashSet<&str>,
         color_override: Option<[f32; 4]>,
         const_bgl: &wgpu::BindGroupLayout,
     ) -> Vec<Self> {
@@ -656,13 +655,16 @@ impl BlockWireGpu {
             rustc_hash::FxHashMap::default();
         let mut groups: Vec<(bool, Vec<&WireModel>)> = Vec::new();
         for &wire in wires {
+            if color_override.is_none() && !wire.display_visible {
+                continue;
+            }
             let Some(instance) = wire.render_instance else {
                 continue;
             };
             if wire.points.len() < 2 {
                 continue;
             }
-            let mesh_edge = mesh_names.contains(wire.name.as_str());
+            let mesh_edge = color_override.is_none() && wire.fill_is_3d;
             let key = (instance.source_id, mesh_edge);
             let slot = *slots.entry(key).or_insert_with(|| {
                 let slot = groups.len();

@@ -48,6 +48,7 @@ pub struct LocalWire {
     pub tangent_geoms: Vec<TangentGeom>,
     pub fill_tris: Vec<[f32; 3]>,
     pub fill_tris_low: Vec<[f32; 3]>,
+    pub fill_is_3d: bool,
     /// Preserves the planar SOLID classification through block expansion so
     /// it never gets merged with unrelated annotation fills of the same style.
     pub fill_is_2d_solid: bool,
@@ -60,6 +61,9 @@ pub struct LocalWire {
     /// equals the sub-entity's resolved colour. For colour-split MTEXT
     /// (`\C`/`\c` inline overrides) each wire carries its own override colour.
     pub color: [f32; 4],
+    pub contrast_bg: Option<[f32; 4]>,
+    pub preserve_color: bool,
+    pub canvas_color: bool,
     pub aci: u8,
     pub pattern_length: f32,
     pub pattern: [f32; 8],
@@ -69,6 +73,9 @@ pub struct LocalWire {
     /// shader band grows with a scaled insert. `0.0` = a normal wire.
     pub world_width: f32,
     pub plinegen: bool,
+    pub plot_visible: bool,
+    pub plot_l0: bool,
+    pub hide_unselected: bool,
     /// Set at construction; used to discriminate fill-only GPU batches from
     /// stroke batches in [`StyleKey`]. Derived from
     /// `points.is_empty() && !fill_tris.is_empty()`.
@@ -102,6 +109,8 @@ pub struct NestedRef {
     pub xform: Transform,
     pub style: crate::scene::render_graph::InsertStyleSpec,
     pub instance_offsets: Vec<[f64; 3]>,
+    pub plot_visible: bool,
+    pub plot_l0: bool,
     /// XCLIP boundary for this nested insert, in the parent defn's local frame
     /// (`None` = unclipped). Baked at build time because the clip's spatial
     /// filter lives in `doc.objects`, which isn't reachable at expand time; on
@@ -514,6 +523,14 @@ fn build_defn(
                 if let Some(record) = baked.filter(|record| {
                     !record.entity_handles.is_empty()
                 }) {
+                    let table_plot_l0 = crate::scene::view::render::is_effective_layer_zero(
+                        &table.common.layer,
+                    );
+                    let table_plot_visible = doc
+                        .layers
+                        .get(&table.common.layer)
+                        .map(|layer| layer.is_plottable)
+                        .unwrap_or(true);
                     let mut insert = acadrust::entities::Insert::new(
                         record.name.clone(),
                         table.insertion_point,
@@ -538,7 +555,7 @@ fn build_defn(
                         |leaf, context| {
                             let mut placed = leaf.clone();
                             placed.apply_transform(&context.transform);
-                            for wire in tessellate_sub_local(
+                            for mut wire in tessellate_sub_local(
                                 doc,
                                 &placed,
                                 anno_scale,
@@ -547,6 +564,8 @@ fn build_defn(
                                 viewport,
                                 depth_map,
                             ) {
+                                wire.plot_visible &= table_plot_l0 || table_plot_visible;
+                                wire.plot_l0 |= table_plot_l0;
                                 subs.push(LocalSub::Wire(wire));
                             }
                         },
@@ -622,12 +641,22 @@ fn build_nested_ref(
         .map(|filter| {
             crate::scene::pick::xclip::world_clip_polygon_for_transform(filter, &xform)
         });
+    let plot_l0 = crate::scene::view::render::is_effective_layer_zero(
+        &nested_ins.common.layer,
+    );
+    let plot_visible = doc
+        .layers
+        .get(&nested_ins.common.layer)
+        .map(|layer| layer.is_plottable)
+        .unwrap_or(true);
 
     NestedRef {
         block_name: nested_ins.block_name.clone(),
         xform,
         style: crate::scene::render_graph::InsertStyleSpec::new(doc, nested_ins, viewport),
         instance_offsets: crate::scene::render_graph::array_offsets(nested_ins),
+        plot_visible,
+        plot_l0,
         clip_poly,
         local_rank: depth_map
             .get(&nested_ins.common.handle.value())
@@ -673,6 +702,11 @@ fn tessellate_sub_local(
     // INSERT's layer at expand time. Flag each ByLayer property so emit_wire
     // can override the cached (layer-0-resolved) value with the insert layer's.
     let on_l0 = crate::scene::view::render::is_effective_layer_zero(&sub.common().layer);
+    let layer_plottable = doc
+        .layers
+        .get(&sub.common().layer)
+        .map(|layer| layer.is_plottable)
+        .unwrap_or(true);
     let color_l0 =
         !has_book_color && on_l0 && sub.common().color == AcadColor::ByLayer;
     let transparency_l0 = on_l0 && sub.common().transparency.alpha() == 0;
@@ -725,6 +759,8 @@ fn tessellate_sub_local(
         return vec![];
     }
 
+    let frame_mode = crate::scene::frame::entity_kind(sub)
+        .map(|kind| crate::scene::frame::mode(doc, kind));
     let mut result = Vec::with_capacity(wires_out.len());
     for wire in wires_out {
         // Per-wire point-count cap: a single wire that exceeds this is skipped
@@ -752,6 +788,23 @@ fn tessellate_sub_local(
                 .chain(wire.text_verts.iter().map(|v| v.pos)),
         );
         let is_fill_only = wire.points.is_empty() && !wire.fill_tris.is_empty();
+        let mtext_has_background = matches!(
+            sub,
+            EntityType::MText(text) if text.background_fill_flags & 0x03 != 0
+        );
+        let preserve_color = mtext_has_background && is_fill_only;
+        let canvas_color = is_fill_only
+            && matches!(
+                sub,
+                EntityType::MText(text) if text.background_fill_flags & 0x02 != 0
+            );
+        let contrast_bg = if !preserve_color
+            && (!wire.text_verts.is_empty() || !wire.points.is_empty())
+        {
+            tessellate::explicit_mtext_background(sub)
+        } else {
+            None
+        };
         // A wire whose colour differs from the entity's resolved base colour
         // carries an explicit per-segment override (e.g. an MTEXT `\C1;` inline
         // colour). ByBlock / layer-0 inheritance applies only to wires still on
@@ -769,16 +822,24 @@ fn tessellate_sub_local(
             tangent_geoms: wire.tangent_geoms,
             fill_tris: wire.fill_tris,
             fill_tris_low: wire.fill_tris_low,
+            fill_is_3d: wire.fill_is_3d,
             fill_is_2d_solid: wire.fill_is_2d_solid,
             pick_tris: wire.pick_tris,
             pick_tris_low: wire.pick_tris_low,
             color: wire.color,
+            contrast_bg,
+            preserve_color,
+            canvas_color,
             aci,
             pattern_length: pat_len,
             pattern: pat,
             line_weight_px: lw_px,
             world_width: wire.world_width,
             plinegen: wire.plinegen,
+            plot_visible: frame_mode.is_none_or(|mode| mode == 1)
+                && (on_l0 || layer_plottable),
+            plot_l0: on_l0,
+            hide_unselected: frame_mode == Some(0),
             is_fill_only,
             color_is_byblock: color_is_byblock && wire_on_base_color,
             lt_is_byblock,
@@ -890,6 +951,7 @@ pub fn expand_insert(
     // The INSERT's own layer style — layer-0 inheritance target for children.
     ins_layer: crate::scene::view::render::InheritStyle,
     ins_layer_aci: u8,
+    ins_layer_plottable: bool,
     selected: bool,
     pslt_factor: f32,
     // World-space XY view AABB (with world_offset already subtracted, so the
@@ -941,6 +1003,7 @@ pub fn expand_insert(
             ins_pat,
             ins_lw_px,
             ins_layer,
+            ins_layer_plottable,
             selected,
             pslt_factor,
             is_xref,
@@ -1020,6 +1083,8 @@ pub fn expand_insert(
         ins_lw_px,
         l0: ins_layer,
         l0_aci: ins_layer_aci,
+        l0_plottable: ins_layer_plottable,
+        plot_visible: ins_layer_plottable,
         selected,
         pslt_factor,
         view_aabb: None,
@@ -1123,6 +1188,7 @@ fn expansion_prototype_key(
     ins_pat: [f32; 8],
     ins_lw_px: f32,
     ins_layer: crate::scene::view::render::InheritStyle,
+    ins_layer_plottable: bool,
     selected: bool,
     pslt_factor: f32,
     is_xref: bool,
@@ -1150,6 +1216,7 @@ fn expansion_prototype_key(
     insert_style.push(ins_layer.pat_len.to_bits());
     insert_style.extend(ins_layer.pat.map(f32::to_bits));
     insert_style.push(ins_layer.lw_px.to_bits());
+    insert_style.push(ins_layer_plottable as u32);
     insert_style.push(pslt_factor.to_bits());
     insert_style.extend(bg_color.map(f32::to_bits));
     insert_style.push(anno_scale.to_bits());
@@ -1199,6 +1266,12 @@ fn translated_prototype_wire(
             TangentGeom::Circle { center, .. } => {
                 for axis in 0..3 {
                     center[axis] += delta_f32[axis];
+                }
+            }
+            TangentGeom::PlanarCircle { center, .. }
+            | TangentGeom::Arc { center, .. } => {
+                for axis in 0..3 {
+                    center[axis] += delta[axis];
                 }
             }
         }
@@ -1252,6 +1325,8 @@ struct ExpandCtx<'a> {
     /// for child wires on layer "0" whose properties are ByLayer.
     l0: crate::scene::view::render::InheritStyle,
     l0_aci: u8,
+    l0_plottable: bool,
+    plot_visible: bool,
     selected: bool,
     pslt_factor: f32,
     // World-space XY view AABB (post world_offset). `None` = no culling.
@@ -1286,6 +1361,8 @@ fn nested_prototype_key(
     style.push(ctx.l0.pat_len.to_bits());
     style.extend(ctx.l0.pat.map(f32::to_bits));
     style.push(ctx.l0.lw_px.to_bits());
+    style.push(ctx.l0_plottable as u32);
+    style.push(ctx.plot_visible as u32);
     style.push(ctx.pslt_factor.to_bits());
     style.extend(ctx.bg_color.map(f32::to_bits));
     NestedPrototypeKey {
@@ -1316,6 +1393,9 @@ pub(crate) fn fade_toward_bg(color: [f32; 4], bg: [f32; 4]) -> [f32; 4] {
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 struct StyleKey {
     color: [u32; 4],
+    contrast_bg: Option<[u32; 4]>,
+    preserve_color: bool,
+    canvas_color: bool,
     pattern_length: u32,
     pattern: [u32; 8],
     line_weight_px: u32,
@@ -1333,6 +1413,9 @@ struct StyleKey {
     /// Part of the batch key so planar SOLID fills remain independently
     /// switchable after block geometry is merged by style.
     fill_is_2d_solid: bool,
+    fill_is_3d: bool,
+    plot_visible: bool,
+    hide_unselected: bool,
     /// Bit-cast composed block-local depth for band wires (`0` = no override).
     /// Keeps bands of different in-block draw ranks in separate batches so
     /// each finalized WireModel carries one correct `depth_override`.
@@ -1342,6 +1425,9 @@ struct StyleKey {
 #[derive(Default, Debug)]
 struct BatchEntry {
     color: [f32; 4],
+    contrast_bg: Option<[f32; 4]>,
+    preserve_color: bool,
+    canvas_color: bool,
     pattern_length: f32,
     pattern: [f32; 8],
     line_weight_px: f32,
@@ -1362,7 +1448,10 @@ struct BatchEntry {
     /// reconstructs `high + low`). Without it absolute f32 fills quantize to
     /// ~0.5 m and the greek-text rectangles shear.
     fill_tris_low: Vec<[f32; 3]>,
+    fill_is_3d: bool,
     fill_is_2d_solid: bool,
+    plot_visible: bool,
+    hide_unselected: bool,
     /// Accumulated thickness-wall pick geometry, paired high/low like
     /// `fill_tris`. Pick-only — no GPU batch reads this.
     pick_tris: Vec<[f32; 3]>,
@@ -1415,6 +1504,9 @@ struct Batches {
 impl BatchEntry {
     fn new(
         color: [f32; 4],
+        contrast_bg: Option<[f32; 4]>,
+        preserve_color: bool,
+        canvas_color: bool,
         pat_len: f32,
         pat: [f32; 8],
         lw_px: f32,
@@ -1423,6 +1515,9 @@ impl BatchEntry {
         plinegen: bool,
         _is_fill_only: bool,
         fill_is_2d_solid: bool,
+        fill_is_3d: bool,
+        plot_visible: bool,
+        hide_unselected: bool,
     ) -> Self {
         // `is_fill_only` is part of the StyleKey hash so greek fills never
         // share a batch with regular wires (otherwise the finalized
@@ -1431,6 +1526,9 @@ impl BatchEntry {
         // itself — the empty `points` field is enough at finalize time.
         Self {
             color,
+            contrast_bg,
+            preserve_color,
+            canvas_color,
             pattern_length: pat_len,
             pattern: pat,
             line_weight_px: lw_px,
@@ -1438,6 +1536,9 @@ impl BatchEntry {
             aci,
             plinegen,
             fill_is_2d_solid,
+            fill_is_3d,
+            plot_visible,
+            hide_unselected,
             min_x: f32::INFINITY,
             min_y: f32::INFINITY,
             max_x: f32::NEG_INFINITY,
@@ -1454,23 +1555,39 @@ impl Batches {
             .closed
             .into_iter()
             .chain(self.by_style.into_values())
-            .map(|b| {
+            .map(|mut b| {
+                if b.hide_unselected && !selected {
+                    b.points.clear();
+                    b.points_low.clear();
+                }
                 let aabb = if b.min_x.is_infinite() {
                     WireModel::UNBOUNDED_AABB
                 } else {
                     [b.min_x, b.min_y, b.max_x, b.max_y]
                 };
-                // RAW colour came from `tessellate_sub_local` (and from
-                // `expand_defn`'s ByBlock fallbacks); apply `adapt_to_bg`
-                // now so each render against a different bg gets the
-                // right pure-black ↔ pure-white flip without rebuilding
-                // the cached defn.
-                let color = crate::scene::view::render::adapt_to_bg(b.color, bg_color);
+                let contrast_bg = b.contrast_bg.unwrap_or(bg_color);
+                let color = if b.canvas_color {
+                    bg_color
+                } else if b.preserve_color {
+                    b.color
+                } else {
+                    crate::scene::view::render::adapt_to_bg(b.color, contrast_bg)
+                };
+                if !b.preserve_color {
+                    for vertex in &mut b.text_verts {
+                        vertex.color = crate::scene::view::render::adapt_to_bg(
+                            vertex.color,
+                            contrast_bg,
+                        );
+                    }
+                }
                 WireModel {
                     taper_widths: Vec::new(),
                     world_width: b.world_width,
                     depth_override: b.local_depth,
-                    fill_is_3d: false,
+                    display_visible: !b.hide_unselected || selected,
+                    plot_visible: b.plot_visible,
+                    fill_is_3d: b.fill_is_3d,
                     fill_is_2d_solid: b.fill_is_2d_solid,
                     render_instance: None,
                     pick_tris: b.pick_tris,
@@ -1510,6 +1627,9 @@ impl Batches {
 
 fn style_key(
     color: [f32; 4],
+    contrast_bg: Option<[f32; 4]>,
+    preserve_color: bool,
+    canvas_color: bool,
     pat_len: f32,
     pat: [f32; 8],
     lw_px: f32,
@@ -1518,6 +1638,9 @@ fn style_key(
     plinegen: bool,
     is_fill_only: bool,
     fill_is_2d_solid: bool,
+    fill_is_3d: bool,
+    plot_visible: bool,
+    hide_unselected: bool,
     local_depth: Option<f32>,
 ) -> StyleKey {
     StyleKey {
@@ -1527,6 +1650,9 @@ fn style_key(
             color[2].to_bits(),
             color[3].to_bits(),
         ],
+        contrast_bg: contrast_bg.map(|color| color.map(f32::to_bits)),
+        preserve_color,
+        canvas_color,
         pattern_length: pat_len.to_bits(),
         pattern: [
             pat[0].to_bits(),
@@ -1544,6 +1670,9 @@ fn style_key(
         plinegen,
         is_fill_only,
         fill_is_2d_solid,
+        fill_is_3d,
+        plot_visible,
+        hide_unselected,
         depth_bits: local_depth.map_or(0, f32::to_bits),
     }
 }
@@ -1641,6 +1770,11 @@ fn expand_defn(
                     layer0_aci: ctx.l0_aci,
                 };
                 let nested_style = nref.style.resolve(parent_style);
+                let nested_layer_plottable = if nref.plot_l0 {
+                    ctx.l0_plottable
+                } else {
+                    nref.plot_visible
+                };
                 let inner_ctx = ExpandCtx {
                     cache: ctx.cache,
                     ins_color: nested_style.insert.0,
@@ -1650,6 +1784,8 @@ fn expand_defn(
                     ins_lw_px: nested_style.insert.3,
                     l0: nested_style.layer0,
                     l0_aci: nested_style.layer0_aci,
+                    l0_plottable: nested_layer_plottable,
+                    plot_visible: ctx.plot_visible && nested_layer_plottable,
                     selected: ctx.selected,
                     pslt_factor: ctx.pslt_factor,
                     view_aabb: ctx.view_aabb,
@@ -1940,9 +2076,15 @@ fn emit_wire(
     // batches stay merged.
     let local_depth = (lw.world_width > 0.0)
         .then(|| d_range.0 + lw.local_rank * d_range.1);
+    let plot_visible = ctx.plot_visible
+        && lw.plot_visible
+        && (!lw.plot_l0 || ctx.l0_plottable);
 
     let key = style_key(
         final_color,
+        lw.contrast_bg,
+        lw.preserve_color,
+        lw.canvas_color,
         final_pat_len,
         final_pat,
         final_lw_px,
@@ -1951,6 +2093,9 @@ fn emit_wire(
         lw.plinegen,
         lw.is_fill_only,
         lw.fill_is_2d_solid,
+        lw.fill_is_3d,
+        plot_visible,
+        lw.hide_unselected,
         local_depth,
     );
 
@@ -1966,6 +2111,9 @@ fn emit_wire(
     let entry = out.by_style.entry(key).or_insert_with(|| {
         BatchEntry::new(
             final_color,
+            lw.contrast_bg,
+            lw.preserve_color,
+            lw.canvas_color,
             final_pat_len,
             final_pat,
             final_lw_px,
@@ -1974,6 +2122,9 @@ fn emit_wire(
             lw.plinegen,
             lw.is_fill_only,
             lw.fill_is_2d_solid,
+            lw.fill_is_3d,
+            plot_visible,
+            lw.hide_unselected,
         )
     });
     entry.local_depth = local_depth;
@@ -2049,9 +2200,9 @@ fn emit_wire(
         ));
     }
     for tg in &lw.tangent_geoms {
-        entry
-            .tangent_geoms
-            .push(transform_tangent(tg, accum_xform));
+        if let Some(tangent) = transform_tangent(tg, accum_xform) {
+            entry.tangent_geoms.push(tangent);
+        }
     }
     // Per the WireModel contract an empty `fill_tris_low` means "all-zero low
     // half" (e.g. a Leader / dimension arrowhead fill, which the tessellator
@@ -2154,7 +2305,7 @@ fn emit_wire(
 fn transform_tangent(
     tg: &TangentGeom,
     t: &Transform,
-) -> TangentGeom {
+) -> Option<TangentGeom> {
     match tg {
         TangentGeom::Line { p1, p2 } => {
             let q1 = t.apply(Vector3::new(
@@ -2167,10 +2318,10 @@ fn transform_tangent(
                 p2[1] as f64,
                 p2[2] as f64,
             ));
-            TangentGeom::Line {
+            Some(TangentGeom::Line {
                 p1: [(q1.x) as f32, (q1.y) as f32, (q1.z) as f32],
                 p2: [(q2.x) as f32, (q2.y) as f32, (q2.z) as f32],
-            }
+            })
         }
         TangentGeom::Circle { center, radius } => {
             let c = t.apply(Vector3::new(
@@ -2182,10 +2333,74 @@ fn transform_tangent(
             let sx = ((m[0][0] * m[0][0] + m[0][1] * m[0][1] + m[0][2] * m[0][2]) as f64).sqrt();
             let sy = ((m[1][0] * m[1][0] + m[1][1] * m[1][1] + m[1][2] * m[1][2]) as f64).sqrt();
             let s = ((sx + sy) * 0.5) as f32;
-            TangentGeom::Circle {
+            Some(TangentGeom::Circle {
                 center: [(c.x) as f32, (c.y) as f32, (c.z) as f32],
                 radius: radius * s,
+            })
+        }
+        TangentGeom::Arc {
+            center,
+            axis_x,
+            axis_y,
+            radius,
+            start_angle,
+            end_angle,
+        } => {
+            let c = t.apply(Vector3::new(center[0], center[1], center[2]));
+            let x = t.apply_rotation(Vector3::new(axis_x[0], axis_x[1], axis_x[2]));
+            let y = t.apply_rotation(Vector3::new(axis_y[0], axis_y[1], axis_y[2]));
+            let sx = x.length();
+            let sy = y.length();
+            let scale = sx.max(sy);
+            if !scale.is_finite()
+                || scale <= 1.0e-12
+                || (sx - sy).abs() > scale * 1.0e-9
+            {
+                return None;
             }
+            let x = x / sx;
+            let y = y / sy;
+            if x.dot(&y).abs() > 1.0e-9 {
+                return None;
+            }
+            Some(TangentGeom::Arc {
+                center: [c.x, c.y, c.z],
+                axis_x: [x.x, x.y, x.z],
+                axis_y: [y.x, y.y, y.z],
+                radius: radius * ((sx + sy) * 0.5),
+                start_angle: *start_angle,
+                end_angle: *end_angle,
+            })
+        }
+        TangentGeom::PlanarCircle {
+            center,
+            axis_x,
+            axis_y,
+            radius,
+        } => {
+            let c = t.apply(Vector3::new(center[0], center[1], center[2]));
+            let x = t.apply_rotation(Vector3::new(axis_x[0], axis_x[1], axis_x[2]));
+            let y = t.apply_rotation(Vector3::new(axis_y[0], axis_y[1], axis_y[2]));
+            let sx = x.length();
+            let sy = y.length();
+            let scale = sx.max(sy);
+            if !scale.is_finite()
+                || scale <= 1.0e-12
+                || (sx - sy).abs() > scale * 1.0e-9
+            {
+                return None;
+            }
+            let x = x / sx;
+            let y = y / sy;
+            if x.dot(&y).abs() > 1.0e-9 {
+                return None;
+            }
+            Some(TangentGeom::PlanarCircle {
+                center: [c.x, c.y, c.z],
+                axis_x: [x.x, x.y, x.z],
+                axis_y: [y.x, y.y, y.z],
+                radius: radius * ((sx + sy) * 0.5),
+            })
         }
     }
 }

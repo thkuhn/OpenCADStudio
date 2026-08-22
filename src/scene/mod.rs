@@ -9,6 +9,7 @@ pub mod annotative;
 pub mod cache;
 pub mod convert;
 pub mod creation_style;
+pub(crate) mod frame;
 pub mod model;
 pub mod pick;
 pub mod pipeline;
@@ -20,6 +21,8 @@ pub mod view;
 // blocks and/or free functions). Pure text-move from the original mod.rs.
 mod boundary;
 mod camera_ops;
+pub(crate) mod centerline;
+pub(crate) mod centermark;
 mod entity;
 mod group_layer;
 mod layout;
@@ -33,7 +36,11 @@ mod project;
 mod scene_markers;
 mod selection;
 
-pub(crate) use boundary::{boundary_entities, ring_source_handles};
+pub(crate) use boundary::{
+    boundary_entities, boundary_entities_from_sources, boundary_faces,
+    boundary_polyline_entities, exact_hatch_paths, hatch_boundary_rings, hatch_path_directions,
+    hatch_path_ring, ring_source_handles, separated_hatch_path_groups, BoundarySource,
+};
 
 // Parallel tessellation free functions live in `convert::tess` (alongside the
 // other tessellation code); re-exported here so this root and sibling topic
@@ -1422,6 +1429,7 @@ pub struct Scene {
     lighting_cache: RefCell<HashMap<(Handle, u64), Vec<SceneLight>>>,
     /// Currently selected entity handles.
     pub selected: HashSet<Handle>,
+    selected_order: Vec<Handle>,
     /// Session-only ISOLATEOBJECTS / HIDEOBJECTS state. Never written to DWG/DXF.
     pub object_isolation: ObjectIsolationState,
     /// Entity handles temporarily removed from the base render while an
@@ -1841,6 +1849,7 @@ impl Scene {
             object_data_cache: crate::entities::object_data::ObjectDataCache::default(),
             lighting_cache: RefCell::new(HashMap::default()),
             selected: HashSet::default(),
+            selected_order: Vec::new(),
             object_isolation: ObjectIsolationState::default(),
             preview_hidden: HashSet::default(),
             command_preview_hidden: HashSet::default(),
@@ -2387,6 +2396,16 @@ impl Scene {
             self.associative_hatch_source_cache.borrow_mut().take();
         }
         let mut changes = changes.to_vec();
+        for change in self.refresh_associative_centerlines(&changes) {
+            if !changes.iter().any(|(handle, _)| *handle == change.0) {
+                changes.push(change);
+            }
+        }
+        for change in self.refresh_associative_center_marks(&changes) {
+            if !changes.iter().any(|(handle, _)| *handle == change.0) {
+                changes.push(change);
+            }
+        }
         for change in self.refresh_associative_hatches(&changes) {
             if !changes.iter().any(|(handle, _)| *handle == change.0) {
                 changes.push(change);
@@ -3205,8 +3224,12 @@ impl Scene {
             world_origin: [0.0, 0.0],
             boundary: Arc::new(vec![[x0, y0], [x1, y0], [x1, y1], [x0, y1], [x0, y0]]),
             boundary_wcs: None,
+            fill_plane: None,
+            fill_plane_boundary: None,
             boundary_exterior: None,
             boundary_sources: None,
+            boundary_paths: None,
+            style: acadrust::entities::HatchStyleType::Normal,
             pattern: crate::scene::model::hatch_model::HatchPattern::Solid,
             name: "SOLID".to_string(),
             color: self.paper_bg_color,
@@ -4377,6 +4400,7 @@ impl Scene {
             .hidden
             .extend(self.selected.iter().copied());
         self.selected.clear();
+        self.selected_order.clear();
         self.bump_entities(&changes);
     }
 
@@ -4644,71 +4668,6 @@ impl Scene {
         paper.sort_by_key(|(order, _)| *order);
         names.extend(paper.into_iter().map(|(_, n)| n));
         names
-    }
-
-    /// Collect closed polygon outlines (world XY) from the current layout.
-    pub fn closed_outlines(&self) -> Vec<Vec<[f64; 2]>> {
-        self.entity_wires()
-            .iter()
-            .filter_map(|wire| {
-                let pts: Vec<[f64; 2]> = wire
-                    .points
-                    .iter()
-                    .copied()
-                    .enumerate()
-                    .filter_map(|(index, high)| {
-                        if !high[0].is_finite() || !high[1].is_finite() {
-                            return None;
-                        }
-                        let low = wire.points_low.get(index).copied().unwrap_or([0.0; 3]);
-                        let point = [
-                            high[0] as f64 + low[0] as f64,
-                            high[1] as f64 + low[1] as f64,
-                        ];
-                        point.iter().all(|value| value.is_finite()).then_some(point)
-                    })
-                    .collect();
-                if pts.len() < 4 {
-                    return None;
-                }
-                let f = pts.first()?;
-                let l = pts.last()?;
-                let dx = f[0] - l[0];
-                let dy = f[1] - l[1];
-                if (dx * dx + dy * dy).sqrt() > 1e-2 {
-                    return None;
-                }
-                // Segment-list wires (e.g. LwPolyline) store each segment as an
-                // independent NaN-separated pair, so every shared corner repeats
-                // (`A B | B C | C D | D A`). Collapse that back into a clean ring:
-                // skip the NaN separators and any vertex coincident with the
-                // previous one, so consumers (point-in-polygon, the hatch /
-                // boundary commands) see one vertex per corner — not the doubled
-                // ring that otherwise shows two grips at every corner.
-                let mut ring: Vec<[f64; 2]> = Vec::with_capacity(pts.len());
-                for q in pts {
-                    if let Some(&last) = ring.last() {
-                        if (last[0] - q[0]).abs() < 1e-4 && (last[1] - q[1]).abs() < 1e-4 {
-                            continue;
-                        }
-                    }
-                    ring.push(q);
-                }
-                // Drop a trailing vertex equal to the first — the ring is closed
-                // implicitly, so keeping it would be a duplicate corner.
-                if ring.len() > 1 {
-                    let first = ring[0];
-                    let last = *ring.last().unwrap();
-                    if (first[0] - last[0]).abs() < 1e-4 && (first[1] - last[1]).abs() < 1e-4 {
-                        ring.pop();
-                    }
-                }
-                if ring.len() < 3 {
-                    return None;
-                }
-                Some(ring)
-            })
-            .collect()
     }
 
     /// Wire set for the Model layout, shared by every tile.
@@ -8732,6 +8691,7 @@ impl Scene {
                 }
                 EntityType::Insert(insert) => {
                     for attribute in &insert.attributes {
+                        add(&mut index.layers, &attribute.common.layer);
                         add(&mut index.text_styles, &attribute.text_style);
                     }
                 }

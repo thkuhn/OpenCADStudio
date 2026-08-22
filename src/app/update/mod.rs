@@ -1767,18 +1767,35 @@ impl OpenCADStudio {
                 ))
             }
 
-            Message::CommandLineArrowProbe { direction } => {
+            Message::CommandLineArrowProbe {
+                direction,
+                extend_selection,
+            } => {
                 iced::widget::operation::is_focused(iced::widget::Id::new(
                     crate::ui::command_line::CMD_INPUT_ID,
                 ))
                 .map(move |focused| Message::CommandLineArrowResolved {
                     direction,
                     focused,
+                    extend_selection,
                 })
             }
 
-            Message::CommandLineArrowResolved { direction, focused } => {
+            Message::CommandLineArrowResolved {
+                direction,
+                focused,
+                extend_selection,
+            } => {
                 if !focused {
+                    return Task::none();
+                }
+                // The editor inherits arrows captured by the focused command line.
+                if self.mtext_editor.is_some() {
+                    match direction {
+                        ArrowKey::Up => self.mtext_caret_move_vertical(1, extend_selection),
+                        ArrowKey::Down => self.mtext_caret_move_vertical(-1, extend_selection),
+                        ArrowKey::Left | ArrowKey::Right => {}
+                    }
                     return Task::none();
                 }
                 match direction {
@@ -3733,6 +3750,58 @@ impl OpenCADStudio {
                 }
                 Task::none()
             }
+            Message::LayerTogglePlot(idx) => {
+                let i = self.active_tab;
+
+                let plottable = self.tabs[i]
+                    .layers
+                    .layers
+                    .get(idx)
+                    .map(|layer| !layer.plottable);
+
+                let targets = self.layer_row_action_targets(i, idx);
+
+                if let Some(plottable) = plottable {
+                    if !targets.is_empty() {
+                        let undo = self.begin_layer_undo(i, "LAYER PLOT/NOPLOT", &targets);
+
+                        for name in &targets {
+                            if let Some(layer) = self.tabs[i].scene.document.layers.get_mut(name) {
+                                layer.is_plottable = plottable;
+                            }
+
+                            if let Some(layer) = self.tabs[i]
+                                .layers
+                                .layers
+                                .iter_mut()
+                                .find(|layer| &layer.name == name)
+                            {
+                                layer.plottable = plottable;
+                            }
+                        }
+
+                        self.tabs[i].layers.refresh_sort();
+
+                        self.tabs[i]
+                            .scene
+                            .invalidate_layer_dependencies(&targets);
+
+                        self.tabs[i].dirty = true;
+                        self.commit_layer_undo(i, undo);
+
+                        self.command_line.push_output(
+                            crate::tf!(
+                                "{} layer(s) set to {}",
+                                targets.len(),
+                                if plottable { "Plot" } else { "No Plot" }
+                            )
+                            .as_ref(),
+                        );
+                    }
+                }
+
+                Task::none()
+            },
 
             Message::LayerToggleVpFreeze(layer_idx, vp_col_idx) => {
                 self.on_layer_toggle_vp_freeze(layer_idx, vp_col_idx)

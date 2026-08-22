@@ -82,6 +82,8 @@ pub struct GripPopup {
     pub anchor: iced::Point,
     pub items: Vec<crate::scene::model::object::GripMenuItem>,
     pub selected: usize,
+    /// Whether a click-opened menu stays visible away from its grip.
+    pub pinned: bool,
 }
 
 /// Pending follow-up value for grip-menu actions that need a number
@@ -2159,9 +2161,9 @@ pub enum Message {
     },
     /// A widget captured Up/Down; resolve it only if the command input owns
     /// keyboard focus.
-    CommandLineArrowProbe { direction: ArrowKey },
+    CommandLineArrowProbe { direction: ArrowKey, extend_selection: bool },
     /// Result of the command-input focus query for a captured Up/Down key.
-    CommandLineArrowResolved { direction: ArrowKey, focused: bool },
+    CommandLineArrowResolved { direction: ArrowKey, focused: bool, extend_selection: bool },
     /// Toggle the dropdown listing the full command-line history.
     CommandHistoryToggle,
     /// Grab/move/release the expanded history panel's top resize edge.
@@ -2200,6 +2202,7 @@ pub enum Message {
     LayerToggleVisible(usize),
     LayerToggleLock(usize),
     LayerToggleFreeze(usize),
+    LayerTogglePlot(usize),
     /// Sort the Layer Manager table by a clicked column header.
     LayerSort(crate::ui::window::layers::LayerSortCol),
     /// Toggle per-viewport freeze: (layer_index, vp_col_index)
@@ -4113,6 +4116,7 @@ pub fn run_web() -> iced::Result {
     .subscription(OpenCADStudio::subscription)
     .title(|_state: &OpenCADStudio| "Open CAD Studio".to_string())
     .theme(|state: &OpenCADStudio| state.active_theme.clone())
+    .backend(iced::Backend::Hardware(iced::backend::Api::OpenGL))
     .font(iced_aw::ICED_AW_FONT_BYTES)
     .run()
 }
