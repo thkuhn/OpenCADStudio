@@ -2461,6 +2461,19 @@ impl OpenCADStudio {
                     self.aec_style_manager_material_color =
                         format!("#{:06X}", material.line_color);
                     self.aec_style_manager_material_line_type = material.line_type.clone();
+                    self.aec_style_manager_material_category =
+                        material.category.clone().unwrap_or_default();
+                    self.aec_style_manager_material_hatch_color =
+                        material.hatch_color.unwrap_or(material.line_color);
+                    self.aec_style_manager_material_hatch_scale =
+                        format!("{}", material.hatch_scale);
+                    self.aec_style_manager_material_render_ref =
+                        material.render_material_ref.clone().unwrap_or_default();
+                    self.aec_style_manager_material_hatch_angle =
+                        format!("{}", material.hatch_angle);
+                    self.aec_style_manager_material_hatch_angle_relative =
+                        material.hatch_angle_relative;
+                    self.aec_style_manager_material_hatch_color_picker_open = false;
                     self.aec_style_manager_material_form_open = true;
                 }
                 self.aec_style_manager_selected_material = Some(id);
@@ -3058,6 +3071,13 @@ impl OpenCADStudio {
                 self.aec_style_manager_material_hatch.clear();
                 self.aec_style_manager_material_color = "#FFFFFF".to_string();
                 self.aec_style_manager_material_line_type = "Continuous".to_string();
+                self.aec_style_manager_material_category.clear();
+                self.aec_style_manager_material_hatch_color = 0xFFFFFF;
+                self.aec_style_manager_material_hatch_scale = "1.0".to_string();
+                self.aec_style_manager_material_render_ref.clear();
+                self.aec_style_manager_material_hatch_angle = "0.0".to_string();
+                self.aec_style_manager_material_hatch_angle_relative = true;
+                self.aec_style_manager_material_hatch_color_picker_open = false;
                 self.aec_style_manager_material_form_open = true;
                 Task::none()
             }
@@ -3106,6 +3126,91 @@ impl OpenCADStudio {
                 self.aec_style_manager_material_color = format!("#{r:02X}{g:02X}{b:02X}");
                 Task::none()
             }
+            Message::AecStyleManagerMaterialCategoryChanged(value) => {
+                self.aec_style_manager_material_category = value;
+                Task::none()
+            }
+            Message::AecStyleManagerMaterialHatchColorChanged(value) => {
+                self.aec_style_manager_material_hatch_color = value;
+                self.aec_style_manager_material_hatch_color_picker_open = false;
+                Task::none()
+            }
+            Message::AecStyleManagerMaterialHatchColorPickerToggle => {
+                self.aec_style_manager_material_hatch_color_picker_open =
+                    !self.aec_style_manager_material_hatch_color_picker_open;
+                Task::none()
+            }
+            Message::AecStyleManagerMaterialHatchScaleChanged(value) => {
+                self.aec_style_manager_material_hatch_scale = value;
+                Task::none()
+            }
+            Message::AecStyleManagerMaterialRenderRefChanged(value) => {
+                self.aec_style_manager_material_render_ref = value;
+                Task::none()
+            }
+            Message::AecStyleManagerMaterialHatchAngleChanged(value) => {
+                self.aec_style_manager_material_hatch_angle = value;
+                Task::none()
+            }
+            Message::AecStyleManagerMaterialHatchAngleRelativeToggle => {
+                self.aec_style_manager_material_hatch_angle_relative =
+                    !self.aec_style_manager_material_hatch_angle_relative;
+                Task::none()
+            }
+            Message::AecStyleManagerMaterialDuplicate => {
+                let source_id = self
+                    .aec_style_manager_material_editing_id
+                    .clone()
+                    .or_else(|| self.aec_style_manager_selected_material.clone());
+                let Some(source_id) = source_id else {
+                    return Task::none();
+                };
+                let Some(material) = self
+                    .aec_style_library
+                    .as_ref()
+                    .and_then(|lib| lib.materials.iter().find(|m| m.id == source_id))
+                    .cloned()
+                else {
+                    return Task::none();
+                };
+                let existing_names: Vec<String> = self
+                    .aec_style_library
+                    .as_ref()
+                    .map(|lib| lib.materials.iter().map(|m| m.name.clone()).collect())
+                    .unwrap_or_default();
+                let base_name = format!("{} (Kopie)", material.name);
+                let mut name = base_name.clone();
+                let mut counter = 2;
+                while existing_names.iter().any(|n| n == &name) {
+                    name = format!("{base_name} {counter}");
+                    counter += 1;
+                }
+                self.aec_style_manager_selected_material = None;
+                self.aec_style_manager_selected_wall_style = None;
+                self.aec_style_manager_material_editing_id = None;
+                self.aec_style_manager_material_name = name;
+                self.aec_style_manager_material_hatch = material.hatch_pattern;
+                self.aec_style_manager_material_color =
+                    format!("#{:06X}", material.line_color);
+                self.aec_style_manager_material_line_type = material.line_type;
+                self.aec_style_manager_material_category =
+                    material.category.unwrap_or_default();
+                self.aec_style_manager_material_hatch_color =
+                    material.hatch_color.unwrap_or(material.line_color);
+                self.aec_style_manager_material_hatch_scale =
+                    format!("{}", material.hatch_scale);
+                self.aec_style_manager_material_render_ref =
+                    material.render_material_ref.unwrap_or_default();
+                self.aec_style_manager_material_hatch_angle =
+                    format!("{}", material.hatch_angle);
+                self.aec_style_manager_material_hatch_angle_relative =
+                    material.hatch_angle_relative;
+                self.aec_style_manager_material_color_picker_open = false;
+                self.aec_style_manager_material_hatch_color_picker_open = false;
+                self.aec_style_manager_material_hatch_picker_open = false;
+                self.aec_style_manager_material_form_open = true;
+                Task::none()
+            }
             Message::AecStyleManagerMaterialSave => {
                 let name = self.aec_style_manager_material_name.trim().to_string();
                 if name.is_empty() {
@@ -3129,17 +3234,42 @@ impl OpenCADStudio {
                 } else {
                     self.aec_style_manager_material_line_type.trim().to_string()
                 };
+                let category = {
+                    let c = self.aec_style_manager_material_category.trim();
+                    if c.is_empty() {
+                        None
+                    } else {
+                        Some(c.to_string())
+                    }
+                };
+                let mut hatch_scale = self
+                    .aec_style_manager_material_hatch_scale
+                    .trim()
+                    .parse::<f64>()
+                    .unwrap_or(1.0);
+                if hatch_scale <= 0.0 {
+                    hatch_scale = 0.01;
+                }
+                let render_material_ref = {
+                    let r = self.aec_style_manager_material_render_ref.trim();
+                    if r.is_empty() {
+                        None
+                    } else {
+                        Some(r.to_string())
+                    }
+                };
+                let hatch_angle = self
+                    .aec_style_manager_material_hatch_angle
+                    .trim()
+                    .parse::<f64>()
+                    .unwrap_or(0.0);
+                let hatch_angle_relative = self.aec_style_manager_material_hatch_angle_relative;
                 let id = self
                     .aec_style_manager_material_editing_id
                     .clone()
                     .unwrap_or_else(|| {
                         format!("mat_{}", crate::modules::aec::commands::slugify(&name))
                     });
-                let render_material_ref = self
-                    .aec_style_library
-                    .as_ref()
-                    .and_then(|lib| lib.materials.iter().find(|m| m.id == id))
-                    .and_then(|m| m.render_material_ref.clone());
 
                 let material = crate::modules::aec::engine::material::Material {
                     id: id.clone(),
@@ -3148,6 +3278,11 @@ impl OpenCADStudio {
                     line_color: color,
                     line_type,
                     render_material_ref,
+                    category,
+                    hatch_color: Some(self.aec_style_manager_material_hatch_color),
+                    hatch_scale,
+                    hatch_angle,
+                    hatch_angle_relative,
                 };
 
                 let lib = self
@@ -4184,6 +4319,37 @@ impl OpenCADStudio {
                 sel.right_click_entered = false;
                 sel.context_menu = Some(click_pos);
                 sel.draworder_submenu = false;
+                sel.junction_menu_submenu = false;
+                drop(sel);
+                // If the cursor is hovering a wall axis endpoint grip when the
+                // context menu opens, remember which junction (axis handle +
+                // end_index) it's anchored on so the menu can offer the
+                // per-junction join-override actions (#join-constraints step 4).
+                let junction = self.grip_hover.as_ref().and_then(|h| {
+                    let axis = crate::modules::aec::commands::resolve_wall_package(
+                        &self.tabs[i].scene,
+                        h.handle,
+                    );
+                    let vertices = crate::modules::aec::commands::get_wall_vertices(
+                        &self.tabs[i].scene,
+                        axis,
+                    );
+                    if vertices.len() < 2 {
+                        return None;
+                    }
+                    if h.grip_id == 0 {
+                        Some((axis, 0usize))
+                    } else if h.grip_id == vertices.len() - 1 {
+                        Some((axis, 1usize))
+                    } else {
+                        None
+                    }
+                });
+                self.tabs[i]
+                    .scene
+                    .selection
+                    .borrow_mut()
+                    .junction_menu = junction;
                 Task::none()
             }
 
@@ -5485,6 +5651,188 @@ impl OpenCADStudio {
                 let i = self.active_tab;
                 let mut sel = self.tabs[i].scene.selection.borrow_mut();
                 sel.wall_justification_submenu = !sel.wall_justification_submenu;
+                Task::none()
+            }
+
+            Message::WallJunctionSubmenuToggle => {
+                let i = self.active_tab;
+                let mut sel = self.tabs[i].scene.selection.borrow_mut();
+                sel.junction_menu_submenu = !sel.junction_menu_submenu;
+                Task::none()
+            }
+
+            Message::WallJunctionOverrideSetStyle(style) => {
+                let i = self.active_tab;
+                let junction = self.tabs[i].scene.selection.borrow().junction_menu;
+                if let Some((axis_handle, end_index)) = junction {
+                    use crate::modules::aec::commands as aec_cmds;
+                    let mut override_data =
+                        aec_cmds::read_junction_override(&self.tabs[i].scene, axis_handle, end_index)
+                            .unwrap_or_default();
+                    override_data.default_style = Some(style);
+                    aec_cmds::write_junction_override(
+                        &mut self.tabs[i].scene,
+                        axis_handle,
+                        end_index,
+                        &override_data,
+                    );
+                    aec_cmds::refresh_wall_after_axis_edit(&mut self.tabs[i].scene, axis_handle);
+                }
+                let mut sel = self.tabs[i].scene.selection.borrow_mut();
+                sel.context_menu = None;
+                sel.junction_menu = None;
+                drop(sel);
+                self.refresh_properties();
+                Task::none()
+            }
+
+            Message::WallJunctionOverrideReset => {
+                let i = self.active_tab;
+                let junction = self.tabs[i].scene.selection.borrow().junction_menu;
+                if let Some((axis_handle, end_index)) = junction {
+                    use crate::modules::aec::commands as aec_cmds;
+                    aec_cmds::remove_junction_override(&mut self.tabs[i].scene, axis_handle, end_index);
+                    aec_cmds::refresh_wall_after_axis_edit(&mut self.tabs[i].scene, axis_handle);
+                }
+                let mut sel = self.tabs[i].scene.selection.borrow_mut();
+                sel.context_menu = None;
+                sel.junction_menu = None;
+                drop(sel);
+                self.refresh_properties();
+                Task::none()
+            }
+
+            Message::AecJunctionEditorOpen(axis_handle, end_index) => {
+                let i = self.active_tab;
+                use crate::modules::aec::commands as aec_cmds;
+                let ov = aec_cmds::read_junction_override(&self.tabs[i].scene, axis_handle, end_index)
+                    .unwrap_or_default();
+                self.aec_junction_editor_target = Some((axis_handle, end_index));
+                self.aec_junction_editor_default_style = ov.default_style;
+                self.aec_junction_editor_pairs = ov.layer_pairs;
+                self.aec_junction_editor_pair_layer_a = None;
+                self.aec_junction_editor_pair_wall_b = None;
+                self.aec_junction_editor_pair_layer_b = None;
+                self.aec_junction_editor_pair_style =
+                    crate::modules::aec::engine::join::JoinOverrideStyle::Miter;
+                let mut sel = self.tabs[i].scene.selection.borrow_mut();
+                sel.context_menu = None;
+                sel.junction_menu = None;
+                drop(sel);
+                self.active_modal = Some(super::ModalKind::AecJunctionEditor);
+                Task::none()
+            }
+
+            Message::AecJunctionEditorClose => {
+                self.aec_junction_editor_target = None;
+                self.active_modal = None;
+                self.reset_modal_geometry();
+                Task::none()
+            }
+
+            Message::AecJunctionEditorSetDefaultStyle(style) => {
+                self.aec_junction_editor_default_style = Some(style);
+                Task::none()
+            }
+
+            Message::AecJunctionEditorResetDefaultStyle => {
+                self.aec_junction_editor_default_style = None;
+                Task::none()
+            }
+
+            Message::AecJunctionEditorPairLayerAChanged(index, material_id) => {
+                self.aec_junction_editor_pair_layer_a = Some((index, material_id));
+                Task::none()
+            }
+
+            Message::AecJunctionEditorPairWallBChanged(wall_b) => {
+                self.aec_junction_editor_pair_wall_b = wall_b;
+                self.aec_junction_editor_pair_layer_b = None;
+                Task::none()
+            }
+
+            Message::AecJunctionEditorPairLayerBChanged(index, material_id) => {
+                self.aec_junction_editor_pair_layer_b = Some((index, material_id));
+                Task::none()
+            }
+
+            Message::AecJunctionEditorPairStyleChanged(style) => {
+                self.aec_junction_editor_pair_style = style;
+                Task::none()
+            }
+
+            Message::AecJunctionEditorAddPair => {
+                use crate::modules::aec::engine::join::LayerRef;
+                if let Some((layer_a_index, layer_a_id)) = self.aec_junction_editor_pair_layer_a.clone() {
+                    let layer_b =
+                        self.aec_junction_editor_pair_layer_b.clone().map(|(index, id)| LayerRef {
+                            material_id: id,
+                            role_tag: None,
+                            index,
+                        });
+                    self.aec_junction_editor_pairs.push(
+                        crate::modules::aec::engine::join::LayerPairOverride {
+                            layer_a: LayerRef {
+                                material_id: layer_a_id,
+                                role_tag: None,
+                                index: layer_a_index,
+                            },
+                            layer_b,
+                            style: self.aec_junction_editor_pair_style.clone(),
+                        },
+                    );
+                    self.aec_junction_editor_pair_layer_a = None;
+                    self.aec_junction_editor_pair_wall_b = None;
+                    self.aec_junction_editor_pair_layer_b = None;
+                }
+                Task::none()
+            }
+
+            Message::AecJunctionEditorRemovePair(idx) => {
+                if idx < self.aec_junction_editor_pairs.len() {
+                    self.aec_junction_editor_pairs.remove(idx);
+                }
+                Task::none()
+            }
+
+            Message::AecJunctionEditorSave => {
+                if let Some((axis_handle, end_index)) = self.aec_junction_editor_target {
+                    let i = self.active_tab;
+                    use crate::modules::aec::commands as aec_cmds;
+                    let override_data = crate::modules::aec::engine::join::JunctionOverride {
+                        default_style: self.aec_junction_editor_default_style.clone(),
+                        layer_pairs: self.aec_junction_editor_pairs.clone(),
+                    };
+                    if override_data.default_style.is_none() && override_data.layer_pairs.is_empty() {
+                        aec_cmds::remove_junction_override(&mut self.tabs[i].scene, axis_handle, end_index);
+                    } else {
+                        aec_cmds::write_junction_override(
+                            &mut self.tabs[i].scene,
+                            axis_handle,
+                            end_index,
+                            &override_data,
+                        );
+                    }
+                    aec_cmds::refresh_wall_after_axis_edit(&mut self.tabs[i].scene, axis_handle);
+                    self.refresh_properties();
+                }
+                self.aec_junction_editor_target = None;
+                self.active_modal = None;
+                self.reset_modal_geometry();
+                Task::none()
+            }
+
+            Message::AecJunctionEditorFullReset => {
+                if let Some((axis_handle, end_index)) = self.aec_junction_editor_target {
+                    let i = self.active_tab;
+                    use crate::modules::aec::commands as aec_cmds;
+                    aec_cmds::remove_junction_override(&mut self.tabs[i].scene, axis_handle, end_index);
+                    aec_cmds::refresh_wall_after_axis_edit(&mut self.tabs[i].scene, axis_handle);
+                    self.refresh_properties();
+                }
+                self.aec_junction_editor_target = None;
+                self.active_modal = None;
+                self.reset_modal_geometry();
                 Task::none()
             }
 

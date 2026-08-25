@@ -965,10 +965,45 @@ impl OpenCADStudio {
                 );
             }
             "AEC_WALLJOIN" => {
-                use crate::modules::aec::commands::WallJoinCommand;
-                let cmd = WallJoinCommand::new();
-                self.command_line.push_info(&cmd.prompt());
-                self.tabs[i].active_cmd = Some(Box::new(cmd));
+                // If two (or more) walls are already selected — as when
+                // invoked from the context menu on a selection — join the
+                // first two directly instead of making the user pick again;
+                // the pick would otherwise silently wait for a click the
+                // context-menu flow never delivers (same fix as
+                // AEC_WALLREVERSE below).
+                let selected_handles: Vec<acadrust::Handle> = self.tabs[i]
+                    .scene
+                    .selected_entities()
+                    .into_iter()
+                    .map(|(h, _)| h)
+                    .collect();
+                let mut wall_handles: Vec<acadrust::Handle> = Vec::new();
+                for h in selected_handles {
+                    let resolved = crate::modules::aec::commands::resolve_wall_package(
+                        &self.tabs[i].scene,
+                        h,
+                    );
+                    if crate::modules::aec::commands::is_wall_pick_target(
+                        &self.tabs[i].scene,
+                        resolved,
+                    ) && !wall_handles.contains(&resolved)
+                    {
+                        wall_handles.push(resolved);
+                    }
+                }
+                if wall_handles.len() >= 2 {
+                    crate::modules::aec::commands::aec_walljoin_do(
+                        &mut self.tabs[i].scene,
+                        &mut self.command_line,
+                        &format!("{}|{}", wall_handles[0].value(), wall_handles[1].value()),
+                    );
+                    self.tabs[i].dirty = true;
+                } else {
+                    use crate::modules::aec::commands::WallJoinCommand;
+                    let cmd = WallJoinCommand::new();
+                    self.command_line.push_info(&cmd.prompt());
+                    self.tabs[i].active_cmd = Some(Box::new(cmd));
+                }
             }
             "AEC_WALLEXTEND" => {
                 use crate::modules::aec::commands::WallExtendCommand;

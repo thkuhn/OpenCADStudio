@@ -103,40 +103,114 @@ impl StyleLibrary {
         }
         ordered
     }
+
+    /// Returns every wall style / layer index that references `material_id`.
+    pub fn materials_using(&self, material_id: &str) -> Vec<(&WallStyle, usize)> {
+        let mut result = Vec::new();
+        for ws in &self.wall_styles {
+            for (idx, layer) in ws.layers.iter().enumerate() {
+                if layer.material_id == material_id {
+                    result.push((ws, idx));
+                }
+            }
+        }
+        result
+    }
 }
 
 /// Builds a small, ready-to-use default library so `AEC_WALL`'s style
 /// selection has something to offer out of the box, without requiring the
 /// user to define materials/styles first via `AEC_MATERIAL`/`AEC_STYLE`.
 pub fn seed_default_library() -> StyleLibrary {
-    let masonry = Material::new(
-        "mat_masonry".to_string(),
-        "Mauerwerk".to_string(),
-        "ANSI31".to_string(),
-        0x8B7355,
-        "Continuous".to_string(),
-    );
-    let concrete = Material::new(
-        "mat_concrete".to_string(),
-        "Stahlbeton".to_string(),
-        "AR-CONC".to_string(),
-        0x888888,
-        "Continuous".to_string(),
-    );
-    let insulation = Material::new(
-        "mat_insulation".to_string(),
-        "Daemmung".to_string(),
-        "ANSI37".to_string(),
-        0xFFDD88,
-        "Continuous".to_string(),
-    );
-    let plaster = Material::new(
-        "mat_plaster".to_string(),
-        "Putz".to_string(),
-        "SOLID".to_string(),
-        0xFFFFFF,
-        "Continuous".to_string(),
-    );
+    let masonry = Material {
+        category: Some("Mauerwerk".to_string()),
+        ..Material::new(
+            "mat_masonry".to_string(),
+            "Mauerwerk".to_string(),
+            "ANSI31".to_string(),
+            0x8B7355,
+            "Continuous".to_string(),
+        )
+    };
+    let concrete = Material {
+        category: Some("Beton".to_string()),
+        ..Material::new(
+            "mat_concrete".to_string(),
+            "Stahlbeton".to_string(),
+            "AR-CONC".to_string(),
+            0x888888,
+            "Continuous".to_string(),
+        )
+    };
+    let insulation = Material {
+        category: Some("Daemmung".to_string()),
+        hatch_scale: 0.75,
+        ..Material::new(
+            "mat_insulation".to_string(),
+            "Daemmung".to_string(),
+            "ANSI37".to_string(),
+            0xFFDD88,
+            "Continuous".to_string(),
+        )
+    };
+    let plaster = Material {
+        category: Some("Putz".to_string()),
+        ..Material::new(
+            "mat_plaster".to_string(),
+            "Putz".to_string(),
+            "SOLID".to_string(),
+            0xFFFFFF,
+            "Continuous".to_string(),
+        )
+    };
+    let wood = Material {
+        category: Some("Holz".to_string()),
+        hatch_color: Some(0xA67C52),
+        hatch_scale: 0.5,
+        ..Material::new(
+            "mat_wood".to_string(),
+            "Holz".to_string(),
+            "ANSI31".to_string(),
+            0xC4A35A,
+            "Continuous".to_string(),
+        )
+    };
+    let drywall = Material {
+        category: Some("Trockenbau".to_string()),
+        hatch_color: Some(0xE8E8E0),
+        hatch_scale: 1.0,
+        ..Material::new(
+            "mat_drywall".to_string(),
+            "Gipskarton".to_string(),
+            "ANSI31".to_string(),
+            0xF5F5F0,
+            "Continuous".to_string(),
+        )
+    };
+    let steel = Material {
+        category: Some("Metall".to_string()),
+        hatch_color: Some(0x4A5568),
+        hatch_scale: 1.5,
+        ..Material::new(
+            "mat_steel".to_string(),
+            "Stahl".to_string(),
+            "ANSI32".to_string(),
+            0x708090,
+            "Continuous".to_string(),
+        )
+    };
+    let glass = Material {
+        category: Some("Verglasung".to_string()),
+        hatch_color: Some(0xA8D4E8),
+        hatch_scale: 2.0,
+        ..Material::new(
+            "mat_glass".to_string(),
+            "Glas".to_string(),
+            "ANSI33".to_string(),
+            0xC8E6F0,
+            "Continuous".to_string(),
+        )
+    };
 
     let masonry_wall = WallStyle {
         style: Style {
@@ -248,7 +322,9 @@ pub fn seed_default_library() -> StyleLibrary {
     };
 
     StyleLibrary {
-        materials: vec![masonry, concrete, insulation, plaster],
+        materials: vec![
+            masonry, concrete, insulation, plaster, wood, drywall, steel, glass,
+        ],
         wall_styles: vec![
             masonry_wall,
             concrete_wall,
@@ -588,5 +664,60 @@ mod tests {
         let layer = &lib.wall_styles[0].layers[0];
         assert_eq!(layer.hatch_override, None);
         assert_eq!(layer.role_tag, None);
+    }
+
+    #[test]
+    fn seed_default_library_includes_new_example_materials() {
+        let lib = seed_default_library();
+
+        let wood = lib
+            .materials
+            .iter()
+            .find(|m| m.id == "mat_wood")
+            .expect("Holz material");
+        assert_eq!(wood.name, "Holz");
+        assert_eq!(wood.category.as_deref(), Some("Holz"));
+        assert_eq!(wood.hatch_color, Some(0xA67C52));
+        assert!((wood.hatch_scale - 0.5).abs() < 1e-12);
+
+        let drywall = lib
+            .materials
+            .iter()
+            .find(|m| m.id == "mat_drywall")
+            .expect("Gipskarton material");
+        assert_eq!(drywall.category.as_deref(), Some("Trockenbau"));
+
+        let steel = lib
+            .materials
+            .iter()
+            .find(|m| m.id == "mat_steel")
+            .expect("Stahl material");
+        assert_eq!(steel.category.as_deref(), Some("Metall"));
+        assert!((steel.hatch_scale - 1.5).abs() < 1e-12);
+
+        let glass = lib
+            .materials
+            .iter()
+            .find(|m| m.id == "mat_glass")
+            .expect("Glas material");
+        assert_eq!(glass.category.as_deref(), Some("Verglasung"));
+        assert_eq!(glass.hatch_color, Some(0xA8D4E8));
+    }
+
+    #[test]
+    fn materials_using_reports_wall_styles_and_layer_indices() {
+        let lib = seed_default_library();
+        let masonry_uses = lib.materials_using("mat_masonry");
+        assert!(
+            !masonry_uses.is_empty(),
+            "mat_masonry should be referenced by at least one wall style layer"
+        );
+        assert!(masonry_uses.iter().any(|(ws, _)| ws.style.id == "style_masonry"));
+
+        let unused = lib.materials_using("mat_wood");
+        assert!(
+            unused.is_empty(),
+            "mat_wood is seeded but not used by any default wall style"
+        );
     }
 }

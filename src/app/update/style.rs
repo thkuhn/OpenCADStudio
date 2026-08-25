@@ -1152,6 +1152,20 @@ pub(super) fn on_text_style_dialog_open(&mut self) -> Task<Message> {
                     Some(crate::app::ColorPickTarget::AecMaterial) => {
                         Some(Message::AecStyleManagerMaterialColorPicked(color))
                     }
+                    Some(crate::app::ColorPickTarget::AecMaterialHatch) => {
+                        let value = match color {
+                            acadrust::types::Color::Rgb { r, g, b } => {
+                                ((r as u32) << 16) | ((g as u32) << 8) | (b as u32)
+                            }
+                            acadrust::types::Color::Index(i) => {
+                                let (r, g, b) = acadrust::types::aci_table::aci_to_rgb(i)
+                                    .unwrap_or((255, 255, 255));
+                                ((r as u32) << 16) | ((g as u32) << 8) | (b as u32)
+                            }
+                            _ => 0xFFFFFF,
+                        };
+                        Some(Message::AecStyleManagerMaterialHatchColorChanged(value))
+                    }
                     Some(crate::app::ColorPickTarget::Ribbon) => {
                         Some(Message::RibbonColorChanged(color))
                     }

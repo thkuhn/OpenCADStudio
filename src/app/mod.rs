@@ -1014,8 +1014,18 @@ pub(super) struct OpenCADStudio {
     aec_style_manager_material_hatch: String,
     aec_style_manager_material_color: String,
     aec_style_manager_material_line_type: String,
+    aec_style_manager_material_category: String,
+    aec_style_manager_material_hatch_color: u32,
+    aec_style_manager_material_hatch_scale: String,
+    aec_style_manager_material_render_ref: String,
+    aec_style_manager_material_hatch_angle: String,
+    /// `true` when `hatch_angle` is relative to the wall's own direction,
+    /// `false` when it is an absolute/global angle.
+    aec_style_manager_material_hatch_angle_relative: bool,
     /// Whether the material form's colour-picker popup is expanded.
     aec_style_manager_material_color_picker_open: bool,
+    /// Whether the material form's hatch-colour-picker popup is expanded.
+    aec_style_manager_material_hatch_color_picker_open: bool,
     /// Whether the material form's visual hatch-pattern picker is expanded.
     aec_style_manager_material_hatch_picker_open: bool,
     /// Line types available for the material form's line-type combo box
@@ -1041,6 +1051,28 @@ pub(super) struct OpenCADStudio {
     /// How the "Wall Styles" master list is ordered: alphabetically by name,
     /// or hierarchically (parents before children, siblings grouped).
     aec_style_manager_wall_style_sort: AecWallStyleSort,
+
+    // ── AEC Junction Editor Panel (Step 5) ──────────────────────────────────
+    /// `(axis_handle, end_index)` of the junction currently open in the
+    /// editor panel — the same identity Step 4's context menu uses.
+    aec_junction_editor_target: Option<(acadrust::Handle, usize)>,
+    /// Edit buffer: pending node-level default style for the open junction.
+    aec_junction_editor_default_style: Option<crate::modules::aec::engine::join::JoinOverrideStyle>,
+    /// Edit buffer: pending layer-pair overrides for the open junction.
+    aec_junction_editor_pairs: Vec<crate::modules::aec::engine::join::LayerPairOverride>,
+    /// "Add pair" form: `(layer index, material id)` of `layer_a` (always on
+    /// the target wall). The index disambiguates layers that reuse the same
+    /// material (e.g. two plaster layers) — matching on material id alone
+    /// could never target one specific occurrence.
+    aec_junction_editor_pair_layer_a: Option<(usize, String)>,
+    /// "Add pair" form: the other wall's axis handle chosen for `layer_b`
+    /// (`None` = "Außenkante / keine").
+    aec_junction_editor_pair_wall_b: Option<acadrust::Handle>,
+    /// "Add pair" form: `(layer index, material id)` of `layer_b` on the
+    /// chosen other wall (see `aec_junction_editor_pair_layer_a`).
+    aec_junction_editor_pair_layer_b: Option<(usize, String)>,
+    /// "Add pair" form: style to apply to the pair being composed.
+    aec_junction_editor_pair_style: crate::modules::aec::engine::join::JoinOverrideStyle,
 
     // ── AEC Project Explorer ──────────────────────────────────────────────
     /// Loaded `.ocsproj` contents (if any).
@@ -1358,6 +1390,8 @@ pub enum ColorPickTarget {
     MText,
     /// The AEC Style Manager's material edit form line colour.
     AecMaterial,
+    /// The AEC Style Manager's material edit form hatch colour.
+    AecMaterialHatch,
 }
 
 /// Table records the clipboard entities depend on, snapshotted from the source
@@ -1766,6 +1800,9 @@ pub enum ModalKind {
     /// view/edit content is added by a later step.
     AecMaterialManager,
     AecWallStyleManager,
+    /// Junction Editor Panel (Step 5) — edit a wall junction's node-level
+    /// default style and per-layer-pair join overrides.
+    AecJunctionEditor,
     /// AEC Project Explorer — browse a `.ocsproj` Building → Storey tree.
     AecProjectExplorer,
     /// AEC Style Picker — hierarchical modal for selecting wall styles,
@@ -2280,6 +2317,23 @@ pub enum Message {
     AecStyleManagerMaterialColorPickerToggle,
     /// A colour was chosen in the material edit form's colour picker.
     AecStyleManagerMaterialColorPicked(acadrust::types::Color),
+    /// Category field changed in the material edit form.
+    AecStyleManagerMaterialCategoryChanged(String),
+    /// Hatch colour changed in the material edit form.
+    AecStyleManagerMaterialHatchColorChanged(u32),
+    /// Opens/closes the material edit form's hatch-colour-picker popup.
+    AecStyleManagerMaterialHatchColorPickerToggle,
+    /// Hatch-scale field changed in the material edit form.
+    AecStyleManagerMaterialHatchScaleChanged(String),
+    /// Render-material-ref field changed in the material edit form.
+    AecStyleManagerMaterialRenderRefChanged(String),
+    /// Hatch-angle field changed in the material edit form.
+    AecStyleManagerMaterialHatchAngleChanged(String),
+    /// Toggles whether the hatch angle is relative to the wall direction or
+    /// an absolute/global angle.
+    AecStyleManagerMaterialHatchAngleRelativeToggle,
+    /// "Duplicate" pressed — clones the selected material into a new unsaved form.
+    AecStyleManagerMaterialDuplicate,
     /// "Save" pressed in the material edit form — upserts and persists.
     AecStyleManagerMaterialSave,
     /// "Delete" pressed for the currently selected material.
@@ -3005,6 +3059,49 @@ pub enum Message {
     /// Begin an interactive reference-object pick to move the current
     /// selection above (`true`) or below (`false`) the picked object.
     DrawOrderPickRef(bool),
+    // ── Wall Junction context menu ──────────────────────────────────────
+    /// Toggle the Wall Junction sub-items (Miter/Butt/Außenkante/Automatisch/
+    /// Detailansicht...) in the viewport context menu.
+    WallJunctionSubmenuToggle,
+    /// Set the node-level default join style for the wall junction the
+    /// viewport context menu is currently anchored on.
+    WallJunctionOverrideSetStyle(crate::modules::aec::engine::join::JoinOverrideStyle),
+    /// Remove the junction override for the wall junction the viewport
+    /// context menu is currently anchored on, restoring automatic resolution.
+    WallJunctionOverrideReset,
+    // ── AEC Junction Editor Panel (Step 5) ──────────────────────────────
+    /// Open the Junction Editor Panel for the given `(axis_handle,
+    /// end_index)`, loading all participating walls/layers and the current
+    /// `JunctionOverride` (if any) into the edit buffers.
+    AecJunctionEditorOpen(acadrust::Handle, usize),
+    /// Close the panel without saving pending edits.
+    AecJunctionEditorClose,
+    /// Set the pending node-level default style in the panel's edit buffer.
+    AecJunctionEditorSetDefaultStyle(crate::modules::aec::engine::join::JoinOverrideStyle),
+    /// Reset the pending node-level default style back to "Automatisch".
+    AecJunctionEditorResetDefaultStyle,
+    /// The "add pair" form's `layer_a` choice changed: `(layer index,
+    /// material id)` — the index is required to disambiguate layers that
+    /// reuse the same material.
+    AecJunctionEditorPairLayerAChanged(usize, String),
+    /// The "add pair" form's other-wall choice changed (`None` = Außenkante).
+    AecJunctionEditorPairWallBChanged(Option<acadrust::Handle>),
+    /// The "add pair" form's `layer_b` choice changed: `(layer index,
+    /// material id)` (see `AecJunctionEditorPairLayerAChanged`).
+    AecJunctionEditorPairLayerBChanged(usize, String),
+    /// The "add pair" form's style choice changed.
+    AecJunctionEditorPairStyleChanged(crate::modules::aec::engine::join::JoinOverrideStyle),
+    /// Commit the "add pair" form as a new `LayerPairOverride` in the edit
+    /// buffer (not yet persisted — Save writes the whole `JunctionOverride`).
+    AecJunctionEditorAddPair,
+    /// Remove the layer-pair override at this index from the edit buffer.
+    AecJunctionEditorRemovePair(usize),
+    /// Persist the edit buffer as the complete `JunctionOverride` via
+    /// `write_junction_override`, then refresh the wall and close the panel.
+    AecJunctionEditorSave,
+    /// Remove the entire override for the open junction (same effect as
+    /// Step 4's context-menu reset) and close the panel.
+    AecJunctionEditorFullReset,
     /// Open the Quick Select panel. Initialises filters from the current
     /// selection's first entity (type + layer) when one is selected.
     QSelectOpen,
@@ -3660,7 +3757,14 @@ impl OpenCADStudio {
             aec_style_manager_material_hatch: String::new(),
             aec_style_manager_material_color: String::new(),
             aec_style_manager_material_line_type: String::new(),
+            aec_style_manager_material_category: String::new(),
+            aec_style_manager_material_hatch_color: 0xFFFFFF,
+            aec_style_manager_material_hatch_scale: "1.0".to_string(),
+            aec_style_manager_material_render_ref: String::new(),
+            aec_style_manager_material_hatch_angle: "0.0".to_string(),
+            aec_style_manager_material_hatch_angle_relative: true,
             aec_style_manager_material_color_picker_open: false,
+            aec_style_manager_material_hatch_color_picker_open: false,
             aec_style_manager_material_hatch_picker_open: false,
             aec_style_manager_material_linetype_items: Vec::new(),
             aec_style_manager_material_linetype_combo: iced::widget::combo_box::State::new(Vec::new()),
@@ -3671,6 +3775,13 @@ impl OpenCADStudio {
             aec_style_manager_wall_style_layers: Vec::new(),
             aec_style_manager_wall_style_drag_index: None,
             aec_style_manager_wall_style_sort: AecWallStyleSort::default(),
+            aec_junction_editor_target: None,
+            aec_junction_editor_default_style: None,
+            aec_junction_editor_pairs: Vec::new(),
+            aec_junction_editor_pair_layer_a: None,
+            aec_junction_editor_pair_wall_b: None,
+            aec_junction_editor_pair_layer_b: None,
+            aec_junction_editor_pair_style: crate::modules::aec::engine::join::JoinOverrideStyle::Miter,
             aec_project_explorer_file: None,
             aec_project_explorer_path: None,
             aec_project_explorer_selected_building: None,

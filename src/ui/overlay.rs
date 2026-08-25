@@ -83,6 +83,10 @@ pub struct GripMarker {
     pub is_hovered: bool,
     /// Screen-plane direction with positive Y pointing up.
     pub dir: Option<[f32; 2]>,
+    /// True → this grip is a wall junction node with an active manual join
+    /// override, drawn in a distinguishing color from automatically-resolved
+    /// junctions.
+    pub has_override: bool,
 }
 
 // ── Grid display params ───────────────────────────────────────────────────
@@ -423,6 +427,20 @@ fn draw_grip_marker(frame: &mut canvas::Frame, grip: &GripMarker, theme: &Theme)
             canvas::Stroke {
                 width: 1.5,
                 style: canvas::Style::Solid(pair.text),
+                ..Default::default()
+            },
+        );
+    } else if grip.has_override {
+        // Wall junction with an active manual join-constraint override —
+        // drawn in the warning color so it reads differently from an
+        // automatically-resolved junction (#join-constraints step 4).
+        let color = theme.palette().warning.base.color;
+        frame.fill(&path, color);
+        frame.stroke(
+            &path,
+            canvas::Stroke {
+                width: 1.5,
+                style: canvas::Style::Solid(color),
                 ..Default::default()
             },
         );

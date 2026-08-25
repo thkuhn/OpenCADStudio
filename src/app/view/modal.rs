@@ -49,6 +49,7 @@ impl OpenCADStudio {
             Some(K::RecoveryPrompt) => crate::tr!("modal", "recovery-prompt"),
             Some(K::AecMaterialManager) => t!("AEC Material Manager").into_owned(),
             Some(K::AecWallStyleManager) => t!("AEC Wall Style Manager").into_owned(),
+            Some(K::AecJunctionEditor) => t!("Junction Editor").into_owned(),
             Some(K::AecProjectExplorer) => t!("AEC Project Explorer").into_owned(),
             Some(K::AecStylePicker { .. }) => t!("AEC Style Picker").into_owned(),
             None => String::new(),
@@ -272,11 +273,20 @@ impl OpenCADStudio {
                         crate::ui::window::aec_material_manager::MaterialFormState {
                             open: self.aec_style_manager_material_form_open,
                             is_new: self.aec_style_manager_material_editing_id.is_none(),
+                            editing_id: self.aec_style_manager_material_editing_id.as_deref(),
                             name: &self.aec_style_manager_material_name,
                             hatch: &self.aec_style_manager_material_hatch,
                             color: &self.aec_style_manager_material_color,
                             line_type: &self.aec_style_manager_material_line_type,
+                            category: &self.aec_style_manager_material_category,
+                            hatch_color: self.aec_style_manager_material_hatch_color,
+                            hatch_scale: &self.aec_style_manager_material_hatch_scale,
+                            render_material_ref: &self.aec_style_manager_material_render_ref,
+                            hatch_angle: &self.aec_style_manager_material_hatch_angle,
+                            hatch_angle_relative: self.aec_style_manager_material_hatch_angle_relative,
                             color_picker_open: self.aec_style_manager_material_color_picker_open,
+                            hatch_color_picker_open: self
+                                .aec_style_manager_material_hatch_color_picker_open,
                             hatch_picker_open: self.aec_style_manager_material_hatch_picker_open,
                             linetype_items: &self.aec_style_manager_material_linetype_items,
                             linetype_combo: &self.aec_style_manager_material_linetype_combo,
@@ -284,6 +294,41 @@ impl OpenCADStudio {
                     )
                 },
             ),
+            super::super::ModalKind::AecJunctionEditor => sized_flow(ex, 620, 480, |_| {
+                let scene = &self.tabs[self.active_tab].scene;
+                let (axis_handle, end_index) = self
+                    .aec_junction_editor_target
+                    .unwrap_or((acadrust::Handle::default(), 0));
+                let participants =
+                    crate::modules::aec::commands::walls_at_junction(scene, axis_handle, end_index);
+                static EMPTY_LIB: std::sync::OnceLock<
+                    crate::modules::aec::engine::library::StyleLibrary,
+                > = std::sync::OnceLock::new();
+                let library = self
+                    .aec_style_library
+                    .as_ref()
+                    .unwrap_or(EMPTY_LIB.get_or_init(crate::modules::aec::engine::library::StyleLibrary::empty));
+                crate::ui::window::aec_junction_editor::view_window(
+                    crate::ui::window::aec_junction_editor::JunctionEditorState {
+                        axis_handle,
+                        end_index,
+                        participants,
+                        library,
+                        default_style: self.aec_junction_editor_default_style.clone(),
+                        pairs: &self.aec_junction_editor_pairs,
+                        pair_layer_a: self
+                            .aec_junction_editor_pair_layer_a
+                            .as_ref()
+                            .map(|(i, s)| (*i, s.as_str())),
+                        pair_wall_b: self.aec_junction_editor_pair_wall_b,
+                        pair_layer_b: self
+                            .aec_junction_editor_pair_layer_b
+                            .as_ref()
+                            .map(|(i, s)| (*i, s.as_str())),
+                        pair_style: self.aec_junction_editor_pair_style.clone(),
+                    },
+                )
+            }),
             super::super::ModalKind::AecProjectExplorer => sized_flow(ex, 720, 520, |_| {
                 crate::ui::window::aec_project_explorer::view_window(
                     self.aec_project_explorer_file.as_ref(),

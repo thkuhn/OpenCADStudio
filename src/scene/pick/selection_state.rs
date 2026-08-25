@@ -35,6 +35,14 @@ pub struct SelectionState {
     pub draworder_submenu: bool,
     /// True while the context menu's Wall Justification sub-items are expanded.
     pub wall_justification_submenu: bool,
+    /// Set when `context_menu` was opened while the cursor was hovering a wall
+    /// axis endpoint grip (a junction node): `(wall axis handle, end_index)`,
+    /// `end_index` being `0` (start vertex) or `1` (last vertex). Drives the
+    /// junction override menu items rendered in the viewport context menu.
+    pub junction_menu: Option<(acadrust::Handle, usize)>,
+    /// True while the context menu's Wall Junction sub-items (Miter/Butt/
+    /// Au\u{00df}enkante/Automatisch/Detailansicht) are expanded.
+    pub junction_menu_submenu: bool,
     pub last_move_pos: Option<Point>,
     pub left_down: bool,
     pub left_press_pos: Option<Point>,

@@ -1,5 +1,68 @@
 use glam::DVec3;
+use serde::{Deserialize, Serialize};
 use std::fmt;
+
+/// A stable, material-/role-based reference to a wall layer, used by
+/// [`JunctionOverride`] so manual join overrides survive layer reordering
+/// (unlike a raw layer index, which shifts when layers are inserted/removed).
+///
+/// Identity is `material_id` plus an optional `role_tag` (see
+/// [`crate::modules::aec::engine::wall_style::Layer`]) — the same fields the
+/// miter matcher (`MiterLayer`) already uses to pair layers across a join.
+///
+/// `index` additionally records the layer's position within its owning
+/// wall's layer stack at the time the reference was captured. `material_id`
+/// (+ `role_tag`) alone cannot distinguish two layers that use the same
+/// material without an explicit role tag (e.g. two plaster layers on either
+/// side of a wall) — without `index`, such a pair would be indistinguishable
+/// and an override created for one would silently apply to both. Defaults to
+/// `0` for records persisted before this field existed.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct LayerRef {
+    /// Identifier of the material for the referenced layer.
+    pub material_id: String,
+    /// Optional role tag (e.g. `"Tragschale"`), used to disambiguate layers
+    /// that share the same material within a wall style.
+    #[serde(default)]
+    pub role_tag: Option<String>,
+    /// Position of the layer within its owning wall's layer stack.
+    #[serde(default)]
+    pub index: usize,
+}
+
+/// Manual override for how two layers (or a layer and the outer face) are
+/// joined at a specific junction end.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub enum JoinOverrideStyle {
+    Miter,
+    Butt,
+    OuterFace,
+    NoExtend,
+}
+
+/// Override for a single pair of layers at a junction.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct LayerPairOverride {
+    /// Material/function-based reference to the first layer, not a raw index.
+    pub layer_a: LayerRef,
+    /// Material/function-based reference to the second layer. `None` means
+    /// the through-wall side / outer face rather than a specific layer.
+    #[serde(default)]
+    pub layer_b: Option<LayerRef>,
+    pub style: JoinOverrideStyle,
+}
+
+/// Manual join-constraint overrides for one end of a wall axis (a
+/// "junction"). Persisted as XDATA on the wall axis entity, keyed by which
+/// end of the axis the junction sits at (see `write_junction_override` /
+/// `read_junction_override` in `commands.rs`).
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct JunctionOverride {
+    #[serde(default)]
+    pub default_style: Option<JoinOverrideStyle>,
+    #[serde(default)]
+    pub layer_pairs: Vec<LayerPairOverride>,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum JoinKind {
@@ -914,6 +977,40 @@ mod tests {
         assert_eq!(new_a[1], DVec3::new(5.0, 0.0, 0.0));
         assert_eq!(new_b[0], DVec3::new(5.0, 0.0, 0.0));
         assert_eq!(new_a[0], DVec3::new(0.0, 0.0, 0.0));
+    }
+
+    #[test]
+    fn junction_override_serde_roundtrip() {
+        let ov = JunctionOverride {
+            default_style: Some(JoinOverrideStyle::Miter),
+            layer_pairs: vec![
+                LayerPairOverride {
+                    layer_a: LayerRef {
+                        material_id: "masonry".to_string(),
+                        role_tag: Some("Tragschale".to_string()),
+                        index: 0,
+                    },
+                    layer_b: Some(LayerRef {
+                        material_id: "insulation".to_string(),
+                        role_tag: None,
+                        index: 1,
+                    }),
+                    style: JoinOverrideStyle::Butt,
+                },
+                LayerPairOverride {
+                    layer_a: LayerRef {
+                        material_id: "plaster".to_string(),
+                        role_tag: Some("Innenputz".to_string()),
+                        index: 2,
+                    },
+                    layer_b: None,
+                    style: JoinOverrideStyle::OuterFace,
+                },
+            ],
+        };
+        let json = serde_json::to_string(&ov).unwrap();
+        let back: JunctionOverride = serde_json::from_str(&json).unwrap();
+        assert_eq!(ov, back);
     }
 
     #[test]

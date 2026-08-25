@@ -1837,7 +1837,11 @@ impl OpenCADStudio {
             self.tabs[i].scene.poison_undo_recording();
         }
         // Vertex / length edits on the wall axis must rebuild contour, hatch
-        // and solids; otherwise the old 2D outline stays on screen.
+        // and solids, and re-resolve nearby joins; otherwise the old 2D
+        // outline stays on screen or joins go stale. Route through
+        // `refresh_wall_after_axis_edit` so a Properties-panel edit reaches
+        // exactly the same end state as a grip-drag release, instead of
+        // duplicating a divergent, partial sequence here.
         let mut display_handles = handles.to_vec();
         let mut refreshed = rustc_hash::FxHashSet::default();
         for &handle in handles {
@@ -1856,14 +1860,11 @@ impl OpenCADStudio {
                     crate::modules::aec::commands::wall_thickness_and_height(e).is_some()
                 });
             if is_wall {
-                if let Ok(touched) =
-                    crate::modules::aec::commands::regenerate_wall_representation(
-                        &mut self.tabs[i].scene,
-                        owner,
-                    )
-                {
-                    display_handles.extend(touched);
-                }
+                let touched = crate::modules::aec::commands::refresh_wall_after_axis_edit(
+                    &mut self.tabs[i].scene,
+                    owner,
+                );
+                display_handles.extend(touched);
             }
         }
         display_handles.retain(|h| self.tabs[i].scene.document.get_entity(*h).is_some());

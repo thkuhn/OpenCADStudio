@@ -481,12 +481,39 @@ impl OpenCADStudio {
                                     hover.handle == handle && hover.grip_id == grip_id
                                 })
                             });
+                            // A wall axis endpoint grip with an active manual
+                            // join-constraint override gets a distinguishing
+                            // color (#join-constraints step 4).
+                            let has_override = owner.is_some_and(|handle| {
+                                let axis = crate::modules::aec::commands::resolve_wall_package(
+                                    &tab.scene, handle,
+                                );
+                                let vertices =
+                                    crate::modules::aec::commands::get_wall_vertices(&tab.scene, axis);
+                                if vertices.len() < 2 {
+                                    return false;
+                                }
+                                let end_index = if grip_id == 0 {
+                                    Some(0usize)
+                                } else if grip_id == vertices.len() - 1 {
+                                    Some(1usize)
+                                } else {
+                                    None
+                                };
+                                end_index.is_some_and(|end_index| {
+                                    crate::modules::aec::commands::read_junction_override(
+                                        &tab.scene, axis, end_index,
+                                    )
+                                    .is_some()
+                                })
+                            });
                             crate::ui::overlay::GripMarker {
                                 pos: screen,
                                 shape,
                                 is_hot,
                                 is_hovered,
                                 dir,
+                                has_override,
                             }
                         })
                         .collect()
@@ -1429,9 +1456,15 @@ impl OpenCADStudio {
         // the cursor position (canvas-relative) anchors the menu under
         // the cursor instead of drifting into window-relative space.
         if !tab.is_start {
-            let (ctx_pos, draworder_open, justification_open) = {
+            let (ctx_pos, draworder_open, justification_open, junction_menu, junction_submenu_open) = {
                 let sel = tab.scene.selection.borrow();
-                (sel.context_menu, sel.draworder_submenu, sel.wall_justification_submenu)
+                (
+                    sel.context_menu,
+                    sel.draworder_submenu,
+                    sel.wall_justification_submenu,
+                    sel.junction_menu,
+                    sel.junction_menu_submenu,
+                )
             };
             if let Some(p) = ctx_pos {
                 let has_cmd = tab.active_cmd.is_some();
@@ -1465,6 +1498,8 @@ impl OpenCADStudio {
                     draworder_open,
                     only_walls,
                     justification_open,
+                    junction_menu,
+                    junction_submenu_open,
                 ));
             }
         }

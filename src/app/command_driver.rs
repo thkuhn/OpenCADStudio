@@ -1767,7 +1767,9 @@ impl OpenCADStudio {
                 finish,
             } => {
                 let mut first_handle = None;
+                let mut all_live_handles = Vec::with_capacity(updates.len());
                 for (handle, entity) in updates {
+                    all_live_handles.push(handle);
                     if first_handle.is_none() {
                         first_handle = Some(handle);
                     }
@@ -1813,6 +1815,21 @@ impl OpenCADStudio {
                                 crate::modules::aec::commands::wall_thickness_and_height(e).is_some()
                             });
                         if is_wall {
+                            // Drop the draw-time outer-contour companion
+                            // (untagged preview polyline). Regeneration creates
+                            // proper WALL_REP children; leaving the companion
+                            // would leave a stale orphan that never follows
+                            // later axis edits.
+                            let companions: Vec<_> = all_live_handles
+                                .iter()
+                                .copied()
+                                .filter(|&h| h != handle)
+                                .collect();
+                            crate::modules::aec::commands::erase_wall_live_preview_companions(
+                                &mut self.tabs[i].scene,
+                                handle,
+                                &companions,
+                            );
                             let _ = crate::modules::aec::commands::regenerate_wall_representation(
                                 &mut self.tabs[i].scene,
                                 handle,
@@ -2784,10 +2801,67 @@ impl OpenCADStudio {
                 let dy = delta.y as f64; // drawing plane is world XY
                 let dz = delta.z as f64;
 
+                // AEC wall axis vertices live on an invisible layer that is
+                // excluded from the crossing-window hit test, so `handles`
+                // here only ever contains the *visible* contour/hatch/solid
+                // children of a wall. Stretching one of those directly (like
+                // any other polyline) would move the derived representation
+                // without touching the axis; the very next regeneration then
+                // rebuilds the contour from the untouched axis and silently
+                // reverts the stretch. Detect wall packages up front, move
+                // the *axis* polyline's own vertices using the same
+                // window/delta test, and regenerate from there — mirroring
+                // what a grip-drag release does. Handles resolved to a wall
+                // here are excluded from the generic per-entity stretch loop
+                // below so they are not independently (and incorrectly)
+                // stretched a second time.
+                let mut wall_owner_of: rustc_hash::FxHashMap<acadrust::Handle, acadrust::Handle> =
+                    rustc_hash::FxHashMap::default();
+                for &handle in &handles {
+                    let owner = crate::modules::aec::commands::resolve_wall_package(
+                        &self.tabs[i].scene,
+                        handle,
+                    );
+                    let is_wall = self.tabs[i]
+                        .scene
+                        .document
+                        .get_entity(owner)
+                        .is_some_and(|e| {
+                            crate::modules::aec::commands::wall_thickness_and_height(e).is_some()
+                        });
+                    if is_wall {
+                        wall_owner_of.insert(handle, owner);
+                    }
+                }
+                let mut wall_owners: Vec<acadrust::Handle> =
+                    wall_owner_of.values().copied().collect();
+                wall_owners.sort_by_key(|h| h.value());
+                wall_owners.dedup();
+                for owner in &wall_owners {
+                    let before = self.tabs[i].scene.document.get_entity_arc(*owner);
+                    let Some(touched) = crate::modules::aec::commands::stretch_wall_axis_in_window(
+                        &mut self.tabs[i].scene,
+                        *owner,
+                        &in_win,
+                        glam::DVec3::new(dx, dy, dz),
+                    ) else {
+                        continue;
+                    };
+                    if let Some(before) = before {
+                        self.tabs[i].scene.record_undo_before(*owner, Some(before));
+                    }
+                    changed_handles.extend(touched);
+                    changed_handles.push(*owner);
+                    count += 1;
+                }
+
                 // Dimensions whose points moved — their baked *D block is
                 // stale afterwards and must be dropped (see #398 / #372).
                 let mut stretched_dims: Vec<acadrust::Handle> = Vec::new();
                 for handle in &handles {
+                    if wall_owner_of.contains_key(handle) {
+                        continue;
+                    }
                     let before = self.tabs[i].scene.document.get_entity_arc(*handle);
                     let Some(entity) = self.tabs[i].scene.document.get_entity_mut(*handle) else {
                         continue;

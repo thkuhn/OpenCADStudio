@@ -950,6 +950,8 @@ pub(super) fn viewport_context_menu_overlay(
     draworder_open: bool,
     only_walls: bool,
     justification_open: bool,
+    junction_menu: Option<(acadrust::Handle, usize)>,
+    junction_submenu_open: bool,
 ) -> Element<'static, Message> {
     let item = |label: String, msg: Message| -> Element<'static, Message> {
         button(text(label).size(12))
@@ -1158,6 +1160,59 @@ pub(super) fn viewport_context_menu_overlay(
             t!("Zoom Extents").into_owned(),
             Message::Command("ZOOM EXTENTS".to_string()),
         ));
+    }
+
+    // Wall junction join-override submenu — offered when the context menu
+    // was opened on top of a wall axis endpoint grip (a shared junction
+    // node). Follows the same expand/collapse pattern as the Draw Order and
+    // Wall Justification submenus above.
+    if junction_menu.is_some() {
+        use crate::modules::aec::engine::join::JoinOverrideStyle;
+        items.push(sep());
+        let wj_caret = if junction_submenu_open {
+            crate::ui::icons::themed_arrow_down(9.0)
+        } else {
+            crate::ui::icons::themed_arrow_right(9.0)
+        };
+        items.push(
+            button(
+                row![
+                    text(t!("Wandverbindung").into_owned()).size(12),
+                    iced::widget::Space::new().width(Fill),
+                    wj_caret,
+                ]
+                .align_y(iced::Center),
+            )
+            .on_press(Message::WallJunctionSubmenuToggle)
+            .style(button::subtle)
+            .padding([4, 12])
+            .width(Fill)
+            .into(),
+        );
+        if junction_submenu_open {
+            items.push(subitem(
+                t!("Miter").into_owned(),
+                Message::WallJunctionOverrideSetStyle(JoinOverrideStyle::Miter),
+            ));
+            items.push(subitem(
+                t!("Butt").into_owned(),
+                Message::WallJunctionOverrideSetStyle(JoinOverrideStyle::Butt),
+            ));
+            items.push(subitem(
+                t!("Au\u{00df}enkante").into_owned(),
+                Message::WallJunctionOverrideSetStyle(JoinOverrideStyle::OuterFace),
+            ));
+            items.push(subitem(
+                t!("Automatisch (zur\u{00fc}cksetzen)").into_owned(),
+                Message::WallJunctionOverrideReset,
+            ));
+            if let Some((axis_handle, end_index)) = junction_menu {
+                items.push(subitem(
+                    t!("Detailansicht...").into_owned(),
+                    Message::AecJunctionEditorOpen(axis_handle, end_index),
+                ));
+            }
+        }
     }
 
     let menu_col = column(items).spacing(0).width(Length::Fixed(180.0));

@@ -40,6 +40,138 @@ pub const AEC_APPID: &str = "OPENCAD_AEC";
 /// is a follow-up; matches the former plugin's pragmatism).
 static STOREYS: Mutex<Vec<Storey>> = Mutex::new(Vec::new());
 
+/// User-visible notices queued when a stored [`join::JunctionOverride`] is
+/// found to reference a layer/material that no longer exists and is
+/// automatically cleaned up during regeneration (see
+/// `validate_junction_override` / `remove_junction_override`). Regeneration
+/// helpers (`regenerate_wall_representation_inner`, `join_junction_in_document`)
+/// don't have direct access to a [`CommandLine`], so they queue the message
+/// here; command entry points that do have one (e.g. `aec_walljoin_do`)
+/// drain it via [`take_pending_override_warnings`] and surface it the same
+/// way other non-fatal warnings are reported (`command_line.push_info`).
+static PENDING_OVERRIDE_WARNINGS: Mutex<Vec<String>> = Mutex::new(Vec::new());
+
+fn queue_override_warning(msg: String) {
+    if let Ok(mut q) = PENDING_OVERRIDE_WARNINGS.lock() {
+        q.push(msg);
+    }
+}
+
+/// Drain and return every queued override-invalidation notice since the last
+/// call. Command entry points with a [`CommandLine`] should call this after
+/// a regeneration/join and forward each message via `command_line.push_info`.
+pub fn take_pending_override_warnings() -> Vec<String> {
+    PENDING_OVERRIDE_WARNINGS
+        .lock()
+        .map(|mut q| std::mem::take(&mut *q))
+        .unwrap_or_default()
+}
+
+fn layer_ref_matches(r: &join::LayerRef, set: &[join::LayerRef]) -> bool {
+    set.iter().any(|l| {
+        l.material_id == r.material_id && l.role_tag == r.role_tag && l.index == r.index
+    })
+}
+
+/// Build the [`join::LayerRef`] list for a wall's layer stack (given its
+/// materials in layer order), keeping the `index` field aligned with each
+/// layer's position — required so layers that reuse the same material (e.g.
+/// two plaster layers) stay individually addressable by
+/// [`join::LayerPairOverride`] instead of colliding.
+fn layer_refs_from_materials<'a>(
+    materials: impl IntoIterator<Item = &'a str>,
+) -> Vec<join::LayerRef> {
+    materials
+        .into_iter()
+        .enumerate()
+        .map(|(i, m)| join::LayerRef { material_id: m.to_string(), role_tag: None, index: i })
+        .collect()
+}
+
+/// Validate a stored [`join::JunctionOverride`] against the current layer
+/// sets of the wall(s) at the junction (`self_layers` and, when known,
+/// `other_layers`): drop any [`join::LayerPairOverride`] whose `layer_a` or
+/// `layer_b` (when `Some`) no longer matches an existing layer on either
+/// side. Returns the cleaned override (`None` when nothing meaningful is
+/// left — no `default_style` and no remaining valid `layer_pairs`) plus how
+/// many pairs were dropped.
+fn validate_junction_override(
+    override_data: &join::JunctionOverride,
+    self_layers: &[join::LayerRef],
+    other_layers: &[join::LayerRef],
+) -> (Option<join::JunctionOverride>, usize) {
+    // `layer_a` identifies a layer on the wall that *owns* this override
+    // (the resolver — see `resolve_layer_override_style` — only ever matches
+    // it against that wall's own layer set); `layer_b`, when present, may
+    // name a layer on either side of the junction.
+    let matches_any = |r: &join::LayerRef| {
+        layer_ref_matches(r, self_layers) || layer_ref_matches(r, other_layers)
+    };
+    let mut removed = 0usize;
+    let kept_pairs: Vec<join::LayerPairOverride> = override_data
+        .layer_pairs
+        .iter()
+        .filter(|p| {
+            let ok = layer_ref_matches(&p.layer_a, self_layers)
+                && match &p.layer_b {
+                    Some(b) => matches_any(b),
+                    None => true,
+                };
+            if !ok {
+                removed += 1;
+            }
+            ok
+        })
+        .cloned()
+        .collect();
+    if removed == 0 {
+        return (Some(override_data.clone()), 0);
+    }
+    if override_data.default_style.is_none() && kept_pairs.is_empty() {
+        (None, removed)
+    } else {
+        (
+            Some(join::JunctionOverride {
+                default_style: override_data.default_style.clone(),
+                layer_pairs: kept_pairs,
+            }),
+            removed,
+        )
+    }
+}
+
+/// Validate the [`join::JunctionOverride`] stored on `axis_handle`/`end_index`
+/// against `self_layers`/`other_layers`, persisting the cleaned-up result (or
+/// erasing the XDATA entirely) and queuing a user-visible notice when
+/// anything was invalidated. Returns the override to actually use for this
+/// regeneration (already cleaned).
+fn validate_and_persist_junction_override(
+    scene: &mut Scene,
+    axis_handle: Handle,
+    end_index: usize,
+    override_data: join::JunctionOverride,
+    self_layers: &[join::LayerRef],
+    other_layers: &[join::LayerRef],
+) -> Option<join::JunctionOverride> {
+    let (cleaned, removed) =
+        validate_junction_override(&override_data, self_layers, other_layers);
+    if removed == 0 {
+        return cleaned;
+    }
+    match &cleaned {
+        Some(ov) => {
+            write_junction_override(scene, axis_handle, end_index, ov);
+        }
+        None => {
+            remove_junction_override(scene, axis_handle, end_index);
+        }
+    }
+    queue_override_warning(format!(
+        "AEC: Removed {removed} outdated join override(s) on wall {axis_handle} (referenced layer/material no longer exists); falling back to automatic join resolution."
+    ));
+    cleaned
+}
+
 /// Register `OPENCAD_AEC` in the APPID table if missing so XDATA survives
 /// DWG/DXF round-trip.
 fn ensure_app_id(doc: &mut CadDocument) {
@@ -100,7 +232,7 @@ fn write_aec_record(doc: &mut CadDocument, handle: Handle, record: ExtendedDataR
 
 /// Read the primary `OPENCAD_AEC` record on `entity` (WALL / OPENING / ROOM /
 /// WALL_DERIVED / …), skipping pure index tags (`CHILD_HANDLES`,
-/// `JOINED_PEERS`) that may coexist on the same entity.
+/// `JOINED_PEERS`, `JOIN_OVERRIDE`) that may coexist on the same entity.
 fn read_aec_record(entity: &EntityType) -> Option<&ExtendedDataRecord> {
     entity.common().extended_data.records().iter().find(|r| {
         if r.application_name != AEC_APPID {
@@ -109,7 +241,8 @@ fn read_aec_record(entity: &EntityType) -> Option<&ExtendedDataRecord> {
         match r.values.first() {
             Some(XDataValue::String(s))
                 if s == engine::owner_index::CHILD_HANDLES_TAG
-                    || s == engine::owner_index::JOINED_PEERS_TAG =>
+                    || s == engine::owner_index::JOINED_PEERS_TAG
+                    || s == JOIN_OVERRIDE_TAG =>
             {
                 false
             }
@@ -138,6 +271,136 @@ fn write_wall_display_tag(scene: &mut Scene, handle: Handle, axis_handle: Handle
 /// synthesize orphan display entities.
 fn write_wall_derived_tag(scene: &mut Scene, handle: Handle, axis_handle: Handle) {
     write_wall_display_tag(scene, handle, axis_handle, WALL_REP_ROLE_CONTOUR);
+}
+
+/// XDATA kind tag for a manual join-constraint override on a wall axis end
+/// (a "junction"). A junction is identified by the wall axis's own handle
+/// plus which end of its axis it sits at (`0` for the start vertex, `1` for
+/// the last vertex) — mirroring the `end_a`/`end_b` vertex-index convention
+/// already used by [`join::join_wall_axes`]. Multiple walls sharing a
+/// junction point each store their own override on their own axis/end, since
+/// XDATA lives on a single entity.
+const JOIN_OVERRIDE_TAG: &str = "JOIN_OVERRIDE";
+
+/// Write (or replace) a [`join::JunctionOverride`] as XDATA on `axis_handle`,
+/// tied to `end_index` (`0` = axis start, `1` = axis end). The payload is
+/// serialized as JSON, matching the pattern used for other AEC XDATA blobs.
+/// Only the record for the same `end_index` is replaced — an override on the
+/// other end of the same axis is left untouched.
+pub fn write_junction_override(
+    scene: &mut Scene,
+    axis_handle: Handle,
+    end_index: usize,
+    override_data: &join::JunctionOverride,
+) -> bool {
+    let Ok(json) = serde_json::to_string(override_data) else {
+        return false;
+    };
+    ensure_app_id(&mut scene.document);
+    let app_handle = scene
+        .document
+        .app_ids
+        .get(AEC_APPID)
+        .map(|a| a.handle.value());
+    let Some(entity) = scene.document.get_entity_mut(axis_handle) else {
+        return false;
+    };
+    let end_index = end_index as i32;
+    let xd = &mut entity.common_mut().extended_data;
+    let kept: Vec<_> = xd
+        .records()
+        .iter()
+        .filter(|r| {
+            if r.application_name != AEC_APPID {
+                return true;
+            }
+            !matches!(
+                (r.values.first(), r.values.get(1)),
+                (Some(XDataValue::String(s)), Some(XDataValue::Integer32(e)))
+                    if s == JOIN_OVERRIDE_TAG && *e == end_index
+            )
+        })
+        .cloned()
+        .collect();
+    xd.clear();
+    for r in kept {
+        xd.add_record(r);
+    }
+    let mut record = ExtendedDataRecord::new(AEC_APPID);
+    record.add_value(XDataValue::String(JOIN_OVERRIDE_TAG.to_string()));
+    record.add_value(XDataValue::Integer32(end_index));
+    record.add_value(XDataValue::String(json));
+    xd.add_record(record);
+    if let Some(ah) = app_handle {
+        let still_has_aec = xd.records().iter().any(|r| r.application_name == AEC_APPID);
+        if !still_has_aec {
+            xd.raw_dwg_eed.retain(|(a, _)| *a != ah);
+        }
+    }
+    true
+}
+
+/// Read the [`join::JunctionOverride`] stored on `axis_handle` for
+/// `end_index` (`0` = axis start, `1` = axis end). Returns `None` when no
+/// such XDATA exists — including on entities from drawings created before
+/// this feature existed — and never panics on missing/malformed data.
+pub fn read_junction_override(
+    scene: &Scene,
+    axis_handle: Handle,
+    end_index: usize,
+) -> Option<join::JunctionOverride> {
+    let entity = scene.document.get_entity(axis_handle)?;
+    let end_index = end_index as i32;
+    entity
+        .common()
+        .extended_data
+        .records()
+        .iter()
+        .find(|r| {
+            r.application_name == AEC_APPID
+                && matches!(
+                    (r.values.first(), r.values.get(1)),
+                    (Some(XDataValue::String(s)), Some(XDataValue::Integer32(e)))
+                        if s == JOIN_OVERRIDE_TAG && *e == end_index
+                )
+        })
+        .and_then(|r| match r.values.get(2) {
+            Some(XDataValue::String(json)) => serde_json::from_str(json).ok(),
+            _ => None,
+        })
+}
+
+/// Erase the [`join::JunctionOverride`] XDATA (if any) for `end_index` from
+/// `axis_handle`. Used to fully clean up a degenerate override (no
+/// `default_style` and no valid `layer_pairs` left) instead of persisting an
+/// empty/meaningless record via [`write_junction_override`]. Returns `true`
+/// when a record was actually removed.
+pub fn remove_junction_override(scene: &mut Scene, axis_handle: Handle, end_index: usize) -> bool {
+    let end_index = end_index as i32;
+    let Some(entity) = scene.document.get_entity_mut(axis_handle) else {
+        return false;
+    };
+    let xd = &mut entity.common_mut().extended_data;
+    let before = xd.records().len();
+    let kept: Vec<_> = xd
+        .records()
+        .iter()
+        .filter(|r| {
+            !(r.application_name == AEC_APPID
+                && matches!(
+                    (r.values.first(), r.values.get(1)),
+                    (Some(XDataValue::String(s)), Some(XDataValue::Integer32(e)))
+                        if s == JOIN_OVERRIDE_TAG && *e == end_index
+                ))
+        })
+        .cloned()
+        .collect();
+    let changed = kept.len() != before;
+    xd.clear();
+    for r in kept {
+        xd.add_record(r);
+    }
+    changed
 }
 
 /// Overwrites only the `height` field of a wall's `WALL` XDATA record,
@@ -352,7 +615,7 @@ pub fn wall_axis_snap_wires(
 }
 
 /// Extracts vertices from a wall's axis polyline.
-fn get_wall_vertices(scene: &Scene, handle: Handle) -> Vec<DVec3> {
+pub(crate) fn get_wall_vertices(scene: &Scene, handle: Handle) -> Vec<DVec3> {
     if let Some(EntityType::LwPolyline(pl)) = scene.document.get_entity(handle) {
         pl.vertices.iter().map(|v| DVec3::new(v.location.x, v.location.y, 0.0)).collect()
     } else {
@@ -361,7 +624,7 @@ fn get_wall_vertices(scene: &Scene, handle: Handle) -> Vec<DVec3> {
 }
 
 /// Updates a wall's axis polyline vertices.
-fn update_wall_vertices(scene: &mut Scene, handle: Handle, vertices: &[DVec3]) {
+pub(crate) fn update_wall_vertices(scene: &mut Scene, handle: Handle, vertices: &[DVec3]) {
     if let Some(entity) = scene.document.get_entity_mut(handle) {
         if let EntityType::LwPolyline(pl) = entity {
             // Keep bulge / start-width when only endpoint positions change so
@@ -785,6 +1048,57 @@ pub fn ensure_wall_axis_layer(scene: &mut Scene) {
     }
 }
 
+/// Erase draw-time companion entities that are superseded once
+/// [`regenerate_wall_representation`] builds proper `WALL_REP` children.
+///
+/// `WallCommand` commits an untagged outer-contour `LwPolyline` alongside the
+/// axis for live preview. That polyline is **not** a `WALL_REP` child and is
+/// never refreshed on axis edits — leaving it in the document produces the
+/// "orphan 2D polyline that doesn't follow wall changes" symptom. Call this
+/// with every non-axis live handle when the wall drawing command finishes,
+/// immediately before regeneration.
+pub fn erase_wall_live_preview_companions(
+    scene: &mut Scene,
+    axis_handle: Handle,
+    companions: &[Handle],
+) {
+    let mut to_erase = Vec::new();
+    for &h in companions {
+        if h == axis_handle {
+            continue;
+        }
+        let Some(entity) = scene.document.get_entity(h) else {
+            continue;
+        };
+        // Only untagged preview polylines. Never touch WALL axes, WALL_REP
+        // children, or unrelated geometry.
+        if !matches!(entity, EntityType::LwPolyline(_)) {
+            continue;
+        }
+        if wall_from_entity(entity).is_some() {
+            continue;
+        }
+        if is_wall_display_child_entity(entity) {
+            continue;
+        }
+        to_erase.push(h);
+    }
+    if !to_erase.is_empty() {
+        scene.erase_entities(&to_erase);
+    }
+}
+
+/// True when `entity` carries a `WALL_REP` / `WALL_DERIVED` display tag.
+fn is_wall_display_child_entity(entity: &EntityType) -> bool {
+    let Some(record) = read_aec_record(entity) else {
+        return false;
+    };
+    matches!(
+        record.values.first(),
+        Some(XDataValue::String(kind)) if kind == "WALL_REP" || kind == "WALL_DERIVED"
+    )
+}
+
 /// Number of straight segments used to approximate one arc edge when
 /// tessellating a closed footprint ring for the hatch fill boundary (see
 /// [`tessellate_ring_with_bulges`]). [`HatchModel::boundary`] is a plain
@@ -899,6 +1213,52 @@ pub fn refresh_wall_after_axis_edit(scene: &mut Scene, wall_handle: Handle) -> V
     touched
 }
 
+/// Move a wall's **axis** vertices (not its visible contour/hatch/solid
+/// children) by `delta` wherever `in_win` reports the vertex as selected,
+/// then regenerate + re-join via [`refresh_wall_after_axis_edit`].
+///
+/// The wall axis lives on the invisible `AEC_WALL_AXIS` layer, so commands
+/// like STRETCH that hit-test only visible geometry never see it — they only
+/// ever get a handle to the derived contour. Moving that derived contour's
+/// own vertices instead of the axis is reverted by the very next
+/// regeneration (which rebuilds the contour from the unchanged axis), so any
+/// wall-aware caller must resolve to the axis and move *it* first. This
+/// function is that shared operation; used by STRETCH in
+/// `command_driver.rs`.
+///
+/// Returns `None` if `owner` isn't a wall, has no axis vertices, or none of
+/// them fall inside the window (no-op). Otherwise returns every axis +
+/// derived handle touched by the regeneration, exactly like
+/// [`refresh_wall_after_axis_edit`].
+pub fn stretch_wall_axis_in_window(
+    scene: &mut Scene,
+    owner: Handle,
+    in_win: impl Fn(f64, f64) -> bool,
+    delta: DVec3,
+) -> Option<Vec<Handle>> {
+    let axis_vertices = get_wall_vertices(scene, owner);
+    if axis_vertices.is_empty() {
+        return None;
+    }
+    let mut moved = false;
+    let new_vertices: Vec<DVec3> = axis_vertices
+        .iter()
+        .map(|v| {
+            if in_win(v.x, v.y) {
+                moved = true;
+                DVec3::new(v.x + delta.x, v.y + delta.y, v.z + delta.z)
+            } else {
+                *v
+            }
+        })
+        .collect();
+    if !moved {
+        return None;
+    }
+    update_wall_vertices(scene, owner, &new_vertices);
+    Some(refresh_wall_after_axis_edit(scene, owner))
+}
+
 /// Like [`regenerate_wall_representation`], but lets a caller supply a
 /// corner-extension hint: `(vertex_index, extended_position)` moves one axis
 /// vertex further out — past a joined corner and into the other wall's
@@ -950,6 +1310,143 @@ pub fn regenerate_wall_representation_with_precomputed_miters(
         None,
         Some(mitered_footprints),
     )
+}
+
+/// Locate a wall's already-established join(s) — pairwise (L/T) or N-way —
+/// at the axis end that is *not* `handled_end`, using the peer-link index
+/// maintained by `engine::owner_index`, cross-referenced against which of
+/// this wall's own axis ends is actually coincident with a peer's endpoint
+/// or lies on a peer's span. Reuses the exact same junction-detection and
+/// per-layer-miter machinery as `join_junction_in_document`
+/// (`join::detect_junctions` + `engine::miter::junction_wall_geoms` +
+/// `mitered_junction_layer_footprints_with_overrides`), but purely
+/// read-only: it never mutates axis vertices or persists overrides for
+/// participants other than confirming this wall's own existing
+/// `JunctionOverride`.
+///
+/// Returns `None` when there is no peer at the other end (the common case:
+/// a wall with only one join, or a freshly drawn unjoined end), which keeps
+/// `regenerate_wall_representation_inner` byte-for-byte unchanged for that
+/// case. Used so a NEW join event at one end doesn't silently drop an
+/// already-established join at the other end during regeneration.
+fn find_other_end_junction_footprints(
+    scene: &mut Scene,
+    wall_handle: Handle,
+    self_axis_2d: &[(f64, f64)],
+    handled_end: usize,
+) -> Option<Vec<Option<Vec<(f64, f64)>>>> {
+    if self_axis_2d.len() < 2 {
+        return None;
+    }
+    let other_end = if handled_end == 0 {
+        self_axis_2d.len() - 1
+    } else {
+        0
+    };
+    if other_end == handled_end {
+        return None;
+    }
+    let pt = self_axis_2d[other_end];
+    let pt3 = DVec3::new(pt.0, pt.1, 0.0);
+    let tol = join::JUNCTION_TOLERANCE.max(1e-4);
+
+    // Participants: this wall plus every currently-linked peer whose axis is
+    // actually coincident (endpoint or through-span) with this wall's other
+    // end. `handles[0]` is always `wall_handle`.
+    let mut handles = vec![wall_handle];
+    for peer in engine::owner_index::peers_of(&scene.document, wall_handle) {
+        if peer == wall_handle || handles.contains(&peer) {
+            continue;
+        }
+        let peer_axis = get_wall_vertices(scene, peer);
+        if peer_axis.len() < 2 {
+            continue;
+        }
+        let end_hit = peer_axis[0].distance(pt3) <= tol || peer_axis.last().unwrap().distance(pt3) <= tol;
+        let through_hit = (0..peer_axis.len() - 1).any(|i| {
+            point_to_segment_dist_2d(pt3, peer_axis[i], peer_axis[i + 1]) <= tol
+                && peer_axis[i].distance(pt3) > join::END_MID_TOLERANCE
+                && peer_axis[i + 1].distance(pt3) > join::END_MID_TOLERANCE
+        });
+        if end_hit || through_hit {
+            handles.push(peer);
+        }
+    }
+    if handles.len() < 2 {
+        return None;
+    }
+
+    let axes: Vec<Vec<DVec3>> = handles.iter().map(|h| get_wall_vertices(scene, *h)).collect();
+    if axes.iter().any(|a| a.len() < 2) {
+        return None;
+    }
+    let axis_refs: Vec<&[DVec3]> = axes.iter().map(|a| a.as_slice()).collect();
+    let junctions = join::detect_junctions(&axis_refs, tol);
+    let junc = junctions.into_iter().find(|j| j.point.distance(pt3) <= tol.max(1e-3))?;
+
+    // Confirm this wall (`handles[0]`) actually participates as an endpoint
+    // at `other_end` in the detected junction (guards against picking up an
+    // unrelated junction that happens to share the same point).
+    let self_wall_index = 0usize;
+    let pi = junc
+        .participants
+        .iter()
+        .position(|p| p.wall_index == self_wall_index)?;
+    if !matches!(junc.participants[pi].role, join::JunctionRole::Endpoint(e) if e == other_end) {
+        return None;
+    }
+
+    let axes_2d: Vec<Vec<(f64, f64)>> = axes
+        .iter()
+        .map(|a| a.iter().map(|p| (p.x, p.y)).collect())
+        .collect();
+    let layers: Vec<Vec<engine::miter::MiterLayer>> =
+        handles.iter().map(|h| wall_layer_data(scene, *h)).collect();
+    let geoms = engine::miter::junction_wall_geoms(&junc, &axes_2d, &layers);
+    let layer_refs: Vec<Vec<join::LayerRef>> = junc
+        .participants
+        .iter()
+        .map(|p| {
+            layers
+                .get(p.wall_index)
+                .map(|ls| layer_refs_from_materials(ls.iter().map(|l| l.material.as_str())))
+                .unwrap_or_default()
+        })
+        .collect();
+    let junction_overrides: Vec<Option<join::JunctionOverride>> = junc
+        .participants
+        .iter()
+        .enumerate()
+        .map(|(oi, p)| match p.role {
+            join::JunctionRole::Endpoint(end_idx) => {
+                read_junction_override(scene, handles[p.wall_index], end_idx).and_then(|ov| {
+                    let self_refs = layer_refs.get(oi).cloned().unwrap_or_default();
+                    let other_refs: Vec<join::LayerRef> = layer_refs
+                        .iter()
+                        .enumerate()
+                        .filter(|(oi2, _)| *oi2 != oi)
+                        .flat_map(|(_, ls)| ls.iter().cloned())
+                        .collect();
+                    validate_and_persist_junction_override(
+                        scene,
+                        handles[p.wall_index],
+                        end_idx,
+                        ov,
+                        &self_refs,
+                        &other_refs,
+                    )
+                })
+            }
+            join::JunctionRole::Through(_) => None,
+        })
+        .collect();
+    let all_fps = engine::miter::mitered_junction_layer_footprints_with_overrides(
+        &junc,
+        &geoms,
+        &layer_refs,
+        &junction_overrides,
+    );
+    all_fps.get(pi).cloned()
 }
 
 fn regenerate_wall_representation_inner(
@@ -1092,26 +1589,79 @@ fn regenerate_wall_representation_inner(
         })
         .collect();
 
+    // Shared helper: build per-layer mitered footprints for one end's join
+    // context, honoring any persisted `JunctionOverride` for that end.
+    let compute_end_footprints = |scene: &mut Scene, ctx: &engine::miter::JoinMiterContext| {
+        let self_layer_refs: Vec<join::LayerRef> =
+            layer_refs_from_materials(layers.iter().map(|l| l.material.as_str()));
+        let junction_override = read_junction_override(scene, wall_handle, ctx.self_end)
+            .and_then(|ov| {
+                let other_layer_refs: Vec<join::LayerRef> =
+                    layer_refs_from_materials(ctx.other_layers.iter().map(|l| l.material.as_str()));
+                validate_and_persist_junction_override(
+                    scene,
+                    wall_handle,
+                    ctx.self_end,
+                    ov,
+                    &self_layer_refs,
+                    &other_layer_refs,
+                )
+            });
+        engine::miter::mitered_layer_footprints_with_override(
+            &self_axis_2d,
+            &self_layer_data,
+            &self_layer_refs,
+            ctx.self_end,
+            &ctx.other_axis,
+            &ctx.other_layers,
+            ctx.other_end,
+            ctx.kind,
+            junction_override.as_ref(),
+        )
+    };
+
     // Pre-compute per-layer mitered footprints when a join context is present,
     // or use caller-supplied N-way junction footprints.
-    let mitered_footprints: Vec<Option<Vec<(f64, f64)>>> =
+    let mut mitered_footprints: Vec<Option<Vec<(f64, f64)>>> =
         if let Some(pre) = precomputed_miters {
             let mut v = pre.to_vec();
             v.resize(layers.len(), None);
             v
         } else if let Some(ctx) = join_miter {
-            engine::miter::mitered_layer_footprints(
-                &self_axis_2d,
-                &self_layer_data,
-                ctx.self_end,
-                &ctx.other_axis,
-                &ctx.other_layers,
-                ctx.other_end,
-                ctx.kind,
-            )
+            compute_end_footprints(scene, ctx)
         } else {
             vec![None; layers.len()]
         };
+
+    // Whichever end this call's `join_miter` handled (if any) shouldn't be
+    // re-derived below; every other axis end that currently has an
+    // established peer join must also be reflected here, or that end's
+    // rendering would revert to a plain unjoined cap whenever this wall is
+    // regenerated for a *different* join event (see module-level bug notes
+    // on `find_other_end_join_miter`).
+    if self_axis_2d.len() >= 2 {
+        let mut candidate_ends = vec![0usize, self_axis_2d.len() - 1];
+        candidate_ends.dedup();
+        if let Some(ctx) = join_miter {
+            candidate_ends.retain(|&e| e != ctx.self_end);
+        }
+        for end_idx in candidate_ends {
+            if let Some(other_footprints) =
+                find_other_end_junction_footprints(scene, wall_handle, &self_axis_2d, end_idx)
+            {
+                for (i, base_fp) in base_footprints.iter().enumerate() {
+                    let merged = engine::miter::merge_end_footprints(
+                        base_fp,
+                        mitered_footprints.get(i).and_then(|o| o.as_ref()),
+                        other_footprints.get(i).and_then(|o| o.as_ref()),
+                    );
+                    if i < mitered_footprints.len() {
+                        mitered_footprints[i] = merged;
+                    }
+                }
+            }
+        }
+    }
 
     // Extrusion height/base come from the (possibly extended) axis so solids
     // stay consistent with the 2D footprint chosen per layer below.
@@ -1122,6 +1672,20 @@ fn regenerate_wall_representation_inner(
     };
     let extrusions = wall_layer_extrusions(extrusion_axis, &layers, height);
     let library = load_or_seed();
+
+    // Overall wall run direction (radians), used as the base angle for
+    // materials whose hatch angle is relative to the wall instead of a
+    // fixed/global angle.
+    let wall_angle_rad = {
+        let first = centerline.first().copied();
+        let last = centerline.last().copied();
+        match (first, last) {
+            (Some((x0, y0)), Some((x1, y1))) if (x1 - x0).abs() > 1e-9 || (y1 - y0).abs() > 1e-9 => {
+                (y1 - y0).atan2(x1 - x0)
+            }
+            _ => 0.0,
+        }
+    };
 
     let mut new_derived: Vec<Handle> = Vec::new();
     for (i, layer) in layers.iter().enumerate() {
@@ -1181,8 +1745,27 @@ fn regenerate_wall_representation_inner(
             .or_else(|| material.map(|m| m.hatch_pattern.clone()).filter(|p| !p.is_empty()))
             .unwrap_or_else(|| "ANSI31".to_string());
         let color = material
-            .map(|m| wall_hatch_color(m.line_color))
+            .and_then(|m| m.hatch_color)
+            .or_else(|| material.map(|m| m.line_color))
+            .map(wall_hatch_color)
             .unwrap_or([0.6, 0.6, 0.6, 0.85]);
+        let mut hatch_scale = material.map(|m| m.hatch_scale).unwrap_or(1.0);
+        if hatch_scale <= 0.0 {
+            hatch_scale = 0.01;
+        }
+        let hatch_scale = hatch_scale as f32;
+        // Hatch direction: either the material's own hatch angle applied on
+        // top of the wall's run direction ("relative"), or used verbatim as
+        // a fixed/global angle. Both are stored in degrees on `Material` and
+        // converted to the radians `HatchModel::angle_offset` expects.
+        let hatch_angle_deg = material.map(|m| m.hatch_angle).unwrap_or(0.0);
+        let hatch_angle_relative = material.map(|m| m.hatch_angle_relative).unwrap_or(true);
+        let hatch_angle_offset = if hatch_angle_relative {
+            wall_angle_rad + hatch_angle_deg.to_radians()
+        } else {
+            hatch_angle_deg.to_radians()
+        } as f32;
+        let line_color = material.map(|m| m.line_color);
         let families = crate::scene::model::hatch_patterns::find(&pattern_name)
             .and_then(|e| {
                 if let crate::scene::model::hatch_model::HatchPattern::Pattern(f) = &e.gpu {
@@ -1213,6 +1796,15 @@ fn regenerate_wall_representation_inner(
                     e.as_entity_mut().set_layer(layer_name.to_string());
                 }
             }
+            if let Some(rgb) = line_color {
+                if let Some(e) = scene.document.get_entity_mut(contour_handle) {
+                    e.as_entity_mut().set_color(acadrust::types::Color::Rgb {
+                        r: ((rgb >> 16) & 0xFF) as u8,
+                        g: ((rgb >> 8) & 0xFF) as u8,
+                        b: (rgb & 0xFF) as u8,
+                    });
+                }
+            }
             write_wall_display_tag(scene, contour_handle, wall_handle, WALL_REP_ROLE_CONTOUR);
             new_derived.push(contour_handle);
 
@@ -1226,8 +1818,8 @@ fn regenerate_wall_representation_inner(
                 color,
                 aci: 0,
                 line_weight_px: 1.0,
-                angle_offset: 0.0,
-                scale: 1.0,
+                angle_offset: hatch_angle_offset,
+                scale: hatch_scale,
                 world_origin: origin,
                 boundary_wcs: Some(std::sync::Arc::new(wcs)),
                 fill_plane: None,
@@ -1688,7 +2280,7 @@ impl WallCommand {
             pl.add_vertex(v);
         }
 
-        let mut entity = self.plane.place_entity(EntityType::LwPolyline(pl));
+        let entity = self.plane.place_entity(EntityType::LwPolyline(pl));
         // Contour is a visual helper; no XDATA needed (axis carries the truth).
         Some(entity)
     }
@@ -3169,6 +3761,13 @@ impl CadCommand for WallJoinCommand {
         is_wall_pick_target(scene, handle)
     }
 
+    /// Walls are rendered as filled contours, so a click anywhere inside the
+    /// wall's body (not just precisely on its outline) must resolve to the
+    /// wall entity; otherwise clicking a wall almost always misses.
+    fn entity_pick_includes_fills(&self) -> bool {
+        true
+    }
+
     /// N-way-aware hover preview: while awaiting the second (target) wall,
     /// check whether joining the already-selected wall with the currently
     /// hovered candidate would actually resolve into a 3+ way junction (i.e.
@@ -3544,6 +4143,126 @@ fn try_join_multi_wall_junctions(scene: &mut Scene, wall_handle: Handle) -> Vec<
     touched
 }
 
+/// A single wall's participation in a junction, as discovered by
+/// [`walls_at_junction`]: which axis/end it is, and its material layers
+/// (outer→inner) expressed as [`join::LayerRef`]s for use in
+/// [`join::LayerPairOverride`] construction.
+#[derive(Debug, Clone, PartialEq)]
+pub struct JunctionParticipant {
+    pub axis_handle: Handle,
+    pub end_index: usize,
+    pub layers: Vec<join::LayerRef>,
+    /// `true` when this wall does not end at the junction but merely passes
+    /// through it (a T-junction's "through" wall). Such walls have no
+    /// editable junction end of their own, but must still be listed so the
+    /// Junction Editor shows every connected wall, not just the stem.
+    pub is_through: bool,
+}
+
+/// Find every wall participating in the same junction node as
+/// `(axis_handle, end_index)`, i.e. every wall whose axis endpoint (or
+/// through-hit) shares the same clustered point. Reuses the same
+/// [`join::detect_junctions`] topology already used by N-way join
+/// resolution (see [`try_join_multi_wall_junctions`] /
+/// [`join_junction_in_document`]) so the Junction-Editor-Panel and the
+/// N-way join resolver always agree on who participates.
+///
+/// Both [`join::JunctionRole::Endpoint`] and [`join::JunctionRole::Through`]
+/// participants are returned — a T-junction's "through" wall has no
+/// editable junction end of its own, but must still show up in the list so
+/// the user can see it is connected (see `JunctionParticipant::is_through`).
+/// When no cluster is found (e.g. an isolated wall end), a single-element
+/// result containing just the queried wall is returned so the caller can
+/// still build a `JunctionOverride` for it.
+pub fn walls_at_junction(
+    scene: &Scene,
+    axis_handle: Handle,
+    end_index: usize,
+) -> Vec<JunctionParticipant> {
+    let handles = all_wall_axis_handles(scene);
+    let axes: Vec<Vec<DVec3>> = handles.iter().map(|h| get_wall_vertices(scene, *h)).collect();
+    let axis_refs: Vec<&[DVec3]> = axes.iter().map(|a| a.as_slice()).collect();
+    let tol = join::JUNCTION_TOLERANCE.max(1e-4);
+    let junctions = join::detect_junctions(&axis_refs, tol);
+
+    let layers_for = |handle: Handle| -> Vec<join::LayerRef> {
+        scene
+            .document
+            .get_entity(handle)
+            .and_then(wall_from_entity)
+            .map(|w| layer_refs_from_materials(w.layers.iter().map(|l| l.material.as_str())))
+            .unwrap_or_default()
+    };
+
+    let Some(self_idx) = handles.iter().position(|h| *h == axis_handle) else {
+        return vec![JunctionParticipant {
+            axis_handle,
+            end_index,
+            layers: layers_for(axis_handle),
+            is_through: false,
+        }];
+    };
+
+    // `JunctionRole::Endpoint` carries the *raw* vertex index (`0` or
+    // `axis.len() - 1`, i.e. potentially > 1 for multi-segment wall axes),
+    // while `end_index` (both the parameter here and every other AEC
+    // junction-override API, e.g. `write_junction_override`) uses the
+    // normalized `0` = start / `1` = end convention. Comparing them
+    // directly would never match for walls with more than two axis points,
+    // which is exactly why the editor previously fell back to "just this
+    // wall" for such walls despite a real junction existing.
+    let normalize_end = |raw: usize| -> usize { if raw == 0 { 0 } else { 1 } };
+
+    for junc in &junctions {
+        let matches_self = junc.participants.iter().any(|p| {
+            p.wall_index == self_idx
+                && matches!(p.role, join::JunctionRole::Endpoint(e) if normalize_end(e) == end_index)
+        });
+        if !matches_self {
+            continue;
+        }
+        let mut out: Vec<JunctionParticipant> = junc
+            .participants
+            .iter()
+            .map(|p| match p.role {
+                join::JunctionRole::Endpoint(e) => {
+                    let h = handles[p.wall_index];
+                    JunctionParticipant {
+                        axis_handle: h,
+                        end_index: normalize_end(e),
+                        layers: layers_for(h),
+                        is_through: false,
+                    }
+                }
+                join::JunctionRole::Through(_) => {
+                    let h = handles[p.wall_index];
+                    JunctionParticipant {
+                        axis_handle: h,
+                        // A through-wall has no editable end at this
+                        // junction; the index is unused for it (no override
+                        // lookups are ever keyed by it), just kept out of
+                        // the normalized 0/1 range so it can't accidentally
+                        // be mistaken for a real endpoint.
+                        end_index: usize::MAX,
+                        layers: layers_for(h),
+                        is_through: true,
+                    }
+                }
+            })
+            .collect();
+        out.sort_by_key(|p| p.axis_handle.value());
+        return out;
+    }
+
+    // No cluster found — fall back to just the queried wall.
+    vec![JunctionParticipant {
+        axis_handle,
+        end_index,
+        layers: layers_for(axis_handle),
+        is_through: false,
+    }]
+}
+
 /// Snap all participants of a multi-wall junction to the shared point and
 /// rebuild every endpoint wall with N-way mitered layer footprints.
 ///
@@ -3632,7 +4351,52 @@ pub fn join_junction_in_document(
     // junction_wall_geoms expects axes/layers indexed by participant.wall_index.
     // Our junc was built from `handles`/`axes` directly, so wall_index is into
     // those slices — correct.
-    let all_fps = engine::miter::mitered_junction_layer_footprints(&junc, &geoms);
+    let layer_refs: Vec<Vec<join::LayerRef>> = junc
+        .participants
+        .iter()
+        .map(|p| {
+            layers
+                .get(p.wall_index)
+                .map(|ls| layer_refs_from_materials(ls.iter().map(|l| l.material.as_str())))
+                .unwrap_or_default()
+        })
+        .collect();
+    let junction_overrides: Vec<Option<join::JunctionOverride>> = junc
+        .participants
+        .iter()
+        .enumerate()
+        .map(|(pi, p)| match p.role {
+            join::JunctionRole::Endpoint(end_idx) => {
+                read_junction_override(scene, handles[p.wall_index], end_idx).and_then(|ov| {
+                    // `layer_a` must match this participant's own current
+                    // layers; `layer_b` may name a layer on *any* other
+                    // participant at this N-way junction.
+                    let self_refs = layer_refs.get(pi).cloned().unwrap_or_default();
+                    let other_refs: Vec<join::LayerRef> = layer_refs
+                        .iter()
+                        .enumerate()
+                        .filter(|(oi, _)| *oi != pi)
+                        .flat_map(|(_, ls)| ls.iter().cloned())
+                        .collect();
+                    validate_and_persist_junction_override(
+                        scene,
+                        handles[p.wall_index],
+                        end_idx,
+                        ov,
+                        &self_refs,
+                        &other_refs,
+                    )
+                })
+            }
+            join::JunctionRole::Through(_) => None,
+        })
+        .collect();
+    let all_fps = engine::miter::mitered_junction_layer_footprints_with_overrides(
+        &junc,
+        &geoms,
+        &layer_refs,
+        &junction_overrides,
+    );
 
     // Max thickness among participants — used for corner_override fallback.
     let thicknesses: Vec<f64> = handles
@@ -3947,6 +4711,9 @@ pub fn aec_walljoin_do(scene: &mut Scene, command_line: &mut CommandLine, args: 
                 scene.bump_entities(&changes);
             }
             command_line.push_info("AEC_WALLJOIN: walls joined.");
+            for msg in take_pending_override_warnings() {
+                command_line.push_info(&msg);
+            }
         }
         Err(e) => {
             command_line.push_error(&format!("AEC_WALLJOIN: {}", e));
@@ -4049,6 +4816,13 @@ impl CadCommand for WallExtendCommand {
     /// Restrict the rollover highlight to wall packages (axis or derived).
     fn entity_pick_hover_highlights_handle(&self, scene: &Scene, handle: Handle) -> bool {
         is_wall_pick_target(scene, handle)
+    }
+
+    /// Walls are rendered as filled contours, so a click anywhere inside the
+    /// wall's body (not just precisely on its outline) must resolve to the
+    /// wall entity; otherwise clicking a wall almost always misses.
+    fn entity_pick_includes_fills(&self) -> bool {
+        true
     }
 
     fn on_entity_pick(&mut self, handle: Handle, pt: DVec3) -> CmdResult {
@@ -4219,6 +4993,12 @@ pub fn aec_wallextend_do(scene: &mut Scene, command_line: &mut CommandLine, args
                     Ok(t) => touched.extend(t),
                     Err(_) => touched.push(target_handle),
                 }
+                // Register the two walls as joined peers — same bookkeeping
+                // `AEC_WALLJOIN`/auto-join perform after a successful join —
+                // so later moves/regenerations recognize and preserve this
+                // connection instead of silently treating it as unjoined.
+                engine::owner_index::link_peers(&mut scene.document, wall_handle, target_handle);
+
                 touched.sort_by_key(|h| h.value());
                 touched.dedup();
                 let changes: Vec<_> = touched
@@ -4273,6 +5053,13 @@ impl CadCommand for WallReverseCommand {
 
     fn entity_pick_hover_highlights_handle(&self, scene: &Scene, handle: Handle) -> bool {
         is_wall_pick_target(scene, handle)
+    }
+
+    /// Walls are rendered as filled contours, so a click anywhere inside the
+    /// wall's body (not just precisely on its outline) must resolve to the
+    /// wall entity; otherwise clicking a wall almost always misses.
+    fn entity_pick_includes_fills(&self) -> bool {
+        true
     }
 
     fn on_entity_pick(&mut self, handle: Handle, _pt: DVec3) -> CmdResult {
@@ -4706,6 +5493,404 @@ mod wall_command_tests {
             layer_override: None,
             hatch_override: None,
         }
+    }
+
+    #[test]
+    fn junction_override_write_read_roundtrip() {
+        let mut scene = Scene::new();
+        let wall = add_multi_layer_wall(&mut scene);
+
+        let ov = join::JunctionOverride {
+            default_style: Some(join::JoinOverrideStyle::Miter),
+            layer_pairs: vec![join::LayerPairOverride {
+                layer_a: join::LayerRef {
+                    material_id: "Concrete".to_string(),
+                    role_tag: Some("Tragschale".to_string()),
+                    index: 0,
+                },
+                layer_b: None,
+                style: join::JoinOverrideStyle::OuterFace,
+            }],
+        };
+
+        assert!(write_junction_override(&mut scene, wall, 1, &ov));
+        let read_back = read_junction_override(&scene, wall, 1);
+        assert_eq!(read_back, Some(ov));
+
+        // The other end of the same axis was not touched.
+        assert_eq!(read_junction_override(&scene, wall, 0), None);
+    }
+
+    #[test]
+    fn junction_override_missing_returns_none() {
+        let mut scene = Scene::new();
+        let wall = add_multi_layer_wall(&mut scene);
+        // No override ever written on this axis.
+        assert_eq!(read_junction_override(&scene, wall, 0), None);
+        assert_eq!(read_junction_override(&scene, wall, 1), None);
+    }
+
+    #[test]
+    fn junction_override_absent_on_old_format_entity_is_backward_compatible() {
+        // Simulate a drawing saved before this feature existed: the wall
+        // axis has its normal `WALL` XDATA but never the new `JOIN_OVERRIDE`
+        // tag. Reading must not panic and must simply report `None`.
+        let mut scene = Scene::new();
+        let wall = add_multi_layer_wall(&mut scene);
+        let entity = scene.document.get_entity(wall).unwrap();
+        assert!(wall_from_entity(entity).is_some(), "old-format wall still loads");
+        assert_eq!(read_junction_override(&scene, wall, 0), None);
+        assert_eq!(read_junction_override(&scene, wall, 1), None);
+    }
+
+    /// Mirrors the `Message::WallJunctionOverrideSetStyle` handler in
+    /// `app/update/mod.rs`: read the existing override (if any), set
+    /// `default_style`, write it back, then trigger the same immediate
+    /// regeneration the context-menu action performs.
+    #[test]
+    fn wall_junction_context_menu_set_style_persists_and_regenerates() {
+        let mut scene = Scene::new();
+        let wall = add_multi_layer_wall(&mut scene);
+        let end_index = 1usize;
+
+        let mut override_data =
+            read_junction_override(&scene, wall, end_index).unwrap_or_default();
+        override_data.default_style = Some(join::JoinOverrideStyle::Butt);
+        assert!(write_junction_override(&mut scene, wall, end_index, &override_data));
+        let touched = refresh_wall_after_axis_edit(&mut scene, wall);
+        assert!(!touched.is_empty(), "regeneration should touch at least the axis");
+
+        let read_back = read_junction_override(&scene, wall, end_index);
+        assert_eq!(
+            read_back.and_then(|ov| ov.default_style),
+            Some(join::JoinOverrideStyle::Butt)
+        );
+    }
+
+    /// Mirrors the `Message::WallJunctionOverrideReset` handler: remove the
+    /// override for the junction and regenerate. `read_junction_override`
+    /// must report `None` afterward.
+    #[test]
+    fn wall_junction_context_menu_reset_removes_override_and_regenerates() {
+        let mut scene = Scene::new();
+        let wall = add_multi_layer_wall(&mut scene);
+        let end_index = 0usize;
+
+        let ov = join::JunctionOverride {
+            default_style: Some(join::JoinOverrideStyle::Miter),
+            layer_pairs: vec![],
+        };
+        assert!(write_junction_override(&mut scene, wall, end_index, &ov));
+        assert!(read_junction_override(&scene, wall, end_index).is_some());
+
+        assert!(remove_junction_override(&mut scene, wall, end_index));
+        let touched = refresh_wall_after_axis_edit(&mut scene, wall);
+        assert!(!touched.is_empty());
+
+        assert_eq!(read_junction_override(&scene, wall, end_index), None);
+    }
+
+    fn add_wall_2layer(scene: &mut Scene, p1: (f64, f64), p2: (f64, f64), mat: &str) -> Handle {
+        let mut pl = LwPolyline::new();
+        pl.add_vertex(LwVertex::new(Vector2::new(p1.0, p1.1)));
+        pl.add_vertex(LwVertex::new(Vector2::new(p2.0, p2.1)));
+        let mut entity = EntityType::LwPolyline(pl);
+        let layers = vec![wl(mat, 0.2, "Structural"), wl("Insulation", 0.05, "Insulation")];
+        let mut record = ExtendedDataRecord::new(AEC_APPID);
+        record.values = wall_record("style1", 3.0, 0, &layers, &[], WallJustification::Center);
+        entity.common_mut().extended_data.add_record(record);
+        scene.add_entity(entity)
+    }
+
+    /// Same as [`add_wall_2layer`], but with a *bent*, multi-segment axis
+    /// (three vertices) so its "last vertex" raw index is `2`, not `1` — the
+    /// exact shape needed to reproduce the reported bug where the Junction
+    /// Editor's endpoint-index comparison broke for non-2-point wall axes.
+    fn add_bent_wall_2layer(
+        scene: &mut Scene,
+        p1: (f64, f64),
+        p2: (f64, f64),
+        p3: (f64, f64),
+        mat: &str,
+    ) -> Handle {
+        let mut pl = LwPolyline::new();
+        pl.add_vertex(LwVertex::new(Vector2::new(p1.0, p1.1)));
+        pl.add_vertex(LwVertex::new(Vector2::new(p2.0, p2.1)));
+        pl.add_vertex(LwVertex::new(Vector2::new(p3.0, p3.1)));
+        let mut entity = EntityType::LwPolyline(pl);
+        let layers = vec![wl(mat, 0.2, "Structural"), wl("Insulation", 0.05, "Insulation")];
+        let mut record = ExtendedDataRecord::new(AEC_APPID);
+        record.values = wall_record("style1", 3.0, 0, &layers, &[], WallJustification::Center);
+        entity.common_mut().extended_data.add_record(record);
+        scene.add_entity(entity)
+    }
+
+    /// Regression test for the reported bug: the Junction Editor's master
+    /// list ("Beteiligte W\u{e4}nde") showed only the single clicked wall even
+    /// though the Properties panel correctly showed the connected walls. Root
+    /// cause: `walls_at_junction` compared the raw `JunctionRole::Endpoint`
+    /// vertex index (which is `axis.len() - 1` for the "far" end, e.g. `2`
+    /// for a 3-vertex bent wall) directly against the normalized `0`/`1`
+    /// `end_index` convention used everywhere else, so the match always
+    /// failed for walls with more than two axis points, and the function
+    /// fell back to returning just the queried wall.
+    #[test]
+    fn walls_at_junction_finds_all_participants_for_bent_multi_segment_wall() {
+        let mut scene = Scene::new();
+        // w1's axis has 3 vertices; its junction end is the *last* vertex,
+        // whose raw index is 2 (not 1).
+        let w1 = add_bent_wall_2layer(&mut scene, (-10.0, 5.0), (-10.0, 0.0), (0.0, 0.0), "Brick");
+        let w2 = add_wall_2layer(&mut scene, (0.0, 0.0), (0.0, 10.0), "Concrete");
+        let w3 = add_wall_2layer(&mut scene, (0.0, 0.0), (10.0, 0.0), "Wood");
+        for h in [w1, w2, w3] {
+            regenerate_wall_representation(&mut scene, h).expect("initial regen");
+        }
+        join_junction_in_document(&mut scene, &[w1, w2, w3], None).expect("N-way join");
+
+        let w1_vertices = get_wall_vertices(&scene, w1);
+        let end_1 = if w1_vertices[0].distance(DVec3::ZERO) < 1e-6 { 0 } else { 1 };
+        let participants = walls_at_junction(&scene, w1, end_1);
+
+        let mut handles: Vec<Handle> = participants.iter().map(|p| p.axis_handle).collect();
+        handles.sort_by_key(|h| h.value());
+        let mut expected = vec![w1, w2, w3];
+        expected.sort_by_key(|h| h.value());
+        assert_eq!(
+            handles, expected,
+            "expected all 3 walls at the junction, got {participants:?}"
+        );
+    }
+
+    /// Regression test for the reported bug: a T-junction between two walls
+    /// (one wall's endpoint touches the other wall's *interior*, i.e. a
+    /// [`join::JunctionRole::Through`] participant) must still list the
+    /// through-running wall in the Junction Editor's "Beteiligte Wände"
+    /// list, not just the stem wall that was clicked to open the editor.
+    #[test]
+    fn walls_at_junction_includes_through_wall_at_t_junction() {
+        let mut scene = Scene::new();
+        let through = add_wall_2layer(&mut scene, (0.0, 0.0), (10.0, 0.0), "Brick");
+        let stem = add_wall_2layer(&mut scene, (5.0, 0.0), (5.0, 5.0), "Concrete");
+        for h in [through, stem] {
+            regenerate_wall_representation(&mut scene, h).expect("initial regen");
+        }
+        join_junction_in_document(&mut scene, &[through, stem], None).expect("T join");
+
+        // The stem wall's end at (5,0) is a real Endpoint; use it as the
+        // query, exactly as the context menu does when the user clicks the
+        // stem wall to open the Junction Editor.
+        let stem_vertices = get_wall_vertices(&scene, stem);
+        let stem_end = if stem_vertices[0].distance(DVec3::new(5.0, 0.0, 0.0)) < 1e-6 { 0 } else { 1 };
+        let participants = walls_at_junction(&scene, stem, stem_end);
+
+        let mut handles: Vec<Handle> = participants.iter().map(|p| p.axis_handle).collect();
+        handles.sort_by_key(|h| h.value());
+        let mut expected = vec![through, stem];
+        expected.sort_by_key(|h| h.value());
+        assert_eq!(
+            handles, expected,
+            "the through wall must be listed alongside the stem wall, got {participants:?}"
+        );
+
+        let through_participant = participants
+            .iter()
+            .find(|p| p.axis_handle == through)
+            .expect("through wall must be present");
+        assert!(
+            through_participant.is_through,
+            "through wall participant must be flagged as is_through"
+        );
+        let stem_participant = participants
+            .iter()
+            .find(|p| p.axis_handle == stem)
+            .expect("stem wall must be present");
+        assert!(!stem_participant.is_through, "stem wall must not be flagged as through");
+    }
+
+    /// Step 5 test 1: discovering "all walls at a junction" for a known
+    /// multi-wall N-way fixture returns every participating wall handle plus
+    /// its layer material ids, reusing [`join::detect_junctions`] topology.
+    #[test]
+    fn walls_at_junction_finds_all_n_way_participants() {
+        let mut scene = Scene::new();
+        let w1 = add_wall_2layer(&mut scene, (0.0, 0.0), (-10.0, 0.0), "Brick");
+        let w2 = add_wall_2layer(&mut scene, (0.0, 0.0), (0.0, 10.0), "Concrete");
+        let w3 = add_wall_2layer(&mut scene, (0.0, 0.0), (10.0, 0.0), "Wood");
+        for h in [w1, w2, w3] {
+            regenerate_wall_representation(&mut scene, h).expect("initial regen");
+        }
+        join_junction_in_document(&mut scene, &[w1, w2, w3], None).expect("N-way join");
+
+        let end_1 = if get_wall_vertices(&scene, w1)[0].distance(DVec3::ZERO) < 1e-6 { 0 } else { 1 };
+        let participants = walls_at_junction(&scene, w1, end_1);
+
+        let mut handles: Vec<Handle> = participants.iter().map(|p| p.axis_handle).collect();
+        handles.sort_by_key(|h| h.value());
+        let mut expected = vec![w1, w2, w3];
+        expected.sort_by_key(|h| h.value());
+        assert_eq!(handles, expected);
+
+        let mut mats: Vec<String> = participants
+            .iter()
+            .flat_map(|p| p.layers.iter().map(|l| l.material_id.clone()))
+            .collect();
+        mats.sort();
+        let mut expected_mats = vec![
+            "Brick".to_string(),
+            "Insulation".to_string(),
+            "Concrete".to_string(),
+            "Insulation".to_string(),
+            "Wood".to_string(),
+            "Insulation".to_string(),
+        ];
+        expected_mats.sort();
+        assert_eq!(mats, expected_mats);
+    }
+
+    /// Step 5 test 2: adding a `LayerPairOverride` via the panel's save logic
+    /// (read-mutate-write the same `JunctionOverride`) persists correctly and
+    /// coexists with an existing `default_style`.
+    #[test]
+    fn junction_editor_adds_layer_pair_and_keeps_default_style() {
+        let mut scene = Scene::new();
+        let wall = add_multi_layer_wall(&mut scene);
+        let end_index = 1usize;
+
+        let mut override_data =
+            read_junction_override(&scene, wall, end_index).unwrap_or_default();
+        override_data.default_style = Some(join::JoinOverrideStyle::Miter);
+        assert!(write_junction_override(&mut scene, wall, end_index, &override_data));
+
+        // Panel save logic: read-modify-write the same structure to add a
+        // layer-pair override.
+        let mut override_data =
+            read_junction_override(&scene, wall, end_index).unwrap_or_default();
+        override_data.layer_pairs.push(join::LayerPairOverride {
+            layer_a: join::LayerRef {
+                material_id: "Concrete".to_string(),
+                role_tag: None,
+                index: 0,
+            },
+            layer_b: None,
+            style: join::JoinOverrideStyle::Butt,
+        });
+        assert!(write_junction_override(&mut scene, wall, end_index, &override_data));
+
+        let read_back = read_junction_override(&scene, wall, end_index).unwrap();
+        assert_eq!(read_back.default_style, Some(join::JoinOverrideStyle::Miter));
+        assert_eq!(read_back.layer_pairs.len(), 1);
+        assert_eq!(read_back.layer_pairs[0].style, join::JoinOverrideStyle::Butt);
+    }
+
+    /// Step 5 test 3: removing a single layer-pair entry (panel's per-pair
+    /// "Zuruecksetzen") leaves other pairs and `default_style` intact.
+    #[test]
+    fn junction_editor_removes_single_layer_pair_only() {
+        let mut scene = Scene::new();
+        let wall = add_multi_layer_wall(&mut scene);
+        let end_index = 1usize;
+
+        let override_data = join::JunctionOverride {
+            default_style: Some(join::JoinOverrideStyle::OuterFace),
+            layer_pairs: vec![
+                join::LayerPairOverride {
+                    layer_a: join::LayerRef {
+                        material_id: "Brick".to_string(),
+                        role_tag: None,
+                        index: 0,
+                    },
+                    layer_b: None,
+                    style: join::JoinOverrideStyle::Miter,
+                },
+                join::LayerPairOverride {
+                    layer_a: join::LayerRef {
+                        material_id: "Insulation".to_string(),
+                        role_tag: None,
+                        index: 1,
+                    },
+                    layer_b: None,
+                    style: join::JoinOverrideStyle::Butt,
+                },
+            ],
+        };
+        assert!(write_junction_override(&mut scene, wall, end_index, &override_data));
+
+        // Panel per-pair reset: remove only the targeted entry.
+        let mut current = read_junction_override(&scene, wall, end_index).unwrap();
+        current.layer_pairs.retain(|p| p.layer_a.material_id != "Brick");
+        assert!(write_junction_override(&mut scene, wall, end_index, &current));
+
+        let read_back = read_junction_override(&scene, wall, end_index).unwrap();
+        assert_eq!(read_back.default_style, Some(join::JoinOverrideStyle::OuterFace));
+        assert_eq!(read_back.layer_pairs.len(), 1);
+        assert_eq!(read_back.layer_pairs[0].layer_a.material_id, "Insulation");
+    }
+
+    /// Step 5 test 4: a full reset via the panel removes the entire override,
+    /// matching Step 4's context-menu reset exactly (same helper, same result).
+    #[test]
+    fn junction_editor_full_reset_matches_context_menu_reset() {
+        let mut scene = Scene::new();
+        let wall = add_multi_layer_wall(&mut scene);
+        let end_index = 1usize;
+
+        let override_data = join::JunctionOverride {
+            default_style: Some(join::JoinOverrideStyle::Miter),
+            layer_pairs: vec![join::LayerPairOverride {
+                layer_a: join::LayerRef {
+                    material_id: "Brick".to_string(),
+                    role_tag: None,
+                    index: 0,
+                },
+                layer_b: None,
+                style: join::JoinOverrideStyle::Butt,
+            }],
+        };
+        assert!(write_junction_override(&mut scene, wall, end_index, &override_data));
+        assert!(read_junction_override(&scene, wall, end_index).is_some());
+
+        assert!(remove_junction_override(&mut scene, wall, end_index));
+        assert_eq!(read_junction_override(&scene, wall, end_index), None);
+    }
+
+    /// Step 5 test 5 (consistency): setting `default_style` via the Step 4
+    /// context-menu code path, then editing `layer_pairs` via the panel's
+    /// code path on the SAME `(axis_handle, end_index)`, must combine both
+    /// additively in the final `JunctionOverride` (no clobbering).
+    #[test]
+    fn context_menu_and_junction_editor_paths_combine_additively() {
+        let mut scene = Scene::new();
+        let wall = add_multi_layer_wall(&mut scene);
+        let end_index = 1usize;
+
+        // Step 4 context-menu path.
+        let mut override_data =
+            read_junction_override(&scene, wall, end_index).unwrap_or_default();
+        override_data.default_style = Some(join::JoinOverrideStyle::Butt);
+        assert!(write_junction_override(&mut scene, wall, end_index, &override_data));
+
+        // Step 5 panel path, on the exact same (axis_handle, end_index).
+        let mut override_data =
+            read_junction_override(&scene, wall, end_index).unwrap_or_default();
+        override_data.layer_pairs.push(join::LayerPairOverride {
+            layer_a: join::LayerRef {
+                material_id: "Insulation".to_string(),
+                role_tag: None,
+                index: 1,
+            },
+            layer_b: Some(join::LayerRef {
+                material_id: "Concrete".to_string(),
+                role_tag: None,
+                index: 0,
+            }),
+            style: join::JoinOverrideStyle::OuterFace,
+        });
+        assert!(write_junction_override(&mut scene, wall, end_index, &override_data));
+
+        let read_back = read_junction_override(&scene, wall, end_index).unwrap();
+        assert_eq!(read_back.default_style, Some(join::JoinOverrideStyle::Butt));
+        assert_eq!(read_back.layer_pairs.len(), 1);
+        assert_eq!(read_back.layer_pairs[0].style, join::JoinOverrideStyle::OuterFace);
     }
 
     #[test]
@@ -6212,6 +7397,429 @@ mod wall_command_tests {
         );
     }
 
+    /// Step 2: a `NoExtend` `layer_pairs` override on wall A's structural
+    /// layer must stop that specific layer from being extended into the L
+    /// corner, while the other (insulation) layer still auto-miters exactly
+    /// as in `join_two_walls_extends_contours_into_shared_corner`.
+    #[test]
+    fn join_junction_override_no_extend_keeps_one_layer_un_joined() {
+        let mut scene = Scene::new();
+        let wall_a = add_multi_layer_wall(&mut scene);
+
+        let mut pl_b = LwPolyline::new();
+        pl_b.add_vertex(LwVertex::new(Vector2::new(6.0, 1.0)));
+        pl_b.add_vertex(LwVertex::new(Vector2::new(6.0, 10.0)));
+        let mut entity_b = EntityType::LwPolyline(pl_b);
+        let layers_b = vec![wl("Concrete", 0.3, "Structural")];
+        let mut record_b = ExtendedDataRecord::new(AEC_APPID);
+        record_b.values = wall_record("style1", 3.0, 0, &layers_b, &[], WallJustification::Center);
+        entity_b.common_mut().extended_data.add_record(record_b);
+        let wall_b = scene.add_entity(entity_b);
+
+        regenerate_wall_representation(&mut scene, wall_a)
+            .expect("wall A regeneration should succeed");
+        regenerate_wall_representation(&mut scene, wall_b)
+            .expect("wall B regeneration should succeed");
+
+        // Wall A's axis end that will join is its last vertex (end_index 1).
+        let override_data = join::JunctionOverride {
+            default_style: None,
+            layer_pairs: vec![join::LayerPairOverride {
+                layer_a: join::LayerRef {
+                    material_id: "Concrete".to_string(),
+                    role_tag: None,
+                    index: 0,
+                },
+                layer_b: None,
+                style: join::JoinOverrideStyle::NoExtend,
+            }],
+        };
+        assert!(write_junction_override(&mut scene, wall_a, 1, &override_data));
+        assert_eq!(
+            read_junction_override(&scene, wall_a, 1),
+            Some(override_data)
+        );
+
+        let (kind, _touched) = join_two_walls_in_document(&mut scene, wall_a, wall_b)
+            .expect("the two axes should join as an L-corner");
+        assert_eq!(kind, JoinKind::L);
+
+        let wall_a_v2 = wall_from_entity(scene.document.get_entity(wall_a).unwrap())
+            .expect("wall A should still read back as WALL");
+        let contour_max_x: Vec<f64> = wall_a_v2
+            .derived_handles
+            .iter()
+            .filter_map(|h| scene.document.get_entity(*h))
+            .filter_map(|e| match e {
+                EntityType::LwPolyline(pl) => Some(pl),
+                _ => None,
+            })
+            .map(|pl| {
+                pl.vertices
+                    .iter()
+                    .map(|v| v.location.x)
+                    .fold(f64::MIN, f64::max)
+            })
+            .collect();
+        assert!(
+            !contour_max_x.is_empty(),
+            "wall A should still have contour polylines"
+        );
+        // With the Concrete layer forced NoExtend, no contour piece should
+        // reach past wall B's half-thickness the way the fully-automatic
+        // regression case does — at most one derived contour (Insulation)
+        // may still extend into the corner.
+        let extending = contour_max_x.iter().filter(|&&x| x > 6.0 + 1e-6).count();
+        assert!(
+            extending <= 1,
+            "the NoExtend Concrete layer must not extend past the corner, got max_x values {contour_max_x:?}"
+        );
+    }
+
+    /// Step 3: when wall A's material changes such that a stored
+    /// `LayerPairOverride.layer_a` no longer matches any current layer, that
+    /// pair must be pruned on the next regeneration while a still-valid
+    /// `default_style` on the same override survives, and regeneration must
+    /// still succeed (falling back to automatic resolution for that layer).
+    #[test]
+    fn stale_layer_pair_override_is_pruned_but_default_style_kept() {
+        let mut scene = Scene::new();
+        let wall_a = add_multi_layer_wall(&mut scene);
+
+        let mut pl_b = LwPolyline::new();
+        pl_b.add_vertex(LwVertex::new(Vector2::new(6.0, 1.0)));
+        pl_b.add_vertex(LwVertex::new(Vector2::new(6.0, 10.0)));
+        let mut entity_b = EntityType::LwPolyline(pl_b);
+        let layers_b = vec![wl("Concrete", 0.3, "Structural")];
+        let mut record_b = ExtendedDataRecord::new(AEC_APPID);
+        record_b.values = wall_record("style1", 3.0, 0, &layers_b, &[], WallJustification::Center);
+        entity_b.common_mut().extended_data.add_record(record_b);
+        let wall_b = scene.add_entity(entity_b);
+
+        regenerate_wall_representation(&mut scene, wall_a).expect("wall A regen");
+        regenerate_wall_representation(&mut scene, wall_b).expect("wall B regen");
+
+        let override_data = join::JunctionOverride {
+            default_style: Some(join::JoinOverrideStyle::Miter),
+            layer_pairs: vec![join::LayerPairOverride {
+                layer_a: join::LayerRef {
+                    material_id: "Concrete".to_string(),
+                    role_tag: None,
+                    index: 0,
+                },
+                layer_b: None,
+                style: join::JoinOverrideStyle::NoExtend,
+            }],
+        };
+        assert!(write_junction_override(&mut scene, wall_a, 1, &override_data));
+
+        // Structural change: wall A's "Concrete" layer becomes "Brick" — the
+        // stored override's `layer_a` no longer matches anything on wall A.
+        write_wall_layers(
+            &mut scene,
+            wall_a,
+            vec![
+                wl("Brick", 0.2, "Structural"),
+                wl("Insulation", 0.05, "Insulation"),
+            ],
+        );
+
+        let _ = take_pending_override_warnings(); // clear anything queued so far
+        let (kind, _touched) = join_two_walls_in_document(&mut scene, wall_a, wall_b)
+            .expect("regeneration must succeed via automatic fallback");
+        assert_eq!(kind, JoinKind::L);
+
+        let cleaned = read_junction_override(&scene, wall_a, 1)
+            .expect("default_style should survive the cleanup");
+        assert_eq!(cleaned.default_style, Some(join::JoinOverrideStyle::Miter));
+        assert!(
+            cleaned.layer_pairs.is_empty(),
+            "the stale Concrete layer pair should have been pruned, got {:?}",
+            cleaned.layer_pairs
+        );
+    }
+
+    /// Step 3: a layer removed entirely from a wall's style invalidates any
+    /// override referencing it — same cleanup, no crash, and the wall's
+    /// automatic-resolution footprint is still produced.
+    #[test]
+    fn override_referencing_removed_layer_is_cleaned_up_without_crash() {
+        let mut scene = Scene::new();
+        let wall_a = add_multi_layer_wall(&mut scene);
+
+        let mut pl_b = LwPolyline::new();
+        pl_b.add_vertex(LwVertex::new(Vector2::new(6.0, 1.0)));
+        pl_b.add_vertex(LwVertex::new(Vector2::new(6.0, 10.0)));
+        let mut entity_b = EntityType::LwPolyline(pl_b);
+        let layers_b = vec![wl("Concrete", 0.3, "Structural")];
+        let mut record_b = ExtendedDataRecord::new(AEC_APPID);
+        record_b.values = wall_record("style1", 3.0, 0, &layers_b, &[], WallJustification::Center);
+        entity_b.common_mut().extended_data.add_record(record_b);
+        let wall_b = scene.add_entity(entity_b);
+
+        regenerate_wall_representation(&mut scene, wall_a).expect("wall A regen");
+        regenerate_wall_representation(&mut scene, wall_b).expect("wall B regen");
+
+        let override_data = join::JunctionOverride {
+            default_style: Some(join::JoinOverrideStyle::Butt),
+            layer_pairs: vec![join::LayerPairOverride {
+                layer_a: join::LayerRef {
+                    material_id: "Insulation".to_string(),
+                    role_tag: None,
+                    index: 0,
+                },
+                layer_b: None,
+                style: join::JoinOverrideStyle::OuterFace,
+            }],
+        };
+        assert!(write_junction_override(&mut scene, wall_a, 1, &override_data));
+
+        // Remove the Insulation layer entirely from wall A's style.
+        write_wall_layers(&mut scene, wall_a, vec![wl("Concrete", 0.2, "Structural")]);
+
+        let (kind, _touched) = join_two_walls_in_document(&mut scene, wall_a, wall_b)
+            .expect("regeneration must not fail even though a referenced layer is gone");
+        assert_eq!(kind, JoinKind::L);
+
+        let cleaned = read_junction_override(&scene, wall_a, 1)
+            .expect("default_style should survive the cleanup");
+        assert!(cleaned.layer_pairs.is_empty());
+
+        let wall_a_v2 = wall_from_entity(scene.document.get_entity(wall_a).unwrap())
+            .expect("wall A should still read back as WALL");
+        assert!(
+            !wall_a_v2.derived_handles.is_empty(),
+            "wall A should still have a fallback footprint after cleanup"
+        );
+    }
+
+    /// Step 3: an override with only an (invalidated) `layer_pairs` entry and
+    /// no `default_style` must have its XDATA tag fully erased once cleanup
+    /// leaves nothing meaningful behind.
+    #[test]
+    fn fully_invalid_override_removes_xdata_tag_entirely() {
+        let mut scene = Scene::new();
+        let wall_a = add_multi_layer_wall(&mut scene);
+
+        let mut pl_b = LwPolyline::new();
+        pl_b.add_vertex(LwVertex::new(Vector2::new(6.0, 1.0)));
+        pl_b.add_vertex(LwVertex::new(Vector2::new(6.0, 10.0)));
+        let mut entity_b = EntityType::LwPolyline(pl_b);
+        let layers_b = vec![wl("Concrete", 0.3, "Structural")];
+        let mut record_b = ExtendedDataRecord::new(AEC_APPID);
+        record_b.values = wall_record("style1", 3.0, 0, &layers_b, &[], WallJustification::Center);
+        entity_b.common_mut().extended_data.add_record(record_b);
+        let wall_b = scene.add_entity(entity_b);
+
+        regenerate_wall_representation(&mut scene, wall_a).expect("wall A regen");
+        regenerate_wall_representation(&mut scene, wall_b).expect("wall B regen");
+
+        let override_data = join::JunctionOverride {
+            default_style: None,
+            layer_pairs: vec![join::LayerPairOverride {
+                layer_a: join::LayerRef {
+                    material_id: "Concrete".to_string(),
+                    role_tag: None,
+                    index: 0,
+                },
+                layer_b: None,
+                style: join::JoinOverrideStyle::NoExtend,
+            }],
+        };
+        assert!(write_junction_override(&mut scene, wall_a, 1, &override_data));
+
+        write_wall_layers(
+            &mut scene,
+            wall_a,
+            vec![
+                wl("Brick", 0.2, "Structural"),
+                wl("Insulation", 0.05, "Insulation"),
+            ],
+        );
+
+        join_two_walls_in_document(&mut scene, wall_a, wall_b)
+            .expect("regeneration must succeed via automatic fallback");
+
+        assert_eq!(
+            read_junction_override(&scene, wall_a, 1),
+            None,
+            "the degenerate override should be erased entirely, not left as an empty record"
+        );
+    }
+
+    /// Step 3: when a wall at an N-way junction is deleted, another wall's
+    /// override that referenced one of the deleted wall's layers as
+    /// `layer_b` must not cause a panic on the next regeneration of the
+    /// remaining walls — it is cleaned up gracefully instead.
+    #[test]
+    fn deleted_wall_at_junction_does_not_panic_remaining_override() {
+        fn add_wall(scene: &mut Scene, p1: (f64, f64), p2: (f64, f64)) -> Handle {
+            let mut pl = LwPolyline::new();
+            pl.add_vertex(LwVertex::new(Vector2::new(p1.0, p1.1)));
+            pl.add_vertex(LwVertex::new(Vector2::new(p2.0, p2.1)));
+            let mut entity = EntityType::LwPolyline(pl);
+            let layers = vec![wl("Concrete", 0.2, "Structural")];
+            let mut record = ExtendedDataRecord::new(AEC_APPID);
+            record.values = wall_record("style1", 3.0, 0, &layers, &[], WallJustification::Center);
+            entity.common_mut().extended_data.add_record(record);
+            scene.add_entity(entity)
+        }
+        let mut scene = Scene::new();
+        // Three walls meeting at the origin (X-ish junction).
+        let w1 = add_wall(&mut scene, (0.0, 0.0), (-10.0, 0.0));
+        let w2 = add_wall(&mut scene, (0.0, 0.0), (0.0, 10.0));
+        let w3 = add_wall(&mut scene, (0.0, 0.0), (10.0, 0.0));
+
+        for h in [w1, w2, w3] {
+            regenerate_wall_representation(&mut scene, h).expect("initial regen");
+        }
+        join_junction_in_document(&mut scene, &[w1, w2, w3], None).expect("initial N-way join");
+
+        // W1 stores an override whose `layer_b` names W3's Concrete layer.
+        let override_data = join::JunctionOverride {
+            default_style: None,
+            layer_pairs: vec![join::LayerPairOverride {
+                layer_a: join::LayerRef {
+                    material_id: "Concrete".to_string(),
+                    role_tag: None,
+                    index: 0,
+                },
+                layer_b: Some(join::LayerRef {
+                    material_id: "Concrete".to_string(),
+                    role_tag: None,
+                    index: 0,
+                }),
+                style: join::JoinOverrideStyle::Butt,
+            }],
+        };
+        let end_1 = if get_wall_vertices(&scene, w1)[0].distance(DVec3::ZERO) < 1e-6 {
+            0
+        } else {
+            1
+        };
+        assert!(write_junction_override(&mut scene, w1, end_1, &override_data));
+
+        // Delete W3 entirely from the document.
+        scene.document.remove_entity(w3);
+
+        // Re-resolving the junction with only the remaining walls must not
+        // panic, even though W1's override still references the deleted
+        // wall's layer.
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            join_junction_in_document(&mut scene, &[w1, w2], None)
+        }));
+        assert!(result.is_ok(), "regeneration must not panic after a peer wall was deleted");
+    }
+
+    /// Step 3 regression: a still-valid override (referenced layer/material
+    /// unchanged) must not be touched by the invalidation pass.
+    #[test]
+    fn valid_override_is_not_touched_by_invalidation() {
+        let mut scene = Scene::new();
+        let wall_a = add_multi_layer_wall(&mut scene);
+
+        let mut pl_b = LwPolyline::new();
+        pl_b.add_vertex(LwVertex::new(Vector2::new(6.0, 1.0)));
+        pl_b.add_vertex(LwVertex::new(Vector2::new(6.0, 10.0)));
+        let mut entity_b = EntityType::LwPolyline(pl_b);
+        let layers_b = vec![wl("Concrete", 0.3, "Structural")];
+        let mut record_b = ExtendedDataRecord::new(AEC_APPID);
+        record_b.values = wall_record("style1", 3.0, 0, &layers_b, &[], WallJustification::Center);
+        entity_b.common_mut().extended_data.add_record(record_b);
+        let wall_b = scene.add_entity(entity_b);
+
+        regenerate_wall_representation(&mut scene, wall_a).expect("wall A regen");
+        regenerate_wall_representation(&mut scene, wall_b).expect("wall B regen");
+
+        let override_data = join::JunctionOverride {
+            default_style: None,
+            layer_pairs: vec![join::LayerPairOverride {
+                layer_a: join::LayerRef {
+                    material_id: "Concrete".to_string(),
+                    role_tag: None,
+                    index: 0,
+                },
+                layer_b: None,
+                style: join::JoinOverrideStyle::NoExtend,
+            }],
+        };
+        assert!(write_junction_override(&mut scene, wall_a, 1, &override_data));
+
+        let _ = take_pending_override_warnings();
+        join_two_walls_in_document(&mut scene, wall_a, wall_b).expect("join should succeed");
+
+        assert_eq!(
+            read_junction_override(&scene, wall_a, 1),
+            Some(override_data),
+            "a still-valid override must survive regeneration unchanged"
+        );
+        assert!(
+            take_pending_override_warnings().is_empty(),
+            "no invalidation notice should be queued for a valid override"
+        );
+    }
+
+    /// Step 3: the user-visible notice mechanism (`take_pending_override_warnings`,
+    /// drained via `command_line.push_info` at command entry points) must
+    /// actually be invoked when an override is invalidated and removed.
+    #[test]
+    fn invalidated_override_queues_and_surfaces_a_notice() {
+        let mut scene = Scene::new();
+        let wall_a = add_multi_layer_wall(&mut scene);
+
+        let mut pl_b = LwPolyline::new();
+        pl_b.add_vertex(LwVertex::new(Vector2::new(6.0, 1.0)));
+        pl_b.add_vertex(LwVertex::new(Vector2::new(6.0, 10.0)));
+        let mut entity_b = EntityType::LwPolyline(pl_b);
+        let layers_b = vec![wl("Concrete", 0.3, "Structural")];
+        let mut record_b = ExtendedDataRecord::new(AEC_APPID);
+        record_b.values = wall_record("style1", 3.0, 0, &layers_b, &[], WallJustification::Center);
+        entity_b.common_mut().extended_data.add_record(record_b);
+        let wall_b = scene.add_entity(entity_b);
+
+        regenerate_wall_representation(&mut scene, wall_a).expect("wall A regen");
+        regenerate_wall_representation(&mut scene, wall_b).expect("wall B regen");
+
+        let override_data = join::JunctionOverride {
+            default_style: None,
+            layer_pairs: vec![join::LayerPairOverride {
+                layer_a: join::LayerRef {
+                    material_id: "Concrete".to_string(),
+                    role_tag: None,
+                    index: 0,
+                },
+                layer_b: None,
+                style: join::JoinOverrideStyle::NoExtend,
+            }],
+        };
+        assert!(write_junction_override(&mut scene, wall_a, 1, &override_data));
+        write_wall_layers(
+            &mut scene,
+            wall_a,
+            vec![
+                wl("Brick", 0.2, "Structural"),
+                wl("Insulation", 0.05, "Insulation"),
+            ],
+        );
+
+        let _ = take_pending_override_warnings(); // drain any leftovers from prior tests
+        let mut command_line = CommandLine::default();
+        aec_walljoin_do(
+            &mut scene,
+            &mut command_line,
+            &format!("{}|{}", wall_a.value(), wall_b.value()),
+        );
+
+        assert!(
+            command_line
+                .history
+                .iter()
+                .any(|e| e.text.contains("outdated join override")),
+            "the command line should surface an invalidation notice, got {:?}",
+            command_line.history.iter().map(|e| &e.text).collect::<Vec<_>>()
+        );
+    }
+
     #[test]
     fn regenerate_wall_representation_builds_layers_and_avoids_duplication() {
         let mut scene = Scene::new();
@@ -6631,6 +8239,57 @@ mod wall_command_tests {
         assert!((axis_b[1].y - 5.0).abs() < 1e-9);
     }
 
+    /// Regression test for the reported bug: `AEC_WALLEXTEND` to a target
+    /// wall visually trims/miters the extended wall, but never registered
+    /// the two walls as joined peers (`JOINED_PEERS` via
+    /// `engine::owner_index::link_peers`) — unlike `AEC_WALLJOIN` and the
+    /// automatic join performed while drawing. Without that peer link, the
+    /// connection isn't recognized as a real join by later operations (e.g.
+    /// re-resolving the junction after a subsequent move), so it appears as
+    /// if "no join was created".
+    #[test]
+    fn aec_wallextend_do_links_peers_with_target_wall() {
+        use crate::ui::command_line::CommandLine;
+
+        let mut scene = Scene::new();
+        let wall_a = add_multi_layer_wall(&mut scene); // (0,0) -> (5,0)
+        let mut pl_b = LwPolyline::new();
+        pl_b.add_vertex(LwVertex::new(Vector2::new(8.0, -5.0)));
+        pl_b.add_vertex(LwVertex::new(Vector2::new(8.0, 5.0)));
+        let mut entity_b = EntityType::LwPolyline(pl_b);
+        let mut record_b = ExtendedDataRecord::new(AEC_APPID);
+        record_b.values = wall_record(
+            "style1",
+            3.0,
+            0,
+            &vec![wl("Concrete", 0.2, "Structural")],
+            &[],
+            WallJustification::Center,
+        );
+        entity_b.common_mut().extended_data.add_record(record_b);
+        let wall_b = scene.add_entity(entity_b);
+
+        let mut command_line = CommandLine::default();
+        aec_wallextend_do(
+            &mut scene,
+            &mut command_line,
+            &format!("{}|WALL|{}", wall_a.value(), wall_b.value()),
+        );
+
+        let peers_a = engine::owner_index::peers_of(&scene.document, wall_a);
+        let peers_b = engine::owner_index::peers_of(&scene.document, wall_b);
+        assert_eq!(
+            peers_a,
+            vec![wall_b],
+            "extended wall must be linked as a peer of its target wall"
+        );
+        assert_eq!(
+            peers_b,
+            vec![wall_a],
+            "target wall must be linked as a peer of the extended wall"
+        );
+    }
+
     #[test]
     fn aec_walljoin_do_forces_l_even_when_one_wall_overhangs() {
         use crate::ui::command_line::CommandLine;
@@ -6738,6 +8397,47 @@ mod wall_command_tests {
         assert!(
             (max_x - 4.0).abs() < 0.3,
             "reused contour must follow new axis, max_x={max_x}"
+        );
+    }
+
+    #[test]
+    fn erase_wall_live_preview_companions_drops_untagged_draw_contour() {
+        // Bug B / Step 3: WallCommand commits an untagged outer-contour
+        // polyline for live preview. On finish it must be erased so only
+        // WALL_REP children remain (which regenerate with the axis).
+        let mut scene = Scene::new();
+        let wall = add_multi_layer_wall(&mut scene);
+
+        let mut preview = LwPolyline::new();
+        preview.is_closed = true;
+        preview.add_vertex(LwVertex::new(Vector2::new(0.0, -0.1)));
+        preview.add_vertex(LwVertex::new(Vector2::new(10.0, -0.1)));
+        preview.add_vertex(LwVertex::new(Vector2::new(10.0, 0.1)));
+        preview.add_vertex(LwVertex::new(Vector2::new(0.0, 0.1)));
+        let preview_h = scene.add_entity(EntityType::LwPolyline(preview));
+
+        // A properly tagged WALL_REP child must NOT be erased by the helper.
+        let mut tagged = LwPolyline::new();
+        tagged.is_closed = true;
+        tagged.add_vertex(LwVertex::new(Vector2::new(0.0, 0.0)));
+        tagged.add_vertex(LwVertex::new(Vector2::new(1.0, 0.0)));
+        tagged.add_vertex(LwVertex::new(Vector2::new(1.0, 1.0)));
+        let tagged_h = scene.add_entity(EntityType::LwPolyline(tagged));
+        write_wall_display_tag(&mut scene, tagged_h, wall, WALL_REP_ROLE_CONTOUR);
+
+        erase_wall_live_preview_companions(&mut scene, wall, &[preview_h, tagged_h]);
+
+        assert!(
+            scene.document.get_entity(preview_h).is_none(),
+            "untagged live preview contour must be erased on wall finish"
+        );
+        assert!(
+            scene.document.get_entity(tagged_h).is_some(),
+            "WALL_REP children must not be erased by preview cleanup"
+        );
+        assert!(
+            scene.document.get_entity(wall).is_some(),
+            "wall axis must remain"
         );
     }
 
@@ -6899,6 +8599,192 @@ mod wall_command_tests {
         }
         // Axis + every derived.
         assert_eq!(touched.len(), 1 + wall.derived_handles.len());
+    }
+
+    /// Regression for the Properties-panel/vertex-edit staleness bug: after
+    /// moving a wall's axis vertex and regenerating its representation, the
+    /// *resident* (GPU-facing) wire set — the one `invalidate_property_targets`
+    /// feeds via `bump_entities` — must reflect the new contour geometry, not
+    /// a leftover outline from before the edit. `refresh_wall_after_axis_edit`
+    /// forces this via `scene.bump_geometry()`; any other axis-edit caller must
+    /// reach the same end state.
+    #[test]
+    fn wall_axis_edit_updates_resident_contour_wires() {
+        use crate::scene::view::camera::Camera;
+
+        let mut scene = Scene::new();
+        let wall_handle = add_multi_layer_wall(&mut scene);
+        regenerate_wall_representation(&mut scene, wall_handle).expect("initial regen");
+
+        // Prime the resident (camera-independent, GPU-facing) wire cache at
+        // the original axis position.
+        let cam = Camera::default();
+        let _ = scene.model_tile_wires_arc(0, &cam, 1.0, 1.0);
+
+        // Simulate a Properties-panel vertex edit: move the wall's endpoint
+        // far away, regenerate, then invalidate exactly like
+        // `invalidate_property_targets` does today — only `bump_entities` on
+        // the touched handles, no `bump_geometry()`.
+        let new_vertices = vec![DVec3::new(0.0, 0.0, 0.0), DVec3::new(500.0, 0.0, 0.0)];
+        update_wall_vertices(&mut scene, wall_handle, &new_vertices);
+        let touched = regenerate_wall_representation(&mut scene, wall_handle)
+            .expect("regen after vertex edit");
+        let changes: Vec<_> = touched
+            .iter()
+            .map(|&h| (h, crate::scene::ChangeKind::Modified))
+            .collect();
+        scene.bump_entities(&changes);
+
+        // The resident wire set must no longer contain any wire endpoint at
+        // the old axis extent (x == 5.0); every wall-derived wire must reach
+        // out to the new extent (x == 500.0).
+        let wires = scene.model_tile_wires_arc(0, &cam, 1.0, 1.0);
+        let mut saw_new_extent = false;
+        for wire in wires.iter() {
+            let Some(handle) = Scene::handle_from_wire_name(&wire.name) else {
+                continue;
+            };
+            if !touched.contains(&handle) {
+                continue;
+            }
+            for pt in &wire.points {
+                if pt[0].is_nan() {
+                    // Tombstone slot from the resident-wire splice; not real
+                    // geometry.
+                    continue;
+                }
+                assert!(
+                    (pt[0] - 5.0).abs() > 1e-6,
+                    "resident wire for handle {} still shows the pre-edit contour \
+                     at x=5.0 (stale tessellation); point={:?}",
+                    handle.value(),
+                    pt
+                );
+                if (pt[0] - 500.0).abs() < 1e-6 {
+                    saw_new_extent = true;
+                }
+            }
+        }
+        assert!(
+            saw_new_extent,
+            "resident wire set never reached the new axis extent (x=500.0); \
+             contour/hatch did not visibly follow the moved wall point"
+        );
+    }
+
+    /// Regression for the STRETCH bug: the wall axis lives on the invisible
+    /// `AEC_WALL_AXIS` layer, so a crossing-window stretch only ever sees the
+    /// visible contour handle. Moving that contour's own vertices in place
+    /// (the naive/buggy approach) is immediately reverted by the next
+    /// `refresh_wall_after_axis_edit` regeneration, because it rebuilds the
+    /// contour from the *unchanged* axis. Only moving the axis itself, then
+    /// regenerating, actually relocates the visible wall — this is exactly
+    /// the fix applied to `CmdResult::StretchEntities` in
+    /// `command_driver.rs`.
+    #[test]
+    fn stretching_only_the_contour_is_reverted_by_regen_but_stretching_the_axis_sticks() {
+        let mut scene = Scene::new();
+        let wall_handle = add_multi_layer_wall(&mut scene);
+        let touched = regenerate_wall_representation(&mut scene, wall_handle)
+            .expect("initial regen");
+
+        let contour_handle = *touched
+            .iter()
+            .find(|&&h| {
+                h != wall_handle
+                    && matches!(
+                        scene.document.get_entity(h),
+                        Some(EntityType::LwPolyline(pl)) if pl.is_closed
+                    )
+            })
+            .expect("wall must have produced a closed contour");
+
+        // --- Buggy path: mutate only the visible contour's vertices in
+        // place (what STRETCH's generic LwPolyline branch used to do for a
+        // wall's contour handle before the fix), then regenerate.
+        let mut contour_before = match scene.document.get_entity(contour_handle) {
+            Some(EntityType::LwPolyline(pl)) => pl.clone(),
+            _ => panic!("expected contour LwPolyline"),
+        };
+        for v in &mut contour_before.vertices {
+            v.location.x += 495.0;
+        }
+        update_wall_vertices(&mut scene, contour_handle, &[]); // no-op guard; contour isn't the axis
+        if let Some(EntityType::LwPolyline(pl)) = scene.document.get_entity_mut(contour_handle) {
+            *pl = contour_before;
+        }
+        let reverted = refresh_wall_after_axis_edit(&mut scene, wall_handle);
+        let still_short = get_wall_vertices(&scene, wall_handle)
+            .iter()
+            .all(|v| v.x < 400.0);
+        assert!(
+            still_short,
+            "regenerating from the untouched axis must revert a contour-only stretch \
+             (this is the bug being fixed): axis vertices = {:?}",
+            get_wall_vertices(&scene, wall_handle)
+        );
+        let contour_after_revert = reverted
+            .iter()
+            .find(|&&h| {
+                matches!(
+                    scene.document.get_entity(h),
+                    Some(EntityType::LwPolyline(pl)) if pl.is_closed
+                )
+            })
+            .and_then(|&h| match scene.document.get_entity(h) {
+                Some(EntityType::LwPolyline(pl)) => Some(pl.clone()),
+                _ => None,
+            })
+            .expect("regenerated contour");
+        assert!(
+            contour_after_revert
+                .vertices
+                .iter()
+                .all(|v| v.location.x < 400.0),
+            "contour-only stretch must not survive regeneration: {:?}",
+            contour_after_revert.vertices
+        );
+
+        // --- Correct (fixed) path: `stretch_wall_axis_in_window` — the
+        // exact helper `CmdResult::StretchEntities` now calls for wall
+        // packages — moves the axis itself, then regenerates.
+        let touched_after_fix = stretch_wall_axis_in_window(
+            &mut scene,
+            wall_handle,
+            |x, _y| x < 400.0,
+            DVec3::new(495.0, 0.0, 0.0),
+        )
+        .expect("axis vertex fell inside the window; must return Some(touched)");
+        let axis_moved = get_wall_vertices(&scene, wall_handle)
+            .iter()
+            .any(|v| v.x > 400.0);
+        assert!(
+            axis_moved,
+            "moving the axis vertices must stick after regeneration"
+        );
+        let contour_moved = touched_after_fix
+            .iter()
+            .filter_map(|&h| match scene.document.get_entity(h) {
+                Some(EntityType::LwPolyline(pl)) if pl.is_closed => Some(pl.clone()),
+                _ => None,
+            })
+            .any(|pl| pl.vertices.iter().any(|v| v.location.x > 400.0));
+        assert!(
+            contour_moved,
+            "the regenerated contour must reach the new axis extent after the fix"
+        );
+
+        // A window that covers none of the axis vertices must be a no-op.
+        assert!(
+            stretch_wall_axis_in_window(
+                &mut scene,
+                wall_handle,
+                |_x, _y| false,
+                DVec3::new(1.0, 0.0, 0.0),
+            )
+            .is_none(),
+            "a window matching no axis vertex must not move or regenerate the wall"
+        );
     }
 
     #[test]
@@ -8190,5 +10076,216 @@ mod wall_command_tests {
         let peers2_far = engine::owner_index::peers_of(&scene.document, w2);
         assert!(!peers2_far.contains(&w1));
         assert!(peers2_far.contains(&w3)); // W2 and W3 still meet at (0.1, 0)
+    }
+
+    /// Collects every vertex of every `LwPolyline` derived (`WALL_REP`)
+    /// child of `wall_handle` into one flat list, for corner-position
+    /// assertions against a wall's rendered footprint(s).
+    fn wall_contour_points(scene: &Scene, wall_handle: Handle) -> Vec<(f64, f64)> {
+        let Some(entity) = scene.document.get_entity(wall_handle) else {
+            return Vec::new();
+        };
+        let Some(wall) = wall_from_entity(entity) else {
+            return Vec::new();
+        };
+        let mut pts = Vec::new();
+        for h in &wall.derived_handles {
+            if let Some(EntityType::LwPolyline(pl)) = scene.document.get_entity(*h) {
+                pts.extend(pl.vertices.iter().map(|v| (v.location.x, v.location.y)));
+            }
+        }
+        pts
+    }
+
+    fn has_point(pts: &[(f64, f64)], target: (f64, f64), tol: f64) -> bool {
+        pts.iter()
+            .any(|p| (p.0 - target.0).abs() < tol && (p.1 - target.1).abs() < tol)
+    }
+
+    fn add_single_layer_wall(scene: &mut Scene, p1: (f64, f64), p2: (f64, f64)) -> Handle {
+        let mut pl = LwPolyline::new();
+        pl.add_vertex(LwVertex::new(Vector2::new(p1.0, p1.1)));
+        pl.add_vertex(LwVertex::new(Vector2::new(p2.0, p2.1)));
+        let mut entity = EntityType::LwPolyline(pl);
+        let layers = vec![wl("Concrete", 0.2, "Structural")];
+        let mut record = ExtendedDataRecord::new(AEC_APPID);
+        record.values = wall_record("style1", 3.0, 0, &layers, &[], WallJustification::Center);
+        entity.common_mut().extended_data.add_record(record);
+        scene.add_entity(entity)
+    }
+
+    /// Regression test for the "other end's join reverts to a plain cap"
+    /// bug: Wall A is joined to Wall B at A's end 1 (10,0), producing a
+    /// correctly mitered L-corner there (exact corner coordinates match the
+    /// `l_corner_miter_shares_diagonal_endpoints` geometry in `miter.rs`).
+    /// A NEW Wall C is then joined to A's *other* end (0,0). After that
+    /// second join, A's rendered footprint must still contain the original
+    /// A-B miter corners *and* a real (non-plain-cap) miter at the A-C end.
+    #[test]
+    fn other_end_join_survives_new_join_at_opposite_end() {
+        let mut scene = Scene::new();
+        let wall_a = add_single_layer_wall(&mut scene, (0.0, 0.0), (10.0, 0.0));
+        let wall_b = add_single_layer_wall(&mut scene, (10.0, 0.0), (10.0, 10.0));
+        regenerate_wall_representation(&mut scene, wall_a).expect("regen a");
+        regenerate_wall_representation(&mut scene, wall_b).expect("regen b");
+
+        join_two_walls_in_document(&mut scene, wall_a, wall_b).expect("A-B join");
+
+        // Plain (un-joined) end-0 cap footprint corners for reference.
+        let plain_end0 = [(0.0, -0.1), (0.0, 0.1)];
+        let corner1 = (10.1, -0.1);
+        let corner2 = (9.9, 0.1);
+
+        let pts_before = wall_contour_points(&scene, wall_a);
+        assert!(
+            has_point(&pts_before, corner1, 1e-6) && has_point(&pts_before, corner2, 1e-6),
+            "A-B miter corners must be present right after the first join, got {pts_before:?}"
+        );
+
+        // NEW wall C joins A's other end (0,0).
+        let wall_c = add_single_layer_wall(&mut scene, (0.0, 0.0), (0.0, -10.0));
+        regenerate_wall_representation(&mut scene, wall_c).expect("regen c");
+        join_two_walls_in_document(&mut scene, wall_a, wall_c).expect("A-C join");
+
+        let pts_after = wall_contour_points(&scene, wall_a);
+        assert!(
+            has_point(&pts_after, corner1, 1e-6) && has_point(&pts_after, corner2, 1e-6),
+            "A-B miter corners must survive regeneration triggered by the NEW A-C join, got {pts_after:?}"
+        );
+        assert!(
+            !plain_end0.iter().all(|p| has_point(&pts_after, *p, 1e-6)),
+            "end 0 must show a real miter against C, not the plain unjoined cap, got {pts_after:?}"
+        );
+    }
+
+    /// N-way variant of the regression above: three walls already meet at
+    /// one point via `join_junction_in_document`; a fourth wall then joins
+    /// one of them at *its other end*. Both ends of the middle wall must
+    /// stay correctly joined afterward.
+    #[test]
+    fn n_way_junction_survives_new_join_at_participants_other_end() {
+        let mut scene = Scene::new();
+        // Genuine (non-collinear) 3-way junction at (0,0): w1 along +X,
+        // w2 along +Y, w3 along a third direction — each participant gets
+        // a real diagonal miter at the shared point, not a straight-through
+        // continuation.
+        let w1 = add_single_layer_wall(&mut scene, (0.0, 0.0), (10.0, 0.0));
+        let w2 = add_single_layer_wall(&mut scene, (0.0, 0.0), (0.0, 10.0));
+        let w3 = add_single_layer_wall(&mut scene, (0.0, 0.0), (-10.0, 10.0));
+        for h in [w1, w2, w3] {
+            regenerate_wall_representation(&mut scene, h).expect("initial regen");
+        }
+        join_junction_in_document(&mut scene, &[w1, w2, w3], None).expect("N-way join");
+
+        // Snapshot every vertex near the junction corner (close to the
+        // origin) before the new join is introduced.
+        let pts_before = wall_contour_points(&scene, w1);
+        let near_origin_before: Vec<(f64, f64)> =
+            pts_before.into_iter().filter(|p| p.0 < 5.0).collect();
+        assert!(
+            !near_origin_before.is_empty(),
+            "sanity: w1 should have a real N-way miter near the junction"
+        );
+        let plain_end1 = [(10.0, -0.1), (10.0, 0.1)];
+        assert!(
+            plain_end1.iter().all(|p| has_point(&wall_contour_points(&scene, w1), *p, 1e-6)),
+            "sanity: w1's un-joined end should still be a plain cap before the new join"
+        );
+
+        // NEW wall w4 joins w1 at ITS other end (10,0).
+        let w4 = add_single_layer_wall(&mut scene, (10.0, 0.0), (10.0, 10.0));
+        regenerate_wall_representation(&mut scene, w4).expect("regen w4");
+        join_two_walls_in_document(&mut scene, w1, w4).expect("w1-w4 join");
+
+        let pts_after = wall_contour_points(&scene, w1);
+        assert!(
+            !plain_end1.iter().all(|p| has_point(&pts_after, *p, 1e-6)),
+            "w1's new join end must be a real miter, not the plain cap"
+        );
+        // The original N-way junction corner geometry (near x=0) must be
+        // byte-for-byte preserved after this unrelated join event elsewhere.
+        for p in &near_origin_before {
+            assert!(
+                has_point(&pts_after, *p, 1e-9),
+                "w1's original N-way junction corner point {p:?} must survive the new A-B join, got {pts_after:?}"
+            );
+        }
+    }
+
+    /// A wall with only ONE join (no second join at all) must keep producing
+    /// exactly the same mitered footprint as before this change — no
+    /// accidental behavior change for the common single-join case.
+    #[test]
+    fn single_join_wall_footprint_unchanged() {
+        let mut scene = Scene::new();
+        let wall_a = add_single_layer_wall(&mut scene, (0.0, 0.0), (10.0, 0.0));
+        let wall_b = add_single_layer_wall(&mut scene, (10.0, 0.0), (10.0, 10.0));
+        regenerate_wall_representation(&mut scene, wall_a).expect("regen a");
+        regenerate_wall_representation(&mut scene, wall_b).expect("regen b");
+
+        join_two_walls_in_document(&mut scene, wall_a, wall_b).expect("A-B join");
+
+        let pts = wall_contour_points(&scene, wall_a);
+        let corner1 = (10.1, -0.1);
+        let corner2 = (9.9, 0.1);
+        assert!(has_point(&pts, corner1, 1e-6) && has_point(&pts, corner2, 1e-6));
+
+        // Plain cap at the un-joined end 0 must be exactly the un-mitered
+        // rectangle corners (no peer exists there).
+        assert!(has_point(&pts, (0.0, -0.1), 1e-6));
+        assert!(has_point(&pts, (0.0, 0.1), 1e-6));
+    }
+
+    /// Regression test for the reported bug: three walls already meet at one
+    /// point via an N-way junction (w1, w2, w3, all correctly mitered).
+    /// A NEW wall w4 is then joined to the *same* junction point. After the
+    /// junction is re-resolved for 4 participants, the *other* walls (w2, w3)
+    /// — which did not change themselves — must still show their correct
+    /// mitered footprint, not revert to a plain unjoined cap.
+    #[test]
+    fn adding_new_wall_to_existing_junction_keeps_other_walls_mitered() {
+        let mut scene = Scene::new();
+        let w1 = add_single_layer_wall(&mut scene, (0.0, 0.0), (10.0, 0.0));
+        let w2 = add_single_layer_wall(&mut scene, (0.0, 0.0), (0.0, 10.0));
+        let w3 = add_single_layer_wall(&mut scene, (0.0, 0.0), (-10.0, 10.0));
+        for h in [w1, w2, w3] {
+            regenerate_wall_representation(&mut scene, h).expect("initial regen");
+        }
+        join_junction_in_document(&mut scene, &[w1, w2, w3], None).expect("N-way join");
+
+        // Plain (un-joined) cap corners at the origin end of a vertical /
+        // diagonal single-layer (0.2 thick) wall — what w2/w3 would show at
+        // their origin end if the junction miter were lost and they fell
+        // back to an un-joined rectangle cap.
+        let plain_origin_cap = [(-0.1, 0.0), (0.1, 0.0)];
+
+        let w2_before = wall_contour_points(&scene, w2);
+        let w3_before = wall_contour_points(&scene, w3);
+        assert!(
+            !plain_origin_cap.iter().all(|p| has_point(&w2_before, *p, 1e-6)),
+            "sanity: w2 should have a real N-way miter, not a plain cap, got {w2_before:?}"
+        );
+        assert!(
+            !plain_origin_cap.iter().all(|p| has_point(&w3_before, *p, 1e-6)),
+            "sanity: w3 should have a real N-way miter, not a plain cap, got {w3_before:?}"
+        );
+
+        // NEW wall w4 joins the SAME junction point (0,0), the way the
+        // interactive drawing workflow actually triggers it: via
+        // `try_auto_join_nearby_walls` for just the newly drawn wall.
+        let w4 = add_single_layer_wall(&mut scene, (0.0, 0.0), (10.0, -10.0));
+        regenerate_wall_representation(&mut scene, w4).expect("regen w4");
+        try_auto_join_nearby_walls(&mut scene, w4);
+
+        let w2_after = wall_contour_points(&scene, w2);
+        let w3_after = wall_contour_points(&scene, w3);
+        assert!(
+            !plain_origin_cap.iter().all(|p| has_point(&w2_after, *p, 1e-6)),
+            "w2 must still show a real miter at the junction after w4 joins, not revert to a plain cap, got {w2_after:?}"
+        );
+        assert!(
+            !plain_origin_cap.iter().all(|p| has_point(&w3_after, *p, 1e-6)),
+            "w3 must still show a real miter at the junction after w4 joins, not revert to a plain cap, got {w3_after:?}"
+        );
     }
 }
