@@ -193,6 +193,19 @@ pub(super) struct DocumentTab {
     pub(super) active_block_edit: Option<usize>,
     /// Currently active MLeader style name.
     pub(super) active_mleader_style: String,
+    /// Name of the `DisplayConfig` (AEC plan/display library) currently
+    /// active for this tab, if any (`AEC_PLANMANAGER` Step 5 — in-memory
+    /// only, not yet persisted to XDATA/project files; see Step 6).
+    pub(super) active_display_config: Option<String>,
+    /// Step 7 ("Auto-Maßstabskopplung an den Zeichnungsmaßstab"): when
+    /// `true` (the default), a drawing-scale change on this tab looks up
+    /// and activates a mapped `DisplayConfig` via
+    /// `App::aec_maybe_apply_display_config_for_scale`. Manually picking a
+    /// `DisplayConfig` (`Message::AecActiveDisplayConfigSelected`) sets this
+    /// to `false` (manual override); re-enabled via the "Automatisch an
+    /// Maßstab koppeln" checkbox in the DisplayConfig manager. Not part of
+    /// undo/redo, matching `active_display_config`.
+    pub(super) auto_display_config_from_scale: bool,
     /// Last camera_generation value written back to the document.
     pub(super) last_synced_camera_gen: u64,
     /// Render-state key of `scene.document.preview`. Matching saves reuse the
@@ -478,6 +491,8 @@ impl DocumentTab {
             dyn_active: 0,
             history: HistoryState::default(),
             active_layer: "0".to_string(),
+            active_display_config: None,
+            auto_display_config_from_scale: true,
             active_ucs: None,
             bg_color: None,
             paper_bg_color: None,

@@ -73,6 +73,59 @@ fn layer_ref_matches(r: &join::LayerRef, set: &[join::LayerRef]) -> bool {
     })
 }
 
+/// Merge a `ComponentRuleSet`'s slot-level `style_override` (checked in
+/// `slots` priority order, first match per field wins) with its
+/// `layer_style_override` entry matching `layer_ref` (fills any field the
+/// slot override(s) left unset) — precedence tiers (a)/(b) of the Step 3
+/// style resolution chain in `.junie/plans/aec-plan-view-display-variants.md`.
+/// Returns an all-`None` [`engine::display_component::ComponentStyleOverride`]
+/// when `rules` is `None` or nothing applies, so callers can always fall
+/// through unconditionally to the `style_substitutions`/`hatch_override`/
+/// material tiers below.
+fn resolve_layer_style_override(
+    rules: Option<&engine::display_component::ComponentRuleSet>,
+    slots: &[engine::display_component::WallComponentSlot],
+    layer_ref: &join::LayerRef,
+) -> engine::display_component::ComponentStyleOverride {
+    let mut out = engine::display_component::ComponentStyleOverride::default();
+    let Some(rules) = rules else {
+        return out;
+    };
+    // Detailed per-layer override first (more specific than a whole-slot
+    // override), then each slot in priority order fills any remaining gaps.
+    if let Some(lso) = rules.layer_style_override.iter().find(|lso| {
+        lso.layer.material_id == layer_ref.material_id
+            && lso.layer.role_tag == layer_ref.role_tag
+            && lso.layer.index == layer_ref.index
+    }) {
+        out.line_type = lso.style.line_type.clone();
+        out.line_color = lso.style.line_color;
+        out.hatch_pattern = lso.style.hatch_pattern.clone();
+        out.hatch_color = lso.style.hatch_color;
+        out.fill_color = lso.style.fill_color;
+    }
+    for slot in slots {
+        if let Some(s) = rules.style_for(*slot) {
+            if out.line_type.is_none() {
+                out.line_type = s.line_type.clone();
+            }
+            if out.line_color.is_none() {
+                out.line_color = s.line_color;
+            }
+            if out.hatch_pattern.is_none() {
+                out.hatch_pattern = s.hatch_pattern.clone();
+            }
+            if out.hatch_color.is_none() {
+                out.hatch_color = s.hatch_color;
+            }
+            if out.fill_color.is_none() {
+                out.fill_color = s.fill_color;
+            }
+        }
+    }
+    out
+}
+
 /// Build the [`join::LayerRef`] list for a wall's layer stack (given its
 /// materials in layer order), keeping the `index` field aligned with each
 /// layer's position — required so layers that reuse the same material (e.g.
@@ -1194,6 +1247,46 @@ pub fn regenerate_wall_representation(
     regenerate_wall_representation_with_corner(scene, wall_handle, None, None)
 }
 
+/// Like [`regenerate_wall_representation`], but honors per-slot visibility
+/// from `rules` (see [`engine::display_component::ComponentRuleSet`]):
+/// a `WALL_REP` child whose corresponding [`engine::display_component::WallComponentSlot`]
+/// is hidden simply isn't created, instead of a global LOD switch. `None`
+/// (or a default rule set) reproduces today's behavior exactly (every slot
+/// defaults to visible).
+pub fn regenerate_wall_representation_with_rules(
+    scene: &mut Scene,
+    wall_handle: Handle,
+    rules: Option<&engine::display_component::ComponentRuleSet>,
+) -> Result<Vec<Handle>, WallRegenError> {
+    let wall_handle = resolve_wall_package(scene, wall_handle);
+    regenerate_wall_representation_with_corner_and_rules(scene, wall_handle, None, None, rules)
+}
+
+/// Like [`regenerate_wall_representation_with_rules`], but additionally
+/// honors a `DisplayConfig`'s `style_substitutions` map (source wall style
+/// id -> target wall style id, see [`engine::plan_view::DisplayConfig`]):
+/// when the wall's own style id has an entry here, the *style* (material/
+/// hatch/color) of each layer is taken from the corresponding layer (by
+/// index) of the target wall style, while axis, thickness and layer count
+/// are always derived from the wall's own (unchanged) layers. `None`
+/// reproduces today's behavior exactly (no substitution applied).
+pub fn regenerate_wall_representation_with_rules_and_substitutions(
+    scene: &mut Scene,
+    wall_handle: Handle,
+    rules: Option<&engine::display_component::ComponentRuleSet>,
+    style_substitutions: Option<&HashMap<engine::plan_view::WallStyleRef, engine::plan_view::WallStyleRef>>,
+) -> Result<Vec<Handle>, WallRegenError> {
+    let wall_handle = resolve_wall_package(scene, wall_handle);
+    regenerate_wall_representation_with_corner_rules_and_substitutions(
+        scene,
+        wall_handle,
+        None,
+        None,
+        rules,
+        style_substitutions,
+    )
+}
+
 /// Rebuild a wall after its axis vertices changed (grip / stretch) and
 /// re-resolve nearby L/T/N junctions. Returns every axis + derived handle
 /// that the scene tessellation must refresh.
@@ -1285,12 +1378,53 @@ pub fn regenerate_wall_representation_with_corner(
     corner_override: Option<(usize, DVec3)>,
     join_miter: Option<&engine::miter::JoinMiterContext>,
 ) -> Result<Vec<Handle>, WallRegenError> {
+    regenerate_wall_representation_with_corner_and_rules(
+        scene,
+        wall_handle,
+        corner_override,
+        join_miter,
+        None,
+    )
+}
+
+/// Like [`regenerate_wall_representation_with_corner`], but also honors
+/// per-slot visibility from `rules` (see [`regenerate_wall_representation_with_rules`]).
+pub fn regenerate_wall_representation_with_corner_and_rules(
+    scene: &mut Scene,
+    wall_handle: Handle,
+    corner_override: Option<(usize, DVec3)>,
+    join_miter: Option<&engine::miter::JoinMiterContext>,
+    rules: Option<&engine::display_component::ComponentRuleSet>,
+) -> Result<Vec<Handle>, WallRegenError> {
+    regenerate_wall_representation_with_corner_rules_and_substitutions(
+        scene,
+        wall_handle,
+        corner_override,
+        join_miter,
+        rules,
+        None,
+    )
+}
+
+/// Like [`regenerate_wall_representation_with_corner_and_rules`], but also
+/// honors `style_substitutions` (see
+/// [`regenerate_wall_representation_with_rules_and_substitutions`]).
+pub fn regenerate_wall_representation_with_corner_rules_and_substitutions(
+    scene: &mut Scene,
+    wall_handle: Handle,
+    corner_override: Option<(usize, DVec3)>,
+    join_miter: Option<&engine::miter::JoinMiterContext>,
+    rules: Option<&engine::display_component::ComponentRuleSet>,
+    style_substitutions: Option<&HashMap<engine::plan_view::WallStyleRef, engine::plan_view::WallStyleRef>>,
+) -> Result<Vec<Handle>, WallRegenError> {
     regenerate_wall_representation_inner(
         scene,
         wall_handle,
         corner_override,
         join_miter,
         None,
+        rules,
+        style_substitutions,
     )
 }
 
@@ -1303,12 +1437,54 @@ pub fn regenerate_wall_representation_with_precomputed_miters(
     corner_override: Option<(usize, DVec3)>,
     mitered_footprints: &[Option<Vec<(f64, f64)>>],
 ) -> Result<Vec<Handle>, WallRegenError> {
+    regenerate_wall_representation_with_precomputed_miters_and_rules(
+        scene,
+        wall_handle,
+        corner_override,
+        mitered_footprints,
+        None,
+    )
+}
+
+/// Like [`regenerate_wall_representation_with_precomputed_miters`], but also
+/// honors per-slot visibility from `rules` (see
+/// [`regenerate_wall_representation_with_rules`]).
+pub fn regenerate_wall_representation_with_precomputed_miters_and_rules(
+    scene: &mut Scene,
+    wall_handle: Handle,
+    corner_override: Option<(usize, DVec3)>,
+    mitered_footprints: &[Option<Vec<(f64, f64)>>],
+    rules: Option<&engine::display_component::ComponentRuleSet>,
+) -> Result<Vec<Handle>, WallRegenError> {
+    regenerate_wall_representation_with_precomputed_miters_rules_and_substitutions(
+        scene,
+        wall_handle,
+        corner_override,
+        mitered_footprints,
+        rules,
+        None,
+    )
+}
+
+/// Like [`regenerate_wall_representation_with_precomputed_miters_and_rules`],
+/// but also honors `style_substitutions` (see
+/// [`regenerate_wall_representation_with_rules_and_substitutions`]).
+pub fn regenerate_wall_representation_with_precomputed_miters_rules_and_substitutions(
+    scene: &mut Scene,
+    wall_handle: Handle,
+    corner_override: Option<(usize, DVec3)>,
+    mitered_footprints: &[Option<Vec<(f64, f64)>>],
+    rules: Option<&engine::display_component::ComponentRuleSet>,
+    style_substitutions: Option<&HashMap<engine::plan_view::WallStyleRef, engine::plan_view::WallStyleRef>>,
+) -> Result<Vec<Handle>, WallRegenError> {
     regenerate_wall_representation_inner(
         scene,
         wall_handle,
         corner_override,
         None,
         Some(mitered_footprints),
+        rules,
+        style_substitutions,
     )
 }
 
@@ -1455,7 +1631,27 @@ fn regenerate_wall_representation_inner(
     corner_override: Option<(usize, DVec3)>,
     join_miter: Option<&engine::miter::JoinMiterContext>,
     precomputed_miters: Option<&[Option<Vec<(f64, f64)>>]>,
+    rules: Option<&engine::display_component::ComponentRuleSet>,
+    style_substitutions: Option<&HashMap<engine::plan_view::WallStyleRef, engine::plan_view::WallStyleRef>>,
 ) -> Result<Vec<Handle>, WallRegenError> {
+    use engine::display_component::{LayerSelection, WallComponentSlot};
+    // The current pipeline doesn't create a dedicated 2D "overall" contour
+    // separate from the per-layer contours (nor a dedicated "overall" hatch
+    // separate from the per-layer hatches), so `Contour2D`/`Layers2D` both
+    // gate the same contour polylines below, and `ContourHatch2D`/
+    // `LayerHatch2D` both gate the same hatch entities. `AxisLine` has no
+    // creatable entity here (the axis is always the invisible `wall_handle`
+    // itself); `SurfaceStyle3D`, `SectionRepresentation` and
+    // `ElevationRepresentation` have no current equivalent either — all four
+    // are TODOs for a later step and are intentionally no-ops here.
+    let contour_visible = rules.map_or(true, |r| {
+        r.is_visible(WallComponentSlot::Contour2D) && r.is_visible(WallComponentSlot::Layers2D)
+    });
+    let hatch_visible = rules.map_or(true, |r| {
+        r.is_visible(WallComponentSlot::ContourHatch2D)
+            && r.is_visible(WallComponentSlot::LayerHatch2D)
+    });
+    let solid_visible = rules.map_or(true, |r| r.is_visible(WallComponentSlot::Solid3D));
     let Some(entity) = scene.document.get_entity(wall_handle) else {
         return Err(WallRegenError::NotAWall);
     };
@@ -1463,7 +1659,8 @@ fn regenerate_wall_representation_inner(
     let Some(wall) = wall_from_entity(entity) else {
         return Err(WallRegenError::NotAWall);
     };
-    let (layers, height, _old_derived) = (wall.layers, wall.height, wall.derived_handles);
+    let (layers, height, _old_derived, wall_style_id) =
+        (wall.layers, wall.height, wall.derived_handles, wall.style_id);
 
     if layers.is_empty() {
         return Err(WallRegenError::NoLayers);
@@ -1673,6 +1870,31 @@ fn regenerate_wall_representation_inner(
     let extrusions = wall_layer_extrusions(extrusion_axis, &layers, height);
     let library = load_or_seed();
 
+    // `StyleSubstitution`: when the wall's own style has a target entry,
+    // the target wall style's layers become the *style* source (material,
+    // and therefore hatch/color) for the corresponding layer index, while
+    // axis/thickness/layer count always stay derived from `layers` above —
+    // only the style-lookup material id per layer changes. Layer count
+    // mismatches (fewer target layers than source) simply leave the
+    // remaining layers on their own original material (no substitution for
+    // those indices), matching the plan's precedence chain (c falls back
+    // to (d)/(e) for anything the substitution can't resolve).
+    let substituted_layer_styles: Option<Vec<(String, Option<String>)>> =
+        style_substitutions.and_then(|subs| {
+            subs.get(&wall_style_id).and_then(|target_id| {
+                library
+                    .wall_styles
+                    .iter()
+                    .find(|s| &s.style.id == target_id)
+                    .map(|s| {
+                        s.layers
+                            .iter()
+                            .map(|l| (l.material_id.clone(), l.hatch_override.clone()))
+                            .collect()
+                    })
+            })
+        });
+
     // Overall wall run direction (radians), used as the base angle for
     // materials whose hatch angle is relative to the wall instead of a
     // fixed/global angle.
@@ -1733,19 +1955,65 @@ fn regenerate_wall_representation_inner(
             vec![uncut_footprint.clone()]
         };
 
-        let material = library.materials.iter().find(|m| &m.id == mat_name);
+        // Stable per-layer identity, used to match `layer_filter` /
+        // `layer_style_override` entries against this layer (mirrors
+        // `layer_refs_from_materials`'s convention: `WallLayer` carries no
+        // `role_tag`, so it's always `None` here).
+        let layer_ref = join::LayerRef {
+            material_id: mat_name.clone(),
+            role_tag: None,
+            index: i,
+        };
+        // `layer_filter: LayerSelection` gates `Contour2D`/`Solid3D` only
+        // (see plan Step 3); `All` (or no rules) keeps every layer, exactly
+        // like before this feature existed.
+        let layer_included = match rules.map(|r| &r.layer_filter) {
+            Some(LayerSelection::Explicit(refs)) => layer_ref_matches(&layer_ref, refs),
+            _ => true,
+        };
+
+        // `StyleSubstitution` (precedence tier c): swap the *style* source
+        // (material id + its own hatch override) for this layer index from
+        // the resolved target wall style, while `layer`'s own geometry
+        // (thickness/gaps/offsets) is untouched. Falls back to this layer's
+        // own material/hatch_override when the target has no layer at this
+        // index (or no substitution applies at all).
+        let (effective_mat_name, effective_hatch_override): (&str, Option<&str>) =
+            match substituted_layer_styles.as_ref().and_then(|v| v.get(i)) {
+                Some((sub_mat, sub_hatch)) => (sub_mat.as_str(), sub_hatch.as_deref()),
+                None => (mat_name.as_str(), layer.hatch_override.as_deref()),
+            };
+        let material = library.materials.iter().find(|m| m.id == effective_mat_name);
+
+        // Precedence tiers (a)/(b): a `ComponentRuleSet.style_override` for
+        // the relevant slot, merged with a `layer_style_override` matching
+        // this exact layer (more specific, so it fills any field the slot
+        // override left unset). Both take priority over (c) substitution
+        // and (d)/(e) below.
+        let contour_style_override =
+            resolve_layer_style_override(rules, &[WallComponentSlot::Layers2D, WallComponentSlot::Contour2D], &layer_ref);
+        let hatch_style_override = resolve_layer_style_override(
+            rules,
+            &[WallComponentSlot::LayerHatch2D, WallComponentSlot::ContourHatch2D],
+            &layer_ref,
+        );
+
         // Layer-level `hatch_override` (Step 4) takes precedence over the
         // material's own `hatch_pattern`; both fall back to "ANSI31" so a
         // layer/material without an explicit pattern still renders a hatch.
-        let pattern_name = layer
-            .hatch_override
-            .as_deref()
-            .filter(|p| !p.is_empty())
-            .map(|p| p.to_string())
+        let pattern_name = hatch_style_override
+            .hatch_pattern
+            .clone()
+            .or_else(|| {
+                effective_hatch_override
+                    .filter(|p| !p.is_empty())
+                    .map(|p| p.to_string())
+            })
             .or_else(|| material.map(|m| m.hatch_pattern.clone()).filter(|p| !p.is_empty()))
             .unwrap_or_else(|| "ANSI31".to_string());
-        let color = material
-            .and_then(|m| m.hatch_color)
+        let color = hatch_style_override
+            .hatch_color
+            .or_else(|| material.and_then(|m| m.hatch_color))
             .or_else(|| material.map(|m| m.line_color))
             .map(wall_hatch_color)
             .unwrap_or([0.6, 0.6, 0.6, 0.85]);
@@ -1765,7 +2033,10 @@ fn regenerate_wall_representation_inner(
         } else {
             hatch_angle_deg.to_radians()
         } as f32;
-        let line_color = material.map(|m| m.line_color);
+        let line_color = contour_style_override
+            .line_color
+            .or_else(|| material.map(|m| m.line_color));
+        let fill_color = contour_style_override.fill_color;
         let families = crate::scene::model::hatch_patterns::find(&pattern_name)
             .and_then(|e| {
                 if let crate::scene::model::hatch_model::HatchPattern::Pattern(f) = &e.gpu {
@@ -1782,63 +2053,67 @@ fn regenerate_wall_representation_inner(
                 continue;
             }
 
-            let mut pl = LwPolyline::new();
-            for (idx, &(x, y)) in footprint.iter().enumerate() {
-                let bulge = footprint_bulges.get(idx).copied().unwrap_or(0.0);
-                pl.add_vertex(LwVertex::with_bulge(Vector2::new(x, y), bulge));
-            }
-            pl.is_closed = true;
-            let contour_handle =
-                reuse_or_add_wall_contour(scene, &mut reusable_contours, pl);
-            if let Some(layer_name) = layer.layer_override.as_deref().filter(|s| !s.is_empty()) {
-                scene.ensure_layer(layer_name);
-                if let Some(e) = scene.document.get_entity_mut(contour_handle) {
-                    e.as_entity_mut().set_layer(layer_name.to_string());
+            if contour_visible && layer_included {
+                let mut pl = LwPolyline::new();
+                for (idx, &(x, y)) in footprint.iter().enumerate() {
+                    let bulge = footprint_bulges.get(idx).copied().unwrap_or(0.0);
+                    pl.add_vertex(LwVertex::with_bulge(Vector2::new(x, y), bulge));
                 }
-            }
-            if let Some(rgb) = line_color {
-                if let Some(e) = scene.document.get_entity_mut(contour_handle) {
-                    e.as_entity_mut().set_color(acadrust::types::Color::Rgb {
-                        r: ((rgb >> 16) & 0xFF) as u8,
-                        g: ((rgb >> 8) & 0xFF) as u8,
-                        b: (rgb & 0xFF) as u8,
-                    });
+                pl.is_closed = true;
+                let contour_handle =
+                    reuse_or_add_wall_contour(scene, &mut reusable_contours, pl);
+                if let Some(layer_name) = layer.layer_override.as_deref().filter(|s| !s.is_empty()) {
+                    scene.ensure_layer(layer_name);
+                    if let Some(e) = scene.document.get_entity_mut(contour_handle) {
+                        e.as_entity_mut().set_layer(layer_name.to_string());
+                    }
                 }
+                if let Some(rgb) = line_color {
+                    if let Some(e) = scene.document.get_entity_mut(contour_handle) {
+                        e.as_entity_mut().set_color(acadrust::types::Color::Rgb {
+                            r: ((rgb >> 16) & 0xFF) as u8,
+                            g: ((rgb >> 8) & 0xFF) as u8,
+                            b: (rgb & 0xFF) as u8,
+                        });
+                    }
+                }
+                write_wall_display_tag(scene, contour_handle, wall_handle, WALL_REP_ROLE_CONTOUR);
+                new_derived.push(contour_handle);
             }
-            write_wall_display_tag(scene, contour_handle, wall_handle, WALL_REP_ROLE_CONTOUR);
-            new_derived.push(contour_handle);
 
-            let tessellated = tessellate_ring_with_bulges(footprint, footprint_bulges);
-            let (rel, origin, wcs) = pack_wall_ring(&tessellated);
-            let hatch_model = crate::scene::model::hatch_model::HatchModel {
-                render_instance: None,
-                boundary: std::sync::Arc::new(rel),
-                pattern: crate::scene::model::hatch_model::HatchPattern::Pattern(families.clone()),
-                name: pattern_name.clone(),
-                color,
-                aci: 0,
-                line_weight_px: 1.0,
-                angle_offset: hatch_angle_offset,
-                scale: hatch_scale,
-                world_origin: origin,
-                boundary_wcs: Some(std::sync::Arc::new(wcs)),
-                fill_plane: None,
-                fill_plane_boundary: None,
-                boundary_exterior: None,
-                boundary_sources: None,
-                boundary_paths: None,
-                style: acadrust::entities::HatchStyleType::Normal,
-                draw_depth: 0.0,
-            };
-            let hatch_handle = scene.add_hatch(hatch_model, None, None);
-            if let Some(layer_name) = layer.layer_override.as_deref().filter(|s| !s.is_empty()) {
-                scene.ensure_layer(layer_name);
-                if let Some(e) = scene.document.get_entity_mut(hatch_handle) {
-                    e.as_entity_mut().set_layer(layer_name.to_string());
+            if hatch_visible {
+                let tessellated = tessellate_ring_with_bulges(footprint, footprint_bulges);
+                let (rel, origin, wcs) = pack_wall_ring(&tessellated);
+                let hatch_model = crate::scene::model::hatch_model::HatchModel {
+                    render_instance: None,
+                    boundary: std::sync::Arc::new(rel),
+                    pattern: crate::scene::model::hatch_model::HatchPattern::Pattern(families.clone()),
+                    name: pattern_name.clone(),
+                    color,
+                    aci: 0,
+                    line_weight_px: 1.0,
+                    angle_offset: hatch_angle_offset,
+                    scale: hatch_scale,
+                    world_origin: origin,
+                    boundary_wcs: Some(std::sync::Arc::new(wcs)),
+                    fill_plane: None,
+                    fill_plane_boundary: None,
+                    boundary_exterior: None,
+                    boundary_sources: None,
+                    boundary_paths: None,
+                    style: acadrust::entities::HatchStyleType::Normal,
+                    draw_depth: 0.0,
+                };
+                let hatch_handle = scene.add_hatch(hatch_model, None, None);
+                if let Some(layer_name) = layer.layer_override.as_deref().filter(|s| !s.is_empty()) {
+                    scene.ensure_layer(layer_name);
+                    if let Some(e) = scene.document.get_entity_mut(hatch_handle) {
+                        e.as_entity_mut().set_layer(layer_name.to_string());
+                    }
                 }
+                write_wall_display_tag(scene, hatch_handle, wall_handle, WALL_REP_ROLE_HATCH);
+                new_derived.push(hatch_handle);
             }
-            write_wall_display_tag(scene, hatch_handle, wall_handle, WALL_REP_ROLE_HATCH);
-            new_derived.push(hatch_handle);
         }
 
         // Extruded solid for this layer — same uncut footprint as the display
@@ -1866,7 +2141,7 @@ fn regenerate_wall_representation_inner(
                 let b = extrusions.get(i).map(|e| e.base_offset).unwrap_or(0.0);
                 (fp, bg, h, b)
             };
-        if footprint.len() >= 3 && solid_height.abs() > 1e-9 {
+        if solid_visible && layer_included && footprint.len() >= 3 && solid_height.abs() > 1e-9 {
             let mut pl = LwPolyline::new();
             for (idx, &(x, y)) in footprint.iter().enumerate() {
                 let bulge = footprint_bulges.get(idx).copied().unwrap_or(0.0);
@@ -1893,6 +2168,15 @@ fn regenerate_wall_representation_inner(
                 s3d.wires = crate::scene::model::solid_model::edge_wires(&body);
                 let solid_handle = scene.add_entity(EntityType::Solid3D(s3d));
                 scene.register_solid_model(solid_handle, body);
+                if let Some(rgb) = fill_color {
+                    if let Some(e) = scene.document.get_entity_mut(solid_handle) {
+                        e.as_entity_mut().set_color(acadrust::types::Color::Rgb {
+                            r: ((rgb >> 16) & 0xFF) as u8,
+                            g: ((rgb >> 8) & 0xFF) as u8,
+                            b: (rgb & 0xFF) as u8,
+                        });
+                    }
+                }
                 write_wall_display_tag(scene, solid_handle, wall_handle, WALL_REP_ROLE_SOLID);
                 new_derived.push(solid_handle);
             }
@@ -4073,6 +4357,42 @@ pub fn try_auto_join_nearby_walls(scene: &mut Scene, wall_handle: Handle) -> Vec
                 // (geometry race); skip it and stop rather than looping forever.
                 excluding.push(other);
             }
+        }
+    }
+    touched.sort_by_key(|h| h.value());
+    touched.dedup();
+    touched
+}
+
+/// Regenerates every wall in `scene` under `config`'s wall
+/// [`engine::display_component::ComponentRuleSet`] (via
+/// [`DisplayConfig::wall_rules`]) and `style_substitutions`. This is the
+/// entry point the "active DisplayConfig" dropdown/manager (Step 5) uses
+/// to apply a selected `DisplayConfig` to the whole document at once,
+/// mirroring what [`regenerate_wall_representation_with_rules_and_substitutions`]
+/// does for a single wall. Returns every handle touched (axis + derived),
+/// same convention as [`refresh_wall_after_axis_edit`]. Walls whose
+/// regeneration fails (e.g. no layers) are skipped silently, same as a
+/// single-wall regeneration failure would be.
+pub fn apply_display_config_to_scene(
+    scene: &mut Scene,
+    config: &engine::plan_view::DisplayConfig,
+) -> Vec<Handle> {
+    let rules = config.wall_rules();
+    let substitutions = if config.style_substitutions.is_empty() {
+        None
+    } else {
+        Some(&config.style_substitutions)
+    };
+    let mut touched = Vec::new();
+    for wall_handle in all_wall_axis_handles(scene) {
+        if let Ok(handles) = regenerate_wall_representation_with_rules_and_substitutions(
+            scene,
+            wall_handle,
+            rules,
+            substitutions,
+        ) {
+            touched.extend(handles);
         }
     }
     touched.sort_by_key(|h| h.value());
@@ -7897,6 +8217,528 @@ mod wall_command_tests {
             "the non-overridden layer's derived entities should keep using the default layer"
         );
         assert!(scene.document.layers.contains("AEC_OVERRIDE_LAYER"));
+    }
+
+    #[test]
+    fn regenerate_wall_representation_with_rules_none_matches_default_behavior() {
+        use crate::modules::aec::engine::display_component::ComponentRuleSet;
+
+        let mut scene_plain = Scene::new();
+        let wall_plain = add_multi_layer_wall(&mut scene_plain);
+        regenerate_wall_representation(&mut scene_plain, wall_plain)
+            .expect("plain regeneration should succeed");
+        let derived_plain = wall_from_entity(scene_plain.document.get_entity(wall_plain).unwrap())
+            .unwrap()
+            .derived_handles;
+
+        let mut scene_none = Scene::new();
+        let wall_none = add_multi_layer_wall(&mut scene_none);
+        regenerate_wall_representation_with_rules(&mut scene_none, wall_none, None)
+            .expect("rules-aware regeneration with None should succeed");
+        let derived_none = wall_from_entity(scene_none.document.get_entity(wall_none).unwrap())
+            .unwrap()
+            .derived_handles;
+        assert_eq!(derived_plain.len(), derived_none.len());
+
+        let mut scene_default = Scene::new();
+        let wall_default = add_multi_layer_wall(&mut scene_default);
+        let default_rules = ComponentRuleSet::default();
+        regenerate_wall_representation_with_rules(
+            &mut scene_default,
+            wall_default,
+            Some(&default_rules),
+        )
+        .expect("rules-aware regeneration with default (all-visible) rules should succeed");
+        let derived_default =
+            wall_from_entity(scene_default.document.get_entity(wall_default).unwrap())
+                .unwrap()
+                .derived_handles;
+        assert_eq!(
+            derived_plain.len(),
+            derived_default.len(),
+            "a default ComponentRuleSet (everything visible) must reproduce today's behavior"
+        );
+    }
+
+    #[test]
+    fn regenerate_wall_representation_with_rules_hides_solid3d_slot() {
+        use crate::modules::aec::engine::display_component::{ComponentRuleSet, WallComponentSlot};
+
+        let mut scene = Scene::new();
+        let wall_handle = add_multi_layer_wall(&mut scene);
+        let mut rules = ComponentRuleSet::default();
+        rules
+            .visibility
+            .insert(WallComponentSlot::Solid3D.key().to_string(), false);
+
+        regenerate_wall_representation_with_rules(&mut scene, wall_handle, Some(&rules))
+            .expect("regeneration with Solid3D hidden should still succeed");
+
+        let derived = wall_from_entity(scene.document.get_entity(wall_handle).unwrap())
+            .unwrap()
+            .derived_handles;
+        assert!(!derived.is_empty());
+
+        let mut saw_contour = false;
+        let mut saw_hatch = false;
+        let mut saw_solid = false;
+        for h in &derived {
+            match scene.document.get_entity(*h) {
+                Some(EntityType::LwPolyline(_)) => saw_contour = true,
+                Some(EntityType::Hatch(_)) => saw_hatch = true,
+                Some(EntityType::Solid3D(_)) => saw_solid = true,
+                _ => {}
+            }
+        }
+        assert!(saw_contour, "contours should remain when only Solid3D is hidden");
+        assert!(saw_hatch, "hatches should remain when only Solid3D is hidden");
+        assert!(!saw_solid, "no Solid3D entity should be created when the slot is hidden");
+    }
+
+    #[test]
+    fn regenerate_wall_representation_with_rules_hides_layers2d_slot() {
+        use crate::modules::aec::engine::display_component::{ComponentRuleSet, WallComponentSlot};
+
+        let mut scene = Scene::new();
+        let wall_handle = add_multi_layer_wall(&mut scene);
+        let mut rules = ComponentRuleSet::default();
+        rules
+            .visibility
+            .insert(WallComponentSlot::Layers2D.key().to_string(), false);
+
+        regenerate_wall_representation_with_rules(&mut scene, wall_handle, Some(&rules))
+            .expect("regeneration with Layers2D hidden should still succeed");
+
+        let derived = wall_from_entity(scene.document.get_entity(wall_handle).unwrap())
+            .unwrap()
+            .derived_handles;
+        assert!(!derived.is_empty());
+
+        let mut saw_contour = false;
+        let mut saw_solid = false;
+        for h in &derived {
+            match scene.document.get_entity(*h) {
+                Some(EntityType::LwPolyline(_)) => saw_contour = true,
+                Some(EntityType::Solid3D(_)) => saw_solid = true,
+                _ => {}
+            }
+        }
+        assert!(!saw_contour, "no contour polyline should be created when Layers2D is hidden");
+        assert!(saw_solid, "solids should remain when only Layers2D is hidden");
+    }
+
+    /// Serializes access to the on-disk AEC style library file (see
+    /// `engine::library::default_library_path`) for tests that need
+    /// `load_or_seed()` inside `regenerate_wall_representation_inner` to see
+    /// specific wall styles/materials (Step 3 `StyleSubstitution` tests):
+    /// writes `lib`, runs `f`, then restores whatever was on disk before.
+    fn with_test_library<F: FnOnce()>(lib: &crate::modules::aec::engine::library::StyleLibrary, f: F) {
+        static LIBRARY_TEST_LOCK: Mutex<()> = Mutex::new(());
+        let _guard = LIBRARY_TEST_LOCK.lock().unwrap();
+        let path = crate::modules::aec::engine::library::default_library_path();
+        let backup = std::fs::read_to_string(&path).ok();
+        crate::modules::aec::engine::library::save_to_default_path(lib)
+            .expect("failed to write test library");
+        f();
+        match backup {
+            Some(content) => {
+                let _ = std::fs::write(&path, content);
+            }
+            None => {
+                let _ = std::fs::remove_file(&path);
+            }
+        }
+    }
+
+    #[test]
+    fn component_rule_set_style_override_wins_for_hatch_slot() {
+        use crate::modules::aec::engine::display_component::{
+            ComponentRuleSet, ComponentStyleOverride, WallComponentSlot,
+        };
+
+        let mut scene = Scene::new();
+        let wall_handle = add_multi_layer_wall(&mut scene);
+        let mut rules = ComponentRuleSet::default();
+        rules.style_override.insert(
+            WallComponentSlot::ContourHatch2D.key().to_string(),
+            ComponentStyleOverride {
+                hatch_pattern: Some("NET".to_string()),
+                hatch_color: Some(0x00FF00),
+                ..Default::default()
+            },
+        );
+
+        regenerate_wall_representation_with_rules(&mut scene, wall_handle, Some(&rules))
+            .expect("regeneration with a ContourHatch2D style_override should succeed");
+
+        let derived = wall_from_entity(scene.document.get_entity(wall_handle).unwrap())
+            .unwrap()
+            .derived_handles;
+
+        let mut saw_overridden_pattern = false;
+        for h in &derived {
+            if let Some(EntityType::Hatch(hatch)) = scene.document.get_entity(*h) {
+                if hatch.pattern.name == "NET" {
+                    saw_overridden_pattern = true;
+                }
+                // The default fallback pattern must never appear once the
+                // slot-wide override is active.
+                assert_ne!(hatch.pattern.name, "ANSI31");
+            }
+        }
+        assert!(
+            saw_overridden_pattern,
+            "every layer's hatch should use the ContourHatch2D style_override pattern"
+        );
+    }
+
+    #[test]
+    fn layer_selection_explicit_filters_contour_and_solid_to_referenced_layers() {
+        use crate::modules::aec::engine::display_component::{ComponentRuleSet, LayerSelection};
+        use crate::modules::aec::engine::join::LayerRef;
+
+        let mut scene = Scene::new();
+        let wall_handle = add_multi_layer_wall(&mut scene);
+        // add_multi_layer_wall's layers are ["Concrete" (index 0), "Insulation" (index 1)].
+        let mut rules = ComponentRuleSet::default();
+        rules.layer_filter = LayerSelection::Explicit(vec![LayerRef {
+            material_id: "Concrete".to_string(),
+            role_tag: None,
+            index: 0,
+        }]);
+
+        regenerate_wall_representation_with_rules(&mut scene, wall_handle, Some(&rules))
+            .expect("regeneration with an explicit layer_filter should succeed");
+
+        let derived = wall_from_entity(scene.document.get_entity(wall_handle).unwrap())
+            .unwrap()
+            .derived_handles;
+
+        let mut contour_count = 0usize;
+        let mut solid_count = 0usize;
+        let mut hatch_count = 0usize;
+        for h in &derived {
+            match scene.document.get_entity(*h) {
+                Some(EntityType::LwPolyline(_)) => contour_count += 1,
+                Some(EntityType::Solid3D(_)) => solid_count += 1,
+                Some(EntityType::Hatch(_)) => hatch_count += 1,
+                _ => {}
+            }
+        }
+        assert_eq!(
+            contour_count, 1,
+            "only the explicitly referenced layer's contour should be created"
+        );
+        assert_eq!(
+            solid_count, 1,
+            "only the explicitly referenced layer's solid should be created"
+        );
+        // `layer_filter` doesn't gate hatches (plan Step 3 scope is
+        // Contour2D/Solid3D only) — both layers' hatches remain.
+        assert_eq!(
+            hatch_count, 2,
+            "layer_filter must not affect hatch creation, only Contour2D/Solid3D"
+        );
+    }
+
+    #[test]
+    fn style_substitution_swaps_hatch_look_but_keeps_axis_and_thickness() {
+        use crate::modules::aec::engine::library::StyleLibrary;
+        use crate::modules::aec::engine::material::Material;
+
+        let source_material = Material::new(
+            "SourceMat".to_string(),
+            "Source".to_string(),
+            "ANSI31".to_string(),
+            0x111111,
+            "Continuous".to_string(),
+        );
+        let mut target_material = Material::new(
+            "TargetMat".to_string(),
+            "Target".to_string(),
+            "ANSI37".to_string(),
+            0x222222,
+            "Continuous".to_string(),
+        );
+        target_material.hatch_color = Some(0xABCDEF);
+
+        let source_style = WallStyle {
+            style: Style {
+                id: "src-style".to_string(),
+                name: "Source Style".to_string(),
+                object_kind: "Wall".to_string(),
+                parent_style_id: None,
+            },
+            layers: vec![Layer {
+                material_id: "SourceMat".to_string(),
+                thickness: LayerValue::Fixed(0.2),
+                function: LayerFunction::Structural,
+                gap_before: 0.0,
+                bottom_offset: 0.0,
+                top_offset: 0.0,
+                layer_override: None,
+                hatch_override: None,
+                role_tag: None,
+            }],
+        };
+        let target_style = WallStyle {
+            style: Style {
+                id: "tgt-style".to_string(),
+                name: "Target Style".to_string(),
+                object_kind: "Wall".to_string(),
+                parent_style_id: None,
+            },
+            // Same total thickness as `source_style` (0.2), satisfying the
+            // `validate_style_substitution` consistency requirement.
+            layers: vec![Layer {
+                material_id: "TargetMat".to_string(),
+                thickness: LayerValue::Fixed(0.2),
+                function: LayerFunction::Structural,
+                gap_before: 0.0,
+                bottom_offset: 0.0,
+                top_offset: 0.0,
+                layer_override: None,
+                hatch_override: None,
+                role_tag: None,
+            }],
+        };
+        assert!(crate::modules::aec::engine::display_component::validate_style_substitution(
+            &source_style,
+            &target_style
+        )
+        .is_ok());
+
+        let lib = StyleLibrary {
+            materials: vec![source_material, target_material],
+            wall_styles: vec![source_style, target_style],
+        };
+
+        with_test_library(&lib, || {
+            let mut scene = Scene::new();
+            let mut pl = LwPolyline::new();
+            pl.add_vertex(LwVertex::new(Vector2::new(0.0, 0.0)));
+            pl.add_vertex(LwVertex::new(Vector2::new(5.0, 0.0)));
+            let mut entity = EntityType::LwPolyline(pl);
+            let layers = vec![wl("SourceMat", 0.2, "Structural")];
+            let mut record = ExtendedDataRecord::new(AEC_APPID);
+            record.values =
+                wall_record("src-style", 3.0, 0, &layers, &[], WallJustification::Center);
+            entity.common_mut().extended_data.add_record(record);
+            let wall_handle = scene.add_entity(entity);
+
+            let axis_before = get_wall_vertices(&scene, wall_handle);
+
+            let mut substitutions: HashMap<String, String> = HashMap::new();
+            substitutions.insert("src-style".to_string(), "tgt-style".to_string());
+
+            regenerate_wall_representation_with_rules_and_substitutions(
+                &mut scene,
+                wall_handle,
+                None,
+                Some(&substitutions),
+            )
+            .expect("regeneration with a style substitution should succeed");
+
+            let axis_after = get_wall_vertices(&scene, wall_handle);
+            assert_eq!(axis_before, axis_after, "axis geometry must stay unchanged");
+            let wall_after = wall_from_entity(scene.document.get_entity(wall_handle).unwrap())
+                .expect("still a WALL");
+            assert!((wall_after.layers[0].thickness - 0.2).abs() < 1e-9);
+
+            let mut saw_target_pattern = false;
+            for h in &wall_after.derived_handles {
+                if let Some(EntityType::Hatch(hatch)) = scene.document.get_entity(*h) {
+                    if hatch.pattern.name == "ANSI37" {
+                        saw_target_pattern = true;
+                    }
+                    assert_ne!(
+                        hatch.pattern.name, "ANSI31",
+                        "the substituted wall must not use the source style's hatch pattern"
+                    );
+                }
+            }
+            assert!(
+                saw_target_pattern,
+                "the substituted wall should use the target wall style's hatch pattern"
+            );
+        });
+    }
+
+    #[test]
+    fn detailed_style_override_wins_over_style_substitution() {
+        use crate::modules::aec::engine::display_component::{
+            ComponentRuleSet, ComponentStyleOverride, WallComponentSlot,
+        };
+        use crate::modules::aec::engine::library::StyleLibrary;
+        use crate::modules::aec::engine::material::Material;
+
+        let source_material = Material::new(
+            "SourceMat2".to_string(),
+            "Source".to_string(),
+            "ANSI31".to_string(),
+            0x111111,
+            "Continuous".to_string(),
+        );
+        let target_material = Material::new(
+            "TargetMat2".to_string(),
+            "Target".to_string(),
+            "ANSI37".to_string(),
+            0x222222,
+            "Continuous".to_string(),
+        );
+        let source_style = WallStyle {
+            style: Style {
+                id: "src-style-2".to_string(),
+                name: "Source Style 2".to_string(),
+                object_kind: "Wall".to_string(),
+                parent_style_id: None,
+            },
+            layers: vec![Layer {
+                material_id: "SourceMat2".to_string(),
+                thickness: LayerValue::Fixed(0.2),
+                function: LayerFunction::Structural,
+                gap_before: 0.0,
+                bottom_offset: 0.0,
+                top_offset: 0.0,
+                layer_override: None,
+                hatch_override: None,
+                role_tag: None,
+            }],
+        };
+        let target_style = WallStyle {
+            style: Style {
+                id: "tgt-style-2".to_string(),
+                name: "Target Style 2".to_string(),
+                object_kind: "Wall".to_string(),
+                parent_style_id: None,
+            },
+            layers: vec![Layer {
+                material_id: "TargetMat2".to_string(),
+                thickness: LayerValue::Fixed(0.2),
+                function: LayerFunction::Structural,
+                gap_before: 0.0,
+                bottom_offset: 0.0,
+                top_offset: 0.0,
+                layer_override: None,
+                hatch_override: None,
+                role_tag: None,
+            }],
+        };
+
+        let lib = StyleLibrary {
+            materials: vec![source_material, target_material],
+            wall_styles: vec![source_style, target_style],
+        };
+
+        with_test_library(&lib, || {
+            let mut scene = Scene::new();
+            let mut pl = LwPolyline::new();
+            pl.add_vertex(LwVertex::new(Vector2::new(0.0, 0.0)));
+            pl.add_vertex(LwVertex::new(Vector2::new(5.0, 0.0)));
+            let mut entity = EntityType::LwPolyline(pl);
+            let layers = vec![wl("SourceMat2", 0.2, "Structural")];
+            let mut record = ExtendedDataRecord::new(AEC_APPID);
+            record.values = wall_record(
+                "src-style-2",
+                3.0,
+                0,
+                &layers,
+                &[],
+                WallJustification::Center,
+            );
+            entity.common_mut().extended_data.add_record(record);
+            let wall_handle = scene.add_entity(entity);
+
+            let mut substitutions: HashMap<String, String> = HashMap::new();
+            substitutions.insert("src-style-2".to_string(), "tgt-style-2".to_string());
+
+            let mut rules = ComponentRuleSet::default();
+            rules.style_override.insert(
+                WallComponentSlot::ContourHatch2D.key().to_string(),
+                ComponentStyleOverride {
+                    hatch_pattern: Some("NET".to_string()),
+                    ..Default::default()
+                },
+            );
+
+            regenerate_wall_representation_with_rules_and_substitutions(
+                &mut scene,
+                wall_handle,
+                Some(&rules),
+                Some(&substitutions),
+            )
+            .expect("regeneration with both a Detailed override and an applicable substitution should succeed");
+
+            let derived = wall_from_entity(scene.document.get_entity(wall_handle).unwrap())
+                .unwrap()
+                .derived_handles;
+
+            let mut saw_detailed_pattern = false;
+            for h in &derived {
+                if let Some(EntityType::Hatch(hatch)) = scene.document.get_entity(*h) {
+                    assert_eq!(
+                        hatch.pattern.name, "NET",
+                        "the Detailed style_override must win over the style substitution's target pattern"
+                    );
+                    saw_detailed_pattern = true;
+                }
+            }
+            assert!(saw_detailed_pattern, "a hatch should have been created");
+        });
+    }
+
+    #[test]
+    fn regenerate_wall_representation_with_rules_hides_slot_at_joined_corner() {
+        use crate::modules::aec::engine::display_component::{ComponentRuleSet, WallComponentSlot};
+
+        // Two joined walls sharing a corner via `regenerate_wall_representation_with_corner_and_rules`,
+        // confirming the Solid3D override still applies at a mitered/extended corner.
+        let mut scene = Scene::new();
+        let wall_a = add_multi_layer_wall(&mut scene);
+        let mut pl_b = LwPolyline::new();
+        pl_b.add_vertex(LwVertex::new(Vector2::new(5.0, 0.0)));
+        pl_b.add_vertex(LwVertex::new(Vector2::new(5.0, 5.0)));
+        let mut entity_b = EntityType::LwPolyline(pl_b);
+        let layers_b = vec![wl("Concrete", 0.2, "Structural"), wl("Insulation", 0.05, "Insulation")];
+        let mut record_b = ExtendedDataRecord::new(AEC_APPID);
+        record_b.values = wall_record("style1", 3.0, 0, &layers_b, &[], WallJustification::Center);
+        entity_b.common_mut().extended_data.add_record(record_b);
+        let wall_b = scene.add_entity(entity_b);
+
+        let mut rules = ComponentRuleSet::default();
+        rules
+            .visibility
+            .insert(WallComponentSlot::Solid3D.key().to_string(), false);
+
+        // Regenerate wall_a with a corner-extension override toward wall_b's
+        // start vertex, same shape as the plain join path uses, but with the
+        // Solid3D slot hidden.
+        regenerate_wall_representation_with_corner_and_rules(
+            &mut scene,
+            wall_a,
+            Some((1, DVec3::new(5.0, 0.0, 0.0))),
+            None,
+            Some(&rules),
+        )
+        .expect("joined-corner regeneration with Solid3D hidden should still succeed");
+
+        let derived_a = wall_from_entity(scene.document.get_entity(wall_a).unwrap())
+            .unwrap()
+            .derived_handles;
+        assert!(!derived_a.is_empty());
+        let mut saw_contour = false;
+        let mut saw_solid = false;
+        for h in &derived_a {
+            match scene.document.get_entity(*h) {
+                Some(EntityType::LwPolyline(_)) => saw_contour = true,
+                Some(EntityType::Solid3D(_)) => saw_solid = true,
+                _ => {}
+            }
+        }
+        assert!(saw_contour, "contours should still be produced at the joined corner");
+        assert!(!saw_solid, "Solid3D should stay hidden at the joined corner too");
+
+        let _ = wall_b; // kept alive to represent the join partner
     }
 
     #[test]

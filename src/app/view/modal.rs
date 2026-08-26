@@ -49,6 +49,7 @@ impl OpenCADStudio {
             Some(K::RecoveryPrompt) => crate::tr!("modal", "recovery-prompt"),
             Some(K::AecMaterialManager) => t!("AEC Material Manager").into_owned(),
             Some(K::AecWallStyleManager) => t!("AEC Wall Style Manager").into_owned(),
+            Some(K::AecPlanManager) => t!("AEC DisplayConfig Manager").into_owned(),
             Some(K::AecJunctionEditor) => t!("Junction Editor").into_owned(),
             Some(K::AecProjectExplorer) => t!("AEC Project Explorer").into_owned(),
             Some(K::AecStylePicker { .. }) => t!("AEC Style Picker").into_owned(),
@@ -327,6 +328,52 @@ impl OpenCADStudio {
                             .map(|(i, s)| (*i, s.as_str())),
                         pair_style: self.aec_junction_editor_pair_style.clone(),
                     },
+                )
+            }),
+            super::super::ModalKind::AecPlanManager => sized_flow(ex, 900, 560, |_| {
+                static EMPTY_LIB: std::sync::OnceLock<
+                    crate::modules::aec::engine::library::DisplayConfigLibrary,
+                > = std::sync::OnceLock::new();
+                crate::ui::window::aec_plan_manager::view_window(
+                    self.aec_plan_library.as_ref().unwrap_or(EMPTY_LIB.get_or_init(
+                        crate::modules::aec::engine::library::DisplayConfigLibrary::empty,
+                    )),
+                    self.aec_plan_manager_selected.as_deref(),
+                    &self.aec_plan_manager_filter,
+                    crate::ui::window::aec_plan_manager::PlanConfigFormState {
+                        open: self.aec_plan_manager_form_open,
+                        is_new: self.aec_plan_manager_editing_name.is_none(),
+                        editing_name: self.aec_plan_manager_editing_name.as_deref(),
+                        name: &self.aec_plan_manager_name,
+                        discipline: &self.aec_plan_manager_discipline,
+                        scale: &self.aec_plan_manager_scale,
+                        phase: self.aec_plan_manager_phase.clone(),
+                        view_type: self.aec_plan_manager_view_type.clone(),
+                        slot_visibility: &self.aec_plan_manager_slot_visibility,
+                        slot_style_override: &self.aec_plan_manager_style_override,
+                        style_editor: self.aec_plan_manager_style_editor_slot.as_deref().map(|slot_key| {
+                            crate::ui::window::aec_plan_manager::StyleEditorFormState {
+                                slot_key,
+                                line_type: &self.aec_plan_manager_style_editor_line_type,
+                                line_color: &self.aec_plan_manager_style_editor_line_color,
+                                hatch_pattern: &self.aec_plan_manager_style_editor_hatch_pattern,
+                                hatch_color: &self.aec_plan_manager_style_editor_hatch_color,
+                                fill_color: &self.aec_plan_manager_style_editor_fill_color,
+                            }
+                        }),
+                        style_library: self.aec_style_library.as_ref(),
+                        layer_filter_explicit: self.aec_plan_manager_layer_filter_explicit,
+                        layer_filter_selection: &self.aec_plan_manager_layer_filter_selection,
+                        style_substitutions: &self.aec_plan_manager_style_substitutions,
+                        new_substitution_source: self.aec_plan_manager_new_substitution_source.as_deref(),
+                        new_substitution_target: self.aec_plan_manager_new_substitution_target.as_deref(),
+                        substitution_error: self.aec_plan_manager_substitution_error.as_deref(),
+                        new_mapping_scale: &self.aec_plan_manager_scale_mapping_new_scale,
+                        new_mapping_config: self.aec_plan_manager_scale_mapping_new_config.as_deref(),
+                    },
+                    self.tabs.get(self.active_tab)
+                        .map(|tab| tab.auto_display_config_from_scale)
+                        .unwrap_or(true),
                 )
             }),
             super::super::ModalKind::AecProjectExplorer => sized_flow(ex, 720, 520, |_| {

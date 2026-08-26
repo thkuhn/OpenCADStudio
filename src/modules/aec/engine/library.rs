@@ -1,13 +1,14 @@
 //! AEC Style Library for persisting materials and wall styles.
 
 use crate::modules::aec::engine::material::Material;
+use crate::modules::aec::engine::plan_view::{DisplayConfig, ScaleDisplayConfigMapping};
 use crate::modules::aec::engine::style::Style;
 use crate::modules::aec::engine::wall_style::{LayerValue, Layer, LayerFunction, WallStyle};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
 /// A collection of AEC materials and wall styles.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 pub struct StyleLibrary {
     /// List of available materials.
     pub materials: Vec<Material>,
@@ -417,6 +418,167 @@ pub fn load_or_seed() -> StyleLibrary {
     seed
 }
 
+/// A collection of [`DisplayConfig`]s ("Plans"), persisted analogously to
+/// [`StyleLibrary`] — see Step 5 of
+/// `.junie/plans/aec-plan-view-display-variants.md`. Deliberately a
+/// separate library/file (not folded into `StyleLibrary`) since
+/// `DisplayConfig`s are a distinct kind of library entry with their own
+/// lifecycle, and keeping them apart avoids growing every wall-style/
+/// material save into a `DisplayConfig` roundtrip too.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+pub struct DisplayConfigLibrary {
+    /// List of available display configurations ("Plans").
+    #[serde(default)]
+    pub configs: Vec<DisplayConfig>,
+    /// Step 7 ("Auto-Maßstabskopplung an den Zeichnungsmaßstab"): the
+    /// "bei aktivem Zeichnungsmaßstab X automatisch `DisplayConfig` Y
+    /// vorschlagen/aktivieren" mapping table. Kept at the library (not the
+    /// single-config) granularity — see [`ScaleDisplayConfigMapping`].
+    #[serde(default)]
+    pub scale_display_config_mappings: Vec<ScaleDisplayConfigMapping>,
+}
+
+impl DisplayConfigLibrary {
+    /// An empty library (no display configs, no scale mappings).
+    pub fn empty() -> Self {
+        Self {
+            configs: Vec::new(),
+            scale_display_config_mappings: Vec::new(),
+        }
+    }
+
+    /// Inserts or replaces (by `name`) a display config.
+    pub fn upsert(&mut self, config: DisplayConfig) {
+        if let Some(existing) = self.configs.iter_mut().find(|c| c.name == config.name) {
+            *existing = config;
+        } else {
+            self.configs.push(config);
+        }
+    }
+
+    /// Removes a display config by `name`. Returns `true` if one was removed.
+    pub fn remove(&mut self, name: &str) -> bool {
+        let before = self.configs.len();
+        self.configs.retain(|c| c.name != name);
+        self.configs.len() != before
+    }
+
+    /// Looks up a display config by `name`.
+    pub fn find(&self, name: &str) -> Option<&DisplayConfig> {
+        self.configs.iter().find(|c| c.name == name)
+    }
+
+    /// Step 7: resolves the `DisplayConfig` mapped to `scale_name` (e.g.
+    /// `"1:50"`), matched case-insensitively against
+    /// [`ScaleDisplayConfigMapping::scale_name`], mirroring the
+    /// `eq_ignore_ascii_case` convention already used elsewhere for scale-
+    /// name comparisons. Returns `None` — never panics — when there is no
+    /// mapping for `scale_name`, or when the mapped `DisplayConfig` name no
+    /// longer exists in `configs` (graceful degradation).
+    pub fn resolve_display_config_for_scale(&self, scale_name: &str) -> Option<&DisplayConfig> {
+        let mapping = self
+            .scale_display_config_mappings
+            .iter()
+            .find(|m| m.scale_name.eq_ignore_ascii_case(scale_name))?;
+        self.find(&mapping.display_config_name)
+    }
+}
+
+/// Upserts a [`ScaleDisplayConfigMapping`] into an existing list (mirroring
+/// the [`crate::modules::aec::engine::display_component::upsert_style_substitution`]
+/// pattern): if `scale_name` already has a mapping, its target config name
+/// is replaced in place (preserving order); otherwise a new mapping is
+/// appended.
+pub fn upsert_scale_display_config_mapping(
+    existing: &[ScaleDisplayConfigMapping],
+    scale_name: String,
+    display_config_name: String,
+) -> Vec<ScaleDisplayConfigMapping> {
+    let mut result = existing.to_vec();
+    match result.iter().position(|m| m.scale_name == scale_name) {
+        Some(pos) => result[pos].display_config_name = display_config_name,
+        None => result.push(ScaleDisplayConfigMapping {
+            scale_name,
+            display_config_name,
+        }),
+    }
+    result
+}
+
+/// Serializes the display-config library to a string (JSON, see [`to_toml`]
+/// for the rationale of the misleadingly-named-but-consistent function).
+pub fn display_config_library_to_toml(lib: &DisplayConfigLibrary) -> Result<String, String> {
+    serde_json::to_string_pretty(lib).map_err(|e| e.to_string())
+}
+
+/// Deserializes the display-config library from a string.
+pub fn display_config_library_from_toml(s: &str) -> Result<DisplayConfigLibrary, String> {
+    serde_json::from_str(s).map_err(|e| e.to_string())
+}
+
+/// Returns the default path for the AEC display-config ("Plan") library
+/// file. Reuses the application's standard configuration directory.
+pub fn default_display_config_library_path() -> PathBuf {
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        if let Some(p) = crate::config::config_dir() {
+            return p.join("aec_display_configs.toml");
+        }
+    }
+
+    let mut p = PathBuf::new();
+    #[cfg(all(not(target_arch = "wasm32"), target_os = "linux"))]
+    {
+        if let Ok(home) = std::env::var("HOME") {
+            p.push(home);
+            p.push(".config");
+        }
+    }
+    p.push("OpenCADStudio");
+    p.push("aec_display_configs.toml");
+    p
+}
+
+/// Persists `lib` to [`default_display_config_library_path`], creating
+/// parent directories as needed. On `wasm32` this is a no-op.
+pub fn save_display_config_library_to_default_path(lib: &DisplayConfigLibrary) -> Result<(), String> {
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let path = default_display_config_library_path();
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+        }
+        let content = display_config_library_to_toml(lib)?;
+        return std::fs::write(&path, content).map_err(|e| e.to_string());
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        let _ = lib;
+        Ok(())
+    }
+}
+
+/// Loads the display-config library from
+/// [`default_display_config_library_path`], or — if it does not exist yet —
+/// returns an empty library (no seed data: unlike materials/wall styles,
+/// `DisplayConfig`s have no sensible non-empty default without a project's
+/// own wall styles to reference). On `wasm32` this always returns an empty
+/// in-memory library.
+pub fn load_or_seed_display_config_library() -> DisplayConfigLibrary {
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let path = default_display_config_library_path();
+        if path.exists() {
+            if let Ok(content) = std::fs::read_to_string(&path) {
+                if let Ok(lib) = display_config_library_from_toml(&content) {
+                    return lib;
+                }
+            }
+        }
+    }
+    DisplayConfigLibrary::empty()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -719,5 +881,239 @@ mod tests {
             unused.is_empty(),
             "mat_wood is seeded but not used by any default wall style"
         );
+    }
+
+    #[test]
+    fn display_config_library_roundtrip() {
+        use crate::modules::aec::engine::plan_view::{PlanPhase, ViewType};
+
+        let mut lib = DisplayConfigLibrary::empty();
+        let mut cfg = DisplayConfig::new(
+            "Architekt 1:50".to_string(),
+            "Architektur".to_string(),
+            PlanPhase::New,
+            ViewType::FloorPlan,
+        );
+        cfg.scale = Some(50.0);
+        lib.upsert(cfg);
+
+        let serialized = display_config_library_to_toml(&lib).expect("serialization failed");
+        let deserialized =
+            display_config_library_from_toml(&serialized).expect("deserialization failed");
+        assert_eq!(lib, deserialized);
+    }
+
+    #[test]
+    fn display_config_library_upsert_replaces_by_name() {
+        use crate::modules::aec::engine::plan_view::{PlanPhase, ViewType};
+
+        let mut lib = DisplayConfigLibrary::empty();
+        lib.upsert(DisplayConfig::new(
+            "Statik 1:50".to_string(),
+            "Statik".to_string(),
+            PlanPhase::Existing,
+            ViewType::Section,
+        ));
+        assert_eq!(lib.configs.len(), 1);
+
+        let mut updated = DisplayConfig::new(
+            "Statik 1:50".to_string(),
+            "Statik (überarbeitet)".to_string(),
+            PlanPhase::New,
+            ViewType::Section,
+        );
+        updated.scale = Some(100.0);
+        lib.upsert(updated);
+
+        assert_eq!(lib.configs.len(), 1, "same name must replace, not duplicate");
+        let found = lib.find("Statik 1:50").expect("config must still be found by name");
+        assert_eq!(found.discipline, "Statik (überarbeitet)");
+        assert_eq!(found.scale, Some(100.0));
+    }
+
+    #[test]
+    fn display_config_library_remove_by_name() {
+        use crate::modules::aec::engine::plan_view::{PlanPhase, ViewType};
+
+        let mut lib = DisplayConfigLibrary::empty();
+        lib.upsert(DisplayConfig::new(
+            "Präsentation 1:200".to_string(),
+            "Präsentation".to_string(),
+            PlanPhase::New,
+            ViewType::FloorPlan,
+        ));
+
+        assert!(lib.remove("Präsentation 1:200"));
+        assert!(lib.configs.is_empty());
+        assert!(!lib.remove("Präsentation 1:200"));
+    }
+
+    #[test]
+    fn display_config_library_without_configs_field_deserializes_empty() {
+        let json = r#"{}"#;
+        let lib = display_config_library_from_toml(json)
+            .expect("missing configs field must default to empty");
+        assert!(lib.configs.is_empty());
+        assert!(lib.scale_display_config_mappings.is_empty());
+    }
+
+    #[test]
+    fn display_config_library_scale_mappings_roundtrip() {
+        use crate::modules::aec::engine::plan_view::{PlanPhase, ScaleDisplayConfigMapping, ViewType};
+
+        let mut lib = DisplayConfigLibrary::empty();
+        lib.upsert(DisplayConfig::new(
+            "Architekt 1:50".to_string(),
+            "Architektur".to_string(),
+            PlanPhase::New,
+            ViewType::FloorPlan,
+        ));
+        lib.scale_display_config_mappings.push(ScaleDisplayConfigMapping {
+            scale_name: "1:50".to_string(),
+            display_config_name: "Architekt 1:50".to_string(),
+        });
+
+        let serialized = display_config_library_to_toml(&lib).expect("serialization failed");
+        let deserialized =
+            display_config_library_from_toml(&serialized).expect("deserialization failed");
+        assert_eq!(lib, deserialized);
+    }
+
+    #[test]
+    fn display_config_library_without_scale_mappings_field_deserializes_empty() {
+        // Simulates a library file saved before Step 7 introduced
+        // `scale_display_config_mappings`: must default to empty, not fail.
+        let json = r#"{
+            "configs": [
+                {
+                    "name": "Architekt 1:50",
+                    "discipline": "Architektur",
+                    "phase": "New",
+                    "view_type": "FloorPlan"
+                }
+            ]
+        }"#;
+        let lib = display_config_library_from_toml(json)
+            .expect("old-format library without scale mappings must still deserialize");
+        assert_eq!(lib.configs.len(), 1);
+        assert!(lib.scale_display_config_mappings.is_empty());
+    }
+
+    #[test]
+    fn resolve_display_config_for_scale_finds_exact_match() {
+        use crate::modules::aec::engine::plan_view::{PlanPhase, ScaleDisplayConfigMapping, ViewType};
+
+        let mut lib = DisplayConfigLibrary::empty();
+        lib.upsert(DisplayConfig::new(
+            "Architekt 1:50".to_string(),
+            "Architektur".to_string(),
+            PlanPhase::New,
+            ViewType::FloorPlan,
+        ));
+        lib.scale_display_config_mappings.push(ScaleDisplayConfigMapping {
+            scale_name: "1:50".to_string(),
+            display_config_name: "Architekt 1:50".to_string(),
+        });
+
+        let resolved = lib
+            .resolve_display_config_for_scale("1:50")
+            .expect("mapping should resolve");
+        assert_eq!(resolved.name, "Architekt 1:50");
+    }
+
+    #[test]
+    fn resolve_display_config_for_scale_is_case_insensitive() {
+        use crate::modules::aec::engine::plan_view::{PlanPhase, ScaleDisplayConfigMapping, ViewType};
+
+        let mut lib = DisplayConfigLibrary::empty();
+        lib.upsert(DisplayConfig::new(
+            "Statik".to_string(),
+            "Statik".to_string(),
+            PlanPhase::Existing,
+            ViewType::Section,
+        ));
+        // Scale names in practice are digits/colons, but the comparison
+        // itself must be `eq_ignore_ascii_case` regardless — verify with a
+        // deliberately mixed-case variant to exercise that code path.
+        lib.scale_display_config_mappings.push(ScaleDisplayConfigMapping {
+            scale_name: "1:50 A".to_string(),
+            display_config_name: "Statik".to_string(),
+        });
+
+        let resolved = lib.resolve_display_config_for_scale("1:50 a");
+        assert_eq!(resolved.map(|c| c.name.as_str()), Some("Statik"));
+    }
+
+    #[test]
+    fn resolve_display_config_for_scale_returns_none_without_mapping() {
+        let lib = DisplayConfigLibrary::empty();
+        assert!(lib.resolve_display_config_for_scale("1:50").is_none());
+    }
+
+    #[test]
+    fn resolve_display_config_for_scale_returns_none_for_dangling_reference() {
+        use crate::modules::aec::engine::plan_view::ScaleDisplayConfigMapping;
+
+        // Edge case ("Grenzwert") explicitly called out by the plan: the
+        // mapping references a `DisplayConfig` name that no longer exists.
+        let mut lib = DisplayConfigLibrary::empty();
+        lib.scale_display_config_mappings.push(ScaleDisplayConfigMapping {
+            scale_name: "1:50".to_string(),
+            display_config_name: "Nonexistent".to_string(),
+        });
+
+        assert!(lib.resolve_display_config_for_scale("1:50").is_none());
+    }
+
+    #[test]
+    fn upsert_scale_display_config_mapping_appends_new_scale() {
+        let existing = vec![ScaleDisplayConfigMapping {
+            scale_name: "1:50".to_string(),
+            display_config_name: "Architekt 1:50".to_string(),
+        }];
+        let result = upsert_scale_display_config_mapping(
+            &existing,
+            "1:100".to_string(),
+            "Architekt 1:100".to_string(),
+        );
+        assert_eq!(result.len(), 2);
+        assert_eq!(result[1].scale_name, "1:100");
+        assert_eq!(result[1].display_config_name, "Architekt 1:100");
+    }
+
+    #[test]
+    fn upsert_scale_display_config_mapping_overwrites_existing_scale_in_place() {
+        let existing = vec![
+            ScaleDisplayConfigMapping {
+                scale_name: "1:50".to_string(),
+                display_config_name: "Architekt 1:50".to_string(),
+            },
+            ScaleDisplayConfigMapping {
+                scale_name: "1:100".to_string(),
+                display_config_name: "Architekt 1:100".to_string(),
+            },
+        ];
+        let result = upsert_scale_display_config_mapping(
+            &existing,
+            "1:50".to_string(),
+            "Statik 1:50".to_string(),
+        );
+        assert_eq!(result.len(), 2);
+        assert_eq!(result[0].scale_name, "1:50");
+        assert_eq!(result[0].display_config_name, "Statik 1:50");
+        // Unrelated rows preserved.
+        assert_eq!(result[1].scale_name, "1:100");
+    }
+
+    #[test]
+    fn upsert_scale_display_config_mapping_on_empty_buffer_creates_first_row() {
+        let result = upsert_scale_display_config_mapping(
+            &[],
+            "1:20".to_string(),
+            "Detail 1:20".to_string(),
+        );
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].scale_name, "1:20");
+        assert_eq!(result[0].display_config_name, "Detail 1:20");
     }
 }

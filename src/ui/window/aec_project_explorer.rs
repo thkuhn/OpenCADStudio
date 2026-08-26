@@ -44,6 +44,11 @@ pub fn view_window<'a>(
         None => t!("(unsaved project)").into_owned(),
     };
 
+    let mut migrate_button = button(text(t!("Bibliotheken migrieren")).size(11)).padding([5, 10]);
+    if project.is_some() {
+        migrate_button = migrate_button.on_press(Message::AecProjectExplorerMigrateLibraries);
+    }
+
     let toolbar = row![
         button(text(t!("New Project")).size(11))
             .padding([5, 10])
@@ -58,6 +63,7 @@ pub fn view_window<'a>(
         button(text(t!("Save As…")).size(11))
             .padding([5, 10])
             .on_press(Message::AecProjectExplorerSaveAs),
+        migrate_button,
         Space::new().width(Fill),
         text(path_label).size(10).style(muted),
     ]

@@ -1031,6 +1031,7 @@ impl OpenCADStudio {
                             );
                         }
                         self.tabs[i].dirty = true;
+                        self.aec_maybe_apply_display_config_for_scale(i, &arg);
                         self.command_line
                             .push_output(crate::tf!("Annotation scale: {arg}").as_ref());
                     }

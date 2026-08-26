@@ -1,6 +1,7 @@
 pub mod about;
 pub mod aec_junction_editor;
 pub mod aec_material_manager;
+pub mod aec_plan_manager;
 pub mod aec_wall_style_manager;
 pub mod aec_style_picker;
 pub mod aec_project_explorer;

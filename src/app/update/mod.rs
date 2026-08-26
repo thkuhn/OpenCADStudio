@@ -135,6 +135,78 @@ impl OpenCADStudio {
         }
     }
 
+    /// Persists `lib` as the effective material/wall-style library: into
+    /// the loaded project (fanning out to every drawing/storey referencing
+    /// it) when a project is loaded *and* pathed, otherwise falling back to
+    /// the machine-wide global library file so standalone drawings (no
+    /// project) keep working exactly as before.
+    fn aec_save_style_library_preferring_project(
+        &mut self,
+        lib: &crate::modules::aec::engine::library::StyleLibrary,
+    ) -> Result<(), String> {
+        if let (Some(project), Some(path)) = (
+            self.aec_project_explorer_file.as_mut(),
+            self.aec_project_explorer_path.clone(),
+        ) {
+            crate::modules::aec::engine::project::save_style_library_to_project(
+                project,
+                &path,
+                lib.clone(),
+            )
+            .map_err(|e| e.to_string())
+        } else {
+            crate::modules::aec::engine::library::save_to_default_path(lib)
+        }
+    }
+
+    /// Persists `lib` as the effective `DisplayConfig` library, analogous
+    /// to [`Self::aec_save_style_library_preferring_project`].
+    fn aec_save_display_config_library_preferring_project(
+        &mut self,
+        lib: &crate::modules::aec::engine::library::DisplayConfigLibrary,
+    ) -> Result<(), String> {
+        if let (Some(project), Some(path)) = (
+            self.aec_project_explorer_file.as_mut(),
+            self.aec_project_explorer_path.clone(),
+        ) {
+            crate::modules::aec::engine::project::save_display_config_library_to_project(
+                project,
+                &path,
+                lib.clone(),
+            )
+            .map_err(|e| e.to_string())
+        } else {
+            crate::modules::aec::engine::library::save_display_config_library_to_default_path(lib)
+        }
+    }
+
+    /// Step 7 ("Auto-Maßstabskopplung an den Zeichnungsmaßstab"): when tab
+    /// `tab_index`'s `auto_display_config_from_scale` flag is set, looks up
+    /// the `DisplayConfig` mapped to `scale_name` and — if found —
+    /// activates it on that tab (mirrors the manual-selection handler for
+    /// `Message::AecActiveDisplayConfigSelected`, but must NOT touch the
+    /// flag itself: it only ever reads it).
+    pub(super) fn aec_maybe_apply_display_config_for_scale(&mut self, tab_index: usize, scale_name: &str) {
+        let Some(tab) = self.tabs.get(tab_index) else {
+            return;
+        };
+        if !tab.auto_display_config_from_scale {
+            return;
+        }
+        let lib = self.aec_plan_library.get_or_insert_with(|| {
+            crate::modules::aec::engine::project::resolve_display_config_library(
+                self.aec_project_explorer_file.as_ref(),
+            )
+        });
+        let Some(config) = lib.resolve_display_config_for_scale(scale_name).cloned() else {
+            return;
+        };
+        if let Some(tab) = self.tabs.get_mut(tab_index) {
+            tab.active_display_config = Some(config.name.clone());
+            crate::modules::aec::commands::apply_display_config_to_scene(&mut tab.scene, &config);
+        }
+    }
+
     /// Apply any not-yet-saved building/storey edit buffers (from the inline
     /// "Speichern" rows) to the in-memory project, so the top-level "Save"
     /// button captures everything the user typed, even if they never
@@ -306,14 +378,15 @@ impl OpenCADStudio {
             .aec_style_library
             .get_or_insert_with(crate::modules::aec::engine::library::StyleLibrary::empty);
         lib.upsert_wall_style(wall_style);
+        let lib_snapshot = lib.clone();
 
-        match crate::modules::aec::engine::library::save_to_default_path(lib) {
+        match self.aec_save_style_library_preferring_project(&lib_snapshot) {
             Ok(()) => {
                 self.command_line
                     .push_info(crate::t!("AEC Style Manager: wall style saved.").as_ref());
                 self.aec_style_manager_selected_wall_style = Some(id.clone());
                 self.aec_style_manager_wall_style_editing_id = Some(id.clone());
-                Some((id, lib.clone()))
+                Some((id, lib_snapshot))
             }
             Err(e) => {
                 self.command_line.push_error(
@@ -2053,8 +2126,11 @@ impl OpenCADStudio {
             }
             Message::AecMaterialManagerOpen => {
                 self.ribbon.close_dropdown();
-                self.aec_style_library =
-                    Some(crate::modules::aec::engine::library::load_or_seed());
+                self.aec_style_library = Some(
+                    crate::modules::aec::engine::project::resolve_style_library(
+                        self.aec_project_explorer_file.as_ref(),
+                    ),
+                );
                 self.aec_style_manager_filter.clear();
                 self.aec_style_manager_selected_material = None;
                 self.aec_style_manager_selected_wall_style = None;
@@ -2069,8 +2145,11 @@ impl OpenCADStudio {
             }
             Message::AecWallStyleManagerOpen => {
                 self.ribbon.close_dropdown();
-                self.aec_style_library =
-                    Some(crate::modules::aec::engine::library::load_or_seed());
+                self.aec_style_library = Some(
+                    crate::modules::aec::engine::project::resolve_style_library(
+                        self.aec_project_explorer_file.as_ref(),
+                    ),
+                );
                 self.aec_style_manager_filter.clear();
                 self.aec_style_manager_selected_material = None;
                 self.aec_style_manager_selected_wall_style = None;
@@ -2436,6 +2515,583 @@ impl OpenCADStudio {
                     path.to_string_lossy().into_owned()
                 };
                 self.aec_project_explorer_edit_storey_drawing = display;
+                Task::none()
+            }
+            Message::AecProjectExplorerMigrateLibraries => {
+                if let Some(project) = self.aec_project_explorer_file.as_mut() {
+                    crate::modules::aec::engine::project::migrate_file_library_to_project(project);
+                    self.aec_project_explorer_persist_if_pathed();
+                    self.command_line.push_info(
+                        crate::t!("AEC Project Explorer: libraries migrated into project.").as_ref(),
+                    );
+                } else {
+                    self.command_line.push_error(
+                        crate::t!("AEC Project Explorer: no project loaded to migrate into.")
+                            .as_ref(),
+                    );
+                }
+                Task::none()
+            }
+            Message::AecPlanManagerOpen => {
+                self.ribbon.close_dropdown();
+                self.aec_plan_library = Some(
+                    crate::modules::aec::engine::project::resolve_display_config_library(
+                        self.aec_project_explorer_file.as_ref(),
+                    ),
+                );
+                // Layer-Filter-UI: the multi-select checklist needs the
+                // full set of wall styles/layers currently in effect, the
+                // same "project overrides global" resolution the
+                // Material/WallStyle managers already use.
+                self.aec_style_library = Some(
+                    crate::modules::aec::engine::project::resolve_style_library(
+                        self.aec_project_explorer_file.as_ref(),
+                    ),
+                );
+                self.aec_plan_manager_filter.clear();
+                self.aec_plan_manager_selected = None;
+                self.aec_plan_manager_editing_name = None;
+                self.aec_plan_manager_form_open = false;
+                self.active_modal = Some(super::ModalKind::AecPlanManager);
+                Task::none()
+            }
+            Message::AecPlanManagerClose => {
+                self.active_modal = None;
+                Task::none()
+            }
+            Message::AecPlanManagerFilter(value) => {
+                self.aec_plan_manager_filter = value;
+                Task::none()
+            }
+            Message::AecPlanManagerSelect(name) => {
+                if let Some(cfg) = self
+                    .aec_plan_library
+                    .as_ref()
+                    .and_then(|lib| lib.find(&name))
+                {
+                    self.aec_plan_manager_editing_name = Some(cfg.name.clone());
+                    self.aec_plan_manager_name = cfg.name.clone();
+                    self.aec_plan_manager_discipline = cfg.discipline.clone();
+                    self.aec_plan_manager_scale =
+                        cfg.scale.map(|s| s.to_string()).unwrap_or_default();
+                    self.aec_plan_manager_phase = cfg.phase.clone();
+                    self.aec_plan_manager_view_type = cfg.view_type.clone();
+                    self.aec_plan_manager_slot_visibility = cfg
+                        .wall_rules()
+                        .map(|r| r.visibility.clone())
+                        .unwrap_or_default();
+                    self.aec_plan_manager_style_override = cfg
+                        .wall_rules()
+                        .map(|r| r.style_override.clone())
+                        .unwrap_or_default();
+                    self.aec_plan_manager_style_editor_slot = None;
+                    let (is_explicit, selected) = cfg
+                        .wall_rules()
+                        .map(|r| {
+                            crate::modules::aec::engine::display_component::layer_filter_to_ui_state(
+                                &r.layer_filter,
+                            )
+                        })
+                        .unwrap_or((false, Vec::new()));
+                    self.aec_plan_manager_layer_filter_explicit = is_explicit;
+                    self.aec_plan_manager_layer_filter_selection = selected;
+                    self.aec_plan_manager_style_substitutions =
+                        cfg.style_substitutions.iter().map(|(s, t)| (s.clone(), t.clone())).collect();
+                    self.aec_plan_manager_new_substitution_source = None;
+                    self.aec_plan_manager_new_substitution_target = None;
+                    self.aec_plan_manager_substitution_error = None;
+                    self.aec_plan_manager_form_open = true;
+                }
+                self.aec_plan_manager_selected = Some(name);
+                Task::none()
+            }
+            Message::AecPlanManagerNew => {
+                self.aec_plan_manager_selected = None;
+                self.aec_plan_manager_editing_name = None;
+                self.aec_plan_manager_name.clear();
+                self.aec_plan_manager_discipline.clear();
+                self.aec_plan_manager_scale.clear();
+                self.aec_plan_manager_phase = crate::modules::aec::engine::plan_view::PlanPhase::New;
+                self.aec_plan_manager_view_type =
+                    crate::modules::aec::engine::plan_view::ViewType::FloorPlan;
+                self.aec_plan_manager_slot_visibility.clear();
+                self.aec_plan_manager_style_override.clear();
+                self.aec_plan_manager_style_editor_slot = None;
+                self.aec_plan_manager_layer_filter_explicit = false;
+                self.aec_plan_manager_layer_filter_selection.clear();
+                self.aec_plan_manager_style_substitutions.clear();
+                self.aec_plan_manager_new_substitution_source = None;
+                self.aec_plan_manager_new_substitution_target = None;
+                self.aec_plan_manager_substitution_error = None;
+                self.aec_plan_manager_form_open = true;
+                Task::none()
+            }
+            Message::AecPlanManagerDuplicate => {
+                let source_name = self
+                    .aec_plan_manager_editing_name
+                    .clone()
+                    .or_else(|| self.aec_plan_manager_selected.clone());
+                let Some(source_name) = source_name else {
+                    return Task::none();
+                };
+                let Some(cfg) = self
+                    .aec_plan_library
+                    .as_ref()
+                    .and_then(|lib| lib.find(&source_name))
+                    .cloned()
+                else {
+                    return Task::none();
+                };
+                let existing_names: Vec<String> = self
+                    .aec_plan_library
+                    .as_ref()
+                    .map(|lib| lib.configs.iter().map(|c| c.name.clone()).collect())
+                    .unwrap_or_default();
+                let base_name = format!("{} (Kopie)", cfg.name);
+                let mut name = base_name.clone();
+                let mut counter = 2;
+                while existing_names.iter().any(|n| n == &name) {
+                    name = format!("{base_name} {counter}");
+                    counter += 1;
+                }
+                self.aec_plan_manager_selected = None;
+                self.aec_plan_manager_editing_name = None;
+                self.aec_plan_manager_name = name;
+                self.aec_plan_manager_discipline = cfg.discipline.clone();
+                self.aec_plan_manager_scale = cfg.scale.map(|s| s.to_string()).unwrap_or_default();
+                self.aec_plan_manager_slot_visibility =
+                    cfg.wall_rules().map(|r| r.visibility.clone()).unwrap_or_default();
+                self.aec_plan_manager_style_override =
+                    cfg.wall_rules().map(|r| r.style_override.clone()).unwrap_or_default();
+                self.aec_plan_manager_style_editor_slot = None;
+                let (is_explicit, selected) = cfg
+                    .wall_rules()
+                    .map(|r| {
+                        crate::modules::aec::engine::display_component::layer_filter_to_ui_state(
+                            &r.layer_filter,
+                        )
+                    })
+                    .unwrap_or((false, Vec::new()));
+                self.aec_plan_manager_layer_filter_explicit = is_explicit;
+                self.aec_plan_manager_layer_filter_selection = selected;
+                self.aec_plan_manager_style_substitutions =
+                    cfg.style_substitutions.iter().map(|(s, t)| (s.clone(), t.clone())).collect();
+                self.aec_plan_manager_new_substitution_source = None;
+                self.aec_plan_manager_new_substitution_target = None;
+                self.aec_plan_manager_substitution_error = None;
+                self.aec_plan_manager_phase = cfg.phase;
+                self.aec_plan_manager_view_type = cfg.view_type;
+                self.aec_plan_manager_form_open = true;
+                Task::none()
+            }
+            Message::AecPlanManagerDelete => {
+                if let Some(name) = self.aec_plan_manager_selected.clone() {
+                    let lib_snapshot = if let Some(lib) = self.aec_plan_library.as_mut() {
+                        lib.remove(&name);
+                        Some(lib.clone())
+                    } else {
+                        None
+                    };
+                    if let Some(lib_snapshot) = lib_snapshot {
+                        match self.aec_save_display_config_library_preferring_project(&lib_snapshot) {
+                            Ok(()) => self.command_line.push_info(
+                                crate::t!("AEC DisplayConfig Manager: config deleted.").as_ref(),
+                            ),
+                            Err(e) => self.command_line.push_error(
+                                crate::tf!("AEC DisplayConfig Manager: failed to save library: {e}")
+                                    .as_ref(),
+                            ),
+                        }
+                    }
+                }
+                self.aec_plan_manager_selected = None;
+                self.aec_plan_manager_editing_name = None;
+                self.aec_plan_manager_form_open = false;
+                Task::none()
+            }
+            Message::AecPlanManagerNameChanged(value) => {
+                self.aec_plan_manager_name = value;
+                Task::none()
+            }
+            Message::AecPlanManagerDisciplineChanged(value) => {
+                self.aec_plan_manager_discipline = value;
+                Task::none()
+            }
+            Message::AecPlanManagerScaleChanged(value) => {
+                self.aec_plan_manager_scale = value;
+                Task::none()
+            }
+            Message::AecPlanManagerPhaseChanged(phase) => {
+                self.aec_plan_manager_phase = phase;
+                Task::none()
+            }
+            Message::AecPlanManagerViewTypeChanged(view_type) => {
+                self.aec_plan_manager_view_type = view_type;
+                Task::none()
+            }
+            Message::AecPlanManagerSlotVisibilityToggle(key) => {
+                let current = self
+                    .aec_plan_manager_slot_visibility
+                    .get(&key)
+                    .copied()
+                    .unwrap_or(true);
+                self.aec_plan_manager_slot_visibility.insert(key, !current);
+                Task::none()
+            }
+            Message::AecPlanManagerSlotStyleEdit(key) => {
+                let existing = self.aec_plan_manager_style_override.get(&key).cloned();
+                let existing = existing.unwrap_or_default();
+                self.aec_plan_manager_style_editor_line_type =
+                    existing.line_type.clone().unwrap_or_default();
+                self.aec_plan_manager_style_editor_line_color = existing
+                    .line_color
+                    .map(|c| format!("{c:06X}"))
+                    .unwrap_or_default();
+                self.aec_plan_manager_style_editor_hatch_pattern =
+                    existing.hatch_pattern.clone().unwrap_or_default();
+                self.aec_plan_manager_style_editor_hatch_color = existing
+                    .hatch_color
+                    .map(|c| format!("{c:06X}"))
+                    .unwrap_or_default();
+                self.aec_plan_manager_style_editor_fill_color = existing
+                    .fill_color
+                    .map(|c| format!("{c:06X}"))
+                    .unwrap_or_default();
+                self.aec_plan_manager_style_editor_slot = Some(key);
+                Task::none()
+            }
+            Message::AecPlanManagerSlotStyleEditorClose => {
+                self.aec_plan_manager_style_editor_slot = None;
+                Task::none()
+            }
+            Message::AecPlanManagerSlotStyleLineTypeChanged(value) => {
+                self.aec_plan_manager_style_editor_line_type = value;
+                Task::none()
+            }
+            Message::AecPlanManagerSlotStyleLineColorChanged(value) => {
+                self.aec_plan_manager_style_editor_line_color = value;
+                Task::none()
+            }
+            Message::AecPlanManagerSlotStyleHatchPatternChanged(value) => {
+                self.aec_plan_manager_style_editor_hatch_pattern = value;
+                Task::none()
+            }
+            Message::AecPlanManagerSlotStyleHatchColorChanged(value) => {
+                self.aec_plan_manager_style_editor_hatch_color = value;
+                Task::none()
+            }
+            Message::AecPlanManagerSlotStyleFillColorChanged(value) => {
+                self.aec_plan_manager_style_editor_fill_color = value;
+                Task::none()
+            }
+            Message::AecPlanManagerSlotStyleSave => {
+                let Some(key) = self.aec_plan_manager_style_editor_slot.clone() else {
+                    return Task::none();
+                };
+                let override_value =
+                    crate::modules::aec::engine::display_component::component_style_override_from_editor_fields(
+                        &self.aec_plan_manager_style_editor_line_type,
+                        &self.aec_plan_manager_style_editor_line_color,
+                        &self.aec_plan_manager_style_editor_hatch_pattern,
+                        &self.aec_plan_manager_style_editor_hatch_color,
+                        &self.aec_plan_manager_style_editor_fill_color,
+                    );
+                if override_value == Default::default() {
+                    self.aec_plan_manager_style_override.remove(&key);
+                } else {
+                    self.aec_plan_manager_style_override.insert(key, override_value);
+                }
+                self.aec_plan_manager_style_editor_slot = None;
+                Task::none()
+            }
+            Message::AecPlanManagerSlotStyleReset(key) => {
+                self.aec_plan_manager_style_override.remove(&key);
+                if self.aec_plan_manager_style_editor_slot.as_deref() == Some(key.as_str()) {
+                    self.aec_plan_manager_style_editor_slot = None;
+                }
+                Task::none()
+            }
+            Message::AecPlanManagerLayerFilterModeToggle(is_explicit) => {
+                self.aec_plan_manager_layer_filter_explicit = is_explicit;
+                Task::none()
+            }
+            Message::AecPlanManagerLayerFilterLayerToggle(layer) => {
+                if let Some(pos) = self
+                    .aec_plan_manager_layer_filter_selection
+                    .iter()
+                    .position(|l| *l == layer)
+                {
+                    self.aec_plan_manager_layer_filter_selection.remove(pos);
+                } else {
+                    self.aec_plan_manager_layer_filter_selection.push(layer);
+                }
+                Task::none()
+            }
+            Message::AecPlanManagerSubstitutionSourceChanged(value) => {
+                self.aec_plan_manager_new_substitution_source = Some(value);
+                self.aec_plan_manager_substitution_error = None;
+                Task::none()
+            }
+            Message::AecPlanManagerSubstitutionTargetChanged(value) => {
+                self.aec_plan_manager_new_substitution_target = Some(value);
+                self.aec_plan_manager_substitution_error = None;
+                Task::none()
+            }
+            Message::AecPlanManagerSubstitutionAdd => {
+                let Some(source) = self.aec_plan_manager_new_substitution_source.clone() else {
+                    return Task::none();
+                };
+                let Some(target) = self.aec_plan_manager_new_substitution_target.clone() else {
+                    return Task::none();
+                };
+                let styles = self.aec_style_library.as_ref();
+                let source_style = styles.and_then(|lib| lib.wall_styles.iter().find(|w| w.style.id == source));
+                let target_style = styles.and_then(|lib| lib.wall_styles.iter().find(|w| w.style.id == target));
+                match (source_style, target_style) {
+                    (Some(source_style), Some(target_style)) => {
+                        match crate::modules::aec::engine::display_component::validate_style_substitution(
+                            source_style,
+                            target_style,
+                        ) {
+                            Ok(()) => {
+                                self.aec_plan_manager_style_substitutions =
+                                    crate::modules::aec::engine::display_component::upsert_style_substitution(
+                                        &self.aec_plan_manager_style_substitutions,
+                                        source,
+                                        target,
+                                    );
+                                self.aec_plan_manager_substitution_error = None;
+                            }
+                            Err(message) => {
+                                self.aec_plan_manager_substitution_error = Some(message);
+                            }
+                        }
+                    }
+                    _ => {
+                        self.aec_plan_manager_substitution_error =
+                            Some(crate::t!("Original- oder Ersatz-Wandstil nicht gefunden.").to_string());
+                    }
+                }
+                Task::none()
+            }
+            Message::AecPlanManagerSubstitutionRemove(source) => {
+                self.aec_plan_manager_style_substitutions.retain(|(s, _)| *s != source);
+                Task::none()
+            }
+            Message::AecPlanManagerScaleMappingNewScaleChanged(scale) => {
+                self.aec_plan_manager_scale_mapping_new_scale = scale;
+                Task::none()
+            }
+            Message::AecPlanManagerScaleMappingNewConfigChanged(config) => {
+                self.aec_plan_manager_scale_mapping_new_config = Some(config);
+                Task::none()
+            }
+            Message::AecPlanManagerScaleMappingAdd => {
+                let scale = self
+                    .aec_plan_manager_scale_mapping_new_scale
+                    .trim()
+                    .to_string();
+                let Some(config_name) = self.aec_plan_manager_scale_mapping_new_config.clone()
+                else {
+                    return Task::none();
+                };
+                if scale.is_empty() {
+                    return Task::none();
+                }
+
+                let lib = self.aec_plan_library.get_or_insert_with(|| {
+                    crate::modules::aec::engine::project::resolve_display_config_library(
+                        self.aec_project_explorer_file.as_ref(),
+                    )
+                });
+
+                lib.scale_display_config_mappings =
+                    crate::modules::aec::engine::library::upsert_scale_display_config_mapping(
+                        &lib.scale_display_config_mappings,
+                        scale,
+                        config_name,
+                    );
+
+                let lib_snapshot = lib.clone();
+                match self.aec_save_display_config_library_preferring_project(&lib_snapshot) {
+                    Ok(()) => {
+                        self.aec_plan_manager_scale_mapping_new_scale = String::new();
+                        self.aec_plan_manager_scale_mapping_new_config = None;
+                        Task::none()
+                    }
+                    Err(e) => {
+                        self.command_line.push_error(
+                            format!("AEC DisplayConfig Manager: failed to save mappings: {}", e)
+                                .as_str(),
+                        );
+                        Task::none()
+                    }
+                }
+            }
+            Message::AecPlanManagerScaleMappingRemove(scale_name) => {
+                let lib = self.aec_plan_library.get_or_insert_with(|| {
+                    crate::modules::aec::engine::project::resolve_display_config_library(
+                        self.aec_project_explorer_file.as_ref(),
+                    )
+                });
+
+                lib.scale_display_config_mappings
+                    .retain(|m| m.scale_name != scale_name);
+
+                let lib_snapshot = lib.clone();
+                match self.aec_save_display_config_library_preferring_project(&lib_snapshot) {
+                    Ok(()) => Task::none(),
+                    Err(e) => {
+                        self.command_line.push_error(
+                            format!("AEC DisplayConfig Manager: failed to save mappings: {}", e)
+                                .as_str(),
+                        );
+                        Task::none()
+                    }
+                }
+            }
+            Message::AecPlanManagerApply => {
+                let name = self.aec_plan_manager_name.trim().to_string();
+                if name.is_empty() {
+                    self.command_line.push_error(
+                        crate::t!("AEC DisplayConfig Manager: name cannot be empty.").as_ref(),
+                    );
+                    return Task::none();
+                }
+                let discipline = self.aec_plan_manager_discipline.trim().to_string();
+                let scale = self.aec_plan_manager_scale.trim().parse::<f64>().ok();
+
+                let mut config = crate::modules::aec::engine::plan_view::DisplayConfig::new(
+                    name.clone(),
+                    discipline,
+                    self.aec_plan_manager_phase.clone(),
+                    self.aec_plan_manager_view_type.clone(),
+                );
+                config.scale = scale;
+
+                // Preserve any existing component-rule fields (per-layer
+                // style overrides) beyond the slot-visibility,
+                // slot-style-override and layer-filter buffers this form
+                // edits; style substitutions are now written from the
+                // Style-Substitutions-UI edit buffer instead of being
+                // carried over unchanged.
+                config.style_substitutions = self
+                    .aec_plan_manager_style_substitutions
+                    .iter()
+                    .cloned()
+                    .collect();
+                let layer_filter =
+                    crate::modules::aec::engine::display_component::layer_filter_from_selection(
+                        self.aec_plan_manager_layer_filter_explicit,
+                        &self.aec_plan_manager_layer_filter_selection,
+                    );
+                let has_buffer_overrides = !self.aec_plan_manager_slot_visibility.is_empty()
+                    || !self.aec_plan_manager_style_override.is_empty()
+                    || self.aec_plan_manager_layer_filter_explicit;
+                if let Some(existing) = self
+                    .aec_plan_manager_editing_name
+                    .as_ref()
+                    .and_then(|old_name| self.aec_plan_library.as_ref().and_then(|lib| lib.find(old_name)))
+                {
+                    if let Some(mut rules) = existing.wall_rules().cloned() {
+                        rules.visibility = self.aec_plan_manager_slot_visibility.clone();
+                        rules.style_override = self.aec_plan_manager_style_override.clone();
+                        rules.layer_filter = layer_filter.clone();
+                        config.component_rules.insert(
+                            crate::modules::aec::engine::plan_view::WALL_ELEMENT_TYPE_ID.to_string(),
+                            rules,
+                        );
+                    } else if has_buffer_overrides {
+                        let mut rules =
+                            crate::modules::aec::engine::display_component::ComponentRuleSet::default();
+                        rules.visibility = self.aec_plan_manager_slot_visibility.clone();
+                        rules.style_override = self.aec_plan_manager_style_override.clone();
+                        rules.layer_filter = layer_filter.clone();
+                        config.component_rules.insert(
+                            crate::modules::aec::engine::plan_view::WALL_ELEMENT_TYPE_ID.to_string(),
+                            rules,
+                        );
+                    }
+                } else if has_buffer_overrides {
+                    let mut rules =
+                        crate::modules::aec::engine::display_component::ComponentRuleSet::default();
+                    rules.visibility = self.aec_plan_manager_slot_visibility.clone();
+                    rules.style_override = self.aec_plan_manager_style_override.clone();
+                    rules.layer_filter = layer_filter.clone();
+                    config.component_rules.insert(
+                        crate::modules::aec::engine::plan_view::WALL_ELEMENT_TYPE_ID.to_string(),
+                        rules,
+                    );
+                }
+
+                // If renaming an existing entry, drop the old name first.
+                if let Some(old_name) = self.aec_plan_manager_editing_name.clone() {
+                    if old_name != name {
+                        if let Some(lib) = self.aec_plan_library.as_mut() {
+                            lib.remove(&old_name);
+                        }
+                    }
+                }
+
+                let lib = self
+                    .aec_plan_library
+                    .get_or_insert_with(crate::modules::aec::engine::library::DisplayConfigLibrary::empty);
+                lib.upsert(config.clone());
+                let lib_snapshot = lib.clone();
+                match self.aec_save_display_config_library_preferring_project(&lib_snapshot) {
+                    Ok(()) => self.command_line.push_info(
+                        crate::t!("AEC DisplayConfig Manager: config saved.").as_ref(),
+                    ),
+                    Err(e) => self.command_line.push_error(
+                        crate::tf!("AEC DisplayConfig Manager: failed to save library: {e}").as_ref(),
+                    ),
+                }
+
+                // If this config is the active tab's active DisplayConfig,
+                // re-apply it immediately so edits are reflected live.
+                let i = self.active_tab;
+                if !self.tabs[i].is_start
+                    && self.tabs[i].active_display_config.as_deref() == Some(name.as_str())
+                {
+                    crate::modules::aec::commands::apply_display_config_to_scene(
+                        &mut self.tabs[i].scene,
+                        &config,
+                    );
+                }
+
+                self.aec_plan_manager_editing_name = Some(name.clone());
+                self.aec_plan_manager_selected = Some(name);
+                Task::none()
+            }
+            Message::AecAutoDisplayConfigFromScaleToggled(enabled) => {
+                let i = self.active_tab;
+                if let Some(tab) = self.tabs.get_mut(i) {
+                    tab.auto_display_config_from_scale = enabled;
+                }
+                Task::none()
+            }
+            Message::AecActiveDisplayConfigSelected(name) => {
+                let i = self.active_tab;
+                if self.tabs[i].is_start {
+                    return Task::none();
+                }
+                // Manual/explicit selection overrides the Step 7 auto-
+                // coupling to the drawing scale until re-enabled.
+                self.tabs[i].auto_display_config_from_scale = false;
+                self.tabs[i].active_display_config = name.clone();
+                if let Some(name) = name {
+                    let lib = self.aec_plan_library.get_or_insert_with(|| {
+                        crate::modules::aec::engine::project::resolve_display_config_library(
+                            self.aec_project_explorer_file.as_ref(),
+                        )
+                    });
+                    if let Some(config) = lib.find(&name).cloned() {
+                        crate::modules::aec::commands::apply_display_config_to_scene(
+                            &mut self.tabs[i].scene,
+                            &config,
+                        );
+                    }
+                }
                 Task::none()
             }
             Message::SelectAndZoomTo(handle) => {
@@ -3045,9 +3701,14 @@ impl OpenCADStudio {
             }
             Message::AecStyleManagerWallStyleDelete => {
                 if let Some(id) = self.aec_style_manager_selected_wall_style.clone() {
-                    if let Some(lib) = self.aec_style_library.as_mut() {
+                    let lib_snapshot = if let Some(lib) = self.aec_style_library.as_mut() {
                         lib.remove_wall_style(&id);
-                        match crate::modules::aec::engine::library::save_to_default_path(lib) {
+                        Some(lib.clone())
+                    } else {
+                        None
+                    };
+                    if let Some(lib_snapshot) = lib_snapshot {
+                        match self.aec_save_style_library_preferring_project(&lib_snapshot) {
                             Ok(()) => self.command_line.push_info(
                                 crate::t!("AEC Style Manager: wall style deleted.").as_ref(),
                             ),
@@ -3289,7 +3950,8 @@ impl OpenCADStudio {
                     .aec_style_library
                     .get_or_insert_with(crate::modules::aec::engine::library::StyleLibrary::empty);
                 lib.upsert_material(material);
-                match crate::modules::aec::engine::library::save_to_default_path(lib) {
+                let lib_snapshot = lib.clone();
+                match self.aec_save_style_library_preferring_project(&lib_snapshot) {
                     Ok(()) => self
                         .command_line
                         .push_info(crate::t!("AEC Style Manager: material saved.").as_ref()),
@@ -3303,9 +3965,14 @@ impl OpenCADStudio {
             }
             Message::AecStyleManagerMaterialDelete => {
                 if let Some(id) = self.aec_style_manager_selected_material.clone() {
-                    if let Some(lib) = self.aec_style_library.as_mut() {
+                    let lib_snapshot = if let Some(lib) = self.aec_style_library.as_mut() {
                         lib.remove_material(&id);
-                        match crate::modules::aec::engine::library::save_to_default_path(lib) {
+                        Some(lib.clone())
+                    } else {
+                        None
+                    };
+                    if let Some(lib_snapshot) = lib_snapshot {
+                        match self.aec_save_style_library_preferring_project(&lib_snapshot) {
                             Ok(()) => self.command_line.push_info(
                                 crate::t!("AEC Style Manager: material deleted.").as_ref(),
                             ),
@@ -4727,6 +5394,7 @@ impl OpenCADStudio {
             Message::SetAnnotationScale(scale) => {
                 self.scale_popup_open = false;
                 let auto_scale = self.annotation_auto_scale;
+                let mut scale_applied = false;
                 if let Some(tab) = self.tabs.get_mut(self.active_tab) {
                     let previous = tab.scene.displayed_annotation_scale_handle();
                     if let Some(handle) = tab.scene.set_annotation_scale_named(&scale) {
@@ -4738,7 +5406,11 @@ impl OpenCADStudio {
                             );
                         }
                         tab.dirty = true;
+                        scale_applied = true;
                     }
+                }
+                if scale_applied {
+                    self.aec_maybe_apply_display_config_for_scale(self.active_tab, &scale);
                 }
                 Task::none()
             }
@@ -5004,6 +5676,7 @@ impl OpenCADStudio {
                         );
                     }
                     self.tabs[i].dirty = true;
+                    self.aec_maybe_apply_display_config_for_scale(i, &sel);
                 }
                 Task::none()
             }

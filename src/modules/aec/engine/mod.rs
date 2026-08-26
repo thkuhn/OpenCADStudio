@@ -6,6 +6,7 @@
 
 pub mod arc;
 pub mod contour;
+pub mod display_component;
 pub mod expr;
 pub mod geometry;
 pub mod ifc;
@@ -16,6 +17,7 @@ pub mod material;
 pub mod miter;
 pub mod openings;
 pub mod owner_index;
+pub mod plan_view;
 pub mod project;
 pub mod representation;
 pub mod room;

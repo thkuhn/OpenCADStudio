@@ -1124,6 +1124,9 @@ impl OpenCADStudio {
             "AEC_STYLEMANAGER" => {
                 return Some(Task::done(Message::AecWallStyleManagerOpen));
             }
+            "AEC_PLANMANAGER" => {
+                return Some(Task::done(Message::AecPlanManagerOpen));
+            }
 
             // ── Model commands (3D primitives) ─────────────────────────────
             "BOX" | "WEDGE" | "CYLINDER" | "CONE" | "SPHERE" | "TORUS" => {

@@ -1052,6 +1052,67 @@ pub(super) struct OpenCADStudio {
     /// or hierarchically (parents before children, siblings grouped).
     aec_style_manager_wall_style_sort: AecWallStyleSort,
 
+    // ── AEC DisplayConfig Manager (Step 5) ─────────────────────────────────
+    /// Loaded (or seeded) on `AEC_PLANMANAGER`; holds the `DisplayConfig`
+    /// entries the manager browses/edits.
+    aec_plan_library: Option<crate::modules::aec::engine::library::DisplayConfigLibrary>,
+    /// Filter text applied to the DisplayConfig master list.
+    aec_plan_manager_filter: String,
+    /// Currently selected config name (if any), by `DisplayConfig::name`.
+    aec_plan_manager_selected: Option<String>,
+    /// Name of the config currently being edited, if the edit buffer holds
+    /// an existing config (`None` while composing a new/unsaved one).
+    aec_plan_manager_editing_name: Option<String>,
+    /// Whether the DisplayConfig edit form is visible.
+    aec_plan_manager_form_open: bool,
+    /// Edit-buffer fields for the DisplayConfig form.
+    aec_plan_manager_name: String,
+    aec_plan_manager_discipline: String,
+    aec_plan_manager_scale: String,
+    aec_plan_manager_phase: crate::modules::aec::engine::plan_view::PlanPhase,
+    aec_plan_manager_view_type: crate::modules::aec::engine::plan_view::ViewType,
+    /// Edit-buffer for the currently edited config's wall `ComponentRuleSet`
+    /// slot-visibility map (slot key -> visible?).
+    aec_plan_manager_slot_visibility: std::collections::HashMap<String, bool>,
+    /// Step 8: edit-buffer for the currently edited config's wall
+    /// `ComponentRuleSet` style-override map (slot key -> `ComponentStyleOverride`).
+    aec_plan_manager_style_override:
+        std::collections::HashMap<String, crate::modules::aec::engine::display_component::ComponentStyleOverride>,
+    /// Step 8: slot key currently open in the per-slot style-override editor
+    /// (`None` = editor closed).
+    aec_plan_manager_style_editor_slot: Option<String>,
+    /// Step 8: style-override editor form buffers (populated when the
+    /// editor for a slot is opened; hex colors as `"RRGGBB"` text).
+    aec_plan_manager_style_editor_line_type: String,
+    aec_plan_manager_style_editor_line_color: String,
+    aec_plan_manager_style_editor_hatch_pattern: String,
+    aec_plan_manager_style_editor_hatch_color: String,
+    aec_plan_manager_style_editor_fill_color: String,
+    /// Layer-Filter-UI: `false` = "Alle" (`LayerSelection::All`), `true` =
+    /// "Auswahl" (`LayerSelection::Explicit`), for the currently edited
+    /// config's wall `ComponentRuleSet::layer_filter`.
+    aec_plan_manager_layer_filter_explicit: bool,
+    /// Layer-Filter-UI: edit-buffer of explicitly selected layers, used
+    /// only while `aec_plan_manager_layer_filter_explicit` is `true`.
+    aec_plan_manager_layer_filter_selection: Vec<crate::modules::aec::engine::join::LayerRef>,
+    /// Style-Substitutions-UI: the edit-buffer list of `(source, target)`
+    /// wall-style-name rows for the currently edited config, ordered as
+    /// `Vec<(WallStyleRef, WallStyleRef)>` per Key Decision 3.
+    aec_plan_manager_style_substitutions: Vec<(String, String)>,
+    /// Style-Substitutions-UI: currently selected "Original-Wandstil" in
+    /// the add-row form.
+    aec_plan_manager_new_substitution_source: Option<String>,
+    /// Style-Substitutions-UI: currently selected "Ersatz-Wandstil" in the
+    /// add-row form.
+    aec_plan_manager_new_substitution_target: Option<String>,
+    /// Style-Substitutions-UI: inline error message shown when
+    /// `validate_style_substitution` rejects the pending add-row.
+    aec_plan_manager_substitution_error: Option<String>,
+    /// Step 7 Mapping Table UI: currently entered scale name in the add-row form.
+    aec_plan_manager_scale_mapping_new_scale: String,
+    /// Step 7 Mapping Table UI: currently selected target DisplayConfig name in the add-row form.
+    aec_plan_manager_scale_mapping_new_config: Option<String>,
+
     // ── AEC Junction Editor Panel (Step 5) ──────────────────────────────────
     /// `(axis_handle, end_index)` of the junction currently open in the
     /// editor panel — the same identity Step 4's context menu uses.
@@ -1805,6 +1866,9 @@ pub enum ModalKind {
     AecJunctionEditor,
     /// AEC Project Explorer — browse a `.ocsproj` Building → Storey tree.
     AecProjectExplorer,
+    /// AEC DisplayConfig Manager — browse/edit the `DisplayConfig` entries
+    /// stored in the AEC plan/display library (`AEC_PLANMANAGER`).
+    AecPlanManager,
     /// AEC Style Picker — hierarchical modal for selecting wall styles,
     /// materials, or layer overrides.
     AecStylePicker {
@@ -2467,6 +2531,107 @@ pub enum Message {
     /// — writes the result into the edit buffer, not directly into the project.
     AecProjectExplorerPickEditStoreyDrawing(uuid::Uuid, uuid::Uuid),
     AecProjectExplorerPickEditStoreyDrawingResult(Option<std::path::PathBuf>),
+    /// "Bibliotheken migrieren" — copies the current global material/wall-
+    /// style and `DisplayConfig` libraries into the loaded project (Step 6:
+    /// "Projektweite Bibliotheks-Persistenz"), then persists the project.
+    AecProjectExplorerMigrateLibraries,
+
+    // ── AEC DisplayConfig Manager (`AEC_PLANMANAGER`, Step 5) ─────────────
+    /// Open the DisplayConfig Manager modal.
+    AecPlanManagerOpen,
+    /// Close the DisplayConfig Manager modal.
+    AecPlanManagerClose,
+    /// Filter text changed in the DisplayConfig master list.
+    AecPlanManagerFilter(String),
+    /// A config row was selected in the DisplayConfig Manager.
+    AecPlanManagerSelect(String),
+    /// "New" pressed — opens a blank DisplayConfig edit form.
+    AecPlanManagerNew,
+    /// "Duplizieren" pressed on the currently edited/selected config.
+    AecPlanManagerDuplicate,
+    /// "Löschen" pressed on the currently selected config.
+    AecPlanManagerDelete,
+    /// Name field changed in the DisplayConfig edit form.
+    AecPlanManagerNameChanged(String),
+    /// Discipline field changed in the DisplayConfig edit form.
+    AecPlanManagerDisciplineChanged(String),
+    /// Scale (informative) field changed in the DisplayConfig edit form.
+    AecPlanManagerScaleChanged(String),
+    /// Phase field changed in the DisplayConfig edit form.
+    AecPlanManagerPhaseChanged(crate::modules::aec::engine::plan_view::PlanPhase),
+    /// View-type field changed in the DisplayConfig edit form.
+    AecPlanManagerViewTypeChanged(crate::modules::aec::engine::plan_view::ViewType),
+    /// A wall display-component slot's visibility checkbox was toggled, by
+    /// its stable slot key (see `WallComponentSlot::key`).
+    AecPlanManagerSlotVisibilityToggle(String),
+    /// Step 8: "Bearbeiten" pressed on a slot row — opens the per-slot
+    /// `ComponentStyleOverride` editor, seeded from the current override
+    /// (or blank/"Standard" if none is set yet), by slot key.
+    AecPlanManagerSlotStyleEdit(String),
+    /// Step 8: closes the per-slot style-override editor without saving.
+    AecPlanManagerSlotStyleEditorClose,
+    /// Step 8: line-type field changed in the style-override editor.
+    AecPlanManagerSlotStyleLineTypeChanged(String),
+    /// Step 8: line-color field (hex `"RRGGBB"`) changed in the editor.
+    AecPlanManagerSlotStyleLineColorChanged(String),
+    /// Step 8: hatch-pattern field changed in the style-override editor.
+    AecPlanManagerSlotStyleHatchPatternChanged(String),
+    /// Step 8: hatch-color field (hex `"RRGGBB"`) changed in the editor.
+    AecPlanManagerSlotStyleHatchColorChanged(String),
+    /// Step 8: fill-color field (hex `"RRGGBB"`) changed in the editor.
+    AecPlanManagerSlotStyleFillColorChanged(String),
+    /// Step 8: "Speichern" pressed in the style-override editor — commits
+    /// the editor buffers into `aec_plan_manager_style_override` for the
+    /// slot key currently open, then closes the editor.
+    AecPlanManagerSlotStyleSave,
+    /// Step 8: "Entfernen" pressed on a slot row — resets that slot back to
+    /// "Standard" by removing its entry from the style-override buffer.
+    AecPlanManagerSlotStyleReset(String),
+    /// Layer-Filter-UI: "Alle"/"Auswahl" toggle changed. `true` = "Auswahl"
+    /// (`LayerSelection::Explicit`), `false` = "Alle" (`LayerSelection::All`).
+    AecPlanManagerLayerFilterModeToggle(bool),
+    /// Layer-Filter-UI: a single layer's checkbox was toggled in the
+    /// "Auswahl" multi-select checklist; adds/removes it from
+    /// `aec_plan_manager_layer_filter_selection`.
+    AecPlanManagerLayerFilterLayerToggle(crate::modules::aec::engine::join::LayerRef),
+    /// Style-Substitutions-UI: "Original-Wandstil" pick_list selection in
+    /// the add-row form changed.
+    AecPlanManagerSubstitutionSourceChanged(String),
+    /// Style-Substitutions-UI: "Ersatz-Wandstil" pick_list selection in the
+    /// add-row form changed.
+    AecPlanManagerSubstitutionTargetChanged(String),
+    /// Style-Substitutions-UI: "Hinzufügen" pressed — validates via
+    /// `validate_style_substitution` and, on success, upserts the row into
+    /// the edit buffer (Key Decision 2: reusing an already-substituted
+    /// source overwrites its target instead of erroring); on failure, sets
+    /// `aec_plan_manager_substitution_error` and leaves the buffer
+    /// unchanged.
+    AecPlanManagerSubstitutionAdd,
+    /// Style-Substitutions-UI: "Entfernen" pressed on a row — removes the
+    /// row for the given source wall style from the edit buffer.
+    AecPlanManagerSubstitutionRemove(String),
+    /// Step 7 Mapping Table UI: scale-name text field changed.
+    AecPlanManagerScaleMappingNewScaleChanged(String),
+    /// Step 7 Mapping Table UI: target-config pick-list selection changed.
+    AecPlanManagerScaleMappingNewConfigChanged(String),
+    /// Step 7 Mapping Table UI: "Hinzufügen" pressed — upserts the mapping
+    /// (by scale name) into `aec_plan_library` and persists immediately.
+    AecPlanManagerScaleMappingAdd,
+    /// Step 7 Mapping Table UI: "Entfernen" pressed on a row — removes the
+    /// mapping for the given scale name and persists immediately.
+    AecPlanManagerScaleMappingRemove(String),
+    /// "Übernehmen" pressed — persists the edit buffer to the library and,
+    /// if the config being edited is the active tab's active DisplayConfig,
+    /// re-applies it to the active scene's walls.
+    AecPlanManagerApply,
+    /// The active-DisplayConfig dropdown selected a config by name for the
+    /// active document tab; immediately regenerates the tab's walls.
+    AecActiveDisplayConfigSelected(Option<String>),
+
+    /// Step 7: toggles the active tab's "Automatisch an Maßstab koppeln"
+    /// checkbox in the DisplayConfig manager, i.e.
+    /// `DocumentTab::auto_display_config_from_scale`.
+    AecAutoDisplayConfigFromScaleToggled(bool),
 
     /// Select an entity and zoom the viewport to it (properties handle links).
     SelectAndZoomTo(acadrust::Handle),
@@ -3775,6 +3940,32 @@ impl OpenCADStudio {
             aec_style_manager_wall_style_layers: Vec::new(),
             aec_style_manager_wall_style_drag_index: None,
             aec_style_manager_wall_style_sort: AecWallStyleSort::default(),
+            aec_plan_library: None,
+            aec_plan_manager_filter: String::new(),
+            aec_plan_manager_selected: None,
+            aec_plan_manager_editing_name: None,
+            aec_plan_manager_form_open: false,
+            aec_plan_manager_name: String::new(),
+            aec_plan_manager_discipline: String::new(),
+            aec_plan_manager_scale: String::new(),
+            aec_plan_manager_phase: crate::modules::aec::engine::plan_view::PlanPhase::New,
+            aec_plan_manager_view_type: crate::modules::aec::engine::plan_view::ViewType::FloorPlan,
+            aec_plan_manager_slot_visibility: std::collections::HashMap::new(),
+            aec_plan_manager_style_override: std::collections::HashMap::new(),
+            aec_plan_manager_style_editor_slot: None,
+            aec_plan_manager_style_editor_line_type: String::new(),
+            aec_plan_manager_style_editor_line_color: String::new(),
+            aec_plan_manager_style_editor_hatch_pattern: String::new(),
+            aec_plan_manager_style_editor_hatch_color: String::new(),
+            aec_plan_manager_style_editor_fill_color: String::new(),
+            aec_plan_manager_layer_filter_explicit: false,
+            aec_plan_manager_layer_filter_selection: Vec::new(),
+            aec_plan_manager_style_substitutions: Vec::new(),
+            aec_plan_manager_new_substitution_source: None,
+            aec_plan_manager_new_substitution_target: None,
+            aec_plan_manager_substitution_error: None,
+            aec_plan_manager_scale_mapping_new_scale: String::new(),
+            aec_plan_manager_scale_mapping_new_config: None,
             aec_junction_editor_target: None,
             aec_junction_editor_default_style: None,
             aec_junction_editor_pairs: Vec::new(),
