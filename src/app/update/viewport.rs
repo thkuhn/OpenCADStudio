@@ -3089,6 +3089,11 @@ impl OpenCADStudio {
                 // derived contour/hatch/solid representation rebuilt.
                 let mut extra_handles = Vec::new();
                 let mut refreshed_owners = std::collections::HashSet::new();
+                let style_library = crate::modules::aec::engine::project::resolve_style_library(
+                    self.aec_project_explorer_file.as_ref(),
+                );
+                let (display_rules, style_substitutions) =
+                    self.resolve_active_display_config_wall_rules(i);
                 for &handle in &handles {
                     let owner = crate::modules::aec::commands::resolve_wall_package(
                         &self.tabs[i].scene,
@@ -3109,6 +3114,9 @@ impl OpenCADStudio {
                             crate::modules::aec::commands::refresh_wall_after_axis_edit(
                                 &mut self.tabs[i].scene,
                                 owner,
+                                Some(&style_library),
+                                display_rules.as_ref(),
+                                style_substitutions.as_ref(),
                             ),
                         );
                     }

@@ -22,6 +22,7 @@ const IFC_ICON: &[u8] = include_bytes!("../../../assets/icons/cui_export.svg");
 const MATERIAL_ICON: &[u8] = include_bytes!("../../../assets/icons/aec/material_manager.svg");
 const STYLE_ICON: &[u8] = include_bytes!("../../../assets/icons/aec/wall_style_manager.svg");
 const PROJECT_ICON: &[u8] = include_bytes!("../../../assets/icons/layers/panel.svg");
+const PLAN_ICON: &[u8] = include_bytes!("../../../assets/icons/aec/wall_style_manager.svg");
 
 /// Helper to declare a ribbon tool that fires a named command.
 fn tool(id: &'static str, label: &'static str, icon: &'static [u8]) -> ToolDef {
@@ -80,6 +81,11 @@ impl CadModule for AecModule {
                             "AEC_STYLEMANAGER",
                             "Wall Style Manager",
                             STYLE_ICON,
+                        )),
+                        RibbonItem::LargeTool(tool(
+                            "AEC_PLANMANAGER",
+                            "DisplayConfig Manager",
+                            PLAN_ICON,
                         )),
                     ],
                 },

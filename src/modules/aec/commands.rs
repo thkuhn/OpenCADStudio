@@ -1239,12 +1239,14 @@ pub enum WallRegenError {
 /// erased first, so calling this repeatedly on the same wall never
 /// accumulates duplicates. Derived handles are always persisted on the
 /// wall's `WALL` XDATA record so subsequent regenerations can erase them.
+/// `library_override`: when `Some`, used instead of the global on-disk library — pass the project-resolved library when a project is active.
 pub fn regenerate_wall_representation(
     scene: &mut Scene,
     wall_handle: Handle,
+    library_override: Option<&StyleLibrary>,
 ) -> Result<Vec<Handle>, WallRegenError> {
     let wall_handle = resolve_wall_package(scene, wall_handle);
-    regenerate_wall_representation_with_corner(scene, wall_handle, None, None)
+    regenerate_wall_representation_with_corner(scene, wall_handle, None, None, library_override)
 }
 
 /// Like [`regenerate_wall_representation`], but honors per-slot visibility
@@ -1253,13 +1255,22 @@ pub fn regenerate_wall_representation(
 /// is hidden simply isn't created, instead of a global LOD switch. `None`
 /// (or a default rule set) reproduces today's behavior exactly (every slot
 /// defaults to visible).
+/// `library_override`: when `Some`, used instead of the global on-disk library — pass the project-resolved library when a project is active.
 pub fn regenerate_wall_representation_with_rules(
     scene: &mut Scene,
     wall_handle: Handle,
     rules: Option<&engine::display_component::ComponentRuleSet>,
+    library_override: Option<&StyleLibrary>,
 ) -> Result<Vec<Handle>, WallRegenError> {
     let wall_handle = resolve_wall_package(scene, wall_handle);
-    regenerate_wall_representation_with_corner_and_rules(scene, wall_handle, None, None, rules)
+    regenerate_wall_representation_with_corner_and_rules(
+        scene,
+        wall_handle,
+        None,
+        None,
+        rules,
+        library_override,
+    )
 }
 
 /// Like [`regenerate_wall_representation_with_rules`], but additionally
@@ -1270,11 +1281,13 @@ pub fn regenerate_wall_representation_with_rules(
 /// index) of the target wall style, while axis, thickness and layer count
 /// are always derived from the wall's own (unchanged) layers. `None`
 /// reproduces today's behavior exactly (no substitution applied).
+/// `library_override`: when `Some`, used instead of the global on-disk library — pass the project-resolved library when a project is active.
 pub fn regenerate_wall_representation_with_rules_and_substitutions(
     scene: &mut Scene,
     wall_handle: Handle,
     rules: Option<&engine::display_component::ComponentRuleSet>,
     style_substitutions: Option<&HashMap<engine::plan_view::WallStyleRef, engine::plan_view::WallStyleRef>>,
+    library_override: Option<&StyleLibrary>,
 ) -> Result<Vec<Handle>, WallRegenError> {
     let wall_handle = resolve_wall_package(scene, wall_handle);
     regenerate_wall_representation_with_corner_rules_and_substitutions(
@@ -1284,19 +1297,38 @@ pub fn regenerate_wall_representation_with_rules_and_substitutions(
         None,
         rules,
         style_substitutions,
+        library_override,
     )
 }
 
 /// Rebuild a wall after its axis vertices changed (grip / stretch) and
 /// re-resolve nearby L/T/N junctions. Returns every axis + derived handle
 /// that the scene tessellation must refresh.
-pub fn refresh_wall_after_axis_edit(scene: &mut Scene, wall_handle: Handle) -> Vec<Handle> {
+pub fn refresh_wall_after_axis_edit(
+    scene: &mut Scene,
+    wall_handle: Handle,
+    library_override: Option<&StyleLibrary>,
+    display_rules: Option<&engine::display_component::ComponentRuleSet>,
+    style_substitutions: Option<&HashMap<engine::plan_view::WallStyleRef, engine::plan_view::WallStyleRef>>,
+) -> Vec<Handle> {
     let wall_handle = resolve_wall_package(scene, wall_handle);
-    let mut touched = match regenerate_wall_representation(scene, wall_handle) {
+    let mut touched = match regenerate_wall_representation_with_rules_and_substitutions(
+        scene,
+        wall_handle,
+        display_rules,
+        style_substitutions,
+        library_override,
+    ) {
         Ok(t) => t,
         Err(_) => vec![wall_handle],
     };
-    touched.extend(try_auto_join_nearby_walls(scene, wall_handle));
+    touched.extend(try_auto_join_nearby_walls(
+        scene,
+        wall_handle,
+        library_override,
+        display_rules,
+        style_substitutions,
+    ));
     touched.sort_by_key(|h| h.value());
     touched.dedup();
     // Resident wire cache can keep the previous 2D outline if only
@@ -1328,6 +1360,9 @@ pub fn stretch_wall_axis_in_window(
     owner: Handle,
     in_win: impl Fn(f64, f64) -> bool,
     delta: DVec3,
+    library_override: Option<&StyleLibrary>,
+    display_rules: Option<&engine::display_component::ComponentRuleSet>,
+    style_substitutions: Option<&HashMap<engine::plan_view::WallStyleRef, engine::plan_view::WallStyleRef>>,
 ) -> Option<Vec<Handle>> {
     let axis_vertices = get_wall_vertices(scene, owner);
     if axis_vertices.is_empty() {
@@ -1349,7 +1384,13 @@ pub fn stretch_wall_axis_in_window(
         return None;
     }
     update_wall_vertices(scene, owner, &new_vertices);
-    Some(refresh_wall_after_axis_edit(scene, owner))
+    Some(refresh_wall_after_axis_edit(
+        scene,
+        owner,
+        library_override,
+        display_rules,
+        style_substitutions,
+    ))
 }
 
 /// Like [`regenerate_wall_representation`], but lets a caller supply a
@@ -1372,11 +1413,13 @@ pub fn stretch_wall_axis_in_window(
 /// On success returns the axis handle plus every newly created derived
 /// (contour/hatch/solid) handle, so callers (e.g. grip-release) can bump 2D
 /// and 3D representations together.
+/// `library_override`: when `Some`, used instead of the global on-disk library — pass the project-resolved library when a project is active.
 pub fn regenerate_wall_representation_with_corner(
     scene: &mut Scene,
     wall_handle: Handle,
     corner_override: Option<(usize, DVec3)>,
     join_miter: Option<&engine::miter::JoinMiterContext>,
+    library_override: Option<&StyleLibrary>,
 ) -> Result<Vec<Handle>, WallRegenError> {
     regenerate_wall_representation_with_corner_and_rules(
         scene,
@@ -1384,17 +1427,20 @@ pub fn regenerate_wall_representation_with_corner(
         corner_override,
         join_miter,
         None,
+        library_override,
     )
 }
 
 /// Like [`regenerate_wall_representation_with_corner`], but also honors
 /// per-slot visibility from `rules` (see [`regenerate_wall_representation_with_rules`]).
+/// `library_override`: when `Some`, used instead of the global on-disk library — pass the project-resolved library when a project is active.
 pub fn regenerate_wall_representation_with_corner_and_rules(
     scene: &mut Scene,
     wall_handle: Handle,
     corner_override: Option<(usize, DVec3)>,
     join_miter: Option<&engine::miter::JoinMiterContext>,
     rules: Option<&engine::display_component::ComponentRuleSet>,
+    library_override: Option<&StyleLibrary>,
 ) -> Result<Vec<Handle>, WallRegenError> {
     regenerate_wall_representation_with_corner_rules_and_substitutions(
         scene,
@@ -1403,12 +1449,14 @@ pub fn regenerate_wall_representation_with_corner_and_rules(
         join_miter,
         rules,
         None,
+        library_override,
     )
 }
 
 /// Like [`regenerate_wall_representation_with_corner_and_rules`], but also
 /// honors `style_substitutions` (see
 /// [`regenerate_wall_representation_with_rules_and_substitutions`]).
+/// `library_override`: when `Some`, used instead of the global on-disk library — pass the project-resolved library when a project is active.
 pub fn regenerate_wall_representation_with_corner_rules_and_substitutions(
     scene: &mut Scene,
     wall_handle: Handle,
@@ -1416,6 +1464,7 @@ pub fn regenerate_wall_representation_with_corner_rules_and_substitutions(
     join_miter: Option<&engine::miter::JoinMiterContext>,
     rules: Option<&engine::display_component::ComponentRuleSet>,
     style_substitutions: Option<&HashMap<engine::plan_view::WallStyleRef, engine::plan_view::WallStyleRef>>,
+    library_override: Option<&StyleLibrary>,
 ) -> Result<Vec<Handle>, WallRegenError> {
     regenerate_wall_representation_inner(
         scene,
@@ -1425,17 +1474,20 @@ pub fn regenerate_wall_representation_with_corner_rules_and_substitutions(
         None,
         rules,
         style_substitutions,
+        library_override,
     )
 }
 
 /// Like [`regenerate_wall_representation_with_corner`], but takes precomputed
 /// per-layer miter footprints (from N-way junction resolution). `None` entries
 /// fall back to `corner_override` / base contours exactly as unmatched layers do.
+/// `library_override`: when `Some`, used instead of the global on-disk library — pass the project-resolved library when a project is active.
 pub fn regenerate_wall_representation_with_precomputed_miters(
     scene: &mut Scene,
     wall_handle: Handle,
     corner_override: Option<(usize, DVec3)>,
     mitered_footprints: &[Option<Vec<(f64, f64)>>],
+    library_override: Option<&StyleLibrary>,
 ) -> Result<Vec<Handle>, WallRegenError> {
     regenerate_wall_representation_with_precomputed_miters_and_rules(
         scene,
@@ -1443,18 +1495,21 @@ pub fn regenerate_wall_representation_with_precomputed_miters(
         corner_override,
         mitered_footprints,
         None,
+        library_override,
     )
 }
 
 /// Like [`regenerate_wall_representation_with_precomputed_miters`], but also
 /// honors per-slot visibility from `rules` (see
 /// [`regenerate_wall_representation_with_rules`]).
+/// `library_override`: when `Some`, used instead of the global on-disk library — pass the project-resolved library when a project is active.
 pub fn regenerate_wall_representation_with_precomputed_miters_and_rules(
     scene: &mut Scene,
     wall_handle: Handle,
     corner_override: Option<(usize, DVec3)>,
     mitered_footprints: &[Option<Vec<(f64, f64)>>],
     rules: Option<&engine::display_component::ComponentRuleSet>,
+    library_override: Option<&StyleLibrary>,
 ) -> Result<Vec<Handle>, WallRegenError> {
     regenerate_wall_representation_with_precomputed_miters_rules_and_substitutions(
         scene,
@@ -1463,12 +1518,14 @@ pub fn regenerate_wall_representation_with_precomputed_miters_and_rules(
         mitered_footprints,
         rules,
         None,
+        library_override,
     )
 }
 
 /// Like [`regenerate_wall_representation_with_precomputed_miters_and_rules`],
 /// but also honors `style_substitutions` (see
 /// [`regenerate_wall_representation_with_rules_and_substitutions`]).
+/// `library_override`: when `Some`, used instead of the global on-disk library — pass the project-resolved library when a project is active.
 pub fn regenerate_wall_representation_with_precomputed_miters_rules_and_substitutions(
     scene: &mut Scene,
     wall_handle: Handle,
@@ -1476,6 +1533,7 @@ pub fn regenerate_wall_representation_with_precomputed_miters_rules_and_substitu
     mitered_footprints: &[Option<Vec<(f64, f64)>>],
     rules: Option<&engine::display_component::ComponentRuleSet>,
     style_substitutions: Option<&HashMap<engine::plan_view::WallStyleRef, engine::plan_view::WallStyleRef>>,
+    library_override: Option<&StyleLibrary>,
 ) -> Result<Vec<Handle>, WallRegenError> {
     regenerate_wall_representation_inner(
         scene,
@@ -1485,6 +1543,7 @@ pub fn regenerate_wall_representation_with_precomputed_miters_rules_and_substitu
         Some(mitered_footprints),
         rules,
         style_substitutions,
+        library_override,
     )
 }
 
@@ -1633,6 +1692,7 @@ fn regenerate_wall_representation_inner(
     precomputed_miters: Option<&[Option<Vec<(f64, f64)>>]>,
     rules: Option<&engine::display_component::ComponentRuleSet>,
     style_substitutions: Option<&HashMap<engine::plan_view::WallStyleRef, engine::plan_view::WallStyleRef>>,
+    library_override: Option<&StyleLibrary>,
 ) -> Result<Vec<Handle>, WallRegenError> {
     use engine::display_component::{LayerSelection, WallComponentSlot};
     // The current pipeline doesn't create a dedicated 2D "overall" contour
@@ -1868,7 +1928,17 @@ fn regenerate_wall_representation_inner(
         &axis_entity
     };
     let extrusions = wall_layer_extrusions(extrusion_axis, &layers, height);
-    let library = load_or_seed();
+    // Prefer a caller-supplied (usually project-resolved) library so hatch
+    // scale/pattern/color and material lookups match the active project
+    // instead of always reading the global on-disk defaults.
+    let owned_library;
+    let library: &StyleLibrary = match library_override {
+        Some(lib) => lib,
+        None => {
+            owned_library = load_or_seed();
+            &owned_library
+        }
+    };
 
     // `StyleSubstitution`: when the wall's own style has a target entry,
     // the target wall style's layers become the *style* source (material,
@@ -2232,6 +2302,7 @@ pub fn change_wall_justification(
     scene: &mut Scene,
     wall_handle: Handle,
     new_justification: WallJustification,
+    library_override: Option<&StyleLibrary>,
 ) -> bool {
     let wall_handle = resolve_wall_package(scene, wall_handle);
     let Some(entity) = scene.document.get_entity(wall_handle) else {
@@ -2273,7 +2344,7 @@ pub fn change_wall_justification(
         return false;
     }
 
-    let _ = regenerate_wall_representation(scene, wall_handle);
+    let _ = regenerate_wall_representation(scene, wall_handle, library_override);
     true
 }
 
@@ -3167,6 +3238,23 @@ pub(crate) fn slugify(name: &str) -> String {
     }
 }
 
+/// Builds a new, globally unique library id (`<prefix>_<slug>_<suffix>`) for
+/// a freshly created material/wall style.
+///
+/// Ids used to be purely name-derived (`<prefix>_<slugified name>`), which
+/// meant two libraries created independently (e.g. in different projects)
+/// could end up with the *same* id for wall styles/materials that merely
+/// share a name but have different layer definitions. If those libraries
+/// are later mixed (project copied, wall pasted across drawings, ...), the
+/// wrong entry silently wins on lookup. Appending a short random suffix
+/// keeps ids human-readable while making cross-project collisions
+/// practically impossible; existing ids (loaded from disk, or passed in
+/// when editing) are left untouched so old data keeps resolving correctly.
+pub(crate) fn unique_id(prefix: &str, name: &str) -> String {
+    let suffix = uuid::Uuid::new_v4().simple().to_string();
+    format!("{prefix}_{}_{}", slugify(name), &suffix[..8])
+}
+
 /// Step of an in-progress `AEC_MATERIAL` command.
 enum MaterialStep {
     Name,
@@ -3285,9 +3373,17 @@ pub fn aec_material_add(command_line: &mut CommandLine, args: &str) {
         return;
     };
     let color = u32::from_str_radix(color_hex, 16).unwrap_or(0);
-    let id = format!("mat_{}", slugify(name));
 
     let mut lib = load_or_seed();
+    // Re-use the id of an existing material with the same name so re-running
+    // AEC_MATERIAL_ADD on the same name still updates it in place; only a
+    // genuinely new name gets a fresh, globally unique id (see `unique_id`).
+    let id = lib
+        .materials
+        .iter()
+        .find(|m| m.name.eq_ignore_ascii_case(name))
+        .map(|m| m.id.clone())
+        .unwrap_or_else(|| unique_id("mat", name));
     lib.upsert_material(Material::new(
         id,
         name.to_string(),
@@ -3541,7 +3637,15 @@ pub fn aec_style_add(command_line: &mut CommandLine, args: &str) {
         }
     }
 
-    let id = format!("style_{}", slugify(name));
+    // Re-use the id of an existing wall style with the same name so
+    // re-running AEC_STYLE_ADD on the same name still updates it in place;
+    // only a genuinely new name gets a fresh, globally unique id.
+    let id = lib
+        .wall_styles
+        .iter()
+        .find(|s| s.style.name.eq_ignore_ascii_case(name))
+        .map(|s| s.style.id.clone())
+        .unwrap_or_else(|| unique_id("style", name));
     lib.upsert_wall_style(WallStyle {
         style: Style {
             id,
@@ -3838,7 +3942,7 @@ pub fn expand_with_wall_derived_handles(scene: &Scene, handles: &mut Vec<Handle>
 /// contour/hatch/solid representation existed: rebuild it for every
 /// `WALL` entity in the document that doesn't already carry a
 /// `derived_handles` list (new walls skip a redundant rebuild).
-pub fn aec_wall_refresh(scene: &mut Scene, command_line: &mut CommandLine) {
+pub fn aec_wall_refresh(scene: &mut Scene, command_line: &mut CommandLine, library_override: Option<&StyleLibrary>) {
     let candidates: Vec<Handle> = scene
         .document
         .entities()
@@ -3863,7 +3967,7 @@ pub fn aec_wall_refresh(scene: &mut Scene, command_line: &mut CommandLine) {
 
     let mut refreshed = 0usize;
     for handle in candidates {
-        if regenerate_wall_representation(scene, handle).is_ok() {
+        if regenerate_wall_representation(scene, handle, library_override).is_ok() {
             refreshed += 1;
         }
     }
@@ -4298,7 +4402,13 @@ pub fn find_wall_to_auto_join(
 /// [`join_two_walls_in_document`]. Returns every axis + derived handle touched
 /// so callers can refresh 2D and 3D in one `bump_entities` call. Never errors —
 /// failed/no-candidate joins are silent no-ops.
-pub fn try_auto_join_nearby_walls(scene: &mut Scene, wall_handle: Handle) -> Vec<Handle> {
+pub fn try_auto_join_nearby_walls(
+    scene: &mut Scene,
+    wall_handle: Handle,
+    library_override: Option<&StyleLibrary>,
+    display_rules: Option<&engine::display_component::ComponentRuleSet>,
+    style_substitutions: Option<&HashMap<engine::plan_view::WallStyleRef, engine::plan_view::WallStyleRef>>,
+) -> Vec<Handle> {
     let mut touched = Vec::new();
 
     // Step 4: Symmetric peer unlinking for walls that are no longer nearby.
@@ -4311,7 +4421,13 @@ pub fn try_auto_join_nearby_walls(scene: &mut Scene, wall_handle: Handle) -> Vec
         if wall_endpoint_to_axis_dist(&axis, &peer_axis) > WALL_JOIN_SNAP_RADIUS {
             engine::owner_index::unlink_peers(&mut scene.document, wall_handle, peer);
             // Peer representation might be mitered against us; refresh it.
-            if let Ok(t) = regenerate_wall_representation(scene, peer) {
+            if let Ok(t) = regenerate_wall_representation_with_rules_and_substitutions(
+                scene,
+                peer,
+                display_rules,
+                style_substitutions,
+                library_override,
+            ) {
                 touched.extend(t);
             }
         }
@@ -4321,7 +4437,13 @@ pub fn try_auto_join_nearby_walls(scene: &mut Scene, wall_handle: Handle) -> Vec
 
     // Prefer multi-wall junction resolution when 3+ walls already cluster at
     // an endpoint of `wall_handle` (or a nearby through-hit).
-    let junction_touched = try_join_multi_wall_junctions(scene, wall_handle);
+    let junction_touched = try_join_multi_wall_junctions(
+        scene,
+        wall_handle,
+        library_override,
+        display_rules,
+        style_substitutions,
+    );
     if !junction_touched.is_empty() {
         touched.extend(junction_touched.iter().copied());
         // Walls already rebuilt via the junction path shouldn't be pairwise-
@@ -4347,7 +4469,14 @@ pub fn try_auto_join_nearby_walls(scene: &mut Scene, wall_handle: Handle) -> Vec
         let Some(other) = find_wall_to_auto_join(scene, wall_handle, &excluding) else {
             break;
         };
-        match join_two_walls_in_document(scene, wall_handle, other) {
+        match join_two_walls_in_document(
+            scene,
+            wall_handle,
+            other,
+            library_override,
+            display_rules,
+            style_substitutions,
+        ) {
             Ok((_kind, handles)) => {
                 touched.extend(handles);
                 excluding.push(other);
@@ -4377,6 +4506,7 @@ pub fn try_auto_join_nearby_walls(scene: &mut Scene, wall_handle: Handle) -> Vec
 pub fn apply_display_config_to_scene(
     scene: &mut Scene,
     config: &engine::plan_view::DisplayConfig,
+    library_override: Option<&StyleLibrary>,
 ) -> Vec<Handle> {
     let rules = config.wall_rules();
     let substitutions = if config.style_substitutions.is_empty() {
@@ -4391,6 +4521,7 @@ pub fn apply_display_config_to_scene(
             wall_handle,
             rules,
             substitutions,
+            library_override,
         ) {
             touched.extend(handles);
         }
@@ -4412,7 +4543,13 @@ fn all_wall_axis_handles(scene: &Scene) -> Vec<Handle> {
 
 /// Detect multi-wall junctions involving `wall_handle` and resolve them with
 /// N-way miter. Returns touched handles (empty when no multi-wall junction).
-fn try_join_multi_wall_junctions(scene: &mut Scene, wall_handle: Handle) -> Vec<Handle> {
+fn try_join_multi_wall_junctions(
+    scene: &mut Scene,
+    wall_handle: Handle,
+    library_override: Option<&StyleLibrary>,
+    display_rules: Option<&engine::display_component::ComponentRuleSet>,
+    style_substitutions: Option<&HashMap<engine::plan_view::WallStyleRef, engine::plan_view::WallStyleRef>>,
+) -> Vec<Handle> {
     let handles = all_wall_axis_handles(scene);
     if handles.len() < 3 {
         return Vec::new();
@@ -4454,7 +4591,14 @@ fn try_join_multi_wall_junctions(scene: &mut Scene, wall_handle: Handle) -> Vec<
                 join::JunctionRole::Endpoint(end_idx) => axes[self_idx].get(end_idx).copied(),
                 join::JunctionRole::Through(_) => None,
             });
-        if let Ok(t) = join_junction_in_document(scene, &part_handles, snap_point) {
+        if let Ok(t) = join_junction_in_document(
+            scene,
+            &part_handles,
+            snap_point,
+            library_override,
+            display_rules,
+            style_substitutions,
+        ) {
             touched.extend(t);
         }
     }
@@ -4598,6 +4742,9 @@ pub fn join_junction_in_document(
     scene: &mut Scene,
     handles: &[Handle],
     snap_point: Option<DVec3>,
+    library_override: Option<&StyleLibrary>,
+    display_rules: Option<&engine::display_component::ComponentRuleSet>,
+    style_substitutions: Option<&HashMap<engine::plan_view::WallStyleRef, engine::plan_view::WallStyleRef>>,
 ) -> Result<Vec<Handle>, JoinError> {
     if handles.len() < 2 {
         return Err(JoinError::Degenerate);
@@ -4760,11 +4907,23 @@ pub fn join_junction_in_document(
 
         // Endpoint walls get precomputed miters; through-walls just refresh.
         let result = if matches!(part.role, join::JunctionRole::Endpoint(_)) {
-            regenerate_wall_representation_with_precomputed_miters(
-                scene, h, override_pt, fps,
+            regenerate_wall_representation_with_precomputed_miters_rules_and_substitutions(
+                scene,
+                h,
+                override_pt,
+                fps,
+                display_rules,
+                style_substitutions,
+                library_override,
             )
         } else {
-            regenerate_wall_representation(scene, h)
+            regenerate_wall_representation_with_rules_and_substitutions(
+                scene,
+                h,
+                display_rules,
+                style_substitutions,
+                library_override,
+            )
         };
         match result {
             Ok(t) => touched.extend(t),
@@ -4810,8 +4969,19 @@ pub fn join_two_walls_in_document(
     scene: &mut Scene,
     h_a: Handle,
     h_b: Handle,
+    library_override: Option<&StyleLibrary>,
+    display_rules: Option<&engine::display_component::ComponentRuleSet>,
+    style_substitutions: Option<&HashMap<engine::plan_view::WallStyleRef, engine::plan_view::WallStyleRef>>,
 ) -> Result<(JoinKind, Vec<Handle>), JoinError> {
-    join_two_walls_in_document_inner(scene, h_a, h_b, false)
+    join_two_walls_in_document_inner(
+        scene,
+        h_a,
+        h_b,
+        false,
+        library_override,
+        display_rules,
+        style_substitutions,
+    )
 }
 
 /// Like [`join_two_walls_in_document`], but always forms an L-corner
@@ -4820,8 +4990,19 @@ pub fn join_two_walls_as_l_in_document(
     scene: &mut Scene,
     h_a: Handle,
     h_b: Handle,
+    library_override: Option<&StyleLibrary>,
+    display_rules: Option<&engine::display_component::ComponentRuleSet>,
+    style_substitutions: Option<&HashMap<engine::plan_view::WallStyleRef, engine::plan_view::WallStyleRef>>,
 ) -> Result<(JoinKind, Vec<Handle>), JoinError> {
-    join_two_walls_in_document_inner(scene, h_a, h_b, true)
+    join_two_walls_in_document_inner(
+        scene,
+        h_a,
+        h_b,
+        true,
+        library_override,
+        display_rules,
+        style_substitutions,
+    )
 }
 
 fn join_two_walls_in_document_inner(
@@ -4829,6 +5010,9 @@ fn join_two_walls_in_document_inner(
     h_a: Handle,
     h_b: Handle,
     force_l: bool,
+    library_override: Option<&StyleLibrary>,
+    display_rules: Option<&engine::display_component::ComponentRuleSet>,
+    style_substitutions: Option<&HashMap<engine::plan_view::WallStyleRef, engine::plan_view::WallStyleRef>>,
 ) -> Result<(JoinKind, Vec<Handle>), JoinError> {
     let axis_a = get_wall_vertices(scene, h_a);
     let axis_b = get_wall_vertices(scene, h_b);
@@ -4905,8 +5089,14 @@ fn join_two_walls_in_document_inner(
                             participants.push(h);
                         }
                     }
-                    if let Ok(touched) = join_junction_in_document(scene, &participants, Some(pt))
-                    {
+                    if let Ok(touched) = join_junction_in_document(
+                        scene,
+                        &participants,
+                        Some(pt),
+                        library_override,
+                        display_rules,
+                        style_substitutions,
+                    ) {
                         return Ok((kind, touched));
                     }
                 }
@@ -4925,11 +5115,14 @@ fn join_two_walls_in_document_inner(
                 other_end: end_b,
                 kind,
             });
-            match regenerate_wall_representation_with_corner(
+            match regenerate_wall_representation_with_corner_rules_and_substitutions(
                 scene,
                 h_a,
                 override_a,
                 miter_a.as_ref(),
+                display_rules,
+                style_substitutions,
+                library_override,
             ) {
                 Ok(t) => touched.extend(t),
                 Err(_) => touched.push(h_a),
@@ -4945,11 +5138,14 @@ fn join_two_walls_in_document_inner(
                 other_end: end_a,
                 kind,
             });
-            match regenerate_wall_representation_with_corner(
+            match regenerate_wall_representation_with_corner_rules_and_substitutions(
                 scene,
                 h_b,
                 override_b,
                 miter_b.as_ref(),
+                display_rules,
+                style_substitutions,
+                library_override,
             ) {
                 Ok(t) => touched.extend(t),
                 Err(_) => touched.push(h_b),
@@ -4992,7 +5188,14 @@ fn wall_layer_data(scene: &Scene, handle: Handle) -> Vec<engine::miter::MiterLay
 /// writes the trimmed/extended axes back and regenerates both walls'
 /// representation. Reports [`JoinError`] via the command line instead of
 /// panicking.
-pub fn aec_walljoin_do(scene: &mut Scene, command_line: &mut CommandLine, args: &str) {
+pub fn aec_walljoin_do(
+    scene: &mut Scene,
+    command_line: &mut CommandLine,
+    args: &str,
+    library_override: Option<&StyleLibrary>,
+    display_rules: Option<&engine::display_component::ComponentRuleSet>,
+    style_substitutions: Option<&HashMap<engine::plan_view::WallStyleRef, engine::plan_view::WallStyleRef>>,
+) {
     let parts: Vec<&str> = args.split('|').collect();
     let [a, b] = parts.as_slice() else {
         command_line.push_error("AEC_WALLJOIN: malformed arguments.");
@@ -5021,7 +5224,14 @@ pub fn aec_walljoin_do(scene: &mut Scene, command_line: &mut CommandLine, args: 
         return;
     }
 
-    match join_two_walls_as_l_in_document(scene, h_a, h_b) {
+    match join_two_walls_as_l_in_document(
+        scene,
+        h_a,
+        h_b,
+        library_override,
+        display_rules,
+        style_substitutions,
+    ) {
         Ok((_kind, touched)) => {
             let changes: Vec<_> = touched
                 .into_iter()
@@ -5196,7 +5406,14 @@ impl CadCommand for WallExtendCommand {
 /// with `target`'s axis via [`join::join_wall_axes`]), writes it back and
 /// regenerates the wall's representation. Reports [`JoinError`] via the
 /// command line instead of panicking.
-pub fn aec_wallextend_do(scene: &mut Scene, command_line: &mut CommandLine, args: &str) {
+pub fn aec_wallextend_do(
+    scene: &mut Scene,
+    command_line: &mut CommandLine,
+    args: &str,
+    library_override: Option<&StyleLibrary>,
+    display_rules: Option<&engine::display_component::ComponentRuleSet>,
+    style_substitutions: Option<&HashMap<engine::plan_view::WallStyleRef, engine::plan_view::WallStyleRef>>,
+) {
     let mut parts = args.splitn(2, '|');
     let (Some(wall_str), Some(rest)) = (parts.next(), parts.next()) else {
         command_line.push_error("AEC_WALLEXTEND: malformed arguments.");
@@ -5260,7 +5477,13 @@ pub fn aec_wallextend_do(scene: &mut Scene, command_line: &mut CommandLine, args
             }
         }
         update_wall_vertices(scene, wall_handle, &axis);
-        let touched = match regenerate_wall_representation(scene, wall_handle) {
+        let touched = match regenerate_wall_representation_with_rules_and_substitutions(
+            scene,
+            wall_handle,
+            display_rules,
+            style_substitutions,
+            library_override,
+        ) {
             Ok(t) => t,
             Err(_) => vec![wall_handle],
         };
@@ -5298,18 +5521,27 @@ pub fn aec_wallextend_do(scene: &mut Scene, command_line: &mut CommandLine, args
                     other_end: None,
                     kind: JoinKind::T,
                 };
-                let mut touched = match regenerate_wall_representation_with_corner(
+                let mut touched = match regenerate_wall_representation_with_corner_rules_and_substitutions(
                     scene,
                     wall_handle,
                     None,
                     Some(&miter),
+                    display_rules,
+                    style_substitutions,
+                    library_override,
                 ) {
                     Ok(t) => t,
                     Err(_) => vec![wall_handle],
                 };
                 // Target length stays unchanged; refresh its display so
                 // overlapping layer edges stay in sync visually.
-                match regenerate_wall_representation(scene, target_handle) {
+                match regenerate_wall_representation_with_rules_and_substitutions(
+                    scene,
+                    target_handle,
+                    display_rules,
+                    style_substitutions,
+                    library_override,
+                ) {
                     Ok(t) => touched.extend(t),
                     Err(_) => touched.push(target_handle),
                 }
@@ -5409,6 +5641,9 @@ impl CadCommand for WallReverseCommand {
 pub fn reverse_wall_in_document(
     scene: &mut Scene,
     wall_handle: Handle,
+    library_override: Option<&StyleLibrary>,
+    display_rules: Option<&engine::display_component::ComponentRuleSet>,
+    style_substitutions: Option<&HashMap<engine::plan_view::WallStyleRef, engine::plan_view::WallStyleRef>>,
 ) -> Result<Vec<Handle>, WallRegenError> {
     let wall_handle = resolve_wall_package(scene, wall_handle);
     let mut axis = get_wall_vertices(scene, wall_handle);
@@ -5453,8 +5688,20 @@ pub fn reverse_wall_in_document(
         }
     }
 
-    let mut touched = regenerate_wall_representation(scene, wall_handle)?;
-    let joined = try_auto_join_nearby_walls(scene, wall_handle);
+    let mut touched = regenerate_wall_representation_with_rules_and_substitutions(
+        scene,
+        wall_handle,
+        display_rules,
+        style_substitutions,
+        library_override,
+    )?;
+    let joined = try_auto_join_nearby_walls(
+        scene,
+        wall_handle,
+        library_override,
+        display_rules,
+        style_substitutions,
+    );
     touched.extend(joined);
     touched.sort_by_key(|h| h.value());
     touched.dedup();
@@ -5463,7 +5710,14 @@ pub fn reverse_wall_in_document(
 
 /// `AEC_WALLREVERSE_DO handle` — non-interactive handler dispatched by
 /// [`WallReverseCommand`] once a wall is picked.
-pub fn aec_wallreverse_do(scene: &mut Scene, command_line: &mut CommandLine, args: &str) {
+pub fn aec_wallreverse_do(
+    scene: &mut Scene,
+    command_line: &mut CommandLine,
+    args: &str,
+    library_override: Option<&StyleLibrary>,
+    display_rules: Option<&engine::display_component::ComponentRuleSet>,
+    style_substitutions: Option<&HashMap<engine::plan_view::WallStyleRef, engine::plan_view::WallStyleRef>>,
+) {
     let Ok(val) = args.trim().parse::<u64>() else {
         command_line.push_error("AEC_WALLREVERSE: malformed handle.");
         return;
@@ -5473,7 +5727,13 @@ pub fn aec_wallreverse_do(scene: &mut Scene, command_line: &mut CommandLine, arg
         command_line.push_error("AEC_WALLREVERSE: select a wall entity.");
         return;
     }
-    match reverse_wall_in_document(scene, handle) {
+    match reverse_wall_in_document(
+        scene,
+        handle,
+        library_override,
+        display_rules,
+        style_substitutions,
+    ) {
         Ok(touched) => {
             let changes: Vec<_> = touched
                 .into_iter()
@@ -5579,6 +5839,9 @@ pub fn place_wall_opening(
     wall_handle: Handle,
     pt: DVec3,
     kind: engine::openings::OpeningKind,
+    library_override: Option<&StyleLibrary>,
+    display_rules: Option<&engine::display_component::ComponentRuleSet>,
+    style_substitutions: Option<&HashMap<engine::plan_view::WallStyleRef, engine::plan_view::WallStyleRef>>,
 ) -> Result<(Handle, Vec<Handle>), String> {
     let wall_handle = resolve_wall_package(scene, wall_handle);
     if !is_wall_pick_target(scene, wall_handle) {
@@ -5622,7 +5885,13 @@ pub fn place_wall_opening(
     write_aec_record(&mut scene.document, opening_handle, opening_record(&opening));
     engine::owner_index::add_child(&mut scene.document, wall_handle, opening_handle);
 
-    let mut touched = match regenerate_wall_representation(scene, wall_handle) {
+    let mut touched = match regenerate_wall_representation_with_rules_and_substitutions(
+        scene,
+        wall_handle,
+        display_rules,
+        style_substitutions,
+        library_override,
+    ) {
         Ok(t) => t,
         Err(_) => vec![wall_handle],
     };
@@ -5638,6 +5907,7 @@ pub fn place_wall_opening(
 pub fn remove_wall_opening(
     scene: &mut Scene,
     opening_handle: Handle,
+    library_override: Option<&StyleLibrary>,
 ) -> Result<Vec<Handle>, String> {
     let Some(entity) = scene.document.get_entity(opening_handle).cloned() else {
         return Err("opening entity not found".into());
@@ -5648,7 +5918,7 @@ pub fn remove_wall_opening(
     let wall_handle = resolve_wall_package(scene, opening.host_wall);
     engine::owner_index::remove_child(&mut scene.document, wall_handle, opening_handle);
     scene.erase_entities(&[opening_handle]);
-    let mut touched = match regenerate_wall_representation(scene, wall_handle) {
+    let mut touched = match regenerate_wall_representation(scene, wall_handle, library_override) {
         Ok(t) => t,
         Err(_) => vec![wall_handle],
     };
@@ -5745,7 +6015,14 @@ impl CadCommand for WallOpeningCommand {
 
 /// `AEC_WALLOPENING_DO handle|W|x,y,z` or `...|D|x,y,z` — non-interactive
 /// handler dispatched by [`WallOpeningCommand`].
-pub fn aec_wallopening_do(scene: &mut Scene, command_line: &mut CommandLine, args: &str) {
+pub fn aec_wallopening_do(
+    scene: &mut Scene,
+    command_line: &mut CommandLine,
+    args: &str,
+    library_override: Option<&StyleLibrary>,
+    display_rules: Option<&engine::display_component::ComponentRuleSet>,
+    style_substitutions: Option<&HashMap<engine::plan_view::WallStyleRef, engine::plan_view::WallStyleRef>>,
+) {
     let parts: Vec<&str> = args.split('|').collect();
     if parts.len() != 3 {
         command_line.push_error("AEC_WALLOPENING: malformed arguments.");
@@ -5774,7 +6051,15 @@ pub fn aec_wallopening_do(scene: &mut Scene, command_line: &mut CommandLine, arg
     };
     let z = xyz.get(2).and_then(|s| s.parse::<f64>().ok()).unwrap_or(0.0);
 
-    match place_wall_opening(scene, Handle::new(wall_val), DVec3::new(x, y, z), kind) {
+    match place_wall_opening(
+        scene,
+        Handle::new(wall_val),
+        DVec3::new(x, y, z),
+        kind,
+        library_override,
+        display_rules,
+        style_substitutions,
+    ) {
         Ok((_opening, touched)) => {
             let changes: Vec<_> = touched
                 .into_iter()
@@ -5877,7 +6162,7 @@ mod wall_command_tests {
             read_junction_override(&scene, wall, end_index).unwrap_or_default();
         override_data.default_style = Some(join::JoinOverrideStyle::Butt);
         assert!(write_junction_override(&mut scene, wall, end_index, &override_data));
-        let touched = refresh_wall_after_axis_edit(&mut scene, wall);
+        let touched = refresh_wall_after_axis_edit(&mut scene, wall, None, None, None);
         assert!(!touched.is_empty(), "regeneration should touch at least the axis");
 
         let read_back = read_junction_override(&scene, wall, end_index);
@@ -5904,7 +6189,7 @@ mod wall_command_tests {
         assert!(read_junction_override(&scene, wall, end_index).is_some());
 
         assert!(remove_junction_override(&mut scene, wall, end_index));
-        let touched = refresh_wall_after_axis_edit(&mut scene, wall);
+        let touched = refresh_wall_after_axis_edit(&mut scene, wall, None, None, None);
         assert!(!touched.is_empty());
 
         assert_eq!(read_junction_override(&scene, wall, end_index), None);
@@ -5963,9 +6248,9 @@ mod wall_command_tests {
         let w2 = add_wall_2layer(&mut scene, (0.0, 0.0), (0.0, 10.0), "Concrete");
         let w3 = add_wall_2layer(&mut scene, (0.0, 0.0), (10.0, 0.0), "Wood");
         for h in [w1, w2, w3] {
-            regenerate_wall_representation(&mut scene, h).expect("initial regen");
+            regenerate_wall_representation(&mut scene, h, None).expect("initial regen");
         }
-        join_junction_in_document(&mut scene, &[w1, w2, w3], None).expect("N-way join");
+        join_junction_in_document(&mut scene,  &[w1, w2, w3],  None,  None,  None,  None).expect("N-way join");
 
         let w1_vertices = get_wall_vertices(&scene, w1);
         let end_1 = if w1_vertices[0].distance(DVec3::ZERO) < 1e-6 { 0 } else { 1 };
@@ -5992,9 +6277,9 @@ mod wall_command_tests {
         let through = add_wall_2layer(&mut scene, (0.0, 0.0), (10.0, 0.0), "Brick");
         let stem = add_wall_2layer(&mut scene, (5.0, 0.0), (5.0, 5.0), "Concrete");
         for h in [through, stem] {
-            regenerate_wall_representation(&mut scene, h).expect("initial regen");
+            regenerate_wall_representation(&mut scene, h, None).expect("initial regen");
         }
-        join_junction_in_document(&mut scene, &[through, stem], None).expect("T join");
+        join_junction_in_document(&mut scene, &[through, stem], None, None, None, None).expect("T join");
 
         // The stem wall's end at (5,0) is a real Endpoint; use it as the
         // query, exactly as the context menu does when the user clicks the
@@ -6037,9 +6322,9 @@ mod wall_command_tests {
         let w2 = add_wall_2layer(&mut scene, (0.0, 0.0), (0.0, 10.0), "Concrete");
         let w3 = add_wall_2layer(&mut scene, (0.0, 0.0), (10.0, 0.0), "Wood");
         for h in [w1, w2, w3] {
-            regenerate_wall_representation(&mut scene, h).expect("initial regen");
+            regenerate_wall_representation(&mut scene, h, None).expect("initial regen");
         }
-        join_junction_in_document(&mut scene, &[w1, w2, w3], None).expect("N-way join");
+        join_junction_in_document(&mut scene,  &[w1, w2, w3],  None,  None,  None,  None).expect("N-way join");
 
         let end_1 = if get_wall_vertices(&scene, w1)[0].distance(DVec3::ZERO) < 1e-6 { 0 } else { 1 };
         let participants = walls_at_junction(&scene, w1, end_1);
@@ -7091,6 +7376,19 @@ mod wall_command_tests {
     }
 
     #[test]
+    fn unique_id_stays_readable_but_differs_across_calls() {
+        // Two ids generated for the exact same name (e.g. the same wall
+        // style name entered independently in two different projects) must
+        // still differ, so libraries created independently never collide
+        // when later mixed (see `unique_id` doc comment).
+        let a = unique_id("style", "Mauerwerk 36.5");
+        let b = unique_id("style", "Mauerwerk 36.5");
+        assert_ne!(a, b);
+        assert!(a.starts_with("style_mauerwerk_36_5_"));
+        assert!(b.starts_with("style_mauerwerk_36_5_"));
+    }
+
+    #[test]
     fn wall_round_trip_with_derived_handles() {
         let layers = vec![wl("Concrete", 0.2, "Structural")];
         let derived = vec![Handle::new(10), Handle::new(11), Handle::new(12)];
@@ -7264,7 +7562,7 @@ mod wall_command_tests {
         }
         xd.add_record(record);
 
-        regenerate_wall_representation(&mut scene, wall_handle)
+        regenerate_wall_representation(&mut scene, wall_handle, None)
             .expect("regeneration should succeed after style change");
 
         let updated = wall_from_entity(scene.document.get_entity(wall_handle).unwrap())
@@ -7279,7 +7577,7 @@ mod wall_command_tests {
     fn resolve_wall_package_returns_axis_for_a_derived_entity() {
         let mut scene = Scene::new();
         let wall_handle = add_multi_layer_wall(&mut scene);
-        regenerate_wall_representation(&mut scene, wall_handle)
+        regenerate_wall_representation(&mut scene, wall_handle, None)
             .expect("regeneration should succeed for a valid two-layer wall");
 
         let derived = wall_from_entity(scene.document.get_entity(wall_handle).unwrap())
@@ -7296,7 +7594,7 @@ mod wall_command_tests {
     fn regen_tags_display_children_with_wall_rep_roles() {
         let mut scene = Scene::new();
         let wall_handle = add_multi_layer_wall(&mut scene);
-        regenerate_wall_representation(&mut scene, wall_handle)
+        regenerate_wall_representation(&mut scene, wall_handle, None)
             .expect("regeneration should succeed for a valid two-layer wall");
 
         let derived = wall_from_entity(scene.document.get_entity(wall_handle).unwrap())
@@ -7364,7 +7662,7 @@ mod wall_command_tests {
 
         let started = Instant::now();
         for h in &handles {
-            regenerate_wall_representation(&mut scene, *h)
+            regenerate_wall_representation(&mut scene, *h, None)
                 .expect("regeneration should succeed for every generated wall");
         }
         let elapsed = started.elapsed();
@@ -7420,7 +7718,7 @@ mod wall_command_tests {
         entity.common_mut().extended_data.add_record(record);
         let wall_handle = scene.add_entity(entity);
 
-        regenerate_wall_representation(&mut scene, wall_handle)
+        regenerate_wall_representation(&mut scene, wall_handle, None)
             .expect("regeneration should succeed for a curved single-layer wall");
 
         let derived = wall_from_entity(scene.document.get_entity(wall_handle).unwrap())
@@ -7463,7 +7761,7 @@ mod wall_command_tests {
         entity.common_mut().extended_data.add_record(record);
         let wall_handle = scene.add_entity(entity);
 
-        regenerate_wall_representation(&mut scene, wall_handle)
+        regenerate_wall_representation(&mut scene, wall_handle, None)
             .expect("regeneration should succeed for a valid two-layer wall");
 
         let derived = wall_from_entity(scene.document.get_entity(wall_handle).unwrap())
@@ -7523,7 +7821,7 @@ mod wall_command_tests {
     fn expand_handles_for_wall_packages_includes_owner_and_children() {
         let mut scene = Scene::new();
         let wall_handle = add_multi_layer_wall(&mut scene);
-        regenerate_wall_representation(&mut scene, wall_handle)
+        regenerate_wall_representation(&mut scene, wall_handle, None)
             .expect("regeneration should succeed for a valid two-layer wall");
         let derived = wall_from_entity(scene.document.get_entity(wall_handle).unwrap())
             .expect("should still read back as WALL")
@@ -7544,7 +7842,7 @@ mod wall_command_tests {
     fn expand_with_wall_derived_handles_resolves_child_to_full_package() {
         let mut scene = Scene::new();
         let wall_handle = add_multi_layer_wall(&mut scene);
-        regenerate_wall_representation(&mut scene, wall_handle)
+        regenerate_wall_representation(&mut scene, wall_handle, None)
             .expect("regeneration should succeed for a valid two-layer wall");
         let derived = wall_from_entity(scene.document.get_entity(wall_handle).unwrap())
             .expect("should still read back as WALL")
@@ -7563,7 +7861,7 @@ mod wall_command_tests {
     fn write_wall_height_from_derived_child_updates_owner() {
         let mut scene = Scene::new();
         let wall_handle = add_multi_layer_wall(&mut scene);
-        regenerate_wall_representation(&mut scene, wall_handle)
+        regenerate_wall_representation(&mut scene, wall_handle, None)
             .expect("regeneration should succeed for a valid two-layer wall");
         let derived = wall_from_entity(scene.document.get_entity(wall_handle).unwrap())
             .expect("should still read back as WALL")
@@ -7609,7 +7907,7 @@ mod wall_command_tests {
     fn wall_axis_snap_wires_excludes_derived_and_includes_axis() {
         let mut scene = Scene::new();
         let wall_handle = add_multi_layer_wall(&mut scene);
-        regenerate_wall_representation(&mut scene, wall_handle)
+        regenerate_wall_representation(&mut scene, wall_handle, None)
             .expect("regeneration should succeed for a valid two-layer wall");
 
         let wall = wall_from_entity(scene.document.get_entity(wall_handle).unwrap())
@@ -7680,12 +7978,12 @@ mod wall_command_tests {
         entity_b.common_mut().extended_data.add_record(record_b);
         let wall_b = scene.add_entity(entity_b);
 
-        regenerate_wall_representation(&mut scene, wall_a)
+        regenerate_wall_representation(&mut scene, wall_a, None)
             .expect("wall A regeneration should succeed");
-        regenerate_wall_representation(&mut scene, wall_b)
+        regenerate_wall_representation(&mut scene, wall_b, None)
             .expect("wall B regeneration should succeed");
 
-        let (kind, _touched) = join_two_walls_in_document(&mut scene, wall_a, wall_b)
+        let (kind, _touched) = join_two_walls_in_document(&mut scene, wall_a, wall_b, None, None, None)
             .expect("the two axes should join as an L-corner");
         assert_eq!(kind, JoinKind::L);
 
@@ -7736,9 +8034,9 @@ mod wall_command_tests {
         entity_b.common_mut().extended_data.add_record(record_b);
         let wall_b = scene.add_entity(entity_b);
 
-        regenerate_wall_representation(&mut scene, wall_a)
+        regenerate_wall_representation(&mut scene, wall_a, None)
             .expect("wall A regeneration should succeed");
-        regenerate_wall_representation(&mut scene, wall_b)
+        regenerate_wall_representation(&mut scene, wall_b, None)
             .expect("wall B regeneration should succeed");
 
         // Wall A's axis end that will join is its last vertex (end_index 1).
@@ -7760,7 +8058,7 @@ mod wall_command_tests {
             Some(override_data)
         );
 
-        let (kind, _touched) = join_two_walls_in_document(&mut scene, wall_a, wall_b)
+        let (kind, _touched) = join_two_walls_in_document(&mut scene, wall_a, wall_b, None, None, None)
             .expect("the two axes should join as an L-corner");
         assert_eq!(kind, JoinKind::L);
 
@@ -7816,8 +8114,8 @@ mod wall_command_tests {
         entity_b.common_mut().extended_data.add_record(record_b);
         let wall_b = scene.add_entity(entity_b);
 
-        regenerate_wall_representation(&mut scene, wall_a).expect("wall A regen");
-        regenerate_wall_representation(&mut scene, wall_b).expect("wall B regen");
+        regenerate_wall_representation(&mut scene, wall_a, None).expect("wall A regen");
+        regenerate_wall_representation(&mut scene, wall_b, None).expect("wall B regen");
 
         let override_data = join::JunctionOverride {
             default_style: Some(join::JoinOverrideStyle::Miter),
@@ -7845,7 +8143,7 @@ mod wall_command_tests {
         );
 
         let _ = take_pending_override_warnings(); // clear anything queued so far
-        let (kind, _touched) = join_two_walls_in_document(&mut scene, wall_a, wall_b)
+        let (kind, _touched) = join_two_walls_in_document(&mut scene, wall_a, wall_b, None, None, None)
             .expect("regeneration must succeed via automatic fallback");
         assert_eq!(kind, JoinKind::L);
 
@@ -7877,8 +8175,8 @@ mod wall_command_tests {
         entity_b.common_mut().extended_data.add_record(record_b);
         let wall_b = scene.add_entity(entity_b);
 
-        regenerate_wall_representation(&mut scene, wall_a).expect("wall A regen");
-        regenerate_wall_representation(&mut scene, wall_b).expect("wall B regen");
+        regenerate_wall_representation(&mut scene, wall_a, None).expect("wall A regen");
+        regenerate_wall_representation(&mut scene, wall_b, None).expect("wall B regen");
 
         let override_data = join::JunctionOverride {
             default_style: Some(join::JoinOverrideStyle::Butt),
@@ -7897,7 +8195,7 @@ mod wall_command_tests {
         // Remove the Insulation layer entirely from wall A's style.
         write_wall_layers(&mut scene, wall_a, vec![wl("Concrete", 0.2, "Structural")]);
 
-        let (kind, _touched) = join_two_walls_in_document(&mut scene, wall_a, wall_b)
+        let (kind, _touched) = join_two_walls_in_document(&mut scene, wall_a, wall_b, None, None, None)
             .expect("regeneration must not fail even though a referenced layer is gone");
         assert_eq!(kind, JoinKind::L);
 
@@ -7931,8 +8229,8 @@ mod wall_command_tests {
         entity_b.common_mut().extended_data.add_record(record_b);
         let wall_b = scene.add_entity(entity_b);
 
-        regenerate_wall_representation(&mut scene, wall_a).expect("wall A regen");
-        regenerate_wall_representation(&mut scene, wall_b).expect("wall B regen");
+        regenerate_wall_representation(&mut scene, wall_a, None).expect("wall A regen");
+        regenerate_wall_representation(&mut scene, wall_b, None).expect("wall B regen");
 
         let override_data = join::JunctionOverride {
             default_style: None,
@@ -7957,7 +8255,7 @@ mod wall_command_tests {
             ],
         );
 
-        join_two_walls_in_document(&mut scene, wall_a, wall_b)
+        join_two_walls_in_document(&mut scene, wall_a, wall_b, None, None, None)
             .expect("regeneration must succeed via automatic fallback");
 
         assert_eq!(
@@ -7991,9 +8289,9 @@ mod wall_command_tests {
         let w3 = add_wall(&mut scene, (0.0, 0.0), (10.0, 0.0));
 
         for h in [w1, w2, w3] {
-            regenerate_wall_representation(&mut scene, h).expect("initial regen");
+            regenerate_wall_representation(&mut scene, h, None).expect("initial regen");
         }
-        join_junction_in_document(&mut scene, &[w1, w2, w3], None).expect("initial N-way join");
+        join_junction_in_document(&mut scene, &[w1, w2, w3], None, None, None, None).expect("initial N-way join");
 
         // W1 stores an override whose `layer_b` names W3's Concrete layer.
         let override_data = join::JunctionOverride {
@@ -8026,7 +8324,7 @@ mod wall_command_tests {
         // panic, even though W1's override still references the deleted
         // wall's layer.
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            join_junction_in_document(&mut scene, &[w1, w2], None)
+            join_junction_in_document(&mut scene, &[w1, w2], None, None, None, None)
         }));
         assert!(result.is_ok(), "regeneration must not panic after a peer wall was deleted");
     }
@@ -8048,8 +8346,8 @@ mod wall_command_tests {
         entity_b.common_mut().extended_data.add_record(record_b);
         let wall_b = scene.add_entity(entity_b);
 
-        regenerate_wall_representation(&mut scene, wall_a).expect("wall A regen");
-        regenerate_wall_representation(&mut scene, wall_b).expect("wall B regen");
+        regenerate_wall_representation(&mut scene, wall_a, None).expect("wall A regen");
+        regenerate_wall_representation(&mut scene, wall_b, None).expect("wall B regen");
 
         let override_data = join::JunctionOverride {
             default_style: None,
@@ -8066,7 +8364,7 @@ mod wall_command_tests {
         assert!(write_junction_override(&mut scene, wall_a, 1, &override_data));
 
         let _ = take_pending_override_warnings();
-        join_two_walls_in_document(&mut scene, wall_a, wall_b).expect("join should succeed");
+        join_two_walls_in_document(&mut scene, wall_a, wall_b, None, None, None).expect("join should succeed");
 
         assert_eq!(
             read_junction_override(&scene, wall_a, 1),
@@ -8097,8 +8395,8 @@ mod wall_command_tests {
         entity_b.common_mut().extended_data.add_record(record_b);
         let wall_b = scene.add_entity(entity_b);
 
-        regenerate_wall_representation(&mut scene, wall_a).expect("wall A regen");
-        regenerate_wall_representation(&mut scene, wall_b).expect("wall B regen");
+        regenerate_wall_representation(&mut scene, wall_a, None).expect("wall A regen");
+        regenerate_wall_representation(&mut scene, wall_b, None).expect("wall B regen");
 
         let override_data = join::JunctionOverride {
             default_style: None,
@@ -8125,10 +8423,10 @@ mod wall_command_tests {
         let _ = take_pending_override_warnings(); // drain any leftovers from prior tests
         let mut command_line = CommandLine::default();
         aec_walljoin_do(
-            &mut scene,
-            &mut command_line,
-            &format!("{}|{}", wall_a.value(), wall_b.value()),
-        );
+            &mut scene, 
+            &mut command_line, 
+            &format!("{}|{}", wall_a.value(), wall_b.value()), 
+        None,  None,  None);
 
         assert!(
             command_line
@@ -8146,7 +8444,7 @@ mod wall_command_tests {
         let wall_handle = add_multi_layer_wall(&mut scene);
         let before = scene.document.entities().count();
 
-        regenerate_wall_representation(&mut scene, wall_handle)
+        regenerate_wall_representation(&mut scene, wall_handle, None)
             .expect("regeneration should succeed for a valid two-layer wall");
         let after_first = scene.document.entities().count();
         assert!(
@@ -8161,7 +8459,7 @@ mod wall_command_tests {
 
         // Calling it again must replace, not accumulate, the derived
         // entities.
-        regenerate_wall_representation(&mut scene, wall_handle)
+        regenerate_wall_representation(&mut scene, wall_handle, None)
             .expect("second regeneration should also succeed");
         let after_second = scene.document.entities().count();
         assert_eq!(
@@ -8190,7 +8488,7 @@ mod wall_command_tests {
         entity.common_mut().extended_data.add_record(record);
         let wall_handle = scene.add_entity(entity);
 
-        regenerate_wall_representation(&mut scene, wall_handle)
+        regenerate_wall_representation(&mut scene, wall_handle, None)
             .expect("regeneration should succeed for a valid two-layer wall");
 
         let derived = wall_from_entity(scene.document.get_entity(wall_handle).unwrap())
@@ -8225,7 +8523,7 @@ mod wall_command_tests {
 
         let mut scene_plain = Scene::new();
         let wall_plain = add_multi_layer_wall(&mut scene_plain);
-        regenerate_wall_representation(&mut scene_plain, wall_plain)
+        regenerate_wall_representation(&mut scene_plain, wall_plain, None)
             .expect("plain regeneration should succeed");
         let derived_plain = wall_from_entity(scene_plain.document.get_entity(wall_plain).unwrap())
             .unwrap()
@@ -8233,7 +8531,7 @@ mod wall_command_tests {
 
         let mut scene_none = Scene::new();
         let wall_none = add_multi_layer_wall(&mut scene_none);
-        regenerate_wall_representation_with_rules(&mut scene_none, wall_none, None)
+        regenerate_wall_representation_with_rules(&mut scene_none, wall_none, None, None)
             .expect("rules-aware regeneration with None should succeed");
         let derived_none = wall_from_entity(scene_none.document.get_entity(wall_none).unwrap())
             .unwrap()
@@ -8247,7 +8545,7 @@ mod wall_command_tests {
             &mut scene_default,
             wall_default,
             Some(&default_rules),
-        )
+        None)
         .expect("rules-aware regeneration with default (all-visible) rules should succeed");
         let derived_default =
             wall_from_entity(scene_default.document.get_entity(wall_default).unwrap())
@@ -8271,7 +8569,7 @@ mod wall_command_tests {
             .visibility
             .insert(WallComponentSlot::Solid3D.key().to_string(), false);
 
-        regenerate_wall_representation_with_rules(&mut scene, wall_handle, Some(&rules))
+        regenerate_wall_representation_with_rules(&mut scene, wall_handle, Some(&rules), None)
             .expect("regeneration with Solid3D hidden should still succeed");
 
         let derived = wall_from_entity(scene.document.get_entity(wall_handle).unwrap())
@@ -8306,7 +8604,7 @@ mod wall_command_tests {
             .visibility
             .insert(WallComponentSlot::Layers2D.key().to_string(), false);
 
-        regenerate_wall_representation_with_rules(&mut scene, wall_handle, Some(&rules))
+        regenerate_wall_representation_with_rules(&mut scene, wall_handle, Some(&rules), None)
             .expect("regeneration with Layers2D hidden should still succeed");
 
         let derived = wall_from_entity(scene.document.get_entity(wall_handle).unwrap())
@@ -8368,7 +8666,7 @@ mod wall_command_tests {
             },
         );
 
-        regenerate_wall_representation_with_rules(&mut scene, wall_handle, Some(&rules))
+        regenerate_wall_representation_with_rules(&mut scene, wall_handle, Some(&rules), None)
             .expect("regeneration with a ContourHatch2D style_override should succeed");
 
         let derived = wall_from_entity(scene.document.get_entity(wall_handle).unwrap())
@@ -8407,7 +8705,7 @@ mod wall_command_tests {
             index: 0,
         }]);
 
-        regenerate_wall_representation_with_rules(&mut scene, wall_handle, Some(&rules))
+        regenerate_wall_representation_with_rules(&mut scene, wall_handle, Some(&rules), None)
             .expect("regeneration with an explicit layer_filter should succeed");
 
         let derived = wall_from_entity(scene.document.get_entity(wall_handle).unwrap())
@@ -8536,7 +8834,7 @@ mod wall_command_tests {
                 wall_handle,
                 None,
                 Some(&substitutions),
-            )
+            None)
             .expect("regeneration with a style substitution should succeed");
 
             let axis_after = get_wall_vertices(&scene, wall_handle);
@@ -8666,7 +8964,7 @@ mod wall_command_tests {
                 wall_handle,
                 Some(&rules),
                 Some(&substitutions),
-            )
+            None)
             .expect("regeneration with both a Detailed override and an applicable substitution should succeed");
 
             let derived = wall_from_entity(scene.document.get_entity(wall_handle).unwrap())
@@ -8719,7 +9017,7 @@ mod wall_command_tests {
             Some((1, DVec3::new(5.0, 0.0, 0.0))),
             None,
             Some(&rules),
-        )
+        None)
         .expect("joined-corner regeneration with Solid3D hidden should still succeed");
 
         let derived_a = wall_from_entity(scene.document.get_entity(wall_a).unwrap())
@@ -8770,7 +9068,7 @@ mod wall_command_tests {
         // Regenerate every wall: this moves each axis polyline onto the
         // dedicated AEC_WALL_AXIS layer.
         for h in &handles {
-            regenerate_wall_representation(&mut scene, *h)
+            regenerate_wall_representation(&mut scene, *h, None)
                 .expect("regeneration should succeed for every wall segment");
         }
         for h in &handles {
@@ -8837,7 +9135,7 @@ mod wall_command_tests {
         entity.common_mut().extended_data.add_record(record);
         let wall_handle = scene.add_entity(entity);
 
-        regenerate_wall_representation(&mut scene, wall_handle)
+        regenerate_wall_representation(&mut scene, wall_handle, None)
             .expect("regeneration should succeed");
 
         let wall = wall_from_entity(scene.document.get_entity(wall_handle).unwrap()).unwrap();
@@ -8879,14 +9177,14 @@ mod wall_command_tests {
         let wall_handle = scene.add_entity(entity);
 
         // Initial regeneration
-        regenerate_wall_representation(&mut scene, wall_handle).unwrap();
+        regenerate_wall_representation(&mut scene, wall_handle, None).unwrap();
 
         // Update layers
         let updated_layers = vec![wl("Brick", 0.5, "Structural")];
         assert!(write_wall_layers(&mut scene, wall_handle, updated_layers));
 
         // Regenerate again
-        regenerate_wall_representation(&mut scene, wall_handle).unwrap();
+        regenerate_wall_representation(&mut scene, wall_handle, None).unwrap();
 
         let wall = wall_from_entity(scene.document.get_entity(wall_handle).unwrap()).unwrap();
         assert_eq!(wall.layers[0].thickness, 0.5);
@@ -8918,10 +9216,10 @@ mod wall_command_tests {
         let mut command_line = CommandLine::default();
 
         aec_wallextend_do(
-            &mut scene,
-            &mut command_line,
-            &format!("{}|PT|8|0|0", wall_handle.value()),
-        );
+            &mut scene, 
+            &mut command_line, 
+            &format!("{}|PT|8|0|0", wall_handle.value()), 
+        None,  None,  None);
 
         let axis = get_wall_vertices(&scene, wall_handle);
         assert_eq!(axis.len(), 2);
@@ -8975,10 +9273,10 @@ mod wall_command_tests {
         // (it has a non-zero Y). Extending must not bend the wall towards
         // this point — it must project onto the original direction line.
         aec_wallextend_do(
-            &mut scene,
-            &mut command_line,
-            &format!("{}|PT|8|2|0", wall_handle.value()),
-        );
+            &mut scene, 
+            &mut command_line, 
+            &format!("{}|PT|8|2|0", wall_handle.value()), 
+        None,  None,  None);
 
         let axis = get_wall_vertices(&scene, wall_handle);
         assert_eq!(axis.len(), 2);
@@ -9020,10 +9318,10 @@ mod wall_command_tests {
 
         // Extend the (5,5) endpoint further along +Y, to (5,8).
         aec_wallextend_do(
-            &mut scene,
-            &mut command_line,
-            &format!("{}|PT|5|8|0", wall_handle.value()),
-        );
+            &mut scene, 
+            &mut command_line, 
+            &format!("{}|PT|5|8|0", wall_handle.value()), 
+        None,  None,  None);
 
         let axis = get_wall_vertices(&scene, wall_handle);
         assert_eq!(axis.len(), 3);
@@ -9064,10 +9362,10 @@ mod wall_command_tests {
 
         let mut command_line = CommandLine::default();
         aec_wallextend_do(
-            &mut scene,
-            &mut command_line,
-            &format!("{}|WALL|{}", wall_a.value(), wall_b.value()),
-        );
+            &mut scene, 
+            &mut command_line, 
+            &format!("{}|WALL|{}", wall_a.value(), wall_b.value()), 
+        None,  None,  None);
 
         let axis_a = get_wall_vertices(&scene, wall_a);
         // Wall A should now end exactly at the intersection with wall B's axis.
@@ -9113,10 +9411,10 @@ mod wall_command_tests {
 
         let mut command_line = CommandLine::default();
         aec_wallextend_do(
-            &mut scene,
-            &mut command_line,
-            &format!("{}|WALL|{}", wall_a.value(), wall_b.value()),
-        );
+            &mut scene, 
+            &mut command_line, 
+            &format!("{}|WALL|{}", wall_a.value(), wall_b.value()), 
+        None,  None,  None);
 
         let peers_a = engine::owner_index::peers_of(&scene.document, wall_a);
         let peers_b = engine::owner_index::peers_of(&scene.document, wall_b);
@@ -9152,10 +9450,10 @@ mod wall_command_tests {
         let stem = add_wall(&mut scene, (5.0, 1.0), (5.0, 4.0));
         let mut command_line = CommandLine::default();
         aec_walljoin_do(
-            &mut scene,
-            &mut command_line,
-            &format!("{}|{}", through.value(), stem.value()),
-        );
+            &mut scene, 
+            &mut command_line, 
+            &format!("{}|{}", through.value(), stem.value()), 
+        None,  None,  None);
         let axis_t = get_wall_vertices(&scene, through);
         let axis_s = get_wall_vertices(&scene, stem);
         assert!(
@@ -9180,13 +9478,13 @@ mod wall_command_tests {
     fn regenerate_after_axis_shorten_matches_new_length() {
         let mut scene = Scene::new();
         let wall = add_multi_layer_wall(&mut scene); // (0,0)-(5,0)
-        let _ = regenerate_wall_representation(&mut scene, wall);
+        let _ = regenerate_wall_representation(&mut scene, wall, None);
         update_wall_vertices(
             &mut scene,
             wall,
             &[DVec3::new(0.0, 0.0, 0.0), DVec3::new(3.0, 0.0, 0.0)],
         );
-        let _ = regenerate_wall_representation(&mut scene, wall);
+        let _ = regenerate_wall_representation(&mut scene, wall, None);
         let rec = wall_from_entity(scene.document.get_entity(wall).unwrap()).unwrap();
         let mut max_x = 0.0_f64;
         for h in rec.derived_handles {
@@ -9207,7 +9505,7 @@ mod wall_command_tests {
     fn regenerate_rewrites_existing_contour_polyline() {
         let mut scene = Scene::new();
         let wall = add_multi_layer_wall(&mut scene);
-        let _ = regenerate_wall_representation(&mut scene, wall);
+        let _ = regenerate_wall_representation(&mut scene, wall, None);
         let rec = wall_from_entity(scene.document.get_entity(wall).unwrap()).unwrap();
         let contour_h = rec
             .derived_handles
@@ -9221,7 +9519,7 @@ mod wall_command_tests {
             wall,
             &[DVec3::new(0.0, 0.0, 0.0), DVec3::new(4.0, 0.0, 0.0)],
         );
-        let _ = regenerate_wall_representation(&mut scene, wall);
+        let _ = regenerate_wall_representation(&mut scene, wall, None);
 
         let rec = wall_from_entity(scene.document.get_entity(wall).unwrap()).unwrap();
         assert!(
@@ -9287,7 +9585,7 @@ mod wall_command_tests {
     fn regenerate_erases_orphan_wall_rep_contour() {
         let mut scene = Scene::new();
         let wall = add_multi_layer_wall(&mut scene);
-        let _ = regenerate_wall_representation(&mut scene, wall);
+        let _ = regenerate_wall_representation(&mut scene, wall, None);
 
         let mut orphan = LwPolyline::new();
         orphan.is_closed = true;
@@ -9303,7 +9601,7 @@ mod wall_command_tests {
             wall,
             &[DVec3::new(0.0, 0.0, 0.0), DVec3::new(2.0, 0.0, 0.0)],
         );
-        let _ = regenerate_wall_representation(&mut scene, wall);
+        let _ = regenerate_wall_representation(&mut scene, wall, None);
 
         // Orphan handle may be reused as the new contour; it must not keep
         // the old 9-unit rectangle either way.
@@ -9341,7 +9639,7 @@ mod wall_command_tests {
             &mut scene,
             wall_handle,
             WallJustification::Interior,
-        ));
+        None));
 
         let wall = wall_from_entity(scene.document.get_entity(wall_handle).unwrap()).unwrap();
         assert_eq!(wall.justification, WallJustification::Interior);
@@ -9420,7 +9718,7 @@ mod wall_command_tests {
         let mut scene = Scene::new();
         let wall_handle = add_multi_layer_wall(&mut scene);
 
-        let touched = regenerate_wall_representation(&mut scene, wall_handle)
+        let touched = regenerate_wall_representation(&mut scene, wall_handle, None)
             .expect("regeneration should succeed");
 
         assert!(
@@ -9456,7 +9754,7 @@ mod wall_command_tests {
 
         let mut scene = Scene::new();
         let wall_handle = add_multi_layer_wall(&mut scene);
-        regenerate_wall_representation(&mut scene, wall_handle).expect("initial regen");
+        regenerate_wall_representation(&mut scene, wall_handle, None).expect("initial regen");
 
         // Prime the resident (camera-independent, GPU-facing) wire cache at
         // the original axis position.
@@ -9469,7 +9767,7 @@ mod wall_command_tests {
         // the touched handles, no `bump_geometry()`.
         let new_vertices = vec![DVec3::new(0.0, 0.0, 0.0), DVec3::new(500.0, 0.0, 0.0)];
         update_wall_vertices(&mut scene, wall_handle, &new_vertices);
-        let touched = regenerate_wall_representation(&mut scene, wall_handle)
+        let touched = regenerate_wall_representation(&mut scene, wall_handle, None)
             .expect("regen after vertex edit");
         let changes: Vec<_> = touched
             .iter()
@@ -9527,7 +9825,7 @@ mod wall_command_tests {
     fn stretching_only_the_contour_is_reverted_by_regen_but_stretching_the_axis_sticks() {
         let mut scene = Scene::new();
         let wall_handle = add_multi_layer_wall(&mut scene);
-        let touched = regenerate_wall_representation(&mut scene, wall_handle)
+        let touched = regenerate_wall_representation(&mut scene, wall_handle, None)
             .expect("initial regen");
 
         let contour_handle = *touched
@@ -9555,7 +9853,7 @@ mod wall_command_tests {
         if let Some(EntityType::LwPolyline(pl)) = scene.document.get_entity_mut(contour_handle) {
             *pl = contour_before;
         }
-        let reverted = refresh_wall_after_axis_edit(&mut scene, wall_handle);
+        let reverted = refresh_wall_after_axis_edit(&mut scene,  wall_handle,  None,  None,  None);
         let still_short = get_wall_vertices(&scene, wall_handle)
             .iter()
             .all(|v| v.x < 400.0);
@@ -9591,11 +9889,13 @@ mod wall_command_tests {
         // exact helper `CmdResult::StretchEntities` now calls for wall
         // packages — moves the axis itself, then regenerates.
         let touched_after_fix = stretch_wall_axis_in_window(
-            &mut scene,
-            wall_handle,
-            |x, _y| x < 400.0,
-            DVec3::new(495.0, 0.0, 0.0),
-        )
+            &mut scene, 
+            wall_handle, 
+            |x,  _y| x < 400.0, 
+            DVec3::new(495.0, 0.0, 0.0), 
+            None, 
+            None,
+            None)
         .expect("axis vertex fell inside the window; must return Some(touched)");
         let axis_moved = get_wall_vertices(&scene, wall_handle)
             .iter()
@@ -9619,11 +9919,13 @@ mod wall_command_tests {
         // A window that covers none of the axis vertices must be a no-op.
         assert!(
             stretch_wall_axis_in_window(
-                &mut scene,
-                wall_handle,
-                |_x, _y| false,
-                DVec3::new(1.0, 0.0, 0.0),
-            )
+                &mut scene, 
+                wall_handle, 
+                |_x,  _y| false, 
+                DVec3::new(1.0, 0.0, 0.0), 
+                None, 
+                None,
+                None)
             .is_none(),
             "a window matching no axis vertex must not move or regenerate the wall"
         );
@@ -9652,7 +9954,7 @@ mod wall_command_tests {
         ent_b.common_mut().extended_data.add_record(rec_b);
         let wall_b = scene.add_entity(ent_b);
 
-        let (kind, touched) = join_two_walls_in_document(&mut scene, wall_a, wall_b).expect("L join");
+        let (kind, touched) = join_two_walls_in_document(&mut scene,  wall_a,  wall_b,  None,  None,  None).expect("L join");
         assert_eq!(kind, JoinKind::L);
         assert!(touched.contains(&wall_a) && touched.contains(&wall_b));
 
@@ -9723,7 +10025,7 @@ mod wall_command_tests {
         ent_b.common_mut().extended_data.add_record(rec_b);
         let wall_b = scene.add_entity(ent_b);
 
-        let (kind, _touched) = join_two_walls_in_document(&mut scene, wall_a, wall_b).expect("T join");
+        let (kind, _touched) = join_two_walls_in_document(&mut scene,  wall_a,  wall_b,  None,  None,  None).expect("T join");
         assert_eq!(kind, JoinKind::T);
 
         let axis_a = get_wall_vertices(&scene, wall_a);
@@ -9767,7 +10069,7 @@ mod wall_command_tests {
         };
         let through = add(&mut scene, (0.0, 0.0), (10.0, 0.0));
         let stem = add(&mut scene, (4.0, 1.0), (4.0, 8.0));
-        let (kind, _) = join_two_walls_in_document(&mut scene, stem, through).expect("T");
+        let (kind, _) = join_two_walls_in_document(&mut scene,  stem,  through,  None,  None,  None).expect("T");
         assert_eq!(kind, JoinKind::T);
         let through_axis = get_wall_vertices(&scene, through);
         assert_eq!(through_axis[0], DVec3::new(0.0, 0.0, 0.0));
@@ -9795,7 +10097,7 @@ mod wall_command_tests {
         };
         let a = add(&mut scene, (0.0, 0.0), (5.0, 0.0));
         let b = add(&mut scene, (5.0, 0.0), (5.0, 5.0));
-        let touched = join_junction_in_document(&mut scene, &[a, b], None).expect("L junction");
+        let touched = join_junction_in_document(&mut scene,  &[a, b],  None,  None,  None,  None).expect("L junction");
         assert!(touched.contains(&a) && touched.contains(&b));
         let axis_a = get_wall_vertices(&scene, a);
         let axis_b = get_wall_vertices(&scene, b);
@@ -9804,7 +10106,7 @@ mod wall_command_tests {
 
         let through = add(&mut scene, (0.0, 10.0), (10.0, 10.0));
         let stem = add(&mut scene, (3.0, 10.0), (3.0, 15.0));
-        join_junction_in_document(&mut scene, &[through, stem], None).expect("T junction");
+        join_junction_in_document(&mut scene,  &[through, stem],  None,  None,  None,  None).expect("T junction");
         let through_axis = get_wall_vertices(&scene, through);
         assert_eq!(through_axis[0], DVec3::new(0.0, 10.0, 0.0));
         assert_eq!(through_axis[1], DVec3::new(10.0, 10.0, 0.0));
@@ -9826,12 +10128,12 @@ mod wall_command_tests {
         };
         let through = add(&mut scene, (0.0, 0.0), (10.0, 0.0));
         let stem = add(&mut scene, (4.0, 0.0), (4.0, 6.0));
-        join_two_walls_in_document(&mut scene, stem, through).expect("T");
+        join_two_walls_in_document(&mut scene,  stem,  through,  None,  None,  None).expect("T");
 
         let mut stem_axis = get_wall_vertices(&scene, stem);
         stem_axis[0] = DVec3::new(4.05, 0.1, 0.0);
         update_wall_vertices(&mut scene, stem, &stem_axis);
-        let _ = try_auto_join_nearby_walls(&mut scene, stem);
+        let _ = try_auto_join_nearby_walls(&mut scene,  stem,  None,  None,  None);
 
         let through_axis = get_wall_vertices(&scene, through);
         assert_eq!(through_axis[0], DVec3::new(0.0, 0.0, 0.0));
@@ -9887,7 +10189,7 @@ mod wall_command_tests {
             .strip_prefix("AEC_WALLEXTEND_DO ")
             .expect("dispatch prefix");
         let mut command_line = CommandLine::default();
-        aec_wallextend_do(&mut scene, &mut command_line, args);
+        aec_wallextend_do(&mut scene,  &mut command_line,  args,  None,  None,  None);
 
         let axis_a_after = get_wall_vertices(&scene, wall_a);
         assert_eq!(
@@ -9922,7 +10224,7 @@ mod wall_command_tests {
         let mut scene = Scene::new();
         // Existing wall along X from (0,0) to (5,0).
         let existing = add_multi_layer_wall(&mut scene);
-        regenerate_wall_representation(&mut scene, existing).expect("regen existing");
+        regenerate_wall_representation(&mut scene, existing, None).expect("regen existing");
 
         // New wall ending 0.15 m short of existing's end — within snap radius.
         let mut pl = LwPolyline::new();
@@ -9969,7 +10271,7 @@ mod wall_command_tests {
         // `add_multi_layer_wall`. Its endpoint at (5,0) is ~0.18 away from
         // the new wall's lower endpoint below — a clear End-End match.
         let corner = add_multi_layer_wall(&mut scene);
-        regenerate_wall_representation(&mut scene, corner).expect("regen corner");
+        regenerate_wall_representation(&mut scene, corner, None).expect("regen corner");
 
         // Candidate T: a long horizontal wall running underneath, whose
         // *interior* (not an endpoint) is only ~0.1 away from the new wall's
@@ -9982,7 +10284,7 @@ mod wall_command_tests {
         rec_through.values = wall_record("s", 3.0, 0, &layers, &[], WallJustification::Center);
         ent_through.common_mut().extended_data.add_record(rec_through);
         let through = scene.add_entity(ent_through);
-        regenerate_wall_representation(&mut scene, through).expect("regen through");
+        regenerate_wall_representation(&mut scene, through, None).expect("regen through");
 
         // New wall: vertical, ending at (5.15, 0.1) — closer in raw distance
         // to `through`'s interior (~0.1) than to `corner`'s endpoint (~0.18).
@@ -10007,7 +10309,7 @@ mod wall_command_tests {
     fn find_wall_to_auto_join_never_returns_the_wall_itself() {
         let mut scene = Scene::new();
         let existing = add_multi_layer_wall(&mut scene);
-        regenerate_wall_representation(&mut scene, existing).expect("regen existing");
+        regenerate_wall_representation(&mut scene, existing, None).expect("regen existing");
         // Even without excluding it explicitly, the candidate loop skips
         // `wall_handle == other` unconditionally, so a wall can never
         // auto-join to itself while still being drawn/edited.
@@ -10019,7 +10321,7 @@ mod wall_command_tests {
         let mut scene = Scene::new();
         // Existing: (0,0)->(5,0). New wall approaches an L corner near (5,0).
         let existing = add_multi_layer_wall(&mut scene);
-        regenerate_wall_representation(&mut scene, existing).expect("regen existing");
+        regenerate_wall_representation(&mut scene, existing, None).expect("regen existing");
 
         let mut pl = LwPolyline::new();
         // End slightly short of the true intersection (5,0) — within snap radius.
@@ -10031,9 +10333,9 @@ mod wall_command_tests {
         record.values = wall_record("s", 3.0, 0, &layers, &[], WallJustification::Center);
         entity.common_mut().extended_data.add_record(record);
         let new_wall = scene.add_entity(entity);
-        regenerate_wall_representation(&mut scene, new_wall).expect("regen new");
+        regenerate_wall_representation(&mut scene, new_wall, None).expect("regen new");
 
-        let touched = try_auto_join_nearby_walls(&mut scene, new_wall);
+        let touched = try_auto_join_nearby_walls(&mut scene,  new_wall,  None,  None,  None);
         assert!(
             !touched.is_empty(),
             "auto-join should touch both walls' packages"
@@ -10080,9 +10382,9 @@ mod wall_command_tests {
     fn try_auto_join_nearby_walls_is_noop_when_nothing_nearby() {
         let mut scene = Scene::new();
         let wall = add_multi_layer_wall(&mut scene);
-        regenerate_wall_representation(&mut scene, wall).expect("regen");
+        regenerate_wall_representation(&mut scene, wall, None).expect("regen");
         let before = get_wall_vertices(&scene, wall);
-        let touched = try_auto_join_nearby_walls(&mut scene, wall);
+        let touched = try_auto_join_nearby_walls(&mut scene,  wall,  None,  None,  None);
         assert!(touched.is_empty(), "no partner → no touched handles");
         let after = get_wall_vertices(&scene, wall);
         assert_eq!(before, after, "axis must be unchanged when auto-join is a no-op");
@@ -10109,7 +10411,7 @@ mod wall_command_tests {
         let mut scene = Scene::new();
         let wall = add_multi_layer_wall(&mut scene);
         // Concrete 0.2 + Insulation 0.05, total 0.25 → y ∈ [-0.125, 0.125]
-        regenerate_wall_representation(&mut scene, wall).expect("regen");
+        regenerate_wall_representation(&mut scene, wall, None).expect("regen");
 
         let axis_before = get_wall_vertices(&scene, wall);
         let layers_before = wall_from_entity(scene.document.get_entity(wall).unwrap())
@@ -10128,7 +10430,7 @@ mod wall_command_tests {
             .map(|(_, y)| *y)
             .fold(f64::INFINITY, f64::min);
 
-        reverse_wall_in_document(&mut scene, wall).expect("reverse");
+        reverse_wall_in_document(&mut scene,  wall,  None,  None,  None).expect("reverse");
 
         let axis_after = get_wall_vertices(&scene, wall);
         assert_eq!(
@@ -10191,9 +10493,9 @@ mod wall_command_tests {
         entity_b.common_mut().extended_data.add_record(record_b);
         let wall_b = scene.add_entity(entity_b);
 
-        regenerate_wall_representation(&mut scene, wall_a).expect("regen A");
-        regenerate_wall_representation(&mut scene, wall_b).expect("regen B");
-        let (_kind, _) = join_two_walls_in_document(&mut scene, wall_a, wall_b).expect("join");
+        regenerate_wall_representation(&mut scene, wall_a, None).expect("regen A");
+        regenerate_wall_representation(&mut scene, wall_b, None).expect("regen B");
+        let (_kind, _) = join_two_walls_in_document(&mut scene,  wall_a,  wall_b,  None,  None,  None).expect("join");
 
         let axis_a_before = get_wall_vertices(&scene, wall_a);
         let axis_b_before = get_wall_vertices(&scene, wall_b);
@@ -10204,7 +10506,7 @@ mod wall_command_tests {
             .copied()
             .expect("joined walls must share a corner before reverse");
 
-        reverse_wall_in_document(&mut scene, wall_a).expect("reverse A");
+        reverse_wall_in_document(&mut scene,  wall_a,  None,  None,  None).expect("reverse A");
 
         let axis_a = get_wall_vertices(&scene, wall_a);
         let axis_b = get_wall_vertices(&scene, wall_b);
@@ -10266,9 +10568,9 @@ mod wall_command_tests {
         ent_b.common_mut().extended_data.add_record(rec_b);
         let wall_b = scene.add_entity(ent_b);
 
-        regenerate_wall_representation(&mut scene, wall_a).expect("regen A");
-        regenerate_wall_representation(&mut scene, wall_b).expect("regen B");
-        let (kind, _) = join_two_walls_in_document(&mut scene, wall_a, wall_b).expect("join");
+        regenerate_wall_representation(&mut scene, wall_a, None).expect("regen A");
+        regenerate_wall_representation(&mut scene, wall_b, None).expect("regen B");
+        let (kind, _) = join_two_walls_in_document(&mut scene,  wall_a,  wall_b,  None,  None,  None).expect("join");
         assert_eq!(kind, JoinKind::L);
 
         let axis_a_joined = get_wall_vertices(&scene, wall_a);
@@ -10301,7 +10603,7 @@ mod wall_command_tests {
         // Reverse the *already-joined* wall A. This is the live-app scenario:
         // join happened earlier; reverse must re-join without relying on
         // endpoints moving.
-        let touched = reverse_wall_in_document(&mut scene, wall_a).expect("reverse A");
+        let touched = reverse_wall_in_document(&mut scene,  wall_a,  None,  None,  None).expect("reverse A");
 
         // Both packages must be in the touched set (B's derived geometry is
         // regenerated too, not only A's axis/XDATA).
@@ -10373,7 +10675,7 @@ mod wall_command_tests {
         entity.common_mut().extended_data.add_record(record);
         let wall = scene.add_entity(entity);
 
-        regenerate_wall_representation(&mut scene, wall).expect("regen");
+        regenerate_wall_representation(&mut scene, wall, None).expect("regen");
 
         let entity_before = scene.document.get_entity(wall).unwrap().clone();
         let layers_before = wall_from_entity(&entity_before).unwrap().layers.clone();
@@ -10391,7 +10693,7 @@ mod wall_command_tests {
             })
             .collect();
 
-        reverse_wall_in_document(&mut scene, wall).expect("reverse");
+        reverse_wall_in_document(&mut scene,  wall,  None,  None,  None).expect("reverse");
 
         let entity_after = scene.document.get_entity(wall).unwrap().clone();
         let layers_after = wall_from_entity(&entity_after).unwrap().layers.clone();
@@ -10618,7 +10920,7 @@ mod wall_command_tests {
         };
         let ha = add_wall(&mut scene, (0.0, 0.0), (5.0, 0.0));
         let hb = add_wall(&mut scene, (0.0, 0.0), (0.0, 5.0));
-        join_two_walls_in_document(&mut scene, ha, hb).expect("L join");
+        join_two_walls_in_document(&mut scene,  ha,  hb,  None,  None,  None).expect("L join");
         assert_eq!(engine::owner_index::peers_of(&scene.document, ha), vec![hb]);
         assert_eq!(engine::owner_index::peers_of(&scene.document, hb), vec![ha]);
 
@@ -10629,10 +10931,10 @@ mod wall_command_tests {
         assert!(engine::owner_index::peers_of(&scene.document, ha).is_empty());
         assert!(engine::owner_index::peers_of(&scene.document, hb).is_empty());
         // re-join
-        join_two_walls_in_document(&mut scene, ha, hb).expect("rejoin");
+        join_two_walls_in_document(&mut scene,  ha,  hb,  None,  None,  None).expect("rejoin");
 
         let hc = add_wall(&mut scene, (2.5, -3.0), (2.5, 0.0));
-        join_two_walls_in_document(&mut scene, ha, hc).expect("T join");
+        join_two_walls_in_document(&mut scene,  ha,  hc,  None,  None,  None).expect("T join");
         let mut peers_a = engine::owner_index::peers_of(&scene.document, ha);
         peers_a.sort_by_key(|h| h.value());
         let mut expected = vec![hb, hc];
@@ -10700,18 +11002,18 @@ mod wall_command_tests {
         assert!(openings_for_host_wall(&scene, wall).is_empty());
 
         let (o1, _) = place_wall_opening(
-            &mut scene,
-            wall,
-            DVec3::new(1.5, 0.0, 0.0),
-            engine::openings::OpeningKind::Window,
-        )
+            &mut scene, 
+            wall, 
+            DVec3::new(1.5, 0.0, 0.0), 
+            engine::openings::OpeningKind::Window, 
+        None,  None,  None)
         .expect("place window");
         let (o2, _) = place_wall_opening(
-            &mut scene,
-            wall,
-            DVec3::new(3.5, 0.0, 0.0),
-            engine::openings::OpeningKind::Door,
-        )
+            &mut scene, 
+            wall, 
+            DVec3::new(3.5, 0.0, 0.0), 
+            engine::openings::OpeningKind::Door, 
+        None,  None,  None)
         .expect("place door");
 
         let children = engine::owner_index::children_of(&scene.document, wall);
@@ -10726,7 +11028,7 @@ mod wall_command_tests {
         let parsed = opening_from_entity(o1_ent, o1).unwrap();
         assert_eq!(parsed.host_wall, wall);
 
-        remove_wall_opening(&mut scene, o1).expect("remove window");
+        remove_wall_opening(&mut scene, o1, None).expect("remove window");
         assert_eq!(
             engine::owner_index::children_of(&scene.document, wall),
             vec![o2]
@@ -10736,7 +11038,7 @@ mod wall_command_tests {
         assert_eq!(remaining[0].handle, o2);
         assert!(scene.document.get_entity(o1).is_none());
 
-        remove_wall_opening(&mut scene, o2).expect("remove door");
+        remove_wall_opening(&mut scene, o2, None).expect("remove door");
         assert!(engine::owner_index::children_of(&scene.document, wall).is_empty());
         assert!(openings_for_host_wall(&scene, wall).is_empty());
     }
@@ -10754,7 +11056,7 @@ mod wall_command_tests {
         rec1.values = wall_record("s1", 3.0, 0, &layers, &[], WallJustification::Center);
         ent1.common_mut().extended_data.add_record(rec1);
         let w1 = scene.add_entity(ent1);
-        regenerate_wall_representation(&mut scene, w1).expect("regen w1");
+        regenerate_wall_representation(&mut scene, w1, None).expect("regen w1");
 
         // Junction A at (0,0): w1 + w2 + w3
         // w2: vertical from (0,0) to (0,5)
@@ -10766,7 +11068,7 @@ mod wall_command_tests {
         rec2.values = wall_record("s2", 3.0, 0, &layers, &[], WallJustification::Center);
         ent2.common_mut().extended_data.add_record(rec2);
         let w2 = scene.add_entity(ent2);
-        regenerate_wall_representation(&mut scene, w2).expect("regen w2");
+        regenerate_wall_representation(&mut scene, w2, None).expect("regen w2");
 
         // w3: vertical from (0,0) to (0,-5)
         let mut pl3 = LwPolyline::new();
@@ -10777,7 +11079,7 @@ mod wall_command_tests {
         rec3.values = wall_record("s3", 3.0, 0, &layers, &[], WallJustification::Center);
         ent3.common_mut().extended_data.add_record(rec3);
         let w3 = scene.add_entity(ent3);
-        regenerate_wall_representation(&mut scene, w3).expect("regen w3");
+        regenerate_wall_representation(&mut scene, w3, None).expect("regen w3");
 
         // Junction B at (10,0): w1 + w4 + w5
         // w4: vertical from (10,0) to (10,5)
@@ -10789,7 +11091,7 @@ mod wall_command_tests {
         rec4.values = wall_record("s4", 3.0, 0, &layers, &[], WallJustification::Center);
         ent4.common_mut().extended_data.add_record(rec4);
         let w4 = scene.add_entity(ent4);
-        regenerate_wall_representation(&mut scene, w4).expect("regen w4");
+        regenerate_wall_representation(&mut scene, w4, None).expect("regen w4");
 
         // w5: vertical from (10,0) to (10,-5)
         let mut pl5 = LwPolyline::new();
@@ -10800,18 +11102,18 @@ mod wall_command_tests {
         rec5.values = wall_record("s5", 3.0, 0, &layers, &[], WallJustification::Center);
         ent5.common_mut().extended_data.add_record(rec5);
         let w5 = scene.add_entity(ent5);
-        regenerate_wall_representation(&mut scene, w5).expect("regen w5");
+        regenerate_wall_representation(&mut scene, w5, None).expect("regen w5");
 
         // Join Junction A.
         let junc_a_handles = vec![w1, w2, w3];
-        let touched_a = join_junction_in_document(&mut scene, &junc_a_handles, None).expect("join A");
+        let touched_a = join_junction_in_document(&mut scene,  &junc_a_handles,  None,  None,  None,  None).expect("join A");
         assert!(touched_a.contains(&w1));
         assert!(touched_a.contains(&w2));
         assert!(touched_a.contains(&w3));
 
         // Join Junction B.
         let junc_b_handles = vec![w1, w4, w5];
-        let touched_b = join_junction_in_document(&mut scene, &junc_b_handles, None).expect("join B");
+        let touched_b = join_junction_in_document(&mut scene,  &junc_b_handles,  None,  None,  None,  None).expect("join B");
         assert!(touched_b.contains(&w1));
         assert!(touched_b.contains(&w4));
         assert!(touched_b.contains(&w5));
@@ -10838,7 +11140,7 @@ mod wall_command_tests {
 
         // Test the safety guard: passing all handles at once should yield Ambiguous.
         let all_handles = vec![w1, w2, w3, w4, w5];
-        let result = join_junction_in_document(&mut scene, &all_handles, None);
+        let result = join_junction_in_document(&mut scene,  &all_handles,  None,  None,  None,  None);
         assert_eq!(result.err(), Some(JoinError::Ambiguous));
     }
 
@@ -10852,27 +11154,27 @@ mod wall_command_tests {
 
         let w1 = add_multi_layer_wall(&mut scene);
         update_wall_vertices(&mut scene, w1, &[DVec3::new(0.0, 0.0, 0.0), DVec3::new(10.0, 0.0, 0.0)]);
-        regenerate_wall_representation(&mut scene, w1).unwrap();
+        regenerate_wall_representation(&mut scene, w1, None).unwrap();
 
         let w2 = add_multi_layer_wall(&mut scene);
         update_wall_vertices(&mut scene, w2, &[DVec3::new(0.0, 0.0, 0.0), DVec3::new(0.0, 10.0, 0.0)]);
-        regenerate_wall_representation(&mut scene, w2).unwrap();
+        regenerate_wall_representation(&mut scene, w2, None).unwrap();
 
         let w3 = add_multi_layer_wall(&mut scene);
         update_wall_vertices(&mut scene, w3, &[DVec3::new(0.0, 0.0, 0.0), DVec3::new(0.0, -10.0, 0.0)]);
-        regenerate_wall_representation(&mut scene, w3).unwrap();
+        regenerate_wall_representation(&mut scene, w3, None).unwrap();
 
         // Initial join.
-        join_junction_in_document(&mut scene, &[w1, w2, w3], None).unwrap();
+        join_junction_in_document(&mut scene,  &[w1, w2, w3],  None,  None,  None,  None).unwrap();
 
         // Move W1's endpoint at (0,0) slightly to (0.1, 0.1).
         // This should trigger a rebuild of ALL THREE walls via try_auto_join_nearby_walls.
         let mut axis1 = get_wall_vertices(&scene, w1);
         axis1[0] = DVec3::new(0.1, 0.0, 0.0);
         update_wall_vertices(&mut scene, w1, &axis1);
-        regenerate_wall_representation(&mut scene, w1).unwrap();
+        regenerate_wall_representation(&mut scene, w1, None).unwrap();
         
-        let touched = try_auto_join_nearby_walls(&mut scene, w1);
+        let touched = try_auto_join_nearby_walls(&mut scene,  w1,  None,  None,  None);
 
         // Assert all 3 walls are still joined (their ends moved to (0.1, 0.0)).
         let axis1 = get_wall_vertices(&scene, w1);
@@ -10908,7 +11210,7 @@ mod wall_command_tests {
         axis1[1] = DVec3::new(110.0, 100.0, 0.0);
         update_wall_vertices(&mut scene, w1, &axis1);
         
-        let touched_far = try_auto_join_nearby_walls(&mut scene, w1);
+        let touched_far = try_auto_join_nearby_walls(&mut scene,  w1,  None,  None,  None);
         
         let peers1_far = engine::owner_index::peers_of(&scene.document, w1);
         assert!(peers1_far.is_empty(), "W1 should be unlinked after moving far away");
@@ -10968,10 +11270,10 @@ mod wall_command_tests {
         let mut scene = Scene::new();
         let wall_a = add_single_layer_wall(&mut scene, (0.0, 0.0), (10.0, 0.0));
         let wall_b = add_single_layer_wall(&mut scene, (10.0, 0.0), (10.0, 10.0));
-        regenerate_wall_representation(&mut scene, wall_a).expect("regen a");
-        regenerate_wall_representation(&mut scene, wall_b).expect("regen b");
+        regenerate_wall_representation(&mut scene, wall_a, None).expect("regen a");
+        regenerate_wall_representation(&mut scene, wall_b, None).expect("regen b");
 
-        join_two_walls_in_document(&mut scene, wall_a, wall_b).expect("A-B join");
+        join_two_walls_in_document(&mut scene,  wall_a,  wall_b,  None,  None,  None).expect("A-B join");
 
         // Plain (un-joined) end-0 cap footprint corners for reference.
         let plain_end0 = [(0.0, -0.1), (0.0, 0.1)];
@@ -10986,8 +11288,8 @@ mod wall_command_tests {
 
         // NEW wall C joins A's other end (0,0).
         let wall_c = add_single_layer_wall(&mut scene, (0.0, 0.0), (0.0, -10.0));
-        regenerate_wall_representation(&mut scene, wall_c).expect("regen c");
-        join_two_walls_in_document(&mut scene, wall_a, wall_c).expect("A-C join");
+        regenerate_wall_representation(&mut scene, wall_c, None).expect("regen c");
+        join_two_walls_in_document(&mut scene,  wall_a,  wall_c,  None,  None,  None).expect("A-C join");
 
         let pts_after = wall_contour_points(&scene, wall_a);
         assert!(
@@ -11015,9 +11317,9 @@ mod wall_command_tests {
         let w2 = add_single_layer_wall(&mut scene, (0.0, 0.0), (0.0, 10.0));
         let w3 = add_single_layer_wall(&mut scene, (0.0, 0.0), (-10.0, 10.0));
         for h in [w1, w2, w3] {
-            regenerate_wall_representation(&mut scene, h).expect("initial regen");
+            regenerate_wall_representation(&mut scene, h, None).expect("initial regen");
         }
-        join_junction_in_document(&mut scene, &[w1, w2, w3], None).expect("N-way join");
+        join_junction_in_document(&mut scene,  &[w1, w2, w3],  None,  None,  None,  None).expect("N-way join");
 
         // Snapshot every vertex near the junction corner (close to the
         // origin) before the new join is introduced.
@@ -11036,8 +11338,8 @@ mod wall_command_tests {
 
         // NEW wall w4 joins w1 at ITS other end (10,0).
         let w4 = add_single_layer_wall(&mut scene, (10.0, 0.0), (10.0, 10.0));
-        regenerate_wall_representation(&mut scene, w4).expect("regen w4");
-        join_two_walls_in_document(&mut scene, w1, w4).expect("w1-w4 join");
+        regenerate_wall_representation(&mut scene, w4, None).expect("regen w4");
+        join_two_walls_in_document(&mut scene,  w1,  w4,  None,  None,  None).expect("w1-w4 join");
 
         let pts_after = wall_contour_points(&scene, w1);
         assert!(
@@ -11062,10 +11364,10 @@ mod wall_command_tests {
         let mut scene = Scene::new();
         let wall_a = add_single_layer_wall(&mut scene, (0.0, 0.0), (10.0, 0.0));
         let wall_b = add_single_layer_wall(&mut scene, (10.0, 0.0), (10.0, 10.0));
-        regenerate_wall_representation(&mut scene, wall_a).expect("regen a");
-        regenerate_wall_representation(&mut scene, wall_b).expect("regen b");
+        regenerate_wall_representation(&mut scene, wall_a, None).expect("regen a");
+        regenerate_wall_representation(&mut scene, wall_b, None).expect("regen b");
 
-        join_two_walls_in_document(&mut scene, wall_a, wall_b).expect("A-B join");
+        join_two_walls_in_document(&mut scene,  wall_a,  wall_b,  None,  None,  None).expect("A-B join");
 
         let pts = wall_contour_points(&scene, wall_a);
         let corner1 = (10.1, -0.1);
@@ -11091,9 +11393,9 @@ mod wall_command_tests {
         let w2 = add_single_layer_wall(&mut scene, (0.0, 0.0), (0.0, 10.0));
         let w3 = add_single_layer_wall(&mut scene, (0.0, 0.0), (-10.0, 10.0));
         for h in [w1, w2, w3] {
-            regenerate_wall_representation(&mut scene, h).expect("initial regen");
+            regenerate_wall_representation(&mut scene, h, None).expect("initial regen");
         }
-        join_junction_in_document(&mut scene, &[w1, w2, w3], None).expect("N-way join");
+        join_junction_in_document(&mut scene,  &[w1, w2, w3],  None,  None,  None,  None).expect("N-way join");
 
         // Plain (un-joined) cap corners at the origin end of a vertical /
         // diagonal single-layer (0.2 thick) wall — what w2/w3 would show at
@@ -11116,8 +11418,8 @@ mod wall_command_tests {
         // interactive drawing workflow actually triggers it: via
         // `try_auto_join_nearby_walls` for just the newly drawn wall.
         let w4 = add_single_layer_wall(&mut scene, (0.0, 0.0), (10.0, -10.0));
-        regenerate_wall_representation(&mut scene, w4).expect("regen w4");
-        try_auto_join_nearby_walls(&mut scene, w4);
+        regenerate_wall_representation(&mut scene, w4, None).expect("regen w4");
+        try_auto_join_nearby_walls(&mut scene,  w4,  None,  None,  None);
 
         let w2_after = wall_contour_points(&scene, w2);
         let w3_after = wall_contour_points(&scene, w3);

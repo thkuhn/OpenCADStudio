@@ -48,6 +48,13 @@ pub struct StatusMenuData<'a> {
     pub selection_types: Vec<String>,
     pub selection_filter: &'a rustc_hash::FxHashSet<String>,
     pub tooltip_hidden: bool,
+    // AEC "Planart" pill: name of the active `DisplayConfig` for the tab, if any.
+    pub active_plan_name: Option<String>,
+    // AEC "Planart" pill: all `DisplayConfig` names in `App::aec_plan_library`.
+    pub plan_names: Vec<String>,
+    // AEC "Planart" pill: whether the active tab auto-couples its DisplayConfig
+    // to the drawing scale (`DocumentTab::auto_display_config_from_scale`).
+    pub auto_display_config_from_scale: bool,
 }
 
 #[derive(Clone, Default)]
@@ -136,6 +143,9 @@ impl StatusBar {
             selection_types,
             selection_filter,
             tooltip_hidden,
+            active_plan_name,
+            plan_names,
+            auto_display_config_from_scale,
         } = menu_data;
 
         // Leftmost hamburger: opens a dropdown listing Model + every layout, so
@@ -228,6 +238,39 @@ impl StatusBar {
         } else {
             status_pill(scale_label).into()
         };
+        // Plan (AEC DisplayConfig) pill: opens the DisplayConfig picker popup,
+        // right-click opens the full Plan Manager. Mirrors the scale pill above.
+        let plan_label = match &active_plan_name {
+            Some(name) => t!("Planart: %{name}", name = name.as_str()).into_owned(),
+            None => t!("Planart: Kein Plan").into_owned(),
+        };
+        let plan_element: Element<'_, Message> = mouse_area(
+            status_menu::menu_bar(
+                menu_tip(
+                    popup_pill(&plan_label),
+                    t!("AEC DisplayConfig (Planart)\nClick to change · Right-click opens the Plan Manager"),
+                    tooltip_hidden,
+                ),
+                crate::ui::popup::plan_popup::menu_entries(
+                    active_plan_name.as_deref(),
+                    plan_names,
+                ),
+                150.0,
+            ),
+        )
+        .on_right_press(Message::AecPlanManagerOpen)
+        .into();
+        // Coupling toggle: shows/controls whether the active tab's DisplayConfig
+        // auto-follows the drawing scale.
+        let plan_auto_toggle: Element<'_, Message> = tip(
+            toggle_pill(
+                ST_VP_SCALE_SYNC,
+                auto_display_config_from_scale,
+                Message::AecAutoDisplayConfigFromScaleToggled(!auto_display_config_from_scale),
+            ),
+            t!("Automatisch an Maßstab koppeln"),
+        )
+        .into();
         // Build the right-side pills, honouring the user's per-pill visibility.
         // They live in a flex-wrap flow (WrapFlow) so they spill onto extra rows
         // when the width can't hold them all on one line.
@@ -319,6 +362,12 @@ impl StatusBar {
         }
         if vis(StatusPill::Scale) {
             pills.push(scale_element);
+        }
+        // "Planart" pill (AEC DisplayConfig) only makes sense while a drawing
+        // is active, same as the other pills that read from the active tab.
+        if !is_start {
+            pills.push(plan_element);
+            pills.push(plan_auto_toggle);
         }
         if vis(StatusPill::AnnoVisibility) {
             pills.push(

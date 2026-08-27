@@ -573,9 +573,19 @@ fn layer_filter_section_view<'a>(
             for wall_style in &library.wall_styles {
                 let mut layer_rows = column![].spacing(2);
                 for (idx, layer) in wall_style.layers.iter().enumerate() {
+                    // `role_tag` is always `None` at regen time — the
+                    // runtime `WallLayer` (see `wall.rs`) carries no
+                    // `role_tag` field at all, so `commands.rs` always
+                    // builds its `LayerRef`s with `role_tag: None` (see the
+                    // comment next to `layer_ref_matches`'s call site).
+                    // Using the wall style's own `role_tag` here would make
+                    // this checklist's `LayerRef`s permanently mismatch
+                    // those, so an explicit selection would silently match
+                    // zero layers — hiding the whole slot instead of
+                    // filtering it. Mirror the runtime convention instead.
                     let layer_ref = LayerRef {
                         material_id: layer.material_id.clone(),
-                        role_tag: layer.role_tag.clone(),
+                        role_tag: None,
                         index: idx,
                     };
                     let checked = selected.contains(&layer_ref);

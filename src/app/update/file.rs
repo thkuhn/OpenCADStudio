@@ -1208,6 +1208,19 @@ pub(super) fn on_open_file(&mut self) -> Task<Message> {
                     (1.0 / unit_factor) as f32
                 };
 
+                // Eagerly resolve the AEC `DisplayConfig` ("Planart") library
+                // right after loading, so the status-bar picker already
+                // lists every plan even before the user ever opens the Plan
+                // Manager (which used to be the only place populating
+                // `aec_plan_library`). Refreshed unconditionally (not just
+                // `get_or_insert_with`) so a freshly opened project's own
+                // library always wins over a stale one from a previous tab.
+                self.aec_plan_library = Some(
+                    crate::modules::aec::engine::project::resolve_display_config_library(
+                        self.aec_project_explorer_file.as_ref(),
+                    ),
+                );
+
                 // Open-time breakdown so regressions are visible immediately.
                 // `total` is wall time from the Open click to here (post-xref,
                 // pre-first-frame); the phase figures are the background-thread

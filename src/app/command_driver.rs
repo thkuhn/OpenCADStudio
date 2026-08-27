@@ -1830,9 +1830,14 @@ impl OpenCADStudio {
                                 handle,
                                 &companions,
                             );
+                            let style_library =
+                                crate::modules::aec::engine::project::resolve_style_library(
+                                    self.aec_project_explorer_file.as_ref(),
+                                );
                             let _ = crate::modules::aec::commands::regenerate_wall_representation(
                                 &mut self.tabs[i].scene,
                                 handle,
+                                Some(&style_library),
                             );
                             // Remember the just-used style/height as the session
                             // default.
@@ -2837,6 +2842,12 @@ impl OpenCADStudio {
                     wall_owner_of.values().copied().collect();
                 wall_owners.sort_by_key(|h| h.value());
                 wall_owners.dedup();
+                let style_library =
+                    crate::modules::aec::engine::project::resolve_style_library(
+                        self.aec_project_explorer_file.as_ref(),
+                    );
+                let (display_rules, style_substitutions) =
+                    self.resolve_active_display_config_wall_rules(i);
                 for owner in &wall_owners {
                     let before = self.tabs[i].scene.document.get_entity_arc(*owner);
                     let Some(touched) = crate::modules::aec::commands::stretch_wall_axis_in_window(
@@ -2844,6 +2855,9 @@ impl OpenCADStudio {
                         *owner,
                         &in_win,
                         glam::DVec3::new(dx, dy, dz),
+                        Some(&style_library),
+                        display_rules.as_ref(),
+                        style_substitutions.as_ref(),
                     ) else {
                         continue;
                     };

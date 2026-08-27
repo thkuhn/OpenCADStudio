@@ -201,9 +201,16 @@ impl OpenCADStudio {
         let Some(config) = lib.resolve_display_config_for_scale(scale_name).cloned() else {
             return;
         };
+        let style_library = crate::modules::aec::engine::project::resolve_style_library(
+            self.aec_project_explorer_file.as_ref(),
+        );
         if let Some(tab) = self.tabs.get_mut(tab_index) {
             tab.active_display_config = Some(config.name.clone());
-            crate::modules::aec::commands::apply_display_config_to_scene(&mut tab.scene, &config);
+            crate::modules::aec::commands::apply_display_config_to_scene(
+                &mut tab.scene,
+                &config,
+                Some(&style_library),
+            );
         }
     }
 
@@ -250,6 +257,70 @@ impl OpenCADStudio {
         }
     }
 
+    /// Resolves `tabs[tab_index]`'s active `DisplayConfig` (`active_display_config`
+    /// + `aec_plan_library`), if any, into the wall `ComponentRuleSet` and
+    /// `style_substitutions` map that must be threaded through wall-mutating
+    /// regenerations (join/extend/reverse/opening as well as style
+    /// assignment) so they honor the currently active Planart. Returns owned
+    /// data (rather than borrowing `self.tabs`/`self.aec_plan_library`) so
+    /// callers can resolve this once and still freely borrow `self.tabs[i]`
+    /// mutably afterwards.
+    pub(crate) fn resolve_active_display_config_wall_rules(
+        &self,
+        tab_index: usize,
+    ) -> (
+        Option<crate::modules::aec::engine::display_component::ComponentRuleSet>,
+        Option<std::collections::HashMap<
+            crate::modules::aec::engine::plan_view::WallStyleRef,
+            crate::modules::aec::engine::plan_view::WallStyleRef,
+        >>,
+    ) {
+        let config = self.tabs[tab_index]
+            .active_display_config
+            .as_deref()
+            .and_then(|name| self.aec_plan_library.as_ref().and_then(|lib| lib.find(name)));
+        match config {
+            Some(config) => {
+                let rules = config.wall_rules().cloned();
+                let substitutions = if config.style_substitutions.is_empty() {
+                    None
+                } else {
+                    Some(config.style_substitutions.clone())
+                };
+                (rules, substitutions)
+            }
+            None => (None, None),
+        }
+    }
+
+    /// Regenerates a single wall's representation the same way
+    /// [`crate::modules::aec::commands::regenerate_wall_representation`]
+    /// does, but additionally honors `tabs[tab_index]`'s active
+    /// `DisplayConfig` (`active_display_config` + `aec_plan_library`), if
+    /// any — mirroring what [`crate::modules::aec::commands::apply_display_config_to_scene`]
+    /// does when a `DisplayConfig` is (re-)applied to the whole document.
+    /// Without this, per-wall regenerations triggered from the AEC Style
+    /// Manager (assigning/saving a wall style) would silently ignore the
+    /// currently active plan and fall back to the default, fully-visible
+    /// representation.
+    fn regenerate_wall_respecting_active_display_config(
+        &mut self,
+        tab_index: usize,
+        wall_handle: acadrust::Handle,
+    ) -> Result<Vec<acadrust::Handle>, crate::modules::aec::commands::WallRegenError> {
+        let style_library = crate::modules::aec::engine::project::resolve_style_library(
+            self.aec_project_explorer_file.as_ref(),
+        );
+        let (rules, substitutions) = self.resolve_active_display_config_wall_rules(tab_index);
+        crate::modules::aec::commands::regenerate_wall_representation_with_rules_and_substitutions(
+            &mut self.tabs[tab_index].scene,
+            wall_handle,
+            rules.as_ref(),
+            substitutions.as_ref(),
+            Some(&style_library),
+        )
+    }
+
     fn aec_style_manager_wall_style_save_internal(
         &mut self,
     ) -> Option<(String, crate::modules::aec::engine::library::StyleLibrary)> {
@@ -261,12 +332,15 @@ impl OpenCADStudio {
             return None;
         }
 
+        // A brand-new style gets a fresh, globally unique id (name +
+        // random suffix) instead of a purely name-derived one, so two
+        // styles created independently (e.g. in different projects) that
+        // happen to share a name never collide on the same id later. Ids
+        // of styles already being edited are left untouched.
         let id = self
             .aec_style_manager_wall_style_editing_id
             .clone()
-            .unwrap_or_else(|| {
-                format!("style_{}", crate::modules::aec::commands::slugify(&name))
-            });
+            .unwrap_or_else(|| crate::modules::aec::commands::unique_id("style", &name));
 
         // Cycle detection before saving
         if let Some(parent_id) = &self.aec_style_manager_wall_style_parent {
@@ -2176,6 +2250,16 @@ impl OpenCADStudio {
                 self.aec_project_explorer_new_storey_name.clear();
                 self.aec_project_explorer_new_storey_elevation = "0.0".to_string();
                 self.aec_project_explorer_new_storey_drawing.clear();
+                // Refresh the "Planart" library so the status-bar picker
+                // reflects this (empty) project's library immediately,
+                // instead of still showing a previously loaded drawing's
+                // global/library-file entries until the Plan Manager is
+                // opened once.
+                self.aec_plan_library = Some(
+                    crate::modules::aec::engine::project::resolve_display_config_library(
+                        self.aec_project_explorer_file.as_ref(),
+                    ),
+                );
                 Task::none()
             }
             Message::AecProjectExplorerLoad => Task::perform(
@@ -2198,6 +2282,15 @@ impl OpenCADStudio {
                         self.aec_project_explorer_path = Some(path);
                         self.aec_project_explorer_selected_building = None;
                         self.aec_project_explorer_selected_storey = None;
+                        // Same reasoning as `AecProjectExplorerNew`: make the
+                        // freshly loaded project's own "Planart" library
+                        // visible right away instead of only after the Plan
+                        // Manager is opened once.
+                        self.aec_plan_library = Some(
+                            crate::modules::aec::engine::project::resolve_display_config_library(
+                                self.aec_project_explorer_file.as_ref(),
+                            ),
+                        );
                     }
                     Err(e) => {
                         self.command_line.push_error(
@@ -3053,9 +3146,14 @@ impl OpenCADStudio {
                 if !self.tabs[i].is_start
                     && self.tabs[i].active_display_config.as_deref() == Some(name.as_str())
                 {
+                    let style_library =
+                        crate::modules::aec::engine::project::resolve_style_library(
+                            self.aec_project_explorer_file.as_ref(),
+                        );
                     crate::modules::aec::commands::apply_display_config_to_scene(
                         &mut self.tabs[i].scene,
                         &config,
+                        Some(&style_library),
                     );
                 }
 
@@ -3086,9 +3184,14 @@ impl OpenCADStudio {
                         )
                     });
                     if let Some(config) = lib.find(&name).cloned() {
+                        let style_library =
+                            crate::modules::aec::engine::project::resolve_style_library(
+                                self.aec_project_explorer_file.as_ref(),
+                            );
                         crate::modules::aec::commands::apply_display_config_to_scene(
                             &mut self.tabs[i].scene,
                             &config,
+                            Some(&style_library),
                         );
                     }
                 }
@@ -3567,10 +3670,7 @@ impl OpenCADStudio {
                                             xd.raw_dwg_eed.retain(|(a, _)| *a != ah);
                                         }
 
-                                        let _ = crate::modules::aec::commands::regenerate_wall_representation(
-                                            &mut self.tabs[i].scene,
-                                            handle,
-                                        );
+                                        let _ = self.regenerate_wall_respecting_active_display_config(i, handle);
                                         self.tabs[i].dirty = true;
                                     }
                                 }
@@ -3606,7 +3706,7 @@ impl OpenCADStudio {
             }
             Message::AecStyleManagerWallStyleSaveAndApply => {
                 if let Some((id, lib)) = self.aec_style_manager_wall_style_save_internal() {
-                    let tab = &mut self.tabs[self.active_tab];
+                    let tab_index = self.active_tab;
                     let wall_style_map: std::collections::HashMap<
                         String,
                         crate::modules::aec::engine::wall_style::WallStyle,
@@ -3625,7 +3725,7 @@ impl OpenCADStudio {
                         .collect();
 
                     let mut affected_handles = Vec::new();
-                    for entity in tab.scene.document.entities() {
+                    for entity in self.tabs[tab_index].scene.document.entities() {
                         if let Some(wall) =
                             crate::modules::aec::commands::wall_from_entity(entity)
                         {
@@ -3646,7 +3746,7 @@ impl OpenCADStudio {
 
                     let mut updated_count = 0;
                     for handle in affected_handles {
-                        if let Some(entity) = tab.scene.document.get_entity(handle) {
+                        if let Some(entity) = self.tabs[tab_index].scene.document.get_entity(handle) {
                             if let Some(wall) =
                                 crate::modules::aec::commands::wall_from_entity(entity)
                             {
@@ -3669,7 +3769,7 @@ impl OpenCADStudio {
                                     )
                                 {
                                     crate::modules::aec::commands::write_wall_layers(
-                                        &mut tab.scene,
+                                        &mut self.tabs[tab_index].scene,
                                         handle,
                                         wall_layers,
                                     );
@@ -3677,18 +3777,16 @@ impl OpenCADStudio {
                             }
                         }
 
-                        if crate::modules::aec::commands::regenerate_wall_representation(
-                            &mut tab.scene,
-                            handle,
-                        )
-                        .is_ok()
+                        if self
+                            .regenerate_wall_respecting_active_display_config(tab_index, handle)
+                            .is_ok()
                         {
                             updated_count += 1;
                         }
                     }
 
                     if updated_count > 0 {
-                        tab.scene.bump_geometry();
+                        self.tabs[tab_index].scene.bump_geometry();
                         self.command_line.push_info(
                             crate::tf!(
                                 "AEC Style Manager: updated {updated_count} wall(s) using this style."
@@ -3925,12 +4023,12 @@ impl OpenCADStudio {
                     .parse::<f64>()
                     .unwrap_or(0.0);
                 let hatch_angle_relative = self.aec_style_manager_material_hatch_angle_relative;
+                // Same reasoning as for wall styles above: only genuinely
+                // new materials get a fresh, globally unique id.
                 let id = self
                     .aec_style_manager_material_editing_id
                     .clone()
-                    .unwrap_or_else(|| {
-                        format!("mat_{}", crate::modules::aec::commands::slugify(&name))
-                    });
+                    .unwrap_or_else(|| crate::modules::aec::commands::unique_id("mat", &name));
 
                 let material = crate::modules::aec::engine::material::Material {
                     id: id.clone(),
@@ -6349,7 +6447,19 @@ impl OpenCADStudio {
                         end_index,
                         &override_data,
                     );
-                    aec_cmds::refresh_wall_after_axis_edit(&mut self.tabs[i].scene, axis_handle);
+                    let style_library =
+                        crate::modules::aec::engine::project::resolve_style_library(
+                            self.aec_project_explorer_file.as_ref(),
+                        );
+                    let (display_rules, style_substitutions) =
+                        self.resolve_active_display_config_wall_rules(i);
+                    aec_cmds::refresh_wall_after_axis_edit(
+                        &mut self.tabs[i].scene,
+                        axis_handle,
+                        Some(&style_library),
+                        display_rules.as_ref(),
+                        style_substitutions.as_ref(),
+                    );
                 }
                 let mut sel = self.tabs[i].scene.selection.borrow_mut();
                 sel.context_menu = None;
@@ -6365,7 +6475,19 @@ impl OpenCADStudio {
                 if let Some((axis_handle, end_index)) = junction {
                     use crate::modules::aec::commands as aec_cmds;
                     aec_cmds::remove_junction_override(&mut self.tabs[i].scene, axis_handle, end_index);
-                    aec_cmds::refresh_wall_after_axis_edit(&mut self.tabs[i].scene, axis_handle);
+                    let style_library =
+                        crate::modules::aec::engine::project::resolve_style_library(
+                            self.aec_project_explorer_file.as_ref(),
+                        );
+                    let (display_rules, style_substitutions) =
+                        self.resolve_active_display_config_wall_rules(i);
+                    aec_cmds::refresh_wall_after_axis_edit(
+                        &mut self.tabs[i].scene,
+                        axis_handle,
+                        Some(&style_library),
+                        display_rules.as_ref(),
+                        style_substitutions.as_ref(),
+                    );
                 }
                 let mut sel = self.tabs[i].scene.selection.borrow_mut();
                 sel.context_menu = None;
@@ -6486,7 +6608,19 @@ impl OpenCADStudio {
                             &override_data,
                         );
                     }
-                    aec_cmds::refresh_wall_after_axis_edit(&mut self.tabs[i].scene, axis_handle);
+                    let style_library =
+                        crate::modules::aec::engine::project::resolve_style_library(
+                            self.aec_project_explorer_file.as_ref(),
+                        );
+                    let (display_rules, style_substitutions) =
+                        self.resolve_active_display_config_wall_rules(i);
+                    aec_cmds::refresh_wall_after_axis_edit(
+                        &mut self.tabs[i].scene,
+                        axis_handle,
+                        Some(&style_library),
+                        display_rules.as_ref(),
+                        style_substitutions.as_ref(),
+                    );
                     self.refresh_properties();
                 }
                 self.aec_junction_editor_target = None;
@@ -6500,7 +6634,19 @@ impl OpenCADStudio {
                     let i = self.active_tab;
                     use crate::modules::aec::commands as aec_cmds;
                     aec_cmds::remove_junction_override(&mut self.tabs[i].scene, axis_handle, end_index);
-                    aec_cmds::refresh_wall_after_axis_edit(&mut self.tabs[i].scene, axis_handle);
+                    let style_library =
+                        crate::modules::aec::engine::project::resolve_style_library(
+                            self.aec_project_explorer_file.as_ref(),
+                        );
+                    let (display_rules, style_substitutions) =
+                        self.resolve_active_display_config_wall_rules(i);
+                    aec_cmds::refresh_wall_after_axis_edit(
+                        &mut self.tabs[i].scene,
+                        axis_handle,
+                        Some(&style_library),
+                        display_rules.as_ref(),
+                        style_substitutions.as_ref(),
+                    );
                     self.refresh_properties();
                 }
                 self.aec_junction_editor_target = None;

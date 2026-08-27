@@ -959,9 +959,13 @@ impl OpenCADStudio {
                 self.tabs[i].dirty = true;
             }
             "AEC_WALL_REFRESH" => {
+                let style_library = crate::modules::aec::engine::project::resolve_style_library(
+                    self.aec_project_explorer_file.as_ref(),
+                );
                 crate::modules::aec::commands::aec_wall_refresh(
                     &mut self.tabs[i].scene,
                     &mut self.command_line,
+                    Some(&style_library),
                 );
             }
             "AEC_WALLJOIN" => {
@@ -992,10 +996,19 @@ impl OpenCADStudio {
                     }
                 }
                 if wall_handles.len() >= 2 {
+                    let style_library =
+                        crate::modules::aec::engine::project::resolve_style_library(
+                            self.aec_project_explorer_file.as_ref(),
+                        );
+                    let (display_rules, style_substitutions) =
+                        self.resolve_active_display_config_wall_rules(i);
                     crate::modules::aec::commands::aec_walljoin_do(
                         &mut self.tabs[i].scene,
                         &mut self.command_line,
                         &format!("{}|{}", wall_handles[0].value(), wall_handles[1].value()),
+                        Some(&style_library),
+                        display_rules.as_ref(),
+                        style_substitutions.as_ref(),
                     );
                     self.tabs[i].dirty = true;
                 } else {
@@ -1039,11 +1052,20 @@ impl OpenCADStudio {
                     }
                 }
                 if !wall_handles.is_empty() {
+                    let style_library =
+                        crate::modules::aec::engine::project::resolve_style_library(
+                            self.aec_project_explorer_file.as_ref(),
+                        );
+                    let (display_rules, style_substitutions) =
+                        self.resolve_active_display_config_wall_rules(i);
                     for h in wall_handles {
                         crate::modules::aec::commands::aec_wallreverse_do(
                             &mut self.tabs[i].scene,
                             &mut self.command_line,
                             &h.value().to_string(),
+                            Some(&style_library),
+                            display_rules.as_ref(),
+                            style_substitutions.as_ref(),
                         );
                     }
                     self.tabs[i].dirty = true;
@@ -1068,37 +1090,69 @@ impl OpenCADStudio {
             }
             cmd if cmd.starts_with("AEC_WALLOPENING_DO ") => {
                 let args = cmd["AEC_WALLOPENING_DO ".len()..].to_string();
+                let style_library = crate::modules::aec::engine::project::resolve_style_library(
+                    self.aec_project_explorer_file.as_ref(),
+                );
+                let (display_rules, style_substitutions) =
+                    self.resolve_active_display_config_wall_rules(i);
                 crate::modules::aec::commands::aec_wallopening_do(
                     &mut self.tabs[i].scene,
                     &mut self.command_line,
                     &args,
+                    Some(&style_library),
+                    display_rules.as_ref(),
+                    style_substitutions.as_ref(),
                 );
                 self.tabs[i].dirty = true;
             }
             cmd if cmd.starts_with("AEC_WALLJOIN_DO ") => {
                 let args = cmd["AEC_WALLJOIN_DO ".len()..].to_string();
+                let style_library = crate::modules::aec::engine::project::resolve_style_library(
+                    self.aec_project_explorer_file.as_ref(),
+                );
+                let (display_rules, style_substitutions) =
+                    self.resolve_active_display_config_wall_rules(i);
                 crate::modules::aec::commands::aec_walljoin_do(
                     &mut self.tabs[i].scene,
                     &mut self.command_line,
                     &args,
+                    Some(&style_library),
+                    display_rules.as_ref(),
+                    style_substitutions.as_ref(),
                 );
                 self.tabs[i].dirty = true;
             }
             cmd if cmd.starts_with("AEC_WALLEXTEND_DO ") => {
                 let args = cmd["AEC_WALLEXTEND_DO ".len()..].to_string();
+                let style_library = crate::modules::aec::engine::project::resolve_style_library(
+                    self.aec_project_explorer_file.as_ref(),
+                );
+                let (display_rules, style_substitutions) =
+                    self.resolve_active_display_config_wall_rules(i);
                 crate::modules::aec::commands::aec_wallextend_do(
                     &mut self.tabs[i].scene,
                     &mut self.command_line,
                     &args,
+                    Some(&style_library),
+                    display_rules.as_ref(),
+                    style_substitutions.as_ref(),
                 );
                 self.tabs[i].dirty = true;
             }
             cmd if cmd.starts_with("AEC_WALLREVERSE_DO ") => {
                 let args = cmd["AEC_WALLREVERSE_DO ".len()..].to_string();
+                let style_library = crate::modules::aec::engine::project::resolve_style_library(
+                    self.aec_project_explorer_file.as_ref(),
+                );
+                let (display_rules, style_substitutions) =
+                    self.resolve_active_display_config_wall_rules(i);
                 crate::modules::aec::commands::aec_wallreverse_do(
                     &mut self.tabs[i].scene,
                     &mut self.command_line,
                     &args,
+                    Some(&style_library),
+                    display_rules.as_ref(),
+                    style_substitutions.as_ref(),
                 );
                 self.tabs[i].dirty = true;
             }

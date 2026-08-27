@@ -2199,10 +2199,15 @@ pub(super) fn on_tab_close(&mut self, idx: usize) -> Task<Message> {
                             if self.tabs[i].scene.is_layer_locked(handle) {
                                 continue;
                             }
+                            let style_library =
+                                crate::modules::aec::engine::project::resolve_style_library(
+                                    self.aec_project_explorer_file.as_ref(),
+                                );
                             crate::modules::aec::commands::change_wall_justification(
                                 &mut self.tabs[i].scene,
                                 handle,
                                 new_justification,
+                                Some(&style_library),
                             );
                         }
                     } else {
@@ -2412,9 +2417,14 @@ pub(super) fn on_tab_close(&mut self, idx: usize) -> Task<Message> {
                                                         handle,
                                                         v,
                                                     );
+                                                    let style_library =
+                                                        crate::modules::aec::engine::project::resolve_style_library(
+                                                            self.aec_project_explorer_file.as_ref(),
+                                                        );
                                                     let _ = crate::modules::aec::commands::regenerate_wall_representation(
                                                         &mut self.tabs[i].scene,
                                                         handle,
+                                                        Some(&style_library),
                                                     );
                                                 }
                                             }

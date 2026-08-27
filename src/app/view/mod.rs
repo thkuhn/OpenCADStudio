@@ -1883,6 +1883,13 @@ impl OpenCADStudio {
                             .collect(),
                         selection_filter: &tab.scene.selection_filter,
                         tooltip_hidden: self.status_menu_tooltip_hidden,
+                        active_plan_name: tab.active_display_config.clone(),
+                        plan_names: self
+                            .aec_plan_library
+                            .as_ref()
+                            .map(|lib| lib.configs.iter().map(|c| c.name.clone()).collect())
+                            .unwrap_or_default(),
+                        auto_display_config_from_scale: tab.auto_display_config_from_scale,
                     };
                     self.status_bar.view(
                         &self.snapper,
