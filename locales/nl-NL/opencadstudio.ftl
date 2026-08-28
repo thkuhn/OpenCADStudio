@@ -30,7 +30,7 @@ ribbon-tab =
     .draw = Tekenen
     .annotate = Annoteren
     .insert = Invoegen
-    .model = Model
+    .model = Modelleren
     .layout = Indeling
     .manage = Beheren
     .view = Beeld
@@ -314,6 +314,7 @@ common =
     .block-rotation = Blokrotatie
     .blocks = Blokken
     .blue = Blauw
+    .bulge = Bolling
     .boolean-failed-the-solids-may-not-overlap = Boolean mislukt . . de vaste stoffen mogen niet overlappen.
     .boolean-select-exactly-two-solids-created-this = Boolean: selecteer precies twee vaste stoffen die deze sessie hebben gemaakt.
     .bottom = Onderkant
@@ -332,6 +333,7 @@ common =
     .brightness = Helderheid
     .by-layer = Op laag
     .byblock = Per blok
+    .bycolor = Per kleur
     .bylayer = DoorLayer
     .convtosurface-converted-n-solid-s-to-surface-s = CONVTOSURFACE: omgezet __ocs_fmt_0__ vaste stof(s) naar oppervlakte(s).
     .convtosurface-select-a-solid-created-this-sess = CONVTOSURFACE: selecteer een vaste aangemaakte sessie.
@@ -1329,6 +1331,18 @@ draw =
     .ray-specify-through-point = RAY Door het punt opgeven:
     .rect-specify-first-corner = RECT Eerste hoek opgeven:
     .rect-specify-opposite-corner = RECT Geef de andere hoek op:
+    .rect-calculate-dimensions-based-on-length-width = RECT  Bereken afmetingen op basis van [Lengte / Breedte] <Lengte>:
+    .rect-specify-elevation = RECT  Geef hoogte op <__ocs_fmt_0__>:
+    .rect-specify-fillet-radius = RECT  Geef afrondingsstraal op <__ocs_fmt_0__>:
+    .rect-specify-first-chamfer-distance = RECT  Geef eerste afschuiningsafstand op <__ocs_fmt_0__>:
+    .rect-specify-orientation-from-the-first-corner = RECT  Geef richting vanaf de eerste hoek op:
+    .rect-specify-rectangle-area = RECT  Geef oppervlakte van rechthoek op:
+    .rect-specify-rectangle-length = RECT  Geef lengte van rechthoek op:
+    .rect-specify-rectangle-width = RECT  Geef breedte van rechthoek op:
+    .rect-specify-rotation-angle = RECT  Geef rotatiehoek op <__ocs_fmt_0__>:
+    .rect-specify-second-chamfer-distance = RECT  Geef tweede afschuiningsafstand op <__ocs_fmt_0__>:
+    .rect-specify-thickness = RECT  Geef dikte op <__ocs_fmt_0__>:
+    .rect-specify-width = RECT  Geef breedte op <__ocs_fmt_0__>:
     .rect-cen-specify-center-point = RECT CEN Centrumpunt opgeven:
     .rect-cen-specify-corner-point = RECT CEN Geef hoekpunt op:
     .rect-rot-specify-adjacent-corner-defines-edge = RECT ROT Aangrenzende hoek opgeven (randrichting definiëren):
@@ -1786,14 +1800,24 @@ annotate =
     .collect-leaders = Verwijslijnen verzamelen
     .ddedit-select-text-entity = DDEDIT Selecteer een tekstobject:
     .dimaligned-enter-dimension-text-blank-measured = DIMALIGNED Voer maattekst in (leeg = gemeten waarde):
-    .dimaligned-specify-dimension-line-location-tex = DIMALIGNED Geef de positie van de maatlijn op [Tekst/Hoek]:
-    .dimaligned-specify-first-extension-line-origin = DIMALIGNED Vermeld de oorsprong van de eerste extensieregel:
-    .dimaligned-specify-second-extension-line-origi = DIMALIGNED Vermeld de oorsprong van de tweede extensieregel [Tekst/hoek]:
+    .dimaligned-enter-formatted-dimension-text-blank-measured = DIMALIGNED Voer opgemaakte maattekst in (leeg = gemeten waarde):
+    .dimaligned-select-object-to-dimension = DIMALIGNED Selecteer het object om te bematen:
+    .dimaligned-specify-dimension-line-location-tex = DIMALIGNED Geef de positie van de maatlijn op [Mtext/Tekst/Hoek]:
+    .dimaligned-specify-first-extension-line-origin = DIMALIGNED Geef het beginpunt van de eerste hulplijn op of druk op Enter om een object te selecteren:
+    .dimaligned-specify-second-extension-line-origi = DIMALIGNED Geef het beginpunt van de tweede hulplijn op:
     .dimaligned-specify-text-angle-degrees = DIMALIGNED Teksthoek (graden) specificeren:
+    .dimangular-enter-dimension-text-blank-measured = DIMANGULAR Voer maattekst in (leeg = gemeten waarde):
+    .dimangular-enter-formatted-dimension-text-blank-measured = DIMANGULAR Voer opgemaakte maattekst in (leeg = gemeten waarde):
+    .dimangular-select-arc-circle-line-or-specify-angle-vertex = DIMANGULAR Selecteer een boog, cirkel of lijn, of geef een hoekpunt op:
+    .dimangular-select-second-line = DIMANGULAR Selecteer de tweede lijn:
     .dimangular-specify-angle-vertex = DIMANGULAR Specificeer hoekvertex:
+    .dimangular-specify-dimension-arc-location-options = DIMANGULAR Geef de positie van de maatboog op [Mtext/Tekst/Hoek/Kwadrant]:
     .dimangular-specify-dimension-arc-location = DIMANGULAR Geef de positie van de maatboog op:
     .dimangular-specify-first-extension-line-point = DIMANGULAR Geef eerste extensieregelpunt aan:
+    .dimangular-specify-quadrant = DIMANGULAR Geef het kwadrant op:
     .dimangular-specify-second-extension-line-point = DIMANGULAR Geef tweede extensieregelpunt:
+    .dimangular-specify-second-point-for-text-angle = DIMANGULAR Geef het tweede punt voor de teksthoek op:
+    .dimangular-specify-text-angle-or-first-point = DIMANGULAR Geef de teksthoek of het eerste punt op:
     .dimbaseline-no-base-dimension-found-place-a-di = DIMBASELINE Geen basismaat gevonden. Plaats eerst een maat.
     .dimbaseline-specify-a-second-extension-line-or = DIMBASELINE Vermeld een tweede extensielijn (tot afsluiten overgaan):
     .dimbreak-select-dimension-to-break = DIMBREAK Selecteer de te onderbreken maat:
@@ -1801,8 +1825,8 @@ annotate =
     .dimcontinue-no-base-dimension-found-place-a-di = DIMCONTINUE Geen basismaat gevonden. Plaats eerst een maat.
     .dimcontinue-specify-a-second-extension-line-or = DIMCONTINUE Vermeld een tweede extensielijn (tot afsluiten overgaan):
     .dimdiameter-enter-dimension-text-blank-measure = DIMDIAMETER Voer maattekst in (leeg = gemeten waarde):
-    .dimdiameter-specify-center-point = DIMDIAMETER Centrumpunt opgeven:
-    .dimdiameter-specify-dimension-line-location-te = DIMDIAMETER Geef de positie van de maatlijn op [Tekst/Hoek]:
+    .dimdiameter-select-arc-circle-or-polyline-arc = DIMDIAMETER Selecteer boog, cirkel of polylijnboog:
+    .dimdiameter-specify-dimension-line-location-text = DIMDIAMETER Geef de positie van de maatlijn op [M-tekst/Tekst/Hoek]:
     .dimdiameter-specify-point-on-circle = DIMDIAMETER Punt op cirkel specificeren:
     .dimdiameter-specify-text-angle-degrees = DIMDIAMETER Teksthoek (graden) specificeren:
     .dimedit-enter-text-override-blank-reset-to-mea = DIMEDIT Tekstoverride invoeren (blanc = reset op gemeten):
@@ -1818,10 +1842,12 @@ annotate =
     .dimlinear-specify-second-extension-line-origin = DIMLINEAR Vermeld de oorsprong van de tweede extensieregel [Tekst/hoek]:
     .dimlinear-specify-text-angle-degrees = DIMLINEAR Teksthoek (graden) specificeren:
     .dimordinate-specify-feature-location = DIMORDINATE Geef functielocatie op:
-    .dimordinate-specify-leader-endpoint = DIMORDINATE Geef het eindpunt van de verwijslijn op:
+    .dimordinate-enter-dimension-text-blank-measured = DIMORDINATE Voer maattekst in (leeg = gemeten waarde):
+    .dimordinate-specify-leader-endpoint = DIMORDINATE Geef het eindpunt van de verwijslijn op [Xdatum/Ydatum/Mtext/Text/Angle]:
+    .dimordinate-specify-text-angle-degrees = DIMORDINATE Teksthoek (graden) specificeren:
     .dimradius-enter-dimension-text-blank-measured = DIMRADIUS Voer maattekst in (leeg = gemeten waarde):
-    .dimradius-specify-center-point = DIMRADIUS Centrumpunt opgeven:
-    .dimradius-specify-dimension-line-location-text = DIMRADIUS Geef de positie van de maatlijn op [Tekst/Hoek]:
+    .dimradius-select-arc-circle-or-polyline-arc = DIMRADIUS Selecteer boog, cirkel of polylijnboog:
+    .dimradius-specify-dimension-line-location-text = DIMRADIUS Geef de positie van de maatlijn op [M-tekst/Tekst/Hoek]:
     .dimradius-specify-radius-point = DIMRADIUS radiuspunt specificeren:
     .dimradius-specify-text-angle-degrees = DIMRADIUS Teksthoek (graden) specificeren:
     .dimspace-enter-value-0-auto = DIMSPACE Waarde invoeren (0 = auto):
@@ -1853,6 +1879,7 @@ annotate =
         Gegevens
     .lower = Lager
     .mleader-specify-arrowhead-point = MLEADER pijlpunt specificeren:
+    .mleader-specify-landing-point = MLEADER Landingspunt opgeven:
     .mleader-specify-next-point-count-pts-enter-to = MLEADER Geef het volgende punt op [__ocs_arg_count__ punten — Enter om tekst te plaatsen]:
     .mleaderadd-select-a-multileader = MLEADERADD Selecteer een multileader:
     .mleaderadd-specify-arrowhead-location = MLEADERADD Plaats pijlpunt opgeven:
@@ -2022,6 +2049,15 @@ insert =
     .object-s-cut-to-clipboard = __ocs_fmt_0__ object(en) naar het klembord geknipt.
 
 model =
+    .create = Maken
+    .boolean = Booleaanse bewerkingen
+    .pyramid = Piramide
+    .polysolid = Polysolid
+    .extrude = Extruderen
+    .revolve = Omwentelen
+    .loft = Loft
+    .sweep = Vegen
+    .presspull = Duwen/trekken
     .n-specify-center-point = __ocs_arg_n__ Centrumpunt opgeven:
     .n-specify-first-corner = __ocs_arg_n__ Geef eerste hoek:
     .n-specify-height-enter-for-default = __ocs_arg_n__ Hoogte <Enter voor standaard> opgeven:
@@ -2322,6 +2358,7 @@ view =
     .zoom-extents =
         Zoomen
         Maten
+    .cmd-no-hatch-objects = __ocs_fmt_0__: geen arceerobjecten.
     .cmd-no-text-or-dimension-objects = __ocs_fmt_0__: geen tekst- of maatobjecten.
     .cmd-not-yet-implemented = __ocs_fmt_0__: nog niet geïmplementeerd.
     .viewport-s-in-layout = __ocs_fmt_0__ weergavevenster(s) in indeling "__ocs_fmt_1__":
@@ -2699,6 +2736,9 @@ properties =
     .plot-style-table = Plotstijltabel
     .plot-table-attached-to = Plottabel bijvoegen
     .plot-table-type = Type plotstijltabel
+    .color-dependent-plot-styles = Kleurafhankelijke plotstijlen
+    .named-plot-styles = Benoemde plotstijlen
+    .plot-style-is-locked-to-color-in-color-dependent = In kleurafhankelijke modus (CTB) is de plotstijl aan de kleur gekoppeld
     .point-1-x = Punt 1 X
     .point-1-y = Punt 1 Y
     .point-1-z = Punt 1 Z
@@ -3061,7 +3101,7 @@ styles =
     .pdmode-new-value-0-dot-1-none-2-3-x-4-tick-32 = PDMODE  nieuwe waarde [0=punt 1=geen 2=+ 3=x 4=streepje; +32 cirkel +64 vierkant]:
     .pdmode-v = PDMODE = __ocs_fmt_0__
     .pdmode-set-to-v = PDMODE ingesteld op __ocs_fmt_0__
-    .pdsize-new-point-size-0-5-of-viewport-0-absolu = PDSIZE  nieuwe puntgrootte (0 = 5% van weergavevenster, <0 = absoluut):
+    .pdsize-new-point-size-0-5-of-viewport-0-absolu = PDSIZE  nieuwe puntgrootte (0 = 5% van weergavevenster, >0 = absoluut, <0 = percentage van weergavevenster):
     .pdsize-v-4 = PDSIZE = __ocs_fmt_0__
     .pdsize-set-to-v-4 = PDSIZE ingesteld op __ocs_fmt_0__
     .pickadd = PICKADD = __ocs_fmt_0__ (__ocs_fmt_1__)

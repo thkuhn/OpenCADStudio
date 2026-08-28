@@ -13,27 +13,27 @@ impl OpenCADStudio {
 
             "MLINE" => {
                 use crate::modules::draw::draw::mline::MlineCommand;
-                let style_name = self.tabs[i].scene.document.header.multiline_style.clone();
-                let style = self.tabs[i]
+                let header = &self.tabs[i].scene.document.header;
+                let style_name = header.multiline_style.clone();
+                let scale = header.multiline_scale;
+                let justification = header.multiline_justification;
+                let styles = self.tabs[i]
                     .scene
                     .document
                     .objects
                     .iter()
-                    .find_map(|(handle, object)| match object {
-                        acadrust::objects::ObjectType::MLineStyle(style)
-                            if style.name.eq_ignore_ascii_case(&style_name) =>
-                        {
-                            Some((*handle, style.elements.len()))
+                    .filter_map(|(handle, object)| match object {
+                        acadrust::objects::ObjectType::MLineStyle(style) => {
+                            Some((*handle, style.clone()))
                         }
                         _ => None,
-                    });
-                let (style_handle, element_count) = style
-                    .map(|(handle, count)| (Some(handle), count))
-                    .unwrap_or((None, 2));
-                let cmd_obj = MlineCommand::with_style(
+                    })
+                    .collect();
+                let cmd_obj = MlineCommand::with_styles(
+                    styles,
                     style_name,
-                    style_handle,
-                    element_count,
+                    scale,
+                    justification,
                 );
                 self.command_line.push_info(&cmd_obj.prompt());
                 self.tabs[i].active_cmd = Some(Box::new(cmd_obj));
@@ -678,9 +678,13 @@ impl OpenCADStudio {
                 }
             }
 
-            "POINT" => {
+            "POINT" | "MULTIPOINT" => {
                 use crate::modules::draw::draw::point::PointCommand;
-                let new_cmd = PointCommand::new();
+                let new_cmd = if cmd == "MULTIPOINT" {
+                    PointCommand::multiple()
+                } else {
+                    PointCommand::new()
+                };
                 self.command_line.push_info(&new_cmd.prompt());
                 self.tabs[i].active_cmd = Some(Box::new(new_cmd));
             }
@@ -1183,19 +1187,64 @@ impl OpenCADStudio {
             }
 
             // ── Model commands (3D primitives) ─────────────────────────────
-            "BOX" | "WEDGE" | "CYLINDER" | "CONE" | "SPHERE" | "TORUS" => {
+            "BOX" | "WEDGE" | "CYLINDER" | "CONE" | "SPHERE" | "PYRAMID" | "PYR"
+            | "TORUS" => {
                 use crate::modules::model::primitive_cmd::PrimitiveCommand;
                 let new_cmd = PrimitiveCommand::new(cmd);
                 self.command_line.push_info(&new_cmd.prompt());
                 self.tabs[i].active_cmd = Some(Box::new(new_cmd));
             }
 
-            // ── Design commands (solid booleans) ───────────────────────────
-            "UNION" | "SUBTRACT" | "INTERSECT" => {
+            // ── Solid booleans ─────────────────────────────────────────────
+            "UNION" | "INTERSECT" => {
                 use crate::modules::model::boolean_cmd::BoolOp;
                 if let Some(op) = BoolOp::from_id(cmd) {
-                    return Some(self.solid_boolean(op));
+                    let solid_count = {
+                        let scene = &self.tabs[i].scene;
+                        scene
+                            .selected_handles_in_order()
+                            .into_iter()
+                            .filter(|handle| !scene.is_layer_locked(*handle))
+                            .filter(|handle| {
+                                matches!(
+                                    scene.document.get_entity(*handle),
+                                    Some(acadrust::EntityType::Solid3D(_))
+                                )
+                            })
+                            .take(2)
+                            .count()
+                    };
+                    if solid_count < 2 {
+                        use crate::modules::draw::select::SelectObjectsCommand;
+                        let selection = SelectObjectsCommand::new(cmd);
+                        self.command_line.push_info(&selection.prompt());
+                        self.tabs[i].active_cmd = Some(Box::new(selection));
+                    } else {
+                        return Some(self.solid_boolean(op));
+                    }
                 }
+            }
+
+            "SUBTRACT" => {
+                use crate::modules::model::boolean_cmd::SubtractCommand;
+                let bases = {
+                    let scene = &self.tabs[i].scene;
+                    scene
+                        .selected_handles_in_order()
+                        .into_iter()
+                        .filter(|handle| !scene.is_layer_locked(*handle))
+                        .filter(|handle| {
+                            matches!(
+                                scene.document.get_entity(*handle),
+                                Some(acadrust::EntityType::Solid3D(_))
+                            )
+                        })
+                        .collect()
+                };
+                self.tabs[i].scene.deselect_all();
+                let subtract = SubtractCommand::new(bases);
+                self.command_line.push_info(&subtract.prompt());
+                self.tabs[i].active_cmd = Some(Box::new(subtract));
             }
 
             // INTERFERE — non-destructive intersect: solid from the overlap.
@@ -1291,17 +1340,7 @@ impl OpenCADStudio {
                 }
             }
 
-            // PYRAMID <radius> <height> [sides] — create an n-sided pyramid mesh.
-            "PYRAMID" | "PYR" => {
-                use crate::command::TwoValuePromptCommand;
-                let c = TwoValuePromptCommand::new(
-                    "PYRAMID",
-                    "PYRAMID  base radius:",
-                    "PYRAMID  height (add sides by typing a 3rd number):",
-                );
-                self.command_line.push_info(&c.prompt());
-                self.tabs[i].active_cmd = Some(Box::new(c));
-            }
+            // PYRAMID <radius> <height> [sides] keeps the direct numeric form.
             cmd if cmd.starts_with("PYRAMID ") || cmd.starts_with("PYR ") => {
                 let nums: Vec<f64> = cmd
                     .split_whitespace()
@@ -1491,11 +1530,16 @@ impl OpenCADStudio {
             // ── Annotate commands ──────────────────────────────────────────
             "TEXT" => {
                 use crate::modules::annotate::text::TextCommand;
-                let height = crate::scene::creation_style::current_text_defaults(
-                    &self.tabs[i].scene.document,
-                )
-                .height;
-                let new_cmd = TextCommand::with_height(height);
+                let (defaults, styles, annotation_multiplier) = {
+                    let scene = &self.tabs[i].scene;
+                    let annotation_multiplier = scene.creation_annotation_multiplier();
+                    let defaults =
+                        crate::scene::creation_style::current_text_defaults(&scene.document);
+                    let styles = scene.document.text_styles.iter().cloned().collect();
+                    (defaults, styles, annotation_multiplier)
+                };
+                let new_cmd =
+                    TextCommand::with_defaults(defaults, styles, annotation_multiplier);
                 self.command_line.push_info(&new_cmd.prompt());
                 self.tabs[i].active_cmd = Some(Box::new(new_cmd));
             }
@@ -1530,7 +1574,13 @@ impl OpenCADStudio {
                     &self.tabs[i].scene.document,
                 )
                 .height;
-                let new_cmd = MTextCommand::with_height(height);
+                let style = self.tabs[i]
+                    .scene
+                    .document
+                    .header
+                    .current_text_style_name
+                    .clone();
+                let new_cmd = MTextCommand::with_defaults(height, style);
                 self.command_line.push_info(&new_cmd.prompt());
                 self.tabs[i].active_cmd = Some(Box::new(new_cmd));
             }

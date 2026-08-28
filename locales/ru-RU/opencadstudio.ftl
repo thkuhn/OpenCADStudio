@@ -30,7 +30,7 @@ ribbon-tab =
     .draw = Начертить
     .annotate = Аннотации
     .insert = Вставка
-    .model = Модель
+    .model = Моделирование
     .layout = Расположение
     .manage = Управление
     .view = Просмотр
@@ -317,6 +317,7 @@ common =
     .block-rotation = Вращение блока
     .blocks = Блоки
     .blue = Синий
+    .bulge = Выпуклость
     .boolean-failed-the-solids-may-not-overlap = Булевый не сработал — твердые вещества могут не перекрываться.
     .boolean-select-exactly-two-solids-created-this = Булев: выберите ровно два твердых тела, созданных на этом сеансе.
     .bottom = Снизу
@@ -335,6 +336,7 @@ common =
     .brightness = Яркость
     .by-layer = слой
     .byblock = Блокировка
+    .bycolor = По цвету
     .bylayer = ByLayer
     .convtosurface-converted-n-solid-s-to-surface-s = CONVTOSURFACE: преобразовано __ocs_fmt_0__ твердое(ые) в поверхность(ы).
     .convtosurface-select-a-solid-created-this-sess = CONVTOSURFACE: выберите твердое решение, созданное в ходе этой сессии.
@@ -1332,6 +1334,18 @@ draw =
     .ray-specify-through-point = RAY Укажите через точку:
     .rect-specify-first-corner = RECT Укажите первый угол:
     .rect-specify-opposite-corner = RECT  Укажите противоположный угол:
+    .rect-calculate-dimensions-based-on-length-width = RECT  Рассчитать размеры по [Длине / Ширине] <Длина>:
+    .rect-specify-elevation = RECT  Укажите отметку <__ocs_fmt_0__>:
+    .rect-specify-fillet-radius = RECT  Укажите радиус скругления <__ocs_fmt_0__>:
+    .rect-specify-first-chamfer-distance = RECT  Укажите первое расстояние фаски <__ocs_fmt_0__>:
+    .rect-specify-orientation-from-the-first-corner = RECT  Укажите направление от первого угла:
+    .rect-specify-rectangle-area = RECT  Укажите площадь прямоугольника:
+    .rect-specify-rectangle-length = RECT  Укажите длину прямоугольника:
+    .rect-specify-rectangle-width = RECT  Укажите ширину прямоугольника:
+    .rect-specify-rotation-angle = RECT  Укажите угол поворота <__ocs_fmt_0__>:
+    .rect-specify-second-chamfer-distance = RECT  Укажите второе расстояние фаски <__ocs_fmt_0__>:
+    .rect-specify-thickness = RECT  Укажите толщину <__ocs_fmt_0__>:
+    .rect-specify-width = RECT  Укажите ширину <__ocs_fmt_0__>:
     .rect-cen-specify-center-point = RECT CEN Укажите центральную точку:
     .rect-cen-specify-corner-point = RECT CEN Укажите угловую точку:
     .rect-rot-specify-adjacent-corner-defines-edge = RECT ROT Укажите смежный угол (определите направление кромки):
@@ -1789,14 +1803,24 @@ annotate =
     .collect-leaders = Собрать выноски
     .ddedit-select-text-entity = DDEDIT Выберите текстовый объект:
     .dimaligned-enter-dimension-text-blank-measured = DIMALIGNED Введите текст размера (пусто = измеренное значение):
-    .dimaligned-specify-dimension-line-location-tex = DIMALIGNED Укажите положение размерной линии [Текст/Угол]:
-    .dimaligned-specify-first-extension-line-origin = DIMALIGNED Укажите происхождение первой линии расширения:
-    .dimaligned-specify-second-extension-line-origi = DIMALIGNED Укажите происхождение второй линии расширения [Текст/Угле]:
+    .dimaligned-enter-formatted-dimension-text-blank-measured = DIMALIGNED Введите форматированный текст размера (пусто = измеренное значение):
+    .dimaligned-select-object-to-dimension = DIMALIGNED Выберите объект для нанесения размера:
+    .dimaligned-specify-dimension-line-location-tex = DIMALIGNED Укажите положение размерной линии [Mtext/Текст/Угол]:
+    .dimaligned-specify-first-extension-line-origin = DIMALIGNED Укажите начало первой выносной линии или нажмите Enter для выбора объекта:
+    .dimaligned-specify-second-extension-line-origi = DIMALIGNED Укажите начало второй выносной линии:
     .dimaligned-specify-text-angle-degrees = DIMALIGNED Укажите угол текста (градусы):
-    .dimangular-specify-angle-vertex = DIMANGULAR Укажите угол вершины:
-    .dimangular-specify-dimension-arc-location = DIMANGULAR Укажите местоположение дуги размерности:
-    .dimangular-specify-first-extension-line-point = DIMANGULAR Укажите первую точку расширения:
-    .dimangular-specify-second-extension-line-point = DIMANGULAR Укажите вторую точку расширения:
+    .dimangular-enter-dimension-text-blank-measured = DIMANGULAR Введите текст размера (пусто = измеренное значение):
+    .dimangular-enter-formatted-dimension-text-blank-measured = DIMANGULAR Введите форматированный текст размера (пусто = измеренное значение):
+    .dimangular-select-arc-circle-line-or-specify-angle-vertex = DIMANGULAR Выберите дугу, окружность, линию или укажите вершину угла:
+    .dimangular-select-second-line = DIMANGULAR Выберите вторую линию:
+    .dimangular-specify-angle-vertex = DIMANGULAR Укажите вершину угла:
+    .dimangular-specify-dimension-arc-location-options = DIMANGULAR Укажите положение размерной дуги [Mtext/Текст/Угол/Квадрант]:
+    .dimangular-specify-dimension-arc-location = DIMANGULAR Укажите положение размерной дуги:
+    .dimangular-specify-first-extension-line-point = DIMANGULAR Укажите первую точку выносной линии:
+    .dimangular-specify-quadrant = DIMANGULAR Укажите квадрант:
+    .dimangular-specify-second-extension-line-point = DIMANGULAR Укажите вторую точку выносной линии:
+    .dimangular-specify-second-point-for-text-angle = DIMANGULAR Укажите вторую точку угла текста:
+    .dimangular-specify-text-angle-or-first-point = DIMANGULAR Укажите угол текста или первую точку:
     .dimbaseline-no-base-dimension-found-place-a-di = DIMBASELINE Базовый размер не найден. Сначала создайте размер.
     .dimbaseline-specify-a-second-extension-line-or = DIMBASELINE Укажите происхождение второй линии расширения (Введите для выхода):
     .dimbreak-select-dimension-to-break = DIMBREAK Выберите размер для разбиения:
@@ -1804,8 +1828,8 @@ annotate =
     .dimcontinue-no-base-dimension-found-place-a-di = DIMCONTINUE Базовый размер не найден. Сначала создайте размер.
     .dimcontinue-specify-a-second-extension-line-or = DIMCONTINUE Укажите происхождение второй линии расширения (Введите для выхода):
     .dimdiameter-enter-dimension-text-blank-measure = DIMDIAMETER Введите текст размера (пусто = измеренное значение):
-    .dimdiameter-specify-center-point = DIMDIAMETER Укажите центральную точку:
-    .dimdiameter-specify-dimension-line-location-te = DIMDIAMETER Укажите положение размерной линии [Текст/Угол]:
+    .dimdiameter-select-arc-circle-or-polyline-arc = DIMDIAMETER Выберите дугу, окружность или дуговой сегмент полилинии:
+    .dimdiameter-specify-dimension-line-location-text = DIMDIAMETER Укажите положение размерной линии [Мтекст/Текст/Угол]:
     .dimdiameter-specify-point-on-circle = DIMDIAMETER Укажите точку на окружности:
     .dimdiameter-specify-text-angle-degrees = DIMDIAMETER Укажите угол текста (градусы):
     .dimedit-enter-text-override-blank-reset-to-mea = DIMEDIT Введите текстовую оверрайд (blank = reset to measured):
@@ -1821,10 +1845,12 @@ annotate =
     .dimlinear-specify-second-extension-line-origin = DIMLINEAR Укажите происхождение второй линии расширения [Текст/Угле]:
     .dimlinear-specify-text-angle-degrees = DIMLINEAR Укажите угол текста (градусы):
     .dimordinate-specify-feature-location = DIMORDINATE Укажите местоположение:
-    .dimordinate-specify-leader-endpoint = DIMORDINATE Укажите конечную точку выноски:
+    .dimordinate-enter-dimension-text-blank-measured = DIMORDINATE Введите текст размера (пусто = измеренное значение):
+    .dimordinate-specify-leader-endpoint = DIMORDINATE Укажите конечную точку выноски [Xdatum/Ydatum/Mtext/Text/Angle]:
+    .dimordinate-specify-text-angle-degrees = DIMORDINATE Укажите угол текста (градусы):
     .dimradius-enter-dimension-text-blank-measured = DIMRADIUS Введите текст размера (пусто = измеренное значение):
-    .dimradius-specify-center-point = DIMRADIUS Укажите центральную точку:
-    .dimradius-specify-dimension-line-location-text = DIMRADIUS Укажите положение размерной линии [Текст/Угол]:
+    .dimradius-select-arc-circle-or-polyline-arc = DIMRADIUS Выберите дугу, окружность или дуговой сегмент полилинии:
+    .dimradius-specify-dimension-line-location-text = DIMRADIUS Укажите положение размерной линии [Мтекст/Текст/Угол]:
     .dimradius-specify-radius-point = DIMRADIUS Укажите точку радиуса:
     .dimradius-specify-text-angle-degrees = DIMRADIUS Укажите угол текста (градусы):
     .dimspace-enter-value-0-auto = DIMSPACE Введите значение (0 = авто):
@@ -1856,6 +1882,7 @@ annotate =
         Данные
     .lower = ниже
     .mleader-specify-arrowhead-point = MLEADER Укажите точку наконечника стрелки:
+    .mleader-specify-landing-point = MLEADER Укажите точку полки:
     .mleader-specify-next-point-count-pts-enter-to = MLEADER Укажите следующую точку [точек: __ocs_arg_count__ — Enter для размещения текста]:
     .mleaderadd-select-a-multileader = MLEADERADD Выберите мультивыноску:
     .mleaderadd-specify-arrowhead-location = MLEADERADD Укажите местоположение наконечника стрелки:
@@ -2025,6 +2052,15 @@ insert =
     .object-s-cut-to-clipboard = В буфер обмена вырезано объектов: __ocs_fmt_0__.
 
 model =
+    .create = Создание
+    .boolean = Булевы операции
+    .pyramid = Пирамида
+    .polysolid = Политело
+    .extrude = Выдавливание
+    .revolve = Вращение
+    .loft = Лофт
+    .sweep = Сдвиг по траектории
+    .presspull = Нажать/вытянуть
     .n-specify-center-point = __ocs_arg_n__ Укажите центральную точку:
     .n-specify-first-corner = __ocs_arg_n__ Укажите первый угол:
     .n-specify-height-enter-for-default = __ocs_arg_n__ Укажите высоту <Введите по умолчанию>:
@@ -2325,6 +2361,7 @@ view =
     .zoom-extents =
         Зум
         размеры
+    .cmd-no-hatch-objects = __ocs_fmt_0__: ð¢ðÁÐé ð¥ð▒ÐèðÁð║Ðéð¥ð▓ ÐêÐéÐÇð©Ðàð¥ð▓ð║ð©.
     .cmd-no-text-or-dimension-objects = __ocs_fmt_0__: нет текстовых или размерных объектов.
     .cmd-not-yet-implemented = __ocs_fmt_0__: еще не реализовано.
     .viewport-s-in-layout = Видовые экраны (__ocs_fmt_0__) на листе «__ocs_fmt_1__»:
@@ -2702,6 +2739,9 @@ properties =
     .plot-style-table = Таблица стилей печати
     .plot-table-attached-to = Стол для игровых участков, прикрепленный
     .plot-table-type = Тип стола для игровых автоматов
+    .color-dependent-plot-styles = Цветозависимые стили печати
+    .named-plot-styles = Именованные стили печати
+    .plot-style-is-locked-to-color-in-color-dependent = В цветозависимом режиме (CTB) стиль печати определяется цветом
     .point-1-x = Точка 1 X
     .point-1-y = Точка 1 Y
     .point-1-z = Точка 1 Z
@@ -3064,7 +3104,7 @@ styles =
     .pdmode-new-value-0-dot-1-none-2-3-x-4-tick-32 = PDMODE Новое значение [0=точка 1=нет 2=+ 3=× 4=штрих; +32 окружность +64 квадрат]:
     .pdmode-v = PDMODE = __ocs_fmt_0__
     .pdmode-set-to-v = PDMODE, установленный на __ocs_fmt_0__
-    .pdsize-new-point-size-0-5-of-viewport-0-absolu = PDSIZE  новый размер точки (0 = 5% от площади обзора, <0 = абсолютный):
+    .pdsize-new-point-size-0-5-of-viewport-0-absolu = PDSIZE  новый размер точки (0 = 5% от области просмотра, >0 = абсолютный, <0 = процент области просмотра):
     .pdsize-v-4 = PDSIZE = __ocs_fmt_0__
     .pdsize-set-to-v-4 = PDSIZE, установленный на __ocs_fmt_0__
     .pickadd = PICKADD = __ocs_fmt_0__ (__ocs_fmt_1__)

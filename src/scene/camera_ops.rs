@@ -315,7 +315,9 @@ impl Scene {
         self.camera_generation = saved_generation;
 
         if let Some((min, max)) = refreshed {
-            self.camera.borrow_mut().fit_depth_to_bounds(min, max);
+            self.camera
+                .borrow_mut()
+                .fit_depth_to_bounds_f64(min, max);
             self.projection_bounds_epoch.set(self.geometry_epoch);
         }
     }
@@ -672,11 +674,7 @@ impl Scene {
         // The saved-view convention uses a 24 mm vertical aperture. This is
         // the inverse of the projection path's documented
         // `distance = view_height * lens / 24` relation.
-        let fov_y = if perspective {
-            2.0 * (12.0 / lens_length).atan()
-        } else {
-            45.0_f32.to_radians()
-        };
+        let fov_y = 2.0 * (12.0 / lens_length).atan();
         let distance = ((view_height as f32 / 2.0) / (fov_y * 0.5).tan()).max(0.001);
         Some(Camera {
             target,
@@ -729,9 +727,9 @@ impl Scene {
         let view_dir = cam.rotation * glam::Vec3::Z;
         let view_height = cam.ortho_size() * 2.0;
         let target_wcs = acadrust::types::Vector3 {
-            x: (cam.target.x as f64) + [0.0_f64; 3][0],
-            y: (cam.target.y as f64) + [0.0_f64; 3][1],
-            z: (cam.target.z as f64) + [0.0_f64; 3][2],
+            x: cam.target.x,
+            y: cam.target.y,
+            z: cam.target.z,
         };
         entry.lower_left = lower_left;
         entry.upper_right = upper_right;
@@ -1186,9 +1184,11 @@ impl Scene {
         if !ok {
             return;
         }
-        let min = glam::Vec3::new(lo.x as f32, lo.y as f32, lo.z as f32);
-        let max = glam::Vec3::new(hi.x as f32, hi.y as f32, hi.z as f32);
-        self.camera.borrow_mut().fit_depth_to_bounds(min, max);
+        let min = glam::DVec3::new(lo.x, lo.y, lo.z);
+        let max = glam::DVec3::new(hi.x, hi.y, hi.z);
+        self.camera
+            .borrow_mut()
+            .fit_depth_to_bounds_f64(min, max);
     }
 
     fn fit_paper_space_extents(&mut self) {
@@ -1335,15 +1335,8 @@ impl Scene {
             self.annotation_all_visible(),
             None,
         );
-        // Ray / XLine tessellate as ±DISPLAY_EXTENT display segments
-        // (entities/ray.rs) — their endpoints are rendering artifacts, not
-        // drawing extent. A construction line through the drawing defeats
-        // both rejects below: its centroid sits at the base point (inside
-        // the consensus cluster), and in a fresh drawing `local_extent_max`
-        // is still the 1e9 default, so the far points pass the `lim` filter
-        // too (issue #284). Exclude them up front — an infinite construction
-        // line should never contribute to ZOOM Extents — and fall back to their
-        // base points if the drawing holds nothing else.
+        // Infinite display segments do not contribute to drawing extents.
+        // Preserve their base points as a fallback for otherwise empty drawings.
         let mut infinite_base_pts: Vec<glam::Vec3> = Vec::new();
         wires.retain(|w| {
             let is_infinite = Self::handle_from_wire_name(&w.name)
@@ -1389,18 +1382,12 @@ impl Scene {
             return;
         }
 
-        // Per-wire centroid pass — used both for the absolute-magnitude reject
-        // (`local_extent_max`) and for the IQR-based outlier reject below.
-        // A wire whose centroid sits far outside the drawing's consensus
-        // cluster is an orphan (block-defn entity that leaked into MSPACE,
-        // bogus hatch boundary, Ray/XLine far point) and must not poison the
-        // bounding box.
+        // Collect wire centroids for robust outlier rejection.
         struct WireCent {
             idx: usize,
             cx: f32,
             cy: f32,
         }
-        let lim = self.local_extent_max;
         let mut cents: Vec<WireCent> = Vec::with_capacity(wires.len());
         for (idx, wire) in wires.iter().enumerate() {
             let mut sx = 0.0_f64;
@@ -1426,26 +1413,8 @@ impl Scene {
             return;
         }
 
-        // Robust drawing centre (median centroid). `lim` is a span RELATIVE to
-        // this centre, so every reject below is distance-from-centre — geometry
-        // now reaches fit_all as absolute coordinates (no world_offset), which
-        // at UTM scale are ~5.7e6; an absolute `|x| > lim` test would reject the
-        // entire drawing and make ZOOM Extents a no-op.
-        let (mcx, mcy) = {
-            let mut xs: Vec<f32> = cents.iter().map(|c| c.cx).collect();
-            let mut ys: Vec<f32> = cents.iter().map(|c| c.cy).collect();
-            if xs.is_empty() {
-                (0.0_f32, 0.0_f32)
-            } else {
-                xs.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-                ys.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-                (xs[xs.len() / 2], ys[ys.len() / 2])
-            }
-        };
-
-        // IQR-based reject only kicks in with enough samples for the quartiles
-        // to be meaningful. Below that, the centre-relative `lim` filter is the
-        // only gate (legacy behavior).
+        // Quartile rejection needs enough samples to be meaningful. With fewer
+        // wires, every finite visible point belongs to the drawing extents.
         let (rx_lo, rx_hi, ry_lo, ry_hi) = if cents.len() >= 8 {
             let mut xs: Vec<f32> = cents.iter().map(|c| c.cx).collect();
             let mut ys: Vec<f32> = cents.iter().map(|c| c.cy).collect();
@@ -1456,17 +1425,18 @@ impl Scene {
             let q3x = q(&xs, 0.75);
             let q1y = q(&ys, 0.25);
             let q3y = q(&ys, 0.75);
-            // k=10× the inter-quartile span is permissive enough to keep
-            // legitimate sparse outlying geometry (annotation labels, scattered
-            // dim leaders) but tight enough to drop a single wire stranded at
-            // -world_offset. `max(1.0)` guards against a degenerate IQR=0
-            // (e.g. all wires at the same centroid).
+            // Keep sparse annotations while rejecting isolated corrupt wires.
             const K: f32 = 10.0;
             let dx = (q3x - q1x).max(1.0) * K;
             let dy = (q3y - q1y).max(1.0) * K;
             (q1x - dx, q3x + dx, q1y - dy, q3y + dy)
         } else {
-            (mcx - lim, mcx + lim, mcy - lim, mcy + lim)
+            (
+                f32::NEG_INFINITY,
+                f32::INFINITY,
+                f32::NEG_INFINITY,
+                f32::INFINITY,
+            )
         };
 
         let mut min = glam::Vec3::splat(f32::MAX);
@@ -1478,9 +1448,6 @@ impl Scene {
             let wire = &wires[c.idx];
             for &[x, y, z] in &wire.points {
                 if !x.is_finite() || !y.is_finite() || !z.is_finite() {
-                    continue;
-                }
-                if (x - mcx).abs() > lim || (y - mcy).abs() > lim {
                     continue;
                 }
                 min = min.min(glam::Vec3::new(x, y, z));
@@ -1557,7 +1524,7 @@ impl Scene {
             if index == active {
                 tile.camera = live_camera.clone();
             } else {
-                tile.camera.fit_to_bounds(min, max, aspect);
+                tile.camera.fit_to_bounds_f64(min, max, aspect);
             }
         }
         if let Some(aspect) = aspects.get(active) {

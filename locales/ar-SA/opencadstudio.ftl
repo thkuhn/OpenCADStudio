@@ -30,7 +30,7 @@ ribbon-tab =
     .draw = رسم
     .annotate = تعليقات توضيحية
     .insert = إدراج
-    .model = نموذج
+    .model = النمذجة
     .layout = تخطيط
     .manage = إدارة
     .view = عرض
@@ -326,6 +326,7 @@ common =
     .block-rotation = دوران الكتلة
     .blocks = الكتل
     .blue = أزرق
+    .bulge = التحدب
     .boolean-failed-the-solids-may-not-overlap = فشلت العملية المنطقية — قد لا تتداخل المجسمات.
     .boolean-select-exactly-two-solids-created-this = العملية المنطقية: حدد مجسمين بالضبط أُنشئا في هذه الجلسة.
     .bottom = أسفل
@@ -344,6 +345,7 @@ common =
     .brightness = السطوع
     .by-layer = حسب الطبقة
     .byblock = حسب الكتلة
+    .bycolor = حسب اللون
     .bylayer = حسب الطبقة
     .convtosurface-converted-n-solid-s-to-surface-s = CONVTOSURFACE: تم تحويل __ocs_fmt_0__ مجسم إلى أسطح.
     .convtosurface-select-a-solid-created-this-sess = CONVTOSURFACE: حدد مجسمًا أُنشئ في هذه الجلسة.
@@ -1341,6 +1343,18 @@ draw =
     .ray-specify-through-point = RAY  حدد نقطة العبور:
     .rect-specify-first-corner = RECT  حدد الزاوية الأولى:
     .rect-specify-opposite-corner = RECT  حدد الزاوية المقابلة:
+    .rect-calculate-dimensions-based-on-length-width = RECT  احسب الأبعاد استنادًا إلى [الطول / العرض] <الطول>:
+    .rect-specify-elevation = RECT  حدد الارتفاع <__ocs_fmt_0__>:
+    .rect-specify-fillet-radius = RECT  حدد نصف قطر التدوير <__ocs_fmt_0__>:
+    .rect-specify-first-chamfer-distance = RECT  حدد مسافة الشطف الأولى <__ocs_fmt_0__>:
+    .rect-specify-orientation-from-the-first-corner = RECT  حدد الاتجاه من الزاوية الأولى:
+    .rect-specify-rectangle-area = RECT  حدد مساحة المستطيل:
+    .rect-specify-rectangle-length = RECT  حدد طول المستطيل:
+    .rect-specify-rectangle-width = RECT  حدد عرض المستطيل:
+    .rect-specify-rotation-angle = RECT  حدد زاوية الدوران <__ocs_fmt_0__>:
+    .rect-specify-second-chamfer-distance = RECT  حدد مسافة الشطف الثانية <__ocs_fmt_0__>:
+    .rect-specify-thickness = RECT  حدد السمك <__ocs_fmt_0__>:
+    .rect-specify-width = RECT  حدد العرض <__ocs_fmt_0__>:
     .rect-cen-specify-center-point = RECT CEN  حدد نقطة المركز:
     .rect-cen-specify-corner-point = RECT CEN  حدد نقطة الزاوية:
     .rect-rot-specify-adjacent-corner-defines-edge = RECT ROT  حدد الزاوية المجاورة (تحدد اتجاه الحافة):
@@ -1798,14 +1812,24 @@ annotate =
     .collect-leaders = تجميع الخطوط القائدة
     .ddedit-select-text-entity = DDEDIT  حدد كيان النص:
     .dimaligned-enter-dimension-text-blank-measured = DIMALIGNED  أدخل نص البُعد (فارغ = القيمة المقاسة):
-    .dimaligned-specify-dimension-line-location-tex = DIMALIGNED  حدد موقع خط البُعد [نص/زاوية]:
-    .dimaligned-specify-first-extension-line-origin = DIMALIGNED  حدد أصل خط الامتداد الأول:
-    .dimaligned-specify-second-extension-line-origi = DIMALIGNED  حدد أصل خط الامتداد الثاني [نص/زاوية]:
+    .dimaligned-enter-formatted-dimension-text-blank-measured = DIMALIGNED  أدخل نص البُعد المنسق (فارغ = القيمة المقاسة):
+    .dimaligned-select-object-to-dimension = DIMALIGNED  حدد كائنًا لقياسه:
+    .dimaligned-specify-dimension-line-location-tex = DIMALIGNED  حدد موقع خط البُعد [Mtext/نص/زاوية]:
+    .dimaligned-specify-first-extension-line-origin = DIMALIGNED  حدد أصل خط الامتداد الأول أو اضغط Enter لتحديد كائن:
+    .dimaligned-specify-second-extension-line-origi = DIMALIGNED  حدد أصل خط الامتداد الثاني:
     .dimaligned-specify-text-angle-degrees = DIMALIGNED  حدد زاوية النص (بالدرجات):
+    .dimangular-enter-dimension-text-blank-measured = DIMANGULAR  أدخل نص البُعد (فارغ = القيمة المقاسة):
+    .dimangular-enter-formatted-dimension-text-blank-measured = DIMANGULAR  أدخل نص البُعد المنسق (فارغ = القيمة المقاسة):
+    .dimangular-select-arc-circle-line-or-specify-angle-vertex = DIMANGULAR  حدد قوسًا أو دائرة أو خطًا، أو حدد رأس زاوية:
+    .dimangular-select-second-line = DIMANGULAR  حدد الخط الثاني:
     .dimangular-specify-angle-vertex = DIMANGULAR  حدد رأس الزاوية:
+    .dimangular-specify-dimension-arc-location-options = DIMANGULAR  حدد موقع قوس البُعد [Mtext/نص/زاوية/ربع]:
     .dimangular-specify-dimension-arc-location = DIMANGULAR  حدد موقع قوس البُعد:
     .dimangular-specify-first-extension-line-point = DIMANGULAR  حدد نقطة خط الامتداد الأول:
+    .dimangular-specify-quadrant = DIMANGULAR  حدد الربع:
     .dimangular-specify-second-extension-line-point = DIMANGULAR  حدد نقطة خط الامتداد الثاني:
+    .dimangular-specify-second-point-for-text-angle = DIMANGULAR  حدد النقطة الثانية لزاوية النص:
+    .dimangular-specify-text-angle-or-first-point = DIMANGULAR  حدد زاوية النص أو النقطة الأولى:
     .dimbaseline-no-base-dimension-found-place-a-di = DIMBASELINE  لم يُعثر على بُعد أساسي. ضع بُعدًا أولًا.
     .dimbaseline-specify-a-second-extension-line-or = DIMBASELINE  حدد أصل خط امتداد ثانٍ (Enter للخروج):
     .dimbreak-select-dimension-to-break = DIMBREAK  حدد البُعد المراد قطعه:
@@ -1813,8 +1837,8 @@ annotate =
     .dimcontinue-no-base-dimension-found-place-a-di = DIMCONTINUE  لم يُعثر على بُعد أساسي. ضع بُعدًا أولًا.
     .dimcontinue-specify-a-second-extension-line-or = DIMCONTINUE  حدد أصل خط امتداد ثانٍ (Enter للخروج):
     .dimdiameter-enter-dimension-text-blank-measure = DIMDIAMETER  أدخل نص البُعد (فارغ = القيمة المقاسة):
-    .dimdiameter-specify-center-point = DIMDIAMETER  حدد نقطة المركز:
-    .dimdiameter-specify-dimension-line-location-te = DIMDIAMETER  حدد موقع خط البُعد [نص/زاوية]:
+    .dimdiameter-select-arc-circle-or-polyline-arc = DIMDIAMETER  حدد قوسًا أو دائرة أو قوسًا متعدد الخطوط:
+    .dimdiameter-specify-dimension-line-location-text = DIMDIAMETER  حدد موقع خط البُعد [نص متعدد الأسطر/نص/زاوية]:
     .dimdiameter-specify-point-on-circle = DIMDIAMETER  حدد نقطة على الدائرة:
     .dimdiameter-specify-text-angle-degrees = DIMDIAMETER  حدد زاوية النص (بالدرجات):
     .dimedit-enter-text-override-blank-reset-to-mea = DIMEDIT  أدخل نص التجاوز (فارغ = إعادة للقيمة المقاسة):
@@ -1830,10 +1854,12 @@ annotate =
     .dimlinear-specify-second-extension-line-origin = DIMLINEAR  حدد أصل خط الامتداد الثاني [نص/زاوية]:
     .dimlinear-specify-text-angle-degrees = DIMLINEAR  حدد زاوية النص (بالدرجات):
     .dimordinate-specify-feature-location = DIMORDINATE  حدد موقع المعلم:
-    .dimordinate-specify-leader-endpoint = DIMORDINATE  حدد نقطة نهاية الخط القائد:
+    .dimordinate-enter-dimension-text-blank-measured = DIMORDINATE  أدخل نص البُعد (فارغ = القيمة المقاسة):
+    .dimordinate-specify-leader-endpoint = DIMORDINATE  حدد نقطة نهاية الخط القائد [Xdatum/Ydatum/Mtext/Text/Angle]:
+    .dimordinate-specify-text-angle-degrees = DIMORDINATE  حدد زاوية النص (بالدرجات):
     .dimradius-enter-dimension-text-blank-measured = DIMRADIUS  أدخل نص البُعد (فارغ = القيمة المقاسة):
-    .dimradius-specify-center-point = DIMRADIUS  حدد نقطة المركز:
-    .dimradius-specify-dimension-line-location-text = DIMRADIUS  حدد موقع خط البُعد [نص/زاوية]:
+    .dimradius-select-arc-circle-or-polyline-arc = DIMRADIUS  حدد قوسًا أو دائرة أو قوسًا متعدد الخطوط:
+    .dimradius-specify-dimension-line-location-text = DIMRADIUS  حدد موقع خط البُعد [نص متعدد الأسطر/نص/زاوية]:
     .dimradius-specify-radius-point = DIMRADIUS  حدد نقطة نصف القطر:
     .dimradius-specify-text-angle-degrees = DIMRADIUS  حدد زاوية النص (بالدرجات):
     .dimspace-enter-value-0-auto = DIMSPACE  أدخل القيمة (0 = تلقائي):
@@ -1865,6 +1891,7 @@ annotate =
         البيانات
     .lower = خفض
     .mleader-specify-arrowhead-point = MLEADER  حدد نقطة رأس السهم:
+    .mleader-specify-landing-point = MLEADER  حدد نقطة خط الإسناد:
     .mleader-specify-next-point-count-pts-enter-to = MLEADER  حدد النقطة التالية [__ocs_arg_count__ نقاط — Enter لوضع النص]:
     .mleaderadd-select-a-multileader = MLEADERADD  حدد خطًا قائدًا متعددًا:
     .mleaderadd-specify-arrowhead-location = MLEADERADD  حدد موقع رأس السهم:
@@ -2034,6 +2061,15 @@ insert =
     .object-s-cut-to-clipboard = قُص __ocs_fmt_0__ كائن إلى الحافظة.
 
 model =
+    .create = إنشاء
+    .boolean = عمليات منطقية
+    .pyramid = هرم
+    .polysolid = مجسّم متعدد
+    .extrude = بثق
+    .revolve = تدوير
+    .loft = تشكيل انتقالي
+    .sweep = سحب على مسار
+    .presspull = دفع/سحب
     .n-specify-center-point = __ocs_arg_n__  حدد نقطة المركز:
     .n-specify-first-corner = __ocs_arg_n__  حدد الزاوية الأولى:
     .n-specify-height-enter-for-default = __ocs_arg_n__  حدد الارتفاع <Enter للافتراضي>:
@@ -2334,6 +2370,7 @@ view =
     .zoom-extents =
         تكبير إلى
         النطاقات
+    .cmd-no-hatch-objects = __ocs_fmt_0__: ┘äÏº Ï¬┘êÏ¼Ï» ┘âÏºÏª┘åÏºÏ¬ Ï¬Ï©┘ä┘è┘ä.
     .cmd-no-text-or-dimension-objects = __ocs_fmt_0__: لا توجد كائنات نص أو أبعاد.
     .cmd-not-yet-implemented = __ocs_fmt_0__: لم يُنفّذ بعد.
     .viewport-s-in-layout = __ocs_fmt_0__ منفذ عرض في التخطيط "__ocs_fmt_1__":
@@ -2711,6 +2748,9 @@ properties =
     .plot-style-table = جدول نمط الطباعة
     .plot-table-attached-to = جدول الطباعة مرفق بـ
     .plot-table-type = نوع جدول الطباعة
+    .color-dependent-plot-styles = أنماط طباعة معتمدة على اللون
+    .named-plot-styles = أنماط طباعة مسماة
+    .plot-style-is-locked-to-color-in-color-dependent = نمط الطباعة مقيد باللون في الوضع المعتمد على اللون (CTB)
     .point-1-x = النقطة 1 X
     .point-1-y = النقطة 1 Y
     .point-1-z = النقطة 1 Z
@@ -3073,7 +3113,7 @@ styles =
     .pdmode-new-value-0-dot-1-none-2-3-x-4-tick-32 = PDMODE  القيمة الجديدة [0=نقطة 1=لا شيء 2=+ 3=x 4=شرطة؛ +32 دائرة +64 مربع]:
     .pdmode-v = PDMODE = __ocs_fmt_0__
     .pdmode-set-to-v = عُيّن PDMODE إلى __ocs_fmt_0__
-    .pdsize-new-point-size-0-5-of-viewport-0-absolu = PDSIZE  حجم النقطة الجديد (0 = 5% من منفذ العرض، <0 = مطلق):
+    .pdsize-new-point-size-0-5-of-viewport-0-absolu = PDSIZE  حجم النقطة الجديد (0 = 5% من منفذ العرض، >0 = مطلق، <0 = نسبة مئوية من منفذ العرض):
     .pdsize-v-4 = PDSIZE = __ocs_fmt_0__
     .pdsize-set-to-v-4 = عُيّن PDSIZE إلى __ocs_fmt_0__
     .pickadd = PICKADD = __ocs_fmt_0__ (__ocs_fmt_1__)

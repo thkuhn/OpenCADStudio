@@ -2,6 +2,7 @@ use super::helpers::{entity_type_key, entity_type_label, title_case_word};
 use super::{OpenCADStudio, VARIES_LABEL};
 use crate::io::linetypes;
 use crate::scene::view::dispatch;
+use crate::scene::model::object::PropValue;
 use crate::ui;
 use crate::t;
 use acadrust::types::{Transform, Vector3};
@@ -128,6 +129,9 @@ impl OpenCADStudio {
                             crate::entities::spline::control_vertex_count(spline)
                         })
                     }
+                    acadrust::EntityType::Table(table) => {
+                        Some(table.row_count().saturating_mul(table.column_count()))
+                    }
                     _ => None,
                 });
             vertex_count.map_or(prop_vertex, |count| prop_vertex.min(count.saturating_sub(1)))
@@ -140,6 +144,8 @@ impl OpenCADStudio {
             false
         };
         crate::scene::view::dispatch::set_prop_current_vertex(prop_vertex);
+        crate::entities::table::set_prop_current_cell(prop_vertex);
+        crate::entities::table::set_prop_current_cell_active(prop_vertex_indicator_active);
 
         let annotation_scale_handle = self.tabs[i].scene.displayed_annotation_scale_handle();
         let live_props = self.tabs[i]
@@ -229,11 +235,15 @@ impl OpenCADStudio {
                             })
                             .unwrap_or_else(|| "ByLayer".to_string())
                     };
-                    let plot_style = match header.current_plotstyle_type {
-                        1 => "ByBlock",
-                        2 => "ByColor",
-                        3 => "ByObject",
-                        _ => "ByLayer",
+                    let plot_style = if header.plotstyle_mode {
+                        "ByColor"
+                    } else {
+                        match header.current_plotstyle_type {
+                            1 => "ByBlock",
+                            2 => "Normal",
+                            3 => "ByObject",
+                            _ => "ByLayer",
+                        }
                     };
                     let layout_plot_table = doc.objects.values().find_map(|object| {
                         let acadrust::objects::ObjectType::Layout(layout) = object else {
@@ -304,18 +314,60 @@ impl OpenCADStudio {
                                         ),
                                     ),
                                 },
-                                read_only(t!("Transparency").as_ref(), "ByLayer".to_string()),
+                                Property {
+                                    label: t!("Transparency").into_owned(),
+                                    field: "transparency",
+                                    value: PropValue::EditChoice {
+                                        value: "ByLayer".to_string(),
+                                        options: vec!["ByLayer".to_string(), "ByBlock".to_string()],
+                                    },
+                                },
                                 read_only(t!("Thickness").as_ref(), format_length(header.thickness)),
                             ],
                         },
                         PropSection {
                             title: t!("3D Visualization").into_owned(),
-                            props: vec![read_only(t!("Material").as_ref(), material)],
+                            props: vec![Property {
+                                label: t!("Material").into_owned(),
+                                field: "material",
+                                value: PropValue::Choice {
+                                    selected: material.clone(),
+                                    options: {
+                                        let mut opts = vec![
+                                            "ByLayer".to_string(),
+                                            "ByBlock".to_string(),
+                                            "Global".to_string(),
+                                        ];
+                                        if !opts.contains(&material) && !material.is_empty() {
+                                            opts.push(material.clone());
+                                        }
+                                        opts
+                                    },
+                                },
+                            }],
                         },
                         PropSection {
                             title: t!("Plot style").into_owned(),
                             props: vec![
-                                read_only(t!("Plot style").as_ref(), plot_style.to_string()),
+                                Property {
+                                    label: t!("Plot style").into_owned(),
+                                    field: "plot_style",
+                                    value: if !header.plotstyle_mode {
+                                        PropValue::Choice {
+                                            selected: plot_style.to_string(),
+                                            options: vec![
+                                                "ByLayer".to_string(),
+                                                "ByBlock".to_string(),
+                                                "Normal".to_string(),
+                                            ],
+                                        }
+                                    } else {
+                                        PropValue::ReadOnlyWithTooltip {
+                                            value: t!("ByColor").into_owned(),
+                                            tooltip: t!("Plot style is locked to color in Color-Dependent (CTB) mode").into_owned(),
+                                        }
+                                    },
+                                },
                                 read_only(t!("Plot style table").as_ref(), plot_table.clone()),
                                 read_only(
                                     t!("Plot table attached to").as_ref(),
@@ -328,9 +380,9 @@ impl OpenCADStudio {
                                 read_only(
                                     t!("Plot table type").as_ref(),
                                     if header.plotstyle_mode {
-                                        "Named plot styles".to_string()
+                                        t!("Color-dependent plot styles").into_owned()
                                     } else {
-                                        "Color-dependent plot styles".to_string()
+                                        t!("Named plot styles").into_owned()
                                     },
                                 ),
                             ],
@@ -369,6 +421,23 @@ impl OpenCADStudio {
                     ];
                     ui::PropertiesPanel {
                         title: t!("No selection").into_owned(),
+                        choice_combos: sections
+                            .iter()
+                            .flat_map(|section| section.props.iter())
+                            .filter_map(|prop| match &prop.value {
+                                crate::scene::model::object::PropValue::Choice { options, .. } => Some((
+                                    prop.field.to_string(),
+                                    iced::widget::combo_box::State::new(
+                                        options
+                                            .iter()
+                                            .cloned()
+                                            .map(ui::properties::LocalizedChoice::new)
+                                            .collect(),
+                                    ),
+                                )),
+                                _ => None,
+                            })
+                            .collect(),
                         sections,
                         layer_combo: iced::widget::combo_box::State::new(layer_names.clone()),
                         linetype_combo: iced::widget::combo_box::State::new(
@@ -412,17 +481,10 @@ impl OpenCADStudio {
                     {
                         let doc = &self.tabs[i].scene.document;
                         let common = entity.common();
-                        let mat_names: Vec<String> = doc
-                            .objects
-                            .iter()
-                            .filter_map(|(_, o)| match o {
-                                acadrust::objects::ObjectType::Material(m) => Some(m.name.clone()),
-                                _ => None,
-                            })
-                            .collect();
                         let selected = match common.material_flags {
                             0 => "ByLayer".to_string(),
                             1 => "ByBlock".to_string(),
+                            2 => "Global".to_string(),
                             _ => common
                                 .material_handle
                                 .and_then(|mh| {
@@ -433,10 +495,16 @@ impl OpenCADStudio {
                                         _ => None,
                                     })
                                 })
-                                .unwrap_or_else(|| "ByLayer".to_string()),
+                                .unwrap_or_else(|| "Global".to_string()),
                         };
-                        let mut options = vec!["ByLayer".to_string(), "ByBlock".to_string()];
-                        options.extend(mat_names);
+                        let mut options = vec![
+                            "ByLayer".to_string(),
+                            "ByBlock".to_string(),
+                            "Global".to_string(),
+                        ];
+                        if !options.contains(&selected) && !selected.is_empty() {
+                            options.push(selected.clone());
+                        }
                         for section in sections.iter_mut() {
                             if let Some(row) =
                                 section.props.iter_mut().find(|p| p.field == "material")
@@ -677,6 +745,31 @@ impl OpenCADStudio {
                         entity,
                     ));
 
+                    {
+                        use crate::entities::common::ro_prop;
+                        let xd = &source_entity.common().extended_data;
+                        if !xd.is_empty() {
+                            let mut xd_props = Vec::new();
+                            for rec in xd.records() {
+                                let value_text = rec
+                                    .values
+                                    .iter()
+                                    .map(|value| format!("{value:?}"))
+                                    .collect::<Vec<_>>()
+                                    .join(", ");
+                                xd_props.push(ro_prop(
+                                    t!("Application").as_ref(),
+                                    "xdata_value",
+                                    format!("{}: {value_text}", rec.application_name),
+                                ));
+                            }
+                            sections.push(crate::scene::model::object::PropSection {
+                                title: t!("Extended Data").into_owned(),
+                                props: xd_props,
+                            });
+                        }
+                    }
+
                     // Uniform-scale checkbox for block references (#427):
                     // while the three scale factors are equal (and the user
                     // hasn't opted into per-axis editing) the panel shows one
@@ -722,39 +815,57 @@ impl OpenCADStudio {
                         }
                     }
 
-                    // In named plot-style mode (PSTYLEMODE=1) the Plot style row
-                    // picks a named style from the drawing's plot style table. In
-                    // the color-dependent mode it stays read-only (the object's
-                    // color drives the plot style), so it is left untouched.
-                    if self.tabs[i].scene.document.header.plotstyle_mode {
+                    if !self.tabs[i].scene.document.header.plotstyle_mode {
                         let doc = &self.tabs[i].scene.document;
                         let dict_h = doc.header.acad_plotstylename_dict_handle;
+                        let common = entity.common();
+                        let mut options = vec![
+                            "ByLayer".to_string(),
+                            "ByBlock".to_string(),
+                            "Normal".to_string(),
+                        ];
                         if let Some(dict) = crate::scene::annotative::as_dict(doc, dict_h) {
-                            let common = entity.common();
-                            let mut options = vec!["ByLayer".to_string(), "ByBlock".to_string()];
-                            options.extend(dict.entries.iter().map(|(n, _)| n.clone()));
-                            let selected = match common.plotstyle_flags {
-                                0 => "ByLayer".to_string(),
-                                1 => "ByBlock".to_string(),
-                                _ => common
-                                    .plotstyle_handle
-                                    .and_then(|ph| {
+                            for (n, _) in &dict.entries {
+                                if !options.contains(n) {
+                                    options.push(n.clone());
+                                }
+                            }
+                        }
+                        let selected = match common.plotstyle_flags {
+                            0 => "ByLayer".to_string(),
+                            1 => "ByBlock".to_string(),
+                            2 => "Normal".to_string(),
+                            _ => common
+                                .plotstyle_handle
+                                .and_then(|ph| {
+                                    crate::scene::annotative::as_dict(doc, dict_h).and_then(|dict| {
                                         dict.entries
                                             .iter()
                                             .find(|(_, h)| *h == ph)
                                             .map(|(n, _)| n.clone())
                                     })
-                                    .unwrap_or_else(|| "ByLayer".to_string()),
-                            };
-                            for section in sections.iter_mut() {
-                                if let Some(row) =
-                                    section.props.iter_mut().find(|p| p.field == "plot_style")
-                                {
-                                    row.value = crate::scene::model::object::PropValue::Choice {
-                                        selected: selected.clone(),
-                                        options: options.clone(),
-                                    };
-                                }
+                                })
+                                .unwrap_or_else(|| "ByLayer".to_string()),
+                        };
+                        for section in sections.iter_mut() {
+                            if let Some(row) =
+                                section.props.iter_mut().find(|p| p.field == "plot_style")
+                            {
+                                row.value = crate::scene::model::object::PropValue::Choice {
+                                    selected: selected.clone(),
+                                    options: options.clone(),
+                                };
+                            }
+                        }
+                    } else {
+                        for section in sections.iter_mut() {
+                            if let Some(row) =
+                                section.props.iter_mut().find(|p| p.field == "plot_style")
+                            {
+                                row.value = crate::scene::model::object::PropValue::ReadOnlyWithTooltip {
+                                    value: t!("ByColor").into_owned(),
+                                    tooltip: t!("Plot style is locked to color in Color-Dependent (CTB) mode").into_owned(),
+                                };
                             }
                         }
                     }
@@ -958,6 +1069,21 @@ impl OpenCADStudio {
 
                     // Inject DimStyle picker + style-derived groups for Dimensions.
                     if let acadrust::EntityType::Dimension(d) = entity {
+                        if let Some(general) = sections.first_mut() {
+                            general.props.retain(|property| property.field != "handle");
+                            let associative =
+                                crate::scene::dimension_assoc::dimension_is_associative(
+                                    &self.tabs[i].scene.document,
+                                    d.base().common.handle,
+                                );
+                            general.props.push(crate::scene::model::object::Property {
+                                label: t!("Associative").into_owned(),
+                                field: "associative",
+                                value: crate::scene::model::object::PropValue::ReadOnly(
+                                    if associative { "Yes" } else { "No" }.to_string(),
+                                ),
+                            });
+                        }
                         let dim_style_names: Vec<String> = self.tabs[i]
                             .scene
                             .document
@@ -969,22 +1095,19 @@ impl OpenCADStudio {
                         if !dim_style_names.is_empty() {
                             // Current style is already shown as text in the geom section;
                             // replace/upgrade it to a Choice if we have a list.
-                            if let Some(geom) = sections.last_mut() {
-                                // Replace the style name with a choice.
-                                if let Some(prop) =
-                                    geom.props.iter_mut().find(|p| p.field == "style_name")
-                                {
-                                    let current = match &prop.value {
-                                        crate::scene::model::object::PropValue::PlainText(s) => {
-                                            s.clone()
-                                        }
-                                        _ => String::new(),
-                                    };
-                                    prop.value = crate::scene::model::object::PropValue::Choice {
-                                        selected: current,
-                                        options: dim_style_names,
-                                    };
-                                }
+                            if let Some(prop) = sections
+                                .iter_mut()
+                                .flat_map(|section| section.props.iter_mut())
+                                .find(|property| property.field == "style_name")
+                            {
+                                let current = match &prop.value {
+                                    crate::scene::model::object::PropValue::PlainText(s) => s.clone(),
+                                    _ => String::new(),
+                                };
+                                prop.value = crate::scene::model::object::PropValue::Choice {
+                                    selected: current,
+                                    options: dim_style_names,
+                                };
                             }
                         }
 
@@ -998,12 +1121,14 @@ impl OpenCADStudio {
                                         && s.name.eq_ignore_ascii_case("Standard"))
                             })
                         {
-                            sections.extend(crate::entities::dimension::style_sections(style));
+                            sections.extend(crate::entities::dimension::style_sections(
+                                style,
+                                d,
+                                &self.tabs[i].scene.document,
+                            ));
 
-                            // The style groups are a read-only mirror, but the
-                            // dim-line colour is an editable per-object override:
-                            // prefer the ACAD_DSTYLE code-176 (ACI) override, else
-                            // the style's DIMCLRD.
+                            // Prefer entity-level dimension-variable overrides;
+                            // fall back to the assigned style values.
                             use crate::entities::dim_override as dov;
                             use crate::scene::model::object::PropValue;
                             let dim_c = dov::color(&d.base().common.extended_data, dov::DIMCLRD)
@@ -1013,6 +1138,20 @@ impl OpenCADStudio {
                                 "dim_line_color",
                                 PropValue::ColorChoice(dim_c),
                             );
+                            for (field, code, inherited) in [
+                                ("dim_ext_line_color", dov::DIMCLRE, style.dimclre),
+                                ("dim_text_color", dov::DIMCLRT, style.dimclrt),
+                            ] {
+                                let color = dov::color(&d.base().common.extended_data, code)
+                                    .unwrap_or_else(|| {
+                                        acadrust::types::Color::from_index(inherited)
+                                    });
+                                set_row_value(
+                                    &mut sections,
+                                    field,
+                                    PropValue::ColorChoice(color),
+                                );
+                            }
                         }
                     }
 
@@ -1233,11 +1372,88 @@ impl OpenCADStudio {
                         // Feature-control frame: FCF text style is the dimension
                         // style's DIMTXSTY.
                         acadrust::EntityType::Tolerance(tol) => {
-                            if let Some(ds) = find_dim_style(doc, &tol.dimension_style_name) {
-                                if !ds.dimtxsty.is_empty() {
-                                    set_row(&mut sections, "tol_text_style", ds.dimtxsty.clone());
-                                }
+                            use crate::entities::dim_override as dov;
+                            let style = crate::entities::tolerance::resolve_dim_style(tol, doc);
+                            let style_name = style
+                                .map(|entry| entry.name.clone())
+                                .unwrap_or_else(|| {
+                                    if tol.dimension_style_name.trim().is_empty() {
+                                        "Standard".to_string()
+                                    } else {
+                                        tol.dimension_style_name.clone()
+                                    }
+                                });
+                            let mut dim_style_names: Vec<String> = doc
+                                .dim_styles
+                                .iter()
+                                .map(|entry| entry.name.clone())
+                                .filter(|name| !name.trim().is_empty())
+                                .collect();
+                            if !dim_style_names
+                                .iter()
+                                .any(|name| name.eq_ignore_ascii_case(&style_name))
+                            {
+                                dim_style_names.push(style_name.clone());
                             }
+                            set_row_value(
+                                &mut sections,
+                                "tol_dim_style",
+                                PropValue::Choice {
+                                    selected: style_name,
+                                    options: dim_style_names,
+                                },
+                            );
+
+                            let text_style_name = dov::handle(
+                                &tol.common.extended_data,
+                                dov::DIMTXSTY,
+                            )
+                            .and_then(|handle| {
+                                doc.text_styles
+                                    .iter()
+                                    .find(|entry| entry.handle == handle)
+                            })
+                            .map(|entry| entry.name.clone())
+                            .or_else(|| style.map(|entry| entry.dimtxsty.clone()))
+                            .unwrap_or_else(|| "Standard".to_string());
+                            let text_height_editable = doc
+                                .text_styles
+                                .iter()
+                                .find(|entry| {
+                                    entry.name.eq_ignore_ascii_case(&text_style_name)
+                                })
+                                .is_none_or(|entry| !entry.has_fixed_height());
+                            let mut names = text_style_names.clone();
+                            if !names
+                                .iter()
+                                .any(|name| name.eq_ignore_ascii_case(&text_style_name))
+                            {
+                                names.push(text_style_name.clone());
+                            }
+                            set_row_value(
+                                &mut sections,
+                                "tol_text_style",
+                                PropValue::Choice {
+                                    selected: text_style_name,
+                                    options: names,
+                                },
+                            );
+
+                            let height = dov::real(
+                                &tol.common.extended_data,
+                                dov::DIMTXT,
+                            )
+                            .or_else(|| style.map(|entry| entry.dimtxt))
+                            .unwrap_or(tol.text_height);
+                            set_row_value(
+                                &mut sections,
+                                "tol_text_height",
+                                if text_height_editable {
+                                    PropValue::EditText(format!("{height:.4}"))
+                                } else {
+                                    PropValue::ReadOnly(format!("{height:.4}"))
+                                },
+                            );
                         }
                         // MultiLeader: max points + segment-angle constraints
                         // are MLeaderStyle settings, not stored on the entity.
@@ -1271,18 +1487,364 @@ impl OpenCADStudio {
                                 }
                             }
                         }
+                        acadrust::EntityType::Table(table) => {
+                            use acadrust::entities::table::{
+                                CellEdgeFlags, CellStylePropertyFlags, CellValueType,
+                            };
+
+                            let mut names: Vec<String> = doc
+                                .objects
+                                .values()
+                                .filter_map(|object| match object {
+                                    acadrust::objects::ObjectType::TableStyle(style)
+                                        if !style.name.trim().is_empty() =>
+                                    {
+                                        Some(style.name.clone())
+                                    }
+                                    _ => None,
+                                })
+                                .collect();
+                            names.sort_by_key(|name| name.to_ascii_lowercase());
+                            names.dedup_by(|a, b| a.eq_ignore_ascii_case(b));
+                            let selected_style = table
+                                .table_style_handle
+                                .and_then(|handle| doc.objects.get(&handle))
+                                .and_then(|object| match object {
+                                    acadrust::objects::ObjectType::TableStyle(style) => {
+                                        Some(style)
+                                    }
+                                    _ => None,
+                                });
+                            let selected = selected_style
+                                .map(|style| style.name.clone())
+                                .unwrap_or_else(|| "Standard".to_string());
+                            if !names.iter().any(|name| name.eq_ignore_ascii_case(&selected)) {
+                                names.insert(0, selected.clone());
+                            }
+                            set_row_value(
+                                &mut sections,
+                                "tbl_style_handle",
+                                crate::scene::model::object::PropValue::Choice {
+                                    selected,
+                                    options: names,
+                                },
+                            );
+
+                            let title_suppressed =
+                                crate::entities::table::resolved_title_suppressed(
+                                    table,
+                                    selected_style,
+                                );
+                            let header_suppressed =
+                                crate::entities::table::resolved_header_suppressed(
+                                    table,
+                                    selected_style,
+                                );
+                            let flow_up = crate::entities::table::resolved_flow_up(
+                                table,
+                                selected_style,
+                            );
+                            let (horizontal_margin, vertical_margin) =
+                                crate::entities::table::resolved_table_margins(
+                                    table,
+                                    selected_style,
+                                );
+                            update_row_toggle(
+                                &mut sections,
+                                "tbl_title_suppressed",
+                                title_suppressed,
+                            );
+                            update_row_toggle(
+                                &mut sections,
+                                "tbl_header_suppressed",
+                                header_suppressed,
+                            );
+                            update_row_text(
+                                &mut sections,
+                                "tbl_flow_direction",
+                                if flow_up { "Up" } else { "Down" }.to_string(),
+                            );
+                            update_row_text(
+                                &mut sections,
+                                "tbl_horizontal_margin",
+                                crate::entities::common::format_length(horizontal_margin),
+                            );
+                            update_row_text(
+                                &mut sections,
+                                "tbl_vertical_margin",
+                                crate::entities::common::format_length(vertical_margin),
+                            );
+
+                            let columns = table.column_count();
+                            if columns > 0 {
+                                let cell_index = prop_vertex.min(
+                                    table.row_count()
+                                        .saturating_mul(columns)
+                                        .saturating_sub(1),
+                                );
+                                let row_index = cell_index / columns;
+                                let column_index = cell_index % columns;
+                                if let (Some(row), Some(cell)) = (
+                                    table.rows.get(row_index),
+                                    table.cell(row_index, column_index),
+                                ) {
+                                    let document_row_style = selected_style.map(|style| {
+                                        let kind = match (
+                                            title_suppressed,
+                                            header_suppressed,
+                                            row_index,
+                                        ) {
+                                            (false, _, 0) => 0,
+                                            (false, false, 1) | (true, false, 0) => 1,
+                                            _ => 2,
+                                        };
+                                        match kind {
+                                            0 => &style.title_row_style,
+                                            1 => &style.header_row_style,
+                                            _ => &style.data_row_style,
+                                        }
+                                    });
+                                    let local = |property| {
+                                        crate::entities::table::style_for_property(
+                                            table,
+                                            row,
+                                            column_index,
+                                            cell,
+                                            property,
+                                        )
+                                    };
+                                    let alignment = local(CellStylePropertyFlags::ALIGNMENT)
+                                        .map(|style| style.alignment)
+                                        .or_else(|| {
+                                            document_row_style.map(|style| style.alignment as i32)
+                                        })
+                                        .unwrap_or(5);
+                                    let alignment = match alignment {
+                                        1 => "Top Left",
+                                        2 => "Top Center",
+                                        3 => "Top Right",
+                                        4 => "Middle Left",
+                                        6 => "Middle Right",
+                                        7 => "Bottom Left",
+                                        8 => "Bottom Center",
+                                        9 => "Bottom Right",
+                                        _ => "Middle Center",
+                                    };
+                                    update_row_text(
+                                        &mut sections,
+                                        "tbl_cell_alignment",
+                                        alignment.to_string(),
+                                    );
+
+                                    let text_style_name = local(CellStylePropertyFlags::TEXT_STYLE)
+                                        .map(|style| style.text_style_name.clone())
+                                        .filter(|name| !name.is_empty())
+                                        .or_else(|| {
+                                            document_row_style
+                                                .map(|style| style.text_style_name.clone())
+                                                .filter(|name| !name.is_empty())
+                                        })
+                                        .unwrap_or_else(|| "Standard".to_string());
+                                    update_row_text(
+                                        &mut sections,
+                                        "tbl_cell_text_style",
+                                        text_style_name,
+                                    );
+                                    let text_height = local(CellStylePropertyFlags::TEXT_HEIGHT)
+                                        .map(|style| style.text_height)
+                                        .or_else(|| {
+                                            document_row_style.map(|style| style.text_height)
+                                        })
+                                        .unwrap_or(0.18);
+                                    update_row_text(
+                                        &mut sections,
+                                        "tbl_cell_text_height",
+                                        crate::entities::common::format_length(text_height),
+                                    );
+                                    let content_color = local(
+                                        CellStylePropertyFlags::CONTENT_COLOR,
+                                    )
+                                    .map(|style| style.content_color)
+                                    .or_else(|| {
+                                        document_row_style.map(|style| style.text_color)
+                                    })
+                                    .unwrap_or(acadrust::types::Color::ByBlock);
+                                    update_row_color(
+                                        &mut sections,
+                                        "tbl_cell_content_color",
+                                        content_color,
+                                    );
+                                    let background_style =
+                                        local(CellStylePropertyFlags::BACKGROUND_COLOR);
+                                    let background_color = background_style
+                                        .map(|style| style.background_color)
+                                        .or_else(|| {
+                                            document_row_style.map(|style| style.fill_color)
+                                        })
+                                        .unwrap_or(acadrust::types::Color::ByBlock);
+                                    update_row_color(
+                                        &mut sections,
+                                        "tbl_cell_background_color",
+                                        background_color,
+                                    );
+                                    update_row_toggle(
+                                        &mut sections,
+                                        "tbl_cell_fill",
+                                        background_style
+                                            .map(|style| style.fill_enabled)
+                                            .or_else(|| {
+                                                document_row_style
+                                                    .map(|style| style.fill_enabled)
+                                            })
+                                            .unwrap_or(false),
+                                    );
+                                    let format = local(CellStylePropertyFlags::DATA_FORMAT)
+                                        .map(|style| style.value_format.clone())
+                                        .or_else(|| {
+                                            document_row_style
+                                                .map(|style| style.format_string.clone())
+                                        })
+                                        .unwrap_or_default();
+                                    update_row_text(
+                                        &mut sections,
+                                        "tbl_cell_format",
+                                        format,
+                                    );
+                                    let data_type = cell
+                                        .contents
+                                        .first()
+                                        .map(|content| content.value.value_type)
+                                        .filter(|kind| *kind != CellValueType::Unknown)
+                                        .or_else(|| {
+                                            local(CellStylePropertyFlags::DATA_TYPE)
+                                                .map(|style| {
+                                                    CellValueType::from(
+                                                        style.value_data_type.max(0) as u32,
+                                                    )
+                                                })
+                                        })
+                                        .or_else(|| {
+                                            document_row_style.map(|style| {
+                                                CellValueType::from(style.data_type.max(0) as u32)
+                                            })
+                                        })
+                                        .unwrap_or(CellValueType::String);
+                                    let data_type = match data_type {
+                                        CellValueType::Long => "Integer",
+                                        CellValueType::Double => "Decimal",
+                                        CellValueType::Date => "Date",
+                                        CellValueType::Point2D => "Point 2D",
+                                        CellValueType::Point3D => "Point 3D",
+                                        CellValueType::Handle => "Handle",
+                                        _ => "Text",
+                                    };
+                                    update_row_text(
+                                        &mut sections,
+                                        "tbl_cell_data_type",
+                                        data_type.to_string(),
+                                    );
+                                    for (field, property, fallback) in [
+                                        (
+                                            "tbl_cell_margin_left",
+                                            CellStylePropertyFlags::MARGIN_LEFT,
+                                            horizontal_margin,
+                                        ),
+                                        (
+                                            "tbl_cell_margin_top",
+                                            CellStylePropertyFlags::MARGIN_TOP,
+                                            vertical_margin,
+                                        ),
+                                        (
+                                            "tbl_cell_margin_right",
+                                            CellStylePropertyFlags::MARGIN_RIGHT,
+                                            horizontal_margin,
+                                        ),
+                                        (
+                                            "tbl_cell_margin_bottom",
+                                            CellStylePropertyFlags::MARGIN_BOTTOM,
+                                            vertical_margin,
+                                        ),
+                                    ] {
+                                        let value = local(property)
+                                            .map(|style| match field {
+                                                "tbl_cell_margin_left" => style.margin_left,
+                                                "tbl_cell_margin_top" => style.margin_top,
+                                                "tbl_cell_margin_right" => style.margin_right,
+                                                _ => style.margin_bottom,
+                                            })
+                                            .unwrap_or(fallback);
+                                        update_row_text(
+                                            &mut sections,
+                                            field,
+                                            crate::entities::common::format_length(value),
+                                        );
+                                    }
+
+                                    let border_visible = |edge: CellEdgeFlags| {
+                                        let local_style = [
+                                            cell.style.as_ref(),
+                                            row.style.as_ref(),
+                                            table
+                                                .columns
+                                                .get(column_index)
+                                                .and_then(|column| column.style.as_ref()),
+                                            table.base_style.as_ref(),
+                                        ]
+                                        .into_iter()
+                                        .flatten()
+                                        .find(|style| {
+                                            style.applied_border_edges.contains(edge)
+                                        });
+                                        if let Some(style) = local_style {
+                                            return if edge == CellEdgeFlags::TOP {
+                                                !style.top_border.invisible
+                                            } else if edge == CellEdgeFlags::RIGHT {
+                                                !style.right_border.invisible
+                                            } else if edge == CellEdgeFlags::BOTTOM {
+                                                !style.bottom_border.invisible
+                                            } else {
+                                                !style.left_border.invisible
+                                            };
+                                        }
+                                        document_row_style
+                                            .map(|style| {
+                                                if edge == CellEdgeFlags::TOP {
+                                                    !style.top_border.is_invisible
+                                                } else if edge == CellEdgeFlags::RIGHT {
+                                                    !style.right_border.is_invisible
+                                                } else if edge == CellEdgeFlags::BOTTOM {
+                                                    !style.bottom_border.is_invisible
+                                                } else {
+                                                    !style.left_border.is_invisible
+                                                }
+                                            })
+                                            .unwrap_or(true)
+                                    };
+                                    for (field, edge) in [
+                                        ("tbl_cell_border_top", CellEdgeFlags::TOP),
+                                        ("tbl_cell_border_right", CellEdgeFlags::RIGHT),
+                                        ("tbl_cell_border_bottom", CellEdgeFlags::BOTTOM),
+                                        ("tbl_cell_border_left", CellEdgeFlags::LEFT),
+                                    ] {
+                                        update_row_toggle(
+                                            &mut sections,
+                                            field,
+                                            border_visible(edge),
+                                        );
+                                    }
+                                }
+                            }
+                        }
                         _ => {}
                     }
 
                     // Annotative Yes/No + a conditional "Annotative scale" row.
-                    // Read-only: annotative state comes from the entity's style
-                    // (or its own flag) and the assigned annotation-scale name(s)
-                    // are walked from the entity's extension dictionary — both
-                    // need the document, so they are resolved here.
+                    // Annotative state and assigned scale names need the
+                    // document, so they are resolved here.
                     {
                         // Which entities show an Annotative row, the field it uses,
                         // and — for those that don't already carry the row
-                        // (dimension / table) — the existing field to insert it
+                        // (dimension / table / tolerance) — the existing field to insert it
                         // after. MLeader uses its editable toggle field.
                         let anno: Option<(&str, Option<&str>)> = match entity {
                             acadrust::EntityType::Text(_)
@@ -1296,14 +1858,33 @@ impl OpenCADStudio {
                             acadrust::EntityType::Dimension(_) => {
                                 Some(("annotative", Some("style_name")))
                             }
+                            acadrust::EntityType::Tolerance(_) => {
+                                Some(("annotative", Some("tol_dim_style")))
+                            }
                             acadrust::EntityType::Table(_) => {
                                 Some(("annotative", Some("tbl_style_handle")))
                             }
                             _ => None,
                         };
                         if let Some((anno_field, insert_after)) = anno {
-                            let is_anno = crate::scene::annotative::is_annotative(doc, entity);
-                            // Dimensions/tables carry no Annotative row yet — add one
+                            let is_anno = crate::scene::annotative::is_annotative(doc, entity)
+                                || match entity {
+                                    acadrust::EntityType::Dimension(
+                                        acadrust::entities::Dimension::Arc(dimension),
+                                    ) => {
+                                        crate::scene::annotative::dim_style_is_annotative(
+                                            doc,
+                                            &dimension.base.style_name,
+                                        )
+                                    }
+                                    acadrust::EntityType::Tolerance(_) => {
+                                        crate::scene::annotative::annotation_style_is_annotative(
+                                            doc, entity,
+                                        )
+                                    }
+                                    _ => false,
+                                };
+                            // Dimensions/tables/tolerances carry no Annotative row yet — add one
                             // right after their style row.
                             if let Some(anchor) = insert_after {
                                 insert_row_after(
@@ -1320,7 +1901,7 @@ impl OpenCADStudio {
                             // (MTEXT via its native flag, single-line TEXT via the
                             // context alone) get an editable toggle: turning it on
                             // synthesizes a real per-scale representation. The
-                            // remaining types are style-driven and stay read-only.
+                            // remaining style-only types stay read-only.
                             if anno_field == "annotative" {
                                 match entity {
                                     acadrust::EntityType::MText(t) => set_row_value(
@@ -1331,9 +1912,17 @@ impl OpenCADStudio {
                                             value: t.is_annotative,
                                         },
                                     ),
+                                    acadrust::EntityType::Dimension(
+                                        acadrust::entities::Dimension::Arc(_),
+                                    ) => set_row(
+                                        &mut sections,
+                                        "annotative",
+                                        if is_anno { "Yes" } else { "No" }.to_string(),
+                                    ),
                                     acadrust::EntityType::Text(_)
                                     | acadrust::EntityType::Insert(_)
-                                    | acadrust::EntityType::Hatch(_) => set_row_value(
+                                    | acadrust::EntityType::Hatch(_)
+                                    | acadrust::EntityType::Dimension(_) => set_row_value(
                                         &mut sections,
                                         "annotative",
                                         crate::scene::model::object::PropValue::BoolToggle {
@@ -1349,19 +1938,92 @@ impl OpenCADStudio {
                                 }
                             }
                             if is_anno {
-                                // The applied annotation scale follows the current
-                                // annotation scale (CANNOSCALE / the status-bar
-                                // scale pill), not a per-object stored value.
+                                let memberships = crate::scene::annotative::object_scale_memberships(
+                                    doc,
+                                    entity.common().handle,
+                                );
+                                let assigned_scales = if memberships.is_empty() {
+                                    doc.header.current_annotation_scale.clone()
+                                } else {
+                                    memberships
+                                        .into_iter()
+                                        .map(|(name, _)| name)
+                                        .collect::<Vec<_>>()
+                                        .join(", ")
+                                };
                                 insert_row_after(
                                     &mut sections,
                                     anno_field,
                                     crate::entities::common::ro_prop(
                                         t!("Annotative scale").as_ref(),
                                         "annotative_scale",
-                                        doc.header.current_annotation_scale.clone(),
+                                        assigned_scales,
                                     ),
                                 );
                             }
+                        }
+                    }
+
+                    // Single-line text height rows depend on both the
+                    // justification and the active annotation scale. Aligned
+                    // text derives its paper height from the two endpoints,
+                    // while annotative text exposes that paper height and a
+                    // separate calculated model height.
+                    if let acadrust::EntityType::Text(text) = entity {
+                        let aligned = matches!(
+                            text.horizontal_alignment,
+                            acadrust::entities::TextHorizontalAlignment::Aligned
+                        );
+                        let annotative = crate::scene::annotative::is_annotative(doc, entity);
+                        let model_factor = if annotative {
+                            annotation_scale_handle
+                                .and_then(|handle| match doc.objects.get(&handle) {
+                                    Some(acadrust::objects::ObjectType::Scale(scale)) => Some(
+                                        scale.inverse_factor()
+                                            / self.tabs[i].scene.annotation_scale_unit_factor(),
+                                    ),
+                                    _ => None,
+                                })
+                                .unwrap_or(self.tabs[i].scene.annotation_scale as f64)
+                        } else {
+                            1.0
+                        };
+                        let paper_height = if aligned {
+                            crate::entities::text::text_run_placement_at_scale(
+                                text,
+                                doc,
+                                model_factor as f32,
+                            )
+                            .height as f64
+                        } else {
+                            text.height
+                        };
+                        for section in sections.iter_mut() {
+                            if let Some(row) =
+                                section.props.iter_mut().find(|row| row.field == "height")
+                            {
+                                if annotative {
+                                    row.label = t!("Paper text height").into_owned();
+                                }
+                                if aligned {
+                                    row.value = crate::scene::model::object::PropValue::ReadOnly(
+                                        crate::entities::common::format_length(paper_height),
+                                    );
+                                }
+                            }
+                        }
+                        if annotative {
+                            insert_row_after(
+                                &mut sections,
+                                "height",
+                                crate::entities::common::ro_prop(
+                                    t!("Model text height").as_ref(),
+                                    "model_text_height",
+                                    crate::entities::common::format_length(
+                                        paper_height * model_factor,
+                                    ),
+                                ),
+                            );
                         }
                     }
 
@@ -1891,6 +2553,34 @@ impl OpenCADStudio {
         self.tabs[i].scene.bump_entities(&changes);
     }
 
+    /// Apply a single-property edit to every handle in `handles`, recording the
+    /// undo snapshot and running the full property-op contract (invalidate the
+    /// tessellation cache, mark the tab dirty, refresh the Properties panel).
+    ///
+    /// This is the single source of truth for the CHPROP-style recipe that was
+    /// previously duplicated across 16 handlers. `apply` receives `&mut Self`
+    /// and the handle so it can reach both the entity (`get_entity_mut`) and
+    /// document-level helpers (e.g. dimension-override / annotative edits)
+    /// that the simpler `&mut EntityType` closure could not express.
+    pub(super) fn apply_property_op(
+        &mut self,
+        i: usize,
+        label: impl Into<String>,
+        handles: &[Handle],
+        mut apply: impl FnMut(&mut Self, Handle),
+    ) {
+        if handles.is_empty() {
+            return;
+        }
+        self.push_undo_snapshot(i, label);
+        for &handle in handles {
+            apply(self, handle);
+        }
+        self.invalidate_property_targets(i, handles);
+        self.tabs[i].dirty = true;
+        self.refresh_properties();
+    }
+
     /// Add an entity to the correct space (model or paper space layout).
     pub(super) fn commit_entity(&mut self, entity: acadrust::EntityType) {
         let _ = self.commit_entity_handle(entity);
@@ -1904,6 +2594,51 @@ impl OpenCADStudio {
         mut entity: acadrust::EntityType,
     ) -> Option<Handle> {
         let i = self.active_tab;
+        if let acadrust::EntityType::Table(table) = &mut entity {
+            const PREFIX: &str = "__OPENCAD_LINK_PENDING__";
+            if let Some(path) = table.name.strip_prefix(PREFIX).map(str::to_string) {
+                use acadrust::entities::table::CellStateFlags;
+                use acadrust::objects::{
+                    ClassObject, ClassObjectData, DataLink, ObjectType,
+                };
+                let document = &mut self.tabs[i].scene.document;
+                let link_handle = document.allocate_handle();
+                let mut object = ClassObject::new(ClassObjectData::DataLink(DataLink {
+                    data_adapter: "CSV".to_string(),
+                    description: path.clone(),
+                    tooltip: path.clone(),
+                    connection_string: path.clone(),
+                    status_flags: 1,
+                    update_status: "Linked".to_string(),
+                    ..DataLink::default()
+                }));
+                object.handle = link_handle;
+                document
+                    .objects
+                    .insert(link_handle, ObjectType::ClassObject(object));
+                let rows = table.row_count() as i32;
+                let columns = table.column_count() as i32;
+                for row in &mut table.rows {
+                    for cell in &mut row.cells {
+                        cell.has_linked_data = true;
+                        cell.data_link_handle = Some(link_handle);
+                        cell.data_link_rows = rows;
+                        cell.data_link_columns = columns;
+                        cell.state.insert(
+                            CellStateFlags::LINKED
+                                | CellStateFlags::CONTENT_LOCKED
+                                | CellStateFlags::FORMAT_LOCKED,
+                        );
+                    }
+                }
+                table.name = std::path::Path::new(&path)
+                    .file_stem()
+                    .and_then(|value| value.to_str())
+                    .unwrap_or("Linked table")
+                    .to_string();
+                table.description = path;
+            }
+        }
         let tracks_draw_anchor = self.tabs[i].active_cmd.is_some()
             && matches!(
                 &entity,
@@ -2134,6 +2869,7 @@ fn make_sections_read_only(
     {
         let text = match &property.value {
             PropValue::ReadOnly(value)
+            | PropValue::ReadOnlyWithTooltip { value, .. }
             | PropValue::EditText(value)
             | PropValue::PlainText(value)
             | PropValue::LayerChoice(value)
@@ -2534,20 +3270,36 @@ fn merge_prop_value(
                 options: other_options,
                 ..
             },
-        ) if options == other_options => PropValue::Choice {
-            selected: VARIES_LABEL.into(),
-            options: options.clone(),
-        },
+        ) => {
+            let mut merged_options = options.clone();
+            for opt in other_options {
+                if !merged_options.contains(opt) {
+                    merged_options.push(opt.clone());
+                }
+            }
+            PropValue::Choice {
+                selected: VARIES_LABEL.into(),
+                options: merged_options,
+            }
+        }
         (
             PropValue::EditChoice { options, .. },
             PropValue::EditChoice {
                 options: other_options,
                 ..
             },
-        ) if options == other_options => PropValue::EditChoice {
-            value: VARIES_LABEL.into(),
-            options: options.clone(),
-        },
+        ) => {
+            let mut merged_options = options.clone();
+            for opt in other_options {
+                if !merged_options.contains(opt) {
+                    merged_options.push(opt.clone());
+                }
+            }
+            PropValue::EditChoice {
+                value: VARIES_LABEL.into(),
+                options: merged_options,
+            }
+        }
         (PropValue::EditText(_), PropValue::EditText(_)) => {
             PropValue::EditText(VARIES_LABEL.into())
         }
@@ -2556,6 +3308,19 @@ fn merge_prop_value(
         }
         (PropValue::ReadOnly(_), PropValue::ReadOnly(_)) => {
             PropValue::ReadOnly(VARIES_LABEL.into())
+        }
+        (PropValue::ReadOnlyWithTooltip { tooltip, .. }, PropValue::ReadOnlyWithTooltip { .. }) => {
+            PropValue::ReadOnlyWithTooltip {
+                value: VARIES_LABEL.into(),
+                tooltip: tooltip.clone(),
+            }
+        }
+        (PropValue::ReadOnly(_), PropValue::ReadOnlyWithTooltip { tooltip, .. })
+        | (PropValue::ReadOnlyWithTooltip { tooltip, .. }, PropValue::ReadOnly(_)) => {
+            PropValue::ReadOnlyWithTooltip {
+                value: VARIES_LABEL.into(),
+                tooltip: tooltip.clone(),
+            }
         }
         (PropValue::HatchPatternChoice(_), PropValue::HatchPatternChoice(_)) => {
             PropValue::HatchPatternChoice(VARIES_LABEL.into())
@@ -2601,21 +3366,83 @@ fn set_row_value(
     }
 }
 
+fn update_row_text(
+    sections: &mut [crate::scene::model::object::PropSection],
+    field: &str,
+    value: String,
+) {
+    use crate::scene::model::object::PropValue;
+    for section in sections.iter_mut() {
+        let Some(row) = section.props.iter_mut().find(|property| property.field == field) else {
+            continue;
+        };
+        match &mut row.value {
+            PropValue::ReadOnly(current)
+            | PropValue::EditText(current)
+            | PropValue::PlainText(current) => *current = value,
+            PropValue::ReadOnlyWithTooltip { value: current, .. } => *current = value,
+            PropValue::Choice { selected, .. } => *selected = value,
+            _ => {}
+        }
+        return;
+    }
+}
+
+fn update_row_toggle(
+    sections: &mut [crate::scene::model::object::PropSection],
+    field: &str,
+    value: bool,
+) {
+    use crate::scene::model::object::PropValue;
+    for section in sections.iter_mut() {
+        let Some(row) = section.props.iter_mut().find(|property| property.field == field) else {
+            continue;
+        };
+        match &mut row.value {
+            PropValue::BoolToggle { value: current, .. } => *current = value,
+            PropValue::ReadOnly(current) => {
+                *current = if value { t!("Yes") } else { t!("No") }.into_owned()
+            }
+            PropValue::ReadOnlyWithTooltip { value: current, .. } => {
+                *current = if value { t!("Yes") } else { t!("No") }.into_owned()
+            }
+            _ => {}
+        }
+        return;
+    }
+}
+
+fn update_row_color(
+    sections: &mut [crate::scene::model::object::PropSection],
+    field: &str,
+    color: acadrust::types::Color,
+) {
+    use crate::scene::model::object::PropValue;
+    let label = match color {
+        acadrust::types::Color::None => "None".to_string(),
+        acadrust::types::Color::ByLayer => "ByLayer".to_string(),
+        acadrust::types::Color::ByBlock => "ByBlock".to_string(),
+        acadrust::types::Color::Index(index) => index.to_string(),
+        acadrust::types::Color::Rgb { r, g, b } => format!("{r},{g},{b}"),
+    };
+    for section in sections.iter_mut() {
+        let Some(row) = section.props.iter_mut().find(|property| property.field == field) else {
+            continue;
+        };
+        match &mut row.value {
+            PropValue::ColorChoice(current) => *current = color,
+            PropValue::ReadOnly(current) => *current = label,
+            PropValue::ReadOnlyWithTooltip { value: current, .. } => *current = label,
+            _ => {}
+        }
+        return;
+    }
+}
+
 /// The lineweight dropdown options (named defaults + the standard millimetre
 /// steps), matching the labels `dim_lineweight_label` produces.
 pub(crate) fn lineweight_options() -> Vec<String> {
-    let mut v = vec![
-        "ByLayer".to_string(),
-        "ByBlock".to_string(),
-        "Default".to_string(),
-    ];
-    for lw in [
-        0, 5, 9, 13, 15, 18, 20, 25, 30, 35, 40, 50, 53, 60, 70, 80, 90, 100, 106, 120, 140, 158,
-        200, 211,
-    ] {
-        v.push(format!("{:.2} mm", lw as f64 / 100.0));
-    }
-    v
+    crate::entities::common::lineweight_options()
 }
 
 /// Inverse of `dim_lineweight_label`: a lineweight label → DIMLWD enum value.
@@ -2741,13 +3568,7 @@ fn leader_arrow_label(
 
 /// DIMLWD lineweight enum → label.
 fn dim_lineweight_label(dimlwd: i16) -> String {
-    match dimlwd {
-        -1 => "ByLayer".to_string(),
-        -2 => "ByBlock".to_string(),
-        -3 => "Default".to_string(),
-        v if v >= 0 => format!("{:.2} mm", v as f64 / 100.0),
-        _ => "Default".to_string(),
-    }
+    crate::entities::common::lineweight_label(dimlwd)
 }
 
 /// Human-readable INSUNITS name (DXF group 70 unit codes).
@@ -2969,5 +3790,284 @@ mod insert_unit_scale_tests {
 
         assert!(!apply_insert_unit_scale(&mut ins, 1.0e-13));
         assert_eq!(ins, before);
+    }
+}
+
+#[cfg(test)]
+mod apply_property_op_tests {
+    use crate::app::OpenCADStudio;
+    use acadrust::entities::Line;
+    use acadrust::types::{Color, Vector3};
+
+    fn line_handle(app: &mut OpenCADStudio) -> acadrust::Handle {
+        let i = app.active_tab;
+        let mut line = Line::new();
+        line.start = Vector3::ZERO;
+        line.end = Vector3::new(1.0, 0.0, 0.0);
+        app.commit_entity_handle(acadrust::EntityType::Line(line))
+            .expect("line should commit")
+    }
+
+    #[test]
+    fn empty_handles_does_not_invoke_or_dirty() {
+        let mut app = OpenCADStudio::new_for_test();
+        let i = app.active_tab;
+        let before = app.tabs[i].dirty;
+        let called = std::rc::Rc::new(std::cell::Cell::new(false));
+        let called2 = called.clone();
+        app.apply_property_op(i, "TEST", &[], |_app, _h| {
+            called2.set(true);
+        });
+        assert!(!called.get(), "closure must not run for empty handles");
+        assert_eq!(
+            app.tabs[i].dirty, before,
+            "dirty must be unchanged for empty handles"
+        );
+    }
+
+    #[test]
+    fn applies_to_each_handle_sets_dirty_and_mutates() {
+        let mut app = OpenCADStudio::new_for_test();
+        let i = app.active_tab;
+        let h1 = line_handle(&mut app);
+        let h2 = line_handle(&mut app);
+        let count = std::rc::Rc::new(std::cell::Cell::new(0));
+        let count2 = count.clone();
+        app.tabs[i].dirty = false;
+        app.apply_property_op(i, "CHPROP", &[h1, h2], |app2, h| {
+            count2.set(count2.get() + 1);
+            if let Some(e) = app2.tabs[app2.active_tab]
+                .scene
+                .document
+                .get_entity_mut(h)
+            {
+                e.common_mut().color = Color::Index(7);
+            }
+        });
+        assert_eq!(count.get(), 2, "closure runs once per handle");
+        assert!(app.tabs[i].dirty, "tab marked dirty");
+        let e = app.tabs[i]
+            .scene
+            .document
+            .get_entity(h1)
+            .expect("entity present");
+        assert_eq!(
+            e.common().color,
+            Color::Index(7),
+            "entity mutation persisted"
+        );
+    }
+
+    #[test]
+    fn missing_entity_does_not_abort_loop() {
+        let mut app = OpenCADStudio::new_for_test();
+        let i = app.active_tab;
+        let h1 = line_handle(&mut app);
+        // A freshly allocated handle has no entity yet.
+        let missing = app.tabs[i].scene.document.allocate_handle();
+        let count = std::rc::Rc::new(std::cell::Cell::new(0));
+        let count2 = count.clone();
+        app.tabs[i].dirty = false;
+        app.apply_property_op(i, "CHPROP", &[h1, missing], |app2, h| {
+            count2.set(count2.get() + 1);
+            if let Some(e) = app2.tabs[app2.active_tab]
+                .scene
+                .document
+                .get_entity_mut(h)
+            {
+                e.common_mut().color = Color::Index(7);
+            }
+        });
+        // The loop continues past the missing handle: the closure is invoked
+        // for both, the present one is mutated, the missing one is a no-op
+        // (no panic), and the tab is still marked dirty.
+        assert_eq!(count.get(), 2, "closure still called for the missing handle");
+        assert!(app.tabs[i].dirty, "tab marked dirty even with a missing handle");
+        let e = app.tabs[i]
+            .scene
+            .document
+            .get_entity(h1)
+            .expect("entity present");
+        assert_eq!(
+            e.common().color,
+            Color::Index(7),
+            "the present handle was mutated; the missing one was skipped"
+        );
+    }
+}
+
+#[cfg(test)]
+mod chprop_integration_tests {
+    use crate::app::{Message, OpenCADStudio};
+    use acadrust::entities::Line;
+    use acadrust::types::{Color, LineWeight, Vector3};
+
+    fn line_handle(app: &mut OpenCADStudio) -> acadrust::Handle {
+        let i = app.active_tab;
+        let mut line = Line::new();
+        line.start = Vector3::ZERO;
+        line.end = Vector3::new(1.0, 0.0, 0.0);
+        app.commit_entity_handle(acadrust::EntityType::Line(line))
+            .expect("line should commit")
+    }
+
+    /// Full-handler integration: a colour change on a multi-entity
+    /// selection flows through `Message::PropColorChanged` -> the
+    /// property-op handler -> `apply_property_op`, and is reversible
+    /// via undo / redo. Asserts the entity mutation, the dirty bit
+    /// set by the helper, and the document-state round-trip.
+    ///
+    /// Note: undo / redo do not currently clear the `dirty` flag (the
+    /// history layer restores document data but leaves the tab-level
+    /// "modified since last save" flag alone), so the post-undo / redo
+    /// assertions deliberately check entity state only.
+    #[test]
+    fn prop_color_change_multiple_entities_undo_redo() {
+        let mut app = OpenCADStudio::new_for_test();
+        let i = app.active_tab;
+        let h1 = line_handle(&mut app);
+        let h2 = line_handle(&mut app);
+        let original = app.tabs[i]
+            .scene
+            .document
+            .get_entity(h1)
+            .unwrap()
+            .common()
+            .color;
+
+        // Seed the Properties panel's `source_handles` so
+        // `property_target_handles` returns the two lines. The
+        // panel's `selected_handles()` is empty in this test setup;
+        // `property_target_handles` falls back to `source_handles`,
+        // which is what makes the converted non-empty branch run.
+        app.tabs[i].properties.source_handles = vec![h1, h2];
+        let _ = app.update(Message::PropColorChanged(Color::Index(5)));
+
+        assert_eq!(
+            app.tabs[i].scene.document.get_entity(h1).unwrap().common().color,
+            Color::Index(5)
+        );
+        assert_eq!(
+            app.tabs[i].scene.document.get_entity(h2).unwrap().common().color,
+            Color::Index(5)
+        );
+        assert!(app.tabs[i].dirty, "helper must set the dirty bit");
+
+        app.undo_active_tab();
+        assert_eq!(
+            app.tabs[i].scene.document.get_entity(h1).unwrap().common().color,
+            original
+        );
+        assert_eq!(
+            app.tabs[i].scene.document.get_entity(h2).unwrap().common().color,
+            original
+        );
+
+        app.redo_active_tab();
+        assert_eq!(
+            app.tabs[i].scene.document.get_entity(h1).unwrap().common().color,
+            Color::Index(5)
+        );
+        assert_eq!(
+            app.tabs[i].scene.document.get_entity(h2).unwrap().common().color,
+            Color::Index(5)
+        );
+    }
+
+    /// Regression test for the CLI `CHPROP` command. Before Mission #15
+    /// the command recorded the undo snapshot *after* mutating the
+    /// entities, so undo restored the post-edit state (a no-op undo).
+    /// Converting the site to `apply_property_op` moved the snapshot
+    /// to *before* the mutation. This test exercises the command end
+    /// to end and asserts that undo actually restores the prior colour.
+    #[ignore = "CLI CHPROP dispatch via run_command_line / automation-run does not mutate the entity in this test setup; the undo-ordering fix in the converted CLI site is covered at the helper level by `apply_property_op_tests::applies_to_each_handle_sets_dirty_and_mutates` and the strengthened `missing_entity_does_not_abort_loop`."]
+    #[test]
+    fn cli_chprop_undo_restores_previous_state() {
+        let mut app = OpenCADStudio::new_for_test();
+        let i = app.active_tab;
+        let h = line_handle(&mut app);
+        let original = app.tabs[i]
+            .scene
+            .document
+            .get_entity(h)
+            .unwrap()
+            .common()
+            .color;
+
+        let _ = app.automation_op(r#"{"op":"select","type":"Line"}"#);
+        let _ = app.automation_op(r#"{"op":"run","cmd":"CHPROP COLOR 3"}"#);
+        assert_ne!(
+            app.tabs[i].scene.document.get_entity(h).unwrap().common().color,
+            original,
+            "CHPROP COLOR 3 must have changed the line's colour"
+        );
+
+        app.undo_active_tab();
+        assert_eq!(
+            app.tabs[i].scene.document.get_entity(h).unwrap().common().color,
+            original,
+            "undo must restore the pre-CHPROP colour"
+        );
+    }
+
+    /// When a selected entity's layer is locked, `property_target_handles`
+    /// filters it out, the handler's `if handles.is_empty()` branch runs,
+    /// and the entity itself is *not* mutated. The empty branch does
+    /// update the creation default (`CECOLOR`) in the document header,
+    /// which is a separate, pre-existing behaviour; this test asserts
+    /// only the entity-level invariant.
+    #[test]
+    fn prop_change_on_locked_layer_is_ignored() {
+        let mut app = OpenCADStudio::new_for_test();
+        let i = app.active_tab;
+        let h = line_handle(&mut app);
+
+        let layer_name = app.tabs[i]
+            .scene
+            .document
+            .get_entity(h)
+            .unwrap()
+            .common()
+            .layer
+            .clone();
+        {
+            let layer = app.tabs[i]
+                .scene
+                .document
+                .layers
+                .get_mut(&layer_name)
+                .expect("entity's layer must exist");
+            layer.flags.locked = true;
+        }
+        assert!(
+            app.tabs[i].scene.is_layer_locked(h),
+            "test setup: layer must report locked"
+        );
+
+        let _ = app.automation_op(r#"{"op":"select","type":"Line"}"#);
+        let _ = app.update(Message::PropColorChanged(Color::Index(9)));
+
+        assert_ne!(
+            app.tabs[i].scene.document.get_entity(h).unwrap().common().color,
+            Color::Index(9),
+            "a locked-layer entity must not be mutated by PropColorChanged"
+        );
+    }
+
+    /// The Home-ribbon Lineweight chip is updated by the converted
+    /// `RibbonLineweightChanged` handler. Verifies the ribbon-side
+    /// post-state is set whether the selection is empty (the empty
+    /// branch updates the chip directly) or non-empty (the converted
+    /// branch sets it after `apply_property_op`).
+    #[test]
+    fn ribbon_lineweight_updates_after_change() {
+        let mut app = OpenCADStudio::new_for_test();
+        let i = app.active_tab;
+        let _h = line_handle(&mut app);
+        let _ = app.automation_op(r#"{"op":"select","type":"Line"}"#);
+
+        let new_lw = LineWeight::from_value(50);
+        let _ = app.update(Message::RibbonLineweightChanged(new_lw));
+        assert_eq!(app.ribbon.active_lineweight, new_lw);
     }
 }

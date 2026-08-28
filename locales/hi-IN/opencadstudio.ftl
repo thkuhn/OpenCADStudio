@@ -30,7 +30,7 @@ ribbon-tab =
     .draw = ड्रॉ
     .annotate = एनोटेट
     .insert = सम्मिलित करें
-    .model = मॉडल
+    .model = मॉडलिंग
     .layout = लेआउट
     .manage = प्रबंधित करें
     .view = देखें
@@ -302,6 +302,7 @@ common =
     .block-rotation = ब्लॉक रोटेशन
     .blocks = ब्लॉक
     .blue = नीला
+    .bulge = उभार
     .boolean-failed-the-solids-may-not-overlap = बोओलेन विफल रहा - ठोस ओवरलैप नहीं हो सकता।
     .boolean-select-exactly-two-solids-created-this = बोओलान: इस सत्र को बनाने वाले दो ठोस चुनें।
     .bottom = नीचे
@@ -320,6 +321,7 @@ common =
     .brightness = चमक
     .by-layer = ByLayer
     .byblock = ब्लॉक द्वारा
+    .bycolor = रंग द्वारा
     .bylayer = ByLayer
     .convtosurface-converted-n-solid-s-to-surface-s = CONVTOSURFACE: सतह (s) के लिए __ocs_fmt_0__ ठोस (s) परिवर्तित।
     .convtosurface-select-a-solid-created-this-sess = CONVTOSURFACE: इस सत्र को एक ठोस बनाया गया चयन करें।
@@ -1317,6 +1319,18 @@ draw =
     .ray-specify-through-point = RAY पॉइंट के माध्यम से निर्दिष्ट करें:
     .rect-specify-first-corner = RECT पहले कोने को निर्दिष्ट करें:
     .rect-specify-opposite-corner = RECT विपरीत कोने निर्दिष्ट करें:
+    .rect-calculate-dimensions-based-on-length-width = RECT  [लंबाई / चौड़ाई] के आधार पर आयाम निकालें <लंबाई>:
+    .rect-specify-elevation = RECT  ऊंचाई निर्दिष्ट करें <__ocs_fmt_0__>:
+    .rect-specify-fillet-radius = RECT  फिलेट त्रिज्या निर्दिष्ट करें <__ocs_fmt_0__>:
+    .rect-specify-first-chamfer-distance = RECT  पहली चैम्फर दूरी निर्दिष्ट करें <__ocs_fmt_0__>:
+    .rect-specify-orientation-from-the-first-corner = RECT  पहले कोने से दिशा निर्दिष्ट करें:
+    .rect-specify-rectangle-area = RECT  आयत का क्षेत्रफल निर्दिष्ट करें:
+    .rect-specify-rectangle-length = RECT  आयत की लंबाई निर्दिष्ट करें:
+    .rect-specify-rectangle-width = RECT  आयत की चौड़ाई निर्दिष्ट करें:
+    .rect-specify-rotation-angle = RECT  घूर्णन कोण निर्दिष्ट करें <__ocs_fmt_0__>:
+    .rect-specify-second-chamfer-distance = RECT  दूसरी चैम्फर दूरी निर्दिष्ट करें <__ocs_fmt_0__>:
+    .rect-specify-thickness = RECT  मोटाई निर्दिष्ट करें <__ocs_fmt_0__>:
+    .rect-specify-width = RECT  चौड़ाई निर्दिष्ट करें <__ocs_fmt_0__>:
     .rect-cen-specify-center-point = RECT CEN केंद्र बिंदु निर्दिष्ट करें:
     .rect-cen-specify-corner-point = RECT CEN कोने बिंदु निर्दिष्ट करें:
     .rect-rot-specify-adjacent-corner-defines-edge = RECT ROT निकटवर्ती कोने (डिफ़ाइन किनारे दिशा) निर्दिष्ट करें:
@@ -1774,14 +1788,24 @@ annotate =
     .collect-leaders = लीडर एकत्र करें
     .ddedit-select-text-entity = DDEDIT टेक्स्ट ऑब्जेक्ट चुनें:
     .dimaligned-enter-dimension-text-blank-measured = DIMALIGNED आयाम टेक्स्ट दर्ज करें (blank = मापा मान):
-    .dimaligned-specify-dimension-line-location-tex = DIMALIGNED आयाम लाइन स्थान निर्दिष्ट करें [टेक्स्ट / एंगल]:
-    .dimaligned-specify-first-extension-line-origin = DIMALIGNED पहली एक्सटेंशन लाइन उत्पत्ति निर्दिष्ट करें:
-    .dimaligned-specify-second-extension-line-origi = DIMALIGNED दूसरी एक्सटेंशन लाइन उत्पत्ति निर्दिष्ट करें [टेक्स्ट / एंगल]:
+    .dimaligned-enter-formatted-dimension-text-blank-measured = DIMALIGNED स्वरूपित आयाम टेक्स्ट दर्ज करें (खाली = मापा मान):
+    .dimaligned-select-object-to-dimension = DIMALIGNED आयाम देने के लिए ऑब्जेक्ट चुनें:
+    .dimaligned-specify-dimension-line-location-tex = DIMALIGNED आयाम रेखा का स्थान निर्दिष्ट करें [Mtext/टेक्स्ट/कोण]:
+    .dimaligned-specify-first-extension-line-origin = DIMALIGNED पहली एक्सटेंशन रेखा का मूल निर्दिष्ट करें या ऑब्जेक्ट चुनने के लिए Enter दबाएँ:
+    .dimaligned-specify-second-extension-line-origi = DIMALIGNED दूसरी एक्सटेंशन रेखा का मूल निर्दिष्ट करें:
     .dimaligned-specify-text-angle-degrees = DIMALIGNED पाठ कोण निर्दिष्ट करें (डिग्री):
+    .dimangular-enter-dimension-text-blank-measured = DIMANGULAR आयाम टेक्स्ट दर्ज करें (खाली = मापा मान):
+    .dimangular-enter-formatted-dimension-text-blank-measured = DIMANGULAR स्वरूपित आयाम टेक्स्ट दर्ज करें (खाली = मापा मान):
+    .dimangular-select-arc-circle-line-or-specify-angle-vertex = DIMANGULAR चाप, वृत्त या रेखा चुनें, या कोण का शीर्ष निर्दिष्ट करें:
+    .dimangular-select-second-line = DIMANGULAR दूसरी रेखा चुनें:
     .dimangular-specify-angle-vertex = DIMANGULAR कोण वर्टेक्स निर्दिष्ट करें:
+    .dimangular-specify-dimension-arc-location-options = DIMANGULAR आयाम आर्क स्थान निर्दिष्ट करें [Mtext/टेक्स्ट/कोण/चतुर्थांश]:
     .dimangular-specify-dimension-arc-location = DIMANGULAR आयाम आर्क स्थान निर्दिष्ट करें:
     .dimangular-specify-first-extension-line-point = DIMANGULAR पहली एक्सटेंशन लाइन बिंदु निर्दिष्ट करें:
+    .dimangular-specify-quadrant = DIMANGULAR चतुर्थांश निर्दिष्ट करें:
     .dimangular-specify-second-extension-line-point = DIMANGULAR दूसरी एक्सटेंशन लाइन बिंदु निर्दिष्ट करें:
+    .dimangular-specify-second-point-for-text-angle = DIMANGULAR टेक्स्ट कोण के लिए दूसरा बिंदु निर्दिष्ट करें:
+    .dimangular-specify-text-angle-or-first-point = DIMANGULAR टेक्स्ट कोण या पहला बिंदु निर्दिष्ट करें:
     .dimbaseline-no-base-dimension-found-place-a-di = DIMBASELINE कोई आधार आयाम नहीं मिला। पहले आयाम दें।
     .dimbaseline-specify-a-second-extension-line-or = DIMBASELINE एक दूसरी विस्तार लाइन मूल निर्दिष्ट करें (बाहर निकलने के लिए बेहतर):
     .dimbreak-select-dimension-to-break = DIMBREAK तोड़ने के लिए आयाम का चयन करें:
@@ -1789,8 +1813,8 @@ annotate =
     .dimcontinue-no-base-dimension-found-place-a-di = DIMCONTINUE कोई आधार आयाम नहीं मिला। पहले आयाम दें।
     .dimcontinue-specify-a-second-extension-line-or = DIMCONTINUE एक दूसरी विस्तार लाइन मूल निर्दिष्ट करें (बाहर निकलने के लिए बेहतर):
     .dimdiameter-enter-dimension-text-blank-measure = DIMDIAMETER आयाम टेक्स्ट दर्ज करें (blank = मापा मान):
-    .dimdiameter-specify-center-point = DIMDIAMETER केंद्र बिंदु निर्दिष्ट करें:
-    .dimdiameter-specify-dimension-line-location-te = DIMDIAMETER आयाम लाइन स्थान निर्दिष्ट करें [टेक्स्ट / एंगल]:
+    .dimdiameter-select-arc-circle-or-polyline-arc = DIMDIAMETER आर्क, सर्कल या पॉलीलाइन आर्क चुनें:
+    .dimdiameter-specify-dimension-line-location-text = DIMDIAMETER आयाम लाइन स्थान निर्दिष्ट करें [एमटेक्स्ट/टेक्स्ट/एंगल]:
     .dimdiameter-specify-point-on-circle = DIMDIAMETER सर्कल पर बिंदु निर्दिष्ट करें:
     .dimdiameter-specify-text-angle-degrees = DIMDIAMETER पाठ कोण निर्दिष्ट करें (डिग्री):
     .dimedit-enter-text-override-blank-reset-to-mea = DIMEDIT टेक्स्ट ओवरराइड (ब्लैंक = मापा गया करने के लिए रीसेट):
@@ -1806,10 +1830,12 @@ annotate =
     .dimlinear-specify-second-extension-line-origin = DIMLINEAR दूसरी एक्सटेंशन लाइन उत्पत्ति निर्दिष्ट करें [टेक्स्ट / एंगल]:
     .dimlinear-specify-text-angle-degrees = DIMLINEAR पाठ कोण निर्दिष्ट करें (डिग्री):
     .dimordinate-specify-feature-location = DIMORDINATE सुविधा स्थान निर्दिष्ट करें:
-    .dimordinate-specify-leader-endpoint = DIMORDINATE लीडर समापन बिंदु निर्दिष्ट करें:
+    .dimordinate-enter-dimension-text-blank-measured = DIMORDINATE आयाम टेक्स्ट दर्ज करें (रिक्त = मापा मान):
+    .dimordinate-specify-leader-endpoint = DIMORDINATE लीडर समापन बिंदु निर्दिष्ट करें [Xdatum/Ydatum/Mtext/Text/Angle]:
+    .dimordinate-specify-text-angle-degrees = DIMORDINATE पाठ कोण निर्दिष्ट करें (डिग्री):
     .dimradius-enter-dimension-text-blank-measured = DIMRADIUS आयाम टेक्स्ट दर्ज करें (blank = मापा मान):
-    .dimradius-specify-center-point = DIMRADIUS केंद्र बिंदु निर्दिष्ट करें:
-    .dimradius-specify-dimension-line-location-text = DIMRADIUS आयाम लाइन स्थान निर्दिष्ट करें [टेक्स्ट / एंगल]:
+    .dimradius-select-arc-circle-or-polyline-arc = DIMRADIUS आर्क, सर्कल या पॉलीलाइन आर्क चुनें:
+    .dimradius-specify-dimension-line-location-text = DIMRADIUS आयाम लाइन स्थान निर्दिष्ट करें [एमटेक्स्ट/टेक्स्ट/एंगल]:
     .dimradius-specify-radius-point = DIMRADIUS त्रिज्या बिंदु निर्दिष्ट करें:
     .dimradius-specify-text-angle-degrees = DIMRADIUS पाठ कोण निर्दिष्ट करें (डिग्री):
     .dimspace-enter-value-0-auto = DIMSPACE मान दर्ज करें (0 = ऑटो):
@@ -1841,6 +1867,7 @@ annotate =
         डेटा
     .lower = कम
     .mleader-specify-arrowhead-point = MLEADER निर्दिष्ट तीरहेड बिंदु:
+    .mleader-specify-landing-point = MLEADER लैंडिंग बिंदु निर्दिष्ट करें:
     .mleader-specify-next-point-count-pts-enter-to = MLEADER अगला बिंदु निर्दिष्ट करें [__ocs_arg_count__ बिंदु — टेक्स्ट रखने के लिए Enter दबाएँ]:
     .mleaderadd-select-a-multileader = MLEADERADD मल्टीलीडर चुनें:
     .mleaderadd-specify-arrowhead-location = MLEADERADD एरोहेड का स्थान निर्दिष्ट करें:
@@ -2010,6 +2037,15 @@ insert =
     .object-s-cut-to-clipboard = __ocs_fmt_0__ ऑब्जेक्ट क्लिपबोर्ड पर काटे गए।
 
 model =
+    .create = बनाएँ
+    .boolean = बूलियन संक्रियाएँ
+    .pyramid = पिरामिड
+    .polysolid = बहुखंड ठोस
+    .extrude = एक्सट्रूड
+    .revolve = घुमाएँ
+    .loft = लॉफ्ट
+    .sweep = स्वीप
+    .presspull = दबाएँ/खींचें
     .n-specify-center-point = __ocs_arg_n__ केंद्र बिंदु निर्दिष्ट करें:
     .n-specify-first-corner = __ocs_arg_n__ पहले कोने को निर्दिष्ट करें:
     .n-specify-height-enter-for-default = __ocs_arg_n__ ऊंचाई निर्दिष्ट करें <Diefal> के लिए दर्ज करें>:
@@ -2310,6 +2346,7 @@ view =
     .zoom-extents =
         ज़ूम
         बहार
+    .cmd-no-hatch-objects = __ocs_fmt_0__: ÓñòÓÑïÓñê Óñ╣ÓÑêÓñÜ ÓñæÓñ¼ÓÑìÓñ£ÓÑçÓñòÓÑìÓñƒ Óñ¿Óñ╣ÓÑÇÓñéÓÑñ
     .cmd-no-text-or-dimension-objects = __ocs_fmt_0__: कोई टेक्स्ट या डाइमेंशन ऑब्जेक्ट नहीं।
     .cmd-not-yet-implemented = __ocs_fmt_0__: अभी तक लागू नहीं है।
     .viewport-s-in-layout = लेआउट "__ocs_fmt_1__" में __ocs_fmt_0__ व्यूपोर्ट:
@@ -2687,6 +2724,9 @@ properties =
     .plot-style-table = प्लॉट स्टाइल टेबल
     .plot-table-attached-to = से जुड़ी प्लॉट टेबल
     .plot-table-type = प्लॉट तालिका प्रकार
+    .color-dependent-plot-styles = रंग-निर्भर प्लॉट शैलियाँ
+    .named-plot-styles = नामित प्लॉट शैलियाँ
+    .plot-style-is-locked-to-color-in-color-dependent = रंग-निर्भर (CTB) मोड में प्लॉट शैली रंग से लॉक होती है
     .point-1-x = अंक 1 X
     .point-1-y = अंक 1 Y
     .point-1-z = प्वाइंट 1
@@ -3049,7 +3089,7 @@ styles =
     .pdmode-new-value-0-dot-1-none-2-3-x-4-tick-32 = PDMODE नया मान [0=बिंदु 1=कोई नहीं 2=+ 3=× 4=टिक; +32 वृत्त +64 वर्ग]:
     .pdmode-v = PDMODE = __ocs_fmt_0__
     .pdmode-set-to-v = PDMODE सेट करने के लिए __ocs_fmt_0__
-    .pdsize-new-point-size-0-5-of-viewport-0-absolu = PDSIZE  नए बिंदु आकार (0 = 5% व्यूपोर्ट, <0 = निरपेक्ष):
+    .pdsize-new-point-size-0-5-of-viewport-0-absolu = PDSIZE  नया बिंदु आकार (0 = व्यूपोर्ट का 5%, >0 = निरपेक्ष, <0 = व्यूपोर्ट प्रतिशत):
     .pdsize-v-4 = PDSIZE = __ocs_fmt_0__
     .pdsize-set-to-v-4 = PDSIZE सेट करने के लिए __ocs_fmt_0__
     .pickadd = PICKADD = __ocs_fmt_0__ (__ocs_fmt_1__)

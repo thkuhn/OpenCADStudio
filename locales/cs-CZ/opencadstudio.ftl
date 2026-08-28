@@ -30,7 +30,7 @@ ribbon-tab =
     .draw = Kreslení
     .annotate = Poznámky
     .insert = Vložit
-    .model = Model
+    .model = Modelování
     .layout = Rozvržení
     .manage = Správa
     .view = Zobrazení
@@ -313,6 +313,7 @@ common =
     .block-rotation = Rotace bloku
     .blocks = Bloky
     .blue = Modrá
+    .bulge = Vyklenutí
     .boolean-failed-the-solids-may-not-overlap = Logická hodnota selhala – tělesa se nemusí překrývat.
     .boolean-select-exactly-two-solids-created-this = Boolean: vyberte přesně dvě tělesa vytvořená v této relaci.
     .bottom = Spodní
@@ -331,6 +332,7 @@ common =
     .brightness = Jas
     .by-layer = Podle vrstvy
     .byblock = ByBlock
+    .bycolor = Podle barvy
     .bylayer = Podle vrstvy
     .convtosurface-converted-n-solid-s-to-surface-s = CONVTOSURFACE: převede tělesa __ocs_fmt_0__ na povrchy.
     .convtosurface-select-a-solid-created-this-sess = CONVTOSURFACE: vyberte těleso vytvořené v této relaci.
@@ -1328,6 +1330,18 @@ draw =
     .ray-specify-through-point = RAY Určete průchozí bod:
     .rect-specify-first-corner = RECT Určete první roh:
     .rect-specify-opposite-corner = RECT Určete opačný roh:
+    .rect-calculate-dimensions-based-on-length-width = RECT  Vypočítat rozměry podle [Délky / Šířky] <Délka>:
+    .rect-specify-elevation = RECT  Určete výšku <__ocs_fmt_0__>:
+    .rect-specify-fillet-radius = RECT  Určete poloměr zaoblení <__ocs_fmt_0__>:
+    .rect-specify-first-chamfer-distance = RECT  Určete první vzdálenost zkosení <__ocs_fmt_0__>:
+    .rect-specify-orientation-from-the-first-corner = RECT  Určete orientaci od prvního rohu:
+    .rect-specify-rectangle-area = RECT  Určete plochu obdélníku:
+    .rect-specify-rectangle-length = RECT  Určete délku obdélníku:
+    .rect-specify-rectangle-width = RECT  Určete šířku obdélníku:
+    .rect-specify-rotation-angle = RECT  Určete úhel otočení <__ocs_fmt_0__>:
+    .rect-specify-second-chamfer-distance = RECT  Určete druhou vzdálenost zkosení <__ocs_fmt_0__>:
+    .rect-specify-thickness = RECT  Určete tloušťku <__ocs_fmt_0__>:
+    .rect-specify-width = RECT  Určete šířku <__ocs_fmt_0__>:
     .rect-cen-specify-center-point = RECT CEN Zadejte střed:
     .rect-cen-specify-corner-point =RECT CEN Zadejte rohový bod:
     .rect-rot-specify-adjacent-corner-defines-edge = RECT ROT Určete sousední roh (definuje směr hrany):
@@ -1785,14 +1799,24 @@ annotate =
     .collect-leaders = Sbírejte vůdce
     .ddedit-select-text-entity = DDEDIT Vyberte textovou entitu:
     .dimaligned-enter-dimension-text-blank-measured = Text rozměru DIMALIGNED Enter (prázdná naměřená hodnota =):
-    .dimaligned-specify-dimension-line-location-tex = DIMALIGNED Určete umístění kótovací čáry [Text/Úhel]:
-    .dimaligned-specify-first-extension-line-origin = DIMALIGNED Zadejte počátek prvního vynášecího řádku:
-    .dimaligned-specify-second-extension-line-origi = DIMALIGNED Zadejte počátek druhé vynášecí čáry [Text/Úhel]:
+    .dimaligned-enter-formatted-dimension-text-blank-measured = DIMALIGNED Zadejte formátovaný text kóty (prázdné = naměřená hodnota):
+    .dimaligned-select-object-to-dimension = DIMALIGNED Vyberte objekt ke kótování:
+    .dimaligned-specify-dimension-line-location-tex = DIMALIGNED Určete umístění kótovací čáry [Mtext/Text/Úhel]:
+    .dimaligned-specify-first-extension-line-origin = DIMALIGNED Zadejte počátek první vynášecí čáry nebo stiskněte Enter pro výběr objektu:
+    .dimaligned-specify-second-extension-line-origi = DIMALIGNED Zadejte počátek druhé vynášecí čáry:
     .dimaligned-specify-text-angle-degrees = DIMALIGNED Zadejte úhel textu (stupně):
+    .dimangular-enter-dimension-text-blank-measured = DIMANGULAR Zadejte text kóty (prázdné = naměřená hodnota):
+    .dimangular-enter-formatted-dimension-text-blank-measured = DIMANGULAR Zadejte formátovaný text kóty (prázdné = naměřená hodnota):
+    .dimangular-select-arc-circle-line-or-specify-angle-vertex = DIMANGULAR Vyberte oblouk, kružnici či čáru, nebo zadejte vrchol úhlu:
+    .dimangular-select-second-line = DIMANGULAR Vyberte druhou čáru:
     .dimangular-specify-angle-vertex = DIMANGULAR Zadejte vrchol úhlu:
+    .dimangular-specify-dimension-arc-location-options = DIMANGULAR Zadejte umístění oblouku kóty [Mtext/Text/Úhel/Kvadrant]:
     .dimangular-specify-dimension-arc-location = DIMANGULAR Zadejte umístění oblouku kóty:
     .dimangular-specify-first-extension-line-point = DIMANGULAR Zadejte první bod vynášecí čáry:
+    .dimangular-specify-quadrant = DIMANGULAR Zadejte kvadrant:
     .dimangular-specify-second-extension-line-point = DIMANGULAR Zadejte druhý bod vynášecí čáry:
+    .dimangular-specify-second-point-for-text-angle = DIMANGULAR Zadejte druhý bod úhlu textu:
+    .dimangular-specify-text-angle-or-first-point = DIMANGULAR Zadejte úhel textu nebo první bod:
     .dimbaseline-no-base-dimension-found-place-a-di = DIMBASELINE Nebyl nalezen žádný rozměr základny. Nejprve umístěte kótu.
     .dimbaseline-specify-a-second-extension-line-or = DIMBASELINE Zadejte počátek druhé prodlužovací čáry (Enter pro ukončení):
     .dimbreak-select-dimension-to-break = DIMBREAK Vyberte rozměr, který chcete přerušit:
@@ -1800,8 +1824,8 @@ annotate =
     .dimcontinue-no-base-dimension-found-place-a-di = DIMCONTINUE Nebyl nalezen žádný rozměr základny. Nejprve umístěte kótu.
     .dimcontinue-specify-a-second-extension-line-or = DIMCONTINUE Zadejte počátek druhé prodlužovací čáry (Enter pro ukončení):
     .dimdiameter-enter-dimension-text-blank-measure = Text rozměru DIMDIAMETER Enter (prázdná naměřená hodnota =):
-    .dimdiameter-specify-center-point = DIMDIAMETER Zadejte středový bod:
-    .dimdiameter-specify-dimension-line-location-te = DIMDIAMETER Určete umístění kótovací čáry [Text/Úhel]:
+    .dimdiameter-select-arc-circle-or-polyline-arc = DIMDIAMETER Vyberte oblouk, kružnici nebo obloukový segment křivky:
+    .dimdiameter-specify-dimension-line-location-text = DIMDIAMETER Určete umístění kótovací čáry [MText/Text/Úhel]:
     .dimdiameter-specify-point-on-circle = DIMDIAMETER Určete bod na kružnici:
     .dimdiameter-specify-text-angle-degrees = DIMDIAMETER Zadejte úhel textu (stupně):
     .dimedit-enter-text-override-blank-reset-to-mea = Přepsání textu DIMEDIT Enter (prázdné = resetováno na měření):
@@ -1817,10 +1841,12 @@ annotate =
     .dimlinear-specify-second-extension-line-origin = DIMLINEAR Zadejte počátek druhé vynášecí čáry [Text/Úhel]:
     .dimlinear-specify-text-angle-degrees = DIMLINEAR Zadejte úhel textu (stupně):
     .dimordinate-specify-feature-location = DIMORDINATE Zadejte umístění funkce:
-    .dimordinate-specify-leader-endpoint = DIMORDINATE Zadejte koncový bod odkazu:
+    .dimordinate-enter-dimension-text-blank-measured = DIMORDINATE Zadejte text rozměru (prázdné = naměřená hodnota):
+    .dimordinate-specify-leader-endpoint = DIMORDINATE Zadejte koncový bod odkazu [Xdatum/Ydatum/Mtext/Text/Angle]:
+    .dimordinate-specify-text-angle-degrees = DIMORDINATE Zadejte úhel textu (stupně):
     .dimradius-enter-dimension-text-blank-measured = Text rozměru DIMRADIUS Enter (prázdná naměřená hodnota =):
-    .dimradius-specify-center-point = DIMRADIUS Zadejte středový bod:
-    .dimradius-specify-dimension-line-location-text = DIMRADIUS Určete umístění kótovací čáry [Text/Úhel]:
+    .dimradius-select-arc-circle-or-polyline-arc = DIMRADIUS Vyberte oblouk, kružnici nebo obloukový segment křivky:
+    .dimradius-specify-dimension-line-location-text = DIMRADIUS Určete umístění kótovací čáry [MText/Text/Úhel]:
     .dimradius-specify-radius-point = DIMRADIUS Zadejte bod poloměru:
     .dimradius-specify-text-angle-degrees = DIMRADIUS Zadejte úhel textu (stupně):
     .dimspace-enter-value-0-auto = Hodnota DIMSPACE Enter (0 = auto):
@@ -1852,6 +1878,7 @@ annotate =
         Data
     .lower = Nižší
     .mleader-specify-arrowhead-point = MLEADER Zadejte bod šipky:
+    .mleader-specify-landing-point = MLEADER Zadejte bod odskoku:
     .mleader-specify-next-point-count-pts-enter-to = MLEADER Zadejte další bod [__ocs_arg_count__ bodů — Enter pro umístění textu]:
     .mleaderadd-select-a-multileader = MLEADERADD Vyberte multiodkaz:
     .mleaderadd-specify-arrowhead-location =MLEADERADD Zadejte umístění šipky:
@@ -2021,6 +2048,15 @@ insert =
     .object-s-cut-to-clipboard = Objekt(y) __ocs_fmt_0__ vyříznutý do schránky.
 
 model =
+    .create = Vytvořit
+    .boolean = Booleovské operace
+    .pyramid = Jehlan
+    .polysolid = Polysolid
+    .extrude = Vysunutí
+    .revolve = Rotace
+    .loft = Přechod
+    .sweep = Tažení
+    .presspull = Tlačit/táhnout
     .n-specify-center-point = __ocs_arg_n__ Zadejte středový bod:
     .n-specify-first-corner = __ocs_arg_n__ Určete první roh:
     .n-specify-height-enter-for-default = __ocs_arg_n__ Zadejte výšku <Enter for default>:
@@ -2321,6 +2357,7 @@ view =
     .zoom-extents =
         Přiblížení
         Rozsahy
+    .cmd-no-hatch-objects = __ocs_fmt_0__: ┼¥├ídn├® ┼írafovac├¡ objekty.
     .cmd-no-text-or-dimension-objects = __ocs_fmt_0__: žádný text ani kótovací objekty.
     .cmd-not-yet-implemented = __ocs_fmt_0__: dosud neimplementováno.
     .viewport-s-in-layout =Výřezy __ocs_fmt_0__ v rozložení "__ocs_fmt_1__":
@@ -2698,6 +2735,9 @@ properties =
     .plot-style-table = Tabulka stylu pozemku
     .plot-table-attached-to =Plot tabulka připojena k
     .plot-table-type = Typ tabulky grafu
+    .color-dependent-plot-styles = Barevně závislé styly vykreslování
+    .named-plot-styles = Pojmenované styly vykreslování
+    .plot-style-is-locked-to-color-in-color-dependent = V barevně závislém režimu (CTB) je styl vykreslování uzamčen podle barvy
     .point-1-x = Bod 1 X
     .point-1-y = Bod 1 Y
     .point-1-z = Bod 1 Z
@@ -3060,7 +3100,7 @@ styles =
     .pdmode-new-value-0-dot-1-none-2-3-x-4-tick-32 = PDMODE nová hodnota [0=dot 1=none 2=+ 3=x 4=tick; +32 kruh +64 čtverec]:
     .pdmode-v = PDMODE = __ocs_fmt_0__
     .pdmode-set-to-v = PDMODE nastaveno na __ocs_fmt_0__
-    .pdsize-new-point-size-0-5-of-viewport-0-absolu = Nová velikost bodu PDSIZE (0 = 5 % výřezu, <0 = absolutní):
+    .pdsize-new-point-size-0-5-of-viewport-0-absolu = Nová velikost bodu PDSIZE (0 = 5 % výřezu, >0 = absolutní, <0 = procento výřezu):
     .pdsize-v-4 = PDSIZE = __ocs_fmt_0__
     .pdsize-set-to-v-4 = PDSIZE nastaveno na __ocs_fmt_0__
     .pickadd = PICKADD = __ocs_fmt_0__ (__ocs_fmt_1__)

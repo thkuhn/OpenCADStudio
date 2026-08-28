@@ -416,6 +416,7 @@ fn tessellate_entity_inner(
             | EntityType::MText(_)
             | EntityType::Dimension(_)
             | EntityType::MultiLeader(_)
+            | EntityType::Tolerance(_)
     ) {
         crate::scene::annotative::effective_annotation_scale_for(
             document,
@@ -527,7 +528,7 @@ fn tessellate_entity_inner(
     if let EntityType::Viewport(vp) = e {
         // The sheet viewport (overall/id=1) is never shown — it represents the
         // paper boundary, not a user-defined content window.
-        if !Scene::is_content_viewport(vp) {
+        if Scene::is_sheet_viewport(document, vp) {
             return vec![];
         }
         let is_active = active_viewport == Some(h);
@@ -748,7 +749,9 @@ fn tessellate_entity_inner(
             Vec::new()
         };
         return vec![WireModel {
+            point_marker: None,
             taper_widths: Vec::new(),
+            pattern_stations: Vec::new(),
             world_width: 0.0,
             depth_override: None,
             display_visible: true,
@@ -816,7 +819,10 @@ fn tessellate_entity_inner(
             graph.walk_insert(
                 &insert,
                 h,
-                |_, _| true,
+                |sub, context| {
+                    // Direct POINTs are dimension definition markers.
+                    context.insert_path.len() != 1 || !matches!(sub, EntityType::Point(_))
+                },
                 |sub, context| {
                     let has_book_color = view::render::has_resolved_book_color(document, sub);
                     let color_byblock =
@@ -1107,7 +1113,9 @@ fn tessellate_entity_inner(
             (ins.insert_point.z) as f32,
         );
         let marker = WireModel {
+            point_marker: None,
             taper_widths: Vec::new(),
+            pattern_stations: Vec::new(),
             world_width: 0.0,
             depth_override: None,
             display_visible: true,
@@ -1504,7 +1512,9 @@ fn lod_stub_wire(
     // LOD boundary. #19.
     let stored_color = if selected { WireModel::SELECTED } else { color };
     WireModel {
+        point_marker: None,
         taper_widths: Vec::new(),
+        pattern_stations: Vec::new(),
         world_width: 0.0,
         depth_override: None,
         display_visible: true,
@@ -1597,7 +1607,9 @@ fn lod_stub_wire_3d(
     }
     let stored_color = if selected { WireModel::SELECTED } else { color };
     WireModel {
+        point_marker: None,
         taper_widths: Vec::new(),
+        pattern_stations: Vec::new(),
         world_width: 0.0,
         depth_override: None,
         display_visible: true,

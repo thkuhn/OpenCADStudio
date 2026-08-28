@@ -1,5 +1,22 @@
 use super::*;
 
+fn selected_solid(app: &OpenCADStudio, tab: usize) -> Option<acadrust::Handle> {
+    let scene = &app.tabs.get(tab)?.scene;
+    let selected = scene.selected_handles_in_order();
+    let [handle] = selected.as_slice() else {
+        return None;
+    };
+
+    if matches!(
+        scene.document.get_entity(*handle),
+        Some(acadrust::EntityType::Solid3D(_))
+    ) {
+        Some(*handle)
+    } else {
+        None
+    }
+}
+
 impl OpenCADStudio {
     pub(super) fn dispatch_dim(&mut self, cmd: &str, i: usize) -> Option<Task<Message>> {
         match cmd {
@@ -31,9 +48,27 @@ impl OpenCADStudio {
                 self.tabs[i].active_cmd = Some(Box::new(new_cmd));
             }
 
+            "DIMJOGGED" | "DIMJOG" => {
+                use crate::modules::annotate::jogged_radius_dim::JoggedRadiusDimensionCommand;
+                let defaults = crate::scene::creation_style::current_dimension_defaults(
+                    &self.tabs[i].scene.document,
+                );
+                let multiplier = self.tabs[i].scene.creation_annotation_multiplier();
+                let new_cmd = JoggedRadiusDimensionCommand::new(defaults, multiplier);
+                self.command_line.push_info(&new_cmd.prompt());
+                self.tabs[i].active_cmd = Some(Box::new(new_cmd));
+            }
+
             "DIMANGULAR" => {
                 use crate::modules::annotate::angular_dim::AngularDimensionCommand;
                 let new_cmd = AngularDimensionCommand::new();
+                self.command_line.push_info(&new_cmd.prompt());
+                self.tabs[i].active_cmd = Some(Box::new(new_cmd));
+            }
+
+            "DIMARC" => {
+                use crate::modules::annotate::arc_length_dim::ArcLengthDimensionCommand;
+                let new_cmd = ArcLengthDimensionCommand::new();
                 self.command_line.push_info(&new_cmd.prompt());
                 self.tabs[i].active_cmd = Some(Box::new(new_cmd));
             }
@@ -577,10 +612,7 @@ impl OpenCADStudio {
             }
 
             "TOLERANCE" => {
-                use crate::modules::annotate::tolerance_cmd::ToleranceCommand;
-                let cmd = ToleranceCommand::new();
-                self.command_line.push_info(&cmd.prompt());
-                self.tabs[i].active_cmd = Some(Box::new(cmd));
+                self.open_tolerance_dialog(None);
             }
 
             "TABLE" => {
@@ -950,6 +982,20 @@ impl OpenCADStudio {
                 self.tabs[i].active_cmd = Some(Box::new(new_cmd));
             }
 
+            "SOLIDFILLET" => {
+                use crate::modules::model::edge_cmd::{EdgeOperation, SolidEdgeCommand};
+                let command = SolidEdgeCommand::new(EdgeOperation::Fillet, selected_solid(self, i));
+                self.command_line.push_info(&command.prompt());
+                self.tabs[i].active_cmd = Some(Box::new(command));
+            }
+
+            "FILLET" if selected_solid(self, i).is_some() => {
+                use crate::modules::model::edge_cmd::{EdgeOperation, SolidEdgeCommand};
+                let command = SolidEdgeCommand::new(EdgeOperation::Fillet, selected_solid(self, i));
+                self.command_line.push_info(&command.prompt());
+                self.tabs[i].active_cmd = Some(Box::new(command));
+            }
+
             "FILLET" => {
                 use crate::modules::draw::modify::fillet::FilletCommand;
                 let entities: Vec<_> = self.tabs[i]
@@ -1081,6 +1127,20 @@ impl OpenCADStudio {
                     self.command_line.push_info(&new_cmd.prompt());
                     self.tabs[i].active_cmd = Some(Box::new(new_cmd));
                 }
+            }
+
+            "SOLIDCHAMFER" => {
+                use crate::modules::model::edge_cmd::{EdgeOperation, SolidEdgeCommand};
+                let command = SolidEdgeCommand::new(EdgeOperation::Chamfer, selected_solid(self, i));
+                self.command_line.push_info(&command.prompt());
+                self.tabs[i].active_cmd = Some(Box::new(command));
+            }
+
+            "CHAMFER" if selected_solid(self, i).is_some() => {
+                use crate::modules::model::edge_cmd::{EdgeOperation, SolidEdgeCommand};
+                let command = SolidEdgeCommand::new(EdgeOperation::Chamfer, selected_solid(self, i));
+                self.command_line.push_info(&command.prompt());
+                self.tabs[i].active_cmd = Some(Box::new(command));
             }
 
             "CHAMFER" => {
@@ -1242,49 +1302,6 @@ impl OpenCADStudio {
                 let new_cmd = ExtendCommand::new(all_entities);
                 self.command_line.push_info(&new_cmd.prompt());
                 self.tabs[i].active_cmd = Some(Box::new(new_cmd));
-            }
-
-            // DIMJOGGED <DJO> — create a jogged radius dimension on the selected
-            // arc/circle: a standard radius dim carrying an OCS_JOGGED XData marker
-            // that the geometry generator renders with a foreshortened zig-zag.
-            "DIMJOGGED" | "DIMJOG" => {
-                use acadrust::entities::{Dimension, DimensionRadius};
-                use acadrust::types::Vector3;
-                use acadrust::xdata::{ExtendedDataRecord, XDataValue};
-                let found =
-                    self.tabs[i]
-                        .scene
-                        .selected_entities()
-                        .iter()
-                        .find_map(|(_, e)| match e {
-                            acadrust::EntityType::Arc(a) => Some((a.center, a.radius)),
-                            acadrust::EntityType::Circle(c) => Some((c.center, c.radius)),
-                            _ => None,
-                        });
-                let Some((center, radius)) = found else {
-                    self.command_line
-                        .push_error(crate::t!("DIMJOGGED: select an arc or circle first.").as_ref());
-                    return None;
-                };
-                if radius <= 0.0 {
-                    self.command_line.push_error(crate::t!("DIMJOGGED: invalid radius.").as_ref());
-                    return None;
-                }
-                let k = std::f64::consts::FRAC_1_SQRT_2;
-                let arc_point =
-                    Vector3::new(center.x + radius * k, center.y + radius * k, center.z);
-                let mut dim = DimensionRadius::new(center, arc_point);
-                dim.base.common.layer = self.tabs[i].active_layer.clone();
-                let mut rec = ExtendedDataRecord::new("OCS_JOGGED");
-                rec.add_value(XDataValue::String("1".to_string()));
-                dim.base.common.extended_data.add_record(rec);
-                self.push_undo_snapshot(i, "DIMJOGGED");
-                self.tabs[i]
-                    .scene
-                    .add_entity(acadrust::EntityType::Dimension(Dimension::Radius(dim)));
-                self.tabs[i].dirty = true;
-                self.command_line
-                    .push_output(crate::t!("DIMJOGGED: created a jogged radius dimension.").as_ref());
             }
 
             // ARCTEXT <text> — lay the text out as one Text entity per character

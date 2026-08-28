@@ -160,6 +160,22 @@ impl Scene {
             let in_vp = |x: f32, y: f32| x >= vp_x0 && x <= vp_x1 && y >= vp_y0 && y <= vp_y1;
 
             for wire in model_wires.iter() {
+                let marker_view_height = wire.point_marker.map_or(view_height_eff, |marker| {
+                    if !use_perspective {
+                        return view_height_eff;
+                    }
+                    let relative = marker.origin
+                        - glam::DVec3::new(
+                            display_center_x,
+                            display_center_y,
+                            display_center_z,
+                        );
+                    let depth = relative.x * view_fwd_d.0
+                        + relative.y * view_fwd_d.1
+                        + relative.z * view_fwd_d.2;
+                    view_height_eff * (camera_dist_d - depth).max(0.001)
+                        / camera_dist_d.max(0.001)
+                });
                 let projected_pts: Vec<[f32; 3]> = wire
                     .points
                     .iter()
@@ -168,11 +184,8 @@ impl Scene {
                         if mx.is_nan() || my.is_nan() || mz.is_nan() {
                             return [f32::NAN; 3];
                         }
-                        // Reconstruct absolute WCS from the double-single high
-                        // (`points`) + low (`points_low`) pair — the high f32
-                        // alone is ~0.5 m off at UTM scale.
-                        let lo = wire.points_low.get(pi).copied().unwrap_or([0.0; 3]);
-                        proj_abs(mx as f64 + lo[0] as f64, my as f64 + lo[1] as f64, mz as f64 + lo[2] as f64)
+                        let point = wire.point_world(pi, marker_view_height);
+                        proj_abs(point.x, point.y, point.z)
                     })
                     .collect();
 
@@ -233,8 +246,17 @@ impl Scene {
                     continue;
                 }
 
-                let clipped =
-                    clip_polyline_to_rect(&projected_pts, vp_x0, vp_y0, vp_x1, vp_y1, pcz);
+                let stationed = wire.pattern_stations.len() > wire.points.len();
+                let source_length = stationed.then(|| wire.pattern_stations[wire.points.len()]);
+                let (clipped, mut clipped_stations) = clip_polyline_to_rect(
+                    &projected_pts,
+                    stationed.then(|| &wire.pattern_stations[..wire.points.len()]),
+                    vp_x0,
+                    vp_y0,
+                    vp_x1,
+                    vp_y1,
+                    pcz,
+                );
                 if clipped.is_empty() && projected_text.is_empty() {
                     continue;
                 }
@@ -299,11 +321,21 @@ impl Scene {
                 }
                 let mut out = wire.clone();
                 out.points = clipped;
+                if let Some(source_length) = source_length {
+                    for station in &mut clipped_stations {
+                        *station *= scale;
+                    }
+                    clipped_stations.push(source_length * scale);
+                    out.pattern_stations = clipped_stations;
+                } else {
+                    out.pattern_stations.clear();
+                }
                 out.text_verts = projected_text;
                 // Paper coordinates are small sheet units — no relative-to-eye
                 // residual is needed, and keeping the model wire's points_low
                 // here would add a model-scale offset to the paper points.
                 out.points_low = Vec::new();
+                out.point_marker = None;
                 out.snap_pts = snap_pts;
                 out.key_vertices = key_vertices;
                 // Tangent geometry is in model space and can't be trivially
@@ -966,14 +998,16 @@ fn cs_clip(
 /// Returns a new points vec with proper NaN separators at clip boundaries.
 fn clip_polyline_to_rect(
     pts: &[[f32; 3]],
+    stations: Option<&[f32]>,
     xmin: f32,
     ymin: f32,
     xmax: f32,
     ymax: f32,
     z: f32,
-) -> Vec<[f32; 3]> {
+) -> (Vec<[f32; 3]>, Vec<f32>) {
     const NAN3: [f32; 3] = [f32::NAN, f32::NAN, f32::NAN];
     let mut result: Vec<[f32; 3]> = Vec::new();
+    let mut result_stations = Vec::new();
     let mut i = 0;
 
     while i < pts.len() {
@@ -1002,19 +1036,50 @@ fn clip_polyline_to_rect(
                     pen_down = false;
                 }
                 Some((cx0, cy0, cx1, cy1)) => {
+                    let parameter = |x: f32, y: f32| {
+                        let dx = x1 - x0;
+                        let dy = y1 - y0;
+                        if dx.abs() >= dy.abs() && dx.abs() > 1e-12 {
+                            (x - x0) / dx
+                        } else if dy.abs() > 1e-12 {
+                            (y - y0) / dy
+                        } else {
+                            0.0
+                        }
+                    };
+                    let station = |t: f32| {
+                        stations.map_or(0.0, |values| {
+                            let start_station = values[start + j];
+                            start_station
+                                + (values[start + j + 1] - start_station) * t
+                        })
+                    };
                     if !pen_down {
                         if !result.is_empty() {
                             result.push(NAN3);
+                            if stations.is_some() {
+                                result_stations.push(0.0);
+                            }
                         }
                         result.push([cx0, cy0, z]);
+                        if stations.is_some() {
+                            result_stations.push(station(parameter(cx0, cy0)));
+                        }
                         pen_down = true;
                     } else if let Some(&[lx, ly, _]) = result.last() {
                         if (lx - cx0).abs() > 1e-4 || (ly - cy0).abs() > 1e-4 {
                             result.push(NAN3);
                             result.push([cx0, cy0, z]);
+                            if stations.is_some() {
+                                result_stations.push(0.0);
+                                result_stations.push(station(parameter(cx0, cy0)));
+                            }
                         }
                     }
                     result.push([cx1, cy1, z]);
+                    if stations.is_some() {
+                        result_stations.push(station(parameter(cx1, cy1)));
+                    }
                     // If the exit point was clipped, lift pen.
                     if (cx1 - x1).abs() > 1e-4 || (cy1 - y1).abs() > 1e-4 {
                         pen_down = false;
@@ -1030,6 +1095,9 @@ fn clip_polyline_to_rect(
         .unwrap_or(false)
     {
         result.pop();
+        if stations.is_some() {
+            result_stations.pop();
+        }
     }
-    result
+    (result, result_stations)
 }

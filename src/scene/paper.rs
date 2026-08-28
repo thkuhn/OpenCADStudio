@@ -29,7 +29,7 @@ impl Scene {
                 && if sheet.is_valid() {
                     handle != sheet
                 } else {
-                    Self::is_content_viewport(vp)
+                    !Self::is_sheet_viewport(&self.document, vp)
                 }
         };
         let content = if let Some(block) = self
@@ -168,7 +168,6 @@ impl Scene {
             if !vp.status.is_on
                 || vp.common.invisible
                 || self.entity_temporarily_hidden(handle)
-                || self.layer_hidden(&vp.common.layer)
             {
                 continue;
             }
@@ -204,7 +203,18 @@ impl Scene {
         Arc<Vec<HatchModel>>,
         Arc<Vec<ImageModel>>,
     ) {
-        let selected = self.selected_hatch_sig();
+        self.paper_sheet_render_models_for_view(true)
+    }
+
+    pub(super) fn paper_sheet_render_models_for_view(
+        &self,
+        tint_selected: bool,
+    ) -> (
+        Arc<Vec<HatchModel>>,
+        Arc<Vec<HatchModel>>,
+        Arc<Vec<ImageModel>>,
+    ) {
+        let selected = if tint_selected { self.selected_hatch_sig() } else { 0 };
         let reuse = {
             let cache = self.paper_sheet_render_cache.borrow();
             if let Some(cache) = cache.get(&self.current_layout) {
@@ -259,7 +269,11 @@ impl Scene {
         if let Some(sheet) = self.paper_sheet_fill() {
             hatches.push(sheet);
         }
-        hatches.extend(self.paper_canvas_hatches().iter().cloned());
+        hatches.extend(
+            self.paper_canvas_hatches(tint_selected)
+                .iter()
+                .cloned(),
+        );
         let hatches = Arc::new(hatches);
         let wipeouts = self.paper_canvas_wipeouts();
         let images = self.paper_sheet_images();
@@ -381,7 +395,7 @@ impl Scene {
     /// entity handle) rather than the already-flattened arc — the
     /// flattened arc carries pattern names, not handles, so filtering
     /// there is unreliable.
-    pub fn paper_canvas_hatches(&self) -> Arc<Vec<HatchModel>> {
+    fn paper_canvas_hatches(&self, tint_selected: bool) -> Arc<Vec<HatchModel>> {
         let layout_block = self.current_layout_block_handle();
         let layer_hidden = |layer: &str| {
             self.document
@@ -455,7 +469,7 @@ impl Scene {
                     }
                 }
             }
-            if self.selected.contains(&handle) {
+            if tint_selected && self.selected.contains(&handle) {
                 m.color = [0.15, 0.55, 1.00, m.color[3]];
             }
             models.push(m);

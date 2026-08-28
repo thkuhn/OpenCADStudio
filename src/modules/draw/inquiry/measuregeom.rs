@@ -70,7 +70,9 @@ impl MeasureGeomCommand {
     /// Build a cyan preview wire connecting the picked points and the cursor.
     fn preview_wire(name: &str, pts: Vec<[f32; 3]>) -> WireModel {
         WireModel {
+            point_marker: None,
             taper_widths: Vec::new(),
+            pattern_stations: Vec::new(),
             world_width: 0.0,
             depth_override: None,
             display_visible: true,

@@ -30,7 +30,7 @@ ribbon-tab =
     .draw = Rysowanie
     .annotate = Opisy
     .insert = Wstaw
-    .model = Model
+    .model = Modelowanie
     .layout = Układ
     .manage = Zarządzaj
     .view = Widok
@@ -313,6 +313,7 @@ common =
     .block-rotation = Obrót bloku
     .blocks = Bloki
     .blue = Niebieski
+    .bulge = Wybrzuszenie
     .boolean-failed-the-solids-may-not-overlap = Wartość logiczna nie powiodła się — bryły nie mogą się nakładać.
     .boolean-select-exactly-two-solids-created-this = Boolean: wybierz dokładnie dwie bryły utworzone w tej sesji.
     .bottom = Dół
@@ -331,6 +332,7 @@ common =
     .brightness = Jasność
     .by-layer = Według warstwy
     .byblock = ByBlock
+    .bycolor = Według koloru
     .bylayer = Według warstwy
     .convtosurface-converted-n-solid-s-to-surface-s = CONVTOSURFACE: przekształcono bryłę __ocs_fmt_0__ w powierzchnię.
     .convtosurface-select-a-solid-created-this-sess = CONVTOSURFACE: wybierz bryłę utworzoną w tej sesji.
@@ -1328,6 +1330,18 @@ draw =
     .ray-specify-through-point = RAY Określ punkt przelotowy:
     .rect-specify-first-corner = RECT Określ pierwszy narożnik:
     .rect-specify-opposite-corner = RECT Określ przeciwny narożnik:
+    .rect-calculate-dimensions-based-on-length-width = RECT  Oblicz wymiary na podstawie [Długości / Szerokości] <Długość>:
+    .rect-specify-elevation = RECT  Określ rzędną <__ocs_fmt_0__>:
+    .rect-specify-fillet-radius = RECT  Określ promień zaokrąglenia <__ocs_fmt_0__>:
+    .rect-specify-first-chamfer-distance = RECT  Określ pierwszą odległość fazowania <__ocs_fmt_0__>:
+    .rect-specify-orientation-from-the-first-corner = RECT  Określ orientację od pierwszego narożnika:
+    .rect-specify-rectangle-area = RECT  Określ pole prostokąta:
+    .rect-specify-rectangle-length = RECT  Określ długość prostokąta:
+    .rect-specify-rectangle-width = RECT  Określ szerokość prostokąta:
+    .rect-specify-rotation-angle = RECT  Określ kąt obrotu <__ocs_fmt_0__>:
+    .rect-specify-second-chamfer-distance = RECT  Określ drugą odległość fazowania <__ocs_fmt_0__>:
+    .rect-specify-thickness = RECT  Określ grubość <__ocs_fmt_0__>:
+    .rect-specify-width = RECT  Określ szerokość <__ocs_fmt_0__>:
     .rect-cen-specify-center-point = RECT CEN Określ punkt środkowy:
     .rect-cen-specify-corner-point =RECT CEN Określ punkt narożny:
     .rect-rot-specify-adjacent-corner-defines-edge = RECT ROT Określ sąsiadujący narożnik (określa kierunek krawędzi):
@@ -1785,14 +1799,24 @@ annotate =
     .collect-leaders = Zbieraj Liderów
     .ddedit-select-text-entity = DDEDIT Wybierz element tekstowy:
     .dimaligned-enter-dimension-text-blank-measured = DIMALIGNED Enter tekst wymiarowy (pusta wartość zmierzona =):
-    .dimaligned-specify-dimension-line-location-tex = DIMALIGNED Określ położenie linii wymiarowej [Tekst/Kąt]:
-    .dimaligned-specify-first-extension-line-origin = DIMALIGNED Określ początek pierwszej linii pomocniczej:
-    .dimaligned-specify-second-extension-line-origi = DIMALIGNED Określ początek drugiej linii pomocniczej [Tekst/Kąt]:
+    .dimaligned-enter-formatted-dimension-text-blank-measured = DIMALIGNED Wprowadź sformatowany tekst wymiaru (puste = zmierzona wartość):
+    .dimaligned-select-object-to-dimension = DIMALIGNED Wybierz obiekt do zwymiarowania:
+    .dimaligned-specify-dimension-line-location-tex = DIMALIGNED Określ położenie linii wymiarowej [Mtext/Tekst/Kąt]:
+    .dimaligned-specify-first-extension-line-origin = DIMALIGNED Określ początek pierwszej linii pomocniczej lub naciśnij Enter, aby wybrać obiekt:
+    .dimaligned-specify-second-extension-line-origi = DIMALIGNED Określ początek drugiej linii pomocniczej:
     .dimaligned-specify-text-angle-degrees = DIMALIGNED Określ kąt tekstu (w stopniach):
+    .dimangular-enter-dimension-text-blank-measured = DIMANGULAR Wprowadź tekst wymiaru (puste = zmierzona wartość):
+    .dimangular-enter-formatted-dimension-text-blank-measured = DIMANGULAR Wprowadź sformatowany tekst wymiaru (puste = zmierzona wartość):
+    .dimangular-select-arc-circle-line-or-specify-angle-vertex = DIMANGULAR Wybierz łuk, okrąg lub linię albo określ wierzchołek kąta:
+    .dimangular-select-second-line = DIMANGULAR Wybierz drugą linię:
     .dimangular-specify-angle-vertex = DIMANGULAR Określ wierzchołek kąta:
+    .dimangular-specify-dimension-arc-location-options = DIMANGULAR Określ położenie łuku wymiarowego [Mtext/Tekst/Kąt/Ćwiartka]:
     .dimangular-specify-dimension-arc-location = DIMANGULAR Określ położenie łuku wymiarowego:
     .dimangular-specify-first-extension-line-point = DIMANGULAR Określ pierwszy punkt linii pomocniczej:
+    .dimangular-specify-quadrant = DIMANGULAR Określ ćwiartkę:
     .dimangular-specify-second-extension-line-point = DIMANGULAR Określ drugi punkt linii pomocniczej:
+    .dimangular-specify-second-point-for-text-angle = DIMANGULAR Określ drugi punkt kąta tekstu:
+    .dimangular-specify-text-angle-or-first-point = DIMANGULAR Określ kąt tekstu lub pierwszy punkt:
     .dimbaseline-no-base-dimension-found-place-a-di = DIMBASELINE Nie znaleziono wymiaru podstawowego. Najpierw umieść wymiar.
     .dimbaseline-specify-a-second-extension-line-or = DIMBASELINE Określ początek drugiej linii pomocniczej (Enter, aby wyjść):
     .dimbreak-select-dimension-to-break = DIMBREAK Wybierz wymiar do przerwania:
@@ -1800,8 +1824,8 @@ annotate =
     .dimcontinue-no-base-dimension-found-place-a-di = DIMCONTINUE Nie znaleziono wymiaru podstawowego. Najpierw umieść wymiar.
     .dimcontinue-specify-a-second-extension-line-or = DIMCONTINUE Określ początek drugiej linii pomocniczej (Enter, aby wyjść):
     .dimdiameter-enter-dimension-text-blank-measure = DIMDIAMETER Enter tekst wymiarowy (pusta wartość zmierzona =):
-    .dimdiameter-specify-center-point = DIMDIAMETER Określ punkt środkowy:
-    .dimdiameter-specify-dimension-line-location-te = DIMDIAMETER Określ położenie linii wymiarowej [Tekst/Kąt]:
+    .dimdiameter-select-arc-circle-or-polyline-arc = DIMDIAMETER Wybierz łuk, okrąg lub łuk polilinii:
+    .dimdiameter-specify-dimension-line-location-text = DIMDIAMETER Określ położenie linii wymiarowej [Mtekst/Tekst/Kąt]:
     .dimdiameter-specify-point-on-circle = DIMDIAMETER Określ punkt na okręgu:
     .dimdiameter-specify-text-angle-degrees = DIMDIAMETER Określ kąt tekstu (w stopniach):
     .dimedit-enter-text-override-blank-reset-to-mea = DIMEDIT Enter zastąpienie tekstu (puste = resetowane do zmierzonego):
@@ -1817,10 +1841,12 @@ annotate =
     .dimlinear-specify-second-extension-line-origin = DIMLINEAR Określ początek drugiej linii pomocniczej [Tekst/Kąt]:
     .dimlinear-specify-text-angle-degrees = DIMLINEAR Określ kąt tekstu (w stopniach):
     .dimordinate-specify-feature-location = DIMORDINATE Określ lokalizację elementu:
-    .dimordinate-specify-leader-endpoint = DIMORDINATE Określ punkt końcowy linii odniesienia:
+    .dimordinate-enter-dimension-text-blank-measured = DIMORDINATE Wprowadź tekst wymiarowy (puste = wartość zmierzona):
+    .dimordinate-specify-leader-endpoint = DIMORDINATE Określ punkt końcowy linii odniesienia [Xdatum/Ydatum/Mtext/Text/Angle]:
+    .dimordinate-specify-text-angle-degrees = DIMORDINATE Określ kąt tekstu (w stopniach):
     .dimradius-enter-dimension-text-blank-measured = DIMRADIUS Enter tekst wymiarowy (pusta wartość zmierzona =):
-    .dimradius-specify-center-point = DIMRADIUS Określ punkt środkowy:
-    .dimradius-specify-dimension-line-location-text = DIMRADIUS Określ położenie linii wymiarowej [Tekst/Kąt]:
+    .dimradius-select-arc-circle-or-polyline-arc = DIMRADIUS Wybierz łuk, okrąg lub łuk polilinii:
+    .dimradius-specify-dimension-line-location-text = DIMRADIUS Określ położenie linii wymiarowej [Mtekst/Tekst/Kąt]:
     .dimradius-specify-radius-point = DIMRADIUS Określ punkt promienia:
     .dimradius-specify-text-angle-degrees = DIMRADIUS Określ kąt tekstu (w stopniach):
     .dimspace-enter-value-0-auto = Wartość DIMSPACE Enter (0 = auto):
@@ -1852,6 +1878,7 @@ annotate =
         Dane
     .lower = Niższy
     .mleader-specify-arrowhead-point = MLEADER Określ punkt grotu strzałki:
+    .mleader-specify-landing-point = MLEADER Określ punkt odsadzenia:
     .mleader-specify-next-point-count-pts-enter-to = MLEADER Określ następny punkt [__ocs_arg_count__ pkt — Enter, aby umieścić tekst]:
     .mleaderadd-select-a-multileader = MLEADERADD Wybierz wielolinię odniesienia:
     .mleaderadd-specify-arrowhead-location =MLEADERADD Określ położenie grotu strzałki:
@@ -2021,6 +2048,15 @@ insert =
     .object-s-cut-to-clipboard = Obiekt(y) __ocs_fmt_0__ wycięty do schowka.
 
 model =
+    .create = Utwórz
+    .boolean = Operacje boolowskie
+    .pyramid = Ostrosłup
+    .polysolid = Bryła wielosegmentowa
+    .extrude = Wyciągnij
+    .revolve = Obróć
+    .loft = Loft
+    .sweep = Przeciągnij
+    .presspull = Naciśnij/wyciągnij
     .n-specify-center-point = __ocs_arg_n__ Określ punkt środkowy:
     .n-specify-first-corner = __ocs_arg_n__ Określ pierwszy narożnik:
     .n-specify-height-enter-for-default = __ocs_arg_n__ Podaj wysokość <Enter for default>:
@@ -2321,6 +2357,7 @@ view =
     .zoom-extents =
         Powiększ
         Zakresy
+    .cmd-no-hatch-objects = __ocs_fmt_0__: brak obiekt├│w kreskowania.
     .cmd-no-text-or-dimension-objects = __ocs_fmt_0__: brak obiektów tekstowych i wymiarowych.
     .cmd-not-yet-implemented = __ocs_fmt_0__: jeszcze nie wdrożony.
     .viewport-s-in-layout =Okna widokowe __ocs_fmt_0__ w układzie „__ocs_fmt_1__”:
@@ -2698,6 +2735,9 @@ properties =
     .plot-style-table = Tabela stylów wydruku
     .plot-table-attached-to =Tabela wykresów dołączona do
     .plot-table-type = Typ tabeli wykresów
+    .color-dependent-plot-styles = Style wydruku zależne od koloru
+    .named-plot-styles = Nazwane style wydruku
+    .plot-style-is-locked-to-color-in-color-dependent = W trybie zależnym od koloru (CTB) styl wydruku jest przypisany do koloru
     .point-1-x = Punkt 1 X
     .point-1-y = Punkt 1 Y
     .point-1-z = Punkt 1 Z
@@ -3060,7 +3100,7 @@ styles =
     .pdmode-new-value-0-dot-1-none-2-3-x-4-tick-32 = PDMODE nowa wartość [0=dot 1=none 2=+ 3=x 4=tick; +32 koło +64 kwadraty]:
     .pdmode-v = PDMODE = __ocs_fmt_0__
     .pdmode-set-to-v = PDMODE ustawione na __ocs_fmt_0__
-    .pdsize-new-point-size-0-5-of-viewport-0-absolu = PDSIZE nowy rozmiar punktu (0 = 5% rzutni, <0 = bezwzględnie):
+    .pdsize-new-point-size-0-5-of-viewport-0-absolu = PDSIZE nowy rozmiar punktu (0 = 5% rzutni, >0 = bezwzględnie, <0 = procent rzutni):
     .pdsize-v-4 = PDSIZE = __ocs_fmt_0__
     .pdsize-set-to-v-4 = PDSIZE ustawione na __ocs_fmt_0__
     .pickadd = PICKADD = __ocs_fmt_0__ (__ocs_fmt_1__)

@@ -30,7 +30,7 @@ ribbon-tab =
     .draw = Desenhar
     .annotate = Anotar
     .insert = Inserir
-    .model = Modelo
+    .model = Modelagem
     .layout = Layout
     .manage = Gerenciar
     .view = Exibir
@@ -314,6 +314,7 @@ common =
     .block-rotation = Rotação do bloco
     .blocks = Blocos
     .blue = Azul
+    .bulge = Curvatura
     .boolean-failed-the-solids-may-not-overlap = A operação booleana falhou — os sólidos podem não se sobrepor.
     .boolean-select-exactly-two-solids-created-this = Operação booleana: selecione exatamente dois sólidos criados nesta sessão.
     .bottom = Inferior
@@ -332,6 +333,7 @@ common =
     .brightness = Brilho
     .by-layer = Por camada
     .byblock = PorBloco
+    .bycolor = PorCor
     .bylayer = PorCamada
     .convtosurface-converted-n-solid-s-to-surface-s = CONVTOSURFACE: __ocs_fmt_0__ sólidos convertidos em superfícies.
     .convtosurface-select-a-solid-created-this-sess = CONVTOSURFACE: selecione um sólido criado nesta sessão.
@@ -1329,6 +1331,18 @@ draw =
     .ray-specify-through-point = RAY  Especifique o ponto de passagem:
     .rect-specify-first-corner = RECT  Especifique o primeiro canto:
     .rect-specify-opposite-corner = RECT  Especifique o canto oposto:
+    .rect-calculate-dimensions-based-on-length-width = RECT  Calcule as dimensões com base em [Comprimento / Largura] <Comprimento>:
+    .rect-specify-elevation = RECT  Especifique a elevação <__ocs_fmt_0__>:
+    .rect-specify-fillet-radius = RECT  Especifique o raio de concordância <__ocs_fmt_0__>:
+    .rect-specify-first-chamfer-distance = RECT  Especifique a primeira distância do chanfro <__ocs_fmt_0__>:
+    .rect-specify-orientation-from-the-first-corner = RECT  Especifique a orientação a partir do primeiro canto:
+    .rect-specify-rectangle-area = RECT  Especifique a área do retângulo:
+    .rect-specify-rectangle-length = RECT  Especifique o comprimento do retângulo:
+    .rect-specify-rectangle-width = RECT  Especifique a largura do retângulo:
+    .rect-specify-rotation-angle = RECT  Especifique o ângulo de rotação <__ocs_fmt_0__>:
+    .rect-specify-second-chamfer-distance = RECT  Especifique a segunda distância do chanfro <__ocs_fmt_0__>:
+    .rect-specify-thickness = RECT  Especifique a espessura <__ocs_fmt_0__>:
+    .rect-specify-width = RECT  Especifique a largura <__ocs_fmt_0__>:
     .rect-cen-specify-center-point = RECT CEN  Especifique o ponto central:
     .rect-cen-specify-corner-point = RECT CEN  Especifique o ponto de canto:
     .rect-rot-specify-adjacent-corner-defines-edge = RECT ROT  Especifique o canto adjacente (define a direção da aresta):
@@ -1786,14 +1800,24 @@ annotate =
     .collect-leaders = Coletar linhas de chamada
     .ddedit-select-text-entity = DDEDIT  Selecione a entidade de texto:
     .dimaligned-enter-dimension-text-blank-measured = DIMALIGNED  Insira o texto da cota (vazio = valor medido):
-    .dimaligned-specify-dimension-line-location-tex = DIMALIGNED  Especifique a localização da linha de cota [Texto/Ângulo]:
-    .dimaligned-specify-first-extension-line-origin = DIMALIGNED  Especifique a origem da primeira linha de extensão:
-    .dimaligned-specify-second-extension-line-origi = DIMALIGNED  Especifique a origem da segunda linha de extensão [Texto/Ângulo]:
+    .dimaligned-enter-formatted-dimension-text-blank-measured = DIMALIGNED  Insira o texto formatado da cota (vazio = valor medido):
+    .dimaligned-select-object-to-dimension = DIMALIGNED  Selecione o objeto a ser cotado:
+    .dimaligned-specify-dimension-line-location-tex = DIMALIGNED  Especifique a localização da linha de cota [Mtext/Texto/Ângulo]:
+    .dimaligned-specify-first-extension-line-origin = DIMALIGNED  Especifique a origem da primeira linha de extensão ou pressione Enter para selecionar um objeto:
+    .dimaligned-specify-second-extension-line-origi = DIMALIGNED  Especifique a origem da segunda linha de extensão:
     .dimaligned-specify-text-angle-degrees = DIMALIGNED  Especifique o ângulo do texto (graus):
+    .dimangular-enter-dimension-text-blank-measured = DIMANGULAR  Insira o texto da cota (vazio = valor medido):
+    .dimangular-enter-formatted-dimension-text-blank-measured = DIMANGULAR  Insira o texto formatado da cota (vazio = valor medido):
+    .dimangular-select-arc-circle-line-or-specify-angle-vertex = DIMANGULAR  Selecione arco, círculo, linha ou especifique um vértice de ângulo:
+    .dimangular-select-second-line = DIMANGULAR  Selecione a segunda linha:
     .dimangular-specify-angle-vertex = DIMANGULAR  Especifique o vértice do ângulo:
+    .dimangular-specify-dimension-arc-location-options = DIMANGULAR  Especifique a localização do arco de cota [Mtext/Texto/Ângulo/Quadrante]:
     .dimangular-specify-dimension-arc-location = DIMANGULAR  Especifique a localização do arco de cota:
     .dimangular-specify-first-extension-line-point = DIMANGULAR  Especifique o ponto da primeira linha de extensão:
+    .dimangular-specify-quadrant = DIMANGULAR  Especifique o quadrante:
     .dimangular-specify-second-extension-line-point = DIMANGULAR  Especifique o ponto da segunda linha de extensão:
+    .dimangular-specify-second-point-for-text-angle = DIMANGULAR  Especifique o segundo ponto para o ângulo do texto:
+    .dimangular-specify-text-angle-or-first-point = DIMANGULAR  Especifique o ângulo do texto ou o primeiro ponto:
     .dimbaseline-no-base-dimension-found-place-a-di = DIMBASELINE  Nenhuma cota base encontrada. Coloque uma cota primeiro.
     .dimbaseline-specify-a-second-extension-line-or = DIMBASELINE  Especifique a origem de uma segunda linha de extensão (Enter para sair):
     .dimbreak-select-dimension-to-break = DIMBREAK  Selecione a cota a quebrar:
@@ -1801,8 +1825,8 @@ annotate =
     .dimcontinue-no-base-dimension-found-place-a-di = DIMCONTINUE  Nenhuma cota base encontrada. Coloque uma cota primeiro.
     .dimcontinue-specify-a-second-extension-line-or = DIMCONTINUE  Especifique a origem de uma segunda linha de extensão (Enter para sair):
     .dimdiameter-enter-dimension-text-blank-measure = DIMDIAMETER  Insira o texto da cota (vazio = valor medido):
-    .dimdiameter-specify-center-point = DIMDIAMETER  Especifique o ponto central:
-    .dimdiameter-specify-dimension-line-location-te = DIMDIAMETER  Especifique a localização da linha de cota [Texto/Ângulo]:
+    .dimdiameter-select-arc-circle-or-polyline-arc = DIMDIAMETER  Selecione um arco, círculo ou arco de polilinha:
+    .dimdiameter-specify-dimension-line-location-text = DIMDIAMETER  Especifique a localização da linha de cota [Mtexto/Texto/Ângulo]:
     .dimdiameter-specify-point-on-circle = DIMDIAMETER  Especifique um ponto no círculo:
     .dimdiameter-specify-text-angle-degrees = DIMDIAMETER  Especifique o ângulo do texto (graus):
     .dimedit-enter-text-override-blank-reset-to-mea = DIMEDIT  Insira a substituição do texto (vazio = restaurar ao medido):
@@ -1818,10 +1842,12 @@ annotate =
     .dimlinear-specify-second-extension-line-origin = DIMLINEAR  Especifique a origem da segunda linha de extensão [Texto/Ângulo]:
     .dimlinear-specify-text-angle-degrees = DIMLINEAR  Especifique o ângulo do texto (graus):
     .dimordinate-specify-feature-location = DIMORDINATE  Especifique a localização da característica:
-    .dimordinate-specify-leader-endpoint = DIMORDINATE  Especifique a extremidade da linha de chamada:
+    .dimordinate-enter-dimension-text-blank-measured = DIMORDINATE  Insira o texto da cota (vazio = valor medido):
+    .dimordinate-specify-leader-endpoint = DIMORDINATE  Especifique a extremidade da linha de chamada [Xdatum/Ydatum/Mtext/Text/Angle]:
+    .dimordinate-specify-text-angle-degrees = DIMORDINATE  Especifique o ângulo do texto (graus):
     .dimradius-enter-dimension-text-blank-measured = DIMRADIUS  Insira o texto da cota (vazio = valor medido):
-    .dimradius-specify-center-point = DIMRADIUS  Especifique o ponto central:
-    .dimradius-specify-dimension-line-location-text = DIMRADIUS  Especifique a localização da linha de cota [Texto/Ângulo]:
+    .dimradius-select-arc-circle-or-polyline-arc = DIMRADIUS  Selecione um arco, círculo ou arco de polilinha:
+    .dimradius-specify-dimension-line-location-text = DIMRADIUS  Especifique a localização da linha de cota [Mtexto/Texto/Ângulo]:
     .dimradius-specify-radius-point = DIMRADIUS  Especifique o ponto do raio:
     .dimradius-specify-text-angle-degrees = DIMRADIUS  Especifique o ângulo do texto (graus):
     .dimspace-enter-value-0-auto = DIMSPACE  Insira o valor (0 = automático):
@@ -1853,6 +1879,7 @@ annotate =
         dados
     .lower = Inferior
     .mleader-specify-arrowhead-point = MLEADER  Especifique o ponto da ponta de seta:
+    .mleader-specify-landing-point = MLEADER  Especifique o ponto de conexão:
     .mleader-specify-next-point-count-pts-enter-to = MLEADER  Especifique o próximo ponto [__ocs_arg_count__ pontos — Enter para inserir texto]:
     .mleaderadd-select-a-multileader = MLEADERADD  Selecione uma linha de chamada múltipla:
     .mleaderadd-specify-arrowhead-location = MLEADERADD  Especifique a localização da ponta de seta:
@@ -2022,6 +2049,15 @@ insert =
     .object-s-cut-to-clipboard = __ocs_fmt_0__ objetos recortados para a área de transferência.
 
 model =
+    .create = Criar
+    .boolean = Operações booleanas
+    .pyramid = Pirâmide
+    .polysolid = Polissólido
+    .extrude = Extrusão
+    .revolve = Revolução
+    .loft = Loft
+    .sweep = Varredura
+    .presspull = Pressionar/puxar
     .n-specify-center-point = __ocs_arg_n__  Especifique o ponto central:
     .n-specify-first-corner = __ocs_arg_n__  Especifique o primeiro canto:
     .n-specify-height-enter-for-default = __ocs_arg_n__  Especifique a altura <Enter para o padrão>:
@@ -2322,6 +2358,7 @@ view =
     .zoom-extents =
         Zoom nas
         extensões
+    .cmd-no-hatch-objects = __ocs_fmt_0__: nenhum objeto de hachura.
     .cmd-no-text-or-dimension-objects = __ocs_fmt_0__: nenhum objeto de texto ou cota.
     .cmd-not-yet-implemented = __ocs_fmt_0__: ainda não implementado.
     .viewport-s-in-layout = __ocs_fmt_0__ janelas de visualização no layout “__ocs_fmt_1__”:
@@ -2699,6 +2736,9 @@ properties =
     .plot-style-table = Tabela de estilos de plotagem
     .plot-table-attached-to = Tabela de plotagem anexada a
     .plot-table-type = Tipo de tabela de plotagem
+    .color-dependent-plot-styles = Estilos de plotagem dependentes de cor
+    .named-plot-styles = Estilos de plotagem nomeados
+    .plot-style-is-locked-to-color-in-color-dependent = No modo dependente de cor (CTB), o estilo de plotagem fica vinculado à cor
     .point-1-x = Ponto 1 X
     .point-1-y = Ponto 1 Y
     .point-1-z = Ponto 1 Z
@@ -3061,7 +3101,7 @@ styles =
     .pdmode-new-value-0-dot-1-none-2-3-x-4-tick-32 = PDMODE  novo valor [0=ponto 1=nenhum 2=+ 3=x 4=marca; +32 círculo +64 quadrado]:
     .pdmode-v = PDMODE = __ocs_fmt_0__
     .pdmode-set-to-v = PDMODE definido como __ocs_fmt_0__
-    .pdsize-new-point-size-0-5-of-viewport-0-absolu = PDSIZE  novo tamanho do ponto (0 = 5% da janela de visualização, <0 = absoluto):
+    .pdsize-new-point-size-0-5-of-viewport-0-absolu = PDSIZE  novo tamanho do ponto (0 = 5% da janela de visualização, >0 = absoluto, <0 = porcentagem da janela de visualização):
     .pdsize-v-4 = PDSIZE = __ocs_fmt_0__
     .pdsize-set-to-v-4 = PDSIZE definido como __ocs_fmt_0__
     .pickadd = PICKADD = __ocs_fmt_0__ (__ocs_fmt_1__)

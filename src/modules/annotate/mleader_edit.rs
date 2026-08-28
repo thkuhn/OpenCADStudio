@@ -462,7 +462,9 @@ impl CadCommand for MLeaderCollectCommand {
 
 fn preview_wire(pts: &[Vec3]) -> WireModel {
     WireModel {
+        point_marker: None,
         taper_widths: Vec::new(),
+        pattern_stations: Vec::new(),
         world_width: 0.0,
         depth_override: None,
         display_visible: true,

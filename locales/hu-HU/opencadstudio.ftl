@@ -30,7 +30,7 @@ ribbon-tab =
     .draw = Rajz
     .annotate = Feliratozás
     .insert = Beszúrás
-    .model = Modell
+    .model = Modellezés
     .layout = Elrendezés
     .manage = Kezelés
     .view = Nézet
@@ -313,6 +313,7 @@ common =
     .block-rotation = Blokkforgatás
     .blocks = Blokkok
     .blue = kék
+    .bulge = Kidudorodás
     .boolean-failed-the-solids-may-not-overlap = A logikai elemzés sikertelen – előfordulhat, hogy a szilárdtestek nem fedik át egymást.
     .boolean-select-exactly-two-solids-created-this = Logikai: jelöljön ki pontosan két szilárdtestet, amelyek ebben a munkamenetben jöttek létre.
     .bottom = Alul
@@ -331,6 +332,7 @@ common =
     .brightness = Fényerő
     .by-layer = Réteg szerint
     .byblock = ByBlock
+    .bycolor = Szín szerint
     .bylayer = ByLayer
     .convtosurface-converted-n-solid-s-to-surface-s = CONVTOSURFACE: __ocs_fmt_0__ szilárdtest(ek)et felületté alakított(ok).
     .convtosurface-select-a-solid-created-this-sess = CONVTOSURFACE: válassza ki a munkamenetben létrehozott szilárdtestet.
@@ -1328,6 +1330,18 @@ draw =
     .ray-specify-through-point = RAY Pont megadása:
     .rect-specify-first-corner = RECT Adja meg az első sarkot:
     .rect-specify-opposite-corner = RECT Adja meg a szemközti sarkot:
+    .rect-calculate-dimensions-based-on-length-width = RECT  Méretek számítása [Hossz / Szélesség] alapján <Hossz>:
+    .rect-specify-elevation = RECT  Adja meg a magasságot <__ocs_fmt_0__>:
+    .rect-specify-fillet-radius = RECT  Adja meg a lekerekítés sugarát <__ocs_fmt_0__>:
+    .rect-specify-first-chamfer-distance = RECT  Adja meg az első letörési távolságot <__ocs_fmt_0__>:
+    .rect-specify-orientation-from-the-first-corner = RECT  Adja meg az irányt az első saroktól:
+    .rect-specify-rectangle-area = RECT  Adja meg a téglalap területét:
+    .rect-specify-rectangle-length = RECT  Adja meg a téglalap hosszát:
+    .rect-specify-rectangle-width = RECT  Adja meg a téglalap szélességét:
+    .rect-specify-rotation-angle = RECT  Adja meg az elforgatási szöget <__ocs_fmt_0__>:
+    .rect-specify-second-chamfer-distance = RECT  Adja meg a második letörési távolságot <__ocs_fmt_0__>:
+    .rect-specify-thickness = RECT  Adja meg a vastagságot <__ocs_fmt_0__>:
+    .rect-specify-width = RECT  Adja meg a szélességet <__ocs_fmt_0__>:
     .rect-cen-specify-center-point = RECT CEN Középpont megadása:
     .rect-cen-specify-corner-point =RECT CEN Sarokpont megadása:
     .rect-rot-specify-adjacent-corner-defines-edge = RECT ROT Adja meg a szomszédos sarkot (meghatározza az él irányát):
@@ -1785,14 +1799,24 @@ annotate =
     .collect-leaders = Gyűjtsd össze a vezetőket
     .ddedit-select-text-entity = DDEDIT Szöveg entitás kiválasztása:
     .dimaligned-enter-dimension-text-blank-measured = DIMALIGNED Enter méretszöveg (üres = mért érték):
-    .dimaligned-specify-dimension-line-location-tex = DIMALIGNED A méretvonal helyének megadása [szöveg/szög]:
-    .dimaligned-specify-first-extension-line-origin = DIMALIGNED Adja meg az első mellékvonal eredetét:
-    .dimaligned-specify-second-extension-line-origi = DIMALIGNED Adja meg a második mellékvonal eredetét [szöveg/szög]:
+    .dimaligned-enter-formatted-dimension-text-blank-measured = DIMALIGNED Adja meg a formázott méretszöveget (üres = mért érték):
+    .dimaligned-select-object-to-dimension = DIMALIGNED Válassza ki a méretezendő objektumot:
+    .dimaligned-specify-dimension-line-location-tex = DIMALIGNED Adja meg a méretvonal helyét [Mtext/Szöveg/Szög]:
+    .dimaligned-specify-first-extension-line-origin = DIMALIGNED Adja meg az első segédvonal kezdőpontját, vagy nyomja meg az Entert egy objektum kiválasztásához:
+    .dimaligned-specify-second-extension-line-origi = DIMALIGNED Adja meg a második segédvonal kezdőpontját:
     .dimaligned-specify-text-angle-degrees = DIMALIGNED Adja meg a szöveg szögét (fokban):
+    .dimangular-enter-dimension-text-blank-measured = DIMANGULAR Adja meg a méretszöveget (üres = mért érték):
+    .dimangular-enter-formatted-dimension-text-blank-measured = DIMANGULAR Adja meg a formázott méretszöveget (üres = mért érték):
+    .dimangular-select-arc-circle-line-or-specify-angle-vertex = DIMANGULAR Válasszon ívet, kört vagy vonalat, vagy adjon meg egy szögcsúcsot:
+    .dimangular-select-second-line = DIMANGULAR Válassza ki a második vonalat:
     .dimangular-specify-angle-vertex = DIMANGULAR Szögcsúcs megadása:
+    .dimangular-specify-dimension-arc-location-options = DIMANGULAR Adja meg a méretív helyét [Mtext/Szöveg/Szög/Kvadráns]:
     .dimangular-specify-dimension-arc-location = DIMANGULAR A méretív helyének megadása:
     .dimangular-specify-first-extension-line-point = DIMANGULAR Adja meg az első hosszabbító vonalpontot:
+    .dimangular-specify-quadrant = DIMANGULAR Adja meg a kvadránst:
     .dimangular-specify-second-extension-line-point = DIMANGULAR Adja meg a második kiterjesztési vonalpontot:
+    .dimangular-specify-second-point-for-text-angle = DIMANGULAR Adja meg a szövegszög második pontját:
+    .dimangular-specify-text-angle-or-first-point = DIMANGULAR Adja meg a szövegszöget vagy az első pontot:
     .dimbaseline-no-base-dimension-found-place-a-di = DIMBASELINE Nem található alapméret. Először helyezzen el egy méretet.
     .dimbaseline-specify-a-second-extension-line-or = DIMBASELINE Adjon meg egy második mellékvonal kezdőpontját (Enter a kilépéshez):
     .dimbreak-select-dimension-to-break = DIMBREAK Válassza ki a törni kívánt méretet:
@@ -1800,8 +1824,8 @@ annotate =
     .dimcontinue-no-base-dimension-found-place-a-di = DIMCONTINUE Nem található alapméret. Először helyezzen el egy méretet.
     .dimcontinue-specify-a-second-extension-line-or = DIMCONTINUE Adjon meg egy második mellékvonal kezdőpontját (Enter a kilépéshez):
     .dimdiameter-enter-dimension-text-blank-measure = DIMDIAMETER Enter méretszöveg (üres = mért érték):
-    .dimdiameter-specify-center-point = DIMDIAMETER Középpont megadása:
-    .dimdiameter-specify-dimension-line-location-te = DIMDIAMETER A méretvonal helyének megadása [szöveg/szög]:
+    .dimdiameter-select-arc-circle-or-polyline-arc = DIMDIAMETER Válasszon ívet, kört vagy vonalláncívet:
+    .dimdiameter-specify-dimension-line-location-text = DIMDIAMETER A méretvonal helyének megadása [Mszöveg/szöveg/szög]:
     .dimdiameter-specify-point-on-circle = DIMDIAMETER Pont megadása a körön:
     .dimdiameter-specify-text-angle-degrees = DIMDIAMETER Adja meg a szöveg szögét (fokban):
     .dimedit-enter-text-override-blank-reset-to-mea = DIMEDIT Enter szöveg felülírása (üres = visszaállítása mért értékre):
@@ -1817,10 +1841,12 @@ annotate =
     .dimlinear-specify-second-extension-line-origin = DIMLINEAR Adja meg a második mellékvonal eredetét [szöveg/szög]:
     .dimlinear-specify-text-angle-degrees = DIMLINEAR Adja meg a szöveg szögét (fokban):
     .dimordinate-specify-feature-location = DIMORDINATE Jellemző helyének megadása:
-    .dimordinate-specify-leader-endpoint = DIMORDINATE Vezető végpont megadása:
+    .dimordinate-enter-dimension-text-blank-measured = DIMORDINATE Adja meg a méretszöveget (üres = mért érték):
+    .dimordinate-specify-leader-endpoint = DIMORDINATE Vezető végpont megadása [Xdatum/Ydatum/Mtext/Text/Angle]:
+    .dimordinate-specify-text-angle-degrees = DIMORDINATE Adja meg a szöveg szögét (fokban):
     .dimradius-enter-dimension-text-blank-measured = DIMRADIUS Enter méretszöveg (üres = mért érték):
-    .dimradius-specify-center-point = DIMRADIUS Középpont megadása:
-    .dimradius-specify-dimension-line-location-text = DIMRADIUS A méretvonal helyének megadása [szöveg/szög]:
+    .dimradius-select-arc-circle-or-polyline-arc = DIMRADIUS Válasszon ívet, kört vagy vonalláncívet:
+    .dimradius-specify-dimension-line-location-text = DIMRADIUS A méretvonal helyének megadása [Mszöveg/szöveg/szög]:
     .dimradius-specify-radius-point = DIMRADIUS Adja meg a sugárpontot:
     .dimradius-specify-text-angle-degrees = DIMRADIUS Adja meg a szöveg szögét (fokban):
     .dimspace-enter-value-0-auto = DIMSPACE Enter érték (0 = automatikus):
@@ -1852,6 +1878,7 @@ annotate =
         Adatok
     .lower = Lejjebb
     .mleader-specify-arrowhead-point = MLEADER Nyílhegy pont megadása:
+    .mleader-specify-landing-point = MLEADER Bekötési pont megadása:
     .mleader-specify-next-point-count-pts-enter-to = MLEADER Adja meg a következő pontot [__ocs_arg_count__ pts — Enter a szöveg elhelyezéséhez]:
     .mleaderadd-select-a-multileader = MLEADERADD Válasszon többvezetőt:
     .mleaderadd-specify-arrowhead-location =MLEADERADD Adja meg a nyílhegy helyét:
@@ -2021,6 +2048,15 @@ insert =
     .object-s-cut-to-clipboard = __ocs_fmt_0__ objektum(ok) vágólapra vágva.
 
 model =
+    .create = Létrehozás
+    .boolean = Logikai műveletek
+    .pyramid = Gúla
+    .polysolid = Poliszilárdtest
+    .extrude = Kihúzás
+    .revolve = Forgatás
+    .loft = Átmenet
+    .sweep = Seprés
+    .presspull = Nyomás/húzás
     .n-specify-center-point = __ocs_arg_n__ Középpont megadása:
     .n-specify-first-corner = __ocs_arg_n__ Adja meg az első sarkot:
     .n-specify-height-enter-for-default = __ocs_arg_n__ Adja meg a <Enter for default> magasságot:
@@ -2321,6 +2357,7 @@ view =
     .zoom-extents =
         Zoom
         Terjedelem
+    .cmd-no-hatch-objects = __ocs_fmt_0__: nincs sraffoz├ísi objektum.
     .cmd-no-text-or-dimension-objects = __ocs_fmt_0__: nincs szöveg vagy méretobjektum.
     .cmd-not-yet-implemented = __ocs_fmt_0__: még nincs implementálva.
     .viewport-s-in-layout =__ocs_fmt_0__ nézetablak(ok) a „__ocs_fmt_1__” elrendezésben:
@@ -2698,6 +2735,9 @@ properties =
     .plot-style-table = Telek stílusú táblázat
     .plot-table-attached-to =Telektábla csatolva
     .plot-table-type = Plot tábla típusa
+    .color-dependent-plot-styles = Színfüggő nyomtatási stílusok
+    .named-plot-styles = Elnevezett nyomtatási stílusok
+    .plot-style-is-locked-to-color-in-color-dependent = Színfüggő (CTB) módban a nyomtatási stílust a szín határozza meg
     .point-1-x = 1. pont X
     .point-1-y = 1. pont Y
     .point-1-z = 1. pont Z
@@ -3060,7 +3100,7 @@ styles =
     .pdmode-new-value-0-dot-1-none-2-3-x-4-tick-32 = PDMODE új érték [0=dot 1=none 2=+ 3=x 4=tick; +32 kör +64 négyzet]:
     .pdmode-v = PDMODE = __ocs_fmt_0__
     .pdmode-set-to-v = A PDMODE __ocs_fmt_0__ értékre van állítva
-    .pdsize-new-point-size-0-5-of-viewport-0-absolu = PDSIZE új pontméret (0 = a nézetablak 5%-a, <0 = abszolút):
+    .pdsize-new-point-size-0-5-of-viewport-0-absolu = PDSIZE új pontméret (0 = a nézetablak 5%-a, >0 = abszolút, <0 = a nézetablak százaléka):
     .pdsize-v-4 = PDSIZE = __ocs_fmt_0__
     .pdsize-set-to-v-4 = A PDSIZE __ocs_fmt_0__ értékre van állítva
     .pickadd = PICKADD = __ocs_fmt_0__ (__ocs_fmt_1__)

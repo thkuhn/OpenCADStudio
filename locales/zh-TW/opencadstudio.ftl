@@ -30,7 +30,7 @@ ribbon-tab =
     .draw = 繪製
     .annotate = 註解
     .insert = 插入
-    .model = 模型
+    .model = 建模
     .layout = 配置
     .manage = 管理
     .view = 視圖
@@ -313,6 +313,7 @@ common =
     .block-rotation = 圖塊旋轉
     .blocks = 圖塊
     .blue = 藍色
+    .bulge = 凸度
     .boolean-failed-the-solids-may-not-overlap = 布爾失敗——固件可能不會重疊.
     .boolean-select-exactly-two-solids-created-this = 布爾: 選擇建立此會話的正中兩個固件 。
     .bottom = 底部
@@ -331,6 +332,7 @@ common =
     .brightness = 亮度
     .by-layer = 按層
     .byblock = 依圖塊
+    .bycolor = 依色彩
     .bylayer = 隨層
     .convtosurface-converted-n-solid-s-to-surface-s = CONVTOSURFACE:將__ocs_fmt_0__實體轉換為曲面.
     .convtosurface-select-a-solid-created-this-sess = CONVTOSURFACE:選擇建立此會話的固件 。
@@ -1328,6 +1330,18 @@ draw =
     .ray-specify-through-point = RAY通過點指定 :
     .rect-specify-first-corner = RECT 指定第一角 :
     .rect-specify-opposite-corner = RECT 指定相向角 :
+    .rect-calculate-dimensions-based-on-length-width = RECT  根據 [長度 / 寬度] 計算尺寸 <長度>:
+    .rect-specify-elevation = RECT  指定高程 <__ocs_fmt_0__>:
+    .rect-specify-fillet-radius = RECT  指定圓角半徑 <__ocs_fmt_0__>:
+    .rect-specify-first-chamfer-distance = RECT  指定第一個倒角距離 <__ocs_fmt_0__>:
+    .rect-specify-orientation-from-the-first-corner = RECT  從第一個角點指定方向:
+    .rect-specify-rectangle-area = RECT  指定矩形面積:
+    .rect-specify-rectangle-length = RECT  指定矩形長度:
+    .rect-specify-rectangle-width = RECT  指定矩形寬度:
+    .rect-specify-rotation-angle = RECT  指定旋轉角度 <__ocs_fmt_0__>:
+    .rect-specify-second-chamfer-distance = RECT  指定第二個倒角距離 <__ocs_fmt_0__>:
+    .rect-specify-thickness = RECT  指定厚度 <__ocs_fmt_0__>:
+    .rect-specify-width = RECT  指定寬度 <__ocs_fmt_0__>:
     .rect-cen-specify-center-point = RECT CEN  指定中心點：
     .rect-cen-specify-corner-point = RECT CEN  指定角點：
     .rect-rot-specify-adjacent-corner-defines-edge = RECTROT指定相鄰的角( 定邊方向) :
@@ -1785,14 +1799,24 @@ annotate =
     .collect-leaders = 合併引線
     .ddedit-select-text-entity = DDEDIT  選擇文字實體：
     .dimaligned-enter-dimension-text-blank-measured = DIMALIGNED  輸入標註文字（空白 = 測量值）：
-    .dimaligned-specify-dimension-line-location-tex = DIMALIGNED  指定尺寸線位置  [文字/角度]：
-    .dimaligned-specify-first-extension-line-origin = DIMALIGNED  指定第一條尺寸界線原點：
-    .dimaligned-specify-second-extension-line-origi = DIMALIGNED  指定第二條尺寸界線原點  [文字/角度]：
+    .dimaligned-enter-formatted-dimension-text-blank-measured = DIMALIGNED  輸入帶格式的標註文字（空白 = 測量值）：
+    .dimaligned-select-object-to-dimension = DIMALIGNED  選取要標註的物件：
+    .dimaligned-specify-dimension-line-location-tex = DIMALIGNED  指定尺寸線位置 [Mtext/文字/角度]：
+    .dimaligned-specify-first-extension-line-origin = DIMALIGNED  指定第一條尺寸界線原點，或按 Enter 選取物件：
+    .dimaligned-specify-second-extension-line-origi = DIMALIGNED  指定第二條尺寸界線原點：
     .dimaligned-specify-text-angle-degrees = DIMALIGNED  指定文字角度（度）：
+    .dimangular-enter-dimension-text-blank-measured = DIMANGULAR  輸入標註文字（空白 = 測量值）：
+    .dimangular-enter-formatted-dimension-text-blank-measured = DIMANGULAR  輸入帶格式的標註文字（空白 = 測量值）：
+    .dimangular-select-arc-circle-line-or-specify-angle-vertex = DIMANGULAR  選取圓弧、圓或直線，或指定角度頂點：
+    .dimangular-select-second-line = DIMANGULAR  選取第二條直線：
     .dimangular-specify-angle-vertex = DIMANGULAR  指定角度頂點：
+    .dimangular-specify-dimension-arc-location-options = DIMANGULAR  指定標註圓弧位置 [Mtext/文字/角度/象限]：
     .dimangular-specify-dimension-arc-location = DIMANGULAR  指定標註圓弧位置：
     .dimangular-specify-first-extension-line-point = DIMANGULAR  指定第一條尺寸界線點：
+    .dimangular-specify-quadrant = DIMANGULAR  指定象限：
     .dimangular-specify-second-extension-line-point = DIMANGULAR  指定第二條尺寸界線點：
+    .dimangular-specify-second-point-for-text-angle = DIMANGULAR  指定文字角度的第二點：
+    .dimangular-specify-text-angle-or-first-point = DIMANGULAR  指定文字角度或第一點：
     .dimbaseline-no-base-dimension-found-place-a-di = DIMBASELINE  未找到基準標註。請先放置標註。
     .dimbaseline-specify-a-second-extension-line-or = DIMBASELINE  指定第二條尺寸界線原點（按 Enter 退出）：
     .dimbreak-select-dimension-to-break = DIMBREAK  選擇要打斷的標註：
@@ -1800,8 +1824,8 @@ annotate =
     .dimcontinue-no-base-dimension-found-place-a-di = DIMCONTINUE  未找到基準標註。請先放置標註。
     .dimcontinue-specify-a-second-extension-line-or = DIMCONTINUE  指定第二條尺寸界線原點（按 Enter 退出）：
     .dimdiameter-enter-dimension-text-blank-measure = DIMDIAMETER  輸入標註文字（空白 = 測量值）：
-    .dimdiameter-specify-center-point = DIMDIAMETER  指定中心點：
-    .dimdiameter-specify-dimension-line-location-te = DIMDIAMETER  指定尺寸線位置  [文字/角度]：
+    .dimdiameter-select-arc-circle-or-polyline-arc = DIMDIAMETER  選擇圓弧、圓或聚合線圓弧：
+    .dimdiameter-specify-dimension-line-location-text = DIMDIAMETER  指定尺寸線位置  [多行文字/文字/角度]：
     .dimdiameter-specify-point-on-circle = DIMDIAMETER  指定圓上的點：
     .dimdiameter-specify-text-angle-degrees = DIMDIAMETER  指定文字角度（度）：
     .dimedit-enter-text-override-blank-reset-to-mea = DIMEDIT  輸入文字替代（空白 = 重置為測量值）：
@@ -1817,10 +1841,12 @@ annotate =
     .dimlinear-specify-second-extension-line-origin = DIMLINEAR  指定第二條尺寸界線原點  [文字/角度]：
     .dimlinear-specify-text-angle-degrees = DIMLINEAR  指定文字角度（度）：
     .dimordinate-specify-feature-location = DIMORDINATE  指定特徵位置：
-    .dimordinate-specify-leader-endpoint = DIMORDINATE  指定引線端點：
+    .dimordinate-enter-dimension-text-blank-measured = DIMORDINATE  輸入標註文字（空白 = 測量值）：
+    .dimordinate-specify-leader-endpoint = DIMORDINATE  指定引線端點 [Xdatum/Ydatum/Mtext/Text/Angle]：
+    .dimordinate-specify-text-angle-degrees = DIMORDINATE  指定文字角度（度）：
     .dimradius-enter-dimension-text-blank-measured = DIMRADIUS  輸入標註文字（空白 = 測量值）：
-    .dimradius-specify-center-point = DIMRADIUS  指定中心點：
-    .dimradius-specify-dimension-line-location-text = DIMRADIUS  指定尺寸線位置  [文字/角度]：
+    .dimradius-select-arc-circle-or-polyline-arc = DIMRADIUS  選擇圓弧、圓或聚合線圓弧：
+    .dimradius-specify-dimension-line-location-text = DIMRADIUS  指定尺寸線位置  [多行文字/文字/角度]：
     .dimradius-specify-radius-point = DIMRADIUS  指定半徑點：
     .dimradius-specify-text-angle-degrees = DIMRADIUS  指定文字角度（度）：
     .dimspace-enter-value-0-auto = DIMSPACE  輸入值（0 = 自動）：
@@ -1852,6 +1878,7 @@ annotate =
         資料
     .lower = 下調
     .mleader-specify-arrowhead-point = MLEADER  指定箭頭點：
+    .mleader-specify-landing-point = MLEADER  指定水平基線點：
     .mleader-specify-next-point-count-pts-enter-to = MLEADER  指定下一點 [__ocs_arg_count__ 個點 — 按 Enter 放置文字]：
     .mleaderadd-select-a-multileader = MLEADERADD  選擇多重引線：
     .mleaderadd-specify-arrowhead-location = MLEADERADD  指定箭頭位置：
@@ -2017,6 +2044,15 @@ insert =
     .object-s-cut-to-clipboard = __ocs_fmt_0__ 物件切入剪貼簿。
 
 model =
+    .create = 建立
+    .boolean = 布林運算
+    .pyramid = 角錐體
+    .polysolid = 多段實體
+    .extrude = 擠出
+    .revolve = 旋轉
+    .loft = 放樣
+    .sweep = 掃掠
+    .presspull = 按拉
     .n-specify-center-point = __ocs_arg_n__  指定中心點：
     .n-specify-first-corner = __ocs_arg_n__  指定第一個角點：
     .n-specify-height-enter-for-default = __ocs_arg_n__  指定高度（按 Enter 使用預設值）：
@@ -2317,6 +2353,7 @@ view =
     .zoom-extents =
         縮放
         範圍
+    .cmd-no-hatch-objects = __ocs_fmt_0__:µ▓Æµ£ëÕí½ÕààþÀÜþë®õ╗ÂÒÇé
     .cmd-no-text-or-dimension-objects = __ocs_fmt_0__:沒有文字或維度物件。
     .cmd-not-yet-implemented = __ocs_fmt_0__:尚未實作。
     .viewport-s-in-layout = 配置“__ocs_fmt_1__”中的視口（__ocs_fmt_0__ 個）：
@@ -2694,6 +2731,9 @@ properties =
     .plot-style-table = 列印樣式表
     .plot-table-attached-to = 列印樣式表應用於
     .plot-table-type = 列印樣式表類型
+    .color-dependent-plot-styles = 色彩相關出圖型式
+    .named-plot-styles = 具名出圖型式
+    .plot-style-is-locked-to-color-in-color-dependent = 在色彩相關 (CTB) 模式下，出圖型式由色彩決定
     .point-1-x = 點 1 X
     .point-1-y = 點 1 Y
     .point-1-z = 點 1 Z
@@ -3056,7 +3096,7 @@ styles =
     .pdmode-new-value-0-dot-1-none-2-3-x-4-tick-32 = PDMODE 新值 [0=點 1=無 2=+ 3=× 4=短划；+32 圓 +64 方框]：
     .pdmode-v = PDMODE = __ocs_fmt_0__ 時間軸 :
     .pdmode-set-to-v = PDMODE 設定為__ocs_fmt_0__
-    .pdsize-new-point-size-0-5-of-viewport-0-absolu = PDSIZE 指定新點大小（0 = 視口的 5%，<0 = 絕對值）：
+    .pdsize-new-point-size-0-5-of-viewport-0-absolu = PDSIZE 指定新點大小（0 = 視口的 5%，>0 = 絕對值，<0 = 視口百分比）：
     .pdsize-v-4 = PDSIZE = __ocs_fmt_0__ 時間軸 :
     .pdsize-set-to-v-4 = PDSIZE 設定為__ocs_fmt_0__
     .pickadd = PICKADD = __ocs_fmt_0__ (__ocs_fmt_1__)

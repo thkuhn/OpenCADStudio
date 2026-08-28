@@ -30,7 +30,7 @@ ribbon-tab =
     .draw = 作図
     .annotate = 注釈
     .insert = 挿入
-    .model = モデル
+    .model = モデリング
     .layout = レイアウト
     .manage = 管理
     .view = 表示
@@ -304,6 +304,7 @@ common =
     .block-rotation = ブロック回転
     .blocks = ブロック
     .blue = 青
+    .bulge = ふくらみ
     .boolean-failed-the-solids-may-not-overlap = ブール演算に失敗しました — ソリッドが重なっていない可能性があります。
     .boolean-select-exactly-two-solids-created-this = ブール演算: このセッションで作成したソリッドを 2 つ選択してください。
     .bottom = 下
@@ -322,6 +323,7 @@ common =
     .brightness = 明るさ
     .by-layer = レイヤー別
     .byblock = ブロック依存
+    .bycolor = 色依存
     .bylayer = レイヤー依存
     .convtosurface-converted-n-solid-s-to-surface-s = CONVTOSURFACE: __ocs_fmt_0__ 個のソリッドをサーフェスに変換しました。
     .convtosurface-select-a-solid-created-this-sess = CONVTOSURFACE: このセッションで作成したソリッドを選択してください。
@@ -1319,6 +1321,18 @@ draw =
     .ray-specify-through-point = RAY  通過点を指定:
     .rect-specify-first-corner = RECT  最初のコーナーを指定:
     .rect-specify-opposite-corner = RECT  反対側のコーナーを指定:
+    .rect-calculate-dimensions-based-on-length-width = RECT  [長さ / 幅] に基づいて寸法を計算 <長さ>:
+    .rect-specify-elevation = RECT  高度を指定 <__ocs_fmt_0__>:
+    .rect-specify-fillet-radius = RECT  フィレット半径を指定 <__ocs_fmt_0__>:
+    .rect-specify-first-chamfer-distance = RECT  1 番目の面取り距離を指定 <__ocs_fmt_0__>:
+    .rect-specify-orientation-from-the-first-corner = RECT  最初のコーナーから方向を指定:
+    .rect-specify-rectangle-area = RECT  長方形の面積を指定:
+    .rect-specify-rectangle-length = RECT  長方形の長さを指定:
+    .rect-specify-rectangle-width = RECT  長方形の幅を指定:
+    .rect-specify-rotation-angle = RECT  回転角度を指定 <__ocs_fmt_0__>:
+    .rect-specify-second-chamfer-distance = RECT  2 番目の面取り距離を指定 <__ocs_fmt_0__>:
+    .rect-specify-thickness = RECT  厚さを指定 <__ocs_fmt_0__>:
+    .rect-specify-width = RECT  幅を指定 <__ocs_fmt_0__>:
     .rect-cen-specify-center-point = RECT CEN  中心点を指定:
     .rect-cen-specify-corner-point = RECT CEN  コーナー点を指定:
     .rect-rot-specify-adjacent-corner-defines-edge = RECT ROT  隣接コーナーを指定（エッジ方向を定義）:
@@ -1776,14 +1790,24 @@ annotate =
     .collect-leaders = 引出線を収集
     .ddedit-select-text-entity = DDEDIT  文字図形を選択:
     .dimaligned-enter-dimension-text-blank-measured = DIMALIGNED  寸法値を入力（空白 = 計測値）:
-    .dimaligned-specify-dimension-line-location-tex = DIMALIGNED  寸法線の位置を指定 [文字/角度]:
-    .dimaligned-specify-first-extension-line-origin = DIMALIGNED  1 本目の寸法補助線の起点を指定:
-    .dimaligned-specify-second-extension-line-origi = DIMALIGNED  2 本目の寸法補助線の起点を指定 [文字/角度]:
+    .dimaligned-enter-formatted-dimension-text-blank-measured = DIMALIGNED  書式付き寸法文字を入力（空白 = 計測値）:
+    .dimaligned-select-object-to-dimension = DIMALIGNED  寸法を記入するオブジェクトを選択:
+    .dimaligned-specify-dimension-line-location-tex = DIMALIGNED  寸法線の位置を指定 [Mtext/文字/角度]:
+    .dimaligned-specify-first-extension-line-origin = DIMALIGNED  1 本目の寸法補助線の起点を指定、または Enter でオブジェクトを選択:
+    .dimaligned-specify-second-extension-line-origi = DIMALIGNED  2 本目の寸法補助線の起点を指定:
     .dimaligned-specify-text-angle-degrees = DIMALIGNED  文字角度を指定（度）:
+    .dimangular-enter-dimension-text-blank-measured = DIMANGULAR  寸法値を入力（空白 = 計測値）:
+    .dimangular-enter-formatted-dimension-text-blank-measured = DIMANGULAR  書式付き寸法文字を入力（空白 = 計測値）:
+    .dimangular-select-arc-circle-line-or-specify-angle-vertex = DIMANGULAR  円弧、円、線分を選択、または角度の頂点を指定:
+    .dimangular-select-second-line = DIMANGULAR  2 本目の線分を選択:
     .dimangular-specify-angle-vertex = DIMANGULAR  角度の頂点を指定:
+    .dimangular-specify-dimension-arc-location-options = DIMANGULAR  寸法円弧の位置を指定 [Mtext/文字/角度/象限]:
     .dimangular-specify-dimension-arc-location = DIMANGULAR  寸法円弧の位置を指定:
     .dimangular-specify-first-extension-line-point = DIMANGULAR  1 本目の寸法補助線の点を指定:
+    .dimangular-specify-quadrant = DIMANGULAR  象限を指定:
     .dimangular-specify-second-extension-line-point = DIMANGULAR  2 本目の寸法補助線の点を指定:
+    .dimangular-specify-second-point-for-text-angle = DIMANGULAR  文字角度の 2 点目を指定:
+    .dimangular-specify-text-angle-or-first-point = DIMANGULAR  文字角度または 1 点目を指定:
     .dimbaseline-no-base-dimension-found-place-a-di = DIMBASELINE  基準寸法がありません。先に寸法を配置してください。
     .dimbaseline-specify-a-second-extension-line-or = DIMBASELINE  2 本目の寸法補助線の起点を指定（Enter で終了）:
     .dimbreak-select-dimension-to-break = DIMBREAK  分割する寸法を選択:
@@ -1791,8 +1815,8 @@ annotate =
     .dimcontinue-no-base-dimension-found-place-a-di = DIMCONTINUE  基準寸法がありません。先に寸法を配置してください。
     .dimcontinue-specify-a-second-extension-line-or = DIMCONTINUE  2 本目の寸法補助線の起点を指定（Enter で終了）:
     .dimdiameter-enter-dimension-text-blank-measure = DIMDIAMETER  寸法値を入力（空白 = 計測値）:
-    .dimdiameter-specify-center-point = DIMDIAMETER  中心点を指定:
-    .dimdiameter-specify-dimension-line-location-te = DIMDIAMETER  寸法線の位置を指定 [文字/角度]:
+    .dimdiameter-select-arc-circle-or-polyline-arc = DIMDIAMETER  円弧、円、またはポリライン円弧を選択:
+    .dimdiameter-specify-dimension-line-location-text = DIMDIAMETER  寸法線の位置を指定 [マルチテキスト/文字/角度]:
     .dimdiameter-specify-point-on-circle = DIMDIAMETER  円上の点を指定:
     .dimdiameter-specify-text-angle-degrees = DIMDIAMETER  文字角度を指定（度）:
     .dimedit-enter-text-override-blank-reset-to-mea = DIMEDIT  寸法値の上書きを入力（空白 = 計測値に戻す）:
@@ -1808,10 +1832,12 @@ annotate =
     .dimlinear-specify-second-extension-line-origin = DIMLINEAR  2 本目の寸法補助線の起点を指定 [文字/角度]:
     .dimlinear-specify-text-angle-degrees = DIMLINEAR  文字角度を指定（度）:
     .dimordinate-specify-feature-location = DIMORDINATE  フィーチャ位置を指定:
-    .dimordinate-specify-leader-endpoint = DIMORDINATE  引出線の終点を指定:
+    .dimordinate-enter-dimension-text-blank-measured = DIMORDINATE  寸法値を入力（空白 = 計測値）:
+    .dimordinate-specify-leader-endpoint = DIMORDINATE  引出線の終点を指定 [Xdatum/Ydatum/Mtext/Text/Angle]:
+    .dimordinate-specify-text-angle-degrees = DIMORDINATE  文字角度を指定（度）:
     .dimradius-enter-dimension-text-blank-measured = DIMRADIUS  寸法値を入力（空白 = 計測値）:
-    .dimradius-specify-center-point = DIMRADIUS  中心点を指定:
-    .dimradius-specify-dimension-line-location-text = DIMRADIUS  寸法線の位置を指定 [文字/角度]:
+    .dimradius-select-arc-circle-or-polyline-arc = DIMRADIUS  円弧、円、またはポリライン円弧を選択:
+    .dimradius-specify-dimension-line-location-text = DIMRADIUS  寸法線の位置を指定 [マルチテキスト/文字/角度]:
     .dimradius-specify-radius-point = DIMRADIUS  半径点を指定:
     .dimradius-specify-text-angle-degrees = DIMRADIUS  文字角度を指定（度）:
     .dimspace-enter-value-0-auto = DIMSPACE  値を入力（0 = 自動）:
@@ -1843,6 +1869,7 @@ annotate =
         リンク
     .lower = 下げる
     .mleader-specify-arrowhead-point = MLEADER  矢印位置を指定:
+    .mleader-specify-landing-point = MLEADER  ランディング点を指定:
     .mleader-specify-next-point-count-pts-enter-to = MLEADER  次の点を指定 [__ocs_arg_count__ 点 — Enter で文字を配置]:
     .mleaderadd-select-a-multileader = MLEADERADD  マルチ引出線を選択:
     .mleaderadd-specify-arrowhead-location = MLEADERADD  矢印位置を指定:
@@ -2010,6 +2037,15 @@ insert =
     .object-s-cut-to-clipboard = __ocs_fmt_0__ 個のオブジェクトを切り取ってクリップボードに保存しました。
 
 model =
+    .create = 作成
+    .boolean = ブール演算
+    .pyramid = ピラミッド
+    .polysolid = ポリソリッド
+    .extrude = 押し出し
+    .revolve = 回転
+    .loft = ロフト
+    .sweep = スイープ
+    .presspull = プレスプル
     .n-specify-center-point = __ocs_arg_n__  中心点を指定:
     .n-specify-first-corner = __ocs_arg_n__  最初のコーナーを指定:
     .n-specify-height-enter-for-default = __ocs_arg_n__  高さを指定 <Enter で既定値>:
@@ -2310,6 +2346,7 @@ view =
     .zoom-extents =
         全体表示
         ズーム
+    .cmd-no-hatch-objects = __ocs_fmt_0__: ÒâÅÒââÒâüÒâ│Òé░ Òé¬ÒâûÒé©ÒéºÒé»ÒâêÒüîÒüéÒéèÒü¥ÒüøÒéôÒÇé
     .cmd-no-text-or-dimension-objects = __ocs_fmt_0__: テキストまたは寸法オブジェクトがありません。
     .cmd-not-yet-implemented = __ocs_fmt_0__: まだ実装されていません。
     .viewport-s-in-layout = レイアウト「__ocs_fmt_1__」内の __ocs_fmt_0__ 個のビューポート:
@@ -2687,6 +2724,9 @@ properties =
     .plot-style-table = 印刷スタイルテーブル
     .plot-table-attached-to = 印刷テーブルのアタッチ先
     .plot-table-type = 印刷テーブルの種類
+    .color-dependent-plot-styles = 色従属印刷スタイル
+    .named-plot-styles = 名前付き印刷スタイル
+    .plot-style-is-locked-to-color-in-color-dependent = 色従属（CTB）モードでは、印刷スタイルは色に固定されます
     .point-1-x = 点 1 X
     .point-1-y = 点 1 Y
     .point-1-z = 点 1 Z
@@ -3049,7 +3089,7 @@ styles =
     .pdmode-new-value-0-dot-1-none-2-3-x-4-tick-32 = PDMODE  新しい値 [0=点 1=なし 2=+ 3=x 4=目盛り、+32 円 +64 正方形]:
     .pdmode-v = PDMODE = __ocs_fmt_0__
     .pdmode-set-to-v = PDMODE を __ocs_fmt_0__ に設定しました
-    .pdsize-new-point-size-0-5-of-viewport-0-absolu = PDSIZE  新しい点サイズ（0=ビューポートの 5%、<0=絶対値）:
+    .pdsize-new-point-size-0-5-of-viewport-0-absolu = PDSIZE  新しい点サイズ（0=ビューポートの 5%、>0=絶対値、<0=ビューポートの割合）:
     .pdsize-v-4 = PDSIZE = __ocs_fmt_0__
     .pdsize-set-to-v-4 = PDSIZE を __ocs_fmt_0__ に設定しました
     .pickadd = PICKADD = __ocs_fmt_0__ (__ocs_fmt_1__)

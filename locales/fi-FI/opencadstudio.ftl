@@ -30,7 +30,7 @@ ribbon-tab =
     .draw = Piirrä
     .annotate = Merkinnät
     .insert = Lisää
-    .model = Malli
+    .model = Mallinnus
     .layout = Asettelu
     .manage = Hallinta
     .view = Näkymä
@@ -313,6 +313,7 @@ common =
     .block-rotation = Lohkon kierto
     .blocks = Lohkot
     .blue = Sininen
+    .bulge = Kaarevuus
     .boolean-failed-the-solids-may-not-overlap = Boolen arvo epäonnistui – kiinteät aineet eivät ehkä mene päällekkäin.
     .boolean-select-exactly-two-solids-created-this = Boolen arvo: valitse täsmälleen kaksi tässä istunnossa luotua solidia.
     .bottom = Pohja
@@ -331,6 +332,7 @@ common =
     .brightness = Kirkkaus
     .by-layer = Kerroksen mukaan
     .byblock = ByBlock
+    .bycolor = Värin mukaan
     .bylayer = Layerin mukaan
     .convtosurface-converted-n-solid-s-to-surface-s = CONVTOSURFACE: muutettu __ocs_fmt_0__-kiintoaine(t) pinnoiksi.
     .convtosurface-select-a-solid-created-this-sess = CONVTOSURFACE: valitse tässä istunnossa luotu solid.
@@ -1328,6 +1330,18 @@ draw =
     .ray-specify-through-point = RAY Määritä pisteen kautta:
     .rect-specify-first-corner = RECT Määritä ensimmäinen kulma:
     .rect-specify-opposite-corner = RECT Määritä vastakkainen kulma:
+    .rect-calculate-dimensions-based-on-length-width = RECT  Laske mitat [Pituuden / Leveyden] perusteella <Pituus>:
+    .rect-specify-elevation = RECT  Määritä korkeusasema <__ocs_fmt_0__>:
+    .rect-specify-fillet-radius = RECT  Määritä pyöristyssäde <__ocs_fmt_0__>:
+    .rect-specify-first-chamfer-distance = RECT  Määritä ensimmäinen viiste-etäisyys <__ocs_fmt_0__>:
+    .rect-specify-orientation-from-the-first-corner = RECT  Määritä suunta ensimmäisestä kulmasta:
+    .rect-specify-rectangle-area = RECT  Määritä suorakulmion pinta-ala:
+    .rect-specify-rectangle-length = RECT  Määritä suorakulmion pituus:
+    .rect-specify-rectangle-width = RECT  Määritä suorakulmion leveys:
+    .rect-specify-rotation-angle = RECT  Määritä kiertokulma <__ocs_fmt_0__>:
+    .rect-specify-second-chamfer-distance = RECT  Määritä toinen viiste-etäisyys <__ocs_fmt_0__>:
+    .rect-specify-thickness = RECT  Määritä paksuus <__ocs_fmt_0__>:
+    .rect-specify-width = RECT  Määritä leveys <__ocs_fmt_0__>:
     .rect-cen-specify-center-point = RECT CEN Määritä keskipiste:
     .rect-cen-specify-corner-point =RECT CEN Määritä kulmapiste:
     .rect-rot-specify-adjacent-corner-defines-edge = RECT ROT Määritä viereinen kulma (määrittää reunasuunnan):
@@ -1785,14 +1799,24 @@ annotate =
     .collect-leaders = Kerää johtajia
     .ddedit-select-text-entity = DDEDIT Valitse tekstikokonaisuus:
     .dimaligned-enter-dimension-text-blank-measured = DIMALIGNED Enter mittateksti (tyhjä = mitattu arvo):
-    .dimaligned-specify-dimension-line-location-tex = DIMALIGNED Määritä mittaviivan sijainti [teksti/kulma]:
-    .dimaligned-specify-first-extension-line-origin = DIMALIGNED Määritä ensimmäisen jatkolinjan alkuperä:
-    .dimaligned-specify-second-extension-line-origi = DIMALIGNED Määritä toisen jatkolinjan alkuperä [teksti/kulma]:
+    .dimaligned-enter-formatted-dimension-text-blank-measured = DIMALIGNED Syötä muotoiltu mittateksti (tyhjä = mitattu arvo):
+    .dimaligned-select-object-to-dimension = DIMALIGNED Valitse mitoitettava objekti:
+    .dimaligned-specify-dimension-line-location-tex = DIMALIGNED Määritä mittaviivan sijainti [Mtext/Teksti/Kulma]:
+    .dimaligned-specify-first-extension-line-origin = DIMALIGNED Määritä ensimmäisen apuviivan alkupiste tai valitse objekti painamalla Enter:
+    .dimaligned-specify-second-extension-line-origi = DIMALIGNED Määritä toisen apuviivan alkupiste:
     .dimaligned-specify-text-angle-degrees = DIMALIGNED Määritä tekstin kulma (asteita):
+    .dimangular-enter-dimension-text-blank-measured = DIMANGULAR Syötä mittateksti (tyhjä = mitattu arvo):
+    .dimangular-enter-formatted-dimension-text-blank-measured = DIMANGULAR Syötä muotoiltu mittateksti (tyhjä = mitattu arvo):
+    .dimangular-select-arc-circle-line-or-specify-angle-vertex = DIMANGULAR Valitse kaari, ympyrä tai viiva tai määritä kulman kärkipiste:
+    .dimangular-select-second-line = DIMANGULAR Valitse toinen viiva:
     .dimangular-specify-angle-vertex = DIMANGULAR Määritä kulman kärkipiste:
+    .dimangular-specify-dimension-arc-location-options = DIMANGULAR Määritä mittakaaren sijainti [Mtext/Teksti/Kulma/Neljännes]:
     .dimangular-specify-dimension-arc-location = DIMANGULAR Määritä mittakaaren sijainti:
     .dimangular-specify-first-extension-line-point = DIMANGULAR Määritä ensimmäinen jatkolinjan piste:
+    .dimangular-specify-quadrant = DIMANGULAR Määritä neljännes:
     .dimangular-specify-second-extension-line-point = DIMANGULAR Määritä toinen jatkolinjan piste:
+    .dimangular-specify-second-point-for-text-angle = DIMANGULAR Määritä tekstikulman toinen piste:
+    .dimangular-specify-text-angle-or-first-point = DIMANGULAR Määritä tekstikulma tai ensimmäinen piste:
     .dimbaseline-no-base-dimension-found-place-a-di = DIMBASELINE Perusmittaa ei löytynyt. Aseta ensin mitta.
     .dimbaseline-specify-a-second-extension-line-or = DIMBASELINE Määritä toinen alalinjan lähtökohta (Enter poistuaksesi):
     .dimbreak-select-dimension-to-break = DIMBREAK Valitse katkaistava mitta:
@@ -1800,8 +1824,8 @@ annotate =
     .dimcontinue-no-base-dimension-found-place-a-di = DIMCONTINUE Perusmittaa ei löytynyt. Aseta ensin mitta.
     .dimcontinue-specify-a-second-extension-line-or = DIMCONTINUE Määritä toinen alalinjan lähtökohta (Enter poistuaksesi):
     .dimdiameter-enter-dimension-text-blank-measure = DIMDIAMETER Enter mittateksti (tyhjä = mitattu arvo):
-    .dimdiameter-specify-center-point = DIMDIAMETER Määritä keskipiste:
-    .dimdiameter-specify-dimension-line-location-te = DIMDIAMETER Määritä mittaviivan sijainti [teksti/kulma]:
+    .dimdiameter-select-arc-circle-or-polyline-arc = DIMDIAMETER Valitse kaari, ympyrä tai murtoviivan kaari:
+    .dimdiameter-specify-dimension-line-location-text = DIMDIAMETER Määritä mittaviivan sijainti [Mteksti/teksti/kulma]:
     .dimdiameter-specify-point-on-circle = DIMDIAMETER Määritä piste ympyrässä:
     .dimdiameter-specify-text-angle-degrees = DIMDIAMETER Määritä tekstin kulma (asteita):
     .dimedit-enter-text-override-blank-reset-to-mea = DIMEDIT Enter tekstin ohitus (tyhjä = nollattu mitattuun):
@@ -1817,10 +1841,12 @@ annotate =
     .dimlinear-specify-second-extension-line-origin = DIMLINEAR Määritä toisen jatkolinjan alkuperä [teksti/kulma]:
     .dimlinear-specify-text-angle-degrees = DIMLINEAR Määritä tekstin kulma (asteita):
     .dimordinate-specify-feature-location = DIMORDINATE Määritä ominaisuuden sijainti:
-    .dimordinate-specify-leader-endpoint = DIMORDINATE Määritä johtajan päätepiste:
+    .dimordinate-enter-dimension-text-blank-measured = DIMORDINATE Syötä mittateksti (tyhjä = mitattu arvo):
+    .dimordinate-specify-leader-endpoint = DIMORDINATE Määritä johtajan päätepiste [Xdatum/Ydatum/Mtext/Text/Angle]:
+    .dimordinate-specify-text-angle-degrees = DIMORDINATE Määritä tekstin kulma (asteita):
     .dimradius-enter-dimension-text-blank-measured = DIMRADIUS Enter mittateksti (tyhjä = mitattu arvo):
-    .dimradius-specify-center-point = DIMRADIUS Määritä keskipiste:
-    .dimradius-specify-dimension-line-location-text = DIMRADIUS Määritä mittaviivan sijainti [teksti/kulma]:
+    .dimradius-select-arc-circle-or-polyline-arc = DIMRADIUS Valitse kaari, ympyrä tai murtoviivan kaari:
+    .dimradius-specify-dimension-line-location-text = DIMRADIUS Määritä mittaviivan sijainti [Mteksti/teksti/kulma]:
     .dimradius-specify-radius-point = DIMRADIUS Määritä sädepiste:
     .dimradius-specify-text-angle-degrees = DIMRADIUS Määritä tekstin kulma (asteita):
     .dimspace-enter-value-0-auto = DIMSPACE Enter-arvo (0 = automaattinen):
@@ -1852,6 +1878,7 @@ annotate =
         Data
     .lower = Alempi
     .mleader-specify-arrowhead-point = MLEADER Määritä nuolenpää:
+    .mleader-specify-landing-point = MLEADER Määritä vaakaviivan piste:
     .mleader-specify-next-point-count-pts-enter-to = MLEADER Määritä seuraava piste [__ocs_arg_count__ pts — Enter tekstin sijoittamiseksi]:
     .mleaderadd-select-a-multileader = MLEADERADD Valitse monijohtaja:
     .mleaderadd-specify-arrowhead-location =MLEADERADD Määritä nuolenpään sijainti:
@@ -2021,6 +2048,15 @@ insert =
     .object-s-cut-to-clipboard = __ocs_fmt_0__ objekti(t) leikattu leikepöydälle.
 
 model =
+    .create = Luo
+    .boolean = Boolen operaatiot
+    .pyramid = Pyramidi
+    .polysolid = Monikappale
+    .extrude = Pursota
+    .revolve = Pyöräytä
+    .loft = Loftaus
+    .sweep = Pyyhkäisy
+    .presspull = Työnnä/vedä
     .n-specify-center-point = __ocs_arg_n__ Määritä keskipiste:
     .n-specify-first-corner = __ocs_arg_n__ Määritä ensimmäinen kulma:
     .n-specify-height-enter-for-default = __ocs_arg_n__ Määritä korkeus <Enter for default>:
@@ -2321,6 +2357,7 @@ view =
     .zoom-extents =
         Zoomaa
         Laajuudet
+    .cmd-no-hatch-objects = __ocs_fmt_0__: ei t├ñytt├Âobjekteja.
     .cmd-no-text-or-dimension-objects = __ocs_fmt_0__: ei tekstiä tai mittaobjekteja.
     .cmd-not-yet-implemented = __ocs_fmt_0__: ei vielä otettu käyttöön.
     .viewport-s-in-layout =__ocs_fmt_0__-näkymä(t) asettelussa "__ocs_fmt_1__":
@@ -2698,6 +2735,9 @@ properties =
     .plot-style-table = Juontyylinen pöytä
     .plot-table-attached-to =Tonttitaulukko liitteenä
     .plot-table-type = Piirretaulukon tyyppi
+    .color-dependent-plot-styles = Väristä riippuvat tulostustyylit
+    .named-plot-styles = Nimetyt tulostustyylit
+    .plot-style-is-locked-to-color-in-color-dependent = Väristä riippuvassa tilassa (CTB) tulostustyyli määräytyy värin mukaan
     .point-1-x = Kohta 1 X
     .point-1-y = Kohta 1 Y
     .point-1-z = Kohta 1 Z
@@ -3060,7 +3100,7 @@ styles =
     .pdmode-new-value-0-dot-1-none-2-3-x-4-tick-32 = PDMODE uusi arvo [0=dot 1=none 2=+ 3=x 4=tick; +32 ympyrä +64 neliö]:
     .pdmode-v = PDMODE = __ocs_fmt_0__
     .pdmode-set-to-v = PDMODE asetettu arvoon __ocs_fmt_0__
-    .pdsize-new-point-size-0-5-of-viewport-0-absolu = PDSIZE uusi pistekoko (0 = 5 % kuvaportista, <0 = absoluuttinen):
+    .pdsize-new-point-size-0-5-of-viewport-0-absolu = PDSIZE uusi pistekoko (0 = 5 % kuvaportista, >0 = absoluuttinen, <0 = kuvaportin prosenttiosuus):
     .pdsize-v-4 = PDSIZE = __ocs_fmt_0__
     .pdsize-set-to-v-4 = PDSIZE asetettu arvoon __ocs_fmt_0__
     .pickadd = PICKADD = __ocs_fmt_0__ (__ocs_fmt_1__)

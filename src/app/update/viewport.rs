@@ -341,8 +341,9 @@ impl OpenCADStudio {
             .abs();
         if !self.point_size_relative && mag == 0.0 {
             let wpp = self.tabs[i].scene.world_per_pixel().unwrap_or(0.0);
+            let viewport_height = self.tabs[i].scene.selection.borrow().vp_size.1;
             mag = if wpp > 0.0 {
-                crate::entities::point::relative_world_size(0.0, wpp)
+                crate::entities::point::relative_world_size(0.0, wpp, viewport_height)
             } else {
                 1.0
             };
@@ -808,6 +809,7 @@ impl OpenCADStudio {
         // render mode; the model-layout tab style is untouched.
         if self.tabs[i].scene.set_active_viewport_render_mode(mode) {
             self.tabs[i].scene.bump_geometry_no_blocks();
+            self.tabs[i].dirty = true;
             self.command_line
                 .push_output(crate::tf!("Viewport visual style: {label}").as_ref());
             return Task::none();
@@ -826,6 +828,7 @@ impl OpenCADStudio {
         // Re-upload face3d fills on the next frame — the render
         // pipeline keys its upload cache off `geometry_epoch`.
         self.tabs[i].scene.bump_geometry_no_blocks();
+        self.tabs[i].dirty = true;
         self.command_line
             .push_output(crate::tf!("Visual style: {label}").as_ref());
         Task::none()
@@ -2280,7 +2283,9 @@ impl OpenCADStudio {
                         let far_pos = base + dir * far;
                         let far_neg = base - dir * far;
                         let guide = crate::scene::WireModel {
+                            point_marker: None,
                             taper_widths: Vec::new(),
+                            pattern_stations: Vec::new(),
                             world_width: 0.0,
                             depth_override: None,
                             display_visible: true,
@@ -3547,6 +3552,38 @@ impl OpenCADStudio {
                     })?
                 });
                 if let Some(handle) = hit {
+                    let uses_surface_point = self.tabs[i]
+                        .active_cmd
+                        .as_ref()
+                        .is_some_and(|command| command.entity_pick_uses_surface_point());
+                    let entity_pick_point = if uses_surface_point {
+                        self.tabs[i]
+                            .scene
+                            .solid_click_point_for(p, view_rot2, eye2, bounds, handle)
+                            .unwrap_or(pick_wcs)
+                    } else {
+                        pick_wcs
+                    };
+                    let entity_pick_direction = if uses_surface_point {
+                        if matches!(
+                            self.tabs[i].scene.document.get_entity(handle),
+                            Some(acadrust::EntityType::Solid3D(_))
+                        ) {
+                            self.tabs[i]
+                                .scene
+                                .solid_planar_face_normal_at(handle, entity_pick_point)
+                        } else {
+                            self.tabs[i]
+                                .scene
+                                .document
+                                .get_entity(handle)
+                                .and_then(crate::entities::curve::entity_curve)
+                                .and_then(|curve| curve.plane.normal())
+                                .map(glam::DVec3::from_array)
+                        }
+                    } else {
+                        None
+                    };
                     // Some commands (e.g. SS_CATCHMENT) need the entity
                     // body before `on_entity_pick` can advance.
                     let inject_first = self.tabs[i]
@@ -3577,7 +3614,8 @@ impl OpenCADStudio {
                     let result = self.tabs[i].active_cmd.as_mut().map(|c| {
                         // Shift-swap state for TRIM/EXTEND (#336).
                         c.set_shift(shift);
-                        c.on_entity_pick(handle, pick_wcs)
+                        c.set_entity_pick_direction(entity_pick_direction);
+                        c.on_entity_pick(handle, entity_pick_point)
                     });
                     // HATCHEDIT: after pick, inject hatch model data into the command.
                     if self.tabs[i]
@@ -4126,8 +4164,7 @@ impl OpenCADStudio {
                             )
                         })
                         .or_else(|| {
-                            // Block-internal hatch: resolve to the
-                            // parent Insert (AutoCAD behaviour).
+                            // Block-internal hatch: resolve to the parent Insert.
                             scene::pick::hit_test::click_hit_insert_hatch(
                                 p,
                                 self.tabs[i].scene.insert_hatches_for_click().as_ref(),
@@ -4483,6 +4520,104 @@ impl OpenCADStudio {
                         ).as_ref());
                         return Task::none();
                     }
+                    let table_editor = self.tabs[i]
+                        .scene
+                        .document
+                        .get_entity(handle)
+                        .and_then(|entity| match entity {
+                            AcadEntityType::Table(table) => {
+                                let horizontal = glam::DVec3::new(
+                                    table.horizontal_direction.x,
+                                    table.horizontal_direction.y,
+                                    table.horizontal_direction.z,
+                                )
+                                .normalize_or(glam::DVec3::X);
+                                let normal = glam::DVec3::new(
+                                    table.normal.x,
+                                    table.normal.y,
+                                    table.normal.z,
+                                )
+                                .normalize_or(glam::DVec3::Z);
+                                let mut down = horizontal
+                                    .cross(normal)
+                                    .normalize_or(glam::DVec3::NEG_Y);
+                                let table_style = table.table_style_handle.and_then(|style_handle| {
+                                    self.tabs[i]
+                                        .scene
+                                        .document
+                                        .objects
+                                        .get(&style_handle)
+                                        .and_then(|object| match object {
+                                            acadrust::objects::ObjectType::TableStyle(style) => {
+                                                Some(style)
+                                            }
+                                            _ => None,
+                                        })
+                                });
+                                let flows_up = crate::entities::table::resolved_flow_up(
+                                    table,
+                                    table_style,
+                                );
+                                if flows_up {
+                                    down = -down;
+                                }
+                                let origin = glam::DVec3::new(
+                                    table.insertion_point.x,
+                                    table.insertion_point.y,
+                                    table.insertion_point.z,
+                                );
+                                let relative = click_world - origin;
+                                let x = relative.dot(horizontal);
+                                let y = relative.dot(down);
+                                if x < 0.0 || y < 0.0 {
+                                    return None;
+                                }
+                                let column = table
+                                    .columns
+                                    .iter()
+                                    .scan(0.0, |offset, column| {
+                                        *offset += column.width;
+                                        Some(*offset)
+                                    })
+                                    .position(|end| x <= end)?;
+                                let row = table
+                                    .rows
+                                    .iter()
+                                    .scan(0.0, |offset, row| {
+                                        *offset += row.height;
+                                        Some(*offset)
+                                    })
+                                    .position(|end| y <= end)?;
+                                let locked = table.cell(row, column).is_some_and(|cell| {
+                                    use acadrust::entities::table::CellStateFlags;
+                                    cell.state.intersects(
+                                        CellStateFlags::CONTENT_LOCKED
+                                            | CellStateFlags::CONTENT_READ_ONLY,
+                                    )
+                                });
+                                Some((
+                                    (!locked).then(|| {
+                                        crate::modules::annotate::table_cmd::TableCellEditCommand::new(
+                                            handle, table, row, column,
+                                        )
+                                    }),
+                                    row * table.column_count() + column,
+                                ))
+                            }
+                            _ => None,
+                        });
+                    if let Some((command, cell_index)) = table_editor {
+                        self.tabs[i].properties.prop_vertex = cell_index;
+                        self.tabs[i].properties.prop_vertex_indicator_active = true;
+                        crate::entities::table::set_prop_current_cell(cell_index);
+                        self.refresh_properties();
+                        if let Some(command) = command {
+                            self.command_line
+                                .push_info(&crate::command::CadCommand::prompt(&command));
+                            self.tabs[i].active_cmd = Some(Box::new(command));
+                        }
+                        return Task::none();
+                    }
                     // Any text-bearing entity opens its in-place editor
                     // (plain box or rich MText editor, per type). A
                     // Leader resolves to the entity it annotates.
@@ -4613,7 +4748,10 @@ impl OpenCADStudio {
                     if let Some(AcadEntityType::Viewport(vp)) =
                         self.tabs[i].scene.document.get_entity(h)
                     {
-                        if Scene::is_content_viewport(vp) {
+                        if !Scene::is_sheet_viewport(
+                            &self.tabs[i].scene.document,
+                            vp,
+                        ) {
                             Some(h)
                         } else {
                             None
@@ -5286,8 +5424,7 @@ impl OpenCADStudio {
         self.tabs[i].scene.set_current_layout(name.clone());
         self.tabs[i].scene.deselect_all();
         let switch_ms = perf_phase.elapsed().as_secs_f64() * 1000.0;
-        // UCS follows the pane: model header UCS in the Model tab, none
-        // in plain paper space (a viewport's UCS is adopted on entry).
+        // UCS follows the active model, layout, or floating viewport pane.
         let perf_phase = Instant::now();
         self.tabs[i].refresh_active_ucs();
         self.tabs[i].scene.restore_saved_camera();
@@ -5351,10 +5488,28 @@ impl OpenCADStudio {
         self.push_undo_snapshot(i, "LAYOUT");
         match self.tabs[i].scene.document.add_layout(&new_name) {
             Ok(_) => {
-                // Override the acadrust default limits (12×9 imperial) with A4 landscape.
+                let layout_flags = i16::from(
+                    self.tabs[i]
+                        .scene
+                        .document
+                        .header
+                        .paper_space_linetype_scaling,
+                ) | (i16::from(
+                    self.tabs[i]
+                        .scene
+                        .document
+                        .header
+                        .paper_space_limit_check,
+                ) << 1);
+                let plot_style = self
+                    .active_plot_style
+                    .as_ref()
+                    .map(|style| style.name.clone())
+                    .unwrap_or_default();
                 for obj in self.tabs[i].scene.document.objects.values_mut() {
                     if let acadrust::objects::ObjectType::Layout(l) = obj {
                         if l.name == new_name {
+                            l.flags = layout_flags;
                             l.min_limits = (0.0, 0.0);
                             l.max_limits = (297.0, 210.0);
                             l.min_extents = (0.0, 0.0, 0.0);
@@ -5364,6 +5519,14 @@ impl OpenCADStudio {
                             l.plot_paper_units = 1;
                             l.plot_scale_numerator = 1.0;
                             l.plot_scale_denominator = 1.0;
+                            l.plot_scale_type = 16;
+                            l.plot_scale_factor = 1.0;
+                            l.plot_type = 5;
+                            l.plot_flags.use_standard_scale = true;
+                            l.plot_flags.print_lineweights = true;
+                            l.plot_flags.plot_plot_styles = !plot_style.is_empty();
+                            l.plot_flags.show_plot_styles = !plot_style.is_empty();
+                            l.plot_style_sheet = plot_style;
                             l.paper_size = "ISO_A4_(297.00_x_210.00_MM)".into();
                             break;
                         }

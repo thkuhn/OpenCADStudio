@@ -516,6 +516,9 @@ impl OpenCADStudio {
             if let Some(previous) = self.print_all_plot_window_prev.take() {
                 self.plot_window = previous;
             }
+            if let Some(previous) = self.print_all_plot_setup_prev.take() {
+                self.plot_setup_template = previous;
+            }
             self.print_all_options = false;
             self.active_modal = Some(PrintAll);
             self.reset_modal_geometry();
@@ -557,6 +560,7 @@ impl OpenCADStudio {
                 self.attr_editor_selected = 0;
                 self.attr_editor_tab = crate::ui::window::attribute_editor::AttrTab::Attribute;
             }
+            Some(GeometricTolerance) => self.geometric_tolerance = None,
             // Closing (✕) discards edits made since the last Apply — matching the
             // style editors. Committing happens only through the Apply button.
             Some(Aliases) => self.alias_editor_rows.clear(),
@@ -594,6 +598,25 @@ impl OpenCADStudio {
         } else {
             Task::none()
         }
+    }
+
+    /// Emit `SelectionChangedV4` to V4 plugins when the active tab's selection
+    /// set actually changed since the last broadcast.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(super) fn notify_plugins_selection_changed(&mut self) {
+        if self.active_tab >= self.tabs.len() {
+            return;
+        }
+        let i = self.active_tab;
+        let tab_id = self.tabs[i].id;
+        let fingerprint = self.tabs[i].scene.selection_fingerprint();
+        let key = (tab_id, fingerprint);
+        if self.last_plugin_selection == Some(key) {
+            return;
+        }
+        self.last_plugin_selection = Some(key);
+        let handles = self.tabs[i].scene.selected_handles_in_order();
+        crate::plugin::v4_support::publish_selection_changed_v4(tab_id, handles);
     }
 
     pub fn update(&mut self, msg: Message) -> Task<Message> {
@@ -640,6 +663,11 @@ impl OpenCADStudio {
         // The block panel watches the drawing's block list and rebuilds its
         // thumbnails whenever the names change (BLOCK define, file open, …).
         self.refresh_block_palette_if_stale();
+        // Let V4 plugins observe selection changes that happened while handling
+        // this message (picking, window select, QSELECT, SELECTALL, grip edits,
+        // and plugin request draining).
+        #[cfg(not(target_arch = "wasm32"))]
+        self.notify_plugins_selection_changed();
         // OTRACK acquires tracking points only while a command or grip drag is
         // running; drop them once neither is active so the temporary tracking
         // points / vectors disappear when the command ends (issue #64).
@@ -1820,9 +1848,38 @@ impl OpenCADStudio {
                     self.command_line.input = s;
                     return Task::batch(vec![sweep, self.update(Message::CommandSubmit)]);
                 }
-                self.command_line.input = s;
+                let live_input = s.clone();
+                self.command_line.input = live_input.clone();
                 self.command_line.autocomplete_cursor = None;
                 self.command_line.cancel_history_navigation();
+                // Live incremental search for INSERT/MINSERT: update picker on each keystroke
+                // without requiring Enter. Performance-first: uses upper/lower caches
+                // and partial sort (O(k)) so per-keystroke is <0.2ms even for 10k blocks.
+                // Suggestion count is in direct relation to CLIPROMPTLINES (picker limit).
+                {
+                    let i = self.active_tab;
+                    // Capture prompt/options while holding cmd borrow, then release before
+                    // borrowing command_line to satisfy borrow checker.
+                    let (should_update, opts, prompt) = if let Some(cmd) = self.tabs[i].active_cmd.as_mut() {
+                        if cmd.on_live_input(&live_input) {
+                            (true, cmd.options(), cmd.prompt())
+                        } else {
+                            (false, Vec::new(), String::new())
+                        }
+                    } else {
+                        (false, Vec::new(), String::new())
+                    };
+                    if should_update {
+                        self.command_line.set_step_options(opts);
+                        // Update pinned prompt text live without pushing new history entry
+                        // (avoids flooding history with one entry per keystroke).
+                        if let Some(last) = self.command_line.history.last_mut() {
+                            if last.pinned {
+                                last.text = prompt;
+                            }
+                        }
+                    }
+                }
                 Task::batch(vec![sweep, Task::none()])
             }
 
@@ -5964,6 +6021,40 @@ impl OpenCADStudio {
                 self.refresh_properties();
                 Task::none()
             }
+            Message::ToleranceDialogField(field) => {
+                if let Some(state) = self.geometric_tolerance.as_mut() {
+                    state.apply_field(field);
+                }
+                Task::none()
+            }
+            Message::ToleranceDialogToggle(toggle) => {
+                if let Some(state) = self.geometric_tolerance.as_mut() {
+                    state.apply_toggle(toggle);
+                }
+                Task::none()
+            }
+            Message::ToleranceDialogApply => {
+                self.apply_tolerance_dialog_edit();
+                Task::none()
+            }
+            Message::ToleranceDialogOk => {
+                let editing = self
+                    .geometric_tolerance
+                    .as_ref()
+                    .and_then(|state| state.editing)
+                    .is_some();
+                if editing {
+                    if self.apply_tolerance_dialog_edit() {
+                        self.geometric_tolerance = None;
+                        self.active_modal = None;
+                        self.reset_modal_geometry();
+                    }
+                } else {
+                    self.begin_tolerance_placement();
+                    self.reset_modal_geometry();
+                }
+                Task::none()
+            }
             Message::SetLinearFormat(code) => {
                 self.units_popup_open = false;
                 let i = self.active_tab;
@@ -6146,10 +6237,7 @@ impl OpenCADStudio {
                 Task::none()
             }
             Message::MTextHeight(s) => {
-                if let Some(ed) = self.mtext_editor.as_mut() {
-                    ed.height = s;
-                }
-                self.rebuild_mtext_preview();
+                self.mtext_apply_span_number("height", s);
                 Task::none()
             }
             Message::MTextRectWidth(width) => {
@@ -6181,24 +6269,126 @@ impl OpenCADStudio {
                 Task::none()
             }
             Message::MTextOblique(s) => {
-                if let Some(ed) = self.mtext_editor.as_mut() {
-                    ed.oblique = s;
-                }
-                self.rebuild_mtext_preview();
+                self.mtext_apply_span_number("oblique", s);
                 Task::none()
             }
             Message::MTextWidth(s) => {
+                self.mtext_apply_span_number("width", s);
+                Task::none()
+            }
+            Message::MTextCharSpace(s) => {
+                self.mtext_apply_span_number("tracking", s);
+                Task::none()
+            }
+            Message::MTextUndo => {
+                self.mtext_undo();
+                Task::none()
+            }
+            Message::MTextRedo => {
+                self.mtext_redo();
+                Task::none()
+            }
+            Message::MTextStack => {
+                self.mtext_stack_selection();
+                Task::none()
+            }
+            Message::MTextClearFormatting => {
+                self.mtext_clear_formatting();
+                Task::none()
+            }
+            Message::MTextInsert(value) => {
+                self.mtext_type(&value);
+                Task::none()
+            }
+            Message::MTextAnnotative(value) => {
                 if let Some(ed) = self.mtext_editor.as_mut() {
-                    ed.width = s;
+                    ed.annotative = value;
                 }
                 self.rebuild_mtext_preview();
                 Task::none()
             }
-            Message::MTextCharSpace(s) => {
+            Message::MTextColumnMode(mode) => {
                 if let Some(ed) = self.mtext_editor.as_mut() {
-                    ed.char_space = s;
+                    match mode.as_str() {
+                        "Static" => {
+                            ed.column_type = 1;
+                            ed.column_auto_height = false;
+                        }
+                        "Dynamic auto" => {
+                            ed.column_type = 2;
+                            ed.column_auto_height = true;
+                        }
+                        "Dynamic manual" => {
+                            ed.column_type = 2;
+                            ed.column_auto_height = false;
+                        }
+                        _ => ed.column_type = 0,
+                    }
                 }
                 self.rebuild_mtext_preview();
+                Task::none()
+            }
+            Message::MTextColumnCount(value) => {
+                if let Some(ed) = self.mtext_editor.as_mut() {
+                    ed.column_count = value;
+                }
+                self.rebuild_mtext_preview();
+                Task::none()
+            }
+            Message::MTextColumnWidth(value) => {
+                if let Some(ed) = self.mtext_editor.as_mut() {
+                    ed.column_width = value;
+                }
+                self.rebuild_mtext_preview();
+                Task::none()
+            }
+            Message::MTextColumnGutter(value) => {
+                if let Some(ed) = self.mtext_editor.as_mut() {
+                    ed.column_gutter = value;
+                }
+                self.rebuild_mtext_preview();
+                Task::none()
+            }
+            Message::MTextColumnHeight(value) => {
+                if let Some(ed) = self.mtext_editor.as_mut() {
+                    ed.rect_height = value;
+                }
+                self.rebuild_mtext_preview();
+                Task::none()
+            }
+            Message::MTextColumnFlowReversed(value) => {
+                if let Some(ed) = self.mtext_editor.as_mut() {
+                    ed.column_flow_reversed = value;
+                }
+                self.rebuild_mtext_preview();
+                Task::none()
+            }
+            Message::MTextParagraphNumber(field, value) => {
+                self.mtext_apply_paragraph_number(field, value);
+                Task::none()
+            }
+            Message::MTextFindText(value) => {
+                if let Some(ed) = self.mtext_editor.as_mut() {
+                    ed.find_text = value;
+                }
+                Task::none()
+            }
+            Message::MTextReplaceText(value) => {
+                if let Some(ed) = self.mtext_editor.as_mut() {
+                    ed.replace_text = value;
+                }
+                Task::none()
+            }
+            Message::MTextFindNext => {
+                self.mtext_find_next();
+                Task::none()
+            }
+            Message::MTextReplaceNext => {
+                self.mtext_replace_next();
+                Task::none()
+            }
+            Message::MTextReplaceAll => {
+                self.mtext_replace_all();
                 Task::none()
             }
             Message::MTextJustify(ap) => {
@@ -6664,7 +6854,7 @@ impl OpenCADStudio {
                         .push_error(crate::t!("DRAWORDER: select entities first.").as_ref());
                 } else {
                     use crate::command::CadCommand;
-                    let cmd = super::commands::DrawOrderRefCommand::new(to_move, above);
+                    let cmd = super::commands::DrawOrderCommand::for_reference_pick(to_move, above);
                     self.command_line.push_info(&cmd.prompt());
                     self.tabs[i].active_cmd = Some(Box::new(cmd));
                 }
@@ -6921,19 +7111,17 @@ impl OpenCADStudio {
                     self.tabs[i].dirty = true;
                     self.ribbon.active_lineweight = lw;
                 } else {
-                    self.push_undo_snapshot(i, "CHPROP");
-                    for &handle in &handles {
-                        if let Some(entity) = self.tabs[i].scene.document.get_entity_mut(handle) {
-                            crate::scene::view::dispatch::apply_line_weight(entity, lw);
-                        }
-                    }
                     // Lineweight is baked into the cached wire geometry —
                     // re-tessellate so the change shows immediately (issue #231
                     // class).
-                    self.invalidate_property_targets(i, &handles);
-                    self.tabs[i].dirty = true;
+                    self.apply_property_op(i, "CHPROP", &handles, |app, handle| {
+                        if let Some(entity) =
+                            app.tabs[i].scene.document.get_entity_mut(handle)
+                        {
+                            crate::scene::view::dispatch::apply_line_weight(entity, lw);
+                        }
+                    });
                     self.ribbon.active_lineweight = lw;
-                    self.refresh_properties();
                 }
                 Task::none()
             }
@@ -6948,17 +7136,15 @@ impl OpenCADStudio {
                     self.refresh_properties();
                     return task;
                 }
-                self.push_undo_snapshot(i, "CHPROP");
-                for &handle in &handles {
-                    if let Some(entity) = self.tabs[i].scene.document.get_entity_mut(handle) {
+                self.apply_property_op(i, "CHPROP", &handles, |app, handle| {
+                    if let Some(entity) =
+                        app.tabs[i].scene.document.get_entity_mut(handle)
+                    {
                         crate::scene::view::dispatch::apply_common_prop(
                             entity, "layer", &layer,
                         );
                     }
-                }
-                self.invalidate_property_targets(i, &handles);
-                self.tabs[i].dirty = true;
-                self.refresh_properties();
+                });
                 Task::none()
             }
 
@@ -6971,17 +7157,15 @@ impl OpenCADStudio {
                     self.refresh_properties();
                     return task;
                 }
-                self.push_undo_snapshot(i, "CHPROP");
-                for &handle in &handles {
-                    if let Some(entity) = self.tabs[i].scene.document.get_entity_mut(handle) {
+                self.apply_property_op(i, "CHPROP", &handles, |app, handle| {
+                    if let Some(entity) =
+                        app.tabs[i].scene.document.get_entity_mut(handle)
+                    {
                         crate::scene::view::dispatch::apply_color(entity, color);
                     }
-                }
-                self.invalidate_property_targets(i, &handles);
+                });
                 self.tabs[i].properties.color_picker_open = false;
                 self.tabs[i].properties.color_palette_open = false;
-                self.tabs[i].dirty = true;
-                self.refresh_properties();
                 Task::none()
             }
 
@@ -6998,15 +7182,13 @@ impl OpenCADStudio {
                     self.refresh_properties();
                     return Task::none();
                 }
-                self.push_undo_snapshot(i, "CHPROP");
-                for &handle in &handles {
-                    if let Some(entity) = self.tabs[i].scene.document.get_entity_mut(handle) {
+                self.apply_property_op(i, "CHPROP", &handles, |app, handle| {
+                    if let Some(entity) =
+                        app.tabs[i].scene.document.get_entity_mut(handle)
+                    {
                         crate::scene::view::dispatch::apply_line_weight(entity, lw);
                     }
-                }
-                self.invalidate_property_targets(i, &handles);
-                self.tabs[i].dirty = true;
-                self.refresh_properties();
+                });
                 Task::none()
             }
 
@@ -7018,17 +7200,15 @@ impl OpenCADStudio {
                     self.refresh_properties();
                     return task;
                 }
-                self.push_undo_snapshot(i, "CHPROP");
-                for &handle in &handles {
-                    if let Some(entity) = self.tabs[i].scene.document.get_entity_mut(handle) {
+                self.apply_property_op(i, "CHPROP", &handles, |app, handle| {
+                    if let Some(entity) =
+                        app.tabs[i].scene.document.get_entity_mut(handle)
+                    {
                         crate::scene::view::dispatch::apply_common_prop(
                             entity, "linetype", &lt,
                         );
                     }
-                }
-                self.invalidate_property_targets(i, &handles);
-                self.tabs[i].dirty = true;
-                self.refresh_properties();
+                });
                 Task::none()
             }
 
@@ -7110,8 +7290,7 @@ impl OpenCADStudio {
                 let i = self.active_tab;
                 let handles = self.property_target_handles(i);
                 if !handles.is_empty() {
-                    self.push_undo_snapshot(i, "CHPROP");
-                    for &handle in &handles {
+                    self.apply_property_op(i, "CHPROP", &handles, |app, handle| {
                         match field {
                             // Per-object annotative toggle: MTEXT/MULTILEADER carry
                             // a native flag; single-line TEXT is annotative purely
@@ -7120,7 +7299,7 @@ impl OpenCADStudio {
                             // representation and turning it off removes it (not just
                             // the flag).
                             "is_annotative" | "enable_annotation_scale" | "annotative_ctx" => {
-                                let doc = &self.tabs[i].scene.document;
+                                let doc = &app.tabs[i].scene.document;
                                 let cur = match doc.get_entity(handle) {
                                     Some(acadrust::EntityType::MText(t)) => t.is_annotative,
                                     Some(acadrust::EntityType::MultiLeader(m)) => {
@@ -7129,10 +7308,10 @@ impl OpenCADStudio {
                                     // TEXT (and any other context-only type): its
                                     // annotative state is whether a context exists.
                                     Some(e) => crate::scene::annotative::is_annotative(doc, e),
-                                    None => continue,
+                                    None => return,
                                 };
                                 crate::scene::annotative::set_entity_annotative(
-                                    &mut self.tabs[i].scene.document,
+                                    &mut app.tabs[i].scene.document,
                                     handle,
                                     !cur,
                                 );
@@ -7143,10 +7322,10 @@ impl OpenCADStudio {
                                 // object. Off is handled inside set_entity_*.
                                 if !cur {
                                     if let Some(sh) =
-                                        self.tabs[i].scene.creation_annotation_scale_handle()
+                                        app.tabs[i].scene.creation_annotation_scale_handle()
                                     {
                                         crate::scene::annotative::create_annotation_context(
-                                            &mut self.tabs[i].scene.document,
+                                            &mut app.tabs[i].scene.document,
                                             handle,
                                             sh,
                                         );
@@ -7155,7 +7334,7 @@ impl OpenCADStudio {
                             }
                             "invisible" => {
                                 if let Some(entity) =
-                                    self.tabs[i].scene.document.get_entity_mut(handle)
+                                    app.tabs[i].scene.document.get_entity_mut(handle)
                                 {
                                     crate::scene::view::dispatch::toggle_invisible(entity);
                                 }
@@ -7164,31 +7343,72 @@ impl OpenCADStudio {
                             // (#427): checking collapses Y/Z onto X; unchecking
                             // only switches the panel to per-axis rows.
                             "ins_uniform" => {
-                                let scales = match self.tabs[i].scene.document.get_entity(handle) {
+                                let scales = match app.tabs[i].scene.document.get_entity(handle) {
                                     Some(acadrust::EntityType::Insert(ins)) => {
                                         Some((ins.x_scale(), ins.y_scale(), ins.z_scale()))
                                     }
                                     _ => None,
                                 };
-                                let Some((sx, sy, sz)) = scales else { continue };
+                                let Some((sx, sy, sz)) = scales else { return };
                                 let eq = (sx - sy).abs() < 1e-12 && (sx - sz).abs() < 1e-12;
                                 let checked =
-                                    eq && !self.props_asym_scale.contains(&handle.value());
+                                    eq && !app.props_asym_scale.contains(&handle.value());
                                 if checked {
-                                    self.props_asym_scale.insert(handle.value());
+                                    app.props_asym_scale.insert(handle.value());
                                 } else {
-                                    self.props_asym_scale.remove(&handle.value());
+                                    app.props_asym_scale.remove(&handle.value());
                                     if let Some(acadrust::EntityType::Insert(ins)) =
-                                        self.tabs[i].scene.document.get_entity_mut(handle)
+                                        app.tabs[i].scene.document.get_entity_mut(handle)
                                     {
                                         ins.set_y_scale(sx);
                                         ins.set_z_scale(sx);
                                     }
                                 }
                             }
+                            "tbl_title_suppressed" | "tbl_header_suppressed" => {
+                                let next = {
+                                    let document = &app.tabs[i].scene.document;
+                                    let Some(acadrust::EntityType::Table(table)) =
+                                        document.get_entity(handle)
+                                    else {
+                                        return;
+                                    };
+                                    let table_style = table.table_style_handle.and_then(|style_handle| {
+                                        document.objects.get(&style_handle).and_then(|object| {
+                                            match object {
+                                                acadrust::objects::ObjectType::TableStyle(style) => {
+                                                    Some(style)
+                                                }
+                                                _ => None,
+                                            }
+                                        })
+                                    });
+                                    let current = if field == "tbl_title_suppressed" {
+                                        crate::entities::table::resolved_title_suppressed(
+                                            table,
+                                            table_style,
+                                        )
+                                    } else {
+                                        crate::entities::table::resolved_header_suppressed(
+                                            table,
+                                            table_style,
+                                        )
+                                    };
+                                    !current
+                                };
+                                if let Some(entity) =
+                                    app.tabs[i].scene.document.get_entity_mut(handle)
+                                {
+                                    crate::scene::view::dispatch::apply_geom_prop(
+                                        entity,
+                                        field,
+                                        if next { "true" } else { "false" },
+                                    );
+                                }
+                            }
                             _ => {
                                 if let Some(entity) =
-                                    self.tabs[i].scene.document.get_entity_mut(handle)
+                                    app.tabs[i].scene.document.get_entity_mut(handle)
                                 {
                                     crate::scene::view::dispatch::apply_geom_prop(
                                         entity, field, "toggle",
@@ -7196,10 +7416,14 @@ impl OpenCADStudio {
                                 }
                             }
                         }
-                    }
-                    self.invalidate_property_targets(i, &handles);
-                    self.tabs[i].dirty = true;
-                    self.refresh_properties();
+                        if field.starts_with("tbl_") {
+                            if let Some(acadrust::EntityType::Table(table)) =
+                                app.tabs[i].scene.document.get_entity_mut(handle)
+                            {
+                                table.block_record_handle = None;
+                            }
+                        }
+                    });
                 }
                 Task::none()
             }
@@ -7212,6 +7436,9 @@ impl OpenCADStudio {
                     match self.tabs[i].scene.document.get_entity(handles[0]) {
                         Some(acadrust::EntityType::LwPolyline(p)) => p.vertices.len(),
                         Some(acadrust::EntityType::Polyline2D(p)) => p.vertices.len(),
+                        Some(acadrust::EntityType::Table(table)) => {
+                            table.row_count().saturating_mul(table.column_count())
+                        }
                         _ => 0,
                     }
                 } else {
@@ -7223,6 +7450,7 @@ impl OpenCADStudio {
                     let next = (cur + delta as i64).rem_euclid(n as i64) as usize;
                     self.tabs[i].properties.prop_vertex = next;
                     self.tabs[i].properties.prop_vertex_indicator_active = next != cur as usize;
+                    crate::entities::table::set_prop_current_cell(next);
                     self.refresh_properties();
                 }
                 Task::none()
@@ -7325,9 +7553,8 @@ impl OpenCADStudio {
                 let i = self.active_tab;
                 let handles = self.property_target_handles(i);
                 if !handles.is_empty() {
-                    self.push_undo_snapshot(i, "CHPROP");
-                    for &handle in &handles {
-                        match self.tabs[i].scene.document.get_entity_mut(handle) {
+                    self.apply_property_op(i, "CHPROP", &handles, |app, handle| {
+                        match app.tabs[i].scene.document.get_entity_mut(handle) {
                             Some(acadrust::EntityType::MText(m)) => {
                                 m.background_color = color.clone();
                                 // Picking a colour turns the background on in Fill
@@ -7340,11 +7567,8 @@ impl OpenCADStudio {
                             }
                             _ => {}
                         }
-                    }
-                    self.invalidate_property_targets(i, &handles);
+                    });
                     self.tabs[i].properties.bg_color_picker_open = false;
-                    self.tabs[i].dirty = true;
-                    self.refresh_properties();
                 }
                 Task::none()
             }
@@ -7369,8 +7593,25 @@ impl OpenCADStudio {
                 // line with the rest of the dim-colour stack (index-only through
                 // the file layer). Guarded to leaders / dimensions so a mixed
                 // selection can't stamp the override onto other entities.
-                if field == "dim_line_color" {
+                if matches!(
+                    field.as_str(),
+                    "dim_line_color"
+                        | "dim_ext_line_color"
+                        | "dim_text_color"
+                        | "dim_text_fill_color"
+                ) {
+                    let fill_mode = (field == "dim_text_fill_color").then(|| match color {
+                        acadrust::types::Color::None => 0,
+                        acadrust::types::Color::ByBlock => 1,
+                        _ => 2,
+                    });
                     let aci = color.approximate_index();
+                    let code = match field.as_str() {
+                        "dim_ext_line_color" => crate::entities::dim_override::DIMCLRE,
+                        "dim_text_color" => crate::entities::dim_override::DIMCLRT,
+                        "dim_text_fill_color" => crate::entities::dim_override::DIMTFILLCLR,
+                        _ => crate::entities::dim_override::DIMCLRD,
+                    };
                     let targets: Vec<acadrust::Handle> = handles
                         .iter()
                         .copied()
@@ -7383,28 +7624,83 @@ impl OpenCADStudio {
                         })
                         .collect();
                     if !targets.is_empty() {
-                        self.push_undo_snapshot(i, "CHPROP");
-                        for &handle in &targets {
+                        self.apply_property_op(i, "CHPROP", &targets, |app, handle| {
+                            if field == "dim_text_fill_color" {
+                                crate::entities::dim_override::set(
+                                    &mut app.tabs[i].scene.document,
+                                    handle,
+                                    crate::entities::dim_override::DIMTFILL,
+                                    Some(acadrust::xdata::XDataValue::Integer16(
+                                        fill_mode.unwrap_or(2),
+                                    )),
+                                );
+                                if fill_mode != Some(2) {
+                                    return;
+                                }
+                            }
                             crate::entities::dim_override::set(
-                                &mut self.tabs[i].scene.document,
+                                &mut app.tabs[i].scene.document,
                                 handle,
-                                crate::entities::dim_override::DIMCLRD,
+                                code,
                                 Some(acadrust::xdata::XDataValue::Integer16(aci)),
                             );
-                        }
-                        self.invalidate_property_targets(i, &targets);
+                        });
                         self.tabs[i].properties.open_color_field = None;
-                        self.tabs[i].dirty = true;
-                        self.refresh_properties();
+                    }
+                    return Task::none();
+                }
+                if matches!(
+                    field.as_str(),
+                    "tbl_cell_content_color" | "tbl_cell_background_color"
+                ) {
+                    let cell_index = self.tabs[i].properties.prop_vertex;
+                    if !handles.is_empty() {
+                        self.apply_property_op(i, "TABLE CELL COLOR", &handles, |app, handle| {
+                            let Some(acadrust::EntityType::Table(table)) =
+                                app.tabs[i].scene.document.get_entity_mut(handle)
+                            else {
+                                return;
+                            };
+                            let columns = table.column_count();
+                            if columns == 0 {
+                                return;
+                            }
+                            if let Some(cell) = table.cell_mut(
+                                cell_index / columns,
+                                cell_index % columns,
+                            ) {
+                                use acadrust::entities::table::CellStateFlags;
+                                if cell.state.intersects(
+                                    CellStateFlags::FORMAT_LOCKED
+                                        | CellStateFlags::FORMAT_READ_ONLY,
+                                ) {
+                                    return;
+                                }
+                                let style = cell.style.get_or_insert_with(Default::default);
+                                if field == "tbl_cell_content_color" {
+                                    style.content_color = color;
+                                    style.property_flags.insert(
+                                        acadrust::entities::table::CellStylePropertyFlags::CONTENT_COLOR,
+                                    );
+                                } else {
+                                    style.background_color = color;
+                                    style.fill_enabled = true;
+                                    style.property_flags.insert(
+                                        acadrust::entities::table::CellStylePropertyFlags::BACKGROUND_COLOR,
+                                    );
+                                }
+                            }
+                            table.block_record_handle = None;
+                        });
+                        self.tabs[i].properties.open_color_field = None;
                     }
                     return Task::none();
                 }
                 if !handles.is_empty() {
-                    self.push_undo_snapshot(i, "CHPROP");
                     let idx = if field == "gradient_color_2" { 1 } else { 0 };
-                    for &handle in &handles {
+                    self.apply_property_op(i, "CHPROP", &handles, |app, handle| {
                         if let Some(acadrust::EntityType::Hatch(h)) =
-                            self.tabs[i].scene.document.get_entity_mut(handle)
+                            app.tabs[i].scene.document.get_entity_mut(handle)
                         {
                             while h.gradient_color.colors.len() <= idx {
                                 let value = if h.gradient_color.colors.is_empty() {
@@ -7421,14 +7717,11 @@ impl OpenCADStudio {
                             }
                             h.gradient_color.colors[idx].color = color.clone();
                         }
-                    }
+                    });
                     // Rebuild hatch seeds so the gradient fill picks up the new
                     // colour (synced_hatch_models only patches the main colour).
                     self.tabs[i].scene.populate_hatches_from_document();
-                    self.invalidate_property_targets(i, &handles);
                     self.tabs[i].properties.open_color_field = None;
-                    self.tabs[i].dirty = true;
-                    self.refresh_properties();
                 }
                 Task::none()
             }
@@ -8855,8 +9148,32 @@ impl OpenCADStudio {
 
             Message::AutoSave => self.on_autosave(),
 
+            Message::ThumbnailCaptureFrame => self.on_thumbnail_capture_frame(),
+
+            Message::ThumbnailCaptureFinished => {
+                self.thumbnail_capture_clean = false;
+                Task::none()
+            }
+
             #[cfg(not(target_arch = "wasm32"))]
             Message::SaveFinished(outcome) => self.on_save_finished(outcome),
+
+            #[cfg(target_arch = "wasm32")]
+            Message::WebSaveScreenshot {
+                tab_id,
+                filename,
+                ext,
+                version,
+                bounds,
+                screenshot,
+            } => self.on_web_save_screenshot(
+                tab_id,
+                filename,
+                ext,
+                version,
+                bounds,
+                screenshot,
+            ),
 
             #[cfg(not(target_arch = "wasm32"))]
             Message::SaveFileInUseRetry => self.on_save_file_in_use_retry(),
@@ -9264,6 +9581,9 @@ impl OpenCADStudio {
                         self.plot_dialog.style_missing = false;
                         self.plot_dialog.plot_styles =
                             crate::io::plot_style::available_ctb_names();
+                        self.tabs[self.active_tab]
+                            .scene
+                            .invalidate_display_plot_style();
 
                         self.command_line.push_output(
                             crate::tf!(
@@ -9315,6 +9635,9 @@ impl OpenCADStudio {
                             self.plot_dialog.style_missing = false;
                             self.plot_dialog.plot_styles =
                                 crate::io::plot_style::available_ctb_names();
+                            self.tabs[self.active_tab]
+                                .scene
+                                .invalidate_display_plot_style();
                             self.command_line.push_output(crate::tf!(
                                 "Plot style table saved to \"{}\".",
                                 path.display()
@@ -10038,6 +10361,7 @@ impl OpenCADStudio {
 
                 let i = self.active_tab;
                 self.tabs[i].properties.color_picker_open = false;
+                self.tabs[i].properties.open_color_field = None;
                 self.tabs[i].layers.color_picker_row = None;
 
                 Task::none()

@@ -30,7 +30,7 @@ ribbon-tab =
     .draw = 그리기
     .annotate = 주석
     .insert = 삽입
-    .model = 모델
+    .model = 모델링
     .layout = 배치
     .manage = 관리
     .view = 보기
@@ -313,6 +313,7 @@ common =
     .block-rotation = 블록 회전
     .blocks = 블록
     .blue = 블루
+    .bulge = 벌지
     .boolean-failed-the-solids-may-not-overlap = 부울 실패 - 솔리드가 겹치지 않을 수 있습니다.
     .boolean-select-exactly-two-solids-created-this = 부울: 이번 세션에서 생성된 정확히 두 개의 솔리드를 선택합니다.
     .bottom = 바닥
@@ -331,6 +332,7 @@ common =
     .brightness = 밝기
     .by-layer = 레이어별
     .byblock = 바이블록
+    .bycolor = 색상별
     .bylayer = 레이어별
     .convtosurface-converted-n-solid-s-to-surface-s = CONVTOSURFACE: __ocs_fmt_0__ 솔리드를 표면으로 변환했습니다.
     .convtosurface-select-a-solid-created-this-sess = CONVTOSURFACE: 이 세션에서 생성된 솔리드를 선택합니다.
@@ -1328,6 +1330,18 @@ draw =
     .ray-specify-through-point = RAY 통과점 지정:
     .rect-specify-first-corner = RECT 첫 번째 구석 지정:
     .rect-specify-opposite-corner = RECT 반대편 모서리 지정:
+    .rect-calculate-dimensions-based-on-length-width = RECT  [길이 / 폭]을 기준으로 치수 계산 <길이>:
+    .rect-specify-elevation = RECT  고도 지정 <__ocs_fmt_0__>:
+    .rect-specify-fillet-radius = RECT  모깎기 반지름 지정 <__ocs_fmt_0__>:
+    .rect-specify-first-chamfer-distance = RECT  첫 번째 모따기 거리 지정 <__ocs_fmt_0__>:
+    .rect-specify-orientation-from-the-first-corner = RECT  첫 번째 구석에서 방향 지정:
+    .rect-specify-rectangle-area = RECT  직사각형 면적 지정:
+    .rect-specify-rectangle-length = RECT  직사각형 길이 지정:
+    .rect-specify-rectangle-width = RECT  직사각형 폭 지정:
+    .rect-specify-rotation-angle = RECT  회전 각도 지정 <__ocs_fmt_0__>:
+    .rect-specify-second-chamfer-distance = RECT  두 번째 모따기 거리 지정 <__ocs_fmt_0__>:
+    .rect-specify-thickness = RECT  두께 지정 <__ocs_fmt_0__>:
+    .rect-specify-width = RECT  폭 지정 <__ocs_fmt_0__>:
     .rect-cen-specify-center-point = RECT CEN 중심점 지정:
     .rect-cen-specify-corner-point =RECT CEN 코너점 지정:
     .rect-rot-specify-adjacent-corner-defines-edge = RECT ROT 인접 모서리 지정(모서리 방향 정의):
@@ -1785,14 +1799,24 @@ annotate =
     .collect-leaders = 리더 수집
     .ddedit-select-text-entity = DDEDIT 텍스트 엔터티 선택:
     .dimaligned-enter-dimension-text-blank-measured = DIMALIGNED Enter 치수 문자(빈 = 측정 값):
-    .dimaligned-specify-dimension-line-location-tex = DIMALIGNED 치수선 위치 지정 [문자/각도]:
-    .dimaligned-specify-first-extension-line-origin = DIMALIGNED 첫 번째 연장선 원점 지정:
-    .dimaligned-specify-second-extension-line-origi = DIMALIGNED 두 번째 연장선 원점 지정 [문자/각도]:
+    .dimaligned-enter-formatted-dimension-text-blank-measured = DIMALIGNED 서식 있는 치수 문자를 입력하십시오(비워 두면 측정값):
+    .dimaligned-select-object-to-dimension = DIMALIGNED 치수를 기입할 객체 선택:
+    .dimaligned-specify-dimension-line-location-tex = DIMALIGNED 치수선 위치 지정 [Mtext/문자/각도]:
+    .dimaligned-specify-first-extension-line-origin = DIMALIGNED 첫 번째 치수 보조선 원점을 지정하거나 Enter를 눌러 객체 선택:
+    .dimaligned-specify-second-extension-line-origi = DIMALIGNED 두 번째 치수 보조선 원점 지정:
     .dimaligned-specify-text-angle-degrees = DIMALIGNED 텍스트 각도(도) 지정:
+    .dimangular-enter-dimension-text-blank-measured = DIMANGULAR 치수 문자를 입력하십시오(비워 두면 측정값):
+    .dimangular-enter-formatted-dimension-text-blank-measured = DIMANGULAR 서식 있는 치수 문자를 입력하십시오(비워 두면 측정값):
+    .dimangular-select-arc-circle-line-or-specify-angle-vertex = DIMANGULAR 호, 원 또는 선을 선택하거나 각도 꼭지점을 지정하십시오:
+    .dimangular-select-second-line = DIMANGULAR 두 번째 선을 선택하십시오:
     .dimangular-specify-angle-vertex = DIMANGULAR 각도 꼭지점 지정:
+    .dimangular-specify-dimension-arc-location-options = DIMANGULAR 치수 호 위치 지정 [Mtext/문자/각도/사분면]:
     .dimangular-specify-dimension-arc-location = DIMANGULAR 치수 호 위치를 지정합니다.
     .dimangular-specify-first-extension-line-point = DIMANGULAR 첫 번째 연장선 점 지정:
+    .dimangular-specify-quadrant = DIMANGULAR 사분면을 지정하십시오:
     .dimangular-specify-second-extension-line-point = DIMANGULAR 두 번째 연장선 점을 지정합니다.
+    .dimangular-specify-second-point-for-text-angle = DIMANGULAR 문자 각도의 두 번째 점을 지정하십시오:
+    .dimangular-specify-text-angle-or-first-point = DIMANGULAR 문자 각도 또는 첫 번째 점을 지정하십시오:
     .dimbaseline-no-base-dimension-found-place-a-di = DIMBASELINE 기본 치수를 찾을 수 없습니다. 먼저 치수를 배치합니다.
     .dimbaseline-specify-a-second-extension-line-or = DIMBASELINE 두 번째 연장선 원점을 지정합니다(종료하려면 Enter).
     .dimbreak-select-dimension-to-break = DIMBREAK 끊을 치수 선택:
@@ -1800,8 +1824,8 @@ annotate =
     .dimcontinue-no-base-dimension-found-place-a-di = DIMCONTINUE 기본 치수를 찾을 수 없습니다. 먼저 치수를 배치합니다.
     .dimcontinue-specify-a-second-extension-line-or = DIMCONTINUE 두 번째 연장선 원점을 지정합니다(종료하려면 Enter).
     .dimdiameter-enter-dimension-text-blank-measure = DIMDIAMETER Enter 치수 문자(빈 = 측정 값):
-    .dimdiameter-specify-center-point = DIMDIAMETER 중심점 지정:
-    .dimdiameter-specify-dimension-line-location-te = DIMDIAMETER 치수선 위치 지정 [문자/각도]:
+    .dimdiameter-select-arc-circle-or-polyline-arc = DIMDIAMETER 호, 원 또는 폴리선 호 선택:
+    .dimdiameter-specify-dimension-line-location-text = DIMDIAMETER 치수선 위치 지정 [여러 줄 문자/문자/각도]:
     .dimdiameter-specify-point-on-circle = DIMDIAMETER 원의 점 지정:
     .dimdiameter-specify-text-angle-degrees = DIMDIAMETER 텍스트 각도(도) 지정:
     .dimedit-enter-text-override-blank-reset-to-mea = DIMEDIT Enter 텍스트 재정의(빈 =가 측정으로 재설정됨):
@@ -1817,10 +1841,12 @@ annotate =
     .dimlinear-specify-second-extension-line-origin = DIMLINEAR 두 번째 연장선 원점 지정 [문자/각도]:
     .dimlinear-specify-text-angle-degrees = DIMLINEAR 텍스트 각도(도) 지정:
     .dimordinate-specify-feature-location = DIMORDINATE 기능 위치 지정:
-    .dimordinate-specify-leader-endpoint = DIMORDINATE 리더 끝점 지정:
+    .dimordinate-enter-dimension-text-blank-measured = DIMORDINATE 치수 문자 입력(빈 값 = 측정 값):
+    .dimordinate-specify-leader-endpoint = DIMORDINATE 리더 끝점 지정 [Xdatum/Ydatum/Mtext/Text/Angle]:
+    .dimordinate-specify-text-angle-degrees = DIMORDINATE 텍스트 각도(도) 지정:
     .dimradius-enter-dimension-text-blank-measured = DIMRADIUS Enter 치수 문자(빈 = 측정 값):
-    .dimradius-specify-center-point = DIMRADIUS 중심점 지정:
-    .dimradius-specify-dimension-line-location-text = DIMRADIUS 치수선 위치 지정 [문자/각도]:
+    .dimradius-select-arc-circle-or-polyline-arc = DIMRADIUS 호, 원 또는 폴리선 호 선택:
+    .dimradius-specify-dimension-line-location-text = DIMRADIUS 치수선 위치 지정 [여러 줄 문자/문자/각도]:
     .dimradius-specify-radius-point = DIMRADIUS 반경 점 지정:
     .dimradius-specify-text-angle-degrees = DIMRADIUS 텍스트 각도(도) 지정:
     .dimspace-enter-value-0-auto = DIMSPACE Enter 값(0 = 자동):
@@ -1852,6 +1878,7 @@ annotate =
         데이터
     .lower = 낮은
     .mleader-specify-arrowhead-point = MLEADER 화살촉 점 지정:
+    .mleader-specify-landing-point = MLEADER 연결점 지정:
     .mleader-specify-next-point-count-pts-enter-to = MLEADER 다음 점 지정 [__ocs_arg_count__ 포인트 - 텍스트를 배치할 Enter]:
     .mleaderadd-select-a-multileader = MLEADERADD 다중 지시선 선택:
     .mleaderadd-specify-arrowhead-location =MLEADERADD 화살촉 위치 지정:
@@ -2021,6 +2048,15 @@ insert =
     .object-s-cut-to-clipboard = __ocs_fmt_0__ 개체를 클립보드로 잘라냈습니다.
 
 model =
+    .create = 생성
+    .boolean = 불리언 연산
+    .pyramid = 피라미드
+    .polysolid = 폴리솔리드
+    .extrude = 돌출
+    .revolve = 회전
+    .loft = 로프트
+    .sweep = 스윕
+    .presspull = 누르기/당기기
     .n-specify-center-point = __ocs_arg_n__ 중심점 지정:
     .n-specify-first-corner = __ocs_arg_n__ 첫 번째 구석 지정:
     .n-specify-height-enter-for-default = __ocs_arg_n__ 높이 지정 <Enter for default>:
@@ -2321,6 +2357,7 @@ view =
     .zoom-extents =
         줌
         범위
+    .cmd-no-hatch-objects = __ocs_fmt_0__: Ýò┤ý╣ÿ Û░Øý▓┤Û░Ç ýùåýèÁÙïêÙïñ.
     .cmd-no-text-or-dimension-objects = __ocs_fmt_0__: 문자 또는 치수 객체가 없습니다.
     .cmd-not-yet-implemented = __ocs_fmt_0__: 아직 구현되지 않았습니다.
     .viewport-s-in-layout ="__ocs_fmt_1__" 레이아웃의 __ocs_fmt_0__ 뷰포트:
@@ -2698,6 +2735,9 @@ properties =
     .plot-style-table = 플롯 스타일 테이블
     .plot-table-attached-to =플롯 테이블이 첨부됨
     .plot-table-type = 플롯 테이블 유형
+    .color-dependent-plot-styles = 색상 종속 플롯 스타일
+    .named-plot-styles = 명명된 플롯 스타일
+    .plot-style-is-locked-to-color-in-color-dependent = 색상 종속(CTB) 모드에서는 플롯 스타일이 색상에 고정됩니다
     .point-1-x = 포인트 1 X
     .point-1-y = 포인트 1 Y
     .point-1-z = 포인트 1 Z
@@ -3060,7 +3100,7 @@ styles =
     .pdmode-new-value-0-dot-1-none-2-3-x-4-tick-32 = PDMODE 새 값 [0=dot 1=none 2=+ 3=x 4=tick; +32원 +64사각형]:
     .pdmode-v = PDMODE = __ocs_fmt_0__
     .pdmode-set-to-v = PDMODE가 __ocs_fmt_0__로 설정됨
-    .pdsize-new-point-size-0-5-of-viewport-0-absolu = PDSIZE 새 포인트 크기(0 = 뷰포트의 5%, <0 = 절대값):
+    .pdsize-new-point-size-0-5-of-viewport-0-absolu = PDSIZE 새 포인트 크기(0 = 뷰포트의 5%, >0 = 절대값, <0 = 뷰포트 백분율):
     .pdsize-v-4 = PDSIZE = __ocs_fmt_0__
     .pdsize-set-to-v-4 = PDSIZE가 __ocs_fmt_0__로 설정됨
     .pickadd = PICKADD = __ocs_fmt_0__ (__ocs_fmt_1__)

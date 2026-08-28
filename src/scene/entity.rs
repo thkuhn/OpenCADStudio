@@ -134,6 +134,15 @@ impl Scene {
         let _ = self.document.layers.add(layer);
     }
 
+    fn ensure_app_id(&mut self, name: &str) {
+        if name.trim().is_empty() || self.document.app_ids.contains(name) {
+            return;
+        }
+        let mut app_id = acadrust::tables::AppId::new(name);
+        app_id.handle = self.document.allocate_handle();
+        let _ = self.document.app_ids.add(app_id);
+    }
+
     pub fn add_entity(&mut self, entity: EntityType) -> Handle {
         self.add_entity_internal(entity, true)
     }
@@ -256,6 +265,20 @@ impl Scene {
         let creates_layer =
             self.is_recording_undo() && !layer.trim().is_empty() && !self.document.layers.contains(&layer);
         self.ensure_layer(&layer);
+        let app_ids: Vec<String> = entity
+            .common()
+            .extended_data
+            .records()
+            .iter()
+            .map(|record| record.application_name.clone())
+            .collect();
+        let creates_app_id = self.is_recording_undo()
+            && app_ids.iter().any(|name| {
+                !name.trim().is_empty() && !self.document.app_ids.contains(name)
+            });
+        for name in &app_ids {
+            self.ensure_app_id(name);
+        }
 
         // Route to the correct block based on current editing mode:
         //   - BEDIT block editor: geometry belongs to the edited block record,
@@ -308,12 +331,10 @@ impl Scene {
             }
             // Delta-undo: the new handle's before-image is "nothing" (it did not
             // exist). Poison the recording if this add also mutated non-entity
-            // state (a new layer / block) so the app knows a pure-entity delta
-            // would be incomplete. Raster image definitions are captured as
-            // targeted object before-images above.
+            // state (a new layer, application ID, or block).
             if self.is_recording_undo() {
                 self.record_undo_before(handle, None);
-                if creates_layer || mutates_block_structure {
+                if creates_layer || creates_app_id || mutates_block_structure {
                     self.poison_undo_recording();
                 }
             }
@@ -565,11 +586,28 @@ impl Scene {
             self.images.insert(handle, model);
         }
         self.refresh_meshes_for_handles(&[handle]);
-        if let Some(operation) = self.document.solid_history_operation(handle).cloned() {
-            if let Ok(body) = cadkernel::acis::rebuild_body(&operation) {
-                self.solid_models.insert(handle, body);
-            }
-        }
+        self.restore_solid_models(&[handle]);
+    }
+
+    pub fn restore_solid_models(&mut self, handles: &[Handle]) {
+        let bodies: Vec<(Handle, cadkernel::brep::Body)> = handles
+            .iter()
+            .filter(|handle| !self.solid_models.contains_key(handle))
+            .filter_map(|&handle| {
+                let from_history = self
+                    .document
+                    .solid_history_operation(handle)
+                    .and_then(|operation| cadkernel::acis::rebuild_body(operation).ok());
+                let body = from_history.or_else(|| match self.document.get_entity(handle) {
+                    Some(EntityType::Solid3D(solid)) => {
+                        crate::scene::convert::solid3d_tess::kernel_body(solid)
+                    }
+                    _ => None,
+                })?;
+                Some((handle, body))
+            })
+            .collect();
+        self.solid_models.extend(bodies);
     }
 
     /// Re-tessellate only the named ACIS entities. The former edit path
@@ -903,6 +941,7 @@ impl Scene {
         annotation_scale_handle: Option<Handle>,
         all_visible: bool,
         viewport: Option<Handle>,
+        tint_selected: bool,
     ) -> Vec<HatchModel> {
         let layer_hidden = |layer: &str| {
             self.document
@@ -1077,7 +1116,7 @@ impl Scene {
                         }
                     }
                 }
-                if self.selected.contains(&handle) {
+                if tint_selected && self.selected.contains(&handle) {
                     m.color = [0.15, 0.55, 1.00, m.color[3]];
                 }
                 let d = depth_map.get(&handle.value()).map_or(0.0, |d| d[0]);
@@ -1094,7 +1133,7 @@ impl Scene {
         models.extend(self.instanced_hatch_models(
             target_block,
             hatch_bg,
-            true,
+            tint_selected,
             frozen,
             annotation_scale_handle,
             all_visible,
@@ -2360,8 +2399,6 @@ impl Scene {
                 let mut bits = 0;
                 if is_outer {
                     bits |= acadrust::entities::hatch::BoundaryPathFlags::OUTERMOST.bits();
-                }
-                if !handles.is_empty() {
                     bits |= acadrust::entities::hatch::BoundaryPathFlags::EXTERNAL.bits();
                 }
                 let mut path = BoundaryPath::with_flags(

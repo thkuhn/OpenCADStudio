@@ -30,7 +30,7 @@ ribbon-tab =
     .draw = Чертане
     .annotate = Анотиране
     .insert = Вмъкване
-    .model = Модел
+    .model = Моделиране
     .layout = Оформление
     .manage = Управление
     .view = Изглед
@@ -313,6 +313,7 @@ common =
     .block-rotation = Завъртане на блок
     .blocks = Блокове
     .blue = Синьо
+    .bulge = Изпъкналост
     .boolean-failed-the-solids-may-not-overlap = Булева операция неуспешна — телата може да не се припокриват.
     .boolean-select-exactly-two-solids-created-this = Булева операция: избери точно две тела, създадени в тази сесия.
     .bottom = Долу
@@ -331,6 +332,7 @@ common =
     .brightness = Яркост
     .by-layer = По слой
     .byblock = По блок
+    .bycolor = По цвят
     .bylayer = По слой
     .convtosurface-converted-n-solid-s-to-surface-s = CONVTOSURFACE: конвертирани __ocs_fmt_0__ тяло/а в повърхност/и.
     .convtosurface-select-a-solid-created-this-sess = CONVTOSURFACE: избери тяло, създадено в тази сесия.
@@ -1328,6 +1330,18 @@ draw =
     .ray-specify-through-point = RAY  Посочи точка на преминаване:
     .rect-specify-first-corner = RECT  Посочи първи ъгъл:
     .rect-specify-opposite-corner = RECT  Посочи противоположен ъгъл:
+    .rect-calculate-dimensions-based-on-length-width = RECT  Изчисли размерите по [Дължина / Ширина] <Дължина>:
+    .rect-specify-elevation = RECT  Посочи кота <__ocs_fmt_0__>:
+    .rect-specify-fillet-radius = RECT  Посочи радиус на закръгляне <__ocs_fmt_0__>:
+    .rect-specify-first-chamfer-distance = RECT  Посочи първо разстояние на фаската <__ocs_fmt_0__>:
+    .rect-specify-orientation-from-the-first-corner = RECT  Посочи ориентация от първия ъгъл:
+    .rect-specify-rectangle-area = RECT  Посочи площ на правоъгълника:
+    .rect-specify-rectangle-length = RECT  Посочи дължина на правоъгълника:
+    .rect-specify-rectangle-width = RECT  Посочи ширина на правоъгълника:
+    .rect-specify-rotation-angle = RECT  Посочи ъгъл на завъртане <__ocs_fmt_0__>:
+    .rect-specify-second-chamfer-distance = RECT  Посочи второ разстояние на фаската <__ocs_fmt_0__>:
+    .rect-specify-thickness = RECT  Посочи дебелина <__ocs_fmt_0__>:
+    .rect-specify-width = RECT  Посочи ширина <__ocs_fmt_0__>:
     .rect-cen-specify-center-point = RECT CEN  Посочи централна точка:
     .rect-cen-specify-corner-point = RECT CEN  Посочи ъглова точка:
     .rect-rot-specify-adjacent-corner-defines-edge = RECT ROT  Посочи съседен ъгъл (определя посоката на страната):
@@ -1785,14 +1799,24 @@ annotate =
     .collect-leaders = Събери водачи
     .ddedit-select-text-entity = DDEDIT  Избери текстов обект:
     .dimaligned-enter-dimension-text-blank-measured = DIMALIGNED  Въведи текст на оразмеряване (празно = измерена стойност):
-    .dimaligned-specify-dimension-line-location-tex = DIMALIGNED  Посочи местоположение на линията за оразмеряване  [Текст/Ъгъл]:
-    .dimaligned-specify-first-extension-line-origin = DIMALIGNED  Посочи начало на първата удължителна линия:
-    .dimaligned-specify-second-extension-line-origi = DIMALIGNED  Посочи начало на втората удължителна линия  [Текст/Ъгъл]:
+    .dimaligned-enter-formatted-dimension-text-blank-measured = DIMALIGNED  Въведи форматиран текст на оразмеряване (празно = измерена стойност):
+    .dimaligned-select-object-to-dimension = DIMALIGNED  Избери обект за оразмеряване:
+    .dimaligned-specify-dimension-line-location-tex = DIMALIGNED  Посочи местоположение на линията за оразмеряване [Mtext/Текст/Ъгъл]:
+    .dimaligned-specify-first-extension-line-origin = DIMALIGNED  Посочи начало на първата удължителна линия или натисни Enter за избор на обект:
+    .dimaligned-specify-second-extension-line-origi = DIMALIGNED  Посочи начало на втората удължителна линия:
     .dimaligned-specify-text-angle-degrees = DIMALIGNED  Посочи ъгъл на текста (градуси):
+    .dimangular-enter-dimension-text-blank-measured = DIMANGULAR  Въведи текст на оразмеряване (празно = измерена стойност):
+    .dimangular-enter-formatted-dimension-text-blank-measured = DIMANGULAR  Въведи форматиран текст на оразмеряване (празно = измерена стойност):
+    .dimangular-select-arc-circle-line-or-specify-angle-vertex = DIMANGULAR  Избери дъга, окръжност, линия или посочи връх на ъгъла:
+    .dimangular-select-second-line = DIMANGULAR  Избери втората линия:
     .dimangular-specify-angle-vertex = DIMANGULAR  Посочи връх на ъгъла:
+    .dimangular-specify-dimension-arc-location-options = DIMANGULAR  Посочи местоположение на дъгата за оразмеряване [Mtext/Текст/Ъгъл/Квадрант]:
     .dimangular-specify-dimension-arc-location = DIMANGULAR  Посочи местоположение на дъгата за оразмеряване:
     .dimangular-specify-first-extension-line-point = DIMANGULAR  Посочи точка на първата удължителна линия:
+    .dimangular-specify-quadrant = DIMANGULAR  Посочи квадрант:
     .dimangular-specify-second-extension-line-point = DIMANGULAR  Посочи точка на втората удължителна линия:
+    .dimangular-specify-second-point-for-text-angle = DIMANGULAR  Посочи втора точка за ъгъла на текста:
+    .dimangular-specify-text-angle-or-first-point = DIMANGULAR  Посочи ъгъл на текста или първа точка:
     .dimbaseline-no-base-dimension-found-place-a-di = DIMBASELINE  Не е намерено базово оразмеряване. Първо постави оразмеряване.
     .dimbaseline-specify-a-second-extension-line-or = DIMBASELINE  Посочи начало на втора удължителна линия (Enter за изход):
     .dimbreak-select-dimension-to-break = DIMBREAK  Избери оразмеряване за прекъсване:
@@ -1800,8 +1824,8 @@ annotate =
     .dimcontinue-no-base-dimension-found-place-a-di = DIMCONTINUE  Не е намерено базово оразмеряване. Първо постави оразмеряване.
     .dimcontinue-specify-a-second-extension-line-or = DIMCONTINUE  Посочи начало на втора удължителна линия (Enter за изход):
     .dimdiameter-enter-dimension-text-blank-measure = DIMDIAMETER  Въведи текст на оразмеряване (празно = измерена стойност):
-    .dimdiameter-specify-center-point = DIMDIAMETER  Посочи централна точка:
-    .dimdiameter-specify-dimension-line-location-te = DIMDIAMETER  Посочи местоположение на линията за оразмеряване  [Текст/Ъгъл]:
+    .dimdiameter-select-arc-circle-or-polyline-arc = DIMDIAMETER  Избери дъга, окръжност или дъгов сегмент на полилиния:
+    .dimdiameter-specify-dimension-line-location-text = DIMDIAMETER  Посочи местоположение на линията за оразмеряване  [Мтекст/Текст/Ъгъл]:
     .dimdiameter-specify-point-on-circle = DIMDIAMETER  Посочи точка на окръжност:
     .dimdiameter-specify-text-angle-degrees = DIMDIAMETER  Посочи ъгъл на текста (градуси):
     .dimedit-enter-text-override-blank-reset-to-mea = DIMEDIT  Въведи заместващ текст (празно = върни към измерена стойност):
@@ -1817,10 +1841,12 @@ annotate =
     .dimlinear-specify-second-extension-line-origin = DIMLINEAR  Посочи начало на втората удължителна линия  [Текст/Ъгъл]:
     .dimlinear-specify-text-angle-degrees = DIMLINEAR  Посочи ъгъл на текста (градуси):
     .dimordinate-specify-feature-location = DIMORDINATE  Посочи местоположение на елемента:
-    .dimordinate-specify-leader-endpoint = DIMORDINATE  Посочи крайна точка на водача:
+    .dimordinate-enter-dimension-text-blank-measured = DIMORDINATE  Въведи текст на оразмеряване (празно = измерена стойност):
+    .dimordinate-specify-leader-endpoint = DIMORDINATE  Посочи крайна точка на водача [Xdatum/Ydatum/Mtext/Text/Angle]:
+    .dimordinate-specify-text-angle-degrees = DIMORDINATE  Посочи ъгъл на текста (градуси):
     .dimradius-enter-dimension-text-blank-measured = DIMRADIUS  Въведи текст на оразмеряване (празно = измерена стойност):
-    .dimradius-specify-center-point = DIMRADIUS  Посочи централна точка:
-    .dimradius-specify-dimension-line-location-text = DIMRADIUS  Посочи местоположение на линията за оразмеряване  [Текст/Ъгъл]:
+    .dimradius-select-arc-circle-or-polyline-arc = DIMRADIUS  Избери дъга, окръжност или дъгов сегмент на полилиния:
+    .dimradius-specify-dimension-line-location-text = DIMRADIUS  Посочи местоположение на линията за оразмеряване  [Мтекст/Текст/Ъгъл]:
     .dimradius-specify-radius-point = DIMRADIUS  Посочи точка на радиус:
     .dimradius-specify-text-angle-degrees = DIMRADIUS  Посочи ъгъл на текста (градуси):
     .dimspace-enter-value-0-auto = DIMSPACE  Въведи стойност (0 = авто):
@@ -1852,6 +1878,7 @@ annotate =
         данни
     .lower = Малки букви
     .mleader-specify-arrowhead-point = MLEADER  Посочи точка на върха на стрелката:
+    .mleader-specify-landing-point = MLEADER  Посочи точката на хоризонталния участък:
     .mleader-specify-next-point-count-pts-enter-to = MLEADER  Посочи следваща точка [__ocs_arg_count__ т. — Enter за поставяне на текст]:
     .mleaderadd-select-a-multileader = MLEADERADD  Избери многоводач:
     .mleaderadd-specify-arrowhead-location = MLEADERADD  Посочи местоположение на върха на стрелката:
@@ -2021,6 +2048,15 @@ insert =
     .object-s-cut-to-clipboard = __ocs_fmt_0__ обект(а) изрязани в клипборда.
 
 model =
+    .create = Създаване
+    .boolean = Булеви операции
+    .pyramid = Пирамида
+    .polysolid = Полисолид
+    .extrude = Екструдиране
+    .revolve = Завъртане
+    .loft = Лофт
+    .sweep = Изтегляне по траектория
+    .presspull = Натискане/издърпване
     .n-specify-center-point = __ocs_arg_n__  Посочи централна точка:
     .n-specify-first-corner = __ocs_arg_n__  Посочи първи ъгъл:
     .n-specify-height-enter-for-default = __ocs_arg_n__  Посочи височина <Enter за подразбиране>:
@@ -2321,6 +2357,7 @@ view =
     .zoom-extents =
         Мащаб
         Обхват
+    .cmd-no-hatch-objects = __ocs_fmt_0__: ð¢ÐÅð╝ð░ ÐëÐÇð©Ðàð¥ð▓ÐèÐçð¢ð© ð¥ð▒ðÁð║Ðéð©.
     .cmd-no-text-or-dimension-objects = __ocs_fmt_0__: няма текстови обекти или оразмерявания.
     .cmd-not-yet-implemented = __ocs_fmt_0__: все още не е реализирано.
     .viewport-s-in-layout = __ocs_fmt_0__ изглед(а) в оформление "__ocs_fmt_1__":
@@ -2699,6 +2736,9 @@ properties =
     .plot-style-table = Таблица със стилове за плотиране
     .plot-table-attached-to = Таблицата за плотиране е прикачена към
     .plot-table-type = Тип на таблица за плотиране
+    .color-dependent-plot-styles = Цветово-зависими стилове за печат
+    .named-plot-styles = Именувани стилове за печат
+    .plot-style-is-locked-to-color-in-color-dependent = Стилът за печат е заключен към цвета в цветово-зависим режим (CTB)
     .point-1-x = Точка 1 X
     .point-1-y = Точка 1 Y
     .point-1-z = Точка 1 Z
@@ -3061,7 +3101,7 @@ styles =
     .pdmode-new-value-0-dot-1-none-2-3-x-4-tick-32 = PDMODE  нова стойност [0=точка 1=нищо 2=+ 3=x 4=чертичка; +32 окръжност +64 квадрат]:
     .pdmode-v = PDMODE = __ocs_fmt_0__
     .pdmode-set-to-v = PDMODE зададен на __ocs_fmt_0__
-    .pdsize-new-point-size-0-5-of-viewport-0-absolu = PDSIZE  нов размер на точка (0 = 5% от изгледа, <0 = абсолютно):
+    .pdsize-new-point-size-0-5-of-viewport-0-absolu = PDSIZE  нов размер на точка (0 = 5% от изгледа, >0 = абсолютен, <0 = процент от изгледа):
     .pdsize-v-4 = PDSIZE = __ocs_fmt_0__
     .pdsize-set-to-v-4 = PDSIZE зададен на __ocs_fmt_0__
     .pickadd = PICKADD = __ocs_fmt_0__ (__ocs_fmt_1__)

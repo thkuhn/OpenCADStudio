@@ -169,6 +169,38 @@ pub struct SelectionEntity {
     pub surface_area: Option<f64>,
 }
 
+/// Association source with an optional sub-entity marker.
+#[derive(Clone, Copy, Debug)]
+pub struct DimensionAssociationSource {
+    pub handle: Handle,
+    pub marker: Option<i32>,
+    pub parameter: f64,
+}
+
+impl DimensionAssociationSource {
+    pub const fn inferred(handle: Handle) -> Self {
+        Self {
+            handle,
+            marker: None,
+            parameter: 0.0,
+        }
+    }
+
+    pub const fn explicit(handle: Handle, marker: i32, parameter: f64) -> Self {
+        Self {
+            handle,
+            marker: Some(marker),
+            parameter,
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+pub enum DimensionAssociationInput {
+    Infer(Option<Handle>),
+    Explicit(Vec<Option<DimensionAssociationSource>>),
+}
+
 #[derive(Clone)]
 pub enum AreaPreviewSource {
     Handles(Vec<Handle>),
@@ -542,6 +574,34 @@ impl KeywordCommand {
     }
 }
 
+fn match_cmd_option<'a>(
+    options: &'a [(&'static str, &'static str, Option<&'static str>)],
+    text: &str,
+) -> Option<&'a (&'static str, &'static str, Option<&'static str>)> {
+    let t = text.trim();
+    let up = t.to_uppercase();
+    if up.is_empty() {
+        return None;
+    }
+    // 1. Exact match on keyword or label (case-insensitive)
+    if let Some(opt) = options.iter().find(|(label, k, _)| {
+        k.eq_ignore_ascii_case(&up) || label.eq_ignore_ascii_case(t)
+    }) {
+        return Some(opt);
+    }
+    // 2. Unambiguous prefix match on keyword or label (e.g. "A" -> "ABOVE", "L" -> "LEFT")
+    let matches: Vec<_> = options
+        .iter()
+        .filter(|(label, k, _)| {
+            k.to_uppercase().starts_with(&up) || label.to_uppercase().starts_with(&up)
+        })
+        .collect();
+    if matches.len() == 1 {
+        return Some(matches[0]);
+    }
+    None
+}
+
 impl CadCommand for KeywordCommand {
     fn name(&self) -> &'static str {
         self.name
@@ -581,10 +641,7 @@ impl CadCommand for KeywordCommand {
             // Consumed inputs that keep prompting return `Some(NeedPoint)` —
             // `None` would hand the same text to the command a second time.
             None => {
-                let up = t.to_uppercase();
-                let Some((_, keyword, value_prompt)) = self.options.iter().find(|(label, k, _)| {
-                    k.eq_ignore_ascii_case(&up) || label.eq_ignore_ascii_case(t)
-                })
+                let Some((_, keyword, value_prompt)) = match_cmd_option(&self.options, t)
                 else {
                     // Unknown verb — keep prompting rather than dispatch garbage.
                     return Some(CmdResult::NeedPoint);
@@ -783,11 +840,18 @@ impl CadCommand for SelectThenKeywordCommand {
             return None;
         }
         match self.pending {
-            Some((keyword, _)) => Some(CmdResult::Dispatch(format!("{} {keyword} {t}", self.name))),
+            Some((keyword, _)) => {
+                if self.selected.is_empty() {
+                    Some(CmdResult::Dispatch(format!("{} {keyword} {t}", self.name)))
+                } else {
+                    Some(CmdResult::Relaunch(
+                        format!("{} {keyword} {t}", self.name),
+                        std::mem::take(&mut self.selected),
+                    ))
+                }
+            }
             None => {
-                let up = t.to_uppercase();
-                let Some((_, keyword, value_prompt)) =
-                    self.options.iter().find(|(_, k, _)| k.eq_ignore_ascii_case(&up))
+                let Some((_, keyword, value_prompt)) = match_cmd_option(&self.options, t)
                 else {
                     // Unknown verb — consumed, keep prompting (`None` would
                     // feed the same text to the command a second time).
@@ -798,7 +862,16 @@ impl CadCommand for SelectThenKeywordCommand {
                         self.pending = Some((keyword, vp));
                         Some(CmdResult::NeedPoint)
                     }
-                    None => Some(CmdResult::Dispatch(format!("{} {keyword}", self.name))),
+                    None => {
+                        if self.selected.is_empty() {
+                            Some(CmdResult::Dispatch(format!("{} {keyword}", self.name)))
+                        } else {
+                            Some(CmdResult::Relaunch(
+                                format!("{} {keyword}", self.name),
+                                std::mem::take(&mut self.selected),
+                            ))
+                        }
+                    }
                 }
             }
         }
@@ -1171,6 +1244,11 @@ pub enum CmdResult {
     CommitEntitiesAndExit(Vec<EntityType>),
     /// Commit an acadrust entity to the document and end the command.
     CommitAndExit(EntityType),
+    /// Commit a dimension using the drawing's association mode.
+    CommitDimension {
+        entity: EntityType,
+        association: DimensionAssociationInput,
+    },
     /// Commit a Model-tab 3D solid: the acadrust entity (for selection /
     /// persistence) plus its B-rep (cached for boolean ops + shaded
     /// rendering). Ends the command.
@@ -1349,6 +1427,17 @@ pub enum CmdResult {
         handle: Option<Handle>,
         initial: String,
         height: f64,
+        /// Optional entity defaults collected by the interactive MTEXT
+        /// command (boundary, rotation, attachment, spacing and columns).
+        /// Existing-entity edits leave this as `None` and load the document
+        /// entity instead.
+        template: Option<Box<acadrust::MText>>,
+    },
+    /// Collect rich text without creating an MText entity.
+    SuspendForMTextInput {
+        pos: DVec3,
+        initial: String,
+        height: f64,
     },
     /// Open the in-place single-line TEXT editor (a plain text-entry box, no
     /// formatting toolbar). `handle` is `Some` when editing an existing Text,
@@ -1358,6 +1447,14 @@ pub enum CmdResult {
         handle: Option<Handle>,
         initial: String,
         height: f64,
+    },
+    /// Suspend the active TEXT command while the in-place editor collects one
+    /// independent line. The prepared entity carries the chosen style,
+    /// justification, rotation and two-point geometry. When the editor closes,
+    /// the command resumes so another line can be placed directly below it.
+    SuspendForTextInput {
+        pos: DVec3,
+        entity: acadrust::entities::Text,
     },
     /// Apply new pattern/scale/angle to an existing hatch entity.
     HatcheditApply {
@@ -1384,15 +1481,18 @@ pub enum CmdResult {
         /// Translation vector applied once to every selected point.
         delta: DVec3,
     },
-    /// Create a Solid3D placeholder entity + associated MeshModel.
-    /// `mesh_fn` is called with the entity's handle string to build the mesh.
-    CommitSolid3D {
-        mesh_fn: Box<dyn FnOnce(String) -> Option<crate::scene::model::mesh_model::MeshModel> + Send>,
-    },
-    /// Extrude the profile entity `handle` by `height` along Z.
+    /// Extrude the profile entity `handle` along its plane normal.
     ExtrudeEntity {
         handle: Handle,
         height: f64,
+        color: [f32; 4],
+    },
+    /// Pull a closed profile or a planar solid face by a signed distance.
+    PresspullEntity {
+        handle: Handle,
+        pick: DVec3,
+        distance: f64,
+        drag: Option<DVec3>,
         color: [f32; 4],
     },
     /// Revolve the profile entity `handle` around the given axis by `angle_deg`.
@@ -1413,6 +1513,17 @@ pub enum CmdResult {
     LoftEntities {
         handles: Vec<Handle>,
         color: [f32; 4],
+    },
+    /// Round or bevel the straight edge nearest `pick` on a solid.
+    SolidEdgeBlend {
+        handle: Handle,
+        pick: DVec3,
+        value: f64,
+        fillet: bool,
+    },
+    SolidSubtract {
+        bases: Vec<Handle>,
+        cutters: Vec<Handle>,
     },
     /// INSERT landed on a block that has AttributeDefinitions.
     /// The host should look up the attdefs for `block_name` from the document
@@ -1678,6 +1789,16 @@ pub trait CadCommand: Send {
         Vec::new()
     }
 
+    /// Live search: called on each keystroke in the command line while the
+    /// command is active. Return true if the input updated internal filter
+    /// and the UI should refresh (prompt/options). Used for INSERT/MINSERT
+    /// incremental block name search without requiring Enter. Performance
+    /// critical — implementations must use precomputed caches and partial
+    /// sorting.
+    fn on_live_input(&mut self, _input: &str) -> bool {
+        false
+    }
+
     /// Push the active coordinate frame in full precision. Geometry commands
     /// use it for plane-local construction; inquiry and modify commands use it
     /// for local deltas, angles and transformation axes.
@@ -1740,6 +1861,11 @@ pub trait CadCommand: Send {
         false
     }
 
+    /// Accept typed coordinates while object picking.
+    fn entity_pick_accepts_points(&self) -> bool {
+        false
+    }
+
     /// Include filled hatch / DXF SOLID regions in the entity hit-test.
     ///
     /// Most entity-pick commands operate on curve geometry and intentionally
@@ -1748,6 +1874,14 @@ pub trait CadCommand: Send {
     fn entity_pick_includes_fills(&self) -> bool {
         false
     }
+
+    /// Supply the mesh surface hit instead of the working-plane projection.
+    fn entity_pick_uses_surface_point(&self) -> bool {
+        false
+    }
+
+    /// Supply the picked surface or profile direction when available.
+    fn set_entity_pick_direction(&mut self, _direction: Option<DVec3>) {}
 
     /// Render the entity under the cursor through the normal rollover
     /// highlight while this command is waiting for an entity pick.
@@ -1768,6 +1902,11 @@ pub trait CadCommand: Send {
     fn on_editor_closed(&mut self, _committed: bool) -> CmdResult {
         CmdResult::Cancel
     }
+
+    /// Resume the command with collected rich text.
+    fn on_editor_text(&mut self, _value: String) {}
+
+    fn on_editor_display_height(&mut self, _height: f64) {}
 
     /// Called when the user clicks and `needs_entity_pick()` is true.
     /// `handle` is the nearest wire's entity handle (Handle::NULL if nothing found).
@@ -1887,6 +2026,11 @@ pub trait CadCommand: Send {
         None
     }
 
+    /// Current drawing-persisted multiline creation settings.
+    fn mline_settings(&self) -> Option<(f64, i16, String, Option<Handle>)> {
+        None
+    }
+
     /// Returns `true` when the active text prompt expects free-form prose
     /// that can legitimately contain whitespace (the body of a TEXT /
     /// MTEXT / DDEDIT entity, an attribute default value, etc.). For
@@ -1972,10 +2116,13 @@ pub trait CadCommand: Send {
         None
     }
 
-    /// Inject the block's attribute definitions for ATTREQ attr-filling after
-    /// the INSERT point is picked. Carries the full definitions so the created
-    /// attributes inherit their geometry, not just tag / prompt / default (#255).
-    fn attreq_set_attdefs(&mut self, _attdefs: Vec<acadrust::entities::AttributeDefinition>) {}
+    /// Inject block attribute definitions after the INSERT point is picked.
+    fn attreq_set_attdefs(
+        &mut self,
+        _attdefs: Vec<acadrust::entities::AttributeDefinition>,
+    ) -> Option<acadrust::EntityType> {
+        None
+    }
 
     /// Returns the INSERT entity built so far (pending attr fill) if this is an
     /// ATTREQ-aware INSERT command waiting for attdef injection.
