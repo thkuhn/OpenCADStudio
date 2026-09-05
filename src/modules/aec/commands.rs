@@ -25,10 +25,12 @@ use super::engine::{
 };
 pub use super::engine::{Wall, WallJustification, WallLayer};
 use super::engine::library::load_or_seed;
+use super::engine::plan_view::{PhaseFilter, PlanPhase};
 use super::engine::material::Material;
 use super::engine::style::Style;
 use super::engine::wall_style::{
-    base_width_from_layers, effective_layers_for_wall_bb, Layer, LayerFunction, LayerValue,
+    base_width_from_layers, effective_layers_for_wall_bb, migrate_gap_before_to_axis_offset, Layer,
+    LayerFunction, LayerValue,
     ResolvedLayer, WallStyle,
 };
 use std::collections::HashMap;
@@ -124,6 +126,41 @@ fn resolve_layer_style_override(
         }
     }
     out
+}
+
+/// Result of resolving a [`PhaseFilter`] against a single wall's
+/// [`PlanPhase`]: whether the wall should be shown at all under this
+/// `DisplayConfig`, plus an optional extra style overlay (dashed lines for
+/// `Demolition`, greyed-out for `Existing`, ...) to merge on top of the
+/// wall's normally resolved style.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct PhaseFilterResult {
+    /// `false` means the wall must be hidden entirely for this config.
+    pub visible: bool,
+    /// Extra style overlay for `Demolition`/`Existing` walls; `None` for
+    /// `New` walls or when the filter defines no overlay for this phase.
+    pub extra_style: Option<engine::display_component::ComponentStyleOverride>,
+}
+
+/// Resolves a [`DisplayConfig::phase_filter`] against a wall's `phase`.
+///
+/// `filter == None` is the pre-Step-1 default: every phase is visible and no
+/// extra style is applied, preserving existing behaviour exactly. When a
+/// filter is present, `phase` must be listed in `visible_phases` to be shown,
+/// and `Demolition`/`Existing` walls additionally pick up
+/// `demolition_style`/`existing_style` (if set) as an extra overlay for
+/// callers to merge into the resolved wall style.
+pub fn apply_phase_filter(phase: PlanPhase, filter: Option<&PhaseFilter>) -> PhaseFilterResult {
+    let Some(filter) = filter else {
+        return PhaseFilterResult { visible: true, extra_style: None };
+    };
+    let visible = filter.visible_phases.contains(&phase);
+    let extra_style = match phase {
+        PlanPhase::Demolition => filter.demolition_style.clone(),
+        PlanPhase::Existing => filter.existing_style.clone(),
+        PlanPhase::New => None,
+    };
+    PhaseFilterResult { visible, extra_style }
 }
 
 /// Build the [`join::LayerRef`] list for a wall's layer stack (given its
@@ -476,8 +513,7 @@ pub fn write_wall_height(scene: &mut Scene, wall_handle: Handle, height: f64) ->
         wall.storey_id,
         &wall.layers,
         &wall.derived_handles,
-        wall.justification,
-    ) {
+        wall.justification, wall.phase, wall.hatch_override.as_ref()) {
         record.add_value(v);
     }
     write_aec_record(&mut scene.document, wall_handle, record)
@@ -501,7 +537,72 @@ pub fn write_wall_layers(scene: &mut Scene, wall_handle: Handle, layers: Vec<Wal
         wall.storey_id,
         &wall.layers,
         &wall.derived_handles,
+        wall.justification, wall.phase, wall.hatch_override.as_ref()) {
+        record.add_value(v);
+    }
+    write_aec_record(&mut scene.document, wall_handle, record)
+}
+
+/// Overwrites only the `phase` field of a wall's `WALL` XDATA record,
+/// keeping every other field intact. Used by the Properties panel's
+/// editable "Phase" dropdown (single or multi-selected walls). Purely a
+/// metadata edit — the wall's geometry is unaffected, so no regeneration
+/// is triggered here.
+pub fn write_wall_phase(scene: &mut Scene, wall_handle: Handle, phase: PlanPhase) -> bool {
+    let wall_handle = resolve_wall_package(scene, wall_handle);
+    let Some(entity) = scene.document.get_entity(wall_handle) else {
+        return false;
+    };
+    let Some(mut wall) = wall_from_entity(entity) else {
+        return false;
+    };
+    wall.phase = phase;
+    let mut record = ExtendedDataRecord::new(AEC_APPID);
+    for v in wall_record(
+        &wall.style_id,
+        wall.height,
+        wall.storey_id,
+        &wall.layers,
+        &wall.derived_handles,
         wall.justification,
+        wall.phase,
+        wall.hatch_override.as_ref(),
+    ) {
+        record.add_value(v);
+    }
+    write_aec_record(&mut scene.document, wall_handle, record)
+}
+
+/// Overwrites only the `hatch_override` field of a wall's `WALL` XDATA
+/// record, keeping every other field intact. Used by the Properties
+/// panel's optional "Relativ zur Wand" checkbox + angle field (Step 6
+/// hatch-angle chain: `Wall.hatch_override` > style-profile override >
+/// `Material`). Passing `None` clears any existing per-wall override.
+/// Purely a metadata edit — the wall's geometry is unaffected, so no
+/// regeneration is triggered here.
+pub fn write_wall_hatch_override(
+    scene: &mut Scene,
+    wall_handle: Handle,
+    hatch_override: Option<engine::display_component::ComponentStyleOverride>,
+) -> bool {
+    let wall_handle = resolve_wall_package(scene, wall_handle);
+    let Some(entity) = scene.document.get_entity(wall_handle) else {
+        return false;
+    };
+    let Some(mut wall) = wall_from_entity(entity) else {
+        return false;
+    };
+    wall.hatch_override = hatch_override;
+    let mut record = ExtendedDataRecord::new(AEC_APPID);
+    for v in wall_record(
+        &wall.style_id,
+        wall.height,
+        wall.storey_id,
+        &wall.layers,
+        &wall.derived_handles,
+        wall.justification,
+        wall.phase,
+        wall.hatch_override.as_ref(),
     ) {
         record.add_value(v);
     }
@@ -745,6 +846,8 @@ pub fn wall_record(
     layers: &[WallLayer],
     derived_handles: &[Handle],
     justification: WallJustification,
+    phase: PlanPhase,
+    hatch_override: Option<&engine::display_component::ComponentStyleOverride>,
 ) -> Vec<XDataValue> {
     let mut values = Vec::new();
     values.push(XDataValue::String("WALL".to_string()));
@@ -763,9 +866,13 @@ pub fn wall_record(
     }
     values.push(XDataValue::String(justification.as_str().to_string()));
 
-    // Trailing layer extras: gap_before, bottom_offset, top_offset for each layer
+    // Schema marker distinguishing absolute axis_offset extras from legacy
+    // gap_before stacking values. Absent on older records.
+    values.push(XDataValue::String("axis_offset".to_string()));
+
+    // Trailing layer extras: axis_offset, bottom_offset, top_offset for each layer
     for layer in layers {
-        values.push(XDataValue::Distance(layer.gap_before));
+        values.push(XDataValue::Distance(layer.axis_offset));
         values.push(XDataValue::Distance(layer.bottom_offset));
         values.push(XDataValue::Distance(layer.top_offset));
     }
@@ -782,6 +889,31 @@ pub fn wall_record(
     // parse back with every layer defaulting to `None`.
     for layer in layers {
         values.push(XDataValue::String(layer.hatch_override.clone().unwrap_or_default()));
+    }
+    // Trailing `phase` tag, appended last so records written before this
+    // field existed still parse back defaulting to `PlanPhase::New`.
+    values.push(XDataValue::String(phase.as_str().to_string()));
+    // Trailing per-wall-instance `hatch_override` (Step 3 hatch-angle chain:
+    // `Wall.hatch_override` > style-profile override > `Material`), appended
+    // last so records written before this field existed still parse back
+    // with `None`. Encoded as a presence flag followed by the two hatch
+    // fields (angle in degrees as a `Distance`, relative-flag as a string),
+    // each using a sentinel when unset (`f64::NAN` / empty string).
+    match hatch_override {
+        Some(ov) => {
+            values.push(XDataValue::String("1".to_string()));
+            values.push(XDataValue::Distance(ov.hatch_angle.unwrap_or(f64::NAN)));
+            values.push(XDataValue::String(match ov.hatch_angle_relative {
+                Some(true) => "true".to_string(),
+                Some(false) => "false".to_string(),
+                None => String::new(),
+            }));
+        }
+        None => {
+            values.push(XDataValue::String("0".to_string()));
+            values.push(XDataValue::Distance(f64::NAN));
+            values.push(XDataValue::String(String::new()));
+        }
     }
     values
 }
@@ -847,7 +979,7 @@ pub fn wall_from_entity(entity: &EntityType) -> Option<Wall> {
             material: mat,
             thickness: thick,
             function: func,
-            gap_before: 0.0,
+            axis_offset: 0.0,
             bottom_offset: 0.0,
             top_offset: 0.0,
             layer_override: None,
@@ -860,6 +992,9 @@ pub fn wall_from_entity(entity: &EntityType) -> Option<Wall> {
     let tail = 5 + layer_count * 3;
     let mut derived_handles = Vec::new();
     let mut justification = WallJustification::Center;
+    let mut phase = PlanPhase::default();
+    let mut wall_hatch_override: Option<engine::display_component::ComponentStyleOverride> = None;
+    let mut extras_applied = false;
 
     if v.len() > tail {
         if let XDataValue::Integer32(count) = v[tail] {
@@ -876,23 +1011,51 @@ pub fn wall_from_entity(entity: &EntityType) -> Option<Wall> {
                         justification = WallJustification::from_str(s);
                     }
 
-                    // Optional layer extras (gaps and offsets) might follow justification
-                    let extras_tail = tail + 1 + count + 1;
+                    // Optional layer extras (axis_offset/gap + vertical offsets) might follow justification.
+                    // New records insert a "axis_offset" schema marker before the triples;
+                    // legacy records store gap_before and must be migrated to absolute offsets.
+                    let mut extras_tail = tail + 1 + count + 1;
+                    let mut legacy_gap_before = true;
+                    if v.len() > extras_tail {
+                        if let XDataValue::String(marker) = &v[extras_tail] {
+                            if marker == "axis_offset" {
+                                legacy_gap_before = false;
+                                extras_tail += 1;
+                            }
+                        }
+                    }
                     if v.len() >= extras_tail + layer_count * 3 {
+                        let mut legacy_gaps = vec![0.0; layer_count];
                         for i in 0..layer_count {
                             let base = extras_tail + i * 3;
                             if let XDataValue::Distance(g) = v[base] {
-                                layers[i].gap_before = g;
+                                if legacy_gap_before {
+                                    legacy_gaps[i] = g;
+                                } else {
+                                    layers[i].axis_offset = g;
+                                }
                             }
                             if let XDataValue::Distance(b) = v[base + 1] {
                                 layers[i].bottom_offset = b;
                             }
-                            if let XDataValue::Distance(t) = v[base + 2] {
-                                layers[i].top_offset = t;
+                            if let XDataValue::Distance(tv) = v[base + 2] {
+                                layers[i].top_offset = tv;
                             }
                         }
+                        if legacy_gap_before {
+                            let pairs: Vec<(f64, f64)> = layers
+                                .iter()
+                                .zip(legacy_gaps.iter())
+                                .map(|(l, g)| (l.thickness, *g))
+                                .collect();
+                            let offsets = migrate_gap_before_to_axis_offset(&pairs);
+                            for (layer, offset) in layers.iter_mut().zip(offsets) {
+                                layer.axis_offset = offset;
+                            }
+                        }
+                        extras_applied = true;
 
-                        // Optional layer_override block might follow the gap/offset extras.
+                        // Optional layer_override block might follow the axis_offset/offset extras.
                         let override_tail = extras_tail + layer_count * 3;
                         if v.len() >= override_tail + layer_count {
                             for i in 0..layer_count {
@@ -911,11 +1074,64 @@ pub fn wall_from_entity(entity: &EntityType) -> Option<Wall> {
                                             if s.is_empty() { None } else { Some(s.clone()) };
                                     }
                                 }
+
+                                // Optional trailing `phase` tag might follow the
+                                // hatch_override block. Absent on older records,
+                                // which default to `PlanPhase::New`.
+                                let phase_tail = hatch_tail + layer_count;
+                                if v.len() > phase_tail {
+                                    if let XDataValue::String(s) = &v[phase_tail] {
+                                        phase = PlanPhase::from_str(s);
+                                    }
+
+                                    // Optional trailing per-wall-instance
+                                    // `hatch_override` block might follow `phase`
+                                    // (presence flag + angle + relative-flag).
+                                    // Absent on older records, which default to
+                                    // `None` (no per-wall override).
+                                    let wall_hatch_tail = phase_tail + 1;
+                                    if v.len() >= wall_hatch_tail + 3 {
+                                        if let XDataValue::String(flag) = &v[wall_hatch_tail] {
+                                            if flag == "1" {
+                                                let angle = if let XDataValue::Distance(a) = v[wall_hatch_tail + 1] {
+                                                    if a.is_nan() { None } else { Some(a) }
+                                                } else {
+                                                    None
+                                                };
+                                                let relative = if let XDataValue::String(r) = &v[wall_hatch_tail + 2] {
+                                                    match r.as_str() {
+                                                        "true" => Some(true),
+                                                        "false" => Some(false),
+                                                        _ => None,
+                                                    }
+                                                } else {
+                                                    None
+                                                };
+                                                wall_hatch_override = Some(engine::display_component::ComponentStyleOverride {
+                                                    hatch_angle: angle,
+                                                    hatch_angle_relative: relative,
+                                                    ..Default::default()
+                                                });
+                                            }
+                                        }
+                                    }
+                                }
                             }
                         }
                     }
                 }
             }
+        }
+    }
+
+    // Records without layer extras predate both gap_before and axis_offset
+    // fields; treat them as gap_before = 0 and migrate to a centered stack so
+    // geometry stays identical to the historical default.
+    if !extras_applied && !layers.is_empty() {
+        let pairs: Vec<(f64, f64)> = layers.iter().map(|l| (l.thickness, 0.0)).collect();
+        let offsets = migrate_gap_before_to_axis_offset(&pairs);
+        for (layer, offset) in layers.iter_mut().zip(offsets) {
+            layer.axis_offset = offset;
         }
     }
 
@@ -926,6 +1142,8 @@ pub fn wall_from_entity(entity: &EntityType) -> Option<Wall> {
         layers,
         derived_handles,
         justification,
+        phase,
+        hatch_override: wall_hatch_override,
     })
 }
 
@@ -1010,7 +1228,7 @@ pub fn wall_layer_contour_polylines(
     if centerline.len() < 2 {
         return Vec::new();
     }
-    let layer_data: Vec<(f64, f64)> = layers.iter().map(|l| (l.thickness, l.gap_before)).collect();
+    let layer_data: Vec<(f64, f64)> = layers.iter().map(|l| (l.thickness, l.axis_offset)).collect();
     engine::contour::layer_contours_with_bulges(&centerline, &bulges, &layer_data)
         .into_iter()
         .map(|(a, b)| (a.points, b.points))
@@ -1044,7 +1262,7 @@ pub fn wall_layer_footprints_with_bulges(
     if centerline.len() < 2 {
         return Vec::new();
     }
-    let layer_data: Vec<(f64, f64)> = layers.iter().map(|l| (l.thickness, l.gap_before)).collect();
+    let layer_data: Vec<(f64, f64)> = layers.iter().map(|l| (l.thickness, l.axis_offset)).collect();
     let repr = engine::representation::build_wall_representation_with_bulges(
         &centerline,
         &bulges,
@@ -1719,8 +1937,14 @@ fn regenerate_wall_representation_inner(
     let Some(wall) = wall_from_entity(entity) else {
         return Err(WallRegenError::NotAWall);
     };
-    let (layers, height, _old_derived, wall_style_id) =
-        (wall.layers, wall.height, wall.derived_handles, wall.style_id);
+    let (layers, height, _old_derived, wall_style_id, wall_hatch_override) = (
+        wall.layers,
+        wall.height,
+        wall.derived_handles,
+        wall.style_id,
+        wall.hatch_override,
+    );
+    let wall_hatch_override = wall_hatch_override.as_ref();
 
     if layers.is_empty() {
         return Err(WallRegenError::NoLayers);
@@ -1779,7 +2003,7 @@ fn regenerate_wall_representation_inner(
     let wall_openings = openings_for_host_wall(scene, wall_handle);
     let (centerline, bulges) = wall_axis_points_and_bulges(&axis_entity);
     let layer_data: Vec<(f64, f64)> =
-        layers.iter().map(|l| (l.thickness, l.gap_before)).collect();
+        layers.iter().map(|l| (l.thickness, l.axis_offset)).collect();
     let layer_extrusion: Vec<(f64, f64)> = layers
         .iter()
         .map(|l| {
@@ -1839,7 +2063,7 @@ fn regenerate_wall_representation_inner(
         .map(|l| {
             engine::miter::MiterLayer::with_id(
                 l.thickness,
-                l.gap_before,
+                l.axis_offset,
                 l.material.clone(),
                 l.function.clone(),
             )
@@ -2034,10 +2258,18 @@ fn regenerate_wall_representation_inner(
             role_tag: None,
             index: i,
         };
-        // `layer_filter: LayerSelection` gates `Contour2D`/`Solid3D` only
-        // (see plan Step 3); `All` (or no rules) keeps every layer, exactly
-        // like before this feature existed.
-        let layer_included = match rules.map(|r| &r.layer_filter) {
+        // `layer_filter_for(slot)` gates `Contour2D`/`Solid3D` independently
+        // (Step 2/3): the 2D contour below consults the `Contour2D` slot,
+        // while the 3D solid further down consults `Solid3D` separately —
+        // so e.g. a 5-layer wall can show only the masonry layer as its 2D
+        // contour while still extruding every layer's solid. `All` (or no
+        // rules) keeps every layer, exactly like before this feature
+        // existed.
+        let layer_included_contour = match rules.map(|r| r.layer_filter_for(WallComponentSlot::Contour2D)) {
+            Some(LayerSelection::Explicit(refs)) => layer_ref_matches(&layer_ref, refs),
+            _ => true,
+        };
+        let layer_included_solid = match rules.map(|r| r.layer_filter_for(WallComponentSlot::Solid3D)) {
             Some(LayerSelection::Explicit(refs)) => layer_ref_matches(&layer_ref, refs),
             _ => true,
         };
@@ -2096,8 +2328,18 @@ fn regenerate_wall_representation_inner(
         // top of the wall's run direction ("relative"), or used verbatim as
         // a fixed/global angle. Both are stored in degrees on `Material` and
         // converted to the radians `HatchModel::angle_offset` expects.
-        let hatch_angle_deg = material.map(|m| m.hatch_angle).unwrap_or(0.0);
-        let hatch_angle_relative = material.map(|m| m.hatch_angle_relative).unwrap_or(true);
+        // Override precedence: `Wall.hatch_override` (per-instance) >
+        // style-profile `hatch_style_override` > `Material` default.
+        let hatch_angle_deg = wall_hatch_override
+            .and_then(|ov| ov.hatch_angle)
+            .or(hatch_style_override.hatch_angle)
+            .or_else(|| material.map(|m| m.hatch_angle))
+            .unwrap_or(0.0);
+        let hatch_angle_relative = wall_hatch_override
+            .and_then(|ov| ov.hatch_angle_relative)
+            .or(hatch_style_override.hatch_angle_relative)
+            .or_else(|| material.map(|m| m.hatch_angle_relative))
+            .unwrap_or(true);
         let hatch_angle_offset = if hatch_angle_relative {
             wall_angle_rad + hatch_angle_deg.to_radians()
         } else {
@@ -2123,7 +2365,7 @@ fn regenerate_wall_representation_inner(
                 continue;
             }
 
-            if contour_visible && layer_included {
+            if contour_visible && layer_included_contour {
                 let mut pl = LwPolyline::new();
                 for (idx, &(x, y)) in footprint.iter().enumerate() {
                     let bulge = footprint_bulges.get(idx).copied().unwrap_or(0.0);
@@ -2211,7 +2453,7 @@ fn regenerate_wall_representation_inner(
                 let b = extrusions.get(i).map(|e| e.base_offset).unwrap_or(0.0);
                 (fp, bg, h, b)
             };
-        if solid_visible && layer_included && footprint.len() >= 3 && solid_height.abs() > 1e-9 {
+        if solid_visible && layer_included_solid && footprint.len() >= 3 && solid_height.abs() > 1e-9 {
             let mut pl = LwPolyline::new();
             for (idx, &(x, y)) in footprint.iter().enumerate() {
                 let bulge = footprint_bulges.get(idx).copied().unwrap_or(0.0);
@@ -2287,8 +2529,7 @@ pub fn set_wall_derived_handles(
         v2.storey_id,
         &v2.layers,
         derived_handles,
-        v2.justification,
-    );
+        v2.justification, v2.phase, v2.hatch_override.as_ref());
     write_aec_record(&mut scene.document, wall_handle, record)
 }
 
@@ -2338,8 +2579,7 @@ pub fn change_wall_justification(
         v2.storey_id,
         &v2.layers,
         &v2.derived_handles,
-        new_justification,
-    );
+        new_justification, v2.phase, v2.hatch_override.as_ref());
     if !write_aec_record(&mut scene.document, wall_handle, record) {
         return false;
     }
@@ -2521,7 +2761,7 @@ impl WallCommand {
         }
 
         let total_thickness = if let Some(layers) = &self.resolved_layers {
-            layers.iter().map(|l| l.thickness + l.gap_before).sum()
+            layers.iter().map(|l| l.thickness).sum()
         } else {
             self.thickness
         };
@@ -2568,7 +2808,7 @@ impl WallCommand {
                 material: String::new(),
                 thickness: self.thickness,
                 function: "Structural".to_string(),
-                gap_before: 0.0,
+                axis_offset: -self.thickness * 0.5,
                 bottom_offset: 0.0,
                 top_offset: 0.0,
                 layer_override: None,
@@ -2582,8 +2822,7 @@ impl WallCommand {
             self.wall.storey_id,
             &layers,
             &[],
-            self.justification,
-        );
+            self.justification, self.wall.phase, self.wall.hatch_override.as_ref());
 
         entity.common_mut().extended_data.add_record(record);
         Some(entity)
@@ -2600,11 +2839,23 @@ impl WallCommand {
         let layer_data: Vec<(f64, f64)> = match self.resolved_layers.as_ref() {
             Some(layers) if !layers.is_empty() => layers
                 .iter()
-                .map(|l| (l.thickness, l.gap_before))
+                .map(|l| (l.thickness, l.axis_offset))
                 .collect(),
-            _ => vec![(self.thickness, 0.0)],
+            _ => vec![(self.thickness, -self.thickness * 0.5)],
         };
-        let total_thickness: f64 = layer_data.iter().map(|(t, g)| t + g).sum();
+        let total_thickness = if layer_data.is_empty() {
+            0.0
+        } else {
+            let min_s = layer_data
+                .iter()
+                .map(|(_, off)| *off)
+                .fold(f64::INFINITY, f64::min);
+            let max_e = layer_data
+                .iter()
+                .map(|(th, off)| *off + *th)
+                .fold(f64::NEG_INFINITY, f64::max);
+            (max_e - min_s).max(0.0)
+        };
         let centerline_offset = self.justification.offset(total_thickness);
 
         let points: Vec<(f64, f64)> = self.vertices
@@ -2863,11 +3114,23 @@ impl CadCommand for WallCommand {
             let layer_data: Vec<(f64, f64)> = match self.resolved_layers.as_ref() {
                 Some(layers) if !layers.is_empty() => layers
                     .iter()
-                    .map(|l| (l.thickness, l.gap_before))
+                    .map(|l| (l.thickness, l.axis_offset))
                     .collect(),
-                _ => vec![(self.thickness, 0.0)],
+                _ => vec![(self.thickness, -self.thickness * 0.5)],
             };
-            let total_thickness: f64 = layer_data.iter().map(|(t, g)| t + g).sum();
+            let total_thickness = if layer_data.is_empty() {
+            0.0
+        } else {
+            let min_s = layer_data
+                .iter()
+                .map(|(_, off)| *off)
+                .fold(f64::INFINITY, f64::min);
+            let max_e = layer_data
+                .iter()
+                .map(|(th, off)| *off + *th)
+                .fold(f64::NEG_INFINITY, f64::max);
+            (max_e - min_s).max(0.0)
+        };
             let centerline_offset = self.justification.offset(total_thickness);
             let points: Vec<(f64, f64)> = temp_vertices
                 .iter()
@@ -3179,7 +3442,7 @@ fn resolved_layer_to_wall_layer(lib: &StyleLibrary, layer: ResolvedLayer) -> Wal
         material: mat_name,
         thickness: layer.thickness,
         function: layer_function_to_str(&layer.function),
-        gap_before: layer.gap_before,
+        axis_offset: layer.axis_offset,
         bottom_offset: layer.bottom_offset,
         top_offset: layer.top_offset,
         layer_override: layer.layer_override,
@@ -3194,7 +3457,7 @@ fn resolved_layer_to_wall_layer_raw(layer: ResolvedLayer) -> WallLayer {
         material: layer.material_id,
         thickness: layer.thickness,
         function: layer_function_to_str(&layer.function),
-        gap_before: layer.gap_before,
+        axis_offset: layer.axis_offset,
         bottom_offset: layer.bottom_offset,
         top_offset: layer.top_offset,
         layer_override: layer.layer_override,
@@ -3627,7 +3890,7 @@ pub fn aec_style_add(command_line: &mut CommandLine, args: &str) {
                 material_id,
                 thickness,
                 function: parse_layer_function(func_str),
-                gap_before: 0.0,
+                axis_offset: LayerValue::Fixed(0.0),
                 bottom_offset: 0.0,
                 top_offset: 0.0,
                 layer_override: None,
@@ -3654,6 +3917,7 @@ pub fn aec_style_add(command_line: &mut CommandLine, args: &str) {
             parent_style_id,
         },
         layers,
+    display_profiles: std::collections::HashMap::new(),
     });
 
     match engine::library::save_to_default_path(&lib) {
@@ -3854,8 +4118,7 @@ pub fn set_wall_storey(scene: &mut Scene, wall_handle: Handle, new_storey_id: u3
         wall.storey_id,
         &wall.layers,
         &wall.derived_handles,
-        wall.justification,
-    ) {
+        wall.justification, wall.phase, wall.hatch_override.as_ref()) {
         record.add_value(v);
     }
     if !write_aec_record(&mut scene.document, wall_handle, record) {
@@ -4508,19 +4771,96 @@ pub fn apply_display_config_to_scene(
     config: &engine::plan_view::DisplayConfig,
     library_override: Option<&StyleLibrary>,
 ) -> Vec<Handle> {
-    let rules = config.wall_rules();
-    let substitutions = if config.style_substitutions.is_empty() {
-        None
-    } else {
-        Some(&config.style_substitutions)
-    };
+    // `DisplayConfig::wall_rules`/`style_substitutions` were removed in
+    // Step 2 (overrides now live per-wall-style on
+    // `WallStyle::display_profiles`, keyed by `DisplayConfig::name`); each
+    // wall's own style is resolved against `config.name` via
+    // `engine::library::resolve_effective_rule_set` below, instead of a
+    // single document-wide rule set. `style_substitutions` has no
+    // successor concept (removed without migration), so it's always
+    // `None`. `config.phase_filter` (Step 1) hides walls whose `phase`
+    // isn't in `visible_phases`; visible demolition/existing walls get an
+    // additional style overlay merged on top of their resolved rules.
+    let owned_lib = library_override.map_or_else(
+        || engine::project::resolve_style_library(None),
+        |l| l.clone(),
+    );
+    let library_override = Some(&owned_lib);
     let mut touched = Vec::new();
     for wall_handle in all_wall_axis_handles(scene) {
+        let Some(entity) = scene.document.get_entity(wall_handle) else {
+            continue;
+        };
+        let Some(wall) = wall_from_entity(entity) else {
+            continue;
+        };
+        let filter_result = apply_phase_filter(wall.phase, config.phase_filter.as_ref());
+        if !filter_result.visible {
+            if let Ok(handles) = regenerate_wall_representation_with_rules_and_substitutions(
+                scene,
+                wall_handle,
+                Some(&engine::display_component::ComponentRuleSet {
+                    visibility: [
+                        (engine::display_component::WallComponentSlot::Contour2D.key().to_string(), false),
+                        (engine::display_component::WallComponentSlot::Layers2D.key().to_string(), false),
+                        (engine::display_component::WallComponentSlot::ContourHatch2D.key().to_string(), false),
+                        (engine::display_component::WallComponentSlot::LayerHatch2D.key().to_string(), false),
+                        (engine::display_component::WallComponentSlot::Solid3D.key().to_string(), false),
+                    ]
+                    .into_iter()
+                    .collect(),
+                    ..Default::default()
+                }),
+                None,
+                library_override,
+            ) {
+                touched.extend(handles);
+            }
+            continue;
+        }
+
+        let style_rules = owned_lib
+            .wall_styles
+            .iter()
+            .find(|ws| ws.style.id == wall.style_id)
+            .and_then(|ws| engine::library::resolve_effective_rule_set(ws, &config.name))
+            .cloned();
+        // Overlay tier (d): phase-specific style overlay (demolition/existing)
+        // merged on top of the resolved style-profile rules, when present.
+        let overlay = filter_result.extra_style;
+        let effective_rules = match (style_rules, overlay) {
+            (Some(mut rules), Some(ov)) => {
+                for slot in [
+                    engine::display_component::WallComponentSlot::Contour2D,
+                    engine::display_component::WallComponentSlot::Layers2D,
+                    engine::display_component::WallComponentSlot::ContourHatch2D,
+                    engine::display_component::WallComponentSlot::LayerHatch2D,
+                ] {
+                    rules.style_override.entry(slot.key().to_string()).or_insert_with(|| ov.clone());
+                }
+                Some(rules)
+            }
+            (Some(rules), None) => Some(rules),
+            (None, Some(ov)) => {
+                let mut rules = engine::display_component::ComponentRuleSet::default();
+                for slot in [
+                    engine::display_component::WallComponentSlot::Contour2D,
+                    engine::display_component::WallComponentSlot::Layers2D,
+                    engine::display_component::WallComponentSlot::ContourHatch2D,
+                    engine::display_component::WallComponentSlot::LayerHatch2D,
+                ] {
+                    rules.style_override.insert(slot.key().to_string(), ov.clone());
+                }
+                Some(rules)
+            }
+            (None, None) => None,
+        };
+
         if let Ok(handles) = regenerate_wall_representation_with_rules_and_substitutions(
             scene,
             wall_handle,
-            rules,
-            substitutions,
+            effective_rules.as_ref(),
+            None,
             library_override,
         ) {
             touched.extend(handles);
@@ -5172,7 +5512,7 @@ fn wall_layer_data(scene: &Scene, handle: Handle) -> Vec<engine::miter::MiterLay
             .map(|l| {
                 engine::miter::MiterLayer::with_id(
                     l.thickness,
-                    l.gap_before,
+                    l.axis_offset,
                     l.material.clone(),
                     l.function.clone(),
                 )
@@ -5680,8 +6020,7 @@ pub fn reverse_wall_in_document(
                 v2.storey_id,
                 &v2.layers,
                 &v2.derived_handles,
-                v2.justification,
-            ) {
+                v2.justification, v2.phase, v2.hatch_override.as_ref()) {
                 record.add_value(v);
             }
             write_aec_record(&mut scene.document, wall_handle, record);
@@ -6092,12 +6431,32 @@ mod wall_command_tests {
             material: material.to_string(),
             thickness,
             function: function.to_string(),
-            gap_before: 0.0,
+            axis_offset: -thickness * 0.5,
             bottom_offset: 0.0,
             top_offset: 0.0,
             layer_override: None,
             hatch_override: None,
         }
+    }
+
+    /// Build a multi-layer stack with centered absolute axis offsets.
+    fn wls(specs: &[(&str, f64, &str)]) -> Vec<WallLayer> {
+        let pairs: Vec<(f64, f64)> = specs.iter().map(|(_, t, _)| (*t, 0.0)).collect();
+        let offsets = migrate_gap_before_to_axis_offset(&pairs);
+        specs
+            .iter()
+            .zip(offsets)
+            .map(|(&(mat, t, fun), off)| WallLayer {
+                material: mat.to_string(),
+                thickness: t,
+                function: fun.to_string(),
+                axis_offset: off,
+                bottom_offset: 0.0,
+                top_offset: 0.0,
+                layer_override: None,
+                hatch_override: None,
+            })
+            .collect()
     }
 
     #[test]
@@ -6200,9 +6559,9 @@ mod wall_command_tests {
         pl.add_vertex(LwVertex::new(Vector2::new(p1.0, p1.1)));
         pl.add_vertex(LwVertex::new(Vector2::new(p2.0, p2.1)));
         let mut entity = EntityType::LwPolyline(pl);
-        let layers = vec![wl(mat, 0.2, "Structural"), wl("Insulation", 0.05, "Insulation")];
+        let layers = wls(&[(mat, 0.2, "Structural"), ("Insulation", 0.05, "Insulation")]);
         let mut record = ExtendedDataRecord::new(AEC_APPID);
-        record.values = wall_record("style1", 3.0, 0, &layers, &[], WallJustification::Center);
+        record.values = wall_record("style1", 3.0, 0, &layers, &[], WallJustification::Center, PlanPhase::New, None);
         entity.common_mut().extended_data.add_record(record);
         scene.add_entity(entity)
     }
@@ -6223,9 +6582,9 @@ mod wall_command_tests {
         pl.add_vertex(LwVertex::new(Vector2::new(p2.0, p2.1)));
         pl.add_vertex(LwVertex::new(Vector2::new(p3.0, p3.1)));
         let mut entity = EntityType::LwPolyline(pl);
-        let layers = vec![wl(mat, 0.2, "Structural"), wl("Insulation", 0.05, "Insulation")];
+        let layers = wls(&[(mat, 0.2, "Structural"), ("Insulation", 0.05, "Insulation")]);
         let mut record = ExtendedDataRecord::new(AEC_APPID);
-        record.values = wall_record("style1", 3.0, 0, &layers, &[], WallJustification::Center);
+        record.values = wall_record("style1", 3.0, 0, &layers, &[], WallJustification::Center, PlanPhase::New, None);
         entity.common_mut().extended_data.add_record(record);
         scene.add_entity(entity)
     }
@@ -6835,14 +7194,108 @@ mod wall_command_tests {
         assert_eq!(segments.len(), 1);
     }
 
+    /// `write_wall_hatch_override` (Step 6 Properties panel section) sets,
+    /// updates, and clears the per-wall-instance hatch-angle override while
+    /// leaving the rest of the WALL record intact.
+    #[test]
+    fn write_wall_hatch_override_sets_updates_and_clears_the_override() {
+        let mut scene = Scene::new();
+        let mut cmd = WallCommand::new_with_library(None);
+        cmd.on_point(DVec3::new(0.0, 0.0, 0.0));
+        let entity = match cmd.on_point(DVec3::new(5.0, 0.0, 0.0)) {
+            CmdResult::CommitLiveEntities(mut entities) => entities.remove(0),
+            _ => panic!("two points should commit a live wall segment"),
+        };
+        let handle = scene.add_entity(entity);
+
+        // No override set initially.
+        let initial = wall_from_entity(scene.document.get_entity(handle).unwrap()).unwrap();
+        assert_eq!(initial.hatch_override, None);
+
+        // Setting an override.
+        let override_a = engine::display_component::ComponentStyleOverride {
+            hatch_angle: Some(45.0),
+            hatch_angle_relative: Some(false),
+            ..Default::default()
+        };
+        assert!(write_wall_hatch_override(&mut scene, handle, Some(override_a.clone())));
+        let updated = wall_from_entity(scene.document.get_entity(handle).unwrap()).unwrap();
+        assert_eq!(updated.hatch_override, Some(override_a));
+        // Unrelated fields untouched.
+        assert!((updated.height - DEFAULT_WALL_HEIGHT).abs() < 1e-9);
+
+        // Updating the override (e.g. angle field edited again).
+        let override_b = engine::display_component::ComponentStyleOverride {
+            hatch_angle: Some(90.0),
+            hatch_angle_relative: Some(true),
+            ..Default::default()
+        };
+        assert!(write_wall_hatch_override(&mut scene, handle, Some(override_b.clone())));
+        let updated2 = wall_from_entity(scene.document.get_entity(handle).unwrap()).unwrap();
+        assert_eq!(updated2.hatch_override, Some(override_b));
+
+        // Clearing the override (checkbox unchecked).
+        assert!(write_wall_hatch_override(&mut scene, handle, None));
+        let cleared = wall_from_entity(scene.document.get_entity(handle).unwrap()).unwrap();
+        assert_eq!(cleared.hatch_override, None);
+    }
+
+    #[test]
+    fn apply_phase_filter_with_no_filter_shows_everything_unstyled() {
+        for phase in [PlanPhase::New, PlanPhase::Demolition, PlanPhase::Existing] {
+            let result = apply_phase_filter(phase, None);
+            assert!(result.visible);
+            assert_eq!(result.extra_style, None);
+        }
+    }
+
+    #[test]
+    fn apply_phase_filter_hides_phases_missing_from_visible_phases() {
+        let filter = PhaseFilter {
+            visible_phases: vec![PlanPhase::New],
+            demolition_style: None,
+            existing_style: None,
+        };
+        assert!(apply_phase_filter(PlanPhase::New, Some(&filter)).visible);
+        assert!(!apply_phase_filter(PlanPhase::Demolition, Some(&filter)).visible);
+        assert!(!apply_phase_filter(PlanPhase::Existing, Some(&filter)).visible);
+    }
+
+    #[test]
+    fn apply_phase_filter_applies_demolition_and_existing_overlays() {
+        let filter = PhaseFilter {
+            visible_phases: vec![PlanPhase::New, PlanPhase::Demolition, PlanPhase::Existing],
+            demolition_style: Some(engine::display_component::ComponentStyleOverride {
+                line_type: Some("Dashed".to_string()),
+                ..Default::default()
+            }),
+            existing_style: Some(engine::display_component::ComponentStyleOverride {
+                line_color: Some(0x888888),
+                ..Default::default()
+            }),
+        };
+        let demolition = apply_phase_filter(PlanPhase::Demolition, Some(&filter));
+        assert!(demolition.visible);
+        assert_eq!(demolition.extra_style.unwrap().line_type, Some("Dashed".to_string()));
+
+        let existing = apply_phase_filter(PlanPhase::Existing, Some(&filter));
+        assert!(existing.visible);
+        assert_eq!(existing.extra_style.unwrap().line_color, Some(0x888888));
+
+        // `New` walls never pick up an overlay, even if visible.
+        let new_phase = apply_phase_filter(PlanPhase::New, Some(&filter));
+        assert!(new_phase.visible);
+        assert_eq!(new_phase.extra_style, None);
+    }
+
     #[test]
     fn wall_round_trip() {
-        let layers = vec![
-            wl("Finish", 0.02, "Finish"),
-            wl("Brick", 0.10, "Structural"),
-            wl("Finish", 0.02, "Finish"),
-        ];
-        let values = wall_record("style1", 3.0, 1, &layers, &[], WallJustification::Center);
+        let layers = wls(&[
+            ("Finish", 0.02, "Finish"),
+            ("Brick", 0.10, "Structural"),
+            ("Finish", 0.02, "Finish"),
+        ]);
+        let values = wall_record("style1", 3.0, 1, &layers, &[], WallJustification::Center, PlanPhase::New, None);
         let pl = LwPolyline::new();
         let mut entity = EntityType::LwPolyline(pl);
         let mut record = ExtendedDataRecord::new(AEC_APPID);
@@ -6858,6 +7311,98 @@ mod wall_command_tests {
         assert_eq!(wall.layers[1].thickness, 0.10);
         assert_eq!(wall.layers[1].function, "Structural");
         assert_eq!(wall.total_thickness(), 0.14);
+        assert_eq!(wall.phase, PlanPhase::New);
+    }
+
+    #[test]
+    fn wall_from_entity_round_trips_phase() {
+        let layers = wls(&[("Brick", 0.2, "Structural")]);
+        let values = wall_record(
+            "style1",
+            3.0,
+            0,
+            &layers,
+            &[],
+            WallJustification::Center,
+            PlanPhase::Demolition,
+            None,
+        );
+        let pl = LwPolyline::new();
+        let mut entity = EntityType::LwPolyline(pl);
+        let mut record = ExtendedDataRecord::new(AEC_APPID);
+        record.values = values;
+        entity.common_mut().extended_data.add_record(record);
+
+        let wall = wall_from_entity(&entity).expect("Should parse WALL");
+        assert_eq!(wall.phase, PlanPhase::Demolition);
+    }
+
+    #[test]
+    fn wall_without_phase_tail_defaults_to_new() {
+        // Simulates a record written before the `phase` field existed: the
+        // trailing tag is simply absent, and parsing must fall back to
+        // `PlanPhase::New` rather than failing.
+        let layers = wls(&[("Brick", 0.2, "Structural")]);
+        let mut values = wall_record(
+            "style1",
+            3.0,
+            0,
+            &layers,
+            &[],
+            WallJustification::Center,
+            PlanPhase::Demolition,
+            None,
+        );
+        // Drop the trailing wall-hatch-override block (3 values) and the
+        // phase tag itself, simulating a record written before either
+        // field existed.
+        for _ in 0..4 {
+            values.pop();
+        }
+        let pl = LwPolyline::new();
+        let mut entity = EntityType::LwPolyline(pl);
+        let mut record = ExtendedDataRecord::new(AEC_APPID);
+        record.values = values;
+        entity.common_mut().extended_data.add_record(record);
+
+        let wall = wall_from_entity(&entity).expect("Should parse WALL");
+        assert_eq!(wall.phase, PlanPhase::New);
+    }
+
+    #[test]
+    fn write_wall_height_preserves_phase() {
+        let mut scene = Scene::new();
+        let mut cmd = WallCommand::new_with_library(None);
+        cmd.on_point(DVec3::new(0.0, 0.0, 0.0));
+        let entity = match cmd.on_point(DVec3::new(5.0, 0.0, 0.0)) {
+            CmdResult::CommitLiveEntities(mut entities) => entities.remove(0),
+            _ => panic!("two points should commit a live wall segment"),
+        };
+        let handle = scene.add_entity(entity);
+
+        // Manually flip the phase to `Existing`, mimicking a prior
+        // Properties-panel edit, then confirm a later height edit preserves it.
+        let mut wall = wall_from_entity(scene.document.get_entity(handle).unwrap()).unwrap();
+        wall.phase = PlanPhase::Existing;
+        let mut record = ExtendedDataRecord::new(AEC_APPID);
+        record.values = wall_record(
+            &wall.style_id,
+            wall.height,
+            wall.storey_id,
+            &wall.layers,
+            &wall.derived_handles,
+            wall.justification,
+            wall.phase,
+            wall.hatch_override.as_ref(),
+        );
+        write_aec_record(&mut scene.document, handle, record);
+
+        assert!(write_wall_height(&mut scene, handle, 3.2));
+
+        let updated = wall_from_entity(scene.document.get_entity(handle).unwrap())
+            .expect("entity should still read back as a wall after the edit");
+        assert_eq!(updated.phase, PlanPhase::Existing);
+        assert!((updated.height - 3.2).abs() < 1e-9);
     }
 
     #[test]
@@ -6866,7 +7411,7 @@ mod wall_command_tests {
         let mut entity = EntityType::LwPolyline(pl);
         let layers = vec![wl("Mat", 0.15, "Func")];
         let mut rec = ExtendedDataRecord::new(AEC_APPID);
-        rec.values = wall_record("style2", 3.2, 2, &layers, &[], WallJustification::Center);
+        rec.values = wall_record("style2", 3.2, 2, &layers, &[], WallJustification::Center, PlanPhase::New, None);
         entity.common_mut().extended_data.add_record(rec);
 
         let res = wall_thickness_and_height(&entity).expect("Should read WALL");
@@ -6893,7 +7438,7 @@ mod wall_command_tests {
             let mut entity = EntityType::LwPolyline(pl);
             let layers = vec![wl("Brick", 0.2, "Structural")];
             let mut r = ExtendedDataRecord::new(AEC_APPID);
-            r.values = wall_record("style1", 2.8, 0, &layers, &[], WallJustification::Center);
+            r.values = wall_record("style1", 2.8, 0, &layers, &[], WallJustification::Center, PlanPhase::New, None);
             entity.common_mut().extended_data.add_record(r);
             scene.add_entity(entity);
         }
@@ -6939,13 +7484,14 @@ mod wall_command_tests {
                 material_id: "brick_id".to_string(),
                 thickness: LayerValue::Fixed(0.25),
                 function: LayerFunction::Structural,
-                gap_before: 0.0,
+                axis_offset: LayerValue::Fixed(0.0),
                 bottom_offset: 0.0,
                 top_offset: 0.0,
                 layer_override: None,
                 hatch_override: None,
                 role_tag: None,
             }],
+        display_profiles: std::collections::HashMap::new(),
         };
         let lib = StyleLibrary {
             materials: vec![material],
@@ -7060,13 +7606,14 @@ mod wall_command_tests {
                 material_id: "brick_id".to_string(),
                 thickness: LayerValue::Fixed(0.25),
                 function: LayerFunction::Structural,
-                gap_before: 0.0,
+                axis_offset: LayerValue::Fixed(0.0),
                 bottom_offset: 0.0,
                 top_offset: 0.0,
                 layer_override: None,
                 hatch_override: None,
                 role_tag: None,
             }],
+        display_profiles: std::collections::HashMap::new(),
         };
         let lib = StyleLibrary {
             materials: vec![material],
@@ -7118,13 +7665,14 @@ mod wall_command_tests {
                 material_id: "brick_id".to_string(),
                 thickness: LayerValue::Fixed(0.25),
                 function: LayerFunction::Structural,
-                gap_before: 0.0,
+                axis_offset: LayerValue::Fixed(0.0),
                 bottom_offset: 0.0,
                 top_offset: 0.0,
                 layer_override: None,
                 hatch_override: None,
                 role_tag: None,
             }],
+        display_profiles: std::collections::HashMap::new(),
         };
         let lib = StyleLibrary {
             materials: vec![material],
@@ -7392,7 +7940,7 @@ mod wall_command_tests {
     fn wall_round_trip_with_derived_handles() {
         let layers = vec![wl("Concrete", 0.2, "Structural")];
         let derived = vec![Handle::new(10), Handle::new(11), Handle::new(12)];
-        let values = wall_record("style1", 3.0, 0, &layers, &derived, WallJustification::Center);
+        let values = wall_record("style1", 3.0, 0, &layers, &derived, WallJustification::Center, PlanPhase::New, None);
         let pl = LwPolyline::new();
         let mut entity = EntityType::LwPolyline(pl);
         let mut record = ExtendedDataRecord::new(AEC_APPID);
@@ -7409,7 +7957,7 @@ mod wall_command_tests {
         // build it with an empty list and confirm it reads back empty, not
         // an error, keeping legacy records readable.
         let layers = vec![wl("Concrete", 0.2, "Structural")];
-        let values = wall_record("style1", 3.0, 0, &layers, &[], WallJustification::Center);
+        let values = wall_record("style1", 3.0, 0, &layers, &[], WallJustification::Center, PlanPhase::New, None);
         let pl = LwPolyline::new();
         let mut entity = EntityType::LwPolyline(pl);
         let mut record = ExtendedDataRecord::new(AEC_APPID);
@@ -7427,12 +7975,12 @@ mod wall_command_tests {
         pl.add_vertex(LwVertex::new(Vector2::new(0.0, 0.0)));
         pl.add_vertex(LwVertex::new(Vector2::new(5.0, 0.0)));
         let mut entity = EntityType::LwPolyline(pl);
-        let layers = vec![
-            wl("Concrete", 0.2, "Structural"),
-            wl("Insulation", 0.05, "Insulation"),
-        ];
+        let layers = wls(&[
+            ("Concrete", 0.2, "Structural"),
+            ("Insulation", 0.05, "Insulation"),
+        ]);
         let mut record = ExtendedDataRecord::new(AEC_APPID);
-        record.values = wall_record("style1", 3.0, 0, &layers, &[], WallJustification::Center);
+        record.values = wall_record("style1", 3.0, 0, &layers, &[], WallJustification::Center, PlanPhase::New, None);
         entity.common_mut().extended_data.add_record(record);
         scene.add_entity(entity)
     }
@@ -7462,13 +8010,14 @@ mod wall_command_tests {
                     material_id: "Concrete".to_string(),
                     thickness: LayerValue::Fixed(0.2),
                     function: LayerFunction::Structural,
-                    gap_before: 0.0,
+                    axis_offset: LayerValue::Fixed(0.0),
                     bottom_offset: 0.0,
                     top_offset: 0.0,
                     layer_override: None,
                     hatch_override: None,
                     role_tag: None,
                 }],
+            display_profiles: std::collections::HashMap::new(),
             },
         );
         wall_styles.insert(
@@ -7485,7 +8034,7 @@ mod wall_command_tests {
                         material_id: "Brick".to_string(),
                         thickness: LayerValue::Fixed(0.1),
                         function: LayerFunction::Finish,
-                        gap_before: 0.0,
+                        axis_offset: LayerValue::Fixed(0.0),
                         bottom_offset: 0.0,
                         top_offset: 0.0,
                         layer_override: None,
@@ -7496,7 +8045,7 @@ mod wall_command_tests {
                         material_id: "Insulation".to_string(),
                         thickness: LayerValue::Fixed(0.06),
                         function: LayerFunction::Insulation,
-                        gap_before: 0.0,
+                        axis_offset: LayerValue::Fixed(0.0),
                         bottom_offset: 0.0,
                         top_offset: 0.0,
                         layer_override: None,
@@ -7504,6 +8053,7 @@ mod wall_command_tests {
                         role_tag: None,
                     },
                 ],
+            display_profiles: std::collections::HashMap::new(),
             },
         );
 
@@ -7525,7 +8075,7 @@ mod wall_command_tests {
                     LayerFunction::Finish => "Finish".to_string(),
                     LayerFunction::Other(s) => s.clone(),
                 },
-                gap_before: l.gap_before,
+                axis_offset: l.axis_offset,
                 bottom_offset: l.bottom_offset,
                 top_offset: l.top_offset,
                 layer_override: l.layer_override.clone(),
@@ -7545,8 +8095,7 @@ mod wall_command_tests {
             wall.storey_id,
             &wall.layers,
             &wall.derived_handles,
-            wall.justification,
-        );
+            wall.justification, wall.phase, wall.hatch_override.as_ref());
 
         let entity = scene.document.get_entity_mut(wall_handle).unwrap();
         let xd = &mut entity.common_mut().extended_data;
@@ -7649,13 +8198,10 @@ mod wall_command_tests {
             }
             pl.add_vertex(LwVertex::new(Vector2::new(x0 + 5.0, 0.0)));
             let mut entity = EntityType::LwPolyline(pl);
-            let layers = vec![
-                wl("Concrete", 0.2, "Structural"),
-                wl("Insulation", 0.05, "Insulation"),
-            ];
+            let layers = wls(&[("Concrete", 0.2, "Structural"), ("Insulation", 0.05, "Insulation")]);
             let mut record = ExtendedDataRecord::new(AEC_APPID);
             record.values =
-                wall_record("style1", 3.0, 0, &layers, &[], WallJustification::Center);
+                wall_record("style1", 3.0, 0, &layers, &[], WallJustification::Center, PlanPhase::New, None);
             entity.common_mut().extended_data.add_record(record);
             handles.push(scene.add_entity(entity));
         }
@@ -7714,7 +8260,7 @@ mod wall_command_tests {
         let mut entity = EntityType::LwPolyline(pl);
         let layers = vec![wl("Concrete", 0.2, "Structural")];
         let mut record = ExtendedDataRecord::new(AEC_APPID);
-        record.values = wall_record("style1", 3.0, 0, &layers, &[], WallJustification::Center);
+        record.values = wall_record("style1", 3.0, 0, &layers, &[], WallJustification::Center, PlanPhase::New, None);
         entity.common_mut().extended_data.add_record(record);
         let wall_handle = scene.add_entity(entity);
 
@@ -7757,7 +8303,7 @@ mod wall_command_tests {
         let default_layer = wl("Insulation", 0.05, "Insulation");
         let layers = vec![overridden, default_layer];
         let mut record = ExtendedDataRecord::new(AEC_APPID);
-        record.values = wall_record("style1", 3.0, 0, &layers, &[], WallJustification::Center);
+        record.values = wall_record("style1", 3.0, 0, &layers, &[], WallJustification::Center, PlanPhase::New, None);
         entity.common_mut().extended_data.add_record(record);
         let wall_handle = scene.add_entity(entity);
 
@@ -7794,7 +8340,7 @@ mod wall_command_tests {
         let mut layer = wl("Concrete", 0.2, "Structural");
         layer.hatch_override = Some("NET".to_string());
         let layers = vec![layer, wl("Insulation", 0.05, "Insulation")];
-        let values = wall_record("style1", 3.0, 0, &layers, &[], WallJustification::Center);
+        let values = wall_record("style1", 3.0, 0, &layers, &[], WallJustification::Center, PlanPhase::New, None);
         let pl = LwPolyline::new();
         let mut entity = EntityType::LwPolyline(pl);
         let mut record = ExtendedDataRecord::new(AEC_APPID);
@@ -7804,6 +8350,116 @@ mod wall_command_tests {
         let wall = wall_from_entity(&entity).expect("should parse WALL");
         assert_eq!(wall.layers[0].hatch_override.as_deref(), Some("NET"));
         assert_eq!(wall.layers[1].hatch_override, None);
+    }
+
+    #[test]
+    fn layer_filter_for_contour_and_solid_can_differ_within_one_profile() {
+        use engine::display_component::{ComponentRuleSet, LayerSelection, WallComponentSlot};
+        let mut scene = Scene::new();
+        let wall_handle = add_multi_layer_wall(&mut scene);
+        let layer_ref = join::LayerRef { material_id: "Concrete".to_string(), role_tag: None, index: 0 };
+        let mut rules = ComponentRuleSet::default();
+        rules.layer_filter.insert(
+            WallComponentSlot::Contour2D.key().to_string(),
+            LayerSelection::Explicit(vec![layer_ref.clone()]),
+        );
+        // `Solid3D` left unset -> defaults to `All` (non-regression).
+        let handles = regenerate_wall_representation_with_rules_and_substitutions(
+            &mut scene,
+            wall_handle,
+            Some(&rules),
+            None,
+            None,
+        )
+        .expect("regeneration should succeed");
+        assert!(!handles.is_empty());
+        assert_eq!(rules.layer_filter_for(WallComponentSlot::Contour2D), &LayerSelection::Explicit(vec![layer_ref]));
+        assert_eq!(rules.layer_filter_for(WallComponentSlot::Solid3D), &LayerSelection::All);
+
+        let derived = wall_from_entity(scene.document.get_entity(wall_handle).unwrap())
+            .expect("should still read back as WALL")
+            .derived_handles;
+        let contour_count = derived
+            .iter()
+            .filter(|handle| matches!(scene.document.get_entity(**handle), Some(EntityType::LwPolyline(_))))
+            .count();
+        let solid_count = derived
+            .iter()
+            .filter(|handle| matches!(scene.document.get_entity(**handle), Some(EntityType::Solid3D(_))))
+            .count();
+        assert_eq!(contour_count, 1, "Contour2D must include only the explicit layer");
+        assert_eq!(solid_count, 2, "Solid3D must keep both layers when its filter defaults to All");
+    }
+
+    #[test]
+    fn hatch_override_chain_wall_takes_precedence_over_material() {
+        let mut scene = Scene::new();
+        let mut pl = LwPolyline::new();
+        pl.add_vertex(LwVertex::new(Vector2::new(0.0, 0.0)));
+        pl.add_vertex(LwVertex::new(Vector2::new(5.0, 0.0)));
+        let mut entity = EntityType::LwPolyline(pl);
+        let layers = vec![wl("Concrete", 0.2, "Structural")];
+        let mut record = ExtendedDataRecord::new(AEC_APPID);
+        let wall_hatch_override = engine::display_component::ComponentStyleOverride {
+            hatch_angle: Some(45.0),
+            hatch_angle_relative: Some(false),
+            ..Default::default()
+        };
+        record.values = wall_record(
+            "style1",
+            3.0,
+            0,
+            &layers,
+            &[],
+            WallJustification::Center,
+            PlanPhase::New,
+            Some(&wall_hatch_override),
+        );
+        entity.common_mut().extended_data.add_record(record);
+        let wall_handle = scene.add_entity(entity);
+
+        let wall = wall_from_entity(scene.document.get_entity(wall_handle).unwrap())
+            .expect("should parse WALL");
+        assert_eq!(wall.hatch_override, Some(wall_hatch_override));
+
+        regenerate_wall_representation(&mut scene, wall_handle, None)
+            .expect("regeneration should succeed for a single-layer wall");
+
+        let derived = wall_from_entity(scene.document.get_entity(wall_handle).unwrap())
+            .expect("should still read back as WALL")
+            .derived_handles;
+        let mut hatch_count = 0;
+        for handle in derived {
+            if let Some(EntityType::Hatch(hatch)) = scene.document.get_entity(handle) {
+                hatch_count += 1;
+                assert!(
+                    (hatch.pattern_angle - std::f64::consts::FRAC_PI_4).abs() < 1.0e-5,
+                    "wall hatch override should render at 45 degrees, got {} radians",
+                    hatch.pattern_angle
+                );
+            }
+        }
+        assert_eq!(hatch_count, 1, "the single-layer wall should produce one hatch");
+    }
+
+    #[test]
+    fn apply_phase_filter_hides_and_overlays_as_expected_end_to_end() {
+        use engine::plan_view::{PhaseFilter, PlanPhase as Phase};
+        let filter = PhaseFilter {
+            visible_phases: vec![Phase::New, Phase::Demolition],
+            demolition_style: Some(engine::display_component::ComponentStyleOverride {
+                line_color: Some(0xFF0000),
+                ..Default::default()
+            }),
+            existing_style: None,
+        };
+        assert!(apply_phase_filter(Phase::New, Some(&filter)).visible);
+        assert!(apply_phase_filter(Phase::Demolition, Some(&filter)).visible);
+        assert!(!apply_phase_filter(Phase::Existing, Some(&filter)).visible);
+        assert_eq!(
+            apply_phase_filter(Phase::Demolition, Some(&filter)).extra_style.unwrap().line_color,
+            Some(0xFF0000)
+        );
     }
 
     #[test]
@@ -7974,7 +8630,7 @@ mod wall_command_tests {
         let mut entity_b = EntityType::LwPolyline(pl_b);
         let layers_b = vec![wl("Concrete", 0.3, "Structural")];
         let mut record_b = ExtendedDataRecord::new(AEC_APPID);
-        record_b.values = wall_record("style1", 3.0, 0, &layers_b, &[], WallJustification::Center);
+        record_b.values = wall_record("style1", 3.0, 0, &layers_b, &[], WallJustification::Center, PlanPhase::New, None);
         entity_b.common_mut().extended_data.add_record(record_b);
         let wall_b = scene.add_entity(entity_b);
 
@@ -8030,7 +8686,7 @@ mod wall_command_tests {
         let mut entity_b = EntityType::LwPolyline(pl_b);
         let layers_b = vec![wl("Concrete", 0.3, "Structural")];
         let mut record_b = ExtendedDataRecord::new(AEC_APPID);
-        record_b.values = wall_record("style1", 3.0, 0, &layers_b, &[], WallJustification::Center);
+        record_b.values = wall_record("style1", 3.0, 0, &layers_b, &[], WallJustification::Center, PlanPhase::New, None);
         entity_b.common_mut().extended_data.add_record(record_b);
         let wall_b = scene.add_entity(entity_b);
 
@@ -8110,7 +8766,7 @@ mod wall_command_tests {
         let mut entity_b = EntityType::LwPolyline(pl_b);
         let layers_b = vec![wl("Concrete", 0.3, "Structural")];
         let mut record_b = ExtendedDataRecord::new(AEC_APPID);
-        record_b.values = wall_record("style1", 3.0, 0, &layers_b, &[], WallJustification::Center);
+        record_b.values = wall_record("style1", 3.0, 0, &layers_b, &[], WallJustification::Center, PlanPhase::New, None);
         entity_b.common_mut().extended_data.add_record(record_b);
         let wall_b = scene.add_entity(entity_b);
 
@@ -8136,10 +8792,7 @@ mod wall_command_tests {
         write_wall_layers(
             &mut scene,
             wall_a,
-            vec![
-                wl("Brick", 0.2, "Structural"),
-                wl("Insulation", 0.05, "Insulation"),
-            ],
+            wls(&[("Brick", 0.2, "Structural"), ("Insulation", 0.05, "Insulation")]),
         );
 
         let _ = take_pending_override_warnings(); // clear anything queued so far
@@ -8171,7 +8824,7 @@ mod wall_command_tests {
         let mut entity_b = EntityType::LwPolyline(pl_b);
         let layers_b = vec![wl("Concrete", 0.3, "Structural")];
         let mut record_b = ExtendedDataRecord::new(AEC_APPID);
-        record_b.values = wall_record("style1", 3.0, 0, &layers_b, &[], WallJustification::Center);
+        record_b.values = wall_record("style1", 3.0, 0, &layers_b, &[], WallJustification::Center, PlanPhase::New, None);
         entity_b.common_mut().extended_data.add_record(record_b);
         let wall_b = scene.add_entity(entity_b);
 
@@ -8225,7 +8878,7 @@ mod wall_command_tests {
         let mut entity_b = EntityType::LwPolyline(pl_b);
         let layers_b = vec![wl("Concrete", 0.3, "Structural")];
         let mut record_b = ExtendedDataRecord::new(AEC_APPID);
-        record_b.values = wall_record("style1", 3.0, 0, &layers_b, &[], WallJustification::Center);
+        record_b.values = wall_record("style1", 3.0, 0, &layers_b, &[], WallJustification::Center, PlanPhase::New, None);
         entity_b.common_mut().extended_data.add_record(record_b);
         let wall_b = scene.add_entity(entity_b);
 
@@ -8249,10 +8902,7 @@ mod wall_command_tests {
         write_wall_layers(
             &mut scene,
             wall_a,
-            vec![
-                wl("Brick", 0.2, "Structural"),
-                wl("Insulation", 0.05, "Insulation"),
-            ],
+            wls(&[("Brick", 0.2, "Structural"), ("Insulation", 0.05, "Insulation")]),
         );
 
         join_two_walls_in_document(&mut scene, wall_a, wall_b, None, None, None)
@@ -8278,7 +8928,7 @@ mod wall_command_tests {
             let mut entity = EntityType::LwPolyline(pl);
             let layers = vec![wl("Concrete", 0.2, "Structural")];
             let mut record = ExtendedDataRecord::new(AEC_APPID);
-            record.values = wall_record("style1", 3.0, 0, &layers, &[], WallJustification::Center);
+            record.values = wall_record("style1", 3.0, 0, &layers, &[], WallJustification::Center, PlanPhase::New, None);
             entity.common_mut().extended_data.add_record(record);
             scene.add_entity(entity)
         }
@@ -8342,7 +8992,7 @@ mod wall_command_tests {
         let mut entity_b = EntityType::LwPolyline(pl_b);
         let layers_b = vec![wl("Concrete", 0.3, "Structural")];
         let mut record_b = ExtendedDataRecord::new(AEC_APPID);
-        record_b.values = wall_record("style1", 3.0, 0, &layers_b, &[], WallJustification::Center);
+        record_b.values = wall_record("style1", 3.0, 0, &layers_b, &[], WallJustification::Center, PlanPhase::New, None);
         entity_b.common_mut().extended_data.add_record(record_b);
         let wall_b = scene.add_entity(entity_b);
 
@@ -8391,7 +9041,7 @@ mod wall_command_tests {
         let mut entity_b = EntityType::LwPolyline(pl_b);
         let layers_b = vec![wl("Concrete", 0.3, "Structural")];
         let mut record_b = ExtendedDataRecord::new(AEC_APPID);
-        record_b.values = wall_record("style1", 3.0, 0, &layers_b, &[], WallJustification::Center);
+        record_b.values = wall_record("style1", 3.0, 0, &layers_b, &[], WallJustification::Center, PlanPhase::New, None);
         entity_b.common_mut().extended_data.add_record(record_b);
         let wall_b = scene.add_entity(entity_b);
 
@@ -8414,10 +9064,7 @@ mod wall_command_tests {
         write_wall_layers(
             &mut scene,
             wall_a,
-            vec![
-                wl("Brick", 0.2, "Structural"),
-                wl("Insulation", 0.05, "Insulation"),
-            ],
+            wls(&[("Brick", 0.2, "Structural"), ("Insulation", 0.05, "Insulation")]),
         );
 
         let _ = take_pending_override_warnings(); // drain any leftovers from prior tests
@@ -8484,7 +9131,7 @@ mod wall_command_tests {
         let default_layer = wl("Insulation", 0.05, "Insulation");
         let layers = vec![overridden, default_layer];
         let mut record = ExtendedDataRecord::new(AEC_APPID);
-        record.values = wall_record("style1", 3.0, 0, &layers, &[], WallJustification::Center);
+        record.values = wall_record("style1", 3.0, 0, &layers, &[], WallJustification::Center, PlanPhase::New, None);
         entity.common_mut().extended_data.add_record(record);
         let wall_handle = scene.add_entity(entity);
 
@@ -8692,18 +9339,26 @@ mod wall_command_tests {
 
     #[test]
     fn layer_selection_explicit_filters_contour_and_solid_to_referenced_layers() {
-        use crate::modules::aec::engine::display_component::{ComponentRuleSet, LayerSelection};
+        use crate::modules::aec::engine::display_component::{
+            ComponentRuleSet, LayerSelection, WallComponentSlot,
+        };
         use crate::modules::aec::engine::join::LayerRef;
 
         let mut scene = Scene::new();
         let wall_handle = add_multi_layer_wall(&mut scene);
         // add_multi_layer_wall's layers are ["Concrete" (index 0), "Insulation" (index 1)].
         let mut rules = ComponentRuleSet::default();
-        rules.layer_filter = LayerSelection::Explicit(vec![LayerRef {
+        let explicit = LayerSelection::Explicit(vec![LayerRef {
             material_id: "Concrete".to_string(),
             role_tag: None,
             index: 0,
         }]);
+        rules
+            .layer_filter
+            .insert(WallComponentSlot::Contour2D.key().to_string(), explicit.clone());
+        rules
+            .layer_filter
+            .insert(WallComponentSlot::Solid3D.key().to_string(), explicit);
 
         regenerate_wall_representation_with_rules(&mut scene, wall_handle, Some(&rules), None)
             .expect("regeneration with an explicit layer_filter should succeed");
@@ -8771,13 +9426,14 @@ mod wall_command_tests {
                 material_id: "SourceMat".to_string(),
                 thickness: LayerValue::Fixed(0.2),
                 function: LayerFunction::Structural,
-                gap_before: 0.0,
+                axis_offset: LayerValue::Fixed(0.0),
                 bottom_offset: 0.0,
                 top_offset: 0.0,
                 layer_override: None,
                 hatch_override: None,
                 role_tag: None,
             }],
+        display_profiles: std::collections::HashMap::new(),
         };
         let target_style = WallStyle {
             style: Style {
@@ -8792,13 +9448,14 @@ mod wall_command_tests {
                 material_id: "TargetMat".to_string(),
                 thickness: LayerValue::Fixed(0.2),
                 function: LayerFunction::Structural,
-                gap_before: 0.0,
+                axis_offset: LayerValue::Fixed(0.0),
                 bottom_offset: 0.0,
                 top_offset: 0.0,
                 layer_override: None,
                 hatch_override: None,
                 role_tag: None,
             }],
+        display_profiles: std::collections::HashMap::new(),
         };
         assert!(crate::modules::aec::engine::display_component::validate_style_substitution(
             &source_style,
@@ -8820,7 +9477,7 @@ mod wall_command_tests {
             let layers = vec![wl("SourceMat", 0.2, "Structural")];
             let mut record = ExtendedDataRecord::new(AEC_APPID);
             record.values =
-                wall_record("src-style", 3.0, 0, &layers, &[], WallJustification::Center);
+                wall_record("src-style", 3.0, 0, &layers, &[], WallJustification::Center, PlanPhase::New, None);
             entity.common_mut().extended_data.add_record(record);
             let wall_handle = scene.add_entity(entity);
 
@@ -8895,13 +9552,14 @@ mod wall_command_tests {
                 material_id: "SourceMat2".to_string(),
                 thickness: LayerValue::Fixed(0.2),
                 function: LayerFunction::Structural,
-                gap_before: 0.0,
+                axis_offset: LayerValue::Fixed(0.0),
                 bottom_offset: 0.0,
                 top_offset: 0.0,
                 layer_override: None,
                 hatch_override: None,
                 role_tag: None,
             }],
+        display_profiles: std::collections::HashMap::new(),
         };
         let target_style = WallStyle {
             style: Style {
@@ -8914,13 +9572,14 @@ mod wall_command_tests {
                 material_id: "TargetMat2".to_string(),
                 thickness: LayerValue::Fixed(0.2),
                 function: LayerFunction::Structural,
-                gap_before: 0.0,
+                axis_offset: LayerValue::Fixed(0.0),
                 bottom_offset: 0.0,
                 top_offset: 0.0,
                 layer_override: None,
                 hatch_override: None,
                 role_tag: None,
             }],
+        display_profiles: std::collections::HashMap::new(),
         };
 
         let lib = StyleLibrary {
@@ -8942,8 +9601,7 @@ mod wall_command_tests {
                 0,
                 &layers,
                 &[],
-                WallJustification::Center,
-            );
+                WallJustification::Center, PlanPhase::New, None);
             entity.common_mut().extended_data.add_record(record);
             let wall_handle = scene.add_entity(entity);
 
@@ -8997,9 +9655,9 @@ mod wall_command_tests {
         pl_b.add_vertex(LwVertex::new(Vector2::new(5.0, 0.0)));
         pl_b.add_vertex(LwVertex::new(Vector2::new(5.0, 5.0)));
         let mut entity_b = EntityType::LwPolyline(pl_b);
-        let layers_b = vec![wl("Concrete", 0.2, "Structural"), wl("Insulation", 0.05, "Insulation")];
+        let layers_b = wls(&[("Concrete", 0.2, "Structural"), ("Insulation", 0.05, "Insulation")]);
         let mut record_b = ExtendedDataRecord::new(AEC_APPID);
-        record_b.values = wall_record("style1", 3.0, 0, &layers_b, &[], WallJustification::Center);
+        record_b.values = wall_record("style1", 3.0, 0, &layers_b, &[], WallJustification::Center, PlanPhase::New, None);
         entity_b.common_mut().extended_data.add_record(record_b);
         let wall_b = scene.add_entity(entity_b);
 
@@ -9060,7 +9718,7 @@ mod wall_command_tests {
             let mut entity = EntityType::LwPolyline(pl);
             let layers = vec![wl("Concrete", 0.2, "Structural")];
             let mut record = ExtendedDataRecord::new(AEC_APPID);
-            record.values = wall_record("style1", 2.8, 0, &layers, &[], WallJustification::Center);
+            record.values = wall_record("style1", 2.8, 0, &layers, &[], WallJustification::Center, PlanPhase::New, None);
             entity.common_mut().extended_data.add_record(record);
             handles.push(scene.add_entity(entity));
         }
@@ -9105,7 +9763,7 @@ mod wall_command_tests {
             material: "brick".to_string(),
             thickness: 0.2,
             function: "Structural".to_string(),
-            gap_before: 0.0,
+            axis_offset: -0.1,
             bottom_offset: 0.5,
             top_offset: 0.3,
             layer_override: None,
@@ -9131,7 +9789,7 @@ mod wall_command_tests {
         layer.top_offset = 0.3;
         let layers = vec![layer];
         let mut record = ExtendedDataRecord::new(AEC_APPID);
-        record.values = wall_record("style1", 3.0, 0, &layers, &[], WallJustification::Center);
+        record.values = wall_record("style1", 3.0, 0, &layers, &[], WallJustification::Center, PlanPhase::New, None);
         entity.common_mut().extended_data.add_record(record);
         let wall_handle = scene.add_entity(entity);
 
@@ -9172,7 +9830,7 @@ mod wall_command_tests {
         let initial_layers = vec![wl("Brick", 0.1, "Structural")];
         let mut record = ExtendedDataRecord::new(AEC_APPID);
         record.values =
-            wall_record("style1", 3.0, 0, &initial_layers, &[], WallJustification::Center);
+            wall_record("style1", 3.0, 0, &initial_layers, &[], WallJustification::Center, PlanPhase::New, None);
         entity.common_mut().extended_data.add_record(record);
         let wall_handle = scene.add_entity(entity);
 
@@ -9310,7 +9968,7 @@ mod wall_command_tests {
         let mut entity = EntityType::LwPolyline(pl);
         let layers = vec![wl("Concrete", 0.2, "Structural")];
         let mut record = ExtendedDataRecord::new(AEC_APPID);
-        record.values = wall_record("style1", 3.0, 0, &layers, &[], WallJustification::Center);
+        record.values = wall_record("style1", 3.0, 0, &layers, &[], WallJustification::Center, PlanPhase::New, None);
         entity.common_mut().extended_data.add_record(record);
         let wall_handle = scene.add_entity(entity);
 
@@ -9355,8 +10013,7 @@ mod wall_command_tests {
             0,
             &vec![wl("Concrete", 0.2, "Structural")],
             &[],
-            WallJustification::Center,
-        );
+            WallJustification::Center, PlanPhase::New, None);
         entity_b.common_mut().extended_data.add_record(record_b);
         let wall_b = scene.add_entity(entity_b);
 
@@ -9404,8 +10061,7 @@ mod wall_command_tests {
             0,
             &vec![wl("Concrete", 0.2, "Structural")],
             &[],
-            WallJustification::Center,
-        );
+            WallJustification::Center, PlanPhase::New, None);
         entity_b.common_mut().extended_data.add_record(record_b);
         let wall_b = scene.add_entity(entity_b);
 
@@ -9442,7 +10098,7 @@ mod wall_command_tests {
             pl.add_vertex(LwVertex::new(Vector2::new(b.0, b.1)));
             let mut entity = EntityType::LwPolyline(pl);
             let mut record = ExtendedDataRecord::new(AEC_APPID);
-            record.values = wall_record("s", 3.0, 0, &layers, &[], WallJustification::Center);
+            record.values = wall_record("s", 3.0, 0, &layers, &[], WallJustification::Center, PlanPhase::New, None);
             entity.common_mut().extended_data.add_record(record);
             scene.add_entity(entity)
         };
@@ -9941,7 +10597,7 @@ mod wall_command_tests {
         let mut ent_a = EntityType::LwPolyline(pl_a);
         let layers = vec![wl("Concrete", 0.2, "Structural")];
         let mut rec_a = ExtendedDataRecord::new(AEC_APPID);
-        rec_a.values = wall_record("s", 3.0, 0, &layers, &[], WallJustification::Center);
+        rec_a.values = wall_record("s", 3.0, 0, &layers, &[], WallJustification::Center, PlanPhase::New, None);
         ent_a.common_mut().extended_data.add_record(rec_a);
         let wall_a = scene.add_entity(ent_a);
 
@@ -9950,7 +10606,7 @@ mod wall_command_tests {
         pl_b.add_vertex(LwVertex::new(Vector2::new(6.0, 10.0)));
         let mut ent_b = EntityType::LwPolyline(pl_b);
         let mut rec_b = ExtendedDataRecord::new(AEC_APPID);
-        rec_b.values = wall_record("s", 3.0, 0, &layers, &[], WallJustification::Center);
+        rec_b.values = wall_record("s", 3.0, 0, &layers, &[], WallJustification::Center, PlanPhase::New, None);
         ent_b.common_mut().extended_data.add_record(rec_b);
         let wall_b = scene.add_entity(ent_b);
 
@@ -10012,7 +10668,7 @@ mod wall_command_tests {
         let mut ent_a = EntityType::LwPolyline(pl_a);
         let layers = vec![wl("Concrete", 0.2, "Structural")];
         let mut rec_a = ExtendedDataRecord::new(AEC_APPID);
-        rec_a.values = wall_record("s", 3.0, 0, &layers, &[], WallJustification::Center);
+        rec_a.values = wall_record("s", 3.0, 0, &layers, &[], WallJustification::Center, PlanPhase::New, None);
         ent_a.common_mut().extended_data.add_record(rec_a);
         let wall_a = scene.add_entity(ent_a);
 
@@ -10021,7 +10677,7 @@ mod wall_command_tests {
         pl_b.add_vertex(LwVertex::new(Vector2::new(10.0, 0.0)));
         let mut ent_b = EntityType::LwPolyline(pl_b);
         let mut rec_b = ExtendedDataRecord::new(AEC_APPID);
-        rec_b.values = wall_record("s", 3.0, 0, &layers, &[], WallJustification::Center);
+        rec_b.values = wall_record("s", 3.0, 0, &layers, &[], WallJustification::Center, PlanPhase::New, None);
         ent_b.common_mut().extended_data.add_record(rec_b);
         let wall_b = scene.add_entity(ent_b);
 
@@ -10063,7 +10719,7 @@ mod wall_command_tests {
             pl.add_vertex(LwVertex::new(Vector2::new(b.0, b.1)));
             let mut entity = EntityType::LwPolyline(pl);
             let mut record = ExtendedDataRecord::new(AEC_APPID);
-            record.values = wall_record("s", 3.0, 0, &layers, &[], WallJustification::Center);
+            record.values = wall_record("s", 3.0, 0, &layers, &[], WallJustification::Center, PlanPhase::New, None);
             entity.common_mut().extended_data.add_record(record);
             scene.add_entity(entity)
         };
@@ -10091,7 +10747,7 @@ mod wall_command_tests {
             pl.add_vertex(LwVertex::new(Vector2::new(b.0, b.1)));
             let mut entity = EntityType::LwPolyline(pl);
             let mut record = ExtendedDataRecord::new(AEC_APPID);
-            record.values = wall_record("s", 3.0, 0, &layers, &[], WallJustification::Center);
+            record.values = wall_record("s", 3.0, 0, &layers, &[], WallJustification::Center, PlanPhase::New, None);
             entity.common_mut().extended_data.add_record(record);
             scene.add_entity(entity)
         };
@@ -10122,7 +10778,7 @@ mod wall_command_tests {
             pl.add_vertex(LwVertex::new(Vector2::new(b.0, b.1)));
             let mut entity = EntityType::LwPolyline(pl);
             let mut record = ExtendedDataRecord::new(AEC_APPID);
-            record.values = wall_record("s", 3.0, 0, &layers, &[], WallJustification::Center);
+            record.values = wall_record("s", 3.0, 0, &layers, &[], WallJustification::Center, PlanPhase::New, None);
             entity.common_mut().extended_data.add_record(record);
             scene.add_entity(entity)
         };
@@ -10164,8 +10820,7 @@ mod wall_command_tests {
             0,
             &vec![wl("Concrete", 0.2, "Structural")],
             &[],
-            WallJustification::Center,
-        );
+            WallJustification::Center, PlanPhase::New, None);
         entity_b.common_mut().extended_data.add_record(record_b);
         let wall_b = scene.add_entity(entity_b);
 
@@ -10233,7 +10888,7 @@ mod wall_command_tests {
         let mut entity = EntityType::LwPolyline(pl);
         let layers = vec![wl("Concrete", 0.2, "Structural")];
         let mut record = ExtendedDataRecord::new(AEC_APPID);
-        record.values = wall_record("s", 3.0, 0, &layers, &[], WallJustification::Center);
+        record.values = wall_record("s", 3.0, 0, &layers, &[], WallJustification::Center, PlanPhase::New, None);
         entity.common_mut().extended_data.add_record(record);
         let new_wall = scene.add_entity(entity);
 
@@ -10250,7 +10905,7 @@ mod wall_command_tests {
         pl_far.add_vertex(LwVertex::new(Vector2::new(55.0, 0.0)));
         let mut ent_far = EntityType::LwPolyline(pl_far);
         let mut rec_far = ExtendedDataRecord::new(AEC_APPID);
-        rec_far.values = wall_record("s", 3.0, 0, &layers, &[], WallJustification::Center);
+        rec_far.values = wall_record("s", 3.0, 0, &layers, &[], WallJustification::Center, PlanPhase::New, None);
         ent_far.common_mut().extended_data.add_record(rec_far);
         let far = scene.add_entity(ent_far);
         assert!(
@@ -10281,7 +10936,7 @@ mod wall_command_tests {
         pl_through.add_vertex(LwVertex::new(Vector2::new(15.0, 0.2)));
         let mut ent_through = EntityType::LwPolyline(pl_through);
         let mut rec_through = ExtendedDataRecord::new(AEC_APPID);
-        rec_through.values = wall_record("s", 3.0, 0, &layers, &[], WallJustification::Center);
+        rec_through.values = wall_record("s", 3.0, 0, &layers, &[], WallJustification::Center, PlanPhase::New, None);
         ent_through.common_mut().extended_data.add_record(rec_through);
         let through = scene.add_entity(ent_through);
         regenerate_wall_representation(&mut scene, through, None).expect("regen through");
@@ -10293,7 +10948,7 @@ mod wall_command_tests {
         pl_new.add_vertex(LwVertex::new(Vector2::new(5.15, 0.1)));
         let mut entity = EntityType::LwPolyline(pl_new);
         let mut record = ExtendedDataRecord::new(AEC_APPID);
-        record.values = wall_record("s", 3.0, 0, &layers, &[], WallJustification::Center);
+        record.values = wall_record("s", 3.0, 0, &layers, &[], WallJustification::Center, PlanPhase::New, None);
         entity.common_mut().extended_data.add_record(record);
         let new_wall = scene.add_entity(entity);
 
@@ -10330,7 +10985,7 @@ mod wall_command_tests {
         let mut entity = EntityType::LwPolyline(pl);
         let layers = vec![wl("Concrete", 0.2, "Structural")];
         let mut record = ExtendedDataRecord::new(AEC_APPID);
-        record.values = wall_record("s", 3.0, 0, &layers, &[], WallJustification::Center);
+        record.values = wall_record("s", 3.0, 0, &layers, &[], WallJustification::Center, PlanPhase::New, None);
         entity.common_mut().extended_data.add_record(record);
         let new_wall = scene.add_entity(entity);
         regenerate_wall_representation(&mut scene, new_wall, None).expect("regen new");
@@ -10489,7 +11144,7 @@ mod wall_command_tests {
         let layers_b = vec![wl("Concrete", 0.2, "Structural")];
         let mut record_b = ExtendedDataRecord::new(AEC_APPID);
         record_b.values =
-            wall_record("style1", 3.0, 0, &layers_b, &[], WallJustification::Center);
+            wall_record("style1", 3.0, 0, &layers_b, &[], WallJustification::Center, PlanPhase::New, None);
         entity_b.common_mut().extended_data.add_record(record_b);
         let wall_b = scene.add_entity(entity_b);
 
@@ -10555,7 +11210,7 @@ mod wall_command_tests {
         let mut ent_a = EntityType::LwPolyline(pl_a);
         let layers = vec![wl("Concrete", 0.2, "Structural")];
         let mut rec_a = ExtendedDataRecord::new(AEC_APPID);
-        rec_a.values = wall_record("s", 3.0, 0, &layers, &[], WallJustification::Center);
+        rec_a.values = wall_record("s", 3.0, 0, &layers, &[], WallJustification::Center, PlanPhase::New, None);
         ent_a.common_mut().extended_data.add_record(rec_a);
         let wall_a = scene.add_entity(ent_a);
 
@@ -10564,7 +11219,7 @@ mod wall_command_tests {
         pl_b.add_vertex(LwVertex::new(Vector2::new(5.0, 5.0)));
         let mut ent_b = EntityType::LwPolyline(pl_b);
         let mut rec_b = ExtendedDataRecord::new(AEC_APPID);
-        rec_b.values = wall_record("s", 3.0, 0, &layers, &[], WallJustification::Center);
+        rec_b.values = wall_record("s", 3.0, 0, &layers, &[], WallJustification::Center, PlanPhase::New, None);
         ent_b.common_mut().extended_data.add_record(rec_b);
         let wall_b = scene.add_entity(ent_b);
 
@@ -10664,14 +11319,14 @@ mod wall_command_tests {
         let mut entity = EntityType::LwPolyline(pl);
         // Asymmetric stack: Brick 0.1, gap 0.02, Insulation 0.05, gap 0.01, Concrete 0.2
         let mut brick = wl("Brick", 0.1, "Finish");
-        brick.gap_before = 0.0;
+        brick.axis_offset = 0.0;
         let mut insulation = wl("Insulation", 0.05, "Insulation");
-        insulation.gap_before = 0.02;
+        insulation.axis_offset = 0.02;
         let mut concrete = wl("Concrete", 0.2, "Structural");
-        concrete.gap_before = 0.01;
+        concrete.axis_offset = 0.01;
         let layers = vec![brick, insulation, concrete];
         let mut record = ExtendedDataRecord::new(AEC_APPID);
-        record.values = wall_record("s3", 3.0, 0, &layers, &[], WallJustification::Center);
+        record.values = wall_record("s3", 3.0, 0, &layers, &[], WallJustification::Center, PlanPhase::New, None);
         entity.common_mut().extended_data.add_record(record);
         let wall = scene.add_entity(entity);
 
@@ -10774,17 +11429,17 @@ mod wall_command_tests {
         let centerline = vec![(0.0, 0.0), (5.0, 0.0)];
         let layer_data: Vec<(f64, f64)> = resolved
             .iter()
-            .map(|l| (l.thickness, l.gap_before))
+            .map(|l| (l.thickness, l.axis_offset))
             .collect();
         let contours = engine::contour::layer_contours(&centerline, &layer_data);
         assert_eq!(contours.len(), 4);
 
-        // Hand-built equivalent (pre-formula path).
+        // Hand-built equivalent with the same centered axis offsets as the seed style.
         let manual = vec![
-            (0.015, 0.0),
-            (0.175, 0.0),
-            (0.14, 0.0),
-            (0.015, 0.0),
+            (0.015, -0.1725),
+            (0.175, -0.1575),
+            (0.14, 0.0175),
+            (0.015, 0.1575),
         ];
         let manual_contours = engine::contour::layer_contours(&centerline, &manual);
         assert_eq!(contours.len(), manual_contours.len());
@@ -10821,7 +11476,7 @@ mod wall_command_tests {
                     material_id: "mat_a".into(),
                     thickness: LayerValue::Fixed(0.1),
                     function: LayerFunction::Structural,
-                    gap_before: 0.0,
+                    axis_offset: LayerValue::Fixed(0.0),
                     bottom_offset: 0.0,
                     top_offset: 0.0,
                     layer_override: None,
@@ -10832,7 +11487,7 @@ mod wall_command_tests {
                     material_id: "mat_a".into(),
                     thickness: LayerValue::Formula("BB * 0.5".into()),
                     function: LayerFunction::Insulation,
-                    gap_before: 0.0,
+                    axis_offset: LayerValue::Fixed(0.0),
                     bottom_offset: 0.0,
                     top_offset: 0.0,
                     layer_override: None,
@@ -10840,6 +11495,7 @@ mod wall_command_tests {
                     role_tag: None,
                 },
             ],
+        display_profiles: std::collections::HashMap::new(),
         });
 
         let r1 = resolve_wall_style_layers(&lib, "style_bb", Some(0.4)).unwrap();
@@ -10850,11 +11506,11 @@ mod wall_command_tests {
         let centerline = vec![(0.0, 0.0), (3.0, 0.0)];
         let c1 = engine::contour::layer_contours(
             &centerline,
-            &r1.iter().map(|l| (l.thickness, l.gap_before)).collect::<Vec<_>>(),
+            &r1.iter().map(|l| (l.thickness, l.axis_offset)).collect::<Vec<_>>(),
         );
         let c2 = engine::contour::layer_contours(
             &centerline,
-            &r2.iter().map(|l| (l.thickness, l.gap_before)).collect::<Vec<_>>(),
+            &r2.iter().map(|l| (l.thickness, l.axis_offset)).collect::<Vec<_>>(),
         );
         // Different BB must produce different outer extents.
         let y_max = |cs: &[(Vec<(f64, f64)>, Vec<(f64, f64)>)]| {
@@ -10890,13 +11546,14 @@ mod wall_command_tests {
                 material_id: "mat_a".into(),
                 thickness: LayerValue::Formula("NOT_A_VAR / 0".into()),
                 function: LayerFunction::Structural,
-                gap_before: 0.0,
+                axis_offset: LayerValue::Fixed(0.0),
                 bottom_offset: 0.0,
                 top_offset: 0.0,
                 layer_override: None,
                 hatch_override: None,
                 role_tag: None,
             }],
+        display_profiles: std::collections::HashMap::new(),
         });
 
         let resolved = resolve_wall_style_layers(&lib, "style_bad", Some(0.3)).unwrap();
@@ -10914,7 +11571,7 @@ mod wall_command_tests {
             pl.add_vertex(LwVertex::new(Vector2::new(b.0, b.1)));
             let mut entity = EntityType::LwPolyline(pl);
             let mut record = ExtendedDataRecord::new(AEC_APPID);
-            record.values = wall_record("s", 3.0, 0, &layers, &[], WallJustification::Center);
+            record.values = wall_record("s", 3.0, 0, &layers, &[], WallJustification::Center, PlanPhase::New, None);
             entity.common_mut().extended_data.add_record(record);
             scene.add_entity(entity)
         };
@@ -10965,7 +11622,7 @@ mod wall_command_tests {
             let mut entity = EntityType::LwPolyline(pl);
             let layers = vec![wl("Concrete", 0.2, "Structural")];
             let mut record = ExtendedDataRecord::new(AEC_APPID);
-            record.values = wall_record("style1", 3.0, 0, &layers, &[], WallJustification::Center);
+            record.values = wall_record("style1", 3.0, 0, &layers, &[], WallJustification::Center, PlanPhase::New, None);
             entity.common_mut().extended_data.add_record(record);
             scene.add_entity(entity)
         };
@@ -11053,7 +11710,7 @@ mod wall_command_tests {
         let mut ent1 = EntityType::LwPolyline(pl1);
         let layers = vec![wl("Concrete", 0.2, "Structural")];
         let mut rec1 = ExtendedDataRecord::new(AEC_APPID);
-        rec1.values = wall_record("s1", 3.0, 0, &layers, &[], WallJustification::Center);
+        rec1.values = wall_record("s1", 3.0, 0, &layers, &[], WallJustification::Center, PlanPhase::New, None);
         ent1.common_mut().extended_data.add_record(rec1);
         let w1 = scene.add_entity(ent1);
         regenerate_wall_representation(&mut scene, w1, None).expect("regen w1");
@@ -11065,7 +11722,7 @@ mod wall_command_tests {
         pl2.add_vertex(LwVertex::new(Vector2::new(0.0, 5.0)));
         let mut ent2 = EntityType::LwPolyline(pl2);
         let mut rec2 = ExtendedDataRecord::new(AEC_APPID);
-        rec2.values = wall_record("s2", 3.0, 0, &layers, &[], WallJustification::Center);
+        rec2.values = wall_record("s2", 3.0, 0, &layers, &[], WallJustification::Center, PlanPhase::New, None);
         ent2.common_mut().extended_data.add_record(rec2);
         let w2 = scene.add_entity(ent2);
         regenerate_wall_representation(&mut scene, w2, None).expect("regen w2");
@@ -11076,7 +11733,7 @@ mod wall_command_tests {
         pl3.add_vertex(LwVertex::new(Vector2::new(0.0, -5.0)));
         let mut ent3 = EntityType::LwPolyline(pl3);
         let mut rec3 = ExtendedDataRecord::new(AEC_APPID);
-        rec3.values = wall_record("s3", 3.0, 0, &layers, &[], WallJustification::Center);
+        rec3.values = wall_record("s3", 3.0, 0, &layers, &[], WallJustification::Center, PlanPhase::New, None);
         ent3.common_mut().extended_data.add_record(rec3);
         let w3 = scene.add_entity(ent3);
         regenerate_wall_representation(&mut scene, w3, None).expect("regen w3");
@@ -11088,7 +11745,7 @@ mod wall_command_tests {
         pl4.add_vertex(LwVertex::new(Vector2::new(10.0, 5.0)));
         let mut ent4 = EntityType::LwPolyline(pl4);
         let mut rec4 = ExtendedDataRecord::new(AEC_APPID);
-        rec4.values = wall_record("s4", 3.0, 0, &layers, &[], WallJustification::Center);
+        rec4.values = wall_record("s4", 3.0, 0, &layers, &[], WallJustification::Center, PlanPhase::New, None);
         ent4.common_mut().extended_data.add_record(rec4);
         let w4 = scene.add_entity(ent4);
         regenerate_wall_representation(&mut scene, w4, None).expect("regen w4");
@@ -11099,7 +11756,7 @@ mod wall_command_tests {
         pl5.add_vertex(LwVertex::new(Vector2::new(10.0, -5.0)));
         let mut ent5 = EntityType::LwPolyline(pl5);
         let mut rec5 = ExtendedDataRecord::new(AEC_APPID);
-        rec5.values = wall_record("s5", 3.0, 0, &layers, &[], WallJustification::Center);
+        rec5.values = wall_record("s5", 3.0, 0, &layers, &[], WallJustification::Center, PlanPhase::New, None);
         ent5.common_mut().extended_data.add_record(rec5);
         let w5 = scene.add_entity(ent5);
         regenerate_wall_representation(&mut scene, w5, None).expect("regen w5");
@@ -11253,7 +11910,7 @@ mod wall_command_tests {
         let mut entity = EntityType::LwPolyline(pl);
         let layers = vec![wl("Concrete", 0.2, "Structural")];
         let mut record = ExtendedDataRecord::new(AEC_APPID);
-        record.values = wall_record("style1", 3.0, 0, &layers, &[], WallJustification::Center);
+        record.values = wall_record("style1", 3.0, 0, &layers, &[], WallJustification::Center, PlanPhase::New, None);
         entity.common_mut().extended_data.add_record(record);
         scene.add_entity(entity)
     }

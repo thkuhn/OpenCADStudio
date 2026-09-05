@@ -686,11 +686,15 @@ mod tests {
         use crate::modules::aec::engine::contour::{closed_layer_footprint, layer_contours_with_bulges};
 
         let axis = vec![(0.0, 0.0), (10.0, 0.0)];
-        // Three layers: structural, an air gap (via gap_before on the third
-        // layer), and a finish layer — the opening spans full thickness so
-        // every layer (including the one preceded by the gap) must split.
-        let layers = vec![(0.2, 0.0), (0.05, 0.03), (0.1, 0.0)];
-        let total_thickness: f64 = layers.iter().map(|(t, g)| t + g).sum();
+        // Three layers with explicit axis offsets (including a physical gap
+        // between layers 0 and 1). The opening spans full thickness so every
+        // layer must split.
+        let layers = vec![(0.2, -0.19), (0.05, -0.06), (0.1, -0.01)];
+        let total_thickness = {
+            let min_s = layers.iter().map(|(_, o)| *o).fold(f64::INFINITY, f64::min);
+            let max_e = layers.iter().map(|(th, o)| th + o).fold(f64::NEG_INFINITY, f64::max);
+            max_e - min_s
+        };
         let opening = dummy_opening(5.0, 1.2);
 
         for (li, _layer) in layers.iter().enumerate() {

@@ -1,4 +1,4 @@
-use iced::widget::{button, container, text};
+use iced::widget::{button, combo_box, container, text};
 use iced::{Element, Theme};
 use crate::app::Message;
 use crate::t;
@@ -13,6 +13,47 @@ pub fn hex_to_acad_color(hex: &str) -> acadrust::types::Color {
         g: ((value >> 8) & 0xFF) as u8,
         b: (value & 0xFF) as u8,
     }
+}
+
+/// Encode a true/indexed colour as a bare `"RRGGBB"` hex string (no `#`
+/// prefix), the inverse of [`hex_to_acad_color`]. Indexed colours are
+/// resolved to their RGB value via the ACI table first.
+pub fn acad_color_to_hex(color: acadrust::types::Color) -> String {
+    let (r, g, b) = match color {
+        acadrust::types::Color::Rgb { r, g, b } => (r, g, b),
+        acadrust::types::Color::Index(i) => {
+            acadrust::types::aci_table::aci_to_rgb(i).unwrap_or((255, 255, 255))
+        }
+        _ => (255, 255, 255),
+    };
+    format!("{r:02X}{g:02X}{b:02X}")
+}
+
+/// Shared "linetype preview" combo box: shows the line-type name plus its
+/// ASCII-art pattern (mirrors the Layer Manager's line-type combo, see
+/// `LinetypeItem`). `line_type` is the currently selected name (empty =
+/// "ByLayer"); `on_select` is invoked with the newly-picked name.
+pub fn linetype_field<'a>(
+    line_type: &'a str,
+    linetype_items: &'a [crate::ui::properties::LinetypeItem],
+    linetype_combo: &'a combo_box::State<crate::ui::properties::LinetypeItem>,
+    on_select: impl Fn(String) -> Message + 'static,
+) -> Element<'a, Message> {
+    let display = if line_type.is_empty() { "ByLayer" } else { line_type };
+    let selected = linetype_items
+        .iter()
+        .find(|item| item.name.eq_ignore_ascii_case(display))
+        .cloned();
+    combo_box(
+        linetype_combo,
+        "ByLayer",
+        selected.as_ref(),
+        move |item: crate::ui::properties::LinetypeItem| on_select(item.name),
+    )
+    .size(11)
+    .padding([4, 6])
+    .width(180)
+    .into()
 }
 
 pub fn muted(theme: &Theme) -> iced::widget::text::Style {

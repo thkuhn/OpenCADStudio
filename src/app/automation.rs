@@ -26,6 +26,9 @@ use super::OpenCADStudio;
 /// a time (the document session persists across reconnects).
 pub fn serve() {
     let mut app = OpenCADStudio::new();
+    // Skip the blocking AEC project-required modal in headless flows —
+    // seed a blank project on demand instead (see `aec_require_project`).
+    app.automation_session = true;
     match port_arg() {
         Some(port) => serve_socket(&mut app, port),
         None => serve_stdio(&mut app),

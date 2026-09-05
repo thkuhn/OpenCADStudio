@@ -3098,7 +3098,7 @@ impl OpenCADStudio {
                     self.aec_project_explorer_file.as_ref(),
                 );
                 let (display_rules, style_substitutions) =
-                    self.resolve_active_display_config_wall_rules(i);
+                    self.resolve_active_display_config_wall_rules(i, handles.first().copied());
                 for &handle in &handles {
                     let owner = crate::modules::aec::commands::resolve_wall_package(
                         &self.tabs[i].scene,

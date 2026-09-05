@@ -6,35 +6,29 @@
 //! how the same underlying element data (wall axis, layers, material) is
 //! displayed in a given context — without ever mutating that element data.
 //!
-//! Fine-grained, per-slot display rules live in
-//! [`crate::modules::aec::engine::display_component`]; this module only
-//! carries the outer envelope (`name`, `discipline`, `scale`, `phase`,
-//! `view_type`) plus the two override maps (`component_rules` /
-//! `style_substitutions`).
+//! Fine-grained, per-slot display rules used to live directly on this
+//! envelope (`component_rules` / `style_substitutions`); since Step 2 they
+//! instead live style-centered on
+//! [`crate::modules::aec::engine::wall_style::WallStyle::display_profiles`],
+//! keyed by this type's `name` — see
+//! [`crate::modules::aec::engine::library::resolve_effective_rule_set`].
 
-use crate::modules::aec::engine::display_component::ComponentRuleSet;
+use crate::modules::aec::engine::display_component::ComponentStyleOverride;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
 
-/// Identifier of an architectural element type (e.g. `"Wall"`), used to key
-/// [`DisplayConfig::component_rules`]. Kept as a plain string rather than an
-/// enum so new element types (windows/doors, ...) can be added later without
-/// touching this module.
-pub type ElementTypeId = String;
-
-/// Identifier of a wall style, used by [`DisplayConfig::style_substitutions`].
-/// Matches the plain `id: String` already used by
+/// Identifier of a wall style, used by `WallStyle::display_profiles` keys
+/// on the *other* side of that map (this module only re-exports the type
+/// alias for `style_substitutions`-shaped helper code elsewhere). Matches
+/// the plain `id: String` already used by
 /// [`crate::modules::aec::engine::style::Style`] / `WallStyle`.
 pub type WallStyleRef = String;
 
-/// The [`ElementTypeId`] used for walls, matching the plain string
-/// `"Wall"` already used elsewhere (e.g. `Style::object_kind`) so
-/// `DisplayConfig::component_rules` keys stay consistent across the
-/// codebase.
+/// The element-type identifier used for walls, matching the plain string
+/// `"Wall"` already used elsewhere (e.g. `Style::object_kind`).
 pub const WALL_ELEMENT_TYPE_ID: &str = "Wall";
 
 /// Construction/planning phase of an element within a `DisplayConfig`.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum PlanPhase {
     /// Existing ("Bestand").
     Existing,
@@ -42,6 +36,34 @@ pub enum PlanPhase {
     Demolition,
     /// Newly built ("Neu").
     New,
+}
+
+impl Default for PlanPhase {
+    /// New elements default to "Neu" — the common case when drawing.
+    fn default() -> Self {
+        PlanPhase::New
+    }
+}
+
+impl PlanPhase {
+    /// Stable string tag used for `WALL` XDATA persistence.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            PlanPhase::Existing => "Existing",
+            PlanPhase::Demolition => "Demolition",
+            PlanPhase::New => "New",
+        }
+    }
+
+    /// Inverse of [`PlanPhase::as_str`]; unknown/empty tags default to `New`
+    /// so older `WALL` records without a phase field still parse.
+    pub fn from_str(s: &str) -> Self {
+        match s {
+            "Existing" => PlanPhase::Existing,
+            "Demolition" => PlanPhase::Demolition,
+            _ => PlanPhase::New,
+        }
+    }
 }
 
 /// The kind of drawing view a `DisplayConfig` applies to.
@@ -76,15 +98,34 @@ pub struct DisplayConfig {
     pub phase: PlanPhase,
     /// View type (Grundriss/Schnitt/Ansicht).
     pub view_type: ViewType,
-    /// Fine-grained ("Detailed") per-slot overrides, keyed by element type.
+    /// Which [`PlanPhase`]s this config shows, plus extra style overrides for
+    /// `Demolition`/`Existing` walls (e.g. dashed lines for Abbruch). `None`
+    /// means "unfiltered" — every phase is shown, unchanged from before this
+    /// field existed.
     #[serde(default)]
-    pub component_rules: HashMap<ElementTypeId, ComponentRuleSet>,
-    /// Coarse-grained ("StyleSubstitution") shortcut: source wall style id
-    /// -> target wall style id. A wall using the source style is displayed
-    /// as if it used the target style's layer material/hatch/color, while
-    /// axis, thickness and joins remain unchanged. See Key Decision 8.
+    pub phase_filter: Option<PhaseFilter>,
+}
+
+/// Two-stage phase visibility/appearance filter for a [`DisplayConfig`]: which
+/// [`PlanPhase`]s are visible at all, plus an optional extra style overlay
+/// applied on top of the normal wall style resolution for `Demolition`
+/// ("Abbruch") and `Existing` ("Bestand") walls (e.g. dashed/grey lines).
+/// Leaving a style `None` means "no extra overlay for that phase".
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+pub struct PhaseFilter {
+    /// Phases shown by this config; a phase absent from this list is hidden
+    /// entirely. An empty list means "show nothing" — callers building a
+    /// UI for this should default to all phases selected.
     #[serde(default)]
-    pub style_substitutions: HashMap<WallStyleRef, WallStyleRef>,
+    pub visible_phases: Vec<PlanPhase>,
+    /// Extra style overlay applied to `Demolition`-phase walls, on top of
+    /// their normal resolved style.
+    #[serde(default)]
+    pub demolition_style: Option<ComponentStyleOverride>,
+    /// Extra style overlay applied to `Existing`-phase walls, on top of
+    /// their normal resolved style.
+    #[serde(default)]
+    pub existing_style: Option<ComponentStyleOverride>,
 }
 
 /// Step 7 ("Auto-Maßstabskopplung an den Zeichnungsmaßstab"): a single row
@@ -112,27 +153,14 @@ impl DisplayConfig {
             scale: None,
             phase,
             view_type,
-            component_rules: HashMap::new(),
-            style_substitutions: HashMap::new(),
+            phase_filter: None,
         }
-    }
-
-    /// Resolves the [`ComponentRuleSet`] this config wants applied to
-    /// walls, i.e. `component_rules.get(WALL_ELEMENT_TYPE_ID)`. Returns
-    /// `None` when the config has no wall-specific rules, in which case
-    /// callers should fall back to the default (every slot visible,
-    /// standard style) — see `ComponentRuleSet::default()`.
-    pub fn wall_rules(&self) -> Option<&ComponentRuleSet> {
-        self.component_rules.get(WALL_ELEMENT_TYPE_ID)
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::modules::aec::engine::display_component::{
-        ComponentRuleSet, ComponentStyleOverride, LayerSelection,
-    };
 
     #[test]
     fn display_config_construction_has_no_overrides() {
@@ -145,8 +173,7 @@ mod tests {
         assert_eq!(cfg.name, "Architekt 1:50");
         assert_eq!(cfg.discipline, "Architektur");
         assert_eq!(cfg.scale, None);
-        assert!(cfg.component_rules.is_empty());
-        assert!(cfg.style_substitutions.is_empty());
+        assert_eq!(cfg.phase_filter, None);
     }
 
     #[test]
@@ -158,19 +185,6 @@ mod tests {
             ViewType::Section,
         );
         cfg.scale = Some(50.0);
-        cfg.style_substitutions
-            .insert("mw24-architekt".to_string(), "mw24-statik".to_string());
-        let mut rules = ComponentRuleSet::default();
-        rules.visibility.insert("AxisLine".to_string(), false);
-        rules.style_override.insert(
-            "Contour2D".to_string(),
-            ComponentStyleOverride {
-                line_color: Some(0x000000),
-                ..Default::default()
-            },
-        );
-        rules.layer_filter = LayerSelection::All;
-        cfg.component_rules.insert("Wall".to_string(), rules);
 
         let serialized = serde_json::to_string(&cfg).unwrap();
         let deserialized: DisplayConfig = serde_json::from_str(&serialized).unwrap();
@@ -178,9 +192,9 @@ mod tests {
     }
 
     #[test]
-    fn display_config_without_component_rules_field_deserializes_with_defaults() {
-        // Simulates an older/minimal record: missing `component_rules` and
-        // `style_substitutions` must default to empty maps, not fail.
+    fn display_config_without_optional_fields_deserializes_with_defaults() {
+        // Simulates an older/minimal record: missing `scale`/`phase_filter`
+        // must default cleanly, not fail.
         let json = r#"{
             "name": "Architekt 1:50",
             "discipline": "Architektur",
@@ -188,26 +202,72 @@ mod tests {
             "view_type": "FloorPlan"
         }"#;
         let cfg: DisplayConfig = serde_json::from_str(json).unwrap();
-        assert!(cfg.component_rules.is_empty());
-        assert!(cfg.style_substitutions.is_empty());
         assert_eq!(cfg.scale, None);
+        assert_eq!(cfg.phase_filter, None);
     }
 
     #[test]
-    fn wall_rules_resolves_component_rules_for_wall_element_type() {
-        let mut cfg = DisplayConfig::new(
-            "Statik 1:50".to_string(),
-            "Statik".to_string(),
-            PlanPhase::Existing,
-            ViewType::Section,
+    fn plan_phase_default_is_new() {
+        assert_eq!(PlanPhase::default(), PlanPhase::New);
+    }
+
+    #[test]
+    fn plan_phase_str_round_trip() {
+        for phase in [PlanPhase::Existing, PlanPhase::Demolition, PlanPhase::New] {
+            assert_eq!(PlanPhase::from_str(phase.as_str()), phase);
+        }
+        // Unknown/empty tags fall back to `New` so older records still parse.
+        assert_eq!(PlanPhase::from_str(""), PlanPhase::New);
+        assert_eq!(PlanPhase::from_str("bogus"), PlanPhase::New);
+    }
+
+    #[test]
+    fn display_config_defaults_to_no_phase_filter() {
+        let cfg = DisplayConfig::new(
+            "Architekt 1:50".to_string(),
+            "Architektur".to_string(),
+            PlanPhase::New,
+            ViewType::FloorPlan,
         );
-        assert!(cfg.wall_rules().is_none());
+        assert_eq!(cfg.phase_filter, None);
+    }
 
-        let mut rules = ComponentRuleSet::default();
-        rules.visibility.insert("AxisLine".to_string(), false);
-        cfg.component_rules
-            .insert(WALL_ELEMENT_TYPE_ID.to_string(), rules.clone());
+    #[test]
+    fn display_config_without_phase_filter_field_deserializes_to_none() {
+        // Records written before `phase_filter` existed must still parse,
+        // behaving exactly as before (no filtering at all).
+        let json = r#"{
+            "name": "Architekt 1:50",
+            "discipline": "Architektur",
+            "phase": "New",
+            "view_type": "FloorPlan"
+        }"#;
+        let cfg: DisplayConfig = serde_json::from_str(json).unwrap();
+        assert_eq!(cfg.phase_filter, None);
+    }
 
-        assert_eq!(cfg.wall_rules(), Some(&rules));
+    #[test]
+    fn display_config_phase_filter_roundtrip_serialization() {
+        let mut cfg = DisplayConfig::new(
+            "Abbruch/Bestand 1:50".to_string(),
+            "Architektur".to_string(),
+            PlanPhase::New,
+            ViewType::FloorPlan,
+        );
+        cfg.phase_filter = Some(PhaseFilter {
+            visible_phases: vec![PlanPhase::New, PlanPhase::Demolition, PlanPhase::Existing],
+            demolition_style: Some(ComponentStyleOverride {
+                line_type: Some("Dashed".to_string()),
+                ..Default::default()
+            }),
+            existing_style: Some(ComponentStyleOverride {
+                line_color: Some(0x888888),
+                ..Default::default()
+            }),
+        });
+
+        let serialized = serde_json::to_string(&cfg).unwrap();
+        let deserialized: DisplayConfig = serde_json::from_str(&serialized).unwrap();
+        assert_eq!(cfg, deserialized);
     }
 }

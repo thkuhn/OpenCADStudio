@@ -1,11 +1,35 @@
 use iced::widget::{
     button, column, container, row, scrollable, text, text_input, Space,
 };
-use iced::{Alignment, Border, Element, Fill, Theme};
+use iced::{Alignment, Background, Border, Element, Fill, Theme};
 
 use crate::app::Message;
-use crate::modules::aec::engine::library::StyleLibrary;
+use crate::modules::aec::engine::library::{
+    combined_material_entries, combined_wall_style_entries, LibrarySource, StyleLibrary,
+};
+use crate::modules::aec::engine::project::ProjectFile;
 use crate::t;
+
+fn source_badge<'a>(source: LibrarySource) -> Element<'a, Message> {
+    let label = match source {
+        LibrarySource::Standard => t!("Standard"),
+        LibrarySource::Project => t!("Projekt"),
+    };
+    container(text(label).size(9))
+        .padding([1, 5])
+        .style(|theme: &Theme| container::Style {
+            background: Some(Background::Color(
+                theme.palette().background.strong.color.scale_alpha(0.55),
+            )),
+            text_color: Some(theme.palette().background.base.text.scale_alpha(0.85)),
+            border: Border {
+                radius: 3.0.into(),
+                ..Default::default()
+            },
+            ..Default::default()
+        })
+        .into()
+}
 
 fn list_style(selected: bool) -> impl Fn(&Theme, button::Status) -> button::Style {
     move |theme, status| {
@@ -19,6 +43,7 @@ fn list_style(selected: bool) -> impl Fn(&Theme, button::Status) -> button::Styl
 
 pub fn view_window<'a>(
     library: Option<&'a StyleLibrary>,
+    project: Option<&'a ProjectFile>,
     target: crate::app::StylePickerTarget,
     filter: &'a str,
     selection: Option<&'a str>,
@@ -31,6 +56,16 @@ pub fn view_window<'a>(
             .width(Fill)
             .into();
     };
+    let material_sources: std::collections::HashMap<String, LibrarySource> =
+        combined_material_entries(project)
+            .into_iter()
+            .map(|e| (e.material.id, e.source))
+            .collect();
+    let wall_style_sources: std::collections::HashMap<String, LibrarySource> =
+        combined_wall_style_entries(project)
+            .into_iter()
+            .map(|e| (e.wall_style.style.id, e.source))
+            .collect();
 
     let title = match target {
         crate::app::StylePickerTarget::WallStyleParent => t!("Select Parent Style"),
@@ -75,10 +110,16 @@ pub fn view_window<'a>(
                 })
                 .map(|node| {
                     let is_selected = selection == Some(node.style.style.id.as_str());
+                    let source = wall_style_sources
+                        .get(&node.style.style.id)
+                        .copied()
+                        .unwrap_or(LibrarySource::Standard);
                     button(
                         row![
                             Space::new().width(node.depth as f32 * 20.0),
-                            text(node.style.style.name.as_str()).size(12),
+                            text(node.style.style.name.clone()).size(12),
+                            Space::new().width(6),
+                            source_badge(source),
                         ]
                         .align_y(Alignment::Center),
                     )
@@ -97,7 +138,18 @@ pub fn view_window<'a>(
                 .filter(|m| query.is_empty() || m.name.to_lowercase().contains(&query))
                 .map(|m| {
                     let is_selected = selection == Some(m.id.as_str());
-                    button(text(m.name.as_str()).size(12))
+                    let source = material_sources
+                        .get(&m.id)
+                        .copied()
+                        .unwrap_or(LibrarySource::Standard);
+                    button(
+                        row![
+                            text(m.name.clone()).size(12),
+                            Space::new().width(6),
+                            source_badge(source),
+                        ]
+                        .align_y(Alignment::Center),
+                    )
                         .on_press(Message::AecStylePickerSelect(m.id.clone()))
                         .style(list_style(is_selected))
                         .padding([4, 8])
@@ -184,7 +236,7 @@ pub fn view_window<'a>(
                                         .unwrap_or_else(|| l.material_id.clone());
                                     row![
                                         text(mat_name).size(10).width(120),
-                                        text(format!("{:.2}", l.thickness)).size(10).width(40),
+                                        text(l.thickness.to_cm_display_string()).size(10).width(40),
                                         text(format!("{:?}", l.function)).size(10).width(70),
                                     ]
                                     .spacing(4)
@@ -210,7 +262,7 @@ pub fn view_window<'a>(
                                             ),
                                         }
                                     ).width(120),
-                                    text(t!("Thick")).size(9).style(
+                                    text(t!("Thick (cm)")).size(9).style(
                                         |theme: &Theme| iced::widget::text::Style {
                                             color: Some(
                                                 theme.palette().background.base.text.scale_alpha(

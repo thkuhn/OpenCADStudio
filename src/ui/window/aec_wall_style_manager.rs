@@ -5,10 +5,14 @@ use iced::widget::{
     button, column, container, mouse_area, pick_list, row, scrollable, text, text_input,
     Space,
 };
-use iced::{Border, Element, Fill, Theme};
+use iced::{Background, Border, Element, Fill, Theme};
 
 use crate::app::Message;
-use crate::modules::aec::engine::library::{StyleLibrary, TreeNode};
+use crate::modules::aec::engine::join::LayerRef;
+use crate::modules::aec::engine::library::{
+    combined_wall_style_entries, LibrarySource, StyleLibrary,
+};
+use crate::modules::aec::engine::project::ProjectFile;
 use crate::modules::aec::engine::wall_style::WallStyle;
 use crate::t;
 use super::aec_ui_util::*;
@@ -38,18 +42,76 @@ pub struct WallStyleFormState<'a> {
     /// being edited, based on the currently selected parent. Empty when the
     /// style has no parent (or none is selected yet).
     pub inheritance_chain: Vec<String>,
+    /// Step 4: "Darstellungs-Profile" (per-`DisplayConfig` overrides) edit
+    /// state, `None` while composing a brand-new (unsaved) style, since
+    /// `WallStyle::display_profiles` only makes sense for a style that
+    /// already has a stable id.
+    pub display_profiles: Option<DisplayProfileFormState<'a>>,
+}
+
+/// Edit-buffer state for the "Darstellungs-Profile" section of the wall
+/// style form: a table of every known `DisplayConfig` (Standard/Override
+/// status) plus, when one is selected, its `ComponentRuleSet` detail form
+/// — two independent per-slot layer-filter checklists (`Contour2D`/
+/// `Solid3D`, mirroring `layer_filter_to_ui_state`) and a hatch-angle
+/// override ("Relativ zur Wand" + Winkel).
+pub struct DisplayProfileFormState<'a> {
+    /// Every `DisplayConfig` name known to the resolved `DisplayConfigLibrary`.
+    pub display_config_names: Vec<String>,
+    /// Names of `DisplayConfig`s for which the style being edited already
+    /// has an entry in `display_profiles` ("Override" vs "Standard").
+    pub existing_overrides: std::collections::HashSet<String>,
+    /// The `DisplayConfig` name currently selected in the table, if any.
+    pub selected: Option<&'a str>,
+    /// Layer-Filter-UI: `false` = "Alle Schichten", `true` = "Auswahl", for
+    /// the `Contour2D` slot of the selected profile.
+    pub contour_explicit: bool,
+    /// Layer-Filter-UI: explicitly selected layers for `Contour2D`.
+    pub contour_selected: &'a [LayerRef],
+    /// Same as `contour_explicit`, but for the `Solid3D` slot.
+    pub solid_explicit: bool,
+    /// Same as `contour_selected`, but for the `Solid3D` slot.
+    pub solid_selected: &'a [LayerRef],
+    /// Hatch-angle override text field (degrees; empty = no override).
+    pub hatch_angle: &'a str,
+    /// Whether `hatch_angle` is relative to the wall's own run direction.
+    pub hatch_relative: bool,
 }
 
 pub fn view_window<'a>(
     library: &'a StyleLibrary,
+    project: Option<&'a ProjectFile>,
     selected_id: Option<&str>,
     filter: &str,
     wall_style_form: WallStyleFormState<'a>,
 ) -> Element<'a, Message> {
-    let tree = library.wall_style_tree();
-    let filter_lower = filter.to_lowercase();
+    let entries = combined_wall_style_entries(project);
+    let standard_ids: std::collections::HashSet<String> =
+        crate::modules::aec::engine::library::load_or_seed()
+            .wall_styles
+            .into_iter()
+            .map(|w| w.style.id)
+            .collect();
+    let source_by_id: std::collections::HashMap<String, LibrarySource> = entries
+        .iter()
+        .map(|e| (e.wall_style.style.id.clone(), e.source))
+        .collect();
 
-    let wall_style_rows: Vec<Element<'a, Message>> = tree
+    // Build a merged library for the inheritance tree (project wins on id).
+    let mut merged = StyleLibrary::empty();
+    for e in &entries {
+        merged.upsert_wall_style(e.wall_style.clone());
+    }
+    // Keep materials from the caller's library for form lookups.
+    for m in &library.materials {
+        merged.upsert_material(m.clone());
+    }
+
+    let filter_lower = filter.to_lowercase();
+    // Materialize owned (style, depth, source) rows so the Element does not
+    // borrow the temporary merged library.
+    let owned_rows: Vec<(WallStyle, usize, LibrarySource)> = merged
+        .wall_style_tree()
         .into_iter()
         .filter(|node| {
             filter.is_empty()
@@ -57,20 +119,38 @@ pub fn view_window<'a>(
                 || node.style.style.id.to_lowercase().contains(&filter_lower)
         })
         .map(|node| {
-            wall_style_tree_row(node.style, node.depth, selected_id == Some(node.style.style.id.as_str()))
+            let source = source_by_id
+                .get(&node.style.style.id)
+                .copied()
+                .unwrap_or(LibrarySource::Standard);
+            (node.style.clone(), node.depth, source)
+        })
+        .collect();
+
+    let wall_style_rows: Vec<Element<'_, Message>> = owned_rows
+        .iter()
+        .map(|(style, depth, source)| {
+            wall_style_tree_row(
+                style,
+                *depth,
+                *source,
+                selected_id == Some(style.style.id.as_str()),
+            )
         })
         .collect();
 
     let mut master_list = column![section_title(t!("Wall Styles"))].spacing(2);
-    master_list = if wall_style_rows.is_empty() {
-        master_list.push(no_matches())
+    if wall_style_rows.is_empty() {
+        master_list = master_list.push(no_matches());
     } else {
-        master_list.extend(wall_style_rows)
-    };
+        for row_el in wall_style_rows {
+            master_list = master_list.push(row_el);
+        }
+    }
 
     let sidebar = column![
         row![
-            text_input(t!("Search styles…").as_ref(), filter)
+            text_input(t!("Search wall styles…").as_ref(), filter)
                 .on_input(Message::AecStyleManagerFilter)
                 .size(11)
                 .padding([4, 6]),
@@ -82,10 +162,19 @@ pub fn view_window<'a>(
         scrollable(master_list),
     ]
     .spacing(8)
-    .width(250);
+    .width(270);
+
+    let selected_source = selected_id.and_then(|id| source_by_id.get(id).copied());
+    let selected_has_standard_counterpart = selected_id
+        .map(|id| standard_ids.contains(id))
+        .unwrap_or(false);
 
     let detail = if wall_style_form.open {
-        wall_style_form_view(wall_style_form)
+        wall_style_form_view(
+            wall_style_form,
+            selected_source,
+            selected_has_standard_counterpart,
+        )
     } else {
         container(text(t!("Select a wall style to edit or create a new one.")).style(muted))
             .width(Fill)
@@ -101,9 +190,31 @@ pub fn view_window<'a>(
         .into()
 }
 
+fn source_badge<'a>(source: LibrarySource) -> Element<'a, Message> {
+    let label = match source {
+        LibrarySource::Standard => t!("Standard"),
+        LibrarySource::Project => t!("Projekt"),
+    };
+    container(text(label).size(9))
+        .padding([1, 5])
+        .style(|theme: &Theme| container::Style {
+            background: Some(Background::Color(
+                theme.palette().background.strong.color.scale_alpha(0.55),
+            )),
+            text_color: Some(theme.palette().background.base.text.scale_alpha(0.85)),
+            border: Border {
+                radius: 3.0.into(),
+                ..Default::default()
+            },
+            ..Default::default()
+        })
+        .into()
+}
+
 fn wall_style_tree_row<'a>(
-    wall_style: &'a WallStyle,
+    wall_style: &WallStyle,
     depth: usize,
+    source: LibrarySource,
     selected: bool,
 ) -> Element<'a, Message> {
     let subtitle = crate::tf!(
@@ -119,7 +230,13 @@ fn wall_style_tree_row<'a>(
     button(
         row_content.push(
             column![
-                text(wall_style.style.name.as_str()).size(12),
+                row![
+                    text(wall_style.style.name.clone()).size(12),
+                    Space::new().width(6),
+                    source_badge(source),
+                ]
+                .spacing(4)
+                .align_y(iced::Center),
                 text(subtitle).size(10).style(muted),
             ]
             .spacing(2),
@@ -134,7 +251,11 @@ fn wall_style_tree_row<'a>(
     .into()
 }
 
-fn wall_style_form_view<'a>(wall_style_form: WallStyleFormState<'a>) -> Element<'a, Message> {
+fn wall_style_form_view<'a>(
+    wall_style_form: WallStyleFormState<'a>,
+    selected_source: Option<LibrarySource>,
+    has_standard_counterpart: bool,
+) -> Element<'a, Message> {
     let form_title = if wall_style_form.is_new {
         t!("New Wall Style")
     } else {
@@ -268,7 +389,7 @@ fn wall_style_form_view<'a>(wall_style_form: WallStyleFormState<'a>) -> Element<
                     .unwrap_or_else(|| l.material_id.clone());
                 let thick_label = match &l.thickness {
                     crate::modules::aec::engine::wall_style::LayerValue::Fixed(v) => {
-                        format!("{v:.2}")
+                        format!("{:.1}", v * 100.0)
                     }
                     crate::modules::aec::engine::wall_style::LayerValue::Formula(s) => s.clone(),
                 };
@@ -278,13 +399,13 @@ fn wall_style_form_view<'a>(wall_style_form: WallStyleFormState<'a>) -> Element<
                     text(thick_label)
                         .size(11)
                         .width(LAYER_COL_THICKNESS_W),
-                    text(format!("{:.2}", l.gap_before))
+                    text(format!("{:.1}", l.axis_offset.as_fixed_or(0.0) * 100.0))
                         .size(11)
                         .width(LAYER_COL_GAP_W),
-                    text(format!("{:.2}", l.bottom_offset))
+                    text(format!("{:.1}", l.bottom_offset * 100.0))
                         .size(11)
                         .width(LAYER_COL_OFFSET_W),
-                    text(format!("{:.2}", l.top_offset))
+                    text(format!("{:.1}", l.top_offset * 100.0))
                         .size(11)
                         .width(LAYER_COL_OFFSET_W),
                     text(format!("{:?}", l.function))
@@ -303,6 +424,12 @@ fn wall_style_form_view<'a>(wall_style_form: WallStyleFormState<'a>) -> Element<
                     ..Default::default()
                 }),
         );
+    }
+
+    if let Some(profiles) = &wall_style_form.display_profiles {
+        detail_col = detail_col
+            .push(Space::new().height(10))
+            .push(display_profiles_section(profiles, wall_style_form.layers));
     }
 
     let mut actions = row![
@@ -325,6 +452,22 @@ fn wall_style_form_view<'a>(wall_style_form: WallStyleFormState<'a>) -> Element<
                 .padding([5, 12])
                 .on_press(Message::AecStyleManagerWallStyleDelete),
         );
+        // → Standard: only pure project entries without a global counterpart.
+        if selected_source == Some(LibrarySource::Project) && !has_standard_counterpart {
+            actions = actions.push(
+                button(text(t!("→ Standard")).size(11))
+                    .padding([5, 12])
+                    .on_press(Message::AecStyleManagerCopyWallStyleToGlobal),
+            );
+        }
+        // → Projekt: only Standard entries (copy into the project library).
+        if selected_source == Some(LibrarySource::Standard) {
+            actions = actions.push(
+                button(text(t!("→ Projekt")).size(11))
+                    .padding([5, 12])
+                    .on_press(Message::AecStyleManagerCopyWallStyleToProject),
+            );
+        }
     }
 
     column![detail_col, Space::new(), actions]
@@ -337,10 +480,10 @@ fn layer_header_row<'a>() -> Element<'a, Message> {
     row![
         Space::new().width(LAYER_COL_REORDER_W),
         text(t!("Material")).size(10).style(muted).width(LAYER_COL_MATERIAL_W),
-        text(t!("Thick")).size(10).style(muted).width(LAYER_COL_THICKNESS_W),
-        text(t!("Gap")).size(10).style(muted).width(LAYER_COL_GAP_W),
-        text(t!("Bot.")).size(10).style(muted).width(LAYER_COL_OFFSET_W),
-        text(t!("Top")).size(10).style(muted).width(LAYER_COL_OFFSET_W),
+        text(t!("Thick (cm)")).size(10).style(muted).width(LAYER_COL_THICKNESS_W),
+        text(t!("Achsversatz (cm)")).size(10).style(muted).width(LAYER_COL_GAP_W),
+        text(t!("Bot. (cm)")).size(10).style(muted).width(LAYER_COL_OFFSET_W),
+        text(t!("Top (cm)")).size(10).style(muted).width(LAYER_COL_OFFSET_W),
         text(t!("Function")).size(10).style(muted).width(LAYER_COL_FUNCTION_W),
         text(t!("Lyr. Over.")).size(10).style(muted).width(LAYER_COL_OVERRIDE_W),
         text(t!("Role")).size(10).style(muted).width(LAYER_COL_ROLE_W),
@@ -423,7 +566,7 @@ fn layer_row<'a>(
             // remain editable and are validated again on save.
             let thickness_invalid = {
                 let parsed =
-                    crate::modules::aec::engine::wall_style::LayerValue::parse_str(&buffer.thickness);
+                    crate::modules::aec::engine::wall_style::LayerValue::parse_cm_str(&buffer.thickness);
                 match parsed {
                     crate::modules::aec::engine::wall_style::LayerValue::Fixed(_) => false,
                     crate::modules::aec::engine::wall_style::LayerValue::Formula(ref f) => {
@@ -444,15 +587,15 @@ fn layer_row<'a>(
                 input
             }
         },
-        text_input("gap", &buffer.gap_before)
-            .on_input(move |v| Message::AecStyleManagerWallStyleLayerGapChanged(index, v))
+        text_input("z.B. -12", &buffer.axis_offset)
+            .on_input(move |v| Message::AecStyleManagerWallStyleLayerAxisOffsetChanged(index, v))
             .size(11)
             .width(LAYER_COL_GAP_W),
-        text_input("bottom", &buffer.bottom_offset)
+        text_input("bottom (cm)", &buffer.bottom_offset)
             .on_input(move |v| Message::AecStyleManagerWallStyleLayerBottomOffsetChanged(index, v))
             .size(11)
             .width(LAYER_COL_OFFSET_W),
-        text_input("top", &buffer.top_offset)
+        text_input("top (cm)", &buffer.top_offset)
             .on_input(move |v| Message::AecStyleManagerWallStyleLayerTopOffsetChanged(index, v))
             .size(11)
             .width(LAYER_COL_OFFSET_W),
@@ -507,4 +650,176 @@ fn invalid_thickness_style(theme: &Theme, status: text_input::Status) -> text_in
     let mut style = text_input::default(theme, status);
     style.border.color = danger;
     style
+}
+
+/// "Darstellungs-Profile" section (Step 4): a table of every `DisplayConfig`
+/// (badged "Standard"/"Override" depending on whether the style being
+/// edited already has a `display_profiles` entry for it), and — when one
+/// is selected — its detail form: two independent layer-filter checklists
+/// for `Contour2D`/`Solid3D` plus a hatch-angle override.
+fn display_profiles_section<'a>(
+    profiles: &DisplayProfileFormState<'a>,
+    layers: &'a [crate::app::AecLayerBuffer],
+) -> Element<'a, Message> {
+    let mut section = column![
+        text(t!("Darstellungs-Profile (je Planart)")).size(12),
+    ]
+    .spacing(6);
+
+    if profiles.display_config_names.is_empty() {
+        section = section.push(
+            text(t!("Keine Planarten in der Bibliothek — im Plan-Manager anlegen."))
+                .size(10)
+                .style(muted),
+        );
+        return section.into();
+    }
+
+    let mut table = column![].spacing(2);
+    for name in &profiles.display_config_names {
+        let is_override = profiles.existing_overrides.contains(name);
+        let is_selected = profiles.selected == Some(name.as_str());
+        let status_label = if is_override { t!("Override") } else { t!("Standard") };
+        let name_owned = name.clone();
+        table = table.push(
+            button(
+                row![
+                    text(name.clone()).size(11),
+                    Space::new(),
+                    container(text(status_label).size(9))
+                        .padding([1, 5])
+                        .style(move |theme: &Theme| container::Style {
+                            background: Some(Background::Color(
+                                theme.palette().background.strong.color.scale_alpha(0.55),
+                            )),
+                            text_color: Some(theme.palette().background.base.text.scale_alpha(0.85)),
+                            border: Border { radius: 3.0.into(), ..Default::default() },
+                            ..Default::default()
+                        }),
+                ]
+                .spacing(4)
+                .align_y(iced::Center),
+            )
+            .on_press(Message::AecStyleManagerProfileSelect(name_owned))
+            .style(list_style(is_selected))
+            .padding([5, 8])
+            .width(Fill),
+        );
+    }
+    section = section.push(container(scrollable(table).height(120)).padding(4));
+
+    if profiles.selected.is_some() {
+        section = section.push(layer_filter_slot_view(
+            t!("Schichten für 2D-Gesamtkontur (Contour2D)").into_owned(),
+            layers,
+            profiles.contour_explicit,
+            profiles.contour_selected,
+            Message::AecStyleManagerProfileContourModeToggle,
+            Message::AecStyleManagerProfileContourLayerToggle,
+        ));
+        section = section.push(layer_filter_slot_view(
+            t!("Schichten für 3D-Gesamtkörper (Solid3D)").into_owned(),
+            layers,
+            profiles.solid_explicit,
+            profiles.solid_selected,
+            Message::AecStyleManagerProfileSolidModeToggle,
+            Message::AecStyleManagerProfileSolidLayerToggle,
+        ));
+
+        section = section.push(
+            row![
+                text(t!("Hatch-Winkel")).size(10).style(muted).width(100),
+                text_input("z.B. 45", profiles.hatch_angle)
+                    .on_input(Message::AecStyleManagerProfileHatchAngleChanged)
+                    .size(11)
+                    .padding([4, 6])
+                    .width(80),
+                iced::widget::checkbox(profiles.hatch_relative)
+                    .label(t!("Relativ zur Wand").into_owned())
+                    .on_toggle(Message::AecStyleManagerProfileHatchRelativeToggle)
+                    .size(13)
+                    .text_size(11),
+            ]
+            .spacing(8)
+            .align_y(iced::Center),
+        );
+
+        section = section.push(
+            row![
+                Space::new(),
+                button(text(t!("Entfernen")).size(11))
+                    .style(button::danger)
+                    .padding([4, 10])
+                    .on_press(Message::AecStyleManagerProfileRemove),
+                button(text(t!("Profil speichern")).size(11))
+                    .style(button::primary)
+                    .padding([4, 10])
+                    .on_press(Message::AecStyleManagerProfileSave),
+            ]
+            .spacing(8),
+        );
+    }
+
+    section.into()
+}
+
+/// One slot's layer-filter checklist ("Alle Schichten" vs. "Auswahl" +
+/// per-layer checkboxes), built from the style's own edit-buffer layers
+/// (`AecLayerBuffer`), following the same `layer_filter_to_ui_state`
+/// pattern already used by the Plan Manager, but scoped to a single slot
+/// so `Contour2D` and `Solid3D` are fully independent.
+fn layer_filter_slot_view<'a>(
+    title: String,
+    layers: &'a [crate::app::AecLayerBuffer],
+    is_explicit: bool,
+    selected: &'a [LayerRef],
+    mode_toggle: fn(bool) -> Message,
+    layer_toggle: fn(LayerRef) -> Message,
+) -> Element<'a, Message> {
+    let mode_row = row![
+        button(text(t!("Alle Schichten")).size(10))
+            .style(if !is_explicit { button::primary } else { button::secondary })
+            .padding([3, 8])
+            .on_press(mode_toggle(false)),
+        button(text(t!("Auswahl")).size(10))
+            .style(if is_explicit { button::primary } else { button::secondary })
+            .padding([3, 8])
+            .on_press(mode_toggle(true)),
+    ]
+    .spacing(6);
+
+    let mut section = column![text(title).size(10).style(muted), mode_row].spacing(4);
+
+    if is_explicit {
+        let mut items: Vec<Element<'a, Message>> = Vec::new();
+        for (idx, lb) in layers.iter().enumerate() {
+            let layer_ref = LayerRef {
+                material_id: lb.material_id.clone(),
+                role_tag: None,
+                index: idx,
+            };
+            let checked = selected.contains(&layer_ref);
+            let label = if lb.material_id.is_empty() {
+                format!("#{}", idx + 1)
+            } else {
+                format!("#{} {}", idx + 1, lb.material_id)
+            };
+            let lr = layer_ref.clone();
+            items.push(
+                iced::widget::checkbox(checked)
+                    .label(label)
+                    .on_toggle(move |_| layer_toggle(lr.clone()))
+                    .size(12)
+                    .text_size(10)
+                    .into(),
+            );
+        }
+        let checklist = iced::widget::Row::with_children(items)
+            .spacing(10)
+            .wrap()
+            .vertical_spacing(4.0);
+        section = section.push(container(checklist).padding(4));
+    }
+
+    section.into()
 }

@@ -142,7 +142,7 @@ pub fn build_wall_display_set(
 
 /// Build a complete [`WallRepresentation`] from an axis and layer stack.
 ///
-/// `layers` is a list of `(thickness, gap_before)` pairs — the same layout
+/// `layers` is a list of `(thickness, axis_offset)` pairs — the same layout
 /// consumed by [`layer_contours_with_bulges`]. `centerline_offset` is forwarded
 /// to [`outer_contour_with_bulges`] (0.0 for a center-justified / already-shifted
 /// axis). `axis_bulges` may be empty (all straight) or shorter than `axis`

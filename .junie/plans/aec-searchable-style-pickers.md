@@ -88,32 +88,17 @@ impl std::fmt::Display for NamedChoiceItem {
 
 # Delivery Steps
 
-###   Step 1: Gemeinsamen NamedChoiceItem-Typ und combo_box-States für Style-Manager-Auswahlfelder einführen
-Ein wiederverwendbarer Choice-Item-Typ und synchronisierte combo_box-States stehen für Parent-Stil-, Material- und Layer-Override-Auswahl bereit.
-- Neuer Typ `NamedChoiceItem { id, name }` (mit `Display`-Impl) in einem sinnvollen gemeinsamen Modul (z.B. `src/modules/aec/engine/mod.rs` oder direkt in `aec_style_manager.rs`).
-- Neue `combo_box::State<NamedChoiceItem>`-Felder im `WallStyleFormState`/`App` für Parent-Stil, Material-je-Schicht und Layer-Override.
-- Sync-Funktion (analog `layers.rs::sync_linetypes`) aktualisiert diese States bei jedem Laden/Ändern der `StyleLibrary` (Öffnen des Managers, nach Speichern eines Materials/Stils).
+### ✓ Step 1: Gemeinsamen NamedChoiceItem-Typ und combo_box-States für Style-Manager-Auswahlfelder einführen
+**Abweichung vom Plan (bereits anderweitig gelöst):** Statt `combo_box`-States wird die Auswahl über ein eigenständiges, durchsuchbares Picker-Modal (`src/ui/window/aec_style_picker.rs`, geöffnet über `Message::AecStylePickerOpen(StylePickerTarget)`) realisiert. Es bietet ein `text_input`-Suchfeld (`aec_style_picker_filter`) plus gefilterte, scrollbare Liste inkl. Herkunfts-Badge — funktional identisch zur geplanten Autocomplete-Anforderung, ohne einen separaten `NamedChoiceItem`/`combo_box::State`-Unterbau zu benötigen. Kein Implementierungsbedarf.
 
-###   Step 2: pick_list durch combo_box im AEC-Style-Manager-Formular ersetzen
-Parent-Stil-, Material- und Layer-Override-Auswahl im Wandstil-Formular sind durchsuchbar statt reiner Klick-Dropdowns.
-- In `src/ui/window/aec_style_manager.rs` die drei bestehenden `pick_list`-Aufrufe (Parent-Stil ~Zeile 655, Material je Schicht ~Zeile 291, Layer-Override ~Zeile 333) durch `combo_box(...)`-Aufrufe nach dem `layers.rs`-Muster ersetzen.
-- Bestehende `Message`-Varianten/Handler (`AecStyleManagerWallStyleParentChanged`/`LayerMaterialChanged`/`LayerOverrideChanged`) unverändert weiterverwenden, nur den Auslöser von `on_select` auf `on_selected` umstellen.
-- Manuelle/Test-Verifikation, dass Tippen eines Teilnamens die Optionsliste filtert und Auswahl weiterhin korrekt den bestehenden State aktualisiert.
+### ✓ Step 2: pick_list durch combo_box im AEC-Style-Manager-Formular ersetzen
+**Bereits erledigt (anderer Ansatz):** In `src/ui/window/aec_wall_style_manager.rs` sind Parent-Stil-, Material-je-Schicht- und Layer-Override-Auswahl keine `pick_list`s mehr, sondern Buttons, die das durchsuchbare `AecStylePickerOpen`-Modal öffnen (siehe `StylePickerTarget::WallStyleParent`/`LayerMaterial`/`LayerOverride`). Tippen im Modal-Suchfeld filtert die Liste; Auswahl bestätigt über `AecStylePickerConfirm` und aktualisiert den bestehenden State (`AecStyleManagerWallStyleParentChanged`/`LayerMaterialChanged`/`LayerOverrideChanged`) unverändert. Kein Implementierungsbedarf.
 
-###   Step 3: Teilstring-Suche für die AEC_WALL-Kommandozeilen-Stilauswahl ergänzen
-Beim Zeichnen einer Wand kann ein Stil durch Eingabe eines Teilnamens gefunden werden, statt nur exakter Namens-/ID-Übereinstimmung.
-- In `src/modules/aec/commands.rs`, `WallPhase::AskStyle`-Verarbeitung (~Zeile 1090-1097): Fallback auf Teilstring-Suche (`to_lowercase().contains(...)`) ergänzen, falls kein Exact-Match auf Name/ID gefunden wird.
-- Bestehendes Verhalten bei leerer Eingabe (erster Stil der Liste) und bei Exact-Match bleibt unverändert.
-- Unit-Tests: Teilstring-Eingabe findet den erwarteten Stil; mehrdeutige Teilstring-Treffer wählen konsistent den ersten passenden Eintrag; weiterhin kein Treffer bei komplett unbekanntem Text.
+### ✓ Step 3: Teilstring-Suche für die AEC_WALL-Kommandozeilen-Stilauswahl ergänzen
+**Gegenstandslos:** `WallPhase::AskStyle` als separater Kommandozeilen-Textprompt existiert nicht mehr; der Wandstil wird beim Zeichnen (`AEC_WALL`) über eine live editierbare Eigenschaft (`apply_live_property("wall_style", ...)`) gesetzt, die ebenfalls über `StylePickerTarget::ActiveCommand` dasselbe durchsuchbare Picker-Modal öffnet. Ein separates Teilstring-Matching im Kommandozeilen-Pfad ist damit nicht mehr anwendbar. Kein Implementierungsbedarf.
 
-###   Step 4: Properties-Panel-Wandstil-Feld auf editierbaren, namensauflösenden combo_box umstellen
-Das Properties-Panel zeigt für eine selektierte WALL_V2-Wand den lesbaren Stilnamen an und erlaubt die Auswahl eines neuen Stils.
-- In `src/app/properties.rs` das bisherige `ro_prop(...)`-Feld für den Wand-Stil durch ein neues editierbares Property ersetzen, das den Stilnamen per Lookup in der aktuell geladenen `StyleLibrary` auflöst (Fallback auf rohe `style_id`, falls Stil nicht gefunden).
-- Neues Property nutzt intern denselben `combo_box`/`NamedChoiceItem`-Ansatz wie der Style-Manager, gefüllt mit allen verfügbaren Wandstilen.
-- Tests: Property-Ableitung zeigt für eine Wand mit bekanntem Stil den korrekten Namen; für eine Wand mit unbekannter/gelöschter Stil-ID wird der Fallback (rohe ID) angezeigt, ohne Fehler/Panic.
+### ✓ Step 4: Properties-Panel-Wandstil-Feld auf editierbaren, namensauflösenden combo_box umstellen
+**Bereits erledigt (anderer Ansatz):** In `src/app/properties.rs` ist das Wand-Stil-Feld kein `ro_prop` mehr, sondern ein `PropValue::Picker` mit per Lookup aufgelöstem Stilnamen (Fallback auf die rohe `style_id`, falls kein Treffer in der `StyleLibrary`). Auswahl öffnet über `AecStylePickerOpenForWallProperties` dasselbe durchsuchbare Modal. Kein Implementierungsbedarf.
 
-###   Step 5: Stiländerung im Properties-Panel schreibt WALL_V2-XDATA und regeneriert die Wanddarstellung
-Das Auswählen eines neuen Stils im Properties-Panel wirkt sich sofort sichtbar auf die Wand aus.
-- Neuer Commit-Handler in `src/app/update/command.rs` für Änderungen am Wand-Stil-Property: liest den gewählten `style_id`, löst `effective_layers()` über die aktuell geladene `StyleLibrary` auf, schreibt Stil-ID und Schicht-Snapshot über die bestehende `wall_v2_record`-Schreiblogik in die XDATA.
-- Nach dem Schreiben wird `crate::modules::aec::commands::regenerate_wall_representation` aufgerufen, damit Kontur/Hatch/Solid-Darstellung dem neuen Stil entsprechen.
-- Tests: Simulierte Stiländerung über den neuen Commit-Handler aktualisiert `style_id`/Layer-Snapshot der Wand korrekt und ruft die Regenerierung aus; bestehende Properties-Panel-Tests (`cargo test --lib properties`) bleiben grün.
+### ✓ Step 5: Stiländerung im Properties-Panel schreibt WALL_V2-XDATA und regeneriert die Wanddarstellung
+**Bereits erledigt:** Der `Message::AecStylePickerConfirm`-Handler (Fall `StylePickerTarget::WallPropertiesStyle`, `src/app/update/mod.rs`) löst `resolve_wall_style_layers_ids` auf, schreibt `style_id` + Layer-Snapshot über `wall_record` in die `WALL_V2`-XDATA und ruft anschließend `regenerate_wall_respecting_active_display_config` auf (respektiert zusätzlich die aktive `DisplayConfig`, siehe Folgeplan `aec-plan-view-display-variants.md`). Kein Implementierungsbedarf.

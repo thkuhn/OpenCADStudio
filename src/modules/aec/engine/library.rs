@@ -1,5 +1,6 @@
 //! AEC Style Library for persisting materials and wall styles.
 
+use crate::modules::aec::engine::display_component::ComponentRuleSet;
 use crate::modules::aec::engine::material::Material;
 use crate::modules::aec::engine::plan_view::{DisplayConfig, ScaleDisplayConfigMapping};
 use crate::modules::aec::engine::style::Style;
@@ -22,6 +23,184 @@ pub struct TreeNode<'a> {
     pub style: &'a WallStyle,
     /// Indentation depth (0 for roots).
     pub depth: usize,
+}
+
+/// Conflict status when copying an entry from one library to another.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum CopyConflict {
+    /// No entry with the same ID exists in the target library.
+    None,
+    /// An entry with the same ID already exists and its content is identical.
+    IdenticalAlreadyPresent,
+    /// An entry with the same ID already exists but its content differs.
+    DifferentContentCollision,
+}
+
+/// Where a style-library entry originates in the combined Standard+Project view.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LibrarySource {
+    /// Machine-wide global / standard library (`aec_styles.toml`).
+    Standard,
+    /// Embedded library of the active `.ocsproj`.
+    Project,
+}
+
+/// A material shown in the combined Standard+Project list, with provenance.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CombinedMaterialEntry {
+    pub material: Material,
+    pub source: LibrarySource,
+}
+
+/// A wall style shown in the combined Standard+Project list, with provenance.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CombinedWallStyleEntry {
+    pub wall_style: WallStyle,
+    pub source: LibrarySource,
+}
+
+/// Builds a combined material list from the Standard library and (when present)
+/// the project's embedded library. Project entries win on id collision.
+pub fn combined_material_entries(
+    project: Option<&crate::modules::aec::engine::project::ProjectFile>,
+) -> Vec<CombinedMaterialEntry> {
+    let standard = load_or_seed();
+    let mut entries = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+
+    if let Some(project) = project {
+        for material in &project.material_wall_style_library.materials {
+            seen.insert(material.id.clone());
+            entries.push(CombinedMaterialEntry {
+                material: material.clone(),
+                source: LibrarySource::Project,
+            });
+        }
+    }
+
+    for material in standard.materials {
+        if seen.insert(material.id.clone()) {
+            entries.push(CombinedMaterialEntry {
+                material,
+                source: LibrarySource::Standard,
+            });
+        }
+    }
+
+    entries
+}
+
+/// Builds a combined wall-style list from the Standard library and (when
+/// present) the project's embedded library. Project entries win on id collision.
+pub fn combined_wall_style_entries(
+    project: Option<&crate::modules::aec::engine::project::ProjectFile>,
+) -> Vec<CombinedWallStyleEntry> {
+    let standard = load_or_seed();
+    let mut entries = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+
+    if let Some(project) = project {
+        for wall_style in &project.material_wall_style_library.wall_styles {
+            seen.insert(wall_style.style.id.clone());
+            entries.push(CombinedWallStyleEntry {
+                wall_style: wall_style.clone(),
+                source: LibrarySource::Project,
+            });
+        }
+    }
+
+    for wall_style in standard.wall_styles {
+        if seen.insert(wall_style.style.id.clone()) {
+            entries.push(CombinedWallStyleEntry {
+                wall_style,
+                source: LibrarySource::Standard,
+            });
+        }
+    }
+
+    entries
+}
+
+/// Merged Standard+Project style library for UI lookups (project wins on id).
+pub fn combined_style_library(
+    project: Option<&crate::modules::aec::engine::project::ProjectFile>,
+) -> StyleLibrary {
+    let mut lib = StyleLibrary::empty();
+    for entry in combined_material_entries(project) {
+        lib.upsert_material(entry.material);
+    }
+    for entry in combined_wall_style_entries(project) {
+        lib.upsert_wall_style(entry.wall_style);
+    }
+    lib
+}
+
+/// Source of a material id in the combined view, if present.
+pub fn material_library_source(
+    project: Option<&crate::modules::aec::engine::project::ProjectFile>,
+    id: &str,
+) -> Option<LibrarySource> {
+    combined_material_entries(project)
+        .into_iter()
+        .find(|e| e.material.id == id)
+        .map(|e| e.source)
+}
+
+/// Source of a wall-style id in the combined view, if present.
+pub fn wall_style_library_source(
+    project: Option<&crate::modules::aec::engine::project::ProjectFile>,
+    id: &str,
+) -> Option<LibrarySource> {
+    combined_wall_style_entries(project)
+        .into_iter()
+        .find(|e| e.wall_style.style.id == id)
+        .map(|e| e.source)
+}
+
+/// Checks whether copying `material` into `target` would collide.
+pub fn material_copy_conflict(target: &StyleLibrary, material: &Material) -> CopyConflict {
+    if let Some(existing) = target.materials.iter().find(|m| m.id == material.id) {
+        if existing == material {
+            CopyConflict::IdenticalAlreadyPresent
+        } else {
+            CopyConflict::DifferentContentCollision
+        }
+    } else {
+        CopyConflict::None
+    }
+}
+
+/// Resolves the [`ComponentRuleSet`] `style` wants applied for the
+/// `DisplayConfig` named `display_config_name` (Step 2's style-centered
+/// override model, Key Decision 1/3): looks up
+/// `style.display_profiles.get(display_config_name)`. Returns `None` when
+/// `style` has no profile for that Planart, in which case callers should
+/// fall back to the default rule set (every slot visible, standard style,
+/// `All` layers for `Contour2D`/`Solid3D` — see `ComponentRuleSet::default()`
+/// and `ComponentRuleSet::layer_filter_for`), exactly as an absent
+/// `DisplayConfig::component_rules` entry used to behave before this step.
+pub fn resolve_effective_rule_set<'a>(
+    style: &'a WallStyle,
+    display_config_name: &str,
+) -> Option<&'a ComponentRuleSet> {
+    style.display_profiles.get(display_config_name)
+}
+
+/// Checks whether copying `wall_style` into `target` would collide.
+pub fn wall_style_copy_conflict(target: &StyleLibrary, wall_style: &WallStyle) -> CopyConflict {
+    if let Some(existing) = target
+        .wall_styles
+        .iter()
+        .find(|s| s.style.id == wall_style.style.id)
+    {
+        if existing == wall_style {
+            CopyConflict::IdenticalAlreadyPresent
+        } else {
+            CopyConflict::DifferentContentCollision
+        }
+    } else {
+        CopyConflict::None
+    }
 }
 
 impl StyleLibrary {
@@ -224,13 +403,14 @@ pub fn seed_default_library() -> StyleLibrary {
             material_id: masonry.id.clone(),
             thickness: LayerValue::Fixed(0.24),
             function: LayerFunction::Structural,
-            gap_before: 0.0,
+            axis_offset: LayerValue::Fixed(-0.12),
             bottom_offset: 0.0,
             top_offset: 0.0,
             layer_override: None,
             hatch_override: None,
             role_tag: Some("Tragschale".to_string()),
         }],
+    display_profiles: std::collections::HashMap::new(),
     };
 
     let concrete_wall = WallStyle {
@@ -244,13 +424,14 @@ pub fn seed_default_library() -> StyleLibrary {
             material_id: concrete.id.clone(),
             thickness: LayerValue::Fixed(0.20),
             function: LayerFunction::Structural,
-            gap_before: 0.0,
+            axis_offset: LayerValue::Fixed(-0.10),
             bottom_offset: 0.0,
             top_offset: 0.0,
             layer_override: None,
             hatch_override: Some("AR-CONC".to_string()),
             role_tag: Some("Tragschale".to_string()),
         }],
+    display_profiles: std::collections::HashMap::new(),
     };
 
     let insulated_wall = WallStyle {
@@ -265,7 +446,7 @@ pub fn seed_default_library() -> StyleLibrary {
                 material_id: plaster.id.clone(),
                 thickness: LayerValue::Fixed(0.015),
                 function: LayerFunction::Finish,
-                gap_before: 0.0,
+                axis_offset: LayerValue::Fixed(-0.1725),
                 bottom_offset: 0.0,
                 top_offset: 0.0,
                 layer_override: None,
@@ -276,7 +457,7 @@ pub fn seed_default_library() -> StyleLibrary {
                 material_id: masonry.id.clone(),
                 thickness: LayerValue::Fixed(0.175),
                 function: LayerFunction::Structural,
-                gap_before: 0.0,
+                axis_offset: LayerValue::Fixed(-0.1575),
                 bottom_offset: 0.0,
                 top_offset: 0.0,
                 layer_override: None,
@@ -287,7 +468,7 @@ pub fn seed_default_library() -> StyleLibrary {
                 material_id: insulation.id.clone(),
                 thickness: LayerValue::Fixed(0.14),
                 function: LayerFunction::Insulation,
-                gap_before: 0.0,
+                axis_offset: LayerValue::Fixed(0.0175),
                 bottom_offset: 0.0,
                 top_offset: 0.0,
                 layer_override: None,
@@ -298,7 +479,7 @@ pub fn seed_default_library() -> StyleLibrary {
                 material_id: plaster.id.clone(),
                 thickness: LayerValue::Fixed(0.015),
                 function: LayerFunction::Finish,
-                gap_before: 0.0,
+                axis_offset: LayerValue::Fixed(0.1575),
                 bottom_offset: 0.0,
                 top_offset: 0.0,
                 layer_override: Some("A-WALL-FINISH".to_string()),
@@ -306,6 +487,7 @@ pub fn seed_default_library() -> StyleLibrary {
                 role_tag: Some("Aussenputz".to_string()),
             },
         ],
+    display_profiles: std::collections::HashMap::new(),
     };
 
     // Derived style demonstrating style-manager inheritance: shares the
@@ -320,6 +502,7 @@ pub fn seed_default_library() -> StyleLibrary {
             parent_style_id: Some(insulated_wall.style.id.clone()),
         },
         layers: vec![],
+    display_profiles: std::collections::HashMap::new(),
     };
 
     StyleLibrary {
@@ -587,6 +770,58 @@ mod tests {
     use crate::modules::aec::engine::wall_style::{Layer, LayerFunction, LayerValue, WallStyle};
 
     #[test]
+    fn resolve_effective_rule_set_returns_none_without_a_matching_profile() {
+        let style = WallStyle {
+            style: Style {
+                id: "style1".to_string(),
+                name: "Style 1".to_string(),
+                object_kind: "Wall".to_string(),
+                parent_style_id: None,
+            },
+            layers: vec![],
+            display_profiles: std::collections::HashMap::new(),
+        };
+        assert!(resolve_effective_rule_set(&style, "Architekt 1:50").is_none());
+    }
+
+    #[test]
+    fn resolve_effective_rule_set_returns_the_profile_for_the_matching_display_config_name() {
+        use crate::modules::aec::engine::display_component::ComponentRuleSet;
+
+        let mut rules_50 = ComponentRuleSet::default();
+        rules_50.visibility.insert("AxisLine".to_string(), false);
+        let rules_200 = ComponentRuleSet::default();
+
+        let mut display_profiles = std::collections::HashMap::new();
+        display_profiles.insert("Ausf\u{fc}hrungsplan 1:50".to_string(), rules_50.clone());
+        display_profiles.insert("\u{dc}bersichtsplan 1:200".to_string(), rules_200.clone());
+
+        let style = WallStyle {
+            style: Style {
+                id: "style1".to_string(),
+                name: "Style 1".to_string(),
+                object_kind: "Wall".to_string(),
+                parent_style_id: None,
+            },
+            layers: vec![],
+            display_profiles,
+        };
+
+        assert_eq!(
+            resolve_effective_rule_set(&style, "Ausf\u{fc}hrungsplan 1:50"),
+            Some(&rules_50)
+        );
+        assert_eq!(
+            resolve_effective_rule_set(&style, "\u{dc}bersichtsplan 1:200"),
+            Some(&rules_200)
+        );
+        // A Planart this style has no profile for still falls back to `None`
+        // (default rule set), instead of erroring or picking an arbitrary
+        // profile.
+        assert!(resolve_effective_rule_set(&style, "Schalplan 1:50").is_none());
+    }
+
+    #[test]
     fn test_library_roundtrip() {
         let material = Material::new(
             "mat1".to_string(),
@@ -608,7 +843,7 @@ mod tests {
                     material_id: "mat1".to_string(),
                     thickness: LayerValue::Fixed(10.0),
                     function: LayerFunction::Structural,
-                    gap_before: 0.0,
+                    axis_offset: LayerValue::Fixed(-7.5),
                     bottom_offset: 0.0,
                     top_offset: 0.0,
                     layer_override: None,
@@ -619,7 +854,7 @@ mod tests {
                     material_id: "mat1".to_string(),
                     thickness: LayerValue::Fixed(5.0),
                     function: LayerFunction::Finish,
-                    gap_before: 0.0,
+                    axis_offset: LayerValue::Fixed(2.5),
                     bottom_offset: 0.0,
                     top_offset: 0.0,
                     layer_override: None,
@@ -627,6 +862,7 @@ mod tests {
                     role_tag: None,
                 },
             ],
+        display_profiles: std::collections::HashMap::new(),
         };
 
         let lib = StyleLibrary {
@@ -638,6 +874,38 @@ mod tests {
         let deserialized = from_toml(&serialized).expect("Deserialization failed");
 
         assert_eq!(lib, deserialized);
+    }
+
+
+    #[test]
+    fn legacy_gap_before_library_migrates_to_axis_offset() {
+        let json = r#"{
+            "materials": [],
+            "wall_styles": [{
+                "id": "legacy",
+                "name": "Legacy",
+                "object_kind": "Wall",
+                "parent_style_id": null,
+                "layers": [
+                    {
+                        "material_id": "a",
+                        "thickness": 0.1,
+                        "function": "Structural",
+                        "gap_before": 0.0
+                    },
+                    {
+                        "material_id": "b",
+                        "thickness": 0.1,
+                        "function": "Finish",
+                        "gap_before": 0.05
+                    }
+                ]
+            }]
+        }"#;
+        let lib = from_toml(json).expect("legacy library must load");
+        let style = &lib.wall_styles[0];
+        assert!((style.layers[0].axis_offset.as_fixed_or(0.0) - (-0.125)).abs() < 1e-12);
+        assert!((style.layers[1].axis_offset.as_fixed_or(0.0) - 0.025).abs() < 1e-12);
     }
 
     #[test]
@@ -669,6 +937,7 @@ mod tests {
                 parent_style_id: None,
             },
             layers: Vec::new(),
+        display_profiles: std::collections::HashMap::new(),
         };
         let mut lib = StyleLibrary {
             materials: Vec::new(),
@@ -691,6 +960,7 @@ mod tests {
                 parent_style_id: None,
             },
             layers: vec![],
+        display_profiles: std::collections::HashMap::new(),
         };
         let s2 = WallStyle {
             style: Style {
@@ -700,6 +970,7 @@ mod tests {
                 parent_style_id: Some("s1".to_string()),
             },
             layers: vec![],
+        display_profiles: std::collections::HashMap::new(),
         };
         let s3 = WallStyle {
             style: Style {
@@ -709,6 +980,7 @@ mod tests {
                 parent_style_id: Some("s1".to_string()),
             },
             layers: vec![],
+        display_profiles: std::collections::HashMap::new(),
         };
         let s4 = WallStyle {
             style: Style {
@@ -718,6 +990,7 @@ mod tests {
                 parent_style_id: Some("orphan".to_string()),
             },
             layers: vec![],
+        display_profiles: std::collections::HashMap::new(),
         };
 
         lib.wall_styles = vec![s1, s2, s3, s4];
@@ -1115,5 +1388,95 @@ mod tests {
         assert_eq!(result.len(), 1);
         assert_eq!(result[0].scale_name, "1:20");
         assert_eq!(result[0].display_config_name, "Detail 1:20");
+    }
+
+    #[test]
+    fn combined_material_entries_project_overrides_standard_on_id() {
+        use crate::modules::aec::engine::project::ProjectFile;
+
+        let standard_id = "shared_mat".to_string();
+        let mut project = ProjectFile::default();
+        project.material_wall_style_library.upsert_material(Material::new(
+            standard_id.clone(),
+            "Project Material".to_string(),
+            "SOLID".to_string(),
+            0x00FF00,
+            "Continuous".to_string(),
+        ));
+        project.material_wall_style_library.upsert_material(Material::new(
+            "proj_only".to_string(),
+            "Project Only".to_string(),
+            "SOLID".to_string(),
+            0x0000FF,
+            "Continuous".to_string(),
+        ));
+
+        let entries = combined_material_entries(Some(&project));
+        let shared = entries
+            .iter()
+            .find(|e| e.material.id == standard_id)
+            .expect("shared id present");
+        assert_eq!(shared.source, LibrarySource::Project);
+        assert_eq!(shared.material.name, "Project Material");
+        assert!(entries
+            .iter()
+            .any(|e| e.material.id == "proj_only" && e.source == LibrarySource::Project));
+        // Standard-only entries (from load_or_seed) still appear with Standard source.
+        assert!(entries.iter().any(|e| e.source == LibrarySource::Standard));
+    }
+
+    #[test]
+    fn test_material_copy_conflict() {
+        let mat_a = Material::new(
+            "mat1".to_string(),
+            "Material 1".to_string(),
+            "HATCH1".to_string(),
+            0xFF0000,
+            "Continuous".to_string(),
+        );
+        let mut mat_b = mat_a.clone();
+        mat_b.name = "Material 1 Updated".to_string();
+
+        let mut target = StyleLibrary::empty();
+        assert_eq!(material_copy_conflict(&target, &mat_a), CopyConflict::None);
+
+        target.upsert_material(mat_a.clone());
+        assert_eq!(
+            material_copy_conflict(&target, &mat_a),
+            CopyConflict::IdenticalAlreadyPresent
+        );
+        assert_eq!(
+            material_copy_conflict(&target, &mat_b),
+            CopyConflict::DifferentContentCollision
+        );
+    }
+
+    #[test]
+    fn test_wall_style_copy_conflict() {
+        let style_a = WallStyle {
+            style: Style {
+                id: "style1".to_string(),
+                name: "Style 1".to_string(),
+                object_kind: "Wall".to_string(),
+                parent_style_id: None,
+            },
+            layers: vec![],
+        display_profiles: std::collections::HashMap::new(),
+        };
+        let mut style_b = style_a.clone();
+        style_b.style.name = "Style 1 Updated".to_string();
+
+        let mut target = StyleLibrary::empty();
+        assert_eq!(wall_style_copy_conflict(&target, &style_a), CopyConflict::None);
+
+        target.upsert_wall_style(style_a.clone());
+        assert_eq!(
+            wall_style_copy_conflict(&target, &style_a),
+            CopyConflict::IdenticalAlreadyPresent
+        );
+        assert_eq!(
+            wall_style_copy_conflict(&target, &style_b),
+            CopyConflict::DifferentContentCollision
+        );
     }
 }

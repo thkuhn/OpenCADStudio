@@ -2406,6 +2406,21 @@ pub(super) fn on_tab_close(&mut self, idx: usize) -> Task<Message> {
                                 Some(&style_library),
                             );
                         }
+                    } else if field == "wall_phase" {
+                        // Phase pick on a WALL wall: purely a metadata edit,
+                        // no geometry regeneration needed.
+                        let new_phase =
+                            crate::modules::aec::engine::plan_view::PlanPhase::from_str(&value);
+                        for &handle in &handles {
+                            if self.tabs[i].scene.is_layer_locked(handle) {
+                                continue;
+                            }
+                            crate::modules::aec::commands::write_wall_phase(
+                                &mut self.tabs[i].scene,
+                                handle,
+                                new_phase,
+                            );
+                        }
                     } else {
                         let plane = if self.tabs[i].editing_model_space() {
                             self.tabs[i].ucs_xform().working_plane()
@@ -2787,6 +2802,29 @@ pub(super) fn on_tab_close(&mut self, idx: usize) -> Task<Message> {
                                                         Some(&style_library),
                                                     );
                                                 }
+                                            }
+                                        }
+                                    }
+                                    "wall_hatch_angle" => {
+                                        // Angle row for the per-wall hatch
+                                        // override (Step 6): only meaningful
+                                        // while the override checkbox is on,
+                                        // so a wall with no `hatch_override`
+                                        // simply ignores the edit here.
+                                        if let Some(v) = crate::entities::common::parse_f64(&val) {
+                                            let existing_override = self.tabs[i]
+                                                .scene
+                                                .document
+                                                .get_entity(handle)
+                                                .and_then(crate::modules::aec::commands::wall_from_entity)
+                                                .and_then(|wall| wall.hatch_override);
+                                            if let Some(mut ov) = existing_override {
+                                                ov.hatch_angle = Some(v);
+                                                crate::modules::aec::commands::write_wall_hatch_override(
+                                                    &mut self.tabs[i].scene,
+                                                    handle,
+                                                    Some(ov),
+                                                );
                                             }
                                         }
                                     }

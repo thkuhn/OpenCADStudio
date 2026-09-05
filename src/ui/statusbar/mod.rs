@@ -48,6 +48,9 @@ pub struct StatusMenuData<'a> {
     pub selection_types: Vec<String>,
     pub selection_filter: &'a rustc_hash::FxHashSet<String>,
     pub tooltip_hidden: bool,
+    // AEC "Projekt" pill: display name of the active project, if any
+    // (`App::aec_project_explorer_file`, derived from the loaded `.ocsproj` path).
+    pub active_project_name: Option<String>,
     // AEC "Planart" pill: name of the active `DisplayConfig` for the tab, if any.
     pub active_plan_name: Option<String>,
     // AEC "Planart" pill: all `DisplayConfig` names in `App::aec_plan_library`.
@@ -143,6 +146,7 @@ impl StatusBar {
             selection_types,
             selection_filter,
             tooltip_hidden,
+            active_project_name,
             active_plan_name,
             plan_names,
             auto_display_config_from_scale,
@@ -238,6 +242,19 @@ impl StatusBar {
         } else {
             status_pill(scale_label).into()
         };
+        // Project (AEC ProjectFile) pill: plain read-only display of the active
+        // project's name, right-click opens the Project Explorer. Sits to the
+        // left of the scale pill, mirroring its layout but with no click menu.
+        let project_label = match &active_project_name {
+            Some(name) => t!("Projekt: %{name}", name = name.as_str()).into_owned(),
+            None => t!("Kein Projekt").into_owned(),
+        };
+        let project_element: Element<'_, Message> = mouse_area(tip(
+            status_pill(project_label),
+            t!("Active AEC project\nRight-click opens the Project Explorer"),
+        ))
+        .on_right_press(Message::AecProjectExplorerOpen)
+        .into();
         // Plan (AEC DisplayConfig) pill: opens the DisplayConfig picker popup,
         // right-click opens the full Plan Manager. Mirrors the scale pill above.
         let plan_label = match &active_plan_name {
@@ -359,6 +376,11 @@ impl StatusBar {
                 )
                 .into(),
             );
+        }
+        // "Projekt" pill (active AEC project) only makes sense while a drawing
+        // is active, same as the other pills that read from the active tab.
+        if !is_start {
+            pills.push(project_element);
         }
         if vis(StatusPill::Scale) {
             pills.push(scale_element);

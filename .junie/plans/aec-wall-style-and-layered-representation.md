@@ -139,43 +139,37 @@ graph TD
 
 # Delivery Steps
 
-###   Step 1: Generisches Stil-Kernmodell mit Einzel-Elternvererbung implementieren
+### ✓ Step 1: Generisches Stil-Kernmodell mit Einzel-Elternvererbung implementieren
 Ein wiederverwendbares Stil-Datenmodell löst Elternketten korrekt auf und erkennt Zyklen.
 - Neues Modul `src/modules/aec/engine/style.rs` mit `StyleId`, `Style { id, name, object_kind, parent_style_id }`.
 - Funktion `resolve_chain(styles, id)` implementiert lineare Kettenauflösung mit Zyklus-Erkennung (`Result<Vec<StyleId>, StyleError>`).
 - Unit-Tests: einfache 2-3-stufige Kette, Zyklus wird korrekt als Fehler erkannt, unbekannte `parent_style_id` wird als Fehler erkannt.
 
-###   Step 2: Material-Bibliothek implementieren
+### ✓ Step 2: Material-Bibliothek implementieren
 Materialien mit Darstellungsattributen sind als eigenständiges, testbares Datenmodell verfügbar.
 - Neues Modul `src/modules/aec/engine/material.rs` mit `MaterialId`, `Material { id, name, hatch_pattern, line_color, line_type, render_material_ref }`.
 - Unit-Tests für Material-Erzeugung und Default-Werte (z.B. `render_material_ref: None`).
 
-###   Step 3: Wandstil mit Schichtaufbau und Bibliotheksdatei-Format umsetzen
+### ✓ Step 3: Wandstil mit Schichtaufbau und Bibliotheksdatei-Format umsetzen
 Ein Wandstil kann eine geordnete Materialschicht-Liste per Vererbungskette auflösen und aus einer TOML-Bibliotheksdatei geladen werden.
 - Neues Modul `src/modules/aec/engine/wall_style.rs` mit `Layer { material_id, thickness, function }`, `WallStyle { style, layers }`, `effective_layers()`.
 - Neues Modul `src/modules/aec/engine/library.rs`: TOML-(De-)Serialisierung von `StyleLibrary { materials, wall_styles }`, Standard-Ladepfad.
 - Unit-Tests: Kind-Wandstil ohne eigene Layer erbt Layer des nächsten Vorfahren; Kind mit eigenen Layern überschreibt vollständig; Bibliotheksdatei-Roundtrip (serialisieren → parsen → gleiche Struktur).
 
-###   Step 4: WALL_V2-XDATA-Schema mit Layer-Snapshot und Rückwärtskompatibilität einführen
+### ✓ Step 4: WALL_V2-XDATA-Schema mit Layer-Snapshot und Rückwärtskompatibilität einführen
 Wände speichern einen vollständig aufgelösten Layer-Snapshot in der XDATA und bleiben mit dem alten Single-Layer-Record lesbar.
 - `wall_record`/`wall_from_entity` in `src/modules/aec/commands.rs` um `WALL_V2`-Layout (`style_id`, Höhe, Storey-ID, Layer-Anzahl, je Layer Material-Name/Dicke/Funktion) erweitert.
 - Fallback-Leselogik: alter `WALL`-Record (Single-Layer) wird weiterhin korrekt als 1-Layer-`WallStyle`-Äquivalent interpretiert.
 - Unit-Tests: Schreiben/Lesen eines `WALL_V2`-Records mit mehreren Schichten; Lesen eines alten `WALL`-Records liefert korrektes Fallback-Ergebnis; `collect_wall_segments`/`find_closed_loop` funktionieren unverändert mit beiden Record-Typen.
 
-###   Step 5: Stil-Auswahl in den AEC_WALL-Zeichenworkflow integrieren
-Beim Zeichnen einer Wand kann ein Wandstil aus der Bibliothek gewählt werden, dessen aufgelöste Schichten in die WALL_V2-XDATA geschrieben werden.
-- Neue Prompt-Phase `AskStyle` in `WallCommand` (vor/statt der bisherigen `AskHeight`/`AskThickness`-Phasen), listet verfügbare Wandstil-Namen über die Kommandozeile.
-- Bei Auswahl: `effective_layers()` wird aufgelöst und über die erweiterte `wall_record`-Logik geschrieben; ohne verfügbare Bibliothek greift der bisherige Höhe-/Dicke-Prompt als Fallback.
-- Tests: Stilauswahl schreibt korrekten Layer-Snapshot; fehlende Bibliothek löst den bestehenden Fallback-Pfad aus, ohne den Draw-Workflow zu unterbrechen.
+### ✓ Step 5: Stil-Auswahl in den AEC_WALL-Zeichenworkflow integrieren
+**Umgesetzt mit abweichendem Mechanismus:** Statt einer separaten `AskStyle`-Kommandozeilen-Phase wird der Wandstil während des Zeichnens über eine live editierbare Eigenschaft (`apply_live_property("wall_style", ...)`) gesetzt, die das durchsuchbare Picker-Modal (`StylePickerTarget::ActiveCommand`, `src/ui/window/aec_style_picker.rs`) öffnet. Bei Auswahl werden `effective_layers()` aufgelöst und direkt in die `WALL_V2`-XDATA geschrieben; der Code enthält einen Kommentar, dass es bewusst keine separaten Kommandozeilen-Prompts (`AskStyle`/`AskHeight`) mehr gibt.
 
-###   Step 6: 2D-Schichtkontur und 3D-Extrusion je Schicht erzeugen
+### ✓ Step 6: 2D-Schichtkontur und 3D-Extrusion je Schicht erzeugen
 Eine gezeichnete Wand zeigt im Grundriss eine materialgerechte Schichtkontur und im 3D-Viewport ein extrudiertes Volumen je Schicht.
 - Neues Modul `src/modules/aec/engine/contour.rs`: reine Funktion, die aus Mittellinie + Layer-Liste parallele Offset-Konturen je Schicht berechnet (Normalenversatz, einfache Miter-Ecken).
 - Erweiterung in `src/modules/aec/commands.rs`: je Schicht wird eine Kontur-Polylinie mit Material-Hatch/Farbe sowie ein extrudiertes Solid (Höhe × Schichtdicke) über die bestehende Host-Extrusions-/Tessellierungs-Pipeline erzeugt und per Handle-Referenz mit der Wand-Entity verknüpft.
 - Tests: Kontur-Berechnung für ein einfaches Rechteck-Segment mit 3 Schichten liefert erwartete Offset-Linien; Extrusionshelfer erzeugt die erwartete Anzahl Solids mit korrekter Höhe/Dicke.
 
-###   Step 7: Properties-Panel um Stil- und Schichtanzeige erweitern
-Das Properties-Panel zeigt für eine selektierte Wand den zugewiesenen Stil und eine read-only Übersicht aller Materialschichten.
-- Erweiterung der bestehenden Wand-Sektion in `src/app/properties.rs`: Anzeige von Stilname und einer Tabelle (Material/Dicke/Funktion) aus dem `WALL_V2`-Layer-Snapshot.
-- Bestehende editierbare Felder (Höhe/Dicke/Material) bleiben für Alt-Wände (Single-Layer-Fallback) funktionsfähig.
-- Tests: Properties-Ableitung liefert für eine `WALL_V2`-Wand die korrekte Schicht-Liste; für eine Alt-Wand (Single-Layer) bleibt das bisherige Verhalten unverändert.
+### ✓ Step 7: Properties-Panel um Stil- und Schichtanzeige erweitern
+**Umgesetzt, über den ursprünglichen Plan hinausgehend:** Statt einer rein read-only Anzeige nutzt `src/app/properties.rs` einen editierbaren `PropValue::Picker`, der den Stilnamen auflöst (Fallback auf die rohe `style_id`) und über `AecStylePickerOpenForWallProperties` das durchsuchbare Picker-Modal öffnet. Eine Stiländerung schreibt sofort den neuen Layer-Snapshot in die `WALL_V2`-XDATA und löst `regenerate_wall_respecting_active_display_config` aus.

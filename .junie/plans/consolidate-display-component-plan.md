@@ -65,18 +65,18 @@ Dieses Planungsdokument beschreibt und stimmt das Design für die **Style-Substi
 
 # Delivery Steps
 
-### * Step 1: Pure Upsert-Helper und Tests
+### ✓ Step 1: Pure Upsert-Helper und Tests
 `upsert_style_substitution` existiert in `display_component.rs`, ist unabhängig von der UI testbar und deckt Upsert-, Neu-Zeilen- und Entfernen-Fälle ab.
 - Funktion mit der in Key Decision 3 beschriebenen Signatur implementieren.
 - Unit-Tests: neue Quelle wird angehängt; bestehende Quelle wird überschrieben statt dupliziert (Decision 2); Reihenfolge bestehender, nicht betroffener Zeilen bleibt erhalten.
 
-###   Step 2: State- und Message-Wiring im Manager
+### ✓ Step 2: State- und Message-Wiring im Manager
 `App` hält den Substitutions-Edit-Buffer, neue `Message`-Varianten sind verdrahtet, `AecPlanManagerSelect`/`New`/`Duplicate` befüllen den Buffer korrekt aus einer bestehenden `DisplayConfig`.
 - Neue State-Felder und `Message`-Varianten gemäß Proposed Changes ergänzen.
 - `Select`/`New`/`Duplicate`-Handler um Buffer-Befüllung aus `cfg.style_substitutions` erweitern.
 - `AecPlanManagerSubstitutionAdd`/`Remove`-Handler inkl. `validate_style_substitution`-Aufruf und Fehlertext-Zustand implementieren.
 
-###   Step 3: UI-Sektion im DisplayConfig-Manager
+### ✓ Step 3: UI-Sektion im DisplayConfig-Manager
 Die "Wandstil-Substitutionen"-Sektion ist im Formular sichtbar, funktioniert end-to-end und ist über `AecPlanManagerApply` persistent.
 - `substitution_section_view` mit Zeilenliste, Auswahl-Formular und Fehlertext-Anzeige implementieren.
 - In `config_form_view` unterhalb der Layer-Filter-Sektion einhängen; `PlanConfigFormState`/`modal.rs`-Wiring ergänzen.

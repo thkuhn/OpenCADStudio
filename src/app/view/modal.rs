@@ -54,6 +54,8 @@ impl OpenCADStudio {
             Some(K::AecJunctionEditor) => t!("Junction Editor").into_owned(),
             Some(K::AecProjectExplorer) => t!("AEC Project Explorer").into_owned(),
             Some(K::AecStylePicker { .. }) => t!("AEC Style Picker").into_owned(),
+            Some(K::AecStyleCopyConflict) => t!("Confirm Overwrite").into_owned(),
+            Some(K::AecProjectRequired) => t!("Project Required").into_owned(),
             None => String::new(),
         }
     }
@@ -258,6 +260,7 @@ impl OpenCADStudio {
                 sized_flow(ex, 500, 500, move |flow| {
                     crate::ui::window::aec_style_picker::view_window(
                         self.aec_style_library.as_ref(),
+                        self.aec_project_explorer_file.as_ref(),
                         target,
                         &self.aec_style_picker_filter,
                         self.aec_style_picker_selection.as_deref(),
@@ -276,6 +279,7 @@ impl OpenCADStudio {
                     > = std::sync::OnceLock::new();
                     crate::ui::window::aec_material_manager::view_window(
                         self.aec_style_library.as_ref().unwrap_or(EMPTY_LIB.get_or_init(crate::modules::aec::engine::library::StyleLibrary::empty)),
+                        self.aec_project_explorer_file.as_ref(),
                         self.aec_style_manager_selected_material.as_deref(),
                         &self.aec_style_manager_filter,
                         crate::ui::window::aec_material_manager::MaterialFormState {
@@ -356,25 +360,39 @@ impl OpenCADStudio {
                         scale: &self.aec_plan_manager_scale,
                         phase: self.aec_plan_manager_phase.clone(),
                         view_type: self.aec_plan_manager_view_type.clone(),
-                        slot_visibility: &self.aec_plan_manager_slot_visibility,
-                        slot_style_override: &self.aec_plan_manager_style_override,
-                        style_editor: self.aec_plan_manager_style_editor_slot.as_deref().map(|slot_key| {
-                            crate::ui::window::aec_plan_manager::StyleEditorFormState {
-                                slot_key,
-                                line_type: &self.aec_plan_manager_style_editor_line_type,
-                                line_color: &self.aec_plan_manager_style_editor_line_color,
-                                hatch_pattern: &self.aec_plan_manager_style_editor_hatch_pattern,
-                                hatch_color: &self.aec_plan_manager_style_editor_hatch_color,
-                                fill_color: &self.aec_plan_manager_style_editor_fill_color,
-                            }
-                        }),
-                        style_library: self.aec_style_library.as_ref(),
-                        layer_filter_explicit: self.aec_plan_manager_layer_filter_explicit,
-                        layer_filter_selection: &self.aec_plan_manager_layer_filter_selection,
-                        style_substitutions: &self.aec_plan_manager_style_substitutions,
-                        new_substitution_source: self.aec_plan_manager_new_substitution_source.as_deref(),
-                        new_substitution_target: self.aec_plan_manager_new_substitution_target.as_deref(),
-                        substitution_error: self.aec_plan_manager_substitution_error.as_deref(),
+                        phase_filter_visible_existing: self.aec_plan_manager_phase_filter_visible_existing,
+                        phase_filter_visible_demolition: self.aec_plan_manager_phase_filter_visible_demolition,
+                        phase_filter_visible_new: self.aec_plan_manager_phase_filter_visible_new,
+                        demolition_style: crate::ui::window::aec_plan_manager::StyleEditorFormState {
+                            line_type: &self.aec_plan_manager_demolition_style_line_type,
+                            linetype_items: &self.aec_style_manager_material_linetype_items,
+                            linetype_combo: &self.aec_style_manager_material_linetype_combo,
+                            line_color: &self.aec_plan_manager_demolition_style_line_color,
+                            line_color_picker_open: self
+                                .aec_plan_manager_demolition_style_line_color_picker_open,
+                            hatch_pattern: &self.aec_plan_manager_demolition_style_hatch_pattern,
+                            hatch_color: &self.aec_plan_manager_demolition_style_hatch_color,
+                            hatch_color_picker_open: self
+                                .aec_plan_manager_demolition_style_hatch_color_picker_open,
+                            fill_color: &self.aec_plan_manager_demolition_style_fill_color,
+                            fill_color_picker_open: self
+                                .aec_plan_manager_demolition_style_fill_color_picker_open,
+                        },
+                        existing_style: crate::ui::window::aec_plan_manager::StyleEditorFormState {
+                            line_type: &self.aec_plan_manager_existing_style_line_type,
+                            linetype_items: &self.aec_style_manager_material_linetype_items,
+                            linetype_combo: &self.aec_style_manager_material_linetype_combo,
+                            line_color: &self.aec_plan_manager_existing_style_line_color,
+                            line_color_picker_open: self
+                                .aec_plan_manager_existing_style_line_color_picker_open,
+                            hatch_pattern: &self.aec_plan_manager_existing_style_hatch_pattern,
+                            hatch_color: &self.aec_plan_manager_existing_style_hatch_color,
+                            hatch_color_picker_open: self
+                                .aec_plan_manager_existing_style_hatch_color_picker_open,
+                            fill_color: &self.aec_plan_manager_existing_style_fill_color,
+                            fill_color_picker_open: self
+                                .aec_plan_manager_existing_style_fill_color_picker_open,
+                        },
                         new_mapping_scale: &self.aec_plan_manager_scale_mapping_new_scale,
                         new_mapping_config: self.aec_plan_manager_scale_mapping_new_config.as_deref(),
                     },
@@ -464,8 +482,41 @@ impl OpenCADStudio {
                         names
                     }).unwrap_or_default();
 
+                    // Step 4: "Darstellungs-Profile" edit state — only
+                    // meaningful for a style that already has a stable id
+                    // (a brand-new, unsaved style has nowhere to persist
+                    // `display_profiles` yet).
+                    let display_profiles_form = self
+                        .aec_style_manager_wall_style_editing_id
+                        .as_ref()
+                        .map(|id| {
+                            let display_config_names: Vec<String> = self
+                                .aec_plan_library
+                                .as_ref()
+                                .map(|lib| lib.configs.iter().map(|c| c.name.clone()).collect())
+                                .unwrap_or_default();
+                            let existing_overrides: std::collections::HashSet<String> = self
+                                .aec_style_library
+                                .as_ref()
+                                .and_then(|lib| lib.wall_styles.iter().find(|w| &w.style.id == id))
+                                .map(|ws| ws.display_profiles.keys().cloned().collect())
+                                .unwrap_or_default();
+                            crate::ui::window::aec_wall_style_manager::DisplayProfileFormState {
+                                display_config_names,
+                                existing_overrides,
+                                selected: self.aec_style_manager_profile_selected.as_deref(),
+                                contour_explicit: self.aec_style_manager_profile_contour_explicit,
+                                contour_selected: &self.aec_style_manager_profile_contour_selection,
+                                solid_explicit: self.aec_style_manager_profile_solid_explicit,
+                                solid_selected: &self.aec_style_manager_profile_solid_selection,
+                                hatch_angle: &self.aec_style_manager_profile_hatch_angle,
+                                hatch_relative: self.aec_style_manager_profile_hatch_relative,
+                            }
+                        });
+
                     crate::ui::window::aec_wall_style_manager::view_window(
                         self.aec_style_library.as_ref().unwrap_or(EMPTY_LIB.get_or_init(crate::modules::aec::engine::library::StyleLibrary::empty)),
+                        self.aec_project_explorer_file.as_ref(),
                         self.aec_style_manager_selected_wall_style.as_deref(),
                         &self.aec_style_manager_filter,
                         crate::ui::window::aec_wall_style_manager::WallStyleFormState {
@@ -480,6 +531,7 @@ impl OpenCADStudio {
                             all_layer_names,
                             effective_layers,
                             inheritance_chain,
+                            display_profiles: display_profiles_form,
                         },
                     )
                 },
@@ -1531,6 +1583,12 @@ impl OpenCADStudio {
                     .unwrap_or_else(|| (Vec::new(), 0));
                 automatic_flow(ex, |flow| layer_delete_warning_window(&names, count, flow))
             }
+            super::super::ModalKind::AecStyleCopyConflict => {
+                automatic_flow(ex, |flow| aec_style_copy_conflict_window(flow))
+            }
+            super::super::ModalKind::AecProjectRequired => {
+                automatic_flow(ex, |flow| aec_project_required_window(flow))
+            }
             super::super::ModalKind::Unsaved => {
                 let tab_name = match &self.pending_close {
                     Some(super::super::PendingClose::Tab(idx)) => self
@@ -2001,6 +2059,81 @@ fn layer_delete_warning_window(
                 ),
                 iced::widget::Space::new().width(8),
                 dialog_button(t!("Cancel"), Message::CloseModal, button::secondary),
+            ],
+        ]
+        .spacing(0),
+    )
+    .style(dialog_body_style)
+    .center_x(sizing.width)
+    .center_y(sizing.height)
+    .padding([24, 28])
+    .into()
+}
+
+/// Confirm overwriting an entry that already exists (with different
+/// content) in the target library during an AEC Style Manager copy (Step
+/// 9). "Overwrite" proceeds with the copy; "Cancel" leaves both libraries
+/// untouched.
+fn aec_style_copy_conflict_window(
+    sizing: crate::ui::modal::ModalSizing,
+) -> Element<'static, Message> {
+    let body_text = t!(
+        "An entry with this name/id already exists in the target library with different content.\n\nOverwrite it?"
+    );
+
+    container(
+        column![
+            text(body_text).size(13),
+            iced::widget::Space::new().height(20),
+            row![
+                dialog_button(
+                    t!("Overwrite"),
+                    Message::AecStyleManagerCopyConflictConfirm(true),
+                    button::danger
+                ),
+                iced::widget::Space::new().width(8),
+                dialog_button(
+                    t!("Cancel"),
+                    Message::AecStyleManagerCopyConflictConfirm(false),
+                    button::secondary
+                ),
+            ],
+        ]
+        .spacing(0),
+    )
+    .style(dialog_body_style)
+    .center_x(sizing.width)
+    .center_y(sizing.height)
+    .padding([24, 28])
+    .into()
+}
+
+/// Blocking prompt when Architecture tools are used without an active
+/// project. "Open Project" / "New Project" route into the Project Explorer
+/// flow; closing the modal leaves the entry point unopened.
+fn aec_project_required_window(
+    sizing: crate::ui::modal::ModalSizing,
+) -> Element<'static, Message> {
+    let body_text = t!(
+        "Architecture tools require an active project.\n\nOpen an existing project or create a new one to continue."
+    );
+
+    container(
+        column![
+            text(body_text).size(13),
+            iced::widget::Space::new().height(20),
+            row![
+                dialog_button(
+                    t!("Open Project"),
+                    Message::AecProjectExplorerLoad,
+                    button::primary
+                ),
+                iced::widget::Space::new().width(8),
+                dialog_button(
+                    t!("New Project"),
+                    Message::AecProjectExplorerNew,
+                    button::secondary
+                ),
             ],
         ]
         .spacing(0),

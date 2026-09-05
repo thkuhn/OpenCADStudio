@@ -3098,7 +3098,7 @@ impl OpenCADStudio {
                         self.aec_project_explorer_file.as_ref(),
                     );
                 let (display_rules, style_substitutions) =
-                    self.resolve_active_display_config_wall_rules(i);
+                    self.resolve_active_display_config_wall_rules(i, wall_owners.first().copied());
                 for owner in &wall_owners {
                     let before = self.tabs[i].scene.document.get_entity_arc(*owner);
                     let Some(touched) = crate::modules::aec::commands::stretch_wall_axis_in_window(

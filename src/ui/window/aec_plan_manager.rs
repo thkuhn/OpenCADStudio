@@ -2,52 +2,25 @@
 //! held in the [`crate::modules::aec::engine::library::DisplayConfigLibrary`]
 //! (`AEC_PLANMANAGER`).
 //!
-//! Covers the "basic fields + slot visibility + persist" scope of Step 5:
-//! name/discipline/scale/phase/view_type plus per-slot visibility toggles
-//! for walls, the Step 8 per-slot style-override editor, and the
-//! Layer-Filter-UI follow-up (Alle/Auswahl toggle + multi-select layer
-//! checklist for `Contour2D`/`Solid3D`). The style-substitutions list is
-//! deliberately left for a further follow-up and is not rendered here yet.
+//! Step 5 slims this manager down to stem/master-data
+//! (name/discipline/scale/phase/view_type) plus the two-stage
+//! Phasenfilter-Editor (`PhaseFilter`): step 1 is a checkbox per
+//! [`PlanPhase`] controlling `PhaseFilter::visible_phases`, step 2 is a pair
+//! of inline style-override forms for `demolition_style`/`existing_style`.
+//! The old per-slot visibility/style-override table, the Layer-Filter-UI,
+//! and the Style-Substitutions-UI are gone: those overrides now live
+//! style-centered on `WallStyle::display_profiles`, edited in the Wandstil-
+//! Manager instead (see `aec_wall_style_manager.rs`).
 
 use iced::widget::{button, column, container, pick_list, row, scrollable, text, text_input, Space};
 use iced::{Element, Fill};
 
 use crate::app::Message;
-use crate::modules::aec::engine::display_component::{ComponentStyleOverride, WallComponentSlot};
-use crate::modules::aec::engine::join::LayerRef;
-use crate::modules::aec::engine::library::{DisplayConfigLibrary, StyleLibrary};
+use crate::modules::aec::engine::display_component::ComponentStyleOverride;
+use crate::modules::aec::engine::library::DisplayConfigLibrary;
 use crate::modules::aec::engine::plan_view::{DisplayConfig, PlanPhase, ViewType};
 use crate::t;
 use super::aec_ui_util::*;
-
-/// All wall display-component slots, in the order the plan's sketch lists
-/// them.
-const WALL_SLOTS: [WallComponentSlot; 9] = [
-    WallComponentSlot::AxisLine,
-    WallComponentSlot::Contour2D,
-    WallComponentSlot::ContourHatch2D,
-    WallComponentSlot::Layers2D,
-    WallComponentSlot::LayerHatch2D,
-    WallComponentSlot::Solid3D,
-    WallComponentSlot::SurfaceStyle3D,
-    WallComponentSlot::SectionRepresentation,
-    WallComponentSlot::ElevationRepresentation,
-];
-
-/// A human-readable (German, matching the plan's sketches) label for a slot.
-fn slot_label(slot: WallComponentSlot) -> &'static str {
-    match slot {
-        WallComponentSlot::AxisLine => "Achslinie",
-        WallComponentSlot::Contour2D => "2D Gesamtkontur",
-        WallComponentSlot::ContourHatch2D => "2D Schraffur Gesamtkontur",
-        WallComponentSlot::Layers2D => "2D Wandschichten",
-        WallComponentSlot::LayerHatch2D => "2D Schraffuren Schichten",
-        WallComponentSlot::Solid3D => "3D Gesamtkörper",
-        WallComponentSlot::SurfaceStyle3D => "3D Oberflächenstil",
-        WallComponentSlot::SectionRepresentation => "Schnitt-Darstellung",
-        WallComponentSlot::ElevationRepresentation => "Ansichts-Darstellung",
-    }
-}
 
 fn phase_label(phase: &PlanPhase) -> &'static str {
     match phase {
@@ -105,53 +78,38 @@ pub struct PlanConfigFormState<'a> {
     pub scale: &'a str,
     pub phase: PlanPhase,
     pub view_type: ViewType,
-    /// Slot key -> visible?, the edit buffer for the currently selected
-    /// element type's `ComponentRuleSet::visibility` map.
-    pub slot_visibility: &'a std::collections::HashMap<String, bool>,
-    /// Step 8: slot key -> `ComponentStyleOverride`, the edit buffer for the
-    /// currently selected element type's `ComponentRuleSet::style_override`
-    /// map.
-    pub slot_style_override: &'a std::collections::HashMap<String, ComponentStyleOverride>,
-    /// Step 8: the per-slot style-override editor, if currently open.
-    pub style_editor: Option<StyleEditorFormState<'a>>,
-    /// Layer-Filter-UI: the currently resolved style library, used to list
-    /// all wall styles' layers for the "Auswahl" multi-select checklist.
-    /// `None` when no style library has been resolved yet (checklist is
-    /// then simply empty).
-    pub style_library: Option<&'a StyleLibrary>,
-    /// Layer-Filter-UI: `false` = "Alle", `true` = "Auswahl".
-    pub layer_filter_explicit: bool,
-    /// Layer-Filter-UI: edit-buffer of explicitly selected layers, only
-    /// relevant while `layer_filter_explicit` is `true`.
-    pub layer_filter_selection: &'a [LayerRef],
-    /// Style-Substitutions-UI: the edit-buffer list of `(source, target)`
-    /// wall-style-name rows.
-    pub style_substitutions: &'a [(String, String)],
-    /// Style-Substitutions-UI: currently selected "Original-Wandstil" in
-    /// the add-row form.
-    pub new_substitution_source: Option<&'a str>,
-    /// Style-Substitutions-UI: currently selected "Ersatz-Wandstil" in the
-    /// add-row form.
-    pub new_substitution_target: Option<&'a str>,
-    pub substitution_error: Option<&'a str>,
+    /// Two-stage Phasenfilter-Editor, Stage 1: which phases are currently
+    /// checked as "sichtbar" (`PhaseFilter::visible_phases`).
+    pub phase_filter_visible_existing: bool,
+    pub phase_filter_visible_demolition: bool,
+    pub phase_filter_visible_new: bool,
+    /// Stage 2: the inline style-override form for `PhaseFilter::demolition_style`.
+    pub demolition_style: StyleEditorFormState<'a>,
+    /// Stage 2: the inline style-override form for `PhaseFilter::existing_style`.
+    pub existing_style: StyleEditorFormState<'a>,
     /// Step 7 Mapping Table UI: scale-name text field buffer.
     pub new_mapping_scale: &'a str,
     /// Step 7 Mapping Table UI: target-config pick-list buffer.
     pub new_mapping_config: Option<&'a str>,
 }
 
-/// Step 8: edit-buffer fields for the per-slot `ComponentStyleOverride`
-/// editor, shown as a small inline panel below the slot table when a slot's
-/// "Bearbeiten" button is pressed.
+/// Two-stage Phasenfilter-Editor, Stage 2: edit-buffer fields for a single
+/// phase's `ComponentStyleOverride` overlay (`demolition_style`/`existing_style`).
 pub struct StyleEditorFormState<'a> {
-    /// Slot key currently being edited (see `WallComponentSlot::key`).
-    pub slot_key: &'a str,
     pub line_type: &'a str,
+    /// All available line types in the document (name + ASCII art), used
+    /// by the same `combo_box`+preview widget as the Layer Manager.
+    pub linetype_items: &'a [crate::ui::properties::LinetypeItem],
+    /// `combo_box` state built from `linetype_items`.
+    pub linetype_combo: &'a iced::widget::combo_box::State<crate::ui::properties::LinetypeItem>,
     /// Hex color text, e.g. `"FF0000"` (without leading `#`).
     pub line_color: &'a str,
+    pub line_color_picker_open: bool,
     pub hatch_pattern: &'a str,
     pub hatch_color: &'a str,
+    pub hatch_color_picker_open: bool,
     pub fill_color: &'a str,
+    pub fill_color_picker_open: bool,
 }
 
 pub fn view_window<'a>(
@@ -287,26 +245,22 @@ fn config_form_view<'a>(form: PlanConfigFormState<'a>) -> Element<'a, Message> {
             .on_press(Message::AecPlanManagerClose),
     );
 
-    let slot_rows: Vec<Element<'_, Message>> = WALL_SLOTS
-        .iter()
-        .map(|&slot| slot_row(slot, form.slot_visibility, form.slot_style_override))
-        .collect();
-    let style_editor: Element<'_, Message> = match form.style_editor {
-        Some(editor) => style_editor_view(editor),
-        None => Space::new().into(),
-    };
-    let layer_filter_section = layer_filter_section_view(
-        form.style_library,
-        form.layer_filter_explicit,
-        form.layer_filter_selection,
+    let phase_filter_section = phase_filter_section_view(
+        form.phase_filter_visible_existing,
+        form.phase_filter_visible_demolition,
+        form.phase_filter_visible_new,
+        form.demolition_style,
+        form.existing_style,
     );
-    let substitution_section = substitution_section_view(
-        form.style_library,
-        form.style_substitutions,
-        form.new_substitution_source,
-        form.new_substitution_target,
-        form.substitution_error,
-    );
+    let overrides_hint = container(
+        text(t!(
+            "Hinweis: Darstellungs-Overrides (Sichtbarkeit, Stil-Override, Schicht-Filter je Slot) werden nicht mehr hier, sondern im Wandstil-Manager je Stil und Planart gepflegt (WallStyle.display_profiles)."
+        ))
+        .size(10)
+        .style(muted),
+    )
+    .padding(6)
+    .style(container::bordered_box);
 
     column![
         text(form_title).size(13),
@@ -358,12 +312,8 @@ fn config_form_view<'a>(form: PlanConfigFormState<'a>) -> Element<'a, Message> {
         ]
         .spacing(8),
         Space::new().height(6),
-        row![text(t!("Elementtyp")).size(10).style(muted), text("Wand").size(11)].spacing(8),
-        slot_header_row(),
-        container(scrollable(column(slot_rows).spacing(4)).height(220)).padding(4),
-        style_editor,
-        layer_filter_section,
-        substitution_section,
+        phase_filter_section,
+        overrides_hint,
         Space::new(),
         actions,
     ]
@@ -371,20 +321,11 @@ fn config_form_view<'a>(form: PlanConfigFormState<'a>) -> Element<'a, Message> {
     .into()
 }
 
-fn slot_header_row<'a>() -> Element<'a, Message> {
-    row![
-        text(t!("Slot")).size(10).style(muted).width(220),
-        text(t!("Sichtbar")).size(10).style(muted).width(70),
-        text(t!("Stil-Override")).size(10).style(muted).width(140),
-        text(t!("Aktion")).size(10).style(muted).width(Fill),
-    ]
-    .spacing(8)
-    .into()
-}
-
-/// A short, human-readable summary of a slot's `ComponentStyleOverride`
-/// (or "–" / "Standard" if none is set), for the slot table's overview
-/// column.
+/// A short, human-readable summary of a `ComponentStyleOverride` (or "–" /
+/// "Standard" if none is set). No longer used by any view function since
+/// Step 5 removed the per-slot override table, but kept (with its unit
+/// tests) as a small, generically useful formatting helper.
+#[allow(dead_code)]
 fn style_override_summary(style: Option<&ComponentStyleOverride>) -> String {
     let Some(style) = style else {
         return "–".to_string();
@@ -412,108 +353,55 @@ fn style_override_summary(style: Option<&ComponentStyleOverride>) -> String {
     }
 }
 
-fn slot_row<'a>(
-    slot: WallComponentSlot,
-    slot_visibility: &'a std::collections::HashMap<String, bool>,
-    slot_style_override: &'a std::collections::HashMap<String, ComponentStyleOverride>,
+/// Two-stage Phasenfilter-Editor section: Stage 1 renders one visibility
+/// checkbox per [`PlanPhase`] (`PhaseFilter::visible_phases`); Stage 2
+/// renders two independent style-override forms — one for
+/// `demolition_style` ("Abbruch"), one for `existing_style` ("Bestand") —
+/// each built with [`style_editor_view`].
+fn phase_filter_section_view<'a>(
+    visible_existing: bool,
+    visible_demolition: bool,
+    visible_new: bool,
+    demolition_style: StyleEditorFormState<'a>,
+    existing_style: StyleEditorFormState<'a>,
 ) -> Element<'a, Message> {
-    let key = slot.key();
-    let visible = slot_visibility.get(key).copied().unwrap_or(true);
-    let style = slot_style_override.get(key);
-    let summary = style_override_summary(style);
-    let key_for_edit = key.to_string();
-    let key_for_reset = key.to_string();
-
-    let mut actions = row![button(text(t!("Bearbeiten")).size(10))
-        .padding([3, 8])
-        .on_press(Message::AecPlanManagerSlotStyleEdit(key_for_edit))]
-    .spacing(4);
-    if style.is_some() {
-        actions = actions.push(
-            button(text(t!("Entfernen")).size(10))
-                .style(button::danger)
-                .padding([3, 8])
-                .on_press(Message::AecPlanManagerSlotStyleReset(key_for_reset)),
-        );
-    }
-
-    row![
-        text(slot_label(slot)).size(11).width(220),
-        iced::widget::checkbox(visible)
-            .on_toggle(move |_| Message::AecPlanManagerSlotVisibilityToggle(key.to_string()))
-            .size(13)
-            .width(70),
-        text(summary).size(10).style(muted).width(140),
-        container(actions).width(Fill),
+    let stage1 = column![
+        text(t!("Schritt 1: Sichtbare Phasen")).size(11),
+        row![
+            iced::widget::checkbox(visible_new)
+                .label(t!("Neubau").into_owned())
+                .on_toggle(|checked| Message::AecPlanManagerPhaseVisibleToggle(PlanPhase::New, checked))
+                .size(13)
+                .text_size(11),
+            iced::widget::checkbox(visible_demolition)
+                .label(t!("Abbruch").into_owned())
+                .on_toggle(|checked| {
+                    Message::AecPlanManagerPhaseVisibleToggle(PlanPhase::Demolition, checked)
+                })
+                .size(13)
+                .text_size(11),
+            iced::widget::checkbox(visible_existing)
+                .label(t!("Bestand").into_owned())
+                .on_toggle(|checked| {
+                    Message::AecPlanManagerPhaseVisibleToggle(PlanPhase::Existing, checked)
+                })
+                .size(13)
+                .text_size(11),
+        ]
+        .spacing(16),
     ]
-    .spacing(8)
-    .align_y(iced::Center)
-    .into()
-}
+    .spacing(6);
 
-/// Step 8: the small inline editor for a single slot's `ComponentStyleOverride`.
-fn style_editor_view<'a>(editor: StyleEditorFormState<'a>) -> Element<'a, Message> {
-    let slot_name = WALL_SLOTS
-        .iter()
-        .find(|s| s.key() == editor.slot_key)
-        .map(|&s| slot_label(s))
-        .unwrap_or(editor.slot_key);
     container(
         column![
-            text(crate::tf!("Stil-Override: {slot_name}")).size(11),
+            stage1,
+            Space::new().height(6),
+            text(t!("Schritt 2: Zusatzstile je Phase")).size(11),
             row![
-                text(t!("Linientyp")).size(10).style(muted).width(100),
-                text_input("z. B. Continuous", editor.line_type)
-                    .on_input(Message::AecPlanManagerSlotStyleLineTypeChanged)
-                    .size(11)
-                    .padding([4, 6]),
+                phase_style_form_demolition(demolition_style),
+                phase_style_form_existing(existing_style),
             ]
-            .spacing(8),
-            row![
-                text(t!("Linienfarbe (Hex)")).size(10).style(muted).width(100),
-                text_input("RRGGBB", editor.line_color)
-                    .on_input(Message::AecPlanManagerSlotStyleLineColorChanged)
-                    .size(11)
-                    .padding([4, 6])
-                    .width(120),
-            ]
-            .spacing(8),
-            row![
-                text(t!("Schraffurmuster")).size(10).style(muted).width(100),
-                text_input("z. B. ANSI31", editor.hatch_pattern)
-                    .on_input(Message::AecPlanManagerSlotStyleHatchPatternChanged)
-                    .size(11)
-                    .padding([4, 6]),
-            ]
-            .spacing(8),
-            row![
-                text(t!("Schraffurfarbe (Hex)")).size(10).style(muted).width(100),
-                text_input("RRGGBB", editor.hatch_color)
-                    .on_input(Message::AecPlanManagerSlotStyleHatchColorChanged)
-                    .size(11)
-                    .padding([4, 6])
-                    .width(120),
-            ]
-            .spacing(8),
-            row![
-                text(t!("Füllfarbe (Hex)")).size(10).style(muted).width(100),
-                text_input("RRGGBB", editor.fill_color)
-                    .on_input(Message::AecPlanManagerSlotStyleFillColorChanged)
-                    .size(11)
-                    .padding([4, 6])
-                    .width(120),
-            ]
-            .spacing(8),
-            row![
-                button(text(t!("Speichern")).size(11))
-                    .style(button::primary)
-                    .padding([4, 10])
-                    .on_press(Message::AecPlanManagerSlotStyleSave),
-                button(text(t!("Abbrechen")).size(11))
-                    .padding([4, 10])
-                    .on_press(Message::AecPlanManagerSlotStyleEditorClose),
-            ]
-            .spacing(8),
+            .spacing(12),
         ]
         .spacing(6),
     )
@@ -522,204 +410,132 @@ fn style_editor_view<'a>(editor: StyleEditorFormState<'a>) -> Element<'a, Messag
     .into()
 }
 
-/// Layer-Filter-UI: material name for a layer, falling back to the raw
-/// material id if the material can no longer be found in the library
-/// (mirrors `aec_junction_editor::material_name`).
-fn layer_material_name(library: &StyleLibrary, material_id: &str) -> String {
-    library
-        .materials
-        .iter()
-        .find(|m| m.id == material_id)
-        .map(|m| m.name.clone())
-        .unwrap_or_else(|| material_id.to_string())
+/// Stage 2 form for `PhaseFilter::demolition_style`.
+fn phase_style_form_demolition<'a>(editor: StyleEditorFormState<'a>) -> Element<'a, Message> {
+    style_editor_form(
+        t!("Abbruch-Darstellung").into_owned(),
+        editor,
+        Message::AecPlanManagerDemolitionStyleLineTypeChanged,
+        Message::AecPlanManagerDemolitionStyleLineColorChanged,
+        Message::AecPlanManagerDemolitionStyleLineColorPickerToggle,
+        crate::app::ColorPickTarget::AecPlanDemolitionLineColor,
+        Message::AecPlanManagerDemolitionStyleHatchPatternChanged,
+        Message::AecPlanManagerDemolitionStyleHatchColorChanged,
+        Message::AecPlanManagerDemolitionStyleHatchColorPickerToggle,
+        crate::app::ColorPickTarget::AecPlanDemolitionHatchColor,
+        Message::AecPlanManagerDemolitionStyleFillColorChanged,
+        Message::AecPlanManagerDemolitionStyleFillColorPickerToggle,
+        crate::app::ColorPickTarget::AecPlanDemolitionFillColor,
+    )
 }
 
-/// Layer-Filter-UI section, mirroring the Junction-Editor's multi-select
-/// checklist pattern: an "Alle"/"Auswahl" toggle (`iced::widget::radio` is
-/// not used here — this project's other manager windows consistently use a
-/// two-button toggle row, e.g. `style_buttons` in `aec_junction_editor.rs`,
-/// so the same substitution is used here for consistency), and — only when
-/// "Auswahl" is active — a checklist of every layer across every wall style
-/// in the resolved `StyleLibrary`, grouped by wall style name.
-fn layer_filter_section_view<'a>(
-    style_library: Option<&'a StyleLibrary>,
-    is_explicit: bool,
-    selected: &'a [LayerRef],
+/// Stage 2 form for `PhaseFilter::existing_style`.
+fn phase_style_form_existing<'a>(editor: StyleEditorFormState<'a>) -> Element<'a, Message> {
+    style_editor_form(
+        t!("Bestand-Darstellung").into_owned(),
+        editor,
+        Message::AecPlanManagerExistingStyleLineTypeChanged,
+        Message::AecPlanManagerExistingStyleLineColorChanged,
+        Message::AecPlanManagerExistingStyleLineColorPickerToggle,
+        crate::app::ColorPickTarget::AecPlanExistingLineColor,
+        Message::AecPlanManagerExistingStyleHatchPatternChanged,
+        Message::AecPlanManagerExistingStyleHatchColorChanged,
+        Message::AecPlanManagerExistingStyleHatchColorPickerToggle,
+        crate::app::ColorPickTarget::AecPlanExistingHatchColor,
+        Message::AecPlanManagerExistingStyleFillColorChanged,
+        Message::AecPlanManagerExistingStyleFillColorPickerToggle,
+        crate::app::ColorPickTarget::AecPlanExistingFillColor,
+    )
+}
+
+/// Shared inline `ComponentStyleOverride` editor form, used for both the
+/// `demolition_style` and `existing_style` Stage 2 sections. Line-type uses
+/// the shared Layer-Manager-style `combo_box`+preview widget; every colour
+/// field uses the shared `color_selector` swatch+name widget.
+fn style_editor_form<'a>(
+    title: String,
+    editor: StyleEditorFormState<'a>,
+    on_line_type: impl Fn(String) -> Message + 'static,
+    on_line_color: impl Fn(String) -> Message + 'static,
+    on_line_color_toggle: Message,
+    line_color_more_target: crate::app::ColorPickTarget,
+    on_hatch_pattern: impl Fn(String) -> Message + 'a,
+    on_hatch_color: impl Fn(String) -> Message + 'static,
+    on_hatch_color_toggle: Message,
+    hatch_color_more_target: crate::app::ColorPickTarget,
+    on_fill_color: impl Fn(String) -> Message + 'static,
+    on_fill_color_toggle: Message,
+    fill_color_more_target: crate::app::ColorPickTarget,
 ) -> Element<'a, Message> {
-    let mode_row = row![
-        button(text(t!("Alle")).size(11))
-            .style(if !is_explicit { button::primary } else { button::secondary })
-            .padding([4, 10])
-            .on_press(Message::AecPlanManagerLayerFilterModeToggle(false)),
-        button(text(t!("Auswahl")).size(11))
-            .style(if is_explicit { button::primary } else { button::secondary })
-            .padding([4, 10])
-            .on_press(Message::AecPlanManagerLayerFilterModeToggle(true)),
-    ]
-    .spacing(6);
-
-    let mut section = column![
-        text(t!("Schicht-Filter (Contour2D/Solid3D)")).size(11),
-        mode_row,
-    ]
-    .spacing(6);
-
-    if is_explicit {
-        let mut checklist = column![].spacing(8);
-        if let Some(library) = style_library {
-            if library.wall_styles.is_empty() {
-                checklist = checklist.push(text(t!("Keine Wandstile in der Bibliothek.")).size(10).style(muted));
-            }
-            for wall_style in &library.wall_styles {
-                let mut layer_rows = column![].spacing(2);
-                for (idx, layer) in wall_style.layers.iter().enumerate() {
-                    // `role_tag` is always `None` at regen time — the
-                    // runtime `WallLayer` (see `wall.rs`) carries no
-                    // `role_tag` field at all, so `commands.rs` always
-                    // builds its `LayerRef`s with `role_tag: None` (see the
-                    // comment next to `layer_ref_matches`'s call site).
-                    // Using the wall style's own `role_tag` here would make
-                    // this checklist's `LayerRef`s permanently mismatch
-                    // those, so an explicit selection would silently match
-                    // zero layers — hiding the whole slot instead of
-                    // filtering it. Mirror the runtime convention instead.
-                    let layer_ref = LayerRef {
-                        material_id: layer.material_id.clone(),
-                        role_tag: None,
-                        index: idx,
-                    };
-                    let checked = selected.contains(&layer_ref);
-                    let label = format!("#{} {}", idx + 1, layer_material_name(library, &layer.material_id));
-                    layer_rows = layer_rows.push(
-                        iced::widget::checkbox(checked)
-                            .label(label)
-                            .on_toggle(move |_| {
-                                Message::AecPlanManagerLayerFilterLayerToggle(layer_ref.clone())
-                            })
-                            .size(12)
-                            .text_size(10),
-                    );
-                }
-                checklist = checklist.push(
-                    container(
-                        column![text(wall_style.style.name.as_str()).size(10).style(muted), layer_rows]
-                            .spacing(2),
-                    )
-                    .padding(6)
-                    .style(container::bordered_box),
-                );
-            }
-        } else {
-            checklist = checklist.push(text(t!("Keine Stilbibliothek geladen.")).size(10).style(muted));
-        }
-        section = section.push(container(scrollable(checklist).height(160)).padding(4));
-    }
-
-    section.into()
-}
-
-/// Style-Substitutions-UI: a display label for a wall-style id, falling
-/// back to the raw id if it can no longer be found in the library (mirrors
-/// `layer_material_name`).
-fn wall_style_label(library: &StyleLibrary, style_id: &str) -> String {
-    library
-        .wall_styles
-        .iter()
-        .find(|w| w.style.id == style_id)
-        .map(|w| w.style.name.clone())
-        .unwrap_or_else(|| style_id.to_string())
-}
-
-/// Style-Substitutions-UI section ("Wandstil-Substitutionen", the
-/// `StyleSubstitution` schnellweg override): a table of existing
-/// `(source, target)` rows with a per-row "Entfernen" action, and an
-/// add-row form with two `pick_list`s sourced from the resolved
-/// `StyleLibrary`'s wall styles plus a "Hinzufügen" button. Validation
-/// (`validate_style_substitution`) runs in the `AecPlanManagerSubstitutionAdd`
-/// handler; a rejected add shows `substitution_error` here instead of
-/// adding the row (Key Decision: validation blocks add).
-fn substitution_section_view<'a>(
-    style_library: Option<&'a StyleLibrary>,
-    substitutions: &'a [(String, String)],
-    new_source: Option<&'a str>,
-    new_target: Option<&'a str>,
-    error: Option<&'a str>,
-) -> Element<'a, Message> {
-    let mut section = column![text(t!("Wandstil-Substitutionen (StyleSubstitution, Schnellweg)")).size(11)]
-        .spacing(6);
-
-    if substitutions.is_empty() {
-        section = section.push(text(t!("Keine Substitutionen definiert.")).size(10).style(muted));
-    } else {
-        let mut rows = column![].spacing(4);
-        for (source, target) in substitutions {
-            let (source_label, target_label) = match style_library {
-                Some(library) => (wall_style_label(library, source), wall_style_label(library, target)),
-                None => (source.clone(), target.clone()),
-            };
-            rows = rows.push(
-                row![
-                    text(source_label).size(10).width(180),
-                    text("→").size(10).style(muted),
-                    text(target_label).size(10).width(180),
-                    button(text(t!("Entfernen")).size(10))
-                        .style(button::danger)
-                        .padding([3, 8])
-                        .on_press(Message::AecPlanManagerSubstitutionRemove(source.clone())),
-                ]
-                .spacing(8),
-            );
-        }
-        section = section.push(rows);
-    }
-
-    let style_options: Vec<String> = style_library
-        .map(|library| library.wall_styles.iter().map(|w| w.style.id.clone()).collect())
-        .unwrap_or_default();
-
-    let source_selected = new_source.map(|s| s.to_string());
-    let target_selected = new_target.map(|s| s.to_string());
-    let display_fn = move |id: &String| -> String {
-        match style_library {
-            Some(library) => wall_style_label(library, id),
-            None => id.clone(),
-        }
-    };
-
-    let add_row = row![
-        pick_list(source_selected, style_options.clone(), display_fn)
-            .placeholder(t!("Original-Wandstil").into_owned())
-            .on_select(Message::AecPlanManagerSubstitutionSourceChanged)
-            .text_size(11)
-            .width(200),
-        text("→").size(10).style(muted),
-        pick_list(target_selected, style_options, display_fn)
-            .placeholder(t!("Ersatz-Wandstil").into_owned())
-            .on_select(Message::AecPlanManagerSubstitutionTargetChanged)
-            .text_size(11)
-            .width(200),
-        button(text(t!("Hinzufügen")).size(11))
-            .style(button::primary)
-            .padding([4, 10])
-            .on_press(Message::AecPlanManagerSubstitutionAdd),
-    ]
-    .spacing(8);
-
-    section = section.push(add_row);
-    if let Some(error) = error {
-        section = section.push(text(error).size(10).style(error_text_style));
-    }
-
-    section.into()
-}
-
-/// Danger-colored text style, used for the Style-Substitutions-UI's inline
-/// validation error (mirrors `invalid_thickness_style`'s use of the theme's
-/// danger palette color).
-fn error_text_style(theme: &iced::Theme) -> iced::widget::text::Style {
-    iced::widget::text::Style {
-        color: Some(theme.palette().danger.base.color),
-    }
+    let line_acad_color = hex_to_acad_color(editor.line_color);
+    let hatch_acad_color = hex_to_acad_color(editor.hatch_color);
+    let fill_acad_color = hex_to_acad_color(editor.fill_color);
+    container(
+        column![
+            text(title).size(11),
+            row![
+                text(t!("Linientyp")).size(10).style(muted).width(90),
+                super::aec_ui_util::linetype_field(
+                    editor.line_type,
+                    editor.linetype_items,
+                    editor.linetype_combo,
+                    on_line_type,
+                ),
+            ]
+            .spacing(8),
+            row![
+                text(t!("Linienfarbe")).size(10).style(muted).width(90),
+                container(crate::ui::color_select::color_selector(
+                    line_acad_color,
+                    editor.line_color_picker_open,
+                    crate::ui::color_select::ColorExtras::default(),
+                    move |c| on_line_color(super::aec_ui_util::acad_color_to_hex(c)),
+                    on_line_color_toggle,
+                    Message::OpenColorWindow(line_color_more_target, line_acad_color),
+                ))
+                .width(180),
+            ]
+            .spacing(8),
+            row![
+                text(t!("Schraffurmuster")).size(10).style(muted).width(90),
+                text_input("z. B. ANSI31", editor.hatch_pattern)
+                    .on_input(on_hatch_pattern)
+                    .size(11)
+                    .padding([4, 6]),
+            ]
+            .spacing(8),
+            row![
+                text(t!("Schraffurfarbe")).size(10).style(muted).width(90),
+                container(crate::ui::color_select::color_selector(
+                    hatch_acad_color,
+                    editor.hatch_color_picker_open,
+                    crate::ui::color_select::ColorExtras::default(),
+                    move |c| on_hatch_color(super::aec_ui_util::acad_color_to_hex(c)),
+                    on_hatch_color_toggle,
+                    Message::OpenColorWindow(hatch_color_more_target, hatch_acad_color),
+                ))
+                .width(180),
+            ]
+            .spacing(8),
+            row![
+                text(t!("Füllfarbe")).size(10).style(muted).width(90),
+                container(crate::ui::color_select::color_selector(
+                    fill_acad_color,
+                    editor.fill_color_picker_open,
+                    crate::ui::color_select::ColorExtras::default(),
+                    move |c| on_fill_color(super::aec_ui_util::acad_color_to_hex(c)),
+                    on_fill_color_toggle,
+                    Message::OpenColorWindow(fill_color_more_target, fill_acad_color),
+                ))
+                .width(180),
+            ]
+            .spacing(8),
+        ]
+        .spacing(6),
+    )
+    .padding(8)
+    .style(container::bordered_box)
+    .into()
 }
 
 /// Step 7 Mapping Table UI section ("Maßstabskopplung"): a table of existing
@@ -810,6 +626,8 @@ mod tests {
             hatch_pattern: Some("ANSI31".to_string()),
             hatch_color: Some(0xFFFFFF),
             fill_color: Some(0x808080),
+            hatch_angle: None,
+            hatch_angle_relative: None,
         };
         let summary = style_override_summary(Some(&style));
         assert_eq!(

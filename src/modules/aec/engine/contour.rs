@@ -71,10 +71,11 @@ pub fn offset_centerline(
 }
 
 /// Computes parallel offset polylines (boundary pairs) for an open polyline
-/// centerline and a list of layer (thickness, gap_before) pairs.
+/// centerline and a list of layer `(thickness, axis_offset)` pairs.
 ///
-/// For a list of N layers, it returns N boundary pairs.
-/// The centerline is assumed to be the middle of the total thickness (including gaps).
+/// For a list of N layers, it returns N boundary pairs. Each layer is placed
+/// directly: start = `axis_offset`, end = `axis_offset + thickness` (no
+/// cumulative stacking or automatic centering).
 ///
 /// Corner handling uses a simple angle-bisector miter join. This may produce
 /// minor imperfections at very sharp/acute corners, but matches the plan's
@@ -100,6 +101,8 @@ pub fn layer_contours(
 ///
 /// Each boundary is returned as an [`OffsetPolyline`] so callers that rebuild
 /// `LwPolyline` entities can preserve arc bulges on the offset edges.
+///
+/// `layers` entries are `(thickness, axis_offset)`.
 pub fn layer_contours_with_bulges(
     centerline: &[(f64, f64)],
     bulges: &[f64],
@@ -109,18 +112,14 @@ pub fn layer_contours_with_bulges(
         return Vec::new();
     }
 
-    let total_thickness: f64 = layers.iter().map(|(t, g)| t + g).sum();
-    let mut current_offset = -total_thickness * 0.5;
     let mut results = Vec::with_capacity(layers.len());
-
-    for &(t, g) in layers {
-        let start_offset = current_offset + g;
-        let end_offset = start_offset + t;
+    for &(thickness, axis_offset) in layers {
+        let start_offset = axis_offset;
+        let end_offset = axis_offset + thickness;
 
         let b1 = offset_centerline(centerline, bulges, start_offset);
         let b2 = offset_centerline(centerline, bulges, end_offset);
         results.push((b1, b2));
-        current_offset = end_offset;
     }
 
     results
@@ -244,11 +243,10 @@ mod tests {
     #[test]
     fn straight_wall_two_layers() {
         // Horizontal wall along X axis from 0 to 10.
-        // Layers: 0.1 and 0.2. Total = 0.3.
-        // Centerline at Y=0.
+        // Layers: 0.1 and 0.2 with explicit axis offsets (centered stack).
         // Boundaries at Y = -0.15, -0.05, 0.15.
         let centerline = vec![(0.0, 0.0), (10.0, 0.0)];
-        let layers = vec![(0.1, 0.0), (0.2, 0.0)];
+        let layers = vec![(0.1, -0.15), (0.2, -0.05)];
         let contours = layer_contours(&centerline, &layers);
 
         assert_eq!(contours.len(), 2);
@@ -265,10 +263,10 @@ mod tests {
     #[test]
     fn three_point_bend_centerline() {
         // L-bend: (0,0) -> (10,0) -> (10,10)
-        // One layer of 0.2. Total = 0.2.
+        // One layer of 0.2 centered on the axis.
         // Boundaries at -0.1 and 0.1.
         let centerline = vec![(0.0, 0.0), (10.0, 0.0), (10.0, 10.0)];
-        let layers = vec![(0.2, 0.0)];
+        let layers = vec![(0.2, -0.1)];
         let contours = layer_contours(&centerline, &layers);
 
         assert_eq!(contours.len(), 1);
@@ -290,17 +288,14 @@ mod tests {
     }
 
     #[test]
-    fn layer_with_gap() {
+    fn layer_with_asymmetric_axis_offset() {
         // Horizontal wall along X axis from 0 to 10.
-        // Layer 0: thickness 0.1, gap 0.0.
-        // Layer 1: thickness 0.1, gap 0.05.
-        // Total = 0.1 + 0.05 + 0.1 = 0.25.
-        // Centerline at Y=0.
+        // Equivalent to the former gap layout (0.1@gap0 + 0.1@gap0.05 centered):
         // Layer 0: Y = -0.125 to -0.025
-        // Gap: Y = -0.025 to 0.025
+        // Air gap: Y = -0.025 to 0.025
         // Layer 1: Y = 0.025 to 0.125
         let centerline = vec![(0.0, 0.0), (10.0, 0.0)];
-        let layers = vec![(0.1, 0.0), (0.1, 0.05)];
+        let layers = vec![(0.1, -0.125), (0.1, 0.025)];
         let contours = layer_contours(&centerline, &layers);
 
         assert_eq!(contours.len(), 2);
@@ -312,6 +307,17 @@ mod tests {
         // Layer 1
         assert!((contours[1].0[0].1 - 0.025).abs() < 1e-9);
         assert!((contours[1].1[0].1 - 0.125).abs() < 1e-9);
+    }
+
+    #[test]
+    fn negative_axis_offset_places_layer_on_negative_side() {
+        let centerline = vec![(0.0, 0.0), (10.0, 0.0)];
+        // Single layer entirely on the negative side of the axis.
+        let layers = vec![(0.2, -0.3)];
+        let contours = layer_contours(&centerline, &layers);
+        assert_eq!(contours.len(), 1);
+        assert!((contours[0].0[0].1 - (-0.3)).abs() < 1e-9);
+        assert!((contours[0].1[0].1 - (-0.1)).abs() < 1e-9);
     }
 
     #[test]
@@ -351,18 +357,16 @@ mod tests {
     }
 
     #[test]
-    fn zero_bulge_path_bit_identical_to_legacy() {
+    fn zero_bulge_path_bit_identical_to_direct_offset() {
+        // Explicit axis offsets (equivalent to a former centered stack).
         let centerline = vec![(0.0, 0.0), (10.0, 0.0), (10.0, 10.0)];
-        let layers = vec![(0.1, 0.0), (0.2, 0.05)];
-        let legacy = {
-            // Direct historical computation via get_offset_directions.
-            let total: f64 = layers.iter().map(|(t, g)| t + g).sum();
-            let mut current = -total * 0.5;
+        let layers = vec![(0.1, -0.175), (0.2, -0.025)];
+        let direct = {
             let dirs = get_offset_directions(&centerline);
             let mut out = Vec::new();
-            for &(t, g) in &layers {
-                let s = current + g;
-                let e = s + t;
+            for &(t, axis) in &layers {
+                let s = axis;
+                let e = axis + t;
                 let b1: Vec<_> = centerline
                     .iter()
                     .zip(dirs.iter())
@@ -374,19 +378,18 @@ mod tests {
                     .map(|(&(x, y), &(dx, dy))| (x + dx * e, y + dy * e))
                     .collect();
                 out.push((b1, b2));
-                current = e;
             }
             out
         };
         let via_api = layer_contours(&centerline, &layers);
-        assert_eq!(via_api.len(), legacy.len());
-        for (a, b) in via_api.iter().zip(legacy.iter()) {
+        assert_eq!(via_api.len(), direct.len());
+        for (a, b) in via_api.iter().zip(direct.iter()) {
             assert!(pts_close(&a.0, &b.0));
             assert!(pts_close(&a.1, &b.1));
         }
         // Explicit zero bulges must match too.
         let with_zeros = layer_contours_with_bulges(&centerline, &[0.0, 0.0, 0.0], &layers);
-        for (a, b) in with_zeros.iter().zip(legacy.iter()) {
+        for (a, b) in with_zeros.iter().zip(direct.iter()) {
             assert!(pts_close(&a.0.points, &b.0));
             assert!(pts_close(&a.1.points, &b.1));
         }
@@ -395,12 +398,12 @@ mod tests {
     #[test]
     fn curved_single_layer_parallel_offset_arc() {
         // Axis: semicircle diameter (-1,0)→(1,0), bulge=1, radius 1 about origin.
-        // Single layer thickness 0.2 → boundaries at offset ±0.1.
+        // Single layer thickness 0.2 centered → boundaries at offset ±0.1.
         // CCW arc: left(+)=inward. start_offset=-0.1 → radius 1.1;
         // end_offset=+0.1 → radius 0.9.
         let centerline = vec![(-1.0, 0.0), (1.0, 0.0)];
         let bulges = vec![1.0];
-        let layers = vec![(0.2, 0.0)];
+        let layers = vec![(0.2, -0.1)];
         let contours = layer_contours_with_bulges(&centerline, &bulges, &layers);
         assert_eq!(contours.len(), 1);
 
@@ -464,14 +467,14 @@ mod tests {
 
     #[test]
     fn curved_multi_layer_increasing_radius() {
-        // Same semicircle axis; two layers thickness 0.1 each, no gap.
-        // Total 0.2. Offsets: -0.1, 0.0, +0.1 relative to axis.
+        // Same semicircle axis; two layers thickness 0.1 each, centered.
+        // Offsets: -0.1, 0.0, +0.1 relative to axis.
         // Layer0 boundaries at -0.1 and 0.0 → radii 1.1 and 1.0
         // Layer1 boundaries at  0.0 and +0.1 → radii 1.0 and 0.9
         // (CCW: +offset decreases radius).
         let centerline = vec![(-1.0, 0.0), (1.0, 0.0)];
         let bulges = vec![1.0];
-        let layers = vec![(0.1, 0.0), (0.1, 0.0)];
+        let layers = vec![(0.1, -0.1), (0.1, 0.0)];
         let contours = layer_contours_with_bulges(&centerline, &bulges, &layers);
         assert_eq!(contours.len(), 2);
 

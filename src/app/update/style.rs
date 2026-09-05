@@ -1180,6 +1180,36 @@ pub(super) fn on_text_style_dialog_open(&mut self) -> Task<Message> {
                         Some(Message::LayerStateEditorLayerColor(idx, color))
                     }
                     Some(crate::app::ColorPickTarget::PlotStyle) => None,
+                    Some(crate::app::ColorPickTarget::AecPlanDemolitionLineColor) => Some(
+                        Message::AecPlanManagerDemolitionStyleLineColorChanged(
+                            crate::ui::window::aec_ui_util::acad_color_to_hex(color),
+                        ),
+                    ),
+                    Some(crate::app::ColorPickTarget::AecPlanDemolitionHatchColor) => Some(
+                        Message::AecPlanManagerDemolitionStyleHatchColorChanged(
+                            crate::ui::window::aec_ui_util::acad_color_to_hex(color),
+                        ),
+                    ),
+                    Some(crate::app::ColorPickTarget::AecPlanDemolitionFillColor) => Some(
+                        Message::AecPlanManagerDemolitionStyleFillColorChanged(
+                            crate::ui::window::aec_ui_util::acad_color_to_hex(color),
+                        ),
+                    ),
+                    Some(crate::app::ColorPickTarget::AecPlanExistingLineColor) => Some(
+                        Message::AecPlanManagerExistingStyleLineColorChanged(
+                            crate::ui::window::aec_ui_util::acad_color_to_hex(color),
+                        ),
+                    ),
+                    Some(crate::app::ColorPickTarget::AecPlanExistingHatchColor) => Some(
+                        Message::AecPlanManagerExistingStyleHatchColorChanged(
+                            crate::ui::window::aec_ui_util::acad_color_to_hex(color),
+                        ),
+                    ),
+                    Some(crate::app::ColorPickTarget::AecPlanExistingFillColor) => Some(
+                        Message::AecPlanManagerExistingStyleFillColorChanged(
+                            crate::ui::window::aec_ui_util::acad_color_to_hex(color),
+                        ),
+                    ),
                     None => None,
                 };
                 if let Some(m) = edit {

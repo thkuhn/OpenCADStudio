@@ -84,8 +84,8 @@ impl fmt::Display for SelectionGroup {
 }
 
 #[derive(Clone)]
-struct HatchPatternPreview {
-    pattern: crate::scene::model::hatch_model::HatchPattern,
+pub struct HatchPatternPreview {
+    pub pattern: crate::scene::model::hatch_model::HatchPattern,
 }
 
 impl canvas::Program<Message> for HatchPatternPreview {
@@ -787,6 +787,79 @@ impl PropertiesPanel {
                 self.render_hatch_pattern_row(label, current)
             }
             PropValue::AttrText { tag, value } => self.render_attr_row(tag, value),
+            PropValue::Picker { value, handles } => {
+                render_picker_row(label, value, handles.clone())
+            }
+            PropValue::EntityRef { display, handle } => {
+                render_entity_ref_row(label, display, *handle)
+            }
+            PropValue::Live(value) => self.render_live_row(label, prop.field, value),
+        }
+    }
+
+    /// Render a row backed by the active command's live properties (shown
+    /// while a command such as WALL is in progress). Mirrors the regular
+    /// entity property rows (`render_edit_row`/`render_choice_row`/picker),
+    /// but dispatches through `ActiveCommandLive*` messages instead of the
+    /// `Prop*` ones used for already-committed entities.
+    fn render_live_row<'a>(
+        &'a self,
+        label: &'a str,
+        field: &'static str,
+        value: &'a crate::command::LiveFieldValue,
+    ) -> Element<'a, Message> {
+        use crate::command::LiveFieldValue;
+        match value {
+            LiveFieldValue::Text(text_val) => {
+                let ti = text_input("", text_val)
+                    .on_input(move |v| {
+                        Message::ActiveCommandLivePropertyChanged(field, LiveFieldValue::Text(v))
+                    })
+                    .size(FONT_SZ)
+                    .style(text_input_style)
+                    .padding([3, 6])
+                    .width(Length::Fill);
+                prop_row_widget(label, ti.into())
+            }
+            LiveFieldValue::Number(n) => {
+                let key = FieldKey::Geom(field);
+                let display = self
+                    .edit_buf
+                    .get(&key)
+                    .cloned()
+                    .unwrap_or_else(|| crate::entities::common::format_length(*n));
+                let active = self.active_field.as_ref() == Some(&key);
+                let ti = text_input("", &display)
+                    .on_input(move |v| Message::ActiveCommandLiveTextInput(field, v))
+                    .on_submit(Message::ActiveCommandLiveTextCommit(field))
+                    .size(FONT_SZ)
+                    .style(text_input_style)
+                    .padding([3, 6])
+                    .width(Length::Fill);
+                prop_row_with_active(label, ti.into(), active)
+            }
+            LiveFieldValue::Picker(current) => render_picker_row_for_active_command(label, current),
+            LiveFieldValue::Choice { selected, options } => {
+                let opts = options.clone();
+                let options_for_select = options.clone();
+                let list = iced::widget::pick_list(
+                    Some(selected.clone()),
+                    opts,
+                    |value: &String| value.clone(),
+                )
+                .on_select(move |chosen: String| {
+                    Message::ActiveCommandLivePropertyChanged(
+                        field,
+                        LiveFieldValue::Choice {
+                            selected: chosen,
+                            options: options_for_select.clone(),
+                        },
+                    )
+                })
+                .text_size(FONT_SZ)
+                .width(Length::Fill);
+                prop_row_widget(label, list.into())
+            }
         }
     }
 
@@ -1658,6 +1731,45 @@ fn render_picker_row<'a>(
         .align_y(iced::Alignment::Center),
     )
     .on_press(Message::AecStylePickerOpenForWallProperties(handles))
+    .style(button::subtle)
+    .padding(0)
+    .width(Length::Fill);
+    prop_row_widget(label, btn.into())
+}
+
+/// A read-only reference row (e.g. a wall opening/peer) that selects and
+/// zooms to the referenced entity when clicked.
+fn render_entity_ref_row<'a>(
+    label: &'a str,
+    display: &'a str,
+    handle: acadrust::Handle,
+) -> Element<'a, Message> {
+    let btn = button(
+        text(crate::ui::text_util::elide(display, 24))
+            .size(FONT_SZ),
+    )
+    .on_press(Message::SelectAndZoomTo(handle))
+    .style(button::subtle)
+    .padding([2, 4])
+    .width(Length::Fill);
+    prop_row_widget(label, btn.into())
+}
+
+/// Like [`render_picker_row`], but for a live property of the currently
+/// active command (e.g. the in-progress WALL's style) instead of an already
+/// committed entity — opens the AEC Style Picker targeting the active
+/// command rather than a fixed set of entity handles.
+fn render_picker_row_for_active_command<'a>(label: &'a str, value: &'a str) -> Element<'a, Message> {
+    let btn = button(
+        row![
+            text(crate::ui::text_util::elide(value, 20)).size(FONT_SZ),
+            Space::new().width(Length::Fill),
+            text("...").size(FONT_SZ),
+        ]
+        .padding([0, 4])
+        .align_y(iced::Alignment::Center),
+    )
+    .on_press(Message::AecStylePickerOpenForActiveCommand)
     .style(button::subtle)
     .padding(0)
     .width(Length::Fill);

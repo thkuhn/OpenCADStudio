@@ -4,6 +4,8 @@
 //! storey id, multi-layer snapshot, derived representation handles, and
 //! justification.
 
+use crate::modules::aec::engine::display_component::ComponentStyleOverride;
+use crate::modules::aec::engine::plan_view::PlanPhase;
 use acadrust::Handle;
 
 /// A parametric multi-layer wall: a baseline polyline (owned by the host
@@ -20,6 +22,18 @@ pub struct Wall {
     pub derived_handles: Vec<Handle>,
     /// Informational field: which justification was used when drawing.
     pub justification: WallJustification,
+    /// Construction/planning phase (Neu/Abbruch/Bestand), used by a
+    /// `DisplayConfig`'s `phase_filter` to hide/style this wall differently
+    /// per plan. Defaults to `New` for walls drawn without an explicit
+    /// phase selection.
+    pub phase: PlanPhase,
+    /// Per-wall-instance override of the layer hatch angle/relativity,
+    /// taking precedence over any style-profile (`ComponentRuleSet`)
+    /// override, which in turn takes precedence over the material's own
+    /// `hatch_angle`/`hatch_angle_relative` (Step 3 hatch-angle chain).
+    /// Only `hatch_angle`/`hatch_angle_relative` are meaningful here; other
+    /// fields are unused for this purpose.
+    pub hatch_override: Option<ComponentStyleOverride>,
 }
 
 /// One material layer in a wall's cross-section snapshot.
@@ -28,7 +42,7 @@ pub struct WallLayer {
     pub material: String,
     pub thickness: f64,
     pub function: String,
-    pub gap_before: f64,
+    pub axis_offset: f64,
     pub bottom_offset: f64,
     pub top_offset: f64,
     pub layer_override: Option<String>,
@@ -90,15 +104,23 @@ impl Wall {
             layers: Vec::new(),
             derived_handles: Vec::new(),
             justification: WallJustification::Center,
+            phase: PlanPhase::default(),
+            hatch_override: None,
         }
     }
 
-    /// Total thickness across all layers including gaps.
+    /// Total cross-section width spanning all layers (min start to max end).
     pub fn total_thickness(&self) -> f64 {
-        self.layers
-            .iter()
-            .map(|l| l.thickness + l.gap_before)
-            .sum()
+        if self.layers.is_empty() {
+            return 0.0;
+        }
+        let mut min_start = f64::INFINITY;
+        let mut max_end = f64::NEG_INFINITY;
+        for l in &self.layers {
+            min_start = min_start.min(l.axis_offset);
+            max_end = max_end.max(l.axis_offset + l.thickness);
+        }
+        (max_end - min_start).max(0.0)
     }
 
     /// Volume of the wall given the length of its (2D) baseline centerline.
@@ -119,7 +141,7 @@ mod tests {
             material: "Concrete".into(),
             thickness: 0.2,
             function: "Structural".into(),
-            gap_before: 0.0,
+            axis_offset: -0.1,
             bottom_offset: 0.0,
             top_offset: 0.0,
             layer_override: None,
@@ -137,14 +159,14 @@ mod tests {
     }
 
     #[test]
-    fn total_thickness_includes_gaps() {
+    fn total_thickness_spans_axis_offsets() {
         let mut wall = Wall::new("s", 3.0, 0);
         wall.layers = vec![
             WallLayer {
                 material: "A".into(),
                 thickness: 0.1,
                 function: "Finish".into(),
-                gap_before: 0.05,
+                axis_offset: -0.15,
                 bottom_offset: 0.0,
                 top_offset: 0.0,
                 layer_override: None,
@@ -154,13 +176,14 @@ mod tests {
                 material: "B".into(),
                 thickness: 0.2,
                 function: "Structural".into(),
-                gap_before: 0.0,
+                axis_offset: -0.05,
                 bottom_offset: 0.0,
                 top_offset: 0.0,
                 layer_override: None,
                 hatch_override: None,
             },
         ];
-        assert!((wall.total_thickness() - 0.35).abs() < 1e-9);
+        // span from -0.15 to 0.15
+        assert!((wall.total_thickness() - 0.30).abs() < 1e-9);
     }
 }

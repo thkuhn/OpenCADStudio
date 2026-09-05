@@ -8,8 +8,11 @@ use iced::widget::{
 use iced::{Background, Border, Color, Element, Fill, Theme};
 
 use crate::app::Message;
-use crate::modules::aec::engine::library::StyleLibrary;
+use crate::modules::aec::engine::library::{
+    combined_material_entries, LibrarySource, StyleLibrary,
+};
 use crate::modules::aec::engine::material::Material;
+use crate::modules::aec::engine::project::ProjectFile;
 use crate::t;
 use super::aec_ui_util::*;
 
@@ -57,15 +60,24 @@ pub struct MaterialFormState<'a> {
 
 pub fn view_window<'a>(
     library: &'a StyleLibrary,
+    project: Option<&'a ProjectFile>,
     selected_id: Option<&str>,
     filter: &str,
     material_form: MaterialFormState<'a>,
 ) -> Element<'a, Message> {
+    let entries = combined_material_entries(project);
+    let standard_ids: std::collections::HashSet<String> =
+        crate::modules::aec::engine::library::load_or_seed()
+            .materials
+            .into_iter()
+            .map(|m| m.id)
+            .collect();
+
     let filter_lower = filter.to_lowercase();
-    let filtered: Vec<&'a Material> = library
-        .materials
-        .iter()
-        .filter(|m| {
+    let filtered: Vec<_> = entries
+        .into_iter()
+        .filter(|e| {
+            let m = &e.material;
             filter.is_empty()
                 || m.name.to_lowercase().contains(&filter_lower)
                 || m.id.to_lowercase().contains(&filter_lower)
@@ -77,12 +89,23 @@ pub fn view_window<'a>(
         })
         .collect();
 
+    let selected_source = selected_id.and_then(|id| {
+        filtered
+            .iter()
+            .find(|e| e.material.id == id)
+            .map(|e| e.source)
+    });
+    let selected_has_standard_counterpart = selected_id
+        .map(|id| standard_ids.contains(id))
+        .unwrap_or(false);
+
     // Group by category: named categories sorted alphabetically, then
     // uncategorized materials under "Ohne Kategorie".
     let mut categories: Vec<String> = filtered
         .iter()
-        .filter_map(|m| {
-            m.category
+        .filter_map(|e| {
+            e.material
+                .category
                 .as_ref()
                 .map(|c| c.trim())
                 .filter(|c| !c.is_empty())
@@ -99,21 +122,26 @@ pub fn view_window<'a>(
     } else {
         for cat in &categories {
             master_list = master_list.push(section_title(std::borrow::Cow::Owned(cat.clone())));
-            for m in filtered.iter().filter(|m| {
-                m.category
+            for e in filtered.iter().filter(|e| {
+                e.material
+                    .category
                     .as_ref()
                     .map(|c| c.trim() == cat.as_str())
                     .unwrap_or(false)
             }) {
-                master_list =
-                    master_list.push(material_row(m, selected_id == Some(m.id.as_str())));
+                master_list = master_list.push(material_row(
+                    &e.material,
+                    e.source,
+                    selected_id == Some(e.material.id.as_str()),
+                ));
             }
         }
 
-        let uncategorized: Vec<&&Material> = filtered
+        let uncategorized: Vec<_> = filtered
             .iter()
-            .filter(|m| {
-                m.category
+            .filter(|e| {
+                e.material
+                    .category
                     .as_ref()
                     .map(|c| c.trim().is_empty())
                     .unwrap_or(true)
@@ -121,9 +149,12 @@ pub fn view_window<'a>(
             .collect();
         if !uncategorized.is_empty() {
             master_list = master_list.push(section_title(t!("Ohne Kategorie")));
-            for m in uncategorized {
-                master_list =
-                    master_list.push(material_row(m, selected_id == Some(m.id.as_str())));
+            for e in uncategorized {
+                master_list = master_list.push(material_row(
+                    &e.material,
+                    e.source,
+                    selected_id == Some(e.material.id.as_str()),
+                ));
             }
         }
     }
@@ -142,10 +173,15 @@ pub fn view_window<'a>(
         scrollable(master_list),
     ]
     .spacing(8)
-    .width(200);
+    .width(220);
 
     let detail = if material_form.open {
-        material_form_view(library, material_form)
+        material_form_view(
+            library,
+            material_form,
+            selected_source,
+            selected_has_standard_counterpart,
+        )
     } else {
         container(text(t!("Select a material to edit or create a new one.")).style(muted))
             .width(Fill)
@@ -161,7 +197,32 @@ pub fn view_window<'a>(
         .into()
 }
 
-fn material_row<'a>(material: &'a Material, selected: bool) -> Element<'a, Message> {
+fn source_badge<'a>(source: LibrarySource) -> Element<'a, Message> {
+    let label = match source {
+        LibrarySource::Standard => t!("Standard"),
+        LibrarySource::Project => t!("Projekt"),
+    };
+    container(text(label).size(9))
+        .padding([1, 5])
+        .style(|theme: &Theme| container::Style {
+            background: Some(Background::Color(
+                theme.palette().background.strong.color.scale_alpha(0.55),
+            )),
+            text_color: Some(theme.palette().background.base.text.scale_alpha(0.85)),
+            border: Border {
+                radius: 3.0.into(),
+                ..Default::default()
+            },
+            ..Default::default()
+        })
+        .into()
+}
+
+fn material_row<'a>(
+    material: &Material,
+    source: LibrarySource,
+    selected: bool,
+) -> Element<'a, Message> {
     let rgb = material.line_color;
     let r = ((rgb >> 16) & 0xFF) as u8;
     let g = ((rgb >> 8) & 0xFF) as u8;
@@ -183,8 +244,14 @@ fn material_row<'a>(material: &'a Material, selected: bool) -> Element<'a, Messa
         row![
             swatch,
             column![
-                text(material.name.as_str()).size(12),
-                text(material.hatch_pattern.as_str()).size(10).style(muted),
+                row![
+                    text(material.name.clone()).size(12),
+                    Space::new().width(6),
+                    source_badge(source),
+                ]
+                .spacing(4)
+                .align_y(iced::Center),
+                text(material.hatch_pattern.clone()).size(10).style(muted),
             ]
             .spacing(2),
         ]
@@ -209,6 +276,8 @@ fn rgb_u32_to_acad(rgb: u32) -> acadrust::types::Color {
 fn material_form_view<'a>(
     library: &'a StyleLibrary,
     material_form: MaterialFormState<'a>,
+    selected_source: Option<LibrarySource>,
+    has_standard_counterpart: bool,
 ) -> Element<'a, Message> {
     let form_title = if material_form.is_new {
         t!("New Material")
@@ -234,6 +303,22 @@ fn material_form_view<'a>(
                 .padding([5, 12])
                 .on_press(Message::AecStyleManagerMaterialDelete),
         );
+        // → Standard: only pure project entries without a global counterpart.
+        if selected_source == Some(LibrarySource::Project) && !has_standard_counterpart {
+            actions = actions.push(
+                button(text(t!("→ Standard")).size(11))
+                    .padding([5, 12])
+                    .on_press(Message::AecStyleManagerCopyMaterialToGlobal),
+            );
+        }
+        // → Projekt: only Standard entries (copy into the project library).
+        if selected_source == Some(LibrarySource::Standard) {
+            actions = actions.push(
+                button(text(t!("→ Projekt")).size(11))
+                    .padding([5, 12])
+                    .on_press(Message::AecStyleManagerCopyMaterialToProject),
+            );
+        }
     }
 
     let hatch_acad = rgb_u32_to_acad(material_form.hatch_color);
@@ -269,6 +354,7 @@ fn material_form_view<'a>(
                 crate::ui::color_select::ColorExtras {
                     by_layer: false,
                     by_block: false,
+                    ..Default::default()
                 },
                 Message::AecStyleManagerMaterialColorPicked,
                 Message::AecStyleManagerMaterialColorPickerToggle,
@@ -288,6 +374,7 @@ fn material_form_view<'a>(
                 crate::ui::color_select::ColorExtras {
                     by_layer: false,
                     by_block: false,
+                    ..Default::default()
                 },
                 |color| {
                     let value = match color {
@@ -337,10 +424,11 @@ fn material_form_view<'a>(
         .align_y(iced::Center),
         row![
             text(t!("Line type")).size(10).style(muted).width(100),
-            linetype_field(
+            super::aec_ui_util::linetype_field(
                 material_form.line_type,
                 material_form.linetype_items,
                 material_form.linetype_combo,
+                Message::AecStyleManagerMaterialLineTypeChanged,
             ),
         ]
         .spacing(8),
@@ -383,30 +471,6 @@ fn material_form_view<'a>(
     }
 
     form.into()
-}
-
-fn linetype_field<'a>(
-    line_type: &'a str,
-    linetype_items: &'a [crate::ui::properties::LinetypeItem],
-    linetype_combo: &'a combo_box::State<crate::ui::properties::LinetypeItem>,
-) -> Element<'a, Message> {
-    let display = if line_type.is_empty() { "ByLayer" } else { line_type };
-    let selected = linetype_items
-        .iter()
-        .find(|item| item.name.eq_ignore_ascii_case(display))
-        .cloned();
-    combo_box(
-        linetype_combo,
-        "ByLayer",
-        selected.as_ref(),
-        |item: crate::ui::properties::LinetypeItem| {
-            Message::AecStyleManagerMaterialLineTypeChanged(item.name)
-        },
-    )
-    .size(11)
-    .padding([4, 6])
-    .width(180)
-    .into()
 }
 
 fn hatch_pattern_field<'a>(current: &'a str, open: bool) -> Element<'a, Message> {

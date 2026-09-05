@@ -83,6 +83,16 @@ pub struct ComponentStyleOverride {
     /// Fill color override (0xRRGGBB), used by 3D surface styling.
     #[serde(default)]
     pub fill_color: Option<u32>,
+    /// Hatch angle override in degrees, part of the hatch-angle override
+    /// chain `Wall.hatch_override` > style-profile `ComponentStyleOverride`
+    /// > `Material.hatch_angle` (Step 3).
+    #[serde(default)]
+    pub hatch_angle: Option<f64>,
+    /// Whether `hatch_angle` is relative to the wall's run direction
+    /// (mirrors `Material.hatch_angle_relative`). Only meaningful together
+    /// with `hatch_angle`.
+    #[serde(default)]
+    pub hatch_angle_relative: Option<bool>,
 }
 
 /// Which wall layers feed into layer-aggregating slots (`Contour2D`,
@@ -132,9 +142,10 @@ pub struct ComponentRuleSet {
     /// Individual wall layer -> style override, independent of slot.
     #[serde(default)]
     pub layer_style_override: Vec<LayerStyleOverride>,
-    /// Which layers feed `Contour2D`/`Solid3D`. Defaults to `All`.
+    /// Slot key -> which layers feed that (aggregating) slot. Absent key
+    /// means `All` — see [`Self::layer_filter_for`].
     #[serde(default)]
-    pub layer_filter: LayerSelection,
+    pub layer_filter: HashMap<String, LayerSelection>,
 }
 
 impl ComponentRuleSet {
@@ -147,6 +158,16 @@ impl ComponentRuleSet {
     /// Returns the style override for `slot`, if any was configured.
     pub fn style_for(&self, slot: WallComponentSlot) -> Option<&ComponentStyleOverride> {
         self.style_override.get(slot.key())
+    }
+
+    /// Returns the layer filter configured for `slot` (typically
+    /// `Contour2D`/`Solid3D`), defaulting to `LayerSelection::All` when the
+    /// slot has no explicit entry — this is what makes a profile without an
+    /// explicit per-slot filter behave exactly like today (non-regression
+    /// guarantee, Key Decision 7).
+    pub fn layer_filter_for(&self, slot: WallComponentSlot) -> &LayerSelection {
+        static ALL: LayerSelection = LayerSelection::All;
+        self.layer_filter.get(slot.key()).unwrap_or(&ALL)
     }
 }
 
@@ -257,6 +278,8 @@ pub fn component_style_override_from_editor_fields(
         hatch_pattern: if hatch_pattern.is_empty() { None } else { Some(hatch_pattern.to_string()) },
         hatch_color: parse_editor_hex_color(hatch_color),
         fill_color: parse_editor_hex_color(fill_color),
+        hatch_angle: None,
+        hatch_angle_relative: None,
     }
 }
 
@@ -297,11 +320,14 @@ mod tests {
                 ..Default::default()
             },
         );
-        rules.layer_filter = LayerSelection::Explicit(vec![LayerRef {
-            material_id: "brick".to_string(),
-            role_tag: None,
-            index: 0,
-        }]);
+        rules.layer_filter.insert(
+            WallComponentSlot::Contour2D.key().to_string(),
+            LayerSelection::Explicit(vec![LayerRef {
+                material_id: "brick".to_string(),
+                role_tag: None,
+                index: 0,
+            }]),
+        );
 
         let serialized = serde_json::to_string(&rules).unwrap();
         let deserialized: ComponentRuleSet = serde_json::from_str(&serialized).unwrap();
@@ -317,7 +343,7 @@ mod tests {
             "visibility": { "AxisLine": false },
             "style_override": {},
             "layer_style_override": [],
-            "layer_filter": "All"
+            "layer_filter": {}
         }"#;
         let rules: ComponentRuleSet = serde_json::from_str(json).unwrap();
         assert!(!rules.is_visible(WallComponentSlot::AxisLine));
@@ -330,7 +356,25 @@ mod tests {
         let json = r#"{}"#;
         let rules: ComponentRuleSet = serde_json::from_str(json).unwrap();
         assert!(rules.visibility.is_empty());
-        assert_eq!(rules.layer_filter, LayerSelection::All);
+        assert!(rules.layer_filter.is_empty());
+        assert_eq!(rules.layer_filter_for(WallComponentSlot::Contour2D), &LayerSelection::All);
+        assert_eq!(rules.layer_filter_for(WallComponentSlot::Solid3D), &LayerSelection::All);
+    }
+
+    #[test]
+    fn layer_filter_for_is_independent_per_slot() {
+        let mut rules = ComponentRuleSet::default();
+        let explicit = LayerSelection::Explicit(vec![LayerRef {
+            material_id: "brick".to_string(),
+            role_tag: None,
+            index: 0,
+        }]);
+        rules
+            .layer_filter
+            .insert(WallComponentSlot::Contour2D.key().to_string(), explicit.clone());
+        assert_eq!(rules.layer_filter_for(WallComponentSlot::Contour2D), &explicit);
+        // Solid3D was never set, so it still defaults to All.
+        assert_eq!(rules.layer_filter_for(WallComponentSlot::Solid3D), &LayerSelection::All);
     }
 
     // ---- Style-Substitutions-UI: upsert helper -----------------------------
@@ -384,7 +428,7 @@ mod tests {
                     material_id: mat.to_string(),
                     thickness: LayerValue::Fixed(thickness),
                     function: LayerFunction::Structural,
-                    gap_before: 0.0,
+                    axis_offset: LayerValue::Fixed(0.0),
                     bottom_offset: 0.0,
                     top_offset: 0.0,
                     layer_override: None,
@@ -392,6 +436,7 @@ mod tests {
                     role_tag: None,
                 })
                 .collect(),
+            display_profiles: std::collections::HashMap::new(),
         }
     }
 
@@ -456,6 +501,8 @@ mod tests {
                 hatch_pattern: Some("ANSI31".to_string()),
                 hatch_color: Some(0xFFFFFF),
                 fill_color: Some(0x808080),
+                hatch_angle: None,
+                hatch_angle_relative: None,
             }
         );
     }

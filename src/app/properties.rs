@@ -2510,7 +2510,7 @@ impl OpenCADStudio {
             self.aec_project_explorer_file.as_ref(),
         );
         let (display_rules, style_substitutions) =
-            self.resolve_active_display_config_wall_rules(i);
+            self.resolve_active_display_config_wall_rules(i, handles.first().copied());
         for &handle in handles {
             let owner = crate::modules::aec::commands::resolve_wall_package(
                 &self.tabs[i].scene,
@@ -2972,7 +2972,74 @@ pub(super) fn wall_prop_section(
                     ],
                 },
             },
+            crate::scene::model::object::Property {
+                label: t!("Phase").into_owned(),
+                field: "wall_phase",
+                value: crate::scene::model::object::PropValue::Choice {
+                    selected: wall.phase.as_str().to_string(),
+                    options: vec![
+                        "New".to_string(),
+                        "Demolition".to_string(),
+                        "Existing".to_string(),
+                    ],
+                },
+            },
         ];
+
+        // Optional per-instance hatch-angle override (Step 6): checkbox to
+        // enable/disable the override, plus (only while enabled) the angle
+        // value and "Relativ zur Wand" flag. Clearing the checkbox drops the
+        // override entirely (`Wall.hatch_override = None`), falling back to
+        // the style-profile/material tiers of the hatch-angle chain.
+        let hatch_enabled = wall.hatch_override.is_some();
+        props.push(crate::scene::model::object::Property {
+            label: t!("Hatch Angle Override").into_owned(),
+            field: "wall_hatch_override_enabled",
+            value: crate::scene::model::object::PropValue::BoolToggle {
+                field: "wall_hatch_override_enabled",
+                value: hatch_enabled,
+            },
+        });
+        if let Some(ov) = wall.hatch_override.as_ref() {
+            props.push(crate::entities::common::edit_scalar_prop(
+                t!("Hatch Angle").as_ref(),
+                "wall_hatch_angle",
+                ov.hatch_angle.unwrap_or(0.0),
+            ));
+            props.push(crate::scene::model::object::Property {
+                label: t!("Relative to Wall").into_owned(),
+                field: "wall_hatch_relative",
+                value: crate::scene::model::object::PropValue::BoolToggle {
+                    field: "wall_hatch_relative",
+                    value: ov.hatch_angle_relative.unwrap_or(true),
+                },
+            });
+        }
+        // Purely informational summary of the effective value/source,
+        // regardless of whether a per-instance override is active, so a
+        // user can see where the currently-applied angle comes from.
+        let effective_text = if let Some(ov) = wall.hatch_override.as_ref() {
+            format!(
+                "{}° ({}) — {}",
+                ov.hatch_angle.unwrap_or(0.0),
+                if ov.hatch_angle_relative.unwrap_or(true) {
+                    t!("relative")
+                } else {
+                    t!("absolute")
+                },
+                t!("Wall override")
+            )
+        } else {
+            format!(
+                "{}",
+                t!("No wall override (uses style/material default)")
+            )
+        };
+        props.push(crate::entities::common::ro_prop(
+            t!("Effective Hatch Angle").as_ref(),
+            "wall_hatch_effective",
+            effective_text,
+        ));
 
         for layer in &wall.layers {
             let thickness_str = crate::entities::common::format_length(layer.thickness);
@@ -3015,10 +3082,10 @@ pub(super) fn wall_relation_sections(
         for (idx, opening) in openings.iter().enumerate() {
             let kind = opening.kind.as_str();
             let display = format!(
-                "{kind}  w={:.2} h={:.2} sill={:.2}  (#{:X})",
-                opening.width,
-                opening.height,
-                opening.sill_height,
+                "{kind}  w={} h={} sill={}  (#{:X})",
+                crate::entities::common::format_length(opening.width),
+                crate::entities::common::format_length(opening.height),
+                crate::entities::common::format_length(opening.sill_height),
                 opening.handle.value()
             );
             opening_props.push(Property {

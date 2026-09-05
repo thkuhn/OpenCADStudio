@@ -941,6 +941,9 @@ impl OpenCADStudio {
             // the rest remain immediate scaffold commands — create entities +
             // XDATA without multi-click interaction (former plugin behaviour).
             "AEC_WALL" => {
+                if !self.aec_require_project() {
+                    return None;
+                }
                 use crate::modules::aec::commands::WallCommand;
                 // Register the APPID up front: the interactive command has no
                 // document access while collecting points, so XDATA is
@@ -1005,7 +1008,7 @@ impl OpenCADStudio {
                             self.aec_project_explorer_file.as_ref(),
                         );
                     let (display_rules, style_substitutions) =
-                        self.resolve_active_display_config_wall_rules(i);
+                        self.resolve_active_display_config_wall_rules(i, wall_handles.first().copied());
                     crate::modules::aec::commands::aec_walljoin_do(
                         &mut self.tabs[i].scene,
                         &mut self.command_line,
@@ -1061,7 +1064,7 @@ impl OpenCADStudio {
                             self.aec_project_explorer_file.as_ref(),
                         );
                     let (display_rules, style_substitutions) =
-                        self.resolve_active_display_config_wall_rules(i);
+                        self.resolve_active_display_config_wall_rules(i, wall_handles.first().copied());
                     for h in wall_handles {
                         crate::modules::aec::commands::aec_wallreverse_do(
                             &mut self.tabs[i].scene,
@@ -1098,7 +1101,7 @@ impl OpenCADStudio {
                     self.aec_project_explorer_file.as_ref(),
                 );
                 let (display_rules, style_substitutions) =
-                    self.resolve_active_display_config_wall_rules(i);
+                    self.resolve_active_display_config_wall_rules(i, None);
                 crate::modules::aec::commands::aec_wallopening_do(
                     &mut self.tabs[i].scene,
                     &mut self.command_line,
@@ -1115,7 +1118,7 @@ impl OpenCADStudio {
                     self.aec_project_explorer_file.as_ref(),
                 );
                 let (display_rules, style_substitutions) =
-                    self.resolve_active_display_config_wall_rules(i);
+                    self.resolve_active_display_config_wall_rules(i, None);
                 crate::modules::aec::commands::aec_walljoin_do(
                     &mut self.tabs[i].scene,
                     &mut self.command_line,
@@ -1132,7 +1135,7 @@ impl OpenCADStudio {
                     self.aec_project_explorer_file.as_ref(),
                 );
                 let (display_rules, style_substitutions) =
-                    self.resolve_active_display_config_wall_rules(i);
+                    self.resolve_active_display_config_wall_rules(i, None);
                 crate::modules::aec::commands::aec_wallextend_do(
                     &mut self.tabs[i].scene,
                     &mut self.command_line,
@@ -1149,7 +1152,7 @@ impl OpenCADStudio {
                     self.aec_project_explorer_file.as_ref(),
                 );
                 let (display_rules, style_substitutions) =
-                    self.resolve_active_display_config_wall_rules(i);
+                    self.resolve_active_display_config_wall_rules(i, None);
                 crate::modules::aec::commands::aec_wallreverse_do(
                     &mut self.tabs[i].scene,
                     &mut self.command_line,

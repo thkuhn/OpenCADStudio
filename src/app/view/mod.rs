@@ -1915,6 +1915,13 @@ impl OpenCADStudio {
                             .collect(),
                         selection_filter: &tab.scene.selection_filter,
                         tooltip_hidden: self.status_menu_tooltip_hidden,
+                        active_project_name: self.aec_project_explorer_file.as_ref().map(|_| {
+                            self.aec_project_explorer_path
+                                .as_ref()
+                                .and_then(|p| p.file_stem())
+                                .map(|s| s.to_string_lossy().into_owned())
+                                .unwrap_or_else(|| t!("Unsaved Project").into_owned())
+                        }),
                         active_plan_name: tab.active_display_config.clone(),
                         plan_names: self
                             .aec_plan_library

@@ -109,8 +109,8 @@ pub struct AecLayerBuffer {
     pub thickness: String,
     /// Function enum as a display string (Structural, Insulation, Finish, Other).
     pub function: String,
-    /// Horizontal gap-before string (parsed to f64 on save).
-    pub gap_before: String,
+    /// Axis offset string (fixed number or formula; may be negative).
+    pub axis_offset: String,
     /// Bottom vertical offset string (parsed to f64 on save).
     pub bottom_offset: String,
     /// Top vertical offset string (parsed to f64 on save).
@@ -131,6 +131,20 @@ pub enum AecWallStyleSort {
     Name,
     /// Parents listed before their children, siblings grouped together.
     Hierarchy,
+}
+
+/// A material or wall style currently awaiting an overwrite confirmation
+/// during a copy operation between project and global libraries.
+#[derive(Clone, Debug)]
+pub enum AecPendingCopy {
+    Material {
+        material: crate::modules::aec::engine::material::Material,
+        to_project: bool,
+    },
+    WallStyle {
+        wall_style: crate::modules::aec::engine::wall_style::WallStyle,
+        to_project: bool,
+    },
 }
 
 impl AecWallStyleSort {
@@ -1084,6 +1098,34 @@ pub(super) struct OpenCADStudio {
     /// How the "Wall Styles" master list is ordered: alphabetically by name,
     /// or hierarchically (parents before children, siblings grouped).
     aec_style_manager_wall_style_sort: AecWallStyleSort,
+    /// Whether a copy-conflict confirmation dialog is currently open in the
+    /// AEC Style Manager.
+    aec_style_manager_copy_conflict_open: bool,
+    /// The material or wall style currently awaiting an overwrite confirmation.
+    aec_style_manager_pending_copy: Option<AecPendingCopy>,
+
+    // ── AEC Wall Style Manager: Darstellungs-Profile (Step 4) ──────────────
+    /// Name of the `DisplayConfig` currently selected in the "Darstellungs-
+    /// Profile" table of the wall style form (`None` = none selected).
+    aec_style_manager_profile_selected: Option<String>,
+    /// Layer-Filter-UI: `false` = "Alle" (`LayerSelection::All`), `true` =
+    /// "Auswahl", for the currently edited profile's `Contour2D` slot.
+    aec_style_manager_profile_contour_explicit: bool,
+    /// Layer-Filter-UI: edit-buffer of explicitly selected layers for
+    /// `Contour2D`, only relevant while the above is `true`.
+    aec_style_manager_profile_contour_selection:
+        Vec<crate::modules::aec::engine::join::LayerRef>,
+    /// Same as `..._contour_explicit`, but for the `Solid3D` slot.
+    aec_style_manager_profile_solid_explicit: bool,
+    /// Same as `..._contour_selection`, but for the `Solid3D` slot.
+    aec_style_manager_profile_solid_selection:
+        Vec<crate::modules::aec::engine::join::LayerRef>,
+    /// Hatch-angle override text field ("Relativ zur Wand" + Winkel) for
+    /// the currently edited profile (empty = no override).
+    aec_style_manager_profile_hatch_angle: String,
+    /// Whether `aec_style_manager_profile_hatch_angle` is relative to the
+    /// wall's own run direction (mirrors `ComponentStyleOverride::hatch_angle_relative`).
+    aec_style_manager_profile_hatch_relative: bool,
 
     // ── AEC DisplayConfig Manager (Step 5) ─────────────────────────────────
     /// Loaded (or seeded) on `AEC_PLANMANAGER`; holds the `DisplayConfig`
@@ -1104,43 +1146,34 @@ pub(super) struct OpenCADStudio {
     aec_plan_manager_scale: String,
     aec_plan_manager_phase: crate::modules::aec::engine::plan_view::PlanPhase,
     aec_plan_manager_view_type: crate::modules::aec::engine::plan_view::ViewType,
-    /// Edit-buffer for the currently edited config's wall `ComponentRuleSet`
-    /// slot-visibility map (slot key -> visible?).
-    aec_plan_manager_slot_visibility: std::collections::HashMap<String, bool>,
-    /// Step 8: edit-buffer for the currently edited config's wall
-    /// `ComponentRuleSet` style-override map (slot key -> `ComponentStyleOverride`).
-    aec_plan_manager_style_override:
-        std::collections::HashMap<String, crate::modules::aec::engine::display_component::ComponentStyleOverride>,
-    /// Step 8: slot key currently open in the per-slot style-override editor
-    /// (`None` = editor closed).
-    aec_plan_manager_style_editor_slot: Option<String>,
-    /// Step 8: style-override editor form buffers (populated when the
-    /// editor for a slot is opened; hex colors as `"RRGGBB"` text).
-    aec_plan_manager_style_editor_line_type: String,
-    aec_plan_manager_style_editor_line_color: String,
-    aec_plan_manager_style_editor_hatch_pattern: String,
-    aec_plan_manager_style_editor_hatch_color: String,
-    aec_plan_manager_style_editor_fill_color: String,
-    /// Layer-Filter-UI: `false` = "Alle" (`LayerSelection::All`), `true` =
-    /// "Auswahl" (`LayerSelection::Explicit`), for the currently edited
-    /// config's wall `ComponentRuleSet::layer_filter`.
-    aec_plan_manager_layer_filter_explicit: bool,
-    /// Layer-Filter-UI: edit-buffer of explicitly selected layers, used
-    /// only while `aec_plan_manager_layer_filter_explicit` is `true`.
-    aec_plan_manager_layer_filter_selection: Vec<crate::modules::aec::engine::join::LayerRef>,
-    /// Style-Substitutions-UI: the edit-buffer list of `(source, target)`
-    /// wall-style-name rows for the currently edited config, ordered as
-    /// `Vec<(WallStyleRef, WallStyleRef)>` per Key Decision 3.
-    aec_plan_manager_style_substitutions: Vec<(String, String)>,
-    /// Style-Substitutions-UI: currently selected "Original-Wandstil" in
-    /// the add-row form.
-    aec_plan_manager_new_substitution_source: Option<String>,
-    /// Style-Substitutions-UI: currently selected "Ersatz-Wandstil" in the
-    /// add-row form.
-    aec_plan_manager_new_substitution_target: Option<String>,
-    /// Style-Substitutions-UI: inline error message shown when
-    /// `validate_style_substitution` rejects the pending add-row.
-    aec_plan_manager_substitution_error: Option<String>,
+    /// Two-stage Phasenfilter-Editor (Step 5), Stage 1: which
+    /// [`crate::modules::aec::engine::plan_view::PlanPhase`]s are visible
+    /// for the currently edited config, one bool per phase.
+    aec_plan_manager_phase_filter_visible_existing: bool,
+    aec_plan_manager_phase_filter_visible_demolition: bool,
+    aec_plan_manager_phase_filter_visible_new: bool,
+    /// Stage 2: edit-buffer for `PhaseFilter::demolition_style` (hex colors
+    /// as `"RRGGBB"` text, mirrors the old Step 8 style-editor fields).
+    aec_plan_manager_demolition_style_line_type: String,
+    aec_plan_manager_demolition_style_line_color: String,
+    aec_plan_manager_demolition_style_hatch_pattern: String,
+    aec_plan_manager_demolition_style_hatch_color: String,
+    aec_plan_manager_demolition_style_fill_color: String,
+    /// Stage 2: whether each `demolition_style` colour-picker dropdown is open
+    /// (mirrors the Layer Manager's `color_selector` widget pattern).
+    aec_plan_manager_demolition_style_line_color_picker_open: bool,
+    aec_plan_manager_demolition_style_hatch_color_picker_open: bool,
+    aec_plan_manager_demolition_style_fill_color_picker_open: bool,
+    /// Stage 2: edit-buffer for `PhaseFilter::existing_style`.
+    aec_plan_manager_existing_style_line_type: String,
+    aec_plan_manager_existing_style_line_color: String,
+    aec_plan_manager_existing_style_hatch_pattern: String,
+    aec_plan_manager_existing_style_hatch_color: String,
+    aec_plan_manager_existing_style_fill_color: String,
+    /// Stage 2: whether each `existing_style` colour-picker dropdown is open.
+    aec_plan_manager_existing_style_line_color_picker_open: bool,
+    aec_plan_manager_existing_style_hatch_color_picker_open: bool,
+    aec_plan_manager_existing_style_fill_color_picker_open: bool,
     /// Step 7 Mapping Table UI: currently entered scale name in the add-row form.
     aec_plan_manager_scale_mapping_new_scale: String,
     /// Step 7 Mapping Table UI: currently selected target DisplayConfig name in the add-row form.
@@ -1200,6 +1233,10 @@ pub(super) struct OpenCADStudio {
     /// A pending delete awaiting user confirmation (building or storey), so a
     /// misclick on "Delete" cannot silently drop project structure/files.
     aec_project_explorer_pending_delete: Option<AecProjectExplorerDeleteTarget>,
+    /// When true (headless `--serve` / test automation), the AEC
+    /// project-required guard seeds a blank in-memory project instead of
+    /// opening a blocking modal that nobody can dismiss.
+    automation_session: bool,
 
     // ── Annotation-scale Manager ──────────────────────────────────────────
     scale_manager_selected: String,
@@ -1499,6 +1536,18 @@ pub enum ColorPickTarget {
     AecMaterial,
     /// The AEC Style Manager's material edit form hatch colour.
     AecMaterialHatch,
+    /// Plan Manager Stage 2: `demolition_style` line colour.
+    AecPlanDemolitionLineColor,
+    /// Plan Manager Stage 2: `demolition_style` hatch colour.
+    AecPlanDemolitionHatchColor,
+    /// Plan Manager Stage 2: `demolition_style` fill colour.
+    AecPlanDemolitionFillColor,
+    /// Plan Manager Stage 2: `existing_style` line colour.
+    AecPlanExistingLineColor,
+    /// Plan Manager Stage 2: `existing_style` hatch colour.
+    AecPlanExistingHatchColor,
+    /// Plan Manager Stage 2: `existing_style` fill colour.
+    AecPlanExistingFillColor,
 }
 
 /// Table records the clipboard entities depend on, snapshotted from the source
@@ -1922,6 +1971,12 @@ pub enum ModalKind {
         /// Which field is being picked for.
         target: StylePickerTarget,
     },
+    /// Overwrite confirmation shown when a project↔global copy (Step 9)
+    /// collides with a different-content entry sharing the same id.
+    AecStyleCopyConflict,
+    /// Blocking prompt when an AEC entry point is used without an active
+    /// project — offers open/create project only.
+    AecProjectRequired,
 }
 
 /// A property group controlled by a layer state's restore mask.
@@ -2463,6 +2518,10 @@ pub enum Message {
     AecStyleManagerMaterialSave,
     /// "Delete" pressed for the currently selected material.
     AecStyleManagerMaterialDelete,
+    /// Copy the currently selected material from global library to project library.
+    AecStyleManagerCopyMaterialToProject,
+    /// Copy the currently selected material from project library to global library.
+    AecStyleManagerCopyMaterialToGlobal,
 
     AecStyleManagerWallStyleNew,
     AecStyleManagerWallStyleNameChanged(String),
@@ -2473,7 +2532,7 @@ pub enum Message {
     AecStyleManagerWallStyleLayerThicknessChanged(usize, String),
     AecStyleManagerWallStyleLayerFunctionChanged(usize, String),
     /// Horizontal gap-before field changed for the layer at `index`.
-    AecStyleManagerWallStyleLayerGapChanged(usize, String),
+    AecStyleManagerWallStyleLayerAxisOffsetChanged(usize, String),
     /// Bottom vertical offset field changed for the layer at `index`.
     AecStyleManagerWallStyleLayerBottomOffsetChanged(usize, String),
     /// Top vertical offset field changed for the layer at `index`.
@@ -2504,6 +2563,12 @@ pub enum Message {
     AecStyleManagerWallStyleSave,
     AecStyleManagerWallStyleSaveAndApply,
     AecStyleManagerWallStyleDelete,
+    /// Copy the currently selected wall style from global library to project library.
+    AecStyleManagerCopyWallStyleToProject,
+    /// Copy the currently selected wall style from project library to global library.
+    AecStyleManagerCopyWallStyleToGlobal,
+    /// User's yes/no answer to an overwrite confirmation dialog during AEC Style copy.
+    AecStyleManagerCopyConflictConfirm(bool),
     /// Toggles the "Wall Styles" master-list ordering between Name/Hierarchy.
     AecStyleManagerWallStyleSortToggle,
     /// Open the AEC Style Picker for a specific target.
@@ -2533,6 +2598,30 @@ pub enum Message {
     /// layer material, layer override) this returns to the manager instead
     /// of closing the modal entirely.
     AecStylePickerCancel,
+
+    // ── AEC Wall Style Manager: Darstellungs-Profile (Step 4) ────────────
+    /// A `DisplayConfig` row was selected in the "Darstellungs-Profile"
+    /// table of the currently edited wall style — loads its
+    /// `ComponentRuleSet` (if any) into the profile edit buffers.
+    AecStyleManagerProfileSelect(String),
+    /// "Alle Schichten" / "Auswahl" toggle for the `Contour2D` slot.
+    AecStyleManagerProfileContourModeToggle(bool),
+    /// "Alle Schichten" / "Auswahl" toggle for the `Solid3D` slot.
+    AecStyleManagerProfileSolidModeToggle(bool),
+    /// A layer checkbox was toggled in the `Contour2D` explicit selection.
+    AecStyleManagerProfileContourLayerToggle(crate::modules::aec::engine::join::LayerRef),
+    /// A layer checkbox was toggled in the `Solid3D` explicit selection.
+    AecStyleManagerProfileSolidLayerToggle(crate::modules::aec::engine::join::LayerRef),
+    /// "Relativ zur Wand" checkbox for the profile's hatch-angle override.
+    AecStyleManagerProfileHatchRelativeToggle(bool),
+    /// Hatch-angle text field for the profile's hatch-angle override.
+    AecStyleManagerProfileHatchAngleChanged(String),
+    /// Saves the currently edited profile's `ComponentRuleSet` into the
+    /// wall style's `display_profiles[selected_config_name]`.
+    AecStyleManagerProfileSave,
+    /// Removes the currently selected `DisplayConfig`'s override entirely,
+    /// reverting that Planart back to the style's default representation.
+    AecStyleManagerProfileRemove,
 
     // ── AEC Project Explorer (`AEC_PROJECTEXPLORER`) ──────────────────────
     /// Open the Project Explorer modal.
@@ -2622,55 +2711,41 @@ pub enum Message {
     AecPlanManagerPhaseChanged(crate::modules::aec::engine::plan_view::PlanPhase),
     /// View-type field changed in the DisplayConfig edit form.
     AecPlanManagerViewTypeChanged(crate::modules::aec::engine::plan_view::ViewType),
-    /// A wall display-component slot's visibility checkbox was toggled, by
-    /// its stable slot key (see `WallComponentSlot::key`).
-    AecPlanManagerSlotVisibilityToggle(String),
-    /// Step 8: "Bearbeiten" pressed on a slot row — opens the per-slot
-    /// `ComponentStyleOverride` editor, seeded from the current override
-    /// (or blank/"Standard" if none is set yet), by slot key.
-    AecPlanManagerSlotStyleEdit(String),
-    /// Step 8: closes the per-slot style-override editor without saving.
-    AecPlanManagerSlotStyleEditorClose,
-    /// Step 8: line-type field changed in the style-override editor.
-    AecPlanManagerSlotStyleLineTypeChanged(String),
-    /// Step 8: line-color field (hex `"RRGGBB"`) changed in the editor.
-    AecPlanManagerSlotStyleLineColorChanged(String),
-    /// Step 8: hatch-pattern field changed in the style-override editor.
-    AecPlanManagerSlotStyleHatchPatternChanged(String),
-    /// Step 8: hatch-color field (hex `"RRGGBB"`) changed in the editor.
-    AecPlanManagerSlotStyleHatchColorChanged(String),
-    /// Step 8: fill-color field (hex `"RRGGBB"`) changed in the editor.
-    AecPlanManagerSlotStyleFillColorChanged(String),
-    /// Step 8: "Speichern" pressed in the style-override editor — commits
-    /// the editor buffers into `aec_plan_manager_style_override` for the
-    /// slot key currently open, then closes the editor.
-    AecPlanManagerSlotStyleSave,
-    /// Step 8: "Entfernen" pressed on a slot row — resets that slot back to
-    /// "Standard" by removing its entry from the style-override buffer.
-    AecPlanManagerSlotStyleReset(String),
-    /// Layer-Filter-UI: "Alle"/"Auswahl" toggle changed. `true` = "Auswahl"
-    /// (`LayerSelection::Explicit`), `false` = "Alle" (`LayerSelection::All`).
-    AecPlanManagerLayerFilterModeToggle(bool),
-    /// Layer-Filter-UI: a single layer's checkbox was toggled in the
-    /// "Auswahl" multi-select checklist; adds/removes it from
-    /// `aec_plan_manager_layer_filter_selection`.
-    AecPlanManagerLayerFilterLayerToggle(crate::modules::aec::engine::join::LayerRef),
-    /// Style-Substitutions-UI: "Original-Wandstil" pick_list selection in
-    /// the add-row form changed.
-    AecPlanManagerSubstitutionSourceChanged(String),
-    /// Style-Substitutions-UI: "Ersatz-Wandstil" pick_list selection in the
-    /// add-row form changed.
-    AecPlanManagerSubstitutionTargetChanged(String),
-    /// Style-Substitutions-UI: "Hinzufügen" pressed — validates via
-    /// `validate_style_substitution` and, on success, upserts the row into
-    /// the edit buffer (Key Decision 2: reusing an already-substituted
-    /// source overwrites its target instead of erroring); on failure, sets
-    /// `aec_plan_manager_substitution_error` and leaves the buffer
-    /// unchanged.
-    AecPlanManagerSubstitutionAdd,
-    /// Style-Substitutions-UI: "Entfernen" pressed on a row — removes the
-    /// row for the given source wall style from the edit buffer.
-    AecPlanManagerSubstitutionRemove(String),
+    /// Two-stage Phasenfilter-Editor, Stage 1: a phase's "sichtbar"
+    /// checkbox was toggled in the DisplayConfig edit form.
+    AecPlanManagerPhaseVisibleToggle(crate::modules::aec::engine::plan_view::PlanPhase, bool),
+    /// Stage 2: `demolition_style` line-type field changed.
+    AecPlanManagerDemolitionStyleLineTypeChanged(String),
+    /// Stage 2: `demolition_style` line-color field (hex `"RRGGBB"`) changed.
+    AecPlanManagerDemolitionStyleLineColorChanged(String),
+    /// Stage 2: `demolition_style` hatch-pattern field changed.
+    AecPlanManagerDemolitionStyleHatchPatternChanged(String),
+    /// Stage 2: `demolition_style` hatch-color field (hex `"RRGGBB"`) changed.
+    AecPlanManagerDemolitionStyleHatchColorChanged(String),
+    /// Stage 2: `demolition_style` fill-color field (hex `"RRGGBB"`) changed.
+    AecPlanManagerDemolitionStyleFillColorChanged(String),
+    /// Stage 2: `existing_style` line-type field changed.
+    AecPlanManagerExistingStyleLineTypeChanged(String),
+    /// Stage 2: `existing_style` line-color field (hex `"RRGGBB"`) changed.
+    AecPlanManagerExistingStyleLineColorChanged(String),
+    /// Stage 2: `existing_style` hatch-pattern field changed.
+    AecPlanManagerExistingStyleHatchPatternChanged(String),
+    /// Stage 2: `existing_style` hatch-color field (hex `"RRGGBB"`) changed.
+    AecPlanManagerExistingStyleHatchColorChanged(String),
+    /// Stage 2: `existing_style` fill-color field (hex `"RRGGBB"`) changed.
+    AecPlanManagerExistingStyleFillColorChanged(String),
+    /// Stage 2: toggles the `demolition_style` line-color picker dropdown.
+    AecPlanManagerDemolitionStyleLineColorPickerToggle,
+    /// Stage 2: toggles the `demolition_style` hatch-color picker dropdown.
+    AecPlanManagerDemolitionStyleHatchColorPickerToggle,
+    /// Stage 2: toggles the `demolition_style` fill-color picker dropdown.
+    AecPlanManagerDemolitionStyleFillColorPickerToggle,
+    /// Stage 2: toggles the `existing_style` line-color picker dropdown.
+    AecPlanManagerExistingStyleLineColorPickerToggle,
+    /// Stage 2: toggles the `existing_style` hatch-color picker dropdown.
+    AecPlanManagerExistingStyleHatchColorPickerToggle,
+    /// Stage 2: toggles the `existing_style` fill-color picker dropdown.
+    AecPlanManagerExistingStyleFillColorPickerToggle,
     /// Step 7 Mapping Table UI: scale-name text field changed.
     AecPlanManagerScaleMappingNewScaleChanged(String),
     /// Step 7 Mapping Table UI: target-config pick-list selection changed.
@@ -4051,6 +4126,15 @@ impl OpenCADStudio {
             aec_style_manager_wall_style_layers: Vec::new(),
             aec_style_manager_wall_style_drag_index: None,
             aec_style_manager_wall_style_sort: AecWallStyleSort::default(),
+            aec_style_manager_copy_conflict_open: false,
+            aec_style_manager_pending_copy: None,
+            aec_style_manager_profile_selected: None,
+            aec_style_manager_profile_contour_explicit: false,
+            aec_style_manager_profile_contour_selection: Vec::new(),
+            aec_style_manager_profile_solid_explicit: false,
+            aec_style_manager_profile_solid_selection: Vec::new(),
+            aec_style_manager_profile_hatch_angle: String::new(),
+            aec_style_manager_profile_hatch_relative: false,
             aec_plan_library: None,
             aec_plan_manager_filter: String::new(),
             aec_plan_manager_selected: None,
@@ -4061,20 +4145,25 @@ impl OpenCADStudio {
             aec_plan_manager_scale: String::new(),
             aec_plan_manager_phase: crate::modules::aec::engine::plan_view::PlanPhase::New,
             aec_plan_manager_view_type: crate::modules::aec::engine::plan_view::ViewType::FloorPlan,
-            aec_plan_manager_slot_visibility: std::collections::HashMap::new(),
-            aec_plan_manager_style_override: std::collections::HashMap::new(),
-            aec_plan_manager_style_editor_slot: None,
-            aec_plan_manager_style_editor_line_type: String::new(),
-            aec_plan_manager_style_editor_line_color: String::new(),
-            aec_plan_manager_style_editor_hatch_pattern: String::new(),
-            aec_plan_manager_style_editor_hatch_color: String::new(),
-            aec_plan_manager_style_editor_fill_color: String::new(),
-            aec_plan_manager_layer_filter_explicit: false,
-            aec_plan_manager_layer_filter_selection: Vec::new(),
-            aec_plan_manager_style_substitutions: Vec::new(),
-            aec_plan_manager_new_substitution_source: None,
-            aec_plan_manager_new_substitution_target: None,
-            aec_plan_manager_substitution_error: None,
+            aec_plan_manager_phase_filter_visible_existing: true,
+            aec_plan_manager_phase_filter_visible_demolition: true,
+            aec_plan_manager_phase_filter_visible_new: true,
+            aec_plan_manager_demolition_style_line_type: String::new(),
+            aec_plan_manager_demolition_style_line_color: String::new(),
+            aec_plan_manager_demolition_style_hatch_pattern: String::new(),
+            aec_plan_manager_demolition_style_hatch_color: String::new(),
+            aec_plan_manager_demolition_style_fill_color: String::new(),
+            aec_plan_manager_demolition_style_line_color_picker_open: false,
+            aec_plan_manager_demolition_style_hatch_color_picker_open: false,
+            aec_plan_manager_demolition_style_fill_color_picker_open: false,
+            aec_plan_manager_existing_style_line_type: String::new(),
+            aec_plan_manager_existing_style_line_color: String::new(),
+            aec_plan_manager_existing_style_hatch_pattern: String::new(),
+            aec_plan_manager_existing_style_hatch_color: String::new(),
+            aec_plan_manager_existing_style_fill_color: String::new(),
+            aec_plan_manager_existing_style_line_color_picker_open: false,
+            aec_plan_manager_existing_style_hatch_color_picker_open: false,
+            aec_plan_manager_existing_style_fill_color_picker_open: false,
             aec_plan_manager_scale_mapping_new_scale: String::new(),
             aec_plan_manager_scale_mapping_new_config: None,
             aec_junction_editor_target: None,
@@ -4097,6 +4186,7 @@ impl OpenCADStudio {
             aec_project_explorer_edit_elevation: String::new(),
             aec_project_explorer_edit_storey_drawing: String::new(),
             aec_project_explorer_pending_delete: None,
+            automation_session: false,
             scale_manager_selected: String::new(),
             scale_manager_paper_buf: String::new(),
             scale_manager_drawing_buf: String::new(),
@@ -4280,7 +4370,9 @@ impl OpenCADStudio {
 
     #[cfg(test)]
     pub(crate) fn new_for_test() -> Self {
-        Self::new()
+        let mut app = Self::new();
+        app.automation_session = true;
+        app
     }
 
     /// Install `cmd` as the active interactive command for tab `tab`.

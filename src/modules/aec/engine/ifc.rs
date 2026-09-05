@@ -227,7 +227,7 @@ mod tests {
             material: "Concrete".to_string(),
             thickness: 0.2,
             function: "Structural".to_string(),
-            gap_before: 0.0,
+            axis_offset: 0.0,
             bottom_offset: 0.0,
             top_offset: 0.0,
             layer_override: None,
