@@ -13,8 +13,12 @@
 //! keyed by this type's `name` — see
 //! [`crate::modules::aec::engine::library::resolve_effective_rule_set`].
 
-use crate::modules::aec::engine::display_component::ComponentStyleOverride;
+use crate::modules::aec::engine::display_component::{
+    ComponentStyleOverride, RepresentationMode, StyleDisplayOverlay, WallComponentKind,
+};
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
+use uuid::Uuid;
 
 /// Identifier of a wall style, used by `WallStyle::display_profiles` keys
 /// on the *other* side of that map (this module only re-exports the type
@@ -57,19 +61,38 @@ impl PlanPhase {
 
     /// Inverse of [`PlanPhase::as_str`]; unknown/empty tags default to `New`
     /// so older `WALL` records without a phase field still parse.
+    /// German UI labels (`Neubau`/`Bestand`/`Abbruch`) are accepted too.
     pub fn from_str(s: &str) -> Self {
         match s {
-            "Existing" => PlanPhase::Existing,
-            "Demolition" => PlanPhase::Demolition,
+            "Existing" | "Bestand" => PlanPhase::Existing,
+            "Demolition" | "Abbruch" => PlanPhase::Demolition,
             _ => PlanPhase::New,
+        }
+    }
+
+    /// German UI label (Neubau / Bestand / Abbruch).
+    pub fn display_label(self) -> &'static str {
+        match self {
+            PlanPhase::Existing => "Bestand",
+            PlanPhase::Demolition => "Abbruch",
+            PlanPhase::New => "Neubau",
         }
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum PlanningStage {
+    Permit,
+    #[default]
+    Design,
+    Execution,
+}
+
 /// The kind of drawing view a `DisplayConfig` applies to.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 pub enum ViewType {
     /// Grundriss.
+    #[default]
     FloorPlan,
     /// Schnitt.
     Section,
@@ -85,6 +108,9 @@ pub enum ViewType {
 /// in `.junie/plans/aec-plan-view-display-variants.md`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct DisplayConfig {
+    /// Stable identity; names are labels and may be renamed.
+    #[serde(default = "Uuid::new_v4")]
+    pub id: Uuid,
     /// Human-readable name, e.g. "Architekt 1:50".
     pub name: String,
     /// Freely chosen discipline label, e.g. "Architektur", "Statik".
@@ -94,9 +120,17 @@ pub struct DisplayConfig {
     /// deliberately deferred).
     #[serde(default)]
     pub scale: Option<f64>,
-    /// Planning phase (Bestand/Abbruch/Neu).
-    pub phase: PlanPhase,
-    /// View type (Grundriss/Schnitt/Ansicht).
+    /// Planning stage (Permit/Design/Execution). Additive field: absent in
+    /// `.ocsproj`/library files saved before this field existed, so it
+    /// defaults to [`PlanningStage::Design`] on load instead of failing the
+    /// whole project deserialization.
+    #[serde(default)]
+    pub planning_stage: PlanningStage,
+    /// View type (Grundriss/Schnitt/Ansicht). Additive field: absent in
+    /// `.ocsproj`/library files saved before this field existed, so it
+    /// defaults to [`ViewType::FloorPlan`] on load instead of failing the
+    /// whole project deserialization.
+    #[serde(default)]
     pub view_type: ViewType,
     /// Which [`PlanPhase`]s this config shows, plus extra style overrides for
     /// `Demolition`/`Existing` walls (e.g. dashed lines for Abbruch). `None`
@@ -104,6 +138,18 @@ pub struct DisplayConfig {
     /// field existed.
     #[serde(default)]
     pub phase_filter: Option<PhaseFilter>,
+    /// Default 2D/3D/All filter for this Planart; session override wins.
+    #[serde(default)]
+    pub default_representation: RepresentationMode,
+    /// Global component visibility (absent key = visible).
+    #[serde(default)]
+    pub component_visibility: HashMap<WallComponentKind, bool>,
+    /// Sparse per-wall-style exceptions, keyed by `Style.id`.
+    #[serde(default)]
+    pub style_overlays: HashMap<String, StyleDisplayOverlay>,
+    /// Global look for the 2D overall-contour hatch (`ContourHatch2D`).
+    #[serde(default)]
+    pub contour_hatch: Option<ComponentStyleOverride>,
 }
 
 /// Two-stage phase visibility/appearance filter for a [`DisplayConfig`]: which
@@ -146,14 +192,24 @@ pub struct ScaleDisplayConfigMapping {
 
 impl DisplayConfig {
     /// Creates a new `DisplayConfig` with no overrides yet.
-    pub fn new(name: String, discipline: String, phase: PlanPhase, view_type: ViewType) -> Self {
+    pub fn new(
+        name: String,
+        discipline: String,
+        planning_stage: PlanningStage,
+        view_type: ViewType,
+    ) -> Self {
         Self {
+            id: Uuid::new_v4(),
             name,
             discipline,
             scale: None,
-            phase,
+            planning_stage,
             view_type,
             phase_filter: None,
+            default_representation: RepresentationMode::All,
+            component_visibility: HashMap::new(),
+            style_overlays: HashMap::new(),
+            contour_hatch: None,
         }
     }
 }
@@ -167,7 +223,7 @@ mod tests {
         let cfg = DisplayConfig::new(
             "Architekt 1:50".to_string(),
             "Architektur".to_string(),
-            PlanPhase::New,
+            PlanningStage::Design,
             ViewType::FloorPlan,
         );
         assert_eq!(cfg.name, "Architekt 1:50");
@@ -181,7 +237,7 @@ mod tests {
         let mut cfg = DisplayConfig::new(
             "Statik 1:50".to_string(),
             "Statik".to_string(),
-            PlanPhase::Existing,
+            PlanningStage::Design,
             ViewType::Section,
         );
         cfg.scale = Some(50.0);
@@ -198,12 +254,14 @@ mod tests {
         let json = r#"{
             "name": "Architekt 1:50",
             "discipline": "Architektur",
-            "phase": "New",
+            "planning_stage": "Design",
             "view_type": "FloorPlan"
         }"#;
         let cfg: DisplayConfig = serde_json::from_str(json).unwrap();
         assert_eq!(cfg.scale, None);
         assert_eq!(cfg.phase_filter, None);
+        assert!(!cfg.id.is_nil());
+        assert!(cfg.style_overlays.is_empty());
     }
 
     #[test]
@@ -226,7 +284,7 @@ mod tests {
         let cfg = DisplayConfig::new(
             "Architekt 1:50".to_string(),
             "Architektur".to_string(),
-            PlanPhase::New,
+            PlanningStage::Design,
             ViewType::FloorPlan,
         );
         assert_eq!(cfg.phase_filter, None);
@@ -239,7 +297,7 @@ mod tests {
         let json = r#"{
             "name": "Architekt 1:50",
             "discipline": "Architektur",
-            "phase": "New",
+            "planning_stage": "Design",
             "view_type": "FloorPlan"
         }"#;
         let cfg: DisplayConfig = serde_json::from_str(json).unwrap();
@@ -251,7 +309,7 @@ mod tests {
         let mut cfg = DisplayConfig::new(
             "Abbruch/Bestand 1:50".to_string(),
             "Architektur".to_string(),
-            PlanPhase::New,
+            PlanningStage::Design,
             ViewType::FloorPlan,
         );
         cfg.phase_filter = Some(PhaseFilter {
@@ -261,7 +319,7 @@ mod tests {
                 ..Default::default()
             }),
             existing_style: Some(ComponentStyleOverride {
-                line_color: Some(0x888888),
+                line_color: Some(acadrust::types::Color::Rgb { r: 136, g: 136, b: 136 }),
                 ..Default::default()
             }),
         });

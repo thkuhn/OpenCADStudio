@@ -3126,6 +3126,7 @@ impl OpenCADStudio {
                         );
                     }
                 }
+                self.reapply_active_display_config_to_wall_packages(i, &handles);
                 for h in extra_handles {
                     if !handles.contains(&h) {
                         handles.push(h);

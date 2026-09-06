@@ -941,8 +941,19 @@ impl OpenCADStudio {
             // the rest remain immediate scaffold commands — create entities +
             // XDATA without multi-click interaction (former plugin behaviour).
             "AEC_WALL" => {
-                if !self.aec_require_project() {
-                    return None;
+                if !self.aec_require_project(Message::Command("AEC_WALL".to_string())) {
+                    // The project-required modal was just opened as a side
+                    // effect of `aec_require_project()`. Returning `None`
+                    // here would tell `dispatch_families` that "AEC_WALL"
+                    // was not matched at all, which sends it into the
+                    // "Unknown command" / autocomplete-suggestion fallback
+                    // in `dispatch_command_inner` — in the worst case
+                    // silently re-dispatching an unrelated command (e.g.
+                    // another "AEC_WALL*" verb) right after the blocking
+                    // modal appears. Returning `Some(Task::none())` marks
+                    // the command as handled (just aborted), so nothing
+                    // further runs until the user picks/creates a project.
+                    return Some(Task::none());
                 }
                 use crate::modules::aec::commands::WallCommand;
                 // Register the APPID up front: the interactive command has no
@@ -1017,6 +1028,7 @@ impl OpenCADStudio {
                         display_rules.as_ref(),
                         style_substitutions.as_ref(),
                     );
+                    self.reapply_active_display_config_to_wall_packages(i, &wall_handles);
                     self.tabs[i].dirty = true;
                 } else {
                     use crate::modules::aec::commands::WallJoinCommand;
@@ -1065,7 +1077,7 @@ impl OpenCADStudio {
                         );
                     let (display_rules, style_substitutions) =
                         self.resolve_active_display_config_wall_rules(i, wall_handles.first().copied());
-                    for h in wall_handles {
+                    for h in &wall_handles {
                         crate::modules::aec::commands::aec_wallreverse_do(
                             &mut self.tabs[i].scene,
                             &mut self.command_line,
@@ -1075,6 +1087,7 @@ impl OpenCADStudio {
                             style_substitutions.as_ref(),
                         );
                     }
+                    self.reapply_active_display_config_to_wall_packages(i, &wall_handles);
                     self.tabs[i].dirty = true;
                 } else {
                     use crate::modules::aec::commands::WallReverseCommand;
@@ -1117,8 +1130,18 @@ impl OpenCADStudio {
                 let style_library = crate::modules::aec::engine::project::resolve_style_library(
                     self.aec_project_explorer_file.as_ref(),
                 );
+                let join_handles: Vec<acadrust::Handle> = args
+                    .split('|')
+                    .filter_map(|p| p.parse::<u64>().ok().map(acadrust::Handle::new))
+                    .collect();
+                let first = join_handles.first().copied().map(|h| {
+                    crate::modules::aec::commands::resolve_wall_package(
+                        &self.tabs[i].scene,
+                        h,
+                    )
+                });
                 let (display_rules, style_substitutions) =
-                    self.resolve_active_display_config_wall_rules(i, None);
+                    self.resolve_active_display_config_wall_rules(i, first);
                 crate::modules::aec::commands::aec_walljoin_do(
                     &mut self.tabs[i].scene,
                     &mut self.command_line,
@@ -1127,6 +1150,7 @@ impl OpenCADStudio {
                     display_rules.as_ref(),
                     style_substitutions.as_ref(),
                 );
+                self.reapply_active_display_config_to_wall_packages(i, &join_handles);
                 self.tabs[i].dirty = true;
             }
             cmd if cmd.starts_with("AEC_WALLEXTEND_DO ") => {
@@ -1134,8 +1158,19 @@ impl OpenCADStudio {
                 let style_library = crate::modules::aec::engine::project::resolve_style_library(
                     self.aec_project_explorer_file.as_ref(),
                 );
+                let first = args
+                    .split('|')
+                    .next()
+                    .and_then(|p| p.parse::<u64>().ok())
+                    .map(acadrust::Handle::new)
+                    .map(|h| {
+                        crate::modules::aec::commands::resolve_wall_package(
+                            &self.tabs[i].scene,
+                            h,
+                        )
+                    });
                 let (display_rules, style_substitutions) =
-                    self.resolve_active_display_config_wall_rules(i, None);
+                    self.resolve_active_display_config_wall_rules(i, first);
                 crate::modules::aec::commands::aec_wallextend_do(
                     &mut self.tabs[i].scene,
                     &mut self.command_line,
@@ -1144,6 +1179,9 @@ impl OpenCADStudio {
                     display_rules.as_ref(),
                     style_substitutions.as_ref(),
                 );
+                if let Some(h) = first {
+                    self.reapply_active_display_config_to_wall_packages(i, &[h]);
+                }
                 self.tabs[i].dirty = true;
             }
             cmd if cmd.starts_with("AEC_WALLREVERSE_DO ") => {
@@ -1151,8 +1189,24 @@ impl OpenCADStudio {
                 let style_library = crate::modules::aec::engine::project::resolve_style_library(
                     self.aec_project_explorer_file.as_ref(),
                 );
+                let first = args
+                    .parse::<u64>()
+                    .ok()
+                    .map(acadrust::Handle::new)
+                    .or_else(|| {
+                        args.split('|')
+                            .next()
+                            .and_then(|p| p.parse::<u64>().ok())
+                            .map(acadrust::Handle::new)
+                    })
+                    .map(|h| {
+                        crate::modules::aec::commands::resolve_wall_package(
+                            &self.tabs[i].scene,
+                            h,
+                        )
+                    });
                 let (display_rules, style_substitutions) =
-                    self.resolve_active_display_config_wall_rules(i, None);
+                    self.resolve_active_display_config_wall_rules(i, first);
                 crate::modules::aec::commands::aec_wallreverse_do(
                     &mut self.tabs[i].scene,
                     &mut self.command_line,
@@ -1161,6 +1215,9 @@ impl OpenCADStudio {
                     display_rules.as_ref(),
                     style_substitutions.as_ref(),
                 );
+                if let Some(h) = first {
+                    self.reapply_active_display_config_to_wall_packages(i, &[h]);
+                }
                 self.tabs[i].dirty = true;
             }
             "AEC_ROOMSCHEDULE" => {

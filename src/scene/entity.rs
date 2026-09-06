@@ -2457,42 +2457,51 @@ impl Scene {
             .unwrap_or(model.world_origin);
         if let crate::scene::model::hatch_model::HatchPattern::Pattern(families) = &model.pattern {
             let mut pattern = acadrust::entities::HatchPattern::new(&model.name);
-            let rotation = model.angle_offset as f64;
-            let (rotation_sin, rotation_cos) = rotation.sin_cos();
-            for family in families {
-                let family_angle = (family.angle_deg as f64).to_radians();
-                let angle = family_angle + rotation;
-                let (family_sin, family_cos) = family_angle.sin_cos();
-                let local_offset_x = family.dx as f64 * family_cos
-                    - family.dy as f64 * family_sin;
-                let local_offset_y = family.dx as f64 * family_sin
-                    + family.dy as f64 * family_cos;
-                let base_x = family.x0 as f64 * pattern_scale;
-                let base_y = family.y0 as f64 * pattern_scale;
-                pattern.lines.push(acadrust::entities::HatchPatternLine {
-                    angle,
-                    base_point: Vector2::new(
-                        pattern_origin[0]
-                            + base_x * rotation_cos
-                            - base_y * rotation_sin,
-                        pattern_origin[1]
-                            + base_x * rotation_sin
-                            + base_y * rotation_cos,
-                    ),
-                    offset: Vector2::new(
-                        (local_offset_x * rotation_cos
-                            - local_offset_y * rotation_sin)
-                            * pattern_scale,
-                        (local_offset_x * rotation_sin
-                            + local_offset_y * rotation_cos)
-                            * pattern_scale,
-                    ),
-                    dash_lengths: family
-                        .dashes
-                        .iter()
-                        .map(|dash| *dash as f64 * pattern_scale)
-                        .collect(),
-                });
+            // Named catalog patterns are re-derived on load from the PAT
+            // definition × `pattern_scale`. Baking already-scaled line
+            // geometry here made `hatch_model_from_dxf` treat them as
+            // prebaked (`scale = 1`) while still persisting `pattern_scale`,
+            // so a save/reload of wall hatches changed HatchModel.scale and
+            // could double-apply spacing when lines were dropped.
+            let catalog = crate::scene::model::hatch_patterns::find(&model.name);
+            if catalog.is_none() {
+                let rotation = model.angle_offset as f64;
+                let (rotation_sin, rotation_cos) = rotation.sin_cos();
+                for family in families {
+                    let family_angle = (family.angle_deg as f64).to_radians();
+                    let angle = family_angle + rotation;
+                    let (family_sin, family_cos) = family_angle.sin_cos();
+                    let local_offset_x = family.dx as f64 * family_cos
+                        - family.dy as f64 * family_sin;
+                    let local_offset_y = family.dx as f64 * family_sin
+                        + family.dy as f64 * family_cos;
+                    let base_x = family.x0 as f64 * pattern_scale;
+                    let base_y = family.y0 as f64 * pattern_scale;
+                    pattern.lines.push(acadrust::entities::HatchPatternLine {
+                        angle,
+                        base_point: Vector2::new(
+                            pattern_origin[0]
+                                + base_x * rotation_cos
+                                - base_y * rotation_sin,
+                            pattern_origin[1]
+                                + base_x * rotation_sin
+                                + base_y * rotation_cos,
+                        ),
+                        offset: Vector2::new(
+                            (local_offset_x * rotation_cos
+                                - local_offset_y * rotation_sin)
+                                * pattern_scale,
+                            (local_offset_x * rotation_sin
+                                + local_offset_y * rotation_cos)
+                                * pattern_scale,
+                        ),
+                        dash_lengths: family
+                            .dashes
+                            .iter()
+                            .map(|dash| *dash as f64 * pattern_scale)
+                            .collect(),
+                    });
+                }
             }
             dxf.pattern = pattern;
         }

@@ -55,9 +55,12 @@ pub struct StatusMenuData<'a> {
     pub active_plan_name: Option<String>,
     // AEC "Planart" pill: all `DisplayConfig` names in `App::aec_plan_library`.
     pub plan_names: Vec<String>,
-    // AEC "Planart" pill: whether the active tab auto-couples its DisplayConfig
-    // to the drawing scale (`DocumentTab::auto_display_config_from_scale`).
-    pub auto_display_config_from_scale: bool,
+    /// Effective 2D/3D/Alle after session override (or Planart default).
+    pub representation_mode: crate::modules::aec::engine::display_component::RepresentationMode,
+    /// `None` inherit from Planart; `Some` is a session override.
+    pub representation_override: Option<
+        crate::modules::aec::engine::display_component::RepresentationMode,
+    >,
 }
 
 #[derive(Clone, Default)]
@@ -149,7 +152,8 @@ impl StatusBar {
             active_project_name,
             active_plan_name,
             plan_names,
-            auto_display_config_from_scale,
+            representation_mode,
+            representation_override,
         } = menu_data;
 
         // Leftmost hamburger: opens a dropdown listing Model + every layout, so
@@ -277,17 +281,25 @@ impl StatusBar {
         )
         .on_right_press(Message::AecPlanManagerOpen)
         .into();
-        // Coupling toggle: shows/controls whether the active tab's DisplayConfig
-        // auto-follows the drawing scale.
-        let plan_auto_toggle: Element<'_, Message> = tip(
-            toggle_pill(
-                ST_VP_SCALE_SYNC,
-                auto_display_config_from_scale,
-                Message::AecAutoDisplayConfigFromScaleToggled(!auto_display_config_from_scale),
+        let mode_short = match representation_mode {
+            crate::modules::aec::engine::display_component::RepresentationMode::TwoD => "2D",
+            crate::modules::aec::engine::display_component::RepresentationMode::ThreeD => "3D",
+            crate::modules::aec::engine::display_component::RepresentationMode::All => "Alle",
+        };
+        let representation_label = if representation_override.is_none() {
+            format!("Planart · {mode_short}")
+        } else {
+            mode_short.to_string()
+        };
+        let representation_element: Element<'_, Message> = status_menu::menu_bar(
+            menu_tip(
+                popup_pill(representation_label),
+                t!("Wanddarstellung 2D / 3D / Alle\nÜberschreibt den Planart-Default für diese Sitzung"),
+                tooltip_hidden,
             ),
-            t!("Automatisch an Maßstab koppeln"),
-        )
-        .into();
+            crate::ui::popup::representation_popup::menu_entries(representation_override),
+            140.0,
+        );
         // Build the right-side pills, honouring the user's per-pill visibility.
         // They live in a flex-wrap flow (WrapFlow) so they spill onto extra rows
         // when the width can't hold them all on one line.
@@ -389,7 +401,7 @@ impl StatusBar {
         // is active, same as the other pills that read from the active tab.
         if !is_start {
             pills.push(plan_element);
-            pills.push(plan_auto_toggle);
+            pills.push(representation_element);
         }
         if vis(StatusPill::AnnoVisibility) {
             pills.push(

@@ -1156,6 +1156,9 @@ pub(super) fn on_text_style_dialog_open(&mut self) -> Task<Message> {
                         Some(Message::AecStyleManagerMaterialColorPicked(color))
                     }
                     Some(crate::app::ColorPickTarget::AecMaterialHatch) => {
+                        // Material hatch colour is still stored as a u32
+                        // buffer for the form, resolved from the picked
+                        // AcadColor's RGB (Index → ACI table).
                         let value = match color {
                             acadrust::types::Color::Rgb { r, g, b } => {
                                 ((r as u32) << 16) | ((g as u32) << 8) | (b as u32)
@@ -1182,32 +1185,67 @@ pub(super) fn on_text_style_dialog_open(&mut self) -> Task<Message> {
                     Some(crate::app::ColorPickTarget::PlotStyle) => None,
                     Some(crate::app::ColorPickTarget::AecPlanDemolitionLineColor) => Some(
                         Message::AecPlanManagerDemolitionStyleLineColorChanged(
-                            crate::ui::window::aec_ui_util::acad_color_to_hex(color),
+                            crate::ui::window::aec_ui_util::acad_color_to_editor_string(color),
                         ),
                     ),
                     Some(crate::app::ColorPickTarget::AecPlanDemolitionHatchColor) => Some(
                         Message::AecPlanManagerDemolitionStyleHatchColorChanged(
-                            crate::ui::window::aec_ui_util::acad_color_to_hex(color),
+                            crate::ui::window::aec_ui_util::acad_color_to_editor_string(color),
                         ),
                     ),
                     Some(crate::app::ColorPickTarget::AecPlanDemolitionFillColor) => Some(
                         Message::AecPlanManagerDemolitionStyleFillColorChanged(
-                            crate::ui::window::aec_ui_util::acad_color_to_hex(color),
+                            crate::ui::window::aec_ui_util::acad_color_to_editor_string(color),
                         ),
                     ),
                     Some(crate::app::ColorPickTarget::AecPlanExistingLineColor) => Some(
                         Message::AecPlanManagerExistingStyleLineColorChanged(
-                            crate::ui::window::aec_ui_util::acad_color_to_hex(color),
+                            crate::ui::window::aec_ui_util::acad_color_to_editor_string(color),
                         ),
                     ),
                     Some(crate::app::ColorPickTarget::AecPlanExistingHatchColor) => Some(
                         Message::AecPlanManagerExistingStyleHatchColorChanged(
-                            crate::ui::window::aec_ui_util::acad_color_to_hex(color),
+                            crate::ui::window::aec_ui_util::acad_color_to_editor_string(color),
                         ),
                     ),
                     Some(crate::app::ColorPickTarget::AecPlanExistingFillColor) => Some(
                         Message::AecPlanManagerExistingStyleFillColorChanged(
-                            crate::ui::window::aec_ui_util::acad_color_to_hex(color),
+                            crate::ui::window::aec_ui_util::acad_color_to_editor_string(color),
+                        ),
+                    ),
+                    Some(crate::app::ColorPickTarget::AecWallStyleSlotLineColor) => Some(
+                        Message::AecStyleManagerProfileSlotStyleLineColorChanged(
+                            crate::ui::window::aec_ui_util::acad_color_to_editor_string(color),
+                        ),
+                    ),
+                    Some(crate::app::ColorPickTarget::AecWallStyleSlotHatchColor) => Some(
+                        Message::AecStyleManagerProfileSlotStyleHatchColorChanged(
+                            crate::ui::window::aec_ui_util::acad_color_to_editor_string(color),
+                        ),
+                    ),
+                    Some(crate::app::ColorPickTarget::AecWallStyleSlotFillColor) => Some(
+                        Message::AecStyleManagerProfileSlotStyleFillColorChanged(
+                            crate::ui::window::aec_ui_util::acad_color_to_editor_string(color),
+                        ),
+                    ),
+                    Some(crate::app::ColorPickTarget::AecPlanOverlayLineColor) => Some(
+                        Message::AecPlanManagerOverlayLineColorChanged(
+                            crate::ui::window::aec_ui_util::acad_color_to_editor_string(color),
+                        ),
+                    ),
+                    Some(crate::app::ColorPickTarget::AecPlanOverlayHatchColor) => Some(
+                        Message::AecPlanManagerOverlayHatchColorChanged(
+                            crate::ui::window::aec_ui_util::acad_color_to_editor_string(color),
+                        ),
+                    ),
+                    Some(crate::app::ColorPickTarget::AecPlanOverlayFillColor) => Some(
+                        Message::AecPlanManagerOverlayFillColorChanged(
+                            crate::ui::window::aec_ui_util::acad_color_to_editor_string(color),
+                        ),
+                    ),
+                    Some(crate::app::ColorPickTarget::AecPlanContourHatchColor) => Some(
+                        Message::AecPlanManagerContourHatchColorChanged(
+                            crate::ui::window::aec_ui_util::acad_color_to_editor_string(color),
                         ),
                     ),
                     None => None,

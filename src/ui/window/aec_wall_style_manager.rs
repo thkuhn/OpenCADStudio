@@ -8,6 +8,7 @@ use iced::widget::{
 use iced::{Background, Border, Element, Fill, Theme};
 
 use crate::app::Message;
+use crate::modules::aec::engine::display_component::WallComponentSlot;
 use crate::modules::aec::engine::join::LayerRef;
 use crate::modules::aec::engine::library::{
     combined_wall_style_entries, LibrarySource, StyleLibrary,
@@ -55,6 +56,7 @@ pub struct WallStyleFormState<'a> {
 /// — two independent per-slot layer-filter checklists (`Contour2D`/
 /// `Solid3D`, mirroring `layer_filter_to_ui_state`) and a hatch-angle
 /// override ("Relativ zur Wand" + Winkel).
+#[derive(Clone)]
 pub struct DisplayProfileFormState<'a> {
     /// Every `DisplayConfig` name known to the resolved `DisplayConfigLibrary`.
     pub display_config_names: Vec<String>,
@@ -76,6 +78,39 @@ pub struct DisplayProfileFormState<'a> {
     pub hatch_angle: &'a str,
     /// Whether `hatch_angle` is relative to the wall's own run direction.
     pub hatch_relative: bool,
+    /// Visibility per slot (Step 4).
+    pub slot_visibility: std::collections::HashMap<WallComponentSlot, bool>,
+    /// Slot currently open in the inline style-override editor.
+    pub editing_slot: Option<WallComponentSlot>,
+    /// Pending per-slot style overrides for the selected profile.
+    pub slot_overrides: &'a std::collections::HashMap<
+        WallComponentSlot,
+        crate::modules::aec::engine::display_component::ComponentStyleOverride,
+    >,
+    /// Shared style-editor buffer state for the open slot (if any).
+    pub slot_style_editor: super::aec_ui_util::StyleEditorFormState<'a>,
+}
+
+
+/// Standalone modal content for Planart display-profile editing
+/// (`ModalKind::AecWallStyleDisplayProfiles`).
+pub fn view_display_profiles_window<'a>(
+    profiles: DisplayProfileFormState<'a>,
+    layers: &'a [crate::app::AecLayerBuffer],
+) -> Element<'a, Message> {
+    column![
+        display_profiles_section(&profiles, layers),
+        row![
+            Space::new(),
+            button(text(t!("Schließen")).size(11))
+                .padding([5, 12])
+                .on_press(Message::AecWallStyleManagerDisplayProfilesClose),
+        ]
+        .spacing(8),
+    ]
+    .spacing(10)
+    .padding(10)
+    .into()
 }
 
 pub fn view_window<'a>(
@@ -426,11 +461,21 @@ fn wall_style_form_view<'a>(
         );
     }
 
-    if let Some(profiles) = &wall_style_form.display_profiles {
-        detail_col = detail_col
-            .push(Space::new().height(10))
-            .push(display_profiles_section(profiles, wall_style_form.layers));
-    }
+    detail_col = detail_col
+        .push(Space::new().height(10))
+        .push(
+            text(t!(
+                "Darstellung und Stil-Ausnahmen liegen im Plan-Manager (Planart), nicht am Wandstil."
+            ))
+            .size(10)
+            .style(muted),
+        )
+        .push(
+            button(text(t!("Plan-Manager öffnen…")).size(11))
+                .style(button::secondary)
+                .padding([5, 12])
+                .on_press(Message::AecPlanManagerOpen),
+        );
 
     let mut actions = row![
         Space::new(),
@@ -536,8 +581,9 @@ fn layer_row<'a>(
     row![
         row![handle, up_button, down_button].spacing(2).width(LAYER_COL_REORDER_W),
         {
-            let label = if buffer.material_id.is_empty() {
-                t!("(None)").into_owned()
+            let none_label = t!("(None)").into_owned();
+            let selected_label = if buffer.material_id.is_empty() {
+                none_label.clone()
             } else {
                 all_materials
                     .iter()
@@ -545,19 +591,26 @@ fn layer_row<'a>(
                     .map(|(_, name)| name.to_string())
                     .unwrap_or_else(|| buffer.material_id.clone())
             };
-            button(
-                row![
-                    text(label).size(11),
-                    Space::new(),
-                    text("▾").size(9),
-                ]
-                .align_y(iced::Center),
+            let mut material_labels: Vec<String> = vec![none_label];
+            material_labels.extend(all_materials.iter().map(|(_, name)| name.to_string()));
+            let materials_for_select: Vec<(String, String)> = all_materials
+                .iter()
+                .map(|(id, name)| (id.to_string(), name.to_string()))
+                .collect();
+            pick_list(
+                Some(selected_label),
+                material_labels,
+                |name: &String| name.clone(),
             )
-            .on_press(Message::AecStylePickerOpen(
-                crate::app::StylePickerTarget::LayerMaterial(index),
-            ))
-            .style(button::subtle)
-            .padding([4, 6])
+            .on_select(move |name: String| {
+                let id = materials_for_select
+                    .iter()
+                    .find(|(_, n)| n == &name)
+                    .map(|(id, _)| id.clone())
+                    .unwrap_or_default();
+                Message::AecStyleManagerWallStyleLayerMaterialChanged(index, id)
+            })
+            .text_size(11)
             .width(LAYER_COL_MATERIAL_W)
         },
         {
@@ -652,12 +705,93 @@ fn invalid_thickness_style(theme: &Theme, status: text_input::Status) -> text_in
     style
 }
 
-/// "Darstellungs-Profile" section (Step 4): a table of every `DisplayConfig`
-/// (badged "Standard"/"Override" depending on whether the style being
-/// edited already has a `display_profiles` entry for it), and — when one
-/// is selected — its detail form: two independent layer-filter checklists
-/// for `Contour2D`/`Solid3D` plus a hatch-angle override.
-fn display_profiles_section<'a>(
+fn component_slot_table_view<'a>(
+    slot_visibility: &std::collections::HashMap<WallComponentSlot, bool>,
+    slot_overrides: &std::collections::HashMap<
+        WallComponentSlot,
+        crate::modules::aec::engine::display_component::ComponentStyleOverride,
+    >,
+) -> Element<'a, Message> {
+    let mut col = column![].spacing(8);
+
+    let groups = [
+        (
+            t!("2D"),
+            vec![
+                (WallComponentSlot::AxisLine, t!("Achslinie")),
+                (WallComponentSlot::Contour2D, t!("2D Gesamtkontur")),
+                (
+                    WallComponentSlot::ContourHatch2D,
+                    t!("2D Schraffur der Gesamtkontur"),
+                ),
+                (WallComponentSlot::Layers2D, t!("2D Wandschichten")),
+                (WallComponentSlot::LayerHatch2D, t!("2D Schraffuren der Schichten")),
+            ],
+        ),
+        (
+            t!("3D"),
+            vec![
+                (WallComponentSlot::Solid3D, t!("3D Gesamtkörper")),
+                (
+                    WallComponentSlot::SurfaceStyle3D,
+                    t!("3D Oberflächenstil"),
+                ),
+            ],
+        ),
+        (
+            t!("Schnitte / Ansichten"),
+            vec![
+                (
+                    WallComponentSlot::SectionRepresentation,
+                    t!("Schnittdarstellung"),
+                ),
+                (
+                    WallComponentSlot::ElevationRepresentation,
+                    t!("Ansichtsdarstellung"),
+                ),
+            ],
+        ),
+    ];
+
+    for (group_title, slots) in groups {
+        let mut group_col = column![text(group_title).size(11).style(muted)].spacing(3);
+        for (slot, label) in slots {
+            let visible = slot_visibility.get(&slot).copied().unwrap_or(true);
+            let has_override = slot_overrides.contains_key(&slot);
+            let badge_label = if has_override {
+                t!("Override")
+            } else {
+                t!("Standard")
+            };
+            let badge_style = if has_override {
+                button::primary
+            } else {
+                button::secondary
+            };
+            group_col = group_col.push(
+                row![
+                    iced::widget::checkbox(visible)
+                        .on_toggle(move |v| {
+                            Message::AecStyleManagerProfileSlotVisibilityToggle(slot, v)
+                        })
+                        .size(13),
+                    text(label).size(11).width(220),
+                    Space::new(),
+                    button(text(badge_label).size(9))
+                        .style(badge_style)
+                        .padding([2, 6])
+                        .on_press(Message::AecStyleManagerProfileSlotStyleOpen(slot)),
+                ]
+                .spacing(8)
+                .align_y(iced::Center),
+            );
+        }
+        col = col.push(group_col);
+    }
+
+    col.into()
+}
+pub fn display_profiles_section<'a>(
     profiles: &DisplayProfileFormState<'a>,
     layers: &'a [crate::app::AecLayerBuffer],
 ) -> Element<'a, Message> {
@@ -709,6 +843,49 @@ fn display_profiles_section<'a>(
     section = section.push(container(scrollable(table).height(120)).padding(4));
 
     if profiles.selected.is_some() {
+        section = section.push(Space::new().height(4));
+        section = section.push(component_slot_table_view(
+            &profiles.slot_visibility,
+            profiles.slot_overrides,
+        ));
+        if let Some(slot) = profiles.editing_slot {
+            section = section.push(Space::new().height(6));
+            section = section.push(super::aec_ui_util::style_editor_form(
+                format!("{} — {}", t!("Stil-Override"), slot_label(slot)),
+                profiles.slot_style_editor,
+                Message::AecStyleManagerProfileSlotStyleLineTypeChanged,
+                Message::AecStyleManagerProfileSlotStyleLineColorChanged,
+                Message::AecStyleManagerProfileSlotStyleLineColorPickerToggle,
+                crate::app::ColorPickTarget::AecWallStyleSlotLineColor,
+                Message::AecStyleManagerProfileSlotStyleHatchPatternChanged,
+                Message::AecStyleManagerProfileSlotStyleHatchPickerToggle,
+                Message::AecStyleManagerProfileSlotStyleHatchColorChanged,
+                Message::AecStyleManagerProfileSlotStyleHatchColorPickerToggle,
+                crate::app::ColorPickTarget::AecWallStyleSlotHatchColor,
+                Message::AecStyleManagerProfileSlotStyleFillColorChanged,
+                Message::AecStyleManagerProfileSlotStyleFillColorPickerToggle,
+                crate::app::ColorPickTarget::AecWallStyleSlotFillColor,
+            ));
+            section = section.push(
+                row![
+                    Space::new(),
+                    button(text(t!("Übernehmen")).size(11))
+                        .style(button::primary)
+                        .padding([4, 10])
+                        .on_press(Message::AecStyleManagerProfileSlotStyleApply),
+                    button(text(t!("Entfernen")).size(11))
+                        .style(button::danger)
+                        .padding([4, 10])
+                        .on_press(Message::AecStyleManagerProfileSlotStyleClear),
+                    button(text(t!("Schließen")).size(11))
+                        .padding([4, 10])
+                        .on_press(Message::AecStyleManagerProfileSlotStyleClose),
+                ]
+                .spacing(8),
+            );
+        }
+        section = section.push(Space::new().height(4));
+
         section = section.push(layer_filter_slot_view(
             t!("Schichten für 2D-Gesamtkontur (Contour2D)").into_owned(),
             layers,
@@ -768,6 +945,21 @@ fn display_profiles_section<'a>(
 /// (`AecLayerBuffer`), following the same `layer_filter_to_ui_state`
 /// pattern already used by the Plan Manager, but scoped to a single slot
 /// so `Contour2D` and `Solid3D` are fully independent.
+
+fn slot_label(slot: WallComponentSlot) -> String {
+    match slot {
+        WallComponentSlot::AxisLine => t!("Achslinie").into_owned(),
+        WallComponentSlot::Contour2D => t!("2D Gesamtkontur").into_owned(),
+        WallComponentSlot::ContourHatch2D => t!("2D Schraffur der Gesamtkontur").into_owned(),
+        WallComponentSlot::Layers2D => t!("2D Wandschichten").into_owned(),
+        WallComponentSlot::LayerHatch2D => t!("2D Schraffuren der Schichten").into_owned(),
+        WallComponentSlot::Solid3D => t!("3D Gesamtkörper").into_owned(),
+        WallComponentSlot::SurfaceStyle3D => t!("3D Oberflächenstil").into_owned(),
+        WallComponentSlot::SectionRepresentation => t!("Schnittdarstellung").into_owned(),
+        WallComponentSlot::ElevationRepresentation => t!("Ansichtsdarstellung").into_owned(),
+    }
+}
+
 fn layer_filter_slot_view<'a>(
     title: String,
     layers: &'a [crate::app::AecLayerBuffer],
@@ -797,6 +989,9 @@ fn layer_filter_slot_view<'a>(
                 material_id: lb.material_id.clone(),
                 role_tag: None,
                 index: idx,
+                // The UI edit buffer doesn't track stable layer identity;
+                // matching here falls back to the material/role/index triple.
+                layer_id: None,
             };
             let checked = selected.contains(&layer_ref);
             let label = if lb.material_id.is_empty() {

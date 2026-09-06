@@ -26,16 +26,10 @@ pub mod style;
 pub mod wall;
 pub mod wall_style;
 
-pub use arc::{AxisSegment, CircularArc};
-pub use geometry::{get_offset_directions, Polygon2D};
+pub use geometry::get_offset_directions;
 pub use ifc::Scene;
 pub use library::StyleLibrary;
 pub use loop_detection::find_closed_loop;
-pub use material::Material;
-pub use openings::{Opening, OpeningKind};
-pub use representation::{WallDisplaySet, WallLayerSolidPath, WallRepresentation};
 pub use room::Room;
 pub use storey::Storey;
-pub use style::Style;
 pub use wall::{Wall, WallJustification, WallLayer};
-pub use wall_style::WallStyle;

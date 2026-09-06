@@ -109,6 +109,9 @@ pub trait TextContent {
 /// filtering. Stable across releases — the strings here are the canonical
 /// type identifiers throughout the UI.
 pub fn entity_type_name(et: &EntityType) -> &str {
+    if crate::entities::names::ui_name(et) == "Wall" {
+        return "Wall";
+    }
     match et {
         EntityType::Point(_) => "Point",
         EntityType::Line(line)

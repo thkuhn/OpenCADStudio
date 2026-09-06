@@ -8,9 +8,25 @@
 //! Co-located so adding a new variant only requires updating one file.
 
 use acadrust::EntityType;
+use acadrust::xdata::XDataValue;
+
+/// True when the entity carries an AEC wall axis or display-child record.
+fn is_aec_wall_entity(e: &EntityType) -> bool {
+    e.common().extended_data.records().iter().any(|r| {
+        r.application_name == "OPENCAD_AEC"
+            && matches!(
+                r.values.first(),
+                Some(XDataValue::String(kind))
+                    if kind == "WALL" || kind == "WALL_REP" || kind == "WALL_DERIVED"
+            )
+    })
+}
 
 /// Mixed-case display name shown to the user in panels, tooltips, etc.
 pub fn ui_name(e: &EntityType) -> &'static str {
+    if is_aec_wall_entity(e) {
+        return "Wall";
+    }
     match e {
         EntityType::Point(_) => "Point",
         EntityType::Line(line)

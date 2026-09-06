@@ -28,6 +28,16 @@ pub struct LayerRef {
     /// Position of the layer within its owning wall's layer stack.
     #[serde(default)]
     pub index: usize,
+    /// Stable identity for the layer, mirroring
+    /// [`crate::modules::aec::engine::wall_style::Layer::layer_id`]. When set
+    /// on both sides of a comparison it takes precedence over the
+    /// `material_id`/`role_tag`/`index` triple, so overrides stay attached
+    /// to the correct layer across reorders/insertions/deletions. Additive
+    /// field: `None` for records persisted before this field existed (or
+    /// hand-written in tests), in which case callers fall back to the triple
+    /// comparison — see `commands::layer_ref_matches`.
+    #[serde(default)]
+    pub layer_id: Option<uuid::Uuid>,
 }
 
 /// Manual override for how two layers (or a layer and the outer face) are
@@ -989,11 +999,13 @@ mod tests {
                         material_id: "masonry".to_string(),
                         role_tag: Some("Tragschale".to_string()),
                         index: 0,
+                        layer_id: None,
                     },
                     layer_b: Some(LayerRef {
                         material_id: "insulation".to_string(),
                         role_tag: None,
                         index: 1,
+                        layer_id: None,
                     }),
                     style: JoinOverrideStyle::Butt,
                 },
@@ -1002,6 +1014,7 @@ mod tests {
                         material_id: "plaster".to_string(),
                         role_tag: Some("Innenputz".to_string()),
                         index: 2,
+                        layer_id: None,
                     },
                     layer_b: None,
                     style: JoinOverrideStyle::OuterFace,

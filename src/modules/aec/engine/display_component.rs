@@ -17,8 +17,85 @@
 
 use crate::modules::aec::engine::join::LayerRef;
 use crate::modules::aec::engine::wall_style::{base_width_from_layers, WallStyle};
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::collections::HashMap;
+use uuid::Uuid;
+
+/// Serialize `Option<acadrust::types::Color>` normally.
+fn serialize_option_acad_color<S>(
+    value: &Option<acadrust::types::Color>,
+    serializer: S,
+) -> Result<S::Ok, S::Error>
+where
+    S: Serializer,
+{
+    match value {
+        Some(c) => serializer.serialize_some(c),
+        None => serializer.serialize_none(),
+    }
+}
+
+/// Accept either the native `AcadColor` serde shape or a legacy bare `u32`
+/// (0xRRGGBB) from older TOML/JSON libraries — the latter becomes
+/// `AcadColor::Rgb`.
+fn deserialize_option_acad_color<'de, D>(
+    deserializer: D,
+) -> Result<Option<acadrust::types::Color>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    struct OptColorVisitor;
+
+    impl<'de> serde::de::Visitor<'de> for OptColorVisitor {
+        type Value = Option<acadrust::types::Color>;
+
+        fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+            f.write_str("null, a legacy 0xRRGGBB integer, or an AcadColor value")
+        }
+
+        fn visit_none<E: serde::de::Error>(self) -> Result<Self::Value, E> {
+            Ok(None)
+        }
+
+        fn visit_unit<E: serde::de::Error>(self) -> Result<Self::Value, E> {
+            Ok(None)
+        }
+
+        fn visit_u64<E: serde::de::Error>(self, v: u64) -> Result<Self::Value, E> {
+            let rgb = v as u32;
+            Ok(Some(acadrust::types::Color::Rgb {
+                r: ((rgb >> 16) & 0xFF) as u8,
+                g: ((rgb >> 8) & 0xFF) as u8,
+                b: (rgb & 0xFF) as u8,
+            }))
+        }
+
+        fn visit_i64<E: serde::de::Error>(self, v: i64) -> Result<Self::Value, E> {
+            self.visit_u64(v as u64)
+        }
+
+        fn visit_str<E: serde::de::Error>(self, v: &str) -> Result<Self::Value, E> {
+            acadrust::types::Color::deserialize(serde::de::value::StrDeserializer::new(v))
+                .map(Some)
+        }
+
+        fn visit_string<E: serde::de::Error>(self, v: String) -> Result<Self::Value, E> {
+            self.visit_str(&v)
+        }
+
+        fn visit_map<M: serde::de::MapAccess<'de>>(self, map: M) -> Result<Self::Value, M::Error> {
+            acadrust::types::Color::deserialize(serde::de::value::MapAccessDeserializer::new(map))
+                .map(Some)
+        }
+
+        fn visit_enum<A: serde::de::EnumAccess<'de>>(self, data: A) -> Result<Self::Value, A::Error> {
+            acadrust::types::Color::deserialize(serde::de::value::EnumAccessDeserializer::new(data))
+                .map(Some)
+        }
+    }
+
+    deserializer.deserialize_any(OptColorVisitor)
+}
 
 /// The catalogue of independently visible/stylable display components for a
 /// wall (functional requirements a-i from the original request).
@@ -62,6 +139,133 @@ impl WallComponentSlot {
     }
 }
 
+/// Viewport / Planart representation filter: 2D, 3D, or both.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
+pub enum RepresentationMode {
+    TwoD,
+    ThreeD,
+    #[default]
+    All,
+}
+
+/// Geometry vs. hatch catalogue used by Planart visibility (legacy
+/// `SectionRepresentation`/`ElevationRepresentation` are ignored on load).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum WallComponentKind {
+    Axis,
+    Layers2D,
+    LayerHatch2D,
+    Contour2D,
+    ContourHatch2D,
+    Layers3D,
+    SurfaceStyle3D,
+}
+
+impl WallComponentKind {
+    pub fn all() -> &'static [WallComponentKind] {
+        &[
+            WallComponentKind::Axis,
+            WallComponentKind::Layers2D,
+            WallComponentKind::LayerHatch2D,
+            WallComponentKind::Contour2D,
+            WallComponentKind::ContourHatch2D,
+            WallComponentKind::Layers3D,
+            WallComponentKind::SurfaceStyle3D,
+        ]
+    }
+
+    pub fn is_2d(self) -> bool {
+        matches!(
+            self,
+            WallComponentKind::Axis
+                | WallComponentKind::Layers2D
+                | WallComponentKind::LayerHatch2D
+                | WallComponentKind::Contour2D
+                | WallComponentKind::ContourHatch2D
+        )
+    }
+
+    pub fn is_3d(self) -> bool {
+        matches!(
+            self,
+            WallComponentKind::Layers3D | WallComponentKind::SurfaceStyle3D
+        )
+    }
+
+    pub fn from_slot(slot: WallComponentSlot) -> Option<Self> {
+        match slot {
+            WallComponentSlot::AxisLine => Some(WallComponentKind::Axis),
+            WallComponentSlot::Layers2D => Some(WallComponentKind::Layers2D),
+            WallComponentSlot::LayerHatch2D => Some(WallComponentKind::LayerHatch2D),
+            WallComponentSlot::Contour2D => Some(WallComponentKind::Contour2D),
+            WallComponentSlot::ContourHatch2D => Some(WallComponentKind::ContourHatch2D),
+            WallComponentSlot::Solid3D => Some(WallComponentKind::Layers3D),
+            WallComponentSlot::SurfaceStyle3D => Some(WallComponentKind::SurfaceStyle3D),
+            WallComponentSlot::SectionRepresentation | WallComponentSlot::ElevationRepresentation => {
+                None
+            }
+        }
+    }
+
+    pub fn to_slot(self) -> WallComponentSlot {
+        match self {
+            WallComponentKind::Axis => WallComponentSlot::AxisLine,
+            WallComponentKind::Layers2D => WallComponentSlot::Layers2D,
+            WallComponentKind::LayerHatch2D => WallComponentSlot::LayerHatch2D,
+            WallComponentKind::Contour2D => WallComponentSlot::Contour2D,
+            WallComponentKind::ContourHatch2D => WallComponentSlot::ContourHatch2D,
+            WallComponentKind::Layers3D => WallComponentSlot::Solid3D,
+            WallComponentKind::SurfaceStyle3D => WallComponentSlot::SurfaceStyle3D,
+        }
+    }
+}
+
+impl RepresentationMode {
+    pub fn allows(self, kind: WallComponentKind) -> bool {
+        match self {
+            RepresentationMode::All => true,
+            RepresentationMode::TwoD => kind.is_2d(),
+            RepresentationMode::ThreeD => kind.is_3d(),
+        }
+    }
+}
+
+/// Per-layer 2D/3D visibility in a style overlay (default: visible).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LayerVis {
+    #[serde(default = "default_true")]
+    pub visible_2d: bool,
+    #[serde(default = "default_true")]
+    pub visible_3d: bool,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+impl Default for LayerVis {
+    fn default() -> Self {
+        Self {
+            visible_2d: true,
+            visible_3d: true,
+        }
+    }
+}
+
+/// Sparse per-style exception stored on a Planart (`DisplayConfig`).
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct StyleDisplayOverlay {
+    #[serde(default)]
+    pub layer_visibility: HashMap<Uuid, LayerVis>,
+    #[serde(default)]
+    pub contour_layers: Option<Vec<Uuid>>,
+    #[serde(default)]
+    pub layer_props: HashMap<Uuid, ComponentStyleOverride>,
+    /// Optional look for the overall 2D contour hatch (`ContourHatch2D`).
+    #[serde(default)]
+    pub contour_hatch: Option<ComponentStyleOverride>,
+}
+
 /// A full, self-contained style override for a single slot or layer —
 /// deliberately not a mere on/off flag or a reference to an existing style,
 /// so e.g. "Statik 1:50" can define its own line/hatch/fill look for
@@ -71,18 +275,36 @@ pub struct ComponentStyleOverride {
     /// Line type override (e.g. `"Continuous"`, `"Dashed"`).
     #[serde(default)]
     pub line_type: Option<String>,
-    /// Line color override (0xRRGGBB).
+    /// Line color override (`AcadColor`). Legacy bare `u32` 0xRRGGBB values
+    /// still load as `AcadColor::Rgb`.
     #[serde(default)]
-    pub line_color: Option<u32>,
+    #[serde(
+        serialize_with = "serialize_option_acad_color",
+        deserialize_with = "deserialize_option_acad_color"
+    )]
+    pub line_color: Option<acadrust::types::Color>,
     /// Hatch pattern name override.
     #[serde(default)]
     pub hatch_pattern: Option<String>,
-    /// Hatch color override (0xRRGGBB).
+    /// Hatch color override (`AcadColor`). Legacy bare `u32` 0xRRGGBB values
+    /// still load as `AcadColor::Rgb`.
     #[serde(default)]
-    pub hatch_color: Option<u32>,
-    /// Fill color override (0xRRGGBB), used by 3D surface styling.
+    #[serde(
+        serialize_with = "serialize_option_acad_color",
+        deserialize_with = "deserialize_option_acad_color"
+    )]
+    pub hatch_color: Option<acadrust::types::Color>,
+    /// Hatch pattern scale. `None` inherits; `<= 0` is clamped to `0.01` at regen.
     #[serde(default)]
-    pub fill_color: Option<u32>,
+    pub hatch_scale: Option<f64>,
+    /// Fill color override (`AcadColor`), used by 3D surface styling.
+    /// Legacy bare `u32` 0xRRGGBB values still load as `AcadColor::Rgb`.
+    #[serde(default)]
+    #[serde(
+        serialize_with = "serialize_option_acad_color",
+        deserialize_with = "deserialize_option_acad_color"
+    )]
+    pub fill_color: Option<acadrust::types::Color>,
     /// Hatch angle override in degrees, part of the hatch-angle override
     /// chain `Wall.hatch_override` > style-profile `ComponentStyleOverride`
     /// > `Material.hatch_angle` (Step 3).
@@ -93,6 +315,42 @@ pub struct ComponentStyleOverride {
     /// with `hatch_angle`.
     #[serde(default)]
     pub hatch_angle_relative: Option<bool>,
+    /// Optional CAD layer name override.
+    #[serde(default)]
+    pub cad_layer: Option<String>,
+}
+
+impl ComponentStyleOverride {
+    /// Copy every `Some` field from `src` onto `self` (phase extras win).
+    pub fn overlay_from(&mut self, src: &Self) {
+        if src.line_type.is_some() {
+            self.line_type = src.line_type.clone();
+        }
+        if src.line_color.is_some() {
+            self.line_color = src.line_color;
+        }
+        if src.hatch_pattern.is_some() {
+            self.hatch_pattern = src.hatch_pattern.clone();
+        }
+        if src.hatch_color.is_some() {
+            self.hatch_color = src.hatch_color;
+        }
+        if src.hatch_scale.is_some() {
+            self.hatch_scale = src.hatch_scale;
+        }
+        if src.fill_color.is_some() {
+            self.fill_color = src.fill_color;
+        }
+        if src.hatch_angle.is_some() {
+            self.hatch_angle = src.hatch_angle;
+        }
+        if src.hatch_angle_relative.is_some() {
+            self.hatch_angle_relative = src.hatch_angle_relative;
+        }
+        if src.cad_layer.is_some() {
+            self.cad_layer = src.cad_layer.clone();
+        }
+    }
 }
 
 /// Which wall layers feed into layer-aggregating slots (`Contour2D`,
@@ -215,18 +473,48 @@ pub fn upsert_style_substitution(
     result
 }
 
-/// Parses a `"RRGGBB"` (optionally `"#RRGGBB"`) hex color text field from
-/// the Step 8 style-override editor into a `0xRRGGBB` color value. Blank
-/// (whitespace-only) input means "no override" (`None`); unparsable input
-/// also degrades to `None` rather than erroring, since the editor has no
-/// dedicated validation-error UI.
-pub fn parse_editor_hex_color(text: &str) -> Option<u32> {
-    let trimmed = text.trim().trim_start_matches('#');
+/// Parses a style-override editor colour buffer into an `AcadColor`.
+/// Accepts lossless editor tokens (`ACI…` / `ByLayer` / …), bare/`#`-prefixed
+/// hex (historical RGB buffers), and plain ACI integers. Blank input means
+/// "no override" (`None`); unparsable input also degrades to `None`.
+pub fn parse_editor_hex_color(text: &str) -> Option<acadrust::types::Color> {
+    let trimmed = text.trim();
     if trimmed.is_empty() {
-        None
-    } else {
-        u32::from_str_radix(trimmed, 16).ok()
+        return None;
     }
+    if trimmed.eq_ignore_ascii_case("ByLayer") {
+        return Some(acadrust::types::Color::ByLayer);
+    }
+    if trimmed.eq_ignore_ascii_case("ByBlock") {
+        return Some(acadrust::types::Color::ByBlock);
+    }
+    if trimmed.eq_ignore_ascii_case("None") {
+        return Some(acadrust::types::Color::None);
+    }
+    let aci_body = trimmed
+        .strip_prefix("ACI")
+        .or_else(|| trimmed.strip_prefix("aci"))
+        .or_else(|| trimmed.strip_prefix("I:"))
+        .or_else(|| trimmed.strip_prefix("i:"));
+    if let Some(body) = aci_body {
+        if let Ok(n) = body.trim().parse::<i16>() {
+            return Some(acadrust::types::Color::from_index(n));
+        }
+    }
+    let digits = trimmed.trim_start_matches('#');
+    if digits.len() == 6 {
+        if let Ok(value) = u32::from_str_radix(digits, 16) {
+            return Some(acadrust::types::Color::Rgb {
+                r: ((value >> 16) & 0xFF) as u8,
+                g: ((value >> 8) & 0xFF) as u8,
+                b: (value & 0xFF) as u8,
+            });
+        }
+    }
+    if let Ok(n) = trimmed.parse::<i16>() {
+        return Some(acadrust::types::Color::from_index(n));
+    }
+    None
 }
 
 /// Converts a `LayerSelection` into the Layer-Filter-UI's edit-buffer shape:
@@ -277,9 +565,11 @@ pub fn component_style_override_from_editor_fields(
         line_color: parse_editor_hex_color(line_color),
         hatch_pattern: if hatch_pattern.is_empty() { None } else { Some(hatch_pattern.to_string()) },
         hatch_color: parse_editor_hex_color(hatch_color),
+        hatch_scale: None,
         fill_color: parse_editor_hex_color(fill_color),
         hatch_angle: None,
         hatch_angle_relative: None,
+        cad_layer: None,
     }
 }
 
@@ -315,7 +605,7 @@ mod tests {
         rules.style_override.insert(
             WallComponentSlot::Contour2D.key().to_string(),
             ComponentStyleOverride {
-                line_color: Some(0x000000),
+                line_color: Some(acadrust::types::Color::Rgb { r: 0, g: 0, b: 0 }),
                 line_type: Some("Continuous".to_string()),
                 ..Default::default()
             },
@@ -326,6 +616,7 @@ mod tests {
                 material_id: "brick".to_string(),
                 role_tag: None,
                 index: 0,
+            layer_id: None,
             }]),
         );
 
@@ -368,6 +659,7 @@ mod tests {
             material_id: "brick".to_string(),
             role_tag: None,
             index: 0,
+        layer_id: None,
         }]);
         rules
             .layer_filter
@@ -415,6 +707,7 @@ mod tests {
     ) -> WallStyle {
         use crate::modules::aec::engine::style::Style;
         use crate::modules::aec::engine::wall_style::{Layer, LayerFunction, LayerValue};
+        use uuid::Uuid;
         WallStyle {
             style: Style {
                 id: id.to_string(),
@@ -434,6 +727,7 @@ mod tests {
                     layer_override: None,
                     hatch_override: None,
                     role_tag: None,
+                    layer_id: Uuid::new_v4(),
                 })
                 .collect(),
             display_profiles: std::collections::HashMap::new(),
@@ -460,9 +754,18 @@ mod tests {
 
     #[test]
     fn parse_editor_hex_color_parses_plain_and_hash_prefixed_hex() {
-        assert_eq!(parse_editor_hex_color("FF0000"), Some(0xFF0000));
-        assert_eq!(parse_editor_hex_color("#00ff00"), Some(0x00ff00));
-        assert_eq!(parse_editor_hex_color("  #123456  "), Some(0x123456));
+        assert_eq!(
+            parse_editor_hex_color("FF0000"),
+            Some(acadrust::types::Color::Rgb { r: 0xFF, g: 0x00, b: 0x00 })
+        );
+        assert_eq!(
+            parse_editor_hex_color("#00ff00"),
+            Some(acadrust::types::Color::Rgb { r: 0x00, g: 0xff, b: 0x00 })
+        );
+        assert_eq!(
+            parse_editor_hex_color("  #123456  "),
+            Some(acadrust::types::Color::Rgb { r: 0x12, g: 0x34, b: 0x56 })
+        );
     }
 
     #[test]
@@ -476,6 +779,22 @@ mod tests {
     fn parse_editor_hex_color_invalid_hex_degrades_to_none() {
         assert_eq!(parse_editor_hex_color("not-a-color"), None);
         assert_eq!(parse_editor_hex_color("GGGGGG"), None);
+    }
+
+    #[test]
+    fn parse_editor_hex_color_preserves_index_and_logical_tokens() {
+        assert_eq!(
+            parse_editor_hex_color("ACI1"),
+            Some(acadrust::types::Color::Index(1))
+        );
+        assert_eq!(
+            parse_editor_hex_color("ByLayer"),
+            Some(acadrust::types::Color::ByLayer)
+        );
+        assert_eq!(
+            parse_editor_hex_color("ByBlock"),
+            Some(acadrust::types::Color::ByBlock)
+        );
     }
 
     #[test]
@@ -497,13 +816,64 @@ mod tests {
             style,
             ComponentStyleOverride {
                 line_type: Some("Continuous".to_string()),
-                line_color: Some(0x000000),
+                line_color: Some(acadrust::types::Color::Rgb { r: 0, g: 0, b: 0 }),
                 hatch_pattern: Some("ANSI31".to_string()),
-                hatch_color: Some(0xFFFFFF),
-                fill_color: Some(0x808080),
+                hatch_color: Some(acadrust::types::Color::Rgb {
+                    r: 0xFF,
+                    g: 0xFF,
+                    b: 0xFF
+                }),
+                hatch_scale: None,
+                fill_color: Some(acadrust::types::Color::Rgb {
+                    r: 0x80,
+                    g: 0x80,
+                    b: 0x80
+                }),
                 hatch_angle: None,
                 hatch_angle_relative: None,
+                cad_layer: None,
             }
+        );
+    }
+
+    #[test]
+    fn component_style_override_legacy_u32_deserializes_as_rgb() {
+        let json = r#"{
+            "line_type": null,
+            "line_color": 16711680,
+            "hatch_pattern": null,
+            "hatch_color": 255,
+            "fill_color": null
+        }"#;
+        let style: ComponentStyleOverride = serde_json::from_str(json).unwrap();
+        assert_eq!(
+            style.line_color,
+            Some(acadrust::types::Color::Rgb { r: 255, g: 0, b: 0 })
+        );
+        assert_eq!(
+            style.hatch_color,
+            Some(acadrust::types::Color::Rgb { r: 0, g: 0, b: 255 })
+        );
+    }
+
+    #[test]
+    fn component_rule_set_roundtrip_uses_acad_color() {
+        let mut rules = ComponentRuleSet::default();
+        rules.style_override.insert(
+            WallComponentSlot::Contour2D.key().to_string(),
+            ComponentStyleOverride {
+                line_color: Some(acadrust::types::Color::Index(1)),
+                line_type: Some("Continuous".to_string()),
+                ..Default::default()
+            },
+        );
+        let json = serde_json::to_string(&rules).unwrap();
+        let back: ComponentRuleSet = serde_json::from_str(&json).unwrap();
+        assert_eq!(
+            back.style_for(WallComponentSlot::Contour2D)
+                .unwrap()
+                .line_color,
+            Some(acadrust::types::Color::Index(1))
         );
     }
 
@@ -524,8 +894,8 @@ mod tests {
     #[test]
     fn layer_filter_to_ui_state_explicit_is_true_and_layers() {
         let layers = vec![
-            LayerRef { material_id: "brick".to_string(), role_tag: None, index: 0 },
-            LayerRef { material_id: "plaster".to_string(), role_tag: None, index: 1 },
+            LayerRef { material_id: "brick".to_string(), role_tag: None, index: 0, layer_id: None },
+            LayerRef { material_id: "plaster".to_string(), role_tag: None, index: 1, layer_id: None },
         ];
         assert_eq!(
             layer_filter_to_ui_state(&LayerSelection::Explicit(layers.clone())),
@@ -535,14 +905,14 @@ mod tests {
 
     #[test]
     fn layer_filter_from_selection_false_is_always_all() {
-        let layers = vec![LayerRef { material_id: "brick".to_string(), role_tag: None, index: 0 }];
+        let layers = vec![LayerRef { material_id: "brick".to_string(), role_tag: None, index: 0, layer_id: None }];
         assert_eq!(layer_filter_from_selection(false, &layers), LayerSelection::All);
         assert_eq!(layer_filter_from_selection(false, &[]), LayerSelection::All);
     }
 
     #[test]
     fn layer_filter_from_selection_true_is_explicit() {
-        let layers = vec![LayerRef { material_id: "brick".to_string(), role_tag: None, index: 0 }];
+        let layers = vec![LayerRef { material_id: "brick".to_string(), role_tag: None, index: 0, layer_id: None }];
         assert_eq!(
             layer_filter_from_selection(true, &layers),
             LayerSelection::Explicit(layers)
@@ -559,8 +929,8 @@ mod tests {
     #[test]
     fn layer_filter_round_trip_explicit_non_empty() {
         let filter = LayerSelection::Explicit(vec![
-            LayerRef { material_id: "brick".to_string(), role_tag: None, index: 0 },
-            LayerRef { material_id: "plaster".to_string(), role_tag: Some("Tragschale".to_string()), index: 2 },
+            LayerRef { material_id: "brick".to_string(), role_tag: None, index: 0, layer_id: None },
+            LayerRef { material_id: "plaster".to_string(), role_tag: Some("Tragschale".to_string()), index: 2, layer_id: None },
         ]);
         let (is_explicit, selected) = layer_filter_to_ui_state(&filter);
         assert_eq!(layer_filter_from_selection(is_explicit, &selected), filter);

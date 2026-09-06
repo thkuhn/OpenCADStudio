@@ -2407,8 +2407,6 @@ pub(super) fn on_tab_close(&mut self, idx: usize) -> Task<Message> {
                             );
                         }
                     } else if field == "wall_phase" {
-                        // Phase pick on a WALL wall: purely a metadata edit,
-                        // no geometry regeneration needed.
                         let new_phase =
                             crate::modules::aec::engine::plan_view::PlanPhase::from_str(&value);
                         for &handle in &handles {
@@ -2419,6 +2417,9 @@ pub(super) fn on_tab_close(&mut self, idx: usize) -> Task<Message> {
                                 &mut self.tabs[i].scene,
                                 handle,
                                 new_phase,
+                            );
+                            let _ = self.regenerate_wall_respecting_active_display_config(
+                                i, handle,
                             );
                         }
                     } else {

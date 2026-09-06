@@ -2537,6 +2537,7 @@ impl OpenCADStudio {
                 display_handles.extend(touched);
             }
         }
+        self.reapply_active_display_config_to_wall_packages(i, handles);
         display_handles.retain(|h| self.tabs[i].scene.document.get_entity(*h).is_some());
         display_handles.sort_by_key(|h| h.value());
         display_handles.dedup();
@@ -2976,11 +2977,17 @@ pub(super) fn wall_prop_section(
                 label: t!("Phase").into_owned(),
                 field: "wall_phase",
                 value: crate::scene::model::object::PropValue::Choice {
-                    selected: wall.phase.as_str().to_string(),
+                    selected: wall.phase.display_label().to_string(),
                     options: vec![
-                        "New".to_string(),
-                        "Demolition".to_string(),
-                        "Existing".to_string(),
+                        crate::modules::aec::engine::plan_view::PlanPhase::New
+                            .display_label()
+                            .to_string(),
+                        crate::modules::aec::engine::plan_view::PlanPhase::Demolition
+                            .display_label()
+                            .to_string(),
+                        crate::modules::aec::engine::plan_view::PlanPhase::Existing
+                            .display_label()
+                            .to_string(),
                     ],
                 },
             },
@@ -3041,13 +3048,18 @@ pub(super) fn wall_prop_section(
             effective_text,
         ));
 
-        for layer in &wall.layers {
+        for (i, layer) in wall.layers.iter().enumerate() {
             let thickness_str = crate::entities::common::format_length(layer.thickness);
-            let layer_info = format!("{} — {} ({})", layer.material, thickness_str, layer.function);
+            let layer_info = format!(
+                "{} — {} ({})",
+                layer.material,
+                thickness_str,
+                layer.function
+            );
             props.push(crate::entities::common::ro_prop(
                 t!("Layer").as_ref(),
                 "wall_layer",
-                layer_info,
+                format!("{} — {}", i + 1, layer_info),
             ));
         }
 

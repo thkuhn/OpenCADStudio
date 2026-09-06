@@ -50,6 +50,8 @@ pub struct WallLayer {
     /// material's own hatch pattern when rendering this layer's 2D hatch.
     /// Additive field (mirrors [`crate::modules::aec::engine::wall_style::Layer::hatch_override`]).
     pub hatch_override: Option<String>,
+    /// Stable identity copied from the style layer.
+    pub layer_id: uuid::Uuid,
 }
 
 /// Axis justification relative to the wall's total thickness.
@@ -146,6 +148,7 @@ mod tests {
             top_offset: 0.0,
             layer_override: None,
             hatch_override: None,
+            layer_id: uuid::Uuid::new_v4(),
         });
         assert!((wall.volume(5.0) - 2.8).abs() < 1e-9);
     }
@@ -171,6 +174,7 @@ mod tests {
                 top_offset: 0.0,
                 layer_override: None,
                 hatch_override: None,
+                layer_id: uuid::Uuid::new_v4(),
             },
             WallLayer {
                 material: "B".into(),
@@ -181,6 +185,7 @@ mod tests {
                 top_offset: 0.0,
                 layer_override: None,
                 hatch_override: None,
+                layer_id: uuid::Uuid::new_v4(),
             },
         ];
         // span from -0.15 to 0.15

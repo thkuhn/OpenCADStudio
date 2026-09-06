@@ -4,6 +4,7 @@ use crate::modules::aec::engine::expr::eval_formula;
 use crate::modules::aec::engine::material::MaterialId;
 use crate::modules::aec::engine::style::{resolve_chain, Style, StyleError, StyleId};
 use serde::{Deserialize, Serialize};
+use uuid::Uuid;
 use std::collections::HashMap;
 use std::fmt;
 
@@ -82,9 +83,24 @@ impl LayerValue {
     /// operate on meter-based vars such as `BB`).
     pub fn to_cm_display_string(&self) -> String {
         match self {
-            LayerValue::Fixed(v) => format!("{}", v * 100.0),
+            LayerValue::Fixed(v) => Self::format_cm(v * 100.0),
             LayerValue::Formula(s) => s.clone(),
         }
+    }
+
+    /// Helper to format a centimeter value for display. Rounds to 3 decimal
+    /// places and trims trailing zeros and a trailing decimal point.
+    pub fn format_cm(v: f64) -> String {
+        let rounded = (v * 1000.0).round() / 1000.0;
+        let s = format!("{:.3}", rounded);
+        let mut s = s.trim_end_matches('0').to_string();
+        if s.ends_with('.') {
+            s.pop();
+        }
+        if s == "-0" {
+            s = "0".to_string();
+        }
+        s
     }
 
     /// Parse a user-entered string that represents a value in centimeters,
@@ -158,6 +174,12 @@ pub struct Layer {
     /// Additive field: absent in older libraries, so it defaults to `None`.
     #[serde(default)]
     pub role_tag: Option<String>,
+    /// Stable identity for this layer, used to keep references (style overrides,
+    /// junction pairs) correctly attached across reorders/insertions.
+    /// Additive field: absent in older libraries, so it defaults to a new
+    /// random ID on load (see `layers_from_serde`).
+    #[serde(default = "Uuid::new_v4")]
+    pub layer_id: Uuid,
 }
 
 /// A style defining the layered buildup of a wall.
@@ -178,7 +200,7 @@ pub struct WallStyle {
     /// Absent entries mean "use the default rule set" (every slot visible,
     /// standard style, `All` layers for `Contour2D`/`Solid3D`) — see
     /// [`crate::modules::aec::engine::library::resolve_effective_rule_set`].
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub display_profiles: HashMap<String, crate::modules::aec::engine::display_component::ComponentRuleSet>,
 }
 
@@ -203,6 +225,8 @@ struct LayerSerde {
     hatch_override: Option<String>,
     #[serde(default)]
     role_tag: Option<String>,
+    #[serde(default)]
+    layer_id: Option<Uuid>,
 }
 
 fn deserialize_layers<'de, D>(deserializer: D) -> Result<Vec<Layer>, D::Error>
@@ -228,6 +252,7 @@ fn layers_from_serde(raw: Vec<LayerSerde>) -> Vec<Layer> {
                 layer_override: l.layer_override,
                 hatch_override: l.hatch_override,
                 role_tag: l.role_tag,
+                layer_id: l.layer_id.unwrap_or_else(Uuid::new_v4),
             })
             .collect();
     }
@@ -251,6 +276,7 @@ fn layers_from_serde(raw: Vec<LayerSerde>) -> Vec<Layer> {
             layer_override: l.layer_override,
             hatch_override: l.hatch_override,
             role_tag: l.role_tag,
+            layer_id: l.layer_id.unwrap_or_else(Uuid::new_v4),
         })
         .collect()
 }
@@ -271,6 +297,7 @@ pub struct ResolvedLayer {
     pub layer_override: Option<String>,
     pub hatch_override: Option<String>,
     pub role_tag: Option<String>,
+    pub layer_id: Uuid,
     /// Present when a `LayerValue::Formula` failed; the failed value is then `0.0`.
     pub formula_error: Option<String>,
 }
@@ -326,6 +353,7 @@ pub fn resolve_layer_values(layers: &[Layer], vars: &HashMap<String, f64>) -> Ve
                 layer_override: layer.layer_override.clone(),
                 hatch_override: layer.hatch_override.clone(),
                 role_tag: layer.role_tag.clone(),
+                layer_id: layer.layer_id,
                 formula_error,
             }
         })
@@ -444,6 +472,7 @@ mod tests {
             layer_override: None,
             hatch_override: None,
             role_tag: None,
+            layer_id: Uuid::new_v4(),
         }
     }
 
@@ -458,6 +487,7 @@ mod tests {
             layer_override: None,
             hatch_override: None,
             role_tag: None,
+            layer_id: Uuid::new_v4(),
         }
     }
 
@@ -699,6 +729,42 @@ mod tests {
         assert_eq!(layer.hatch_override, None);
         assert_eq!(layer.role_tag, None);
         assert_eq!(layer.axis_offset, LayerValue::Fixed(0.0));
+        assert!(!layer.layer_id.is_nil());
+    }
+
+    #[test]
+    fn layer_id_migration_and_stability() {
+        let json = r#"[
+            {
+                "material_id": "brick",
+                "thickness": 0.24,
+                "function": "Structural"
+            },
+            {
+                "material_id": "plaster",
+                "thickness": 0.02,
+                "function": "Finish",
+                "layer_id": "550e8400-e29b-41d4-a716-446655440000"
+            }
+        ]"#;
+        let layers: Vec<Layer> = serde_json::from_str(json).unwrap();
+        assert_eq!(layers.len(), 2);
+        
+        // First layer got a new random ID
+        assert!(!layers[0].layer_id.is_nil());
+        assert_ne!(layers[0].layer_id, Uuid::nil());
+        
+        // Second layer kept its existing ID
+        assert_eq!(
+            layers[1].layer_id.to_string(),
+            "550e8400-e29b-41d4-a716-446655440000"
+        );
+
+        // Roundtrip keeps IDs
+        let serialized = serde_json::to_string(&layers).unwrap();
+        let back: Vec<Layer> = serde_json::from_str(&serialized).unwrap();
+        assert_eq!(layers[0].layer_id, back[0].layer_id);
+        assert_eq!(layers[1].layer_id, back[1].layer_id);
     }
 
     #[test]
@@ -726,6 +792,7 @@ mod tests {
             layer_override: None,
             hatch_override: None,
             role_tag: None,
+            layer_id: Uuid::new_v4(),
         };
         let bad = Layer {
             material_id: "b".into(),
@@ -737,6 +804,7 @@ mod tests {
             layer_override: None,
             hatch_override: None,
             role_tag: None,
+            layer_id: Uuid::new_v4(),
         };
         let resolved = resolve_layer_values(&[ok, bad], &wall_vars(0.4));
         assert!((resolved[0].axis_offset - (-0.2)).abs() < 1e-12);
@@ -810,5 +878,36 @@ mod tests {
         assert_eq!(style.layers.len(), 2);
         assert!((style.layers[0].axis_offset.as_fixed_or(0.0) - (-0.125)).abs() < 1e-12);
         assert!((style.layers[1].axis_offset.as_fixed_or(0.0) - 0.025).abs() < 1e-12);
+    }
+
+    #[test]
+    fn layer_value_rounding_and_roundtrip() {
+        // Test cases from requirement
+        let cases = vec![
+            ("29", "29"),
+            ("17.5", "17.5"),
+            ("0.1", "0.1"),
+            ("12.34", "12.34"),
+            ("0", "0"),
+            ("0.0", "0"),
+            ("29.000000000000006", "29"), // Simulating floating point artifact
+            ("28.99999999999996", "29"),  // Simulating floating point artifact
+        ];
+
+        for (input, expected) in cases {
+            let val = LayerValue::parse_cm_str(input);
+            assert_eq!(
+                val.to_cm_display_string(),
+                expected,
+                "Failed roundtrip/formatting for input: {}",
+                input
+            );
+        }
+
+        // Test that formulas are untouched
+        let formula = "BB * 0.5";
+        let val = LayerValue::parse_cm_str(formula);
+        assert_eq!(val.to_cm_display_string(), formula);
+        assert!(matches!(val, LayerValue::Formula(_)));
     }
 }

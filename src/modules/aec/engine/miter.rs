@@ -30,6 +30,7 @@ pub struct MiterLayer {
     pub axis_offset: f64,
     pub material: String,
     pub function: String,
+    pub layer_id: uuid::Uuid,
 }
 
 impl MiterLayer {
@@ -41,6 +42,7 @@ impl MiterLayer {
             axis_offset,
             material: String::new(),
             function: String::new(),
+            layer_id: uuid::Uuid::nil(),
         }
     }
 
@@ -49,12 +51,14 @@ impl MiterLayer {
         axis_offset: f64,
         material: impl Into<String>,
         function: impl Into<String>,
+        layer_id: uuid::Uuid,
     ) -> Self {
         Self {
             thickness,
             axis_offset,
             material: material.into(),
             function: function.into(),
+            layer_id,
         }
     }
 
@@ -166,11 +170,23 @@ fn resolve_layer_override_style<'a>(
     override_data: &'a JunctionOverride,
 ) -> Option<&'a JoinOverrideStyle> {
     for pair in &override_data.layer_pairs {
-        if &pair.layer_a == layer_ref {
+        if layer_ref_matches_one(&pair.layer_a, layer_ref) {
             return Some(&pair.style);
         }
     }
     override_data.default_style.as_ref()
+}
+
+/// Compare two [`LayerRef`]s the same way `commands::layer_ref_matches`
+/// does: prioritize the stable `layer_id` when both sides have one set,
+/// otherwise fall back to the `material_id`/`role_tag`/`index` triple. This
+/// keeps legacy/hand-written overrides (with `layer_id: None`) matching a
+/// live layer that now carries a real ID.
+fn layer_ref_matches_one(a: &LayerRef, b: &LayerRef) -> bool {
+    match (a.layer_id, b.layer_id) {
+        (Some(x), Some(y)) => x == y,
+        _ => a.material_id == b.material_id && a.role_tag == b.role_tag && a.index == b.index,
+    }
 }
 
 /// Override-aware variant of [`mitered_layer_footprints`].
@@ -1557,8 +1573,8 @@ mod tests {
         let stem = vec![(5.0, 0.0), (5.0, 8.0)];
         let through = vec![(0.0, 0.0), (10.0, 0.0)];
         let layers = vec![
-            MiterLayer::with_id(0.1, -0.1, "core", "Structural"),
-            MiterLayer::with_id(0.1, 0.0, "finish", "Finish"),
+            MiterLayer::with_id(0.1, -0.1, "core", "Structural", uuid::Uuid::new_v4()),
+            MiterLayer::with_id(0.1, 0.0, "finish", "Finish", uuid::Uuid::new_v4()),
         ];
         let fps = mitered_layer_footprints(
             &stem,
@@ -1614,12 +1630,12 @@ mod tests {
         let stem = vec![(5.0, 0.0), (5.0, 8.0)];
         let through = vec![(0.0, 0.0), (10.0, 0.0)];
         let layers_stem = vec![
-            MiterLayer::with_id(0.2, -0.15, "brick", "Finish"),
-            MiterLayer::with_id(0.1, 0.05, "orphan", "Other"),
+            MiterLayer::with_id(0.2, -0.15, "brick", "Finish", uuid::Uuid::new_v4()),
+            MiterLayer::with_id(0.1, 0.05, "orphan", "Other", uuid::Uuid::new_v4()),
         ];
         let layers_through = vec![
-            MiterLayer::with_id(0.2, -0.15, "brick", "Finish"),
-            MiterLayer::with_id(0.1, 0.05, "concrete", "Structure"),
+            MiterLayer::with_id(0.2, -0.15, "brick", "Finish", uuid::Uuid::new_v4()),
+            MiterLayer::with_id(0.1, 0.05, "concrete", "Structure", uuid::Uuid::new_v4()),
         ];
 
         let fps = mitered_layer_footprints(
@@ -1769,14 +1785,14 @@ mod tests {
         // A: Brick (outer), Insulation, Concrete (inner)
         // B: same materials reversed in the list — must still pair Brick↔Brick etc.
         let layers_a = vec![
-            MiterLayer::with_id(0.1, -0.17500000000000002, "Brick", "Finish"),
-            MiterLayer::with_id(0.05, -0.07500000000000001, "Insulation", "Insulation"),
-            MiterLayer::with_id(0.2, -0.02500000000000001, "Concrete", "Structural"),
+            MiterLayer::with_id(0.1, -0.17500000000000002, "Brick", "Finish", uuid::Uuid::new_v4()),
+            MiterLayer::with_id(0.05, -0.07500000000000001, "Insulation", "Insulation", uuid::Uuid::new_v4()),
+            MiterLayer::with_id(0.2, -0.02500000000000001, "Concrete", "Structural", uuid::Uuid::new_v4()),
         ];
         let layers_b = vec![
-            MiterLayer::with_id(0.2, -0.17500000000000002, "Concrete", "Structural"),
-            MiterLayer::with_id(0.05, 0.024999999999999994, "Insulation", "Insulation"),
-            MiterLayer::with_id(0.1, 0.075, "Brick", "Finish"),
+            MiterLayer::with_id(0.2, -0.17500000000000002, "Concrete", "Structural", uuid::Uuid::new_v4()),
+            MiterLayer::with_id(0.05, 0.024999999999999994, "Insulation", "Insulation", uuid::Uuid::new_v4()),
+            MiterLayer::with_id(0.1, 0.075, "Brick", "Finish", uuid::Uuid::new_v4()),
         ];
         let pairing = match_layer_indices(&layers_a, &layers_b);
         assert_eq!(pairing, vec![Some(2), Some(1), Some(0)]);
@@ -1805,10 +1821,10 @@ mod tests {
         // Offset-only pairing may still match the closer layer; the other
         // must remain unmatched (None → corner_override).
         let layers_a = vec![
-            MiterLayer::with_id(0.1, -0.15000000000000002, "Brick", "Finish"),
-            MiterLayer::with_id(0.2, -0.05000000000000002, "Concrete", "Structural"),
+            MiterLayer::with_id(0.1, -0.15000000000000002, "Brick", "Finish", uuid::Uuid::new_v4()),
+            MiterLayer::with_id(0.2, -0.05000000000000002, "Concrete", "Structural", uuid::Uuid::new_v4()),
         ];
-        let layers_b = vec![MiterLayer::with_id(0.15, -0.075, "Insulation", "Insulation")];
+        let layers_b = vec![MiterLayer::with_id(0.15, -0.075, "Insulation", "Insulation", uuid::Uuid::new_v4())];
 
         let pairing = match_layer_indices(&layers_a, &layers_b);
         assert_eq!(pairing.len(), 2);
@@ -1837,8 +1853,8 @@ mod tests {
 
     fn two_layer() -> Vec<MiterLayer> {
         vec![
-            MiterLayer::with_id(0.1, -0.15000000000000002, "Brick", "Finish"),
-            MiterLayer::with_id(0.2, -0.05000000000000002, "Concrete", "Structural"),
+            MiterLayer::with_id(0.1, -0.15000000000000002, "Brick", "Finish", uuid::Uuid::new_v4()),
+            MiterLayer::with_id(0.2, -0.05000000000000002, "Concrete", "Structural", uuid::Uuid::new_v4()),
         ]
     }
 
@@ -2258,9 +2274,9 @@ mod tests {
         // Wall 1: (0,0) to (0,10). Layers: [Brick, Concrete] (identical stack)
         // Wall 2: (0,0) to (-10,0). Layers: [Concrete] (different stack)
 
-        let l_brick = MiterLayer::with_id(0.1, -0.15, "Brick", "Finish");
-        let l_concrete = MiterLayer::with_id(0.2, -0.05, "Concrete", "Structural");
-        let l_concrete_alone = MiterLayer::with_id(0.2, -0.1, "Concrete", "Structural");
+        let l_brick = MiterLayer::with_id(0.1, -0.15, "Brick", "Finish", uuid::Uuid::new_v4());
+        let l_concrete = MiterLayer::with_id(0.2, -0.05, "Concrete", "Structural", uuid::Uuid::new_v4());
+        let l_concrete_alone = MiterLayer::with_id(0.2, -0.1, "Concrete", "Structural", uuid::Uuid::new_v4());
 
         let junction = Junction {
             point: glam::DVec3::new(0.0, 0.0, 0.0),
@@ -2299,9 +2315,9 @@ mod tests {
         assert!(res[2][0].is_some(), "W2 layer 0 (Concrete) should miter against W1 and W0");
 
         // Now test a layer that matches NO neighbor.
-        let l_brick_g = MiterLayer::with_id(0.1, -0.075, "Brick", "Finish");
-        let l_glass = MiterLayer::with_id(0.05, 0.025, "Glass", "Finish");
-        let l_brick_alone = MiterLayer::with_id(0.1, -0.05, "Brick", "Finish");
+        let l_brick_g = MiterLayer::with_id(0.1, -0.075, "Brick", "Finish", uuid::Uuid::new_v4());
+        let l_glass = MiterLayer::with_id(0.05, 0.025, "Glass", "Finish", uuid::Uuid::new_v4());
+        let l_brick_alone = MiterLayer::with_id(0.1, -0.05, "Brick", "Finish", uuid::Uuid::new_v4());
         let walls_mixed = vec![
             JunctionWallGeom { axis: vec![(0.0, 0.0), (10.0, 0.0)], layers: vec![l_brick_g, l_glass], end: Some(0) },
             JunctionWallGeom { axis: vec![(0.0, 0.0), (0.0, 10.0)], layers: vec![l_brick_alone.clone()], end: Some(0) },
@@ -2326,14 +2342,14 @@ mod tests {
         // Stem wall 2 (endpoint): (0,0) to (5,-8), layers [Brick] only, at a
         //   distinct angle so this is a genuine 3-way (not 2-wall) junction.
         let through_layers = vec![
-            MiterLayer::with_id(0.2, -0.15, "Brick", "Finish"),
-            MiterLayer::with_id(0.1, 0.05, "Concrete", "Structural"),
+            MiterLayer::with_id(0.2, -0.15, "Brick", "Finish", uuid::Uuid::new_v4()),
+            MiterLayer::with_id(0.1, 0.05, "Concrete", "Structural", uuid::Uuid::new_v4()),
         ];
         let stem1_layers = vec![
-            MiterLayer::with_id(0.2, -0.125, "Brick", "Finish"),
-            MiterLayer::with_id(0.05, 0.075, "Orphan", "Other"),
+            MiterLayer::with_id(0.2, -0.125, "Brick", "Finish", uuid::Uuid::new_v4()),
+            MiterLayer::with_id(0.05, 0.075, "Orphan", "Other", uuid::Uuid::new_v4()),
         ];
-        let stem2_layers = vec![MiterLayer::with_id(0.2, -0.1, "Brick", "Finish")];
+        let stem2_layers = vec![MiterLayer::with_id(0.2, -0.1, "Brick", "Finish", uuid::Uuid::new_v4())];
 
         let junction = Junction {
             point: glam::DVec3::new(0.0, 0.0, 0.0),
@@ -2387,6 +2403,7 @@ mod tests {
             material_id: material.to_string(),
             role_tag: None,
             index,
+        layer_id: None,
         }
     }
 
@@ -2427,9 +2444,9 @@ mod tests {
 
     #[test]
     fn override_none_matches_automatic_n_way_junction_regression() {
-        let l_brick = MiterLayer::with_id(0.1, -0.15, "Brick", "Finish");
-        let l_concrete = MiterLayer::with_id(0.2, -0.05, "Concrete", "Structural");
-        let l_concrete_alone = MiterLayer::with_id(0.2, -0.1, "Concrete", "Structural");
+        let l_brick = MiterLayer::with_id(0.1, -0.15, "Brick", "Finish", uuid::Uuid::new_v4());
+        let l_concrete = MiterLayer::with_id(0.2, -0.05, "Concrete", "Structural", uuid::Uuid::new_v4());
+        let l_concrete_alone = MiterLayer::with_id(0.2, -0.1, "Concrete", "Structural", uuid::Uuid::new_v4());
         let junction = Junction {
             point: glam::DVec3::new(0.0, 0.0, 0.0),
             participants: vec![
@@ -2466,10 +2483,10 @@ mod tests {
         // true outer face of the whole through-wall stack (y = +0.2).
         let stem = vec![(5.0, 0.0), (5.0, 8.0)];
         let through = vec![(0.0, 0.0), (10.0, 0.0)];
-        let stem_layers = vec![MiterLayer::with_id(0.2, -0.1, "core", "Structural")];
+        let stem_layers = vec![MiterLayer::with_id(0.2, -0.1, "core", "Structural", uuid::Uuid::new_v4())];
         let through_layers = vec![
-            MiterLayer::with_id(0.2, -0.2, "core", "Structural"),
-            MiterLayer::with_id(0.2, 0.0, "other", "Structural"),
+            MiterLayer::with_id(0.2, -0.2, "core", "Structural", uuid::Uuid::new_v4()),
+            MiterLayer::with_id(0.2, 0.0, "other", "Structural", uuid::Uuid::new_v4()),
         ];
         let refs = vec![lref("core")];
 
@@ -2511,8 +2528,8 @@ mod tests {
         let axis_a = vec![(0.0, 0.0), (10.0, 0.0)];
         let axis_b = vec![(10.0, 0.0), (10.0, 10.0)];
         let layers = vec![
-            MiterLayer::with_id(0.1, -0.1, "concrete", "Structural"),
-            MiterLayer::with_id(0.1, 0.0, "brick", "Finish"),
+            MiterLayer::with_id(0.1, -0.1, "concrete", "Structural", uuid::Uuid::new_v4()),
+            MiterLayer::with_id(0.1, 0.0, "brick", "Finish", uuid::Uuid::new_v4()),
         ];
         let refs = vec![lref_at("concrete", 0), lref_at("brick", 1)];
 
@@ -2559,8 +2576,8 @@ mod tests {
         let axis_a = vec![(0.0, 0.0), (10.0, 0.0)];
         let axis_b = vec![(10.0, 0.0), (10.0, 10.0)];
         let layers = vec![
-            MiterLayer::with_id(0.1, -0.1, "plaster", "Finish"),
-            MiterLayer::with_id(0.1, 0.0, "plaster", "Finish"),
+            MiterLayer::with_id(0.1, -0.1, "plaster", "Finish", uuid::Uuid::new_v4()),
+            MiterLayer::with_id(0.1, 0.0, "plaster", "Finish", uuid::Uuid::new_v4()),
         ];
         // Both layers share the same material id; only their `index` differs.
         let refs = vec![lref_at("plaster", 0), lref_at("plaster", 1)];
@@ -2600,8 +2617,8 @@ mod tests {
         let axis_a = vec![(0.0, 0.0), (10.0, 0.0)];
         let axis_b = vec![(10.0, 0.0), (10.0, 10.0)];
         let layers = vec![
-            MiterLayer::with_id(0.1, -0.1, "concrete", "Structural"),
-            MiterLayer::with_id(0.1, 0.0, "brick", "Finish"),
+            MiterLayer::with_id(0.1, -0.1, "concrete", "Structural", uuid::Uuid::new_v4()),
+            MiterLayer::with_id(0.1, 0.0, "brick", "Finish", uuid::Uuid::new_v4()),
         ];
         let refs = vec![lref_at("concrete", 0), lref_at("brick", 1)];
 

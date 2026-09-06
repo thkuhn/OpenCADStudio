@@ -695,6 +695,7 @@ common =
     .point = Point
     .point-cloud = Point Cloud
     .polyline = Polyline
+    .wall = Wall
     .portrait = Portrait
     .position = Position
     .position-x = Position X

@@ -695,6 +695,7 @@ common =
     .point = Punkt
     .point-cloud = Punktwolken
     .polyline = Polylinie
+    .wall = Wand
     .portrait = Hochformat
     .position = Position
     .position-x = Position X

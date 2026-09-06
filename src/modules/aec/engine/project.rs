@@ -107,8 +107,12 @@ impl ProjectFile {
     pub fn load(path: &Path) -> io::Result<ProjectFile> {
         match fs::read_to_string(path) {
             Ok(text) => {
-                let project: ProjectFile = serde_json::from_str(&text)
+                let mut project: ProjectFile = serde_json::from_str(&text)
                     .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+                crate::modules::aec::engine::library::migrate_display_profiles_into_planarts(
+                    &mut project.display_config_library.configs,
+                    &mut project.material_wall_style_library.wall_styles,
+                );
                 Ok(project)
             }
             Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(ProjectFile::default()),
@@ -251,12 +255,12 @@ mod tests {
     }
 
     fn seeded_display_config_library() -> DisplayConfigLibrary {
-        use crate::modules::aec::engine::plan_view::{DisplayConfig, PlanPhase, ViewType};
+        use crate::modules::aec::engine::plan_view::{DisplayConfig, PlanningStage, ViewType};
         let mut lib = DisplayConfigLibrary::empty();
         lib.upsert(DisplayConfig::new(
             "Architekt 1:50".to_string(),
             "Architektur".to_string(),
-            PlanPhase::New,
+            PlanningStage::Design,
             ViewType::FloorPlan,
         ));
         lib
@@ -279,11 +283,7 @@ mod tests {
     }
 
     #[test]
-    fn project_display_config_library_scale_mappings_survive_save_and_resolve() {
-        // Step 7 ("Auto-Maßstabskopplung") combined with Step 6 (projektweite
-        // Persistenz): a `ScaleDisplayConfigMapping` stored inside a
-        // project's embedded `display_config_library` must survive a
-        // save/reload roundtrip and still resolve correctly afterwards.
+    fn project_display_config_library_scale_mappings_still_load() {
         use crate::modules::aec::engine::plan_view::ScaleDisplayConfigMapping;
 
         let mut project = ProjectFile::default();
@@ -299,16 +299,13 @@ mod tests {
         let path = temp_path("project_scale_mappings_roundtrip");
         project.save(&path).expect("save");
         let loaded = ProjectFile::load(&path).expect("load");
-
-        let resolved = resolve_display_config_library(Some(&loaded));
         assert_eq!(
-            resolved
-                .resolve_display_config_for_scale("1:50")
-                .map(|c| c.name.as_str()),
-            Some("Architekt 1:50")
+            loaded
+                .display_config_library
+                .scale_display_config_mappings
+                .len(),
+            1
         );
-        // A scale without a mapping must resolve to `None`, not panic.
-        assert!(resolved.resolve_display_config_for_scale("1:100").is_none());
         let _ = fs::remove_file(&path);
     }
 
@@ -320,6 +317,40 @@ mod tests {
         assert!(project.material_wall_style_library.materials.is_empty());
         assert!(project.material_wall_style_library.wall_styles.is_empty());
         assert!(project.display_config_library.configs.is_empty());
+    }
+
+    /// Regression test: `.ocsproj` files saved before `DisplayConfig` gained
+    /// its `planning_stage`/`view_type` fields (see
+    /// `aec-display-fixes-planning-stage.md`) must still load instead of
+    /// failing the whole `ProjectFile` deserialization, which previously
+    /// left the project silently unloaded (required fields with no
+    /// `#[serde(default)]`).
+    #[test]
+    fn project_with_pre_planning_stage_display_configs_still_loads() {
+        let json = r#"{
+            "buildings": [],
+            "display_config_library": {
+                "configs": [
+                    {
+                        "name": "Architekt 1:50",
+                        "discipline": "Architektur"
+                    }
+                ]
+            }
+        }"#;
+        let project: ProjectFile = serde_json::from_str(json)
+            .expect("pre-planning_stage/view_type DisplayConfig entries must still deserialize");
+        assert_eq!(project.display_config_library.configs.len(), 1);
+        let cfg = &project.display_config_library.configs[0];
+        assert_eq!(cfg.name, "Architekt 1:50");
+        assert_eq!(
+            cfg.planning_stage,
+            crate::modules::aec::engine::plan_view::PlanningStage::Design
+        );
+        assert_eq!(
+            cfg.view_type,
+            crate::modules::aec::engine::plan_view::ViewType::FloorPlan
+        );
     }
 
     #[test]

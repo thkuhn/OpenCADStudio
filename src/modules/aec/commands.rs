@@ -1,18 +1,20 @@
 //! AEC commands — wall/room/storey creation, room schedule, IFC export.
 //!
-//! `AEC_WALL` is an interactive multi-point drawing command (analogous to
-//! `PLINE`); the rest remain non-interactive scaffold commands (matching the
-//! former plugin's pragmatic behaviour) that operate directly on `&mut Scene`
-//! / the document and report feedback via the command line.
+//! `AEC_WALL` is an interactive chain of 2-point wall segments (still
+//! analogous to `PLINE` for clicks); the rest remain non-interactive scaffold
+//! commands (matching the former plugin's pragmatic behaviour) that operate
+//! directly on `&mut Scene` / the document and report feedback via the
+//! command line.
 
 use std::sync::Mutex;
+use uuid::Uuid;
 
 use acadrust::entities::{LwPolyline, LwVertex, Point, Table};
 use acadrust::tables::AppId;
 use acadrust::types::{Vector2, Vector3};
 use acadrust::xdata::{ExtendedDataRecord, XDataValue};
 use acadrust::{CadDocument, EntityType, Handle};
-use glam::DVec3;
+use glam::{DVec2, DVec3};
 
 use crate::command::{CadCommand, CmdOption, CmdResult, WorkingPlane};
 use crate::scene::model::wire_model::WireModel;
@@ -71,7 +73,10 @@ pub fn take_pending_override_warnings() -> Vec<String> {
 
 fn layer_ref_matches(r: &join::LayerRef, set: &[join::LayerRef]) -> bool {
     set.iter().any(|l| {
-        l.material_id == r.material_id && l.role_tag == r.role_tag && l.index == r.index
+        match (l.layer_id, r.layer_id) {
+            (Some(a), Some(b)) => a == b,
+            _ => l.material_id == r.material_id && l.role_tag == r.role_tag && l.index == r.index,
+        }
     })
 }
 
@@ -96,15 +101,24 @@ fn resolve_layer_style_override(
     // Detailed per-layer override first (more specific than a whole-slot
     // override), then each slot in priority order fills any remaining gaps.
     if let Some(lso) = rules.layer_style_override.iter().find(|lso| {
-        lso.layer.material_id == layer_ref.material_id
-            && lso.layer.role_tag == layer_ref.role_tag
-            && lso.layer.index == layer_ref.index
+        match (lso.layer.layer_id, layer_ref.layer_id) {
+            (Some(a), Some(b)) => a == b,
+            _ => {
+                lso.layer.material_id == layer_ref.material_id
+                    && lso.layer.role_tag == layer_ref.role_tag
+                    && lso.layer.index == layer_ref.index
+            }
+        }
     }) {
         out.line_type = lso.style.line_type.clone();
         out.line_color = lso.style.line_color;
         out.hatch_pattern = lso.style.hatch_pattern.clone();
         out.hatch_color = lso.style.hatch_color;
+        out.hatch_scale = lso.style.hatch_scale;
         out.fill_color = lso.style.fill_color;
+        out.hatch_angle = lso.style.hatch_angle;
+        out.hatch_angle_relative = lso.style.hatch_angle_relative;
+        out.cad_layer = lso.style.cad_layer.clone();
     }
     for slot in slots {
         if let Some(s) = rules.style_for(*slot) {
@@ -120,8 +134,20 @@ fn resolve_layer_style_override(
             if out.hatch_color.is_none() {
                 out.hatch_color = s.hatch_color;
             }
+            if out.hatch_scale.is_none() {
+                out.hatch_scale = s.hatch_scale;
+            }
             if out.fill_color.is_none() {
                 out.fill_color = s.fill_color;
+            }
+            if out.hatch_angle.is_none() {
+                out.hatch_angle = s.hatch_angle;
+            }
+            if out.hatch_angle_relative.is_none() {
+                out.hatch_angle_relative = s.hatch_angle_relative;
+            }
+            if out.cad_layer.is_none() {
+                out.cad_layer = s.cad_layer.clone();
             }
         }
     }
@@ -144,23 +170,80 @@ pub struct PhaseFilterResult {
 
 /// Resolves a [`DisplayConfig::phase_filter`] against a wall's `phase`.
 ///
-/// `filter == None` is the pre-Step-1 default: every phase is visible and no
-/// extra style is applied, preserving existing behaviour exactly. When a
-/// filter is present, `phase` must be listed in `visible_phases` to be shown,
-/// and `Demolition`/`Existing` walls additionally pick up
-/// `demolition_style`/`existing_style` (if set) as an extra overlay for
-/// callers to merge into the resolved wall style.
+/// `filter == None` keeps every phase visible and applies built-in extras
+/// (dashed demolition contour, grey existing contour). When a filter is
+/// present, `phase` must be listed in `visible_phases`; `Demolition` /
+/// `Existing` pick up `demolition_style`/`existing_style` or the same
+/// built-in extras when those fields are unset.
+fn default_phase_extra_style(
+    phase: PlanPhase,
+) -> Option<engine::display_component::ComponentStyleOverride> {
+    match phase {
+        PlanPhase::Demolition => Some(engine::display_component::ComponentStyleOverride {
+            line_type: Some("DASHED".to_string()),
+            ..Default::default()
+        }),
+        PlanPhase::Existing => Some(engine::display_component::ComponentStyleOverride {
+            line_color: Some(acadrust::types::Color::Rgb {
+                r: 136,
+                g: 136,
+                b: 136,
+            }),
+            ..Default::default()
+        }),
+        PlanPhase::New => None,
+    }
+}
+
 pub fn apply_phase_filter(phase: PlanPhase, filter: Option<&PhaseFilter>) -> PhaseFilterResult {
     let Some(filter) = filter else {
-        return PhaseFilterResult { visible: true, extra_style: None };
+        return PhaseFilterResult {
+            visible: true,
+            extra_style: default_phase_extra_style(phase),
+        };
     };
     let visible = filter.visible_phases.contains(&phase);
     let extra_style = match phase {
-        PlanPhase::Demolition => filter.demolition_style.clone(),
-        PlanPhase::Existing => filter.existing_style.clone(),
+        PlanPhase::Demolition => filter
+            .demolition_style
+            .clone()
+            .or_else(|| default_phase_extra_style(phase)),
+        PlanPhase::Existing => filter
+            .existing_style
+            .clone()
+            .or_else(|| default_phase_extra_style(phase)),
         PlanPhase::New => None,
     };
-    PhaseFilterResult { visible, extra_style }
+    PhaseFilterResult {
+        visible,
+        extra_style,
+    }
+}
+
+fn merge_phase_extra_into_rules(
+    rules: &mut engine::display_component::ComponentRuleSet,
+    extra: engine::display_component::ComponentStyleOverride,
+) {
+    let slot = engine::display_component::WallComponentSlot::Contour2D
+        .key()
+        .to_string();
+    rules
+        .style_override
+        .entry(slot)
+        .or_default()
+        .overlay_from(&extra);
+}
+
+fn hide_all_display_slots(rules: &mut engine::display_component::ComponentRuleSet) {
+    for slot in [
+        engine::display_component::WallComponentSlot::Contour2D,
+        engine::display_component::WallComponentSlot::Layers2D,
+        engine::display_component::WallComponentSlot::ContourHatch2D,
+        engine::display_component::WallComponentSlot::LayerHatch2D,
+        engine::display_component::WallComponentSlot::Solid3D,
+    ] {
+        rules.visibility.insert(slot.key().to_string(), false);
+    }
 }
 
 /// Build the [`join::LayerRef`] list for a wall's layer stack (given its
@@ -169,12 +252,17 @@ pub fn apply_phase_filter(phase: PlanPhase, filter: Option<&PhaseFilter>) -> Pha
 /// two plaster layers) stay individually addressable by
 /// [`join::LayerPairOverride`] instead of colliding.
 fn layer_refs_from_materials<'a>(
-    materials: impl IntoIterator<Item = &'a str>,
+    layers: impl IntoIterator<Item = (&'a str, Uuid)>,
 ) -> Vec<join::LayerRef> {
-    materials
+    layers
         .into_iter()
         .enumerate()
-        .map(|(i, m)| join::LayerRef { material_id: m.to_string(), role_tag: None, index: i })
+        .map(|(i, (m, id))| join::LayerRef {
+            material_id: m.to_string(),
+            role_tag: None,
+            index: i,
+            layer_id: Some(id),
+        })
         .collect()
 }
 
@@ -890,6 +978,12 @@ pub fn wall_record(
     for layer in layers {
         values.push(XDataValue::String(layer.hatch_override.clone().unwrap_or_default()));
     }
+    // Trailing layer_id (stable identity) for each layer, preceded by a
+    // tag so it can be reliably distinguished from other trailing extras.
+    values.push(XDataValue::String("layer_id".to_string()));
+    for layer in layers {
+        values.push(XDataValue::String(layer.layer_id.to_string()));
+    }
     // Trailing `phase` tag, appended last so records written before this
     // field existed still parse back defaulting to `PlanPhase::New`.
     values.push(XDataValue::String(phase.as_str().to_string()));
@@ -984,6 +1078,9 @@ pub fn wall_from_entity(entity: &EntityType) -> Option<Wall> {
             top_offset: 0.0,
             layer_override: None,
             hatch_override: None,
+            // Placeholder; overwritten below from the "layer_id" tag when
+            // present, or assigned a fresh stable ID otherwise (legacy wall).
+            layer_id: Uuid::nil(),
         });
     }
 
@@ -1075,10 +1172,34 @@ pub fn wall_from_entity(entity: &EntityType) -> Option<Wall> {
                                     }
                                 }
 
+                                // Search for optional "layer_id" tag in trailing values,
+                                // and note how many slots it occupies (tag + one UUID
+                                // string per layer) so the subsequent `phase` tag can
+                                // be located at the correct offset. Absent on records
+                                // written before this field existed.
+                                let mut layer_id_block_len = 0usize;
+                                if hatch_tail + layer_count < v.len() {
+                                    if let XDataValue::String(s) = &v[hatch_tail + layer_count] {
+                                        if s == "layer_id" && hatch_tail + layer_count + 1 + layer_count <= v.len() {
+                                            for i in 0..layer_count {
+                                                if let XDataValue::String(id_str) =
+                                                    &v[hatch_tail + layer_count + 1 + i]
+                                                {
+                                                    if let Ok(id) = Uuid::parse_str(id_str) {
+                                                        layers[i].layer_id = id;
+                                                    }
+                                                }
+                                            }
+                                            layer_id_block_len = 1 + layer_count;
+                                        }
+                                    }
+                                }
+
                                 // Optional trailing `phase` tag might follow the
-                                // hatch_override block. Absent on older records,
-                                // which default to `PlanPhase::New`.
-                                let phase_tail = hatch_tail + layer_count;
+                                // hatch_override block (and the layer_id block, if
+                                // present). Absent on older records, which default
+                                // to `PlanPhase::New`.
+                                let phase_tail = hatch_tail + layer_count + layer_id_block_len;
                                 if v.len() > phase_tail {
                                     if let XDataValue::String(s) = &v[phase_tail] {
                                         phase = PlanPhase::from_str(s);
@@ -1132,6 +1253,13 @@ pub fn wall_from_entity(entity: &EntityType) -> Option<Wall> {
         let offsets = migrate_gap_before_to_axis_offset(&pairs);
         for (layer, offset) in layers.iter_mut().zip(offsets) {
             layer.axis_offset = offset;
+        }
+    }
+
+    // Assign new IDs to legacy layers that lack a stable identity from XDATA.
+    for l in &mut layers {
+        if l.layer_id.is_nil() {
+            l.layer_id = Uuid::new_v4();
         }
     }
 
@@ -1423,13 +1551,21 @@ fn pack_wall_ring(ring: &[(f64, f64)]) -> (Vec<[f32; 2]>, [f64; 2], Vec<[f64; 2]
     (rel, origin, wcs)
 }
 
-/// Convert a DXF-style `0xRRGGBB` color into a normalized RGBA color with
-/// the alpha the AEC hatch representation uses.
-fn wall_hatch_color(rgb: u32) -> [f32; 4] {
-    let r = ((rgb >> 16) & 0xFF) as f32 / 255.0;
-    let g = ((rgb >> 8) & 0xFF) as f32 / 255.0;
-    let b = (rgb & 0xFF) as f32 / 255.0;
-    [r, g, b, 0.85]
+/// Convert an `AcadColor` into a normalized RGBA color with the alpha the
+/// AEC hatch representation uses. Logical colours without a resolvable RGB
+/// fall back to light grey.
+fn wall_hatch_color(color: acadrust::types::Color) -> [f32; 4] {
+    let (r, g, b) = color.rgb().unwrap_or((153, 153, 153));
+    [r as f32 / 255.0, g as f32 / 255.0, b as f32 / 255.0, 0.85]
+}
+
+/// Convert a material `line_color` 0xRRGGBB into an `AcadColor::Rgb`.
+fn material_line_color_as_acad(rgb: u32) -> acadrust::types::Color {
+    acadrust::types::Color::Rgb {
+        r: ((rgb >> 16) & 0xFF) as u8,
+        g: ((rgb >> 8) & 0xFF) as u8,
+        b: (rgb & 0xFF) as u8,
+    }
 }
 
 /// Error returned by [`regenerate_wall_representation`]; never a panic —
@@ -1530,23 +1666,25 @@ pub fn refresh_wall_after_axis_edit(
     style_substitutions: Option<&HashMap<engine::plan_view::WallStyleRef, engine::plan_view::WallStyleRef>>,
 ) -> Vec<Handle> {
     let wall_handle = resolve_wall_package(scene, wall_handle);
-    let mut touched = match regenerate_wall_representation_with_rules_and_substitutions(
-        scene,
-        wall_handle,
-        display_rules,
-        style_substitutions,
-        library_override,
-    ) {
-        Ok(t) => t,
-        Err(_) => vec![wall_handle],
-    };
-    touched.extend(try_auto_join_nearby_walls(
+    let mut touched = try_auto_join_nearby_walls(
         scene,
         wall_handle,
         library_override,
         display_rules,
         style_substitutions,
-    ));
+    );
+    if !touched.iter().any(|h| *h == wall_handle) {
+        match regenerate_wall_representation_with_rules_and_substitutions(
+            scene,
+            wall_handle,
+            display_rules,
+            style_substitutions,
+            library_override,
+        ) {
+            Ok(t) => touched.extend(t),
+            Err(_) => touched.push(wall_handle),
+        }
+    }
     touched.sort_by_key(|h| h.value());
     touched.dedup();
     // Resident wire cache can keep the previous 2D outline if only
@@ -1791,12 +1929,10 @@ fn find_other_end_junction_footprints(
     if self_axis_2d.len() < 2 {
         return None;
     }
-    let other_end = if handled_end == 0 {
-        self_axis_2d.len() - 1
-    } else {
-        0
-    };
-    if other_end == handled_end {
+    // `handled_end` is the axis vertex we want footprints for (the caller
+    // already skipped the end covered by this regen's primary join).
+    let other_end = handled_end;
+    if other_end >= self_axis_2d.len() {
         return None;
     }
     let pt = self_axis_2d[other_end];
@@ -1807,7 +1943,13 @@ fn find_other_end_junction_footprints(
     // actually coincident (endpoint or through-span) with this wall's other
     // end. `handles[0]` is always `wall_handle`.
     let mut handles = vec![wall_handle];
-    for peer in engine::owner_index::peers_of(&scene.document, wall_handle) {
+    let mut candidates = engine::owner_index::peers_of(&scene.document, wall_handle);
+    for h in all_wall_axis_handles(scene) {
+        if h != wall_handle && !candidates.contains(&h) {
+            candidates.push(h);
+        }
+    }
+    for peer in candidates {
         if peer == wall_handle || handles.contains(&peer) {
             continue;
         }
@@ -1817,7 +1959,7 @@ fn find_other_end_junction_footprints(
         }
         let end_hit = peer_axis[0].distance(pt3) <= tol || peer_axis.last().unwrap().distance(pt3) <= tol;
         let through_hit = (0..peer_axis.len() - 1).any(|i| {
-            point_to_segment_dist_2d(pt3, peer_axis[i], peer_axis[i + 1]) <= tol
+            point_to_segment_dist_2d(pt3, peer_axis[i], peer_axis[i + 1]) <= WALL_JOIN_SNAP_RADIUS
                 && peer_axis[i].distance(pt3) > join::END_MID_TOLERANCE
                 && peer_axis[i + 1].distance(pt3) > join::END_MID_TOLERANCE
         });
@@ -1862,7 +2004,9 @@ fn find_other_end_junction_footprints(
         .map(|p| {
             layers
                 .get(p.wall_index)
-                .map(|ls| layer_refs_from_materials(ls.iter().map(|l| l.material.as_str())))
+                .map(|ls| {
+                    layer_refs_from_materials(ls.iter().map(|l| (l.material.as_str(), l.layer_id)))
+                })
                 .unwrap_or_default()
         })
         .collect();
@@ -1913,22 +2057,15 @@ fn regenerate_wall_representation_inner(
     library_override: Option<&StyleLibrary>,
 ) -> Result<Vec<Handle>, WallRegenError> {
     use engine::display_component::{LayerSelection, WallComponentSlot};
-    // The current pipeline doesn't create a dedicated 2D "overall" contour
-    // separate from the per-layer contours (nor a dedicated "overall" hatch
-    // separate from the per-layer hatches), so `Contour2D`/`Layers2D` both
-    // gate the same contour polylines below, and `ContourHatch2D`/
-    // `LayerHatch2D` both gate the same hatch entities. `AxisLine` has no
-    // creatable entity here (the axis is always the invisible `wall_handle`
-    // itself); `SurfaceStyle3D`, `SectionRepresentation` and
-    // `ElevationRepresentation` have no current equivalent either — all four
-    // are TODOs for a later step and are intentionally no-ops here.
-    let contour_visible = rules.map_or(true, |r| {
-        r.is_visible(WallComponentSlot::Contour2D) && r.is_visible(WallComponentSlot::Layers2D)
-    });
-    let hatch_visible = rules.map_or(true, |r| {
-        r.is_visible(WallComponentSlot::ContourHatch2D)
-            && r.is_visible(WallComponentSlot::LayerHatch2D)
-    });
+    // Geometry vs. hatch are independent: layer contours/hatches vs. overall
+    // contour/hatch. Envelope (first/last layer) stands in for overall contour
+    // until a dedicated union path exists. Axis/SurfaceStyle3D/Section/Elevation
+    // remain no-ops here.
+    let layers2d_visible = rules.map_or(true, |r| r.is_visible(WallComponentSlot::Layers2D));
+    let contour2d_visible = rules.map_or(true, |r| r.is_visible(WallComponentSlot::Contour2D));
+    let layer_hatch_visible = rules.map_or(true, |r| r.is_visible(WallComponentSlot::LayerHatch2D));
+    let contour_hatch_visible =
+        rules.map_or(true, |r| r.is_visible(WallComponentSlot::ContourHatch2D));
     let solid_visible = rules.map_or(true, |r| r.is_visible(WallComponentSlot::Solid3D));
     let Some(entity) = scene.document.get_entity(wall_handle) else {
         return Err(WallRegenError::NotAWall);
@@ -2066,6 +2203,7 @@ fn regenerate_wall_representation_inner(
                 l.axis_offset,
                 l.material.clone(),
                 l.function.clone(),
+                l.layer_id,
             )
         })
         .collect();
@@ -2074,11 +2212,12 @@ fn regenerate_wall_representation_inner(
     // context, honoring any persisted `JunctionOverride` for that end.
     let compute_end_footprints = |scene: &mut Scene, ctx: &engine::miter::JoinMiterContext| {
         let self_layer_refs: Vec<join::LayerRef> =
-            layer_refs_from_materials(layers.iter().map(|l| l.material.as_str()));
+            layer_refs_from_materials(layers.iter().map(|l| (l.material.as_str(), l.layer_id)));
         let junction_override = read_junction_override(scene, wall_handle, ctx.self_end)
             .and_then(|ov| {
-                let other_layer_refs: Vec<join::LayerRef> =
-                    layer_refs_from_materials(ctx.other_layers.iter().map(|l| l.material.as_str()));
+                let other_layer_refs: Vec<join::LayerRef> = layer_refs_from_materials(
+                    ctx.other_layers.iter().map(|l| (l.material.as_str(), l.layer_id)),
+                );
                 validate_and_persist_junction_override(
                     scene,
                     wall_handle,
@@ -2257,6 +2396,7 @@ fn regenerate_wall_representation_inner(
             material_id: mat_name.clone(),
             role_tag: None,
             index: i,
+            layer_id: Some(layer.layer_id),
         };
         // `layer_filter_for(slot)` gates `Contour2D`/`Solid3D` independently
         // (Step 2/3): the 2D contour below consults the `Contour2D` slot,
@@ -2285,20 +2425,40 @@ fn regenerate_wall_representation_inner(
                 Some((sub_mat, sub_hatch)) => (sub_mat.as_str(), sub_hatch.as_deref()),
                 None => (mat_name.as_str(), layer.hatch_override.as_deref()),
             };
-        let material = library.materials.iter().find(|m| m.id == effective_mat_name);
+        let material = library.materials.iter().find(|m| {
+            m.id == effective_mat_name || m.name == effective_mat_name
+        });
 
-        // Precedence tiers (a)/(b): a `ComponentRuleSet.style_override` for
-        // the relevant slot, merged with a `layer_style_override` matching
-        // this exact layer (more specific, so it fills any field the slot
-        // override left unset). Both take priority over (c) substitution
-        // and (d)/(e) below.
+        // Envelope (overall 2D contour) prefers `Contour2D` so phase extras
+        // (Abbruch/Bestand) win over per-layer `Layers2D` overrides.
+        let is_envelope = i == 0 || i + 1 == layers.len();
+        let contour_slots = if is_envelope {
+            [WallComponentSlot::Contour2D, WallComponentSlot::Layers2D]
+        } else {
+            [WallComponentSlot::Layers2D, WallComponentSlot::Contour2D]
+        };
         let contour_style_override =
-            resolve_layer_style_override(rules, &[WallComponentSlot::Layers2D, WallComponentSlot::Contour2D], &layer_ref);
-        let hatch_style_override = resolve_layer_style_override(
-            rules,
-            &[WallComponentSlot::LayerHatch2D, WallComponentSlot::ContourHatch2D],
-            &layer_ref,
-        );
+            resolve_layer_style_override(rules, &contour_slots, &layer_ref);
+        let hatch_slots = if is_envelope {
+            [
+                WallComponentSlot::ContourHatch2D,
+                WallComponentSlot::LayerHatch2D,
+            ]
+        } else {
+            [
+                WallComponentSlot::LayerHatch2D,
+                WallComponentSlot::ContourHatch2D,
+            ]
+        };
+        let mut hatch_style_override =
+            resolve_layer_style_override(rules, &hatch_slots, &layer_ref);
+        if is_envelope {
+            if let Some(slot_style) = rules.and_then(|r| {
+                r.style_for(WallComponentSlot::ContourHatch2D)
+            }) {
+                hatch_style_override.overlay_from(slot_style);
+            }
+        }
 
         // Layer-level `hatch_override` (Step 4) takes precedence over the
         // material's own `hatch_pattern`; both fall back to "ANSI31" so a
@@ -2313,13 +2473,17 @@ fn regenerate_wall_representation_inner(
             })
             .or_else(|| material.map(|m| m.hatch_pattern.clone()).filter(|p| !p.is_empty()))
             .unwrap_or_else(|| "ANSI31".to_string());
-        let color = hatch_style_override
+        let hatch_acad_color = hatch_style_override
             .hatch_color
             .or_else(|| material.and_then(|m| m.hatch_color))
-            .or_else(|| material.map(|m| m.line_color))
+            .or_else(|| material.map(|m| material_line_color_as_acad(m.line_color)));
+        let color = hatch_acad_color
             .map(wall_hatch_color)
             .unwrap_or([0.6, 0.6, 0.6, 0.85]);
-        let mut hatch_scale = material.map(|m| m.hatch_scale).unwrap_or(1.0);
+        let mut hatch_scale = hatch_style_override
+            .hatch_scale
+            .or_else(|| material.map(|m| m.hatch_scale))
+            .unwrap_or(1.0);
         if hatch_scale <= 0.0 {
             hatch_scale = 0.01;
         }
@@ -2347,7 +2511,7 @@ fn regenerate_wall_representation_inner(
         } as f32;
         let line_color = contour_style_override
             .line_color
-            .or_else(|| material.map(|m| m.line_color));
+            .or_else(|| material.map(|m| material_line_color_as_acad(m.line_color)));
         let fill_color = contour_style_override.fill_color;
         let families = crate::scene::model::hatch_patterns::find(&pattern_name)
             .and_then(|e| {
@@ -2365,7 +2529,11 @@ fn regenerate_wall_representation_inner(
                 continue;
             }
 
-            if contour_visible && layer_included_contour {
+            let draw_contour = (layers2d_visible && layer_included_contour)
+                || (contour2d_visible && is_envelope && layer_included_contour);
+            let draw_hatch = layer_hatch_visible || (contour_hatch_visible && is_envelope);
+
+            if draw_contour {
                 let mut pl = LwPolyline::new();
                 for (idx, &(x, y)) in footprint.iter().enumerate() {
                     let bulge = footprint_bulges.get(idx).copied().unwrap_or(0.0);
@@ -2380,20 +2548,21 @@ fn regenerate_wall_representation_inner(
                         e.as_entity_mut().set_layer(layer_name.to_string());
                     }
                 }
-                if let Some(rgb) = line_color {
+                if let Some(color) = line_color {
                     if let Some(e) = scene.document.get_entity_mut(contour_handle) {
-                        e.as_entity_mut().set_color(acadrust::types::Color::Rgb {
-                            r: ((rgb >> 16) & 0xFF) as u8,
-                            g: ((rgb >> 8) & 0xFF) as u8,
-                            b: (rgb & 0xFF) as u8,
-                        });
+                        e.as_entity_mut().set_color(color);
+                    }
+                }
+                if let Some(lt) = contour_style_override.line_type.as_deref().filter(|s| !s.is_empty()) {
+                    if let Some(e) = scene.document.get_entity_mut(contour_handle) {
+                        e.common_mut().linetype = lt.to_string();
                     }
                 }
                 write_wall_display_tag(scene, contour_handle, wall_handle, WALL_REP_ROLE_CONTOUR);
                 new_derived.push(contour_handle);
             }
 
-            if hatch_visible {
+            if draw_hatch {
                 let tessellated = tessellate_ring_with_bulges(footprint, footprint_bulges);
                 let (rel, origin, wcs) = pack_wall_ring(&tessellated);
                 let hatch_model = crate::scene::model::hatch_model::HatchModel {
@@ -2416,11 +2585,19 @@ fn regenerate_wall_representation_inner(
                     style: acadrust::entities::HatchStyleType::Normal,
                     draw_depth: 0.0,
                 };
-                let hatch_handle = scene.add_hatch(hatch_model, None, None);
+                let hatch_style = hatch_acad_color.map(|c| {
+                    (c, acadrust::types::Transparency::from_percent(0.0))
+                });
+                let hatch_handle = scene.add_hatch(hatch_model, None, hatch_style);
                 if let Some(layer_name) = layer.layer_override.as_deref().filter(|s| !s.is_empty()) {
                     scene.ensure_layer(layer_name);
                     if let Some(e) = scene.document.get_entity_mut(hatch_handle) {
                         e.as_entity_mut().set_layer(layer_name.to_string());
+                    }
+                }
+                if let Some(c) = hatch_acad_color {
+                    if let Some(e) = scene.document.get_entity_mut(hatch_handle) {
+                        e.as_entity_mut().set_color(c);
                     }
                 }
                 write_wall_display_tag(scene, hatch_handle, wall_handle, WALL_REP_ROLE_HATCH);
@@ -2480,13 +2657,9 @@ fn regenerate_wall_representation_inner(
                 s3d.wires = crate::scene::model::solid_model::edge_wires(&body);
                 let solid_handle = scene.add_entity(EntityType::Solid3D(s3d));
                 scene.register_solid_model(solid_handle, body);
-                if let Some(rgb) = fill_color {
+                if let Some(color) = fill_color {
                     if let Some(e) = scene.document.get_entity_mut(solid_handle) {
-                        e.as_entity_mut().set_color(acadrust::types::Color::Rgb {
-                            r: ((rgb >> 16) & 0xFF) as u8,
-                            g: ((rgb >> 8) & 0xFF) as u8,
-                            b: (rgb & 0xFF) as u8,
-                        });
+                        e.as_entity_mut().set_color(color);
                     }
                 }
                 write_wall_display_tag(scene, solid_handle, wall_handle, WALL_REP_ROLE_SOLID);
@@ -2610,16 +2783,16 @@ const WALL_JOIN_SNAP_RADIUS: f64 = 0.3;
 // below), so the point chain finishes immediately (`start_dimension_prompt`)
 // with whatever is currently set — no separate phase state machine needed.
 
-/// `AEC_WALL` — interactive multi-point wall polyline drawing, analogous to
-/// `PLINE`. Once the point chain is finished (Enter/Escape), the command
-/// prompts for height and thickness on the command line (defaults 2.8 / 0.2)
-/// before writing the final `WALL` XDATA record and finalizing the entity.
+/// `AEC_WALL` — interactive wall drawing. Each completed 2-point segment is
+/// written immediately as its own `LwPolyline` + `WALL` XDATA; the command
+/// stays active with the last end as the next start. Style/height/justification
+/// stay live-editable in the Properties panel for the whole chain.
 pub struct WallCommand {
     vertices: Vec<DVec3>,
     live_handle: Option<Handle>,
     live_contour_handle: Option<Handle>,
     plane: WorkingPlane,
-    /// Parametric wall metadata written on finalize (style/layers filled later).
+    /// Parametric wall metadata written on each segment commit.
     wall: Wall,
     /// Fallback single-layer thickness when no style is selected.
     thickness: f64,
@@ -2629,9 +2802,7 @@ pub struct WallCommand {
     justification: WallJustification,
     ctrl_was_down: bool,
     /// Set once the wall height was explicitly edited via the live
-    /// Properties-panel field while drawing; when both this and `style_id`
-    /// are set, the point chain can finish immediately without the
-    /// command-line style/height/thickness fallback prompts.
+    /// Properties-panel field while drawing.
     height_live_set: bool,
     /// Set when the user tried to finish the wall (Enter/Escape) while a
     /// style selection was mandatory but not made yet; `prompt()` shows a
@@ -2645,6 +2816,14 @@ pub struct WallCommand {
     /// continuous with the previous segment) instead of a straight line;
     /// toggled on/off with the `A`/`L` command-line keywords, like `PLINE`.
     arc_mode: bool,
+    /// Handle of the last persisted segment in this chain (for auto-join).
+    last_committed: Option<Handle>,
+    /// Start of the last committed axis, used as tangent reference for arc mode.
+    last_axis_from: Option<DVec3>,
+    /// Exit tangent of the last committed segment (plane-local), same as PLINE.
+    last_tangent: Option<DVec2>,
+    /// Number of segments written this command (Enter after ≥1 ends the chain).
+    segments_committed: usize,
 }
 
 impl WallCommand {
@@ -2657,7 +2836,7 @@ impl WallCommand {
     }
 
     pub fn new_with_library(library: Option<StyleLibrary>) -> Self {
-        Self {
+        let mut cmd = Self {
             vertices: Vec::new(),
             live_handle: None,
             live_contour_handle: None,
@@ -2673,6 +2852,31 @@ impl WallCommand {
             no_style_warning: false,
             bulges: Vec::new(),
             arc_mode: false,
+            last_committed: None,
+            last_axis_from: None,
+            last_tangent: None,
+            segments_committed: 0,
+        };
+        cmd.apply_first_available_style();
+        cmd
+    }
+
+    /// Pick the first library wall style so segments get a real representation
+    /// even if the user never opens the style picker.
+    fn apply_first_available_style(&mut self) {
+        if self.style_id.is_some() {
+            return;
+        }
+        let Some(lib) = &self.library else {
+            return;
+        };
+        let Some(style) = lib.wall_styles.first() else {
+            return;
+        };
+        let id = style.style.id.clone();
+        if let Some(resolved) = resolve_wall_style_layers(lib, &id, None) {
+            self.style_id = Some(id);
+            self.resolved_layers = Some(resolved);
         }
     }
 
@@ -2734,25 +2938,46 @@ impl WallCommand {
         // placed. There's nothing to finalize yet in that case — keep the
         // command running instead of cancelling the whole wall.
         if self.vertices.len() < 2 {
+            // A lone start point produces nothing. After at least one
+            // committed segment, Enter/Escape ends the chain.
+            if self.segments_committed > 0 {
+                return CmdResult::Cancel;
+            }
             return CmdResult::NeedPoint;
         }
-        if self.live_handle.is_none() {
-            return CmdResult::Cancel;
-        }
-        if self.style_id.is_none() && self.requires_style_selection() {
-            // Refuse to finish without an assigned wall style; keep the
-            // command running so the point chain/preview isn't lost, and
-            // surface the hint via `prompt()` (NeedPoint re-prints it).
-            self.no_style_warning = true;
+        self.commit_current_segment()
+    }
+
+    fn commit_current_segment(&mut self) -> CmdResult {
+        if self.vertices.len() < 2 {
             return CmdResult::NeedPoint;
         }
-        // Style/height are always visible and editable in the live
-        // Properties-panel section shown while this command is drawing (see
-        // `live_properties`/`apply_live_property`), so the point chain can
-        // finish immediately with whatever is currently set (defaults if the
-        // user never touched the panel) instead of repeating the same
-        // choices as command-line prompts.
-        self.sync_live(true)
+        let start = self.vertices[0];
+        let end = *self.vertices.last().unwrap();
+        if start.distance(end) < 1e-9 {
+            self.vertices.pop();
+            self.bulges.pop();
+            return CmdResult::NeedPoint;
+        }
+        let Some(entity) = self.build_entity() else {
+            return CmdResult::NeedPoint;
+        };
+        self.last_axis_from = Some(start);
+        let start_l = self.plane.to_local(start);
+        let end_l = self.plane.to_local(end);
+        let bulge = self.bulges.first().copied().unwrap_or(0.0);
+        self.last_tangent = crate::modules::draw::draw::polyline::seg_exit_tangent(
+            start_l,
+            end_l,
+            bulge,
+        )
+        .map(|t| t.as_dvec2());
+        self.vertices = vec![end];
+        self.bulges = vec![0.0];
+        self.segments_committed += 1;
+        self.live_handle = None;
+        self.live_contour_handle = None;
+        CmdResult::CommitEntity(entity)
     }
 
     fn build_entity(&self) -> Option<EntityType> {
@@ -2813,6 +3038,7 @@ impl WallCommand {
                 top_offset: 0.0,
                 layer_override: None,
                 hatch_override: None,
+                layer_id: Uuid::new_v4(),
             }]
         };
         let mut record = ExtendedDataRecord::new(AEC_APPID);
@@ -2942,14 +3168,7 @@ impl WallCommand {
         }
         self.vertices.pop();
         self.bulges.pop();
-        match self.vertices.len() {
-            0 => CmdResult::NeedPoint,
-            1 => match self.live_handle.take() {
-                Some(h) => CmdResult::RemoveLiveEntity(h),
-                None => CmdResult::NeedPoint,
-            },
-            _ => self.sync_live(false),
-        }
+        CmdResult::NeedPoint
     }
 
     /// Tangent-continuation bulge (matches `PLINE`'s arc-continue default):
@@ -2966,6 +3185,14 @@ impl WallCommand {
         let Some(prev_prev) = prev_prev else {
             return 0.0;
         };
+        Self::tangent_bulge_from_dir(prev_prev, prev, next)
+    }
+
+    fn tangent_bulge_from_dir(
+        prev_prev: (f64, f64),
+        prev: (f64, f64),
+        next: (f64, f64),
+    ) -> f64 {
         let dir = (prev.0 - prev_prev.0, prev.1 - prev_prev.1);
         let dir_len = (dir.0 * dir.0 + dir.1 * dir.1).sqrt();
         let chord = (next.0 - prev.0, next.1 - prev.1);
@@ -2980,6 +3207,58 @@ impl WallCommand {
         // Tangent-chord angle equals half the arc's central angle.
         let theta = 2.0 * alpha;
         (theta / 4.0).tan()
+    }
+
+    /// Bulge of chord `start`→`end` for the circular arc that also passes
+    /// through `through`. Collinear points yield `0.0`.
+    fn bulge_through_three(start: (f64, f64), through: (f64, f64), end: (f64, f64)) -> f64 {
+        let (ax, ay) = start;
+        let (bx, by) = through;
+        let (cx, cy) = end;
+        let d = 2.0 * (ax * (by - cy) + bx * (cy - ay) + cx * (ay - by));
+        if d.abs() < 1e-18 {
+            return 0.0;
+        }
+        let a2 = ax * ax + ay * ay;
+        let b2 = bx * bx + by * by;
+        let c2 = cx * cx + cy * cy;
+        let ux = (a2 * (by - cy) + b2 * (cy - ay) + c2 * (ay - by)) / d;
+        let uy = (a2 * (cx - bx) + b2 * (ax - cx) + c2 * (bx - ax)) / d;
+        let ra = (ax - ux, ay - uy);
+        let rb = (bx - ux, by - uy);
+        let rc = (cx - ux, cy - uy);
+        let cross_ac = ra.0 * rc.1 - ra.1 * rc.0;
+        let dot_ac = ra.0 * rc.0 + ra.1 * rc.1;
+        let mut theta = cross_ac.atan2(dot_ac);
+        let cross_ab = ra.0 * rb.1 - ra.1 * rb.0;
+        let dot_ab = ra.0 * rb.0 + ra.1 * rb.1;
+        let theta_ab = cross_ab.atan2(dot_ab);
+        let on_arc = if theta >= 0.0 {
+            theta_ab >= -1e-9 && theta_ab <= theta + 1e-9
+        } else {
+            theta_ab <= 1e-9 && theta_ab >= theta - 1e-9
+        };
+        if !on_arc {
+            if theta >= 0.0 {
+                theta -= 2.0 * std::f64::consts::PI;
+            } else {
+                theta += 2.0 * std::f64::consts::PI;
+            }
+        }
+        (theta / 4.0).tan()
+    }
+
+    fn pending_arc_bulge(&self, start: DVec3, end: DVec3) -> f64 {
+        let start_l = self.plane.to_local(start);
+        let end_l = self.plane.to_local(end);
+        let a = DVec2::new(start_l.x, start_l.y);
+        let b = DVec2::new(end_l.x, end_l.y);
+        // Default tangent is *not* axis-aligned so a typical first horizontal
+        // segment still gets a visible arc (PLINE's +X default would be 0).
+        let tangent = self
+            .last_tangent
+            .unwrap_or_else(|| DVec2::new(1.0, 1.0).normalize_or_zero());
+        crate::modules::draw::draw::polyline::compute_bulge(a, tangent, b)
     }
 }
 
@@ -3049,17 +3328,9 @@ impl CadCommand for WallCommand {
         // straight line so the curve is visible before the point is placed.
         let last_world = *self.vertices.last().unwrap();
         let axis_wire = if self.arc_mode {
-            let prev_prev = self.vertices.len().checked_sub(2).map(|i| {
-                let local = self.plane.to_local(self.vertices[i]);
-                (local.x, local.y)
-            });
             let last_local = self.plane.to_local(last_world);
             let cursor_local = self.plane.to_local(pt);
-            let bulge = Self::compute_tangent_bulge(
-                prev_prev,
-                (last_local.x, last_local.y),
-                (cursor_local.x, cursor_local.y),
-            );
+            let bulge = self.pending_arc_bulge(last_world, pt);
             let arc_pts = tessellate_bulge_segment(
                 (last_local.x, last_local.y),
                 (cursor_local.x, cursor_local.y),
@@ -3094,17 +3365,7 @@ impl CadCommand for WallCommand {
         let mut temp_bulges = self.bulges.clone();
         temp_bulges.resize(self.vertices.len(), 0.0);
         if self.arc_mode && self.vertices.len() >= 1 {
-            let prev_prev = self.vertices.len().checked_sub(2).map(|i| {
-                let local = self.plane.to_local(self.vertices[i]);
-                (local.x, local.y)
-            });
-            let last_local = self.plane.to_local(*self.vertices.last().unwrap());
-            let cursor_local = self.plane.to_local(pt);
-            let bulge = Self::compute_tangent_bulge(
-                prev_prev,
-                (last_local.x, last_local.y),
-                (cursor_local.x, cursor_local.y),
-            );
+            let bulge = self.pending_arc_bulge(*self.vertices.last().unwrap(), pt);
             if let Some(last) = temp_bulges.last_mut() {
                 *last = bulge;
             }
@@ -3169,23 +3430,12 @@ impl CadCommand for WallCommand {
     }
 
     fn on_point(&mut self, pt: DVec3) -> CmdResult {
-        // Compute the bulge for the segment ending at this new point (from
-        // the previously placed vertex) before pushing it, so `self.bulges`
-        // stays parallel to `self.vertices` (one bulge slot per vertex,
-        // trailing entry unused, LWPOLYLINE convention).
         if let Some(&last) = self.vertices.last() {
+            if last.distance(pt) < 1e-9 {
+                return CmdResult::NeedPoint;
+            }
             let bulge = if self.arc_mode {
-                let prev_prev = self.vertices.len().checked_sub(2).map(|i| {
-                    let local = self.plane.to_local(self.vertices[i]);
-                    (local.x, local.y)
-                });
-                let last_local = self.plane.to_local(last);
-                let new_local = self.plane.to_local(pt);
-                Self::compute_tangent_bulge(
-                    prev_prev,
-                    (last_local.x, last_local.y),
-                    (new_local.x, new_local.y),
-                )
+                self.pending_arc_bulge(last, pt)
             } else {
                 0.0
             };
@@ -3195,14 +3445,34 @@ impl CadCommand for WallCommand {
         }
         self.vertices.push(pt);
         self.bulges.push(0.0);
-        if self.style_id.is_none() && self.requires_style_selection() {
-            self.no_style_warning = true;
-        }
         if self.vertices.len() >= 2 {
-            self.sync_live(false)
+            self.commit_current_segment()
         } else {
             CmdResult::NeedPoint
         }
+    }
+
+    fn on_entities_committed(&mut self, scene: &mut Scene, handles: &[Handle]) {
+        let Some(&wall_handle) = handles.first() else {
+            return;
+        };
+        let is_wall = scene
+            .document
+            .get_entity(wall_handle)
+            .is_some_and(|e| wall_from_entity(e).is_some());
+        if !is_wall {
+            return;
+        }
+        auto_join_committed_wall_segment(
+            scene,
+            wall_handle,
+            self.last_committed,
+            self.library.as_ref(),
+        );
+        if engine::owner_index::peers_of(&scene.document, wall_handle).is_empty() {
+            let _ = regenerate_wall_representation(scene, wall_handle, self.library.as_ref());
+        }
+        self.last_committed = Some(wall_handle);
     }
 
     fn set_live_handles(&mut self, handles: Vec<Handle>) {
@@ -3344,7 +3614,11 @@ impl CadCommand for WallCommand {
                 self.resolved_layers =
                     resolve_wall_style_layers(lib, &style.style.id, None);
 
-                self.sync_live_if_previewable(false)
+                if self.vertices.len() >= 2 {
+                    self.commit_current_segment()
+                } else {
+                    CmdResult::NeedPoint
+                }
             }
             ("wall_height", LiveFieldValue::Number(h)) => {
                 self.wall.height = h;
@@ -3447,6 +3721,7 @@ fn resolved_layer_to_wall_layer(lib: &StyleLibrary, layer: ResolvedLayer) -> Wal
         top_offset: layer.top_offset,
         layer_override: layer.layer_override,
         hatch_override: layer.hatch_override,
+        layer_id: layer.layer_id,
     }
 }
 
@@ -3462,6 +3737,7 @@ fn resolved_layer_to_wall_layer_raw(layer: ResolvedLayer) -> WallLayer {
         top_offset: layer.top_offset,
         layer_override: layer.layer_override,
         hatch_override: layer.hatch_override,
+        layer_id: layer.layer_id,
     }
 }
 
@@ -3896,6 +4172,7 @@ pub fn aec_style_add(command_line: &mut CommandLine, args: &str) {
                 layer_override: None,
                 hatch_override: None,
                 role_tag,
+                layer_id: Uuid::new_v4(),
             });
         }
     }
@@ -4756,6 +5033,87 @@ pub fn try_auto_join_nearby_walls(
     touched
 }
 
+/// After a newly committed 2-point wall, join it to the previous chain
+/// segment and any other walls within [`WALL_JOIN_SNAP_RADIUS`]. Join
+/// failures are non-fatal (the new segment stays in the document).
+fn auto_join_committed_wall_segment(
+    scene: &mut Scene,
+    wall_handle: Handle,
+    last_committed: Option<Handle>,
+    library: Option<&StyleLibrary>,
+) {
+    let axis = get_wall_vertices(scene, wall_handle);
+    let ends: Vec<DVec3> = if axis.len() >= 2 {
+        vec![axis[0], *axis.last().unwrap()]
+    } else {
+        Vec::new()
+    };
+    for end in ends {
+        let mut cluster = vec![wall_handle];
+        if let Some(prev) = last_committed {
+            if prev != wall_handle {
+                let prev_axis = get_wall_vertices(scene, prev);
+                let prev_near = prev_axis.len() >= 2
+                    && (prev_axis[0].distance(end) <= WALL_JOIN_SNAP_RADIUS
+                        || prev_axis.last().unwrap().distance(end) <= WALL_JOIN_SNAP_RADIUS);
+                if prev_near {
+                    cluster.push(prev);
+                }
+            }
+        }
+        for h in all_wall_axis_handles(scene) {
+            if h == wall_handle || cluster.contains(&h) {
+                continue;
+            }
+            let other = get_wall_vertices(scene, h);
+            if other.len() < 2 {
+                continue;
+            }
+            let near = other[0].distance(end) <= WALL_JOIN_SNAP_RADIUS
+                || other.last().unwrap().distance(end) <= WALL_JOIN_SNAP_RADIUS
+                || (0..other.len() - 1).any(|i| {
+                    point_to_segment_dist_2d(end, other[i], other[i + 1]) <= WALL_JOIN_SNAP_RADIUS
+                });
+            if near {
+                cluster.push(h);
+            }
+        }
+        cluster.sort_by_key(|h| h.value());
+        cluster.dedup();
+        if cluster.len() < 2 {
+            continue;
+        }
+        match join_junction_in_document(
+            scene,
+            &cluster,
+            Some(end),
+            library,
+            None,
+            None,
+        ) {
+            Ok(_) => {}
+            Err(JoinError::Ambiguous) => {
+                if let Some(prev) = last_committed {
+                    if let Err(err) = join_junction_in_document(
+                        scene,
+                        &[prev, wall_handle],
+                        Some(end),
+                        library,
+                        None,
+                        None,
+                    ) {
+                        queue_override_warning(format!("AEC_WALL join: {err:?}"));
+                    }
+                }
+            }
+            Err(err) => {
+                queue_override_warning(format!("AEC_WALL join: {err:?}"));
+            }
+        }
+    }
+    let _ = try_auto_join_nearby_walls(scene, wall_handle, library, None, None);
+}
+
 /// Regenerates every wall in `scene` under `config`'s wall
 /// [`engine::display_component::ComponentRuleSet`] (via
 /// [`DisplayConfig::wall_rules`]) and `style_substitutions`. This is the
@@ -4770,6 +5128,17 @@ pub fn apply_display_config_to_scene(
     scene: &mut Scene,
     config: &engine::plan_view::DisplayConfig,
     library_override: Option<&StyleLibrary>,
+) -> Vec<Handle> {
+    apply_display_config_to_scene_with_representation(scene, config, library_override, None)
+}
+
+/// Like [`apply_display_config_to_scene`], but a session `RepresentationMode`
+/// (status-bar 2D/3D/Alle) overrides the Planart default.
+pub fn apply_display_config_to_scene_with_representation(
+    scene: &mut Scene,
+    config: &engine::plan_view::DisplayConfig,
+    library_override: Option<&StyleLibrary>,
+    representation_override: Option<engine::display_component::RepresentationMode>,
 ) -> Vec<Handle> {
     // `DisplayConfig::wall_rules`/`style_substitutions` were removed in
     // Step 2 (overrides now live per-wall-style on
@@ -4796,21 +5165,12 @@ pub fn apply_display_config_to_scene(
         };
         let filter_result = apply_phase_filter(wall.phase, config.phase_filter.as_ref());
         if !filter_result.visible {
+            let mut hidden = engine::display_component::ComponentRuleSet::default();
+            hide_all_display_slots(&mut hidden);
             if let Ok(handles) = regenerate_wall_representation_with_rules_and_substitutions(
                 scene,
                 wall_handle,
-                Some(&engine::display_component::ComponentRuleSet {
-                    visibility: [
-                        (engine::display_component::WallComponentSlot::Contour2D.key().to_string(), false),
-                        (engine::display_component::WallComponentSlot::Layers2D.key().to_string(), false),
-                        (engine::display_component::WallComponentSlot::ContourHatch2D.key().to_string(), false),
-                        (engine::display_component::WallComponentSlot::LayerHatch2D.key().to_string(), false),
-                        (engine::display_component::WallComponentSlot::Solid3D.key().to_string(), false),
-                    ]
-                    .into_iter()
-                    .collect(),
-                    ..Default::default()
-                }),
+                Some(&hidden),
                 None,
                 library_override,
             ) {
@@ -4819,42 +5179,20 @@ pub fn apply_display_config_to_scene(
             continue;
         }
 
-        let style_rules = owned_lib
+        let style = owned_lib
             .wall_styles
             .iter()
-            .find(|ws| ws.style.id == wall.style_id)
-            .and_then(|ws| engine::library::resolve_effective_rule_set(ws, &config.name))
-            .cloned();
-        // Overlay tier (d): phase-specific style overlay (demolition/existing)
-        // merged on top of the resolved style-profile rules, when present.
-        let overlay = filter_result.extra_style;
-        let effective_rules = match (style_rules, overlay) {
-            (Some(mut rules), Some(ov)) => {
-                for slot in [
-                    engine::display_component::WallComponentSlot::Contour2D,
-                    engine::display_component::WallComponentSlot::Layers2D,
-                    engine::display_component::WallComponentSlot::ContourHatch2D,
-                    engine::display_component::WallComponentSlot::LayerHatch2D,
-                ] {
-                    rules.style_override.entry(slot.key().to_string()).or_insert_with(|| ov.clone());
-                }
-                Some(rules)
-            }
-            (Some(rules), None) => Some(rules),
-            (None, Some(ov)) => {
-                let mut rules = engine::display_component::ComponentRuleSet::default();
-                for slot in [
-                    engine::display_component::WallComponentSlot::Contour2D,
-                    engine::display_component::WallComponentSlot::Layers2D,
-                    engine::display_component::WallComponentSlot::ContourHatch2D,
-                    engine::display_component::WallComponentSlot::LayerHatch2D,
-                ] {
-                    rules.style_override.insert(slot.key().to_string(), ov.clone());
-                }
-                Some(rules)
-            }
-            (None, None) => None,
-        };
+            .find(|ws| ws.style.id == wall.style_id);
+        let mut rules = engine::library::build_effective_rule_set(
+            config,
+            style,
+            representation_override,
+        );
+        // Phase extras apply only to 2D overall contour lines (fieldwise).
+        if let Some(ov) = filter_result.extra_style {
+            merge_phase_extra_into_rules(&mut rules, ov);
+        }
+        let effective_rules = Some(rules);
 
         if let Ok(handles) = regenerate_wall_representation_with_rules_and_substitutions(
             scene,
@@ -4994,7 +5332,7 @@ pub fn walls_at_junction(
             .document
             .get_entity(handle)
             .and_then(wall_from_entity)
-            .map(|w| layer_refs_from_materials(w.layers.iter().map(|l| l.material.as_str())))
+            .map(|w| layer_refs_from_materials(w.layers.iter().map(|l| (l.material.as_str(), l.layer_id))))
             .unwrap_or_default()
     };
 
@@ -5164,7 +5502,9 @@ pub fn join_junction_in_document(
         .map(|p| {
             layers
                 .get(p.wall_index)
-                .map(|ls| layer_refs_from_materials(ls.iter().map(|l| l.material.as_str())))
+                .map(|ls| {
+                    layer_refs_from_materials(ls.iter().map(|l| (l.material.as_str(), l.layer_id)))
+                })
                 .unwrap_or_default()
         })
         .collect();
@@ -5515,6 +5855,7 @@ fn wall_layer_data(scene: &Scene, handle: Handle) -> Vec<engine::miter::MiterLay
                     l.axis_offset,
                     l.material.clone(),
                     l.function.clone(),
+                    l.layer_id,
                 )
             })
             .collect();
@@ -6436,6 +6777,7 @@ mod wall_command_tests {
             top_offset: 0.0,
             layer_override: None,
             hatch_override: None,
+        layer_id: uuid::Uuid::new_v4(),
         }
     }
 
@@ -6455,6 +6797,7 @@ mod wall_command_tests {
                 top_offset: 0.0,
                 layer_override: None,
                 hatch_override: None,
+            layer_id: uuid::Uuid::new_v4(),
             })
             .collect()
     }
@@ -6471,6 +6814,7 @@ mod wall_command_tests {
                     material_id: "Concrete".to_string(),
                     role_tag: Some("Tragschale".to_string()),
                     index: 0,
+                layer_id: None,
                 },
                 layer_b: None,
                 style: join::JoinOverrideStyle::OuterFace,
@@ -6734,6 +7078,7 @@ mod wall_command_tests {
                 material_id: "Concrete".to_string(),
                 role_tag: None,
                 index: 0,
+            layer_id: None,
             },
             layer_b: None,
             style: join::JoinOverrideStyle::Butt,
@@ -6762,6 +7107,7 @@ mod wall_command_tests {
                         material_id: "Brick".to_string(),
                         role_tag: None,
                         index: 0,
+                    layer_id: None,
                     },
                     layer_b: None,
                     style: join::JoinOverrideStyle::Miter,
@@ -6771,6 +7117,7 @@ mod wall_command_tests {
                         material_id: "Insulation".to_string(),
                         role_tag: None,
                         index: 1,
+                    layer_id: None,
                     },
                     layer_b: None,
                     style: join::JoinOverrideStyle::Butt,
@@ -6805,6 +7152,7 @@ mod wall_command_tests {
                     material_id: "Brick".to_string(),
                     role_tag: None,
                     index: 0,
+                layer_id: None,
                 },
                 layer_b: None,
                 style: join::JoinOverrideStyle::Butt,
@@ -6841,11 +7189,13 @@ mod wall_command_tests {
                 material_id: "Insulation".to_string(),
                 role_tag: None,
                 index: 1,
+            layer_id: None,
             },
             layer_b: Some(join::LayerRef {
                 material_id: "Concrete".to_string(),
                 role_tag: None,
                 index: 0,
+            layer_id: None,
             }),
             style: join::JoinOverrideStyle::OuterFace,
         });
@@ -6875,114 +7225,242 @@ mod wall_command_tests {
         ));
 
         match cmd.on_point(DVec3::new(5.0, 0.0, 0.0)) {
-            CmdResult::CommitLiveEntities(entities) => {
-                // Axis + outline contour are committed together from the
-                // second point on, even before a wall style is chosen.
-                assert_eq!(entities.len(), 2);
-                match &entities[0] {
+            CmdResult::CommitEntity(entity) => {
+                match &entity {
                     EntityType::LwPolyline(pl) => assert_eq!(pl.vertices.len(), 2),
-                    _ => panic!("expected a live wall polyline"),
+                    _ => panic!("expected a wall polyline"),
                 }
+                assert!(
+                    wall_xdata(&entity).is_some(),
+                    "committed wall segment should carry OPENCAD_AEC/WALL xdata"
+                );
+                assert_eq!(
+                    crate::entities::names::ui_name(&entity),
+                    "Wall",
+                    "properties/status should label the host as Wall, not Polyline"
+                );
             }
-            _ => panic!("second point should commit a live wall polyline"),
+            _ => panic!("second point should commit a wall polyline"),
         }
+        assert_eq!(cmd.vertices.len(), 1);
+        assert_eq!(cmd.segments_committed, 1);
     }
 
     #[test]
-    fn later_points_update_the_same_live_polyline_as_a_wall_chain() {
+    fn third_point_commits_a_second_two_vertex_wall() {
         let mut cmd = WallCommand::new_with_library(None);
         cmd.on_point(DVec3::new(0.0, 0.0, 0.0));
-        let committed = cmd.on_point(DVec3::new(5.0, 0.0, 0.0));
-        let (entity, contour_entities) = match committed {
-            CmdResult::CommitLiveEntities(mut entities) => {
-                assert_eq!(entities.len(), 2);
-                let contour = entities.split_off(1);
-                (entities.remove(0), contour)
-            }
-            _ => panic!("expected CommitLiveEntities"),
+        let first = match cmd.on_point(DVec3::new(5.0, 0.0, 0.0)) {
+            CmdResult::CommitEntity(entity) => entity,
+            _ => panic!("expected CommitEntity"),
         };
-        assert!(
-            wall_xdata(&entity).is_some(),
-            "committed wall segment should carry OPENCAD_AEC/WALL xdata"
-        );
-        assert_eq!(contour_entities.len(), 1);
-
-        let handle = Handle::new(7);
-        let contour_handle = Handle::new(8);
-        cmd.set_live_handles(vec![handle, contour_handle]);
-        match cmd.on_point(DVec3::new(5.0, 3.0, 0.0)) {
-            CmdResult::UpdateLiveEntities { updates, finish } => {
-                assert_eq!(updates.len(), 2);
-                let (updated, entity) = &updates[0];
-                assert_eq!(*updated, handle);
-                match entity {
-                    EntityType::LwPolyline(pl) => assert_eq!(pl.vertices.len(), 3),
-                    _ => panic!("expected a live wall polyline"),
-                }
-                assert!(!finish);
-            }
-            _ => panic!("a third point should extend the same live wall chain"),
+        match first {
+            EntityType::LwPolyline(pl) => assert_eq!(pl.vertices.len(), 2),
+            _ => panic!("expected LwPolyline"),
         }
+        match cmd.on_point(DVec3::new(5.0, 3.0, 0.0)) {
+            CmdResult::CommitEntity(entity) => match entity {
+                EntityType::LwPolyline(pl) => assert_eq!(pl.vertices.len(), 2),
+                _ => panic!("expected a wall polyline"),
+            },
+            _ => panic!("a third point should commit the next 2-vertex wall"),
+        }
+        assert_eq!(cmd.segments_committed, 2);
+        assert_eq!(cmd.vertices.len(), 1);
+    }
+
+    #[test]
+    fn zero_length_second_point_is_rejected() {
+        let mut cmd = WallCommand::new_with_library(None);
+        cmd.on_point(DVec3::new(1.0, 1.0, 0.0));
+        assert!(matches!(
+            cmd.on_point(DVec3::new(1.0, 1.0, 0.0)),
+            CmdResult::NeedPoint
+        ));
+        assert_eq!(cmd.vertices.len(), 1);
+        assert_eq!(cmd.segments_committed, 0);
+    }
+
+    #[test]
+    fn wall_chain_auto_joins_l_corner() {
+        let mut scene = Scene::new();
+        let mut cmd = WallCommand::new_with_library(None);
+        cmd.on_point(DVec3::new(0.0, 0.0, 0.0));
+        let e1 = match cmd.on_point(DVec3::new(5.0, 0.0, 0.0)) {
+            CmdResult::CommitEntity(e) => e,
+            _ => panic!("expected first segment"),
+        };
+        let h1 = scene.add_entity(e1);
+        cmd.on_entities_committed(&mut scene, &[h1]);
+        let e2 = match cmd.on_point(DVec3::new(5.0, 4.0, 0.0)) {
+            CmdResult::CommitEntity(e) => e,
+            _ => panic!("expected second segment"),
+        };
+        let h2 = scene.add_entity(e2);
+        cmd.on_entities_committed(&mut scene, &[h2]);
+
+        let w1 = wall_from_entity(scene.document.get_entity(h1).unwrap()).unwrap();
+        let w2 = wall_from_entity(scene.document.get_entity(h2).unwrap()).unwrap();
+        assert!(!w1.derived_handles.is_empty());
+        assert!(!w2.derived_handles.is_empty());
+        let a1 = get_wall_vertices(&scene, h1);
+        let a2 = get_wall_vertices(&scene, h2);
+        let corner = DVec3::new(5.0, 0.0, 0.0);
+        assert!(a1.iter().any(|p| p.distance(corner) < 1e-4));
+        assert!(a2.iter().any(|p| p.distance(corner) < 1e-4));
+    }
+
+    #[test]
+    fn two_point_wall_regen_creates_contour_hatch_solid() {
+        let mut scene = Scene::new();
+        let mut cmd = WallCommand::new_with_library(None);
+        cmd.on_point(DVec3::new(0.0, 0.0, 0.0));
+        let entity = match cmd.on_point(DVec3::new(4.0, 0.0, 0.0)) {
+            CmdResult::CommitEntity(e) => e,
+            _ => panic!("expected segment"),
+        };
+        let handle = scene.add_entity(entity);
+        cmd.on_entities_committed(&mut scene, &[handle]);
+        let wall = wall_from_entity(scene.document.get_entity(handle).unwrap()).unwrap();
+        let mut saw_contour = false;
+        let mut saw_hatch = false;
+        let mut saw_solid = false;
+        for h in wall.derived_handles {
+            let entity = scene.document.get_entity(h).unwrap();
+            let record = read_aec_record(entity).expect("display child");
+            if let [XDataValue::String(kind), _, XDataValue::String(role)] = record.values.as_slice()
+            {
+                assert_eq!(kind, "WALL_REP");
+                match role.as_str() {
+                    WALL_REP_ROLE_CONTOUR => saw_contour = true,
+                    WALL_REP_ROLE_HATCH => saw_hatch = true,
+                    WALL_REP_ROLE_SOLID => saw_solid = true,
+                    _ => {}
+                }
+            }
+        }
+        assert!(saw_contour && saw_hatch && saw_solid);
     }
 
     #[test]
     fn arc_keyword_toggles_arc_mode_and_produces_a_bulge_segment() {
         let mut cmd = WallCommand::new_with_library(None);
         cmd.on_point(DVec3::new(0.0, 0.0, 0.0));
-        cmd.on_point(DVec3::new(5.0, 0.0, 0.0));
-        // Straight so far: first segment bulge stays 0.
-        assert_eq!(cmd.bulges[0], 0.0);
+        let first = match cmd.on_point(DVec3::new(5.0, 0.0, 0.0)) {
+            CmdResult::CommitEntity(entity) => entity,
+            _ => panic!("expected first segment"),
+        };
+        match first {
+            EntityType::LwPolyline(pl) => assert_eq!(pl.vertices[0].bulge, 0.0),
+            _ => panic!("expected LwPolyline"),
+        }
 
-        // Enable arc mode, then place a third point; the new segment (from
-        // the second to the third vertex) should get a non-zero tangent
-        // bulge (tangent-continuous with the straight first segment, curving
-        // up towards the placed point).
         assert!(matches!(cmd.on_text_input("A"), Some(CmdResult::NeedPoint)));
         assert!(cmd.arc_mode);
-        cmd.on_point(DVec3::new(10.0, 5.0, 0.0));
-        assert_ne!(cmd.bulges[1], 0.0, "arc-mode segment should get a bulge");
+        let arc_entity = match cmd.on_point(DVec3::new(10.0, 5.0, 0.0)) {
+            CmdResult::CommitEntity(entity) => entity,
+            _ => panic!("expected arc segment"),
+        };
+        match arc_entity {
+            EntityType::LwPolyline(pl) => {
+                assert_eq!(pl.vertices.len(), 2);
+                assert_ne!(pl.vertices[0].bulge, 0.0, "arc-mode segment should get a bulge");
+            }
+            _ => panic!("expected LwPolyline"),
+        }
 
-        // Switching back to line mode starts straight segments again.
         assert!(matches!(cmd.on_text_input("L"), Some(CmdResult::NeedPoint)));
         assert!(!cmd.arc_mode);
-        cmd.on_point(DVec3::new(15.0, 5.0, 0.0));
-        assert_eq!(cmd.bulges[2], 0.0);
-
-        // The finalized axis polyline carries the bulge on its vertices.
-        let entity = cmd.build_entity().expect("wall entity with >= 2 vertices");
-        match entity {
-            EntityType::LwPolyline(pl) => {
-                assert_eq!(pl.vertices.len(), 4);
-                assert_eq!(pl.vertices[0].bulge, 0.0);
-                assert_ne!(pl.vertices[1].bulge, 0.0);
-                assert_eq!(pl.vertices[2].bulge, 0.0);
-            }
-            _ => panic!("expected LwPolyline axis entity"),
+        match cmd.on_point(DVec3::new(15.0, 5.0, 0.0)) {
+            CmdResult::CommitEntity(entity) => match entity {
+                EntityType::LwPolyline(pl) => assert_eq!(pl.vertices[0].bulge, 0.0),
+                _ => panic!("expected LwPolyline"),
+            },
+            _ => panic!("expected straight segment"),
         }
     }
 
     #[test]
-    fn first_segment_in_arc_mode_without_tangent_reference_stays_straight() {
-        // No previous segment to be tangent to yet — degrades gracefully to
-        // a straight line rather than guessing an arbitrary radius.
+    fn first_segment_in_arc_mode_commits_on_second_click_with_bulge() {
         let mut cmd = WallCommand::new_with_library(None);
         cmd.on_point(DVec3::new(0.0, 0.0, 0.0));
         assert!(matches!(cmd.on_text_input("ARC"), Some(CmdResult::NeedPoint)));
-        cmd.on_point(DVec3::new(5.0, 0.0, 0.0));
-        assert_eq!(cmd.bulges[0], 0.0);
+        match cmd.on_point(DVec3::new(5.0, 0.0, 0.0)) {
+            CmdResult::CommitEntity(EntityType::LwPolyline(pl)) => {
+                assert_ne!(pl.vertices[0].bulge, 0.0);
+            }
+            _ => panic!("expected committed first-segment arc"),
+        }
+    }
+
+    #[test]
+    fn commits_two_vertex_segments_without_picking_a_style() {
+        let mut cmd = WallCommand::new();
+        assert!(
+            cmd.style_id.is_some(),
+            "seed library should auto-select a wall style"
+        );
+        assert!(
+            cmd.requires_style_selection(),
+            "seed library should offer wall styles"
+        );
+        cmd.on_point(DVec3::new(0.0, 0.0, 0.0));
+        match cmd.on_point(DVec3::new(4.0, 0.0, 0.0)) {
+            CmdResult::CommitEntity(EntityType::LwPolyline(pl)) => {
+                assert_eq!(pl.vertices.len(), 2);
+            }
+            _ => panic!("expected a 2-vertex commit"),
+        }
+        match cmd.on_point(DVec3::new(4.0, 3.0, 0.0)) {
+            CmdResult::CommitEntity(EntityType::LwPolyline(pl)) => {
+                assert_eq!(pl.vertices.len(), 2);
+            }
+            _ => panic!("expected a second 2-vertex commit"),
+        }
+        assert_eq!(cmd.segments_committed, 2);
+        assert_eq!(cmd.vertices.len(), 1);
+    }
+
+    #[test]
+    fn third_segment_keeps_first_corner_joined() {
+        let mut scene = Scene::new();
+        let mut cmd = WallCommand::new_with_library(None);
+        cmd.on_point(DVec3::new(0.0, 0.0, 0.0));
+        let h1 = scene.add_entity(match cmd.on_point(DVec3::new(5.0, 0.0, 0.0)) {
+            CmdResult::CommitEntity(e) => e,
+            _ => panic!("seg 1"),
+        });
+        cmd.on_entities_committed(&mut scene, &[h1]);
+        let h2 = scene.add_entity(match cmd.on_point(DVec3::new(5.0, 4.0, 0.0)) {
+            CmdResult::CommitEntity(e) => e,
+            _ => panic!("seg 2"),
+        });
+        cmd.on_entities_committed(&mut scene, &[h2]);
+        let h3 = scene.add_entity(match cmd.on_point(DVec3::new(0.0, 4.0, 0.0)) {
+            CmdResult::CommitEntity(e) => e,
+            _ => panic!("seg 3"),
+        });
+        cmd.on_entities_committed(&mut scene, &[h3]);
+
+        let peers2 = engine::owner_index::peers_of(&scene.document, h2);
+        assert!(
+            peers2.contains(&h1) && peers2.contains(&h3),
+            "middle wall should stay joined to both neighbors, got {peers2:?}"
+        );
+        refresh_wall_after_axis_edit(&mut scene, h2, None, None, None);
+        let peers2_after = engine::owner_index::peers_of(&scene.document, h2);
+        assert!(
+            peers2_after.contains(&h1) && peers2_after.contains(&h3),
+            "regen/edit must not drop either join, got {peers2_after:?}"
+        );
     }
 
     #[test]
     fn undo_drops_the_last_vertex_and_removes_the_live_entity_below_two_points() {
         let mut cmd = WallCommand::new_with_library(None);
         cmd.on_point(DVec3::new(0.0, 0.0, 0.0));
-        cmd.on_point(DVec3::new(5.0, 0.0, 0.0));
-        cmd.set_live_handles(vec![Handle::new(3), Handle::new(4)]);
-
-        match cmd.on_text_input("U") {
-            Some(CmdResult::RemoveLiveEntity(h)) => assert_eq!(h, Handle::new(3)),
-            _ => panic!("undoing back to a single vertex should remove the live entity"),
-        }
+        assert!(matches!(cmd.on_text_input("U"), Some(CmdResult::NeedPoint)));
+        assert!(cmd.vertices.is_empty());
     }
 
     #[test]
@@ -7004,56 +7482,32 @@ mod wall_command_tests {
 
     #[test]
     fn enter_after_the_point_chain_finalizes_immediately_with_defaults() {
-        // Height/thickness are always visible+editable in the live
-        // Properties-panel section while drawing (see `live_properties`), so
-        // Enter after the point chain finalizes right away with whatever is
-        // currently set (defaults, if the panel wasn't touched), instead of
-        // falling back to separate command-line height/thickness prompts.
-        let handle = Handle::new(11);
-        let contour_handle = Handle::new(12);
         let mut cmd = WallCommand::new_with_library(None);
         cmd.on_point(DVec3::new(0.0, 0.0, 0.0));
-        cmd.on_point(DVec3::new(5.0, 0.0, 0.0));
-        cmd.set_live_handles(vec![handle, contour_handle]);
-
-        match cmd.on_enter() {
-            CmdResult::UpdateLiveEntities { updates, finish } => {
-                assert_eq!(updates.len(), 2);
-                let (updated, entity) = &updates[0];
-                assert_eq!(*updated, handle);
-                assert!(finish);
-                let wall = wall_from_entity(entity).expect("finalized wall should carry WALL xdata");
-                assert!((wall.total_thickness() - DEFAULT_WALL_THICKNESS).abs() < 1e-9);
-                assert!((wall.height - DEFAULT_WALL_HEIGHT).abs() < 1e-9);
-            }
-            _ => panic!("expected Enter after the point chain to finalize the live wall"),
-        }
+        let entity = match cmd.on_point(DVec3::new(5.0, 0.0, 0.0)) {
+            CmdResult::CommitEntity(entity) => entity,
+            _ => panic!("expected segment commit"),
+        };
+        let wall = wall_from_entity(&entity).expect("committed wall should carry WALL xdata");
+        assert!((wall.total_thickness() - DEFAULT_WALL_THICKNESS).abs() < 1e-9);
+        assert!((wall.height - DEFAULT_WALL_HEIGHT).abs() < 1e-9);
+        assert!(matches!(cmd.on_enter(), CmdResult::Cancel));
     }
 
     #[test]
     fn live_height_edit_before_enter_finalizes_with_the_edited_value() {
         use crate::command::LiveFieldValue;
 
-        let handle = Handle::new(4);
-        let contour_handle = Handle::new(5);
         let mut cmd = WallCommand::new_with_library(None);
         cmd.on_point(DVec3::new(0.0, 0.0, 0.0));
-        cmd.on_point(DVec3::new(5.0, 0.0, 0.0));
-        cmd.set_live_handles(vec![handle, contour_handle]);
-
         cmd.apply_live_property("wall_height", LiveFieldValue::Number(3.5));
-
-        match cmd.on_enter() {
-            CmdResult::UpdateLiveEntities { updates, finish } => {
-                assert_eq!(updates.len(), 2);
-                assert!(finish);
-                let wall = wall_from_entity(&updates[0].1)
-                    .expect("finalized wall should carry WALL xdata");
-                assert!((wall.total_thickness() - DEFAULT_WALL_THICKNESS).abs() < 1e-9);
-                assert!((wall.height - 3.5).abs() < 1e-9);
-            }
-            _ => panic!("expected the live-edited height to finalize the live wall"),
-        }
+        let entity = match cmd.on_point(DVec3::new(5.0, 0.0, 0.0)) {
+            CmdResult::CommitEntity(entity) => entity,
+            _ => panic!("expected segment commit"),
+        };
+        let wall = wall_from_entity(&entity).expect("committed wall should carry WALL xdata");
+        assert!((wall.total_thickness() - DEFAULT_WALL_THICKNESS).abs() < 1e-9);
+        assert!((wall.height - 3.5).abs() < 1e-9);
     }
 
     /// Draw four wall segments through `WallCommand` exactly as the
@@ -7080,39 +7534,13 @@ mod wall_command_tests {
                 CmdResult::NeedPoint => cmd.on_point(pair[1]),
                 other => other,
             };
-            let (entity, contour_entity) = match committed {
-                CmdResult::CommitLiveEntities(mut entities) => {
-                    let contour = if entities.len() > 1 {
-                        Some(entities.remove(1))
-                    } else {
-                        None
-                    };
-                    (entities.remove(0), contour)
-                }
-                _ => panic!("two points should commit a live wall segment"),
+            let entity = match committed {
+                CmdResult::CommitEntity(entity) => entity,
+                _ => panic!("two points should commit a wall segment"),
             };
             let handle = scene.add_entity(entity);
-            let mut handles = vec![handle];
-            if let Some(c) = contour_entity {
-                handles.push(scene.add_entity(c));
-            }
-            cmd.set_live_handles(handles);
-
-            // Finish the point chain, then accept default height/thickness
-            // (Drawing -> AskHeight -> AskThickness -> finalize).
-            cmd.on_enter();
-            cmd.on_enter();
-            let finalized = cmd.on_enter();
-            match finalized {
-                CmdResult::UpdateLiveEntities { updates, .. } => {
-                    for (h, entity) in updates {
-                        if let Some(slot) = scene.document.get_entity_mut(h) {
-                            *slot = entity;
-                        }
-                    }
-                }
-                _ => panic!("height/thickness prompt should finalize the wall segment"),
-            }
+            cmd.on_entities_committed(&mut scene, &[handle]);
+            assert!(matches!(cmd.on_enter(), CmdResult::Cancel));
         }
 
         let mut command_line = CommandLine::default();
@@ -7143,12 +7571,10 @@ mod wall_command_tests {
 
         let mut cmd = WallCommand::new_with_library(None);
         cmd.on_point(DVec3::new(0.0, 0.0, 0.0));
-        cmd.on_point(DVec3::new(5.0, 0.0, 0.0));
-        cmd.set_live_handles(vec![Handle::new(9), Handle::new(10)]);
         cmd.apply_live_property("wall_height", LiveFieldValue::Number(3.5));
-        let entity = match cmd.on_enter() {
-            CmdResult::UpdateLiveEntities { mut updates, .. } => updates.remove(0).1,
-            _ => panic!("expected Enter to finalize the live wall"),
+        let entity = match cmd.on_point(DVec3::new(5.0, 0.0, 0.0)) {
+            CmdResult::CommitEntity(entity) => entity,
+            _ => panic!("expected second point to commit the wall"),
         };
 
         let wall = wall_from_entity(&entity).expect("finalized entity should read back as a Wall");
@@ -7177,8 +7603,8 @@ mod wall_command_tests {
         let mut cmd = WallCommand::new_with_library(None);
         cmd.on_point(DVec3::new(0.0, 0.0, 0.0));
         let entity = match cmd.on_point(DVec3::new(5.0, 0.0, 0.0)) {
-            CmdResult::CommitLiveEntities(mut entities) => entities.remove(0),
-            _ => panic!("two points should commit a live wall segment"),
+            CmdResult::CommitEntity(entity) => entity,
+            _ => panic!("two points should commit a wall segment"),
         };
         let handle = scene.add_entity(entity);
 
@@ -7203,8 +7629,8 @@ mod wall_command_tests {
         let mut cmd = WallCommand::new_with_library(None);
         cmd.on_point(DVec3::new(0.0, 0.0, 0.0));
         let entity = match cmd.on_point(DVec3::new(5.0, 0.0, 0.0)) {
-            CmdResult::CommitLiveEntities(mut entities) => entities.remove(0),
-            _ => panic!("two points should commit a live wall segment"),
+            CmdResult::CommitEntity(entity) => entity,
+            _ => panic!("two points should commit a wall segment"),
         };
         let handle = scene.add_entity(entity);
 
@@ -7242,11 +7668,27 @@ mod wall_command_tests {
 
     #[test]
     fn apply_phase_filter_with_no_filter_shows_everything_unstyled() {
-        for phase in [PlanPhase::New, PlanPhase::Demolition, PlanPhase::Existing] {
-            let result = apply_phase_filter(phase, None);
-            assert!(result.visible);
-            assert_eq!(result.extra_style, None);
-        }
+        let new_phase = apply_phase_filter(PlanPhase::New, None);
+        assert!(new_phase.visible);
+        assert_eq!(new_phase.extra_style, None);
+
+        let demolition = apply_phase_filter(PlanPhase::Demolition, None);
+        assert!(demolition.visible);
+        assert_eq!(
+            demolition.extra_style.unwrap().line_type.as_deref(),
+            Some("DASHED")
+        );
+
+        let existing = apply_phase_filter(PlanPhase::Existing, None);
+        assert!(existing.visible);
+        assert_eq!(
+            existing.extra_style.unwrap().line_color,
+            Some(acadrust::types::Color::Rgb {
+                r: 136,
+                g: 136,
+                b: 136
+            })
+        );
     }
 
     #[test]
@@ -7270,7 +7712,7 @@ mod wall_command_tests {
                 ..Default::default()
             }),
             existing_style: Some(engine::display_component::ComponentStyleOverride {
-                line_color: Some(0x888888),
+                line_color: Some(acadrust::types::Color::Rgb { r: 136, g: 136, b: 136 }),
                 ..Default::default()
             }),
         };
@@ -7280,12 +7722,52 @@ mod wall_command_tests {
 
         let existing = apply_phase_filter(PlanPhase::Existing, Some(&filter));
         assert!(existing.visible);
-        assert_eq!(existing.extra_style.unwrap().line_color, Some(0x888888));
+        assert_eq!(existing.extra_style.unwrap().line_color, Some(acadrust::types::Color::Rgb { r: 136, g: 136, b: 136 }));
 
         // `New` walls never pick up an overlay, even if visible.
         let new_phase = apply_phase_filter(PlanPhase::New, Some(&filter));
         assert!(new_phase.visible);
         assert_eq!(new_phase.extra_style, None);
+    }
+
+    #[test]
+    fn merge_phase_extra_only_overrides_contour2d() {
+        let extra = engine::display_component::ComponentStyleOverride {
+            line_type: Some("DASHED".to_string()),
+            line_color: Some(acadrust::types::Color::Rgb { r: 255, g: 0, b: 0 }),
+            ..Default::default()
+        };
+        let mut rules = engine::display_component::ComponentRuleSet::default();
+        rules.visibility.insert(
+            engine::display_component::WallComponentSlot::Layers2D
+                .key()
+                .to_string(),
+            true,
+        );
+        merge_phase_extra_into_rules(&mut rules, extra.clone());
+        let contour = rules
+            .style_for(engine::display_component::WallComponentSlot::Contour2D)
+            .expect("phase extra on envelope");
+        assert_eq!(contour.line_type.as_deref(), Some("DASHED"));
+        assert_eq!(
+            contour.line_color,
+            Some(acadrust::types::Color::Rgb { r: 255, g: 0, b: 0 })
+        );
+        assert!(
+            rules
+                .style_for(engine::display_component::WallComponentSlot::Layers2D)
+                .is_none()
+        );
+        assert!(
+            rules
+                .style_for(engine::display_component::WallComponentSlot::LayerHatch2D)
+                .is_none()
+        );
+        assert!(
+            rules
+                .style_for(engine::display_component::WallComponentSlot::Solid3D)
+                .is_none()
+        );
     }
 
     #[test]
@@ -7375,8 +7857,8 @@ mod wall_command_tests {
         let mut cmd = WallCommand::new_with_library(None);
         cmd.on_point(DVec3::new(0.0, 0.0, 0.0));
         let entity = match cmd.on_point(DVec3::new(5.0, 0.0, 0.0)) {
-            CmdResult::CommitLiveEntities(mut entities) => entities.remove(0),
-            _ => panic!("two points should commit a live wall segment"),
+            CmdResult::CommitEntity(entity) => entity,
+            _ => panic!("two points should commit a wall segment"),
         };
         let handle = scene.add_entity(entity);
 
@@ -7490,6 +7972,7 @@ mod wall_command_tests {
                 layer_override: None,
                 hatch_override: None,
                 role_tag: None,
+            layer_id: uuid::Uuid::new_v4(),
             }],
         display_profiles: std::collections::HashMap::new(),
         };
@@ -7499,46 +7982,24 @@ mod wall_command_tests {
         };
 
         let mut cmd = WallCommand::new_with_library(Some(lib));
-        cmd.on_point(DVec3::new(0.0, 0.0, 0.0));
-        cmd.on_point(DVec3::new(5.0, 0.0, 0.0));
-        let handle = Handle::new(100);
-        cmd.set_live_handles(vec![handle]);
-
-        // Style/height are picked live via the Properties-panel fields while
-        // drawing (see `apply_live_property`), so Enter after the point
-        // chain finalizes immediately with a V2 record — no more separate
-        // command-line AskStyle/AskHeight prompts.
-        match cmd.apply_live_property(
+        cmd.apply_live_property("wall_height", LiveFieldValue::Number(3.0));
+        cmd.apply_live_property(
             "wall_style",
             LiveFieldValue::Picker("style1".to_string()),
-        ) {
-            CmdResult::ReplaceEntity(old, new_entities) => {
-                // Gaining a contour preview replaces the axis-only live
-                // entity with axis + contour; simulate the host echoing the
-                // newly assigned handles back to the command.
-                let new_handles: Vec<Handle> =
-                    (0..new_entities.len()).map(|i| Handle::new(300 + i as u64)).collect();
-                cmd.on_entity_replaced(old, &new_handles);
-            }
-            _ => panic!("expected style assignment to replace the live entity"),
-        }
-        cmd.apply_live_property("wall_height", LiveFieldValue::Number(3.0));
-
-        match cmd.on_enter() {
-            CmdResult::UpdateLiveEntities { updates, finish } => {
-                assert_eq!(updates.len(), 2);
-                let pl = match &updates[0].1 {
+        );
+        cmd.on_point(DVec3::new(0.0, 0.0, 0.0));
+        match cmd.on_point(DVec3::new(5.0, 0.0, 0.0)) {
+            CmdResult::CommitEntity(entity) => {
+                let pl = match &entity {
                     EntityType::LwPolyline(pl) => pl,
-                    _ => panic!("expected a live wall polyline"),
+                    _ => panic!("expected a wall polyline"),
                 };
-                assert!(finish);
                 let record = pl.common.extended_data.get_record(AEC_APPID).unwrap();
                 assert_eq!(record.values[0], XDataValue::String("WALL".to_string()));
                 assert_eq!(record.values[1], XDataValue::String("style1".to_string()));
                 assert!(
                     matches!(record.values[2], XDataValue::Distance(h) if (h - 3.0).abs() < 1e-9)
                 );
-                // Material name "Brick Material" should be used, not "brick_id"
                 assert_eq!(
                     record.values[5],
                     XDataValue::String("Brick Material".to_string())
@@ -7551,7 +8012,7 @@ mod wall_command_tests {
                     XDataValue::String("Structural".to_string())
                 );
             }
-            _ => panic!("Expected Enter to finalize wall with V2 record"),
+            _ => panic!("expected second click to commit a styled segment"),
         }
     }
 
@@ -7572,7 +8033,6 @@ mod wall_command_tests {
 
         cmd.on_point(DVec3::new(0.0, 0.0, 0.0));
         cmd.on_point(DVec3::new(5.0, 0.0, 0.0));
-        cmd.set_live_handles(vec![Handle::new(200)]);
 
         cmd.apply_live_property("wall_height", LiveFieldValue::Number(3.5));
         assert!((cmd.wall.height - 3.5).abs() < 1e-9);
@@ -7612,6 +8072,7 @@ mod wall_command_tests {
                 layer_override: None,
                 hatch_override: None,
                 role_tag: None,
+            layer_id: uuid::Uuid::new_v4(),
             }],
         display_profiles: std::collections::HashMap::new(),
         };
@@ -7671,6 +8132,7 @@ mod wall_command_tests {
                 layer_override: None,
                 hatch_override: None,
                 role_tag: None,
+            layer_id: uuid::Uuid::new_v4(),
             }],
         display_profiles: std::collections::HashMap::new(),
         };
@@ -7681,59 +8143,27 @@ mod wall_command_tests {
 
         let mut cmd = WallCommand::new_with_library(Some(lib));
         cmd.on_point(DVec3::new(0.0, 0.0, 0.0));
-        cmd.on_point(DVec3::new(5.0, 0.0, 0.0));
-        cmd.set_live_handles(vec![Handle::new(202)]);
-
-        // No style picked yet -> Enter must not finalize; it must keep the
-        // command running and surface a hint instead.
-        assert!(matches!(cmd.on_enter(), CmdResult::NeedPoint));
-        assert!(cmd.prompt().to_lowercase().contains("style"));
-
-        // Picking a style afterwards clears the warning and lets Enter
-        // finalize normally.
-        match cmd.apply_live_property(
-            "wall_style",
-            crate::command::LiveFieldValue::Picker("style1".to_string()),
-        ) {
-            CmdResult::ReplaceEntity(old, new_entities) => {
-                let new_handles: Vec<Handle> =
-                    (0..new_entities.len()).map(|i| Handle::new(400 + i as u64)).collect();
-                cmd.on_entity_replaced(old, &new_handles);
-            }
-            _ => panic!("expected style assignment to replace the live entity"),
+        match cmd.on_point(DVec3::new(5.0, 0.0, 0.0)) {
+            CmdResult::CommitEntity(_) => {}
+            _ => panic!("segment should commit even without a style"),
         }
-        assert!(!cmd.prompt().to_lowercase().contains("please select"));
-        match cmd.on_enter() {
-            CmdResult::UpdateLiveEntities { finish, .. } => assert!(finish),
-            _ => panic!("expected Enter to finalize once a style was picked"),
-        }
+        assert!(matches!(cmd.on_enter(), CmdResult::Cancel));
     }
 
     #[test]
     fn wall_command_with_no_library_falls_back_to_v1_record() {
         let mut cmd = WallCommand::new_with_library(None);
         cmd.on_point(DVec3::new(0.0, 0.0, 0.0));
-        cmd.on_point(DVec3::new(5.0, 0.0, 0.0));
-        let handle = Handle::new(101);
-        let contour_handle = Handle::new(102);
-        cmd.set_live_handles(vec![handle, contour_handle]);
-
-        // With no style library, Enter after the point chain finalizes
-        // immediately with a plain V1 WALL record using the current
-        // height/thickness defaults (also editable live via the Properties
-        // panel, see `apply_live_property`).
-        match cmd.on_enter() {
-            CmdResult::UpdateLiveEntities { updates, finish } => {
-                assert_eq!(updates.len(), 2);
-                let pl = match &updates[0].1 {
+        match cmd.on_point(DVec3::new(5.0, 0.0, 0.0)) {
+            CmdResult::CommitEntity(entity) => {
+                let pl = match &entity {
                     EntityType::LwPolyline(pl) => pl,
-                    _ => panic!("expected a live wall polyline"),
+                    _ => panic!("expected a wall polyline"),
                 };
-                assert!(finish);
                 let record = pl.common.extended_data.get_record(AEC_APPID).unwrap();
                 assert_eq!(record.values[0], XDataValue::String("WALL".to_string()));
             }
-            _ => panic!("Expected Enter to finalize wall with V1 record"),
+            _ => panic!("Expected second point to commit wall with V1 record"),
         }
     }
 
@@ -7874,14 +8304,15 @@ mod wall_command_tests {
         // Points picked at Interior (Y=+0.1 if drawing left to right).
         // Centerline should be at Y=0.
 
-        let mut cmd = WallCommand::new();
+        let mut cmd = WallCommand::new_with_library(None);
         cmd.justification = WallJustification::Interior;
         cmd.thickness = 0.2;
 
         cmd.on_point(DVec3::new(0.0, 0.1, 0.0));
-        cmd.on_point(DVec3::new(10.0, 0.1, 0.0));
-
-        let entity = cmd.build_entity().expect("Should build entity");
+        let entity = match cmd.on_point(DVec3::new(10.0, 0.1, 0.0)) {
+            CmdResult::CommitEntity(entity) => entity,
+            _ => panic!("Should commit entity"),
+        };
         let EntityType::LwPolyline(pl) = entity else {
             panic!("Expected LwPolyline")
         };
@@ -7985,6 +8416,38 @@ mod wall_command_tests {
         scene.add_entity(entity)
     }
 
+    #[test]
+    fn demolition_regen_sets_dashed_envelope_linetype() {
+        let mut scene = Scene::new();
+        let handle = add_multi_layer_wall(&mut scene);
+        assert!(write_wall_phase(&mut scene, handle, PlanPhase::Demolition));
+        let extra = apply_phase_filter(PlanPhase::Demolition, None)
+            .extra_style
+            .expect("demolition extra");
+        let mut rules = engine::display_component::ComponentRuleSet::default();
+        merge_phase_extra_into_rules(&mut rules, extra);
+        regenerate_wall_representation_with_rules_and_substitutions(
+            &mut scene,
+            handle,
+            Some(&rules),
+            None,
+            None,
+        )
+        .expect("regen");
+        let wall = wall_from_entity(scene.document.get_entity(handle).unwrap()).unwrap();
+        let dashed = wall
+            .derived_handles
+            .iter()
+            .filter_map(|h| scene.document.get_entity(*h))
+            .filter(|e| matches!(e, EntityType::LwPolyline(_)))
+            .filter(|e| e.common().linetype.eq_ignore_ascii_case("DASHED"))
+            .count();
+        assert!(
+            dashed >= 1,
+            "demolition envelope contour must use DASHED linetype"
+        );
+    }
+
     /// Mirrors the core write-back logic of the `AecStylePickerConfirm`
     /// handler for `StylePickerTarget::WallPropertiesStyle` (see
     /// `src/app/update/mod.rs`): resolve `effective_layers()` for the newly
@@ -8016,6 +8479,7 @@ mod wall_command_tests {
                     layer_override: None,
                     hatch_override: None,
                     role_tag: None,
+                layer_id: uuid::Uuid::new_v4(),
                 }],
             display_profiles: std::collections::HashMap::new(),
             },
@@ -8040,6 +8504,7 @@ mod wall_command_tests {
                         layer_override: None,
                         hatch_override: None,
                         role_tag: None,
+                    layer_id: uuid::Uuid::new_v4(),
                     },
                     Layer {
                         material_id: "Insulation".to_string(),
@@ -8051,6 +8516,7 @@ mod wall_command_tests {
                         layer_override: None,
                         hatch_override: None,
                         role_tag: None,
+                    layer_id: uuid::Uuid::new_v4(),
                     },
                 ],
             display_profiles: std::collections::HashMap::new(),
@@ -8080,6 +8546,7 @@ mod wall_command_tests {
                 top_offset: l.top_offset,
                 layer_override: l.layer_override.clone(),
                 hatch_override: l.hatch_override.clone(),
+            layer_id: uuid::Uuid::new_v4(),
             })
             .collect();
 
@@ -8170,6 +8637,63 @@ mod wall_command_tests {
             }
         }
         assert!(saw_contour && saw_hatch && saw_solid);
+    }
+
+    #[test]
+    fn wall_hatch_scale_survives_document_clone_roundtrip() {
+        let mut scene = Scene::new();
+        let wall_handle = add_multi_layer_wall(&mut scene);
+        regenerate_wall_representation(&mut scene, wall_handle, None)
+            .expect("regeneration should succeed");
+
+        let derived = wall_from_entity(scene.document.get_entity(wall_handle).unwrap())
+            .expect("should still read back as WALL")
+            .derived_handles;
+        let hatch_handles: Vec<_> = derived
+            .into_iter()
+            .filter(|&handle| {
+                matches!(
+                    scene.document.get_entity(handle),
+                    Some(EntityType::Hatch(_))
+                )
+            })
+            .collect();
+        assert!(!hatch_handles.is_empty());
+
+        let before: Vec<(f32, f32)> = hatch_handles
+            .iter()
+            .map(|handle| {
+                let model = scene.hatches.get(handle).expect("hatch model");
+                (model.scale, effective_hatch_spacing(model))
+            })
+            .collect();
+
+        let mut reloaded = Scene::new();
+        reloaded.document = scene.document.clone();
+        reloaded.populate_hatches_from_document();
+
+        for (handle, (scale, spacing)) in hatch_handles.iter().zip(before) {
+            let model = reloaded.hatches.get(handle).expect("reloaded hatch model");
+            assert!(
+                (model.scale - scale).abs() < 1e-5,
+                "HatchModel.scale changed on reload: {} -> {}",
+                scale,
+                model.scale
+            );
+            assert!(
+                (effective_hatch_spacing(model) - spacing).abs() < 1e-4,
+                "effective hatch spacing changed on reload"
+            );
+        }
+    }
+
+    fn effective_hatch_spacing(model: &crate::scene::model::hatch_model::HatchModel) -> f32 {
+        match &model.pattern {
+            crate::scene::model::hatch_model::HatchPattern::Pattern(fams) => {
+                fams.first().map(|f| f.dy.abs() * model.scale.max(1e-6)).unwrap_or(0.0)
+            }
+            _ => 0.0,
+        }
     }
 
     #[test]
@@ -8357,7 +8881,7 @@ mod wall_command_tests {
         use engine::display_component::{ComponentRuleSet, LayerSelection, WallComponentSlot};
         let mut scene = Scene::new();
         let wall_handle = add_multi_layer_wall(&mut scene);
-        let layer_ref = join::LayerRef { material_id: "Concrete".to_string(), role_tag: None, index: 0 };
+        let layer_ref = join::LayerRef { material_id: "Concrete".to_string(), role_tag: None, index: 0, layer_id: None };
         let mut rules = ComponentRuleSet::default();
         rules.layer_filter.insert(
             WallComponentSlot::Contour2D.key().to_string(),
@@ -8448,7 +8972,7 @@ mod wall_command_tests {
         let filter = PhaseFilter {
             visible_phases: vec![Phase::New, Phase::Demolition],
             demolition_style: Some(engine::display_component::ComponentStyleOverride {
-                line_color: Some(0xFF0000),
+                line_color: Some(acadrust::types::Color::Rgb { r: 255, g: 0, b: 0 }),
                 ..Default::default()
             }),
             existing_style: None,
@@ -8457,8 +8981,7 @@ mod wall_command_tests {
         assert!(apply_phase_filter(Phase::Demolition, Some(&filter)).visible);
         assert!(!apply_phase_filter(Phase::Existing, Some(&filter)).visible);
         assert_eq!(
-            apply_phase_filter(Phase::Demolition, Some(&filter)).extra_style.unwrap().line_color,
-            Some(0xFF0000)
+            apply_phase_filter(Phase::Demolition, Some(&filter)).extra_style.unwrap().line_color, Some(acadrust::types::Color::Rgb { r: 255, g: 0, b: 0 })
         );
     }
 
@@ -8703,6 +9226,7 @@ mod wall_command_tests {
                     material_id: "Concrete".to_string(),
                     role_tag: None,
                     index: 0,
+                layer_id: None,
                 },
                 layer_b: None,
                 style: join::JoinOverrideStyle::NoExtend,
@@ -8750,6 +9274,124 @@ mod wall_command_tests {
         );
     }
 
+    /// Step 4a: a `layer_style_override` set on one of two same-material
+    /// layers (disambiguated by `layer_id`) must stay attached to the
+    /// originally intended layer even after a third layer is inserted
+    /// before it, shifting its `index`. Matching purely by `index` (or by
+    /// `material_id` alone, since both layers share it) would either lose
+    /// the override or misapply it to the wrong/both layers.
+    #[test]
+    fn layer_style_override_stays_attached_to_intended_layer_after_insert() {
+        let target_id = uuid::Uuid::new_v4();
+        let other_id = uuid::Uuid::new_v4();
+        let rules = engine::display_component::ComponentRuleSet {
+            layer_style_override: vec![engine::display_component::LayerStyleOverride {
+                layer: join::LayerRef {
+                    material_id: "Plaster".to_string(),
+                    role_tag: None,
+                    index: 1,
+                    layer_id: Some(target_id),
+                },
+                style: engine::display_component::ComponentStyleOverride {
+                    line_type: Some("Dashed".to_string()),
+                    ..Default::default()
+                },
+            }],
+            ..Default::default()
+        };
+
+        // Original stack: [Plaster(other_id) @0, Plaster(target_id) @1].
+        let original_ref = join::LayerRef {
+            material_id: "Plaster".to_string(),
+            role_tag: None,
+            index: 1,
+            layer_id: Some(target_id),
+        };
+        let before = resolve_layer_style_override(Some(&rules), &[], &original_ref);
+        assert_eq!(before.line_type, Some("Dashed".to_string()));
+
+        // A third layer is inserted before it, shifting the target layer's
+        // index to 2 — but its `layer_id` is unchanged.
+        let shifted_ref = join::LayerRef {
+            material_id: "Plaster".to_string(),
+            role_tag: None,
+            index: 2,
+            layer_id: Some(target_id),
+        };
+        let after = resolve_layer_style_override(Some(&rules), &[], &shifted_ref);
+        assert_eq!(
+            after.line_type,
+            Some("Dashed".to_string()),
+            "override must stay attached to the layer by layer_id even though its index moved"
+        );
+
+        // The other same-material layer (a different layer_id) must not
+        // pick up the override just because the material matches.
+        let other_ref = join::LayerRef {
+            material_id: "Plaster".to_string(),
+            role_tag: None,
+            index: 0,
+            layer_id: Some(other_id),
+        };
+        let other_result = resolve_layer_style_override(Some(&rules), &[], &other_ref);
+        assert_eq!(other_result.line_type, None);
+    }
+
+    /// Step 4b: a `JunctionOverride.layer_pairs` entry referencing a layer by
+    /// `layer_id` must stay correctly matched (and therefore survive
+    /// `validate_junction_override`'s pruning pass) after an uninvolved
+    /// layer is deleted, even though that shifts the referenced layer's
+    /// `index`.
+    #[test]
+    fn junction_override_layer_pair_survives_deletion_of_uninvolved_layer() {
+        let concrete_id = uuid::Uuid::new_v4();
+
+        // The override was captured while the wall still had an Insulation
+        // layer at index 0 and Concrete at index 1.
+        let override_data = join::JunctionOverride {
+            default_style: None,
+            layer_pairs: vec![join::LayerPairOverride {
+                layer_a: join::LayerRef {
+                    material_id: "Concrete".to_string(),
+                    role_tag: None,
+                    index: 1,
+                    layer_id: Some(concrete_id),
+                },
+                layer_b: None,
+                style: join::JoinOverrideStyle::NoExtend,
+            }],
+        };
+
+        // The uninvolved Insulation layer was deleted, so Concrete is now
+        // the only (index 0) layer, keeping the same `layer_id`.
+        let self_layers = vec![join::LayerRef {
+            material_id: "Concrete".to_string(),
+            role_tag: None,
+            index: 0,
+            layer_id: Some(concrete_id),
+        }];
+        let other_layers: Vec<join::LayerRef> = vec![];
+
+        let (validated, removed) = validate_junction_override(&override_data, &self_layers, &other_layers);
+        assert_eq!(removed, 0, "the layer_id match must keep the pair despite the index shift");
+        assert_eq!(
+            validated,
+            Some(join::JunctionOverride {
+                default_style: None,
+                layer_pairs: vec![join::LayerPairOverride {
+                    layer_a: join::LayerRef {
+                        material_id: "Concrete".to_string(),
+                        role_tag: None,
+                        index: 1,
+                        layer_id: Some(concrete_id),
+                    },
+                    layer_b: None,
+                    style: join::JoinOverrideStyle::NoExtend,
+                }],
+            })
+        );
+    }
+
     /// Step 3: when wall A's material changes such that a stored
     /// `LayerPairOverride.layer_a` no longer matches any current layer, that
     /// pair must be pruned on the next regeneration while a still-valid
@@ -8780,6 +9422,7 @@ mod wall_command_tests {
                     material_id: "Concrete".to_string(),
                     role_tag: None,
                     index: 0,
+                layer_id: None,
                 },
                 layer_b: None,
                 style: join::JoinOverrideStyle::NoExtend,
@@ -8838,6 +9481,7 @@ mod wall_command_tests {
                     material_id: "Insulation".to_string(),
                     role_tag: None,
                     index: 0,
+                layer_id: None,
                 },
                 layer_b: None,
                 style: join::JoinOverrideStyle::OuterFace,
@@ -8892,6 +9536,7 @@ mod wall_command_tests {
                     material_id: "Concrete".to_string(),
                     role_tag: None,
                     index: 0,
+                layer_id: None,
                 },
                 layer_b: None,
                 style: join::JoinOverrideStyle::NoExtend,
@@ -8951,11 +9596,13 @@ mod wall_command_tests {
                     material_id: "Concrete".to_string(),
                     role_tag: None,
                     index: 0,
+                layer_id: None,
                 },
                 layer_b: Some(join::LayerRef {
                     material_id: "Concrete".to_string(),
                     role_tag: None,
                     index: 0,
+                layer_id: None,
                 }),
                 style: join::JoinOverrideStyle::Butt,
             }],
@@ -9006,6 +9653,7 @@ mod wall_command_tests {
                     material_id: "Concrete".to_string(),
                     role_tag: None,
                     index: 0,
+                layer_id: None,
                 },
                 layer_b: None,
                 style: join::JoinOverrideStyle::NoExtend,
@@ -9055,6 +9703,7 @@ mod wall_command_tests {
                     material_id: "Concrete".to_string(),
                     role_tag: None,
                     index: 0,
+                layer_id: None,
                 },
                 layer_b: None,
                 style: join::JoinOverrideStyle::NoExtend,
@@ -9250,9 +9899,12 @@ mod wall_command_tests {
         rules
             .visibility
             .insert(WallComponentSlot::Layers2D.key().to_string(), false);
+        rules
+            .visibility
+            .insert(WallComponentSlot::Contour2D.key().to_string(), false);
 
         regenerate_wall_representation_with_rules(&mut scene, wall_handle, Some(&rules), None)
-            .expect("regeneration with Layers2D hidden should still succeed");
+            .expect("regeneration with 2D contour slots hidden should still succeed");
 
         let derived = wall_from_entity(scene.document.get_entity(wall_handle).unwrap())
             .unwrap()
@@ -9268,8 +9920,11 @@ mod wall_command_tests {
                 _ => {}
             }
         }
-        assert!(!saw_contour, "no contour polyline should be created when Layers2D is hidden");
-        assert!(saw_solid, "solids should remain when only Layers2D is hidden");
+        assert!(
+            !saw_contour,
+            "no contour polyline should be created when Layers2D and Contour2D are hidden"
+        );
+        assert!(saw_solid, "solids should remain when only 2D contour slots are hidden");
     }
 
     /// Serializes access to the on-disk AEC style library file (see
@@ -9308,7 +9963,7 @@ mod wall_command_tests {
             WallComponentSlot::ContourHatch2D.key().to_string(),
             ComponentStyleOverride {
                 hatch_pattern: Some("NET".to_string()),
-                hatch_color: Some(0x00FF00),
+                hatch_color: Some(acadrust::types::Color::Rgb { r: 0, g: 255, b: 0 }),
                 ..Default::default()
             },
         );
@@ -9321,6 +9976,7 @@ mod wall_command_tests {
             .derived_handles;
 
         let mut saw_overridden_pattern = false;
+        let mut saw_overridden_color = false;
         for h in &derived {
             if let Some(EntityType::Hatch(hatch)) = scene.document.get_entity(*h) {
                 if hatch.pattern.name == "NET" {
@@ -9329,11 +9985,24 @@ mod wall_command_tests {
                 // The default fallback pattern must never appear once the
                 // slot-wide override is active.
                 assert_ne!(hatch.pattern.name, "ANSI31");
+                if hatch.common.color
+                    == (acadrust::types::Color::Rgb {
+                        r: 0,
+                        g: 255,
+                        b: 0,
+                    })
+                {
+                    saw_overridden_color = true;
+                }
             }
         }
         assert!(
             saw_overridden_pattern,
             "every layer's hatch should use the ContourHatch2D style_override pattern"
+        );
+        assert!(
+            saw_overridden_color,
+            "hatch entities must keep the override hatch_color on the DXF entity"
         );
     }
 
@@ -9352,6 +10021,7 @@ mod wall_command_tests {
             material_id: "Concrete".to_string(),
             role_tag: None,
             index: 0,
+        layer_id: None,
         }]);
         rules
             .layer_filter
@@ -9413,7 +10083,7 @@ mod wall_command_tests {
             0x222222,
             "Continuous".to_string(),
         );
-        target_material.hatch_color = Some(0xABCDEF);
+        target_material.hatch_color = Some(acadrust::types::Color::Rgb { r: 171, g: 205, b: 239 });
 
         let source_style = WallStyle {
             style: Style {
@@ -9432,6 +10102,7 @@ mod wall_command_tests {
                 layer_override: None,
                 hatch_override: None,
                 role_tag: None,
+            layer_id: uuid::Uuid::new_v4(),
             }],
         display_profiles: std::collections::HashMap::new(),
         };
@@ -9454,6 +10125,7 @@ mod wall_command_tests {
                 layer_override: None,
                 hatch_override: None,
                 role_tag: None,
+            layer_id: uuid::Uuid::new_v4(),
             }],
         display_profiles: std::collections::HashMap::new(),
         };
@@ -9558,6 +10230,7 @@ mod wall_command_tests {
                 layer_override: None,
                 hatch_override: None,
                 role_tag: None,
+            layer_id: uuid::Uuid::new_v4(),
             }],
         display_profiles: std::collections::HashMap::new(),
         };
@@ -9578,6 +10251,7 @@ mod wall_command_tests {
                 layer_override: None,
                 hatch_override: None,
                 role_tag: None,
+            layer_id: uuid::Uuid::new_v4(),
             }],
         display_profiles: std::collections::HashMap::new(),
         };
@@ -9768,6 +10442,7 @@ mod wall_command_tests {
             top_offset: 0.3,
             layer_override: None,
             hatch_override: None,
+        layer_id: uuid::Uuid::new_v4(),
         }];
         let height = 3.0;
         let extrusions = wall_layer_extrusions(&entity, &layers, height);
@@ -10769,6 +11444,90 @@ mod wall_command_tests {
     }
 
     #[test]
+    fn join_junction_honors_display_rules_on_both_walls() {
+        use engine::display_component::{ComponentRuleSet, WallComponentSlot};
+        let mut scene = Scene::new();
+        let layers = vec![wl("Concrete", 0.2, "Structural")];
+        let add = |scene: &mut Scene, a: (f64, f64), b: (f64, f64)| {
+            let mut pl = LwPolyline::new();
+            pl.add_vertex(LwVertex::new(Vector2::new(a.0, a.1)));
+            pl.add_vertex(LwVertex::new(Vector2::new(b.0, b.1)));
+            let mut entity = EntityType::LwPolyline(pl);
+            let mut record = ExtendedDataRecord::new(AEC_APPID);
+            record.values = wall_record("s", 3.0, 0, &layers, &[], WallJustification::Center, PlanPhase::New, None);
+            entity.common_mut().extended_data.add_record(record);
+            scene.add_entity(entity)
+        };
+        let a = add(&mut scene, (0.0, 0.0), (5.0, 0.0));
+        let b = add(&mut scene, (5.0, 0.0), (5.0, 5.0));
+        let mut rules = ComponentRuleSet::default();
+        rules
+            .visibility
+            .insert(WallComponentSlot::Solid3D.key().to_string(), false);
+        join_junction_in_document(&mut scene, &[a, b], None, None, Some(&rules), None)
+            .expect("L junction");
+        for h in [a, b] {
+            let derived = wall_from_entity(scene.document.get_entity(h).unwrap())
+                .expect("WALL")
+                .derived_handles;
+            let solids = derived
+                .iter()
+                .filter(|handle| matches!(scene.document.get_entity(**handle), Some(EntityType::Solid3D(_))))
+                .count();
+            assert_eq!(
+                solids, 0,
+                "join regen must honor the active plan (no 3D solids), wall {h:?}"
+            );
+            assert!(
+                !derived.is_empty(),
+                "2D representation should still be created"
+            );
+        }
+    }
+
+    #[test]
+    fn refresh_after_axis_edit_honors_display_rules_on_joined_walls() {
+        use engine::display_component::{ComponentRuleSet, WallComponentSlot};
+        let mut scene = Scene::new();
+        let layers = vec![wl("Concrete", 0.2, "Structural")];
+        let add = |scene: &mut Scene, a: (f64, f64), b: (f64, f64)| {
+            let mut pl = LwPolyline::new();
+            pl.add_vertex(LwVertex::new(Vector2::new(a.0, a.1)));
+            pl.add_vertex(LwVertex::new(Vector2::new(b.0, b.1)));
+            let mut entity = EntityType::LwPolyline(pl);
+            let mut record = ExtendedDataRecord::new(AEC_APPID);
+            record.values = wall_record("s", 3.0, 0, &layers, &[], WallJustification::Center, PlanPhase::New, None);
+            entity.common_mut().extended_data.add_record(record);
+            scene.add_entity(entity)
+        };
+        let a = add(&mut scene, (0.0, 0.0), (5.0, 0.0));
+        let b = add(&mut scene, (5.0, 0.0), (5.0, 5.0));
+        let mut rules = ComponentRuleSet::default();
+        rules
+            .visibility
+            .insert(WallComponentSlot::Solid3D.key().to_string(), false);
+        join_junction_in_document(&mut scene, &[a, b], None, None, Some(&rules), None)
+            .expect("L junction");
+        let mut axis = get_wall_vertices(&scene, a);
+        axis[0] = DVec3::new(-0.2, 0.0, 0.0);
+        update_wall_vertices(&mut scene, a, &axis);
+        refresh_wall_after_axis_edit(&mut scene, a, None, Some(&rules), None);
+        for h in [a, b] {
+            let derived = wall_from_entity(scene.document.get_entity(h).unwrap())
+                .expect("WALL")
+                .derived_handles;
+            let solids = derived
+                .iter()
+                .filter(|handle| matches!(scene.document.get_entity(**handle), Some(EntityType::Solid3D(_))))
+                .count();
+            assert_eq!(
+                solids, 0,
+                "axis-edit regen must honor the active plan (no 3D solids), wall {h:?}"
+            );
+        }
+    }
+
+    #[test]
     fn try_auto_join_after_grip_keeps_t_through_axis() {
         let mut scene = Scene::new();
         let layers = vec![wl("Concrete", 0.2, "Structural")];
@@ -11482,6 +12241,7 @@ mod wall_command_tests {
                     layer_override: None,
                     hatch_override: None,
                     role_tag: None,
+                layer_id: uuid::Uuid::new_v4(),
                 },
                 Layer {
                     material_id: "mat_a".into(),
@@ -11493,6 +12253,7 @@ mod wall_command_tests {
                     layer_override: None,
                     hatch_override: None,
                     role_tag: None,
+                layer_id: uuid::Uuid::new_v4(),
                 },
             ],
         display_profiles: std::collections::HashMap::new(),
@@ -11552,6 +12313,7 @@ mod wall_command_tests {
                 layer_override: None,
                 hatch_override: None,
                 role_tag: None,
+            layer_id: uuid::Uuid::new_v4(),
             }],
         display_profiles: std::collections::HashMap::new(),
         });

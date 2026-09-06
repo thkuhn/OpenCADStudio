@@ -50,6 +50,7 @@ impl OpenCADStudio {
             Some(K::RecoveryPrompt) => crate::tr!("modal", "recovery-prompt"),
             Some(K::AecMaterialManager) => t!("AEC Material Manager").into_owned(),
             Some(K::AecWallStyleManager) => t!("AEC Wall Style Manager").into_owned(),
+            Some(K::AecWallStyleDisplayProfiles) => t!("Planart-Einstellungen").into_owned(),
             Some(K::AecPlanManager) => t!("AEC DisplayConfig Manager").into_owned(),
             Some(K::AecJunctionEditor) => t!("Junction Editor").into_owned(),
             Some(K::AecProjectExplorer) => t!("AEC Project Explorer").into_owned(),
@@ -76,6 +77,109 @@ impl OpenCADStudio {
             },
         )
     }
+    pub(super) fn aec_wall_style_manager_modal_content<'s>(
+        &'s self,
+        extra: iced::Vector,
+    ) -> Element<'s, Message> {
+        // Same content builder as `ModalKind::AecWallStyleManager`, used as the
+        // blocked parent underlay while display-profiles is open.
+        static EMPTY_LIB: std::sync::OnceLock<
+            crate::modules::aec::engine::library::StyleLibrary,
+        > = std::sync::OnceLock::new();
+        sized_flow(
+            extra,
+            1100,
+            550,
+            |_| {
+                let all_wall_styles = self.aec_style_library.as_ref().map(|lib| {
+                    lib.wall_styles
+                        .iter()
+                        .filter(|ws| {
+                            Some(&ws.style.id)
+                                != self.aec_style_manager_wall_style_editing_id.as_ref()
+                        })
+                        .map(|ws| (ws.style.id.as_str(), ws.style.name.as_str()))
+                        .collect::<Vec<_>>()
+                }).unwrap_or_default();
+                let all_materials = self.aec_style_library.as_ref().map(|lib| {
+                    lib.materials
+                        .iter()
+                        .map(|m| (m.id.as_str(), m.name.as_str()))
+                        .collect::<Vec<_>>()
+                }).unwrap_or_default();
+                let all_layer_names: Vec<String> = self.tabs.get(self.active_tab).map(|tab| {
+                    tab.scene
+                        .document
+                        .layers
+                        .iter()
+                        .map(|l| l.name.clone())
+                        .collect()
+                }).unwrap_or_default();
+                let effective_layers = Vec::new();
+                let inheritance_chain = Vec::new();
+                // Parent underlay only needs enough form state for the
+                // "Planart-Einstellungen…" button; detailed profile editing
+                // lives in the child modal.
+                let display_profiles_form = self
+                    .aec_style_manager_wall_style_editing_id
+                    .as_ref()
+                    .map(|_| {
+                        crate::ui::window::aec_wall_style_manager::DisplayProfileFormState {
+                            display_config_names: Vec::new(),
+                            existing_overrides: Default::default(),
+                            selected: None,
+                            contour_explicit: false,
+                            contour_selected: &[],
+                            solid_explicit: false,
+                            solid_selected: &[],
+                            hatch_angle: "",
+                            hatch_relative: false,
+                            slot_visibility: Default::default(),
+                            editing_slot: None,
+                            slot_overrides: &self.aec_style_manager_profile_slot_overrides,
+                            slot_style_editor: crate::ui::window::aec_ui_util::StyleEditorFormState {
+                                line_type: "",
+                                linetype_items: &[],
+                                linetype_combo: &self.aec_style_manager_material_linetype_combo,
+                                line_color: "",
+                                line_color_picker_open: false,
+                                hatch_pattern: "",
+                                hatch_picker_open: false,
+                                hatch_color: "",
+                                hatch_color_picker_open: false,
+                                fill_color: "",
+                                fill_color_picker_open: false,
+                            },
+                        }
+                    });
+                crate::ui::window::aec_wall_style_manager::view_window(
+                    self.aec_style_library
+                        .as_ref()
+                        .unwrap_or(EMPTY_LIB.get_or_init(
+                            crate::modules::aec::engine::library::StyleLibrary::empty,
+                        )),
+                    self.aec_project_explorer_file.as_ref(),
+                    self.aec_style_manager_selected_wall_style.as_deref(),
+                    &self.aec_style_manager_filter,
+                    crate::ui::window::aec_wall_style_manager::WallStyleFormState {
+                        open: self.aec_style_manager_wall_style_form_open,
+                        is_new: self.aec_style_manager_wall_style_editing_id.is_none(),
+                        name: &self.aec_style_manager_wall_style_name,
+                        parent_id: self.aec_style_manager_wall_style_parent.as_deref(),
+                        layers: &self.aec_style_manager_wall_style_layers,
+                        drag_index: self.aec_style_manager_wall_style_drag_index,
+                        all_wall_styles,
+                        all_materials,
+                        all_layer_names,
+                        effective_layers,
+                        inheritance_chain,
+                        display_profiles: display_profiles_form.clone(),
+                    },
+                )
+            },
+        )
+    }
+
     /// Build the currently-open modal dialog's content (Plan B), or `None`.
     /// Iced 0.15 measures the content first, so dialogs start at their natural
     /// size and overflowing regions become scrollable where a cap is supplied.
@@ -341,7 +445,7 @@ impl OpenCADStudio {
                     },
                 )
             }),
-            super::super::ModalKind::AecPlanManager => sized_flow(ex, 900, 560, |_| {
+            super::super::ModalKind::AecPlanManager => sized_flow(ex, 980, 640, |_| {
                 static EMPTY_LIB: std::sync::OnceLock<
                     crate::modules::aec::engine::library::DisplayConfigLibrary,
                 > = std::sync::OnceLock::new();
@@ -358,7 +462,7 @@ impl OpenCADStudio {
                         name: &self.aec_plan_manager_name,
                         discipline: &self.aec_plan_manager_discipline,
                         scale: &self.aec_plan_manager_scale,
-                        phase: self.aec_plan_manager_phase.clone(),
+                        planning_stage: self.aec_plan_manager_planning_stage,
                         view_type: self.aec_plan_manager_view_type.clone(),
                         phase_filter_visible_existing: self.aec_plan_manager_phase_filter_visible_existing,
                         phase_filter_visible_demolition: self.aec_plan_manager_phase_filter_visible_demolition,
@@ -371,6 +475,7 @@ impl OpenCADStudio {
                             line_color_picker_open: self
                                 .aec_plan_manager_demolition_style_line_color_picker_open,
                             hatch_pattern: &self.aec_plan_manager_demolition_style_hatch_pattern,
+                            hatch_picker_open: self.aec_plan_manager_demolition_style_hatch_picker_open,
                             hatch_color: &self.aec_plan_manager_demolition_style_hatch_color,
                             hatch_color_picker_open: self
                                 .aec_plan_manager_demolition_style_hatch_color_picker_open,
@@ -386,6 +491,7 @@ impl OpenCADStudio {
                             line_color_picker_open: self
                                 .aec_plan_manager_existing_style_line_color_picker_open,
                             hatch_pattern: &self.aec_plan_manager_existing_style_hatch_pattern,
+                            hatch_picker_open: self.aec_plan_manager_existing_style_hatch_picker_open,
                             hatch_color: &self.aec_plan_manager_existing_style_hatch_color,
                             hatch_color_picker_open: self
                                 .aec_plan_manager_existing_style_hatch_color_picker_open,
@@ -393,12 +499,40 @@ impl OpenCADStudio {
                             fill_color_picker_open: self
                                 .aec_plan_manager_existing_style_fill_color_picker_open,
                         },
-                        new_mapping_scale: &self.aec_plan_manager_scale_mapping_new_scale,
-                        new_mapping_config: self.aec_plan_manager_scale_mapping_new_config.as_deref(),
+                        default_representation: self.aec_plan_manager_default_representation,
+                        component_visibility: &self.aec_plan_manager_component_visibility,
+                        wall_styles: &self.aec_plan_manager_wall_styles,
+                        style_overlays: &self.aec_plan_manager_style_overlays,
+                        overlay_style_id: self.aec_plan_manager_overlay_style_id.as_deref(),
+                        overlay_layer_id: self.aec_plan_manager_overlay_layer_id,
+                        overlay_line_type: &self.aec_plan_manager_overlay_line_type,
+                        overlay_line_color: &self.aec_plan_manager_overlay_line_color,
+                        overlay_hatch_pattern: &self.aec_plan_manager_overlay_hatch_pattern,
+                        overlay_hatch_color: &self.aec_plan_manager_overlay_hatch_color,
+                        overlay_hatch_scale: &self.aec_plan_manager_overlay_hatch_scale,
+                        overlay_hatch_angle: &self.aec_plan_manager_overlay_hatch_angle,
+                        overlay_hatch_angle_relative: self
+                            .aec_plan_manager_overlay_hatch_angle_relative,
+                        overlay_fill_color: &self.aec_plan_manager_overlay_fill_color,
+                        overlay_linetype_items: &self.aec_style_manager_material_linetype_items,
+                        overlay_linetype_combo: &self.aec_style_manager_material_linetype_combo,
+                        overlay_line_color_picker_open: self
+                            .aec_plan_manager_overlay_line_color_picker_open,
+                        overlay_hatch_picker_open: self.aec_plan_manager_overlay_hatch_picker_open,
+                        overlay_hatch_color_picker_open: self
+                            .aec_plan_manager_overlay_hatch_color_picker_open,
+                        overlay_fill_color_picker_open: self
+                            .aec_plan_manager_overlay_fill_color_picker_open,
+                        contour_hatch_pattern: &self.aec_plan_manager_contour_hatch_pattern,
+                        contour_hatch_color: &self.aec_plan_manager_contour_hatch_color,
+                        contour_hatch_scale: &self.aec_plan_manager_contour_hatch_scale,
+                        contour_hatch_angle: &self.aec_plan_manager_contour_hatch_angle,
+                        contour_hatch_angle_relative: self
+                            .aec_plan_manager_contour_hatch_angle_relative,
+                        contour_hatch_picker_open: self.aec_plan_manager_contour_hatch_picker_open,
+                        contour_hatch_color_picker_open: self
+                            .aec_plan_manager_contour_hatch_color_picker_open,
                     },
-                    self.tabs.get(self.active_tab)
-                        .map(|tab| tab.auto_display_config_from_scale)
-                        .unwrap_or(true),
                 )
             }),
             super::super::ModalKind::AecProjectExplorer => sized_flow(ex, 720, 520, |_| {
@@ -511,6 +645,22 @@ impl OpenCADStudio {
                                 solid_selected: &self.aec_style_manager_profile_solid_selection,
                                 hatch_angle: &self.aec_style_manager_profile_hatch_angle,
                                 hatch_relative: self.aec_style_manager_profile_hatch_relative,
+                                slot_visibility: self.aec_style_manager_profile_slot_visibility.clone(),
+                                editing_slot: self.aec_style_manager_profile_editing_slot,
+                                slot_overrides: &self.aec_style_manager_profile_slot_overrides,
+                                slot_style_editor: crate::ui::window::aec_ui_util::StyleEditorFormState {
+                                    line_type: &self.aec_style_manager_profile_slot_style_line_type,
+                                    linetype_items: &self.aec_style_manager_material_linetype_items,
+                                    linetype_combo: &self.aec_style_manager_material_linetype_combo,
+                                    line_color: &self.aec_style_manager_profile_slot_style_line_color,
+                                    line_color_picker_open: self.aec_style_manager_profile_slot_style_line_color_picker_open,
+                                    hatch_pattern: &self.aec_style_manager_profile_slot_style_hatch_pattern,
+                                    hatch_picker_open: self.aec_style_manager_profile_slot_style_hatch_picker_open,
+                                    hatch_color: &self.aec_style_manager_profile_slot_style_hatch_color,
+                                    hatch_color_picker_open: self.aec_style_manager_profile_slot_style_hatch_color_picker_open,
+                                    fill_color: &self.aec_style_manager_profile_slot_style_fill_color,
+                                    fill_color_picker_open: self.aec_style_manager_profile_slot_style_fill_color_picker_open,
+                                },
                             }
                         });
 
@@ -531,11 +681,63 @@ impl OpenCADStudio {
                             all_layer_names,
                             effective_layers,
                             inheritance_chain,
-                            display_profiles: display_profiles_form,
+                            display_profiles: display_profiles_form.clone(),
                         },
                     )
                 },
             ),
+            super::super::ModalKind::AecWallStyleDisplayProfiles => {
+                let display_profiles_form = {
+                    let display_config_names: Vec<String> = self
+                        .aec_plan_library
+                        .as_ref()
+                        .map(|lib| lib.configs.iter().map(|c| c.name.clone()).collect())
+                        .unwrap_or_default();
+                    let existing_overrides: std::collections::HashSet<String> = self
+                        .aec_style_manager_wall_style_editing_id
+                        .as_ref()
+                        .and_then(|id| {
+                            self.aec_style_library.as_ref().and_then(|lib| {
+                                lib.wall_styles.iter().find(|w| &w.style.id == id)
+                            })
+                        })
+                        .map(|ws| ws.display_profiles.keys().cloned().collect())
+                        .unwrap_or_default();
+                    crate::ui::window::aec_wall_style_manager::DisplayProfileFormState {
+                        display_config_names,
+                        existing_overrides,
+                        selected: self.aec_style_manager_profile_selected.as_deref(),
+                        contour_explicit: self.aec_style_manager_profile_contour_explicit,
+                        contour_selected: &self.aec_style_manager_profile_contour_selection,
+                        solid_explicit: self.aec_style_manager_profile_solid_explicit,
+                        solid_selected: &self.aec_style_manager_profile_solid_selection,
+                        hatch_angle: &self.aec_style_manager_profile_hatch_angle,
+                        hatch_relative: self.aec_style_manager_profile_hatch_relative,
+                        slot_visibility: self.aec_style_manager_profile_slot_visibility.clone(),
+                        editing_slot: self.aec_style_manager_profile_editing_slot,
+                        slot_overrides: &self.aec_style_manager_profile_slot_overrides,
+                        slot_style_editor: crate::ui::window::aec_ui_util::StyleEditorFormState {
+                            line_type: &self.aec_style_manager_profile_slot_style_line_type,
+                            linetype_items: &self.aec_style_manager_material_linetype_items,
+                            linetype_combo: &self.aec_style_manager_material_linetype_combo,
+                            line_color: &self.aec_style_manager_profile_slot_style_line_color,
+                            line_color_picker_open: self.aec_style_manager_profile_slot_style_line_color_picker_open,
+                            hatch_pattern: &self.aec_style_manager_profile_slot_style_hatch_pattern,
+                            hatch_picker_open: self.aec_style_manager_profile_slot_style_hatch_picker_open,
+                            hatch_color: &self.aec_style_manager_profile_slot_style_hatch_color,
+                            hatch_color_picker_open: self.aec_style_manager_profile_slot_style_hatch_color_picker_open,
+                            fill_color: &self.aec_style_manager_profile_slot_style_fill_color,
+                            fill_color_picker_open: self.aec_style_manager_profile_slot_style_fill_color_picker_open,
+                        },
+                    }
+                };
+                sized_flow(ex, 720, 640, |_flow| {
+                    crate::ui::window::aec_wall_style_manager::view_display_profiles_window(
+                        display_profiles_form.clone(),
+                        &self.aec_style_manager_wall_style_layers,
+                    )
+                })
+            }
             super::super::ModalKind::LayerStateManager => {
                 let states = self.tabs[self.active_tab].scene.document.layer_states();
                 sized_flow(

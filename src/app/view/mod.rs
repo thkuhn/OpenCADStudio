@@ -1928,7 +1928,22 @@ impl OpenCADStudio {
                             .as_ref()
                             .map(|lib| lib.configs.iter().map(|c| c.name.clone()).collect())
                             .unwrap_or_default(),
-                        auto_display_config_from_scale: tab.auto_display_config_from_scale,
+                        representation_override: tab.representation_override,
+                        representation_mode: {
+                            use crate::modules::aec::engine::display_component::RepresentationMode;
+                            use crate::modules::aec::engine::library::effective_representation;
+                            tab.representation_override.unwrap_or_else(|| {
+                                tab.active_display_config
+                                    .as_deref()
+                                    .and_then(|name| {
+                                        self.aec_plan_library
+                                            .as_ref()
+                                            .and_then(|lib| lib.find(name))
+                                    })
+                                    .map(|cfg| effective_representation(cfg, None))
+                                    .unwrap_or(RepresentationMode::All)
+                            })
+                        },
                     };
                     self.status_bar.view(
                         &self.snapper,
@@ -2046,6 +2061,22 @@ impl OpenCADStudio {
                         plot_content,
                         Message::CloseModal,
                         *plot_offset,
+                        crate::ui::modal::ModalOptions::STANDARD,
+                    )
+                } else {
+                    composed.into()
+                }
+            } else if self.active_modal == Some(super::ModalKind::AecWallStyleDisplayProfiles) {
+                if let Some((parent_offset, parent_resize)) =
+                    self.aec_wall_style_manager_parent_geometry.as_ref()
+                {
+                    let parent_content = self.aec_wall_style_manager_modal_content(*parent_resize);
+                    crate::ui::modal::modal(
+                        composed,
+                        t!("AEC Wall Style Manager"),
+                        parent_content,
+                        Message::CloseModal,
+                        *parent_offset,
                         crate::ui::modal::ModalOptions::STANDARD,
                     )
                 } else {

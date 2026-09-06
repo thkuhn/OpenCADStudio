@@ -1919,6 +1919,10 @@ pub trait CadCommand: Send {
     /// target them.
     fn set_live_handles(&mut self, _handles: Vec<Handle>) {}
 
+    /// Called after the host has written entities from [`CmdResult::CommitEntity`]
+    /// (or similar) into the document. Default no-op.
+    fn on_entities_committed(&mut self, _scene: &mut Scene, _handles: &[Handle]) {}
+
     /// Point-click pick of domain objects (wire hit-test often misses small markers).
     fn needs_structure_point_pick(&self) -> bool {
         false

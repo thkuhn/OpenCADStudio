@@ -859,6 +859,17 @@ impl OpenCADStudio {
                             .attach_dimension_association(handle, sources.to_vec());
                     }
                 }
+                if let Some(handle) = committed {
+                    let mut cmd = self.tabs[i].active_cmd.take();
+                    if let Some(ref mut c) = cmd {
+                        c.on_entities_committed(&mut self.tabs[i].scene, &[handle]);
+                        for msg in crate::modules::aec::commands::take_pending_override_warnings() {
+                            self.command_line.push_info(&msg);
+                        }
+                    }
+                    self.tabs[i].active_cmd = cmd;
+                    self.reapply_active_display_config_to_wall_packages(i, &[handle]);
+                }
                 self.tabs[i].dirty = true;
                 let prompt = self.tabs[i].active_cmd.as_ref().map(|c| c.prompt());
                 if let Some(p) = prompt {
@@ -3119,6 +3130,7 @@ impl OpenCADStudio {
                     changed_handles.push(*owner);
                     count += 1;
                 }
+                self.reapply_active_display_config_to_wall_packages(i, &wall_owners);
 
                 // Dimensions whose points moved — their baked *D block is
                 // stale afterwards and must be dropped (see #398 / #372).

@@ -1,11 +1,16 @@
 //! AEC Style Library for persisting materials and wall styles.
 
-use crate::modules::aec::engine::display_component::ComponentRuleSet;
+use crate::modules::aec::engine::display_component::{
+    ComponentRuleSet, ComponentStyleOverride, LayerSelection, LayerStyleOverride,
+    RepresentationMode, StyleDisplayOverlay, WallComponentKind, WallComponentSlot,
+};
+use crate::modules::aec::engine::join::LayerRef;
 use crate::modules::aec::engine::material::Material;
 use crate::modules::aec::engine::plan_view::{DisplayConfig, ScaleDisplayConfigMapping};
 use crate::modules::aec::engine::style::Style;
 use crate::modules::aec::engine::wall_style::{LayerValue, Layer, LayerFunction, WallStyle};
 use serde::{Deserialize, Serialize};
+use uuid::Uuid;
 use std::path::PathBuf;
 
 /// A collection of AEC materials and wall styles.
@@ -186,6 +191,281 @@ pub fn resolve_effective_rule_set<'a>(
     style.display_profiles.get(display_config_name)
 }
 
+/// Session override wins over the Planart default.
+pub fn effective_representation(
+    config: &DisplayConfig,
+    session: Option<RepresentationMode>,
+) -> RepresentationMode {
+    session.unwrap_or(config.default_representation)
+}
+
+/// Planart global visibility + representation + sparse style overlay,
+/// starting from a wall style's leftover `display_profiles` (legacy) if any.
+pub fn build_effective_rule_set(
+    config: &DisplayConfig,
+    style: Option<&WallStyle>,
+    session: Option<RepresentationMode>,
+) -> ComponentRuleSet {
+    let mut rules = style
+        .and_then(|ws| resolve_effective_rule_set(ws, &config.name))
+        .cloned()
+        .unwrap_or_default();
+    let mode = effective_representation(config, session);
+    for kind in WallComponentKind::all() {
+        let key = kind.to_slot().key().to_string();
+        if session.is_some() {
+            // Status-bar 2D/3D/Alle replaces Planart (and leftover
+            // display_profiles) visibility for that representation.
+            rules.visibility.insert(key, mode.allows(*kind));
+        } else {
+            let vis = component_is_visible(config, *kind, mode);
+            rules
+                .visibility
+                .entry(key)
+                .and_modify(|v| *v = *v && vis)
+                .or_insert(vis);
+        }
+    }
+    if let Some(style) = style {
+        if let Some(overlay) = config.style_overlays.get(&style.style.id) {
+            merge_style_overlay_into_rules(&mut rules, overlay);
+        }
+    }
+    rules
+}
+
+/// Global Planart visibility ∩ representation mode.
+pub fn component_is_visible(
+    config: &DisplayConfig,
+    kind: WallComponentKind,
+    mode: RepresentationMode,
+) -> bool {
+    if !mode.allows(kind) {
+        return false;
+    }
+    config.component_visibility.get(&kind).copied().unwrap_or(true)
+}
+
+/// Field-wise look: overlay.layer_props → layer-direct → material → default.
+pub fn resolve_layer_property_override(
+    config: &DisplayConfig,
+    style_id: &str,
+    layer_id: Uuid,
+    layer_direct: Option<&ComponentStyleOverride>,
+    material: Option<&Material>,
+) -> ComponentStyleOverride {
+    let overlay = config
+        .style_overlays
+        .get(style_id)
+        .and_then(|o| o.layer_props.get(&layer_id));
+    let mut out = ComponentStyleOverride::default();
+    let pick = |overlay: Option<&str>, direct: Option<&str>, mat: Option<&str>| {
+        overlay
+            .filter(|s| !s.is_empty())
+            .map(|s| s.to_string())
+            .or_else(|| direct.filter(|s| !s.is_empty()).map(|s| s.to_string()))
+            .or_else(|| mat.filter(|s| !s.is_empty()).map(|s| s.to_string()))
+    };
+    out.line_type = pick(
+        overlay.and_then(|o| o.line_type.as_deref()),
+        layer_direct.and_then(|d| d.line_type.as_deref()),
+        material.map(|m| m.line_type.as_str()),
+    );
+    out.line_color = overlay
+        .and_then(|o| o.line_color)
+        .or_else(|| layer_direct.and_then(|d| d.line_color));
+    out.hatch_pattern = pick(
+        overlay.and_then(|o| o.hatch_pattern.as_deref()),
+        layer_direct.and_then(|d| d.hatch_pattern.as_deref()),
+        material.map(|m| m.hatch_pattern.as_str()),
+    );
+    out.hatch_color = overlay
+        .and_then(|o| o.hatch_color)
+        .or_else(|| layer_direct.and_then(|d| d.hatch_color))
+        .or_else(|| material.and_then(|m| m.hatch_color));
+    out.hatch_scale = overlay
+        .and_then(|o| o.hatch_scale)
+        .or_else(|| layer_direct.and_then(|d| d.hatch_scale))
+        .or_else(|| material.map(|m| m.hatch_scale));
+    if let Some(s) = out.hatch_scale {
+        if s <= 0.0 {
+            out.hatch_scale = Some(0.01);
+        }
+    }
+    out.fill_color = overlay
+        .and_then(|o| o.fill_color)
+        .or_else(|| layer_direct.and_then(|d| d.fill_color));
+    out.hatch_angle = overlay
+        .and_then(|o| o.hatch_angle)
+        .or_else(|| layer_direct.and_then(|d| d.hatch_angle))
+        .or_else(|| material.map(|m| m.hatch_angle));
+    out.hatch_angle_relative = overlay
+        .and_then(|o| o.hatch_angle_relative)
+        .or_else(|| layer_direct.and_then(|d| d.hatch_angle_relative))
+        .or_else(|| material.map(|m| m.hatch_angle_relative));
+    out.cad_layer = pick(
+        overlay.and_then(|o| o.cad_layer.as_deref()),
+        layer_direct.and_then(|d| d.cad_layer.as_deref()),
+        None,
+    );
+    out
+}
+
+/// Phase extras apply only to 2D overall contour lines, never hatch/layers.
+pub fn phase_style_for_slot(
+    extra: Option<&ComponentStyleOverride>,
+    slot: WallComponentSlot,
+) -> Option<&ComponentStyleOverride> {
+    if slot == WallComponentSlot::Contour2D {
+        extra
+    } else {
+        None
+    }
+}
+
+/// Copy-on-Write into the standard library must not take Planart overlays.
+pub fn wall_style_without_display_profiles(mut style: WallStyle) -> WallStyle {
+    style.display_profiles.clear();
+    style
+}
+
+/// Fold a Planart style overlay into a `ComponentRuleSet` used by regen.
+pub fn merge_style_overlay_into_rules(rules: &mut ComponentRuleSet, overlay: &StyleDisplayOverlay) {
+    for (layer_id, props) in &overlay.layer_props {
+        if let Some(existing) = rules
+            .layer_style_override
+            .iter_mut()
+            .find(|lso| lso.layer.layer_id == Some(*layer_id))
+        {
+            existing.style = merge_override_fields(props, &existing.style);
+        } else {
+            rules.layer_style_override.push(LayerStyleOverride {
+                layer: LayerRef {
+                    material_id: String::new(),
+                    role_tag: None,
+                    index: 0,
+                    layer_id: Some(*layer_id),
+                },
+                style: props.clone(),
+            });
+        }
+    }
+    if let Some(ids) = &overlay.contour_layers {
+        rules.layer_filter.insert(
+            WallComponentSlot::Contour2D.key().to_string(),
+            LayerSelection::Explicit(
+                ids.iter()
+                    .map(|id| LayerRef {
+                        material_id: String::new(),
+                        role_tag: None,
+                        index: 0,
+                        layer_id: Some(*id),
+                    })
+                    .collect(),
+            ),
+        );
+    }
+    if let Some(ch) = &overlay.contour_hatch {
+        merge_contour_hatch_into_rules(rules, ch);
+    }
+}
+
+fn merge_contour_hatch_into_rules(rules: &mut ComponentRuleSet, hatch: &ComponentStyleOverride) {
+    let slot = WallComponentSlot::ContourHatch2D.key().to_string();
+    rules
+        .style_override
+        .entry(slot)
+        .or_default()
+        .overlay_from(hatch);
+}
+
+fn merge_override_fields(
+    overlay: &ComponentStyleOverride,
+    base: &ComponentStyleOverride,
+) -> ComponentStyleOverride {
+    ComponentStyleOverride {
+        line_type: overlay.line_type.clone().or_else(|| base.line_type.clone()),
+        line_color: overlay.line_color.or(base.line_color),
+        hatch_pattern: overlay
+            .hatch_pattern
+            .clone()
+            .or_else(|| base.hatch_pattern.clone()),
+        hatch_color: overlay.hatch_color.or(base.hatch_color),
+        hatch_scale: overlay.hatch_scale.or(base.hatch_scale),
+        fill_color: overlay.fill_color.or(base.fill_color),
+        hatch_angle: overlay.hatch_angle.or(base.hatch_angle),
+        hatch_angle_relative: overlay.hatch_angle_relative.or(base.hatch_angle_relative),
+        cad_layer: overlay.cad_layer.clone().or_else(|| base.cad_layer.clone()),
+    }
+}
+
+fn overlay_from_legacy_rules(rules: &ComponentRuleSet) -> StyleDisplayOverlay {
+    let mut overlay = StyleDisplayOverlay::default();
+    for lso in &rules.layer_style_override {
+        if let Some(id) = lso.layer.layer_id {
+            overlay.layer_props.insert(id, lso.style.clone());
+        }
+    }
+    if let Some(LayerSelection::Explicit(refs)) = rules.layer_filter.get(WallComponentSlot::Contour2D.key())
+    {
+        let ids: Vec<Uuid> = refs.iter().filter_map(|r| r.layer_id).collect();
+        if !ids.is_empty() {
+            overlay.contour_layers = Some(ids);
+        }
+    }
+    overlay
+}
+
+fn visibility_from_legacy_rules(rules: &ComponentRuleSet) -> std::collections::HashMap<WallComponentKind, bool> {
+    let mut map = std::collections::HashMap::new();
+    for slot in [
+        WallComponentSlot::AxisLine,
+        WallComponentSlot::Layers2D,
+        WallComponentSlot::LayerHatch2D,
+        WallComponentSlot::Contour2D,
+        WallComponentSlot::ContourHatch2D,
+        WallComponentSlot::Solid3D,
+        WallComponentSlot::SurfaceStyle3D,
+    ] {
+        if let Some(kind) = WallComponentKind::from_slot(slot) {
+            if let Some(&vis) = rules.visibility.get(slot.key()) {
+                map.insert(kind, vis);
+            }
+        }
+    }
+    map
+}
+
+/// Move name-keyed `WallStyle.display_profiles` onto Planart UUID overlays.
+pub fn migrate_display_profiles_into_planarts(
+    configs: &mut [DisplayConfig],
+    styles: &mut [WallStyle],
+) {
+    for style in styles.iter_mut() {
+        if style.display_profiles.is_empty() {
+            continue;
+        }
+        let profiles = std::mem::take(&mut style.display_profiles);
+        for (name, rules) in profiles {
+            let Some(cfg) = configs.iter_mut().find(|c| c.name == name) else {
+                continue;
+            };
+            if cfg.component_visibility.is_empty() {
+                cfg.component_visibility = visibility_from_legacy_rules(&rules);
+            }
+            let overlay = overlay_from_legacy_rules(&rules);
+            if overlay.layer_props.is_empty()
+                && overlay.contour_layers.is_none()
+                && overlay.layer_visibility.is_empty()
+            {
+                continue;
+            }
+            cfg.style_overlays
+                .insert(style.style.id.clone(), overlay);
+        }
+    }
+}
+
 /// Checks whether copying `wall_style` into `target` would collide.
 pub fn wall_style_copy_conflict(target: &StyleLibrary, wall_style: &WallStyle) -> CopyConflict {
     if let Some(existing) = target
@@ -345,7 +625,7 @@ pub fn seed_default_library() -> StyleLibrary {
     };
     let wood = Material {
         category: Some("Holz".to_string()),
-        hatch_color: Some(0xA67C52),
+        hatch_color: Some(acadrust::types::Color::Rgb { r: 166, g: 124, b: 82 }),
         hatch_scale: 0.5,
         ..Material::new(
             "mat_wood".to_string(),
@@ -357,7 +637,7 @@ pub fn seed_default_library() -> StyleLibrary {
     };
     let drywall = Material {
         category: Some("Trockenbau".to_string()),
-        hatch_color: Some(0xE8E8E0),
+        hatch_color: Some(acadrust::types::Color::Rgb { r: 232, g: 232, b: 224 }),
         hatch_scale: 1.0,
         ..Material::new(
             "mat_drywall".to_string(),
@@ -369,7 +649,7 @@ pub fn seed_default_library() -> StyleLibrary {
     };
     let steel = Material {
         category: Some("Metall".to_string()),
-        hatch_color: Some(0x4A5568),
+        hatch_color: Some(acadrust::types::Color::Rgb { r: 74, g: 85, b: 104 }),
         hatch_scale: 1.5,
         ..Material::new(
             "mat_steel".to_string(),
@@ -381,7 +661,7 @@ pub fn seed_default_library() -> StyleLibrary {
     };
     let glass = Material {
         category: Some("Verglasung".to_string()),
-        hatch_color: Some(0xA8D4E8),
+        hatch_color: Some(acadrust::types::Color::Rgb { r: 168, g: 212, b: 232 }),
         hatch_scale: 2.0,
         ..Material::new(
             "mat_glass".to_string(),
@@ -409,6 +689,7 @@ pub fn seed_default_library() -> StyleLibrary {
             layer_override: None,
             hatch_override: None,
             role_tag: Some("Tragschale".to_string()),
+            layer_id: Uuid::new_v4(),
         }],
     display_profiles: std::collections::HashMap::new(),
     };
@@ -430,6 +711,7 @@ pub fn seed_default_library() -> StyleLibrary {
             layer_override: None,
             hatch_override: Some("AR-CONC".to_string()),
             role_tag: Some("Tragschale".to_string()),
+            layer_id: Uuid::new_v4(),
         }],
     display_profiles: std::collections::HashMap::new(),
     };
@@ -452,6 +734,7 @@ pub fn seed_default_library() -> StyleLibrary {
                 layer_override: None,
                 hatch_override: None,
                 role_tag: Some("Innenputz".to_string()),
+                layer_id: Uuid::new_v4(),
             },
             Layer {
                 material_id: masonry.id.clone(),
@@ -463,6 +746,7 @@ pub fn seed_default_library() -> StyleLibrary {
                 layer_override: None,
                 hatch_override: None,
                 role_tag: Some("Tragschale".to_string()),
+                layer_id: Uuid::new_v4(),
             },
             Layer {
                 material_id: insulation.id.clone(),
@@ -474,6 +758,7 @@ pub fn seed_default_library() -> StyleLibrary {
                 layer_override: None,
                 hatch_override: Some("ANSI37".to_string()),
                 role_tag: Some("Daemmschicht".to_string()),
+                layer_id: Uuid::new_v4(),
             },
             Layer {
                 material_id: plaster.id.clone(),
@@ -485,6 +770,7 @@ pub fn seed_default_library() -> StyleLibrary {
                 layer_override: Some("A-WALL-FINISH".to_string()),
                 hatch_override: None,
                 role_tag: Some("Aussenputz".to_string()),
+                layer_id: Uuid::new_v4(),
             },
         ],
     display_profiles: std::collections::HashMap::new(),
@@ -591,6 +877,12 @@ pub fn load_or_seed() -> StyleLibrary {
         if path.exists() {
             if let Ok(content) = std::fs::read_to_string(&path) {
                 if let Ok(lib) = from_toml(&content) {
+                    // Legacy files written before `Layer::layer_id` existed
+                    // get a freshly-migrated set of stable IDs assigned
+                    // in-memory (see `layers_from_serde`). Persist them back
+                    // immediately so subsequent loads return the *same*
+                    // IDs instead of re-randomizing them on every read.
+                    let _ = save_to_default_path(&lib);
                     return lib;
                 }
             }
@@ -613,10 +905,8 @@ pub struct DisplayConfigLibrary {
     /// List of available display configurations ("Plans").
     #[serde(default)]
     pub configs: Vec<DisplayConfig>,
-    /// Step 7 ("Auto-Maßstabskopplung an den Zeichnungsmaßstab"): the
-    /// "bei aktivem Zeichnungsmaßstab X automatisch `DisplayConfig` Y
-    /// vorschlagen/aktivieren" mapping table. Kept at the library (not the
-    /// single-config) granularity — see [`ScaleDisplayConfigMapping`].
+    /// Legacy scale→DisplayConfig mapping table. Kept for deserialization of
+    /// older project files; unused by the UI/runtime (feature removed).
     #[serde(default)]
     pub scale_display_config_mappings: Vec<ScaleDisplayConfigMapping>,
 }
@@ -650,42 +940,6 @@ impl DisplayConfigLibrary {
     pub fn find(&self, name: &str) -> Option<&DisplayConfig> {
         self.configs.iter().find(|c| c.name == name)
     }
-
-    /// Step 7: resolves the `DisplayConfig` mapped to `scale_name` (e.g.
-    /// `"1:50"`), matched case-insensitively against
-    /// [`ScaleDisplayConfigMapping::scale_name`], mirroring the
-    /// `eq_ignore_ascii_case` convention already used elsewhere for scale-
-    /// name comparisons. Returns `None` — never panics — when there is no
-    /// mapping for `scale_name`, or when the mapped `DisplayConfig` name no
-    /// longer exists in `configs` (graceful degradation).
-    pub fn resolve_display_config_for_scale(&self, scale_name: &str) -> Option<&DisplayConfig> {
-        let mapping = self
-            .scale_display_config_mappings
-            .iter()
-            .find(|m| m.scale_name.eq_ignore_ascii_case(scale_name))?;
-        self.find(&mapping.display_config_name)
-    }
-}
-
-/// Upserts a [`ScaleDisplayConfigMapping`] into an existing list (mirroring
-/// the [`crate::modules::aec::engine::display_component::upsert_style_substitution`]
-/// pattern): if `scale_name` already has a mapping, its target config name
-/// is replaced in place (preserving order); otherwise a new mapping is
-/// appended.
-pub fn upsert_scale_display_config_mapping(
-    existing: &[ScaleDisplayConfigMapping],
-    scale_name: String,
-    display_config_name: String,
-) -> Vec<ScaleDisplayConfigMapping> {
-    let mut result = existing.to_vec();
-    match result.iter().position(|m| m.scale_name == scale_name) {
-        Some(pos) => result[pos].display_config_name = display_config_name,
-        None => result.push(ScaleDisplayConfigMapping {
-            scale_name,
-            display_config_name,
-        }),
-    }
-    result
 }
 
 /// Serializes the display-config library to a string (JSON, see [`to_toml`]
@@ -849,6 +1103,7 @@ mod tests {
                     layer_override: None,
                     hatch_override: None,
                     role_tag: Some("Tragschale".to_string()),
+                    layer_id: Uuid::new_v4(),
                 },
                 Layer {
                     material_id: "mat1".to_string(),
@@ -860,6 +1115,7 @@ mod tests {
                     layer_override: None,
                     hatch_override: Some("ANSI31".to_string()),
                     role_tag: None,
+                    layer_id: Uuid::new_v4(),
                 },
             ],
         display_profiles: std::collections::HashMap::new(),
@@ -1112,7 +1368,7 @@ mod tests {
             .expect("Holz material");
         assert_eq!(wood.name, "Holz");
         assert_eq!(wood.category.as_deref(), Some("Holz"));
-        assert_eq!(wood.hatch_color, Some(0xA67C52));
+        assert_eq!(wood.hatch_color, Some(acadrust::types::Color::Rgb { r: 0xA6, g: 0x7C, b: 0x52 }));
         assert!((wood.hatch_scale - 0.5).abs() < 1e-12);
 
         let drywall = lib
@@ -1136,7 +1392,7 @@ mod tests {
             .find(|m| m.id == "mat_glass")
             .expect("Glas material");
         assert_eq!(glass.category.as_deref(), Some("Verglasung"));
-        assert_eq!(glass.hatch_color, Some(0xA8D4E8));
+        assert_eq!(glass.hatch_color, Some(acadrust::types::Color::Rgb { r: 0xA8, g: 0xD4, b: 0xE8 }));
     }
 
     #[test]
@@ -1158,13 +1414,13 @@ mod tests {
 
     #[test]
     fn display_config_library_roundtrip() {
-        use crate::modules::aec::engine::plan_view::{PlanPhase, ViewType};
+        use crate::modules::aec::engine::plan_view::{PlanningStage, ViewType};
 
         let mut lib = DisplayConfigLibrary::empty();
         let mut cfg = DisplayConfig::new(
             "Architekt 1:50".to_string(),
             "Architektur".to_string(),
-            PlanPhase::New,
+            PlanningStage::Design,
             ViewType::FloorPlan,
         );
         cfg.scale = Some(50.0);
@@ -1178,13 +1434,13 @@ mod tests {
 
     #[test]
     fn display_config_library_upsert_replaces_by_name() {
-        use crate::modules::aec::engine::plan_view::{PlanPhase, ViewType};
+        use crate::modules::aec::engine::plan_view::{PlanningStage, ViewType};
 
         let mut lib = DisplayConfigLibrary::empty();
         lib.upsert(DisplayConfig::new(
             "Statik 1:50".to_string(),
             "Statik".to_string(),
-            PlanPhase::Existing,
+            PlanningStage::Design,
             ViewType::Section,
         ));
         assert_eq!(lib.configs.len(), 1);
@@ -1192,7 +1448,7 @@ mod tests {
         let mut updated = DisplayConfig::new(
             "Statik 1:50".to_string(),
             "Statik (überarbeitet)".to_string(),
-            PlanPhase::New,
+            PlanningStage::Design,
             ViewType::Section,
         );
         updated.scale = Some(100.0);
@@ -1206,13 +1462,13 @@ mod tests {
 
     #[test]
     fn display_config_library_remove_by_name() {
-        use crate::modules::aec::engine::plan_view::{PlanPhase, ViewType};
+        use crate::modules::aec::engine::plan_view::{PlanningStage, ViewType};
 
         let mut lib = DisplayConfigLibrary::empty();
         lib.upsert(DisplayConfig::new(
             "Präsentation 1:200".to_string(),
             "Präsentation".to_string(),
-            PlanPhase::New,
+            PlanningStage::Design,
             ViewType::FloorPlan,
         ));
 
@@ -1232,13 +1488,15 @@ mod tests {
 
     #[test]
     fn display_config_library_scale_mappings_roundtrip() {
-        use crate::modules::aec::engine::plan_view::{PlanPhase, ScaleDisplayConfigMapping, ViewType};
+        use crate::modules::aec::engine::plan_view::{
+            PlanningStage, ScaleDisplayConfigMapping, ViewType,
+        };
 
         let mut lib = DisplayConfigLibrary::empty();
         lib.upsert(DisplayConfig::new(
             "Architekt 1:50".to_string(),
             "Architektur".to_string(),
-            PlanPhase::New,
+            PlanningStage::Design,
             ViewType::FloorPlan,
         ));
         lib.scale_display_config_mappings.push(ScaleDisplayConfigMapping {
@@ -1261,7 +1519,7 @@ mod tests {
                 {
                     "name": "Architekt 1:50",
                     "discipline": "Architektur",
-                    "phase": "New",
+                    "planning_stage": "Design",
                     "view_type": "FloorPlan"
                 }
             ]
@@ -1270,124 +1528,6 @@ mod tests {
             .expect("old-format library without scale mappings must still deserialize");
         assert_eq!(lib.configs.len(), 1);
         assert!(lib.scale_display_config_mappings.is_empty());
-    }
-
-    #[test]
-    fn resolve_display_config_for_scale_finds_exact_match() {
-        use crate::modules::aec::engine::plan_view::{PlanPhase, ScaleDisplayConfigMapping, ViewType};
-
-        let mut lib = DisplayConfigLibrary::empty();
-        lib.upsert(DisplayConfig::new(
-            "Architekt 1:50".to_string(),
-            "Architektur".to_string(),
-            PlanPhase::New,
-            ViewType::FloorPlan,
-        ));
-        lib.scale_display_config_mappings.push(ScaleDisplayConfigMapping {
-            scale_name: "1:50".to_string(),
-            display_config_name: "Architekt 1:50".to_string(),
-        });
-
-        let resolved = lib
-            .resolve_display_config_for_scale("1:50")
-            .expect("mapping should resolve");
-        assert_eq!(resolved.name, "Architekt 1:50");
-    }
-
-    #[test]
-    fn resolve_display_config_for_scale_is_case_insensitive() {
-        use crate::modules::aec::engine::plan_view::{PlanPhase, ScaleDisplayConfigMapping, ViewType};
-
-        let mut lib = DisplayConfigLibrary::empty();
-        lib.upsert(DisplayConfig::new(
-            "Statik".to_string(),
-            "Statik".to_string(),
-            PlanPhase::Existing,
-            ViewType::Section,
-        ));
-        // Scale names in practice are digits/colons, but the comparison
-        // itself must be `eq_ignore_ascii_case` regardless — verify with a
-        // deliberately mixed-case variant to exercise that code path.
-        lib.scale_display_config_mappings.push(ScaleDisplayConfigMapping {
-            scale_name: "1:50 A".to_string(),
-            display_config_name: "Statik".to_string(),
-        });
-
-        let resolved = lib.resolve_display_config_for_scale("1:50 a");
-        assert_eq!(resolved.map(|c| c.name.as_str()), Some("Statik"));
-    }
-
-    #[test]
-    fn resolve_display_config_for_scale_returns_none_without_mapping() {
-        let lib = DisplayConfigLibrary::empty();
-        assert!(lib.resolve_display_config_for_scale("1:50").is_none());
-    }
-
-    #[test]
-    fn resolve_display_config_for_scale_returns_none_for_dangling_reference() {
-        use crate::modules::aec::engine::plan_view::ScaleDisplayConfigMapping;
-
-        // Edge case ("Grenzwert") explicitly called out by the plan: the
-        // mapping references a `DisplayConfig` name that no longer exists.
-        let mut lib = DisplayConfigLibrary::empty();
-        lib.scale_display_config_mappings.push(ScaleDisplayConfigMapping {
-            scale_name: "1:50".to_string(),
-            display_config_name: "Nonexistent".to_string(),
-        });
-
-        assert!(lib.resolve_display_config_for_scale("1:50").is_none());
-    }
-
-    #[test]
-    fn upsert_scale_display_config_mapping_appends_new_scale() {
-        let existing = vec![ScaleDisplayConfigMapping {
-            scale_name: "1:50".to_string(),
-            display_config_name: "Architekt 1:50".to_string(),
-        }];
-        let result = upsert_scale_display_config_mapping(
-            &existing,
-            "1:100".to_string(),
-            "Architekt 1:100".to_string(),
-        );
-        assert_eq!(result.len(), 2);
-        assert_eq!(result[1].scale_name, "1:100");
-        assert_eq!(result[1].display_config_name, "Architekt 1:100");
-    }
-
-    #[test]
-    fn upsert_scale_display_config_mapping_overwrites_existing_scale_in_place() {
-        let existing = vec![
-            ScaleDisplayConfigMapping {
-                scale_name: "1:50".to_string(),
-                display_config_name: "Architekt 1:50".to_string(),
-            },
-            ScaleDisplayConfigMapping {
-                scale_name: "1:100".to_string(),
-                display_config_name: "Architekt 1:100".to_string(),
-            },
-        ];
-        let result = upsert_scale_display_config_mapping(
-            &existing,
-            "1:50".to_string(),
-            "Statik 1:50".to_string(),
-        );
-        assert_eq!(result.len(), 2);
-        assert_eq!(result[0].scale_name, "1:50");
-        assert_eq!(result[0].display_config_name, "Statik 1:50");
-        // Unrelated rows preserved.
-        assert_eq!(result[1].scale_name, "1:100");
-    }
-
-    #[test]
-    fn upsert_scale_display_config_mapping_on_empty_buffer_creates_first_row() {
-        let result = upsert_scale_display_config_mapping(
-            &[],
-            "1:20".to_string(),
-            "Detail 1:20".to_string(),
-        );
-        assert_eq!(result.len(), 1);
-        assert_eq!(result[0].scale_name, "1:20");
-        assert_eq!(result[0].display_config_name, "Detail 1:20");
     }
 
     #[test]
@@ -1478,5 +1618,357 @@ mod tests {
             wall_style_copy_conflict(&target, &style_b),
             CopyConflict::DifferentContentCollision
         );
+    }
+
+    #[test]
+    fn build_effective_rule_set_session_3d_hides_2d_slots() {
+        let mut cfg = DisplayConfig::new(
+            "Entwurf".into(),
+            "Architektur".into(),
+            crate::modules::aec::engine::plan_view::PlanningStage::Design,
+            crate::modules::aec::engine::plan_view::ViewType::FloorPlan,
+        );
+        cfg.default_representation = RepresentationMode::All;
+        let rules = build_effective_rule_set(&cfg, None, Some(RepresentationMode::ThreeD));
+        assert!(!rules.is_visible(WallComponentSlot::Layers2D));
+        assert!(!rules.is_visible(WallComponentSlot::Contour2D));
+        assert!(rules.is_visible(WallComponentSlot::Solid3D));
+    }
+
+    #[test]
+    fn viewport_3d_hides_2d_components_including_hatch() {
+        let mut cfg = DisplayConfig::new(
+            "Entwurf".into(),
+            "Architektur".into(),
+            crate::modules::aec::engine::plan_view::PlanningStage::Design,
+            crate::modules::aec::engine::plan_view::ViewType::FloorPlan,
+        );
+        cfg.default_representation = RepresentationMode::TwoD;
+        let mode = effective_representation(&cfg, Some(RepresentationMode::ThreeD));
+        assert!(!component_is_visible(&cfg, WallComponentKind::Layers2D, mode));
+        assert!(!component_is_visible(&cfg, WallComponentKind::LayerHatch2D, mode));
+        assert!(component_is_visible(&cfg, WallComponentKind::Layers3D, mode));
+    }
+
+    #[test]
+    fn session_all_shows_3d_even_if_planart_hides_layers3d() {
+        let mut cfg = DisplayConfig::new(
+            "Entwurf".into(),
+            "Architektur".into(),
+            crate::modules::aec::engine::plan_view::PlanningStage::Design,
+            crate::modules::aec::engine::plan_view::ViewType::FloorPlan,
+        );
+        cfg.default_representation = RepresentationMode::TwoD;
+        cfg.component_visibility
+            .insert(WallComponentKind::Layers3D, false);
+        cfg.component_visibility
+            .insert(WallComponentKind::SurfaceStyle3D, false);
+        let rules = build_effective_rule_set(&cfg, None, Some(RepresentationMode::All));
+        assert!(rules.is_visible(WallComponentSlot::Solid3D));
+        assert!(rules.is_visible(WallComponentSlot::SurfaceStyle3D));
+        assert!(rules.is_visible(WallComponentSlot::Layers2D));
+        let rules_3d = build_effective_rule_set(&cfg, None, Some(RepresentationMode::ThreeD));
+        assert!(rules_3d.is_visible(WallComponentSlot::Solid3D));
+        assert!(!rules_3d.is_visible(WallComponentSlot::Layers2D));
+    }
+
+    #[test]
+    fn session_3d_overrides_hidden_solid_in_display_profiles() {
+        use crate::modules::aec::engine::display_component::ComponentRuleSet;
+        use crate::modules::aec::engine::wall_style::WallStyle;
+        let mut cfg = DisplayConfig::new(
+            "Entwurf".into(),
+            "Architektur".into(),
+            crate::modules::aec::engine::plan_view::PlanningStage::Design,
+            crate::modules::aec::engine::plan_view::ViewType::FloorPlan,
+        );
+        cfg.default_representation = RepresentationMode::TwoD;
+        let mut style = WallStyle {
+            style: Style {
+                id: "s".to_string(),
+                name: "S".to_string(),
+                object_kind: "Wall".to_string(),
+                parent_style_id: None,
+            },
+            layers: vec![],
+            display_profiles: std::collections::HashMap::new(),
+        };
+        let mut profile = ComponentRuleSet::default();
+        profile
+            .visibility
+            .insert(WallComponentSlot::Solid3D.key().to_string(), false);
+        style
+            .display_profiles
+            .insert("Entwurf".into(), profile);
+        let rules = build_effective_rule_set(&cfg, Some(&style), Some(RepresentationMode::ThreeD));
+        assert!(rules.is_visible(WallComponentSlot::Solid3D));
+        assert!(!rules.is_visible(WallComponentSlot::Layers2D));
+        let rules_2d = build_effective_rule_set(&cfg, Some(&style), Some(RepresentationMode::TwoD));
+        assert!(!rules_2d.is_visible(WallComponentSlot::Solid3D));
+        assert!(rules_2d.is_visible(WallComponentSlot::Layers2D));
+    }
+
+    #[test]
+    fn planart_can_show_layers2d_without_layer_hatch() {
+        let mut cfg = DisplayConfig::new(
+            "Statik".into(),
+            "Statik".into(),
+            crate::modules::aec::engine::plan_view::PlanningStage::Design,
+            crate::modules::aec::engine::plan_view::ViewType::FloorPlan,
+        );
+        cfg.component_visibility
+            .insert(WallComponentKind::Layers2D, true);
+        cfg.component_visibility
+            .insert(WallComponentKind::LayerHatch2D, false);
+        let mode = RepresentationMode::All;
+        assert!(component_is_visible(&cfg, WallComponentKind::Layers2D, mode));
+        assert!(!component_is_visible(
+            &cfg,
+            WallComponentKind::LayerHatch2D,
+            mode
+        ));
+    }
+
+    #[test]
+    fn field_override_color_keeps_material_hatch() {
+        let layer_id = Uuid::new_v4();
+        let mut cfg = DisplayConfig::new(
+            "A".into(),
+            "Arch".into(),
+            crate::modules::aec::engine::plan_view::PlanningStage::Design,
+            crate::modules::aec::engine::plan_view::ViewType::FloorPlan,
+        );
+        let mut overlay = StyleDisplayOverlay::default();
+        overlay.layer_props.insert(
+            layer_id,
+            ComponentStyleOverride {
+                line_color: Some(acadrust::types::Color::Rgb { r: 255, g: 0, b: 0 }),
+                ..Default::default()
+            },
+        );
+        cfg.style_overlays.insert("style1".into(), overlay);
+        let mat = Material::new(
+            "m".into(),
+            "M".into(),
+            "ANSI31".into(),
+            0x111111,
+            "Continuous".into(),
+        );
+        let resolved = resolve_layer_property_override(&cfg, "style1", layer_id, None, Some(&mat));
+        assert_eq!(
+            resolved.line_color,
+            Some(acadrust::types::Color::Rgb { r: 255, g: 0, b: 0 })
+        );
+        assert_eq!(resolved.hatch_pattern.as_deref(), Some("ANSI31"));
+    }
+
+    #[test]
+    fn field_override_hatch_scale_keeps_material_pattern() {
+        let layer_id = Uuid::new_v4();
+        let mut cfg = DisplayConfig::new(
+            "A".into(),
+            "Arch".into(),
+            crate::modules::aec::engine::plan_view::PlanningStage::Design,
+            crate::modules::aec::engine::plan_view::ViewType::FloorPlan,
+        );
+        let mut overlay = StyleDisplayOverlay::default();
+        overlay.layer_props.insert(
+            layer_id,
+            ComponentStyleOverride {
+                hatch_scale: Some(2.5),
+                ..Default::default()
+            },
+        );
+        cfg.style_overlays.insert("style1".into(), overlay);
+        let mut mat = Material::new(
+            "m".into(),
+            "M".into(),
+            "ANSI31".into(),
+            0x111111,
+            "Continuous".into(),
+        );
+        mat.hatch_scale = 1.0;
+        let resolved = resolve_layer_property_override(&cfg, "style1", layer_id, None, Some(&mat));
+        assert_eq!(resolved.hatch_scale, Some(2.5));
+        assert_eq!(resolved.hatch_pattern.as_deref(), Some("ANSI31"));
+    }
+
+    #[test]
+    fn contour_hatch_on_planart_merges_into_contour_hatch2d_slot() {
+        let mut cfg = DisplayConfig::new(
+            "A".into(),
+            "Arch".into(),
+            crate::modules::aec::engine::plan_view::PlanningStage::Design,
+            crate::modules::aec::engine::plan_view::ViewType::FloorPlan,
+        );
+        // Global Planart hatch must not apply; only per-style overlay.
+        cfg.contour_hatch = Some(ComponentStyleOverride {
+            hatch_pattern: Some("SOLID".into()),
+            hatch_scale: Some(9.0),
+            ..Default::default()
+        });
+        let mut overlay = StyleDisplayOverlay::default();
+        overlay.contour_hatch = Some(ComponentStyleOverride {
+            hatch_pattern: Some("ANSI31".into()),
+            hatch_scale: Some(2.0),
+            ..Default::default()
+        });
+        cfg.style_overlays.insert("s".into(), overlay);
+        let style = WallStyle {
+            style: Style {
+                id: "s".to_string(),
+                name: "S".to_string(),
+                object_kind: "Wall".to_string(),
+                parent_style_id: None,
+            },
+            layers: vec![],
+            display_profiles: std::collections::HashMap::new(),
+        };
+        let rules = build_effective_rule_set(&cfg, Some(&style), None);
+        let ov = rules
+            .style_for(WallComponentSlot::ContourHatch2D)
+            .expect("contour hatch slot");
+        assert_eq!(ov.hatch_pattern.as_deref(), Some("ANSI31"));
+        assert_eq!(ov.hatch_scale, Some(2.0));
+        let without = build_effective_rule_set(&cfg, None, None);
+        assert!(without.style_for(WallComponentSlot::ContourHatch2D).is_none());
+    }
+
+    #[test]
+    fn merge_overlay_hatch_scale_into_rules() {
+        let layer_id = Uuid::new_v4();
+        let mut overlay = StyleDisplayOverlay::default();
+        overlay.layer_props.insert(
+            layer_id,
+            ComponentStyleOverride {
+                hatch_scale: Some(3.0),
+                ..Default::default()
+            },
+        );
+        let mut rules = ComponentRuleSet::default();
+        merge_style_overlay_into_rules(&mut rules, &overlay);
+        assert_eq!(
+            rules
+                .layer_style_override
+                .iter()
+                .find(|l| l.layer.layer_id == Some(layer_id))
+                .and_then(|l| l.style.hatch_scale),
+            Some(3.0)
+        );
+    }
+
+    #[test]
+    fn phase_style_only_on_contour2d() {
+        let ov = ComponentStyleOverride {
+            line_type: Some("Dashed".into()),
+            ..Default::default()
+        };
+        assert!(phase_style_for_slot(Some(&ov), WallComponentSlot::Contour2D).is_some());
+        assert!(phase_style_for_slot(Some(&ov), WallComponentSlot::ContourHatch2D).is_none());
+        assert!(phase_style_for_slot(Some(&ov), WallComponentSlot::Layers2D).is_none());
+    }
+
+    #[test]
+    fn copy_to_standard_strips_display_profiles() {
+        let mut style = WallStyle {
+            style: Style {
+                id: "style1".into(),
+                name: "S".into(),
+                object_kind: "Wall".into(),
+                parent_style_id: None,
+            },
+            layers: vec![],
+            display_profiles: std::collections::HashMap::new(),
+        };
+        style
+            .display_profiles
+            .insert("Architekt".into(), ComponentRuleSet::default());
+        let stripped = wall_style_without_display_profiles(style);
+        assert!(stripped.display_profiles.is_empty());
+    }
+
+    #[test]
+    fn migrate_name_keyed_profiles_onto_planart_overlays() {
+        let layer_id = Uuid::new_v4();
+        let cfg = DisplayConfig::new(
+            "Architekt 1:50".into(),
+            "Arch".into(),
+            crate::modules::aec::engine::plan_view::PlanningStage::Design,
+            crate::modules::aec::engine::plan_view::ViewType::FloorPlan,
+        );
+        let id_before = cfg.id;
+        let mut rules = ComponentRuleSet::default();
+        rules.visibility.insert("LayerHatch2D".into(), false);
+        rules.layer_style_override.push(
+            crate::modules::aec::engine::display_component::LayerStyleOverride {
+                layer: crate::modules::aec::engine::join::LayerRef {
+                    material_id: "m".into(),
+                    role_tag: None,
+                    index: 0,
+                    layer_id: Some(layer_id),
+                },
+                style: ComponentStyleOverride {
+                    line_color: Some(acadrust::types::Color::Rgb { r: 1, g: 2, b: 3 }),
+                    ..Default::default()
+                },
+            },
+        );
+        let mut style = WallStyle {
+            style: Style {
+                id: "style1".into(),
+                name: "S".into(),
+                object_kind: "Wall".into(),
+                parent_style_id: None,
+            },
+            layers: vec![],
+            display_profiles: std::collections::HashMap::new(),
+        };
+        style
+            .display_profiles
+            .insert("Architekt 1:50".into(), rules);
+        let mut configs = vec![cfg];
+        let mut styles = vec![style];
+        migrate_display_profiles_into_planarts(&mut configs, &mut styles);
+        assert_eq!(configs[0].id, id_before);
+        assert!(styles[0].display_profiles.is_empty());
+        assert_eq!(
+            configs[0]
+                .component_visibility
+                .get(&WallComponentKind::LayerHatch2D)
+                .copied(),
+            Some(false)
+        );
+        assert_eq!(
+            configs[0]
+                .style_overlays
+                .get("style1")
+                .and_then(|o| o.layer_props.get(&layer_id))
+                .and_then(|p| p.line_color),
+            Some(acadrust::types::Color::Rgb { r: 1, g: 2, b: 3 })
+        );
+        configs[0].name = "Renamed".into();
+        assert!(configs[0].style_overlays.contains_key("style1"));
+    }
+
+    #[test]
+    fn overlay_unknown_layer_id_is_ignored_by_resolver() {
+        let mut cfg = DisplayConfig::new(
+            "A".into(),
+            "A".into(),
+            crate::modules::aec::engine::plan_view::PlanningStage::Design,
+            crate::modules::aec::engine::plan_view::ViewType::FloorPlan,
+        );
+        let mut overlay = StyleDisplayOverlay::default();
+        overlay.layer_props.insert(
+            Uuid::new_v4(),
+            ComponentStyleOverride {
+                line_type: Some("Hidden".into()),
+                ..Default::default()
+            },
+        );
+        cfg.style_overlays.insert("style1".into(), overlay);
+        let other = Uuid::new_v4();
+        let resolved = resolve_layer_property_override(&cfg, "style1", other, None, None);
+        assert!(resolved.line_type.is_none());
     }
 }

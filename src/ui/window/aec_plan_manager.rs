@@ -12,21 +12,26 @@
 //! style-centered on `WallStyle::display_profiles`, edited in the Wandstil-
 //! Manager instead (see `aec_wall_style_manager.rs`).
 
+use std::collections::HashMap;
+
 use iced::widget::{button, column, container, pick_list, row, scrollable, text, text_input, Space};
 use iced::{Element, Fill};
+use uuid::Uuid;
 
 use crate::app::Message;
-use crate::modules::aec::engine::display_component::ComponentStyleOverride;
+use crate::modules::aec::engine::display_component::{
+    ComponentStyleOverride, RepresentationMode, StyleDisplayOverlay, WallComponentKind,
+};
 use crate::modules::aec::engine::library::DisplayConfigLibrary;
-use crate::modules::aec::engine::plan_view::{DisplayConfig, PlanPhase, ViewType};
+use crate::modules::aec::engine::plan_view::{DisplayConfig, PlanPhase, PlanningStage, ViewType};
 use crate::t;
 use super::aec_ui_util::*;
 
-fn phase_label(phase: &PlanPhase) -> &'static str {
-    match phase {
-        PlanPhase::Existing => "Bestand",
-        PlanPhase::Demolition => "Abbruch",
-        PlanPhase::New => "Neubau",
+fn planning_stage_label(stage: &PlanningStage) -> &'static str {
+    match stage {
+        PlanningStage::Permit => "Genehmigungsplanung",
+        PlanningStage::Design => "Entwurfsplanung",
+        PlanningStage::Execution => "Ausführungsplanung",
     }
 }
 
@@ -38,16 +43,20 @@ fn view_type_label(view_type: &ViewType) -> &'static str {
     }
 }
 
-const PHASE_LABELS: [&str; 3] = ["Bestand", "Abbruch", "Neubau"];
+const PLANNING_STAGE_LABELS: [&str; 3] = [
+    "Genehmigungsplanung",
+    "Entwurfsplanung",
+    "Ausführungsplanung",
+];
 const VIEW_TYPE_LABELS: [&str; 3] = ["Grundriss", "Schnitt", "Ansicht"];
 
-/// Parses a phase label (as produced by [`phase_label`]) back into a
-/// [`PlanPhase`], defaulting to `New` for anything unrecognized.
-pub fn phase_from_label(label: &str) -> PlanPhase {
+/// Parses a planning stage label (as produced by [`planning_stage_label`]) back
+/// into a [`PlanningStage`], defaulting to `Design` for anything unrecognized.
+pub fn planning_stage_from_label(label: &str) -> PlanningStage {
     match label {
-        "Bestand" => PlanPhase::Existing,
-        "Abbruch" => PlanPhase::Demolition,
-        _ => PlanPhase::New,
+        "Genehmigungsplanung" => PlanningStage::Permit,
+        "Ausführungsplanung" => PlanningStage::Execution,
+        _ => PlanningStage::Design,
     }
 }
 
@@ -76,7 +85,7 @@ pub struct PlanConfigFormState<'a> {
     pub discipline: &'a str,
     /// Informative scale buffer (e.g. `"50"` for 1:50); purely informative.
     pub scale: &'a str,
-    pub phase: PlanPhase,
+    pub planning_stage: PlanningStage,
     pub view_type: ViewType,
     /// Two-stage Phasenfilter-Editor, Stage 1: which phases are currently
     /// checked as "sichtbar" (`PhaseFilter::visible_phases`).
@@ -87,37 +96,43 @@ pub struct PlanConfigFormState<'a> {
     pub demolition_style: StyleEditorFormState<'a>,
     /// Stage 2: the inline style-override form for `PhaseFilter::existing_style`.
     pub existing_style: StyleEditorFormState<'a>,
-    /// Step 7 Mapping Table UI: scale-name text field buffer.
-    pub new_mapping_scale: &'a str,
-    /// Step 7 Mapping Table UI: target-config pick-list buffer.
-    pub new_mapping_config: Option<&'a str>,
+    pub default_representation: RepresentationMode,
+    pub component_visibility: &'a HashMap<WallComponentKind, bool>,
+    /// `(style.id, style.name, layers as (layer_id, label))`.
+    pub wall_styles: &'a [(String, String, Vec<(Uuid, String)>)],
+    pub style_overlays: &'a HashMap<String, StyleDisplayOverlay>,
+    pub overlay_style_id: Option<&'a str>,
+    pub overlay_layer_id: Option<Uuid>,
+    pub overlay_line_type: &'a str,
+    pub overlay_line_color: &'a str,
+    pub overlay_hatch_pattern: &'a str,
+    pub overlay_hatch_color: &'a str,
+    pub overlay_hatch_scale: &'a str,
+    pub overlay_hatch_angle: &'a str,
+    pub overlay_hatch_angle_relative: Option<bool>,
+    pub overlay_fill_color: &'a str,
+    pub overlay_linetype_items: &'a [crate::ui::properties::LinetypeItem],
+    pub overlay_linetype_combo: &'a iced::widget::combo_box::State<crate::ui::properties::LinetypeItem>,
+    pub overlay_line_color_picker_open: bool,
+    pub overlay_hatch_picker_open: bool,
+    pub overlay_hatch_color_picker_open: bool,
+    pub overlay_fill_color_picker_open: bool,
+    pub contour_hatch_pattern: &'a str,
+    pub contour_hatch_color: &'a str,
+    pub contour_hatch_scale: &'a str,
+    pub contour_hatch_angle: &'a str,
+    pub contour_hatch_angle_relative: Option<bool>,
+    pub contour_hatch_picker_open: bool,
+    pub contour_hatch_color_picker_open: bool,
 }
 
-/// Two-stage Phasenfilter-Editor, Stage 2: edit-buffer fields for a single
-/// phase's `ComponentStyleOverride` overlay (`demolition_style`/`existing_style`).
-pub struct StyleEditorFormState<'a> {
-    pub line_type: &'a str,
-    /// All available line types in the document (name + ASCII art), used
-    /// by the same `combo_box`+preview widget as the Layer Manager.
-    pub linetype_items: &'a [crate::ui::properties::LinetypeItem],
-    /// `combo_box` state built from `linetype_items`.
-    pub linetype_combo: &'a iced::widget::combo_box::State<crate::ui::properties::LinetypeItem>,
-    /// Hex color text, e.g. `"FF0000"` (without leading `#`).
-    pub line_color: &'a str,
-    pub line_color_picker_open: bool,
-    pub hatch_pattern: &'a str,
-    pub hatch_color: &'a str,
-    pub hatch_color_picker_open: bool,
-    pub fill_color: &'a str,
-    pub fill_color_picker_open: bool,
-}
+pub use super::aec_ui_util::{StyleEditorFormState, style_editor_form};
 
 pub fn view_window<'a>(
     library: &'a DisplayConfigLibrary,
     selected_name: Option<&str>,
     filter: &str,
     form: PlanConfigFormState<'a>,
-    auto_display_config_from_scale: bool,
 ) -> Element<'a, Message> {
     let filter_lower = filter.to_lowercase();
     let filtered: Vec<&'a DisplayConfig> = library
@@ -139,7 +154,6 @@ pub fn view_window<'a>(
         }
     }
 
-    let auto_scale_checkbox_label = t!("Automatisch an Maßstab koppeln");
     let sidebar = column![
         row![
             text_input(t!("Search configs…").as_ref(), filter)
@@ -151,21 +165,10 @@ pub fn view_window<'a>(
                 .padding([4, 8]),
         ]
         .spacing(4),
-        // Step 7 ("Auto-Maßstabskopplung an den Zeichnungsmaßstab"): lets
-        // the user re-enable automatic scale→config coupling after a
-        // manual override (which disables it for the active tab).
-        iced::widget::checkbox(auto_display_config_from_scale)
-            .label(auto_scale_checkbox_label.into_owned())
-            .on_toggle(Message::AecAutoDisplayConfigFromScaleToggled)
-            .size(12)
-            .text_size(11),
         scrollable(master_list),
     ]
     .spacing(8)
     .width(220);
-
-    let nm_scale = form.new_mapping_scale;
-    let nm_config = form.new_mapping_config;
 
     let detail_content = if form.open {
         config_form_view(form)
@@ -178,13 +181,9 @@ pub fn view_window<'a>(
             .into()
     };
 
-    let mapping_section = mapping_table_section_view(library, nm_scale, nm_config);
-
-    let detail = scrollable(
-        column![detail_content, Space::new().height(24), mapping_section,].spacing(10),
-    )
-    .width(Fill)
-    .height(Fill);
+    let detail = scrollable(column![detail_content].spacing(10))
+        .width(Fill)
+        .height(Fill);
 
     row![sidebar, container(detail).width(Fill)]
         .spacing(10)
@@ -196,7 +195,7 @@ fn config_row<'a>(config: &'a DisplayConfig, selected: bool) -> Element<'a, Mess
     let subtitle = format!(
         "{} · {} · {}",
         config.discipline,
-        phase_label(&config.phase),
+        planning_stage_label(&config.planning_stage),
         view_type_label(&config.view_type)
     );
     button(
@@ -252,15 +251,6 @@ fn config_form_view<'a>(form: PlanConfigFormState<'a>) -> Element<'a, Message> {
         form.demolition_style,
         form.existing_style,
     );
-    let overrides_hint = container(
-        text(t!(
-            "Hinweis: Darstellungs-Overrides (Sichtbarkeit, Stil-Override, Schicht-Filter je Slot) werden nicht mehr hier, sondern im Wandstil-Manager je Stil und Planart gepflegt (WallStyle.display_profiles)."
-        ))
-        .size(10)
-        .style(muted),
-    )
-    .padding(6)
-    .style(container::bordered_box);
 
     column![
         text(form_title).size(13),
@@ -290,11 +280,15 @@ fn config_form_view<'a>(form: PlanConfigFormState<'a>) -> Element<'a, Message> {
         ]
         .spacing(8),
         row![
-            text(t!("Phase")).size(10).style(muted).width(100),
-            pick_list(Some(phase_label(&form.phase)), &PHASE_LABELS[..], |label: &&str| {
-                label.to_string()
-            })
-            .on_select(|label| Message::AecPlanManagerPhaseChanged(phase_from_label(label)))
+            text(t!("Planungsstufe")).size(10).style(muted).width(100),
+            pick_list(
+                Some(planning_stage_label(&form.planning_stage)),
+                &PLANNING_STAGE_LABELS[..],
+                |label: &&str| label.to_string(),
+            )
+            .on_select(|label| Message::AecPlanManagerPlanningStageChanged(
+                planning_stage_from_label(label)
+            ))
             .text_size(11)
             .width(160),
         ]
@@ -312,8 +306,11 @@ fn config_form_view<'a>(form: PlanConfigFormState<'a>) -> Element<'a, Message> {
         ]
         .spacing(8),
         Space::new().height(6),
+        global_display_section(form.default_representation, form.component_visibility),
+        Space::new().height(6),
+        overlay_section_view(&form),
+        Space::new().height(6),
         phase_filter_section,
-        overrides_hint,
         Space::new(),
         actions,
     ]
@@ -335,22 +332,424 @@ fn style_override_summary(style: Option<&ComponentStyleOverride>) -> String {
         parts.push(line_type.to_string());
     }
     if let Some(color) = style.line_color {
-        parts.push(format!("#{color:06X}"));
+        parts.push(format!(
+            "#{}",
+            super::aec_ui_util::acad_color_to_editor_string(color)
+        ));
     }
     if let Some(pattern) = style.hatch_pattern.as_deref() {
         parts.push(pattern.to_string());
     }
     if let Some(color) = style.hatch_color {
-        parts.push(format!("Hatch #{color:06X}"));
+        parts.push(format!(
+            "Hatch #{}",
+            super::aec_ui_util::acad_color_to_editor_string(color)
+        ));
     }
     if let Some(color) = style.fill_color {
-        parts.push(format!("Fill #{color:06X}"));
+        parts.push(format!(
+            "Fill #{}",
+            super::aec_ui_util::acad_color_to_editor_string(color)
+        ));
     }
     if parts.is_empty() {
         t!("Standard").into_owned()
     } else {
         parts.join(", ")
     }
+}
+
+fn kind_label(kind: WallComponentKind) -> &'static str {
+    match kind {
+        WallComponentKind::Axis => "Achse",
+        WallComponentKind::Layers2D => "2D-Schichten",
+        WallComponentKind::LayerHatch2D => "2D-Schichtschraffur",
+        WallComponentKind::Contour2D => "2D-Kontur",
+        WallComponentKind::ContourHatch2D => "2D-Konturschraffur",
+        WallComponentKind::Layers3D => "3D-Schichten",
+        WallComponentKind::SurfaceStyle3D => "3D-Oberfläche",
+    }
+}
+
+fn representation_label(mode: RepresentationMode) -> &'static str {
+    match mode {
+        RepresentationMode::TwoD => "2D",
+        RepresentationMode::ThreeD => "3D",
+        RepresentationMode::All => "Alle",
+    }
+}
+
+const REPRESENTATION_LABELS: [&str; 3] = ["2D", "3D", "Alle"];
+const HATCH_ANGLE_RELATIVE_LABELS: [&str; 3] = ["erben", "Relativ", "Absolut"];
+
+fn hatch_angle_relative_label(value: Option<bool>) -> &'static str {
+    match value {
+        None => "erben",
+        Some(true) => "Relativ",
+        Some(false) => "Absolut",
+    }
+}
+
+fn hatch_angle_relative_from_label(label: &str) -> Option<bool> {
+    match label {
+        "Relativ" => Some(true),
+        "Absolut" => Some(false),
+        _ => None,
+    }
+}
+
+fn representation_from_label(label: &str) -> RepresentationMode {
+    match label {
+        "2D" => RepresentationMode::TwoD,
+        "3D" => RepresentationMode::ThreeD,
+        _ => RepresentationMode::All,
+    }
+}
+
+fn global_display_section<'a>(
+    mode: RepresentationMode,
+    visibility: &'a HashMap<WallComponentKind, bool>,
+) -> Element<'a, Message> {
+    let mut kinds = column![text(t!("Komponenten sichtbar")).size(11)].spacing(4);
+    for kind in WallComponentKind::all() {
+        let checked = visibility.get(kind).copied().unwrap_or(true);
+        kinds = kinds.push(
+            iced::widget::checkbox(checked)
+                .label(kind_label(*kind).to_string())
+                .on_toggle(move |v| Message::AecPlanManagerComponentVisibleToggle(*kind, v))
+                .size(13)
+                .text_size(11),
+        );
+    }
+    container(
+        column![
+            text(t!("Globale Darstellung")).size(11),
+            row![
+                text(t!("Darstellung")).size(10).style(muted).width(100),
+                pick_list(
+                    Some(representation_label(mode)),
+                    &REPRESENTATION_LABELS[..],
+                    |label: &&str| label.to_string(),
+                )
+                .on_select(|label| {
+                    Message::AecPlanManagerRepresentationChanged(representation_from_label(label))
+                })
+                .text_size(11)
+                .width(120),
+            ]
+            .spacing(8),
+            kinds,
+        ]
+        .spacing(6),
+    )
+    .padding(8)
+    .style(container::bordered_box)
+    .into()
+}
+
+fn overlay_color_row<'a>(
+    label: impl iced::widget::text::IntoFragment<'a>,
+    buffer: &'a str,
+    picker_open: bool,
+    on_change: impl Fn(String) -> Message + 'static,
+    on_toggle: Message,
+    more: crate::app::ColorPickTarget,
+) -> Element<'a, Message> {
+    let color = editor_string_to_acad_color(buffer).unwrap_or(acadrust::types::Color::ByLayer);
+    row![
+        text(label).size(10).style(muted).width(110),
+        container(crate::ui::color_select::color_selector(
+            color,
+            picker_open,
+            crate::ui::color_select::ColorExtras::default(),
+            move |c| on_change(acad_color_to_editor_string(c)),
+            on_toggle,
+            Message::OpenColorWindow(more, color),
+        ))
+        .width(180),
+    ]
+    .spacing(8)
+    .into()
+}
+
+fn contour_hatch_section_view<'a>(form: &PlanConfigFormState<'a>) -> Element<'a, Message> {
+    column![
+            text(t!("2D-Gesamtkontur-Schraffur (dieser Wandstil)")).size(11),
+            text(t!("Leer = Material der äußeren Schichten.")).size(10).style(muted),
+            row![
+                text(t!("Schraffurmuster")).size(10).style(muted).width(110),
+                hatch_pattern_field(
+                    form.contour_hatch_pattern,
+                    form.contour_hatch_picker_open,
+                    Some("erben"),
+                    Message::AecPlanManagerContourHatchPickerToggle,
+                    Message::AecPlanManagerContourHatchPatternChanged,
+                ),
+            ]
+            .spacing(8),
+            overlay_color_row(
+                t!("Schraffurfarbe"),
+                form.contour_hatch_color,
+                form.contour_hatch_color_picker_open,
+                Message::AecPlanManagerContourHatchColorChanged,
+                Message::AecPlanManagerContourHatchColorPickerToggle,
+                crate::app::ColorPickTarget::AecPlanContourHatchColor,
+            ),
+            row![
+                text(t!("Schraffur-Skalierung")).size(10).style(muted).width(110),
+                text_input(t!("leer = erben").as_ref(), form.contour_hatch_scale)
+                    .on_input(Message::AecPlanManagerContourHatchScaleChanged)
+                    .size(11)
+                    .padding([4, 6])
+                    .width(120),
+            ]
+            .spacing(8),
+            row![
+                text(t!("Schraffurwinkel")).size(10).style(muted).width(110),
+                text_input(t!("leer = erben").as_ref(), form.contour_hatch_angle)
+                    .on_input(Message::AecPlanManagerContourHatchAngleChanged)
+                    .size(11)
+                    .padding([4, 6])
+                    .width(120),
+            ]
+            .spacing(8),
+            row![
+                text(t!("Relativ zur Wand")).size(10).style(muted).width(110),
+                pick_list(
+                    Some(hatch_angle_relative_label(form.contour_hatch_angle_relative)),
+                    &HATCH_ANGLE_RELATIVE_LABELS[..],
+                    |label: &&str| label.to_string(),
+                )
+                .on_select(|label| {
+                    Message::AecPlanManagerContourHatchAngleRelativeChanged(
+                        hatch_angle_relative_from_label(label),
+                    )
+                })
+                .text_size(11)
+                .width(120),
+            ]
+            .spacing(8),
+        ]
+        .spacing(6)
+        .into()
+}
+
+fn overlay_section_view<'a>(form: &PlanConfigFormState<'a>) -> Element<'a, Message> {
+    let overlay_style_ids: Vec<String> = form.style_overlays.keys().cloned().collect();
+    let mut exception_rows = column![].spacing(2);
+    if overlay_style_ids.is_empty() {
+        exception_rows = exception_rows.push(
+            text(t!("Keine Stil-Ausnahmen. Globalregeln gelten für alle Wände."))
+                .size(10)
+                .style(muted),
+        );
+    } else {
+        for sid in overlay_style_ids {
+            let label = form
+                .wall_styles
+                .iter()
+                .find(|(id, _, _)| id == &sid)
+                .map(|(_, name, _)| name.clone())
+                .unwrap_or_else(|| sid.clone());
+            let selected = form.overlay_style_id == Some(sid.as_str());
+            exception_rows = exception_rows.push(
+                button(text(label).size(11))
+                    .on_press(Message::AecPlanManagerOverlayStyleSelect(sid))
+                    .style(list_style(selected))
+                    .padding([4, 8])
+                    .width(Fill),
+            );
+        }
+    }
+
+    let mut add_row = row![text(t!("Ausnahme hinzufügen")).size(10).style(muted)].spacing(6);
+    let mut added_any = false;
+    for (id, name, _) in form.wall_styles.iter() {
+        if form.style_overlays.contains_key(id) {
+            continue;
+        }
+        added_any = true;
+        add_row = add_row.push(
+            button(text(name.clone()).size(10))
+                .padding([3, 8])
+                .on_press(Message::AecPlanManagerOverlayAddStyle(id.clone())),
+        );
+    }
+    if !added_any {
+        add_row = row![text(t!("Alle Stile haben bereits eine Ausnahme.")).size(10).style(muted)];
+    }
+
+    let layers: Vec<(Uuid, String)> = form
+        .overlay_style_id
+        .and_then(|sid| {
+            form.wall_styles
+                .iter()
+                .find(|(id, _, _)| id == sid)
+                .map(|(_, _, layers)| layers.clone())
+        })
+        .unwrap_or_default();
+    let mut layer_col = column![text(t!("Schicht")).size(11)].spacing(2);
+    if form.overlay_style_id.is_none() {
+        layer_col = layer_col.push(text(t!("Stil-Ausnahme wählen.")).size(10).style(muted));
+    } else if layers.is_empty() {
+        layer_col = layer_col.push(text(t!("Dieser Stil hat keine Schichten.")).size(10).style(muted));
+    } else {
+        for (i, (lid, label)) in layers.into_iter().enumerate() {
+            let selected = form.overlay_layer_id == Some(lid);
+            let shown = if label
+                .chars()
+                .next()
+                .map(|c| c.is_ascii_digit())
+                .unwrap_or(false)
+            {
+                label
+            } else {
+                format!("{} — {}", i + 1, label)
+            };
+            layer_col = layer_col.push(
+                button(text(shown).size(11))
+                    .on_press(Message::AecPlanManagerOverlayLayerSelect(lid))
+                    .style(list_style(selected))
+                    .padding([4, 8])
+                    .width(Fill),
+            );
+        }
+    }
+
+    let vis = form
+        .overlay_style_id
+        .and_then(|sid| form.style_overlays.get(sid))
+        .and_then(|o| form.overlay_layer_id.and_then(|lid| o.layer_visibility.get(&lid).copied()))
+        .unwrap_or_default();
+
+    let mut props = column![
+        text(t!("Feld-Overrides (leer = erben)")).size(11),
+        row![
+            text(t!("Linientyp")).size(10).style(muted).width(110),
+            linetype_field(
+                form.overlay_line_type,
+                form.overlay_linetype_items,
+                form.overlay_linetype_combo,
+                Message::AecPlanManagerOverlayLineTypeChanged,
+            ),
+        ]
+        .spacing(8),
+        overlay_color_row(
+            t!("Linienfarbe"),
+            form.overlay_line_color,
+            form.overlay_line_color_picker_open,
+            Message::AecPlanManagerOverlayLineColorChanged,
+            Message::AecPlanManagerOverlayLineColorPickerToggle,
+            crate::app::ColorPickTarget::AecPlanOverlayLineColor,
+        ),
+        row![
+            text(t!("Schraffurmuster")).size(10).style(muted).width(110),
+            hatch_pattern_field(
+                form.overlay_hatch_pattern,
+                form.overlay_hatch_picker_open,
+                Some("erben"),
+                Message::AecPlanManagerOverlayHatchPickerToggle,
+                Message::AecPlanManagerOverlayHatchPatternChanged,
+            ),
+        ]
+        .spacing(8),
+        overlay_color_row(
+            t!("Schraffurfarbe"),
+            form.overlay_hatch_color,
+            form.overlay_hatch_color_picker_open,
+            Message::AecPlanManagerOverlayHatchColorChanged,
+            Message::AecPlanManagerOverlayHatchColorPickerToggle,
+            crate::app::ColorPickTarget::AecPlanOverlayHatchColor,
+        ),
+        row![
+            text(t!("Schraffur-Skalierung")).size(10).style(muted).width(110),
+            text_input(t!("leer = erben").as_ref(), form.overlay_hatch_scale)
+                .on_input(Message::AecPlanManagerOverlayHatchScaleChanged)
+                .size(11)
+                .padding([4, 6])
+                .width(120),
+        ]
+        .spacing(8),
+        row![
+            text(t!("Schraffurwinkel")).size(10).style(muted).width(110),
+            text_input(t!("leer = erben").as_ref(), form.overlay_hatch_angle)
+                .on_input(Message::AecPlanManagerOverlayHatchAngleChanged)
+                .size(11)
+                .padding([4, 6])
+                .width(120),
+        ]
+        .spacing(8),
+        row![
+            text(t!("Relativ zur Wand")).size(10).style(muted).width(110),
+            pick_list(
+                Some(hatch_angle_relative_label(form.overlay_hatch_angle_relative)),
+                &HATCH_ANGLE_RELATIVE_LABELS[..],
+                |label: &&str| label.to_string(),
+            )
+            .on_select(|label| {
+                Message::AecPlanManagerOverlayHatchAngleRelativeChanged(
+                    hatch_angle_relative_from_label(label),
+                )
+            })
+            .text_size(11)
+            .width(120),
+        ]
+        .spacing(8),
+        overlay_color_row(
+            t!("Füllfarbe"),
+            form.overlay_fill_color,
+            form.overlay_fill_color_picker_open,
+            Message::AecPlanManagerOverlayFillColorChanged,
+            Message::AecPlanManagerOverlayFillColorPickerToggle,
+            crate::app::ColorPickTarget::AecPlanOverlayFillColor,
+        ),
+        row![
+            iced::widget::checkbox(vis.visible_2d)
+                .label(t!("Sichtbar 2D").into_owned())
+                .on_toggle(Message::AecPlanManagerOverlayLayerVis2d)
+                .size(13)
+                .text_size(11),
+            iced::widget::checkbox(vis.visible_3d)
+                .label(t!("Sichtbar 3D").into_owned())
+                .on_toggle(Message::AecPlanManagerOverlayLayerVis3d)
+                .size(13)
+                .text_size(11),
+        ]
+        .spacing(12),
+    ]
+    .spacing(6);
+
+    if form.overlay_layer_id.is_none() {
+        props = column![text(t!("Schicht wählen, um Overrides zu setzen.")).size(10).style(muted)];
+    }
+
+    let mut body = column![
+        text(t!("Stil-Ausnahmen")).size(11),
+        add_row,
+        exception_rows,
+    ]
+    .spacing(6);
+    if form.overlay_style_id.is_some() {
+        body = body.push(
+            button(text(t!("Ausnahme entfernen")).size(11))
+                .style(button::danger)
+                .padding([4, 10])
+                .on_press(Message::AecPlanManagerOverlayRemoveStyle),
+        );
+    }
+    if form.overlay_style_id.is_some() {
+        body = body
+            .push(Space::new().height(4))
+            .push(contour_hatch_section_view(form));
+    }
+    body = body
+        .push(Space::new().height(4))
+        .push(row![layer_col.width(200), props].spacing(12));
+
+    container(body)
+        .padding(8)
+        .style(container::bordered_box)
+        .into()
 }
 
 /// Two-stage Phasenfilter-Editor section: Stage 1 renders one visibility
@@ -397,6 +796,7 @@ fn phase_filter_section_view<'a>(
             stage1,
             Space::new().height(6),
             text(t!("Schritt 2: Zusatzstile je Phase")).size(11),
+            text(t!("Nur 2D-Gesamtkontur (nicht schichtweise)")).size(10),
             row![
                 phase_style_form_demolition(demolition_style),
                 phase_style_form_existing(existing_style),
@@ -420,6 +820,7 @@ fn phase_style_form_demolition<'a>(editor: StyleEditorFormState<'a>) -> Element<
         Message::AecPlanManagerDemolitionStyleLineColorPickerToggle,
         crate::app::ColorPickTarget::AecPlanDemolitionLineColor,
         Message::AecPlanManagerDemolitionStyleHatchPatternChanged,
+        Message::AecPlanManagerDemolitionStyleHatchPickerToggle,
         Message::AecPlanManagerDemolitionStyleHatchColorChanged,
         Message::AecPlanManagerDemolitionStyleHatchColorPickerToggle,
         crate::app::ColorPickTarget::AecPlanDemolitionHatchColor,
@@ -439,6 +840,7 @@ fn phase_style_form_existing<'a>(editor: StyleEditorFormState<'a>) -> Element<'a
         Message::AecPlanManagerExistingStyleLineColorPickerToggle,
         crate::app::ColorPickTarget::AecPlanExistingLineColor,
         Message::AecPlanManagerExistingStyleHatchPatternChanged,
+        Message::AecPlanManagerExistingStyleHatchPickerToggle,
         Message::AecPlanManagerExistingStyleHatchColorChanged,
         Message::AecPlanManagerExistingStyleHatchColorPickerToggle,
         crate::app::ColorPickTarget::AecPlanExistingHatchColor,
@@ -446,161 +848,6 @@ fn phase_style_form_existing<'a>(editor: StyleEditorFormState<'a>) -> Element<'a
         Message::AecPlanManagerExistingStyleFillColorPickerToggle,
         crate::app::ColorPickTarget::AecPlanExistingFillColor,
     )
-}
-
-/// Shared inline `ComponentStyleOverride` editor form, used for both the
-/// `demolition_style` and `existing_style` Stage 2 sections. Line-type uses
-/// the shared Layer-Manager-style `combo_box`+preview widget; every colour
-/// field uses the shared `color_selector` swatch+name widget.
-fn style_editor_form<'a>(
-    title: String,
-    editor: StyleEditorFormState<'a>,
-    on_line_type: impl Fn(String) -> Message + 'static,
-    on_line_color: impl Fn(String) -> Message + 'static,
-    on_line_color_toggle: Message,
-    line_color_more_target: crate::app::ColorPickTarget,
-    on_hatch_pattern: impl Fn(String) -> Message + 'a,
-    on_hatch_color: impl Fn(String) -> Message + 'static,
-    on_hatch_color_toggle: Message,
-    hatch_color_more_target: crate::app::ColorPickTarget,
-    on_fill_color: impl Fn(String) -> Message + 'static,
-    on_fill_color_toggle: Message,
-    fill_color_more_target: crate::app::ColorPickTarget,
-) -> Element<'a, Message> {
-    let line_acad_color = hex_to_acad_color(editor.line_color);
-    let hatch_acad_color = hex_to_acad_color(editor.hatch_color);
-    let fill_acad_color = hex_to_acad_color(editor.fill_color);
-    container(
-        column![
-            text(title).size(11),
-            row![
-                text(t!("Linientyp")).size(10).style(muted).width(90),
-                super::aec_ui_util::linetype_field(
-                    editor.line_type,
-                    editor.linetype_items,
-                    editor.linetype_combo,
-                    on_line_type,
-                ),
-            ]
-            .spacing(8),
-            row![
-                text(t!("Linienfarbe")).size(10).style(muted).width(90),
-                container(crate::ui::color_select::color_selector(
-                    line_acad_color,
-                    editor.line_color_picker_open,
-                    crate::ui::color_select::ColorExtras::default(),
-                    move |c| on_line_color(super::aec_ui_util::acad_color_to_hex(c)),
-                    on_line_color_toggle,
-                    Message::OpenColorWindow(line_color_more_target, line_acad_color),
-                ))
-                .width(180),
-            ]
-            .spacing(8),
-            row![
-                text(t!("Schraffurmuster")).size(10).style(muted).width(90),
-                text_input("z. B. ANSI31", editor.hatch_pattern)
-                    .on_input(on_hatch_pattern)
-                    .size(11)
-                    .padding([4, 6]),
-            ]
-            .spacing(8),
-            row![
-                text(t!("Schraffurfarbe")).size(10).style(muted).width(90),
-                container(crate::ui::color_select::color_selector(
-                    hatch_acad_color,
-                    editor.hatch_color_picker_open,
-                    crate::ui::color_select::ColorExtras::default(),
-                    move |c| on_hatch_color(super::aec_ui_util::acad_color_to_hex(c)),
-                    on_hatch_color_toggle,
-                    Message::OpenColorWindow(hatch_color_more_target, hatch_acad_color),
-                ))
-                .width(180),
-            ]
-            .spacing(8),
-            row![
-                text(t!("Füllfarbe")).size(10).style(muted).width(90),
-                container(crate::ui::color_select::color_selector(
-                    fill_acad_color,
-                    editor.fill_color_picker_open,
-                    crate::ui::color_select::ColorExtras::default(),
-                    move |c| on_fill_color(super::aec_ui_util::acad_color_to_hex(c)),
-                    on_fill_color_toggle,
-                    Message::OpenColorWindow(fill_color_more_target, fill_acad_color),
-                ))
-                .width(180),
-            ]
-            .spacing(8),
-        ]
-        .spacing(6),
-    )
-    .padding(8)
-    .style(container::bordered_box)
-    .into()
-}
-
-/// Step 7 Mapping Table UI section ("Maßstabskopplung"): a table of existing
-/// `(scale_name, display_config_name)` mappings with a per-row "Entfernen"
-/// button, plus an add-row form (text input for scale name + pick_list for
-/// config name).
-fn mapping_table_section_view<'a>(
-    library: &'a DisplayConfigLibrary,
-    new_scale: &'a str,
-    new_config: Option<&'a str>,
-) -> Element<'a, Message> {
-    let mut section = column![text(t!("Maßstabskopplung (Auto-DisplayConfig)")).size(11)]
-        .spacing(6);
-
-    if library.scale_display_config_mappings.is_empty() {
-        section = section.push(
-            text(t!("Keine Kopplungen definiert."))
-                .size(10)
-                .style(muted),
-        );
-    } else {
-        let mut rows = column![].spacing(4);
-        for mapping in &library.scale_display_config_mappings {
-            rows = rows.push(
-                row![
-                    text(&mapping.scale_name).size(10).width(180),
-                    text("→").size(10).style(muted),
-                    text(&mapping.display_config_name).size(10).width(180),
-                    button(text(t!("Entfernen")).size(10))
-                        .style(button::danger)
-                        .padding([3, 8])
-                        .on_press(Message::AecPlanManagerScaleMappingRemove(
-                            mapping.scale_name.clone()
-                        )),
-                ]
-                .spacing(8),
-            );
-        }
-        section = section.push(rows);
-    }
-
-    let config_options: Vec<String> = library.configs.iter().map(|c| c.name.clone()).collect();
-    let config_selected = new_config.map(|s| s.to_string());
-
-    let add_row = row![
-        text_input(t!("Maßstab (z. B. 1:50)").as_ref(), new_scale)
-            .on_input(Message::AecPlanManagerScaleMappingNewScaleChanged)
-            .size(11)
-            .padding([4, 6])
-            .width(180),
-        text("→").size(10).style(muted),
-        pick_list(config_selected, config_options, |name| name.clone())
-            .placeholder(t!("Ziel-DisplayConfig").into_owned())
-            .on_select(Message::AecPlanManagerScaleMappingNewConfigChanged)
-            .text_size(11)
-            .width(200),
-        button(text(t!("Hinzufügen")).size(11))
-            .style(button::primary)
-            .padding([4, 10])
-            .on_press(Message::AecPlanManagerScaleMappingAdd),
-    ]
-    .spacing(8);
-
-    section = section.push(add_row);
-    section.into()
 }
 
 #[cfg(test)]
@@ -622,12 +869,14 @@ mod tests {
     fn style_override_summary_lists_set_fields_in_order() {
         let style = ComponentStyleOverride {
             line_type: Some("Continuous".to_string()),
-            line_color: Some(0x000000),
+            line_color: Some(acadrust::types::Color::Rgb { r: 0, g: 0, b: 0 }),
             hatch_pattern: Some("ANSI31".to_string()),
-            hatch_color: Some(0xFFFFFF),
-            fill_color: Some(0x808080),
+            hatch_color: Some(acadrust::types::Color::Rgb { r: 255, g: 255, b: 255 }),
+            hatch_scale: None,
+            fill_color: Some(acadrust::types::Color::Rgb { r: 128, g: 128, b: 128 }),
             hatch_angle: None,
             hatch_angle_relative: None,
+            cad_layer: None,
         };
         let summary = style_override_summary(Some(&style));
         assert_eq!(
@@ -639,22 +888,34 @@ mod tests {
     #[test]
     fn style_override_summary_partial_override_only_lists_set_fields() {
         let style = ComponentStyleOverride {
-            hatch_color: Some(0x00FF00),
+            hatch_color: Some(acadrust::types::Color::Rgb { r: 0, g: 255, b: 0 }),
             ..Default::default()
         };
         assert_eq!(style_override_summary(Some(&style)), "Hatch #00FF00");
     }
 
     #[test]
-    fn phase_and_view_type_label_roundtrip() {
-        assert_eq!(phase_from_label(phase_label(&PlanPhase::Existing)), PlanPhase::Existing);
-        assert_eq!(phase_from_label(phase_label(&PlanPhase::Demolition)), PlanPhase::Demolition);
-        assert_eq!(phase_from_label(phase_label(&PlanPhase::New)), PlanPhase::New);
+    fn planning_stage_and_view_type_label_roundtrip() {
+        assert_eq!(
+            planning_stage_from_label(planning_stage_label(&PlanningStage::Permit)),
+            PlanningStage::Permit
+        );
+        assert_eq!(
+            planning_stage_from_label(planning_stage_label(&PlanningStage::Design)),
+            PlanningStage::Design
+        );
+        assert_eq!(
+            planning_stage_from_label(planning_stage_label(&PlanningStage::Execution)),
+            PlanningStage::Execution
+        );
         assert_eq!(
             view_type_from_label(view_type_label(&ViewType::FloorPlan)),
             ViewType::FloorPlan
         );
-        assert_eq!(view_type_from_label(view_type_label(&ViewType::Section)), ViewType::Section);
+        assert_eq!(
+            view_type_from_label(view_type_label(&ViewType::Section)),
+            ViewType::Section
+        );
         assert_eq!(
             view_type_from_label(view_type_label(&ViewType::Elevation)),
             ViewType::Elevation
@@ -662,8 +923,8 @@ mod tests {
     }
 
     #[test]
-    fn phase_and_view_type_from_label_unknown_input_falls_back_to_default() {
-        assert_eq!(phase_from_label("unknown"), PlanPhase::New);
+    fn planning_stage_and_view_type_from_label_unknown_input_falls_back_to_default() {
+        assert_eq!(planning_stage_from_label("unknown"), PlanningStage::Design);
         assert_eq!(view_type_from_label("unknown"), ViewType::FloorPlan);
     }
 }

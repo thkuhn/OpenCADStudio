@@ -2,8 +2,7 @@
 //! style library (`AEC_MATERIALMANAGER`).
 
 use iced::widget::{
-    button, canvas, column, combo_box, container, row, scrollable, text, text_input,
-    Space,
+    button, column, combo_box, container, row, scrollable, text, text_input, Space,
 };
 use iced::{Background, Border, Color, Element, Fill, Theme};
 
@@ -343,7 +342,13 @@ fn material_form_view<'a>(
         .spacing(8),
         row![
             text(t!("Hatch pattern")).size(10).style(muted).width(100),
-            hatch_pattern_field(material_form.hatch, material_form.hatch_picker_open),
+            super::aec_ui_util::hatch_pattern_field(
+                material_form.hatch,
+                material_form.hatch_picker_open,
+                None,
+                Message::AecStyleManagerMaterialHatchPickerToggle,
+                Message::AecStyleManagerMaterialHatchSelected,
+            ),
         ]
         .spacing(8),
         row![
@@ -473,56 +478,3 @@ fn material_form_view<'a>(
     form.into()
 }
 
-fn hatch_pattern_field<'a>(current: &'a str, open: bool) -> Element<'a, Message> {
-    let head = button(
-        row![
-            text(if current.is_empty() { "SOLID" } else { current }).size(11),
-            Space::new(),
-            if open {
-                text("▲").size(9)
-            } else {
-                text("▼").size(9)
-            },
-        ]
-        .align_y(iced::Center),
-    )
-    .on_press(Message::AecStyleManagerMaterialHatchPickerToggle)
-    .style(button::subtle)
-    .padding([4, 6])
-    .width(180);
-
-    if !open {
-        return head.into();
-    }
-
-    let mut grid = column![].spacing(4);
-    let patterns = crate::ui::properties::filtered_hatch_patterns("");
-    for pair in patterns.chunks(2) {
-        let mut cards = row![].spacing(4);
-        for entry in pair {
-            let selected = current.eq_ignore_ascii_case(&entry.name);
-            let name = entry.name.clone();
-            let preview = canvas(crate::ui::properties::HatchPatternPreview {
-                pattern: entry.gpu.clone(),
-            })
-            .width(70)
-            .height(36);
-            let card = button(
-                column![
-                    preview,
-                    text(crate::ui::text_util::elide(&entry.name, 12)).size(9),
-                ]
-                .spacing(2)
-                .align_x(iced::Center),
-            )
-            .on_press(Message::AecStyleManagerMaterialHatchSelected(name))
-            .style(if selected { button::primary } else { button::subtle })
-            .padding(3)
-            .width(84);
-            cards = cards.push(card);
-        }
-        grid = grid.push(cards);
-    }
-
-    column![head, scrollable(grid).height(180)].spacing(4).into()
-}
