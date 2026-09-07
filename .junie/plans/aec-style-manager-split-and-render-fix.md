@@ -96,32 +96,32 @@ AecWallStyleManager,     // new
 
 # Delivery Steps
 
-###   Step 1: Fix wall-style-save so drawing regeneration reflects the current (edited) style
+### ✓ Step 1: Fix wall-style-save so drawing regeneration reflects the current (edited) style
 Saving a wall style and updating the drawing actually changes the rendered geometry of affected walls, instead of silently rebuilding stale stored layers.
 - Add `write_wall_v2_layers(scene, wall_handle, layers)` helper in `src/modules/aec/commands.rs` that overwrites only the layer-snapshot portion of a wall's `WALL_V2` XDATA record, keeping `style_id`/`height`/`derived_handles` intact.
 - In `src/app/update/mod.rs`'s wall-style-save drawing-update block, for each affected wall handle: resolve `effective_layers(&style_map, &wall.style_id)` from the just-saved library, convert to `WallLayer`s, call `write_wall_v2_layers`, then call `regenerate_wall_representation`.
 - Add a unit test that edits a wall style's layers (e.g. changes a layer's thickness/material), triggers the save-and-refresh flow on a wall using that style, and asserts the wall's new derived geometry (contour/solid dimensions) reflects the updated layer, not the original one.
 
-###   Step 2: Add an explicit "Save & Update Drawing" action separate from plain "Save"
+### ✓ Step 2: Add an explicit "Save & Update Drawing" action separate from plain "Save"
 Users can choose between saving the wall style library only, or saving and immediately applying the change to the current drawing.
 - Add `Message::AecStyleManagerWallStyleSaveAndApply` in `src/app/mod.rs`.
 - Refactor `Message::AecStyleManagerWallStyleSave`'s handler in `src/app/update/mod.rs` into a shared internal validation/upsert/library-save function, with `AecStyleManagerWallStyleSave` doing library-save only (no drawing touch) and the new `AecStyleManagerWallStyleSaveAndApply` doing library-save plus the fixed regeneration pass from the previous step.
 - Wire both actions to buttons in the wall-style form (temporary location in the existing combined dialog, ahead of the split in the next steps).
 
-###   Step 3: Split the AEC Style Manager into a standalone Material Manager dialog
+### ✓ Step 3: Split the AEC Style Manager into a standalone Material Manager dialog
 Materials are managed in their own focused modal, separate from wall styles.
 - New file `src/ui/window/aec_material_manager.rs` containing the materials list + material edit form (name, hatch-pattern picker, color swatch, line-type dropdown), extracted from `src/ui/window/aec_style_manager.rs`; shared helpers (`muted`, `list_style`, `hex_to_acad_color`) moved to a small shared location importable by both new files.
 - Rename `ModalKind::AecStyleManager` to `ModalKind::AecMaterialManager` in `src/app/mod.rs`; update `src/app/view/modal.rs` routing accordingly.
 - New `AEC_MATERIALMANAGER` command in `src/app/commands/draw.rs` opening `ModalKind::AecMaterialManager`; new Ribbon button in the "Styles" group (`src/modules/aec/mod.rs`).
 
-###   Step 4: Build the standalone Wall Style Manager dialog with hierarchical list and full-width layer table
+### ✓ Step 4: Build the standalone Wall Style Manager dialog with hierarchical list and full-width layer table
 Wall styles get their own dialog showing a hierarchical tree and a layer table that fits the dialog width without horizontal scrolling.
 - New file `src/ui/window/aec_wall_style_manager.rs` containing the wall-style master list (rendered via `StyleLibrary::wall_style_tree()` for indentation, dropping the now-unneeded Name/Hierarchy toggle) and the wall-style edit form (name, parent picker via AEC Style Picker, layer table).
 - New `ModalKind::AecWallStyleManager`; update `AEC_STYLEMANAGER` in `src/app/commands/draw.rs` to open this new modal kind instead of the old combined one.
 - Widen the dialog and/or adjust `LAYER_COL_*_W` constants so all layer-table columns (material, thickness, gap, bottom/top offset, function, layer override, reorder/delete actions) are visible without horizontal scrolling for a typical layer count.
 - Verify the Save/Save & Update Drawing/Delete button row from the previous step renders anchored to the bottom-right of this new dialog.
 
-###   Step 5: Remove the old combined dialog and finalize wiring/tests
+### ✓ Step 5: Remove the old combined dialog and finalize wiring/tests
 The old combined AEC Style Manager is fully replaced by the two focused dialogs, and existing tests continue to pass.
 - Delete `src/ui/window/aec_style_manager.rs` once its content has been fully migrated into the two new files from the previous steps.
 - Verify `src/app/view/modal.rs` no longer references the old `ModalKind::AecStyleManager` variant anywhere; confirm `AEC_STYLE`/`AEC_MATERIAL` command-line commands and the AEC Style Picker modal still function unchanged against the same underlying `StyleLibrary`.

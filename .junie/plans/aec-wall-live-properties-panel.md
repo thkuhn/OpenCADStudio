@@ -92,20 +92,20 @@ pub trait CadCommand: Send {
 
 # Delivery Steps
 
-###   Step 1: Generischen Live-Properties-Hook im CadCommand-Trait einführen
+### ✓ Step 1: Generischen Live-Properties-Hook im CadCommand-Trait einführen
 Interaktive Kommandos können optional editierbare Live-Eigenschaften deklarieren, ohne dass bestehende Kommandos betroffen sind.
 - Neue Typen `LiveFieldValue`, `LiveCommandField`, `LiveCommandProperties` in `src/command.rs`.
 - Neue Default-Methoden `live_properties(&self) -> Option<LiveCommandProperties>` und `apply_live_property(&mut self, field_id, value)` auf `CadCommand` (Default: `None`/no-op), damit alle bestehenden Kommandos unverändert kompilieren.
 - Unit-Test: ein Dummy-Testkommando ohne Override liefert `None`/ignoriert `apply_live_property` klaglos.
 
-###   Step 2: Properties-Panel rendert Live-Eigenschaften des aktiven Kommandos
+### ✓ Step 2: Properties-Panel rendert Live-Eigenschaften des aktiven Kommandos
 Sobald ein Kommando läuft und Live-Eigenschaften liefert, zeigt das Properties-Panel diese anstelle der normalen Selektionsanzeige.
 - Neuer Anzeige-Zustand in `App` (z.B. Enum-Feld), der beim Start/Ende eines Kommandos gesetzt/zurückgesetzt wird.
 - Rendering-Pfad in `src/app/properties.rs`/View-Code prüft diesen Zustand und rendert `live_properties()`-Felder (Text/Zahl editierbar, Picker als Button) statt der Entity-Properties.
 - Änderungen an Text-/Zahlenfeldern rufen `apply_live_property` auf dem aktiven Kommando auf.
 - Nach Abschluss/Abbruch des Kommandos kehrt das Panel zur normalen Selektionsanzeige zurück.
 
-###   Step 3: WallCommand implementiert Live-Properties für Stil und Höhe
+### ✓ Step 3: WallCommand implementiert Live-Properties für Stil und Höhe
 AEC_WALL zeigt sofort beim Start ein Wand-Panel mit Stilname und Höhe, editierbar während des Zeichnens.
 - `WallCommand::live_properties()` liefert Stilname (aufgelöst über die geladene `StyleLibrary`) und aktuelle Höhe.
 - `WallCommand::apply_live_property("wall_height", ...)` aktualisiert `self.wall.height` und triggert `sync_live()` für sofortige Vorschau-Aktualisierung.
@@ -113,14 +113,14 @@ AEC_WALL zeigt sofort beim Start ein Wand-Panel mit Stilname und Höhe, editierb
 - Kommandostart in `src/app/commands/draw.rs`s `AEC_WALL`-Zweig schaltet das Properties-Panel auf den neuen Live-Modus.
 - Tests: Höhenänderung während der Punktkette ändert die Live-Vorschau-Geometrie korrekt; Stiländerung ändert die resultierende Gesamtdicke korrekt.
 
-###   Step 4: AEC Style Picker um Ziel für das laufende Zeichenkommando erweitern
+### ✓ Step 4: AEC Style Picker um Ziel für das laufende Zeichenkommando erweitern
 Der Stil-Button im Wand-Live-Panel öffnet denselben hierarchischen, durchsuchbaren Style-Picker-Dialog wie im Style Manager, statt einer Button-Liste im Befehlseingabe-Fenster.
 - Neues `StylePickerTarget::ActiveCommand`-Mitglied in `src/app/mod.rs`, analog zum bestehenden `WallPropertiesStyle`-Muster.
 - Neue `Message` zum Öffnen des Pickers für das aktive Kommando; Bestätigung ruft `apply_live_property("wall_style", ...)` auf dem aktiven Kommando auf statt XDATA zu schreiben.
 - `src/ui/window/aec_style_picker.rs` behandelt das neue Ziel visuell identisch zu den bestehenden Wandstil-Zielen (Baum, Suche, Schichtaufbau-Vorschau).
 - Tests: simulierte Bestätigung im Picker für `ActiveCommand`-Ziel aktualisiert den erwarteten Feldwert des Test-Kommandos korrekt.
 
-###   Step 5: Kommandozeilen-Fallback anpassen und Sitzungs-Defaults für Stil/Höhe ergänzen
+### ✓ Step 5: Kommandozeilen-Fallback anpassen und Sitzungs-Defaults für Stil/Höhe ergänzen
 Reine Tastaturnutzung bleibt möglich, und die zuletzt verwendeten Wand-Eigenschaften werden beim nächsten Wandzeichnen vorbelegt.
 - `WallPhase::AskStyle`/`AskHeight`/`AskThickness` werden übersprungen, sobald der Nutzer die entsprechenden Werte bereits über das Live-Panel gesetzt hat; als reiner Tastatur-Fallback bleiben sie für Nutzer ohne Panel-Interaktion vollständig erhalten.
 - Neue `App`-Felder `aec_last_wall_style_id`/`aec_last_wall_height`, geschrieben beim erfolgreichen Finalisieren einer Wand, gelesen als Startwert in `WallCommand::new()`.

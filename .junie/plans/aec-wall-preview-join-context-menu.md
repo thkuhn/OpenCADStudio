@@ -92,42 +92,43 @@ Weitere Ergänzungen am AEC-Wand-Workflow (`src/modules/aec/commands.rs::WallCom
 
 # Delivery Steps
 
-###   Step 1: Live-Kontur-Vorschau beim Zeichnen und Bearbeiten von Wänden ergänzen
+### ✓ Step 1: Live-Kontur-Vorschau beim Zeichnen und Bearbeiten von Wänden ergänzen
 Beim Zeichnen und Grip-Editieren einer Wand wird zusätzlich zur Achse die tatsächliche Außenkontur live gerendert.
 - Hilfsfunktion zur reinen Außenkontur-Berechnung (Gesamtdicke aus `resolved_layers`) in `src/modules/aec/engine/contour.rs` ergänzen, basierend auf der bestehenden `layer_contours`-Logik.
 - `WallCommand::sync_live`/`build_entity` in `src/modules/aec/commands.rs` erweitert um eine zusätzliche Vorschau-Entity (Außenkontur), die parallel zur Achse als Live-Entity gesendet wird.
 - Grip-/Move-Editing-Pfad (`resolve_wall_package`/`regenerate_wall_representation`-Aufrufstellen) prüft, ob während einer laufenden Bearbeitung ebenfalls eine Live-Konturvorschau statt sofortiger voller Regenerierung sinnvoll ist, oder ob die bestehende Delete-and-Recreate-Regenerierung für diesen Fall ausreicht.
 - Unit-Tests für die neue Außenkontur-Berechnungsfunktion (einfaches Rechteck-Segment, mehrschichtiger Stil).
 
-###   Step 2: Frühe Stilwarnung und Live-Ausrichtungs-Reflektion in der Vorschau
+### ✓ Step 2: Frühe Stilwarnung und Live-Ausrichtungs-Reflektion in der Vorschau
 Der Hinweis auf einen fehlenden Wandstil erscheint bereits nach dem ersten Punkt, und ein Ausrichtungswechsel während des Zeichnens aktualisiert sofort die Kontur-Vorschau.
 - `WallCommand::on_point`/`no_style_warning`-Logik in `src/modules/aec/commands.rs` so angepasst, dass die Warnung bereits nach dem ersten gesetzten Punkt (statt erst bei `on_enter`) aktiv wird, sofern `requires_style_selection()` zutrifft.
 - Justification-Ctrl-Toggle löst eine Neuberechnung der Live-Kontur-Vorschau (aus Schritt 1) mit der neuen Ausrichtung aus.
 - Tests: Warnung erscheint bereits direkt nach dem ersten Punkt bei vorhandener Stilbibliothek; Kontur-Vorschau ändert sich nachweislich bei Ausrichtungswechsel (z.B. Versatz der Randlinien relativ zur Klickpunktkette).
 
-###   Step 3: AEC_WALLJOIN implementieren (L-/T-Verbindung zweier bestehender Wände)
+### ✓ Step 3: AEC_WALLJOIN implementieren (L-/T-Verbindung zweier bestehender Wände)
 Zwei ausgewählte Wände können per Kommando sauber an einer Ecke (L) oder einem Stoß (T) verbunden werden.
 - Neues Modul `src/modules/aec/engine/join.rs`: reine Geometriefunktion `join_wall_axes(axis_a, axis_b) -> Result<(Vec<DVec3>, Vec<DVec3>, JoinKind), JoinError>` (Schnittpunkt-/Trimm-Berechnung, erkennt L- vs. T-Konfiguration).
 - Neues `CadCommand` `WallJoinCommand` in `src/modules/aec/commands.rs`, das zwei Wand-Achsen (per Selektion oder Klick, unter Nutzung von `resolve_wall_package`) entgegennimmt, die getrimmten Achsen zurückschreibt und `regenerate_wall_representation` für beide Wände aufruft.
 - Neues Kommando `AEC_WALLJOIN` registriert (`src/app/commands/draw.rs`), Ribbon-Button in der bestehenden Architecture-Gruppe.
 - Unit-Tests für `join_wall_axes` (L-Konfiguration, T-Konfiguration, parallele/degenerierte Wände liefern kontrollierten Fehler statt Panic).
 
-###   Step 4: AEC_WALLEXTEND und nachträgliche Ausrichtungsänderung implementieren
+### ✓ Step 4: AEC_WALLEXTEND und nachträgliche Ausrichtungsänderung implementieren
 Eine bestehende Wand kann bis zu einem Zielpunkt verlängert werden, und ihre Ausrichtung (Interior/Center/Exterior) kann nachträglich geändert werden.
 - Neues `CadCommand` `WallExtendCommand`: verlängert die Achse der selektierten Wand bis zu einem gepickten/projizierten Punkt (Wiederverwendung der Schnittpunktlogik aus `join.rs`, falls Zielpunkt auf einer anderen Wand/Linie liegt), ruft `regenerate_wall_representation` auf.
 - Neues Kommando `AEC_WALLEXTEND` registriert, Ribbon-Button ergänzt.
 - Neue Properties-Panel-Aktion zur nachträglichen Änderung der Justification einer bestehenden Wand: berechnet die Achse gemäß gewählter Ausrichtung neu (Wiederverwendung der in `WallCommand` vorhandenen Umrechnungslogik) und regeneriert die Wand.
 - Tests: Verlängerung bis zu einem expliziten Punkt sowie bis zum Schnittpunkt mit einer zweiten Wand liefert die erwartete neue Achse; nachträgliche Ausrichtungsänderung verschiebt die Achse um die erwartete Distanz.
 
-###   Step 5: Automatisches Verschneiden beim Zeichnen (Snap-basiert) ergänzen
+### ✓ Step 5: Automatisches Verschneiden beim Zeichnen (Snap-basiert) ergänzen
 Wird beim Zeichnen einer neuen Wand ein Punkt in der Nähe einer bestehenden Wand gesetzt, wird automatisch eine Verbindung erzeugt.
 - `WallCommand::on_point` in `src/modules/aec/commands.rs` erweitert um eine Prüfung gegen alle vorhandenen Wandachsen im Dokument innerhalb eines konfigurierbaren Snap-/Verschneidungs-Radius.
 - Bei Treffer wird der geklickte Punkt auf die bestehende Wandachse gefangen und beim Finalisieren derselbe Join-Mechanismus (`join_wall_axes` aus Schritt 3) angewendet.
 - Visuelles Feedback (Snap-Marker/Hervorhebung) für den erkannten Verschneidungspunkt während des Zeichnens.
 - Tests: Punkt innerhalb des Radius löst automatische Verschneidung mit der erwarteten Wand aus; Punkt außerhalb des Radius verhält sich wie bisher (kein automatischer Join).
 
-###   Step 6: Dynamische Längen-/Höhen-Attribute und Wand-Kontextmenü ergänzen
+### ~ Step 6: Dynamische Längen-/Höhen-Attribute und Wand-Kontextmenü ergänzen (Kontextmenü erledigt, dynamische Eingabe bewusst zurückgestellt — "Nice to have")
 Länge und Höhe einer Wand können, soweit von der bestehenden Host-Infrastruktur unterstützt, direkt am Objekt editiert werden, und ein Rechtsklick auf Wände bietet die neuen Wandfunktionen an.
+**Status (2026-09-05): Wand-Kontextmenü (Join/Extend) bereits umgesetzt in `src/app/view/overlay.rs` — ✓. Die dynamische In-Viewport-Längen-/Höhen-Eingabe für Wände ist ausdrücklich als "nicht erledigt" markiert: `WallCommand` implementiert keinen `dyn_spec()`/dynamischen Feld-Mechanismus (siehe `command.rs`/`app/update/dynamic.rs`). Eine saubere Integration erfordert Einarbeitung in den bestehenden `DynSpec`/`DynRole`/`DynFieldEntry`-Mechanismus für die laufende Punktkette und ist keine trivalie 1-3-Zeilen-Änderung — daher bewusst als optionales "Nice to have" zurückgestellt statt spontan mit-implementiert.**
 - Prüfung/Erweiterung der bestehenden dynamischen-Input-Infrastruktur (siehe `src/app/commands/mod.rs`) um ein Längenfeld für die aktuelle Wandachse im 2D-Viewport; Höhe im 3D-Viewport wird umgesetzt, sofern die Infrastruktur das ohne größeren Host-Umbau zulässt, andernfalls dokumentiert als bekannte Einschränkung.
 - `src/app/view/overlay.rs::viewport_context_menu_overlay` erhält einen neuen bedingten Zweig (aktiv, wenn alle selektierten Handles über `wall_v2_from_entity` als Wände erkannt werden) mit Einträgen "Join", "Extend" und "Change Justification" (Untermenü Interior/Center/Exterior, analog zum bestehenden Draw-Order-Untermenü-Muster).
 - Tests: Kontextmenü zeigt die neuen Einträge nur bei einer reinen Wand-Selektion, nicht bei gemischter oder Nicht-Wand-Selektion; dynamische Längeneingabe aktualisiert die Live-Vorschau/das Ergebnis korrekt.

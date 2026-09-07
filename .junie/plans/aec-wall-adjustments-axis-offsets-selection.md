@@ -103,7 +103,7 @@ pub fn resolve_wall_package(scene: &Scene, clicked: Handle) -> Handle {
 
 # Delivery Steps
 
-###   Step 1: Ctrl-Umschaltung der Wand-Bezugslinie (innen/Achse/außen) implementieren
+### ✓ Step 1: Ctrl-Umschaltung der Wand-Bezugslinie (innen/Achse/außen) implementieren
 Beim Zeichnen einer Wand kann per Strg-Taste zwischen innerer Kante, Mittellinie und äußerer Kante als Bezugslinie umgeschaltet werden; die gespeicherte Geometrie bleibt weiterhin die Mittellinie.
 - Enum `WallJustification { Interior, Center, Exterior }` in `src/modules/aec/commands.rs`.
 - `WallCommand` erhält ein `justification`-Feld (Default `Center`) und überschreibt `set_ctrl(bool)`, um bei jedem Ctrl-Tastendruck zum nächsten Modus zu wechseln und den aktuellen Modus über die Kommandozeile anzuzeigen.
@@ -111,28 +111,29 @@ Beim Zeichnen einer Wand kann per Strg-Taste zwischen innerer Kante, Mittellinie
 - `WALL_V2`-Record um ein rein informatives `justification`-Feld erweitert (String), mit Fallback "Center" bei fehlendem Feld für Altbestand.
 - Unit-Tests: Umschaltung zyklisch Interior→Center→Exterior→Interior; Punktkette wird für jeden Modus korrekt auf die erwartete Mittellinie umgerechnet (einfacher gerader Wandabschnitt).
 
-###   Step 2: Horizontalen Schicht-Spalt (Luftschicht ohne Material) im Wandstil-Modell und der Kontur-Berechnung ergänzen
+### ✗ Step 2: Horizontalen Schicht-Spalt (Luftschicht ohne Material) im Wandstil-Modell und der Kontur-Berechnung ergänzen (verworfen — nicht zu erledigen)
 Ein Wandstil kann zwischen zwei Schichten einen definierten Spalt angeben, der im Grundriss als Lücke ohne Kontur/Hatch erscheint.
+**Status: Bewusst nicht umgesetzt und wird nicht mehr benötigt (Nutzerentscheidung 2026-09-05). Der spätere, bereits abgeschlossene Plan `wandstil-schicht-achsversatz.md` hat das relative `gap_before`-Stapelmodell durch ein absolutes `axis_offset`-Feld pro Schicht ersetzt (`wall_style.rs`); eine echte materiallose Luftschicht wird fachlich nicht benötigt, der reine Achsversatz reicht aus. `gap_before` existiert nur noch als Legacy-Migrationspfad beim Laden alter Bibliotheken.**
 - `Layer` in `src/modules/aec/engine/wall_style.rs` um `#[serde(default)] gap_before: f64` erweitert.
 - `layer_contours` in `src/modules/aec/engine/contour.rs` berücksichtigt `gap_before` als zusätzlichen kumulativen Offset vor der jeweiligen Schicht, ohne dass für den Spaltbereich selbst eine Randlinie zur Kontur-/Hatch-Erzeugung genutzt wird.
 - `wall_layer_contour_polylines`/`regenerate_wall_representation` in `src/modules/aec/commands.rs` überspringen die Kontur-/Hatch-Erzeugung für den Spaltbereich, erzeugen aber weiterhin korrekte Randlinien für die angrenzenden echten Schichten.
 - Unit-Tests: Kontur-Berechnung für 2 Schichten mit Spalt liefert die erwartete Gesamtbreite und Randlinien-Positionen; bestehende Bibliotheken ohne `gap_before` (Feld fehlt) parsen weiterhin korrekt mit Spalt 0.
 
-###   Step 3: Vertikalen Schicht-Versatz (unten/oben) im Wandstil-Modell und der 3D-Extrusion ergänzen
+### ✓ Step 3: Vertikalen Schicht-Versatz (unten/oben) im Wandstil-Modell und der 3D-Extrusion ergänzen
 Einzelne Schichten können unten und/oder oben von der vollen Wandhöhe abweichen (z.B. Sockelschicht, die nicht bis zur Decke reicht).
 - `Layer` um `#[serde(default)] bottom_offset: f64` und `#[serde(default)] top_offset: f64` erweitert.
 - `wall_layer_extrusions` in `src/modules/aec/commands.rs` berechnet je Schicht `effective_height = wall_height - bottom_offset - top_offset` und die zugehörige Basis-Verschiebung; `regenerate_wall_representation` verschiebt das erzeugte `Solid3D` entsprechend `bottom_offset` in Z, bevor es dem Dokument hinzugefügt wird.
 - Die 2D-Kontur/Hatch-Erzeugung bleibt unverändert (kein Höheneinfluss im Grundriss).
 - Unit-Tests: Extrusionshöhe/-basis für eine Schicht mit unterem und oberem Versatz entspricht der erwarteten reduzierten Höhe und Position; Schicht ohne Versatz verhält sich wie bisher (volle Wandhöhe).
 
-###   Step 4: Style-Manager-Formular um Spalt- und Versatz-Eingabefelder erweitern
+### ✓ Step 4: Style-Manager-Formular um Spalt- und Versatz-Eingabefelder erweitern (Feld heißt "Achsversatz" statt "Spalt")
 Der bestehende Schicht-Editor im AEC Style Manager erlaubt das Eingeben von Schicht-Spalt sowie unterem/oberem Versatz je Schicht.
 - `src/ui/window/aec_style_manager.rs`: Schicht-Zeilen-Layout um drei zusätzliche `text_input`-Felder (Spalt, unten, oben) neben dem bestehenden Dicke-Feld ergänzt, mit zugehörigen neuen `Message`-Varianten und Handlern in `src/app/update/mod.rs` (analog zum bestehenden Dicke-Feld-Pattern).
 - Die Live-Vorschau der aufgelösten (vererbten) Schichten zeigt die neuen Werte mit an.
 - Speichern schreibt die neuen Felder korrekt über `StyleLibrary::upsert_wall_style`/`save_to_default_path`.
 - Tests: Formular-Save mit gesetzten Spalt-/Versatzwerten persistiert und lädt die Werte korrekt zurück (Roundtrip-Test auf `WallStyle`-Ebene).
 
-###   Step 5: Wand-Pakete: Selektion, Verschieben und Grip-Editing behandeln Achse und abgeleitete Entities als eine Einheit
+### ✓ Step 5: Wand-Pakete: Selektion, Verschieben und Grip-Editing behandeln Achse und abgeleitete Entities als eine Einheit
 Das Anklicken einer beliebigen Wand-Teilentity (Kontur, Hatch, Solid) wählt effektiv die ganze Wand aus; Verschieben und Endpunkt-Grips wirken konsistent auf die gesamte Wand, deren sichtbare Darstellung danach automatisch neu aufgebaut wird.
 - Jede in `regenerate_wall_representation` erzeugte abgeleitete Entity erhält eine minimale `WALL_DERIVED`-XDATA-Rückreferenz auf das Achse-Handle.
 - Neue Funktion `resolve_wall_package(scene, handle) -> Handle` in `src/modules/aec/commands.rs`, die für eine abgeleitete Entity das zugehörige Achse-Handle liefert (Fallback: unveränderte Handle-Rückgabe für Nicht-Wand-Entities).
