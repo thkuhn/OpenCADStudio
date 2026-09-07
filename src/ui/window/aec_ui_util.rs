@@ -2,6 +2,7 @@ use iced::widget::{button, canvas, column, combo_box, container, row, scrollable
 use iced::{Element, Theme};
 use crate::app::Message;
 use crate::t;
+use crate::tr;
 
 /// Parses a `"#RRGGBB"` (or bare `RRGGBB`) hex string into a true colour,
 /// falling back to white for anything that doesn't parse.
@@ -219,7 +220,7 @@ pub fn style_editor_form<'a>(
                 hatch_pattern_field(
                     editor.hatch_pattern,
                     editor.hatch_picker_open,
-                    Some("erben"),
+                    Some(tr!("aec", "inherit")),
                     on_hatch_picker_toggle,
                     on_hatch_pattern,
                 ),
@@ -263,14 +264,15 @@ pub fn style_editor_form<'a>(
 pub fn hatch_pattern_field<'a>(
     current: &'a str,
     open: bool,
-    inherit_label: Option<&'static str>,
+    inherit_label: Option<String>,
     on_toggle: Message,
     on_select: impl Fn(String) -> Message + 'a,
 ) -> Element<'a, Message> {
+    let inherit = inherit_label.clone();
     let label = if current.is_empty() {
-        inherit_label.unwrap_or("SOLID")
+        inherit.clone().unwrap_or_else(|| "SOLID".to_string())
     } else {
-        current
+        current.to_string()
     };
     let head = button(
         row![
@@ -294,9 +296,9 @@ pub fn hatch_pattern_field<'a>(
     }
 
     let mut grid = column![].spacing(4);
-    if inherit_label.is_some() {
+    if inherit.is_some() {
         grid = grid.push(
-            button(text(inherit_label.unwrap_or("erben")).size(10))
+            button(text(inherit.unwrap_or_else(|| tr!("aec", "inherit"))).size(10))
                 .on_press(on_select(String::new()))
                 .style(if current.is_empty() {
                     button::primary

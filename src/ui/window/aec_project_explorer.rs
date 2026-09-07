@@ -7,6 +7,7 @@ use iced::{Element, Fill};
 use crate::app::{AecProjectExplorerDeleteTarget, Message};
 use crate::modules::aec::engine::project::{Building, ProjectFile, StoreyRef};
 use crate::t;
+use crate::tr;
 use super::aec_ui_util::*;
 
 /// Transient form buffers owned by `App` and borrowed here for rendering.
@@ -108,11 +109,7 @@ fn delete_confirm_bar<'a>(
                 .find(|b| b.id == bid)
                 .map(|b| b.name.as_str())
                 .unwrap_or("?");
-            t!(
-                "Delete building \"%{name}\" and all its storeys? This cannot be undone.",
-                name = name
-            )
-            .into_owned()
+            tr!("aec", "delete-building", name = name)
         }
         AecProjectExplorerDeleteTarget::Storey(bid, sid) => {
             let name = project
@@ -122,11 +119,7 @@ fn delete_confirm_bar<'a>(
                 .and_then(|b| b.storeys.iter().find(|s| s.id == sid))
                 .map(|s| s.name.as_str())
                 .unwrap_or("?");
-            t!(
-                "Delete storey \"%{name}\"? This cannot be undone.",
-                name = name
-            )
-            .into_owned()
+            tr!("aec", "delete-storey", name = name)
         }
     };
 
@@ -193,7 +186,7 @@ fn building_row<'a>(
             text("▸").size(11).style(muted),
             text(building.name.as_str()).size(12),
             Space::new().width(Fill),
-            text(format!("{} storey(s)", building.storeys.len()))
+            text(tr!("aec", "storey-count", count = building.storeys.len()))
                 .size(10)
                 .style(muted),
         ]
@@ -261,7 +254,7 @@ fn storey_row<'a>(
                 Space::new().width(14),
                 column![
                     text(storey.name.as_str()).size(12),
-                    text(format!("elev {elev}  ·  {}", storey.drawing_path))
+                    text(tr!("aec", "elev-path", elev = elev.as_str(), path = storey.drawing_path.as_str()))
                         .size(10)
                         .style(muted),
                 ]

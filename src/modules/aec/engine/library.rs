@@ -179,7 +179,7 @@ pub fn material_copy_conflict(target: &StyleLibrary, material: &Material) -> Cop
 /// `DisplayConfig` named `display_config_name` (Step 2's style-centered
 /// override model, Key Decision 1/3): looks up
 /// `style.display_profiles.get(display_config_name)`. Returns `None` when
-/// `style` has no profile for that Planart, in which case callers should
+/// `style` has no profile for that plan type, in which case callers should
 /// fall back to the default rule set (every slot visible, standard style,
 /// `All` layers for `Contour2D`/`Solid3D` — see `ComponentRuleSet::default()`
 /// and `ComponentRuleSet::layer_filter_for`), exactly as an absent
@@ -191,7 +191,7 @@ pub fn resolve_effective_rule_set<'a>(
     style.display_profiles.get(display_config_name)
 }
 
-/// Session override wins over the Planart default.
+/// Session override wins over the plan-type default.
 pub fn effective_representation(
     config: &DisplayConfig,
     session: Option<RepresentationMode>,
@@ -199,7 +199,7 @@ pub fn effective_representation(
     session.unwrap_or(config.default_representation)
 }
 
-/// Planart global visibility + representation + sparse style overlay,
+/// Plan-type global visibility + representation + sparse style overlay,
 /// starting from a wall style's leftover `display_profiles` (legacy) if any.
 pub fn build_effective_rule_set(
     config: &DisplayConfig,
@@ -214,7 +214,7 @@ pub fn build_effective_rule_set(
     for kind in WallComponentKind::all() {
         let key = kind.to_slot().key().to_string();
         if session.is_some() {
-            // Status-bar 2D/3D/Alle replaces Planart (and leftover
+            // Status-bar 2D/3D/All replaces plan type (and leftover
             // display_profiles) visibility for that representation.
             rules.visibility.insert(key, mode.allows(*kind));
         } else {
@@ -234,7 +234,7 @@ pub fn build_effective_rule_set(
     rules
 }
 
-/// Global Planart visibility ∩ representation mode.
+/// Global plan-type visibility ∩ representation mode.
 pub fn component_is_visible(
     config: &DisplayConfig,
     kind: WallComponentKind,
@@ -323,13 +323,13 @@ pub fn phase_style_for_slot(
     }
 }
 
-/// Copy-on-Write into the standard library must not take Planart overlays.
+/// Copy-on-Write into the standard library must not take plan-type overlays.
 pub fn wall_style_without_display_profiles(mut style: WallStyle) -> WallStyle {
     style.display_profiles.clear();
     style
 }
 
-/// Fold a Planart style overlay into a `ComponentRuleSet` used by regen.
+/// Fold a plan-type style overlay into a `ComponentRuleSet` used by regen.
 pub fn merge_style_overlay_into_rules(rules: &mut ComponentRuleSet, overlay: &StyleDisplayOverlay) {
     for (layer_id, props) in &overlay.layer_props {
         if let Some(existing) = rules
@@ -436,7 +436,7 @@ fn visibility_from_legacy_rules(rules: &ComponentRuleSet) -> std::collections::H
     map
 }
 
-/// Move name-keyed `WallStyle.display_profiles` onto Planart UUID overlays.
+/// Move name-keyed `WallStyle.display_profiles` onto plan-type UUID overlays.
 pub fn migrate_display_profiles_into_planarts(
     configs: &mut [DisplayConfig],
     styles: &mut [WallStyle],
@@ -1069,7 +1069,7 @@ mod tests {
             resolve_effective_rule_set(&style, "\u{dc}bersichtsplan 1:200"),
             Some(&rules_200)
         );
-        // A Planart this style has no profile for still falls back to `None`
+        // A plan type this style has no profile for still falls back to `None`
         // (default rule set), instead of erroring or picking an arbitrary
         // profile.
         assert!(resolve_effective_rule_set(&style, "Schalplan 1:50").is_none());
@@ -1801,7 +1801,7 @@ mod tests {
             crate::modules::aec::engine::plan_view::PlanningStage::Design,
             crate::modules::aec::engine::plan_view::ViewType::FloorPlan,
         );
-        // Global Planart hatch must not apply; only per-style overlay.
+        // Global plan-type hatch must not apply; only per-style overlay.
         cfg.contour_hatch = Some(ComponentStyleOverride {
             hatch_pattern: Some("SOLID".into()),
             hatch_scale: Some(9.0),

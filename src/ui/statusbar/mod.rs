@@ -48,16 +48,16 @@ pub struct StatusMenuData<'a> {
     pub selection_types: Vec<String>,
     pub selection_filter: &'a rustc_hash::FxHashSet<String>,
     pub tooltip_hidden: bool,
-    // AEC "Projekt" pill: display name of the active project, if any
+    // AEC project pill: display name of the active project, if any
     // (`App::aec_project_explorer_file`, derived from the loaded `.ocsproj` path).
     pub active_project_name: Option<String>,
-    // AEC "Planart" pill: name of the active `DisplayConfig` for the tab, if any.
+    // AEC plan-type pill: name of the active `DisplayConfig` for the tab, if any.
     pub active_plan_name: Option<String>,
-    // AEC "Planart" pill: all `DisplayConfig` names in `App::aec_plan_library`.
+    // AEC plan-type pill: all `DisplayConfig` names in `App::aec_plan_library`.
     pub plan_names: Vec<String>,
-    /// Effective 2D/3D/Alle after session override (or Planart default).
+    /// Effective 2D/3D/All after session override (or plan-type default).
     pub representation_mode: crate::modules::aec::engine::display_component::RepresentationMode,
-    /// `None` inherit from Planart; `Some` is a session override.
+    /// `None` inherit from plan type; `Some` is a session override.
     pub representation_override: Option<
         crate::modules::aec::engine::display_component::RepresentationMode,
     >,
@@ -389,7 +389,7 @@ impl StatusBar {
                 .into(),
             );
         }
-        // "Projekt" pill (active AEC project) only makes sense while a drawing
+        // Project pill (active AEC project) only makes sense while a drawing
         // is active, same as the other pills that read from the active tab.
         if !is_start {
             pills.push(project_element);
@@ -397,7 +397,7 @@ impl StatusBar {
         if vis(StatusPill::Scale) {
             pills.push(scale_element);
         }
-        // "Planart" pill (AEC DisplayConfig) only makes sense while a drawing
+        // Plan-type pill (AEC DisplayConfig) only makes sense while a drawing
         // is active, same as the other pills that read from the active tab.
         if !is_start {
             pills.push(plan_element);

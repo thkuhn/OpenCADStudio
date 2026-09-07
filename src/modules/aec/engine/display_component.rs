@@ -1,4 +1,4 @@
-//! Fine-grained "Darstellungskomponenten" (display component slots) for AEC
+//! Fine-grained display component slots for AEC
 //! elements.
 //!
 //! Each element type (currently only walls; windows/doors are a deliberately
@@ -101,23 +101,23 @@ where
 /// wall (functional requirements a-i from the original request).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum WallComponentSlot {
-    /// a) Achslinie.
+    /// a) Axis line.
     AxisLine,
-    /// b) 2D Gesamtkontur.
+    /// b) 2D overall contour.
     Contour2D,
-    /// c) 2D Schraffur der Gesamtkontur.
+    /// c) 2D hatch of the overall contour.
     ContourHatch2D,
-    /// d) 2D Wandschichten.
+    /// d) 2D wall layers.
     Layers2D,
-    /// e) 2D Schraffuren der Schichten.
+    /// e) 2D hatches of the layers.
     LayerHatch2D,
-    /// f) 3D Gesamtkörper.
+    /// f) 3D solid body.
     Solid3D,
-    /// g) 3D Schraffur/Farbe der Oberflächen.
+    /// g) 3D surface hatch/color.
     SurfaceStyle3D,
-    /// h) Darstellung im Schnitt.
+    /// h) Section representation.
     SectionRepresentation,
-    /// i) Darstellung in der Ansicht.
+    /// i) Elevation representation.
     ElevationRepresentation,
 }
 
@@ -139,7 +139,7 @@ impl WallComponentSlot {
     }
 }
 
-/// Viewport / Planart representation filter: 2D, 3D, or both.
+/// Viewport / plan-type representation filter: 2D, 3D, or both.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
 pub enum RepresentationMode {
     TwoD,
@@ -148,7 +148,7 @@ pub enum RepresentationMode {
     All,
 }
 
-/// Geometry vs. hatch catalogue used by Planart visibility (legacy
+/// Geometry vs. hatch catalogue used by plan-type visibility (legacy
 /// `SectionRepresentation`/`ElevationRepresentation` are ignored on load).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum WallComponentKind {
@@ -252,7 +252,7 @@ impl Default for LayerVis {
     }
 }
 
-/// Sparse per-style exception stored on a Planart (`DisplayConfig`).
+/// Sparse per-style exception stored on a plan type (`DisplayConfig`).
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct StyleDisplayOverlay {
     #[serde(default)]
@@ -354,7 +354,7 @@ impl ComponentStyleOverride {
 }
 
 /// Which wall layers feed into layer-aggregating slots (`Contour2D`,
-/// `Solid3D`), instead of a coarse "Alle/Außen/Innen" choice.
+/// `Solid3D`), instead of a coarse All/Exterior/Interior choice.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum LayerSelection {
     /// All layers of the wall style contribute.
@@ -430,8 +430,8 @@ impl ComponentRuleSet {
 }
 
 /// Consistency check for a `StyleSubstitution` per the plan's requirement
-/// ("Konsistenzprüfung (gleiche Gesamtdicke/Achslage) beim Anlegen der
-/// Substitution"): the source and target wall style must have the same
+/// ("consistency check: same total thickness/axis position when creating
+/// the substitution"): the source and target wall style must have the same
 /// total layer thickness (sum of fixed thicknesses + gaps, formulas
 /// contribute `0.0` — see [`base_width_from_layers`]), so that substituting
 /// only the layer material/hatch/color source never shifts the wall's axis

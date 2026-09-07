@@ -269,7 +269,7 @@ impl OpenCADStudio {
         }
     }
 
-    /// Two-stage Phasenfilter-Editor (Step 5): loads `filter` (or the
+    /// Two-stage phase-filter editor (Step 5): loads `filter` (or the
     /// "unfiltered"/blank defaults if `None`) into the edit buffers backing
     /// the DisplayConfig form's phase-filter section.
     fn aec_plan_manager_load_phase_filter_buffers(
@@ -323,7 +323,7 @@ impl OpenCADStudio {
             .unwrap_or_default();
     }
 
-    /// Two-stage Phasenfilter-Editor (Step 5): builds a [`PhaseFilter`]
+    /// Two-stage phase-filter editor (Step 5): builds a [`PhaseFilter`]
     /// from the current edit buffers. Returns `None` when every phase is
     /// visible and neither style overlay is set — the "unfiltered"/legacy
     /// default — so a config left untouched keeps `phase_filter == None`.
@@ -812,7 +812,7 @@ impl OpenCADStudio {
     /// + `aec_plan_library`), if any, into the wall `ComponentRuleSet` and
     /// `style_substitutions` map that must be threaded through wall-mutating
     /// regenerations (join/extend/reverse/opening as well as style
-    /// assignment) so they honor the currently active Planart. Returns owned
+    /// assignment) so they honor the currently active plan type. Returns owned
     /// data (rather than borrowing `self.tabs`/`self.aec_plan_library`) so
     /// callers can resolve this once and still freely borrow `self.tabs[i]`
     /// mutably afterwards.
@@ -967,7 +967,7 @@ impl OpenCADStudio {
     }
 
     /// After a join (or a new wall segment that auto-joins), rebuild each
-    /// participating wall with *its* Planart/style profile. Shared join
+    /// participating wall with *its* plan-type/style profile. Shared join
     /// regenerations often pass `None` or the first wall's rules, which
     /// would otherwise drop the active display configuration.
     pub(in crate::app) fn reapply_active_display_config_to_wall_packages(
@@ -3119,7 +3119,7 @@ impl OpenCADStudio {
                 self.aec_project_explorer_new_storey_name.clear();
                 self.aec_project_explorer_new_storey_elevation = "0.0".to_string();
                 self.aec_project_explorer_new_storey_drawing.clear();
-                // Refresh the "Planart" library so the status-bar picker
+                // Refresh the plan-type library so the status-bar picker
                 // reflects this (empty) project's library immediately,
                 // instead of still showing a previously loaded drawing's
                 // global/library-file entries until the Plan Manager is
@@ -3165,7 +3165,7 @@ impl OpenCADStudio {
                         self.aec_project_explorer_selected_building = None;
                         self.aec_project_explorer_selected_storey = None;
                         // Same reasoning as `AecProjectExplorerNew`: make the
-                        // freshly loaded project's own "Planart" library
+                        // freshly loaded project's own plan-type library
                         // visible right away instead of only after the Plan
                         // Manager is opened once.
                         self.aec_plan_library = Some(
@@ -4026,7 +4026,7 @@ impl OpenCADStudio {
                 config.style_overlays = self.aec_plan_manager_style_overlays.clone();
                 config.contour_hatch = None;
 
-                // Two-stage Phasenfilter-Editor (Step 5): `phase_filter` is
+                // Two-stage phase-filter editor (Step 5): `phase_filter` is
                 // now derived straight from the edit buffers.
                 config.phase_filter = self.aec_plan_manager_build_phase_filter();
 
@@ -11968,7 +11968,7 @@ impl OpenCADStudio {
 }
 
 /// End-to-end GUI-flow test: drives the real `App::update` message loop
-/// (no window/renderer) to exercise the full "Planart" (DisplayConfig)
+/// (no window/renderer) to exercise the full plan-type (DisplayConfig)
 /// status-bar flow end to end — draw a wall via the headless command
 /// automation used by the GUI's own command line, select a `DisplayConfig`
 /// that hides every wall display slot (as the status-bar dropdown's
@@ -12165,7 +12165,7 @@ mod aec_display_config_gui_flow_test {
         project.material_wall_style_library.wall_styles.push(wall_style);
         app.aec_project_explorer_file = Some(project);
 
-        // 3) Drive the exact message the status-bar "Planart" dropdown/popup
+        // 3) Drive the exact message the status-bar plan-type dropdown/popup
         //    dispatches on selection.
         let _ = app.update(Message::AecActiveDisplayConfigSelected(Some(
             "Statik 1:50".to_string(),
@@ -12190,7 +12190,7 @@ mod aec_display_config_gui_flow_test {
         );
     }
 
-    /// Step 4 (Wandstil-Manager "Darstellungs-Profile" editor): driving the
+    /// Step 4 (wall style manager display-profiles editor): driving the
     /// profile-select/layer-toggle/save messages the way the UI would must
     /// persist an independent `layer_filter` for `Contour2D` vs `Solid3D`
     /// into `WallStyle::display_profiles`, via the same copy-on-write save
@@ -12200,7 +12200,7 @@ mod aec_display_config_gui_flow_test {
         let mut app = drawing_app();
 
         // A project-embedded style with one wall style ("style1") and two
-        // Planarten, mirroring how `AecWallStyleManagerOpen`/`AecPlanManagerOpen`
+        // plan types, mirroring how `AecWallStyleManagerOpen`/`AecPlanManagerOpen`
         // would have already populated these libraries.
         let wall_style = crate::modules::aec::engine::wall_style::WallStyle {
             style: crate::modules::aec::engine::style::Style {
@@ -12294,7 +12294,7 @@ mod aec_display_config_gui_flow_test {
         let rules = saved_style
             .display_profiles
             .get("Ausführungsplan 1:50")
-            .expect("the selected Planart must now have a display_profiles entry");
+            .expect("the selected plan type must now have a display_profiles entry");
 
         assert_eq!(
             rules.layer_filter_for(WallComponentSlot::Contour2D),
@@ -12320,7 +12320,7 @@ mod aec_display_config_gui_flow_test {
     }
 
     /// Removing a profile (`AecStyleManagerProfileRemove`) must delete the
-    /// `display_profiles` entry entirely, reverting that Planart back to
+    /// `display_profiles` entry entirely, reverting that plan type back to
     /// the style's default (non-regression) representation.
     #[test]
     fn wall_style_manager_profile_remove_deletes_the_display_profiles_entry() {
@@ -12369,11 +12369,11 @@ mod aec_display_config_gui_flow_test {
             .expect("style1 must still exist after removing its profile");
         assert!(
             !saved_style.display_profiles.contains_key("Ausführungsplan 1:50"),
-            "the removed Planart must no longer have a display_profiles entry"
+            "the removed plan type must no longer have a display_profiles entry"
         );
     }
 
-    /// Step 5: applying the DisplayConfig form with the "Abbruch" phase
+    /// Step 5: applying the DisplayConfig form with the demolition phase
     /// unchecked and a `demolition_style` override set must persist a
     /// `PhaseFilter` whose `visible_phases` excludes `Demolition` and whose
     /// `demolition_style` carries the entered line-color override.

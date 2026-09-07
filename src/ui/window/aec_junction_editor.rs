@@ -17,6 +17,7 @@ use crate::modules::aec::commands::JunctionParticipant;
 use crate::modules::aec::engine::join::{JoinOverrideStyle, LayerPairOverride};
 use crate::modules::aec::engine::library::StyleLibrary;
 use crate::t;
+use crate::tr;
 
 /// Everything the panel needs to render one open junction. Owned data is
 /// cheap to rebuild each frame (participants come from a topology query,
@@ -51,12 +52,12 @@ fn material_name(library: &StyleLibrary, material_id: &str) -> String {
         .unwrap_or_else(|| material_id.to_string())
 }
 
-fn style_label(style: &JoinOverrideStyle) -> &'static str {
+fn style_label(style: &JoinOverrideStyle) -> String {
     match style {
-        JoinOverrideStyle::Miter => "Miter",
-        JoinOverrideStyle::Butt => "Butt",
-        JoinOverrideStyle::OuterFace => "Außenkante",
-        JoinOverrideStyle::NoExtend => "Nicht verlängern",
+        JoinOverrideStyle::Miter => tr!("aec", "join-miter"),
+        JoinOverrideStyle::Butt => tr!("aec", "join-butt"),
+        JoinOverrideStyle::OuterFace => tr!("aec", "join-outer-face"),
+        JoinOverrideStyle::NoExtend => tr!("aec", "join-no-extend"),
     }
 }
 
@@ -110,15 +111,15 @@ pub fn view_window<'a>(state: JunctionEditorState<'a>) -> Element<'a, Message> {
         let end_label = if p.is_through {
             t!("durchlaufend").into_owned()
         } else {
-            format!("Ende {}", p.end_index)
+            tr!("aec", "end-n", n = p.end_index)
         };
         wall_list = wall_list.push(
             container(
                 column![
                     text(format!(
-                        "{}Wand #{} ({})",
+                        "{}{} ({})",
                         if is_current { "▶ " } else { "" },
-                        p.axis_handle.value(),
+                        tr!("aec", "wall-n", n = p.axis_handle.value()),
                         end_label
                     ))
                     .size(11),

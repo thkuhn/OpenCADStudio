@@ -169,8 +169,8 @@ pub struct Layer {
     #[serde(default)]
     pub hatch_override: Option<String>,
     /// Optional free-text role tag shown in the Style Manager to clarify a
-    /// layer's purpose beyond its [`LayerFunction`] (e.g. "Vormauerschale",
-    /// "Luftschicht"). Purely informational; does not affect geometry.
+    /// layer's purpose beyond its [`LayerFunction`] (e.g. outer wythe,
+    /// air cavity). Purely informational; does not affect geometry.
     /// Additive field: absent in older libraries, so it defaults to `None`.
     #[serde(default)]
     pub role_tag: Option<String>,
@@ -196,7 +196,7 @@ pub struct WallStyle {
     #[serde(deserialize_with = "deserialize_layers")]
     pub layers: Vec<Layer>,
     /// Style-centered display overrides, keyed by `DisplayConfig::name`: one
-    /// `ComponentRuleSet` per Planart/Maßstab this style has been tuned for.
+    /// `ComponentRuleSet` per plan type/scale this style has been tuned for.
     /// Absent entries mean "use the default rule set" (every slot visible,
     /// standard style, `All` layers for `Contour2D`/`Solid3D`) — see
     /// [`crate::modules::aec::engine::library::resolve_effective_rule_set`].

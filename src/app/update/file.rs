@@ -1360,7 +1360,7 @@ pub(super) fn on_open_file(&mut self) -> Task<Message> {
                     (1.0 / unit_factor) as f32
                 };
 
-                // Eagerly resolve the AEC `DisplayConfig` ("Planart") library
+                // Eagerly resolve the AEC `DisplayConfig` (plan type) library
                 // right after loading, so the status-bar picker already
                 // lists every plan even before the user ever opens the Plan
                 // Manager (which used to be the only place populating

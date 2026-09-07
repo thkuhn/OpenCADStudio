@@ -197,7 +197,7 @@ pub(super) struct DocumentTab {
     /// active for this tab, if any (`AEC_PLANMANAGER` Step 5 — in-memory
     /// only, not yet persisted to XDATA/project files; see Step 6).
     pub(super) active_display_config: Option<String>,
-    /// Session 2D/3D/Alle filter. `None` uses the Planart default.
+    /// Session 2D/3D/All filter. `None` uses the plan-type default.
     pub(super) representation_override: Option<
         crate::modules::aec::engine::display_component::RepresentationMode,
     >,

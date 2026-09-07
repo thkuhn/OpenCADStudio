@@ -195,7 +195,7 @@ pub fn save_display_config_library_to_project(
 /// embedded library fields, for a drawing that used to rely on the global,
 /// file-bound library and now wants a shared, project-wide one.
 ///
-/// Design decision ("verlustfrei migrieren", no silent overwrite): if the
+/// Design decision (lossless migrate, no silent overwrite): if the
 /// project already has a *non-empty* embedded library, this is a no-op for
 /// that library (the already-populated project library is considered
 /// authoritative and is never silently replaced). If the project's embedded

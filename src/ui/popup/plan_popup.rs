@@ -1,4 +1,4 @@
-//! AEC DisplayConfig ("Planart") status menu.
+//! AEC DisplayConfig (plan type) status menu.
 
 use iced::widget::{button, row, text};
 use iced::{Element, Fill};

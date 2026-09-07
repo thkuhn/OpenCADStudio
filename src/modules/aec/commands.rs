@@ -344,8 +344,11 @@ fn validate_and_persist_junction_override(
             remove_junction_override(scene, axis_handle, end_index);
         }
     }
-    queue_override_warning(format!(
-        "AEC: Removed {removed} outdated join override(s) on wall {axis_handle} (referenced layer/material no longer exists); falling back to automatic join resolution."
+    queue_override_warning(crate::tr!(
+        "aec",
+        "join-override-cleaned",
+        removed = removed,
+        axis = axis_handle.to_string()
     ));
     cleaned
 }
@@ -3272,20 +3275,26 @@ impl CadCommand for WallCommand {
     }
 
     fn prompt(&self) -> String {
-        let mode = if self.arc_mode { " (Arc)" } else { "" };
+        let mode = if self.arc_mode {
+            crate::tr!("aec", "wall-mode-arc")
+        } else {
+            String::new()
+        };
         if self.vertices.is_empty() {
-            format!(
-                "AEC_WALL  Specify start point (Justification: {}):",
-                self.justification.as_str()
+            crate::tr!(
+                "aec",
+                "wall-prompt-start",
+                justification = self.justification.as_str()
             )
         } else if self.no_style_warning {
-            "AEC_WALL  Please select a wall style in the Properties panel before finishing."
-                .to_string()
+            crate::tr!("aec", "wall-prompt-need-style")
         } else {
-            format!(
-                "AEC_WALL  Next pt{mode} (Justification: {}) [{}pts]:",
-                self.justification.as_str(),
-                self.vertices.len()
+            crate::tr!(
+                "aec",
+                "wall-prompt-next",
+                mode = mode.as_str(),
+                justification = self.justification.as_str(),
+                count = self.vertices.len()
             )
         }
     }
@@ -3824,16 +3833,10 @@ impl CadCommand for MaterialCommand {
 
     fn prompt(&self) -> String {
         match &self.step {
-            MaterialStep::Name => "AEC_MATERIAL  Enter material name:".to_string(),
-            MaterialStep::Hatch { .. } => {
-                "AEC_MATERIAL  Enter hatch pattern <ANSI31>:".to_string()
-            }
-            MaterialStep::Color { .. } => {
-                "AEC_MATERIAL  Enter line color as hex RRGGBB <000000>:".to_string()
-            }
-            MaterialStep::LineType { .. } => {
-                "AEC_MATERIAL  Enter line type <Continuous>:".to_string()
-            }
+            MaterialStep::Name => crate::tr!("aec", "material-prompt-name"),
+            MaterialStep::Hatch { .. } => crate::tr!("aec", "material-prompt-hatch"),
+            MaterialStep::Color { .. } => crate::tr!("aec", "material-prompt-color"),
+            MaterialStep::LineType { .. } => crate::tr!("aec", "material-prompt-linetype"),
         }
     }
 
@@ -3908,7 +3911,7 @@ impl CadCommand for MaterialCommand {
 pub fn aec_material_add(command_line: &mut CommandLine, args: &str) {
     let parts: Vec<&str> = args.split('|').collect();
     let [name, hatch, color_hex, line_type] = parts.as_slice() else {
-        command_line.push_error("AEC_MATERIAL_ADD: malformed arguments.");
+        command_line.push_error(&crate::tr!("aec", "material-malformed"));
         return;
     };
     let color = u32::from_str_radix(color_hex, 16).unwrap_or(0);
@@ -3931,10 +3934,19 @@ pub fn aec_material_add(command_line: &mut CommandLine, args: &str) {
         line_type.to_string(),
     ));
     match engine::library::save_to_default_path(&lib) {
-        Ok(()) => command_line.push_info(&format!(
-            "AEC: Material '{name}' saved (hatch {hatch}, color #{color:06X}, linetype {line_type})."
+        Ok(()) => command_line.push_info(&crate::tr!(
+            "aec",
+            "material-saved",
+            name = name.to_string(),
+            hatch = hatch.to_string(),
+            color = format!("{color:06X}"),
+            line_type = line_type.to_string()
         )),
-        Err(e) => command_line.push_error(&format!("AEC_MATERIAL: failed to save library: {e}")),
+        Err(e) => command_line.push_error(&crate::tr!(
+            "aec",
+            "material-save-failed",
+            error = e.to_string()
+        )),
     }
 }
 
@@ -3999,19 +4011,22 @@ impl CadCommand for StyleCommand {
 
     fn prompt(&self) -> String {
         match &self.step {
-            StyleStep::Name => "AEC_STYLE  Enter wall style name:".to_string(),
-            StyleStep::Parent { .. } => {
-                "AEC_STYLE  Enter parent style name (blank = none):".to_string()
-            }
-            StyleStep::LayerMaterial { layers, .. } => format!(
-                "AEC_STYLE  Add layer {} — material name (blank = finish style):",
-                layers.len() + 1
+            StyleStep::Name => crate::tr!("aec", "style-prompt-name"),
+            StyleStep::Parent { .. } => crate::tr!("aec", "style-prompt-parent"),
+            StyleStep::LayerMaterial { layers, .. } => crate::tr!(
+                "aec",
+                "style-prompt-layer-material",
+                n = { (layers.len() + 1) as i32 }
             ),
-            StyleStep::LayerThickness { material, .. } => {
-                format!("AEC_STYLE  Layer '{material}' — thickness <0.2>:")
-            }
-            StyleStep::LayerFunctionStep { material, .. } => format!(
-                "AEC_STYLE  Layer '{material}' — function [Structural/Insulation/Finish] <Structural>:"
+            StyleStep::LayerThickness { material, .. } => crate::tr!(
+                "aec",
+                "style-prompt-layer-thickness",
+                material = material.as_str()
+            ),
+            StyleStep::LayerFunctionStep { material, .. } => crate::tr!(
+                "aec",
+                "style-prompt-layer-function",
+                material = material.as_str()
             ),
         }
     }
@@ -4118,7 +4133,7 @@ pub fn aec_style_add(command_line: &mut CommandLine, args: &str) {
     let (Some(name), Some(parent_raw), Some(layers_raw)) =
         (parts.next(), parts.next(), parts.next())
     else {
-        command_line.push_error("AEC_STYLE_ADD: malformed arguments.");
+        command_line.push_error(&crate::tr!("aec", "style-malformed"));
         return;
     };
 
@@ -4134,8 +4149,10 @@ pub fn aec_style_add(command_line: &mut CommandLine, args: &str) {
         {
             Some(p) => Some(p.style.id.clone()),
             None => {
-                command_line.push_error(&format!(
-                    "AEC_STYLE: unknown parent style '{parent_raw}', creating without a parent."
+                command_line.push_error(&crate::tr!(
+                    "aec",
+                    "style-unknown-parent",
+                    parent = parent_raw
                 ));
                 None
             }
@@ -4198,15 +4215,24 @@ pub fn aec_style_add(command_line: &mut CommandLine, args: &str) {
     });
 
     match engine::library::save_to_default_path(&lib) {
-        Ok(()) => command_line.push_info(&format!(
-            "AEC: Wall style '{name}' saved with {} layer(s).",
-            lib.wall_styles
+        Ok(()) => {
+            let count = lib.wall_styles
                 .iter()
                 .find(|s| s.style.name == name)
                 .map(|s| s.layers.len())
-                .unwrap_or(0)
+                .unwrap_or(0);
+            command_line.push_info(&crate::tr!(
+                "aec",
+                "style-saved",
+                name = name,
+                count = count
+            ));
+        }
+        Err(e) => command_line.push_error(&crate::tr!(
+            "aec",
+            "style-save-failed",
+            error = e.to_string()
         )),
-        Err(e) => command_line.push_error(&format!("AEC_STYLE: failed to save library: {e}")),
     }
 }
 
@@ -4242,15 +4268,19 @@ pub fn aec_room(scene: &mut Scene, command_line: &mut CommandLine) {
     write_aec_record(&mut scene.document, handle, record);
     scene.bump_geometry();
     if detected {
-        command_line.push_info(&format!(
-            "AEC: Detected closed wall loop, created room '{}' ({} vertices) at {handle}",
-            room.name,
-            pts.len()
+        command_line.push_info(&crate::tr!(
+            "aec",
+            "room-detected",
+            name = room.name.as_str(),
+            count = pts.len(),
+            handle = handle.to_string()
         ));
     } else {
-        command_line.push_info(&format!(
-            "AEC: No closed wall loop found, created demo room '{}' at {handle}",
-            room.name
+        command_line.push_info(&crate::tr!(
+            "aec",
+            "room-demo",
+            name = room.name.as_str(),
+            handle = handle.to_string()
         ));
     }
 }
@@ -4438,9 +4468,12 @@ pub fn aec_storey(scene: &mut Scene, command_line: &mut CommandLine) {
     let handle = ensure_storey_entity(scene, next_id, Some(&new_storey));
     scene.bump_geometry();
 
-    command_line.push_info(&format!(
-        "AEC: Added storey '{}' at elevation {} ({handle})",
-        new_storey.name, new_storey.elevation
+    command_line.push_info(&crate::tr!(
+        "aec",
+        "storey-added",
+        name = new_storey.name.as_str(),
+        elevation = format!("{}", new_storey.elevation),
+        handle = handle.to_string()
     ));
 }
 
@@ -4512,8 +4545,10 @@ pub fn aec_wall_refresh(scene: &mut Scene, command_line: &mut CommandLine, libra
         }
     }
     scene.bump_geometry();
-    command_line.push_info(&format!(
-        "AEC_WALL_REFRESH: rebuilt representation for {refreshed} wall(s)."
+    command_line.push_info(&crate::tr!(
+        "aec",
+        "wall-refresh",
+        count = refreshed
     ));
 }
 
@@ -4548,16 +4583,19 @@ pub fn aec_room_schedule(scene: &mut Scene, command_line: &mut CommandLine) {
     }
 
     if rooms.is_empty() {
-        command_line.push_info("AEC: No rooms found in document.");
+        command_line.push_info(&crate::tr!("aec", "no-rooms"));
         return;
     }
 
     // Real TABLE entity: header row + one row per room.
     let row_count = rooms.len() + 1;
     let mut table = Table::new(Vector3::ZERO, row_count, 3);
-    table.set_cell_text(0, 0, "Name");
-    table.set_cell_text(0, 1, "Area");
-    table.set_cell_text(0, 2, "Storey ID");
+    let hdr_name = crate::tr!("aec", "schedule-name");
+    let hdr_area = crate::tr!("aec", "schedule-area");
+    let hdr_storey = crate::tr!("aec", "schedule-storey-id");
+    table.set_cell_text(0, 0, &hdr_name);
+    table.set_cell_text(0, 1, &hdr_area);
+    table.set_cell_text(0, 2, &hdr_storey);
     for (row, (name, area, storey)) in rooms.iter().enumerate() {
         table.set_cell_text(row + 1, 0, name);
         table.set_cell_text(row + 1, 1, &format!("{area:.2}"));
@@ -4566,9 +4604,11 @@ pub fn aec_room_schedule(scene: &mut Scene, command_line: &mut CommandLine) {
 
     let handle = scene.add_entity(EntityType::Table(table));
     scene.bump_geometry();
-    command_line.push_info(&format!(
-        "AEC: Room schedule table with {} room(s) created at {handle}",
-        rooms.len()
+    command_line.push_info(&crate::tr!(
+        "aec",
+        "schedule-created",
+        count = rooms.len(),
+        handle = handle.to_string()
     ));
 }
 
@@ -4637,11 +4677,12 @@ pub fn aec_ifc_export(scene: &mut Scene, command_line: &mut CommandLine) {
     }
 
     let ifc_data = engine::ifc::write_spf(&ifc_scene);
-    command_line.push_info(&format!(
-        "AEC: Exported IFC4 SPF ({} bytes)",
-        ifc_data.len()
+    command_line.push_info(&crate::tr!(
+        "aec",
+        "ifc-exported",
+        bytes = ifc_data.len()
     ));
-    command_line.push_info("(Note: Real file-save dialog is a future step)");
+    command_line.push_info(&crate::tr!("aec", "ifc-note"));
 }
 
 /// `AEC_WALLJOIN` — interactive front-end: pick two wall entities (clicking a
@@ -4670,8 +4711,8 @@ impl CadCommand for WallJoinCommand {
 
     fn prompt(&self) -> String {
         match self.selected.len() {
-            0 => "AEC_WALLJOIN  Select first wall to join:".to_string(),
-            _ => "AEC_WALLJOIN  Select second wall to join:".to_string(),
+            0 => crate::tr!("aec", "walljoin-first"),
+            _ => crate::tr!("aec", "walljoin-second"),
         }
     }
 
@@ -5133,7 +5174,7 @@ pub fn apply_display_config_to_scene(
 }
 
 /// Like [`apply_display_config_to_scene`], but a session `RepresentationMode`
-/// (status-bar 2D/3D/Alle) overrides the Planart default.
+/// (status-bar 2D/3D/All) overrides the plan-type default.
 pub fn apply_display_config_to_scene_with_representation(
     scene: &mut Scene,
     config: &engine::plan_view::DisplayConfig,
@@ -5743,7 +5784,7 @@ fn join_two_walls_in_document_inner(
                 .map(|i| new_a[i])
                 .or_else(|| end_b.map(|i| new_b[i]));
             // Forced L-corners must not go through the T/N-way classifier:
-            // detect_junctions would re-open a Kopfwand overhang as T.
+            // detect_junctions would re-open a head-wall overhang as T.
             if !force_l {
                 if let Some(pt) = join_pt {
                     let mut participants = vec![h_a, h_b];
@@ -5879,17 +5920,17 @@ pub fn aec_walljoin_do(
 ) {
     let parts: Vec<&str> = args.split('|').collect();
     let [a, b] = parts.as_slice() else {
-        command_line.push_error("AEC_WALLJOIN: malformed arguments.");
+        command_line.push_error(&crate::tr!("aec", "walljoin-malformed-args"));
         return;
     };
     let (Ok(a), Ok(b)) = (a.parse::<u64>(), b.parse::<u64>()) else {
-        command_line.push_error("AEC_WALLJOIN: malformed handles.");
+        command_line.push_error(&crate::tr!("aec", "walljoin-malformed-handles"));
         return;
     };
     let h_a = resolve_wall_package(scene, Handle::new(a));
     let h_b = resolve_wall_package(scene, Handle::new(b));
     if h_a == h_b {
-        command_line.push_error("AEC_WALLJOIN: select two different walls.");
+        command_line.push_error(&crate::tr!("aec", "walljoin-two-different"));
         return;
     }
     let is_wall = |scene: &Scene, h: Handle| {
@@ -5901,7 +5942,7 @@ pub fn aec_walljoin_do(
         })
     };
     if !is_wall(scene, h_a) || !is_wall(scene, h_b) {
-        command_line.push_error("AEC_WALLJOIN: select two wall entities.");
+        command_line.push_error(&crate::tr!("aec", "walljoin-two-walls"));
         return;
     }
 
@@ -5921,7 +5962,7 @@ pub fn aec_walljoin_do(
             if !changes.is_empty() {
                 scene.bump_entities(&changes);
             }
-            command_line.push_info("AEC_WALLJOIN: walls joined.");
+            command_line.push_info(&crate::tr!("aec", "walljoin-ok"));
             for msg in take_pending_override_warnings() {
                 command_line.push_info(&msg);
             }
@@ -5973,11 +6014,11 @@ impl CadCommand for WallExtendCommand {
 
     fn prompt(&self) -> String {
         if self.wall.is_none() {
-            "AEC_WALLEXTEND  Select wall to extend:".to_string()
+            crate::tr!("aec", "wallextend-select")
         } else if self.mode == WallExtendMode::ToPoint {
-            "AEC_WALLEXTEND  Specify extend point or [Wall]:".to_string()
+            crate::tr!("aec", "wallextend-point")
         } else {
-            "AEC_WALLEXTEND  Select target wall or [Point]:".to_string()
+            crate::tr!("aec", "wallextend-wall")
         }
     }
 
@@ -6097,28 +6138,28 @@ pub fn aec_wallextend_do(
 ) {
     let mut parts = args.splitn(2, '|');
     let (Some(wall_str), Some(rest)) = (parts.next(), parts.next()) else {
-        command_line.push_error("AEC_WALLEXTEND: malformed arguments.");
+        command_line.push_error(&crate::tr!("aec", "wallextend-malformed-args"));
         return;
     };
     let Ok(wall_val) = wall_str.parse::<u64>() else {
-        command_line.push_error("AEC_WALLEXTEND: malformed handle.");
+        command_line.push_error(&crate::tr!("aec", "wallextend-malformed-handle"));
         return;
     };
     let wall_handle = resolve_wall_package(scene, Handle::new(wall_val));
     let mut axis = get_wall_vertices(scene, wall_handle);
     if axis.len() < 2 {
-        command_line.push_error("AEC_WALLEXTEND: select a wall axis with at least two points.");
+        command_line.push_error(&crate::tr!("aec", "wallextend-need-axis"));
         return;
     }
 
     if let Some(pt_args) = rest.strip_prefix("PT|") {
         let coords: Vec<&str> = pt_args.split('|').collect();
         let [x, y, z] = coords.as_slice() else {
-            command_line.push_error("AEC_WALLEXTEND: malformed point.");
+            command_line.push_error(&crate::tr!("aec", "wallextend-malformed-point"));
             return;
         };
         let (Ok(x), Ok(y), Ok(z)) = (x.parse::<f64>(), y.parse::<f64>(), z.parse::<f64>()) else {
-            command_line.push_error("AEC_WALLEXTEND: malformed point.");
+            command_line.push_error(&crate::tr!("aec", "wallextend-malformed-point"));
             return;
         };
         let pt = DVec3::new(x, y, z);
@@ -6177,15 +6218,15 @@ pub fn aec_wallextend_do(
         if !changes.is_empty() {
             scene.bump_entities(&changes);
         }
-        command_line.push_info("AEC_WALLEXTEND: wall extended.");
+        command_line.push_info(&crate::tr!("aec", "wallextend-ok"));
     } else if let Some(target_str) = rest.strip_prefix("WALL|") {
         let Ok(target_val) = target_str.parse::<u64>() else {
-            command_line.push_error("AEC_WALLEXTEND: malformed target handle.");
+            command_line.push_error(&crate::tr!("aec", "wallextend-malformed-target"));
             return;
         };
         let target_handle = resolve_wall_package(scene, Handle::new(target_val));
         if target_handle == wall_handle {
-            command_line.push_error("AEC_WALLEXTEND: select a different target wall.");
+            command_line.push_error(&crate::tr!("aec", "wallextend-different"));
             return;
         }
         let target_axis = get_wall_vertices(scene, target_handle);
@@ -6242,14 +6283,14 @@ pub fn aec_wallextend_do(
                 if !changes.is_empty() {
                     scene.bump_entities(&changes);
                 }
-                command_line.push_info("AEC_WALLEXTEND: wall extended to target wall.");
+                command_line.push_info(&crate::tr!("aec", "wallextend-to-wall-ok"));
             }
             Err(e) => {
                 command_line.push_error(&format!("AEC_WALLEXTEND: {}", e));
             }
         }
     } else {
-        command_line.push_error("AEC_WALLEXTEND: malformed arguments.");
+        command_line.push_error(&crate::tr!("aec", "wallextend-malformed-args"));
     }
 }
 
@@ -6273,7 +6314,7 @@ impl CadCommand for WallReverseCommand {
     }
 
     fn prompt(&self) -> String {
-        "AEC_WALLREVERSE  Select wall to reverse:".to_string()
+        crate::tr!("aec", "wallreverse-select")
     }
 
     fn needs_entity_pick(&self) -> bool {
@@ -6399,12 +6440,12 @@ pub fn aec_wallreverse_do(
     style_substitutions: Option<&HashMap<engine::plan_view::WallStyleRef, engine::plan_view::WallStyleRef>>,
 ) {
     let Ok(val) = args.trim().parse::<u64>() else {
-        command_line.push_error("AEC_WALLREVERSE: malformed handle.");
+        command_line.push_error(&crate::tr!("aec", "wallreverse-malformed"));
         return;
     };
     let handle = resolve_wall_package(scene, Handle::new(val));
     if !is_wall_pick_target(scene, handle) {
-        command_line.push_error("AEC_WALLREVERSE: select a wall entity.");
+        command_line.push_error(&crate::tr!("aec", "wallreverse-need-wall"));
         return;
     }
     match reverse_wall_in_document(
@@ -6422,7 +6463,7 @@ pub fn aec_wallreverse_do(
             if !changes.is_empty() {
                 scene.bump_entities(&changes);
             }
-            command_line.push_info("AEC_WALLREVERSE: wall direction reversed.");
+            command_line.push_info(&crate::tr!("aec", "wallreverse-ok"));
         }
         Err(e) => {
             command_line.push_error(&format!("AEC_WALLREVERSE: {e:?}"));
@@ -6644,9 +6685,9 @@ impl CadCommand for WallOpeningCommand {
     fn prompt(&self) -> String {
         let tag = self.name();
         if self.wall.is_none() {
-            format!("{tag}  Select wall:")
+            crate::tr!("aec", "opening-select-wall", cmd = tag)
         } else {
-            format!("{tag}  Specify point along wall:")
+            crate::tr!("aec", "opening-specify-point", cmd = tag)
         }
     }
 
@@ -6705,11 +6746,11 @@ pub fn aec_wallopening_do(
 ) {
     let parts: Vec<&str> = args.split('|').collect();
     if parts.len() != 3 {
-        command_line.push_error("AEC_WALLOPENING: malformed arguments.");
+        command_line.push_error(&crate::tr!("aec", "opening-malformed-args"));
         return;
     }
     let Ok(wall_val) = parts[0].parse::<u64>() else {
-        command_line.push_error("AEC_WALLOPENING: malformed wall handle.");
+        command_line.push_error(&crate::tr!("aec", "opening-malformed-handle"));
         return;
     };
     let kind = match parts[1] {
@@ -6718,15 +6759,15 @@ pub fn aec_wallopening_do(
     };
     let xyz: Vec<&str> = parts[2].split(',').collect();
     if xyz.len() < 2 {
-        command_line.push_error("AEC_WALLOPENING: malformed point.");
+        command_line.push_error(&crate::tr!("aec", "opening-malformed-point"));
         return;
     }
     let Ok(x) = xyz[0].parse::<f64>() else {
-        command_line.push_error("AEC_WALLOPENING: malformed point.");
+        command_line.push_error(&crate::tr!("aec", "opening-malformed-point"));
         return;
     };
     let Ok(y) = xyz[1].parse::<f64>() else {
-        command_line.push_error("AEC_WALLOPENING: malformed point.");
+        command_line.push_error(&crate::tr!("aec", "opening-malformed-point"));
         return;
     };
     let z = xyz.get(2).and_then(|s| s.parse::<f64>().ok()).unwrap_or(0.0);
@@ -6749,10 +6790,10 @@ pub fn aec_wallopening_do(
                 scene.bump_entities(&changes);
             }
             let label = kind.as_str();
-            command_line.push_info(&format!("AEC: {label} opening placed."));
+            command_line.push_info(&crate::tr!("aec", "opening-placed", kind = label));
         }
         Err(e) => {
-            command_line.push_error(&format!("AEC_WALLOPENING: {e}"));
+            command_line.push_error(&crate::tr!("aec", "opening-error", error = e.to_string()));
         }
     }
 }
@@ -6972,7 +7013,7 @@ mod wall_command_tests {
     /// Regression test for the reported bug: a T-junction between two walls
     /// (one wall's endpoint touches the other wall's *interior*, i.e. a
     /// [`join::JunctionRole::Through`] participant) must still list the
-    /// through-running wall in the Junction Editor's "Beteiligte Wände"
+    /// through-running wall in the Junction Editor's participating-walls
     /// list, not just the stem wall that was clicked to open the editor.
     #[test]
     fn walls_at_junction_includes_through_wall_at_t_junction() {
@@ -8170,25 +8211,25 @@ mod wall_command_tests {
     #[test]
     fn material_command_collects_fields_and_dispatches_add_command() {
         let mut cmd = MaterialCommand::new();
-        assert!(cmd.prompt().contains("name"));
+        assert_eq!(cmd.prompt(), crate::tr!("aec", "material-prompt-name"));
 
         assert!(matches!(
             cmd.on_text_input("Sichtbeton"),
             Some(CmdResult::NeedPoint)
         ));
-        assert!(cmd.prompt().contains("hatch"));
+        assert_eq!(cmd.prompt(), crate::tr!("aec", "material-prompt-hatch"));
 
         assert!(matches!(
             cmd.on_text_input(""), // blank -> default hatch
             Some(CmdResult::NeedPoint)
         ));
-        assert!(cmd.prompt().contains("color"));
+        assert_eq!(cmd.prompt(), crate::tr!("aec", "material-prompt-color"));
 
         assert!(matches!(
             cmd.on_text_input("A0A0A0"),
             Some(CmdResult::NeedPoint)
         ));
-        assert!(cmd.prompt().contains("line type"));
+        assert_eq!(cmd.prompt(), crate::tr!("aec", "material-prompt-linetype"));
 
         match cmd.on_text_input("") {
             Some(CmdResult::Dispatch(dispatch)) => {
@@ -8206,25 +8247,28 @@ mod wall_command_tests {
         let mut cmd = MaterialCommand::new();
         assert!(matches!(cmd.on_text_input(""), Some(CmdResult::NeedPoint)));
         // Still on the name step.
-        assert!(cmd.prompt().contains("name") && !cmd.prompt().contains("hatch"));
+        assert_eq!(cmd.prompt(), crate::tr!("aec", "material-prompt-name"));
     }
 
     #[test]
     fn style_command_collects_two_layers_and_dispatches_add_command() {
         let mut cmd = StyleCommand::new();
-        assert!(cmd.prompt().contains("name"));
+        assert_eq!(cmd.prompt(), crate::tr!("aec", "style-prompt-name"));
 
         assert!(matches!(
             cmd.on_text_input("Testwand"),
             Some(CmdResult::NeedPoint)
         ));
-        assert!(cmd.prompt().contains("parent"));
+        assert_eq!(cmd.prompt(), crate::tr!("aec", "style-prompt-parent"));
 
         assert!(matches!(
             cmd.on_text_input(""), // no parent
             Some(CmdResult::NeedPoint)
         ));
-        assert!(cmd.prompt().contains("material name"));
+        assert_eq!(
+            cmd.prompt(),
+            crate::tr!("aec", "style-prompt-layer-material", n = 1i32)
+        );
 
         // Layer 1
         assert!(matches!(
@@ -9728,7 +9772,7 @@ mod wall_command_tests {
             command_line
                 .history
                 .iter()
-                .any(|e| e.text.contains("outdated join override")),
+                .any(|e| e.text.contains("join override") || e.text.contains("Verbindungsüberschreibung")),
             "the command line should surface an invalidation notice, got {:?}",
             command_line.history.iter().map(|e| &e.text).collect::<Vec<_>>()
         );

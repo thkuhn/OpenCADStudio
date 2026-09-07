@@ -4,13 +4,13 @@
 //!
 //! Step 5 slims this manager down to stem/master-data
 //! (name/discipline/scale/phase/view_type) plus the two-stage
-//! Phasenfilter-Editor (`PhaseFilter`): step 1 is a checkbox per
+//! phase-filter editor (`PhaseFilter`): step 1 is a checkbox per
 //! [`PlanPhase`] controlling `PhaseFilter::visible_phases`, step 2 is a pair
 //! of inline style-override forms for `demolition_style`/`existing_style`.
 //! The old per-slot visibility/style-override table, the Layer-Filter-UI,
 //! and the Style-Substitutions-UI are gone: those overrides now live
-//! style-centered on `WallStyle::display_profiles`, edited in the Wandstil-
-//! Manager instead (see `aec_wall_style_manager.rs`).
+//! style-centered on `WallStyle::display_profiles`, edited in the wall style
+//! manager instead (see `aec_wall_style_manager.rs`).
 
 use std::collections::HashMap;
 
@@ -25,30 +25,31 @@ use crate::modules::aec::engine::display_component::{
 use crate::modules::aec::engine::library::DisplayConfigLibrary;
 use crate::modules::aec::engine::plan_view::{DisplayConfig, PlanPhase, PlanningStage, ViewType};
 use crate::t;
+use crate::tr;
 use super::aec_ui_util::*;
 
-fn planning_stage_label(stage: &PlanningStage) -> &'static str {
+fn planning_stage_label(stage: PlanningStage) -> String {
     match stage {
-        PlanningStage::Permit => "Genehmigungsplanung",
-        PlanningStage::Design => "Entwurfsplanung",
-        PlanningStage::Execution => "Ausführungsplanung",
+        PlanningStage::Permit => tr!("aec", "planning-stage-permit"),
+        PlanningStage::Design => tr!("aec", "planning-stage-design"),
+        PlanningStage::Execution => tr!("aec", "planning-stage-execution"),
     }
 }
 
-fn view_type_label(view_type: &ViewType) -> &'static str {
+fn view_type_label(view_type: ViewType) -> String {
     match view_type {
-        ViewType::FloorPlan => "Grundriss",
-        ViewType::Section => "Schnitt",
-        ViewType::Elevation => "Ansicht",
+        ViewType::FloorPlan => tr!("aec", "view-type-floor-plan"),
+        ViewType::Section => tr!("aec", "view-type-section"),
+        ViewType::Elevation => tr!("aec", "view-type-elevation"),
     }
 }
 
-const PLANNING_STAGE_LABELS: [&str; 3] = [
-    "Genehmigungsplanung",
-    "Entwurfsplanung",
-    "Ausführungsplanung",
+const PLANNING_STAGES: [PlanningStage; 3] = [
+    PlanningStage::Permit,
+    PlanningStage::Design,
+    PlanningStage::Execution,
 ];
-const VIEW_TYPE_LABELS: [&str; 3] = ["Grundriss", "Schnitt", "Ansicht"];
+const VIEW_TYPES: [ViewType; 3] = [ViewType::FloorPlan, ViewType::Section, ViewType::Elevation];
 
 /// Parses a planning stage label (as produced by [`planning_stage_label`]) back
 /// into a [`PlanningStage`], defaulting to `Design` for anything unrecognized.
@@ -87,8 +88,8 @@ pub struct PlanConfigFormState<'a> {
     pub scale: &'a str,
     pub planning_stage: PlanningStage,
     pub view_type: ViewType,
-    /// Two-stage Phasenfilter-Editor, Stage 1: which phases are currently
-    /// checked as "sichtbar" (`PhaseFilter::visible_phases`).
+    /// Two-stage phase-filter editor, Stage 1: which phases are currently
+    /// checked as visible (`PhaseFilter::visible_phases`).
     pub phase_filter_visible_existing: bool,
     pub phase_filter_visible_demolition: bool,
     pub phase_filter_visible_new: bool,
@@ -195,8 +196,8 @@ fn config_row<'a>(config: &'a DisplayConfig, selected: bool) -> Element<'a, Mess
     let subtitle = format!(
         "{} · {} · {}",
         config.discipline,
-        planning_stage_label(&config.planning_stage),
-        view_type_label(&config.view_type)
+        planning_stage_label(config.planning_stage),
+        view_type_label(config.view_type)
     );
     button(
         column![
@@ -272,7 +273,7 @@ fn config_form_view<'a>(form: PlanConfigFormState<'a>) -> Element<'a, Message> {
         .spacing(8),
         row![
             text(t!("Maßstab (info)")).size(10).style(muted).width(100),
-            text_input("z. B. 50", form.scale)
+            text_input(tr!("aec", "scale-placeholder").as_str(), form.scale)
                 .on_input(Message::AecPlanManagerScaleChanged)
                 .size(11)
                 .padding([4, 6])
@@ -282,13 +283,11 @@ fn config_form_view<'a>(form: PlanConfigFormState<'a>) -> Element<'a, Message> {
         row![
             text(t!("Planungsstufe")).size(10).style(muted).width(100),
             pick_list(
-                Some(planning_stage_label(&form.planning_stage)),
-                &PLANNING_STAGE_LABELS[..],
-                |label: &&str| label.to_string(),
+                Some(form.planning_stage),
+                &PLANNING_STAGES[..],
+                |stage: &PlanningStage| planning_stage_label(*stage),
             )
-            .on_select(|label| Message::AecPlanManagerPlanningStageChanged(
-                planning_stage_from_label(label)
-            ))
+            .on_select(Message::AecPlanManagerPlanningStageChanged)
             .text_size(11)
             .width(160),
         ]
@@ -296,11 +295,11 @@ fn config_form_view<'a>(form: PlanConfigFormState<'a>) -> Element<'a, Message> {
         row![
             text(t!("Ansichtstyp")).size(10).style(muted).width(100),
             pick_list(
-                Some(view_type_label(&form.view_type)),
-                &VIEW_TYPE_LABELS[..],
-                |label: &&str| label.to_string(),
+                Some(form.view_type),
+                &VIEW_TYPES[..],
+                |view_type: &ViewType| view_type_label(*view_type),
             )
-            .on_select(|label| Message::AecPlanManagerViewTypeChanged(view_type_from_label(label)))
+            .on_select(Message::AecPlanManagerViewTypeChanged)
             .text_size(11)
             .width(160),
         ]
@@ -342,13 +341,15 @@ fn style_override_summary(style: Option<&ComponentStyleOverride>) -> String {
     }
     if let Some(color) = style.hatch_color {
         parts.push(format!(
-            "Hatch #{}",
+            "{} #{}",
+            tr!("aec", "hatch-prefix"),
             super::aec_ui_util::acad_color_to_editor_string(color)
         ));
     }
     if let Some(color) = style.fill_color {
         parts.push(format!(
-            "Fill #{}",
+            "{} #{}",
+            tr!("aec", "fill-prefix"),
             super::aec_ui_util::acad_color_to_editor_string(color)
         ));
     }
@@ -359,37 +360,70 @@ fn style_override_summary(style: Option<&ComponentStyleOverride>) -> String {
     }
 }
 
-fn kind_label(kind: WallComponentKind) -> &'static str {
+fn kind_label(kind: WallComponentKind) -> String {
     match kind {
-        WallComponentKind::Axis => "Achse",
-        WallComponentKind::Layers2D => "2D-Schichten",
-        WallComponentKind::LayerHatch2D => "2D-Schichtschraffur",
-        WallComponentKind::Contour2D => "2D-Kontur",
-        WallComponentKind::ContourHatch2D => "2D-Konturschraffur",
-        WallComponentKind::Layers3D => "3D-Schichten",
-        WallComponentKind::SurfaceStyle3D => "3D-Oberfläche",
+        WallComponentKind::Axis => tr!("aec", "kind-axis"),
+        WallComponentKind::Layers2D => tr!("aec", "kind-layers-2d"),
+        WallComponentKind::LayerHatch2D => tr!("aec", "kind-layer-hatch-2d"),
+        WallComponentKind::Contour2D => tr!("aec", "kind-contour-2d"),
+        WallComponentKind::ContourHatch2D => tr!("aec", "kind-contour-hatch-2d"),
+        WallComponentKind::Layers3D => tr!("aec", "kind-layers-3d"),
+        WallComponentKind::SurfaceStyle3D => tr!("aec", "kind-surface-3d"),
     }
 }
 
-fn representation_label(mode: RepresentationMode) -> &'static str {
+fn representation_label(mode: RepresentationMode) -> String {
     match mode {
-        RepresentationMode::TwoD => "2D",
-        RepresentationMode::ThreeD => "3D",
-        RepresentationMode::All => "Alle",
+        RepresentationMode::TwoD => "2D".to_string(),
+        RepresentationMode::ThreeD => "3D".to_string(),
+        RepresentationMode::All => tr!("aec", "representation-all"),
     }
 }
 
-const REPRESENTATION_LABELS: [&str; 3] = ["2D", "3D", "Alle"];
-const HATCH_ANGLE_RELATIVE_LABELS: [&str; 3] = ["erben", "Relativ", "Absolut"];
+const REPRESENTATION_MODES: [RepresentationMode; 3] = [
+    RepresentationMode::TwoD,
+    RepresentationMode::ThreeD,
+    RepresentationMode::All,
+];
 
-fn hatch_angle_relative_label(value: Option<bool>) -> &'static str {
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum HatchAngleRelChoice {
+    Inherit,
+    Relative,
+    Absolute,
+}
+
+const HATCH_ANGLE_REL_CHOICES: [HatchAngleRelChoice; 3] = [
+    HatchAngleRelChoice::Inherit,
+    HatchAngleRelChoice::Relative,
+    HatchAngleRelChoice::Absolute,
+];
+
+fn hatch_angle_rel_choice(value: Option<bool>) -> HatchAngleRelChoice {
     match value {
-        None => "erben",
-        Some(true) => "Relativ",
-        Some(false) => "Absolut",
+        None => HatchAngleRelChoice::Inherit,
+        Some(true) => HatchAngleRelChoice::Relative,
+        Some(false) => HatchAngleRelChoice::Absolute,
     }
 }
 
+fn hatch_angle_rel_value(choice: HatchAngleRelChoice) -> Option<bool> {
+    match choice {
+        HatchAngleRelChoice::Inherit => None,
+        HatchAngleRelChoice::Relative => Some(true),
+        HatchAngleRelChoice::Absolute => Some(false),
+    }
+}
+
+fn hatch_angle_relative_label(value: Option<bool>) -> String {
+    match hatch_angle_rel_choice(value) {
+        HatchAngleRelChoice::Inherit => tr!("aec", "inherit"),
+        HatchAngleRelChoice::Relative => tr!("aec", "relative"),
+        HatchAngleRelChoice::Absolute => tr!("aec", "absolute"),
+    }
+}
+
+#[allow(dead_code)]
 fn hatch_angle_relative_from_label(label: &str) -> Option<bool> {
     match label {
         "Relativ" => Some(true),
@@ -398,6 +432,7 @@ fn hatch_angle_relative_from_label(label: &str) -> Option<bool> {
     }
 }
 
+#[allow(dead_code)]
 fn representation_from_label(label: &str) -> RepresentationMode {
     match label {
         "2D" => RepresentationMode::TwoD,
@@ -415,7 +450,7 @@ fn global_display_section<'a>(
         let checked = visibility.get(kind).copied().unwrap_or(true);
         kinds = kinds.push(
             iced::widget::checkbox(checked)
-                .label(kind_label(*kind).to_string())
+                .label(kind_label(*kind))
                 .on_toggle(move |v| Message::AecPlanManagerComponentVisibleToggle(*kind, v))
                 .size(13)
                 .text_size(11),
@@ -427,13 +462,11 @@ fn global_display_section<'a>(
             row![
                 text(t!("Darstellung")).size(10).style(muted).width(100),
                 pick_list(
-                    Some(representation_label(mode)),
-                    &REPRESENTATION_LABELS[..],
-                    |label: &&str| label.to_string(),
+                    Some(mode),
+                    &REPRESENTATION_MODES[..],
+                    |mode: &RepresentationMode| representation_label(*mode),
                 )
-                .on_select(|label| {
-                    Message::AecPlanManagerRepresentationChanged(representation_from_label(label))
-                })
+                .on_select(Message::AecPlanManagerRepresentationChanged)
                 .text_size(11)
                 .width(120),
             ]
@@ -481,7 +514,7 @@ fn contour_hatch_section_view<'a>(form: &PlanConfigFormState<'a>) -> Element<'a,
                 hatch_pattern_field(
                     form.contour_hatch_pattern,
                     form.contour_hatch_picker_open,
-                    Some("erben"),
+                    Some(tr!("aec", "inherit")),
                     Message::AecPlanManagerContourHatchPickerToggle,
                     Message::AecPlanManagerContourHatchPatternChanged,
                 ),
@@ -516,13 +549,13 @@ fn contour_hatch_section_view<'a>(form: &PlanConfigFormState<'a>) -> Element<'a,
             row![
                 text(t!("Relativ zur Wand")).size(10).style(muted).width(110),
                 pick_list(
-                    Some(hatch_angle_relative_label(form.contour_hatch_angle_relative)),
-                    &HATCH_ANGLE_RELATIVE_LABELS[..],
-                    |label: &&str| label.to_string(),
+                    Some(hatch_angle_rel_choice(form.contour_hatch_angle_relative)),
+                    &HATCH_ANGLE_REL_CHOICES[..],
+                    |choice: &HatchAngleRelChoice| hatch_angle_relative_label(hatch_angle_rel_value(*choice)),
                 )
-                .on_select(|label| {
+                .on_select(|choice| {
                     Message::AecPlanManagerContourHatchAngleRelativeChanged(
-                        hatch_angle_relative_from_label(label),
+                        hatch_angle_rel_value(choice),
                     )
                 })
                 .text_size(11)
@@ -647,7 +680,7 @@ fn overlay_section_view<'a>(form: &PlanConfigFormState<'a>) -> Element<'a, Messa
             hatch_pattern_field(
                 form.overlay_hatch_pattern,
                 form.overlay_hatch_picker_open,
-                Some("erben"),
+                Some(tr!("aec", "inherit")),
                 Message::AecPlanManagerOverlayHatchPickerToggle,
                 Message::AecPlanManagerOverlayHatchPatternChanged,
             ),
@@ -682,13 +715,13 @@ fn overlay_section_view<'a>(form: &PlanConfigFormState<'a>) -> Element<'a, Messa
         row![
             text(t!("Relativ zur Wand")).size(10).style(muted).width(110),
             pick_list(
-                Some(hatch_angle_relative_label(form.overlay_hatch_angle_relative)),
-                &HATCH_ANGLE_RELATIVE_LABELS[..],
-                |label: &&str| label.to_string(),
+                Some(hatch_angle_rel_choice(form.overlay_hatch_angle_relative)),
+                &HATCH_ANGLE_REL_CHOICES[..],
+                |choice: &HatchAngleRelChoice| hatch_angle_relative_label(hatch_angle_rel_value(*choice)),
             )
-            .on_select(|label| {
+            .on_select(|choice| {
                 Message::AecPlanManagerOverlayHatchAngleRelativeChanged(
-                    hatch_angle_relative_from_label(label),
+                    hatch_angle_rel_value(choice),
                 )
             })
             .text_size(11)
@@ -752,10 +785,10 @@ fn overlay_section_view<'a>(form: &PlanConfigFormState<'a>) -> Element<'a, Messa
         .into()
 }
 
-/// Two-stage Phasenfilter-Editor section: Stage 1 renders one visibility
+/// Two-stage phase-filter editor section: Stage 1 renders one visibility
 /// checkbox per [`PlanPhase`] (`PhaseFilter::visible_phases`); Stage 2
 /// renders two independent style-override forms — one for
-/// `demolition_style` ("Abbruch"), one for `existing_style` ("Bestand") —
+/// `demolition_style` (demolition), one for `existing_style` (existing) —
 /// each built with [`style_editor_view`].
 fn phase_filter_section_view<'a>(
     visible_existing: bool,
@@ -879,9 +912,11 @@ mod tests {
             cad_layer: None,
         };
         let summary = style_override_summary(Some(&style));
+        let hatch = tr!("aec", "hatch-prefix");
+        let fill = tr!("aec", "fill-prefix");
         assert_eq!(
             summary,
-            "Continuous, #000000, ANSI31, Hatch #FFFFFF, Fill #808080"
+            format!("Continuous, #000000, ANSI31, {hatch} #FFFFFF, {fill} #808080")
         );
     }
 
@@ -891,35 +926,29 @@ mod tests {
             hatch_color: Some(acadrust::types::Color::Rgb { r: 0, g: 255, b: 0 }),
             ..Default::default()
         };
-        assert_eq!(style_override_summary(Some(&style)), "Hatch #00FF00");
+        assert_eq!(
+            style_override_summary(Some(&style)),
+            format!("{} #00FF00", tr!("aec", "hatch-prefix"))
+        );
     }
 
     #[test]
     fn planning_stage_and_view_type_label_roundtrip() {
         assert_eq!(
-            planning_stage_from_label(planning_stage_label(&PlanningStage::Permit)),
+            planning_stage_from_label("Genehmigungsplanung"),
             PlanningStage::Permit
         );
         assert_eq!(
-            planning_stage_from_label(planning_stage_label(&PlanningStage::Design)),
+            planning_stage_from_label("Entwurfsplanung"),
             PlanningStage::Design
         );
         assert_eq!(
-            planning_stage_from_label(planning_stage_label(&PlanningStage::Execution)),
+            planning_stage_from_label("Ausführungsplanung"),
             PlanningStage::Execution
         );
-        assert_eq!(
-            view_type_from_label(view_type_label(&ViewType::FloorPlan)),
-            ViewType::FloorPlan
-        );
-        assert_eq!(
-            view_type_from_label(view_type_label(&ViewType::Section)),
-            ViewType::Section
-        );
-        assert_eq!(
-            view_type_from_label(view_type_label(&ViewType::Elevation)),
-            ViewType::Elevation
-        );
+        assert_eq!(view_type_from_label("Grundriss"), ViewType::FloorPlan);
+        assert_eq!(view_type_from_label("Schnitt"), ViewType::Section);
+        assert_eq!(view_type_from_label("Ansicht"), ViewType::Elevation);
     }
 
     #[test]

@@ -89,14 +89,14 @@ pub enum PlanningStage {
 }
 
 /// The kind of drawing view a `DisplayConfig` applies to.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum ViewType {
-    /// Grundriss.
+    /// Floor plan.
     #[default]
     FloorPlan,
-    /// Schnitt.
+    /// Section.
     Section,
-    /// Ansicht.
+    /// Elevation.
     Elevation,
 }
 
@@ -126,19 +126,19 @@ pub struct DisplayConfig {
     /// whole project deserialization.
     #[serde(default)]
     pub planning_stage: PlanningStage,
-    /// View type (Grundriss/Schnitt/Ansicht). Additive field: absent in
+    /// View type (floor plan / section / elevation). Additive field: absent in
     /// `.ocsproj`/library files saved before this field existed, so it
     /// defaults to [`ViewType::FloorPlan`] on load instead of failing the
     /// whole project deserialization.
     #[serde(default)]
     pub view_type: ViewType,
     /// Which [`PlanPhase`]s this config shows, plus extra style overrides for
-    /// `Demolition`/`Existing` walls (e.g. dashed lines for Abbruch). `None`
+    /// `Demolition`/`Existing` walls (e.g. dashed lines for demolition). `None`
     /// means "unfiltered" — every phase is shown, unchanged from before this
     /// field existed.
     #[serde(default)]
     pub phase_filter: Option<PhaseFilter>,
-    /// Default 2D/3D/All filter for this Planart; session override wins.
+    /// Default 2D/3D/All filter for this plan type; session override wins.
     #[serde(default)]
     pub default_representation: RepresentationMode,
     /// Global component visibility (absent key = visible).
@@ -155,7 +155,7 @@ pub struct DisplayConfig {
 /// Two-stage phase visibility/appearance filter for a [`DisplayConfig`]: which
 /// [`PlanPhase`]s are visible at all, plus an optional extra style overlay
 /// applied on top of the normal wall style resolution for `Demolition`
-/// ("Abbruch") and `Existing` ("Bestand") walls (e.g. dashed/grey lines).
+/// and `Existing` walls (e.g. dashed/grey lines).
 /// Leaving a style `None` means "no extra overlay for that phase".
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 pub struct PhaseFilter {
@@ -174,9 +174,9 @@ pub struct PhaseFilter {
     pub existing_style: Option<ComponentStyleOverride>,
 }
 
-/// Step 7 ("Auto-Maßstabskopplung an den Zeichnungsmaßstab"): a single row
-/// of the "bei aktivem Zeichnungsmaßstab X automatisch `DisplayConfig` Y
-/// vorschlagen/aktivieren" mapping table. Deliberately *not* a field of
+/// Step 7 (auto scale coupling to the drawing scale): a single row of the
+/// "when drawing scale X is active, suggest/activate DisplayConfig Y"
+/// mapping table. Deliberately *not* a field of
 /// [`DisplayConfig`] itself — per the plan wording this is a pure
 /// comfort mechanism layered above the core model, so it lives as a
 /// sibling collection on

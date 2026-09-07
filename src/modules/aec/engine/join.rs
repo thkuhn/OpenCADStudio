@@ -203,7 +203,7 @@ pub fn join_wall_axes(
         let b_mid = matches!(role_b, Some(JunctionRole::Through(_)));
         let a_head = axis_overhangs_both_sides(axis_a, isect, END_MID_TOLERANCE);
         let b_head = axis_overhangs_both_sides(axis_b, isect, END_MID_TOLERANCE);
-        // Kopfwand of a T continues past the stem on both sides — never L.
+        // Head wall of a T continues past the stem on both sides — never L.
         let use_l = (both_end || (!a_mid && !b_mid)) && !(a_head ^ b_head);
         if use_l {
             let mut new_a = axis_a.to_vec();
@@ -212,7 +212,7 @@ pub fn join_wall_axes(
             new_b[idx_b] = isect;
             return Ok((new_a, new_b, JoinKind::L, Some(idx_a), Some(idx_b)));
         }
-        // Intersection classified as T via Kopfwand overhang: keep the
+        // Intersection classified as T via head-wall overhang: keep the
         // through axis full length and snap only the stem end.
         if a_head ^ b_head {
             if a_head {
@@ -610,7 +610,7 @@ fn closest_segment_index(point: DVec3, axis: &[DVec3]) -> Option<usize> {
 }
 
 /// True when `point` lies on `axis` such that both endpoints remain at least
-/// `min_overhang` away — the Kopfwand of a T continues past the stem.
+/// `min_overhang` away — the head wall of a T continues past the stem.
 fn axis_overhangs_both_sides(axis: &[DVec3], point: DVec3, min_overhang: f64) -> bool {
     if axis.len() < 2 {
         return false;
@@ -928,7 +928,7 @@ mod tests {
 
     #[test]
     fn detect_junctions_near_end_overhang_stays_t() {
-        // Kopfwand continues 0.2 past the stem — inside WALL_JOIN_SNAP_RADIUS
+        // Head wall continues 0.2 past the stem — inside WALL_JOIN_SNAP_RADIUS
         // (0.3) but still a T because it overhangs both sides.
         let through = vec![DVec3::new(0.0, 0.0, 0.0), DVec3::new(5.2, 0.0, 0.0)];
         let stem = vec![DVec3::new(5.0, 0.0, 0.0), DVec3::new(5.0, 4.0, 0.0)];

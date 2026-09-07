@@ -13,6 +13,7 @@ use crate::modules::aec::engine::library::{
 use crate::modules::aec::engine::material::Material;
 use crate::modules::aec::engine::project::ProjectFile;
 use crate::t;
+use crate::tr;
 use super::aec_ui_util::*;
 
 /// Edit-buffer fields for the material form, owned by `App` and borrowed
@@ -464,9 +465,9 @@ fn material_form_view<'a>(
                 for (ws, layer_idx) in usages {
                     form = form.push(
                         text(format!(
-                            "{} (Schicht {})",
+                            "{} {}",
                             ws.style.name,
-                            layer_idx + 1
+                            tr!("aec", "layer-n", n = { (layer_idx + 1) as i32 })
                         ))
                         .size(10),
                     );

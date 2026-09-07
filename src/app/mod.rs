@@ -1172,7 +1172,7 @@ pub(super) struct OpenCADStudio {
     aec_plan_manager_scale: String,
     aec_plan_manager_planning_stage: crate::modules::aec::engine::plan_view::PlanningStage,
     aec_plan_manager_view_type: crate::modules::aec::engine::plan_view::ViewType,
-    /// Two-stage Phasenfilter-Editor (Step 5), Stage 1: which
+    /// Two-stage phase-filter editor (Step 5), Stage 1: which
     /// [`crate::modules::aec::engine::plan_view::PlanPhase`]s are visible
     /// for the currently edited config, one bool per phase.
     aec_plan_manager_phase_filter_visible_existing: bool,
@@ -1202,7 +1202,7 @@ pub(super) struct OpenCADStudio {
     aec_plan_manager_existing_style_hatch_color_picker_open: bool,
     aec_plan_manager_existing_style_fill_color_picker_open: bool,
     aec_plan_manager_existing_style_hatch_picker_open: bool,
-    /// Stable `DisplayConfig.id` while editing an existing Planart.
+    /// Stable `DisplayConfig.id` while editing an existing plan type.
     aec_plan_manager_editing_id: Option<uuid::Uuid>,
     aec_plan_manager_default_representation:
         crate::modules::aec::engine::display_component::RepresentationMode,
@@ -2032,7 +2032,7 @@ pub enum ModalKind {
     /// view/edit content is added by a later step.
     AecMaterialManager,
     AecWallStyleManager,
-    /// Child modal of [`Self::AecWallStyleManager`]: Planart display-profile
+    /// Child modal of [`Self::AecWallStyleManager`]: plan-type display-profile
     /// editor (mirrors Plot → Plotstyle).
     AecWallStyleDisplayProfiles,
     /// Junction Editor Panel (Step 5) — edit a wall junction's node-level
@@ -2718,16 +2718,16 @@ pub enum Message {
     AecStyleManagerProfileSlotStyleClear,
     /// Close the slot-style editor without changing the pending map.
     AecStyleManagerProfileSlotStyleClose,
-    /// Open the Planart display-profiles child modal from the wall style manager.
+    /// Open the plan-type display-profiles child modal from the wall style manager.
     AecWallStyleManagerDisplayProfilesOpen,
-    /// Close the Planart display-profiles child modal and restore the wall
+    /// Close the plan-type display-profiles child modal and restore the wall
     /// style manager (Plotstyle → Plot pattern).
     AecWallStyleManagerDisplayProfilesClose,
     /// Saves the currently edited profile's `ComponentRuleSet` into the
     /// wall style's `display_profiles[selected_config_name]`.
     AecStyleManagerProfileSave,
     /// Removes the currently selected `DisplayConfig`'s override entirely,
-    /// reverting that Planart back to the style's default representation.
+    /// reverting that plan type back to the style's default representation.
     AecStyleManagerProfileRemove,
 
     // ── AEC Project Explorer (`AEC_PROJECTEXPLORER`) ──────────────────────
@@ -2818,7 +2818,7 @@ pub enum Message {
     AecPlanManagerPlanningStageChanged(crate::modules::aec::engine::plan_view::PlanningStage),
     /// View-type field changed in the DisplayConfig edit form.
     AecPlanManagerViewTypeChanged(crate::modules::aec::engine::plan_view::ViewType),
-    /// Two-stage Phasenfilter-Editor, Stage 1: a phase's "sichtbar"
+    /// Two-stage phase-filter editor, Stage 1: a phase's visibility
     /// checkbox was toggled in the DisplayConfig edit form.
     AecPlanManagerPhaseVisibleToggle(crate::modules::aec::engine::plan_view::PlanPhase, bool),
     /// Stage 2: `demolition_style` line-type field changed.
@@ -2887,14 +2887,14 @@ pub enum Message {
     AecPlanManagerContourHatchColorPickerToggle,
     AecPlanManagerOverlayLayerVis2d(bool),
     AecPlanManagerOverlayLayerVis3d(bool),
-    /// "Übernehmen" pressed — persists the edit buffer to the library and,
+    /// Apply pressed — persists the edit buffer to the library and,
     /// if the config being edited is the active tab's active DisplayConfig,
     /// re-applies it to the active scene's walls.
     AecPlanManagerApply,
     /// The active-DisplayConfig dropdown selected a config by name for the
     /// active document tab; immediately regenerates the tab's walls.
     AecActiveDisplayConfigSelected(Option<String>),
-    /// Status-bar 2D/3D/Alle. `None` inherits the Planart default.
+    /// Status-bar 2D/3D/All. `None` inherits the plan-type default.
     AecRepresentationOverrideSelected(
         Option<crate::modules::aec::engine::display_component::RepresentationMode>,
     ),

@@ -16,6 +16,7 @@ use crate::modules::aec::engine::library::{
 use crate::modules::aec::engine::project::ProjectFile;
 use crate::modules::aec::engine::wall_style::WallStyle;
 use crate::t;
+use crate::tr;
 use super::aec_ui_util::*;
 
 const LAYER_COL_REORDER_W: f32 = 74.0;
@@ -92,7 +93,7 @@ pub struct DisplayProfileFormState<'a> {
 }
 
 
-/// Standalone modal content for Planart display-profile editing
+/// Standalone modal content for plan-type display-profile editing
 /// (`ModalKind::AecWallStyleDisplayProfiles`).
 pub fn view_display_profiles_window<'a>(
     profiles: DisplayProfileFormState<'a>,
@@ -252,10 +253,7 @@ fn wall_style_tree_row<'a>(
     source: LibrarySource,
     selected: bool,
 ) -> Element<'a, Message> {
-    let subtitle = crate::tf!(
-        "{count} layer(s)",
-        count = wall_style.layers.len()
-    );
+    let subtitle = tr!("aec", "layer-count", count = wall_style.layers.len());
     let mut row_content = row![].spacing(4).align_y(iced::Center);
     if depth > 0 {
         row_content = row_content.push(Space::new().width(12.0 * depth as f32));
@@ -464,9 +462,7 @@ fn wall_style_form_view<'a>(
     detail_col = detail_col
         .push(Space::new().height(10))
         .push(
-            text(t!(
-                "Darstellung und Stil-Ausnahmen liegen im Plan-Manager (Planart), nicht am Wandstil."
-            ))
+            text(tr!("aec", "display-on-plan-manager"))
             .size(10)
             .style(muted),
         )
@@ -640,15 +636,15 @@ fn layer_row<'a>(
                 input
             }
         },
-        text_input("z.B. -12", &buffer.axis_offset)
+        text_input(tr!("aec", "placeholder-axis-offset").as_str(), &buffer.axis_offset)
             .on_input(move |v| Message::AecStyleManagerWallStyleLayerAxisOffsetChanged(index, v))
             .size(11)
             .width(LAYER_COL_GAP_W),
-        text_input("bottom (cm)", &buffer.bottom_offset)
+        text_input(tr!("aec", "placeholder-bottom-cm").as_str(), &buffer.bottom_offset)
             .on_input(move |v| Message::AecStyleManagerWallStyleLayerBottomOffsetChanged(index, v))
             .size(11)
             .width(LAYER_COL_OFFSET_W),
-        text_input("top (cm)", &buffer.top_offset)
+        text_input(tr!("aec", "placeholder-top-cm").as_str(), &buffer.top_offset)
             .on_input(move |v| Message::AecStyleManagerWallStyleLayerTopOffsetChanged(index, v))
             .size(11)
             .width(LAYER_COL_OFFSET_W),
@@ -679,11 +675,11 @@ fn layer_row<'a>(
             .padding([4, 6])
             .width(LAYER_COL_OVERRIDE_W)
         },
-        text_input("role", &buffer.role_tag)
+        text_input(tr!("aec", "placeholder-role").as_str(), &buffer.role_tag)
             .on_input(move |v| Message::AecStyleManagerWallStyleLayerRoleTagChanged(index, v))
             .size(11)
             .width(LAYER_COL_ROLE_W),
-        text_input("hatch", &buffer.hatch_override)
+        text_input(tr!("aec", "placeholder-hatch").as_str(), &buffer.hatch_override)
             .on_input(move |v| Message::AecStyleManagerWallStyleLayerHatchOverrideChanged(index, v))
             .size(11)
             .width(LAYER_COL_HATCH_W),
@@ -906,7 +902,7 @@ pub fn display_profiles_section<'a>(
         section = section.push(
             row![
                 text(t!("Hatch-Winkel")).size(10).style(muted).width(100),
-                text_input("z.B. 45", profiles.hatch_angle)
+                text_input(tr!("aec", "placeholder-hatch-angle").as_str(), profiles.hatch_angle)
                     .on_input(Message::AecStyleManagerProfileHatchAngleChanged)
                     .size(11)
                     .padding([4, 6])
