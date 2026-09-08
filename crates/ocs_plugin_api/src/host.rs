@@ -12,6 +12,7 @@
 //! [`ensure_plugin_state`] helpers for the ergonomic typed access.
 
 use std::any::Any;
+use std::path::PathBuf;
 
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
@@ -22,8 +23,12 @@ use crate::ribbon::CadModule;
 // so out-of-tree plugins can use them without adding their own acadrust
 // dependency (which would risk an ABI-mismatching version).
 pub use acadrust;
+pub use acadrust::objects::{
+    DictionaryCloningFlags, KnownXRecordKind, ProxyObjectReference, ProxyReferenceKind, XRecord,
+    XRecordEntry, XRecordSection, XRecordValue, XRecordValueType,
+};
+pub use acadrust::xdata::{ExtendedDataRecord, XDataValue};
 pub use acadrust::{CadDocument, EntityType, Handle};
-pub use acadrust::xdata::ExtendedDataRecord;
 
 use crate::ipc::protocol::{PluginRequest, PluginResponse};
 
@@ -298,6 +303,14 @@ pub trait BuiltinPlugin: Send + Sync {
     /// the V4 runner guarantees it is only called for plugins that report
     /// API major 4 or newer.
     fn on_notification(&mut self, _command_id: Option<u64>, _notification: HostNotification) {}
+
+    /// Lifecycle callback invoked once after the runner connects. The plugin
+    /// receives the active document tab's `HostApi` so it can set up worker
+    /// threads or cache `plugin_request_sender()` before any user command runs.
+    ///
+    /// Added in API v5. The runner only calls this for plugins that report API
+    /// major 5 or newer.
+    fn on_load(&mut self, _host: &mut dyn HostApi) {}
 }
 
 /// A point-driven interactive command a plugin starts via
@@ -531,6 +544,26 @@ pub trait HostApi {
     fn add_entities(&mut self, entities: Vec<EntityType>) -> Vec<Handle> {
         entities.into_iter().map(|e| self.add_entity(e)).collect()
     }
+
+    /// Return the filesystem path of the document in tab `tab_id`, if any.
+    /// Added in API v5. The default returns `None`; in-process hosts should
+    /// override it to expose the real path.
+    fn document_path(&self, tab_id: u64) -> Option<PathBuf> {
+        let _ = tab_id;
+        None
+    }
+
+    /// DocApi v2 (`ocs_doc_api`): dispatch one bincode-serialized `DocApiEnvelope`
+    /// (one write op OR a read-only query batch) and return the bincode-serialized
+    /// `Result<Receipt, ApiError>`. Opaque bytes:
+    /// this crate does not depend on `ocs_doc_api`, it only routes the envelope.
+    ///
+    /// Added for the DocApi v2 adapter. The default returns `Err` ("not supported");
+    /// the in-process host (`HostSession`) overrides it to call the DocApi executor.
+    fn doc_api_dispatch(&mut self, tab_id: u64, bytes: &[u8]) -> Result<Vec<u8>, String> {
+        let _ = (tab_id, bytes);
+        Err("DocApi v2 not supported by this host".to_string())
+    }
 }
 
 /// Simplified, read-only entity kind exposed by [`DocumentReader`].
@@ -713,10 +746,13 @@ mod repl {
             error: Option<String>,
             error_type: Option<String>,
             traceback: Option<String>,
-            line_number: Option<u32>,
-            column_number: Option<u32>,
+            position: Option<(u32, u32)>,
             duration_ms: f64,
         ) -> Self {
+            let (line_number, column_number) = match position {
+                Some((l, c)) => (Some(l), Some(c)),
+                None => (None, None),
+            };
             Self {
                 success,
                 output,

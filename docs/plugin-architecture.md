@@ -89,6 +89,25 @@ plugin compiles against. Two tiers:
 
 A plugin enables the `host` feature.
 
+### Build-time ABI metadata
+
+For API v4 and later the host records two pieces of build-time metadata that
+affect whether a prebuilt plugin can safely be loaded:
+
+- `acadrust_source` — the exact git source of the `acadrust` crate the host was
+  built against.
+- `rustc_version` — the output of `rustc --version` for the compiler that built
+  the host.
+
+A plugin's `plugin.toml` declares the same values under `[opencad]`. For API v4
+and later, `rustc_version` is required and the host refuses to load the plugin
+unless it matches exactly. This turns the current silent runner crash into a
+one-line diagnosis such as:
+
+```
+Plugin built with rustc 1.96.0, host requires 1.98.0 - rebuild required
+```
+
 ### `PluginManifest`
 
 ```rust
@@ -111,6 +130,7 @@ pub trait BuiltinPlugin: Send + Sync {
     fn manifest(&self) -> &'static PluginManifest;
     fn ribbon(&self) -> Box<dyn CadModule>;            // the ribbon tab
     fn dispatch(&self, host: &mut dyn HostApi, cmd: &str) -> bool;
+    fn on_load(&mut self, host: &mut dyn HostApi) {}
 }
 ```
 
@@ -127,6 +147,7 @@ concrete types:
 | Command line | `push_info`, `push_output`, `push_error` |
 | Undo / dirty | `push_undo`, `set_dirty` |
 | Tab | `tab_index()` |
+| Document identity (V5) | `document_path(tab_id)` returns the saved path for a document tab. |
 | Notifications (V4) | `on_notification` receives `HostNotification::SelectionChangedV4 { tab_id, handles }` when the active tab's selection changes, plus `DocumentChangedV4` / `DocumentTabClosed`. |
 
 ### `export_plugin!` — the C-ABI export
@@ -160,6 +181,10 @@ ocs_plugin_api = { git = "https://github.com/HakanSeven12/OpenCADStudio", featur
 [patch.crates-io]
 acadrust = { git = "https://github.com/HakanSeven12/acadrust", branch = "main" }
 ```
+
+Your release build must also use the same `rustc` as the host. Record it in
+`plugin.toml` (see below) and pin the toolchain in your CI matrix so every
+published asset matches the host's compiler.
 
 ```rust
 // src/lib.rs
@@ -206,10 +231,12 @@ version = "0.1.0"
 description = "…"
 
 [opencad]
-api_version = 3
+api_version = 5
 ribbon_order = 50
 command_prefixes = ["EX_"]
 xdata_apps = []
+# Filled with the exact compiler output while staging the release asset.
+rustc_version = "rustc 1.98.0 (hash date)"
 ```
 
 The full, buildable scaffold is in [`docs/plugin-template/`](plugin-template);

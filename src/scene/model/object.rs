@@ -32,10 +32,19 @@ pub enum PropValue {
     },
     /// ACI/RGB/ByLayer/ByBlock color — rendered as a color picker.
     ColorChoice(AcadColor),
+    /// Color-book color with its file-provided display name.
+    NamedColorChoice { color: AcadColor, name: String },
     /// Color varies across the current multi-selection.
     ColorVaries,
     /// Line weight — rendered as a combo_box.
     LwChoice(LineWeight),
+    /// Object-specific line weight routed by field name.
+    FieldLwChoice {
+        field: &'static str,
+        value: LineWeight,
+    },
+    /// Object-specific lineweight varies across the current selection.
+    FieldLwVaries { field: &'static str },
     /// Lineweight varies across the current multi-selection.
     LwVaries,
     /// Linetype name — rendered as a combo_box.

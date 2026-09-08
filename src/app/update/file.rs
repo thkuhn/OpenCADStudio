@@ -133,6 +133,9 @@ fn plot_dialog_sheet_mm(d: &crate::ui::window::plot::PlotDialogState) -> (f64, f
         "A1" => Some(PaperSize::A1),
         "A0" => Some(PaperSize::A0),
         "A4" => Some(PaperSize::A4),
+        "Letter" => Some(PaperSize::Letter),
+        "Legal" => Some(PaperSize::Legal),
+        "Tabloid" => Some(PaperSize::Tabloid),
         _ => None,
     };
     if let Some(paper) = standard {
@@ -364,11 +367,13 @@ impl OpenCADStudio {
             pick_box: self.pick_box,
             cursor_type: self.cursor_type,
             crosshair_color: self.crosshair_color,
+            lineweight_display_scale: self.lineweight_display_scale,
             isometric_drafting: self.isometric_drafting,
             iso_plane: self.iso_plane,
             snap_angle_deg: self.snap_angle_deg,
             otrack: self.snapper.otrack_enabled,
             default_assoc_prompted: self.default_assoc_prompted,
+            donation_prompt_version: self.donation_prompt_version.clone(),
             disabled_plugins: {
                 let mut v: Vec<String> = self.disabled_plugins.iter().cloned().collect();
                 v.sort();
@@ -382,6 +387,8 @@ impl OpenCADStudio {
                 self.snapper.snap_enabled,
             ),
             texteditmode: self.texteditmode,
+            quick_dimension_snap_priority: self.quick_dimension_snap_priority,
+            dimension_continue_mode: self.dimension_continue_mode,
             textfill: crate::scene::text::sdf_atlas::textfill(),
             backup_on_save: self.backup_on_save,
             file_assoc_enabled: self.file_assoc_enabled,
@@ -390,10 +397,13 @@ impl OpenCADStudio {
             pick_add: self.pick_add,
             pick_drag_rect: self.pick_drag_rect,
             quick_properties: self.quick_properties,
-            bg_color: self.default_bg_color.map(f4_to_u3),
-            paper_bg_color: self.default_paper_bg_color.map(f4_to_u3),
+            bg_color: None,
+            paper_bg_color: None,
             language: self.language,
             cliprompt_lines: crate::app::settings::clamp_clipromptlines(self.cliprompt_lines),
+            commandline_fade_ms: crate::app::settings::clamp_commandline_fade_ms(
+                self.commandline_fade_ms,
+            ),
             block_mru: self.block_mru.clone(),
             block_freq: self.block_freq.clone(),
         }
@@ -414,6 +424,7 @@ impl OpenCADStudio {
             .crosshair_color
             .map(crate::app::config::rgb_to_hex)
             .unwrap_or_default();
+        self.lineweight_display_scale = s.lineweight_display_scale.clamp(25, 200);
         self.isometric_drafting = s.isometric_drafting;
         self.iso_plane = s.iso_plane;
         self.snap_angle_deg = if s.snap_angle_deg.is_finite() {
@@ -425,6 +436,7 @@ impl OpenCADStudio {
         // open / tab switch), not app-global, so they are not applied here.
         self.snapper.otrack_enabled = s.otrack;
         self.default_assoc_prompted = s.default_assoc_prompted;
+        self.donation_prompt_version = s.donation_prompt_version.clone();
         self.disabled_plugins = s.disabled_plugins.iter().cloned().collect();
         self.plugin_repos = s.plugin_repos.clone();
         self.command_line.literal_spaces = s.literal_spaces;
@@ -440,6 +452,8 @@ impl OpenCADStudio {
         self.snapper.enabled = modes.into_iter().collect();
         self.snapper.snap_enabled = snap_enabled;
         self.texteditmode = s.texteditmode;
+        self.quick_dimension_snap_priority = s.quick_dimension_snap_priority.min(1);
+        self.dimension_continue_mode = s.dimension_continue_mode.clamp(0, 1);
         crate::scene::text::sdf_atlas::set_textfill(s.textfill);
         self.backup_on_save = s.backup_on_save;
         self.file_assoc_enabled = s.file_assoc_enabled;
@@ -449,14 +463,18 @@ impl OpenCADStudio {
         self.pick_add = s.pick_add;
         self.pick_drag_rect = s.pick_drag_rect;
         self.quick_properties = s.quick_properties;
-        self.default_bg_color = s.bg_color.map(u3_to_f4);
-        self.default_paper_bg_color = s.paper_bg_color.map(u3_to_f4);
+        // Legacy settings.bg_color / paper_bg_color are superseded by model_space config.
         if crate::i18n::set_language(s.language).is_ok() {
             self.language = s.language;
         }
         self.cliprompt_lines = crate::app::settings::clamp_clipromptlines(s.cliprompt_lines);
         self.command_line
             .set_cliprompt_lines(self.cliprompt_lines.clamp(0, 50) as u8);
+        self.commandline_fade_ms =
+            crate::app::settings::clamp_commandline_fade_ms(s.commandline_fade_ms);
+        self.command_line.set_commandline_fade_ms(
+            self.commandline_fade_ms.clamp(0, 60000) as u32,
+        );
         // Block usage: clone but cap to sane sizes (MRU 20, freq map 200)
         self.block_mru = s.block_mru.iter().take(20).cloned().collect();
         self.block_freq = s
@@ -465,11 +483,10 @@ impl OpenCADStudio {
             .take(200)
             .map(|(k, v)| (k.clone(), *v))
             .collect();
-        // Push the restored background onto every drawing tab that exists now
-        // (the start tab and any initial drawing). Tabs created later pick it
-        // up via `apply_bg_default` at their construction site.
+        // Push restored display defaults onto every drawing tab that exists now.
+        // Tabs created later pick them up at their construction site.
         for idx in 0..self.tabs.len() {
-            self.apply_bg_default(idx);
+            self.apply_display_defaults(idx);
         }
         self.rebuild_ribbon_modules();
     }
@@ -592,17 +609,16 @@ impl OpenCADStudio {
         h.object_snap_mode = osmode;
     }
 
-    /// Apply the persisted default background(s) to tab `idx`. No-op for the
-    /// start tab or when no default is set. Refreshes the tab's cached wires
-    /// and meshes so background-adaptive colours pick up the change.
-    pub(in crate::app) fn apply_bg_default(&mut self, idx: usize) {
+    /// Apply persisted viewport display defaults to tab `idx`.
+    pub(in crate::app) fn apply_display_defaults(&mut self, idx: usize) {
         let bg = self.default_bg_color;
         let paper_bg = self.default_paper_bg_color;
-        if bg.is_none() && paper_bg.is_none() {
-            return;
-        }
         let tab = &mut self.tabs[idx];
         if tab.is_start {
+            return;
+        }
+        tab.scene.model_lineweight_scale = self.lineweight_display_scale as f32 / 100.0;
+        if bg.is_none() && paper_bg.is_none() {
             return;
         }
         if let Some(c) = bg {
@@ -771,6 +787,7 @@ impl OpenCADStudio {
                     .map(|(key, command)| (key.clone(), command.clone()))
                     .collect(),
             },
+            model_space: self.model_space.clone(),
         }
     }
 
@@ -780,6 +797,23 @@ impl OpenCADStudio {
         self.ui_theme = cfg.theme.clone();
         self.active_theme = self.ui_theme.to_iced();
         self.theme_color_inputs = self.ui_theme.palette.hex_values();
+        self.model_space = cfg.model_space;
+        self.model_bg_input = self
+            .model_space
+            .custom_bg
+            .map(crate::app::config::rgb_to_hex)
+            .unwrap_or_default();
+        self.paper_bg_input = self
+            .model_space
+            .custom_paper_bg
+            .map(crate::app::config::rgb_to_hex)
+            .unwrap_or_default();
+        self.desk_bg_input = self
+            .model_space
+            .custom_desk_bg
+            .map(crate::app::config::rgb_to_hex)
+            .unwrap_or_default();
+        self.sync_model_space_theme(false);
         self.recent_files = cfg
             .recent
             .files
@@ -824,6 +858,40 @@ impl OpenCADStudio {
         // move. The release message saves the final height once.
         if !self.command_history_resizing {
             self.save_config();
+        }
+    }
+
+    /// Sync the active theme and model space configuration into all open tabs
+    /// and the application default background settings.
+    pub(in crate::app) fn sync_model_space_theme(&mut self, geometry_changed: bool) {
+        let model_bg = self.model_space.resolve_model_bg(&self.active_theme);
+        let paper_bg = self.model_space.resolve_paper_bg();
+        let sel_color = self.model_space.resolve_selection_color();
+        let sel_effect = self.model_space.selection_effect;
+        self.default_bg_color = Some(model_bg);
+        self.default_paper_bg_color = Some(paper_bg);
+
+        for tab in &mut self.tabs {
+            let old_bg = tab.scene.bg_color;
+            let old_paper = tab.scene.paper_bg_color;
+            let old_sel_color = tab.scene.selection_color;
+            let old_sel_effect = tab.scene.selection_effect;
+            tab.scene.bg_color = model_bg;
+            tab.scene.paper_bg_color = paper_bg;
+            tab.scene.selection_color = sel_color;
+            tab.scene.selection_effect = sel_effect;
+            tab.bg_color = Some(model_bg);
+            tab.paper_bg_color = Some(paper_bg);
+
+            if old_sel_color != sel_color || old_sel_effect != sel_effect {
+                tab.scene.selection_generation = tab.scene.selection_generation.wrapping_add(1);
+            }
+
+            if geometry_changed || old_bg != model_bg || old_paper != paper_bg {
+                tab.scene.recolor_meshes();
+                tab.scene.bump_geometry();
+            }
+            tab.scene.request_refresh(crate::scene::ViewportRefreshScope::All);
         }
     }
 
@@ -1282,7 +1350,7 @@ pub(super) fn on_open_file(&mut self) -> Task<Message> {
                     self.tabs.push(new_tab);
                     let idx = self.tabs.len() - 1;
                     self.active_tab = idx;
-                    self.apply_bg_default(idx);
+                    self.apply_display_defaults(idx);
                     idx
                 };
 
@@ -1396,6 +1464,8 @@ pub(super) fn on_open_file(&mut self) -> Task<Message> {
                 if let Some(prepared) = prepared_geometry {
                     self.tabs[i].scene.install_prepared_open_geometry(prepared);
                 }
+                // Pay for the interaction index here, not on the first hover.
+                self.tabs[i].scene.warm_interaction_caches();
                 self.tabs[i]
                     .scene
                     .replace_selection(rustc_hash::FxHashSet::default());
@@ -1650,19 +1720,14 @@ pub(super) fn on_open_file(&mut self) -> Task<Message> {
         let Some(pending) = self.pending_web_thumbnail_save.take() else {
             return Task::none();
         };
-        iced::window::latest()
-            .then(|window| match window {
-                Some(window) => iced::window::screenshot(window).map(Some),
-                None => Task::done(None),
-            })
-            .map(move |screenshot| Message::WebSaveScreenshot {
-                tab_id: pending.tab_id,
-                filename: pending.filename.clone(),
-                ext: pending.ext.clone(),
-                version: pending.version,
-                bounds: Some(pending.bounds),
-                screenshot,
-            })
+        Task::done(Message::WebSaveScreenshot {
+            tab_id: pending.tab_id,
+            filename: pending.filename,
+            ext: pending.ext,
+            version: pending.version,
+            bounds: Some(pending.bounds),
+            screenshot: crate::sys::capture_canvas(),
+        })
     }
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -2390,7 +2455,7 @@ pub(super) fn on_open_file(&mut self) -> Task<Message> {
         self.tab_counter += 1;
         self.tabs[i] = crate::app::document::DocumentTab::new_drawing(self.tab_counter);
         self.active_tab = i;
-        self.apply_bg_default(i);
+        self.apply_display_defaults(i);
         self.update(Message::OpenPathPicked(Some((
             conflict.path,
             metadata.len(),
@@ -2527,7 +2592,7 @@ pub(super) fn on_open_file(&mut self) -> Task<Message> {
                     let pick = Task::perform(
                         async move {
                             let mut dlg = crate::sys::file_dialog()
-                                .set_title("Save Drawing As")
+                                .set_title(crate::t!("Save Drawing As").as_ref())
                                 .set_file_name(default_name)
                                 .add_filter(filter_label, &[filter_ext]);
                             if let Some(dir) = seed_dir {
@@ -2885,8 +2950,8 @@ pub(super) fn on_open_file(&mut self) -> Task<Message> {
                     plot_style.as_ref(),
                     render_options,
                 )
-                .map(|_| format!("Exported: {}", worker_path.display()))
-                .map_err(|e| format!("Export failed: {e}"))
+                .map(|_| crate::tf!("Exported: {}", worker_path.display()).into_owned())
+                .map_err(|e| crate::tf!("Export failed: {e}").into_owned())
         };
         self.run_plot_work(self.plot_dialog.background, false, work)
     }
@@ -2929,12 +2994,12 @@ pub(super) fn on_open_file(&mut self) -> Task<Message> {
                     plot_style.as_ref(),
                     render_options,
                 )
-                .map(|_| {format!(
+                .map(|_| {crate::tf!(
                             "Plotted window to {}",
                         worker_path
                             .file_name().unwrap_or_default().to_string_lossy()
-                        )
-                }).map_err(|e| format!("Plot failed: {e}"))
+                        ).into_owned()
+                }).map_err(|e| crate::tf!("Plot failed: {e}").into_owned())
         };
         self.run_plot_work(self.plot_dialog.background, false, work)
     }
@@ -3022,7 +3087,7 @@ pub(super) fn on_open_file(&mut self) -> Task<Message> {
                 let page_setup = self.tabs[i]
                     .scene
                     .plot_settings_for(&name)
-                    .ok_or_else(|| format!("Layout '{name}' has no page setup."))?;
+                    .ok_or_else(|| crate::tf!("Layout '{name}' has no page setup.").into_owned())?;
                 {
                     let scene = &mut self.tabs[i].scene;
                     scene.current_layout = name.clone();
@@ -3043,10 +3108,10 @@ pub(super) fn on_open_file(&mut self) -> Task<Message> {
                     self.tabs[i].scene.restore_saved_camera();
                 }
                 if dialog.style_missing && dialog.apply_plot_styles {
-                    return Err(format!(
+                    return Err(crate::tf!(
                         "Layout '{name}' plot style table '{}' is not loaded.",
                         dialog.style_name
-                    ));
+                    ).into_owned());
                 }
                 let plot_style = self.dialog_plot_style(&dialog);
                 let params = match dialog.area.as_str() {
@@ -3086,7 +3151,7 @@ pub(super) fn on_open_file(&mut self) -> Task<Message> {
                         rotation_deg,
                         scale,
                         clip,
-                    ) = params.ok_or_else(|| format!("Layout '{name}' plot area is empty."))?;
+                    ) = params.ok_or_else(|| crate::tf!("Layout '{name}' plot area is empty.").into_owned())?;
                     (
                         std::sync::Arc::new(wires),
                         hatches,
@@ -3170,8 +3235,8 @@ pub(super) fn on_open_file(&mut self) -> Task<Message> {
                 &worker_path,
                 None,
             )
-            .map(|_| format!("Exported {} layouts to {}", pages.len(), worker_path.display()))
-            .map_err(|error| format!("Export failed: {error}"))
+            .map(|_| crate::tf!("Exported {} layouts to {}", pages.len(), worker_path.display()).into_owned())
+            .map_err(|error| crate::tf!("Export failed: {error}").into_owned())
         };
         self.run_print_all_work(dialog.background, work)
     }
@@ -3220,8 +3285,8 @@ pub(super) fn on_open_file(&mut self) -> Task<Message> {
                 .and_then(|_| {
                     crate::io::print_to_printer::print_existing_pdf(&temp_path, &options)
                 })
-                .map(|printer| format!("Sent {} layouts to printer: {printer}", pages.len()))
-                .map_err(|error| format!("Print failed: {error}"))
+                .map(|printer| crate::tf!("Sent {} layouts to printer: {printer}", pages.len()).into_owned())
+                .map_err(|error| crate::tf!("Print failed: {error}").into_owned())
             };
             self.run_print_all_work(true, work)
         }
@@ -4236,7 +4301,10 @@ pub(super) fn on_open_file(&mut self) -> Task<Message> {
                 .as_deref()
                 .is_some_and(|name| name.eq_ignore_ascii_case(&style_name));
         let (mut paper, orient) = paper_label_from_dims(ps.paper_width, ps.paper_height);
-        if !matches!(paper.as_str(), "A4" | "A3" | "A2" | "A1" | "A0")
+        if !matches!(
+            paper.as_str(),
+            "A4" | "A3" | "A2" | "A1" | "A0" | "Letter" | "Legal" | "Tabloid"
+        )
             && !ps.paper_size.is_empty()
         {
             paper = ps.paper_size.clone();
@@ -4340,6 +4408,9 @@ pub(super) fn on_open_file(&mut self) -> Task<Message> {
             "A2" => PaperSize::A2,
             "A1" => PaperSize::A1,
             "A0" => PaperSize::A0,
+            "Letter" => PaperSize::Letter,
+            "Legal" => PaperSize::Legal,
+            "Tabloid" => PaperSize::Tabloid,
             _ => PaperSize::A4,
         };
         let orient = if d.orientation == "Portrait" {
@@ -4431,7 +4502,7 @@ pub(super) fn on_open_file(&mut self) -> Task<Message> {
                     plot_style.as_ref(),
                     render_options,
                 ).and_then(|_| crate::io::print_to_printer::open_in_viewer(&tmp))
-                        .map(|_| "Opened plot preview.".to_string()).map_err(|e| format!("Preview failed: {e}"))
+                        .map(|_| crate::t!("Opened plot preview.").into_owned()).map_err(|e| crate::tf!("Preview failed: {e}").into_owned())
                 };
                 return self.run_plot_work(d.background, true, work);
             }
@@ -4448,8 +4519,8 @@ pub(super) fn on_open_file(&mut self) -> Task<Message> {
                 plot_style.as_ref(),
                 render_options,
             ).and_then(|_| crate::io::print_to_printer::print_existing_pdf(&tmp, &opts))
-                    .map(|printer| format!("Sent to printer: {printer}"))
-                    .map_err(|e| format!("Print failed: {e}"))
+                    .map(|printer| crate::tf!("Sent to printer: {printer}").into_owned())
+                    .map_err(|e| crate::tf!("Print failed: {e}").into_owned())
             };
             return self.run_plot_work(true, false, work);
         }
@@ -4476,7 +4547,7 @@ pub(super) fn on_open_file(&mut self) -> Task<Message> {
                 plot_style.as_ref(),
                 render_options,
             ).and_then(|_| crate::io::print_to_printer::open_in_viewer(&tmp))
-                    .map(|_| "Opened plot preview.".to_string()).map_err(|e| format!("Preview failed: {e}"))
+                    .map(|_| crate::t!("Opened plot preview.").into_owned()).map_err(|e| crate::tf!("Preview failed: {e}").into_owned())
             };
             return self.run_plot_work(d.background, true, work);
         }
@@ -4494,8 +4565,8 @@ pub(super) fn on_open_file(&mut self) -> Task<Message> {
                     wires, hatches, wipeouts, page_w, page_h, ox, oy, rotation, scale, clip,
                     plot_style, opts,
                 ))
-                .map(|printer| format!("Sent to printer: {printer}"))
-                .map_err(|error| format!("Print failed: {error}"))
+                .map(|printer| crate::tf!("Sent to printer: {printer}").into_owned())
+                .map_err(|error| crate::tf!("Print failed: {error}").into_owned())
         };
         self.run_plot_work(true, false, work)
     }
@@ -4811,10 +4882,10 @@ pub(super) fn on_open_file(&mut self) -> Task<Message> {
                 Task::perform(
                     async move {
                         let dialog = crate::sys::file_dialog()
-                            .set_title("Save Plot Style Table")
+                            .set_title(crate::t!("Save Plot Style Table").as_ref())
                             .set_file_name(&default_name)
-                            .add_filter("Plot Style Files", &["ctb", "CTB"])
-                            .add_filter("All Files", &["*"]);
+                            .add_filter(crate::t!("Plot Style Files").as_ref(), &["ctb", "CTB"])
+                            .add_filter(crate::t!("All Files").as_ref(), &["*"]);
                         #[cfg(not(target_arch = "wasm32"))]
                         let dialog = match crate::io::plot_style::ensure_plot_styles_dir() {
                             Ok(dir) => dialog.set_directory(dir),

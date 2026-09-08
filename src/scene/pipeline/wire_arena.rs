@@ -50,13 +50,6 @@ const HEADROOM_NUM: u64 = 3;
 const HEADROOM_DEN: u64 = 2;
 const MIN_INST_CAP: u64 = 4096;
 const MIN_CONST_CAP: u64 = 1024;
-/// wgpu caps a single buffer at 256 MB. An arena keeps ONE instance buffer per
-/// batch, so a batch whose instances exceed this can't be an arena — build
-/// returns None and the caller falls back to the chunked batched path. The
-/// buffer (with headroom) is also clamped here so it never exceeds the limit.
-const MAX_INSTANCES: u64 = 268_435_456 / std::mem::size_of::<WireInstance>() as u64;
-const MAX_CONSTS: u64 = 268_435_456 / std::mem::size_of::<WireConst>() as u64;
-
 struct Slab {
     inst_off: u32,
     inst_len: u32,
@@ -127,9 +120,131 @@ fn handle_of(w: &WireModel) -> Option<Handle> {
     crate::scene::Scene::handle_from_wire_name(&w.name)
 }
 
-/// True when `w` needs the shaded-mode edge treatment.
-pub fn is_mesh_edge(w: &WireModel, _mesh_names: &rustc_hash::FxHashSet<u64>) -> bool {
-    !w.points.is_empty() && w.fill_is_3d
+/// Classification of a wire model for rendering pipelines.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum WireKind {
+    Invisible,
+    Block,
+    Circle,
+    Ellipse,
+    Regular,
+    MeshEdge,
+    Empty,
+}
+
+/// Fast, branch-predicted classification of a wire model.
+///
+/// Bypasses analytical circle/ellipse extraction for the 95%+ of wires that have
+/// no tangent geometry or multiple tangent primitives, reducing overhead to ~2 ns.
+#[inline]
+pub fn classify_wire(wire: &WireModel) -> WireKind {
+    if !wire.display_visible {
+        return WireKind::Invisible;
+    }
+    if wire.render_instance.is_some() {
+        return WireKind::Block;
+    }
+    if !wire.tangent_geoms.is_empty()
+        && wire.fill_tris.is_empty()
+        && wire.pick_tris.is_empty()
+        && wire.text_verts.is_empty()
+    {
+        if super::circle_gpu::extract_circle_instances(wire, 0.0).is_some() {
+            return WireKind::Circle;
+        }
+        if super::ellipse_gpu::extract_ellipse_instances(wire, 0.0).is_some() {
+            return WireKind::Ellipse;
+        }
+    }
+    if !wire.points.is_empty() {
+        if wire.fill_is_3d {
+            WireKind::MeshEdge
+        } else {
+            WireKind::Regular
+        }
+    } else {
+        WireKind::Empty
+    }
+}
+
+/// Result of a single-pass partitioning of viewport wires.
+pub struct PartitionedWires<'a> {
+    pub regular: Vec<&'a WireModel>,
+    pub mesh: Vec<&'a WireModel>,
+    pub instanced: Vec<&'a WireModel>,
+    pub circle_instances: Vec<super::circle_gpu::CircleInstance>,
+    pub ellipse_instances: Vec<super::ellipse_gpu::EllipseInstance>,
+}
+
+/// Single-pass classification and extraction of all viewport wire categories.
+///
+/// Traverses the wire slice exactly once, eliminating redundant passes and duplicate
+/// analytical extractions across split_wires, upload_block_wires, upload_circles,
+/// and upload_ellipses.
+pub fn partition_wires<'a>(
+    wires: &'a [WireModel],
+    depth_map: &rustc_hash::FxHashMap<u64, [f32; 2]>,
+) -> PartitionedWires<'a> {
+    let mut regular = Vec::new();
+    let mut mesh = Vec::new();
+    let mut instanced = Vec::new();
+    let mut circle_instances = Vec::new();
+    let mut ellipse_instances = Vec::new();
+
+    for wire in wires {
+        if !wire.display_visible {
+            continue;
+        }
+        if wire.render_instance.is_some() {
+            instanced.push(wire);
+            continue;
+        }
+        let depth = super::wire_gpu::wire_draw_depth(wire, depth_map);
+        if !wire.tangent_geoms.is_empty()
+            && wire.fill_tris.is_empty()
+            && wire.pick_tris.is_empty()
+            && wire.text_verts.is_empty()
+        {
+            if let Some(insts) = super::circle_gpu::extract_circle_instances(wire, depth) {
+                circle_instances.extend(insts);
+                continue;
+            }
+            if let Some(insts) = super::ellipse_gpu::extract_ellipse_instances(wire, depth) {
+                ellipse_instances.extend(insts);
+                continue;
+            }
+        }
+        if !wire.points.is_empty() {
+            if wire.fill_is_3d {
+                mesh.push(wire);
+            } else {
+                regular.push(wire);
+            }
+        }
+    }
+
+    PartitionedWires {
+        regular,
+        mesh,
+        instanced,
+        circle_instances,
+        ellipse_instances,
+    }
+}
+
+/// Use the same regular/mesh partition for full uploads and changed runs.
+/// Instanced blocks are uploaded separately by `BlockWireGpu`.
+pub fn split_wires(wires: &[WireModel]) -> (Vec<&WireModel>, Vec<&WireModel>) {
+    let mut regular = Vec::new();
+    let mut mesh = Vec::new();
+    for wire in wires {
+        match classify_wire(wire) {
+            WireKind::Regular => regular.push(wire),
+            WireKind::MeshEdge => mesh.push(wire),
+            _ => {}
+        }
+    }
+    (regular, mesh)
 }
 
 /// True when appending a new entity at the tail could change the image, so the
@@ -255,48 +370,34 @@ fn make_const_bg(
 
 fn alloc_inst_initialized(
     device: &wgpu::Device,
+    queue: &wgpu::Queue,
     cap: u64,
     data: &[WireInstance],
 ) -> wgpu::Buffer {
-    let buffer = device.create_buffer(&wgpu::BufferDescriptor {
-        label: Some("wire_arena.ibuf"),
-        size: cap * std::mem::size_of::<WireInstance>() as u64,
-        usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
-        mapped_at_creation: true,
-    });
-    if !data.is_empty() {
-        let bytes = bytemuck::cast_slice(data);
-        let mut mapped = buffer
-            .slice(..bytes.len() as u64)
-            .get_mapped_range_mut();
-        mapped.copy_from_slice(bytes);
-        drop(mapped);
-    }
-    buffer.unmap();
-    buffer
+    super::gpu_upload::alloc_with_prefix(
+        device,
+        queue,
+        "wire_arena.ibuf",
+        cap * std::mem::size_of::<WireInstance>() as u64,
+        data,
+        wgpu::BufferUsages::VERTEX,
+    )
 }
 
 fn alloc_const_initialized(
     device: &wgpu::Device,
+    queue: &wgpu::Queue,
     cap: u64,
     data: &[WireConst],
 ) -> wgpu::Buffer {
-    let buffer = device.create_buffer(&wgpu::BufferDescriptor {
-        label: Some("wire_arena.cbuf"),
-        size: cap * std::mem::size_of::<WireConst>() as u64,
-        usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
-        mapped_at_creation: true,
-    });
-    if !data.is_empty() {
-        let bytes = bytemuck::cast_slice(data);
-        let mut mapped = buffer
-            .slice(..bytes.len() as u64)
-            .get_mapped_range_mut();
-        mapped.copy_from_slice(bytes);
-        drop(mapped);
-    }
-    buffer.unmap();
-    buffer
+    super::gpu_upload::alloc_with_prefix(
+        device,
+        queue,
+        "wire_arena.cbuf",
+        cap * std::mem::size_of::<WireConst>() as u64,
+        data,
+        wgpu::BufferUsages::STORAGE,
+    )
 }
 
 fn blank_const() -> WireConst {
@@ -328,12 +429,16 @@ impl WireArena {
     /// path).
     pub fn build(
         device: &wgpu::Device,
-        _queue: &wgpu::Queue,
+        queue: &wgpu::Queue,
         wires: &[&WireModel],
         depth_map: &FxHashMap<u64, [f32; 2]>,
         const_bgl: &wgpu::BindGroupLayout,
         mesh_edge: bool,
     ) -> Option<Self> {
+        let instance_limit =
+            super::gpu_budget::max_arena_elements::<WireInstance>(device) as u64;
+        let constant_limit =
+            super::gpu_budget::max_arena_storage_elements::<WireConst>(device) as u64;
         let ranges = handle_ranges(wires)?;
         let perf = crate::perf::enabled();
         let total_started = iced::time::Instant::now();
@@ -341,11 +446,8 @@ impl WireArena {
         // Reject an oversized batch before parallel emission allocates hundreds
         // of megabytes. `points.len() - 1` is an upper bound because NaN-break
         // segments are skipped by emit_wire_native.
-        let max_instances: usize = wires
-            .iter()
-            .map(|w| w.points.len().saturating_sub(1))
-            .sum();
-        if max_instances as u64 > MAX_INSTANCES || wires.len() as u64 + 1 > MAX_CONSTS {
+        let max_instances: usize = wires.iter().map(|w| w.points.len().saturating_sub(1)).sum();
+        if max_instances as u64 > instance_limit || wires.len() as u64 + 1 > constant_limit {
             return None;
         }
 
@@ -425,7 +527,7 @@ impl WireArena {
 
         let inst_count: usize = packed.iter().map(|slab| slab.instances.len()).sum();
         let const_count: usize = 1 + packed.iter().map(|slab| slab.consts.len()).sum::<usize>();
-        if inst_count as u64 > MAX_INSTANCES || const_count as u64 > MAX_CONSTS {
+        if inst_count as u64 > instance_limit || const_count as u64 > constant_limit {
             return None;
         }
 
@@ -458,18 +560,18 @@ impl WireArena {
         let const_tail = consts_cpu.len() as u32;
         // A batch bigger than one buffer can't be an arena — let the caller chunk
         // it via the batched path.
-        if inst_tail as u64 > MAX_INSTANCES || const_tail as u64 > MAX_CONSTS {
+        if inst_tail as u64 > instance_limit || const_tail as u64 > constant_limit {
             return None;
         }
         let inst_cap = ((inst_tail as u64 * HEADROOM_NUM / HEADROOM_DEN)
             .max(MIN_INST_CAP)
-            .min(MAX_INSTANCES)) as u32;
+            .min(instance_limit)) as u32;
         let const_cap = ((const_tail as u64 * HEADROOM_NUM / HEADROOM_DEN)
             .max(MIN_CONST_CAP)
-            .min(MAX_CONSTS)) as u32;
+            .min(constant_limit)) as u32;
         let upload_started = iced::time::Instant::now();
-        let inst_buf = alloc_inst_initialized(device, inst_cap as u64, &instances);
-        let const_buf = alloc_const_initialized(device, const_cap as u64, &consts_cpu);
+        let inst_buf = alloc_inst_initialized(device, queue, inst_cap as u64, &instances);
+        let const_buf = alloc_const_initialized(device, queue, const_cap as u64, &consts_cpu);
         let upload_ms = upload_started.elapsed().as_secs_f64() * 1000.0;
         let const_bind_group = make_const_bg(device, const_bgl, &const_buf);
         if perf {
@@ -911,9 +1013,6 @@ struct PreparedPackedPatchRun {
     order_sensitive: bool,
 }
 
-const MAX_PACKED_INSTANCES: u64 =
-    268_435_456 / std::mem::size_of::<PackedWireInstance>() as u64;
-
 fn blank_packed_instance() -> PackedWireInstance {
     let mut blank = <PackedWireInstance as bytemuck::Zeroable>::zeroed();
     blank.pattern_length = -1.0;
@@ -934,25 +1033,18 @@ fn can_resize_packed_terminal_slab(
 
 fn alloc_packed_initialized(
     device: &wgpu::Device,
+    queue: &wgpu::Queue,
     cap: u64,
     data: &[PackedWireInstance],
 ) -> wgpu::Buffer {
-    let buffer = device.create_buffer(&wgpu::BufferDescriptor {
-        label: Some("wire_arena.packed.ibuf"),
-        size: cap * std::mem::size_of::<PackedWireInstance>() as u64,
-        usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
-        mapped_at_creation: true,
-    });
-    if !data.is_empty() {
-        let bytes = bytemuck::cast_slice(data);
-        let mut mapped = buffer
-            .slice(..bytes.len() as u64)
-            .get_mapped_range_mut();
-        mapped.copy_from_slice(bytes);
-        drop(mapped);
-    }
-    buffer.unmap();
-    buffer
+    super::gpu_upload::alloc_with_prefix(
+        device,
+        queue,
+        "wire_arena.packed.ibuf",
+        cap * std::mem::size_of::<PackedWireInstance>() as u64,
+        data,
+        wgpu::BufferUsages::VERTEX,
+    )
 }
 
 fn visible_ranges(
@@ -998,16 +1090,19 @@ fn visible_ranges(
 impl PackedWireArena {
     fn build(
         device: &wgpu::Device,
+        queue: &wgpu::Queue,
         wires: &[&WireModel],
         depth_map: &FxHashMap<u64, [f32; 2]>,
         mesh_edge: bool,
     ) -> Option<Self> {
+        let packed_limit =
+            super::gpu_budget::max_arena_elements::<PackedWireInstance>(device) as u64;
         let ranges = handle_ranges(wires)?;
         let max_instances: usize = wires
             .iter()
             .map(|wire| wire.points.len().saturating_sub(1))
             .sum();
-        if max_instances as u64 > MAX_PACKED_INSTANCES {
+        if max_instances as u64 > packed_limit {
             return None;
         }
 
@@ -1051,7 +1146,7 @@ impl PackedWireArena {
             .collect();
 
         let inst_count: usize = packed.iter().map(|slab| slab.instances.len()).sum();
-        if inst_count as u64 > MAX_PACKED_INSTANCES {
+        if inst_count as u64 > packed_limit {
             return None;
         }
         let mut instances = Vec::with_capacity(inst_count);
@@ -1077,8 +1172,8 @@ impl PackedWireArena {
         let inst_tail = instances.len() as u32;
         let inst_cap = ((inst_tail as u64 * HEADROOM_NUM / HEADROOM_DEN)
             .max(MIN_INST_CAP)
-            .min(MAX_PACKED_INSTANCES)) as u32;
-        let inst_buf = alloc_packed_initialized(device, inst_cap as u64, &instances);
+            .min(packed_limit)) as u32;
+        let inst_buf = alloc_packed_initialized(device, queue, inst_cap as u64, &instances);
 
         Some(Self {
             inst_buf,
@@ -1351,7 +1446,7 @@ impl PersistentWireArena {
             )?)
         } else {
             PersistentWireArenaKind::Packed(PackedWireArena::build(
-                device, wires, depth_map, mesh_edge,
+                device, queue, wires, depth_map, mesh_edge,
             )?)
         };
         Some(Self { inner })
@@ -1390,6 +1485,18 @@ impl PersistentWireArena {
         }
     }
 
+    /// Device bytes this arena holds. The instance buffer is reserved with
+    /// headroom, so this is the allocation, not the occupied prefix — which is
+    /// what a memory budget has to answer for.
+    pub fn gpu_bytes(&self) -> u64 {
+        match &self.inner {
+            PersistentWireArenaKind::Indexed(arena) => {
+                arena.inst_buf.size() + arena.const_buf.size()
+            }
+            PersistentWireArenaKind::Packed(arena) => arena.inst_buf.size(),
+        }
+    }
+
     pub fn wire_gpus_visible(
         &self,
         view_rot: glam::Mat4,
@@ -1411,6 +1518,45 @@ impl PersistentWireArena {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn wire_partition_excludes_blocks_and_preserves_mixed_run_edges() {
+        let line = WireModel {
+            name: "line".into(),
+            points: vec![[0.0; 3], [1.0, 0.0, 0.0]],
+            ..Default::default()
+        };
+        let mesh = WireModel {
+            name: "mesh".into(),
+            fill_is_3d: true,
+            ..line.clone()
+        };
+        let block = WireModel {
+            render_instance: Some(crate::scene::model::instance_model::RenderInstance {
+                source_id: 1,
+                translation: [0.0; 3],
+            }),
+            ..line.clone()
+        };
+        let block_mesh = WireModel {
+            fill_is_3d: true,
+            ..block.clone()
+        };
+        let hidden = WireModel {
+            display_visible: false,
+            ..line.clone()
+        };
+        let wires = [block, line, block_mesh, mesh, hidden, WireModel::default()];
+        let (regular, edges) = split_wires(&wires);
+        assert_eq!(
+            regular.iter().map(|w| w.name.as_str()).collect::<Vec<_>>(),
+            ["line"]
+        );
+        assert_eq!(
+            edges.iter().map(|w| w.name.as_str()).collect::<Vec<_>>(),
+            ["mesh"]
+        );
+    }
 
     fn slab() -> Slab {
         Slab {

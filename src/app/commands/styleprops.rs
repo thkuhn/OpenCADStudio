@@ -29,7 +29,7 @@ impl OpenCADStudio {
                 let describe = |c: &Color| match c {
                     Color::ByLayer => "ByLayer".to_string(),
                     Color::ByBlock => "ByBlock".to_string(),
-                    Color::Index(n) => format!("index {n}"),
+                    Color::Index(n) => crate::tf!("index {n}").into_owned(),
                     _ => "(custom)".to_string(),
                 };
                 let arg = if cmd == "BYLAYER" {
@@ -65,7 +65,7 @@ impl OpenCADStudio {
                     }
                     None => {
                         self.command_line.push_error(
-                            "Usage: COLOR <ByLayer|ByBlock|1-255|red|yellow|green|cyan|blue|magenta|white>",
+                            crate::t!("Usage: COLOR <ByLayer|ByBlock|1-255|red|yellow|green|cyan|blue|magenta|white>").as_ref(),
                         );
                     }
                 }
@@ -261,28 +261,10 @@ impl OpenCADStudio {
                         .filter(|s| !s.is_empty())
                         .collect();
 
-                    // Which block definitions are LIVE — reachable from a real
-                    // layout container by following every block reference. A
-                    // block nothing reachable inserts is dead and purges, even a
-                    // whole mutually-referencing subgraph (e.g. the dependent
-                    // blocks a detached xref leaves behind: they insert one
-                    // another but hang off no layout, so a flat "is it named by
-                    // any INSERT" scan keeps them alive forever). Roots:
-                    //   • *Model_Space / *Paper_Space(N),
-                    //   • any block whose layout handle resolves to a real Layout
-                    //     object — a DANGLING layout handle, as orphaned xref
-                    //     blocks carry, does NOT count, so is_layout() alone can't
-                    //     shield the dead subgraph it heads,
-                    //   • dimension-style arrowhead blocks (referenced by handle).
-                    // A block's out-edges: its members' INSERT names, dimension
-                    // *D blocks, table *T / cell blocks, and MultiLeader content.
+                    // Live blocks are reachable from layouts and style roots
+                    // through the shared graph. Dangling layouts do not count.
                     let live_blocks: rustc_hash::FxHashSet<String> = {
                         let doc = &self.tabs[i].scene.document;
-                        let by_handle: rustc_hash::FxHashMap<acadrust::Handle, String> = doc
-                            .block_records
-                            .iter()
-                            .map(|br| (br.handle, br.name.clone()))
-                            .collect();
                         let is_real_layout = |br: &acadrust::BlockRecord| -> bool {
                             let up = br.name.to_ascii_uppercase();
                             up.starts_with("*MODEL_SPACE")
@@ -298,44 +280,19 @@ impl OpenCADStudio {
                                 return out;
                             };
                             for &h in &br.entity_handles {
-                                match doc.get_entity(h) {
-                                    Some(acadrust::EntityType::Insert(ins))
-                                        if !ins.block_name.is_empty() =>
-                                    {
-                                        out.push(ins.block_name.clone());
-                                    }
-                                    Some(acadrust::EntityType::Dimension(d))
-                                        if !d.base().block_name.is_empty() =>
-                                    {
-                                        out.push(d.base().block_name.clone());
-                                    }
-                                    Some(acadrust::EntityType::Table(t)) => {
-                                        if let Some(bh) = t.block_record_handle {
-                                            if let Some(n) = by_handle.get(&bh) {
-                                                out.push(n.clone());
-                                            }
-                                        }
-                                        for row in &t.rows {
-                                            for cell in &row.cells {
-                                                for c in &cell.contents {
-                                                    if let Some(bh) = c.block_handle {
-                                                        if let Some(n) = by_handle.get(&bh) {
-                                                            out.push(n.clone());
-                                                        }
-                                                    }
-                                                }
-                                            }
-                                        }
-                                    }
-                                    Some(acadrust::EntityType::MultiLeader(ml)) => {
-                                        if let Some(bh) = ml.block_content_handle {
-                                            if let Some(n) = by_handle.get(&bh) {
-                                                out.push(n.clone());
-                                            }
-                                        }
-                                    }
-                                    _ => {}
-                                }
+                                let Some(entity) = doc.get_entity(h) else {
+                                    continue;
+                                };
+                                out.extend(
+                                    crate::scene::render_graph::entity_block_uses(
+                                        doc,
+                                        entity,
+                                        1.0,
+                                    )
+                                    .into_iter()
+                                    .filter(|block_use| !block_use.block.is_null())
+                                    .map(|block_use| block_use.insert.block_name),
+                                );
                             }
                             out
                         };
@@ -346,15 +303,11 @@ impl OpenCADStudio {
                             .filter(|&br| is_real_layout(br))
                             .map(|br| br.name.clone())
                             .collect();
-                        for ds in doc.dim_styles.iter() {
-                            for h in [ds.dimblk, ds.dimblk1, ds.dimblk2, ds.dimldrblk] {
-                                if !h.is_null() {
-                                    if let Some(n) = by_handle.get(&h) {
-                                        stack.push(n.clone());
-                                    }
-                                }
-                            }
-                        }
+                        stack.extend(
+                            crate::scene::render_graph::document_block_uses(doc)
+                                .into_iter()
+                                .map(|block_use| block_use.insert.block_name),
+                        );
                         while let Some(n) = stack.pop() {
                             if !live.insert(n.clone()) {
                                 continue;
@@ -422,9 +375,8 @@ impl OpenCADStudio {
                             .filter(|br| {
                                 let up = br.name.to_ascii_uppercase();
                                 // Never PURGE an xref *definition* — that is a
-                                // detach, not a purge. (Orphaned dependent blocks
-                                // a past detach left behind are is_xref=false and
-                                // still fall to the reachability test.)
+                                // detach, not a purge. Orphaned dependencies from
+                                // a past detach still use the reachability test.
                                 !br.flags.is_xref
                                     && !br.flags.is_xref_overlay
                                     && !up.starts_with("*MODEL_SPACE")
@@ -534,19 +486,19 @@ impl OpenCADStudio {
                     // Per-type breakdown so the user sees exactly what went.
                     let mut parts: Vec<String> = Vec::new();
                     if n_layers > 0 {
-                        parts.push(format!("{n_layers} layer(s)"));
+                        parts.push(crate::tf!("{n_layers} layer(s)").into_owned());
                     }
                     if n_styles > 0 {
-                        parts.push(format!("{n_styles} text style(s)"));
+                        parts.push(crate::tf!("{n_styles} text style(s)").into_owned());
                     }
                     if n_lts > 0 {
-                        parts.push(format!("{n_lts} linetype(s)"));
+                        parts.push(crate::tf!("{n_lts} linetype(s)").into_owned());
                     }
                     if n_blocks > 0 {
-                        parts.push(format!("{n_blocks} block(s)"));
+                        parts.push(crate::tf!("{n_blocks} block(s)").into_owned());
                     }
                     if n_sortents > 0 {
-                        parts.push(format!("{n_sortents} stale draw-order table(s)"));
+                        parts.push(crate::tf!("{n_sortents} stale draw-order table(s)").into_owned());
                     }
                     self.command_line.push_output(crate::tf!(
                         "PURGE: {} item(s) removed — {}.",
@@ -587,7 +539,7 @@ impl OpenCADStudio {
 
                 if prop.is_empty() {
                     self.command_line.push_info(
-                        "Usage: CHPROP <prop> <val>  (props: LAYER COLOR LINETYPE LTSCALE)",
+                        crate::t!("Usage: CHPROP <prop> <val>  (props: LAYER COLOR LINETYPE LTSCALE)").as_ref(),
                     );
                 } else {
                     let handles: Vec<_> = self.tabs[i]
@@ -664,6 +616,8 @@ impl OpenCADStudio {
                                         }
                                         "COLOR" => {
                                             common.color = color_val.unwrap();
+                                            common.color_name = None;
+                                            common.color_book_handle = None;
                                             changed += 1;
                                         }
                                         "TRANSPARENCY" => {
@@ -709,6 +663,8 @@ impl OpenCADStudio {
                         if let Some(entity) = self.tabs[i].scene.document.get_entity_mut(*handle) {
                             let common = entity.common_mut();
                             common.color = acadrust::types::Color::ByLayer;
+                            common.color_name = None;
+                            common.color_book_handle = None;
                             common.linetype = "ByLayer".to_string();
                             common.line_weight = acadrust::types::LineWeight::ByLayer;
                             changed += 1;
@@ -845,6 +801,20 @@ impl OpenCADStudio {
                 }
             }
 
+            // ── COMMANDLINEFADETIME — command-line history fade time ───
+            // How long history lines stay visible above the command window,
+            // in ms (0–60000, default 3000). Bare form prompts for a value
+            // (Enter reports current); 0 hides transient overlay lines.
+            "COMMANDLINEFADETIME" => {
+                use crate::command::ValuePromptCommand;
+                let c = ValuePromptCommand::new(
+                    "COMMANDLINEFADETIME",
+                    "COMMANDLINEFADETIME  overlay fade time in ms (0-60000, 0 = hide)  <Enter reports>:",
+                );
+                self.command_line.push_info(&c.prompt());
+                self.tabs[i].active_cmd = Some(Box::new(c));
+            }
+
             // ── SETVAR — read / write system variables ───────────────────
             // SETVAR <name>          → report the value
             // SETVAR <name> <value>  → set it
@@ -865,6 +835,7 @@ impl OpenCADStudio {
                     | "SNAPANG"
                     | "TEXTFILL"
                     | "CLIPROMPTLINES"
+                    | "COMMANDLINEFADETIME"
                     | "ATTREQ"
                     | "ATTDIA"
                     | "DIMASSOC"
@@ -874,6 +845,8 @@ impl OpenCADStudio {
                     | "BLIPMODE"
                     | "SPLFRAME"
                     | "DELOBJ"
+                    | "SOLIDHIST"
+                    | "SHOWHIST"
                     | "PLINEGEN"
                     | "PSLTSCALE"
                     | "DISPSILH"
@@ -931,6 +904,20 @@ impl OpenCADStudio {
                     | "CENTERCROSSSIZE"
                     | "CENTERCROSSGAP"
                     | "CENTERMARKEXE"
+                    | "DIMCONTINUEMODE"
+                    | "COLORTHEME"
+                    | "SELECTIONAREA"
+                    | "SELECTIONAREAOPACITY"
+                    | "SELECTIONEFFECT"
+                    | "SELECTIONEFFECTCOLOR"
+                    | "WINDOWSAREACOLOR"
+                    | "WINDOWAREACOLOR"
+                    | "CROSSINGAREACOLOR"
+                    | "SELECTIONPREVIEW"
+                    | "GRIPSIZE"
+                    | "GRIPCOLOR"
+                    | "GRIPHOT"
+                    | "GRIPHOVER"
             ) =>
             {
                 return self.dispatch_styleprops(&format!("SETVAR {cmd}"), i);
@@ -953,9 +940,40 @@ impl OpenCADStudio {
                 let value = it.next().map(|s| s.trim().to_string());
                 if name.is_empty() || name == "?" {
                     self.command_line.push_info(
-                        "SETVAR: LTSCALE CELTSCALE PDMODE PDSIZE TEXTSIZE ORTHOMODE FILLMODE MIRRTEXT FRAME IMAGEFRAME PDFFRAME WIPEOUTFRAME XCLIPFRAME POINTCLOUDCLIPFRAME ZOOMWHEEL ZOOMFACTOR CURSORSIZE PICKBOX CURSORTYPE SNAPANG TEXTFILL CLIPROMPTLINES ATTREQ ATTDIA DIMASSOC ANGBASE ANGDIR SKETCHINC SKPOLY SKTOLERANCE DONUTID DONUTOD CENTEREXE CENTERLAYER CENTERLTYPE CENTERLTSCALE CENTERLTYPEFILE CENTERCROSSSIZE CENTERCROSSGAP CENTERMARKEXE | CLAYER CELTYPE TEXTSTYLE (read-only)",
+                        crate::t!("SETVAR: LTSCALE CELTSCALE PDMODE PDSIZE TEXTSIZE ORTHOMODE FILLMODE MIRRTEXT FRAME IMAGEFRAME PDFFRAME WIPEOUTFRAME XCLIPFRAME POINTCLOUDCLIPFRAME ZOOMWHEEL ZOOMFACTOR CURSORSIZE PICKBOX CURSORTYPE SNAPANG TEXTFILL CLIPROMPTLINES COMMANDLINEFADETIME ATTREQ ATTDIA DIMASSOC DIMCONTINUEMODE ANGBASE ANGDIR SKETCHINC SKPOLY SKTOLERANCE DONUTID DONUTOD CENTEREXE CENTERLAYER CENTERLTYPE CENTERLTSCALE CENTERLTYPEFILE CENTERCROSSSIZE CENTERCROSSGAP CENTERMARKEXE COLORTHEME SELECTIONAREA SELECTIONAREAOPACITY SELECTIONEFFECT SELECTIONEFFECTCOLOR WINDOWSAREACOLOR CROSSINGAREACOLOR SELECTIONPREVIEW GRIPSIZE GRIPCOLOR GRIPHOT GRIPHOVER | CLAYER CELTYPE TEXTSTYLE (read-only)").as_ref(),
                     );
                 } else {
+                    if matches!(name.as_str(), "SHOWHIST" | "SOLIDHIST") {
+                        let current = if name == "SHOWHIST" {
+                            self.tabs[i].scene.document.header.show_solid_history.clamp(0, 2)
+                        } else {
+                            i16::from(self.tabs[i].scene.document.header.record_solid_history)
+                        };
+                        if let Some(value) = &value {
+                            let maximum = if name == "SHOWHIST" { 2 } else { 1 };
+                            match value.parse::<i16>().ok().filter(|value| (0..=maximum).contains(value)) {
+                                Some(mode) => {
+                                    if current != mode {
+                                        self.push_undo_snapshot(i, &name);
+                                        if name == "SHOWHIST" {
+                                            self.tabs[i].scene.document.header.show_solid_history = mode;
+                                            self.tabs[i].scene.bump_geometry();
+                                        } else {
+                                            self.tabs[i].scene.document.header.record_solid_history = mode != 0;
+                                        }
+                                        self.tabs[i].dirty = true;
+                                        self.refresh_properties();
+                                    }
+                                    self.command_line.push_output(&crate::tf!("{name} = {mode}"));
+                                }
+                                None => self.command_line.push_error(&crate::tf!("{name}: expected an integer from 0 to {maximum}.")),
+                            }
+                        } else {
+                            self.command_line.push_output(&crate::tf!("Enter new value for {name} <{current}>:"));
+                            self.pending_setvar = Some(name.clone());
+                        }
+                        return Some(self.finish_dispatch(cmd));
+                    }
                     let frame_kind = crate::scene::frame::kind_for_name(&name);
                     if name == "FRAME" || frame_kind.is_some() {
                         let current = frame_kind.map_or_else(
@@ -1015,7 +1033,7 @@ impl OpenCADStudio {
                                         self.tabs[i].dirty = true;
                                     }
                                     self.command_line
-                                        .push_output(&format!("{name} = {mode}"));
+                                        .push_output(&crate::tf!("{name} = {mode}"));
                                 }
                                 _ => self.command_line.push_error(
                                     crate::tf!("SETVAR: {name} requires 0, 1, or 2.").as_ref(),
@@ -1069,6 +1087,28 @@ impl OpenCADStudio {
                         }
                         return Some(self.finish_dispatch(cmd));
                     }
+                    if name == "DIMCONTINUEMODE" {
+                        let current = self.dimension_continue_mode;
+                        if let Some(value) = &value {
+                            match value.parse::<i16>() {
+                                Ok(mode @ 0..=1) => {
+                                    self.dimension_continue_mode = mode;
+                                    self.persist_settings_if_changed();
+                                    self.command_line
+                                        .push_output(&crate::tf!("DIMCONTINUEMODE = {mode}"));
+                                }
+                                _ => self.command_line.push_error(
+                                    crate::t!("SETVAR: DIMCONTINUEMODE requires 0 or 1.").as_ref(),
+                                ),
+                            }
+                        } else {
+                            self.command_line.push_output(crate::tf!(
+                                "Enter new value for {name} <{current}>:"
+                            ).as_ref());
+                            self.pending_setvar = Some(name.clone());
+                        }
+                        return Some(self.finish_dispatch(cmd));
+                    }
                     if matches!(name.as_str(), "DONUTID" | "DONUTOD") {
                         let current = if name == "DONUTID" {
                             crate::modules::draw::defaults::get_donut_inner_diameter()
@@ -1096,13 +1136,13 @@ impl OpenCADStudio {
                                     crate::modules::draw::defaults::set_donut_outer_diameter(number);
                                 }
                                 self.command_line
-                                    .push_output(&format!("{name} = {number}"));
+                                    .push_output(&crate::tf!("{name} = {number}"));
                             } else {
-                                self.command_line.push_error(if name == "DONUTID" {
+                                self.command_line.push_error(crate::t!(if name == "DONUTID" {
                                     "SETVAR: DONUTID requires a finite value greater than or equal to zero."
                                 } else {
                                     "SETVAR: DONUTOD requires a finite value greater than zero."
-                                });
+                                }).as_ref());
                             }
                         } else {
                             self.command_line.push_output(crate::tf!(
@@ -1272,6 +1312,171 @@ impl OpenCADStudio {
                                     false,
                                 )),
                             },
+                            "COLORTHEME" => match &value {
+                                Some(v) => match v.as_str() {
+                                    "0" => {
+                                        if self.ui_theme.name == "Custom" {
+                                            self.saved_custom_palette = Some(self.ui_theme.palette);
+                                        }
+                                        self.ui_theme.name = iced::Theme::Dark.to_string();
+                                        self.ui_theme.palette =
+                                            crate::app::config::UiThemePalette::from_iced(iced::Theme::Dark.seed());
+                                        self.theme_color_inputs = self.ui_theme.palette.hex_values();
+                                        self.active_theme = iced::Theme::Dark;
+                                        self.sync_model_space_theme(true);
+                                        Ok(("COLORTHEME = 0 (Dark)".to_string(), true))
+                                    }
+                                    "1" => {
+                                        if self.ui_theme.name == "Custom" {
+                                            self.saved_custom_palette = Some(self.ui_theme.palette);
+                                        }
+                                        self.ui_theme.name = iced::Theme::Light.to_string();
+                                        self.ui_theme.palette =
+                                            crate::app::config::UiThemePalette::from_iced(iced::Theme::Light.seed());
+                                        self.theme_color_inputs = self.ui_theme.palette.hex_values();
+                                        self.active_theme = iced::Theme::Light;
+                                        self.sync_model_space_theme(true);
+                                        Ok(("COLORTHEME = 1 (Light)".to_string(), true))
+                                    }
+                                    _ => Err("SETVAR: 0 (Dark) or 1 (Light) required.".into()),
+                                },
+                                None => {
+                                    let bg = self.ui_theme.palette.background;
+                                    let lum = 0.299 * (bg[0] as f32) + 0.587 * (bg[1] as f32) + 0.114 * (bg[2] as f32);
+                                    let code = if lum > 128.0 { 1 } else { 0 };
+                                    Ok((format!("COLORTHEME = {code} ({})", self.ui_theme.name), false))
+                                }
+                            },
+                            "SELECTIONAREA" => match &value {
+                                Some(v) => match v.as_str() {
+                                    "0" => {
+                                        self.model_space.selection_area = false;
+                                        self.sync_model_space_theme(false);
+                                        Ok(("SELECTIONAREA = 0".to_string(), true))
+                                    }
+                                    "1" => {
+                                        self.model_space.selection_area = true;
+                                        self.sync_model_space_theme(false);
+                                        Ok(("SELECTIONAREA = 1".to_string(), true))
+                                    }
+                                    _ => Err("SETVAR: 0 or 1 required.".into()),
+                                },
+                                None => Ok((format!("SELECTIONAREA = {}", if self.model_space.selection_area { 1 } else { 0 }), false)),
+                            },
+                            "SELECTIONAREAOPACITY" => match &value {
+                                Some(v) => match v.parse::<u8>() {
+                                    Ok(op) if op <= 100 => {
+                                        self.model_space.selection_opacity = op;
+                                        self.sync_model_space_theme(false);
+                                        Ok((format!("SELECTIONAREAOPACITY = {op}"), true))
+                                    }
+                                    _ => Err("SETVAR: integer from 0 to 100 required.".into()),
+                                },
+                                None => Ok((format!("SELECTIONAREAOPACITY = {}", self.model_space.selection_opacity), false)),
+                            },
+                            "SELECTIONEFFECT" => match &value {
+                                Some(v) => match v.as_str() {
+                                    "0" => {
+                                        self.model_space.selection_effect = false;
+                                        self.sync_model_space_theme(false);
+                                        Ok(("SELECTIONEFFECT = 0".to_string(), true))
+                                    }
+                                    "1" => {
+                                        self.model_space.selection_effect = true;
+                                        self.sync_model_space_theme(false);
+                                        Ok(("SELECTIONEFFECT = 1".to_string(), true))
+                                    }
+                                    _ => Err("SETVAR: 0 or 1 required.".into()),
+                                },
+                                None => Ok((format!("SELECTIONEFFECT = {}", if self.model_space.selection_effect { 1 } else { 0 }), false)),
+                            },
+                            "SELECTIONEFFECTCOLOR" => match &value {
+                                Some(v) => match v.parse::<u8>() {
+                                    Ok(color) => {
+                                        self.model_space.selection_highlight_color = color;
+                                        self.sync_model_space_theme(false);
+                                        Ok((format!("SELECTIONEFFECTCOLOR = {color}"), true))
+                                    }
+                                    _ => Err("SETVAR: integer from 0 (Theme) to 255 required.".into()),
+                                },
+                                None => Ok((format!("SELECTIONEFFECTCOLOR = {}", self.model_space.selection_highlight_color), false)),
+                            },
+                            "WINDOWSAREACOLOR" | "WINDOWAREACOLOR" => match &value {
+                                Some(v) => match v.parse::<u8>() {
+                                    Ok(color) => {
+                                        self.model_space.selection_window_color = color;
+                                        self.sync_model_space_theme(false);
+                                        Ok((format!("WINDOWSAREACOLOR = {color}"), true))
+                                    }
+                                    _ => Err("SETVAR: integer from 0 (Theme) to 255 required.".into()),
+                                },
+                                None => Ok((format!("WINDOWSAREACOLOR = {}", self.model_space.selection_window_color), false)),
+                            },
+                            "CROSSINGAREACOLOR" => match &value {
+                                Some(v) => match v.parse::<u8>() {
+                                    Ok(color) => {
+                                        self.model_space.selection_crossing_color = color;
+                                        self.sync_model_space_theme(false);
+                                        Ok((format!("CROSSINGAREACOLOR = {color}"), true))
+                                    }
+                                    _ => Err("SETVAR: integer from 0 (Theme) to 255 required.".into()),
+                                },
+                                None => Ok((format!("CROSSINGAREACOLOR = {}", self.model_space.selection_crossing_color), false)),
+                            },
+                            "SELECTIONPREVIEW" => match &value {
+                                Some(v) => match v.parse::<u8>() {
+                                    Ok(mode @ 0..=3) => {
+                                        self.model_space.selection_preview = mode;
+                                        Ok((format!("SELECTIONPREVIEW = {mode}"), true))
+                                    }
+                                    _ => Err("SETVAR: integer from 0 to 3 required.".into()),
+                                },
+                                None => Ok((format!("SELECTIONPREVIEW = {}", self.model_space.selection_preview), false)),
+                            },
+                            "GRIPSIZE" => match &value {
+                                Some(v) => match v.parse::<u8>() {
+                                    Ok(size @ 1..=25) => {
+                                        self.model_space.grip_size = size;
+                                        self.sync_model_space_theme(false);
+                                        Ok((format!("GRIPSIZE = {size}"), true))
+                                    }
+                                    _ => Err("SETVAR: integer from 1 to 25 required.".into()),
+                                },
+                                None => Ok((format!("GRIPSIZE = {}", self.model_space.grip_size), false)),
+                            },
+                            "GRIPCOLOR" => match &value {
+                                Some(v) => match v.parse::<u8>() {
+                                    Ok(color) => {
+                                        self.model_space.grip_color = color;
+                                        self.sync_model_space_theme(false);
+                                        Ok((format!("GRIPCOLOR = {color}"), true))
+                                    }
+                                    _ => Err("SETVAR: integer from 0 (Theme) to 255 required.".into()),
+                                },
+                                None => Ok((format!("GRIPCOLOR = {}", self.model_space.grip_color), false)),
+                            },
+                            "GRIPHOT" => match &value {
+                                Some(v) => match v.parse::<u8>() {
+                                    Ok(color) => {
+                                        self.model_space.grip_hot = color;
+                                        self.sync_model_space_theme(false);
+                                        Ok((format!("GRIPHOT = {color}"), true))
+                                    }
+                                    _ => Err("SETVAR: integer from 0 (Theme) to 255 required.".into()),
+                                },
+                                None => Ok((format!("GRIPHOT = {}", self.model_space.grip_hot), false)),
+                            },
+                            "GRIPHOVER" => match &value {
+                                Some(v) => match v.parse::<u8>() {
+                                    Ok(color) => {
+                                        self.model_space.grip_hover = color;
+                                        self.sync_model_space_theme(false);
+                                        Ok((format!("GRIPHOVER = {color}"), true))
+                                    }
+                                    _ => Err("SETVAR: integer from 0 (Theme) to 255 required.".into()),
+                                },
+                                None => Ok((format!("GRIPHOVER = {}", self.model_space.grip_hover), false)),
+                            },
                             "SNAPANG" => match &value {
                                 Some(v) => match v.parse::<f32>() {
                                     Ok(angle) if angle.is_finite() => {
@@ -1310,6 +1515,20 @@ impl OpenCADStudio {
                                 },
                                 None => Ok((
                                     format!("CLIPROMPTLINES = {}", self.cliprompt_lines),
+                                    false,
+                                )),
+                            },
+                            "COMMANDLINEFADETIME" => match &value {
+                                Some(v) => match v.parse::<i32>() {
+                                    Ok(n) if (0..=60000).contains(&n) => {
+                                        self.commandline_fade_ms = n;
+                                        self.command_line.set_commandline_fade_ms(n as u32);
+                                        Ok((format!("COMMANDLINEFADETIME = {n}"), true))
+                                    }
+                                    _ => Err("SETVAR: integer from 0 to 60000 required.".into()),
+                                },
+                                None => Ok((
+                                    format!("COMMANDLINEFADETIME = {}", self.commandline_fade_ms),
                                     false,
                                 )),
                             },
@@ -1692,33 +1911,36 @@ impl OpenCADStudio {
                                 None => Ok((format!("SPLINESEGS = {}", h.spline_segments), false)),
                             },
                             "SURFU" => match &value {
-                                Some(v) => v
-                                    .parse::<i16>()
-                                    .map(|x| {
+                                Some(v) => match v.parse::<i16>() {
+                                    Ok(x @ 0..=200) => {
                                         h.surface_u_density = x;
-                                        (format!("SURFU = {x}"), true)
-                                    })
-                                    .map_err(|_| "SETVAR: integer value required.".into()),
+                                        Ok((format!("SURFU = {x}"), true))
+                                    }
+                                    Ok(_) => Err("SETVAR: value must be between 0 and 200.".into()),
+                                    Err(_) => Err("SETVAR: integer value required.".into()),
+                                },
                                 None => Ok((format!("SURFU = {}", h.surface_u_density), false)),
                             },
                             "SURFV" => match &value {
-                                Some(v) => v
-                                    .parse::<i16>()
-                                    .map(|x| {
+                                Some(v) => match v.parse::<i16>() {
+                                    Ok(x @ 0..=200) => {
                                         h.surface_v_density = x;
-                                        (format!("SURFV = {x}"), true)
-                                    })
-                                    .map_err(|_| "SETVAR: integer value required.".into()),
+                                        Ok((format!("SURFV = {x}"), true))
+                                    }
+                                    Ok(_) => Err("SETVAR: value must be between 0 and 200.".into()),
+                                    Err(_) => Err("SETVAR: integer value required.".into()),
+                                },
                                 None => Ok((format!("SURFV = {}", h.surface_v_density), false)),
                             },
                             "SURFTYPE" => match &value {
-                                Some(v) => v
-                                    .parse::<i16>()
-                                    .map(|x| {
+                                Some(v) => match v.parse::<i16>() {
+                                    Ok(x @ (5 | 6 | 8)) => {
                                         h.surface_type = x;
-                                        (format!("SURFTYPE = {x}"), true)
-                                    })
-                                    .map_err(|_| "SETVAR: integer value required.".into()),
+                                        Ok((format!("SURFTYPE = {x}"), true))
+                                    }
+                                    Ok(_) => Err("SETVAR: value must be 5, 6, or 8.".into()),
+                                    Err(_) => Err("SETVAR: integer value required.".into()),
+                                },
                                 None => Ok((format!("SURFTYPE = {}", h.surface_type), false)),
                             },
                             "SHADEDGE" => match &value {
@@ -1875,7 +2097,7 @@ impl OpenCADStudio {
                                     false,
                                 )),
                             },
-                            _ => Err(format!("SETVAR: unknown variable \"{name}\".")),
+                            _ => Err(crate::tf!("SETVAR: unknown variable \"{name}\".").into_owned()),
                         }
                     };
                     match outcome {
@@ -1890,6 +2112,20 @@ impl OpenCADStudio {
                                         | "CURSORTYPE"
                                         | "SNAPANG"
                                         | "CLIPROMPTLINES"
+                                        | "COMMANDLINEFADETIME"
+                                        | "COLORTHEME"
+                                        | "SELECTIONAREA"
+                                        | "SELECTIONAREAOPACITY"
+                                        | "SELECTIONEFFECT"
+                                        | "SELECTIONEFFECTCOLOR"
+                                        | "WINDOWSAREACOLOR"
+                                        | "WINDOWAREACOLOR"
+                                        | "CROSSINGAREACOLOR"
+                                        | "SELECTIONPREVIEW"
+                                        | "GRIPSIZE"
+                                        | "GRIPCOLOR"
+                                        | "GRIPHOT"
+                                        | "GRIPHOVER"
                                 ) {
                                     self.persist_settings_if_changed();
                                 } else {
@@ -2265,7 +2501,7 @@ impl OpenCADStudio {
                     self.command_line.push_output(crate::tf!("PDMODE set to {v}").as_ref());
                 } else {
                     self.command_line.push_error(
-                        "Usage: PDMODE [value]  (0=dot 1=none 2=+ 3=x 4=tick; +32 circle, +64 square)",
+                        crate::t!("Usage: PDMODE [value]  (0=dot 1=none 2=+ 3=x 4=tick; +32 circle, +64 square)").as_ref(),
                     );
                 }
             }
@@ -2333,7 +2569,7 @@ impl OpenCADStudio {
                         self.persist_settings_if_changed();
                         match crate::io::file_association::register_as_handler() {
                             Ok(()) => self.command_line.push_output(
-                                "FILEASSOC set to 1 — registered as a .dwg/.dxf/.bak handler",
+                                crate::t!("FILEASSOC set to 1 — registered as a .dwg/.dxf/.bak handler").as_ref(),
                             ),
                             Err(e) => self
                                 .command_line
@@ -2378,7 +2614,7 @@ impl OpenCADStudio {
                         let msg = if v == 0 {
                             "SAVETIME set to 0 (autosave off)".to_string()
                         } else {
-                            format!("SAVETIME set to {v} minute(s)")
+                            crate::tf!("SAVETIME set to {v} minute(s)").into_owned()
                         };
                         self.command_line.push_output(&msg);
                     }
@@ -2410,7 +2646,7 @@ impl OpenCADStudio {
                         .push_output(crate::tf!("PDSIZE set to {v:.4}").as_ref());
                 } else {
                     self.command_line.push_error(
-                        "Usage: PDSIZE [value]  (>0 absolute size, <0 percent of viewport, 0 default)",
+                        crate::t!("Usage: PDSIZE [value]  (>0 absolute size, <0 percent of viewport, 0 default)").as_ref(),
                     );
                 }
             }
@@ -2687,5 +2923,176 @@ fn rename_symbol(doc: &mut acadrust::CadDocument, ty: &str, old: &str, new: &str
         }
         "VIEW" => rekey(&mut doc.views, old, new),
         _ => false,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::app::OpenCADStudio;
+
+    fn fresh_app() -> OpenCADStudio {
+        let mut app = OpenCADStudio::new_for_test();
+        app.automation_op(r#"{"op":"new"}"#);
+        app
+    }
+
+    #[test]
+    fn test_cad_selection_and_model_space_sysvars() {
+        let mut app = fresh_app();
+
+        // SELECTIONAREA toggle
+        let _ = app.run_command_line("SETVAR SELECTIONAREA 0");
+        assert!(!app.model_space.selection_area);
+        let _ = app.run_command_line("SELECTIONAREA 1");
+        assert!(app.model_space.selection_area);
+
+        // SELECTIONAREAOPACITY
+        let _ = app.run_command_line("SETVAR SELECTIONAREAOPACITY 45");
+        assert_eq!(app.model_space.selection_opacity, 45);
+        let _ = app.run_command_line("SELECTIONAREAOPACITY 80");
+        assert_eq!(app.model_space.selection_opacity, 80);
+
+        // SELECTIONEFFECT
+        let _ = app.run_command_line("SETVAR SELECTIONEFFECT 0");
+        assert!(!app.model_space.selection_effect);
+        assert!(!app.tabs[app.active_tab].scene.selection_effect);
+        let _ = app.run_command_line("SELECTIONEFFECT 1");
+        assert!(app.model_space.selection_effect);
+        assert!(app.tabs[app.active_tab].scene.selection_effect);
+
+        // SELECTIONEFFECTCOLOR
+        let _ = app.run_command_line("SETVAR SELECTIONEFFECTCOLOR 4");
+        assert_eq!(app.model_space.selection_highlight_color, 4);
+        assert_eq!(
+            app.tabs[app.active_tab].scene.selection_color,
+            app.model_space.resolve_selection_color()
+        );
+
+        // WINDOWSAREACOLOR & CROSSINGAREACOLOR
+        let _ = app.run_command_line("SETVAR WINDOWSAREACOLOR 5");
+        assert_eq!(app.model_space.selection_window_color, 5);
+        let _ = app.run_command_line("WINDOWSAREACOLOR 1");
+        assert_eq!(app.model_space.selection_window_color, 1);
+
+        let _ = app.run_command_line("SETVAR CROSSINGAREACOLOR 3");
+        assert_eq!(app.model_space.selection_crossing_color, 3);
+        let _ = app.run_command_line("CROSSINGAREACOLOR 2");
+        assert_eq!(app.model_space.selection_crossing_color, 2);
+
+        // SELECTIONPREVIEW
+        let _ = app.run_command_line("SETVAR SELECTIONPREVIEW 2");
+        assert_eq!(app.model_space.selection_preview, 2);
+    }
+
+    #[test]
+    fn test_background_command_modes() {
+        let mut app = fresh_app();
+        let i = app.active_tab;
+
+        // BACKGROUND CLASSIC
+        let _ = app.run_command_line("BACKGROUND CLASSIC");
+        assert_eq!(app.model_space.mode, crate::app::config::ModelSpaceMode::ClassicDark);
+        assert_eq!(
+            app.tabs[i].scene.bg_color,
+            [33.0 / 255.0, 40.0 / 255.0, 48.0 / 255.0, 1.0]
+        );
+
+        // BACKGROUND RGB custom
+        let _ = app.run_command_line("BACKGROUND 50 60 70");
+        assert_eq!(app.model_space.mode, crate::app::config::ModelSpaceMode::Custom);
+        assert_eq!(app.model_space.custom_bg, Some([50, 60, 70]));
+        assert!((app.tabs[i].scene.bg_color[0] - 50.0 / 255.0).abs() < 1e-4);
+        assert!((app.tabs[i].scene.bg_color[1] - 60.0 / 255.0).abs() < 1e-4);
+        assert!((app.tabs[i].scene.bg_color[2] - 70.0 / 255.0).abs() < 1e-4);
+
+        // BACKGROUND DEFAULT restores MatchTheme
+        let _ = app.run_command_line("BACKGROUND DEFAULT");
+        assert_eq!(app.model_space.mode, crate::app::config::ModelSpaceMode::MatchTheme);
+        assert_eq!(app.model_space.custom_bg, None);
+
+        // BACKGROUND DESK
+        let _ = app.run_command_line("BACKGROUND DESK 80 85 90");
+        assert_eq!(app.model_space.custom_desk_bg, Some([80, 85, 90]));
+        let _ = app.run_command_line("BACKGROUND DESK DEFAULT");
+        assert_eq!(app.model_space.custom_desk_bg, None);
+    }
+
+    #[test]
+    fn test_reviewer_feedback_fixes() {
+        let mut app = fresh_app();
+
+        // An empty background restores MatchTheme.
+        let _ = app.update(crate::app::Message::ModelSpaceBgChanged("".to_string()));
+        assert_eq!(app.model_space.mode, crate::app::config::ModelSpaceMode::MatchTheme);
+        assert_eq!(app.model_space.custom_bg, None);
+
+        // Display and selection defaults are restored separately.
+        app.model_space.mode = crate::app::config::ModelSpaceMode::Custom;
+        app.model_space.custom_bg = Some([10, 20, 30]);
+        app.model_space.selection_opacity = 99;
+        let _ = app.update(crate::app::Message::RestoreModelSpaceDisplayDefaults);
+        assert_eq!(app.model_space.mode, crate::app::config::ModelSpaceMode::MatchTheme);
+        assert_eq!(app.model_space.selection_opacity, 99, "Selection visual must not be wiped by display restore");
+
+        let _ = app.update(crate::app::Message::RestoreSelectionVisualDefaults);
+        assert_eq!(app.model_space.selection_opacity, 12, "Selection restore resets selection visual defaults");
+    }
+
+    #[test]
+    fn test_grip_and_desk_surround_sysvars() {
+        let mut app = fresh_app();
+
+        // 1. Desk surround background message
+        let _ = app.update(crate::app::Message::DeskSpaceBgChanged("#1a2b3c".to_string()));
+        assert_eq!(app.model_space.custom_desk_bg, Some([0x1a, 0x2b, 0x3c]));
+        assert_eq!(app.desk_bg_input, "#1a2b3c");
+        let _ = app.update(crate::app::Message::DeskSpaceBgChanged("".to_string()));
+        assert_eq!(app.model_space.custom_desk_bg, None);
+
+        // 2. GRIPSIZE, GRIPCOLOR, GRIPHOT, GRIPHOVER via command line & SETVAR
+        let _ = app.run_command_line("GRIPSIZE 8");
+        assert_eq!(app.model_space.grip_size, 8);
+        let _ = app.run_command_line("GRIPCOLOR 4");
+        assert_eq!(app.model_space.grip_color, 4);
+        let _ = app.run_command_line("GRIPHOT 1");
+        assert_eq!(app.model_space.grip_hot, 1);
+        let _ = app.run_command_line("GRIPHOVER 2");
+        assert_eq!(app.model_space.grip_hover, 2);
+
+        // Direct messages
+        let _ = app.update(crate::app::Message::GripSizeChanged(12));
+        assert_eq!(app.model_space.grip_size, 12);
+        let _ = app.update(crate::app::Message::GripColorChanged(5));
+        assert_eq!(app.model_space.grip_color, 5);
+
+        // Restore defaults resets grips
+        let _ = app.update(crate::app::Message::RestoreSelectionVisualDefaults);
+        assert_eq!(app.model_space.grip_size, 5);
+        assert_eq!(app.model_space.grip_color, 0);
+        assert_eq!(app.model_space.grip_hot, 0);
+        assert_eq!(app.model_space.grip_hover, 0);
+    }
+
+    #[test]
+    fn bare_commandlinefadetime_stays_active_until_value_or_cancel() {
+        let mut app = fresh_app();
+        let _ = app.run_command_line("COMMANDLINEFADETIME");
+        // Like RECTANGLE and PICKADD: bare form installs an active command
+        // whose pinned prompt stays until a value, Enter, or Esc.
+        assert!(
+            app.tabs[app.active_tab].active_cmd.is_some(),
+            "bare COMMANDLINEFADETIME must stay active"
+        );
+        // A value sets the variable and ends the command.
+        let _ = app.run_command_line("COMMANDLINEFADETIME 5000");
+        assert_eq!(app.commandline_fade_ms, 5000);
+        assert_eq!(app.command_line.commandline_fade_ms(), 5000);
+        assert!(app.tabs[app.active_tab].active_cmd.is_none());
+        // Bare again, then Esc cancels without changing the value.
+        let _ = app.run_command_line("COMMANDLINEFADETIME");
+        assert!(app.tabs[app.active_tab].active_cmd.is_some());
+        let _ = app.update(crate::app::Message::CommandEscape);
+        assert!(app.tabs[app.active_tab].active_cmd.is_none());
+        assert_eq!(app.commandline_fade_ms, 5000);
     }
 }

@@ -8,6 +8,7 @@ use crate::app::helpers::{
     CoordKind,
 };
 use crate::app::{Message, OpenCADStudio, POLY_START_DELAY_MS};
+use crate::app::TextEntryMode;
 use crate::modules::ModuleEvent;
 use crate::scene::pick::grip::{
     find_hit_grip, find_hit_grip_paper, find_hit_grip_rte, GripEdit, GripEditMode,
@@ -123,7 +124,7 @@ pub(super) fn on_tab_close(&mut self, idx: usize) -> Task<Message> {
                     self.tab_counter += 1;
                     self.tabs[0] = crate::app::document::DocumentTab::new_drawing(self.tab_counter);
                     self.active_tab = 0;
-                    self.apply_bg_default(0);
+                    self.apply_display_defaults(0);
                 } else {
                     self.tabs.remove(idx);
                     if self.active_tab >= self.tabs.len() {
@@ -199,8 +200,14 @@ pub(super) fn on_tab_close(&mut self, idx: usize) -> Task<Message> {
                             .get_or_insert_with(String::new)
                             .push_str(&s);
                     } else {
-                        // Command-line entry is shown uppercase.
-                        self.command_line.input.push_str(&s.to_uppercase());
+                        // Command-line entry is shown uppercase — except in
+                        // free-form text prompts, where the typed case is the
+                        // content (matches the CommandInput route).
+                        if self.is_free_text_active() {
+                            self.command_line.input.push_str(&s);
+                        } else {
+                            self.command_line.input.push_str(&s.to_uppercase());
+                        }
                         self.command_line.cancel_history_navigation();
                         // Live incremental search for INSERT/MINSERT (see CommandInput)
                         let live = self.command_line.input.clone();
@@ -263,7 +270,9 @@ pub(super) fn on_tab_close(&mut self, idx: usize) -> Task<Message> {
                 self.command_line.close_history();
                 // A leading `>` was only a "literal spaces" typing hint (see
                 // CommandSpace) — drop it before the input is interpreted.
-                if self.command_line.input.starts_with('>') {
+                // Free-form text prompts keep it: there it is content, not a
+                // hint, so a cell value like `>Note` commits verbatim.
+                if !self.is_free_text_active() && self.command_line.input.starts_with('>') {
                     self.command_line.input.remove(0);
                 }
                 // Grip-menu value prompt — consume the typed number and
@@ -466,6 +475,11 @@ pub(super) fn on_tab_close(&mut self, idx: usize) -> Task<Message> {
                                 // Distance / Angle fields as well.
                                 self.sync_dyn_fields();
 
+                                // A typed grip commit bypasses the normal viewport point-release
+                                // tracking cleanup. Drop the consumed OTRACK / Extension guide now
+                                // so no stale tracking ray remains visible after the grip edit.
+                                self.reset_tracking_after_point();
+
                                 return task;
                             }
                         }
@@ -516,20 +530,21 @@ pub(super) fn on_tab_close(&mut self, idx: usize) -> Task<Message> {
                     let wants_spaces = self.tabs[i]
                         .active_cmd
                         .as_ref()
-                        .map(|c| c.wants_text_input() && c.wants_text_with_spaces())
+                        .map(|c| c.is_free_text_step())
                         .unwrap_or(false);
                     let raw = self.command_line.input.clone();
                     let toks: Vec<String> = raw.split_whitespace().map(String::from).collect();
                     if toks.len() > 1 && !wants_spaces {
                         self.command_line.input.clear();
                         if self.tabs[i].active_cmd.is_some() {
+                            let mut tasks = Vec::new();
                             for tok in &toks {
                                 if self.tabs[i].active_cmd.is_none() {
                                     break;
                                 }
-                                self.feed_active_cmd(tok);
+                                tasks.push(self.feed_active_cmd(tok));
                             }
-                            return Task::none();
+                            return Task::batch(tasks);
                         }
                         return self.run_command_line(&raw);
                     }
@@ -542,7 +557,20 @@ pub(super) fn on_tab_close(&mut self, idx: usize) -> Task<Message> {
                     }
                 }
                 if self.tabs[i].active_cmd.is_some() {
-                    let text = crate::app::expr_eval::eval_to_string(self.command_line.input.trim());
+                    // Free-form text is the content itself: no expression
+                    // evaluation, or a cell value like `5*2` would commit as
+                    // `10`. Single-token prompts keep the calculator behavior.
+                    let free_text = self.tabs[i]
+                        .active_cmd
+                        .as_ref()
+                        .map(|c| c.is_free_text_step())
+                        .unwrap_or(false);
+                    let raw = self.command_line.input.trim().to_string();
+                    let text = if free_text {
+                        raw
+                    } else {
+                        crate::app::expr_eval::eval_to_string(&raw)
+                    };
                     self.command_line.input.clear();
 
                     // Offer the typed text to the command's option handler
@@ -559,16 +587,23 @@ pub(super) fn on_tab_close(&mut self, idx: usize) -> Task<Message> {
                     if self.tabs[i]
                         .active_cmd
                         .as_ref()
-                        .map(|c| c.wants_text_input())
+                        .map(|c| c.input_kind().wants_text())
                         .unwrap_or(false)
                     {
-                        self.push_ucs_to_cmd(i);
-                        if let Some(result) = self.tabs[i]
-                            .active_cmd
-                            .as_mut()
-                            .and_then(|c| c.on_text_input(&text))
-                        {
-                            return self.apply_cmd_result(result);
+                        // An empty submit must not be handed to on_text_input —
+                        // a text step would commit the empty string (wiping a
+                        // table cell, clearing an attribute). It falls through
+                        // to the Enter handling below, which ends the step the
+                        // same way a bare Enter does: unchanged.
+                        if !text.is_empty() {
+                            self.push_ucs_to_cmd(i);
+                            if let Some(result) = self.tabs[i]
+                                .active_cmd
+                                .as_mut()
+                                .and_then(|c| c.on_text_input(&text))
+                            {
+                                return self.apply_cmd_result(result);
+                            }
                         }
                     }
 
@@ -679,9 +714,36 @@ pub(super) fn on_tab_close(&mut self, idx: usize) -> Task<Message> {
                 Task::none()
     }
 
+    /// The active command's current step collects free-form prose from the
+    /// command line. Single decision point for the routes that type into
+    /// the buffer (CommandInput, Shift+Enter, the view's on_submit wiring).
+    pub(crate) fn is_free_text_active(&self) -> bool {
+        self.tabs[self.active_tab]
+            .active_cmd
+            .as_ref()
+            .is_some_and(|c| c.is_free_text_step())
+    }
+
+    /// What Space / Enter currently mean. Previously every key handler
+    /// re-derived this from the MText editor and the active command, and
+    /// the MText preview case was known only to `CommandSpace` — so Enter
+    /// behaved differently depending on which route carried the key.
+    pub(crate) fn text_entry_mode(&self) -> crate::app::TextEntryMode {
+        if self.mtext_editor.as_ref().is_some_and(|e| e.show_preview) {
+            return TextEntryMode::MTextPreview;
+        }
+        if self.is_free_text_active() {
+            return TextEntryMode::FreeText;
+        }
+        TextEntryMode::Command
+    }
+
     pub(super) fn on_command_finalize(&mut self) -> Task<Message> {
-                // In the MText preview, Enter inserts a line break.
-                if self.mtext_editor.as_ref().is_some_and(|e| e.show_preview) {
+                // In the MText preview, Enter inserts a line break. The
+                // free-text prompt case falls through deliberately: for it
+                // Enter *finishes* the edit (Shift+Enter breaks the line,
+                // handled by the SHIFT+ENTER shortcut route).
+                if self.text_entry_mode() == TextEntryMode::MTextPreview {
                     self.mtext_type("\n");
                     return Task::none();
                 }
@@ -826,7 +888,8 @@ pub(super) fn on_tab_close(&mut self, idx: usize) -> Task<Message> {
                 }
                 // Cancel layout rename first, then fall through.
                 let i_e = self.active_tab;
-                if self.qselect.take().is_some() {
+                if let Some(state) = self.qselect.take() {
+                    self.qselect_settings = Some((&state).into());
                     self.reset_modal_geometry();
                     return Task::none();
                 }
@@ -1546,35 +1609,74 @@ pub(super) fn on_tab_close(&mut self, idx: usize) -> Task<Message> {
     pub(super) fn on_qselect_open(&mut self) -> Task<Message> {
                 let i = self.active_tab;
                 self.tabs[i].scene.selection.borrow_mut().context_menu = None;
-                // Seed the type filter from the first selected entity so a
-                // right-click → Quick Select on a known object opens the
-                // panel pre-tuned to that entity's type. Property defaults
-                // to "(Any property)" so the user immediately picks what
-                // they want to compare.
-                let mut type_filter: Option<String> = None;
-                if let Some(&h) = self.tabs[i].scene.selected.iter().next() {
-                    if let Some(e) = self.tabs[i].scene.document.get_entity(h) {
-                        use crate::entities::traits::entity_type_name;
-                        type_filter = Some(entity_type_name(e).to_string());
-                    }
-                }
-                let scope = crate::app::QSelectScope::CurrentSpace;
+                let remembered = self.qselect_settings.clone();
+                let scope = remembered.as_ref().map_or(
+                    crate::app::QSelectScope::CurrentSpace,
+                    |settings| settings.scope,
+                );
                 let available_types = self.tabs[i].scene.qselect_entity_type_names(scope);
+                let type_filter = if let Some(settings) = remembered.as_ref() {
+                    settings
+                        .type_filter
+                        .as_ref()
+                        .filter(|selected| available_types.iter().any(|item| item == *selected))
+                        .cloned()
+                } else {
+                    self.tabs[i]
+                        .scene
+                        .selected
+                        .iter()
+                        .next()
+                        .and_then(|handle| self.tabs[i].scene.document.get_entity(*handle))
+                        .map(crate::entities::traits::entity_type_name)
+                        .map(str::to_string)
+                };
                 let available_properties = self.tabs[i]
                     .scene
                     .qselect_properties(type_filter.as_deref(), scope);
                 let candidate_count = self.tabs[i].scene.qselect_candidate_count(scope);
+                let property = remembered
+                    .as_ref()
+                    .and_then(|settings| settings.property_field.as_ref())
+                    .and_then(|field| {
+                        available_properties
+                            .iter()
+                            .find(|property| property.field == *field)
+                            .cloned()
+                    });
+                let mut operator = remembered
+                    .as_ref()
+                    .map_or(crate::app::QSelectOp::Eq, |settings| settings.operator);
+                if matches!(operator, crate::app::QSelectOp::Gt | crate::app::QSelectOp::Lt)
+                    && !property.as_ref().is_some_and(|property| {
+                        matches!(property.editor, crate::app::QSelectValueEditor::Number)
+                    })
+                {
+                    operator = crate::app::QSelectOp::Eq;
+                }
+                let value = remembered.as_ref().map_or_else(String::new, |settings| {
+                    if settings.property_field.is_none() || property.is_some() {
+                        settings.value.clone()
+                    } else {
+                        String::new()
+                    }
+                });
+                let mode = remembered
+                    .as_ref()
+                    .map_or(crate::app::QSelectMode::Include, |settings| settings.mode);
+                let append = matches!(scope, crate::app::QSelectScope::CurrentSpace)
+                    && remembered.as_ref().is_some_and(|settings| settings.append);
                 self.qselect = Some(crate::app::QSelectState {
                     scope,
                     available_types,
                     available_properties,
                     candidate_count,
                     type_filter,
-                    property: None,
-                    operator: crate::app::QSelectOp::Eq,
-                    value: String::new(),
-                    mode: crate::app::QSelectMode::Include,
-                    append: false,
+                    property,
+                    operator,
+                    value,
+                    mode,
+                    append,
                     error: None,
                 });
                 self.reset_modal_geometry();
@@ -1900,7 +2002,27 @@ pub(super) fn on_tab_close(&mut self, idx: usize) -> Task<Message> {
             }
             self.push_undo_snapshot(i, "CHPROP");
 
-            if field == "tol_text_style" {
+            if crate::scene::model::solid_history::is_loft_geometry_choice(field) {
+                // These choices change the generated body, not just history
+                // flags. Use the same transactional rebuild as numeric edits.
+                for &handle in &handles {
+                    if self.tabs[i].scene.is_layer_locked(handle) {
+                        continue;
+                    }
+                    self.tabs[i]
+                        .scene
+                        .apply_solid_history_property(handle, field, &value);
+                }
+            } else if crate::scene::model::solid_history::is_history_choice(field) {
+                for &handle in &handles {
+                    if self.tabs[i].scene.is_layer_locked(handle) {
+                        continue;
+                    }
+                    self.tabs[i]
+                        .scene
+                        .apply_solid_history_choice(handle, field, &value);
+                }
+            } else if field == "tol_text_style" {
                 use crate::entities::dim_override as dov;
                 use acadrust::xdata::XDataValue;
                 let style_handle = self.tabs[i]
@@ -2053,6 +2175,7 @@ pub(super) fn on_tab_close(&mut self, idx: usize) -> Task<Message> {
                             | "text_style_handle"
                             | "arrowhead_handle"
                             | "line_type_handle"
+                            | "block_content_handle"
                     ) {
                         // Resolve a picked name back to the handle the MLEADER
                         // stores. The style/text-style rows keep their existing
@@ -2098,6 +2221,11 @@ pub(super) fn on_tab_close(&mut self, idx: usize) -> Task<Message> {
                                         .map(|l| l.handle)
                                 }
                             }
+                            "block_content_handle" => doc
+                                .block_records
+                                .iter()
+                                .find(|block| block.name == value)
+                                .map(|block| block.handle),
                             _ => None,
                         };
                         for &handle in &handles {
@@ -2121,10 +2249,52 @@ pub(super) fn on_tab_close(&mut self, idx: usize) -> Task<Message> {
                                     "text_style_handle" => {
                                         if let Some(h) = resolved {
                                             ml.text_style_handle = Some(h);
+                                            ml.context.text_style_handle = Some(h);
+                                            ml.property_override_flags.insert(
+                                                acadrust::entities::MultiLeaderPropertyOverrideFlags::TEXT_STYLE,
+                                            );
                                         }
                                     }
-                                    "arrowhead_handle" => ml.arrowhead_handle = resolved,
-                                    "line_type_handle" => ml.line_type_handle = resolved,
+                                    "arrowhead_handle" => {
+                                        ml.arrowhead_handle = resolved;
+                                        for root in &mut ml.context.leader_roots {
+                                            for line in &mut root.lines {
+                                                line.arrowhead_handle = resolved;
+                                                line.override_flags.insert(
+                                                    acadrust::entities::LeaderLinePropertyOverrideFlags::ARROWHEAD,
+                                                );
+                                            }
+                                        }
+                                        ml.property_override_flags.insert(
+                                            acadrust::entities::MultiLeaderPropertyOverrideFlags::ARROWHEAD,
+                                        );
+                                    }
+                                    "line_type_handle" => {
+                                        ml.line_type_handle = resolved;
+                                        for root in &mut ml.context.leader_roots {
+                                            for line in &mut root.lines {
+                                                line.line_type_handle = resolved;
+                                                line.override_flags.insert(
+                                                    acadrust::entities::LeaderLinePropertyOverrideFlags::LINE_TYPE,
+                                                );
+                                            }
+                                        }
+                                        ml.property_override_flags.insert(
+                                            acadrust::entities::MultiLeaderPropertyOverrideFlags::LEADER_LINE_TYPE,
+                                        );
+                                    }
+                                    "block_content_handle" => {
+                                        if let Some(block_handle) = resolved {
+                                            ml.block_content_handle = Some(block_handle);
+                                            ml.context.block_content_handle = Some(block_handle);
+                                            ml.context.has_block_contents = true;
+                                            ml.context.block_content_location =
+                                                ml.context.content_base_point;
+                                            ml.property_override_flags.insert(
+                                                acadrust::entities::MultiLeaderPropertyOverrideFlags::BLOCK_CONTENT,
+                                            );
+                                        }
+                                    }
                                     _ => {}
                                 }
                             }
@@ -2569,7 +2739,10 @@ pub(super) fn on_tab_close(&mut self, idx: usize) -> Task<Message> {
                         } else {
                             raw_val
                         };
-                        if matches!(field, "current_fit_point" | "current_control_point") {
+                        if matches!(
+                            field,
+                            "current_fit_point" | "current_control_point" | "pm_current_vertex"
+                        ) {
                             let count = handles
                                 .iter()
                                 .filter_map(|handle| {
@@ -2585,6 +2758,10 @@ pub(super) fn on_tab_close(&mut self, idx: usize) -> Task<Message> {
                                         ) => Some(
                                             crate::entities::spline::control_vertex_count(spline),
                                         ),
+                                        (
+                                            "pm_current_vertex",
+                                            acadrust::EntityType::PolygonMesh(mesh),
+                                        ) => Some(mesh.vertices.len()),
                                         _ => None,
                                     }
                                 })
@@ -3211,6 +3388,8 @@ fn apply_attr_row(a: &mut acadrust::entities::AttributeEntity, row: &AttrRow) ->
     }
     if a.common.color != row.color {
         a.common.color = row.color;
+        a.common.color_name = None;
+        a.common.color_book_handle = None;
         ch = true;
     }
     if a.common.linetype != row.linetype {

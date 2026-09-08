@@ -462,13 +462,19 @@ impl OpenCADStudio {
         // clearing Z afterwards shifts the picked point on screen in an
         // oblique view. Plain paper space still uses the camera target plane.
         let plane = if self.tabs[i].editing_model_space() {
-            Some(match self.tabs[i].active_ucs.as_ref() {
-                Some(ucs) => (
-                    ucs_z_axis(ucs),
-                    glam::DVec3::new(ucs.origin.x, ucs.origin.y, ucs.origin.z),
-                ),
-                None => (glam::DVec3::Z, glam::DVec3::ZERO),
-            })
+            self.tabs[i]
+                .active_cmd
+                .as_ref()
+                .and_then(|command| command.cursor_plane())
+                .or_else(|| {
+                    Some(match self.tabs[i].active_ucs.as_ref() {
+                        Some(ucs) => (
+                            ucs_z_axis(ucs),
+                            glam::DVec3::new(ucs.origin.x, ucs.origin.y, ucs.origin.z),
+                        ),
+                        None => (glam::DVec3::Z, glam::DVec3::ZERO),
+                    })
+                })
         } else {
             None
         };
@@ -486,6 +492,25 @@ impl OpenCADStudio {
                 self.tabs[i].scene.paper_to_model(paper)
             }
         }
+    }
+
+    /// An acquired planar profile can lie away from the current UCS plane.
+    /// Reproject the cursor onto that profile before using it as a drag anchor
+    /// or looking for its supporting solid face.
+    fn profile_pick_point(
+        &self, i: usize, handle: Handle,
+        edit_cam: &Option<crate::scene::view::camera::Camera>,
+        cursor: iced::Point, bounds: iced::Rectangle,
+    ) -> Option<glam::DVec3> {
+        let entity = self.tabs[i].scene.document.get_entity(handle)?;
+        let (plane, _, _) = crate::scene::model::presspull_model::profile_geometry(entity)?;
+        let normal = glam::DVec3::from_array(plane.normal()?).as_vec3();
+        let origin = glam::DVec3::from_array(plane.origin);
+        let point = match edit_cam {
+            Some(camera) => camera.pick_on_plane(cursor, bounds, normal, origin),
+            None => self.tabs[i].scene.camera.borrow().pick_on_plane(cursor, bounds, normal, origin),
+        };
+        point.is_finite().then_some(point)
     }
 
     /// Projection + hit-test wires for the active pane. Inside a floating
@@ -916,6 +941,12 @@ impl OpenCADStudio {
             return Task::none();
         }
         let i = self.active_tab;
+        // Modifier-driven selection must be known before cursor_plane/axis and
+        // drafting constraints are read, not merely before the final callback.
+        if let Some(command) = self.tabs[i].active_cmd.as_mut() {
+            command.set_ctrl(self.ctrl_down);
+            command.set_shift(self.shift_down);
+        }
         let perf_move = crate::perf::enabled();
         let move_started = Instant::now();
 
@@ -1087,6 +1118,7 @@ impl OpenCADStudio {
                         }
                         let pivot = sel.orbit_pivot;
                         drop(sel);
+                        self.tabs[i].scene.refresh_projection_bounds();
                         self.tabs[i].scene.camera.borrow_mut().orbit(dx, dy, pivot);
                         self.tabs[i].scene.camera_generation += 1;
                         self.tabs[i]
@@ -1228,12 +1260,6 @@ impl OpenCADStudio {
                 }
                 for handle in std::mem::take(&mut self.grip_preview_handles) {
                     self.tabs[i].scene.preview_hidden.remove(&handle);
-                    for pkg in crate::modules::aec::commands::expand_handles_for_wall_packages(
-                        &self.tabs[i].scene,
-                        &[handle],
-                    ) {
-                        self.tabs[i].scene.preview_hidden.remove(&pkg);
-                    }
                 }
                 // Interactive Add Vertex seeds this with the entity from
                 // before insertion so append + placement is one undo step.
@@ -1256,16 +1282,6 @@ impl OpenCADStudio {
                     if !self.tabs[i].scene.meshes.contains_key(&handle) {
                         self.tabs[i].scene.preview_hidden.insert(handle);
                     }
-                    // Hide the whole wall package so the old 2D contour does
-                    // not stay visible while the axis endpoint is dragged.
-                    for pkg in crate::modules::aec::commands::expand_handles_for_wall_packages(
-                        &self.tabs[i].scene,
-                        &[handle],
-                    ) {
-                        if !self.tabs[i].scene.meshes.contains_key(&pkg) {
-                            self.tabs[i].scene.preview_hidden.insert(pkg);
-                        }
-                    }
                 }
                 let changes: Vec<_> = edited_handles
                     .iter()
@@ -1282,17 +1298,19 @@ impl OpenCADStudio {
                 // the re-wrap is exact).
                let snap = self.tabs[i].scene.wire_models_for(&edited_handles);
 
-                // Keep the entity's original geometry available for self-OSNAP,
-                // Extension and OTRACK while the live grip preview is being deformed.
-                self.grip_snap_wires = snap.clone();
-                // The user explicitly picked this grip, so treat its original position as an
-                // acquired tracking point immediately. This lets Extension/OTRACK use the
-                // original edge direction on the very first movement instead of requiring the
-                // cursor to return to the old grip position and dwell there first.
+                // Preserve the exact geometry from the instant the grip drag began.
+                // This snapshot is visual/reference-only: do NOT append it to
+                // `snap_candidates`, otherwise phantom self-snapping can return.
+                self.grip_reference_wires = snap.clone();
+
+                // The engaged grip is always an intentional OTRACK reference.
                 self.snapper.acquire_grip_tracking_point(
                     grip.origin_world,
-                    &self.grip_snap_wires,
+                    &self.grip_reference_wires,
                 );
+
+
+
                 self.grip_text_verts = snap
                     .iter()
                     .flat_map(|w| w.text_verts.iter().copied())
@@ -1339,19 +1357,6 @@ impl OpenCADStudio {
                 bounds,
                 self.snapper.osnap_radius_px,
             );
-            // `snap_candidates` contains only the spatially-local wires from the rest of
-            // the drawing. Add the frozen pre-drag geometry of the edited entity so its
-            // own vertices and segments remain valid snap references.
-            //
-            // This intentionally uses a plain Vec<WireModel>: Snapper will use its normal
-            // unindexed fallback over this already-small local candidate set rather than
-            // cloning/scanning the whole drawing.
-            let mut grip_snap_candidates: Vec<_> =
-                snap_candidates.iter().cloned().collect();
-
-            grip_snap_candidates.extend(
-                self.grip_snap_wires.iter().cloned()
-            );
             // The engaged grip is the rubber-band origin. Perpendicular
             // snapping must drop its foot from this point, including when a
             // hot-grip set is moved by the same drag vector.
@@ -1362,10 +1367,13 @@ impl OpenCADStudio {
                 self.active_construction_ray(i, raw, base, view_rot, eye, bounds);
             // `raw` is already model space (viewport camera or paper→model),
             // and the wires are model space, so the snap result is model.
+            // Normal snap: only the rest of the drawing participates here.
+            // The frozen grip-reference geometry deliberately stays out, so it cannot
+            // pull the edited point back onto its old shape.
             let snap_hit = self.snapper.snap(
                 raw,
                 p,
-                &grip_snap_candidates,
+                &snap_candidates,
                 view_rot,
                 eye,
                 bounds,
@@ -1374,11 +1382,87 @@ impl OpenCADStudio {
                 construction_ray,
             );
 
-            self.tabs[i].snap_result = snap_hit;
+            // The frozen pre-drag geometry gets a SECOND, reference-only snap pass.
+            //
+            // Its result is never used to place/move the grip. It exists only so the
+            // user can hover an endpoint/midpoint/etc. of the original geometry and
+            // acquire it for OTRACK exactly like ordinary drawing geometry.
+            let reference_snap_hit = if self.snapper.tracking_active()
+                && !self.grip_reference_wires.is_empty()
+            {
+                self.snapper
+                    .snap(
+                        raw,
+                        p,
+                        &self.grip_reference_wires,
+                        view_rot,
+                        eye,
+                        bounds,
+                        go,
+                        gr,
+                        None,
+                    )
+                    .filter(|hit| {
+                        matches!(
+                            hit.snap_type,
+                            crate::snap::SnapType::Endpoint
+                                | crate::snap::SnapType::Midpoint
+                                | crate::snap::SnapType::Center
+                                | crate::snap::SnapType::Node
+                                | crate::snap::SnapType::Quadrant
+                                | crate::snap::SnapType::Intersection
+                                | crate::snap::SnapType::Insertion
+                                | crate::snap::SnapType::ApparentIntersection
+                        )
+                    })
+            } else {
+                None
+            };
+
+            // The visible marker should normally describe the real snap that is driving
+            // the cursor. However, when there is no real object snap (or only Grid), show
+            // the reference snap marker so the user can see what point is being acquired.
+            let display_snap_hit = match snap_hit {
+                Some(hit) if hit.snap_type != crate::snap::SnapType::Grid => Some(hit),
+                _ => reference_snap_hit.or(snap_hit),
+            };
+
+            self.tabs[i].snap_result = display_snap_hit;
+
+            // OTRACK acquisition needs access to the original wire geometry so, once a
+            // reference point has dwelt long enough, it can capture the segment directions
+            // meeting at that point.
+            //
+            // IMPORTANT: this combined set is used ONLY for OTRACK acquisition.
+            // It is never passed to the normal movement snap above.
+            let mut tracking_candidates: Vec<_> =
+                snap_candidates.iter().cloned().collect();
+
+            tracking_candidates.extend(
+                self.grip_reference_wires.iter().cloned()
+            );
+
+            // Prefer a genuine drawing snap when it is an acquisition-capable point.
+            // Otherwise let the frozen-reference snap drive the dwell acquisition.
+            let normal_tracking_hit = snap_hit.filter(|hit| {
+                matches!(
+                    hit.snap_type,
+                    crate::snap::SnapType::Endpoint
+                        | crate::snap::SnapType::Midpoint
+                        | crate::snap::SnapType::Center
+                        | crate::snap::SnapType::Node
+                        | crate::snap::SnapType::Quadrant
+                        | crate::snap::SnapType::Intersection
+                        | crate::snap::SnapType::Insertion
+                        | crate::snap::SnapType::ApparentIntersection
+                )
+            });
+
+            let dwell_hit = normal_tracking_hit.or(reference_snap_hit);
 
             self.snapper.update_otrack_dwell(
-                snap_hit,
-                &grip_snap_candidates,
+                dwell_hit,
+                &tracking_candidates,
                 view_rot,
                 eye,
                 bounds,
@@ -1399,8 +1483,16 @@ impl OpenCADStudio {
             } else {
                 None
             };
+            // If OTRACK has no acquired-object hit, expose the current polar/ortho
+            // construction ray through the same visual guide.
+            let drafting_guide = construction_ray.and_then(|(base, target)| {
+                let dir = (target - base).try_normalize()?;
+                Some((base, dir))
+            });
+            self.otrack_active = otrack_hit
+                .map(|hit| (hit.base, hit.dir))
+                .or(drafting_guide);
 
-            self.otrack_active = otrack_hit.map(|hit| (hit.base, hit.dir));
             self.otrack_kind = otrack_hit.map(|hit| hit.kind);
 
             let mut snapped = if let Some(dir) = axis_lock {
@@ -1597,7 +1689,9 @@ impl OpenCADStudio {
                 .filter(|handle| self.tabs[i].scene.meshes.contains_key(handle))
                 .map(|handle| (handle, crate::scene::ChangeKind::Modified))
                 .collect();
-            self.tabs[i].scene.bump_entities(&mesh_changes);
+            if !mesh_changes.is_empty() {
+                self.tabs[i].scene.bump_entities(&mesh_changes);
+            }
             self.tabs[i].scene.set_preview_hatches(&edited_handles);
             self.tabs[i].dirty = true;
             if let Some(active) = self.tabs[i].active_grip.as_mut() {
@@ -1623,12 +1717,38 @@ impl OpenCADStudio {
                 self.tabs[i].scene.set_preview_text(slid);
                 self.tabs[i].scene.set_preview_wires(Vec::new());
             } else {
-                // Wire geometry, or a reshape grip: re-tessellate. The
-                // preview WireModels carry the entity's glyphs (gathered
-                // for the preview-text buffer in the render path), so a
-                // dimension / MTEXT-width drag keeps its text visible too.
-                let preview = self.tabs[i].scene.wire_models_for(&edited_handles);
-                self.tabs[i].scene.set_preview_wires(preview);
+                // Current deformed geometry.
+                let mut preview =
+                    self.tabs[i].scene.grip_wire_models_for(&edited_handles);
+
+                // Also show the drag-start geometry as a faint ghost.
+                //
+                // This is display-only. Preview wires never participate in the resident
+                // hit-test/snap set, so keeping the original shape visible does not
+                // reintroduce self-snapping.
+                let keep_reference_overlay = edited_handles
+                    .iter()
+                    .any(|handle| self.tabs[i].scene.preview_hidden.contains(handle));
+                let mut reference = if keep_reference_overlay {
+                    self.grip_reference_wires.clone()
+                } else {
+                    Vec::new()
+                };
+
+                for wire in &mut reference {
+                    wire.selected = false;
+
+                    // Preserve the entity colour but strongly fade it.
+                    wire.color[3] *= 0.48;
+
+                    // The original is a positional reference, not another selected object.
+                    wire.line_weight_px = wire.line_weight_px.min(1.0);
+                }
+
+                // Original first, live/deformed geometry over it.
+                reference.append(&mut preview);
+
+                self.tabs[i].scene.set_preview_wires(reference);
             }
             let preview_ms = preview_started.elapsed().as_secs_f64() * 1000.0;
             let geometry_ms = grip_started.elapsed().as_secs_f64() * 1000.0;
@@ -1672,7 +1792,9 @@ impl OpenCADStudio {
         // O(N) per frame and stalls the cursor on large drawings,
         // so each move resets the dwell timer — `HoverDwellTick` runs the hit-test only
         // once the cursor has been still for `HOVER_DWELL_MS`.
-        if !dragging && self.tabs[i].active_cmd.is_none() {
+        let deferred_command_hover = self.tabs[i].active_cmd.as_ref()
+            .is_some_and(|command| command.needs_entity_pick() && command.entity_pick_deferred_hover());
+        if !dragging && (self.tabs[i].active_cmd.is_none() || deferred_command_hover) {
             // On dense drawings, clearing a rollover immediately schedules a
             // second full scene frame just as motion resumes. Keep the previous
             // highlight until the next settled pick replaces it.
@@ -1734,8 +1856,6 @@ impl OpenCADStudio {
                 } else {
                     self.tabs[i].scene.hit_test_wires()
                 };
-            let all_wires =
-                crate::modules::aec::commands::wall_axis_snap_wires(&self.tabs[i].scene, all_wires);
             let snap_candidates = self.tabs[i].scene.interaction_candidates_near(
                 all_wires,
                 snap_cursor,
@@ -1824,12 +1944,17 @@ impl OpenCADStudio {
                     && !command.needs_tangent_pick()
                     && !command.is_selection_gathering()
             });
+            let uses_command_cursor_plane = self.tabs[i]
+                .active_cmd
+                .as_ref()
+                .and_then(|command| command.cursor_plane())
+                .is_some();
             let axis_lock = if let Some(base) = self.last_point {
                 self.active_axis_lock(
                     i,
                     cursor_world,
                     base,
-                    wants_point && !is_window_corner,
+                    wants_point && !is_window_corner && !uses_command_cursor_plane,
                 )
             } else {
                 self.axis_lock_dir = None;
@@ -1956,7 +2081,7 @@ impl OpenCADStudio {
                     let osnap_locked = self.tabs[i]
                         .snap_result
                         .is_some_and(|s| s.snap_type != crate::snap::SnapType::Grid);
-                    if !osnap_locked && !is_window_corner {
+                    if !osnap_locked && !is_window_corner && !uses_command_cursor_plane {
                         if let Some(base) = self.last_point {
                             let ucs_xf = self.tabs[i].ucs_xform();
                             if self.ortho_mode {
@@ -1986,26 +2111,33 @@ impl OpenCADStudio {
                 };
                 // Clamp to world XY only when no UCS is active; with a
                 // UCS the point already lies on the UCS XY plane.
-                if self.tabs[i].active_cmd.is_some() && self.tabs[i].active_ucs.is_none() {
+                if self.tabs[i].active_cmd.is_some()
+                    && self.tabs[i].active_ucs.is_none()
+                    && !uses_command_cursor_plane
+                {
                     pt.z = 0.0;
                 }
                 pt
             };
-            let effective = self.tabs[i]
+            let effective = if needs_entity && self.tabs[i].active_cmd.as_ref()
+                .is_some_and(|command| command.entity_pick_accepts_points())
+            {
+                cursor_world
+            } else { self.tabs[i]
                 .active_cmd
                 .as_ref()
                 .and_then(|command| command.cursor_axis())
                 .and_then(|(origin, direction)| {
                     cursor_on_projected_axis(p, bounds, view_rot, eye, origin, direction)
                 })
-                .unwrap_or(effective);
+                .unwrap_or(effective) };
             // Dynamic-input locked fields constrain the preview point
             // (#356): a typed angle pins the direction, a typed
             // distance pins the radius — the same resolution the Enter
             // commit uses, so preview and commit agree. The lock wins
             // over osnap/ortho/polar.
             let effective = {
-                let locked = self.tabs[i].active_cmd.is_some()
+                let locked = !needs_entity && self.tabs[i].active_cmd.is_some()
                     && self.tabs[i].dyn_fields.iter().any(|f| f.buffer.is_some());
                 if locked {
                     self.tabs[i].last_cursor_world = effective;
@@ -2125,6 +2257,10 @@ impl OpenCADStudio {
                     p.extend(cmd.on_preview_wires(effective));
                 }
                 p
+            } else if needs_entity && deferred_command_hover {
+                // The dwell callback resolves and outlines bounded areas once.
+                // Moving the cursor clears that outline without rebuilding it.
+                Vec::new()
             } else if needs_entity {
                 let include_fills = self.tabs[i]
                     .active_cmd
@@ -2186,12 +2322,17 @@ impl OpenCADStudio {
                         )
                     })?
                 });
-                let highlights_hover = self.tabs[i]
-                    .active_cmd
-                    .as_ref()
-                    .map(|c| c.entity_pick_highlights_hover())
-                    .unwrap_or(false);
+                let preview_in_command = (self.model_space.selection_preview & 2) != 0;
+                let highlights_hover = preview_in_command
+                    && self.tabs[i]
+                        .active_cmd
+                        .as_ref()
+                        .map(|c| c.entity_pick_highlights_hover())
+                        .unwrap_or(false);
                 if highlights_hover {
+                    self.tabs[i].scene.set_hover_highlight(hovered);
+                } else {
+                    self.tabs[i].scene.set_hover_highlight(None);
                     // Optional per-command filter (e.g. wall-only picks): when
                     // the hovered entity is rejected, clear the highlight so
                     // non-candidates don't light up.
@@ -2218,6 +2359,15 @@ impl OpenCADStudio {
                     self.tabs[i].scene.set_hover_highlight(filtered);
                 }
                 let hover_handle = hovered.unwrap_or(acadrust::Handle::NULL);
+                let wants_entity = self.tabs[i].active_cmd.as_ref()
+                    .is_some_and(|command| command.wants_hover_entity(hover_handle));
+                if wants_entity {
+                    if let Some(entity) = self.tabs[i].scene.document.get_entity(hover_handle).cloned() {
+                        if let Some(command) = self.tabs[i].active_cmd.as_mut() {
+                            command.inject_hover_entity(hover_handle, entity);
+                        }
+                    }
+                }
                 let shift = self.shift_down;
                 let mut p = self.tabs[i]
                     .active_cmd
@@ -3050,17 +3200,27 @@ impl OpenCADStudio {
                 is_added_polyline_vertex(original, current, target.grip_id)
                     .then_some(target.grip_id)
             });
+            // Keep originals available until every history shape has a valid
+            // final display. A rejected rebuild cancels the entire gesture.
+            let history_handles: Vec<_> = self.grip_preview_handles.iter().copied()
+                .filter(|handle| self.tabs[i].scene.document.solid_history_operation(*handle).is_some())
+                .collect();
+            for handle in history_handles {
+                if !self.tabs[i].scene.finalize_solid_history(handle) {
+                    self.cancel_active_grip_edit();
+                    self.command_line.push_error(crate::t!("The edited shape could not be displayed; the original geometry was restored.").as_ref());
+                    self.refresh_properties();
+                    return Task::none();
+                }
+            }
             self.tabs[i].active_grip = None;
             // Commit the grip drag as one undoable group, then put every
             // edited entity back into the resident tessellation.
-            let mut handles = std::mem::take(&mut self.grip_preview_handles);
+            let handles = std::mem::take(&mut self.grip_preview_handles);
             let originals = std::mem::take(&mut self.grip_originals);
             let history_originals = std::mem::take(&mut self.grip_history_originals);
             let dirty_before = self.grip_dirty_before.take().unwrap_or(self.tabs[i].dirty);
             if !handles.is_empty() {
-                for &handle in &handles {
-                    let _ = self.tabs[i].scene.finalize_solid_history(handle);
-                }
                 if !originals.is_empty() {
                     self.push_entity_group_history(
                         i,
@@ -3077,64 +3237,15 @@ impl OpenCADStudio {
                     );
                     self.tabs[i].dirty = true;
                 }
-                self.grip_snap_wires.clear();
+                self.grip_reference_wires.clear();
                 self.grip_text_verts = Vec::new();
                 self.grip_text_slide = false;
                 for &handle in &handles {
                     self.tabs[i].scene.preview_hidden.remove(&handle);
-                    for pkg in crate::modules::aec::commands::expand_handles_for_wall_packages(
-                        &self.tabs[i].scene,
-                        &[handle],
-                    ) {
-                        self.tabs[i].scene.preview_hidden.remove(&pkg);
-                    }
                 }
                 self.tabs[i].scene.clear_preview_wire();
-                // AEC wall axes moved/stretched via a grip need their
-                // derived contour/hatch/solid representation rebuilt.
-                let mut extra_handles = Vec::new();
-                let mut refreshed_owners = std::collections::HashSet::new();
-                let style_library = crate::modules::aec::engine::project::resolve_style_library(
-                    self.aec_project_explorer_file.as_ref(),
-                );
-                let (display_rules, style_substitutions) =
-                    self.resolve_active_display_config_wall_rules(i, handles.first().copied());
-                for &handle in &handles {
-                    let owner = crate::modules::aec::commands::resolve_wall_package(
-                        &self.tabs[i].scene,
-                        handle,
-                    );
-                    if !refreshed_owners.insert(owner) {
-                        continue;
-                    }
-                    let is_wall = self.tabs[i]
-                        .scene
-                        .document
-                        .get_entity(owner)
-                        .is_some_and(|e| {
-                            crate::modules::aec::commands::wall_thickness_and_height(e).is_some()
-                        });
-                    if is_wall {
-                        extra_handles.extend(
-                            crate::modules::aec::commands::refresh_wall_after_axis_edit(
-                                &mut self.tabs[i].scene,
-                                owner,
-                                Some(&style_library),
-                                display_rules.as_ref(),
-                                style_substitutions.as_ref(),
-                            ),
-                        );
-                    }
-                }
-                self.reapply_active_display_config_to_wall_packages(i, &handles);
-                for h in extra_handles {
-                    if !handles.contains(&h) {
-                        handles.push(h);
-                    }
-                }
                 let changes: Vec<_> = handles
                     .into_iter()
-                    .filter(|h| self.tabs[i].scene.document.get_entity(*h).is_some())
                     .map(|handle| (handle, crate::scene::ChangeKind::Modified))
                     .collect();
                 self.tabs[i].scene.bump_entities(&changes);
@@ -3237,10 +3348,6 @@ impl OpenCADStudio {
                     } else {
                         self.tabs[i].scene.hit_test_wires()
                     };
-                let all_wires = crate::modules::aec::commands::wall_axis_snap_wires(
-                    &self.tabs[i].scene,
-                    all_wires,
-                );
                 let snap_candidates = self.tabs[i].scene.interaction_candidates_near(
                     all_wires,
                     snap_cursor,
@@ -3342,7 +3449,14 @@ impl OpenCADStudio {
                 let mut pt = snap_hit.map(|s| s.world).unwrap_or(raw);
                 // When no UCS is active clamp to world XY; with a UCS the point is
                 // already constrained to that plane by the ray–plane intersection.
-                if self.tabs[i].active_ucs.is_none() {
+                let uses_command_cursor_plane = self.tabs[i]
+                    .active_cmd
+                    .as_ref()
+                    .and_then(|command| command.cursor_plane())
+                    .is_some();
+                let clamp_world_xy =
+                    self.tabs[i].active_ucs.is_none() && !uses_command_cursor_plane;
+                if clamp_world_xy {
                     pt.z = 0.0;
                 }
                 let axis_lock = if let Some(base) = self.last_point {
@@ -3350,7 +3464,10 @@ impl OpenCADStudio {
                         i,
                         raw,
                         base,
-                        !needs_entity_click && !needs_tan && !is_window_corner,
+                        !needs_entity_click
+                            && !needs_tan
+                            && !is_window_corner
+                            && !uses_command_cursor_plane,
                     )
                 } else {
                     self.axis_lock_dir = None;
@@ -3358,7 +3475,7 @@ impl OpenCADStudio {
                 };
                 if let (Some(dir), Some(base)) = (axis_lock, self.last_point) {
                     pt = axis_lock_apply(pt, base, dir);
-                    if self.tabs[i].active_ucs.is_none() {
+                    if clamp_world_xy {
                         pt.z = 0.0;
                     }
                 }
@@ -3378,11 +3495,12 @@ impl OpenCADStudio {
                 };
                 if let Some(h) = otrack {
                     pt = h.aligned;
-                    if self.tabs[i].active_ucs.is_none() {
+                    if clamp_world_xy {
                         pt.z = 0.0;
                     }
                 } else if axis_lock.is_none()
                     && !is_window_corner
+                    && !uses_command_cursor_plane
                     && !snap_hit.is_some_and(|s| s.snap_type != crate::snap::SnapType::Grid)
                 {
                     // Object snap wins over ortho/polar — a snapped point
@@ -3423,7 +3541,7 @@ impl OpenCADStudio {
                 // A click while dynamic-input fields hold typed values
                 // commits the CONSTRAINED point — the same resolution
                 // the preview shows and Enter would commit (#356).
-                if self.tabs[i].active_cmd.is_some()
+                if !needs_entity_click && self.tabs[i].active_cmd.is_some()
                     && self.tabs[i].dyn_fields.iter().any(|f| f.buffer.is_some())
                 {
                     self.tabs[i].last_cursor_world = pt;
@@ -3431,7 +3549,13 @@ impl OpenCADStudio {
                         pt = r;
                     }
                 }
-                pt
+                if needs_entity_click && self.tabs[i].active_cmd.as_ref()
+                    .is_some_and(|command| command.entity_pick_accepts_points())
+                {
+                    raw
+                } else {
+                    pt
+                }
             };
 
             // `world_pt` is in offset-relative (local) space, matching
@@ -3450,6 +3574,10 @@ impl OpenCADStudio {
                 world_pt + glam::DVec3::new(wo[0], wo[1], wo[2])
             };
 
+            if let Some(command) = self.tabs[i].active_cmd.as_mut() {
+                command.set_ctrl(self.ctrl_down);
+                command.set_shift(self.shift_down);
+            }
             let result = if self.tabs[i]
                 .active_cmd
                 .as_ref()
@@ -3561,11 +3689,26 @@ impl OpenCADStudio {
                         self.tabs[i]
                             .scene
                             .solid_click_point_for(p, view_rot2, eye2, bounds, handle)
-                            .unwrap_or(pick_wcs)
+                            .or_else(|| self.tabs[i].active_cmd.as_ref()
+                                .is_some_and(|command| command.entity_pick_deferred_hover())
+                                .then(|| self.profile_pick_point(i, handle, &edit_cam, p, bounds)).flatten())
+                            .unwrap_or_else(|| {
+                                let bounded_pick = self.tabs[i].active_cmd.as_ref()
+                                    .is_some_and(|command| command.entity_pick_deferred_hover());
+                                if bounded_pick && matches!(
+                                    self.tabs[i].scene.document.get_entity(handle),
+                                    Some(acadrust::EntityType::Solid3D(_)),
+                                ) {
+                                    // The aperture caught an edge outside its face.
+                                    // Do not reinterpret the working-plane point as
+                                    // a hit on another cap of the same body.
+                                    glam::DVec3::NAN
+                                } else { pick_wcs }
+                            })
                     } else {
                         pick_wcs
                     };
-                    let entity_pick_direction = if uses_surface_point {
+                    let entity_pick_direction = if uses_surface_point && entity_pick_point.is_finite() {
                         if matches!(
                             self.tabs[i].scene.document.get_entity(handle),
                             Some(acadrust::EntityType::Solid3D(_))
@@ -3679,6 +3822,10 @@ impl OpenCADStudio {
                         }
                     }
                     result
+                } else if self.tabs[i].active_cmd.as_ref()
+                    .is_some_and(|command| command.entity_pick_accepts_points())
+                {
+                    self.tabs[i].active_cmd.as_mut().map(|command| command.on_point(pick_wcs))
                 } else if self.tabs[i]
                     .active_cmd
                     .as_ref()
@@ -3723,7 +3870,7 @@ impl OpenCADStudio {
                 let wants_text = self.tabs[i]
                     .active_cmd
                     .as_ref()
-                    .map(|c| c.wants_text_input())
+                    .map(|c| c.input_kind().wants_text())
                     .unwrap_or(false);
                 if wants_text {
                     if let Some(text) = self.tabs[i]
@@ -3999,17 +4146,6 @@ impl OpenCADStudio {
                             bounds,
                             candidate_handles.as_ref(),
                         ));
-                        // A box pick on a wall's derived contour/hatch/solid
-                        // resolves to the wall axis (same as click/lasso).
-                        let handles: Vec<_> = handles
-                            .into_iter()
-                            .map(|h| {
-                                crate::modules::aec::commands::resolve_wall_package(
-                                    &self.tabs[i].scene,
-                                    h,
-                                )
-                            })
-                            .collect();
                         // Box/lasso accumulates like individual picks
                         // (issue #83): a plain box adds to the current
                         // selection, Shift+box removes the boxed
@@ -4057,17 +4193,6 @@ impl OpenCADStudio {
                         bounds,
                         |point| self.cursor_model_point(i, &edit_cam, point, bounds),
                     );
-                    // A lasso pick on a wall's derived contour/hatch/solid
-                    // resolves to the wall axis.
-                    let handles: Vec<_> = handles
-                        .into_iter()
-                        .map(|h| {
-                            crate::modules::aec::commands::resolve_wall_package(
-                                &self.tabs[i].scene,
-                                h,
-                            )
-                        })
-                        .collect();
                     // Accumulate like the box path (issue #83): plain
                     // lasso adds, Shift+lasso removes. An empty lasso
                     // leaves the current selection untouched so a stray
@@ -4176,16 +4301,16 @@ impl OpenCADStudio {
                             )
                         })
                         .or_else(|| {
-                            // 3D solids: click anywhere on the shaded
-                            // body — top-level solids and block-internal
-                            // ones together, front-most wins (a block in
-                            // front of a solid resolves to the block).
-                            self.tabs[i].scene.solid_click_hit(
+                            // Normal 3D selection follows the displayed B-rep
+                            // edges. Face-interior picking remains reserved for
+                            // modelling commands that explicitly request it.
+                            self.tabs[i].scene.solid_edge_click_hit(
                                 p,
                                 view_rot,
                                 eye,
                                 bounds,
                                 candidate_handles.as_ref(),
+                                crate::ui::overlay::pick_box_aperture_px(self.pick_box),
                             )
                         });
                         // Selection filter: drop a pick whose type is excluded.

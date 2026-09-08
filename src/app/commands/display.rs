@@ -429,11 +429,11 @@ impl OpenCADStudio {
                     self.tabs[i].scene.set_drawing_limit_check(enabled);
                     self.tabs[i].dirty = true;
                 }
-                self.command_line.push_output(if enabled {
+                self.command_line.push_output(crate::t!(if enabled {
                     "Limits checking ON."
                 } else {
                     "Limits checking OFF."
-                });
+                }).as_ref());
             }
             cmd if cmd.starts_with("LIMITS SET ") => {
                 let tokens: Vec<&str> = cmd["LIMITS SET ".len()..].split_whitespace().collect();
@@ -492,14 +492,14 @@ impl OpenCADStudio {
             "REDRAW" => {
                 use crate::scene::ViewportRefreshScope;
                 self.tabs[i].scene.request_refresh(ViewportRefreshScope::Active);
-                self.command_line.push_output("REDRAW: viewport refreshed.");
+                self.command_line.push_output(crate::t!("REDRAW: viewport refreshed.").as_ref());
                 return Some(Task::none());
             }
             // REDRAWALL — force re-rasterize of every generated viewport.
             "REDRAWALL" => {
                 use crate::scene::ViewportRefreshScope;
                 self.tabs[i].scene.request_refresh(ViewportRefreshScope::All);
-                self.command_line.push_output("REDRAWALL: viewports refreshed.");
+                self.command_line.push_output(crate::t!("REDRAWALL: viewports refreshed.").as_ref());
                 return Some(Task::none());
             }
             // REGEN — full model regeneration (bump_geometry: geometry_epoch AND
@@ -509,7 +509,7 @@ impl OpenCADStudio {
             // REGENALL is functionally identical (C5).
             "REGEN" | "REGENALL" => {
                 self.tabs[i].scene.bump_geometry();
-                self.command_line.push_output("REGEN: regenerated model.");
+                self.command_line.push_output(crate::t!("REGEN: regenerated model.").as_ref());
                 return Some(Task::none());
             }
 
@@ -736,21 +736,30 @@ impl OpenCADStudio {
             // ── EXTRUDE ────────────────────────────────────────────────────
             "EXTRUDE" | "THICKEN" => {
                 use crate::modules::insert::solid3d_cmds::ExtrudeCommand;
-                // If a single entity is already selected, skip the pick step.
+                // A preselection becomes the complete source set; otherwise
+                // the interactive command gathers any number of profiles.
                 let selected: Vec<_> = self.tabs[i].scene.selected_entities().into_iter().collect();
                 let color = self.tabs[i].scene.layer_color(&self.tabs[i].active_layer);
-                if selected.len() == 1 {
-                    let handle = selected[0].0;
+                if !selected.is_empty() {
                     let mut cmd = ExtrudeCommand::new_named(cmd, color);
-                    if let Some(curve) = crate::entities::curve::entity_curve(selected[0].1) {
-                        cmd.set_entity_pick_direction(
-                            curve.plane.normal().map(glam::DVec3::from_array),
-                        );
-                        cmd.on_entity_pick(
-                            handle,
-                            glam::DVec3::from_array(curve.plane.origin),
-                        );
-                    }
+                    let first_curve = selected
+                        .iter()
+                        .find_map(|(_, entity)| crate::entities::curve::entity_curve(entity));
+                    let anchor = first_curve
+                        .as_ref()
+                        .map(|curve| glam::DVec3::from_array(curve.plane.origin))
+                        .unwrap_or(glam::DVec3::ZERO);
+                    let direction = first_curve
+                        .and_then(|curve| curve.plane.normal())
+                        .map(glam::DVec3::from_array);
+                    cmd.set_preselection(
+                        selected
+                            .iter()
+                            .map(|(handle, entity)| (*handle, (*entity).clone()))
+                            .collect(),
+                        anchor,
+                        direction,
+                    );
                     self.command_line.push_info(&cmd.prompt());
                     self.tabs[i].active_cmd = Some(Box::new(cmd));
                 } else {
@@ -762,22 +771,10 @@ impl OpenCADStudio {
 
             "PRESSPULL" => {
                 use crate::modules::insert::solid3d_cmds::PresspullCommand;
-                let selected: Vec<_> = self.tabs[i].scene.selected_entities().into_iter().collect();
                 let color = self.tabs[i].scene.layer_color(&self.tabs[i].active_layer);
                 let mut command = PresspullCommand::new(color);
-                if selected.len() == 1
-                    && !matches!(selected[0].1, acadrust::EntityType::Solid3D(_))
-                {
-                    if let Some(curve) = crate::entities::curve::entity_curve(selected[0].1) {
-                        command.set_entity_pick_direction(
-                            curve.plane.normal().map(glam::DVec3::from_array),
-                        );
-                        command.on_entity_pick(
-                            selected[0].0,
-                            glam::DVec3::from_array(curve.plane.origin),
-                        );
-                    }
-                }
+                command.set_isolines(self.tabs[i].scene.document.header.isolines.max(0) as usize);
+                command.set_preselection(self.presspull_preselection());
                 self.command_line.push_info(&command.prompt());
                 self.tabs[i].active_cmd = Some(Box::new(command));
             }
@@ -785,8 +782,18 @@ impl OpenCADStudio {
             // ── REVOLVE ────────────────────────────────────────────────────
             "REVOLVE" => {
                 use crate::modules::insert::solid3d_cmds::RevolveCommand;
+                let selected: Vec<_> = self.tabs[i].scene.selected_entities().into_iter().collect();
                 let color = self.tabs[i].scene.layer_color(&self.tabs[i].active_layer);
-                let cmd = RevolveCommand::new(color);
+                let isolines = self.tabs[i].scene.document.header.isolines.max(0) as usize;
+                let mut cmd = RevolveCommand::new(color, isolines);
+                if !selected.is_empty() {
+                    cmd.set_preselection(
+                        selected
+                            .iter()
+                            .map(|(handle, entity)| (*handle, (*entity).clone()))
+                            .collect(),
+                    );
+                }
                 self.command_line.push_info(&cmd.prompt());
                 self.tabs[i].active_cmd = Some(Box::new(cmd));
             }
@@ -795,7 +802,16 @@ impl OpenCADStudio {
             "SWEEP" => {
                 use crate::modules::insert::solid3d_cmds::SweepCommand;
                 let color = self.tabs[i].scene.layer_color(&self.tabs[i].active_layer);
-                let cmd = SweepCommand::new(color);
+                let isolines = self.tabs[i].scene.document.header.isolines.max(0) as usize;
+                let mut cmd = SweepCommand::new(color, isolines);
+                let selected = self.tabs[i].scene.selected_handles_in_order()
+                    .into_iter()
+                    .filter_map(|handle| self.tabs[i].scene.document.get_entity(handle)
+                        .cloned().map(|entity| (handle, entity)))
+                    .collect::<Vec<_>>();
+                if !selected.is_empty() {
+                    cmd.set_preselection(selected);
+                }
                 self.command_line.push_info(&cmd.prompt());
                 self.tabs[i].active_cmd = Some(Box::new(cmd));
             }
@@ -804,7 +820,13 @@ impl OpenCADStudio {
             "LOFT" => {
                 use crate::modules::insert::solid3d_cmds::LoftCommand;
                 let color = self.tabs[i].scene.layer_color(&self.tabs[i].active_layer);
-                let cmd = LoftCommand::new(color);
+                let isolines = self.tabs[i].scene.document.header.isolines.max(0) as usize;
+                let selected = self.tabs[i].scene.selected_handles_in_order().into_iter()
+                    .filter_map(|handle| self.tabs[i].scene.document.get_entity(handle)
+                        .cloned().map(|entity| (handle, entity))).collect();
+                let available = self.tabs[i].scene.document.entities()
+                    .map(|entity| (entity.common().handle, entity.clone())).collect();
+                let cmd = LoftCommand::new(color, isolines, crate::command::ExtrudeMode::Solid, selected, available);
                 self.command_line.push_info(&cmd.prompt());
                 self.tabs[i].active_cmd = Some(Box::new(cmd));
             }
@@ -855,8 +877,8 @@ impl OpenCADStudio {
                         let active = self
                             .active_plot_style
                             .as_ref()
-                            .map(|t| format!("Active: {}", t.name))
-                            .unwrap_or_else(|| "No plot style loaded.".into());
+                            .map(|t| crate::tf!("Active: {}", t.name).into_owned())
+                            .unwrap_or_else(|| crate::t!("No plot style loaded.").into_owned());
                         self.command_line.push_info(&active);
                         return Some(Task::done(Message::PlotStyleLoad));
                     }
@@ -865,13 +887,13 @@ impl OpenCADStudio {
                             .active_plot_style
                             .as_ref()
                             .map(|t| {
-                                format!(
+                                crate::tf!(
                                     "Plot style: {}  ({} color overrides)",
                                     t.name,
                                     t.aci_entries.iter().filter(|e| e.color.is_some()).count()
-                                )
+                                ).into_owned()
                             })
-                            .unwrap_or_else(|| "No plot style table loaded.".into());
+                            .unwrap_or_else(|| crate::t!("No plot style table loaded.").into_owned());
                         self.command_line.push_output(&msg);
                     }
                     _ => {
@@ -1193,7 +1215,7 @@ impl OpenCADStudio {
                             .push_output(crate::tf!("ADJUST: {action} = {v} on {changed} image(s).").as_ref());
                     } else {
                         self.command_line.push_error(
-                            "ADJUST: no raster images selected, or unknown property (use BRIGHTNESS|CONTRAST|FADE).",
+                            crate::t!("ADJUST: no raster images selected, or unknown property (use BRIGHTNESS|CONTRAST|FADE).").as_ref(),
                         );
                     }
                 } else {
@@ -1252,7 +1274,7 @@ impl OpenCADStudio {
                 match value.parse::<i8>() {
                     Ok(mode @ -4..=4) => self.annotation_auto_scale = mode,
                     _ => self.command_line.push_error(
-                        "ANNOAUTOSCALE: enter an integer from -4 through 4.",
+                        crate::t!("ANNOAUTOSCALE: enter an integer from -4 through 4.").as_ref(),
                     ),
                 }
             }
@@ -1439,7 +1461,7 @@ impl OpenCADStudio {
                 let path = cmd.trim_start_matches("DATALINK").trim();
                 if path.is_empty() {
                     self.command_line.push_info(
-                        "Usage: DATALINK <path-to-.csv>",
+                        crate::t!("Usage: DATALINK <path-to-.csv>").as_ref(),
                     );
                     return Some(Task::none());
                 }
@@ -1552,7 +1574,7 @@ impl OpenCADStudio {
                 }
                 if jobs.is_empty() {
                     self.command_line
-                        .push_error("DATALINKUPDATE: no linked tables found.");
+                        .push_error(crate::t!("DATALINKUPDATE: no linked tables found.").as_ref());
                     return Some(Task::none());
                 }
                 if write_back {
@@ -1584,7 +1606,7 @@ impl OpenCADStudio {
                     .collect();
                 if updates.is_empty() {
                     self.command_line
-                        .push_error("DATALINKUPDATE: linked sources could not be read.");
+                        .push_error(crate::t!("DATALINKUPDATE: linked sources could not be read.").as_ref());
                     return Some(Task::none());
                 }
                 self.push_undo_snapshot(i, "DATALINKUPDATE");
@@ -1653,7 +1675,7 @@ impl OpenCADStudio {
                 let path = cmd.trim_start_matches("LANDXMLIMPORT").trim();
                 if path.is_empty() {
                     self.command_line.push_info(
-                        "Usage: LANDXMLIMPORT <path-to-.xml>  (imports CgPoint survey points)",
+                        crate::t!("Usage: LANDXMLIMPORT <path-to-.xml>  (imports CgPoint survey points)").as_ref(),
                     );
                     return Some(Task::none());
                 }

@@ -602,6 +602,12 @@ impl Scene {
                     Some(EntityType::Solid3D(solid)) => {
                         crate::scene::convert::solid3d_tess::kernel_body(solid)
                     }
+                    Some(EntityType::Region(region)) => {
+                        crate::scene::convert::solid3d_tess::kernel_region_body(region)
+                    }
+                    Some(EntityType::Surface(surface)) => {
+                        crate::scene::convert::solid3d_tess::kernel_surface_body(surface)
+                    }
                     _ => None,
                 })?;
                 Some((handle, body))
@@ -1183,7 +1189,7 @@ impl Scene {
     fn layer_plottable_in_context(
         &self,
         entity: &EntityType,
-        context: &crate::scene::render_graph::RenderContext,
+        context: &crate::scene::render_graph::InstanceContext,
     ) -> bool {
         let common = entity.common();
         let layer = if crate::scene::view::render::is_effective_layer_zero(&common.layer) {
@@ -1289,6 +1295,7 @@ impl Scene {
             all_visible,
             depth_map.as_ref(),
         )
+        .with_annotation_scale(self.annotation_scale)
         .with_viewport(viewport);
         let mut hatch_block_memo = std::collections::HashMap::new();
         let mut models = Vec::new();
@@ -1315,24 +1322,24 @@ impl Scene {
                     return matches!(entity, EntityType::Insert(_))
                         && targets.contains(&common.handle);
                 }
-                match entity {
-                    EntityType::Insert(insert) => {
+                let block_uses: Vec<_> = crate::scene::render_graph::entity_render_block_uses(
+                    &self.document,
+                    entity,
+                    1.0,
+                )
+                .into_iter()
+                .filter(|block_use| block_use.active)
+                .collect();
+                if block_uses.is_empty() {
+                    true
+                } else {
+                    block_uses.into_iter().any(|block_use| {
                         crate::scene::render_graph::block_contains_hatch(
                             &self.document,
-                            &insert.block_name,
+                            &block_use.insert.block_name,
                             &mut hatch_block_memo,
                         )
-                    }
-                    EntityType::Dimension(dimension) => {
-                        let name = dimension.base().block_name.trim();
-                        !name.is_empty()
-                            && crate::scene::render_graph::block_contains_hatch(
-                                &self.document,
-                                name,
-                                &mut hatch_block_memo,
-                            )
-                    }
-                    _ => true,
+                    })
                 }
             },
             |entity, context| {
@@ -1464,7 +1471,8 @@ impl Scene {
             annotation_scale_handle,
             all_visible,
             depth_map.as_ref(),
-        );
+        )
+        .with_annotation_scale(self.annotation_scale);
         let mut models = Vec::new();
         let mut wipeout_sources = rustc_hash::FxHashMap::default();
         graph.walk_root(
@@ -2123,16 +2131,14 @@ impl Scene {
             .collect();
     }
 
-    /// Tessellate all `Solid3D` entities in the current document into
-    /// GPU-ready `MeshModel`s and store them in `self.meshes`.
-    ///
-    /// Called after loading a document or after undo/redo so that every
-    /// `Solid3D` entity is represented in the mesh cache.
-    /// ImageModel for an edited image-bearing entity (RasterImage, or a PDF
-    /// UNDERLAY resolved through its definition object). `None` for others.
-    fn image_seed_for(&self, entity: &acadrust::entities::EntityType) -> Option<ImageModel> {
+    /// ImageModel for an image-bearing entity. `None` when it cannot decode.
+    pub(super) fn image_seed_for(
+        &self,
+        entity: &acadrust::entities::EntityType,
+    ) -> Option<ImageModel> {
         match entity {
             EntityType::RasterImage(img) => ImageModel::from_raster_image(img),
+            EntityType::Ole2Frame(ole) => ImageModel::from_ole2frame(ole),
             EntityType::Underlay(u) => match self.document.objects.get(&u.definition_handle) {
                 Some(acadrust::objects::ObjectType::UnderlayDefinition(def)) => {
                     ImageModel::from_underlay(u, def)

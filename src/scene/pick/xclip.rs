@@ -197,6 +197,9 @@ pub fn clip_wires(wires: &mut Vec<WireModel>, poly: &[[f64; 2]]) {
             } else {
                 w.pattern_stations.clear();
             }
+            if !w.tangent_geoms.is_empty() {
+                w.tangent_geoms.clear();
+            }
         }
         if !w.fill_tris.is_empty() {
             let local: Vec<[f32; 3]> = (0..w.fill_tris.len())
@@ -296,6 +299,7 @@ pub fn frame_wire(
         lo.push([lx, ly, 0.0]);
     }
     WireModel {
+        bg_adapt: None,
         point_marker: None,
         taper_widths: Vec::new(),
         pattern_stations: Vec::new(),

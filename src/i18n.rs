@@ -1,9 +1,9 @@
 //! Application language selection and embedded Fluent resources.
 
 use i18n_embed::fluent::{fluent_language_loader, FluentLanguageLoader};
-use i18n_embed::LanguageLoader;
 #[cfg(not(target_arch = "wasm32"))]
 use i18n_embed::DesktopLanguageRequester;
+use i18n_embed::LanguageLoader;
 #[cfg(target_arch = "wasm32")]
 use i18n_embed::WebLanguageRequester;
 use rust_embed::RustEmbed;
@@ -65,10 +65,12 @@ pub enum Language {
     PlPl,
     #[serde(rename = "zh-TW")]
     ZhTw,
+    #[serde(rename = "el-GR")]
+    ElGr,
 }
 
 impl Language {
-    pub const ALL: [Language; 21] = [
+    pub const ALL: [Language; 22] = [
         Language::System,
         Language::EnUs,
         Language::BgBg,
@@ -78,6 +80,7 @@ impl Language {
         Language::FrFr,
         Language::FiFi,
         Language::DeDe,
+        Language::ElGr,
         Language::HuHu,
         Language::ItIt,
         Language::JaJp,
@@ -115,6 +118,7 @@ impl Language {
             Language::HuHu => vec!["hu-HU".parse().expect("valid locale")],
             Language::PlPl => vec!["pl-PL".parse().expect("valid locale")],
             Language::ZhTw => vec!["zh-TW".parse().expect("valid locale")],
+            Language::ElGr => vec!["el-GR".parse().expect("valid locale")],
         }
     }
 
@@ -141,6 +145,7 @@ impl Language {
             Language::HuHu => crate::tr!("language", "hungarian"),
             Language::PlPl => crate::tr!("language", "polish"),
             Language::ZhTw => crate::tr!("language", "chinese-traditional"),
+            Language::ElGr => crate::tr!("language", "greek"),
         }
     }
 }
@@ -246,12 +251,8 @@ pub fn translate(source: impl AsRef<str>) -> Cow<'static, str> {
 }
 
 /// Translate a catalog message and replace the named values used by legacy
-/// command prompts. Catalog generation protects these markers from machine
-/// translation and Fluent parsing.
-pub fn translate_args(
-    source: impl AsRef<str>,
-    args: &[(&str, String)],
-) -> Cow<'static, str> {
+/// command prompts. Markers preserve values through Fluent parsing.
+pub fn translate_args(source: impl AsRef<str>, args: &[(&str, String)]) -> Cow<'static, str> {
     let source = source.as_ref();
     let mut translated = locale_catalog::message_attribute(source)
         .map(|(message_id, attribute_id)| loader().get_attr(message_id, attribute_id))
@@ -396,4 +397,151 @@ macro_rules! tf {
         let rendered = format!($template $($args)*);
         $crate::i18n::translate_format($template, rendered)
     }};
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::BTreeSet;
+
+    #[test]
+    fn donation_text_is_translated_in_every_locale() {
+        for language in Language::ALL
+            .into_iter()
+            .filter(|language| *language != Language::System)
+        {
+            let loader = FluentLanguageLoader::new("opencadstudio", "en-US".parse().unwrap());
+            load_language(&loader, language).expect("Fluent resources must parse");
+            let attributes: BTreeSet<String> =
+                loader.with_message_iter(&language.requested()[0], |messages| {
+                    messages
+                        .filter(|message| message.id.name == "donation")
+                        .flat_map(|message| {
+                            message
+                                .attributes
+                                .iter()
+                                .map(|attr| attr.id.name.to_owned())
+                        })
+                        .collect()
+                });
+            assert_eq!(
+                attributes,
+                BTreeSet::from(["title", "heading", "body", "decline"].map(String::from))
+            );
+            for attribute in attributes {
+                assert!(!loader.get_attr("donation", &attribute).is_empty());
+            }
+        }
+    }
+
+    #[test]
+    fn every_catalog_covers_and_formats_the_source_catalog() {
+        let loader = FluentLanguageLoader::new("opencadstudio", "en-US".parse().unwrap());
+        load_language(&loader, Language::EnUs).expect("English Fluent resources must parse");
+        let keys = |loader: &FluentLanguageLoader, language: Language| {
+            loader.with_message_iter(&language.requested()[0], |messages| {
+                let entries: Vec<_> = messages
+                    .flat_map(|message| {
+                        std::iter::once((message.id.name.to_owned(), String::new())).chain(
+                            message.attributes.iter().map(|attribute| {
+                                (message.id.name.to_owned(), attribute.id.name.to_owned())
+                            }),
+                        )
+                    })
+                    .collect();
+                let unique: BTreeSet<_> = entries.iter().cloned().collect();
+                assert_eq!(
+                    entries.len(),
+                    unique.len(),
+                    "duplicate keys in {language:?}"
+                );
+                unique
+            })
+        };
+        let source = keys(&loader, Language::EnUs);
+        assert!(!source.is_empty());
+
+        let english = Localizations::get("en-US/opencadstudio.ftl").unwrap();
+        let english = std::str::from_utf8(&english.data).unwrap();
+        let variables: Vec<_> = english
+            .split('$')
+            .skip(1)
+            .map(|tail| {
+                tail.split(|ch: char| !ch.is_ascii_alphanumeric() && ch != '_' && ch != '-')
+                    .next()
+                    .unwrap()
+            })
+            .collect();
+        let args = variables.into_iter().map(|name| (name, 2)).collect();
+        let render = |loader: &FluentLanguageLoader, message: &str, attribute: &str| {
+            loader
+                .with_fluent_message_and_bundle(message, |fluent_message, bundle| {
+                    let pattern = if attribute.is_empty() {
+                        fluent_message.value()
+                    } else {
+                        fluent_message
+                            .get_attribute(attribute)
+                            .map(|attr| attr.value())
+                    };
+                    pattern
+                        .map(|pattern| {
+                            let mut errors = Vec::new();
+                            let text = bundle.format_pattern(pattern, Some(&args), &mut errors);
+                            assert!(errors.is_empty(), "{message}.{attribute}: {errors:?}");
+                            text.into_owned()
+                        })
+                        .unwrap_or_default()
+                })
+                .unwrap()
+        };
+        let markers = |text: &str| -> BTreeSet<String> {
+            text.split("__ocs_")
+                .skip(1)
+                .filter_map(|tail| tail.split_once("__").map(|(marker, _)| marker.to_owned()))
+                .collect()
+        };
+        for language in Language::ALL.into_iter().filter(|l| *l != Language::System) {
+            let resource =
+                Localizations::get(&format!("{}/opencadstudio.ftl", language.requested()[0]))
+                    .unwrap();
+            let text = std::str::from_utf8(&resource.data).unwrap();
+            if let Err((_, errors)) = fluent_syntax::parser::parse(text) {
+                panic!("Invalid Fluent syntax in {language:?}: {errors:?}");
+            }
+            let localized = FluentLanguageLoader::new("opencadstudio", "en-US".parse().unwrap());
+            load_language(&localized, language).expect("Fluent resources must parse");
+            let actual = keys(&localized, language);
+            let extra: Vec<_> = actual.difference(&source).collect();
+            assert!(extra.is_empty(), "extra keys in {language:?}: {extra:?}");
+            let missing: Vec<_> = source.difference(&actual).collect();
+            assert!(
+                missing.is_empty(),
+                "{} missing keys in {language:?}: {:?}",
+                missing.len(),
+                &missing[..missing.len().min(10)]
+            );
+            for (message, attribute) in &source {
+                let expected = render(&loader, message, attribute);
+                let translated = render(&localized, message, attribute);
+                assert_eq!(
+                    markers(&translated),
+                    markers(&expected),
+                    "{language:?}: {message}.{attribute}"
+                );
+                assert_eq!(
+                    translated.is_empty(),
+                    expected.is_empty(),
+                    "{language:?}: {message}.{attribute}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn greek_language_setting_round_trips() {
+        let loader = FluentLanguageLoader::new("opencadstudio", "en-US".parse().unwrap());
+        load_language(&loader, Language::ElGr).expect("Greek Fluent resources must parse");
+        assert_eq!(loader.get_attr("language", "greek"), "Ελληνικά");
+        assert_eq!(serde_json::to_string(&Language::ElGr).unwrap(), "\"el-GR\"");
+    }
 }

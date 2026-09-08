@@ -5,7 +5,7 @@ use glam::{DVec3, Vec3};
 
 use crate::command::{
     CadCommand, CmdOption, CmdResult, DimensionAssociationInput, DimensionAssociationSource,
-    WorkingPlane,
+    InputKind, WorkingPlane,
 };
 use crate::modules::{IconKind, ModuleEvent, ToolDef};
 use crate::scene::creation_style::DimensionCreationDefaults;
@@ -139,6 +139,8 @@ impl JoggedRadiusDimensionCommand {
                 dimension,
             ))),
             association,
+            preserve_base_style: false,
+            continue_command: false,
         }
     }
 }
@@ -225,16 +227,16 @@ impl CadCommand for JoggedRadiusDimensionCommand {
         CmdResult::Cancel
     }
 
-    fn wants_text_input(&self) -> bool {
-        true
+    fn input_kind(&self) -> InputKind {
+        if self.awaiting_text {
+            InputKind::FreeText
+        } else {
+            InputKind::SingleToken
+        }
     }
 
     fn point_step_accepts_keywords(&self) -> bool {
         !self.awaiting_text && !self.awaiting_angle
-    }
-
-    fn wants_text_with_spaces(&self) -> bool {
-        self.awaiting_text
     }
 
     fn options(&self) -> Vec<CmdOption> {
@@ -440,6 +442,7 @@ fn dvec(point: Vector3) -> DVec3 {
 
 fn preview_wire(points: Vec<Vec3>) -> WireModel {
     WireModel {
+        bg_adapt: None,
         point_marker: None,
         taper_widths: Vec::new(),
         pattern_stations: Vec::new(),

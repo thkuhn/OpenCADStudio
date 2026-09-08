@@ -3,6 +3,17 @@ name: Release
 on:
   release:
     types: [published]
+  workflow_call:
+    inputs:
+      tag:
+        required: true
+        type: string
+      commit:
+        required: true
+        type: string
+      target:
+        default: all
+        type: string
   workflow_dispatch:
     inputs:
       target:
@@ -14,6 +25,9 @@ on:
           - all
           - snap
 
+env:
+  RELEASE_TAG: ${{ inputs.tag || github.event.release.tag_name }}
+
 jobs:
   build-appimage:
     runs-on: ubuntu-22.04
@@ -23,6 +37,13 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.commit || github.sha }}
+
+      - name: Validate package versions
+        id: version
+        shell: bash
+        run: python3 scripts/release.py versions --tag "$RELEASE_TAG"
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -38,7 +59,7 @@ jobs:
       - name: Build
         env:
           OCS_PATREON_TOKEN: ${{ secrets.OCS_PATREON_TOKEN }}
-        run: cargo build --release
+        run: cargo build --locked --release
 
       - name: Prepare AppDir
         run: |
@@ -80,13 +101,13 @@ jobs:
           mv Open*CAD*Studio*.AppImage OpenCADStudio.AppImage
 
       - name: Upload AppImage to release
-        if: github.event_name == 'release'
+        if: env.RELEASE_TAG != ''
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          ASSET=OpenCADStudio-${{ github.ref_name }}-linux-x86_64.AppImage
+          ASSET=OpenCADStudio-${{ env.RELEASE_TAG }}-linux-x86_64.AppImage
           mv OpenCADStudio.AppImage "$ASSET"
-          gh release upload ${{ github.ref_name }} "$ASSET" --clobber --repo ${{ github.repository }}
+          gh release upload ${{ env.RELEASE_TAG }} "$ASSET" --clobber --repo ${{ github.repository }}
 
   build-snap:
     needs: build-appimage
@@ -104,6 +125,13 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.commit || github.sha }}
+
+      - name: Validate package versions
+        id: version
+        shell: bash
+        run: python3 scripts/release.py versions --tag "$RELEASE_TAG"
 
       - name: Download shared Linux payload
         uses: actions/download-artifact@v4
@@ -112,53 +140,51 @@ jobs:
           path: .
 
       - name: Set package version
+        id: package
         env:
-          EVENT_NAME: ${{ github.event_name }}
-          REF_NAME: ${{ github.ref_name }}
+          VERSION: ${{ steps.version.outputs.version }}
         run: |
-          if [ "$EVENT_NAME" = "release" ]; then
-            VERSION="${REF_NAME#v}"
-            if [ "v$VERSION" != "$REF_NAME" ]; then
-              echo "::error::Release tag must be vX.Y.Z"
-              exit 1
-            fi
-          else
-            VERSION="$(sed -n 's/^version = "\([0-9][0-9.]*\)"/\1/p' Cargo.toml | head -1)"
-          fi
-          if ! printf '%s' "$VERSION" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+$'; then
-            echo "::error::Invalid package version: $VERSION"
-            exit 1
-          fi
           sed -i "s/^version: .*/version: '$VERSION'/" snap/snapcraft.yaml
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
 
       - name: Build snap
         id: snapcraft
         uses: snapcore/action-build@v1
 
+      - name: Normalize snap package name
+        id: snap_package
+        env:
+          SNAP: ${{ steps.snapcraft.outputs.snap }}
+          VERSION: ${{ steps.package.outputs.version }}
+        run: |
+          PACKAGE="OpenCADStudio-v${VERSION}-linux-x86_64.snap"
+          mv "$SNAP" "$PACKAGE"
+          echo "snap=$PACKAGE" >> "$GITHUB_OUTPUT"
+
       - name: Upload snap to release
-        if: github.event_name == 'release'
+        if: env.RELEASE_TAG != ''
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          SNAP: ${{ steps.snapcraft.outputs.snap }}
-        run: gh release upload "${{ github.ref_name }}" "$SNAP" --clobber
+          SNAP: ${{ steps.snap_package.outputs.snap }}
+        run: gh release upload "${{ env.RELEASE_TAG }}" "$SNAP" --clobber
 
       - name: Upload snap as workflow artifact
-        if: github.event_name == 'workflow_dispatch'
+        if: env.RELEASE_TAG == ''
         uses: actions/upload-artifact@v4
         with:
-          name: open-cad-studio-snap
-          path: ${{ steps.snapcraft.outputs.snap }}
+          name: OpenCADStudio-v${{ steps.package.outputs.version }}-linux-x86_64-snap
+          path: ${{ steps.snap_package.outputs.snap }}
           if-no-files-found: error
 
       - name: Publish snap to edge
-        if: github.event_name == 'release' && env.SNAPCRAFT_STORE_CREDENTIALS != ''
+        if: env.RELEASE_TAG != '' && env.SNAPCRAFT_STORE_CREDENTIALS != ''
         uses: snapcore/action-publish@v1
         with:
-          snap: ${{ steps.snapcraft.outputs.snap }}
+          snap: ${{ steps.snap_package.outputs.snap }}
           release: edge
 
   build-windows:
-    if: github.event_name == 'release' || inputs.target == 'all'
+    if: github.event_name == 'release' || inputs.tag != '' || inputs.target == 'all'
     runs-on: windows-latest
     permissions:
       contents: write
@@ -166,6 +192,13 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.commit || github.sha }}
+
+      - name: Validate package versions
+        id: version
+        shell: bash
+        run: python3 scripts/release.py versions --tag "$RELEASE_TAG"
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -173,11 +206,6 @@ jobs:
       - name: Convert SVG icon to ICO
         shell: pwsh
         run: |
-          # ImageMagick is pre-installed on windows-latest. The
-          # auto-resize generates every size Explorer / Add-Remove
-          # Programs / the Start Menu shortcut may request from a
-          # single source SVG. Must run BEFORE the build so build.rs
-          # can embed the icon into the .exe (issue #107).
           magick assets/logo.svg `
             -define icon:auto-resize=16,24,32,48,64,128,256 `
             packaging/windows/AppIcon.ico
@@ -197,17 +225,10 @@ jobs:
         env:
           OCS_PATREON_TOKEN: ${{ secrets.OCS_PATREON_TOKEN }}
         run: |
-          cargo build --release
-          # The MSI bundles the DWG thumbnail provider DLL. That cdylib is a
-          # workspace member, not an app dependency, so a plain `cargo build`
-          # never produces it — build the crate as an explicit target.
-          cargo build --release -p dwg-thumbnailer-win
+          cargo build --locked --release
+          cargo build --locked --release -p dwg-thumbnailer-win
 
       - name: Sign executable (Azure Trusted Signing)
-        # Sign the bare .exe *before* the MSI is built so the copy packed
-        # into the installer carries the signature too. AZURE_CLIENT_SECRET
-        # authenticates the App Registration; the remaining AZURE_* secrets
-        # select the Trusted Signing account / certificate profile.
         uses: azure/artifact-signing-action@v2
         with:
           azure-tenant-id: ${{ secrets.AZURE_TENANT_ID }}
@@ -224,22 +245,9 @@ jobs:
       - name: Build MSI installer
         shell: pwsh
         run: |
-          $version = "${{ github.ref_name }}" -replace '^v', ''
-          # workflow_dispatch runs use the branch name as ref_name, which
-          # is not a valid MSI ProductVersion — fall back to 0.0.0 so test
-          # builds still produce an installer.
-          if ($version -notmatch '^\d+(\.\d+){0,3}$') { $version = "0.0.0" }
-          # WiX Toolset 3.x is pre-installed on windows-latest; $env:WIX
-          # points to the install root. candle compiles .wxs → .wixobj
-          # and light links it into the final .msi.
+          $version = "${{ steps.version.outputs.msi }}"
           $candle = Join-Path $env:WIX "bin\candle.exe"
           $light  = Join-Path $env:WIX "bin\light.exe"
-          # Resolve to absolute paths and pass each `-d<name>=<value>`
-          # as one quoted argument. PowerShell's native-command argument
-          # passing strips unquoted `-d…=…` strings on the `=` sign,
-          # which would otherwise hand candle an empty Source variable
-          # and `target\release\OpenCADStudio.exe` as a stray input
-          # filename.
           $exePath  = (Resolve-Path target\release\OpenCADStudio.exe).Path
           $iconPath = (Resolve-Path packaging\windows\AppIcon.ico).Path
           # GPL-3 license RTF shown on the installer's EULA page.
@@ -262,7 +270,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "candle failed" }
           $mainObj = Join-Path $objDir "main.wixobj"
           $uiObj   = Join-Path $objDir "ui.wixobj"
-          & $light $mainObj $uiObj -ext WixUIExtension -out $msiPath
+          & $light $mainObj $uiObj -ext WixUIExtension -cultures:en-us -loc packaging/windows/strings.en-US.wxl -out $msiPath
           if ($LASTEXITCODE -ne 0) { throw "light failed" }
 
       - name: Sign MSI installer (Azure Trusted Signing)
@@ -282,16 +290,12 @@ jobs:
           timestamp-digest: SHA256
 
       - name: Upload artifacts to release
-        if: github.event_name == 'release'
+        if: env.RELEASE_TAG != ''
         shell: pwsh
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          $tag = "${{ github.ref_name }}"
-          # Ship both the bare .exe (portable, no install) and the
-          # .msi (installer with Start Menu shortcut + .dwg / .dxf
-          # file association). The `-portable` / `-installer` suffix
-          # makes the distinction obvious on the release page.
+          $tag = "${{ env.RELEASE_TAG }}"
           $exe = "OpenCADStudio-$tag-windows-x86_64-portable.exe"
           $msi = "OpenCADStudio-$tag-windows-x86_64-installer.msi"
           Move-Item target\release\OpenCADStudio.exe $exe
@@ -301,7 +305,7 @@ jobs:
             --clobber --repo ${{ github.repository }}
 
   build-macos:
-    if: github.event_name == 'release' || inputs.target == 'all'
+    if: github.event_name == 'release' || inputs.tag != '' || inputs.target == 'all'
     runs-on: macos-14    # Apple Silicon (arm64) only
     permissions:
       contents: write
@@ -309,6 +313,13 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.commit || github.sha }}
+
+      - name: Validate package versions
+        id: version
+        shell: bash
+        run: python3 scripts/release.py versions --tag "$RELEASE_TAG"
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -324,11 +335,11 @@ jobs:
         env:
           OCS_PATREON_TOKEN: ${{ secrets.OCS_PATREON_TOKEN }}
         run: |
-          cargo build --release --target aarch64-apple-darwin
-          # The QuickLook extension links libdwg_thumbnailer.a. The staticlib
-          # crate-type is only emitted when the crate is built as a target (as a
-          # plain dependency cargo produces just the rlib), so build it here.
-          cargo build --release --target aarch64-apple-darwin -p dwg-thumbnailer
+          cargo build --locked --release --target aarch64-apple-darwin
+          cargo build --locked --release --target aarch64-apple-darwin -p dwg-thumbnailer
+          # The launcher shim is the .app's actual CFBundleExecutable (#1039)
+          # — see src/bin/ocs_launcher.rs for why.
+          cargo build --locked --release --target aarch64-apple-darwin --bin ocs_launcher
 
       - name: Build .icns from SVG
         run: |
@@ -363,14 +374,8 @@ jobs:
 
       - name: Build DWG QuickLook thumbnail extension (.appex)
         run: |
-          # A QuickLook thumbnail App Extension, built without an Xcode project:
-          # swiftc compiles the provider, links the Rust core static lib (its C
-          # ABI) + the system frameworks, and we hand-assemble the .appex bundle.
-          # `cargo build` already produced libdwg_thumbnailer.a (workspace member,
-          # crate-type staticlib). The whole app is ad-hoc signed below, which
-          # deep-signs the embedded extension too.
           set -e
-          VERSION="${{ github.ref_name }}"; VERSION="${VERSION#v}"; [ -z "$VERSION" ] && VERSION="0.0.0"
+          VERSION="${{ steps.version.outputs.cargo }}"
           EXT=DWGThumbnail.appex
           rm -rf "$EXT"; mkdir -p "$EXT/Contents/MacOS"
           swiftc \
@@ -393,34 +398,25 @@ jobs:
           APP=OpenCADStudio.app
           rm -rf "$APP"
           mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources" "$APP/Contents/PlugIns"
-          cp target/aarch64-apple-darwin/release/OpenCADStudio "$APP/Contents/MacOS/OpenCADStudio"
-          chmod +x "$APP/Contents/MacOS/OpenCADStudio"
+          # Finder opens the launcher, which relays files to the sibling GUI.
+          cp target/aarch64-apple-darwin/release/ocs_launcher "$APP/Contents/MacOS/OpenCADStudio"
+          cp target/aarch64-apple-darwin/release/OpenCADStudio "$APP/Contents/MacOS/OpenCADStudio-App"
+          chmod +x "$APP/Contents/MacOS/OpenCADStudio" "$APP/Contents/MacOS/OpenCADStudio-App"
           cp AppIcon.icns "$APP/Contents/Resources/AppIcon.icns"
           cp DWG.icns DXF.icns "$APP/Contents/Resources/"
           # QuickLook thumbnail extension.
           cp -R DWGThumbnail.appex "$APP/Contents/PlugIns/"
           # Substitute version into Info.plist.
-          VERSION="${{ github.ref_name }}"
-          VERSION="${VERSION#v}"
-          [ -z "$VERSION" ] && VERSION="0.0.0"
+          VERSION="${{ steps.version.outputs.cargo }}"
           sed "s/__VERSION__/$VERSION/g" packaging/Info.plist > "$APP/Contents/Info.plist"
 
       - name: Ad-hoc code-sign the bundle
         run: |
-          # No paid Apple Developer ID is available, so the app cannot be
-          # notarised. An *ad-hoc* signature (identity "-") at least gives the
-          # bundle a valid self-signature: this avoids the harshest Gatekeeper
-          # verdict ("app is damaged, Move to Trash") on a quarantined download
-          # and is mandatory anyway for arm64 binaries to execute. Sign the
-          # whole bundle deeply, then verify.
           codesign --force --deep --sign - --timestamp=none OpenCADStudio.app
           codesign --verify --strict --verbose=2 OpenCADStudio.app
 
       - name: Create .dmg
         run: |
-          # hdiutil intermittently fails with "Resource busy" on the hosted
-          # runner (a stale mount or background indexer holding the image).
-          # Detach any leftover volume and retry a few times before giving up.
           set +e
           for attempt in 1 2 3 4 5; do
             hdiutil detach "/Volumes/Open CAD Studio" >/dev/null 2>&1 || true
@@ -437,24 +433,20 @@ jobs:
           test -f OpenCADStudio.dmg
 
       - name: Upload .dmg to release
-        if: github.event_name == 'release'
+        if: env.RELEASE_TAG != ''
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          ASSET=OpenCADStudio-${{ github.ref_name }}-macos-arm64.dmg
+          ASSET=OpenCADStudio-${{ env.RELEASE_TAG }}-macos-arm64.dmg
           mv OpenCADStudio.dmg "$ASSET"
-          gh release upload ${{ github.ref_name }} "$ASSET" --clobber --repo ${{ github.repository }}
+          gh release upload ${{ env.RELEASE_TAG }} "$ASSET" --clobber --repo ${{ github.repository }}
 
       - name: Emit Homebrew cask sha256
-        if: github.event_name == 'release'
+        if: env.RELEASE_TAG != ''
         run: |
-          # Print the values needed to bump the Homebrew cask
-          # (packaging/homebrew/open-cad-studio.rb) for this release, so the
-          # tap can be updated with a copy-paste instead of computing the
-          # digest by hand.
-          VERSION="${{ github.ref_name }}"
+          VERSION="${{ env.RELEASE_TAG }}"
           VERSION="${VERSION#v}"
-          SHA=$(shasum -a 256 OpenCADStudio-${{ github.ref_name }}-macos-arm64.dmg | awk '{print $1}')
+          SHA=$(shasum -a 256 OpenCADStudio-${{ env.RELEASE_TAG }}-macos-arm64.dmg | awk '{print $1}')
           {
             echo "## Homebrew cask bump"
             echo "Update \`packaging/homebrew/open-cad-studio.rb\`:"
@@ -463,3 +455,18 @@ jobs:
             echo "  sha256 \"$SHA\""
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
+
+  verify:
+    needs: [build-appimage, build-snap, build-windows, build-macos]
+    if: github.event_name == 'release' || inputs.tag != ''
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.commit || github.sha }}
+      - name: Verify native release assets and notes
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 scripts/release.py verify-native --tag "$RELEASE_TAG"

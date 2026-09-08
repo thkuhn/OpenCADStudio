@@ -1127,105 +1127,92 @@ impl CadCommand for TCountCommand {
         }
     }
 }
-/// Generic front-end for a two-value command that operates on the current
-/// selection (POLYSOLID width + height on a selected polyline). Gathers a
-/// selection first when none is set, prompts for two values, and dispatches
-/// `<name> <first> <second>` to the inline handler.
-pub struct SelectThenTwoValueCommand {
-    name: &'static str,
-    prompt1: &'static str,
-    prompt2: &'static str,
-    gathering: bool,
-    selected: Vec<Handle>,
-    first: Option<String>,
-}
-
-impl SelectThenTwoValueCommand {
-    pub fn new(
-        name: &'static str,
-        prompt1: &'static str,
-        prompt2: &'static str,
-        has_selection: bool,
-    ) -> Self {
-        Self {
-            name,
-            prompt1,
-            prompt2,
-            gathering: !has_selection,
-            selected: Vec::new(),
-            first: None,
-        }
-    }
-}
-
-impl CadCommand for SelectThenTwoValueCommand {
-    fn name(&self) -> &'static str {
-        self.name
-    }
-
-    fn prompt(&self) -> String {
-        if self.gathering {
-            crate::t!(
-                "%{name}  select objects, then press Enter:",
-                name = self.name
-            )
-            .into_owned()
-        } else if self.first.is_none() {
-            crate::t!(self.prompt1).into_owned()
-        } else {
-            crate::t!(self.prompt2).into_owned()
-        }
-    }
-
-    fn wants_text_input(&self) -> bool {
-        !self.gathering
-    }
-
-    fn is_selection_gathering(&self) -> bool {
-        self.gathering
-    }
-
-    fn on_selection_complete(&mut self, handles: Vec<Handle>) -> CmdResult {
-        self.selected = handles;
-        CmdResult::NeedPoint
-    }
-
-    fn on_text_input(&mut self, text: &str) -> Option<CmdResult> {
-        if self.gathering {
-            return None;
-        }
-        let t = text.trim();
-        if t.is_empty() {
-            return None;
-        }
-        match &self.first {
-            None => {
-                self.first = Some(t.to_string());
-                // Consumed; `None` would feed the same text back as the second
-                // value and dispatch `<name> <x> <x>` in one step.
-                Some(CmdResult::NeedPoint)
-            }
-            Some(first) => Some(CmdResult::Dispatch(format!("{} {first} {t}", self.name))),
-        }
-    }
-
-    fn on_point(&mut self, _pt: DVec3) -> CmdResult {
-        CmdResult::NeedPoint
-    }
-
-    fn on_enter(&mut self) -> CmdResult {
-        if self.gathering {
-            if self.selected.is_empty() {
-                return CmdResult::Cancel;
-            }
-            self.gathering = false;
-            return CmdResult::NeedPoint;
-        }
-        CmdResult::Cancel
-    }
-}
-
 // ── Result token ──────────────────────────────────────────────────────────
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ExtrudeMode {
+    Solid,
+    Surface,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum ExtrudeExtent {
+    Height(f64),
+    Direction(DVec3),
+    Path(Handle),
+}
+
+/// Construction options shared by SWEEP creation and its live preview.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SweepOptions {
+    pub align: bool,
+    pub bank: bool,
+    pub base_point: Option<DVec3>,
+    pub scale: f64,
+    /// Total twist along the path, in radians.
+    pub twist_angle: f64,
+}
+
+impl Default for SweepOptions {
+    fn default() -> Self {
+        Self {
+            align: true,
+            bank: false,
+            base_point: None,
+            scale: 1.0,
+            twist_angle: 0.0,
+        }
+    }
+}
+
+/// Ordered cross-sections used by LOFT creation, validation and preview.
+#[derive(Clone, Debug, PartialEq)]
+pub enum LoftSectionSelection {
+    Entity(Handle),
+    Point(DVec3),
+    /// Connected source edges forming one exact cross-section.
+    Join(Vec<Handle>),
+}
+
+/// Construction parameters shared by the LOFT command and its history.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct LoftOptions {
+    /// Ruled, Smooth, First normal, Last normal, Ends normal, All normal,
+    /// or Use draft angles, respectively.
+    pub normals: i32,
+    pub start_draft_angle: f64,
+    pub end_draft_angle: f64,
+    pub start_magnitude: f64,
+    pub end_magnitude: f64,
+    /// Point-end continuity: G0 (0) or G1 (1).
+    pub start_continuity: i32,
+    pub end_continuity: i32,
+    /// Positive point-end bulge factors; independent of draft magnitudes.
+    pub start_bulge: f64,
+    pub end_bulge: f64,
+    pub closed: bool,
+    pub periodic: bool,
+    pub align_direction: bool,
+}
+
+impl Default for LoftOptions {
+    fn default() -> Self {
+        Self {
+            normals: 1,
+            start_draft_angle: std::f64::consts::FRAC_PI_2,
+            end_draft_angle: std::f64::consts::FRAC_PI_2,
+            start_magnitude: 0.0,
+            end_magnitude: 0.0,
+            start_continuity: 1,
+            end_continuity: 1,
+            start_bulge: 0.5,
+            end_bulge: 0.5,
+            closed: false,
+            periodic: true,
+            align_direction: true,
+        }
+    }
+}
 
 /// Returned by every `CadCommand` method to tell main.rs what to do.
 #[allow(dead_code)]
@@ -1248,6 +1235,28 @@ pub enum CmdResult {
     CommitDimension {
         entity: EntityType,
         association: DimensionAssociationInput,
+        /// Retain the source dimension's layer and style instead of replacing
+        /// them with the current creation defaults (DIMCONTINUEMODE=1).
+        preserve_base_style: bool,
+        /// Keep collecting points after the dimension is committed.
+        continue_command: bool,
+    },
+    /// Commit several dimensions with independent association sources in one
+    /// undo step, then end the command.
+    CommitDimensionsAndExit(Vec<(EntityType, DimensionAssociationInput)>),
+    /// Persist the quick-dimension extension-origin priority while keeping the
+    /// active command at its current prompt (0 = endpoints, 1 = intersections).
+    SetQuickDimensionSnapPriority(u8),
+    /// Align multileader content points along a picked infinite line.
+    AlignMLeaders {
+        handles: Vec<Handle>,
+        from: DVec3,
+        to: DVec3,
+    },
+    /// Merge compatible block multileaders at a picked content point.
+    CollectMLeaders {
+        handles: Vec<Handle>,
+        point: DVec3,
     },
     /// Commit a Model-tab 3D solid: the acadrust entity (for selection /
     /// persistence) plus its B-rep (cached for boolean ops + shaded
@@ -1256,6 +1265,7 @@ pub enum CmdResult {
         entity: EntityType,
         solid: Box<cadkernel::brep::Body>,
         history: acadrust::objects::SolidHistoryOperation,
+        erase_source: Option<Handle>,
     },
     /// Commit an acadrust entity, end the command, and open the in-place text
     /// editor on it (used by MLEADER to type the annotation after placement).
@@ -1277,6 +1287,8 @@ pub enum CmdResult {
     TransformSelected(Vec<Handle>, EntityTransform),
     /// Copy selected entities with a transform; command stays active for more copies.
     CopySelected(Vec<Handle>, EntityTransform),
+    /// Store selected entities in the shared clipboard; command stays active.
+    CopyToClipboard { handles: Vec<Handle>, base: DVec3 },
     /// Commit a hatch fill (stored in Scene::hatches, not the DXF document).
     CommitHatch(HatchModel),
     /// Commit a hatch with the selected hatch's entity colour and transparency.
@@ -1313,6 +1325,12 @@ pub enum CmdResult {
     },
     /// Cancel: discard any preview and end the command.
     Cancel,
+    /// End the command and begin in-place editing of the table cell under
+    /// `point` on table `handle` (TABLEDIT). The host resolves the cell —
+    /// it owns the document needed for the table-style lookup — honors
+    /// content locks, and launches the cell editor, re-prompting the
+    /// command when the pick misses a cell.
+    EditTableCell { handle: Handle, point: DVec3 },
     /// Cancel because the active drawing space changed. Cleanup is identical
     /// to `Cancel`, but the host reports the context change explicitly.
     CancelForSpaceChange,
@@ -1481,37 +1499,52 @@ pub enum CmdResult {
         /// Translation vector applied once to every selected point.
         delta: DVec3,
     },
-    /// Extrude the profile entity `handle` along its plane normal.
-    ExtrudeEntity {
-        handle: Handle,
-        height: f64,
+    /// Extrude one or more profiles with the requested construction mode.
+    ExtrudeEntities {
+        handles: Vec<Handle>,
+        extent: ExtrudeExtent,
+        mode: ExtrudeMode,
+        taper_angle: f64,
         color: [f32; 4],
     },
-    /// Pull a closed profile or a planar solid face by a signed distance.
-    PresspullEntity {
-        handle: Handle,
-        pick: DVec3,
+    /// Resolve a profile, bounded area, or solid face for PRESSPULL.
+    PresspullPick {
+        handle: Option<Handle>,
+        point: DVec3,
+        offset: bool,
+        multiple: bool,
+    },
+    /// Apply a signed distance to the resolved PRESSPULL selection.
+    PresspullApply {
+        targets: Vec<crate::scene::model::presspull_model::PresspullTarget>,
         distance: f64,
-        drag: Option<DVec3>,
         color: [f32; 4],
     },
-    /// Revolve the profile entity `handle` around the given axis by `angle_deg`.
-    RevolveEntity {
-        handle: Handle,
+    /// Revolve the profile entities around the given axis.
+    RevolveEntities {
+        handles: Vec<Handle>,
         axis_start: glam::DVec3,
         axis_end: glam::DVec3,
-        angle_deg: f32,
+        angle: f64,
+        start_angle: f64,
+        mode: ExtrudeMode,
         color: [f32; 4],
     },
-    /// Sweep the profile entity `profile_handle` along `path_handle`.
-    SweepEntity {
-        profile_handle: Handle,
-        path_handle: Handle,
-        color: [f32; 4],
-    },
-    /// Loft through a series of profile entities.
-    LoftEntities {
+    /// Sweep the selected profiles along one path in a single undo step.
+    SweepEntities {
         handles: Vec<Handle>,
+        path_handle: Handle,
+        mode: ExtrudeMode,
+        options: SweepOptions,
+        color: [f32; 4],
+    },
+    /// Loft through ordered cross-sections, with optional guides or a path.
+    LoftEntities {
+        sections: Vec<LoftSectionSelection>,
+        guides: Vec<Handle>,
+        path: Option<Handle>,
+        mode: ExtrudeMode,
+        options: LoftOptions,
         color: [f32; 4],
     },
     /// Round or bevel the straight edge nearest `pick` on a solid.
@@ -1524,23 +1557,25 @@ pub enum CmdResult {
     SolidSubtract {
         bases: Vec<Handle>,
         cutters: Vec<Handle>,
+        convert_meshes: bool,
     },
     /// INSERT landed on a block that has AttributeDefinitions.
     /// The host should look up the attdefs for `block_name` from the document
     /// and call `attreq_set_attdefs()` on the command, then loop on text input.
     AttreqNeeded { block_name: String },
-    /// Add command-owned "live" entities to the document mid-command and hand
-    /// their assigned handles back to the active command via `set_live_handles()`.
+    /// Add a command-owned "live" entity to the document mid-command and hand
+    /// its assigned handle back to the active command via `set_live_handle()`.
     /// One undo snapshot is pushed here, so the whole in-progress object reverts
     /// as a single unit. The command stays active. Used by PLINE so the partial
     /// polyline is a real, snappable entity while later vertices are placed.
-    CommitLiveEntities(Vec<EntityType>),
-    /// Replace the geometry of live entities in place — preserving
-    /// their handles and layers — without pushing a new undo snapshot. When
-    /// `finish` is true the command also exits (the entities are already
-    /// committed, so no separate commit is needed).
-    UpdateLiveEntities {
-        updates: Vec<(Handle, EntityType)>,
+    CommitLiveEntity(EntityType),
+    /// Replace the geometry of the live entity `handle` in place — preserving
+    /// its layer — without pushing a new undo snapshot. When `finish` is true
+    /// the command also exits (the entity is already committed, so no separate
+    /// commit is needed).
+    UpdateLiveEntity {
+        handle: Handle,
+        entity: EntityType,
         finish: bool,
     },
     /// End a command-owned live entity without replacing its already-current
@@ -1774,7 +1809,44 @@ pub struct LiveCommandProperties {
     pub fields: Vec<LiveCommandField>,
 }
 
+/// What kind of input the command's current step expects from the command line.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum InputKind {
+    /// Normal point-picking / viewport interaction or keyword options.
+    /// The command line does not await dedicated text input.
+    #[default]
+    Point,
+    /// Single-token command-line text input (option letters, numeric radius,
+    /// layer name, block name, numeric angle). Space acts as a submit delimiter,
+    /// characters are automatically uppercased, and expressions like `5*2`
+    /// are evaluated.
+    SingleToken,
+    /// Free-form text prose (table cell contents, TEXT / MTEXT bodies,
+    /// dimension text overrides, attribute prompt defaults). Space is a
+    /// literal character, typed letter casing is preserved, math expression
+    /// evaluation is bypassed, Enter finishes the edit, and Shift+Enter
+    /// inserts a line break.
+    FreeText,
+}
+
+impl InputKind {
+    /// Returns `true` when the command is waiting for typed text input (`SingleToken` or `FreeText`).
+    pub fn wants_text(self) -> bool {
+        matches!(self, InputKind::SingleToken | InputKind::FreeText)
+    }
+
+    /// Returns `true` when the current prompt collects free-form prose.
+    pub fn is_free_text(self) -> bool {
+        self == InputKind::FreeText
+    }
+}
+
 pub trait CadCommand: Send {
+    /// Keep the layer already carried by entities committed by this command
+    /// instead of replacing it with the current drawing layer.
+    fn preserve_commit_layer(&self) -> bool {
+        false
+    }
     /// Short name shown in the command line prompt, e.g. `"LINE"`.
     #[allow(dead_code)]
     fn name(&self) -> &'static str;
@@ -1816,6 +1888,12 @@ pub trait CadCommand: Send {
 
     /// Constrain the cursor to a construction axis for this step.
     fn cursor_axis(&self) -> Option<(DVec3, DVec3)> {
+        None
+    }
+
+    /// Override the model-space plane onto which viewport cursor rays are
+    /// projected for this command step.
+    fn cursor_plane(&self) -> Option<(DVec3, DVec3)> {
         None
     }
 
@@ -1889,6 +1967,19 @@ pub trait CadCommand: Send {
         false
     }
 
+    /// Expensive bounded-area acquisition runs once after cursor dwell, not
+    /// from every pointer event. The host supplies the same WCS surface pick
+    /// used for clicks, and clears the overlay when movement resumes.
+    fn entity_pick_deferred_hover(&self) -> bool {
+        false
+    }
+
+    fn on_deferred_entity_hover(
+        &mut self, _scene: &Scene, _handle: Option<Handle>, _point: DVec3,
+    ) -> Vec<WireModel> {
+        Vec::new()
+    }
+
     /// When [`entity_pick_highlights_hover`] is true, the host still asks
     /// whether this specific hovered handle should light up. Default accepts
     /// every non-null handle (Blend/MatchProp behaviour unchanged). Commands
@@ -1914,6 +2005,21 @@ pub trait CadCommand: Send {
         CmdResult::Cancel
     }
 
+    /// Supply a resolved PRESSPULL target after an object or bounded-area pick.
+    fn on_presspull_target(
+        &mut self,
+        _target: crate::scene::model::presspull_model::PresspullTarget,
+    ) {
+    }
+
+    /// Resume PRESSPULL after an atomic apply attempt. A failed operation keeps
+    /// the current targets available for another distance or selection undo.
+    fn on_presspull_applied(&mut self, _success: bool) {}
+
+    /// Host callback after `CmdResult::CommitLiveEntity`: records the handle the
+    /// new live entity was assigned so later `UpdateLiveEntity` results can
+    /// target it.
+    fn set_live_handle(&mut self, _handle: Handle) {}
     /// Host callback after `CmdResult::CommitLiveEntities`: records the handles the
     /// new live entities were assigned so later `UpdateLiveEntities` results can
     /// target them.
@@ -1966,6 +2072,9 @@ pub trait CadCommand: Send {
     /// Commands that stay active across replaces should update their internal snapshots here.
     fn on_entity_replaced(&mut self, _old: Handle, _new_handles: &[Handle]) {}
 
+    /// Called after a PEDIT operation changed its target.
+    fn on_pedit_applied(&mut self) {}
+
     /// Consume a lasso or drag-box gesture while the command is active.
     /// `fence` is the gesture boundary in drawing coordinates; `window` is
     /// present for rectangular gestures. Returning `Some` prevents the normal
@@ -1991,6 +2100,14 @@ pub trait CadCommand: Send {
         vec![]
     }
 
+    /// Request a source snapshot only when the hovered entity changes.
+    /// Commands can cache geometry across mouse moves without holding a scene.
+    fn wants_hover_entity(&self, _handle: Handle) -> bool {
+        false
+    }
+
+    fn inject_hover_entity(&mut self, _handle: Handle, _entity: EntityType) {}
+
     /// Called on every mouse-move in the viewport.
     /// Return `Some(WireModel)` to update the rubber-band preview, `None` to skip.
     fn on_mouse_move(&mut self, _pt: DVec3) -> Option<WireModel> {
@@ -2010,7 +2127,21 @@ pub trait CadCommand: Send {
         &[]
     }
 
+    /// What kind of input the current step expects from the command line.
+    /// Default is [`InputKind::Point`].
+    fn input_kind(&self) -> InputKind {
+        #[allow(deprecated)]
+        if self.wants_text_with_spaces() {
+            InputKind::FreeText
+        } else if self.wants_text_input() {
+            InputKind::SingleToken
+        } else {
+            InputKind::Point
+        }
+    }
+
     /// Returns `true` when the command is waiting for text typed in the command line.
+    #[deprecated(note = "Use `input_kind().wants_text()` instead")]
     fn wants_text_input(&self) -> bool {
         false
     }
@@ -2037,15 +2168,17 @@ pub trait CadCommand: Send {
 
     /// Returns `true` when the active text prompt expects free-form prose
     /// that can legitimately contain whitespace (the body of a TEXT /
-    /// MTEXT / DDEDIT entity, an attribute default value, etc.). For
-    /// these prompts the command-line input must let `Space` be typed as
-    /// a literal character; for every other prompt `Space` submits the
-    /// input the same way `Enter` does.
-    ///
-    /// Default `false` — single-token prompts (option letters, numeric
-    /// radius, block name) do not embed spaces.
+    /// MTEXT / DDEDIT entity, a table cell, an attribute default value).
+    #[deprecated(note = "Use `input_kind().is_free_text()` instead")]
     fn wants_text_with_spaces(&self) -> bool {
         false
+    }
+
+    /// The current step collects free-form prose from the command line:
+    /// Space is a literal character, typed case is preserved, Enter
+    /// finishes the edit and Shift+Enter inserts a line break.
+    fn is_free_text_step(&self) -> bool {
+        self.input_kind().is_free_text()
     }
 
     /// Called when the user submits text via the command line while `wants_text_input` is true.
@@ -2198,6 +2331,12 @@ pub trait CadCommand: Send {
         false
     }
 
+    /// Whether a bare dynamic angle inherits its sign from the world-XY
+    /// cursor side. Commands with their own 3D axis semantics opt out.
+    fn dyn_auto_sign_angle(&self) -> bool {
+        true
+    }
+
     /// Explicit per-step dynamic-input description. `Some(spec)` takes full
     /// control of the boxes, guide geometry and anchor for this step; `None`
     /// (the default) falls back to the legacy `dyn_field()` behaviour so
@@ -2214,6 +2353,12 @@ pub trait CadCommand: Send {
     /// distance with no reference yet). The string the host commits is this
     /// value formatted; the command's own `on_text_input` parses it back.
     fn dyn_live_value(&self, _cursor: DVec3) -> Option<f64> {
+        None
+    }
+
+    /// Optional world-space point where the dynamic value box should be
+    /// centred. The view projects it with the active camera.
+    fn dyn_label_point(&self, _cursor: DVec3) -> Option<DVec3> {
         None
     }
 

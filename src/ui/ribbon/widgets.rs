@@ -22,7 +22,7 @@ use crate::app::Message;
 use crate::modules::{IconKind, ModuleEvent, RibbonItem, StyleKey, ToolDef};
 use crate::ui::wrap_bar::PosReport;
 use crate::ui::icons;
-use crate::ui::properties::{acad_color_display, LwItem};
+use crate::ui::properties::{acad_color_display, linetype_display_name, LwItem};
 use crate::t;
 
 use super::LayerInfo;
@@ -69,6 +69,18 @@ pub(super) const TOOL_BAR_H: f32 = 3.0 * ROW_H + 18.0;
 /// its label). A collapsed button is this face plus the title opener, so it is
 /// shorter than a full 3-row panel — the ribbon height follows it down.
 pub(super) const COLLAPSED_FACE_H: f32 = LARGE_ICON + 20.0;
+
+/// Gap between the combo dropdown and the tool rows beneath it.
+const COMBO_ROW_SPACING: f32 = 3.0;
+/// Shared padding of combo-style panels (Layers, Properties, style selectors).
+/// The top inset pins every primary dropdown to the same baseline regardless
+/// of how many icon rows sit underneath it.
+const COMBO_PANEL_PAD: Padding = Padding {
+    top: 6.0,
+    bottom: 4.0,
+    left: 4.0,
+    right: 4.0,
+};
 
 // ── Automatic large-button sizing ────────────────────────────────────────
 
@@ -298,32 +310,32 @@ pub(super) const PROP_LW_ID: &str = "PROP_LW";
 
 // ── Style context (passed from Ribbon to render_large) ────────────────────
 
-pub(super) struct StyleContext {
-    pub text_style_names: Vec<String>,
-    pub active_text_style: String,
-    pub dim_style_names: Vec<String>,
-    pub active_dim_style: String,
-    pub mleader_style_names: Vec<String>,
-    pub active_mleader_style: String,
-    pub table_style_names: Vec<String>,
-    pub active_table_style: String,
+pub(super) struct StyleContext<'a> {
+    pub text_style_names: &'a [String],
+    pub active_text_style: &'a str,
+    pub dim_style_names: &'a [String],
+    pub active_dim_style: &'a str,
+    pub mleader_style_names: &'a [String],
+    pub active_mleader_style: &'a str,
+    pub table_style_names: &'a [String],
+    pub active_table_style: &'a str,
 }
 
-impl StyleContext {
+impl<'a> StyleContext<'a> {
     pub(super) fn names_for(&self, key: StyleKey) -> &[String] {
         match key {
-            StyleKey::TextStyle => &self.text_style_names,
-            StyleKey::DimStyle => &self.dim_style_names,
-            StyleKey::MLeaderStyle => &self.mleader_style_names,
-            StyleKey::TableStyle => &self.table_style_names,
+            StyleKey::TextStyle => self.text_style_names,
+            StyleKey::DimStyle => self.dim_style_names,
+            StyleKey::MLeaderStyle => self.mleader_style_names,
+            StyleKey::TableStyle => self.table_style_names,
         }
     }
     pub(super) fn active_for(&self, key: StyleKey) -> &str {
         match key {
-            StyleKey::TextStyle => &self.active_text_style,
-            StyleKey::DimStyle => &self.active_dim_style,
-            StyleKey::MLeaderStyle => &self.active_mleader_style,
-            StyleKey::TableStyle => &self.active_table_style,
+            StyleKey::TextStyle => self.active_text_style,
+            StyleKey::DimStyle => self.active_dim_style,
+            StyleKey::MLeaderStyle => self.active_mleader_style,
+            StyleKey::TableStyle => self.active_table_style,
         }
     }
 }
@@ -604,21 +616,40 @@ pub(super) fn render_small<'a>(
 
 // ── Large item renderer ────────────────────────────────────────────────────
 
+/// Shared render context threaded through the large-item render path. Bundling
+/// the per-view state keeps new fields from rippling through every render
+/// signature and call site (same idea as `ToggleState`).
+#[derive(Clone, Copy)]
+pub(super) struct RenderCtx<'a> {
+    pub active_tool: &'a Option<String>,
+    pub open_dd: &'a Option<String>,
+    pub last_cmd: &'a HashMap<&'static str, &'static str>,
+    pub state: ToggleState,
+    pub layer_infos: &'a [LayerInfo],
+    pub active_layer: &'a str,
+    pub active_color: AcadColor,
+    pub active_linetype: &'a str,
+    pub active_lineweight: LineWeight,
+    pub style_ctx: &'a StyleContext<'a>,
+    /// When compact, the Properties panel's Match button shrinks to a small icon.
+    pub compact: bool,
+}
+
 /// A large dropdown button: the current icon on top, its ▾ directly beneath the
 /// icon, then the label at the bottom. Shared by `LargeDropdown` / `Dropdown` in
 /// the full ribbon and by a collapsed panel whose representative is a dropdown.
 /// `explicit_label` overrides the derived (current-item) label when given.
-#[allow(clippy::too_many_arguments)]
 pub(super) fn render_large_dropdown<'a>(
     id: &'static str,
     icon: IconKind,
     explicit_label: Option<&'a str>,
     items: &[(&'static str, &'static str, IconKind)],
     default: &'static str,
-    active_tool: &Option<String>,
-    open_dd: &Option<String>,
-    last_cmd: &HashMap<&'static str, &'static str>,
+    ctx: &RenderCtx<'_>,
 ) -> Element<'a, Message> {
+    let active_tool = ctx.active_tool;
+    let open_dd = ctx.open_dd;
+    let last_cmd = ctx.last_cmd;
     let active = active_tool.as_deref() == Some(id)
         || items
             .iter()
@@ -708,22 +739,65 @@ pub(super) fn render_large_dropdown<'a>(
     .into()
 }
 
+/// A row of small tool buttons beneath a combo dropdown. Shared by the
+/// Layers, Properties and style-combo panels so their icon rows render
+/// identically.
+fn tool_row<'a>(tools: &[ToolDef], active_tool: &Option<String>) -> Element<'a, Message> {
+    let btns: Vec<Element<Message>> = tools
+        .iter()
+        .map(|t| {
+            let is_active = active_tool.as_deref() == Some(t.id);
+            let tip = t!(t.label);
+            let event = t.event.clone();
+            let icon_el: Element<Message> = make_icon(t.icon, 16.0);
+            let msg = module_event_to_message(event);
+            tooltip(
+                button(icon_el)
+                    .on_press(msg)
+                    .style(move |theme: &Theme, status| {
+                        tool_btn_style(theme, is_active, status)
+                    })
+                    .padding([2, 5]),
+                make_tip(tip.to_string()),
+                TipPos::Right,
+            )
+            .gap(4.0)
+            .delay(Duration::from_millis(400))
+            .style(tip_style)
+            .into()
+        })
+        .collect();
+    row(btns).spacing(2).align_y(iced::Center).into()
+}
+
+/// Fixed-height wrapper for a combo-style panel: dropdown on top, icon rows
+/// below, all pinned to the panel's top edge so every panel's primary
+/// dropdown shares one baseline.
+fn combo_panel_col(width: f32, items: Vec<Element<'_, Message>>) -> Element<'_, Message> {
+    container(column(items).spacing(COMBO_ROW_SPACING).align_x(iced::Left))
+        .width(Length::Fixed(width))
+        .height(Fill)
+        .align_y(iced::Top)
+        .padding(COMBO_PANEL_PAD)
+        .into()
+}
+
 /// Render a full-height large button (LargeTool, LargeDropdown, LayerCombo, StyleCombo).
 pub(super) fn render_large<'a>(
     item: &RibbonItem,
-    active_tool: &Option<String>,
-    open_dd: &Option<String>,
-    last_cmd: &HashMap<&'static str, &'static str>,
-    state: ToggleState,
-    layer_infos: &'a [LayerInfo],
-    active_layer: &'a str,
-    active_color: AcadColor,
-    active_linetype: &'a str,
-    active_lineweight: LineWeight,
-    style_ctx: &StyleContext,
-    // When compact, the Properties panel's Match button shrinks to a small icon.
-    compact: bool,
+    ctx: &RenderCtx<'_>,
 ) -> Element<'a, Message> {
+    let active_tool = ctx.active_tool;
+    let open_dd = ctx.open_dd;
+    let last_cmd = ctx.last_cmd;
+    let state = ctx.state;
+    let layer_infos = ctx.layer_infos;
+    let active_layer = ctx.active_layer;
+    let active_color = ctx.active_color;
+    let active_linetype = ctx.active_linetype;
+    let active_lineweight = ctx.active_lineweight;
+    let style_ctx = ctx.style_ctx;
+    let compact = ctx.compact;
     match item {
         // A plain Tool renders large too, so a collapsed panel can show its
         // representative tool as a big icon.
@@ -779,16 +853,7 @@ pub(super) fn render_large<'a>(
             items,
             default,
         } => {
-                render_large_dropdown(
-                    *id,
-                    *icon,
-                    Some(*label),
-                    items,
-                    *default,
-                    active_tool,
-                    open_dd,
-                    last_cmd,
-                )
+                render_large_dropdown(*id, *icon, Some(*label), items, *default, ctx)
             }
 
         // A plain Dropdown renders large too (used by a collapsed panel whose
@@ -799,9 +864,7 @@ pub(super) fn render_large<'a>(
             items,
             default,
         } => {
-                render_large_dropdown(
-                    *id, *icon, None, items, *default, active_tool, open_dd, last_cmd,
-                )
+                render_large_dropdown(*id, *icon, None, items, *default, ctx)
         }
 
         RibbonItem::LayerComboGroup { row2, row3 } => {
@@ -868,56 +931,14 @@ pub(super) fn render_large<'a>(
             .padding([3, 8])
             .width(Fill);
 
-            let make_tool_row = |tools: &[ToolDef]| -> Element<Message> {
-                let btns: Vec<Element<Message>> = tools
-                    .iter()
-                    .map(|t| {
-                        let is_active = active_tool.as_deref() == Some(t.id);
-                        let tip = t!(t.label);
-                        let event = t.event.clone();
-                        let icon_el: Element<Message> = make_icon(t.icon, 16.0);
-                        let msg = module_event_to_message(event);
-                        tooltip(
-                            button(icon_el)
-                                .on_press(msg)
-                                .style(move |theme: &Theme, status| {
-                                    tool_btn_style(theme, is_active, status)
-                                })
-                                .padding([2, 5]),
-                            make_tip(tip.to_string()),
-                            TipPos::Right,
-                        )
-                        .gap(4.0)
-                        .delay(Duration::from_millis(400))
-                        .style(tip_style)
-                        .into()
-                    })
-                    .collect();
-                row(btns).spacing(2).align_y(iced::Center).into()
-            };
-
-            let tools_row2 = make_tool_row(row2);
-            let tools_row3 = make_tool_row(row3);
-
-            container(
-                column![
-                    PosReport::new(LAYER_COMBO_ID, combo_btn),
-                    tools_row2,
-                    tools_row3
-                ]
-                .spacing(3)
-                .align_x(iced::Left),
+            combo_panel_col(
+                combo_w,
+                vec![
+                    container(PosReport::new(LAYER_COMBO_ID, combo_btn)).width(Fill).into(),
+                    tool_row(row2, active_tool),
+                    tool_row(row3, active_tool),
+                ],
             )
-            .width(Length::Fixed(combo_w))
-            .height(Fill)
-            .align_y(iced::Center)
-            .padding(Padding {
-                top: 4.0,
-                bottom: 4.0,
-                left: 4.0,
-                right: 4.0,
-            })
-            .into()
         }
 
         RibbonItem::PropertiesGroup { match_prop } => {
@@ -934,17 +955,10 @@ pub(super) fn render_large<'a>(
             } else {
                 render_large(
                     &RibbonItem::LargeTool(match_prop.clone()),
-                    active_tool,
-                    open_dd,
-                    last_cmd,
-                    state,
-                    layer_infos,
-                    active_layer,
-                    active_color,
-                    active_linetype,
-                    active_lineweight,
-                    style_ctx,
-                    false,
+                    &RenderCtx {
+                        compact: false,
+                        ..*ctx
+                    },
                 )
             };
 
@@ -998,9 +1012,15 @@ pub(super) fn render_large<'a>(
                 PROP_COLOR_ID,
                 Some(color_swatch),
             );
-            let lt_row = prop_row(active_linetype.to_string(), PROP_LINETYPE_ID, None);
+            let lt_row = prop_row(
+                linetype_display_name(active_linetype),
+                PROP_LINETYPE_ID,
+                None,
+            );
             let lw_row = prop_row(LwItem(active_lineweight).to_string(), PROP_LW_ID, None);
 
+            // Top-pinned like every combo panel, so the Color dropdown shares
+            // the same baseline as the Layers / style selectors.
             let combos = container(
                 column![
                     PosReport::new(PROP_COLOR_ID, color_row),
@@ -1011,12 +1031,12 @@ pub(super) fn render_large<'a>(
                 .align_x(iced::Left),
             )
             .height(Fill)
-            .align_y(iced::Center)
+            .align_y(iced::Top)
             .padding(Padding {
-                top: 4.0,
-                bottom: 4.0,
+                top: COMBO_PANEL_PAD.top,
+                bottom: COMBO_PANEL_PAD.bottom,
                 left: 0.0,
-                right: 4.0,
+                right: COMBO_PANEL_PAD.right,
             });
 
             row![mp_el, combos]
@@ -1064,54 +1084,15 @@ pub(super) fn render_large<'a>(
             let items_panel: Element<Message> =
                 iced::widget::Space::new().width(0).height(0).into();
 
-            // ── tool rows below combo ──
-            let make_tool_row = |tools: &[ToolDef]| -> Element<Message> {
-                let btns: Vec<Element<Message>> = tools
-                    .iter()
-                    .map(|t| {
-                        let is_active = active_tool.as_deref() == Some(t.id);
-                        let tip = t!(t.label);
-                        let event = t.event.clone();
-                        let icon_el: Element<Message> = make_icon(t.icon, 16.0);
-                        let msg = module_event_to_message(event);
-                        tooltip(
-                            button(icon_el)
-                                .on_press(msg)
-                                .style(move |theme: &Theme, status| {
-                                    tool_btn_style(theme, is_active, status)
-                                })
-                                .padding([2, 5]),
-                            make_tip(tip.to_string()),
-                            TipPos::Right,
-                        )
-                        .gap(4.0)
-                        .delay(Duration::from_millis(400))
-                        .style(tip_style)
-                        .into()
-                    })
-                    .collect();
-                row(btns).spacing(2).align_y(iced::Center).into()
-            };
-
             let mut col_items: Vec<Element<Message>> =
                 vec![container(row![PosReport::new(*combo_id, combo_btn), items_panel].spacing(0))
                     .width(Fill)
                     .into()];
             for row_tools in rows {
-                col_items.push(make_tool_row(row_tools));
+                col_items.push(tool_row(row_tools, active_tool));
             }
 
-            container(column(col_items).spacing(3).align_x(iced::Left))
-                .width(Length::Fixed(STYLE_COMBO_W))
-                .height(Fill)
-                .align_y(iced::Center)
-                .padding(Padding {
-                    top: 4.0,
-                    bottom: 4.0,
-                    left: 4.0,
-                    right: 4.0,
-                })
-                .into()
+            combo_panel_col(STYLE_COMBO_W, col_items)
         }
     }
 }
@@ -1291,5 +1272,58 @@ pub(super) fn top_hist_btn_style(
         },
         shadow: iced::Shadow::default(),
         snap: false,
+    }
+}
+
+#[cfg(test)]
+mod style_context_tests {
+    use super::StyleContext;
+    use crate::modules::StyleKey;
+
+    #[test]
+    fn style_context_borrowed_without_cloning() {
+        // RED: should construct from borrowed slices/strs without cloning.
+        let text_names = vec!["Standard".to_string(), "MyStyle".to_string()];
+        let active_text = "Standard".to_string();
+        let dim_names = vec!["DimStd".to_string()];
+        let active_dim = "DimStd".to_string();
+        let mleader_names: Vec<String> = vec![];
+        let active_mleader = String::new();
+        let table_names: Vec<String> = vec![];
+        let active_table = String::new();
+
+        let ctx = StyleContext {
+            text_style_names: &text_names,
+            active_text_style: &active_text,
+            dim_style_names: &dim_names,
+            active_dim_style: &active_dim,
+            mleader_style_names: &mleader_names,
+            active_mleader_style: &active_mleader,
+            table_style_names: &table_names,
+            active_table_style: &active_table,
+        };
+        assert_eq!(ctx.names_for(StyleKey::TextStyle), &text_names);
+        assert_eq!(ctx.active_for(StyleKey::TextStyle), "Standard");
+        assert_eq!(ctx.names_for(StyleKey::DimStyle), &dim_names);
+    }
+
+    #[test]
+    fn style_context_no_clone_needed() {
+        let names = vec!["A".to_string(), "B".to_string()];
+        let active = "A".to_string();
+        let empty: Vec<String> = vec![];
+        let empty_s = String::new();
+        let ctx = StyleContext {
+            text_style_names: &names,
+            active_text_style: &active,
+            dim_style_names: &empty,
+            active_dim_style: &empty_s,
+            mleader_style_names: &empty,
+            active_mleader_style: &empty_s,
+            table_style_names: &empty,
+            active_table_style: &empty_s,
+        };
+        assert_eq!(ctx.active_for(StyleKey::TableStyle), "");
+        assert!(ctx.names_for(StyleKey::MLeaderStyle).is_empty());
     }
 }

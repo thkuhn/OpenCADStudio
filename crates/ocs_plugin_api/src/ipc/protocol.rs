@@ -21,7 +21,7 @@ use crate::host::{CommandSource, CommandStep};
 use crate::manifest::ApiVersion;
 use crate::ribbon::owned::{OwnedPluginManifest, OwnedRibbonGroup};
 
-pub use acadrust::xdata::ExtendedDataRecord;
+pub use acadrust::xdata::{ExtendedDataRecord, XDataValue};
 pub use acadrust::{CadDocument, EntityType, Handle};
 
 /// Events the host forwards to an active plugin `InteractiveCommand`.
@@ -136,6 +136,14 @@ pub enum PluginRequest {
     CloseDocumentViewV4 { tab_id: u64 },
     /// V4: ask the host for the stable tab identifier of the active tab.
     GetTabId,
+    /// V5: ask the host for the filesystem path of the document in `tab_id`.
+    DocumentPath { tab_id: u64 },
+    /// DocApi v2 (`ocs_doc_api`): carry one bincode-serialized `DocApiEnvelope`
+    /// (one write op OR a read-only query batch). Appended at the end to keep
+    /// existing discriminants stable. The host routes this to the DocApi executor.
+    /// `serde_bytes` keeps the payload a single length-prefixed bulk copy (the
+    /// outer frame would otherwise walk it byte-by-byte).
+    DocApiRequest { tab_id: u64, #[serde(with = "serde_bytes")] bytes: Vec<u8> },
 }
 
 /// Responses the host sends back for `PluginRequest`.
@@ -160,6 +168,12 @@ pub enum PluginResponse {
     },
     /// V4: stable tab identifier of the active tab.
     TabId(u64),
+    /// V5: filesystem path of the document in the requested tab, if any.
+    DocumentPath(Option<std::ffi::OsString>),
+    /// DocApi v2 (`ocs_doc_api`): the bincode-serialized `Result<Receipt, ApiError>` answering a
+    /// `PluginRequest::DocApiRequest`. Appended at the end (discriminant stability).
+    /// `serde_bytes` keeps the payload a single length-prefixed bulk copy.
+    DocApiResponse { #[serde(with = "serde_bytes")] bytes: Vec<u8> },
 }
 
 /// Messages sent from the host to the plugin runner.

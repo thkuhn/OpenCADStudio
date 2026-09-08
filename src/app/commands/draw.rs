@@ -454,6 +454,38 @@ impl OpenCADStudio {
                 self.tabs[i].active_cmd = Some(Box::new(new_cmd));
             }
 
+            "3DMESH" => {
+                use crate::modules::draw::draw::mesh3d::Mesh3dCommand;
+                let new_cmd = Mesh3dCommand::new();
+                self.command_line.push_info(&new_cmd.prompt());
+                self.tabs[i].active_cmd = Some(Box::new(new_cmd));
+            }
+
+            "3DFACE" => {
+                use crate::modules::draw::draw::face3d::Face3dCommand;
+                let new_cmd = Face3dCommand::new();
+                self.command_line.push_info(&new_cmd.prompt());
+                self.tabs[i].active_cmd = Some(Box::new(new_cmd));
+            }
+
+            "EDGE" => {
+                use crate::modules::draw::draw::face3d::FaceEdgeCommand;
+                let faces = self.tabs[i]
+                    .scene
+                    .document
+                    .entities()
+                    .filter_map(|entity| match entity {
+                        acadrust::EntityType::Face3D(face) => {
+                            Some((face.common.handle, face.clone()))
+                        }
+                        _ => None,
+                    })
+                    .collect();
+                let new_cmd = FaceEdgeCommand::new(faces);
+                self.command_line.push_info(&new_cmd.prompt());
+                self.tabs[i].active_cmd = Some(Box::new(new_cmd));
+            }
+
             // 2D filled solid. Reached via SO / SOLID2D — the bare SOLID verb is
             // currently the shaded-display toggle (token collision tracked).
             "SOLID" | "SOLID2D" => {
@@ -494,7 +526,7 @@ impl OpenCADStudio {
                     self.tabs[i].dirty = true;
                 }
                 self.command_line
-                    .push_output(&format!("CENTERRESET: {count} center object(s) updated."));
+                    .push_output(&crate::tf!("CENTERRESET: {count} center object(s) updated."));
             }
 
             "CENTERREASSOCIATE" => {
@@ -517,7 +549,7 @@ impl OpenCADStudio {
                     self.tabs[i].dirty = true;
                 }
                 self.command_line
-                    .push_output(&format!("CENTERREASSOCIATE: {count} center object(s) associated."));
+                    .push_output(&crate::tf!("CENTERREASSOCIATE: {count} center object(s) associated."));
             }
 
             "CENTERDISASSOCIATE" => {
@@ -529,7 +561,7 @@ impl OpenCADStudio {
                     self.tabs[i].dirty = true;
                 }
                 self.command_line
-                    .push_output(&format!("CENTERDISASSOCIATE: {count} center object(s) detached."));
+                    .push_output(&crate::tf!("CENTERDISASSOCIATE: {count} center object(s) detached."));
             }
 
             "DIMCENTER" => {
@@ -1247,7 +1279,13 @@ impl OpenCADStudio {
             }
 
             // ── Model commands (3D primitives) ─────────────────────────────
-            "BOX" | "WEDGE" | "CYLINDER" | "CONE" | "SPHERE" | "PYRAMID" | "PYR"
+            "CYLINDER" => {
+                use crate::modules::model::cylinder_cmd::CylinderCommand;
+                let new_cmd = CylinderCommand::new();
+                self.command_line.push_info(&new_cmd.prompt());
+                self.tabs[i].active_cmd = Some(Box::new(new_cmd));
+            }
+            "BOX" | "WEDGE" | "CONE" | "SPHERE" | "PYRAMID" | "PYR"
             | "TORUS" => {
                 use crate::modules::model::primitive_cmd::PrimitiveCommand;
                 let new_cmd = PrimitiveCommand::new(cmd);
@@ -1256,53 +1294,70 @@ impl OpenCADStudio {
             }
 
             // ── Solid booleans ─────────────────────────────────────────────
-            "UNION" | "INTERSECT" => {
+            "UNION" => {
                 use crate::modules::model::boolean_cmd::BoolOp;
-                if let Some(op) = BoolOp::from_id(cmd) {
-                    let solid_count = {
-                        let scene = &self.tabs[i].scene;
-                        scene
-                            .selected_handles_in_order()
-                            .into_iter()
-                            .filter(|handle| !scene.is_layer_locked(*handle))
-                            .filter(|handle| {
-                                matches!(
-                                    scene.document.get_entity(*handle),
-                                    Some(acadrust::EntityType::Solid3D(_))
-                                )
-                            })
-                            .take(2)
-                            .count()
-                    };
-                    if solid_count < 2 {
-                        use crate::modules::draw::select::SelectObjectsCommand;
-                        let selection = SelectObjectsCommand::new(cmd);
-                        self.command_line.push_info(&selection.prompt());
-                        self.tabs[i].active_cmd = Some(Box::new(selection));
-                    } else {
-                        return Some(self.solid_boolean(op));
-                    }
+                if self.union_ready() {
+                    return Some(self.solid_boolean(BoolOp::Union));
+                }
+                use crate::modules::draw::select::SelectObjectsCommand;
+                let selection = SelectObjectsCommand::plain("UNION", "UNIONAPPLY");
+                self.command_line.push_info(&selection.prompt());
+                self.tabs[i].active_cmd = Some(Box::new(selection));
+            }
+
+            "UNIONAPPLY" => {
+                use crate::modules::model::boolean_cmd::BoolOp;
+                return Some(self.solid_boolean(BoolOp::Union));
+            }
+
+            "INTERSECT" => {
+                use crate::modules::model::boolean_cmd::BoolOp;
+                if !self.intersect_ready() {
+                    use crate::modules::draw::select::SelectObjectsCommand;
+                    let selection = SelectObjectsCommand::new(cmd);
+                    self.command_line.push_info(&selection.prompt());
+                    self.tabs[i].active_cmd = Some(Box::new(selection));
+                } else {
+                    return Some(self.solid_boolean(BoolOp::Intersect));
                 }
             }
 
             "SUBTRACT" => {
                 use crate::modules::model::boolean_cmd::SubtractCommand;
-                let bases = {
+                let (bases, bases_have_mesh) = {
                     let scene = &self.tabs[i].scene;
-                    scene
+                    let bases = scene
                         .selected_handles_in_order()
                         .into_iter()
                         .filter(|handle| !scene.is_layer_locked(*handle))
                         .filter(|handle| {
                             matches!(
                                 scene.document.get_entity(*handle),
-                                Some(acadrust::EntityType::Solid3D(_))
+                                Some(
+                                    acadrust::EntityType::Solid3D(_)
+                                        | acadrust::EntityType::Region(_)
+                                        | acadrust::EntityType::Surface(_)
+                                        | acadrust::EntityType::Mesh(_)
+                                        | acadrust::EntityType::PolygonMesh(_)
+                                        | acadrust::EntityType::PolyfaceMesh(_)
+                                )
                             )
                         })
-                        .collect()
+                        .collect::<Vec<_>>();
+                    let bases_have_mesh = bases.iter().any(|handle| {
+                        matches!(
+                            scene.document.get_entity(*handle),
+                            Some(
+                                acadrust::EntityType::Mesh(_)
+                                    | acadrust::EntityType::PolygonMesh(_)
+                                    | acadrust::EntityType::PolyfaceMesh(_)
+                            )
+                        )
+                    });
+                    (bases, bases_have_mesh)
                 };
                 self.tabs[i].scene.deselect_all();
-                let subtract = SubtractCommand::new(bases);
+                let subtract = SubtractCommand::new(bases, bases_have_mesh);
                 self.command_line.push_info(&subtract.prompt());
                 self.tabs[i].active_cmd = Some(Box::new(subtract));
             }
@@ -1322,31 +1377,27 @@ impl OpenCADStudio {
                 return Some(self.solid_convtosurface());
             }
 
-            // POLYSOLID <width> <height> — extrude a selected polyline into a
-            // wall-like solid.
             "POLYSOLID" => {
-                use crate::command::SelectThenTwoValueCommand;
-                let has_sel = !self.tabs[i].scene.selected_entities().is_empty();
-                let c = SelectThenTwoValueCommand::new(
-                    "POLYSOLID",
-                    "POLYSOLID  wall width:",
-                    "POLYSOLID  wall height:",
-                    has_sel,
-                );
+                use crate::modules::model::polysolid_cmd::PolysolidCommand;
+                let preselected = self.tabs[i]
+                    .scene
+                    .selected_entities()
+                    .into_iter()
+                    .find(|(_, entity)| {
+                        matches!(
+                            entity,
+                            acadrust::EntityType::Line(_)
+                                | acadrust::EntityType::Arc(_)
+                                | acadrust::EntityType::Circle(_)
+                                | acadrust::EntityType::Ellipse(_)
+                                | acadrust::EntityType::LwPolyline(_)
+                                | acadrust::EntityType::Spline(_)
+                        )
+                    })
+                    .map(|(handle, entity)| (handle, entity.clone()));
+                let c = PolysolidCommand::new(preselected);
                 self.command_line.push_info(&c.prompt());
                 self.tabs[i].active_cmd = Some(Box::new(c));
-            }
-            cmd if cmd.starts_with("POLYSOLID ") => {
-                let nums: Vec<f64> = cmd
-                    .split_whitespace()
-                    .skip(1)
-                    .filter_map(|s| s.parse::<f64>().ok())
-                    .collect();
-                if nums.len() >= 2 && nums[0] > 0.0 && nums[1] > 0.0 {
-                    return Some(self.solid_polysolid(nums[0], nums[1]));
-                }
-                self.command_line
-                    .push_info(crate::t!("Usage: POLYSOLID <width> <height>   (select a polyline first)").as_ref());
             }
 
             // SPLINEFIT — fit a smooth spline through the selected polyline's points.
@@ -1357,9 +1408,9 @@ impl OpenCADStudio {
             // REGION — convert selected closed boundaries (closed polylines /
             // circles) into Region entities (one wire loop each).
             "REGION" | "REG" => {
-                use acadrust::entities::{Region, Wire};
+                use acadrust::entities::Region;
                 use acadrust::types::Vector3;
-                let mut loops: Vec<Vec<Vector3>> = Vec::new();
+                let mut regions = Vec::new();
                 for (_, e) in self.tabs[i].scene.selected_entities().iter() {
                     let supported = matches!(
                         e,
@@ -1367,32 +1418,39 @@ impl OpenCADStudio {
                             if pl.is_closed && pl.vertices.len() >= 3
                     ) || matches!(e, acadrust::EntityType::Circle(_));
                     if supported {
-                        let Some(curve) = crate::entities::curve::entity_curve(e) else {
+                        let Some((plane, loops, true)) =
+                            crate::scene::model::presspull_model::profile_geometry(e)
+                        else {
                             continue;
                         };
-                        loops.push(
-                            crate::entities::curve::curve_points(&curve)
-                                .into_iter()
-                                .map(|point| Vector3::new(point[0], point[1], point[2]))
-                                .collect(),
+                        let Some(body) = cadkernel::brep::planar_region(plane, &loops) else {
+                            continue;
+                        };
+                        let mut region = Region::new();
+                        region.point_of_reference = Vector3::new(
+                            plane.origin[0],
+                            plane.origin[1],
+                            plane.origin[2],
                         );
+                        region.common.layer = self.tabs[i].active_layer.clone();
+                        regions.push((region, body));
                     }
                 }
-                if loops.is_empty() {
+                if regions.is_empty() {
                     self.command_line
                         .push_error(crate::t!("REGION: select closed polylines or circles.").as_ref());
                 } else {
                     self.push_undo_snapshot(i, "REGION");
-                    let count = loops.len();
-                    for pts in loops {
-                        let mut w = Wire::new();
-                        let first = pts.first().copied().unwrap_or(Vector3::new(0.0, 0.0, 0.0));
-                        w.points = pts;
-                        let mut r = Region::new();
-                        r.point_of_reference = first;
-                        r.wires = vec![w];
-                        r.common.layer = self.tabs[i].active_layer.clone();
-                        self.tabs[i].scene.add_entity(acadrust::EntityType::Region(r));
+                    let count = regions.len();
+                    let mut created = Vec::with_capacity(count);
+                    for (region, body) in regions {
+                        let handle = self.add_region_model(region, body);
+                        if handle.is_null() {
+                            self.tabs[i].scene.rollback_new_entities(&created);
+                            self.discard_last_undo_entry(i);
+                            return Some(iced::Task::none());
+                        }
+                        created.push(handle);
                     }
                     self.tabs[i].dirty = true;
                     self.command_line
@@ -1447,7 +1505,7 @@ impl OpenCADStudio {
                 match parts.get(val_idx).and_then(|s| s.parse::<f64>().ok()) {
                     Some(v) => return Some(self.solid_section(axis, v)),
                     None => self.command_line.push_info(
-                        "Usage: SECTION [X|Y|Z] <value>   (cross-sections the selected solid)",
+                        crate::t!("Usage: SECTION [X|Y|Z] <value>   (cross-sections the selected solid)").as_ref(),
                     ),
                 }
             }
@@ -1473,7 +1531,7 @@ impl OpenCADStudio {
                     return Some(self.solid_align3d(src, dst));
                 }
                 self.command_line.push_info(
-                    "Usage: 3DALIGN <sx1 sy1 sz1 … sx3 sy3 sz3  dx1 dy1 dz1 … dx3 dy3 dz3>  (18 numbers: 3 source then 3 destination points)",
+                    crate::t!("Usage: 3DALIGN <sx1 sy1 sz1 … sx3 sy3 sz3  dx1 dy1 dz1 … dx3 dy3 dz3>  (18 numbers: 3 source then 3 destination points)").as_ref(),
                 );
             }
 
@@ -1502,7 +1560,7 @@ impl OpenCADStudio {
                     Some("Z") => 2,
                     _ => {
                         self.command_line.push_info(
-                            "Usage: 3DMIRROR [X|Y|Z]   (mirrors the selected solid across that plane)",
+                            crate::t!("Usage: 3DMIRROR [X|Y|Z]   (mirrors the selected solid across that plane)").as_ref(),
                         );
                         return None;
                     }
@@ -1542,7 +1600,7 @@ impl OpenCADStudio {
                 match angle {
                     Some(a) => return Some(self.solid_rotate3d(axis, a)),
                     None => self.command_line.push_info(
-                        "Usage: 3DROTATE [X|Y|Z] <angle>   (rotates the selected solid)",
+                        crate::t!("Usage: 3DROTATE [X|Y|Z] <angle>   (rotates the selected solid)").as_ref(),
                     ),
                 }
             }
@@ -1582,7 +1640,7 @@ impl OpenCADStudio {
                 match value {
                     Some(v) => return Some(self.solid_slice(axis, v, keep_low)),
                     None => self.command_line.push_info(
-                        "Usage: SLICE [X|Y|Z] <value> [TOP|BOTTOM]   (cuts the selected solid)",
+                        crate::t!("Usage: SLICE [X|Y|Z] <value> [TOP|BOTTOM]   (cuts the selected solid)").as_ref(),
                     ),
                 }
             }

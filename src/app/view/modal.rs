@@ -17,6 +17,7 @@ impl OpenCADStudio {
             Some(K::FindReplace) => crate::tr!("modal", "find-replace"),
             Some(K::PluginManager) => crate::tr!("modal", "plugin-manager"),
             Some(K::UpdateNotice) => crate::tr!("modal", "update-available"),
+            Some(K::DonationPrompt) => crate::tr!("donation", "title"),
             Some(K::Layers) => crate::tr!("modal", "layer-manager"),
             Some(K::LayerStateManager) => crate::tr!("modal", "layer-state-manager"),
             Some(K::LayerTranslator) => crate::t!("Layer Translator").into_owned(),
@@ -48,15 +49,6 @@ impl OpenCADStudio {
             Some(K::SaveDialog) => crate::tr!("modal", "save-drawing-as"),
             Some(K::Recovery) => crate::tr!("modal", "recovery-report"),
             Some(K::RecoveryPrompt) => crate::tr!("modal", "recovery-prompt"),
-            Some(K::AecMaterialManager) => t!("AEC Material Manager").into_owned(),
-            Some(K::AecWallStyleManager) => t!("AEC Wall Style Manager").into_owned(),
-            Some(K::AecWallStyleDisplayProfiles) => t!("Planart-Einstellungen").into_owned(),
-            Some(K::AecPlanManager) => t!("AEC DisplayConfig Manager").into_owned(),
-            Some(K::AecJunctionEditor) => t!("Junction Editor").into_owned(),
-            Some(K::AecProjectExplorer) => t!("AEC Project Explorer").into_owned(),
-            Some(K::AecStylePicker { .. }) => t!("AEC Style Picker").into_owned(),
-            Some(K::AecStyleCopyConflict) => t!("Confirm Overwrite").into_owned(),
-            Some(K::AecProjectRequired) => t!("Project Required").into_owned(),
             None => String::new(),
         }
     }
@@ -77,109 +69,6 @@ impl OpenCADStudio {
             },
         )
     }
-    pub(super) fn aec_wall_style_manager_modal_content<'s>(
-        &'s self,
-        extra: iced::Vector,
-    ) -> Element<'s, Message> {
-        // Same content builder as `ModalKind::AecWallStyleManager`, used as the
-        // blocked parent underlay while display-profiles is open.
-        static EMPTY_LIB: std::sync::OnceLock<
-            crate::modules::aec::engine::library::StyleLibrary,
-        > = std::sync::OnceLock::new();
-        sized_flow(
-            extra,
-            1100,
-            550,
-            |_| {
-                let all_wall_styles = self.aec_style_library.as_ref().map(|lib| {
-                    lib.wall_styles
-                        .iter()
-                        .filter(|ws| {
-                            Some(&ws.style.id)
-                                != self.aec_style_manager_wall_style_editing_id.as_ref()
-                        })
-                        .map(|ws| (ws.style.id.as_str(), ws.style.name.as_str()))
-                        .collect::<Vec<_>>()
-                }).unwrap_or_default();
-                let all_materials = self.aec_style_library.as_ref().map(|lib| {
-                    lib.materials
-                        .iter()
-                        .map(|m| (m.id.as_str(), m.name.as_str()))
-                        .collect::<Vec<_>>()
-                }).unwrap_or_default();
-                let all_layer_names: Vec<String> = self.tabs.get(self.active_tab).map(|tab| {
-                    tab.scene
-                        .document
-                        .layers
-                        .iter()
-                        .map(|l| l.name.clone())
-                        .collect()
-                }).unwrap_or_default();
-                let effective_layers = Vec::new();
-                let inheritance_chain = Vec::new();
-                // Parent underlay only needs enough form state for the
-                // "Planart-Einstellungen…" button; detailed profile editing
-                // lives in the child modal.
-                let display_profiles_form = self
-                    .aec_style_manager_wall_style_editing_id
-                    .as_ref()
-                    .map(|_| {
-                        crate::ui::window::aec_wall_style_manager::DisplayProfileFormState {
-                            display_config_names: Vec::new(),
-                            existing_overrides: Default::default(),
-                            selected: None,
-                            contour_explicit: false,
-                            contour_selected: &[],
-                            solid_explicit: false,
-                            solid_selected: &[],
-                            hatch_angle: "",
-                            hatch_relative: false,
-                            slot_visibility: Default::default(),
-                            editing_slot: None,
-                            slot_overrides: &self.aec_style_manager_profile_slot_overrides,
-                            slot_style_editor: crate::ui::window::aec_ui_util::StyleEditorFormState {
-                                line_type: "",
-                                linetype_items: &[],
-                                linetype_combo: &self.aec_style_manager_material_linetype_combo,
-                                line_color: "",
-                                line_color_picker_open: false,
-                                hatch_pattern: "",
-                                hatch_picker_open: false,
-                                hatch_color: "",
-                                hatch_color_picker_open: false,
-                                fill_color: "",
-                                fill_color_picker_open: false,
-                            },
-                        }
-                    });
-                crate::ui::window::aec_wall_style_manager::view_window(
-                    self.aec_style_library
-                        .as_ref()
-                        .unwrap_or(EMPTY_LIB.get_or_init(
-                            crate::modules::aec::engine::library::StyleLibrary::empty,
-                        )),
-                    self.aec_project_explorer_file.as_ref(),
-                    self.aec_style_manager_selected_wall_style.as_deref(),
-                    &self.aec_style_manager_filter,
-                    crate::ui::window::aec_wall_style_manager::WallStyleFormState {
-                        open: self.aec_style_manager_wall_style_form_open,
-                        is_new: self.aec_style_manager_wall_style_editing_id.is_none(),
-                        name: &self.aec_style_manager_wall_style_name,
-                        parent_id: self.aec_style_manager_wall_style_parent.as_deref(),
-                        layers: &self.aec_style_manager_wall_style_layers,
-                        drag_index: self.aec_style_manager_wall_style_drag_index,
-                        all_wall_styles,
-                        all_materials,
-                        all_layer_names,
-                        effective_layers,
-                        inheritance_chain,
-                        display_profiles: display_profiles_form.clone(),
-                    },
-                )
-            },
-        )
-    }
-
     /// Build the currently-open modal dialog's content (Plan B), or `None`.
     /// Iced 0.15 measures the content first, so dialogs start at their natural
     /// size and overflowing regions become scrollable where a cap is supplied.
@@ -190,6 +79,68 @@ impl OpenCADStudio {
                 automatic_flow(ex, crate::ui::window::about::view_window)
             }
             super::super::ModalKind::Shortcuts => {
+                // Keys claimed by two rows — the cells turn red and a
+                // persistent warning names the command already using each
+                // key; the last row wins in the binding map on Apply.
+                let mut key_rows: std::collections::BTreeMap<String, Vec<&(String, String)>> =
+                    std::collections::BTreeMap::new();
+                for row in &self.shortcut_editor_rows {
+                    let key = crate::app::shortcuts::normalize_key(&row.0);
+                    if !key.is_empty() {
+                        key_rows.entry(key).or_default().push(row);
+                    }
+                }
+                let duplicate_keys: Vec<String> = key_rows
+                    .iter()
+                    .filter(|(_, rows)| rows.len() > 1)
+                    .map(|(key, _)| key.clone())
+                    .collect();
+                let duplicate_conflicts: Vec<(String, String)> = key_rows
+                    .iter()
+                    .filter(|(_, rows)| rows.len() > 1)
+                    .map(|(key, rows)| {
+                        // Name the established binding: the first row with
+                        // this key that actually has a command.
+                        let command = rows
+                            .iter()
+                            .find(|(_, command)| !command.is_empty())
+                            .map(|(_, command)| command.clone())
+                            .unwrap_or_default();
+                        (key.clone(), command)
+                    })
+                    .collect();
+                let duplicate_set: rustc_hash::FxHashSet<String> =
+                    duplicate_keys.into_iter().collect();
+                // Commands the dispatcher can't run: not a registered
+                // command, plugin command, alias, or input action.
+                let valid: rustc_hash::FxHashSet<String> =
+                    crate::command::all_registered_command_names()
+                        .into_iter()
+                        .map(str::to_uppercase)
+                        .chain(
+                            self.command_line
+                                .dynamic_commands
+                                .iter()
+                                .map(|cmd| cmd.to_uppercase()),
+                        )
+                        .chain(self.command_aliases.keys().cloned())
+                        .chain(
+                            crate::app::shortcuts::INPUT_ACTIONS
+                                .iter()
+                                .map(|action| action.to_string()),
+                        )
+                        .collect();
+                let unknown_commands: Vec<String> = self
+                    .shortcut_editor_rows
+                    .iter()
+                    .filter_map(|(_, command)| {
+                        let command = command.trim();
+                        (!command.is_empty() && !valid.contains(command))
+                            .then(|| command.to_string())
+                    })
+                    .collect();
+                let unknown_set: rustc_hash::FxHashSet<String> =
+                    unknown_commands.into_iter().collect();
                 sized_flow(
                     ex,
                     720,
@@ -197,6 +148,13 @@ impl OpenCADStudio {
                     |flow| {
                         crate::ui::window::shortcuts::view_window(
                             &self.shortcut_editor_rows,
+                            self.shortcut_capture_row,
+                            self.shortcut_pending_add,
+                            self.shortcut_reset_confirm,
+                            &duplicate_set,
+                            &duplicate_conflicts,
+                            &unknown_set,
+                            self.shortcut_close_confirm,
                             flow,
                         )
                     },
@@ -217,8 +175,8 @@ impl OpenCADStudio {
             }
             super::super::ModalKind::Options => sized_flow(
                 ex,
-                520,
-                500,
+                540,
+                560,
                 |flow| {
                     crate::ui::window::options::view_window(
                         &self.default_save_format,
@@ -232,6 +190,11 @@ impl OpenCADStudio {
                         self.cursor_type,
                         self.crosshair_color,
                         &self.crosshair_color_input,
+                        self.lineweight_display_scale,
+                        &self.model_space,
+                        &self.model_bg_input,
+                        &self.paper_bg_input,
+                        &self.desk_bg_input,
                         flow,
                     )
                 },
@@ -351,391 +314,6 @@ impl OpenCADStudio {
                 let state = self.geometric_tolerance.as_ref()?;
                 sized_flow(ex, 670, 530, |flow| {
                     crate::ui::window::geometric_tolerance::view_window(state, flow)
-                })
-            }
-            super::super::ModalKind::AecStylePicker { target } => {
-                let all_layer_names: Vec<String> = self.tabs[self.active_tab]
-                    .scene
-                    .document
-                    .layers
-                    .iter()
-                    .map(|l| l.name.clone())
-                    .collect();
-                sized_flow(ex, 500, 500, move |flow| {
-                    crate::ui::window::aec_style_picker::view_window(
-                        self.aec_style_library.as_ref(),
-                        self.aec_project_explorer_file.as_ref(),
-                        target,
-                        &self.aec_style_picker_filter,
-                        self.aec_style_picker_selection.as_deref(),
-                        all_layer_names.clone(),
-                        flow,
-                    )
-                })
-            }
-            super::super::ModalKind::AecMaterialManager => sized_flow(
-                ex,
-                700,
-                400,
-                |_| {
-                    static EMPTY_LIB: std::sync::OnceLock<
-                        crate::modules::aec::engine::library::StyleLibrary,
-                    > = std::sync::OnceLock::new();
-                    crate::ui::window::aec_material_manager::view_window(
-                        self.aec_style_library.as_ref().unwrap_or(EMPTY_LIB.get_or_init(crate::modules::aec::engine::library::StyleLibrary::empty)),
-                        self.aec_project_explorer_file.as_ref(),
-                        self.aec_style_manager_selected_material.as_deref(),
-                        &self.aec_style_manager_filter,
-                        crate::ui::window::aec_material_manager::MaterialFormState {
-                            open: self.aec_style_manager_material_form_open,
-                            is_new: self.aec_style_manager_material_editing_id.is_none(),
-                            editing_id: self.aec_style_manager_material_editing_id.as_deref(),
-                            name: &self.aec_style_manager_material_name,
-                            hatch: &self.aec_style_manager_material_hatch,
-                            color: &self.aec_style_manager_material_color,
-                            line_type: &self.aec_style_manager_material_line_type,
-                            category: &self.aec_style_manager_material_category,
-                            hatch_color: self.aec_style_manager_material_hatch_color,
-                            hatch_scale: &self.aec_style_manager_material_hatch_scale,
-                            render_material_ref: &self.aec_style_manager_material_render_ref,
-                            hatch_angle: &self.aec_style_manager_material_hatch_angle,
-                            hatch_angle_relative: self.aec_style_manager_material_hatch_angle_relative,
-                            color_picker_open: self.aec_style_manager_material_color_picker_open,
-                            hatch_color_picker_open: self
-                                .aec_style_manager_material_hatch_color_picker_open,
-                            hatch_picker_open: self.aec_style_manager_material_hatch_picker_open,
-                            linetype_items: &self.aec_style_manager_material_linetype_items,
-                            linetype_combo: &self.aec_style_manager_material_linetype_combo,
-                        },
-                    )
-                },
-            ),
-            super::super::ModalKind::AecJunctionEditor => sized_flow(ex, 620, 480, |_| {
-                let scene = &self.tabs[self.active_tab].scene;
-                let (axis_handle, end_index) = self
-                    .aec_junction_editor_target
-                    .unwrap_or((acadrust::Handle::default(), 0));
-                let participants =
-                    crate::modules::aec::commands::walls_at_junction(scene, axis_handle, end_index);
-                static EMPTY_LIB: std::sync::OnceLock<
-                    crate::modules::aec::engine::library::StyleLibrary,
-                > = std::sync::OnceLock::new();
-                let library = self
-                    .aec_style_library
-                    .as_ref()
-                    .unwrap_or(EMPTY_LIB.get_or_init(crate::modules::aec::engine::library::StyleLibrary::empty));
-                crate::ui::window::aec_junction_editor::view_window(
-                    crate::ui::window::aec_junction_editor::JunctionEditorState {
-                        axis_handle,
-                        end_index,
-                        participants,
-                        library,
-                        default_style: self.aec_junction_editor_default_style.clone(),
-                        pairs: &self.aec_junction_editor_pairs,
-                        pair_layer_a: self
-                            .aec_junction_editor_pair_layer_a
-                            .as_ref()
-                            .map(|(i, s)| (*i, s.as_str())),
-                        pair_wall_b: self.aec_junction_editor_pair_wall_b,
-                        pair_layer_b: self
-                            .aec_junction_editor_pair_layer_b
-                            .as_ref()
-                            .map(|(i, s)| (*i, s.as_str())),
-                        pair_style: self.aec_junction_editor_pair_style.clone(),
-                    },
-                )
-            }),
-            super::super::ModalKind::AecPlanManager => sized_flow(ex, 980, 640, |_| {
-                static EMPTY_LIB: std::sync::OnceLock<
-                    crate::modules::aec::engine::library::DisplayConfigLibrary,
-                > = std::sync::OnceLock::new();
-                crate::ui::window::aec_plan_manager::view_window(
-                    self.aec_plan_library.as_ref().unwrap_or(EMPTY_LIB.get_or_init(
-                        crate::modules::aec::engine::library::DisplayConfigLibrary::empty,
-                    )),
-                    self.aec_plan_manager_selected.as_deref(),
-                    &self.aec_plan_manager_filter,
-                    crate::ui::window::aec_plan_manager::PlanConfigFormState {
-                        open: self.aec_plan_manager_form_open,
-                        is_new: self.aec_plan_manager_editing_name.is_none(),
-                        editing_name: self.aec_plan_manager_editing_name.as_deref(),
-                        name: &self.aec_plan_manager_name,
-                        discipline: &self.aec_plan_manager_discipline,
-                        scale: &self.aec_plan_manager_scale,
-                        planning_stage: self.aec_plan_manager_planning_stage,
-                        view_type: self.aec_plan_manager_view_type.clone(),
-                        phase_filter_visible_existing: self.aec_plan_manager_phase_filter_visible_existing,
-                        phase_filter_visible_demolition: self.aec_plan_manager_phase_filter_visible_demolition,
-                        phase_filter_visible_new: self.aec_plan_manager_phase_filter_visible_new,
-                        demolition_style: crate::ui::window::aec_plan_manager::StyleEditorFormState {
-                            line_type: &self.aec_plan_manager_demolition_style_line_type,
-                            linetype_items: &self.aec_style_manager_material_linetype_items,
-                            linetype_combo: &self.aec_style_manager_material_linetype_combo,
-                            line_color: &self.aec_plan_manager_demolition_style_line_color,
-                            line_color_picker_open: self
-                                .aec_plan_manager_demolition_style_line_color_picker_open,
-                            hatch_pattern: &self.aec_plan_manager_demolition_style_hatch_pattern,
-                            hatch_picker_open: self.aec_plan_manager_demolition_style_hatch_picker_open,
-                            hatch_color: &self.aec_plan_manager_demolition_style_hatch_color,
-                            hatch_color_picker_open: self
-                                .aec_plan_manager_demolition_style_hatch_color_picker_open,
-                            fill_color: &self.aec_plan_manager_demolition_style_fill_color,
-                            fill_color_picker_open: self
-                                .aec_plan_manager_demolition_style_fill_color_picker_open,
-                        },
-                        existing_style: crate::ui::window::aec_plan_manager::StyleEditorFormState {
-                            line_type: &self.aec_plan_manager_existing_style_line_type,
-                            linetype_items: &self.aec_style_manager_material_linetype_items,
-                            linetype_combo: &self.aec_style_manager_material_linetype_combo,
-                            line_color: &self.aec_plan_manager_existing_style_line_color,
-                            line_color_picker_open: self
-                                .aec_plan_manager_existing_style_line_color_picker_open,
-                            hatch_pattern: &self.aec_plan_manager_existing_style_hatch_pattern,
-                            hatch_picker_open: self.aec_plan_manager_existing_style_hatch_picker_open,
-                            hatch_color: &self.aec_plan_manager_existing_style_hatch_color,
-                            hatch_color_picker_open: self
-                                .aec_plan_manager_existing_style_hatch_color_picker_open,
-                            fill_color: &self.aec_plan_manager_existing_style_fill_color,
-                            fill_color_picker_open: self
-                                .aec_plan_manager_existing_style_fill_color_picker_open,
-                        },
-                        default_representation: self.aec_plan_manager_default_representation,
-                        component_visibility: &self.aec_plan_manager_component_visibility,
-                        wall_styles: &self.aec_plan_manager_wall_styles,
-                        style_overlays: &self.aec_plan_manager_style_overlays,
-                        overlay_style_id: self.aec_plan_manager_overlay_style_id.as_deref(),
-                        overlay_layer_id: self.aec_plan_manager_overlay_layer_id,
-                        overlay_line_type: &self.aec_plan_manager_overlay_line_type,
-                        overlay_line_color: &self.aec_plan_manager_overlay_line_color,
-                        overlay_hatch_pattern: &self.aec_plan_manager_overlay_hatch_pattern,
-                        overlay_hatch_color: &self.aec_plan_manager_overlay_hatch_color,
-                        overlay_hatch_scale: &self.aec_plan_manager_overlay_hatch_scale,
-                        overlay_hatch_angle: &self.aec_plan_manager_overlay_hatch_angle,
-                        overlay_hatch_angle_relative: self
-                            .aec_plan_manager_overlay_hatch_angle_relative,
-                        overlay_fill_color: &self.aec_plan_manager_overlay_fill_color,
-                        overlay_linetype_items: &self.aec_style_manager_material_linetype_items,
-                        overlay_linetype_combo: &self.aec_style_manager_material_linetype_combo,
-                        overlay_line_color_picker_open: self
-                            .aec_plan_manager_overlay_line_color_picker_open,
-                        overlay_hatch_picker_open: self.aec_plan_manager_overlay_hatch_picker_open,
-                        overlay_hatch_color_picker_open: self
-                            .aec_plan_manager_overlay_hatch_color_picker_open,
-                        overlay_fill_color_picker_open: self
-                            .aec_plan_manager_overlay_fill_color_picker_open,
-                        contour_hatch_pattern: &self.aec_plan_manager_contour_hatch_pattern,
-                        contour_hatch_color: &self.aec_plan_manager_contour_hatch_color,
-                        contour_hatch_scale: &self.aec_plan_manager_contour_hatch_scale,
-                        contour_hatch_angle: &self.aec_plan_manager_contour_hatch_angle,
-                        contour_hatch_angle_relative: self
-                            .aec_plan_manager_contour_hatch_angle_relative,
-                        contour_hatch_picker_open: self.aec_plan_manager_contour_hatch_picker_open,
-                        contour_hatch_color_picker_open: self
-                            .aec_plan_manager_contour_hatch_color_picker_open,
-                    },
-                )
-            }),
-            super::super::ModalKind::AecProjectExplorer => sized_flow(ex, 720, 520, |_| {
-                crate::ui::window::aec_project_explorer::view_window(
-                    self.aec_project_explorer_file.as_ref(),
-                    crate::ui::window::aec_project_explorer::ProjectExplorerState {
-                        path: self.aec_project_explorer_path.as_deref(),
-                        selected_building: self.aec_project_explorer_selected_building,
-                        selected_storey: self.aec_project_explorer_selected_storey,
-                        new_building_name: &self.aec_project_explorer_new_building_name,
-                        new_storey_name: &self.aec_project_explorer_new_storey_name,
-                        new_storey_elevation: &self.aec_project_explorer_new_storey_elevation,
-                        new_storey_drawing: &self.aec_project_explorer_new_storey_drawing,
-                        edit_building_name: &self.aec_project_explorer_edit_building_name,
-                        edit_storey_name: &self.aec_project_explorer_edit_storey_name,
-                        edit_elevation: &self.aec_project_explorer_edit_elevation,
-                        edit_storey_drawing: &self.aec_project_explorer_edit_storey_drawing,
-                        pending_delete: self.aec_project_explorer_pending_delete,
-                    },
-                )
-            }),
-            super::super::ModalKind::AecWallStyleManager => sized_flow(
-                ex,
-                1100,
-                550,
-                |_| {
-                    let all_wall_styles = self.aec_style_library.as_ref().map(|lib| {
-                        lib.wall_styles.iter()
-                            .filter(|ws| Some(&ws.style.id) != self.aec_style_manager_wall_style_editing_id.as_ref())
-                            .map(|ws| (ws.style.id.as_str(), ws.style.name.as_str()))
-                            .collect()
-                    }).unwrap_or_default();
-                    let all_materials = self.aec_style_library.as_ref().map(|lib| {
-                        lib.materials.iter()
-                            .map(|m| (m.id.as_str(), m.name.as_str()))
-                            .collect()
-                    }).unwrap_or_default();
-                    let all_layer_names: Vec<String> = self.tabs[self.active_tab]
-                        .scene
-                        .document
-                        .layers
-                        .iter()
-                        .map(|l| l.name.clone())
-                        .collect();
-
-                    let effective_layers = self.aec_style_library.as_ref().and_then(|lib| {
-                        let id = self.aec_style_manager_wall_style_editing_id.as_ref()
-                            .or(self.aec_style_manager_selected_wall_style.as_ref())?;
-                        let styles_map: std::collections::HashMap<_, _> = lib.wall_styles.iter().map(|w| (w.style.id.clone(), w.clone())).collect();
-                        crate::modules::aec::engine::wall_style::effective_layers(
-                            &styles_map,
-                            id
-                        ).ok()
-                    }).unwrap_or_default();
-
-                    static EMPTY_LIB: std::sync::OnceLock<
-                        crate::modules::aec::engine::library::StyleLibrary,
-                    > = std::sync::OnceLock::new();
-
-                    // Parent-to-child chain of display names for the style
-                    // currently being edited, so the manager can surface the
-                    // full inheritance path instead of just the immediate
-                    // parent. Built from the *pending* parent selection (not
-                    // just the saved one), so it updates live as the user
-                    // re-parents the style being edited.
-                    let inheritance_chain: Vec<String> = self.aec_style_library.as_ref().map(|lib| {
-                        let mut names = Vec::new();
-                        let mut current = self.aec_style_manager_wall_style_parent.clone();
-                        let mut visited = std::collections::HashSet::new();
-                        while let Some(id) = current {
-                            if !visited.insert(id.clone()) {
-                                break; // cycle guard; save-time validation reports the real error
-                            }
-                            let Some(ws) = lib.wall_styles.iter().find(|w| w.style.id == id) else {
-                                break;
-                            };
-                            names.push(ws.style.name.clone());
-                            current = ws.style.parent_style_id.clone();
-                        }
-                        names.reverse();
-                        names
-                    }).unwrap_or_default();
-
-                    // Step 4: "Darstellungs-Profile" edit state — only
-                    // meaningful for a style that already has a stable id
-                    // (a brand-new, unsaved style has nowhere to persist
-                    // `display_profiles` yet).
-                    let display_profiles_form = self
-                        .aec_style_manager_wall_style_editing_id
-                        .as_ref()
-                        .map(|id| {
-                            let display_config_names: Vec<String> = self
-                                .aec_plan_library
-                                .as_ref()
-                                .map(|lib| lib.configs.iter().map(|c| c.name.clone()).collect())
-                                .unwrap_or_default();
-                            let existing_overrides: std::collections::HashSet<String> = self
-                                .aec_style_library
-                                .as_ref()
-                                .and_then(|lib| lib.wall_styles.iter().find(|w| &w.style.id == id))
-                                .map(|ws| ws.display_profiles.keys().cloned().collect())
-                                .unwrap_or_default();
-                            crate::ui::window::aec_wall_style_manager::DisplayProfileFormState {
-                                display_config_names,
-                                existing_overrides,
-                                selected: self.aec_style_manager_profile_selected.as_deref(),
-                                contour_explicit: self.aec_style_manager_profile_contour_explicit,
-                                contour_selected: &self.aec_style_manager_profile_contour_selection,
-                                solid_explicit: self.aec_style_manager_profile_solid_explicit,
-                                solid_selected: &self.aec_style_manager_profile_solid_selection,
-                                hatch_angle: &self.aec_style_manager_profile_hatch_angle,
-                                hatch_relative: self.aec_style_manager_profile_hatch_relative,
-                                slot_visibility: self.aec_style_manager_profile_slot_visibility.clone(),
-                                editing_slot: self.aec_style_manager_profile_editing_slot,
-                                slot_overrides: &self.aec_style_manager_profile_slot_overrides,
-                                slot_style_editor: crate::ui::window::aec_ui_util::StyleEditorFormState {
-                                    line_type: &self.aec_style_manager_profile_slot_style_line_type,
-                                    linetype_items: &self.aec_style_manager_material_linetype_items,
-                                    linetype_combo: &self.aec_style_manager_material_linetype_combo,
-                                    line_color: &self.aec_style_manager_profile_slot_style_line_color,
-                                    line_color_picker_open: self.aec_style_manager_profile_slot_style_line_color_picker_open,
-                                    hatch_pattern: &self.aec_style_manager_profile_slot_style_hatch_pattern,
-                                    hatch_picker_open: self.aec_style_manager_profile_slot_style_hatch_picker_open,
-                                    hatch_color: &self.aec_style_manager_profile_slot_style_hatch_color,
-                                    hatch_color_picker_open: self.aec_style_manager_profile_slot_style_hatch_color_picker_open,
-                                    fill_color: &self.aec_style_manager_profile_slot_style_fill_color,
-                                    fill_color_picker_open: self.aec_style_manager_profile_slot_style_fill_color_picker_open,
-                                },
-                            }
-                        });
-
-                    crate::ui::window::aec_wall_style_manager::view_window(
-                        self.aec_style_library.as_ref().unwrap_or(EMPTY_LIB.get_or_init(crate::modules::aec::engine::library::StyleLibrary::empty)),
-                        self.aec_project_explorer_file.as_ref(),
-                        self.aec_style_manager_selected_wall_style.as_deref(),
-                        &self.aec_style_manager_filter,
-                        crate::ui::window::aec_wall_style_manager::WallStyleFormState {
-                            open: self.aec_style_manager_wall_style_form_open,
-                            is_new: self.aec_style_manager_wall_style_editing_id.is_none(),
-                            name: &self.aec_style_manager_wall_style_name,
-                            parent_id: self.aec_style_manager_wall_style_parent.as_deref(),
-                            layers: &self.aec_style_manager_wall_style_layers,
-                            drag_index: self.aec_style_manager_wall_style_drag_index,
-                            all_wall_styles,
-                            all_materials,
-                            all_layer_names,
-                            effective_layers,
-                            inheritance_chain,
-                            display_profiles: display_profiles_form.clone(),
-                        },
-                    )
-                },
-            ),
-            super::super::ModalKind::AecWallStyleDisplayProfiles => {
-                let display_profiles_form = {
-                    let display_config_names: Vec<String> = self
-                        .aec_plan_library
-                        .as_ref()
-                        .map(|lib| lib.configs.iter().map(|c| c.name.clone()).collect())
-                        .unwrap_or_default();
-                    let existing_overrides: std::collections::HashSet<String> = self
-                        .aec_style_manager_wall_style_editing_id
-                        .as_ref()
-                        .and_then(|id| {
-                            self.aec_style_library.as_ref().and_then(|lib| {
-                                lib.wall_styles.iter().find(|w| &w.style.id == id)
-                            })
-                        })
-                        .map(|ws| ws.display_profiles.keys().cloned().collect())
-                        .unwrap_or_default();
-                    crate::ui::window::aec_wall_style_manager::DisplayProfileFormState {
-                        display_config_names,
-                        existing_overrides,
-                        selected: self.aec_style_manager_profile_selected.as_deref(),
-                        contour_explicit: self.aec_style_manager_profile_contour_explicit,
-                        contour_selected: &self.aec_style_manager_profile_contour_selection,
-                        solid_explicit: self.aec_style_manager_profile_solid_explicit,
-                        solid_selected: &self.aec_style_manager_profile_solid_selection,
-                        hatch_angle: &self.aec_style_manager_profile_hatch_angle,
-                        hatch_relative: self.aec_style_manager_profile_hatch_relative,
-                        slot_visibility: self.aec_style_manager_profile_slot_visibility.clone(),
-                        editing_slot: self.aec_style_manager_profile_editing_slot,
-                        slot_overrides: &self.aec_style_manager_profile_slot_overrides,
-                        slot_style_editor: crate::ui::window::aec_ui_util::StyleEditorFormState {
-                            line_type: &self.aec_style_manager_profile_slot_style_line_type,
-                            linetype_items: &self.aec_style_manager_material_linetype_items,
-                            linetype_combo: &self.aec_style_manager_material_linetype_combo,
-                            line_color: &self.aec_style_manager_profile_slot_style_line_color,
-                            line_color_picker_open: self.aec_style_manager_profile_slot_style_line_color_picker_open,
-                            hatch_pattern: &self.aec_style_manager_profile_slot_style_hatch_pattern,
-                            hatch_picker_open: self.aec_style_manager_profile_slot_style_hatch_picker_open,
-                            hatch_color: &self.aec_style_manager_profile_slot_style_hatch_color,
-                            hatch_color_picker_open: self.aec_style_manager_profile_slot_style_hatch_color_picker_open,
-                            fill_color: &self.aec_style_manager_profile_slot_style_fill_color,
-                            fill_color_picker_open: self.aec_style_manager_profile_slot_style_fill_color_picker_open,
-                        },
-                    }
-                };
-                sized_flow(ex, 720, 640, |_flow| {
-                    crate::ui::window::aec_wall_style_manager::view_display_profiles_window(
-                        display_profiles_form.clone(),
-                        &self.aec_style_manager_wall_style_layers,
-                    )
                 })
             }
             super::super::ModalKind::LayerStateManager => {
@@ -1723,6 +1301,9 @@ impl OpenCADStudio {
             super::super::ModalKind::AssocPrompt => {
                 automatic_flow(ex, default_assoc_dialog_window)
             }
+            super::super::ModalKind::DonationPrompt => {
+                sized_flow(ex, 540, 360, donation_dialog_window)
+            }
             super::super::ModalKind::AecDropWarning => {
                 let src_label = self
                     .tabs
@@ -1784,12 +1365,6 @@ impl OpenCADStudio {
                     .clone()
                     .unwrap_or_else(|| (Vec::new(), 0));
                 automatic_flow(ex, |flow| layer_delete_warning_window(&names, count, flow))
-            }
-            super::super::ModalKind::AecStyleCopyConflict => {
-                automatic_flow(ex, |flow| aec_style_copy_conflict_window(flow))
-            }
-            super::super::ModalKind::AecProjectRequired => {
-                automatic_flow(ex, |flow| aec_project_required_window(flow))
             }
             super::super::ModalKind::Unsaved => {
                 let tab_name = match &self.pending_close {
@@ -2347,10 +1922,43 @@ fn aec_project_required_window(
     .into()
 }
 
-/// First-launch prompt offering to register Open CAD Studio as the default
-/// handler for .dwg / .dxf. "Yes" runs the platform association call; "Not now"
-/// just dismisses. Either answer flips the persisted `default_assoc_prompted`
-/// flag so the dialog never reappears.
+fn donation_dialog_window(sizing: crate::ui::modal::ModalSizing) -> Element<'static, Message> {
+    container(
+        column![
+            text(crate::tr!("donation", "heading")).size(18),
+            row![
+                text(crate::tr!("donation", "body"))
+                    .size(14)
+                    .width(Fill),
+                crate::ui::icons::themed(crate::ui::icons::HEART, 52.0),
+            ]
+            .spacing(20)
+            .align_y(iced::Center),
+            row![
+                Space::new().width(Fill),
+                dialog_button(
+                    crate::tr!("start", "donate"),
+                    Message::DonationPromptDonate,
+                    button::primary,
+                ),
+                dialog_button(
+                    crate::tr!("donation", "decline"),
+                    Message::CloseModal,
+                    button::secondary,
+                ),
+            ]
+            .spacing(8)
+            .align_y(iced::Center),
+        ]
+        .spacing(18)
+        .width(sizing.width),
+    )
+    .style(dialog_body_style)
+    .padding([24, 28])
+    .into()
+}
+
+/// One-time default application prompt.
 fn default_assoc_dialog_window(
     sizing: crate::ui::modal::ModalSizing,
 ) -> Element<'static, Message> {

@@ -3,6 +3,7 @@
 use crate::app::Message;
 use iced::widget::{button, column, container, row, scrollable, text, text_input, Space};
 use iced::{Background, Border, Element, Theme};
+use crate::ui::style::common::muted_style;
 use crate::t;
 use std::borrow::Cow;
 use std::fmt;
@@ -79,12 +80,6 @@ fn field_style(theme: &Theme, status: text_input::Status) -> text_input::Style {
         placeholder: palette.background.base.text.scale_alpha(0.48),
         value: palette.background.base.text,
         selection: palette.primary.base.color.scale_alpha(0.5),
-    }
-}
-
-fn muted_style(theme: &Theme) -> iced::widget::text::Style {
-    iced::widget::text::Style {
-        color: Some(theme.palette().background.base.text.scale_alpha(0.68)),
     }
 }
 
@@ -328,8 +323,8 @@ let mut layer_usage = vec![Vec::<String>::new(); 256];
             } else {
                 crate::io::plot_style::LW_TABLE
                     .get(e.lineweight as usize)
-                    .map(|lw| format!("{lw:.2}mm (idx {})", e.lineweight))
-                    .unwrap_or_else(|| format!("idx {}", e.lineweight))
+                    .map(|lw| crate::tf!("{lw:.2}mm (idx {})", e.lineweight).into_owned())
+                    .unwrap_or_else(|| crate::tf!("idx {}", e.lineweight).into_owned())
             }
         })
         .unwrap_or_else(|| "—".into());
@@ -496,7 +491,7 @@ let mut layer_usage = vec![Vec::<String>::new(); 256];
                 container(
                     column![
                         row![
-                            text(format!("Layers using ACI {selected_aci}"))
+                            text(crate::tf!("Layers using ACI {selected_aci}"))
                                 .size(11),
 
                             Space::new().width(iced::Length::Fill),
@@ -505,9 +500,9 @@ let mut layer_usage = vec![Vec::<String>::new(); 256];
                                 "{} {}",
                                 selected_layers.len(),
                                 if selected_layers.len() == 1 {
-                                    "layer"
+                                    t!("layer")
                                 } else {
-                                    "layers"
+                                    t!("layers")
                                 }
                             ))
                             .size(10)
@@ -517,7 +512,7 @@ let mut layer_usage = vec![Vec::<String>::new(); 256];
 
                         if selected_layers.is_empty() {
                             column![
-                                text("No layers use this ACI in the current drawing.")
+                                text(t!("No layers use this ACI in the current drawing."))
                                     .size(10)
                                     .style(muted_style)
                             ]

@@ -90,7 +90,7 @@ const SNAP_ORDER: &[SnapType] = &[
     // persisted set. (#121)
 ];
 
-/// `$OSMODE` bit for each running object-snap mode (standard AutoCAD bitmask).
+/// `$OSMODE` bit for each running object-snap mode.
 /// `None` for OCS-only snaps (Grid, ObjectPick) that have no standard bit.
 fn snap_bit(s: SnapType) -> Option<i32> {
     Some(match s {
@@ -164,6 +164,8 @@ pub struct UserSettings {
     pub cursor_type: CursorType,
     /// Explicit crosshair RGB. `None` keeps automatic background contrast.
     pub crosshair_color: Option<[u8; 3]>,
+    /// Model-space lineweight preview scale as a percentage.
+    pub lineweight_display_scale: i32,
     /// Isometric drafting changes the grid and crosshair to the active axis pair.
     pub isometric_drafting: bool,
     pub iso_plane: IsoPlane,
@@ -177,6 +179,8 @@ pub struct UserSettings {
     /// prompt has already been shown. Set once the user answers (either way),
     /// so we never nag again on subsequent launches.
     pub default_assoc_prompted: bool,
+    /// App version whose donation prompt has been displayed.
+    pub donation_prompt_version: String,
     /// Ids of plugins the user turned off in the Plugin Manager. Disabled
     /// plugins keep their manifest listed but drop their ribbon tab and command
     /// dispatch.
@@ -198,6 +202,13 @@ pub struct UserSettings {
     pub osmode: i32,
     /// Controls whether the TEXTEDIT command repeats automatically (0 = Multiple, 1 = Single).
     pub texteditmode: bool,
+    /// QDIM extension-origin priority: 0 = endpoints, 1 = intersections.
+    #[serde(default)]
+    pub quick_dimension_snap_priority: u8,
+    /// DIMCONTINUEMODE: 1 inherits the base dimension's layer/style; 0 uses
+    /// the current creation layer/style. Registry-style, app-level preference.
+    #[serde(default = "default_dimension_continue_mode")]
+    pub dimension_continue_mode: i16,
     /// TEXTFILL: fill TrueType glyphs (true) or draw them hollow (false).
     pub textfill: bool,
     /// When true, saving over an existing file first copies it to a sibling
@@ -234,6 +245,13 @@ pub struct UserSettings {
     /// are displayed above the command window (0–50, Registry, default 3).
     #[serde(default = "default_clipromptlines", deserialize_with = "deserialize_clipromptlines")]
     pub cliprompt_lines: i32,
+    /// COMMANDLINEFADETIME: how long command-line overlay history lines stay
+    /// visible, in milliseconds (0–60000, default 3000). 0 skips transient lines.
+    #[serde(
+        default = "default_commandline_fade_ms",
+        deserialize_with = "deserialize_commandline_fade_ms"
+    )]
+    pub commandline_fade_ms: i32,
     /// Most-recently-inserted block names, most recent first, capped to 20.
     /// Used to rank INSERT suggestions without touching the drawing file.
     #[serde(default)]
@@ -245,6 +263,26 @@ pub struct UserSettings {
 
 fn default_clipromptlines() -> i32 {
     3
+}
+
+fn default_commandline_fade_ms() -> i32 {
+    3000
+}
+
+fn deserialize_commandline_fade_ms<'de, D>(de: D) -> Result<i32, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let v = i32::deserialize(de).unwrap_or(3000);
+    Ok(v.clamp(0, 60000))
+}
+
+pub fn clamp_commandline_fade_ms(v: i32) -> i32 {
+    v.clamp(0, 60000)
+}
+
+fn default_dimension_continue_mode() -> i16 {
+    1
 }
 
 fn deserialize_clipromptlines<'de, D>(de: D) -> Result<i32, D::Error>
@@ -271,11 +309,13 @@ impl Default for UserSettings {
             pick_box: 3,
             cursor_type: CursorType::Crosshair,
             crosshair_color: None,
+            lineweight_display_scale: 100,
             isometric_drafting: false,
             iso_plane: IsoPlane::Left,
             snap_angle_deg: 0.0,
             otrack: false,
             default_assoc_prompted: false,
+            donation_prompt_version: String::new(),
             disabled_plugins: Vec::new(),
             plugin_repos: Vec::new(),
             literal_spaces: false,
@@ -284,6 +324,8 @@ impl Default for UserSettings {
             // off (suppress bit 16384).
             osmode: 575 | OSMODE_SUPPRESS,
             texteditmode: false,
+            quick_dimension_snap_priority: 0,
+            dimension_continue_mode: 1,
             textfill: true,
             backup_on_save: true,
             file_assoc_enabled: true,
@@ -296,6 +338,7 @@ impl Default for UserSettings {
             paper_bg_color: None,
             language: crate::i18n::Language::default(),
             cliprompt_lines: 3,
+            commandline_fade_ms: 3000,
             block_mru: Vec::new(),
             block_freq: std::collections::HashMap::new(),
         }

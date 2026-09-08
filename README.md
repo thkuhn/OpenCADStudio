@@ -7,6 +7,7 @@
   <a href="docs/readme/README.fr.md">Français</a> ·
   <a href="docs/readme/README.fi.md">Suomi</a> ·
   <a href="docs/readme/README.de.md">Deutsch</a> ·
+  <a href="docs/readme/README.el.md">Ελληνικά</a> ·
   <a href="docs/readme/README.hu.md">Magyar</a> ·
   <a href="docs/readme/README.it.md">Italiano</a> ·
   <a href="docs/readme/README.ja.md">日本語</a> ·
@@ -122,9 +123,9 @@ The application is ad-hoc signed but is not currently notarized by Apple.
 
 ## Languages
 
-Open CAD Studio can follow the system language or use any of these 20 interface languages:
+Open CAD Studio can follow the system language or use any of these 21 interface languages:
 
-> Arabic · Brazilian Portuguese · Bulgarian · Czech · Dutch · English · Finnish · French · German · Hindi · Hungarian · Italian · Japanese · Korean · Polish · Russian · Simplified Chinese · Spanish · Traditional Chinese · Turkish
+> Arabic · Brazilian Portuguese · Bulgarian · Czech · Dutch · English · Finnish · French · German · Greek · Hindi · Hungarian · Italian · Japanese · Korean · Polish · Russian · Simplified Chinese · Spanish · Traditional Chinese · Turkish
 
 Change the language from the application settings. The browser version also uses the browser's preferred locale when **System** is selected.
 
@@ -174,15 +175,16 @@ trunk serve
 
 ## Automation
 
-The desktop binary supports one-shot conversion and a persistent headless server:
+The desktop binary supports one-shot conversion, a persistent headless server, and a client-neutral MCP endpoint for AI applications:
 
 ```bash
 OpenCADStudio --export input.dwg output.dxf
 OpenCADStudio --serve
 OpenCADStudio --serve --port 4242
+OpenCADStudio --mcp
 ```
 
-The server exchanges one JSON object per line over standard input/output or a local TCP socket. See the [automation guide](docs/automation/README.md) and the included [Python client](docs/automation/ocs.py).
+The automation server exchanges one JSON object per line over standard input/output or a local TCP socket. The self-contained MCP endpoint exposes the live desktop editor through the same tools to every compatible client. To connect a client, configure it to launch `OpenCADStudio --mcp`. See the [MCP control guide](docs/automation/README.md).
 
 ## Plugins
 
@@ -207,13 +209,30 @@ Bug reports, focused pull requests, translations, documentation improvements, an
 - Use [Discussions](https://github.com/HakanSeven12/OpenCADStudio/discussions) for questions and ideas.
 - Report vulnerabilities privately by following the [security policy](SECURITY.md).
 
+Application translations live in `locales/*/opencadstudio.ftl`; source labels map through
+`src/locale_catalog.rs`. After editing translations, run `python3 scripts/export-locales.py`
+to refresh web and desktop packaging labels. Validate with `python3 scripts/test_site.py`
+and `cargo test --lib i18n::tests`.
+
 ## Project growth
+
+### Stars
 
 <a href="https://github.com/HakanSeven12/OpenCADStudio/stargazers">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="https://www.opencadstudio.com/star-history-dark.svg">
     <source media="(prefers-color-scheme: light)" srcset="https://www.opencadstudio.com/star-history-light.svg">
-    <img alt="Open CAD Studio stars and release downloads" src="https://www.opencadstudio.com/star-history-light.svg">
+    <img alt="Open CAD Studio star history" src="https://www.opencadstudio.com/star-history-light.svg">
+  </picture>
+</a>
+
+### Release downloads
+
+<a href="https://github.com/HakanSeven12/OpenCADStudio/releases">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="https://www.opencadstudio.com/download-history-dark.svg">
+    <source media="(prefers-color-scheme: light)" srcset="https://www.opencadstudio.com/download-history-light.svg">
+    <img alt="Open CAD Studio release download history" src="https://www.opencadstudio.com/download-history-light.svg">
   </picture>
 </a>
 

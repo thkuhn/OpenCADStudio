@@ -6,7 +6,7 @@ use crate::modules::IconKind;
 use crate::scene::model::wire_model::WireModel;
 use crate::ui::dock::{DockMsg, PanelId};
 use iced::widget::canvas::{Frame, Path, Program, Stroke};
-use iced::widget::{button, canvas, column, container, mouse_area, row, scrollable, svg, text, text_input, tooltip};
+use iced::widget::{button, canvas, column, container, mouse_area, row, scrollable, text, text_input, tooltip};
 use iced::{Background, Border, Color, Element, Fill, Length, Theme};
 
 const TOOL_H: f32 = 22.0;
@@ -210,18 +210,18 @@ pub fn view(palette: &BlockPalette, width: f32, auto_collapse: bool) -> Element<
             style
         })
         .padding([3, 5]);
-    let pin = tooltip(pin, text("Auto").size(10), tooltip::Position::Bottom).gap(4);
+    let pin = tooltip(pin, text(crate::t!("Auto")).size(10), tooltip::Position::Bottom).gap(4);
 
     let close = button(crate::ui::icons::themed_secondary(crate::ui::icons::CLOSE, 12.0))
         .on_press(Message::Dock(DockMsg::Close(PanelId::BlockPalette)))
         .style(button::subtle)
         .padding([3, 5]);
-    let close = tooltip(close, text("Close").size(10), tooltip::Position::Bottom).gap(4);
+    let close = tooltip(close, text(crate::t!("Close")).size(10), tooltip::Position::Bottom).gap(4);
 
     let title_bar = mouse_area(
         container(
             row![
-                text("Block Palette").size(12),
+                text(crate::t!("Block Palette")).size(12),
                 iced::widget::Space::new().width(Fill),
                 pin,
                 close,
@@ -239,7 +239,7 @@ pub fn view(palette: &BlockPalette, width: f32, auto_collapse: bool) -> Element<
     .on_press(Message::Dock(DockMsg::DockGrab(PanelId::BlockPalette)))
     .interaction(iced::mouse::Interaction::Grab);
 
-    let search_input = text_input("Search blocks…", &palette.search)
+    let search_input = text_input(&crate::t!("Search blocks…"), &palette.search)
         .on_input(|v| Message::BlockPalette(BlockPaletteMsg::Search(v)))
         .padding([4, 8])
         .size(12);
@@ -264,7 +264,7 @@ pub fn view(palette: &BlockPalette, width: f32, auto_collapse: bool) -> Element<
         } else {
             "No matches"
         };
-        container(text(msg).size(12).color(iced::Color { r: 0.55, g: 0.55, b: 0.55, a: 1.0 }))
+        container(text(crate::t!(msg)).size(12).color(iced::Color { r: 0.55, g: 0.55, b: 0.55, a: 1.0 }))
             .center_x(Fill)
             .center_y(Fill)
             .width(Fill)
@@ -355,10 +355,7 @@ fn block_card<'a>(palette: &'a BlockPalette, block: &'a BlockEntry) -> Element<'
 fn icon_button<'a>(icon: IconKind, msg: BlockPaletteMsg) -> Element<'a, Message> {
     let icon_el: Element<'_, Message> = match icon {
         IconKind::Glyph(s) => text(s).size(15).color(Color::WHITE).into(),
-        IconKind::Svg(bytes) => svg(svg::Handle::from_memory(bytes))
-            .width(Length::Fixed(TOOL_H))
-            .height(Length::Fixed(TOOL_H))
-            .into(),
+        IconKind::Svg(bytes) => crate::ui::icons::semantic(bytes, TOOL_H),
     };
     button(icon_el)
         .on_press(Message::BlockPalette(msg))

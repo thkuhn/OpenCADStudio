@@ -70,12 +70,7 @@ fn capture_text_orient(e: &EntityType) -> Option<TextOrient> {
     }
 }
 
-/// MIRRTEXT off: after the mirror reflects a text's points and rotation, put
-/// the glyphs back to right-reading. Restores the captured rotation / oblique /
-/// x-scale, and for single-line TEXT also flips the horizontal justification
-/// (left ↔ right) so the box lands mirror-symmetric to the source instead of
-/// hugging the axis — AutoCAD's behaviour. Center/Middle/Aligned/Fit are already
-/// symmetric about their (reflected) anchor, so they stay.
+/// Restores readable text orientation after a mirror.
 fn restore_text_orient(e: &mut EntityType, o: &TextOrient) {
     match e {
         EntityType::Text(t) => {
@@ -169,14 +164,10 @@ impl Scene {
             .collect();
         let handles = crate::modules::aec::commands::expand_handles_for_wall_packages(self, &handles);
         let handles = &handles[..];
-        // MIRRTEXT (header.mirror_text): when false AutoCAD positions text /
-        // mtext / shape by the mirror but keeps the original rotation +
-        // oblique so the text stays right-reading. Capture before the
-        // transform and re-apply afterwards.
+        // Preserve readable text orientation when MIRRTEXT is disabled.
         let preserve_text_orientation =
             matches!(t, EntityTransform::Mirror { .. }) && !self.document.header.mirror_text;
-        // MIRRTEXT on: toggle the group-71 flags after the reflect so text
-        // becomes a true glyph mirror (see `mirror_true_text_flags`).
+        // Toggle group-71 flags when glyph mirroring is enabled.
         let mirror_true =
             matches!(t, EntityTransform::Mirror { .. }) && self.document.header.mirror_text;
         let mut text_orient_backup: Vec<(Handle, TextOrient)> = Vec::new();
@@ -253,6 +244,24 @@ impl Scene {
                 };
                 if let Some(model) = new_model {
                     self.hatches.insert(h, model);
+                }
+            }
+            let image_bearing = self.document.get_entity(h).is_some_and(|entity| {
+                matches!(
+                    entity,
+                    EntityType::RasterImage(_)
+                        | EntityType::Ole2Frame(_)
+                        | EntityType::Underlay(_)
+                )
+            });
+            if image_bearing {
+                let model = self
+                    .document
+                    .get_entity(h)
+                    .and_then(|entity| self.image_seed_for(entity));
+                self.images.remove(&h);
+                if let Some(model) = model {
+                    self.images.insert(h, model);
                 }
             }
         }
@@ -468,12 +477,21 @@ impl Scene {
         }
     }
 
-    /// Add a freshly-cloned entity, allocating a new handle for it *and* every
-    /// inline sub-entity so the copy never shares a handle with its source.
-    /// Use this (not `add_entity`) whenever inserting a duplicate. (#129)
+    /// Add a clone to the active space with fresh top-level and inline handles.
+    /// Source owner handles are document-local and must not cross drawings.
+    /// (#129, #934)
     pub fn add_entity_clone(&mut self, mut entity: EntityType) -> Handle {
         Self::reset_clone_subhandles(&mut self.document, &mut entity);
-        entity.common_mut().handle = Handle::NULL;
+        let common = entity.common_mut();
+        common.handle = Handle::NULL;
+        common.owner_handle = Handle::NULL;
+        common.entity_mode = Some(
+            if self.current_layout != "Model" && self.active_viewport.is_none() {
+                1
+            } else {
+                2
+            },
+        );
         self.add_entity(entity)
     }
 
@@ -781,7 +799,28 @@ impl Scene {
         for node in graph.nodes {
             self.record_undo_object_before(node, None);
         }
+        self.sync_solid_reference_point(handle);
         true
+    }
+
+    pub(crate) fn sync_solid_reference_point(&mut self, handle: Handle) {
+        let reference = self
+            .document
+            .solid_history_operation(handle)
+            .and_then(crate::scene::model::solid_history::reference_point);
+        let Some(reference) = reference else {
+            return;
+        };
+        let point = acadrust::types::Vector3::new(
+            reference.x,
+            reference.y,
+            reference.z,
+        );
+        match self.document.get_entity_mut(handle) {
+            Some(EntityType::Solid3D(entity)) => entity.point_of_reference = point,
+            Some(EntityType::Surface(entity)) => entity.point_of_reference = point,
+            _ => {}
+        }
     }
 
     fn copy_solid_history(&mut self, source: Handle, target: Handle) -> bool {
@@ -796,8 +835,53 @@ impl Scene {
     }
 
     pub(crate) fn delete_solid_history(&mut self, handle: Handle) {
+        if self.is_recording_undo() {
+            // The codec also clears the entity's history handle. Capture that
+            // link before deletion so undo reconnects the restored graph.
+            let before = self.document.get_entity_arc(handle);
+            self.record_undo_before(handle, before);
+        }
         self.record_solid_history_before(handle);
         self.document.delete_solid_history(handle);
+    }
+
+    fn rebuild_history_body(
+        &self,
+        handle: Handle,
+        operation: &acadrust::objects::SolidHistoryOperation,
+    ) -> Option<cadkernel::brep::Body> {
+        use acadrust::objects::SolidHistoryOperation;
+
+        match (self.document.get_entity(handle)?, operation) {
+            (EntityType::Surface(_), SolidHistoryOperation::Extrusion(value)) => {
+                cadkernel::acis::rebuild_extrusion_with_mode(value, true).ok()
+            }
+            (EntityType::Surface(_), SolidHistoryOperation::Loft(_))
+                | (EntityType::Solid3D(_), _) => cadkernel::acis::rebuild_body(operation).ok(),
+            _ => None,
+        }
+    }
+
+    fn history_surface_data(
+        &self,
+        handle: Handle,
+        operation: &acadrust::objects::SolidHistoryOperation,
+    ) -> Option<Option<acadrust::entities::SurfaceData>> {
+        use acadrust::objects::SolidHistoryOperation;
+
+        match (self.document.get_entity(handle)?, operation) {
+            (EntityType::Surface(_), SolidHistoryOperation::Extrusion(value)) => {
+                crate::scene::model::solid_history::extrusion_surface_data(value).map(Some)
+            }
+            (EntityType::Surface(_), SolidHistoryOperation::Loft(value)) => {
+                let EntityType::Surface(surface) =
+                    crate::scene::model::loft_command_model::surface_entity(value)
+                else { return None; };
+                Some(Some(surface.surface_data))
+            }
+            (EntityType::Solid3D(_), _) => Some(None),
+            _ => None,
+        }
     }
 
     pub fn rebuild_solid_history(
@@ -805,12 +889,24 @@ impl Scene {
         handle: Handle,
         operation: acadrust::objects::SolidHistoryOperation,
     ) -> bool {
-        let Ok(body) = cadkernel::acis::rebuild_body(&operation) else {
+        let Some(body) = self.rebuild_history_body(handle, &operation) else {
             return false;
         };
         let Some(document) = crate::scene::convert::acis_export::solid_to_sat(&body) else {
             return false;
         };
+        let Some(surface_data) = self.history_surface_data(handle, &operation) else {
+            return false;
+        };
+        let Some(display) = self.prepare_solid_model_display(handle, &body) else {
+            return false;
+        };
+        if matches!(&operation, acadrust::objects::SolidHistoryOperation::Loft(_)
+            | acadrust::objects::SolidHistoryOperation::Extrusion(_))
+            && !display.0.complete
+        {
+            return false;
+        }
         self.record_solid_history_before(handle);
         if self
             .document
@@ -819,11 +915,21 @@ impl Scene {
         {
             return false;
         }
-        let Some(EntityType::Solid3D(entity)) = self.document.get_entity_mut(handle) else {
-            return false;
-        };
-        entity.set_sat_document(&document);
-        self.register_solid_model(handle, body);
+        match self.document.get_entity_mut(handle) {
+            Some(EntityType::Solid3D(entity)) => entity.set_sat_document(&document),
+            Some(EntityType::Surface(entity)) => {
+                entity.acis_data = acadrust::entities::AcisData::from_sat(&document.to_sat_string());
+                if let Some(data) = surface_data {
+                    if matches!(&data, acadrust::entities::SurfaceData::Extruded { .. }) {
+                        entity.kind = acadrust::entities::SurfaceKind::Extruded;
+                    }
+                    entity.surface_data = data;
+                }
+            }
+            _ => return false,
+        }
+        self.register_prepared_solid_model(handle, body, display);
+        self.solid_history_preview_wires.remove(&handle);
         true
     }
 
@@ -831,17 +937,39 @@ impl Scene {
         let Some(operation) = self.document.solid_history_operation(handle).cloned() else {
             return false;
         };
-        let Ok(body) = cadkernel::acis::rebuild_body(&operation) else {
+        let Some(body) = self.rebuild_history_body(handle, &operation) else {
             return false;
         };
         let Some(document) = crate::scene::convert::acis_export::solid_to_sat(&body) else {
             return false;
         };
-        let Some(EntityType::Solid3D(entity)) = self.document.get_entity_mut(handle) else {
+        let Some(surface_data) = self.history_surface_data(handle, &operation) else {
             return false;
         };
-        entity.set_sat_document(&document);
-        self.register_solid_model(handle, body);
+        let Some(display) = self.prepare_solid_model_display(handle, &body) else {
+            return false;
+        };
+        if matches!(&operation, acadrust::objects::SolidHistoryOperation::Loft(_)
+            | acadrust::objects::SolidHistoryOperation::Extrusion(_))
+            && !display.0.complete
+        {
+            return false;
+        }
+        match self.document.get_entity_mut(handle) {
+            Some(EntityType::Solid3D(entity)) => entity.set_sat_document(&document),
+            Some(EntityType::Surface(entity)) => {
+                entity.acis_data = acadrust::entities::AcisData::from_sat(&document.to_sat_string());
+                if let Some(data) = surface_data {
+                    if matches!(&data, acadrust::entities::SurfaceData::Extruded { .. }) {
+                        entity.kind = acadrust::entities::SurfaceKind::Extruded;
+                    }
+                    entity.surface_data = data;
+                }
+            }
+            _ => return false,
+        }
+        self.register_prepared_solid_model(handle, body, display);
+        self.solid_history_preview_wires.remove(&handle);
         true
     }
 
@@ -850,9 +978,12 @@ impl Scene {
         handle: Handle,
         operation: acadrust::objects::SolidHistoryOperation,
     ) -> bool {
-        let Ok(body) = cadkernel::acis::rebuild_body(&operation) else {
+        let Some(body) = self.rebuild_history_body(handle, &operation) else {
             return false;
         };
+        if self.history_surface_data(handle, &operation).is_none() {
+            return false;
+        }
         if self
             .document
             .update_solid_history(handle, operation)
@@ -860,10 +991,10 @@ impl Scene {
         {
             return false;
         }
-        let Some(EntityType::Solid3D(_)) = self.document.get_entity(handle) else {
-            return false;
-        };
-        self.register_solid_model(handle, body);
+        self.solid_history_preview_wires.insert(
+            handle,
+            crate::scene::model::solid_model::grip_preview_wires(&body, handle),
+        );
         true
     }
 
@@ -882,6 +1013,15 @@ impl Scene {
             return false;
         }
         if let EntityTransform::Translate(delta) = transform {
+            let surface_data = match (&operation, self.document.get_entity(handle)) {
+                (acadrust::objects::SolidHistoryOperation::Extrusion(value), Some(EntityType::Surface(_))) => {
+                    let Some(data) = crate::scene::model::solid_history::extrusion_surface_data(value) else {
+                        return false;
+                    };
+                    Some(data)
+                }
+                _ => None,
+            };
             if self
                 .document
                 .update_solid_history(handle, operation)
@@ -889,10 +1029,89 @@ impl Scene {
             {
                 return false;
             }
+            if let (Some(data), Some(EntityType::Surface(entity))) =
+                (surface_data, self.document.get_entity_mut(handle))
+            {
+                entity.surface_data = data;
+            }
             self.translate_solid_geometry(handle, delta.to_array());
             return true;
         }
         self.rebuild_solid_history(handle, operation)
+    }
+
+    pub fn apply_solid_history_choice(
+        &mut self,
+        handle: Handle,
+        field: &str,
+        value: &str,
+    ) -> bool {
+        self.record_solid_history_before(handle);
+        let mut created = false;
+        if self.document.solid_history_graph(handle).is_none() {
+            let create = match field {
+                crate::scene::model::solid_history::PROP_HISTORY => {
+                    if value.eq_ignore_ascii_case("Record") {
+                        true
+                    } else if value.eq_ignore_ascii_case("None") {
+                        return false;
+                    } else {
+                        return false;
+                    }
+                }
+                crate::scene::model::solid_history::PROP_SHOW_HISTORY
+                    if self.document.header.show_solid_history.clamp(0, 2) == 1 =>
+                {
+                    if value.eq_ignore_ascii_case("Yes") {
+                        true
+                    } else if value.eq_ignore_ascii_case("No") {
+                        return false;
+                    } else {
+                        return false;
+                    }
+                }
+                _ => return false,
+            };
+            if create {
+                if !matches!(self.document.get_entity(handle), Some(EntityType::Solid3D(_))) {
+                    return false;
+                }
+                self.restore_solid_models(&[handle]);
+                let Some(body) = self.solid_models.get(&handle).cloned() else {
+                    return false;
+                };
+                if self.is_recording_undo() {
+                    let before = self.document.get_entity_arc(handle);
+                    self.record_undo_before(handle, before);
+                }
+                if !self.create_solid_history(
+                    handle,
+                    crate::scene::model::solid_history::brep_op(&body),
+                ) {
+                    return false;
+                }
+                // A solid without a graph was displayed as History=None.
+                // Preserve that object state before applying the requested
+                // choice, independent of the drawing-wide SOLIDHIST setting.
+                crate::scene::model::solid_history::apply_history_choice(
+                    &mut self.document,
+                    handle,
+                    crate::scene::model::solid_history::PROP_HISTORY,
+                    "None",
+                );
+                created = true;
+            }
+        }
+        let applied = crate::scene::model::solid_history::apply_history_choice(
+            &mut self.document,
+            handle,
+            field,
+            value,
+        );
+        if created || applied {
+            self.bump_entities(&[(handle, ChangeKind::Modified)]);
+        }
+        created || applied
     }
 
     fn apply_solid_history_grip(
@@ -1145,5 +1364,38 @@ impl Scene {
             _ => {}
         }
         // The grip-drag caller refreshes changed resident meshes per move.
+        // Raster images, OLE frames and PDF underlays keep a derived ImageModel
+        // with their textured quad geometry. A grip edit mutates the entity directly,
+        // so rebuild that cache as well or only the wire frame follows the grip.
+        let image_bearing = self.document.get_entity(handle).is_some_and(|entity| {
+            matches!(
+                entity,
+                EntityType::RasterImage(_)
+                    | EntityType::Ole2Frame(_)
+                    | EntityType::Underlay(_)
+            )
+        });
+
+        if image_bearing {
+            let model = self
+                .document
+                .get_entity(handle)
+                .and_then(|entity| self.image_seed_for(entity));
+
+            self.images.remove(&handle);
+
+            if let Some(model) = model {
+                self.images.insert(handle, model);
+            }
+        }
+        // A grip edit can move geometry used as the boundary of an associative hatch.
+        // The source entity has already been mutated above, so rebuild any dependent
+        // hatch from the live document geometry immediately.
+        let source_change = [(handle, ChangeKind::Modified)];
+        let hatch_changes = self.refresh_associative_hatches(&source_change);
+
+        if !hatch_changes.is_empty() {
+            self.bump_entities(&hatch_changes);
+        }
     }
 }
