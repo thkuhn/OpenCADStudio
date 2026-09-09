@@ -157,7 +157,7 @@ Im Wandstil-Manager können alle 9 Darstellungskomponenten pro Planart-Profil ei
 - Tabelle wird oberhalb der bestehenden, unveränderten Contour2D/Solid3D-Layer-Filter-Checklisten und des Hatch-Winkel-Formulars eingefügt.
 - Unit-/Integrationstests: Sichtbarkeits-Toggle eines Slots wird korrekt in `WallStyle.display_profiles[config].visibility` persistiert und beim erneuten Öffnen wieder geladen.
 
-###   Step 5: Style-Override je Darstellungskomponente ergänzen
+### ✓ Step 5: Style-Override je Darstellungskomponente ergänzen
 Zu jeder Darstellungskomponente kann zusätzlich zur Sichtbarkeit ein individueller Stil (Linientyp/-farbe, Schraffurmuster/-farbe, Füllfarbe) hinterlegt werden.
 - Neue Messages `AecStyleManagerProfileSlotStyleOpen(WallComponentSlot)`/`AecStyleManagerProfileSlotStyleApply`/`AecStyleManagerProfileSlotStyleClose`.
 - Pro Zeile der Slot-Tabelle einen "Style bearbeiten"-Button ergänzen, der ein Formular öffnet (wiederverwendet das bestehende `StyleEditorFormState`-Muster inkl. Layer-Manager-Vorschau-Widgets aus `aec_ui_util.rs`) und in `ComponentRuleSet.style_override[slot]` schreibt.

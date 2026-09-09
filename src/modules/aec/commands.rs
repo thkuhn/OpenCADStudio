@@ -1019,6 +1019,14 @@ pub(crate) fn get_wall_vertices(scene: &Scene, handle: Handle) -> Vec<DVec3> {
     }
 }
 
+pub(crate) fn get_wall_bulges(scene: &Scene, handle: Handle) -> Vec<f64> {
+    if let Some(EntityType::LwPolyline(pl)) = scene.document.get_entity(handle) {
+        pl.vertices.iter().map(|v| v.bulge).collect()
+    } else {
+        Vec::new()
+    }
+}
+
 /// Updates a wall's axis polyline vertices.
 pub(crate) fn update_wall_vertices(scene: &mut Scene, handle: Handle, vertices: &[DVec3]) {
     if let Some(entity) = scene.document.get_entity_mut(handle) {
@@ -1026,8 +1034,28 @@ pub(crate) fn update_wall_vertices(scene: &mut Scene, handle: Handle, vertices: 
             // Keep bulge / start-width when only endpoint positions change so
             // a join/extend cannot leave a 2D contour with stale arc data.
             if pl.vertices.len() == vertices.len() {
+                let old: Vec<(f64, f64, f64)> = pl
+                    .vertices
+                    .iter()
+                    .map(|v| (v.location.x, v.location.y, v.bulge))
+                    .collect();
                 for (dst, src) in pl.vertices.iter_mut().zip(vertices.iter()) {
                     dst.location = acadrust::types::Vector2::new(src.x, src.y);
+                }
+                let n = pl.vertices.len();
+                for i in 0..n.saturating_sub(1) {
+                    let bulge = old[i].2;
+                    if bulge.abs() <= 1e-12 {
+                        continue;
+                    }
+                    let new_b = engine::arc::retarget_bulge(
+                        (old[i].0, old[i].1),
+                        (old[i + 1].0, old[i + 1].1),
+                        bulge,
+                        (vertices[i].x, vertices[i].y),
+                        (vertices[i + 1].x, vertices[i + 1].y),
+                    );
+                    pl.vertices[i].bulge = new_b;
                 }
             } else {
                 pl.vertices = vertices
@@ -1687,6 +1715,36 @@ const WALL_HATCH_ARC_SEGMENTS: usize = 24;
 /// Returns `ring` unchanged (cloned) when every bulge is zero (or absent),
 /// so straight-only walls keep the exact same hatch boundary as before this
 /// tessellation was added — no behavior change, no performance cost.
+fn retarget_closed_footprint_bulges(
+    original: &[(f64, f64)],
+    original_bulges: &[f64],
+    edited: &[(f64, f64)],
+) -> Vec<f64> {
+    let n = edited.len();
+    if n < 2 {
+        return vec![0.0; n];
+    }
+    if original.len() != n {
+        return vec![0.0; n];
+    }
+    let mut out = vec![0.0; n];
+    for i in 0..n {
+        let bulge = original_bulges.get(i).copied().unwrap_or(0.0);
+        if bulge.abs() <= 1e-12 {
+            continue;
+        }
+        let j = (i + 1) % n;
+        out[i] = engine::arc::retarget_bulge(
+            original[i],
+            original[j],
+            bulge,
+            edited[i],
+            edited[j],
+        );
+    }
+    out
+}
+
 fn tessellate_ring_with_bulges(ring: &[(f64, f64)], bulges: &[f64]) -> Vec<(f64, f64)> {
     if ring.len() < 3 || !bulges.iter().any(|b| b.abs() > 1e-12) {
         return ring.to_vec();
@@ -2386,6 +2444,18 @@ fn regenerate_wall_representation_inner(
     // Shared helper: build per-layer mitered footprints for one end's join
     // context, honoring any persisted `JunctionOverride` for that end.
     let compute_end_footprints = |scene: &mut Scene, ctx: &engine::miter::JoinMiterContext| {
+        if ctx.as_through {
+            let stem_end = ctx.other_end.unwrap_or(ctx.self_end);
+            return engine::miter::through_wall_cutout_footprints_with_bulges(
+                &self_axis_2d,
+                &self_layer_data,
+                &ctx.other_axis,
+                &ctx.other_layers,
+                stem_end,
+                &ctx.self_bulges,
+                &ctx.other_bulges,
+            );
+        }
         let self_layer_refs: Vec<join::LayerRef> =
             layer_refs_from_materials(layers.iter().map(|l| (l.material.as_str(), l.layer_id)));
         let junction_override = read_junction_override(scene, wall_handle, ctx.self_end)
@@ -2402,7 +2472,7 @@ fn regenerate_wall_representation_inner(
                     &other_layer_refs,
                 )
             });
-        engine::miter::mitered_layer_footprints_with_override(
+        engine::miter::mitered_layer_footprints_with_override_and_bulges(
             &self_axis_2d,
             &self_layer_data,
             &self_layer_refs,
@@ -2412,6 +2482,8 @@ fn regenerate_wall_representation_inner(
             ctx.other_end,
             ctx.kind,
             junction_override.as_ref(),
+            &ctx.self_bulges,
+            &ctx.other_bulges,
         )
     };
 
@@ -2531,9 +2603,19 @@ fn regenerate_wall_representation_inner(
         // per disconnected piece (through-cut splits the band).
         let uncut_footprint: (Vec<(f64, f64)>, Vec<f64>) =
             if let Some(Some(mitered)) = mitered_footprints.get(i) {
-                (mitered.clone(), vec![0.0; mitered.len()])
+                let bg = retarget_closed_footprint_bulges(
+                    &base_footprints[i],
+                    base_footprint_bulges.get(i).map(|b| b.as_slice()).unwrap_or(&[]),
+                    mitered,
+                );
+                (mitered.clone(), bg)
             } else if let Some(fp) = extended_footprints.get(i) {
-                (fp.clone(), vec![0.0; fp.len()])
+                let bg = retarget_closed_footprint_bulges(
+                    &base_footprints[i],
+                    base_footprint_bulges.get(i).map(|b| b.as_slice()).unwrap_or(&[]),
+                    fp,
+                );
+                (fp.clone(), bg)
             } else {
                 (
                     base_footprints[i].clone(),
@@ -2796,11 +2878,21 @@ fn regenerate_wall_representation_inner(
             if let Some(Some(mitered)) = mitered_footprints.get(i) {
                 let h = extrusions.get(i).map(|e| e.height).unwrap_or(height);
                 let b = extrusions.get(i).map(|e| e.base_offset).unwrap_or(0.0);
-                (mitered.clone(), vec![0.0; mitered.len()], h, b)
+                let bg = retarget_closed_footprint_bulges(
+                    &base_footprints[i],
+                    base_footprint_bulges.get(i).map(|b| b.as_slice()).unwrap_or(&[]),
+                    mitered,
+                );
+                (mitered.clone(), bg, h, b)
             } else if let Some(fp) = extended_footprints.get(i) {
                 let h = extrusions.get(i).map(|e| e.height).unwrap_or(height);
                 let b = extrusions.get(i).map(|e| e.base_offset).unwrap_or(0.0);
-                (fp.clone(), vec![0.0; fp.len()], h, b)
+                let bg = retarget_closed_footprint_bulges(
+                    &base_footprints[i],
+                    base_footprint_bulges.get(i).map(|b| b.as_slice()).unwrap_or(&[]),
+                    fp,
+                );
+                (fp.clone(), bg, h, b)
             } else if let Some(solid) = display.solids.get(i) {
                 (
                     solid.footprint.clone(),
@@ -3071,24 +3163,34 @@ impl WallCommand {
     /// session defaults (typically the values used by the last wall
     /// finished this session) instead of the hardcoded fallback defaults.
     pub fn new_with_defaults(last_style_id: Option<&str>, last_height: Option<f64>) -> Self {
-        let mut cmd = Self::new();
+        Self::new().with_session_defaults(last_style_id, last_height)
+    }
+
+    /// Apply last-used style/height against the command's current library.
+    /// Call this *after* [`Self::with_library`] so the id is resolved in the
+    /// project library, not the seed library used by [`Self::new`].
+    pub fn with_session_defaults(
+        mut self,
+        last_style_id: Option<&str>,
+        last_height: Option<f64>,
+    ) -> Self {
         if let Some(h) = last_height {
-            cmd.wall.height = h;
-            cmd.height_live_set = true;
+            self.wall.height = h;
+            self.height_live_set = true;
         }
         if let Some(id) = last_style_id {
-            if let Some(lib) = &cmd.library {
+            if let Some(lib) = &self.library {
                 if let Some(style) = lib.wall_styles.iter().find(|s| s.style.id == id) {
                     if let Some(resolved) =
                         resolve_wall_style_layers(lib, &style.style.id, None)
                     {
-                        cmd.style_id = Some(style.style.id.clone());
-                        cmd.resolved_layers = Some(resolved);
+                        self.style_id = Some(style.style.id.clone());
+                        self.resolved_layers = Some(resolved);
                     }
                 }
             }
         }
-        cmd
+        self
     }
 
     /// Replace the style library (e.g. project-resolved) and re-apply the
@@ -5118,6 +5220,36 @@ fn wall_endpoint_to_axis_dist(axis_a: &[DVec3], axis_b: &[DVec3]) -> f64 {
     best
 }
 
+/// Drop junction overrides on ends that no longer sit next to any other wall.
+fn drop_orphaned_junction_overrides(scene: &mut Scene, wall_handle: Handle) {
+    let axis = get_wall_vertices(scene, wall_handle);
+    if axis.len() < 2 {
+        return;
+    }
+    for (end_index, pt) in [(0usize, axis[0]), (1usize, *axis.last().unwrap())] {
+        if !wall_end_has_nearby_partner(scene, wall_handle, pt) {
+            remove_junction_override(scene, wall_handle, end_index);
+        }
+    }
+}
+
+fn wall_end_has_nearby_partner(scene: &Scene, wall_handle: Handle, pt: DVec3) -> bool {
+    for entity in scene.document.entities() {
+        let other = entity.common().handle;
+        if other == wall_handle || !is_wall_axis_xdata(entity) {
+            continue;
+        }
+        let other_axis = get_wall_vertices(scene, other);
+        if other_axis.len() < 2 {
+            continue;
+        }
+        if point_to_polyline_dist_2d(pt, &other_axis) <= WALL_JOIN_SNAP_RADIUS {
+            return true;
+        }
+    }
+    false
+}
+
 /// Minimum 2D distance between either wall's endpoints and the other wall's
 /// endpoints only (no interior/axis-mid points). A small distance here means
 /// a clean End-End (L) match; used to rank join candidates above vaguer
@@ -5179,7 +5311,9 @@ pub fn find_wall_to_auto_join(
             continue;
         }
         // Only accept candidates that the join engine can actually connect.
-        if join::join_wall_axes(&axis, &other_axis).is_err() {
+        let bulges = get_wall_bulges(scene, wall_handle);
+        let other_bulges = get_wall_bulges(scene, other);
+        if join::join_wall_axes_with_bulges(&axis, &bulges, &other_axis, &other_bulges).is_err() {
             continue;
         }
         let endpoint_dist = wall_endpoint_to_endpoint_dist(&axis, &other_axis);
@@ -5221,6 +5355,8 @@ pub fn try_auto_join_nearby_walls(
         let peer_axis = get_wall_vertices(scene, peer);
         if wall_endpoint_to_axis_dist(&axis, &peer_axis) > WALL_JOIN_SNAP_RADIUS {
             engine::owner_index::unlink_peers(&mut scene.document, wall_handle, peer);
+            drop_orphaned_junction_overrides(scene, wall_handle);
+            drop_orphaned_junction_overrides(scene, peer);
             // Peer representation might be mitered against us; refresh it.
             if let Ok(t) = regenerate_wall_representation_with_rules_and_substitutions(
                 scene,
@@ -5957,10 +6093,12 @@ fn join_two_walls_in_document_inner(
 ) -> Result<(JoinKind, Vec<Handle>), JoinError> {
     let axis_a = get_wall_vertices(scene, h_a);
     let axis_b = get_wall_vertices(scene, h_b);
+    let bulges_a = get_wall_bulges(scene, h_a);
+    let bulges_b = get_wall_bulges(scene, h_b);
     let joined = if force_l {
-        join::join_wall_axes_as_l(&axis_a, &axis_b)
+        join::join_wall_axes_as_l_with_bulges(&axis_a, &bulges_a, &axis_b, &bulges_b)
     } else {
-        join::join_wall_axes(&axis_a, &axis_b)
+        join::join_wall_axes_with_bulges(&axis_a, &bulges_a, &axis_b, &bulges_b)
     };
     match joined {
         Ok((new_a, new_b, kind, end_a, end_b)) => {
@@ -6055,6 +6193,9 @@ fn join_two_walls_in_document_inner(
                 other_layers: layers_b.clone(),
                 other_end: end_b,
                 kind,
+                self_bulges: bulges_a.clone(),
+                other_bulges: bulges_b.clone(),
+                as_through: false,
             });
             match regenerate_wall_representation_with_corner_rules_and_substitutions(
                 scene,
@@ -6072,13 +6213,29 @@ fn join_two_walls_in_document_inner(
             // Rebuild B against A. When B is the through-wall of a T (end_b is
             // None) miter_b stays None and we just refresh its rectangular
             // derived geometry so it stays in sync.
-            let miter_b = end_b.map(|self_end| engine::miter::JoinMiterContext {
-                self_end,
-                other_axis: axis_a_2d,
-                other_layers: layers_a,
-                other_end: end_a,
-                kind,
-            });
+            let miter_b = if let Some(self_end) = end_b {
+                Some(engine::miter::JoinMiterContext {
+                    self_end,
+                    other_axis: axis_a_2d.clone(),
+                    other_layers: layers_a.clone(),
+                    other_end: end_a,
+                    kind,
+                    self_bulges: bulges_b.clone(),
+                    other_bulges: bulges_a.clone(),
+                    as_through: false,
+                })
+            } else {
+                end_a.map(|stem_end| engine::miter::JoinMiterContext {
+                    self_end: stem_end,
+                    other_axis: axis_a_2d,
+                    other_layers: layers_a,
+                    other_end: Some(stem_end),
+                    kind,
+                    self_bulges: bulges_b.clone(),
+                    other_bulges: bulges_a.clone(),
+                    as_through: true,
+                })
+            };
             match regenerate_wall_representation_with_corner_rules_and_substitutions(
                 scene,
                 h_b,
@@ -6462,6 +6619,9 @@ pub fn aec_wallextend_do(
                     other_layers: layers_target,
                     other_end: None,
                     kind: JoinKind::T,
+                    self_bulges: get_wall_bulges(scene, wall_handle),
+                    other_bulges: get_wall_bulges(scene, target_handle),
+                    as_through: false,
                 };
                 let mut touched = match regenerate_wall_representation_with_corner_rules_and_substitutions(
                     scene,
@@ -7274,6 +7434,43 @@ mod wall_command_tests {
             .find(|p| p.axis_handle == stem)
             .expect("stem wall must be present");
         assert!(!stem_participant.is_through, "stem wall must not be flagged as through");
+    }
+
+    #[test]
+    fn disconnecting_one_end_drops_only_that_junction_override() {
+        let mut scene = Scene::new();
+        let mid = add_wall_2layer(&mut scene, (0.0, 0.0), (10.0, 0.0), "Brick");
+        let left = add_wall_2layer(&mut scene, (0.0, 0.0), (0.0, 5.0), "Concrete");
+        let right = add_wall_2layer(&mut scene, (10.0, 0.0), (10.0, 5.0), "Wood");
+        for h in [mid, left, right] {
+            regenerate_wall_representation(&mut scene, h, None).expect("regen");
+        }
+        join_two_walls_in_document(&mut scene, mid, left, None, None, None).expect("join left");
+        join_two_walls_in_document(&mut scene, mid, right, None, None, None).expect("join right");
+        let ov = join::JunctionOverride {
+            default_style: Some(join::JoinOverrideStyle::Butt),
+            layer_pairs: vec![],
+        };
+        assert!(write_junction_override(&mut scene, mid, 0, &ov));
+        assert!(write_junction_override(&mut scene, mid, 1, &ov));
+        update_wall_vertices(
+            &mut scene,
+            left,
+            &[
+                glam::DVec3::new(0.0, 20.0, 0.0),
+                glam::DVec3::new(0.0, 25.0, 0.0),
+            ],
+        );
+        let _ = try_auto_join_nearby_walls(&mut scene, left, None, None, None);
+        assert_eq!(
+            read_junction_override(&scene, mid, 0),
+            None,
+            "disconnected end must drop its override"
+        );
+        assert!(
+            read_junction_override(&scene, mid, 1).is_some(),
+            "the still-joined end must keep its override"
+        );
     }
 
     /// Step 5 test 1: discovering "all walls at a junction" for a known

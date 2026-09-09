@@ -43,8 +43,20 @@ fn read_handles(entity: &EntityType, tag: &str) -> Vec<Handle> {
             continue;
         }
         for value in record.values.iter().skip(1) {
-            if let XDataValue::Handle(h) = value {
-                out.push(*h);
+            match value {
+                XDataValue::Handle(h) => out.push(*h),
+                XDataValue::Integer32(v) if *v >= 0 => out.push(Handle::new(*v as u64)),
+                XDataValue::Integer16(v) if *v >= 0 => out.push(Handle::new(*v as u64)),
+                XDataValue::String(s) => {
+                    let s = s.trim().trim_start_matches("0x").trim_start_matches("0X");
+                    if let Some(h) = u64::from_str_radix(s, 16)
+                        .ok()
+                        .or_else(|| s.parse().ok())
+                    {
+                        out.push(Handle::new(h));
+                    }
+                }
+                _ => {}
             }
         }
         break;

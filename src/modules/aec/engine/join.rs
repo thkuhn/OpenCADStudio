@@ -46,7 +46,13 @@ pub struct LayerRef {
 pub enum JoinOverrideStyle {
     Miter,
     Butt,
+    /// Historical alias: join to the far face of the whole through-wall stack.
+    /// Prefer [`Self::FarFace`] / [`Self::NearFace`] for per-layer edges.
     OuterFace,
+    /// Join to the nearer face of the matched (or outer) layer.
+    NearFace,
+    /// Join to the farther face of the matched (or outer) layer.
+    FarFace,
     NoExtend,
 }
 
@@ -111,6 +117,18 @@ pub fn join_wall_axes(
     axis_a: &[DVec3],
     axis_b: &[DVec3],
 ) -> Result<(Vec<DVec3>, Vec<DVec3>, JoinKind, Option<usize>, Option<usize>), JoinError> {
+    join_wall_axes_with_bulges(axis_a, &[], axis_b, &[])
+}
+
+/// Like [`join_wall_axes`], but end/through segments honour LWPOLYLINE bulges
+/// (circular-arc axes). Empty bulge slices behave exactly like the straight
+/// path.
+pub fn join_wall_axes_with_bulges(
+    axis_a: &[DVec3],
+    bulges_a: &[f64],
+    axis_b: &[DVec3],
+    bulges_b: &[f64],
+) -> Result<(Vec<DVec3>, Vec<DVec3>, JoinKind, Option<usize>, Option<usize>), JoinError> {
     if axis_a.len() < 2 || axis_b.len() < 2 {
         return Err(JoinError::Degenerate);
     }
@@ -134,9 +152,13 @@ pub fn join_wall_axes(
     let tol = 1e-6;
 
     // Check for L-junctions (both meeting at ends)
-    for (idx_a, _, p1, p2) in &ends_a {
-        for (idx_b, _, p3, p4) in &ends_b {
-            if let Some(isect) = intersect_lines_2d(*p1, *p2, *p3, *p4) {
+    for (idx_a, inward_a, p1, p2) in &ends_a {
+        let bulge_a = end_segment_bulge(axis_a, bulges_a, *idx_a);
+        let (a0, a1) = polyline_order(*p1, *p2, *idx_a, *inward_a);
+        for (idx_b, inward_b, p3, p4) in &ends_b {
+            let bulge_b = end_segment_bulge(axis_b, bulges_b, *idx_b);
+            let (b0, b1) = polyline_order(*p3, *p4, *idx_b, *inward_b);
+            if let Some(isect) = intersect_axis_dvec(a0, a1, bulge_a, b0, b1, bulge_b, *p1) {
                 let dist = p1.distance(isect) + p3.distance(isect);
                 if dist < best_l_dist {
                     best_l_dist = dist;
@@ -152,12 +174,15 @@ pub fn join_wall_axes(
     // that guard, already-joined L corners (both ends already at the isect)
     // get mis-classified as T and only one wall receives a miter rebuild.
     // Case 1: A is the "stem" (ends at B), B is the "through" wall
-    for (idx_a, _, p1, p2) in &ends_a {
+    for (idx_a, inward_a, p1, p2) in &ends_a {
+        let bulge_a = end_segment_bulge(axis_a, bulges_a, *idx_a);
+        let (a0, a1) = polyline_order(*p1, *p2, *idx_a, *inward_a);
         for i in 0..axis_b.len() - 1 {
             let p3 = axis_b[i];
             let p4 = axis_b[i + 1];
-            if let Some(isect) = intersect_lines_2d(*p1, *p2, p3, p4) {
-                if is_on_segment_interior_2d(isect, p3, p4, tol) {
+            let bulge_b = bulges_b.get(i).copied().unwrap_or(0.0);
+            if let Some(isect) = intersect_axis_dvec(a0, a1, bulge_a, p3, p4, bulge_b, *p1) {
+                if is_on_axis_segment_interior(isect, p3, p4, bulge_b, tol) {
                     let dist = p1.distance(isect);
                     if dist < best_t_dist {
                         best_t_dist = dist;
@@ -168,12 +193,15 @@ pub fn join_wall_axes(
         }
     }
     // Case 2: B is the "stem", A is the "through" wall
-    for (idx_b, _, p3, p4) in &ends_b {
+    for (idx_b, inward_b, p3, p4) in &ends_b {
+        let bulge_b = end_segment_bulge(axis_b, bulges_b, *idx_b);
+        let (b0, b1) = polyline_order(*p3, *p4, *idx_b, *inward_b);
         for i in 0..axis_a.len() - 1 {
             let p1 = axis_a[i];
             let p2 = axis_a[i + 1];
-            if let Some(isect) = intersect_lines_2d(*p3, *p4, p1, p2) {
-                if is_on_segment_interior_2d(isect, p1, p2, tol) {
+            let bulge_a = bulges_a.get(i).copied().unwrap_or(0.0);
+            if let Some(isect) = intersect_axis_dvec(b0, b1, bulge_b, p1, p2, bulge_a, *p3) {
+                if is_on_axis_segment_interior(isect, p1, p2, bulge_a, tol) {
                     let dist = p3.distance(isect);
                     if dist < best_t_dist {
                         best_t_dist = dist;
@@ -260,6 +288,15 @@ pub fn join_wall_axes_as_l(
     axis_a: &[DVec3],
     axis_b: &[DVec3],
 ) -> Result<(Vec<DVec3>, Vec<DVec3>, JoinKind, Option<usize>, Option<usize>), JoinError> {
+    join_wall_axes_as_l_with_bulges(axis_a, &[], axis_b, &[])
+}
+
+pub fn join_wall_axes_as_l_with_bulges(
+    axis_a: &[DVec3],
+    bulges_a: &[f64],
+    axis_b: &[DVec3],
+    bulges_b: &[f64],
+) -> Result<(Vec<DVec3>, Vec<DVec3>, JoinKind, Option<usize>, Option<usize>), JoinError> {
     if axis_a.len() < 2 || axis_b.len() < 2 {
         return Err(JoinError::Degenerate);
     }
@@ -275,8 +312,14 @@ pub fn join_wall_axes_as_l(
     let mut best_dist = f64::INFINITY;
     let mut best_idx_sum = 0usize;
     for (idx_a, p1, p2) in ends_a {
+        let inward_a = if idx_a == 0 { 1 } else { axis_a.len() - 2 };
+        let bulge_a = end_segment_bulge(axis_a, bulges_a, idx_a);
+        let (a0, a1) = polyline_order(p1, p2, idx_a, inward_a);
         for (idx_b, p3, p4) in ends_b {
-            if let Some(isect) = intersect_lines_2d(p1, p2, p3, p4) {
+            let inward_b = if idx_b == 0 { 1 } else { axis_b.len() - 2 };
+            let bulge_b = end_segment_bulge(axis_b, bulges_b, idx_b);
+            let (b0, b1) = polyline_order(p3, p4, idx_b, inward_b);
+            if let Some(isect) = intersect_axis_dvec(a0, a1, bulge_a, b0, b1, bulge_b, p1) {
                 let dist = p1.distance(isect) + p3.distance(isect);
                 let idx_sum = idx_a + idx_b;
                 // On a tie (typical 2-point through wall, both ends equally
@@ -333,6 +376,53 @@ pub fn extend_axis_to_other(
     let mut new_source = source.to_vec();
     new_source[idx] = isect;
     Ok((new_source, idx, isect))
+}
+
+fn end_segment_bulge(axis: &[DVec3], bulges: &[f64], end_idx: usize) -> f64 {
+    if end_idx == 0 {
+        bulges.first().copied().unwrap_or(0.0)
+    } else {
+        bulges.get(axis.len().saturating_sub(2)).copied().unwrap_or(0.0)
+    }
+}
+
+fn polyline_order(end: DVec3, inward: DVec3, end_idx: usize, inward_idx: usize) -> (DVec3, DVec3) {
+    if end_idx < inward_idx {
+        (end, inward)
+    } else {
+        (inward, end)
+    }
+}
+
+fn intersect_axis_dvec(
+    a0: DVec3,
+    a1: DVec3,
+    bulge_a: f64,
+    b0: DVec3,
+    b1: DVec3,
+    bulge_b: f64,
+    hint: DVec3,
+) -> Option<DVec3> {
+    if bulge_a.abs() <= 1e-12 && bulge_b.abs() <= 1e-12 {
+        return intersect_lines_2d(a0, a1, b0, b1);
+    }
+    let hit = super::arc::intersect_axis_segments(
+        (a0.x, a0.y),
+        (a1.x, a1.y),
+        bulge_a,
+        (b0.x, b0.y),
+        (b1.x, b1.y),
+        bulge_b,
+        (hint.x, hint.y),
+    )?;
+    Some(DVec3::new(hit.0, hit.1, hint.z))
+}
+
+fn is_on_axis_segment_interior(p: DVec3, a: DVec3, b: DVec3, bulge: f64, tol: f64) -> bool {
+    if bulge.abs() <= 1e-12 {
+        return is_on_segment_interior_2d(p, a, b, tol);
+    }
+    super::arc::point_on_segment_interior((p.x, p.y), (a.x, a.y), (b.x, b.y), bulge, tol)
 }
 
 fn intersect_lines_2d(p1: DVec3, p2: DVec3, p3: DVec3, p4: DVec3) -> Option<DVec3> {
@@ -1035,5 +1125,26 @@ mod tests {
         assert_eq!(isect, DVec3::new(5.0, 0.0, 0.0));
         assert_eq!(new_source[0], isect);
         assert_eq!(new_source[1], source[1]);
+    }
+
+    #[test]
+    fn join_arc_wall_to_straight_hits_circle_not_chord() {
+        // Semicircle diameter (-1,0)→(1,0), bulge 1, center origin.
+        // Vertical wall along x=0 from (0,-2) to (0,-0.5) should meet at (0,-1).
+        let arc_axis = vec![DVec3::new(-1.0, 0.0, 0.0), DVec3::new(1.0, 0.0, 0.0)];
+        let straight = vec![DVec3::new(0.0, -2.0, 0.0), DVec3::new(0.0, -0.5, 0.0)];
+        let (new_arc, new_st, kind, _end_a, _end_b) =
+            join_wall_axes_with_bulges(&arc_axis, &[1.0], &straight, &[]).unwrap();
+        assert_eq!(kind, JoinKind::T);
+        let on_circle = |p: DVec3| (p - DVec3::new(0.0, -1.0, 0.0)).length() < 1e-8;
+        assert!(
+            new_st.iter().any(|p| on_circle(*p)) || new_arc.iter().any(|p| on_circle(*p)),
+            "join must hit the arc at (0,-1), not the chord at (0,0); arc={new_arc:?} st={new_st:?}"
+        );
+        assert!(
+            new_st.iter().all(|p| (p - DVec3::new(0.0, 0.0, 0.0)).length() > 1e-6)
+                || new_arc.iter().any(|p| on_circle(*p)),
+            "must not snap to the chord midpoint"
+        );
     }
 }

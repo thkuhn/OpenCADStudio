@@ -57,6 +57,8 @@ fn style_label(style: &JoinOverrideStyle) -> String {
         JoinOverrideStyle::Miter => tr!("aec", "join-miter"),
         JoinOverrideStyle::Butt => tr!("aec", "join-butt"),
         JoinOverrideStyle::OuterFace => tr!("aec", "join-outer-face"),
+        JoinOverrideStyle::NearFace => tr!("aec", "join-near-face"),
+        JoinOverrideStyle::FarFace => tr!("aec", "join-far-face"),
         JoinOverrideStyle::NoExtend => tr!("aec", "join-no-extend"),
     }
 }
@@ -69,7 +71,8 @@ fn style_buttons<'a>(
     for style in [
         JoinOverrideStyle::Miter,
         JoinOverrideStyle::Butt,
-        JoinOverrideStyle::OuterFace,
+        JoinOverrideStyle::NearFace,
+        JoinOverrideStyle::FarFace,
         JoinOverrideStyle::NoExtend,
     ] {
         let selected = current == Some(&style);

@@ -599,6 +599,130 @@ fn intersect_offset_segments(
     }
 }
 
+/// Recompute LWPOLYLINE bulge after moving one or both endpoints of an arc
+/// so the segment stays on the **same circle** (trim/extend along the arc).
+///
+/// Straight segments (`|bulge| ≈ 0`) stay straight. If the original geometry
+/// is not a valid arc the old bulge is returned unchanged.
+pub fn retarget_bulge(
+    old_start: (f64, f64),
+    old_end: (f64, f64),
+    bulge: f64,
+    new_start: (f64, f64),
+    new_end: (f64, f64),
+) -> f64 {
+    if bulge.abs() <= EPS {
+        return 0.0;
+    }
+    let Some(arc) = bulge_to_arc(old_start, old_end, bulge) else {
+        return bulge;
+    };
+    let sa = (new_start.1 - arc.center.1).atan2(new_start.0 - arc.center.0);
+    let ea = (new_end.1 - arc.center.1).atan2(new_end.0 - arc.center.0);
+    let trimmed = CircularArc {
+        center: arc.center,
+        radius: arc.radius,
+        start_angle: sa,
+        end_angle: ea,
+        ccw: arc.ccw,
+    };
+    arc_to_bulge(&trimmed).2
+}
+
+/// Same-circle unconstrained variant of [`arc_line_intersection`] (full 2π).
+pub fn circle_line_intersection(arc: &CircularArc, p1: (f64, f64), p2: (f64, f64)) -> Vec<(f64, f64)> {
+    let full = CircularArc {
+        ccw: true,
+        end_angle: arc.start_angle + 2.0 * PI,
+        ..*arc
+    };
+    arc_line_intersection(&full, p1, p2)
+}
+
+/// Same-circle unconstrained variant of [`arc_arc_intersection`].
+pub fn circle_circle_intersection(a: &CircularArc, b: &CircularArc) -> Vec<(f64, f64)> {
+    let full_a = CircularArc {
+        ccw: true,
+        end_angle: a.start_angle + 2.0 * PI,
+        ..*a
+    };
+    let full_b = CircularArc {
+        ccw: true,
+        end_angle: b.start_angle + 2.0 * PI,
+        ..*b
+    };
+    arc_arc_intersection(&full_a, &full_b)
+}
+
+/// Infinite-line / full-circle intersection of two axis segments, preferring
+/// the candidate closest to `hint`. Straight+straight uses the historical
+/// infinite-line join.
+pub fn intersect_axis_segments(
+    a1: (f64, f64),
+    a2: (f64, f64),
+    a_bulge: f64,
+    b1: (f64, f64),
+    b2: (f64, f64),
+    b_bulge: f64,
+    hint: (f64, f64),
+) -> Option<(f64, f64)> {
+    let a_arc = a_bulge.abs() > EPS;
+    let b_arc = b_bulge.abs() > EPS;
+    match (a_arc, b_arc) {
+        (false, false) => line_line_intersection(a1, a2, b1, b2),
+        (true, false) => {
+            let arc = bulge_to_arc(a1, a2, a_bulge)?;
+            closest_to(hint, &circle_line_intersection(&arc, b1, b2))
+        }
+        (false, true) => {
+            let arc = bulge_to_arc(b1, b2, b_bulge)?;
+            closest_to(hint, &circle_line_intersection(&arc, a1, a2))
+        }
+        (true, true) => {
+            let arc_a = bulge_to_arc(a1, a2, a_bulge)?;
+            let arc_b = bulge_to_arc(b1, b2, b_bulge)?;
+            closest_to(hint, &circle_circle_intersection(&arc_a, &arc_b))
+        }
+    }
+}
+
+/// True when `p` lies on the finite axis segment (straight or arc sweep),
+/// excluding a `tol` neighbourhood of the segment endpoints.
+pub fn point_on_segment_interior(
+    p: (f64, f64),
+    start: (f64, f64),
+    end: (f64, f64),
+    bulge: f64,
+    tol: f64,
+) -> bool {
+    if dist2(p, start).sqrt() <= tol || dist2(p, end).sqrt() <= tol {
+        return false;
+    }
+    if bulge.abs() <= EPS {
+        let dx = end.0 - start.0;
+        let dy = end.1 - start.1;
+        let len2 = dx * dx + dy * dy;
+        if len2 < EPS {
+            return false;
+        }
+        let t = ((p.0 - start.0) * dx + (p.1 - start.1) * dy) / len2;
+        if t <= 0.0 || t >= 1.0 {
+            return false;
+        }
+        let proj = (start.0 + t * dx, start.1 + t * dy);
+        return dist2(p, proj).sqrt() <= tol;
+    }
+    let Some(arc) = bulge_to_arc(start, end, bulge) else {
+        return false;
+    };
+    let radial = ((p.0 - arc.center.0).hypot(p.1 - arc.center.1) - arc.radius).abs();
+    if radial > tol {
+        return false;
+    }
+    let ang = (p.1 - arc.center.1).atan2(p.0 - arc.center.0);
+    angle_on_arc(ang, arc.start_angle, arc.end_angle, arc.ccw, ANG_EPS.max(tol / arc.radius.max(EPS)))
+}
+
 /// Reverse an open polyline's bulge list for the reversed point order.
 ///
 /// Segment `points[i] → points[i+1]` with bulge `b` becomes
@@ -773,5 +897,38 @@ mod tests {
         assert!(approx(rev[0], 0.25));
         assert!(approx(rev[1], -0.5));
         assert!(approx(rev[2], 0.0));
+    }
+
+    #[test]
+    fn retarget_bulge_trims_quarter_to_shorter_arc() {
+        let start = (1.0, 0.0);
+        let end = (0.0, 1.0);
+        let bulge = (PI / 8.0).tan();
+        let new_end = (0.0, 1.0);
+        // Same endpoints → bulge unchanged.
+        assert!((retarget_bulge(start, end, bulge, start, new_end) - bulge).abs() < 1e-9);
+        // Trim end to 45°: (cos,sin)=(√2/2, √2/2), included π/4, bulge tan(π/16).
+        let mid = (0.5_f64.sqrt(), 0.5_f64.sqrt());
+        let b2 = retarget_bulge(start, end, bulge, start, mid);
+        assert!((b2 - (PI / 16.0).tan()).abs() < 1e-9);
+        let arc = bulge_to_arc(start, mid, b2).unwrap();
+        assert!((arc.center.0).abs() < 1e-9 && (arc.center.1).abs() < 1e-9);
+        assert!((arc.radius - 1.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn intersect_arc_with_straight_axis() {
+        // Semicircle (-1,0)→(1,0) bulge 1 (center origin) ∩ vertical x=0.
+        let hit = intersect_axis_segments(
+            (-1.0, 0.0),
+            (1.0, 0.0),
+            1.0,
+            (0.0, -2.0),
+            (0.0, 2.0),
+            0.0,
+            (0.0, -1.0),
+        )
+        .expect("hit");
+        assert!(approx_pt(hit, (0.0, -1.0)));
     }
 }

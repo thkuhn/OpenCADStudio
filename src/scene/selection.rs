@@ -36,6 +36,7 @@ impl Scene {
     }
     pub fn select_entity(&mut self, handle: Handle, exclusive: bool) {
         let handles = self.handles_expanded_for_leader_annotations(&[handle]);
+        let handles = crate::modules::aec::commands::expand_handles_for_wall_packages(self, &handles);
         let mut changed = false;
 
         if exclusive {
@@ -140,10 +141,12 @@ impl Scene {
     /// use this instead of assigning `selected` directly.
     pub(crate) fn replace_selection(&mut self, selected: HashSet<Handle>) {
         let handles: Vec<Handle> = selected.iter().copied().collect();
-        let selected: HashSet<Handle> = self
-            .handles_expanded_for_leader_annotations(&handles)
-            .into_iter()
-            .collect();
+        let selected: HashSet<Handle> = crate::modules::aec::commands::expand_handles_for_wall_packages(
+            self,
+            &self.handles_expanded_for_leader_annotations(&handles),
+        )
+        .into_iter()
+        .collect();
 
         if self.selected != selected {
             let mut seen = HashSet::default();
@@ -169,6 +172,7 @@ impl Scene {
     /// Remove a single entity from the selection (Shift+click subtractive pick).
     pub fn deselect_entity(&mut self, handle: Handle) {
         let handles = self.handles_expanded_for_leader_annotations(&[handle]);
+        let handles = crate::modules::aec::commands::expand_handles_for_wall_packages(self, &handles);
         let mut changed = false;
 
         for handle in handles {
@@ -622,7 +626,10 @@ impl Scene {
                                 PropValue::Stepper { .. }
                                 | PropValue::ColorVaries
                                 | PropValue::LwVaries
-                                | PropValue::FieldLwVaries { .. } => continue,
+                                | PropValue::FieldLwVaries { .. }
+                                | PropValue::Picker { .. }
+                                | PropValue::EntityRef { .. }
+                                | PropValue::Live(_) => continue,
                             }
                         };
                         out.push(choice(prop.field, prop.label, editor));
@@ -770,7 +777,10 @@ impl Scene {
                     PropValue::Stepper { display, .. } => display,
                     PropValue::ColorVaries
                     | PropValue::LwVaries
-                    | PropValue::FieldLwVaries { .. } => return None,
+                    | PropValue::FieldLwVaries { .. }
+                    | PropValue::Picker { .. }
+                    | PropValue::EntityRef { .. }
+                    | PropValue::Live(_) => return None,
                 })
             }
         }

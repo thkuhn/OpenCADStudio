@@ -1048,6 +1048,25 @@ impl OpenCADStudio {
         }
     }
 
+    pub(in crate::app) fn remember_last_wall_defaults(
+        &mut self,
+        tab_index: usize,
+        handle: acadrust::Handle,
+    ) {
+        let scene = &self.tabs[tab_index].scene;
+        let axis = crate::modules::aec::commands::resolve_wall_package(scene, handle);
+        let Some(entity) = scene.document.get_entity(axis) else {
+            return;
+        };
+        let Some(wall) = crate::modules::aec::commands::wall_from_entity(entity) else {
+            return;
+        };
+        if !wall.style_id.is_empty() {
+            self.aec_last_wall_style_id = Some(wall.style_id.clone());
+        }
+        self.aec_last_wall_height = Some(wall.height);
+    }
+
     /// During `AEC_WALL` the axis layer stays on regardless of plan type.
     /// After the command ends, restore idle visibility from the active
     /// DisplayConfig (`WallComponentKind::Axis` / AxisLine slot).
@@ -5304,6 +5323,9 @@ impl OpenCADStudio {
                         }
                         crate::app::StylePickerTarget::ActiveCommand => {
                             let i = self.active_tab;
+                            if !selection.is_empty() {
+                                self.aec_last_wall_style_id = Some(selection.clone());
+                            }
                             let result = self.tabs[i].active_cmd.as_mut().map(|c| {
                                 c.apply_live_property(
                                     "wall_style",
@@ -13475,6 +13497,122 @@ mod prop_pointer_tests {
             .get(&WallComponentSlot::Contour2D)
             .copied()
             .unwrap_or(true));
+    }
+
+    #[test]
+    fn wall_style_manager_profile_slot_style_override_roundtrip_and_clear() {
+        use crate::modules::aec::engine::display_component::WallComponentSlot;
+        use crate::modules::aec::engine::library::DisplayConfigLibrary;
+        use crate::modules::aec::engine::plan_view::{DisplayConfig, PlanningStage, ViewType};
+        let mut app = drawing_app();
+
+        let wall_style = crate::modules::aec::engine::wall_style::WallStyle {
+            style: crate::modules::aec::engine::style::Style {
+                id: "style1".to_string(),
+                name: "Style 1".to_string(),
+                object_kind: "Wall".to_string(),
+                parent_style_id: None,
+            },
+            layers: Vec::new(),
+            display_profiles: std::collections::HashMap::new(),
+        };
+        let mut project = crate::modules::aec::engine::project::ProjectFile {
+            buildings: Vec::new(),
+            material_wall_style_library: crate::modules::aec::engine::library::StyleLibrary::default(),
+            display_config_library: Default::default(),
+        };
+        project
+            .material_wall_style_library
+            .wall_styles
+            .push(wall_style);
+        app.aec_project_explorer_file = Some(project);
+        app.aec_style_library = Some(crate::modules::aec::engine::library::combined_style_library(
+            app.aec_project_explorer_file.as_ref(),
+        ));
+        app.aec_plan_library = Some(DisplayConfigLibrary {
+            configs: vec![DisplayConfig::new(
+                "Plan 1".to_string(),
+                "Architektur".to_string(),
+                PlanningStage::Design,
+                ViewType::FloorPlan,
+            )],
+            ..Default::default()
+        });
+        app.aec_style_manager_wall_style_editing_id = Some("style1".to_string());
+
+        let _ = app.update(Message::AecStyleManagerProfileSelect("Plan 1".to_string()));
+        let _ = app.update(Message::AecStyleManagerProfileSlotStyleOpen(
+            WallComponentSlot::Contour2D,
+        ));
+        let _ = app.update(Message::AecStyleManagerProfileSlotStyleLineTypeChanged(
+            "Dashed".to_string(),
+        ));
+        let _ = app.update(Message::AecStyleManagerProfileSlotStyleLineColorChanged(
+            "1".to_string(),
+        ));
+        let _ = app.update(Message::AecStyleManagerProfileSlotStyleHatchPatternChanged(
+            "ANSI31".to_string(),
+        ));
+        let _ = app.update(Message::AecStyleManagerProfileSlotStyleFillColorChanged(
+            "7".to_string(),
+        ));
+        let _ = app.update(Message::AecStyleManagerProfileSlotStyleApply);
+        let _ = app.update(Message::AecStyleManagerProfileSave);
+
+        let saved_style = app
+            .aec_project_explorer_file
+            .as_ref()
+            .unwrap()
+            .material_wall_style_library
+            .wall_styles
+            .iter()
+            .find(|w| w.style.id == "style1")
+            .unwrap();
+        let rules = saved_style.display_profiles.get("Plan 1").unwrap();
+        let ov = rules
+            .style_for(WallComponentSlot::Contour2D)
+            .expect("style override persisted");
+        assert_eq!(ov.line_type.as_deref(), Some("Dashed"));
+        assert!(ov.line_color.is_some());
+        assert_eq!(ov.hatch_pattern.as_deref(), Some("ANSI31"));
+        assert!(ov.fill_color.is_some());
+        assert!(rules.style_for(WallComponentSlot::AxisLine).is_none());
+
+        let _ = app.update(Message::AecStyleManagerProfileSelect("Plan 1".to_string()));
+        assert!(app
+            .aec_style_manager_profile_slot_overrides
+            .contains_key(&WallComponentSlot::Contour2D));
+
+        let _ = app.update(Message::AecStyleManagerProfileSlotStyleOpen(
+            WallComponentSlot::Contour2D,
+        ));
+        assert_eq!(
+            app.aec_style_manager_profile_slot_style_line_type,
+            "Dashed"
+        );
+        assert_eq!(
+            app.aec_style_manager_profile_slot_style_hatch_pattern,
+            "ANSI31"
+        );
+        let _ = app.update(Message::AecStyleManagerProfileSlotStyleClear);
+        let _ = app.update(Message::AecStyleManagerProfileSave);
+
+        let saved_style = app
+            .aec_project_explorer_file
+            .as_ref()
+            .unwrap()
+            .material_wall_style_library
+            .wall_styles
+            .iter()
+            .find(|w| w.style.id == "style1")
+            .unwrap();
+        let rules = saved_style.display_profiles.get("Plan 1").unwrap();
+        assert!(rules.style_for(WallComponentSlot::Contour2D).is_none());
+
+        let _ = app.update(Message::AecStyleManagerProfileSelect("Plan 1".to_string()));
+        assert!(!app
+            .aec_style_manager_profile_slot_overrides
+            .contains_key(&WallComponentSlot::Contour2D));
     }
 }
 

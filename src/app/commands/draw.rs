@@ -998,14 +998,16 @@ impl OpenCADStudio {
                 let style_library = crate::modules::aec::engine::project::resolve_style_library(
                     self.aec_project_explorer_file.as_ref(),
                 );
-                let new_cmd = WallCommand::new_with_defaults(
-                    self.aec_last_wall_style_id.as_deref(),
-                    self.aec_last_wall_height,
-                )
-                .with_library(style_library);
+                let new_cmd = WallCommand::new()
+                    .with_library(style_library)
+                    .with_session_defaults(
+                        self.aec_last_wall_style_id.as_deref(),
+                        self.aec_last_wall_height,
+                    );
                 self.command_line.push_info(&new_cmd.prompt());
                 self.tabs[i].active_cmd = Some(Box::new(new_cmd));
                 self.sync_wall_axis_layer_for_session(i);
+                self.refresh_properties();
             }
             "AEC_ROOM" => {
                 crate::modules::aec::commands::aec_room(

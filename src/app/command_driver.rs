@@ -976,6 +976,7 @@ impl OpenCADStudio {
                         }
                     }
                     self.tabs[i].active_cmd = cmd;
+                    self.remember_last_wall_defaults(i, handle);
                     self.reapply_active_display_config_to_wall_packages(i, &[handle]);
                 }
                 self.tabs[i].dirty = true;
@@ -2446,18 +2447,7 @@ impl OpenCADStudio {
                             self.reapply_active_display_config_to_wall_packages(i, &[handle]);
                             // Remember the just-used style/height as the session
                             // default.
-                            if let Some(entity) = self.tabs[i].scene.document.get_entity(handle) {
-                                if let Some(v2) =
-                                    crate::modules::aec::commands::wall_from_entity(entity)
-                                {
-                                    self.aec_last_wall_style_id = Some(v2.style_id.clone());
-                                    self.aec_last_wall_height = Some(v2.height);
-                                } else if let Some(w) =
-                                    crate::modules::aec::commands::wall_from_entity(entity)
-                                {
-                                    self.aec_last_wall_height = Some(w.height);
-                                }
-                            }
+                            self.remember_last_wall_defaults(i, handle);
                         }
                         self.finish_live_entity_history(i, handle);
                         // TODO: If we have multiple live entities, should we call finish_live_entity_history for all?

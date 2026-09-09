@@ -1353,8 +1353,12 @@ pub(super) fn viewport_context_menu_overlay(
                 Message::WallJunctionOverrideSetStyle(JoinOverrideStyle::Butt),
             ));
             items.push(subitem(
-                t!("Au\u{00df}enkante").into_owned(),
-                Message::WallJunctionOverrideSetStyle(JoinOverrideStyle::OuterFace),
+                t!("Nähere Kante").into_owned(),
+                Message::WallJunctionOverrideSetStyle(JoinOverrideStyle::NearFace),
+            ));
+            items.push(subitem(
+                t!("Entferntere Kante").into_owned(),
+                Message::WallJunctionOverrideSetStyle(JoinOverrideStyle::FarFace),
             ));
             items.push(subitem(
                 t!("Automatisch (zur\u{00fc}cksetzen)").into_owned(),

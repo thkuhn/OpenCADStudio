@@ -8842,11 +8842,17 @@ impl Scene {
             return false;
         }
         let layer = self.document.layers.get(&c.layer);
-        if layer
+        let layer_off = layer
             .map(|l| l.flags.off || l.flags.frozen)
-            .unwrap_or(false)
-        {
-            return false;
+            .unwrap_or(false);
+        if layer_off {
+            let wall_axis_selected = c.layer
+                == crate::modules::aec::commands::AEC_WALL_AXIS_LAYER
+                && (self.selected.contains(&c.handle)
+                    || self.hover_highlight == Some(c.handle));
+            if !wall_axis_selected {
+                return false;
+            }
         }
         if let Some(frozen) = frozen_layers {
             if !frozen.is_empty() {

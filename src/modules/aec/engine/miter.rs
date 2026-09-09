@@ -12,7 +12,7 @@
 //! [`mitered_junction_layer_footprints`], which orders participants by angle
 //! and miters each endpoint wall against its angular neighbors.
 
-use super::contour::layer_contours;
+use super::contour::{layer_contours, layer_contours_with_bulges};
 use super::join::{JoinKind, JoinOverrideStyle, Junction, JunctionOverride, JunctionRole, LayerRef};
 
 /// Minimum angle (5°) below which diagonal miters are rejected as degenerate.
@@ -84,6 +84,13 @@ pub struct JoinMiterContext {
     /// moved); the helper then locates the segment under the join point.
     pub other_end: Option<usize>,
     pub kind: JoinKind,
+    /// Axis bulges on this wall (LWPOLYLINE convention). Empty = straight.
+    pub self_bulges: Vec<f64>,
+    /// Axis bulges on the other wall. Empty = straight.
+    pub other_bulges: Vec<f64>,
+    /// This wall is the through-wall of a T-junction: compute layer cutouts
+    /// instead of stem miters.
+    pub as_through: bool,
 }
 
 /// For each layer of wall A, return either a miter-clipped closed footprint
@@ -107,6 +114,24 @@ pub fn mitered_layer_footprints(
     end_b: Option<usize>,
     kind: JoinKind,
 ) -> Vec<Option<Vec<(f64, f64)>>> {
+    mitered_layer_footprints_with_bulges(
+        axis_a, layers_a, end_a, axis_b, layers_b, end_b, kind, &[], &[],
+    )
+}
+
+/// Like [`mitered_layer_footprints`], offsetting layer edges with axis bulges
+/// so arc walls miter on concentric arcs rather than chords.
+pub fn mitered_layer_footprints_with_bulges(
+    axis_a: &[(f64, f64)],
+    layers_a: &[MiterLayer],
+    end_a: usize,
+    axis_b: &[(f64, f64)],
+    layers_b: &[MiterLayer],
+    end_b: Option<usize>,
+    kind: JoinKind,
+    bulges_a: &[f64],
+    bulges_b: &[f64],
+) -> Vec<Option<Vec<(f64, f64)>>> {
     if axis_a.len() < 2 || axis_b.len() < 2 || layers_a.is_empty() {
         return vec![None; layers_a.len()];
     }
@@ -116,8 +141,8 @@ pub fn mitered_layer_footprints(
 
     let geom_a: Vec<(f64, f64)> = layers_a.iter().map(MiterLayer::as_geom).collect();
     let geom_b: Vec<(f64, f64)> = layers_b.iter().map(MiterLayer::as_geom).collect();
-    let contours_a = layer_contours(axis_a, &geom_a);
-    let contours_b = layer_contours(axis_b, &geom_b);
+    let contours_a = contours_xy(axis_a, bulges_a, &geom_a);
+    let contours_b = contours_xy(axis_b, bulges_b, &geom_b);
     if contours_a.is_empty() || contours_b.is_empty() {
         return vec![None; layers_a.len()];
     }
@@ -211,7 +236,38 @@ pub fn mitered_layer_footprints_with_override(
     kind: JoinKind,
     override_data: Option<&JunctionOverride>,
 ) -> Vec<Option<Vec<(f64, f64)>>> {
-    let mut out = mitered_layer_footprints(axis_a, layers_a, end_a, axis_b, layers_b, end_b, kind);
+    mitered_layer_footprints_with_override_and_bulges(
+        axis_a,
+        layers_a,
+        layer_refs_a,
+        end_a,
+        axis_b,
+        layers_b,
+        end_b,
+        kind,
+        override_data,
+        &[],
+        &[],
+    )
+}
+
+/// Override-aware miter using bulge-offset layer contours.
+pub fn mitered_layer_footprints_with_override_and_bulges(
+    axis_a: &[(f64, f64)],
+    layers_a: &[MiterLayer],
+    layer_refs_a: &[LayerRef],
+    end_a: usize,
+    axis_b: &[(f64, f64)],
+    layers_b: &[MiterLayer],
+    end_b: Option<usize>,
+    kind: JoinKind,
+    override_data: Option<&JunctionOverride>,
+    bulges_a: &[f64],
+    bulges_b: &[f64],
+) -> Vec<Option<Vec<(f64, f64)>>> {
+    let mut out = mitered_layer_footprints_with_bulges(
+        axis_a, layers_a, end_a, axis_b, layers_b, end_b, kind, bulges_a, bulges_b,
+    );
     let Some(ov) = override_data else {
         return out;
     };
@@ -221,13 +277,14 @@ pub fn mitered_layer_footprints_with_override(
 
     let geom_a: Vec<(f64, f64)> = layers_a.iter().map(MiterLayer::as_geom).collect();
     let geom_b: Vec<(f64, f64)> = layers_b.iter().map(MiterLayer::as_geom).collect();
-    let contours_a = layer_contours(axis_a, &geom_a);
-    let contours_b = layer_contours(axis_b, &geom_b);
+    let contours_a = contours_xy(axis_a, bulges_a, &geom_a);
+    let contours_b = contours_xy(axis_b, bulges_b, &geom_b);
     if contours_a.is_empty() || contours_b.is_empty() {
         return out;
     }
     let pairing = match_layer_indices(layers_a, layers_b);
-    let outer_target = through_outer_near_face_line(axis_a, end_a, axis_b, &contours_b);
+    let outer_target =
+        through_outer_near_face_line(axis_a, end_a, axis_b, layers_b, &contours_b);
 
     for i in 0..layers_a.len() {
         let Some(layer_ref) = layer_refs_a.get(i) else {
@@ -240,7 +297,9 @@ pub fn mitered_layer_footprints_with_override(
             continue;
         }
         let (ref a_b1, ref a_b2) = contours_a[i];
-        let b_idx = pairing.get(i).copied().flatten();
+        let b_idx = pairing.get(i).copied().flatten().or_else(|| {
+            closest_layer_index(&layers_a[i], layers_b)
+        });
         let b_contour = b_idx.and_then(|j| contours_b.get(j));
 
         let new_fp = match style {
@@ -273,6 +332,34 @@ pub fn mitered_layer_footprints_with_override(
             JoinOverrideStyle::OuterFace => {
                 outer_target.and_then(|t| t_extend_one_layer(a_b1, a_b2, end_a, t))
             }
+            JoinOverrideStyle::NearFace => {
+                let target = if let Some((b_b1, b_b2)) = b_contour {
+                    layer_face_line(
+                        a_b1, a_b2, end_a, b_b1, b_b2, end_b, axis_a, axis_b, false,
+                    )
+                    .or(outer_target)
+                } else {
+                    outer_target
+                };
+                target.and_then(|t| t_extend_one_layer(a_b1, a_b2, end_a, t))
+            }
+            JoinOverrideStyle::FarFace => {
+                let target = if let Some((b_b1, b_b2)) = b_contour {
+                    layer_face_line(
+                        a_b1, a_b2, end_a, b_b1, b_b2, end_b, axis_a, axis_b, true,
+                    )
+                    .or_else(|| {
+                        through_outer_face_line(
+                            axis_a, end_a, axis_b, layers_b, &contours_b, true,
+                        )
+                    })
+                } else {
+                    through_outer_face_line(
+                        axis_a, end_a, axis_b, layers_b, &contours_b, true,
+                    )
+                };
+                target.and_then(|t| t_extend_one_layer(a_b1, a_b2, end_a, t))
+            }
         };
 
         if let Some(fp) = new_fp {
@@ -298,7 +385,8 @@ fn t_junction_layer_footprints(
     contours_b: &[(Vec<(f64, f64)>, Vec<(f64, f64)>)],
 ) -> Vec<Option<Vec<(f64, f64)>>> {
     let pairing = match_layer_indices(layers_a, layers_b);
-    let outer_target = through_outer_near_face_line(axis_a, end_a, axis_b, contours_b);
+    let outer_target =
+        through_outer_near_face_line(axis_a, end_a, axis_b, layers_b, contours_b);
     let mut out = Vec::with_capacity(layers_a.len());
 
     for (i, b_idx) in pairing.into_iter().enumerate() {
@@ -336,8 +424,9 @@ fn t_junction_layer_footprints(
 /// Pair each layer of wall A to at most one layer of wall B.
 ///
 /// Matching priority:
-/// 1. `material` equality (and `function` equality when both are non-empty)
-/// 2. closest cumulative offset-from-axis (tie-break / no material match)
+/// 1. identical non-nil `layer_id`
+/// 2. `material` equality (and `function` equality when both are non-empty)
+/// 3. closest offset-from-axis (tie-break / no material match)
 ///
 /// A layer is left unmatched (`None`) when no unique candidate remains —
 /// those fall back to the single-vertex corner extension at the caller.
@@ -401,6 +490,12 @@ pub fn match_layer_indices(layers_a: &[MiterLayer], layers_b: &[MiterLayer]) -> 
                 break;
             }
         }
+        if class >= 3 {
+            // Offset-only pairs are not identity. Remaining layers are
+            // matched by stack index below so different materials still join
+            // when they occupy the same slot.
+            break;
+        }
         done_a[i] = true;
         if ambiguous {
             // Leave out[i] = None (fallback to corner_override).
@@ -410,21 +505,34 @@ pub fn match_layer_indices(layers_a: &[MiterLayer], layers_b: &[MiterLayer]) -> 
         used_b[j] = true;
     }
 
+    for i in 0..n_a {
+        if out[i].is_some() {
+            continue;
+        }
+        if i < n_b && !used_b[i] {
+            out[i] = Some(i);
+            used_b[i] = true;
+        }
+    }
+
     out
 }
 
-/// Identity match class: 0 = material+function, 1 = material only,
-/// 2 = offset-only (no identity). Lower is better.
+/// Identity match class: 0 = same layer_id, 1 = material+function,
+/// 2 = material only, 3 = offset-only. Lower is better.
 fn identity_class(a: &MiterLayer, b: &MiterLayer) -> u8 {
+    if !a.layer_id.is_nil() && a.layer_id == b.layer_id {
+        return 0;
+    }
     let mat = !a.material.is_empty() && a.material == b.material;
     if !mat {
-        return 2;
+        return 3;
     }
     let fun = !a.function.is_empty() && !b.function.is_empty() && a.function == b.function;
     if fun {
-        0
-    } else {
         1
+    } else {
+        2
     }
 }
 
@@ -669,6 +777,7 @@ pub fn mitered_junction_layer_footprints(
                             &walls[wi].axis,
                             end_a,
                             &walls[tw].axis,
+                            &walls[tw].layers,
                             &contours[tw],
                         )?;
                         t_extend_one_layer(a_b1, a_b2, end_a, outer)
@@ -742,8 +851,13 @@ pub fn mitered_junction_layer_footprints_with_overrides(
         let other_axis = &walls[other_w].axis;
         let other_contours = &contours[other_w];
         let pairing = match_layer_indices(&walls[wi].layers, &walls[other_w].layers);
-        let outer_target =
-            through_outer_near_face_line(&walls[wi].axis, end_a, other_axis, other_contours);
+        let outer_target = through_outer_near_face_line(
+            &walls[wi].axis,
+            end_a,
+            other_axis,
+            &walls[other_w].layers,
+            other_contours,
+        );
 
         for li in 0..walls[wi].layers.len() {
             let Some(layer_ref) = refs.get(li) else {
@@ -806,6 +920,60 @@ pub fn mitered_junction_layer_footprints_with_overrides(
                 }
                 JoinOverrideStyle::OuterFace => {
                     outer_target.and_then(|t| t_extend_one_layer(a_b1, a_b2, end_a, t))
+                }
+                JoinOverrideStyle::NearFace => {
+                    let target = if let Some((b_b1, b_b2)) = b_contour {
+                        layer_face_line(
+                            a_b1,
+                            a_b2,
+                            end_a,
+                            b_b1,
+                            b_b2,
+                            walls[other_w].end,
+                            &walls[wi].axis,
+                            other_axis,
+                            false,
+                        )
+                        .or(outer_target)
+                    } else {
+                        outer_target
+                    };
+                    target.and_then(|t| t_extend_one_layer(a_b1, a_b2, end_a, t))
+                }
+                JoinOverrideStyle::FarFace => {
+                    let target = if let Some((b_b1, b_b2)) = b_contour {
+                        layer_face_line(
+                            a_b1,
+                            a_b2,
+                            end_a,
+                            b_b1,
+                            b_b2,
+                            walls[other_w].end,
+                            &walls[wi].axis,
+                            other_axis,
+                            true,
+                        )
+                        .or_else(|| {
+                            through_outer_face_line(
+                                &walls[wi].axis,
+                                end_a,
+                                other_axis,
+                                &walls[other_w].layers,
+                                other_contours,
+                                true,
+                            )
+                        })
+                    } else {
+                        through_outer_face_line(
+                            &walls[wi].axis,
+                            end_a,
+                            other_axis,
+                            &walls[other_w].layers,
+                            other_contours,
+                            true,
+                        )
+                    };
+                    target.and_then(|t| t_extend_one_layer(a_b1, a_b2, end_a, t))
                 }
             };
 
@@ -1121,6 +1289,19 @@ fn t_extend_end_points(
 /// Pick the face of through-wall layer B that the stem approaches first
 /// (the near face). Both stem boundary lines butt against this single line.
 fn near_face_line(
+    a_b1: &[(f64, f64)],
+    a_b2: &[(f64, f64)],
+    end_a: usize,
+    b_b1: &[(f64, f64)],
+    b_b2: &[(f64, f64)],
+    end_b: Option<usize>,
+    axis_a: &[(f64, f64)],
+    axis_b: &[(f64, f64)],
+) -> Option<((f64, f64), (f64, f64))> {
+    layer_face_line(a_b1, a_b2, end_a, b_b1, b_b2, end_b, axis_a, axis_b, false)
+}
+
+fn layer_face_line(
     _a_b1: &[(f64, f64)],
     _a_b2: &[(f64, f64)],
     end_a: usize,
@@ -1129,6 +1310,7 @@ fn near_face_line(
     end_b: Option<usize>,
     axis_a: &[(f64, f64)],
     axis_b: &[(f64, f64)],
+    far: bool,
 ) -> Option<((f64, f64), (f64, f64))> {
     let (b1_line, b2_line) = other_boundary_lines(b_b1, b_b2, end_b, axis_a, axis_b, end_a)?;
     let join_pt = *axis_a.get(end_a)?;
@@ -1144,7 +1326,8 @@ fn near_face_line(
     let s2 = closest_point_on_line(join_pt, b2_line);
     let d1 = (s1.0 - join_pt.0) * to_stem.0 + (s1.1 - join_pt.1) * to_stem.1;
     let d2 = (s2.0 - join_pt.0) * to_stem.0 + (s2.1 - join_pt.1) * to_stem.1;
-    if d1 >= d2 {
+    let near_is_b1 = d1 >= d2;
+    if far ^ near_is_b1 {
         Some(b1_line)
     } else {
         Some(b2_line)
@@ -1157,16 +1340,47 @@ fn through_outer_near_face_line(
     axis_a: &[(f64, f64)],
     end_a: usize,
     axis_b: &[(f64, f64)],
+    layers_b: &[MiterLayer],
     contours_b: &[(Vec<(f64, f64)>, Vec<(f64, f64)>)],
+) -> Option<((f64, f64), (f64, f64))> {
+    through_outer_face_line(axis_a, end_a, axis_b, layers_b, contours_b, false)
+}
+
+fn through_outer_face_line(
+    axis_a: &[(f64, f64)],
+    end_a: usize,
+    axis_b: &[(f64, f64)],
+    layers_b: &[MiterLayer],
+    contours_b: &[(Vec<(f64, f64)>, Vec<(f64, f64)>)],
+    far: bool,
 ) -> Option<((f64, f64), (f64, f64))> {
     if contours_b.is_empty() || axis_a.len() < 2 || end_a >= axis_a.len() {
         return None;
     }
-    // Overall outer faces = b1 of the first layer and b2 of the last layer
-    // (layer_contours stacks offsets from -total/2 to +total/2).
-    let (ref first_b1, _) = contours_b[0];
-    let (_, ref last_b2) = contours_b[contours_b.len() - 1];
-    near_face_line(
+    let mut min_i = 0usize;
+    let mut max_i = 0usize;
+    let mut min_off = f64::INFINITY;
+    let mut max_off = f64::NEG_INFINITY;
+    if layers_b.len() == contours_b.len() && !layers_b.is_empty() {
+        for (i, l) in layers_b.iter().enumerate() {
+            let start = l.axis_offset;
+            let end = l.axis_offset + l.thickness;
+            if start < min_off {
+                min_off = start;
+                min_i = i;
+            }
+            if end > max_off {
+                max_off = end;
+                max_i = i;
+            }
+        }
+    } else {
+        min_i = 0;
+        max_i = contours_b.len() - 1;
+    }
+    let (ref first_b1, _) = contours_b[min_i];
+    let (_, ref last_b2) = contours_b[max_i];
+    layer_face_line(
         &[],
         &[],
         end_a,
@@ -1175,7 +1389,159 @@ fn through_outer_near_face_line(
         None,
         axis_a,
         axis_b,
+        far,
     )
+}
+
+fn contours_xy(
+    axis: &[(f64, f64)],
+    bulges: &[f64],
+    geom: &[(f64, f64)],
+) -> Vec<(Vec<(f64, f64)>, Vec<(f64, f64)>)> {
+    if bulges.iter().any(|b| b.abs() > 1e-12) {
+        layer_contours_with_bulges(axis, bulges, geom)
+            .into_iter()
+            .map(|(a, b)| (a.points, b.points))
+            .collect()
+    } else {
+        layer_contours(axis, geom)
+    }
+}
+
+/// Notch through-wall layers where a stem layer overlaps them (T-junction).
+/// Returns a C-shaped footprint connected on the far side, or `None` to keep
+/// the rectangular fallback.
+pub fn through_wall_cutout_footprints(
+    axis_through: &[(f64, f64)],
+    layers_through: &[MiterLayer],
+    axis_stem: &[(f64, f64)],
+    layers_stem: &[MiterLayer],
+    stem_end: usize,
+) -> Vec<Option<Vec<(f64, f64)>>> {
+    through_wall_cutout_footprints_with_bulges(
+        axis_through,
+        layers_through,
+        axis_stem,
+        layers_stem,
+        stem_end,
+        &[],
+        &[],
+    )
+}
+
+pub fn through_wall_cutout_footprints_with_bulges(
+    axis_through: &[(f64, f64)],
+    layers_through: &[MiterLayer],
+    axis_stem: &[(f64, f64)],
+    layers_stem: &[MiterLayer],
+    stem_end: usize,
+    bulges_through: &[f64],
+    bulges_stem: &[f64],
+) -> Vec<Option<Vec<(f64, f64)>>> {
+    if axis_through.len() < 2 || axis_stem.len() < 2 || layers_through.is_empty() {
+        return vec![None; layers_through.len()];
+    }
+    if stem_end >= axis_stem.len() {
+        return vec![None; layers_through.len()];
+    }
+    let geom_t: Vec<(f64, f64)> = layers_through.iter().map(MiterLayer::as_geom).collect();
+    let geom_s: Vec<(f64, f64)> = layers_stem.iter().map(MiterLayer::as_geom).collect();
+    let contours_t = contours_xy(axis_through, bulges_through, &geom_t);
+    let contours_s = contours_xy(axis_stem, bulges_stem, &geom_s);
+    let pairing = match_layer_indices(layers_stem, layers_through);
+    let mut out = vec![None; layers_through.len()];
+    for (si, t_idx) in pairing.iter().enumerate() {
+        for ti in 0..layers_through.len() {
+            if Some(ti) == *t_idx {
+                continue;
+            }
+            if ti >= contours_t.len() || si >= contours_s.len() {
+                continue;
+            }
+            let (ref t1, ref t2) = contours_t[ti];
+            let (ref s1, ref s2) = contours_s[si];
+            if let Some(fp) = notch_through_layer(t1, t2, s1, s2, stem_end, axis_stem) {
+                out[ti] = Some(fp);
+            }
+        }
+    }
+    out
+}
+
+fn closest_layer_index(a: &MiterLayer, layers_b: &[MiterLayer]) -> Option<usize> {
+    if layers_b.is_empty() {
+        return None;
+    }
+    let ca = a.axis_offset + a.thickness * 0.5;
+    let mut best = 0usize;
+    let mut best_d = f64::INFINITY;
+    for (i, b) in layers_b.iter().enumerate() {
+        let cb = b.axis_offset + b.thickness * 0.5;
+        let d = (ca - cb).abs();
+        if d < best_d {
+            best_d = d;
+            best = i;
+        }
+    }
+    Some(best)
+}
+
+fn notch_through_layer(
+    t_b1: &[(f64, f64)],
+    t_b2: &[(f64, f64)],
+    s_b1: &[(f64, f64)],
+    s_b2: &[(f64, f64)],
+    stem_end: usize,
+    axis_stem: &[(f64, f64)],
+) -> Option<Vec<(f64, f64)>> {
+    if t_b1.len() < 2 || t_b2.len() < 2 || s_b1.len() < 2 || s_b2.len() < 2 {
+        return None;
+    }
+    if stem_end >= s_b1.len() || stem_end >= s_b2.len() {
+        return None;
+    }
+    let prev = if stem_end == 0 { 1 } else { stem_end - 1 };
+    if prev >= s_b1.len() || prev >= axis_stem.len() {
+        return None;
+    }
+    let s1_line = extended_line(s_b1[prev], s_b1[stem_end]);
+    let s2_line = extended_line(s_b2[prev], s_b2[stem_end]);
+    let n = t_b1.len();
+    let t1_line = (*t_b1.first()?, *t_b1.last()?);
+    let t2_line = (*t_b2.first()?, *t_b2.last()?);
+    let p_n0 = intersect_lines_2d(t1_line.0, t1_line.1, s1_line.0, s1_line.1)?;
+    let p_n1 = intersect_lines_2d(t1_line.0, t1_line.1, s2_line.0, s2_line.1)?;
+    let p_f0 = intersect_lines_2d(t2_line.0, t2_line.1, s1_line.0, s1_line.1)?;
+    let p_f1 = intersect_lines_2d(t2_line.0, t2_line.1, s2_line.0, s2_line.1)?;
+    let mut near_hits = vec![(1usize, p_n0), (1, p_n1)];
+    let far_hits = vec![p_f0, p_f1];
+    if near_hits.len() < 2 || far_hits.len() < 2 {
+        return None;
+    }
+    near_hits.sort_by(|a, b| a.0.cmp(&b.0));
+    let (i0, p_n0) = near_hits[0];
+    let (_, p_n1) = near_hits[near_hits.len() - 1];
+    let p_f0 = far_hits[0];
+    let p_f1 = far_hits[far_hits.len() - 1];
+    let mut fp = Vec::new();
+    for i in 0..i0.min(n) {
+        fp.push(t_b1[i]);
+    }
+    fp.push(p_n0);
+    fp.push(p_f0);
+    for i in 0..n {
+        fp.push(t_b2[i]);
+    }
+    fp.push(p_f1);
+    fp.push(p_n1);
+    for i in i0..n {
+        fp.push(t_b1[i]);
+    }
+    if fp.len() >= 3 {
+        Some(fp)
+    } else {
+        None
+    }
 }
 
 fn closest_point_on_line(
@@ -1671,6 +2037,46 @@ mod tests {
         assert!(
             !y_orphan.is_empty() && y_orphan.iter().all(|y| (*y - 0.15).abs() < 1e-5),
             "unmatched layer must reach through outer face y=+0.15 (all vertices), got {y_orphan:?} in {fp_orphan:?}"
+        );
+    }
+
+    #[test]
+    fn t_unmatched_outer_face_uses_geometric_extents_not_list_order() {
+        // Finish layer listed first but sitting on the +offset side; core
+        // listed second with a more negative offset. Outer face toward the
+        // stem (+Y) must still be the finish outer edge, not the first list
+        // entry's b1.
+        let stem = vec![(5.0, 0.0), (5.0, 8.0)];
+        let through = vec![(0.0, 0.0), (10.0, 0.0)];
+        let layers_stem = vec![MiterLayer::with_id(
+            0.1,
+            0.05,
+            "orphan",
+            "Other",
+            uuid::Uuid::new_v4(),
+        )];
+        let layers_through = vec![
+            MiterLayer::with_id(0.1, 0.05, "finish", "Finish", uuid::Uuid::new_v4()),
+            MiterLayer::with_id(0.2, -0.15, "core", "Structure", uuid::Uuid::new_v4()),
+        ];
+        let fps = mitered_layer_footprints(
+            &stem,
+            &layers_stem,
+            0,
+            &through,
+            &layers_through,
+            None,
+            JoinKind::T,
+        );
+        let fp = fps[0].as_ref().expect("orphan");
+        let y_join: Vec<f64> = fp
+            .iter()
+            .filter(|(_, y)| y.abs() < 0.5)
+            .map(|(_, y)| *y)
+            .collect();
+        assert!(
+            !y_join.is_empty() && y_join.iter().all(|y| (*y - 0.15).abs() < 1e-5),
+            "outer face must be y=+0.15 despite reversed layer list, got {y_join:?} in {fp:?}"
         );
     }
 
@@ -2644,5 +3050,104 @@ mod tests {
             .as_ref()
             .expect("NoExtend must still yield the un-joined original footprint");
         assert!(fp_brick.iter().all(|(x, _)| *x <= 10.0 + 1e-9));
+    }
+
+    #[test]
+    fn near_face_override_matches_automatic_t_butt() {
+        let stem = vec![(5.0, 0.0), (5.0, 8.0)];
+        let through = vec![(0.0, 0.0), (10.0, 0.0)];
+        let stem_layers = vec![MiterLayer::with_id(0.2, -0.1, "core", "Structural", uuid::Uuid::new_v4())];
+        let through_layers = vec![
+            MiterLayer::with_id(0.2, -0.2, "core", "Structural", uuid::Uuid::new_v4()),
+            MiterLayer::with_id(0.2, 0.0, "other", "Structural", uuid::Uuid::new_v4()),
+        ];
+        let refs = vec![lref("core")];
+        let automatic = mitered_layer_footprints(
+            &stem, &stem_layers, 0, &through, &through_layers, None, JoinKind::T,
+        );
+        let ov = JunctionOverride {
+            default_style: Some(JoinOverrideStyle::NearFace),
+            layer_pairs: Vec::new(),
+        };
+        let overridden = mitered_layer_footprints_with_override(
+            &stem, &stem_layers, &refs, 0, &through, &through_layers, None, JoinKind::T,
+            Some(&ov),
+        );
+        assert_eq!(overridden[0], automatic[0]);
+    }
+
+    #[test]
+    fn far_face_override_extends_past_matched_near_face() {
+        let stem = vec![(5.0, 0.0), (5.0, 8.0)];
+        let through = vec![(0.0, 0.0), (10.0, 0.0)];
+        let stem_layers = vec![MiterLayer::with_id(0.2, -0.1, "core", "Structural", uuid::Uuid::new_v4())];
+        let through_layers = vec![
+            MiterLayer::with_id(0.2, -0.2, "core", "Structural", uuid::Uuid::new_v4()),
+            MiterLayer::with_id(0.2, 0.0, "other", "Structural", uuid::Uuid::new_v4()),
+        ];
+        let refs = vec![lref("core")];
+        let ov = JunctionOverride {
+            default_style: Some(JoinOverrideStyle::FarFace),
+            layer_pairs: Vec::new(),
+        };
+        let overridden = mitered_layer_footprints_with_override(
+            &stem, &stem_layers, &refs, 0, &through, &through_layers, None, JoinKind::T,
+            Some(&ov),
+        );
+        let fp = overridden[0].as_ref().expect("far-face override");
+        assert!(
+            fp.iter().any(|p| close(*p, (4.9, -0.2), 1e-5) || close(*p, (5.1, -0.2), 1e-5)
+                || p.1 < -0.05),
+            "far face of matched core is y=-0.2, got {fp:?}"
+        );
+    }
+
+    #[test]
+    fn unmatched_stem_notches_through_layers() {
+        let through = vec![(0.0, 0.0), (10.0, 0.0)];
+        let stem = vec![(5.0, 0.0), (5.0, 8.0)];
+        let through_layers = vec![
+            MiterLayer::with_id(0.2, -0.1, "core", "Structural", uuid::Uuid::new_v4()),
+        ];
+        let stem_layers = vec![
+            MiterLayer::with_id(0.2, -0.1, "core", "Structural", uuid::Uuid::new_v4()),
+            MiterLayer::with_id(0.2, 0.1, "finish", "Finish", uuid::Uuid::new_v4()),
+        ];
+        let cut = through_wall_cutout_footprints(&through, &through_layers, &stem, &stem_layers, 0);
+        assert!(cut[0].is_some(), "extra unmatched stem layer should notch the through layer");
+        let fp = cut[0].as_ref().unwrap();
+        assert!(fp.len() > 4, "notch should add vertices, got {fp:?}");
+    }
+
+    #[test]
+    fn different_materials_same_index_still_pair() {
+        let a = vec![MiterLayer::with_id(0.2, -0.1, "brick", "Finish", uuid::Uuid::new_v4())];
+        let b = vec![MiterLayer::with_id(0.2, -0.1, "block", "Structure", uuid::Uuid::new_v4())];
+        let pairing = match_layer_indices(&a, &b);
+        assert_eq!(pairing, vec![Some(0)]);
+    }
+
+    #[test]
+    fn arc_l_join_uses_concentric_offset_not_chord() {
+        let arc = vec![(-1.0, 0.0), (1.0, 0.0)];
+        let bulges = vec![1.0];
+        let stem = vec![(1.0, 0.0), (1.0, 2.0)];
+        let layers = vec![MiterLayer::geom(0.2, -0.1)];
+        let chord = mitered_layer_footprints(
+            &arc, &layers, 1, &stem, &layers, Some(0), JoinKind::L,
+        );
+        let radial = mitered_layer_footprints_with_bulges(
+            &arc, &layers, 1, &stem, &layers, Some(0), JoinKind::L, &bulges, &[],
+        );
+        let chord_fp = chord[0].as_ref().expect("chord miter");
+        let radial_fp = radial[0].as_ref().expect("radial miter");
+        assert_ne!(
+            chord_fp, radial_fp,
+            "arc join must not reuse the diameter-chord offset"
+        );
+        assert!(
+            radial_fp.iter().any(|(x, _)| (*x - 1.1).abs() < 0.08),
+            "concentric offset at the join should sit near x=1.1, got {radial_fp:?}"
+        );
     }
 }

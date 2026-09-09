@@ -186,7 +186,11 @@ impl OpenCADStudio {
                 ..Default::default()
             }
         } else {
-            let selected = self.tabs[i].scene.selected_entities();
+            let selected_raw = self.tabs[i].scene.selected_entities();
+            let selected = collapse_selection_to_wall_package(
+                &self.tabs[i].scene,
+                selected_raw,
+            );
             let mut panel = match selected.len() {
                 0 => {
                     use crate::scene::model::object::{PropSection, PropValue, Property};
@@ -458,6 +462,11 @@ impl OpenCADStudio {
                 }
                 1 => {
                     let (handle, source_entity) = selected[0];
+                    let compact_solid =
+                        crate::scene::model::solid_history::has_compact_solid_properties(
+                            &self.tabs[i].scene.document,
+                            handle,
+                        );
                     let contextual = crate::scene::annotative::entity_for_annotation_context(
                         &self.tabs[i].scene.document,
                         source_entity,
@@ -2125,7 +2134,12 @@ impl OpenCADStudio {
                         }
                     }
                     if compact_solid {
-                        retain_compact_solid_sections(&mut sections);
+                        sections.retain(|section| {
+                            !section.props.iter().any(|property| {
+                                property.field.starts_with("acis_")
+                                    || property.field.starts_with("s3d_")
+                            })
+                        });
                     }
                     let title = match entity {
                         acadrust::EntityType::Insert(ins) => {
@@ -2461,12 +2475,50 @@ impl OpenCADStudio {
         let (new_handle, new_grips, new_grip_handles) = {
             let annotation_scale_handle = self.tabs[i].scene.displayed_annotation_scale_handle();
             let selected = self.tabs[i].scene.selected_entities();
-            let single_handle = (selected.len() == 1
-                && !self.tabs[i].scene.is_layer_locked(selected[0].0))
-                .then(|| selected[0].0);
+            let wall_owners: Vec<Handle> = selected
+                .iter()
+                .map(|(handle, _)| {
+                    crate::modules::aec::commands::resolve_wall_package(
+                        &self.tabs[i].scene,
+                        *handle,
+                    )
+                })
+                .collect();
+            let single_wall = wall_owners.first().copied().filter(|owner| {
+                !owner.is_null()
+                    && wall_owners.iter().all(|h| h == owner)
+                    && self.tabs[i]
+                        .scene
+                        .document
+                        .get_entity(*owner)
+                        .and_then(crate::modules::aec::commands::wall_from_entity)
+                        .is_some()
+            });
+            let single_handle = if let Some(owner) = single_wall {
+                (!self.tabs[i].scene.is_layer_locked(owner)).then_some(owner)
+            } else {
+                (selected.len() == 1 && !self.tabs[i].scene.is_layer_locked(selected[0].0))
+                    .then(|| selected[0].0)
+            };
             let mut grips = Vec::new();
             let mut handles = Vec::new();
+            let selected: Vec<(Handle, &acadrust::EntityType)> = if let Some(owner) = single_wall {
+                self.tabs[i]
+                    .scene
+                    .document
+                    .get_entity(owner)
+                    .map(|entity| vec![(owner, entity)])
+                    .unwrap_or_else(|| selected)
+            } else {
+                selected
+            };
             for (handle, entity) in selected {
+                if crate::modules::aec::commands::is_wall_derived_non_axis(
+                    &self.tabs[i].scene,
+                    handle,
+                ) {
+                    continue;
+                }
                 if self.tabs[i].scene.is_layer_locked(handle) {
                     continue;
                 }
@@ -3054,6 +3106,30 @@ fn make_sections_read_only(
 
 // ── Multi-selection property aggregation ───────────────────────────────────
 
+fn collapse_selection_to_wall_package<'a>(
+    scene: &'a crate::scene::Scene,
+    selected: Vec<(Handle, &'a EntityType)>,
+) -> Vec<(Handle, &'a EntityType)> {
+    if selected.is_empty() {
+        return selected;
+    }
+    let owners: Vec<Handle> = selected
+        .iter()
+        .map(|(handle, _)| crate::modules::aec::commands::resolve_wall_package(scene, *handle))
+        .collect();
+    let owner = owners[0];
+    if owner.is_null() || owners.iter().any(|h| *h != owner) {
+        return selected;
+    }
+    let Some(entity) = scene.document.get_entity(owner) else {
+        return selected;
+    };
+    if crate::modules::aec::commands::wall_from_entity(entity).is_none() {
+        return selected;
+    }
+    vec![(owner, entity)]
+}
+
 pub(super) fn build_selection_groups(
     selected: &[(Handle, &EntityType)],
 ) -> Vec<ui::properties::SelectionGroup> {
@@ -3369,6 +3445,7 @@ pub(super) fn storey_prop_section(
 pub(super) fn aggregate_sections(
     selected: &[(Handle, &EntityType)],
     text_style_names: &[String],
+    style_library: Option<&crate::modules::aec::engine::library::StyleLibrary>,
 ) -> Vec<crate::scene::model::object::PropSection> {
     if selected.is_empty() {
         return vec![];
@@ -4296,5 +4373,74 @@ mod chprop_integration_tests {
         let new_lw = LineWeight::from_value(50);
         let _ = app.update(Message::RibbonLineweightChanged(new_lw));
         assert_eq!(app.ribbon.active_lineweight, new_lw);
+    }
+}
+
+#[cfg(test)]
+mod wall_package_selection_tests {
+    use super::{collapse_selection_to_wall_package, wall_prop_section};
+    use crate::modules::aec::commands::{
+        regenerate_wall_representation, resolve_wall_package, wall_from_entity, wall_record,
+        AEC_APPID, WallJustification, WallLayer,
+    };
+    use crate::modules::aec::engine::plan_view::PlanPhase;
+    use crate::scene::Scene;
+    use acadrust::entities::lwpolyline::{LwPolyline, LwVertex};
+    use acadrust::types::Vector2;
+    use acadrust::xdata::ExtendedDataRecord;
+    use acadrust::EntityType;
+
+    fn add_simple_wall(scene: &mut Scene) -> acadrust::Handle {
+        let mut pl = LwPolyline::new();
+        pl.add_vertex(LwVertex::new(Vector2::new(0.0, 0.0)));
+        pl.add_vertex(LwVertex::new(Vector2::new(5.0, 0.0)));
+        let mut entity = EntityType::LwPolyline(pl);
+        let layers = vec![WallLayer {
+            material: "Brick".into(),
+            thickness: 0.2,
+            function: "Structural".into(),
+            axis_offset: -0.1,
+            bottom_offset: 0.0,
+            top_offset: 0.0,
+            layer_override: None,
+            hatch_override: None,
+            layer_id: uuid::Uuid::new_v4(),
+        }];
+        let mut record = ExtendedDataRecord::new(AEC_APPID);
+        record.values = wall_record(
+            "style1",
+            3.0,
+            0,
+            &layers,
+            &[],
+            WallJustification::Center,
+            PlanPhase::New,
+            None,
+        );
+        entity.common_mut().extended_data.add_record(record);
+        scene.add_entity(entity)
+    }
+
+    #[test]
+    fn selecting_derived_layer_shows_wall_package_style() {
+        let mut scene = Scene::new();
+        let wall = add_simple_wall(&mut scene);
+        regenerate_wall_representation(&mut scene, wall, None).expect("regen");
+        let derived = wall_from_entity(scene.document.get_entity(wall).unwrap())
+            .expect("WALL")
+            .derived_handles;
+        assert!(!derived.is_empty());
+        let child = derived[0];
+        assert_eq!(resolve_wall_package(&scene, child), wall);
+        let selected = vec![(child, scene.document.get_entity(child).unwrap())];
+        let collapsed = collapse_selection_to_wall_package(&scene, selected);
+        assert_eq!(collapsed.len(), 1);
+        assert_eq!(collapsed[0].0, wall);
+        let section = wall_prop_section(collapsed[0].1, None).expect("wall section");
+        assert!(
+            section.props.iter().any(|p| p.field == "wall_style"),
+            "package selection must expose wall_style, got {:?}",
+            section.props.iter().map(|p| p.field).collect::<Vec<_>>()
+        );
     }
 }

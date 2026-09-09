@@ -229,9 +229,80 @@ pub fn build_effective_rule_set(
     if let Some(style) = style {
         if let Some(overlay) = config.style_overlays.get(&style.style.id) {
             merge_style_overlay_into_rules(&mut rules, overlay);
+            apply_overlay_layer_visibility(&mut rules, overlay, style);
         }
     }
     rules
+}
+
+fn apply_overlay_layer_visibility(
+    rules: &mut ComponentRuleSet,
+    overlay: &StyleDisplayOverlay,
+    style: &WallStyle,
+) {
+    if overlay.layer_visibility.is_empty() || style.layers.is_empty() {
+        return;
+    }
+    let refs_2d: Vec<LayerRef> = style
+        .layers
+        .iter()
+        .enumerate()
+        .filter_map(|(i, layer)| {
+            let vis = overlay
+                .layer_visibility
+                .get(&layer.layer_id)
+                .copied()
+                .unwrap_or_default();
+            if vis.visible_2d {
+                Some(LayerRef {
+                    material_id: layer.material_id.clone(),
+                    role_tag: layer.role_tag.clone(),
+                    index: i,
+                    layer_id: Some(layer.layer_id),
+                })
+            } else {
+                None
+            }
+        })
+        .collect();
+    if refs_2d.len() != style.layers.len() {
+        rules.layer_filter.insert(
+            WallComponentSlot::Layers2D.key().to_string(),
+            LayerSelection::Explicit(refs_2d.clone()),
+        );
+        rules.layer_filter.insert(
+            WallComponentSlot::LayerHatch2D.key().to_string(),
+            LayerSelection::Explicit(refs_2d),
+        );
+    }
+    let refs_3d: Vec<LayerRef> = style
+        .layers
+        .iter()
+        .enumerate()
+        .filter_map(|(i, layer)| {
+            let vis = overlay
+                .layer_visibility
+                .get(&layer.layer_id)
+                .copied()
+                .unwrap_or_default();
+            if vis.visible_3d {
+                Some(LayerRef {
+                    material_id: layer.material_id.clone(),
+                    role_tag: layer.role_tag.clone(),
+                    index: i,
+                    layer_id: Some(layer.layer_id),
+                })
+            } else {
+                None
+            }
+        })
+        .collect();
+    if refs_3d.len() != style.layers.len() {
+        rules.layer_filter.insert(
+            WallComponentSlot::Solid3D.key().to_string(),
+            LayerSelection::Explicit(refs_3d),
+        );
+    }
 }
 
 /// Global plan-type visibility ∩ representation mode.
@@ -1832,6 +1903,74 @@ mod tests {
         assert_eq!(ov.hatch_scale, Some(2.0));
         let without = build_effective_rule_set(&cfg, None, None);
         assert!(without.style_for(WallComponentSlot::ContourHatch2D).is_none());
+    }
+
+    #[test]
+    fn overlay_layer_visibility_filters_2d_and_3d() {
+        let id_a = Uuid::new_v4();
+        let id_b = Uuid::new_v4();
+        let mut overlay = StyleDisplayOverlay::default();
+        overlay.layer_visibility.insert(
+            id_b,
+            crate::modules::aec::engine::display_component::LayerVis {
+                visible_2d: false,
+                visible_3d: true,
+            },
+        );
+        let mut cfg = DisplayConfig::new(
+            "A".into(),
+            "Arch".into(),
+            crate::modules::aec::engine::plan_view::PlanningStage::Design,
+            crate::modules::aec::engine::plan_view::ViewType::FloorPlan,
+        );
+        cfg.style_overlays.insert("s".into(), overlay);
+        let style = WallStyle {
+            style: Style {
+                id: "s".to_string(),
+                name: "S".to_string(),
+                object_kind: "Wall".to_string(),
+                parent_style_id: None,
+            },
+            layers: vec![
+                Layer {
+                    material_id: "a".into(),
+                    thickness: LayerValue::Fixed(0.1),
+                    function: LayerFunction::Structural,
+                    axis_offset: LayerValue::Fixed(0.0),
+                    bottom_offset: 0.0,
+                    top_offset: 0.0,
+                    layer_override: None,
+                    hatch_override: None,
+                    role_tag: None,
+                    layer_id: id_a,
+                },
+                Layer {
+                    material_id: "b".into(),
+                    thickness: LayerValue::Fixed(0.1),
+                    function: LayerFunction::Insulation,
+                    axis_offset: LayerValue::Fixed(0.1),
+                    bottom_offset: 0.0,
+                    top_offset: 0.0,
+                    layer_override: None,
+                    hatch_override: None,
+                    role_tag: None,
+                    layer_id: id_b,
+                },
+            ],
+            display_profiles: std::collections::HashMap::new(),
+        };
+        let rules = build_effective_rule_set(&cfg, Some(&style), None);
+        match rules.layer_filter_for(WallComponentSlot::Layers2D) {
+            LayerSelection::Explicit(refs) => {
+                assert_eq!(refs.len(), 1);
+                assert_eq!(refs[0].layer_id, Some(id_a));
+            }
+            other => panic!("expected explicit 2D filter, got {other:?}"),
+        }
+        assert_eq!(
+            rules.layer_filter_for(WallComponentSlot::Solid3D),
+            &LayerSelection::All
+        );
     }
 
     #[test]

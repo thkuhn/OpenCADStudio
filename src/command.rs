@@ -1578,6 +1578,13 @@ pub enum CmdResult {
         entity: EntityType,
         finish: bool,
     },
+    /// Commit several command-owned live entities (e.g. AEC wall axis + contour).
+    CommitLiveEntities(Vec<EntityType>),
+    /// Replace several live entities in place. When `finish` is true the command exits.
+    UpdateLiveEntities {
+        updates: Vec<(Handle, EntityType)>,
+        finish: bool,
+    },
     /// End a command-owned live entity without replacing its already-current
     /// document geometry. PLINE uses this for Enter/Escape after the latest
     /// vertex was published, avoiding one redundant geometry epoch/GPU patch.

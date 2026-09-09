@@ -558,4 +558,19 @@ mod tests {
         assert_eq!(set.solids[0].footprint, uncut.layer_contours_2d[0]);
         assert!(!set.rep2d.cut_layer_pieces_2d.is_empty());
     }
+
+    #[test]
+    fn curved_display_set_solids_carry_layer_bulges() {
+        let axis = vec![(-1.0, 0.0), (1.0, 0.0)];
+        let bulges = vec![1.0];
+        let layers = vec![(0.2, 0.0)];
+        let set = build_wall_display_set(&axis, &bulges, &layers, 0.0, &[], &[(3.0, 0.0)]);
+        assert_eq!(set.solids.len(), 1);
+        assert!(
+            set.solids[0].bulges.iter().any(|b| b.abs() > 0.5),
+            "3D path must keep concentric-arc bulges, got {:?}",
+            set.solids[0].bulges
+        );
+        assert_eq!(set.solids[0].footprint, set.rep2d.layer_contours_2d[0]);
+    }
 }
