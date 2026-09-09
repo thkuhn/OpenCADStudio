@@ -239,6 +239,7 @@ impl OpenCADStudio {
         self.tabs[i].snap_result = None;
         self.refresh_selected_grips();
         self.refresh_properties();
+        self.sync_wall_axis_layer_for_session(i);
         true
     }
 
@@ -687,7 +688,7 @@ impl OpenCADStudio {
     /// pick-first selector relaunching MOVE on the picked set works this way).
     /// Pure-selection commands (SELECTALL, QSELECT, …) run without an active
     /// command, so `was_active` is false and their selection is preserved.
-    pub(super) fn apply_cmd_result(&mut self, result: CmdResult) -> Task<Message> {
+    pub(in crate::app) fn apply_cmd_result(&mut self, result: CmdResult) -> Task<Message> {
         let settings = self.tabs[self.active_tab]
             .active_cmd
             .as_ref()
@@ -764,6 +765,7 @@ impl OpenCADStudio {
             self.command_line.set_step_options(Vec::new());
             self.restore_add_selected_defaults();
         }
+        self.sync_wall_axis_layer_for_session(i);
         task
     }
 
@@ -2318,6 +2320,19 @@ impl OpenCADStudio {
                     }
                 }
             }
+            CmdResult::CommitLiveEntity(entity) => {
+                return self.apply_cmd_result_inner(CmdResult::CommitLiveEntities(vec![entity]));
+            }
+            CmdResult::UpdateLiveEntity {
+                handle,
+                entity,
+                finish,
+            } => {
+                return self.apply_cmd_result_inner(CmdResult::UpdateLiveEntities {
+                    updates: vec![(handle, entity)],
+                    finish,
+                });
+            }
             CmdResult::CommitLiveEntities(entities) => {
                 let label = self.history_label_from_active_cmd(i, "ENTITY");
                 let mut handles = Vec::with_capacity(entities.len());
@@ -2427,15 +2442,8 @@ impl OpenCADStudio {
                                 handle,
                                 &companions,
                             );
-                            let style_library =
-                                crate::modules::aec::engine::project::resolve_style_library(
-                                    self.aec_project_explorer_file.as_ref(),
-                                );
-                            let _ = crate::modules::aec::commands::regenerate_wall_representation(
-                                &mut self.tabs[i].scene,
-                                handle,
-                                Some(&style_library),
-                            );
+                            let _ = self.regenerate_wall_respecting_active_display_config(i, handle);
+                            self.reapply_active_display_config_to_wall_packages(i, &[handle]);
                             // Remember the just-used style/height as the session
                             // default.
                             if let Some(entity) = self.tabs[i].scene.document.get_entity(handle) {

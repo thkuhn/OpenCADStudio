@@ -702,6 +702,39 @@ pub fn write_wall_hatch_override(
 
 /// Every display child of `owner` (contour / hatch / solid): the persisted
 /// `derived_handles` list plus a document scan for `WALL_REP` / `WALL_DERIVED`.
+fn aec_value_as_handle(value: &XDataValue) -> Option<Handle> {
+    match value {
+        XDataValue::Handle(h) => Some(*h),
+        XDataValue::Integer32(v) if *v >= 0 => Some(Handle::new(*v as u64)),
+        XDataValue::Integer16(v) if *v >= 0 => Some(Handle::new(*v as u64)),
+        XDataValue::String(s) => {
+            let s = s.trim().trim_start_matches("0x").trim_start_matches("0X");
+            u64::from_str_radix(s, 16)
+                .ok()
+                .or_else(|| s.parse().ok())
+                .map(Handle::new)
+        }
+        _ => None,
+    }
+}
+
+fn wall_rep_owner_from_entity(entity: &EntityType) -> Option<Handle> {
+    for record in entity.common().extended_data.records() {
+        if record.application_name != AEC_APPID {
+            continue;
+        }
+        let kind = match record.values.first() {
+            Some(XDataValue::String(s)) => s.as_str(),
+            _ => continue,
+        };
+        if kind != "WALL_REP" && kind != "WALL_DERIVED" {
+            continue;
+        }
+        return record.values.get(1).and_then(aec_value_as_handle);
+    }
+    None
+}
+
 fn collect_wall_display_children(scene: &Scene, owner: Handle) -> Vec<Handle> {
     let mut out = Vec::new();
     if let Some(entity) = scene.document.get_entity(owner) {
@@ -709,23 +742,18 @@ fn collect_wall_display_children(scene: &Scene, owner: Handle) -> Vec<Handle> {
             out.extend(wall.derived_handles);
         }
     }
+    for h in engine::owner_index::children_of(&scene.document, owner) {
+        if !out.contains(&h) {
+            out.push(h);
+        }
+    }
     for entity in scene.document.entities() {
         let handle = entity.common().handle;
         if handle == owner {
             continue;
         }
-        let Some(record) = read_aec_record(entity) else {
-            continue;
-        };
-        match record.values.as_slice() {
-            [XDataValue::String(kind), XDataValue::Handle(axis), ..]
-                if (kind == "WALL_REP" || kind == "WALL_DERIVED") && *axis == owner =>
-            {
-                if !out.contains(&handle) {
-                    out.push(handle);
-                }
-            }
-            _ => {}
+        if wall_rep_owner_from_entity(entity) == Some(owner) && !out.contains(&handle) {
+            out.push(handle);
         }
     }
     out
@@ -756,25 +784,148 @@ fn reuse_or_add_wall_contour(
     scene.add_entity(EntityType::LwPolyline(pl))
 }
 
+fn clicked_sample_xy(scene: &Scene, handle: Handle) -> Vec<(f64, f64)> {
+    match scene.document.get_entity(handle) {
+        Some(EntityType::LwPolyline(pl)) => {
+            if pl.vertices.len() < 3 {
+                return Vec::new();
+            }
+            pl.vertices
+                .iter()
+                .map(|v| (v.location.x, v.location.y))
+                .collect()
+        }
+        Some(EntityType::Hatch(_)) => {
+            let Some(model) = scene.hatches.get(&handle) else {
+                return Vec::new();
+            };
+            let (ox, oy) = (model.world_origin[0], model.world_origin[1]);
+            model
+                .boundary
+                .iter()
+                .filter_map(|&[x, y]| {
+                    if x.is_finite() && y.is_finite() {
+                        Some((x as f64 + ox, y as f64 + oy))
+                    } else {
+                        None
+                    }
+                })
+                .collect()
+        }
+        Some(EntityType::Solid3D(solid)) => {
+            let mut samples = Vec::new();
+            if let Some(mesh) = scene.meshes.get(&handle) {
+                let [xmin, ymin, xmax, ymax] = mesh.world_aabb;
+                if xmin.is_finite() && ymin.is_finite() && xmax.is_finite() && ymax.is_finite() {
+                    samples.extend([
+                        (xmin as f64, ymin as f64),
+                        (xmax as f64, ymin as f64),
+                        (xmax as f64, ymax as f64),
+                        (xmin as f64, ymax as f64),
+                        (((xmin + xmax) as f64) * 0.5, ((ymin + ymax) as f64) * 0.5),
+                    ]);
+                }
+                if samples.len() < 3 {
+                    if let Some(lod) = mesh.lods.first() {
+                        samples.extend(lod.verts.iter().take(32).filter_map(|v| {
+                            (v[0].is_finite() && v[1].is_finite()).then_some((v[0] as f64, v[1] as f64))
+                        }));
+                    }
+                }
+            }
+            if samples.len() < 3 {
+                for wire in &solid.wires {
+                    for p in &wire.points {
+                        if p.x.is_finite() && p.y.is_finite() {
+                            samples.push((p.x, p.y));
+                        }
+                    }
+                }
+            }
+            samples
+        }
+        _ => Vec::new(),
+    }
+}
+
+fn resolve_wall_package_by_geometry(scene: &Scene, clicked: Handle) -> Option<Handle> {
+    let samples = clicked_sample_xy(scene, clicked);
+    if samples.len() < 3 {
+        return None;
+    }
+    let mut best: Option<(Handle, f64)> = None;
+    for entity in scene.document.entities() {
+        let Some(wall) = wall_from_entity(entity) else {
+            continue;
+        };
+        let owner = entity.common().handle;
+        if owner == clicked {
+            continue;
+        }
+        let axis = get_wall_vertices(scene, owner);
+        if axis.len() < 2 {
+            continue;
+        }
+        let max_ok = wall.total_thickness().max(1e-6) * 1.25 + 1e-4;
+        let mut worst = 0.0_f64;
+        let mut all_near = true;
+        for &(x, y) in &samples {
+            let p = DVec3::new(x, y, 0.0);
+            let mut dmin = f64::MAX;
+            for w in axis.windows(2) {
+                dmin = dmin.min(point_to_segment_dist_2d(p, w[0], w[1]));
+            }
+            if dmin > max_ok {
+                all_near = false;
+                break;
+            }
+            worst = worst.max(dmin);
+        }
+        if !all_near {
+            continue;
+        }
+        match best {
+            None => best = Some((owner, worst)),
+            Some((_, d)) if worst < d => best = Some((owner, worst)),
+            _ => {}
+        }
+    }
+    best.map(|(h, _)| h)
+}
+
 pub fn resolve_wall_package(scene: &Scene, clicked: Handle) -> Handle {
     let Some(entity) = scene.document.get_entity(clicked) else {
         return clicked;
     };
-    let Some(record) = read_aec_record(entity) else {
+    if wall_from_entity(entity).is_some() {
         return clicked;
-    };
-    match record.values.as_slice() {
-        [XDataValue::String(kind), XDataValue::Handle(axis), ..]
-            if kind == "WALL_REP" || kind == "WALL_DERIVED" =>
-        {
-            if scene.document.get_entity(*axis).is_some() {
-                *axis
-            } else {
-                clicked
+    }
+    if let Some(axis) = wall_rep_owner_from_entity(entity) {
+        if scene.document.get_entity(axis).is_some() {
+            return axis;
+        }
+    }
+    // Fallback: the clicked entity is listed on a wall's derived_handles /
+    // CHILD_HANDLES even if child XDATA was stripped (DWG round-trip / merge).
+    for entity in scene.document.entities() {
+        let owner = entity.common().handle;
+        if let Some(wall) = wall_from_entity(entity) {
+            if wall.derived_handles.iter().any(|h| *h == clicked) {
+                return owner;
             }
         }
-        _ => clicked,
+        if engine::owner_index::children_of(&scene.document, owner)
+            .iter()
+            .any(|h| *h == clicked)
+            && wall_from_entity(entity).is_some()
+        {
+            return owner;
+        }
     }
+    if let Some(owner) = resolve_wall_package_by_geometry(scene, clicked) {
+        return owner;
+    }
+    clicked
 }
 
 /// Expand `handles` so each wall owner is accompanied by its display children.
@@ -801,7 +952,7 @@ pub fn expand_handles_for_wall_packages(scene: &Scene, handles: &[Handle]) -> Ve
 /// [`wall_axis_snap_wires`] to keep such entities out of the generic snap
 /// candidate set (Bug 2): walls must always connect at their axes, never at
 /// a shell/hatch/solid outline.
-fn is_wall_derived_non_axis(scene: &Scene, handle: Handle) -> bool {
+pub fn is_wall_derived_non_axis(scene: &Scene, handle: Handle) -> bool {
     resolve_wall_package(scene, handle) != handle
 }
 
@@ -1443,11 +1594,33 @@ pub fn wall_layer_extrusions(
 /// Register the `AEC_WALL_AXIS` layer (invisible / non-printable) if it
 /// isn't already in the document's layer table.
 pub fn ensure_wall_axis_layer(scene: &mut Scene) {
+    set_wall_axis_layer_visible(scene, false);
+}
+
+/// Session override: show or hide every wall axis via `AEC_WALL_AXIS`.
+/// The layer stays non-plottable. OSNAP still injects axis wires when off.
+pub fn set_wall_axis_layer_visible(scene: &mut Scene, visible: bool) {
     scene.ensure_layer(AEC_WALL_AXIS_LAYER);
-    if let Some(layer) = scene.document.layers.get_mut(AEC_WALL_AXIS_LAYER) {
+    let changed = if let Some(layer) = scene.document.layers.get_mut(AEC_WALL_AXIS_LAYER) {
         layer.is_plottable = false;
-        layer.flags.off = true;
+        let was_off = layer.flags.off;
+        layer.flags.off = !visible;
+        was_off != !visible
+    } else {
+        false
+    };
+    if changed {
+        scene.invalidate_layer_dependencies(&[AEC_WALL_AXIS_LAYER.to_string()]);
     }
+}
+
+/// Idle visibility of the axis layer from a resolved rule set. Absent rules
+/// keep the historical default (layer off).
+pub fn axis_visible_from_rules(
+    rules: Option<&engine::display_component::ComponentRuleSet>,
+) -> bool {
+    use engine::display_component::WallComponentSlot;
+    rules.is_some_and(|r| r.is_visible(WallComponentSlot::AxisLine))
 }
 
 /// Erase draw-time companion entities that are superseded once
@@ -1472,12 +1645,10 @@ pub fn erase_wall_live_preview_companions(
         let Some(entity) = scene.document.get_entity(h) else {
             continue;
         };
-        // Only untagged preview polylines. Never touch WALL axes, WALL_REP
-        // children, or unrelated geometry.
+        // Drop the rubber-band contour *and* a superseded live axis: each
+        // segment currently `CommitEntity`s a *new* WALL polyline while the
+        // draw-time live axis stays in the document as a visible 2D line.
         if !matches!(entity, EntityType::LwPolyline(_)) {
-            continue;
-        }
-        if wall_from_entity(entity).is_some() {
             continue;
         }
         if is_wall_display_child_entity(entity) {
@@ -2106,8 +2277,9 @@ fn regenerate_wall_representation_inner(
         scene.erase_entities(&erase_now);
     }
 
-    // The axis is reference geometry from here on: invisible, its own layer.
-    ensure_wall_axis_layer(scene);
+    // The axis is reference geometry on its own layer. Idle visibility follows
+    // the AxisLine slot when rules are present; otherwise the layer stays off.
+    set_wall_axis_layer_visible(scene, axis_visible_from_rules(rules));
     if let Some(e) = scene.document.get_entity_mut(wall_handle) {
         e.as_entity_mut().set_layer(AEC_WALL_AXIS_LAYER.to_string());
     }
@@ -2412,6 +2584,14 @@ fn regenerate_wall_representation_inner(
             Some(LayerSelection::Explicit(refs)) => layer_ref_matches(&layer_ref, refs),
             _ => true,
         };
+        let layer_included_layers2d = match rules.map(|r| r.layer_filter_for(WallComponentSlot::Layers2D)) {
+            Some(LayerSelection::Explicit(refs)) => layer_ref_matches(&layer_ref, refs),
+            _ => true,
+        };
+        let layer_included_hatch = match rules.map(|r| r.layer_filter_for(WallComponentSlot::LayerHatch2D)) {
+            Some(LayerSelection::Explicit(refs)) => layer_ref_matches(&layer_ref, refs),
+            _ => true,
+        };
         let layer_included_solid = match rules.map(|r| r.layer_filter_for(WallComponentSlot::Solid3D)) {
             Some(LayerSelection::Explicit(refs)) => layer_ref_matches(&layer_ref, refs),
             _ => true,
@@ -2532,9 +2712,10 @@ fn regenerate_wall_representation_inner(
                 continue;
             }
 
-            let draw_contour = (layers2d_visible && layer_included_contour)
+            let draw_contour = (layers2d_visible && layer_included_layers2d)
                 || (contour2d_visible && is_envelope && layer_included_contour);
-            let draw_hatch = layer_hatch_visible || (contour_hatch_visible && is_envelope);
+            let draw_hatch = (layer_hatch_visible && layer_included_hatch)
+                || (contour_hatch_visible && is_envelope);
 
             if draw_contour {
                 let mut pl = LwPolyline::new();
@@ -2827,6 +3008,8 @@ pub struct WallCommand {
     last_tangent: Option<DVec2>,
     /// Number of segments written this command (Enter after ≥1 ends the chain).
     segments_committed: usize,
+    /// Untagged live-preview contour handles to erase after the axis commit.
+    pending_preview_companions: Vec<Handle>,
 }
 
 impl WallCommand {
@@ -2859,6 +3042,7 @@ impl WallCommand {
             last_axis_from: None,
             last_tangent: None,
             segments_committed: 0,
+            pending_preview_companions: Vec::new(),
         };
         cmd.apply_first_available_style();
         cmd
@@ -2905,6 +3089,32 @@ impl WallCommand {
             }
         }
         cmd
+    }
+
+    /// Replace the style library (e.g. project-resolved) and re-apply the
+    /// current style id, or the first available style when the previous id
+    /// is missing from the new library.
+    pub fn with_library(mut self, library: StyleLibrary) -> Self {
+        let previous = self.style_id.clone();
+        self.library = Some(library);
+        self.style_id = None;
+        self.resolved_layers = None;
+        if let Some(id) = previous {
+            if let Some(lib) = &self.library {
+                if let Some(style) = lib.wall_styles.iter().find(|s| s.style.id == id) {
+                    if let Some(resolved) =
+                        resolve_wall_style_layers(lib, &style.style.id, None)
+                    {
+                        self.style_id = Some(style.style.id.clone());
+                        self.resolved_layers = Some(resolved);
+                    }
+                }
+            }
+        }
+        if self.style_id.is_none() {
+            self.apply_first_available_style();
+        }
+        self
     }
 
     /// Parse a command-line value, falling back to `default` for an empty
@@ -2978,6 +3188,10 @@ impl WallCommand {
         self.vertices = vec![end];
         self.bulges = vec![0.0];
         self.segments_committed += 1;
+        self.pending_preview_companions = [self.live_handle, self.live_contour_handle]
+            .into_iter()
+            .flatten()
+            .collect();
         self.live_handle = None;
         self.live_contour_handle = None;
         CmdResult::CommitEntity(entity)
@@ -3472,15 +3686,21 @@ impl CadCommand for WallCommand {
         if !is_wall {
             return;
         }
+        if !self.pending_preview_companions.is_empty() {
+            erase_wall_live_preview_companions(
+                scene,
+                wall_handle,
+                &self.pending_preview_companions,
+            );
+            self.pending_preview_companions.clear();
+        }
         auto_join_committed_wall_segment(
             scene,
             wall_handle,
             self.last_committed,
             self.library.as_ref(),
         );
-        if engine::owner_index::peers_of(&scene.document, wall_handle).is_empty() {
-            let _ = regenerate_wall_representation(scene, wall_handle, self.library.as_ref());
-        }
+        let _ = regenerate_wall_representation(scene, wall_handle, self.library.as_ref());
         self.last_committed = Some(wall_handle);
     }
 
@@ -5669,9 +5889,9 @@ pub fn join_junction_in_document(
 /// needs the full package without regenerating.
 pub fn wall_package_handles(scene: &Scene, wall_handle: Handle) -> Vec<Handle> {
     let mut handles = vec![wall_handle];
-    if let Some(entity) = scene.document.get_entity(wall_handle) {
-        if let Some(v2) = wall_from_entity(entity) {
-            handles.extend(v2.derived_handles.iter().copied());
+    for child in collect_wall_display_children(scene, wall_handle) {
+        if !handles.contains(&child) {
+            handles.push(child);
         }
     }
     handles
@@ -6077,7 +6297,7 @@ impl CadCommand for WallExtendCommand {
         true
     }
 
-    fn on_entity_pick(&mut self, handle: Handle, pt: DVec3) -> CmdResult {
+    fn on_entity_pick(&mut self, handle: Handle, _pt: DVec3) -> CmdResult {
         if self.wall.is_none() {
             if handle.is_null() {
                 return CmdResult::NeedPoint;
@@ -7384,6 +7604,43 @@ mod wall_command_tests {
     }
 
     #[test]
+    fn wall_commit_erases_live_preview_axis_and_contour() {
+        let mut scene = Scene::new();
+        let mut cmd = WallCommand::new_with_library(None);
+        cmd.on_point(DVec3::new(0.0, 0.0, 0.0));
+        let mut live_axis = LwPolyline::new();
+        live_axis.add_vertex(LwVertex::new(Vector2::new(0.0, 0.0)));
+        live_axis.add_vertex(LwVertex::new(Vector2::new(3.0, 0.0)));
+        let mut live_contour = LwPolyline::new();
+        live_contour.is_closed = true;
+        live_contour.add_vertex(LwVertex::new(Vector2::new(0.0, -0.1)));
+        live_contour.add_vertex(LwVertex::new(Vector2::new(3.0, -0.1)));
+        live_contour.add_vertex(LwVertex::new(Vector2::new(3.0, 0.1)));
+        live_contour.add_vertex(LwVertex::new(Vector2::new(0.0, 0.1)));
+        let live_handles = vec![
+            scene.add_entity(EntityType::LwPolyline(live_axis)),
+            scene.add_entity(EntityType::LwPolyline(live_contour)),
+        ];
+        cmd.set_live_handles(live_handles.clone());
+        let committed = match cmd.on_point(DVec3::new(4.0, 0.0, 0.0)) {
+            CmdResult::CommitEntity(e) => e,
+            _ => panic!("expected commit"),
+        };
+        let handle = scene.add_entity(committed);
+        cmd.on_entities_committed(&mut scene, &[handle]);
+        for h in live_handles {
+            if h != handle {
+                assert!(
+                    scene.document.get_entity(h).is_none(),
+                    "live preview {h:?} should be erased"
+                );
+            }
+        }
+        let wall = wall_from_entity(scene.document.get_entity(handle).unwrap()).unwrap();
+        assert!(!wall.derived_handles.is_empty());
+    }
+
+    #[test]
     fn arc_keyword_toggles_arc_mode_and_produces_a_bulge_segment() {
         let mut cmd = WallCommand::new_with_library(None);
         cmd.on_point(DVec3::new(0.0, 0.0, 0.0));
@@ -8651,6 +8908,148 @@ mod wall_command_tests {
     }
 
     #[test]
+    fn resolve_wall_package_uses_derived_handles_without_child_xdata() {
+        let mut scene = Scene::new();
+        let wall_handle = add_multi_layer_wall(&mut scene);
+        regenerate_wall_representation(&mut scene, wall_handle, None)
+            .expect("regeneration should succeed");
+        let derived = wall_from_entity(scene.document.get_entity(wall_handle).unwrap())
+            .expect("WALL")
+            .derived_handles;
+        assert!(!derived.is_empty());
+        let child = derived[0];
+        if let Some(entity) = scene.document.get_entity_mut(child) {
+            entity.common_mut().extended_data = acadrust::xdata::ExtendedData::default();
+        }
+        assert_eq!(resolve_wall_package(&scene, child), wall_handle);
+        let pkg = wall_package_handles(&scene, wall_handle);
+        assert!(pkg.contains(&child));
+        assert!(pkg.contains(&wall_handle));
+    }
+
+    #[test]
+    fn resolve_wall_package_reads_wall_rep_when_not_first_aec_record() {
+        let mut scene = Scene::new();
+        let wall_handle = add_multi_layer_wall(&mut scene);
+        regenerate_wall_representation(&mut scene, wall_handle, None)
+            .expect("regeneration should succeed");
+        let child = wall_from_entity(scene.document.get_entity(wall_handle).unwrap())
+            .expect("WALL")
+            .derived_handles[0];
+        if let Some(entity) = scene.document.get_entity_mut(child) {
+            let mut dummy = ExtendedDataRecord::new(AEC_APPID);
+            dummy.add_value(XDataValue::String("OTHER".into()));
+            let mut records = vec![dummy];
+            records.extend(entity.common().extended_data.records().iter().cloned());
+            entity.common_mut().extended_data.clear();
+            for r in records {
+                entity.common_mut().extended_data.add_record(r);
+            }
+        }
+        assert_eq!(resolve_wall_package(&scene, child), wall_handle);
+    }
+
+    #[test]
+    fn resolve_wall_package_accepts_integer_axis_handle() {
+        let mut scene = Scene::new();
+        let wall_handle = add_multi_layer_wall(&mut scene);
+        regenerate_wall_representation(&mut scene, wall_handle, None)
+            .expect("regeneration should succeed");
+        let child = wall_from_entity(scene.document.get_entity(wall_handle).unwrap())
+            .expect("WALL")
+            .derived_handles[0];
+        if let Some(entity) = scene.document.get_entity_mut(child) {
+            entity.common_mut().extended_data.clear();
+            let mut record = ExtendedDataRecord::new(AEC_APPID);
+            record.add_value(XDataValue::String("WALL_REP".into()));
+            record.add_value(XDataValue::Integer32(wall_handle.value() as i32));
+            record.add_value(XDataValue::String(WALL_REP_ROLE_CONTOUR.into()));
+            entity.common_mut().extended_data.add_record(record);
+        }
+        assert_eq!(resolve_wall_package(&scene, child), wall_handle);
+    }
+
+    #[test]
+    fn resolve_wall_package_matches_untagged_layer_polyline_by_geometry() {
+        let mut scene = Scene::new();
+        let wall_handle = add_multi_layer_wall(&mut scene);
+        regenerate_wall_representation(&mut scene, wall_handle, None)
+            .expect("regeneration should succeed");
+        let derived = wall_from_entity(scene.document.get_entity(wall_handle).unwrap())
+            .expect("WALL")
+            .derived_handles;
+        let child = derived
+            .iter()
+            .copied()
+            .find(|&h| matches!(scene.document.get_entity(h), Some(EntityType::LwPolyline(pl)) if pl.vertices.len() >= 3))
+            .expect("layer contour");
+        if let Some(entity) = scene.document.get_entity_mut(child) {
+            entity.common_mut().extended_data = acadrust::xdata::ExtendedData::default();
+        }
+        let Some(entity) = scene.document.get_entity(wall_handle) else {
+            panic!("wall");
+        };
+        let mut wall = wall_from_entity(entity).expect("WALL");
+        wall.derived_handles.clear();
+        let mut record = ExtendedDataRecord::new(AEC_APPID);
+        for v in wall_record(
+            &wall.style_id,
+            wall.height,
+            wall.storey_id,
+            &wall.layers,
+            &wall.derived_handles,
+            wall.justification,
+            wall.phase,
+            wall.hatch_override.as_ref(),
+        ) {
+            record.add_value(v);
+        }
+        write_aec_record(&mut scene.document, wall_handle, record);
+        assert_eq!(resolve_wall_package(&scene, child), wall_handle);
+    }
+
+    #[test]
+    fn resolve_wall_package_matches_untagged_solid_by_geometry() {
+        let mut scene = Scene::new();
+        let wall_handle = add_multi_layer_wall(&mut scene);
+        regenerate_wall_representation(&mut scene, wall_handle, None)
+            .expect("regeneration should succeed");
+        let derived = wall_from_entity(scene.document.get_entity(wall_handle).unwrap())
+            .expect("WALL")
+            .derived_handles;
+        let child = derived
+            .iter()
+            .copied()
+            .find(|&h| matches!(scene.document.get_entity(h), Some(EntityType::Solid3D(_))))
+            .expect("layer solid");
+        if let Some(entity) = scene.document.get_entity_mut(child) {
+            entity.common_mut().extended_data = acadrust::xdata::ExtendedData::default();
+        }
+        let Some(entity) = scene.document.get_entity(wall_handle) else {
+            panic!("wall");
+        };
+        let mut wall = wall_from_entity(entity).expect("WALL");
+        wall.derived_handles.clear();
+        let mut record = ExtendedDataRecord::new(AEC_APPID);
+        for v in wall_record(
+            &wall.style_id,
+            wall.height,
+            wall.storey_id,
+            &wall.layers,
+            &wall.derived_handles,
+            wall.justification,
+            wall.phase,
+            wall.hatch_override.as_ref(),
+        ) {
+            record.add_value(v);
+        }
+        write_aec_record(&mut scene.document, wall_handle, record);
+        assert_eq!(resolve_wall_package(&scene, child), wall_handle);
+        let expanded = expand_handles_for_wall_packages(&scene, &[child]);
+        assert!(expanded.contains(&wall_handle));
+    }
+
+    #[test]
     fn regen_tags_display_children_with_wall_rep_roles() {
         let mut scene = Scene::new();
         let wall_handle = add_multi_layer_wall(&mut scene);
@@ -9059,6 +9458,10 @@ mod wall_command_tests {
             assert!(from_owner.contains(handle));
         }
         assert_eq!(from_child.len(), from_owner.len());
+        assert!(!is_wall_derived_non_axis(&scene, wall_handle));
+        for handle in &derived {
+            assert!(is_wall_derived_non_axis(&scene, *handle));
+        }
     }
 
     #[test]

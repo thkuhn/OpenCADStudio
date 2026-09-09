@@ -857,15 +857,37 @@ impl OpenCADStudio {
                 .as_ref()
                 .and_then(|lib| lib.find(name))
                 .cloned()
+                .or_else(|| {
+                    crate::modules::aec::engine::project::resolve_display_config_library(
+                        self.aec_project_explorer_file.as_ref(),
+                    )
+                    .find(name)
+                    .cloned()
+                })
         });
-        let config = config.unwrap_or_else(|| {
-            crate::modules::aec::engine::plan_view::DisplayConfig::new(
-                String::new(),
-                String::new(),
-                crate::modules::aec::engine::plan_view::PlanningStage::Design,
-                crate::modules::aec::engine::plan_view::ViewType::FloorPlan,
-            )
-        });
+        // A named plan that cannot be resolved must not fall back to an empty
+        // `DisplayConfig` (`RepresentationMode::All`): that would redraw a
+        // newly created wall fully visible and ignore the active plan type.
+        let config = match config {
+            Some(config) => config,
+            None if session.is_some() => {
+                crate::modules::aec::engine::plan_view::DisplayConfig::new(
+                    String::new(),
+                    String::new(),
+                    crate::modules::aec::engine::plan_view::PlanningStage::Design,
+                    crate::modules::aec::engine::plan_view::ViewType::FloorPlan,
+                )
+            }
+            None if config_name.is_none() => {
+                crate::modules::aec::engine::plan_view::DisplayConfig::new(
+                    String::new(),
+                    String::new(),
+                    crate::modules::aec::engine::plan_view::PlanningStage::Design,
+                    crate::modules::aec::engine::plan_view::ViewType::FloorPlan,
+                )
+            }
+            None => return (None, None),
+        };
         let mut rules = crate::modules::aec::engine::library::build_effective_rule_set(
             &config,
             style,
@@ -947,7 +969,7 @@ impl OpenCADStudio {
     /// Manager (assigning/saving a wall style) would silently ignore the
     /// currently active plan and fall back to the default, fully-visible
     /// representation.
-    fn regenerate_wall_respecting_active_display_config(
+    pub(in crate::app) fn regenerate_wall_respecting_active_display_config(
         &mut self,
         tab_index: usize,
         wall_handle: acadrust::Handle,
@@ -1024,6 +1046,97 @@ impl OpenCADStudio {
         if !changes.is_empty() {
             self.tabs[tab_index].scene.bump_entities(&changes);
         }
+    }
+
+    /// During `AEC_WALL` the axis layer stays on regardless of plan type.
+    /// After the command ends, restore idle visibility from the active
+    /// DisplayConfig (`WallComponentKind::Axis` / AxisLine slot).
+    fn handle_is_wall_package(&self, tab_index: usize, handle: acadrust::Handle) -> bool {
+        let scene = &self.tabs[tab_index].scene;
+        let axis = crate::modules::aec::commands::resolve_wall_package(scene, handle);
+        scene
+            .document
+            .get_entity(axis)
+            .and_then(crate::modules::aec::commands::wall_from_entity)
+            .is_some()
+    }
+
+    fn tab_is_editing_wall_axis(&self, tab_index: usize) -> bool {
+        let Some(tab) = self.tabs.get(tab_index) else {
+            return false;
+        };
+        if tab.active_cmd.as_ref().is_some_and(|cmd| {
+            matches!(
+                cmd.name(),
+                "AEC_WALL" | "AEC_WALLJOIN" | "AEC_WALLEXTEND"
+            )
+        }) {
+            return true;
+        }
+        let transform_edit = tab.active_cmd.as_ref().is_some_and(|cmd| {
+            matches!(cmd.name(), "MOVE" | "STRETCH" | "ROTATE" | "SCALE")
+        });
+        if transform_edit
+            && tab
+                .scene
+                .selected
+                .iter()
+                .any(|&h| self.handle_is_wall_package(tab_index, h))
+        {
+            return true;
+        }
+        if let Some(grip) = tab.active_grip.as_ref() {
+            if grip
+                .targets
+                .iter()
+                .any(|t| self.handle_is_wall_package(tab_index, t.handle))
+            {
+                return true;
+            }
+        }
+        false
+    }
+
+    pub(in crate::app) fn sync_wall_axis_layer_for_session(&mut self, tab_index: usize) {
+        let keep_visible = self.tab_is_editing_wall_axis(tab_index);
+        if keep_visible {
+            crate::modules::aec::commands::set_wall_axis_layer_visible(
+                &mut self.tabs[tab_index].scene,
+                true,
+            );
+            self.tabs[tab_index].dirty = true;
+            return;
+        }
+        let axis_kind = crate::modules::aec::engine::display_component::WallComponentKind::Axis;
+        let axis_visible = self.tabs.get(tab_index).and_then(|tab| {
+            let name = tab.active_display_config.as_deref()?;
+            if let Some(config) = self.aec_plan_library.as_ref().and_then(|lib| lib.find(name))
+            {
+                return Some(
+                    config
+                        .component_visibility
+                        .get(&axis_kind)
+                        .copied()
+                        .unwrap_or(true),
+                );
+            }
+            crate::modules::aec::engine::project::resolve_display_config_library(
+                self.aec_project_explorer_file.as_ref(),
+            )
+            .find(name)
+            .map(|config| {
+                config
+                    .component_visibility
+                    .get(&axis_kind)
+                    .copied()
+                    .unwrap_or(true)
+            })
+        })
+        .unwrap_or(false);
+        crate::modules::aec::commands::set_wall_axis_layer_visible(
+            &mut self.tabs[tab_index].scene,
+            axis_visible,
+        );
     }
 
     fn aec_style_manager_wall_style_save_internal(
@@ -7459,8 +7572,8 @@ impl OpenCADStudio {
                 let i = self.active_tab;
                 let types = self.tabs[i].scene.entity_type_names_in_layout();
                 let f = &mut self.tabs[i].scene.selection_filter;
-                for t in types {
-                    f.insert(t.to_string());
+                for t in types.iter() {
+                    f.insert(t.clone());
                 }
                 Task::none()
             }
@@ -7687,7 +7800,7 @@ impl OpenCADStudio {
                 }
                 let i = self.active_tab;
                 self.tabs[i].scene.selection.borrow_mut().context_menu = None;
-                let handles: Vec<_> = self.tabs[i].scene.selected.iter().cloned().collect();
+                let mut handles: Vec<_> = self.tabs[i].scene.selected.iter().cloned().collect();
                 if !handles.is_empty() {
                     crate::modules::aec::commands::expand_with_wall_derived_handles(
                         &self.tabs[i].scene,
@@ -8672,7 +8785,7 @@ impl OpenCADStudio {
                 let i = self.active_tab;
                 let handles = self.property_target_handles(i);
                 if handles.is_empty() {
-                    self.tabs[i].properties.color_palette_open = false;
+                    self.tabs[i].properties.color_picker_open = false;
                     let task = self.on_ribbon_color_changed(color);
                     self.refresh_properties();
                     return task;
@@ -8685,7 +8798,31 @@ impl OpenCADStudio {
                     }
                 });
                 self.tabs[i].properties.color_picker_open = false;
-                self.tabs[i].properties.color_palette_open = false;
+                Task::none()
+            }
+
+            Message::LayoutSettled => {
+                self.layout_settling = false;
+                Task::none()
+            }
+
+            Message::PropFieldLwChanged { field, value } => {
+                let i = self.active_tab;
+                let handles = self.property_target_handles(i);
+                if handles.is_empty() {
+                    return Task::none();
+                }
+                self.apply_property_op(i, "CHPROP", &handles, |app, handle| {
+                    if let Some(entity) =
+                        app.tabs[i].scene.document.get_entity_mut(handle)
+                    {
+                        crate::scene::view::dispatch::apply_common_prop(
+                            entity,
+                            field,
+                            &value.value().to_string(),
+                        );
+                    }
+                });
                 Task::none()
             }
 
@@ -8744,7 +8881,6 @@ impl OpenCADStudio {
                 panel.hatch_pattern_picker_open = !panel.hatch_pattern_picker_open;
                 if panel.hatch_pattern_picker_open {
                     panel.color_picker_open = false;
-                    panel.color_palette_open = false;
                     panel.open_color_field = None;
                     panel.edit_choice_open = false;
                     panel.hatch_pattern_focus =
@@ -12609,6 +12745,143 @@ mod aec_display_config_gui_flow_test {
         assert_eq!(
             derived_after_reset, derived_before,
             "switching to a plan without wall overrides must restore the original rendering"
+        );
+    }
+
+    /// Newly committed `AEC_WALL` segments must be regenerated under the
+    /// already-active plan type, not with a default fully-visible rule set.
+    #[test]
+    fn newly_drawn_wall_honors_active_display_config_slot_visibility() {
+        use crate::modules::aec::commands::WallCommand;
+        use crate::modules::aec::engine::display_component::WallComponentKind;
+        use glam::DVec3;
+
+        let mut app = drawing_app();
+        app.aec_project_explorer_file =
+            Some(crate::modules::aec::engine::project::ProjectFile::default());
+
+        let mut hide_config = DisplayConfig::new(
+            "Statik 1:50".to_string(),
+            "Statik".to_string(),
+            PlanningStage::Design,
+            ViewType::FloorPlan,
+        );
+        for kind in WallComponentKind::all() {
+            hide_config.component_visibility.insert(*kind, false);
+        }
+        app.aec_plan_library = Some(DisplayConfigLibrary {
+            configs: vec![hide_config],
+            ..Default::default()
+        });
+        let _ = app.update(Message::AecActiveDisplayConfigSelected(Some(
+            "Statik 1:50".to_string(),
+        )));
+
+        crate::modules::aec::commands::ensure_wall_app_id(
+            &mut app.tabs[app.active_tab].scene.document,
+        );
+        let cmd = WallCommand::new_with_defaults(None, None);
+        app.tabs[app.active_tab].active_cmd = Some(Box::new(cmd));
+
+        let r1 = app
+            .tabs[app.active_tab]
+            .active_cmd
+            .as_mut()
+            .unwrap()
+            .on_point(DVec3::new(0.0, 0.0, 0.0));
+        let _ = app.apply_cmd_result(r1);
+        let r2 = app
+            .tabs[app.active_tab]
+            .active_cmd
+            .as_mut()
+            .unwrap()
+            .on_point(DVec3::new(4.0, 0.0, 0.0));
+        let _ = app.apply_cmd_result(r2);
+
+        let (_, derived) = wall_handle_and_derived_count(&app);
+        assert_eq!(
+            derived, 0,
+            "a newly drawn wall must honor the active plan type (all slots hidden)"
+        );
+        let axis_off = app.tabs[app.active_tab]
+            .scene
+            .document
+            .layers
+            .get(crate::modules::aec::commands::AEC_WALL_AXIS_LAYER)
+            .map(|l| l.flags.off)
+            .unwrap_or(true);
+        assert!(
+            !axis_off,
+            "wall axis must stay visible while AEC_WALL is still active"
+        );
+
+        let _ = app.apply_cmd_result(crate::command::CmdResult::Cancel);
+        let axis_off = app.tabs[app.active_tab]
+            .scene
+            .document
+            .layers
+            .get(crate::modules::aec::commands::AEC_WALL_AXIS_LAYER)
+            .map(|l| l.flags.off)
+            .unwrap_or(true);
+        assert!(
+            axis_off,
+            "wall axis must follow the hidden Axis slot after AEC_WALL ends"
+        );
+    }
+
+    #[test]
+    fn wall_move_shows_axis_then_restores_display_config() {
+        use crate::modules::aec::engine::display_component::WallComponentKind;
+
+        let mut app = drawing_app();
+        app.aec_project_explorer_file =
+            Some(crate::modules::aec::engine::project::ProjectFile::default());
+        let wall_handle = add_and_regenerate_wall(&mut app);
+
+        let mut hide_config = DisplayConfig::new(
+            "Statik 1:50".to_string(),
+            "Statik".to_string(),
+            PlanningStage::Design,
+            ViewType::FloorPlan,
+        );
+        for kind in WallComponentKind::all() {
+            hide_config.component_visibility.insert(*kind, false);
+        }
+        app.aec_plan_library = Some(DisplayConfigLibrary {
+            configs: vec![hide_config],
+            ..Default::default()
+        });
+        let _ = app.update(Message::AecActiveDisplayConfigSelected(Some(
+            "Statik 1:50".to_string(),
+        )));
+
+        let i = app.active_tab;
+        app.tabs[i].scene.select_entity(wall_handle, false);
+        let _ = app.update(Message::Command("MOVE".into()));
+
+        let axis_off = app.tabs[app.active_tab]
+            .scene
+            .document
+            .layers
+            .get(crate::modules::aec::commands::AEC_WALL_AXIS_LAYER)
+            .map(|l| l.flags.off)
+            .unwrap_or(true);
+        assert!(
+            !axis_off,
+            "wall axis must be visible while MOVE edits a wall"
+        );
+
+        let _ = app.apply_cmd_result(crate::command::CmdResult::Cancel);
+        let axis_off = app.tabs[app.active_tab]
+            .scene
+            .document
+            .layers
+            .get(crate::modules::aec::commands::AEC_WALL_AXIS_LAYER)
+            .map(|l| l.flags.off)
+            .unwrap_or(true);
+        assert!(
+            axis_off,
+            "wall axis must hide again after MOVE when Axis slot is off"
         );
     }
 

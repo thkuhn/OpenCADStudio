@@ -2455,6 +2455,7 @@ impl OpenCADStudio {
                             ],
                             points_low: Vec::new(),
                             color: [0.2, 0.7, 0.9, 0.6],
+                            bg_adapt: None,
                             selected: false,
                             aci: 0,
                             pattern_length: 0.8,
@@ -2874,7 +2875,6 @@ impl OpenCADStudio {
         // press starts a box selection, so without this they'd only
         // close on the second click (issue #104).
         self.tabs[i].properties.color_picker_open = false;
-        self.tabs[i].properties.color_palette_open = false;
         // Click anywhere outside the popup dismisses it. The
         // menu's own buttons live above this mouse_area, so a
         // press that reaches here means the cursor is not on
@@ -3096,6 +3096,7 @@ impl OpenCADStudio {
                     ));
                     self.grip_hover = None;
                     self.grip_popup = None;
+                    self.sync_wall_axis_layer_for_session(i);
 
                     // A grip edit is not a CAD command, so explicitly seed the shared
                     // dynamic-input fields for the newly engaged grip.
@@ -3245,10 +3246,28 @@ impl OpenCADStudio {
                 }
                 self.tabs[i].scene.clear_preview_wire();
                 let changes: Vec<_> = handles
-                    .into_iter()
+                    .iter()
+                    .copied()
                     .map(|handle| (handle, crate::scene::ChangeKind::Modified))
                     .collect();
                 self.tabs[i].scene.bump_entities(&changes);
+                self.reapply_active_display_config_to_wall_packages(i, &handles);
+                self.sync_wall_axis_layer_for_session(i);
+                for &handle in &handles {
+                    let owner = crate::modules::aec::commands::resolve_wall_package(
+                        &self.tabs[i].scene,
+                        handle,
+                    );
+                    if self.tabs[i]
+                        .scene
+                        .document
+                        .get_entity(owner)
+                        .and_then(crate::modules::aec::commands::wall_from_entity)
+                        .is_some()
+                    {
+                        self.tabs[i].scene.select_entity(owner, false);
+                    }
+                }
             }
             // Placement confirmed — keep the just-added leader.
             self.grip_add_provisional = None;

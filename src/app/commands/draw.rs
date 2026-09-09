@@ -631,6 +631,7 @@ impl OpenCADStudio {
                     let new_cmd = MoveCommand::new(handles, wires);
                     self.command_line.push_info(&new_cmd.prompt());
                     self.tabs[i].active_cmd = Some(Box::new(new_cmd));
+                    self.sync_wall_axis_layer_for_session(i);
                 }
             }
 
@@ -994,12 +995,17 @@ impl OpenCADStudio {
                 crate::modules::aec::commands::ensure_wall_app_id(
                     &mut self.tabs[i].scene.document,
                 );
+                let style_library = crate::modules::aec::engine::project::resolve_style_library(
+                    self.aec_project_explorer_file.as_ref(),
+                );
                 let new_cmd = WallCommand::new_with_defaults(
                     self.aec_last_wall_style_id.as_deref(),
                     self.aec_last_wall_height,
-                );
+                )
+                .with_library(style_library);
                 self.command_line.push_info(&new_cmd.prompt());
                 self.tabs[i].active_cmd = Some(Box::new(new_cmd));
+                self.sync_wall_axis_layer_for_session(i);
             }
             "AEC_ROOM" => {
                 crate::modules::aec::commands::aec_room(
@@ -1067,6 +1073,7 @@ impl OpenCADStudio {
                     let cmd = WallJoinCommand::new();
                     self.command_line.push_info(&cmd.prompt());
                     self.tabs[i].active_cmd = Some(Box::new(cmd));
+                    self.sync_wall_axis_layer_for_session(i);
                 }
             }
             "AEC_WALLEXTEND" => {
@@ -1074,6 +1081,7 @@ impl OpenCADStudio {
                 let cmd = WallExtendCommand::new();
                 self.command_line.push_info(&cmd.prompt());
                 self.tabs[i].active_cmd = Some(Box::new(cmd));
+                self.sync_wall_axis_layer_for_session(i);
             }
             "AEC_WALLREVERSE" => {
                 // If one or more walls (or their derived contour/hatch/solid
