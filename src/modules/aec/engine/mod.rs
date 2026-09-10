@@ -11,6 +11,7 @@ pub mod expr;
 pub mod geometry;
 pub mod ifc;
 pub mod join;
+pub mod junction_solver;
 pub mod library;
 pub mod loop_detection;
 pub mod material;

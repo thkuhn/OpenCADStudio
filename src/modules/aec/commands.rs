@@ -24,6 +24,7 @@ use crate::ui::command_line::CommandLine;
 use super::engine::{
     self, find_closed_loop, Room, Storey, StyleLibrary,
     join::{self, JoinKind, JoinError},
+    junction_solver::{self, WallJoinInput},
 };
 pub use super::engine::{Wall, WallJustification, WallLayer};
 use super::engine::library::load_or_seed;
@@ -5629,15 +5630,14 @@ fn try_join_multi_wall_junctions(
     if handles.len() < 3 {
         return Vec::new();
     }
-    let axes: Vec<Vec<DVec3>> = handles
+    let inputs: Vec<WallJoinInput> = handles
         .iter()
-        .map(|h| get_wall_vertices(scene, *h))
+        .map(|h| wall_join_input_from_scene(scene, *h))
         .collect();
-    let axis_refs: Vec<&[DVec3]> = axes.iter().map(|a| a.as_slice()).collect();
     // Step 4: Use a larger tolerance for multi-wall junctions to ensure that
     // vertex-dragged walls still cluster with their former junction peers
     // (up to the snap radius) so the full junction is re-resolved together.
-    let junctions = join::detect_junctions(&axis_refs, WALL_JOIN_SNAP_RADIUS);
+    let solved = junction_solver::solve(&inputs, WALL_JOIN_SNAP_RADIUS);
 
     let self_idx = handles.iter().position(|h| *h == wall_handle);
     let Some(self_idx) = self_idx else {
@@ -5645,12 +5645,18 @@ fn try_join_multi_wall_junctions(
     };
 
     let mut touched = Vec::new();
-    for junc in junctions.into_iter().filter(|j| j.is_multi_wall()) {
-        if !junc.participants.iter().any(|p| p.wall_index == self_idx) {
+    for sj in solved.into_iter().filter(|s| s.junction.is_multi_wall()) {
+        if !sj
+            .junction
+            .participants
+            .iter()
+            .any(|p| p.wall_index == self_idx)
+        {
             continue;
         }
         // Restrict the participant set to walls in this junction.
-        let part_handles: Vec<Handle> = junc
+        let part_handles: Vec<Handle> = sj
+            .junction
             .participants
             .iter()
             .map(|p| handles[p.wall_index])
@@ -5658,12 +5664,13 @@ fn try_join_multi_wall_junctions(
         // Use the moved wall's own (post-move) endpoint as the snap point so
         // the rebuilt junction lands exactly where the user dragged it,
         // rather than at the mean of all participants.
-        let snap_point = junc
+        let snap_point = sj
+            .junction
             .participants
             .iter()
             .find(|p| p.wall_index == self_idx)
             .and_then(|p| match p.role {
-                join::JunctionRole::Endpoint(end_idx) => axes[self_idx].get(end_idx).copied(),
+                join::JunctionRole::Endpoint(end_idx) => inputs[self_idx].axis.get(end_idx).copied(),
                 join::JunctionRole::Through(_) => None,
             });
         if let Ok(t) = join_junction_in_document(
@@ -5824,14 +5831,13 @@ pub fn join_junction_in_document(
     if handles.len() < 2 {
         return Err(JoinError::Degenerate);
     }
-    let axes: Vec<Vec<DVec3>> = handles
+    let inputs: Vec<WallJoinInput> = handles
         .iter()
-        .map(|h| get_wall_vertices(scene, *h))
+        .map(|h| wall_join_input_from_scene(scene, *h))
         .collect();
-    if axes.iter().any(|a| a.len() < 2) {
+    if inputs.iter().any(|w| w.axis.len() < 2) {
         return Err(JoinError::Degenerate);
     }
-    let axis_refs: Vec<&[DVec3]> = axes.iter().map(|a| a.as_slice()).collect();
     // Use a slightly looser tol than pure geometry equality so near-miss
     // endpoints from interactive drawing still cluster (snap radius scale).
     // When a snap point is supplied (vertex-move cascade), use the larger
@@ -5841,25 +5847,24 @@ pub fn join_junction_in_document(
     } else {
         join::JUNCTION_TOLERANCE.max(1e-4)
     };
-    let junctions = join::detect_junctions(&axis_refs, tol);
-    let multi_wall_junctions: Vec<_> = junctions
+    let solved = junction_solver::solve(&inputs, tol);
+    let multi_wall: Vec<_> = solved
         .iter()
-        .filter(|j| j.is_multi_wall())
-        .cloned()
+        .filter(|s| s.junction.is_multi_wall())
         .collect();
-    if multi_wall_junctions.len() > 1 {
+    if multi_wall.len() > 1 {
         // Only one multi-wall junction should be present in the passed handles
         // to avoid ambiguity in which one to rebuild. The caller must filter
         // handles to a single junction's participants.
         return Err(JoinError::Ambiguous);
     }
     // Prefer N-way; otherwise resolve a single 2-wall L (End-End) or T (End-Mid).
-    let mut junc = if let Some(j) = multi_wall_junctions.into_iter().next() {
-        j
+    let mut solved_j = if let Some(j) = multi_wall.into_iter().next() {
+        j.clone()
     } else {
-        let two: Vec<_> = junctions
+        let two: Vec<_> = solved
             .into_iter()
-            .filter(|j| j.participants.len() == 2)
+            .filter(|s| s.junction.participants.len() == 2)
             .collect();
         if two.len() > 1 {
             return Err(JoinError::Ambiguous);
@@ -5867,80 +5872,57 @@ pub fn join_junction_in_document(
         two.into_iter().next().ok_or(JoinError::NoIntersection)?
     };
     if let Some(pt) = snap_point {
-        junc.point = pt;
+        solved_j.junction.point = pt;
+        let axis_refs: Vec<&[DVec3]> = inputs.iter().map(|w| w.axis.as_slice()).collect();
+        solved_j.trimmed_axes = join::apply_junction_to_axes(&axis_refs, &solved_j.junction);
+        solved_j.footprints = junction_solver::footprints_for(
+            &inputs,
+            &solved_j.junction,
+            solved_j.kind,
+            &solved_j.trimmed_axes,
+        );
     }
-
-    // Snap endpoint participants.
-    let snapped = join::apply_junction_to_axes(&axis_refs, &junc);
+    let junc = solved_j.junction.clone();
+    let snapped = solved_j.trimmed_axes.clone();
     for p in &junc.participants {
         if matches!(p.role, join::JunctionRole::Endpoint(_)) {
             update_wall_vertices(scene, handles[p.wall_index], &snapped[p.wall_index]);
         }
     }
 
-    // Build 2D axes + layers for miter (index = original wall index in `handles`).
-    let axes_2d: Vec<Vec<(f64, f64)>> = snapped
-        .iter()
-        .map(|a| a.iter().map(|p| (p.x, p.y)).collect())
-        .collect();
-    let layers: Vec<Vec<engine::miter::MiterLayer>> = handles
-        .iter()
-        .map(|h| wall_layer_data(scene, *h))
-        .collect();
-
-    // Remap junction.participants wall_index (already into `handles`) → geoms.
-    let geoms = engine::miter::junction_wall_geoms(&junc, &axes_2d, &layers);
-    // junction_wall_geoms expects axes/layers indexed by participant.wall_index.
-    // Our junc was built from `handles`/`axes` directly, so wall_index is into
-    // those slices — correct.
-    let layer_refs: Vec<Vec<join::LayerRef>> = junc
-        .participants
-        .iter()
-        .map(|p| {
-            layers
-                .get(p.wall_index)
-                .map(|ls| {
-                    layer_refs_from_materials(ls.iter().map(|l| (l.material.as_str(), l.layer_id)))
-                })
-                .unwrap_or_default()
-        })
-        .collect();
-    let junction_overrides: Vec<Option<join::JunctionOverride>> = junc
-        .participants
-        .iter()
-        .enumerate()
-        .map(|(pi, p)| match p.role {
-            join::JunctionRole::Endpoint(end_idx) => {
-                read_junction_override(scene, handles[p.wall_index], end_idx).and_then(|ov| {
-                    // `layer_a` must match this participant's own current
-                    // layers; `layer_b` may name a layer on *any* other
-                    // participant at this N-way junction.
-                    let self_refs = layer_refs.get(pi).cloned().unwrap_or_default();
-                    let other_refs: Vec<join::LayerRef> = layer_refs
-                        .iter()
-                        .enumerate()
-                        .filter(|(oi, _)| *oi != pi)
-                        .flat_map(|(_, ls)| ls.iter().cloned())
-                        .collect();
-                    validate_and_persist_junction_override(
-                        scene,
-                        handles[p.wall_index],
-                        end_idx,
-                        ov,
-                        &self_refs,
-                        &other_refs,
-                    )
-                })
+    // Persist cleaned overrides for the participating end only; footprints
+    // already came from the solver using that same per-end override.
+    for (pi, p) in junc.participants.iter().enumerate() {
+        if let join::JunctionRole::Endpoint(end_idx) = p.role {
+            if let Some(ov) = read_junction_override(scene, handles[p.wall_index], end_idx) {
+                let self_layers = &inputs[p.wall_index].layers;
+                let self_refs = layer_refs_from_materials(
+                    self_layers.iter().map(|l| (l.material.as_str(), l.layer_id)),
+                );
+                let other_refs: Vec<join::LayerRef> = junc
+                    .participants
+                    .iter()
+                    .enumerate()
+                    .filter(|(oi, _)| *oi != pi)
+                    .flat_map(|(_, op)| {
+                        inputs.get(op.wall_index).into_iter().flat_map(|w| {
+                            layer_refs_from_materials(
+                                w.layers.iter().map(|l| (l.material.as_str(), l.layer_id)),
+                            )
+                        })
+                    })
+                    .collect();
+                let _ = validate_and_persist_junction_override(
+                    scene,
+                    handles[p.wall_index],
+                    end_idx,
+                    ov,
+                    &self_refs,
+                    &other_refs,
+                );
             }
-            join::JunctionRole::Through(_) => None,
-        })
-        .collect();
-    let all_fps = engine::miter::mitered_junction_layer_footprints_with_overrides(
-        &junc,
-        &geoms,
-        &layer_refs,
-        &junction_overrides,
-    );
+        }
+    }
 
     // Max thickness among participants — used for corner_override fallback.
     let thicknesses: Vec<f64> = handles
@@ -5964,11 +5946,14 @@ pub fn join_junction_in_document(
     };
 
     let mut touched = Vec::new();
-    // `all_fps` is aligned with `junc.participants` / `geoms`, not raw handles.
-    for (pi, part) in junc.participants.iter().enumerate() {
+    for part in junc.participants.iter() {
         let h = handles[part.wall_index];
         let axis = &snapped[part.wall_index];
-        let fps = all_fps.get(pi).map(|v| v.as_slice()).unwrap_or(&[]);
+        let empty: Vec<Option<Vec<(f64, f64)>>> = Vec::new();
+        let fps = solved_j
+            .footprints
+            .get(part.wall_index)
+            .unwrap_or(&empty);
 
         let override_pt = match part.role {
             join::JunctionRole::Endpoint(end_idx) => {
@@ -5982,26 +5967,15 @@ pub fn join_junction_in_document(
             join::JunctionRole::Through(_) => None,
         };
 
-        // Endpoint walls get precomputed miters; through-walls just refresh.
-        let result = if matches!(part.role, join::JunctionRole::Endpoint(_)) {
-            regenerate_wall_representation_with_precomputed_miters_rules_and_substitutions(
-                scene,
-                h,
-                override_pt,
-                fps,
-                display_rules,
-                style_substitutions,
-                library_override,
-            )
-        } else {
-            regenerate_wall_representation_with_rules_and_substitutions(
-                scene,
-                h,
-                display_rules,
-                style_substitutions,
-                library_override,
-            )
-        };
+        let result = regenerate_wall_representation_with_precomputed_miters_rules_and_substitutions(
+            scene,
+            h,
+            override_pt,
+            fps,
+            display_rules,
+            style_substitutions,
+            library_override,
+        );
         match result {
             Ok(t) => touched.extend(t),
             Err(_) => touched.push(h),
@@ -6082,6 +6056,22 @@ pub fn join_two_walls_as_l_in_document(
     )
 }
 
+fn wall_join_input_from_scene(scene: &Scene, handle: Handle) -> WallJoinInput {
+    let axis = get_wall_vertices(scene, handle);
+    let last = axis.len().saturating_sub(1);
+    WallJoinInput {
+        axis,
+        bulges: get_wall_bulges(scene, handle),
+        layers: wall_layer_data(scene, handle),
+        override_start: read_junction_override(scene, handle, 0),
+        override_end: if last == 0 {
+            None
+        } else {
+            read_junction_override(scene, handle, last)
+        },
+    }
+}
+
 fn join_two_walls_in_document_inner(
     scene: &mut Scene,
     h_a: Handle,
@@ -6091,25 +6081,22 @@ fn join_two_walls_in_document_inner(
     display_rules: Option<&engine::display_component::ComponentRuleSet>,
     style_substitutions: Option<&HashMap<engine::plan_view::WallStyleRef, engine::plan_view::WallStyleRef>>,
 ) -> Result<(JoinKind, Vec<Handle>), JoinError> {
-    let axis_a = get_wall_vertices(scene, h_a);
-    let axis_b = get_wall_vertices(scene, h_b);
-    let bulges_a = get_wall_bulges(scene, h_a);
-    let bulges_b = get_wall_bulges(scene, h_b);
-    let joined = if force_l {
-        join::join_wall_axes_as_l_with_bulges(&axis_a, &bulges_a, &axis_b, &bulges_b)
-    } else {
-        join::join_wall_axes_with_bulges(&axis_a, &bulges_a, &axis_b, &bulges_b)
-    };
+    let input_a = wall_join_input_from_scene(scene, h_a);
+    let input_b = wall_join_input_from_scene(scene, h_b);
+    let joined = junction_solver::solve_pair(&input_a, &input_b, force_l);
     match joined {
-        Ok((new_a, new_b, kind, end_a, end_b)) => {
-            // Corner-extension fallback (unmatched layers) plus per-layer
-            // miter context (matched layers). Persisted axis vertices stay
-            // exactly as join_wall_axes computed them — only the visible
+        Ok(pair) => {
+            let new_a = pair.axis_a;
+            let new_b = pair.axis_b;
+            let kind = pair.kind;
+            let end_a = pair.end_a;
+            let end_b = pair.end_b;
+            let fps_a = pair.footprints_a;
+            let fps_b = pair.footprints_b;
+            // Corner-extension fallback (unmatched layers) plus solver
+            // precomputed miters (matched layers). Persisted axis vertices stay
+            // exactly as the solver trimmed them — only the visible
             // footprint geometry changes.
-            //
-            // end_a/end_b come from the join engine (not from "which endpoint
-            // moved"): when walls are already coincident at the corner,
-            // vertices don't move but miters still need those indices.
             let thickness_a = scene
                 .document
                 .get_entity(h_a)
@@ -6126,11 +6113,6 @@ fn join_two_walls_in_document_inner(
             let override_b = end_b.and_then(|idx| {
                 thickness_a.map(|t| (idx, extended_endpoint(&new_b, idx, t * 0.5)))
             });
-
-            let layers_a = wall_layer_data(scene, h_a);
-            let layers_b = wall_layer_data(scene, h_b);
-            let axis_a_2d: Vec<(f64, f64)> = new_a.iter().map(|p| (p.x, p.y)).collect();
-            let axis_b_2d: Vec<(f64, f64)> = new_b.iter().map(|p| (p.x, p.y)).collect();
 
             update_wall_vertices(scene, h_a, &new_a);
             update_wall_vertices(scene, h_b, &new_b);
@@ -6186,22 +6168,11 @@ fn join_two_walls_in_document_inner(
 
             let mut touched = Vec::new();
 
-            // Rebuild A against B.
-            let miter_a = end_a.map(|self_end| engine::miter::JoinMiterContext {
-                self_end,
-                other_axis: axis_b_2d.clone(),
-                other_layers: layers_b.clone(),
-                other_end: end_b,
-                kind,
-                self_bulges: bulges_a.clone(),
-                other_bulges: bulges_b.clone(),
-                as_through: false,
-            });
-            match regenerate_wall_representation_with_corner_rules_and_substitutions(
+            match regenerate_wall_representation_with_precomputed_miters_rules_and_substitutions(
                 scene,
                 h_a,
                 override_a,
-                miter_a.as_ref(),
+                &fps_a,
                 display_rules,
                 style_substitutions,
                 library_override,
@@ -6210,37 +6181,11 @@ fn join_two_walls_in_document_inner(
                 Err(_) => touched.push(h_a),
             }
 
-            // Rebuild B against A. When B is the through-wall of a T (end_b is
-            // None) miter_b stays None and we just refresh its rectangular
-            // derived geometry so it stays in sync.
-            let miter_b = if let Some(self_end) = end_b {
-                Some(engine::miter::JoinMiterContext {
-                    self_end,
-                    other_axis: axis_a_2d.clone(),
-                    other_layers: layers_a.clone(),
-                    other_end: end_a,
-                    kind,
-                    self_bulges: bulges_b.clone(),
-                    other_bulges: bulges_a.clone(),
-                    as_through: false,
-                })
-            } else {
-                end_a.map(|stem_end| engine::miter::JoinMiterContext {
-                    self_end: stem_end,
-                    other_axis: axis_a_2d,
-                    other_layers: layers_a,
-                    other_end: Some(stem_end),
-                    kind,
-                    self_bulges: bulges_b.clone(),
-                    other_bulges: bulges_a.clone(),
-                    as_through: true,
-                })
-            };
-            match regenerate_wall_representation_with_corner_rules_and_substitutions(
+            match regenerate_wall_representation_with_precomputed_miters_rules_and_substitutions(
                 scene,
                 h_b,
                 override_b,
-                miter_b.as_ref(),
+                &fps_b,
                 display_rules,
                 style_substitutions,
                 library_override,
