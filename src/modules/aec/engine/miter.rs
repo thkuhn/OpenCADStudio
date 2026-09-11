@@ -101,10 +101,11 @@ pub struct JoinMiterContext {
 /// or the stem of a T-join; `None` means B is the through-wall of a T.
 ///
 /// **L-joins** (`end_b = Some`) produce a diagonal per-layer miter.
-/// **T-joins** against a through-wall (`end_b = None`, or `kind = T`) butt the
-/// stem layer straight into the near face of the matching through-wall layer
-/// (no diagonal). Unmatched stem layers extend to the through-wall's outer
-/// face on the stem's approach side.
+/// **T-joins** against a through-wall (`end_b = None`, or `kind = T`) butt
+/// the stem **Structural** layer to the near face of the through-wall's
+/// Structural partner. Other stem layers still stop on the approach outer
+/// face so finishes do not tunnel to the far side. Per-layer depth is
+/// available via join overrides.
 pub fn mitered_layer_footprints(
     axis_a: &[(f64, f64)],
     layers_a: &[MiterLayer],
@@ -371,10 +372,9 @@ pub fn mitered_layer_footprints_with_override_and_bulges(
     out
 }
 
-/// T-junction footprints: each stem layer is extended straight along its
-/// boundary lines until it meets the near face of the matching through-wall
-/// layer. Unmatched stem layers meet the through-wall's outer face on the
-/// stem's approach side. No diagonal miter; layers do not cross.
+/// T-junction footprints: the Structural/core stem layer butts the near
+/// face of the paired through-wall Structural layer. Remaining stem layers
+/// extend to the through-wall outer face on the approach side (no tunnel).
 fn t_junction_layer_footprints(
     axis_a: &[(f64, f64)],
     layers_a: &[MiterLayer],
@@ -384,41 +384,254 @@ fn t_junction_layer_footprints(
     contours_a: &[(Vec<(f64, f64)>, Vec<(f64, f64)>)],
     contours_b: &[(Vec<(f64, f64)>, Vec<(f64, f64)>)],
 ) -> Vec<Option<Vec<(f64, f64)>>> {
-    let pairing = match_layer_indices(layers_a, layers_b);
     let outer_target =
         through_outer_near_face_line(axis_a, end_a, axis_b, layers_b, contours_b);
+    let core_pair = pair_structural_cores(layers_a, layers_b);
     let mut out = Vec::with_capacity(layers_a.len());
 
-    for (i, b_idx) in pairing.into_iter().enumerate() {
+    for i in 0..layers_a.len() {
         if i >= contours_a.len() {
             out.push(None);
             continue;
         }
         let (ref a_b1, ref a_b2) = contours_a[i];
-
-        let target_line = if let Some(j) = b_idx {
-            if j >= contours_b.len() {
-                outer_target
+        let fp = if let Some((core_a, core_b)) = core_pair {
+            if i == core_a && core_b < contours_b.len() {
+                let (ref b_b1, ref b_b2) = contours_b[core_b];
+                let target = near_face_line(a_b1, a_b2, end_a, b_b1, b_b2, None, axis_a, axis_b)
+                    .or(outer_target);
+                target.and_then(|t| t_extend_one_layer(a_b1, a_b2, end_a, t))
+            } else if let Some(j) = approach_finish_match(i, layers_a, layers_b, core_pair, axis_a, end_a, axis_b)
+            {
+                if j < contours_b.len() {
+                    let (ref b_b1, ref b_b2) = contours_b[j];
+                    t_miter_finish_against_through(
+                        a_b1, a_b2, end_a, b_b1, b_b2, axis_a, axis_b,
+                    )
+                } else {
+                    outer_target.and_then(|t| t_extend_one_layer(a_b1, a_b2, end_a, t))
+                }
             } else {
-                let (ref b_b1, ref b_b2) = contours_b[j];
-                near_face_line(a_b1, a_b2, end_a, b_b1, b_b2, None, axis_a, axis_b)
-                    .or(outer_target)
+                outer_target.and_then(|t| t_extend_one_layer(a_b1, a_b2, end_a, t))
             }
         } else {
-            // No material match → extend to the through-wall outer edge.
-            outer_target
+            outer_target.and_then(|t| t_extend_one_layer(a_b1, a_b2, end_a, t))
         };
 
-        let Some(target) = target_line else {
-            out.push(None);
-            continue;
-        };
-        match t_extend_one_layer(a_b1, a_b2, end_a, target) {
-            Some(fp) if fp.len() >= 3 => out.push(Some(fp)),
+        match fp {
+            Some(poly) if poly.len() >= 3 => out.push(Some(poly)),
             _ => out.push(None),
         }
     }
     out
+}
+
+fn approach_finish_match(
+    stem_i: usize,
+    layers_a: &[MiterLayer],
+    layers_b: &[MiterLayer],
+    core_pair: Option<(usize, usize)>,
+    axis_a: &[(f64, f64)],
+    end_a: usize,
+    axis_b: &[(f64, f64)],
+) -> Option<usize> {
+    let stem = layers_a.get(stem_i)?;
+    if is_structural_function(&stem.function) {
+        return None;
+    }
+    if stem.material.is_empty() {
+        return None;
+    }
+    let core_b = core_pair.map(|(_, b)| b);
+    let toward_stem = through_offset_toward_stem(axis_a, end_a, axis_b);
+    let core_center = core_b.map(|j| {
+        let l = &layers_b[j];
+        l.axis_offset + l.thickness * 0.5
+    });
+    let mut best: Option<(usize, f64)> = None;
+    for (j, thru) in layers_b.iter().enumerate() {
+        if Some(j) == core_b || is_structural_function(&thru.function) {
+            continue;
+        }
+        if !thru.material.eq_ignore_ascii_case(&stem.material) {
+            continue;
+        }
+        let center = thru.axis_offset + thru.thickness * 0.5;
+        if let Some(cc) = core_center {
+            if (center - cc) * toward_stem < -1e-9 {
+                continue;
+            }
+        }
+        let d = center * toward_stem;
+        match best {
+            None => best = Some((j, d)),
+            Some((_, bd)) if d > bd => best = Some((j, d)),
+            _ => {}
+        }
+    }
+    best.map(|(j, _)| j)
+}
+
+fn through_offset_toward_stem(
+    axis_a: &[(f64, f64)],
+    end_a: usize,
+    axis_b: &[(f64, f64)],
+) -> f64 {
+    if axis_a.len() < 2 || axis_b.len() < 2 || end_a >= axis_a.len() {
+        return 1.0;
+    }
+    let join = axis_a[end_a];
+    let prev = if end_a == 0 { 1 } else { end_a - 1 };
+    let stem = (axis_a[prev].0 - join.0, axis_a[prev].1 - join.1);
+    let mut best_seg = 0usize;
+    let mut best_d = f64::INFINITY;
+    for s in 0..axis_b.len().saturating_sub(1) {
+        let d = point_seg_dist(join, axis_b[s], axis_b[s + 1]);
+        if d < best_d {
+            best_d = d;
+            best_seg = s;
+        }
+    }
+    let b0 = axis_b[best_seg];
+    let b1 = axis_b[best_seg + 1];
+    let bx = b1.0 - b0.0;
+    let by = b1.1 - b0.1;
+    let bl = (bx * bx + by * by).sqrt();
+    if bl < 1e-12 {
+        return 1.0;
+    }
+    let nx = -by / bl;
+    let ny = bx / bl;
+    let side = nx * stem.0 + ny * stem.1;
+    if side >= 0.0 {
+        1.0
+    } else {
+        -1.0
+    }
+}
+
+fn t_miter_finish_against_through(
+    a_b1: &[(f64, f64)],
+    a_b2: &[(f64, f64)],
+    end_a: usize,
+    b_b1: &[(f64, f64)],
+    b_b2: &[(f64, f64)],
+    axis_a: &[(f64, f64)],
+    axis_b: &[(f64, f64)],
+) -> Option<Vec<(f64, f64)>> {
+    if a_b1.len() < 2 || a_b2.len() < 2 || end_a >= a_b1.len() {
+        return None;
+    }
+    let (b1_line, b2_line) = other_boundary_lines(b_b1, b_b2, None, axis_a, axis_b, end_a)?;
+    let outer_b = near_face_line(a_b1, a_b2, end_a, b_b1, b_b2, None, axis_a, axis_b)?;
+    let inner_b = if lines_equivalent(outer_b, b1_line) {
+        b2_line
+    } else {
+        b1_line
+    };
+    let prev_a = if end_a == 0 { 1 } else { end_a - 1 };
+    let a1_line = extended_line(a_b1[prev_a], a_b1[end_a]);
+    let a2_line = extended_line(a_b2[prev_a], a_b2[end_a]);
+    // Inner stem edge is closer to the wall axis; outer is farther out.
+    let d1 = point_axis_offset(a_b1[end_a], axis_a);
+    let d2 = point_axis_offset(a_b2[end_a], axis_a);
+    let (inner_a, outer_a) = if d1 <= d2 {
+        (a1_line, a2_line)
+    } else {
+        (a2_line, a1_line)
+    };
+    let new_inner = intersect_lines_2d(inner_a.0, inner_a.1, inner_b.0, inner_b.1)?;
+    let new_outer = intersect_lines_2d(outer_a.0, outer_a.1, outer_b.0, outer_b.1)?;
+    let (new_a1, new_a2) = if d1 <= d2 {
+        (new_inner, new_outer)
+    } else {
+        (new_outer, new_inner)
+    };
+    Some(rebuild_footprint(a_b1, a_b2, end_a, new_a1, new_a2))
+}
+
+fn point_axis_offset(p: (f64, f64), axis: &[(f64, f64)]) -> f64 {
+    if axis.len() < 2 {
+        return 0.0;
+    }
+    let mut best = f64::INFINITY;
+    for s in 0..axis.len() - 1 {
+        let d = point_seg_dist(p, axis[s], axis[s + 1]);
+        if d < best {
+            best = d;
+        }
+    }
+    best
+}
+
+fn lines_equivalent(
+    a: ((f64, f64), (f64, f64)),
+    b: ((f64, f64), (f64, f64)),
+) -> bool {
+    let da = point_seg_dist(a.0, b.0, b.1);
+    let db = point_seg_dist(a.1, b.0, b.1);
+    da < 1e-6 && db < 1e-6
+}
+
+fn is_structural_function(function: &str) -> bool {
+    let f = function.trim();
+    f.eq_ignore_ascii_case("structural") || f.eq_ignore_ascii_case("tragwerk")
+}
+
+/// Pair Structural cores: among Structural layers, prefer material match
+/// (`match_layer_indices` restricted to those); else the thickest Structural
+/// on each wall. With no Structural, fall back to the thickest layer.
+fn pair_structural_cores(layers_a: &[MiterLayer], layers_b: &[MiterLayer]) -> Option<(usize, usize)> {
+    let struct_a: Vec<usize> = layers_a
+        .iter()
+        .enumerate()
+        .filter(|(_, l)| is_structural_function(&l.function))
+        .map(|(i, _)| i)
+        .collect();
+    let struct_b: Vec<usize> = layers_b
+        .iter()
+        .enumerate()
+        .filter(|(_, l)| is_structural_function(&l.function))
+        .map(|(i, _)| i)
+        .collect();
+
+    if !struct_a.is_empty() && !struct_b.is_empty() {
+        let sub_a: Vec<MiterLayer> = struct_a.iter().map(|&i| layers_a[i].clone()).collect();
+        let sub_b: Vec<MiterLayer> = struct_b.iter().map(|&i| layers_b[i].clone()).collect();
+        let pairing = match_layer_indices(&sub_a, &sub_b);
+        for (local_a, maybe_b) in pairing.into_iter().enumerate() {
+            if let Some(local_b) = maybe_b {
+                return Some((struct_a[local_a], struct_b[local_b]));
+            }
+        }
+        let thickest = |idxs: &[usize], layers: &[MiterLayer]| {
+            idxs.iter()
+                .copied()
+                .max_by(|i, j| {
+                    layers[*i]
+                        .thickness
+                        .partial_cmp(&layers[*j].thickness)
+                        .unwrap_or(std::cmp::Ordering::Equal)
+                })
+        };
+        return Some((thickest(&struct_a, layers_a)?, thickest(&struct_b, layers_b)?));
+    }
+
+    if layers_a.is_empty() || layers_b.is_empty() {
+        return None;
+    }
+    let thickest = |layers: &[MiterLayer]| {
+        layers
+            .iter()
+            .enumerate()
+            .max_by(|(_, a), (_, b)| {
+                a.thickness
+                    .partial_cmp(&b.thickness)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            })
+            .map(|(i, _)| i)
+    };
+    Some((thickest(layers_a)?, thickest(layers_b)?))
 }
 
 /// Pair each layer of wall A to at most one layer of wall B.
@@ -651,6 +864,8 @@ pub fn mitered_junction_layer_footprints(
         // b2 = positive-offset side = CCW / left of leave dir → next in CCW order.
         let right_w = prev.wall_index;
         let left_w = next.wall_index;
+        let right_collinear = is_collinear_opposite_endpoint(&walls[wi], &walls[right_w]);
+        let left_collinear = is_collinear_opposite_endpoint(&walls[wi], &walls[left_w]);
 
         let pair_right = match_layer_indices(&walls[wi].layers, &walls[right_w].layers);
         let pair_left = match_layer_indices(&walls[wi].layers, &walls[left_w].layers);
@@ -717,11 +932,20 @@ pub fn mitered_junction_layer_footprints(
                             (Some((new_a1, _)), Some((_, new_a2))) => {
                                 Some(rebuild_footprint(a_b1, a_b2, end_a, new_a1, new_a2))
                             }
-                            (Some((new_a1, new_a2)), None) => {
+                            (Some((new_a1, new_a2)), None) if !left_collinear => {
                                 Some(rebuild_footprint(a_b1, a_b2, end_a, new_a1, new_a2))
                             }
-                            (None, Some((new_a1, new_a2))) => {
+                            (None, Some((new_a1, new_a2))) if !right_collinear => {
                                 Some(rebuild_footprint(a_b1, a_b2, end_a, new_a1, new_a2))
+                            }
+                            // Collinear opposite neighbor (180°): keep that
+                            // side square so two same-axis walls do not both
+                            // L-miter into the same square.
+                            (Some((new_a1, _)), None) if left_collinear => {
+                                Some(rebuild_footprint(a_b1, a_b2, end_a, new_a1, a_b2[end_a]))
+                            }
+                            (None, Some((_, new_a2))) if right_collinear => {
+                                Some(rebuild_footprint(a_b1, a_b2, end_a, a_b1[end_a], new_a2))
                             }
                             _ => None,
                         }
@@ -1190,6 +1414,15 @@ fn miter_end_points(
 }
 
 /// Unit direction leaving a wall axis junction.
+fn is_collinear_opposite_endpoint(a: &JunctionWallGeom, b: &JunctionWallGeom) -> bool {
+    let (Some(ea), Some(eb)) = (a.end, b.end) else {
+        return false;
+    };
+    let da = wall_leave_dir(&a.axis, ea);
+    let db = wall_leave_dir(&b.axis, eb);
+    da.0 * db.0 + da.1 * db.1 < -0.95
+}
+
 fn wall_leave_dir(axis: &[(f64, f64)], end: usize) -> (f64, f64) {
     if axis.len() < 2 || end >= axis.len() {
         return (0.0, 0.0);
@@ -1227,7 +1460,38 @@ fn rebuild_footprint(
             footprint.push(a_b2[i]);
         }
     }
+    ensure_ccw(&mut footprint);
     footprint
+}
+
+fn ensure_ccw(ring: &mut Vec<(f64, f64)>) {
+    if super::geometry::signed_area(ring) < 0.0 {
+        ring.reverse();
+    }
+}
+
+/// Split a footprint that may contain NaN separators into simple rings.
+pub fn split_footprint_rings(fp: &[(f64, f64)]) -> Vec<Vec<(f64, f64)>> {
+    let mut rings = Vec::new();
+    let mut cur = Vec::new();
+    for &p in fp {
+        if !p.0.is_finite() || !p.1.is_finite() {
+            if cur.len() >= 3 {
+                rings.push(std::mem::take(&mut cur));
+            } else {
+                cur.clear();
+            }
+        } else {
+            cur.push(p);
+        }
+    }
+    if cur.len() >= 3 {
+        rings.push(cur);
+    }
+    if rings.is_empty() && fp.len() >= 3 && fp.iter().all(|p| p.0.is_finite() && p.1.is_finite()) {
+        rings.push(fp.to_vec());
+    }
+    rings
 }
 
 /// Build a closed footprint for one layer of wall A, with the joined end
@@ -1408,9 +1672,10 @@ fn contours_xy(
     }
 }
 
-/// Notch through-wall layers where a stem layer overlaps them (T-junction).
-/// Returns a C-shaped footprint connected on the far side, or `None` to keep
-/// the rectangular fallback.
+/// Through-wall footprints at a T-junction.
+///
+/// Approach-side through layers overlapped by the stem **core** receive a
+/// C-notch; the through core (and far-side finish) stay rectangular (`None`).
 pub fn through_wall_cutout_footprints(
     axis_through: &[(f64, f64)],
     layers_through: &[MiterLayer],
@@ -1448,24 +1713,60 @@ pub fn through_wall_cutout_footprints_with_bulges(
     let geom_s: Vec<(f64, f64)> = layers_stem.iter().map(MiterLayer::as_geom).collect();
     let contours_t = contours_xy(axis_through, bulges_through, &geom_t);
     let contours_s = contours_xy(axis_stem, bulges_stem, &geom_s);
-    let pairing = match_layer_indices(layers_stem, layers_through);
+    let Some((core_s, core_t)) = pair_structural_cores(layers_stem, layers_through) else {
+        return vec![None; layers_through.len()];
+    };
+    if core_t >= contours_t.len() {
+        return vec![None; layers_through.len()];
+    }
+    let (ref core_t1, ref core_t2) = contours_t[core_t];
+    let toward = through_offset_toward_stem(axis_stem, stem_end, axis_through);
+    let punchers = punchers_outside_in(layers_stem, layers_through, Some((core_s, core_t)), toward);
     let mut out = vec![None; layers_through.len()];
-    for (si, t_idx) in pairing.iter().enumerate() {
-        for ti in 0..layers_through.len() {
-            if Some(ti) == *t_idx {
-                continue;
-            }
-            if ti >= contours_t.len() || si >= contours_s.len() {
-                continue;
-            }
-            let (ref t1, ref t2) = contours_t[ti];
-            let (ref s1, ref s2) = contours_s[si];
-            if let Some(fp) = notch_through_layer(t1, t2, s1, s2, stem_end, axis_stem) {
-                out[ti] = Some(fp);
-            }
+    for ti in 0..layers_through.len() {
+        if ti == core_t || ti >= contours_t.len() {
+            continue;
+        }
+        if is_structural_function(&layers_through[ti].function) {
+            continue;
+        }
+        let (ref t1, ref t2) = contours_t[ti];
+        if !through_layer_on_approach_side(
+            t1, t2, core_t1, core_t2, axis_stem, stem_end,
+        ) {
+            continue;
+        }
+        let overlapping: Vec<usize> = punchers
+            .get(ti)
+            .map(|v| v.iter().copied().filter(|&si| si < contours_s.len()).collect())
+            .unwrap_or_default();
+        if overlapping.is_empty() {
+            continue;
+        }
+        if let Some(fp) = notch_through_layer_from_stem_layers(
+            t1,
+            t2,
+            &layers_through[ti],
+            &overlapping,
+            layers_stem,
+            &contours_s,
+            stem_end,
+            axis_stem,
+        ) {
+            out[ti] = Some(fp);
         }
     }
     out
+}
+
+/// Leftmost and rightmost stem boundary polylines (full stem envelope).
+#[allow(dead_code)]
+fn stem_outer_boundaries(
+    contours_s: &[(Vec<(f64, f64)>, Vec<(f64, f64)>)],
+) -> Option<(&[ (f64, f64) ], &[ (f64, f64) ])> {
+    let first = contours_s.first()?;
+    let last = contours_s.last()?;
+    Some((first.0.as_slice(), last.1.as_slice()))
 }
 
 fn closest_layer_index(a: &MiterLayer, layers_b: &[MiterLayer]) -> Option<usize> {
@@ -1484,6 +1785,266 @@ fn closest_layer_index(a: &MiterLayer, layers_b: &[MiterLayer]) -> Option<usize>
         }
     }
     Some(best)
+}
+
+fn contour_centroid(a: &[(f64, f64)], b: &[(f64, f64)]) -> (f64, f64) {
+    let mut sx = 0.0;
+    let mut sy = 0.0;
+    let mut n = 0.0;
+    for p in a.iter().chain(b.iter()) {
+        sx += p.0;
+        sy += p.1;
+        n += 1.0;
+    }
+    if n < 1.0 {
+        (0.0, 0.0)
+    } else {
+        (sx / n, sy / n)
+    }
+}
+
+fn stem_to_body(axis_stem: &[(f64, f64)], stem_end: usize) -> Option<(f64, f64)> {
+    if stem_end >= axis_stem.len() || axis_stem.len() < 2 {
+        return None;
+    }
+    let prev = if stem_end == 0 { 1 } else { stem_end - 1 };
+    let join = axis_stem[stem_end];
+    let interior = axis_stem[prev];
+    Some((interior.0 - join.0, interior.1 - join.1))
+}
+
+fn through_layer_on_approach_side(
+    t1: &[(f64, f64)],
+    t2: &[(f64, f64)],
+    core1: &[(f64, f64)],
+    core2: &[(f64, f64)],
+    axis_stem: &[(f64, f64)],
+    stem_end: usize,
+) -> bool {
+    let Some(to_stem) = stem_to_body(axis_stem, stem_end) else {
+        return false;
+    };
+    let layer = contour_centroid(t1, t2);
+    let core = contour_centroid(core1, core2);
+    (layer.0 - core.0) * to_stem.0 + (layer.1 - core.1) * to_stem.1 > 1e-9
+}
+
+fn line_param(p: (f64, f64), a: (f64, f64), b: (f64, f64)) -> f64 {
+    let dx = b.0 - a.0;
+    let dy = b.1 - a.1;
+    let len2 = dx * dx + dy * dy;
+    if len2 < 1e-24 {
+        0.0
+    } else {
+        ((p.0 - a.0) * dx + (p.1 - a.1) * dy) / len2
+    }
+}
+
+/// Pair stem vs through from the approach outer face inward:
+/// same material → miter at this through layer (consumed, does not punch deeper);
+/// different material → continue inward if a same-material through layer (or the
+/// core) still exists, otherwise butt here.
+fn punchers_outside_in(
+    layers_stem: &[MiterLayer],
+    layers_through: &[MiterLayer],
+    core_pair: Option<(usize, usize)>,
+    toward_stem: f64,
+) -> Vec<Vec<usize>> {
+    let n_t = layers_through.len();
+    let mut out = vec![Vec::new(); n_t];
+    let core_t = core_pair.map(|(_, t)| t);
+    let core_s = core_pair.map(|(s, _)| s);
+    let mut order: Vec<usize> = (0..n_t).collect();
+    order.sort_by(|&a, &b| {
+        let da = layer_outerness(&layers_through[a], toward_stem);
+        let db = layer_outerness(&layers_through[b], toward_stem);
+        db.partial_cmp(&da).unwrap_or(std::cmp::Ordering::Equal)
+    });
+    let mut consumed = vec![false; layers_stem.len()];
+    for ti in order {
+        if Some(ti) == core_t || is_structural_function(&layers_through[ti].function) {
+            continue;
+        }
+        let thru = &layers_through[ti];
+        let mut punch = Vec::new();
+        for si in 0..layers_stem.len() {
+            if consumed[si] {
+                continue;
+            }
+            let stem = &layers_stem[si];
+            let same_mat = !stem.material.is_empty()
+                && stem.material.eq_ignore_ascii_case(&thru.material);
+            if same_mat && !is_structural_function(&stem.function) {
+                punch.push(si);
+                consumed[si] = true;
+                continue;
+            }
+            let deeper_same = layers_through.iter().enumerate().any(|(j, l)| {
+                if j == ti || Some(j) == core_t {
+                    return false;
+                }
+                if layer_outerness(l, toward_stem) >= layer_outerness(thru, toward_stem) - 1e-12 {
+                    return false;
+                }
+                !stem.material.is_empty() && stem.material.eq_ignore_ascii_case(&l.material)
+            });
+            let is_core = core_s == Some(si);
+            if is_core || deeper_same {
+                punch.push(si);
+            } else {
+                punch.push(si);
+                consumed[si] = true;
+            }
+        }
+        out[ti] = punch;
+    }
+    out
+}
+
+fn layer_outerness(layer: &MiterLayer, toward_stem: f64) -> f64 {
+    if toward_stem >= 0.0 {
+        layer.axis_offset + layer.thickness
+    } else {
+        -layer.axis_offset
+    }
+}
+
+fn notch_through_layer_from_stem_layers(
+    t_b1: &[(f64, f64)],
+    t_b2: &[(f64, f64)],
+    thru: &MiterLayer,
+    overlapping: &[usize],
+    layers_stem: &[MiterLayer],
+    contours_s: &[(Vec<(f64, f64)>, Vec<(f64, f64)>)],
+    stem_end: usize,
+    axis_stem: &[(f64, f64)],
+) -> Option<Vec<(f64, f64)>> {
+    if overlapping.is_empty() {
+        return None;
+    }
+    let Some(to_stem) = stem_to_body(axis_stem, stem_end) else {
+        return None;
+    };
+    let join = *axis_stem.get(stem_end)?;
+    let t1_line = (*t_b1.first()?, *t_b1.last()?);
+    let t2_line = (*t_b2.first()?, *t_b2.last()?);
+    let s1 = closest_point_on_line(join, t1_line);
+    let s2 = closest_point_on_line(join, t2_line);
+    let d1 = (s1.0 - join.0) * to_stem.0 + (s1.1 - join.1) * to_stem.1;
+    let d2 = (s2.0 - join.0) * to_stem.0 + (s2.1 - join.1) * to_stem.1;
+    let (near, far) = if d1 >= d2 {
+        (t_b1, t_b2)
+    } else {
+        (t_b2, t_b1)
+    };
+    let near_line = (*near.first()?, *near.last()?);
+    let far_line = (*far.first()?, *far.last()?);
+
+    let mut hits: Vec<(f64, usize, bool)> = Vec::new();
+    for &si in overlapping {
+        let (ref b1, ref b2) = contours_s[si];
+        if stem_end >= b1.len() || stem_end >= b2.len() {
+            continue;
+        }
+        let prev = if stem_end == 0 { 1 } else { stem_end - 1 };
+        if prev >= b1.len() {
+            continue;
+        }
+        for (is_b2, b) in [(false, b1), (true, b2)] {
+            let line = extended_line(b[prev], b[stem_end]);
+            if let Some(p) = intersect_lines_2d(near_line.0, near_line.1, line.0, line.1) {
+                hits.push((line_param(p, near_line.0, near_line.1), si, is_b2));
+            }
+        }
+    }
+    if hits.len() < 2 {
+        let (ref s1c, ref s2c) = contours_s[overlapping[0]];
+        return notch_through_layer(t_b1, t_b2, s1c, s2c, stem_end, axis_stem);
+    }
+    hits.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+    let left = hits[0];
+    let right = hits[hits.len() - 1];
+    let (n0, f0) = through_cut_corners(
+        thru,
+        layers_stem,
+        contours_s,
+        left.1,
+        left.2,
+        near_line,
+        far_line,
+        stem_end,
+        axis_stem,
+    )?;
+    let (n1, f1) = through_cut_corners(
+        thru,
+        layers_stem,
+        contours_s,
+        right.1,
+        right.2,
+        near_line,
+        far_line,
+        stem_end,
+        axis_stem,
+    )?;
+    let mut n0 = n0;
+    let mut n1 = n1;
+    let mut f0 = f0;
+    let mut f1 = f1;
+    if line_param(n1, near_line.0, near_line.1) < line_param(n0, near_line.0, near_line.1) {
+        std::mem::swap(&mut n0, &mut n1);
+        std::mem::swap(&mut f0, &mut f1);
+    }
+    let mut left_ring = vec![near_line.0, n0, f0, far_line.0];
+    let mut right_ring = vec![n1, near_line.1, far_line.1, f1];
+    ensure_ccw(&mut left_ring);
+    ensure_ccw(&mut right_ring);
+    if left_ring.len() < 3 || right_ring.len() < 3 {
+        return None;
+    }
+    let mut fp = left_ring;
+    fp.push((f64::NAN, f64::NAN));
+    fp.extend(right_ring);
+    Some(fp)
+}
+
+fn through_cut_corners(
+    thru: &MiterLayer,
+    layers_stem: &[MiterLayer],
+    contours_s: &[(Vec<(f64, f64)>, Vec<(f64, f64)>)],
+    stem_i: usize,
+    use_b2: bool,
+    near_line: ((f64, f64), (f64, f64)),
+    far_line: ((f64, f64), (f64, f64)),
+    stem_end: usize,
+    axis_stem: &[(f64, f64)],
+) -> Option<((f64, f64), (f64, f64))> {
+    let stem = layers_stem.get(stem_i)?;
+    let (ref b1, ref b2) = contours_s.get(stem_i)?;
+    if stem_end >= b1.len() || stem_end >= b2.len() {
+        return None;
+    }
+    let prev = if stem_end == 0 { 1 } else { stem_end - 1 };
+    if prev >= b1.len() {
+        return None;
+    }
+    let l1 = extended_line(b1[prev], b1[stem_end]);
+    let l2 = extended_line(b2[prev], b2[stem_end]);
+    let miter = !stem.material.is_empty()
+        && stem.material.eq_ignore_ascii_case(&thru.material)
+        && !is_structural_function(&stem.function);
+    if miter {
+        let d1 = point_axis_offset(b1[stem_end], axis_stem);
+        let d2 = point_axis_offset(b2[stem_end], axis_stem);
+        let (inner, outer) = if d1 <= d2 { (l1, l2) } else { (l2, l1) };
+        let n = intersect_lines_2d(near_line.0, near_line.1, outer.0, outer.1)?;
+        let f = intersect_lines_2d(far_line.0, far_line.1, inner.0, inner.1)?;
+        Some((n, f))
+    } else {
+        let line = if use_b2 { l2 } else { l1 };
+        let n = intersect_lines_2d(near_line.0, near_line.1, line.0, line.1)?;
+        let f = intersect_lines_2d(far_line.0, far_line.1, line.0, line.1)?;
+        Some((n, f))
+    }
 }
 
 fn notch_through_layer(
@@ -1506,42 +2067,45 @@ fn notch_through_layer(
     }
     let s1_line = extended_line(s_b1[prev], s_b1[stem_end]);
     let s2_line = extended_line(s_b2[prev], s_b2[stem_end]);
-    let n = t_b1.len();
     let t1_line = (*t_b1.first()?, *t_b1.last()?);
     let t2_line = (*t_b2.first()?, *t_b2.last()?);
-    let p_n0 = intersect_lines_2d(t1_line.0, t1_line.1, s1_line.0, s1_line.1)?;
-    let p_n1 = intersect_lines_2d(t1_line.0, t1_line.1, s2_line.0, s2_line.1)?;
-    let p_f0 = intersect_lines_2d(t2_line.0, t2_line.1, s1_line.0, s1_line.1)?;
-    let p_f1 = intersect_lines_2d(t2_line.0, t2_line.1, s2_line.0, s2_line.1)?;
-    let mut near_hits = vec![(1usize, p_n0), (1, p_n1)];
-    let far_hits = vec![p_f0, p_f1];
-    if near_hits.len() < 2 || far_hits.len() < 2 {
+    let Some(to_stem) = stem_to_body(axis_stem, stem_end) else {
+        return None;
+    };
+    let join = axis_stem[stem_end];
+    let s1 = closest_point_on_line(join, t1_line);
+    let s2 = closest_point_on_line(join, t2_line);
+    let d1 = (s1.0 - join.0) * to_stem.0 + (s1.1 - join.1) * to_stem.1;
+    let d2 = (s2.0 - join.0) * to_stem.0 + (s2.1 - join.1) * to_stem.1;
+    let (near, far) = if d1 >= d2 {
+        (t_b1, t_b2)
+    } else {
+        (t_b2, t_b1)
+    };
+    let near_line = (*near.first()?, *near.last()?);
+    let far_line = (*far.first()?, *far.last()?);
+    let mut n0 = intersect_lines_2d(near_line.0, near_line.1, s1_line.0, s1_line.1)?;
+    let mut n1 = intersect_lines_2d(near_line.0, near_line.1, s2_line.0, s2_line.1)?;
+    let mut f0 = intersect_lines_2d(far_line.0, far_line.1, s1_line.0, s1_line.1)?;
+    let mut f1 = intersect_lines_2d(far_line.0, far_line.1, s2_line.0, s2_line.1)?;
+    if line_param(n1, near_line.0, near_line.1) < line_param(n0, near_line.0, near_line.1) {
+        std::mem::swap(&mut n0, &mut n1);
+        std::mem::swap(&mut f0, &mut f1);
+    }
+    // Full-thickness cut through this shell: two disjoint remainders.
+    // A single C-ring that travels the far edge twice self-overlaps and
+    // tessellators fill the notch (2D hatch and 3D extrusion).
+    let mut left = vec![near_line.0, n0, f0, far_line.0];
+    let mut right = vec![n1, near_line.1, far_line.1, f1];
+    ensure_ccw(&mut left);
+    ensure_ccw(&mut right);
+    if left.len() < 3 || right.len() < 3 {
         return None;
     }
-    near_hits.sort_by(|a, b| a.0.cmp(&b.0));
-    let (i0, p_n0) = near_hits[0];
-    let (_, p_n1) = near_hits[near_hits.len() - 1];
-    let p_f0 = far_hits[0];
-    let p_f1 = far_hits[far_hits.len() - 1];
-    let mut fp = Vec::new();
-    for i in 0..i0.min(n) {
-        fp.push(t_b1[i]);
-    }
-    fp.push(p_n0);
-    fp.push(p_f0);
-    for i in 0..n {
-        fp.push(t_b2[i]);
-    }
-    fp.push(p_f1);
-    fp.push(p_n1);
-    for i in i0..n {
-        fp.push(t_b1[i]);
-    }
-    if fp.len() >= 3 {
-        Some(fp)
-    } else {
-        None
-    }
+    let mut fp = left;
+    fp.push((f64::NAN, f64::NAN));
+    fp.extend(right);
+    Some(fp)
 }
 
 fn closest_point_on_line(
@@ -1935,7 +2499,8 @@ mod tests {
         // Through wall: two layers stacked about the axis (each 0.1 thick).
         //   layer0 (core):   y ∈ [-0.1,  0.0]
         //   layer1 (finish): y ∈ [ 0.0,  0.1]
-        // Stem from +Y with the same stack — each layer butts its own near face.
+        // Structural cores butt at the core near face; finish stays on the
+        // approach outer face and must not tunnel to the far side.
         let stem = vec![(5.0, 0.0), (5.0, 8.0)];
         let through = vec![(0.0, 0.0), (10.0, 0.0)];
         let layers = vec![
@@ -1955,7 +2520,6 @@ mod tests {
         let fp0 = fps[0].as_ref().expect("core layer");
         let fp1 = fps[1].as_ref().expect("finish layer");
 
-        // Join-end y values only (near the joint, not the far stem end).
         let join_ys = |fp: &[(f64, f64)]| -> Vec<f64> {
             fp.iter()
                 .filter(|(_, y)| y.abs() < 0.5)
@@ -1963,25 +2527,36 @@ mod tests {
                 .collect()
         };
 
-        // Finish (layer1) is closer to the stem (+Y) → near face y = +0.1.
         let y1 = join_ys(fp1);
         assert!(
-            !y1.is_empty() && y1.iter().all(|y| (*y - 0.1).abs() < 1e-5),
-            "finish layer should butt y=+0.1, got {y1:?} in {fp1:?}"
+            !y1.is_empty()
+                && y1.iter().any(|y| (*y - 0.1).abs() < 1e-4)
+                && y1.iter().all(|y| *y > -1e-4),
+            "finish should miter on the approach side (touch y=+0.1, not far face), got {y1:?} in {fp1:?}"
+        );
+        // Inner→outer diagonal: inner stem edge meets inner through edge (y=0),
+        // outer stem edge meets outer through edge (y=0.1).
+        let has_inner = fp1.iter().any(|(x, y)| {
+            y.abs() < 1e-4 && (*x - 5.0).abs() < 1e-3
+        });
+        let has_outer = fp1.iter().any(|(_, y)| (*y - 0.1).abs() < 1e-4);
+        assert!(
+            has_inner && has_outer,
+            "plaster miter must run inner-to-outer, got {fp1:?}"
+        );
+        assert!(
+            !fp1.iter().any(|(x, y)| (*y - 0.1).abs() < 1e-4 && (*x - 5.0).abs() < 1e-3),
+            "wrong miter diagonal (outer at inner x), got {fp1:?}"
         );
 
-        // Core (layer0) near face from +Y is y = 0.0.
         let y0 = join_ys(fp0);
         assert!(
             !y0.is_empty() && y0.iter().all(|y| y.abs() < 1e-5),
             "core layer should butt y=0.0, got {y0:?} in {fp0:?}"
         );
-
-        // Layers must not cross: from +Y, smaller y = deeper into through wall.
-        let depth = |ys: &[f64]| ys.iter().copied().fold(f64::NEG_INFINITY, f64::max);
         assert!(
-            depth(&y0) < depth(&y1) + 1e-9,
-            "core must extend at least as deep as finish (no cross), y0={y0:?} y1={y1:?}"
+            !fp0.iter().any(|(_, y)| (*y + 0.1).abs() < 1e-5),
+            "core must not reach far face y=-0.1, got {fp0:?}"
         );
     }
 
@@ -2024,15 +2599,13 @@ mod tests {
                 .collect()
         };
 
-        // Matched brick butts at its own near face (y=+0.05), the boundary
-        // between brick and concrete — NOT the outer face.
+        // Thickest fallback cores (no Structural): brick butts at brick near
+        // face y=+0.05; unmatched orphan still reaches the outer face.
         let y_match = join_ys(fp_match);
         assert!(
             !y_match.is_empty() && y_match.iter().all(|y| (*y - 0.05).abs() < 1e-5),
             "matched layer should butt at brick's near face y=+0.05, got {y_match:?} in {fp_match:?}"
         );
-        // Unmatched orphan must reach the true outer face of the through
-        // stack (y=+0.15, outer edge of concrete) — every vertex, not just one.
         let y_orphan = join_ys(fp_orphan);
         assert!(
             !y_orphan.is_empty() && y_orphan.iter().all(|y| (*y - 0.15).abs() < 1e-5),
@@ -2075,8 +2648,8 @@ mod tests {
             .map(|(_, y)| *y)
             .collect();
         assert!(
-            !y_join.is_empty() && y_join.iter().all(|y| (*y - 0.15).abs() < 1e-5),
-            "outer face must be y=+0.15 despite reversed layer list, got {y_join:?} in {fp:?}"
+            !y_join.is_empty() && y_join.iter().all(|y| (*y - 0.05).abs() < 1e-5),
+            "no Structural: thickest through layer is core; stem butts its near face y=+0.05, got {y_join:?} in {fp:?}"
         );
     }
 
@@ -2329,6 +2902,55 @@ mod tests {
             max_abs_x_near_origin > 0.05,
             "east wall end should leave the axis after N-way miter, got max |x|={max_abs_x_near_origin}, fp={east_outer:?}"
         );
+    }
+
+    #[test]
+    fn n_way_collinear_pair_does_not_miter_into_each_other() {
+        // Three endpoints at (8,22): horizontal stem + two collinear vertical
+        // walls (the example "N-Wege einschalig"). The vertical pair must not
+        // receive overlapping L-miters.
+        let layers = vec![g(0.2)];
+        let geoms = vec![
+            JunctionWallGeom {
+                axis: vec![(0.0, 22.0), (8.0, 22.0)],
+                layers: layers.clone(),
+                end: Some(1),
+            },
+            JunctionWallGeom {
+                axis: vec![(8.0, 22.0), (8.0, 28.0)],
+                layers: layers.clone(),
+                end: Some(0),
+            },
+            JunctionWallGeom {
+                axis: vec![(8.0, 22.0), (8.0, 16.0)],
+                layers: layers.clone(),
+                end: Some(0),
+            },
+        ];
+        let junction = Junction {
+            point: glam::DVec3::new(8.0, 22.0, 0.0),
+            participants: (0..3)
+                .map(|i| JunctionParticipant {
+                    wall_index: i,
+                    role: JunctionRole::Endpoint(if i == 0 { 1 } else { 0 }),
+                })
+                .collect(),
+        };
+        let all = mitered_junction_layer_footprints(&junction, &geoms);
+        let north = all[1][0].as_ref().expect("north wall should miter against stem only");
+        let south = all[2][0].as_ref().expect("south wall should miter against stem only");
+        let north_ymin = north.iter().map(|p| p.1).fold(f64::INFINITY, f64::min);
+        let south_ymax = south.iter().map(|p| p.1).fold(f64::NEG_INFINITY, f64::max);
+        assert!(
+            north_ymin > 21.85,
+            "north wall must not L-miter through the collinear south wall, ymin={north_ymin} fp={north:?}"
+        );
+        assert!(
+            south_ymax < 22.15,
+            "south wall must not L-miter through the collinear north wall, ymax={south_ymax} fp={south:?}"
+        );
+        let stem = all[0][0].as_ref().expect("stem should still miter");
+        assert!(stem.len() >= 3);
     }
 
     #[test]
@@ -2892,7 +3514,7 @@ mod tests {
         let stem_layers = vec![MiterLayer::with_id(0.2, -0.1, "core", "Structural", uuid::Uuid::new_v4())];
         let through_layers = vec![
             MiterLayer::with_id(0.2, -0.2, "core", "Structural", uuid::Uuid::new_v4()),
-            MiterLayer::with_id(0.2, 0.0, "other", "Structural", uuid::Uuid::new_v4()),
+            MiterLayer::with_id(0.2, 0.0, "other", "Finish", uuid::Uuid::new_v4()),
         ];
         let refs = vec![lref("core")];
 
@@ -2914,7 +3536,6 @@ mod tests {
             Some(&ov),
         );
         let fp_over = overridden[0].as_ref().expect("outer-face override should succeed");
-        // Outer face of the through stack (2 layers of 0.2 each) is y = +0.2.
         assert!(
             fp_over.iter().any(|p| close(*p, (4.9, 0.2), 1e-5)),
             "expected outer-face butt at y=0.2, got {fp_over:?}"
@@ -3114,9 +3735,186 @@ mod tests {
             MiterLayer::with_id(0.2, 0.1, "finish", "Finish", uuid::Uuid::new_v4()),
         ];
         let cut = through_wall_cutout_footprints(&through, &through_layers, &stem, &stem_layers, 0);
-        assert!(cut[0].is_some(), "extra unmatched stem layer should notch the through layer");
-        let fp = cut[0].as_ref().unwrap();
-        assert!(fp.len() > 4, "notch should add vertices, got {fp:?}");
+        assert!(
+            cut[0].is_none(),
+            "through core must stay rectangular, got {cut:?}"
+        );
+    }
+
+    #[test]
+    fn through_cutout_uses_full_stem_envelope_on_every_layer() {
+        let through = vec![(0.0, 0.0), (10.0, 0.0)];
+        let stem = vec![(5.0, 0.0), (5.0, 8.0)];
+        let through_layers = vec![
+            MiterLayer::with_id(0.015, -0.195, "putz", "Finish", uuid::Uuid::new_v4()),
+            MiterLayer::with_id(0.24, -0.18, "mw", "Structural", uuid::Uuid::new_v4()),
+            MiterLayer::with_id(0.12, 0.06, "ins", "Insulation", uuid::Uuid::new_v4()),
+            MiterLayer::with_id(0.015, 0.18, "putz2", "Finish", uuid::Uuid::new_v4()),
+        ];
+        let stem_layers = through_layers.clone();
+        let cut = through_wall_cutout_footprints(&through, &through_layers, &stem, &stem_layers, 0);
+        assert_eq!(cut.len(), 4);
+        assert!(cut[0].is_none(), "far-side putz must stay rectangular, got {cut:?}");
+        assert!(cut[1].is_none(), "through core must stay rectangular, got {cut:?}");
+        assert!(
+            cut[2].is_some(),
+            "approach insulation must be notched, got {cut:?}"
+        );
+        assert!(
+            cut[3].is_some(),
+            "approach putz should receive a stem-core pocket, got {cut:?}"
+        );
+        let fp = cut[3].as_ref().unwrap();
+        let rings = split_footprint_rings(fp);
+        assert_eq!(rings.len(), 2, "through-cut must be two remainders, got {fp:?}");
+        // Same-material putz: cut edges are miters (inner/outer X differ).
+        let mitered_edge = rings.iter().any(|r| {
+            r.windows(2).any(|w| {
+                (w[0].1 - 0.195).abs() < 0.02
+                    && (w[1].1 - 0.18).abs() < 0.02
+                    && (w[0].0 - w[1].0).abs() > 0.005
+            }) || r.windows(2).any(|w| {
+                (w[0].1 - 0.18).abs() < 0.02
+                    && (w[1].1 - 0.195).abs() < 0.02
+                    && (w[0].0 - w[1].0).abs() > 0.005
+            })
+        });
+        assert!(
+            mitered_edge,
+            "approach putz pocket should miter with stem putz, got {rings:?}"
+        );
+        let in_ring = |ring: &[(f64, f64)], p: (f64, f64)| -> bool {
+            let mut inside = false;
+            let n = ring.len();
+            let mut j = n - 1;
+            for i in 0..n {
+                let (xi, yi) = ring[i];
+                let (xj, yj) = ring[j];
+                if ((yi > p.1) != (yj > p.1))
+                    && (p.0 < (xj - xi) * (p.1 - yi) / (yj - yi + 1e-30) + xi)
+                {
+                    inside = !inside;
+                }
+                j = i;
+            }
+            inside
+        };
+        let overlap = (5.0, 0.187);
+        assert!(
+            rings.iter().all(|r| !in_ring(r, overlap)),
+            "approach putz must be open at the stem core, got {rings:?}"
+        );
+    }
+
+    #[test]
+    fn through_insulation_notched_by_core_not_full_envelope_on_3_to_4() {
+        let through = vec![(0.0, 0.0), (10.0, 0.0)];
+        let stem = vec![(5.0, 0.0), (5.0, 8.0)];
+        let through_layers = vec![
+            MiterLayer::with_id(0.015, -0.195, "putz", "Finish", uuid::Uuid::new_v4()),
+            MiterLayer::with_id(0.24, -0.18, "mw", "Structural", uuid::Uuid::new_v4()),
+            MiterLayer::with_id(0.12, 0.06, "ins", "Insulation", uuid::Uuid::new_v4()),
+            MiterLayer::with_id(0.015, 0.18, "putz2", "Finish", uuid::Uuid::new_v4()),
+        ];
+        let stem_layers = vec![
+            MiterLayer::with_id(0.015, -0.195, "putz", "Finish", uuid::Uuid::new_v4()),
+            MiterLayer::with_id(0.36, -0.18, "mw", "Structural", uuid::Uuid::new_v4()),
+            MiterLayer::with_id(0.015, 0.18, "putz2", "Finish", uuid::Uuid::new_v4()),
+        ];
+        let cut = through_wall_cutout_footprints(&through, &through_layers, &stem, &stem_layers, 0);
+        let ins = cut[2].as_ref().expect("through insulation must be notched");
+        let rings = split_footprint_rings(ins);
+        assert_eq!(rings.len(), 2, "insulation cut must be two remainders, got {ins:?}");
+        let mut xs: Vec<f64> = rings
+            .iter()
+            .flat_map(|r| r.iter().map(|p| p.0))
+            .collect();
+        xs.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        let left_inner = rings[0].iter().map(|p| p.0).fold(f64::NEG_INFINITY, f64::max)
+            .min(rings[1].iter().map(|p| p.0).fold(f64::NEG_INFINITY, f64::max));
+        let right_inner = rings[0].iter().map(|p| p.0).fold(f64::INFINITY, f64::min)
+            .max(rings[1].iter().map(|p| p.0).fold(f64::INFINITY, f64::min));
+        let gap = (right_inner - left_inner).abs();
+        assert!(
+            gap < 0.38,
+            "insulation pocket must be stem-core width, not full stem, gap={gap} rings={rings:?}"
+        );
+        assert!(
+            gap > 0.30,
+            "insulation pocket should still clear the stem core, gap={gap} rings={rings:?}"
+        );
+        let butt = rings.iter().any(|r| {
+            r.windows(2).any(|w| {
+                (w[0].0 - w[1].0).abs() < 0.002
+                    && (w[0].1 - w[1].1).abs() > 0.05
+            })
+        });
+        assert!(
+            butt,
+            "unmatched insulation should butt (vertical cut), got {rings:?}"
+        );
+    }
+
+    #[test]
+    fn through_plaster_hatch_tessellation_leaves_stem_pocket() {
+        let through = vec![(0.0, 0.0), (10.0, 0.0)];
+        let stem = vec![(5.0, 0.0), (5.0, 8.0)];
+        let through_layers = vec![
+            MiterLayer::with_id(0.015, -0.195, "putz", "Finish", uuid::Uuid::new_v4()),
+            MiterLayer::with_id(0.24, -0.18, "mw", "Structural", uuid::Uuid::new_v4()),
+            MiterLayer::with_id(0.12, 0.06, "ins", "Insulation", uuid::Uuid::new_v4()),
+            MiterLayer::with_id(0.015, 0.18, "putz", "Finish", uuid::Uuid::new_v4()),
+        ];
+        let stem_layers = vec![
+            MiterLayer::with_id(0.015, -0.195, "putz", "Finish", uuid::Uuid::new_v4()),
+            MiterLayer::with_id(0.36, -0.18, "mw", "Structural", uuid::Uuid::new_v4()),
+            MiterLayer::with_id(0.015, 0.18, "putz", "Finish", uuid::Uuid::new_v4()),
+        ];
+        let cut = through_wall_cutout_footprints(&through, &through_layers, &stem, &stem_layers, 0);
+        let plaster = cut[3]
+            .as_ref()
+            .or(cut[0].as_ref())
+            .expect("approach plaster must be notched");
+        let rings = split_footprint_rings(plaster);
+        let closed: Vec<Vec<[f64; 2]>> = rings
+            .iter()
+            .map(|r| {
+                let mut pts: Vec<[f64; 2]> = r.iter().map(|&(x, y)| [x, y]).collect();
+                if pts.len() >= 3 {
+                    let first = pts[0];
+                    let last = *pts.last().unwrap();
+                    if (first[0] - last[0]).abs() > 1e-9 || (first[1] - last[1]).abs() > 1e-9 {
+                        pts.push(first);
+                    }
+                }
+                pts
+            })
+            .collect();
+        let (points, triangles) = cadkernel::geom2d::triangulate_rings(&closed);
+        let pocket = [5.0, 0.187];
+        let in_tri = |a: [f64; 2], b: [f64; 2], c: [f64; 2], p: [f64; 2]| {
+            let s = (a[1] * c[0] - a[0] * c[1] + (c[1] - a[1]) * p[0] + (a[0] - c[0]) * p[1])
+                .signum();
+            let t = (a[0] * b[1] - a[1] * b[0] + (a[1] - b[1]) * p[0] + (b[0] - a[0]) * p[1])
+                .signum();
+            let area2 = -b[1] * c[0] + a[1] * (c[0] - b[0]) + a[0] * (b[1] - c[1]) + b[0] * c[1];
+            if area2.abs() < 1e-18 {
+                return false;
+            }
+            let bary_a = (b[1] * c[0] - b[0] * c[1] + (c[1] - b[1]) * p[0] + (b[0] - c[0]) * p[1])
+                / area2;
+            let bary_b = (a[0] * c[1] - a[1] * c[0] + (a[1] - c[1]) * p[0] + (c[0] - a[0]) * p[1])
+                / area2;
+            let bary_c = 1.0 - bary_a - bary_b;
+            bary_a >= -1e-6 && bary_b >= -1e-6 && bary_c >= -1e-6 && s * t >= 0.0
+        };
+        let filled = triangles.iter().any(|&[i, j, k]| {
+            in_tri(points[i], points[j], points[k], pocket)
+        });
+        assert!(
+            !filled,
+            "hatch tessellation must not fill the stem pocket, triangles={triangles:?} pts={points:?}"
+        );
     }
 
     #[test]

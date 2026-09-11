@@ -1502,6 +1502,7 @@ impl OpenCADStudio {
                 crate::ui::window::aec_style_picker::view_window(
                     self.aec_style_library.as_ref(),
                     self.aec_project_explorer_file.as_ref(),
+                    self.aec_session_style_library.as_ref(),
                     target,
                     &self.aec_style_picker_filter,
                     self.aec_style_picker_selection.as_deref(),
@@ -1532,6 +1533,7 @@ impl OpenCADStudio {
         crate::ui::window::aec_material_manager::view_window(
             library,
             self.aec_project_explorer_file.as_ref(),
+            self.aec_session_style_library.as_ref(),
             self.aec_style_manager_selected_material.as_deref(),
             &self.aec_style_manager_filter,
             crate::ui::window::aec_material_manager::MaterialFormState {
@@ -1565,6 +1567,7 @@ impl OpenCADStudio {
         crate::ui::window::aec_wall_style_manager::view_window(
             library,
             self.aec_project_explorer_file.as_ref(),
+            self.aec_session_style_library.as_ref(),
             self.aec_style_manager_selected_wall_style.as_deref(),
             &self.aec_style_manager_filter,
             form,

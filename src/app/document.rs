@@ -201,6 +201,9 @@ pub(super) struct DocumentTab {
     pub(super) representation_override: Option<
         crate::modules::aec::engine::display_component::RepresentationMode,
     >,
+    /// Drawing-local AEC styles reconstructed from wall XDATA (not persisted).
+    pub(super) aec_session_style_library:
+        Option<crate::modules::aec::engine::library::StyleLibrary>,
     /// Last camera_generation value written back to the document.
     pub(super) last_synced_camera_gen: u64,
     /// Sentinel "Welcome / Start" tab. Always at index 0 when present.
@@ -604,6 +607,7 @@ impl DocumentTab {
             active_layer: "0".to_string(),
             active_display_config: None,
             representation_override: None,
+            aec_session_style_library: None,
             active_ucs: None,
             bg_color: None,
             paper_bg_color: None,

@@ -553,7 +553,7 @@ mod tests {
     #[test]
     fn solve_t_through_cutout_and_stem_butt() {
         let core = layer(0.2, -0.2, "core");
-        let extra = layer(0.2, 0.0, "other");
+        let extra = MiterLayer::with_id(0.2, 0.0, "other", "Finish", uuid::Uuid::new_v4());
         let walls = vec![
             wall_with_layers(
                 vec![p(0.0, 0.0), p(10.0, 0.0)],
@@ -572,8 +572,13 @@ mod tests {
         );
         assert_eq!(t.trimmed_axes[0], walls[0].axis);
         assert!(
-            t.footprints[0].iter().any(|fp| fp.is_some()),
-            "unmatched through layer should receive a cutout, got {:?}",
+            t.footprints[0][0].is_none(),
+            "through core stays rectangular, got {:?}",
+            t.footprints[0]
+        );
+        assert!(
+            t.footprints[0][1].is_some(),
+            "approach finish should receive a cutout, got {:?}",
             t.footprints[0]
         );
     }

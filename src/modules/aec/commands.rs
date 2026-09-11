@@ -1458,6 +1458,16 @@ pub fn wall_from_entity(entity: &EntityType) -> Option<Wall> {
     })
 }
 
+/// Reconstruct a [`StyleLibrary`] from every wall in `scene`.
+pub fn extract_style_library_from_scene(scene: &Scene) -> StyleLibrary {
+    let walls: Vec<Wall> = scene
+        .document
+        .entities()
+        .filter_map(wall_from_entity)
+        .collect();
+    engine::library::extract_style_library_from_walls(&walls)
+}
+
 /// Helper to get total thickness, height, and storey_id for a wall entity.
 pub fn wall_thickness_and_height(entity: &EntityType) -> Option<(f64, f64, u32)> {
     let wall = wall_from_entity(entity)?;
@@ -1776,11 +1786,20 @@ fn tessellate_ring_with_bulges(ring: &[(f64, f64)], bulges: &[f64]) -> Vec<(f64,
 fn pack_wall_ring(ring: &[(f64, f64)]) -> (Vec<[f32; 2]>, [f64; 2], Vec<[f64; 2]>) {
     let origin = ring.first().copied().unwrap_or((0.0, 0.0));
     let origin = [origin.0, origin.1];
-    let rel: Vec<[f32; 2]> = ring
+    let mut rel: Vec<[f32; 2]> = ring
         .iter()
         .map(|&(x, y)| [(x - origin[0]) as f32, (y - origin[1]) as f32])
         .collect();
-    let wcs: Vec<[f64; 2]> = ring.iter().map(|&(x, y)| [x, y]).collect();
+    let mut wcs: Vec<[f64; 2]> = ring.iter().map(|&(x, y)| [x, y]).collect();
+    // Close the loop so hatch tessellation matches the closed 2D contour.
+    if rel.len() >= 3 {
+        let first = rel[0];
+        let last = *rel.last().unwrap();
+        if (first[0] - last[0]).abs() > 1e-6 || (first[1] - last[1]).abs() > 1e-6 {
+            rel.push(first);
+            wcs.push(wcs[0]);
+        }
+    }
     (rel, origin, wcs)
 }
 
@@ -2279,6 +2298,62 @@ fn find_other_end_junction_footprints(
     all_fps.get(pi).cloned()
 }
 
+/// T-junction cutouts when this wall is the through (head) wall: the join
+/// sits on a span, not an axis end, so [`find_other_end_junction_footprints`]
+/// never sees it. Without this, plan-type / 2D-3D regen drops pockets.
+fn find_through_span_cutout_footprints(
+    scene: &mut Scene,
+    wall_handle: Handle,
+    self_axis_2d: &[(f64, f64)],
+) -> Option<Vec<Option<Vec<(f64, f64)>>>> {
+    if self_axis_2d.len() < 2 {
+        return None;
+    }
+    let handles = all_wall_axis_handles(scene);
+    if handles.len() < 2 {
+        return None;
+    }
+    let self_i = handles.iter().position(|h| *h == wall_handle)?;
+    let axes: Vec<Vec<DVec3>> = handles.iter().map(|h| get_wall_vertices(scene, *h)).collect();
+    if axes.iter().any(|a| a.len() < 2) {
+        return None;
+    }
+    let axis_refs: Vec<&[DVec3]> = axes.iter().map(|a| a.as_slice()).collect();
+    let tol = join::JUNCTION_TOLERANCE.max(1e-4);
+    let junctions = join::detect_junctions(&axis_refs, tol);
+    let junc = junctions.into_iter().find(|j| {
+        j.participants.iter().any(|p| {
+            p.wall_index == self_i && matches!(p.role, join::JunctionRole::Through(_))
+        }) && j
+            .participants
+            .iter()
+            .any(|p| matches!(p.role, join::JunctionRole::Endpoint(_)))
+    })?;
+    let stem = junc
+        .participants
+        .iter()
+        .find(|p| matches!(p.role, join::JunctionRole::Endpoint(_)))?;
+    let join::JunctionRole::Endpoint(stem_end) = stem.role else {
+        return None;
+    };
+    let stem_handle = handles[stem.wall_index];
+    let stem_axis: Vec<(f64, f64)> = axes[stem.wall_index]
+        .iter()
+        .map(|p| (p.x, p.y))
+        .collect();
+    let through_layers = wall_layer_data(scene, wall_handle);
+    let stem_layers = wall_layer_data(scene, stem_handle);
+    Some(engine::miter::through_wall_cutout_footprints_with_bulges(
+        self_axis_2d,
+        &through_layers,
+        &stem_axis,
+        &stem_layers,
+        stem_end,
+        &get_wall_bulges(scene, wall_handle),
+        &get_wall_bulges(scene, stem_handle),
+    ))
+}
+
 fn regenerate_wall_representation_inner(
     scene: &mut Scene,
     wall_handle: Handle,
@@ -2529,6 +2604,17 @@ fn regenerate_wall_representation_inner(
                 }
             }
         }
+        if !join_miter.map(|c| c.as_through).unwrap_or(false) {
+            if let Some(cut) =
+                find_through_span_cutout_footprints(scene, wall_handle, &self_axis_2d)
+            {
+                for (i, fp) in cut.into_iter().enumerate() {
+                    if fp.is_some() && i < mitered_footprints.len() {
+                        mitered_footprints[i] = fp;
+                    }
+                }
+            }
+        }
     }
 
     // Extrusion height/base come from the (possibly extended) axis so solids
@@ -2643,7 +2729,18 @@ fn regenerate_wall_representation_inner(
                 })
                 .unwrap_or_else(|| vec![uncut_footprint.clone()])
         } else {
-            vec![uncut_footprint.clone()]
+            let rings = engine::miter::split_footprint_rings(&uncut_footprint.0);
+            if rings.len() > 1 {
+                rings
+                    .into_iter()
+                    .map(|r| {
+                        let n = r.len();
+                        (r, vec![0.0; n])
+                    })
+                    .collect()
+            } else {
+                vec![uncut_footprint.clone()]
+            }
         };
 
         // Stable per-layer identity, used to match `layer_filter` /
@@ -2872,75 +2969,71 @@ fn regenerate_wall_representation_inner(
             }
         }
 
-        // Extruded solid for this layer — same uncut footprint as the display
-        // package (miter/corner override, else WallDisplaySet solids). 3D
-        // opening boolean remains deferred.
-        let (footprint, footprint_bulges, solid_height, solid_base) =
-            if let Some(Some(mitered)) = mitered_footprints.get(i) {
-                let h = extrusions.get(i).map(|e| e.height).unwrap_or(height);
-                let b = extrusions.get(i).map(|e| e.base_offset).unwrap_or(0.0);
-                let bg = retarget_closed_footprint_bulges(
-                    &base_footprints[i],
-                    base_footprint_bulges.get(i).map(|b| b.as_slice()).unwrap_or(&[]),
-                    mitered,
-                );
-                (mitered.clone(), bg, h, b)
-            } else if let Some(fp) = extended_footprints.get(i) {
-                let h = extrusions.get(i).map(|e| e.height).unwrap_or(height);
-                let b = extrusions.get(i).map(|e| e.base_offset).unwrap_or(0.0);
-                let bg = retarget_closed_footprint_bulges(
-                    &base_footprints[i],
-                    base_footprint_bulges.get(i).map(|b| b.as_slice()).unwrap_or(&[]),
-                    fp,
-                );
-                (fp.clone(), bg, h, b)
-            } else if let Some(solid) = display.solids.get(i) {
-                (
-                    solid.footprint.clone(),
-                    solid.bulges.clone(),
-                    solid.height,
-                    solid.base_offset,
-                )
-            } else {
-                let (fp, bg) = uncut_footprint.clone();
-                let h = extrusions.get(i).map(|e| e.height).unwrap_or(height);
-                let b = extrusions.get(i).map(|e| e.base_offset).unwrap_or(0.0);
-                (fp, bg, h, b)
-            };
-        if solid_visible && layer_included_solid && footprint.len() >= 3 && solid_height.abs() > 1e-9 {
-            let mut pl = LwPolyline::new();
-            for (idx, &(x, y)) in footprint.iter().enumerate() {
-                let bulge = footprint_bulges.get(idx).copied().unwrap_or(0.0);
-                pl.add_vertex(LwVertex::with_bulge(Vector2::new(x, y), bulge));
-            }
-            pl.is_closed = true;
-            let contour_entity = EntityType::LwPolyline(pl);
-
-            let to_extrude = if solid_base.abs() > 1e-9 {
-                let mut clone = contour_entity.clone();
-                if let EntityType::LwPolyline(ref mut pl) = clone {
-                    pl.elevation = solid_base;
+        // Extruded solid for this layer — same rings as 2D (miter/cutout/
+        // corner override, else WallDisplaySet solids). 3D opening boolean
+        // remains deferred.
+        let (solid_height, solid_base) = if let Some(ex) = extrusions.get(i) {
+            (ex.height, ex.base_offset)
+        } else if let Some(solid) = display.solids.get(i) {
+            (solid.height, solid.base_offset)
+        } else {
+            (height, 0.0)
+        };
+        let solid_rings: Vec<(Vec<(f64, f64)>, Vec<f64>)> = if !pieces_2d.is_empty()
+            && mitered_footprints.get(i).and_then(|o| o.as_ref()).is_some()
+        {
+            pieces_2d.clone()
+        } else if let Some(fp) = extended_footprints.get(i) {
+            let bg = retarget_closed_footprint_bulges(
+                &base_footprints[i],
+                base_footprint_bulges.get(i).map(|b| b.as_slice()).unwrap_or(&[]),
+                fp,
+            );
+            vec![(fp.clone(), bg)]
+        } else if let Some(solid) = display.solids.get(i) {
+            vec![(solid.footprint.clone(), solid.bulges.clone())]
+        } else {
+            vec![uncut_footprint.clone()]
+        };
+        if solid_visible && layer_included_solid && solid_height.abs() > 1e-9 {
+            for (footprint, footprint_bulges) in &solid_rings {
+                if footprint.len() < 3 {
+                    continue;
                 }
-                Some(clone)
-            } else {
-                None
-            };
-            let entity_to_use = to_extrude.as_ref().unwrap_or(&contour_entity);
+                let mut pl = LwPolyline::new();
+                for (idx, &(x, y)) in footprint.iter().enumerate() {
+                    let bulge = footprint_bulges.get(idx).copied().unwrap_or(0.0);
+                    pl.add_vertex(LwVertex::with_bulge(Vector2::new(x, y), bulge));
+                }
+                pl.is_closed = true;
+                let contour_entity = EntityType::LwPolyline(pl);
 
-            if let Some(body) =
-                crate::scene::model::sweep_model::extruded(entity_to_use, solid_height)
-            {
-                let mut s3d = acadrust::entities::Solid3D::new();
-                s3d.wires = crate::scene::model::solid_model::edge_wires(&body);
-                let solid_handle = scene.add_entity(EntityType::Solid3D(s3d));
-                scene.register_solid_model(solid_handle, body);
-                if let Some(color) = fill_color {
-                    if let Some(e) = scene.document.get_entity_mut(solid_handle) {
-                        e.as_entity_mut().set_color(color);
+                let to_extrude = if solid_base.abs() > 1e-9 {
+                    let mut clone = contour_entity.clone();
+                    if let EntityType::LwPolyline(ref mut pl) = clone {
+                        pl.elevation = solid_base;
                     }
+                    Some(clone)
+                } else {
+                    None
+                };
+                let entity_to_use = to_extrude.as_ref().unwrap_or(&contour_entity);
+
+                if let Some(body) =
+                    crate::scene::model::sweep_model::extruded(entity_to_use, solid_height)
+                {
+                    let mut s3d = acadrust::entities::Solid3D::new();
+                    s3d.wires = crate::scene::model::solid_model::edge_wires(&body);
+                    let solid_handle = scene.add_entity(EntityType::Solid3D(s3d));
+                    scene.register_solid_model(solid_handle, body);
+                    if let Some(color) = fill_color {
+                        if let Some(e) = scene.document.get_entity_mut(solid_handle) {
+                            e.as_entity_mut().set_color(color);
+                        }
+                    }
+                    write_wall_display_tag(scene, solid_handle, wall_handle, WALL_REP_ROLE_SOLID);
+                    new_derived.push(solid_handle);
                 }
-                write_wall_display_tag(scene, solid_handle, wall_handle, WALL_REP_ROLE_SOLID);
-                new_derived.push(solid_handle);
             }
         }
     }
@@ -5809,6 +5902,82 @@ pub fn walls_at_junction(
     }]
 }
 
+/// Persist a junction override (or clear it) and rebuild every wall in that
+/// junction so layer-pair / default-style edits are visible immediately.
+pub fn apply_junction_override_and_rebuild(
+    scene: &mut Scene,
+    axis_handle: Handle,
+    end_index: usize,
+    override_data: Option<&join::JunctionOverride>,
+    library_override: Option<&StyleLibrary>,
+    display_rules: Option<&engine::display_component::ComponentRuleSet>,
+    style_substitutions: Option<&HashMap<engine::plan_view::WallStyleRef, engine::plan_view::WallStyleRef>>,
+) -> Vec<Handle> {
+    match override_data {
+        Some(ov) if ov.default_style.is_some() || !ov.layer_pairs.is_empty() => {
+            write_junction_override(scene, axis_handle, end_index, ov);
+        }
+        _ => {
+            remove_junction_override(scene, axis_handle, end_index);
+        }
+    }
+    let participants = walls_at_junction(scene, axis_handle, end_index);
+    let handles: Vec<Handle> = {
+        let mut hs: Vec<Handle> = participants.iter().map(|p| p.axis_handle).collect();
+        if !hs.contains(&axis_handle) {
+            hs.push(axis_handle);
+        }
+        hs.sort_by_key(|h| h.value());
+        hs.dedup();
+        hs
+    };
+    let mut touched = if handles.len() >= 2 {
+        join_junction_in_document(
+            scene,
+            &handles,
+            None,
+            library_override,
+            display_rules,
+            style_substitutions,
+        )
+        .unwrap_or_else(|_| {
+            refresh_wall_after_axis_edit(
+                scene,
+                axis_handle,
+                library_override,
+                display_rules,
+                style_substitutions,
+            )
+        })
+    } else {
+        refresh_wall_after_axis_edit(
+            scene,
+            axis_handle,
+            library_override,
+            display_rules,
+            style_substitutions,
+        )
+    };
+    for h in &handles {
+        if !touched.iter().any(|t| t == h) {
+            match regenerate_wall_representation_with_rules_and_substitutions(
+                scene,
+                *h,
+                display_rules,
+                style_substitutions,
+                library_override,
+            ) {
+                Ok(t) => touched.extend(t),
+                Err(_) => touched.push(*h),
+            }
+        }
+    }
+    scene.bump_geometry();
+    touched.sort_by_key(|h| h.value());
+    touched.dedup();
+    touched
+}
+
 /// Snap all participants of a multi-wall junction to the shared point and
 /// rebuild every endpoint wall with N-way mitered layer footprints.
 ///
@@ -7162,7 +7331,11 @@ mod wall_command_tests {
                 bottom_offset: 0.0,
                 top_offset: 0.0,
                 layer_override: None,
-                hatch_override: None,
+                hatch_override: match mat {
+                    "Putz" => Some("DOTS".to_string()),
+                    "Mauerwerk" => Some("ANSI31".to_string()),
+                    _ => None,
+                },
             layer_id: uuid::Uuid::new_v4(),
             })
             .collect()
@@ -12379,6 +12552,291 @@ mod wall_command_tests {
                 );
             }
         }
+
+        let peers_new = engine::owner_index::peers_of(&scene.document, new_wall);
+        let peers_ex = engine::owner_index::peers_of(&scene.document, existing);
+        assert!(
+            peers_new.contains(&existing),
+            "auto-join must record JOINED_PEERS on the new wall, got {peers_new:?}"
+        );
+        assert!(
+            peers_ex.contains(&new_wall),
+            "auto-join must record JOINED_PEERS on the existing wall, got {peers_ex:?}"
+        );
+    }
+
+    #[test]
+    fn try_auto_join_t_records_joined_peers() {
+        let mut scene = Scene::new();
+        let through = add_single_layer_wall(&mut scene, (0.0, 0.0), (10.0, 0.0));
+        regenerate_wall_representation(&mut scene, through, None).expect("regen through");
+        let stem = add_single_layer_wall(&mut scene, (5.0, 0.05), (5.0, 4.0));
+        regenerate_wall_representation(&mut scene, stem, None).expect("regen stem");
+        let _ = try_auto_join_nearby_walls(&mut scene, stem, None, None, None);
+        let peers = engine::owner_index::peers_of(&scene.document, stem);
+        assert!(
+            peers.contains(&through),
+            "T auto-join must list the through wall as JOINED_PEERS, got {peers:?}"
+        );
+        let peers_t = engine::owner_index::peers_of(&scene.document, through);
+        assert!(
+            peers_t.contains(&stem),
+            "T auto-join must list the stem on the through wall, got {peers_t:?}"
+        );
+    }
+
+    #[test]
+    fn apply_junction_override_rebuilds_partner_wall() {
+        let mut scene = Scene::new();
+        let wall_a = add_multi_layer_wall(&mut scene);
+        let mut pl_b = LwPolyline::new();
+        pl_b.add_vertex(LwVertex::new(Vector2::new(6.0, 1.0)));
+        pl_b.add_vertex(LwVertex::new(Vector2::new(6.0, 10.0)));
+        let mut entity_b = EntityType::LwPolyline(pl_b);
+        let layers_b = vec![wl("Concrete", 0.3, "Structural")];
+        let mut record_b = ExtendedDataRecord::new(AEC_APPID);
+        record_b.values = wall_record(
+            "style1",
+            3.0,
+            0,
+            &layers_b,
+            &[],
+            WallJustification::Center,
+            PlanPhase::New,
+            None,
+        );
+        entity_b.common_mut().extended_data.add_record(record_b);
+        let wall_b = scene.add_entity(entity_b);
+        regenerate_wall_representation(&mut scene, wall_a, None).expect("regen a");
+        regenerate_wall_representation(&mut scene, wall_b, None).expect("regen b");
+        join_two_walls_in_document(&mut scene, wall_a, wall_b, None, None, None)
+            .expect("join");
+
+        let ov = join::JunctionOverride {
+            default_style: Some(join::JoinOverrideStyle::NoExtend),
+            layer_pairs: Vec::new(),
+        };
+        let touched = apply_junction_override_and_rebuild(
+            &mut scene,
+            wall_a,
+            1,
+            Some(&ov),
+            None,
+            None,
+            None,
+        );
+        assert!(touched.contains(&wall_a) && touched.contains(&wall_b));
+        assert!(read_junction_override(&scene, wall_a, 1).is_some());
+    }
+
+    fn plaster_masonry_plaster() -> Vec<WallLayer> {
+        wls(&[
+            ("Putz", 0.015, "Finish"),
+            ("Mauerwerk", 0.24, "Structural"),
+            ("Putz", 0.015, "Finish"),
+        ])
+    }
+
+    fn plaster_masonry_insulation_plaster() -> Vec<WallLayer> {
+        wls(&[
+            ("Putz", 0.015, "Finish"),
+            ("Mauerwerk", 0.24, "Structural"),
+            ("Insulation", 0.12, "Insulation"),
+            ("Putz", 0.015, "Finish"),
+        ])
+    }
+
+    fn join_l_pair(
+        scene: &mut Scene,
+        a: Handle,
+        b: Handle,
+    ) {
+        let lib = crate::modules::aec::engine::library::seed_default_library();
+        let _ = regenerate_wall_representation(scene, a, Some(&lib));
+        let _ = regenerate_wall_representation(scene, b, Some(&lib));
+        let _ = join_two_walls_in_document(scene, a, b, Some(&lib), None, None);
+    }
+
+    fn add_example_note(scene: &mut Scene, x: f64, y: f64, value: &str) {
+        use acadrust::entities::MText;
+        let mut t = MText::with_value(value.to_string(), Vector3::new(x, y, 0.0));
+        t.height = 0.28;
+        scene.add_entity(EntityType::MText(t));
+    }
+
+    #[test]
+    fn write_aec_wall_join_examples_dxf() {
+        let mut scene = Scene::new();
+        let lib = crate::modules::aec::engine::library::seed_default_library();
+
+        // L: einschalig
+        let l_a = add_single_layer_wall(&mut scene, (0.0, 0.0), (5.0, 0.0));
+        let l_b = add_single_layer_wall(&mut scene, (5.0, 0.0), (5.0, 5.0));
+        join_l_pair(&mut scene, l_a, l_b);
+        add_example_note(
+            &mut scene,
+            0.0,
+            -1.4,
+            "L einschalig\\PStil: style1 (Concrete)\\PVerbindung: L, Standard-Miter\\POverride: keiner",
+        );
+
+        // L: Putz + Mauerwerk + Putz
+        let l3_a = add_layered_wall(&mut scene, (10.0, 0.0), (16.0, 0.0), plaster_masonry_plaster());
+        let l3_b = add_layered_wall(&mut scene, (16.0, 0.0), (16.0, 5.0), plaster_masonry_plaster());
+        join_l_pair(&mut scene, l3_a, l3_b);
+        add_example_note(
+            &mut scene,
+            10.0,
+            -1.4,
+            "L dreischalig\\PStil: style1 (Putz+Mauerwerk+Putz)\\PVerbindung: L, Standard-Miter\\POverride: keiner",
+        );
+
+        // L: Putz + Mauerwerk + Dämmung + Putz
+        let l4_a = add_layered_wall(
+            &mut scene,
+            (20.0, 0.0),
+            (26.0, 0.0),
+            plaster_masonry_insulation_plaster(),
+        );
+        let l4_b = add_layered_wall(
+            &mut scene,
+            (26.0, 0.0),
+            (26.0, 5.0),
+            plaster_masonry_insulation_plaster(),
+        );
+        join_l_pair(&mut scene, l4_a, l4_b);
+        add_example_note(
+            &mut scene,
+            20.0,
+            -1.4,
+            "L vierschalig\\PStil: style1 (Putz+Mauerwerk+Insulation+Putz)\\PVerbindung: L, Standard-Miter\\POverride: keiner",
+        );
+
+        // T: gleiche 4-Schalen (Stamm trifft Durchgang)
+        let t4_through = add_layered_wall(
+            &mut scene,
+            (0.0, 10.0),
+            (10.0, 10.0),
+            plaster_masonry_insulation_plaster(),
+        );
+        let t4_stem = add_layered_wall(
+            &mut scene,
+            (5.0, 10.05),
+            (5.0, 16.0),
+            plaster_masonry_insulation_plaster(),
+        );
+        let _ = regenerate_wall_representation(&mut scene, t4_through, Some(&lib));
+        let _ = regenerate_wall_representation(&mut scene, t4_stem, Some(&lib));
+        let _ = try_auto_join_nearby_walls(&mut scene, t4_stem, Some(&lib), None, None);
+        add_example_note(
+            &mut scene,
+            0.0,
+            8.3,
+            "T vierschalig\\PStil: style1 (Putz+Mauerwerk+Insulation+Putz)\\PVerbindung: T (Auto-Join)\\PStamm → Durchgang, Standard-Miter\\POverride: keiner",
+        );
+
+        // T: gleiche 3-Schalen
+        let t3_through = add_layered_wall(
+            &mut scene,
+            (14.0, 10.0),
+            (24.0, 10.0),
+            plaster_masonry_plaster(),
+        );
+        let t3_stem = add_layered_wall(
+            &mut scene,
+            (19.0, 10.05),
+            (19.0, 16.0),
+            plaster_masonry_plaster(),
+        );
+        let _ = regenerate_wall_representation(&mut scene, t3_through, Some(&lib));
+        let _ = regenerate_wall_representation(&mut scene, t3_stem, Some(&lib));
+        let _ = try_auto_join_nearby_walls(&mut scene, t3_stem, Some(&lib), None, None);
+        add_example_note(
+            &mut scene,
+            14.0,
+            8.3,
+            "T dreischalig\\PStil: style1 (Putz+Mauerwerk+Putz)\\PVerbindung: T (Auto-Join)\\PStamm → Durchgang, Standard-Miter\\POverride: keiner",
+        );
+
+        // N-Wege einschalig
+        let n1 = add_single_layer_wall(&mut scene, (0.0, 22.0), (8.0, 22.0));
+        let n2 = add_single_layer_wall(&mut scene, (8.0, 22.0), (8.0, 28.0));
+        let n3 = add_single_layer_wall(&mut scene, (8.0, 22.0), (8.0, 16.0));
+        for h in [n1, n2, n3] {
+            let _ = regenerate_wall_representation(&mut scene, h, Some(&lib));
+        }
+        let _ = join_junction_in_document(&mut scene, &[n1, n2, n3], None, Some(&lib), None, None);
+        add_example_note(
+            &mut scene,
+            0.0,
+            29.2,
+            "N-Wege einschalig\\PStil: style1 (Concrete)\\PVerbindung: N-Wege (3 Wände)\\PStandard-Miter\\POverride: keiner",
+        );
+
+        // L 4-schalig mit individuellen Schichtverbindungen:
+        // Putz außen/innen NoExtend, Mauerwerk Miter, Dämmung Butt.
+        let ov_a = add_layered_wall(
+            &mut scene,
+            (14.0, 22.0),
+            (22.0, 22.0),
+            plaster_masonry_insulation_plaster(),
+        );
+        let ov_b = add_layered_wall(
+            &mut scene,
+            (22.0, 22.0),
+            (22.0, 28.0),
+            plaster_masonry_insulation_plaster(),
+        );
+        join_l_pair(&mut scene, ov_a, ov_b);
+        let layers = wall_from_entity(scene.document.get_entity(ov_a).unwrap())
+            .unwrap()
+            .layers;
+        let refs = layer_refs_from_materials(
+            layers.iter().map(|l| (l.material.as_str(), l.layer_id)),
+        );
+        let ov = join::JunctionOverride {
+            default_style: Some(join::JoinOverrideStyle::Miter),
+            layer_pairs: vec![
+                join::LayerPairOverride {
+                    layer_a: refs[0].clone(),
+                    layer_b: None,
+                    style: join::JoinOverrideStyle::NoExtend,
+                },
+                join::LayerPairOverride {
+                    layer_a: refs[1].clone(),
+                    layer_b: refs.get(1).cloned(),
+                    style: join::JoinOverrideStyle::Miter,
+                },
+                join::LayerPairOverride {
+                    layer_a: refs[2].clone(),
+                    layer_b: None,
+                    style: join::JoinOverrideStyle::Butt,
+                },
+                join::LayerPairOverride {
+                    layer_a: refs[3].clone(),
+                    layer_b: None,
+                    style: join::JoinOverrideStyle::NoExtend,
+                },
+            ],
+        };
+        let _ = apply_junction_override_and_rebuild(
+            &mut scene, ov_a, 1, Some(&ov), Some(&lib), None, None,
+        );
+        add_example_note(
+            &mut scene,
+            14.0,
+            29.2,
+            "L vierschalig mit Schicht-Overrides\\PStil: style1 (Putz+Mauerwerk+Insulation+Putz)\\PVerbindung: L\\PDefault: Miter\\PPutz außen/innen: NoExtend\\PMauerwerk: Miter\\PDämmung: Butt",
+        );
+
+        let out = std::path::Path::new("docs/examples/aec-wall-joins.dxf");
+        if let Some(parent) = out.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        acadrust::DxfWriter::new(&scene.document)
+            .write_to_file(out)
+            .expect("write example drawing");
+        assert!(out.exists());
     }
 
     #[test]
@@ -13255,13 +13713,30 @@ mod wall_command_tests {
     }
 
     fn add_single_layer_wall(scene: &mut Scene, p1: (f64, f64), p2: (f64, f64)) -> Handle {
+        add_layered_wall(scene, p1, p2, vec![wl("Concrete", 0.2, "Structural")])
+    }
+
+    fn add_layered_wall(
+        scene: &mut Scene,
+        p1: (f64, f64),
+        p2: (f64, f64),
+        layers: Vec<WallLayer>,
+    ) -> Handle {
         let mut pl = LwPolyline::new();
         pl.add_vertex(LwVertex::new(Vector2::new(p1.0, p1.1)));
         pl.add_vertex(LwVertex::new(Vector2::new(p2.0, p2.1)));
         let mut entity = EntityType::LwPolyline(pl);
-        let layers = vec![wl("Concrete", 0.2, "Structural")];
         let mut record = ExtendedDataRecord::new(AEC_APPID);
-        record.values = wall_record("style1", 3.0, 0, &layers, &[], WallJustification::Center, PlanPhase::New, None);
+        record.values = wall_record(
+            "style1",
+            3.0,
+            0,
+            &layers,
+            &[],
+            WallJustification::Center,
+            PlanPhase::New,
+            None,
+        );
         entity.common_mut().extended_data.add_record(record);
         scene.add_entity(entity)
     }

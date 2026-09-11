@@ -10,9 +10,7 @@ use iced::{Background, Border, Element, Fill, Theme};
 use crate::app::Message;
 use crate::modules::aec::engine::display_component::WallComponentSlot;
 use crate::modules::aec::engine::join::LayerRef;
-use crate::modules::aec::engine::library::{
-    combined_wall_style_entries, LibrarySource, StyleLibrary,
-};
+use crate::modules::aec::engine::library::{LibrarySource, StyleLibrary};
 use crate::modules::aec::engine::project::ProjectFile;
 use crate::modules::aec::engine::wall_style::WallStyle;
 use crate::t;
@@ -117,11 +115,14 @@ pub fn view_display_profiles_window<'a>(
 pub fn view_window<'a>(
     library: &'a StyleLibrary,
     project: Option<&'a ProjectFile>,
+    session: Option<&'a StyleLibrary>,
     selected_id: Option<&str>,
     filter: &str,
     wall_style_form: WallStyleFormState<'a>,
 ) -> Element<'a, Message> {
-    let entries = combined_wall_style_entries(project);
+    let entries = crate::modules::aec::engine::library::combined_wall_style_entries_with_session(
+        project, session,
+    );
     let standard_ids: std::collections::HashSet<String> =
         crate::modules::aec::engine::library::load_or_seed()
             .wall_styles
@@ -230,6 +231,7 @@ fn source_badge<'a>(source: LibrarySource) -> Element<'a, Message> {
     let label = match source {
         LibrarySource::Standard => t!("Standard"),
         LibrarySource::Project => t!("Projekt"),
+        LibrarySource::Session => t!("Sitzung"),
     };
     container(text(label).size(9))
         .padding([1, 5])

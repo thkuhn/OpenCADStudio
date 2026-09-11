@@ -8,6 +8,7 @@ use crate::modules::aec::engine::join::LayerRef;
 use crate::modules::aec::engine::material::Material;
 use crate::modules::aec::engine::plan_view::{DisplayConfig, ScaleDisplayConfigMapping};
 use crate::modules::aec::engine::style::Style;
+use crate::modules::aec::engine::wall::{Wall, WallLayer};
 use crate::modules::aec::engine::wall_style::{LayerValue, Layer, LayerFunction, WallStyle};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -48,6 +49,8 @@ pub enum LibrarySource {
     Standard,
     /// Embedded library of the active `.ocsproj`.
     Project,
+    /// In-memory reconstruction from the current drawing (not persisted).
+    Session,
 }
 
 /// A material shown in the combined Standard+Project list, with provenance.
@@ -69,6 +72,15 @@ pub struct CombinedWallStyleEntry {
 pub fn combined_material_entries(
     project: Option<&crate::modules::aec::engine::project::ProjectFile>,
 ) -> Vec<CombinedMaterialEntry> {
+    combined_material_entries_with_session(project, None)
+}
+
+/// Like [`combined_material_entries`], with a session overlay after project
+/// and before Standard. Project and session win on id; Standard fills gaps.
+pub fn combined_material_entries_with_session(
+    project: Option<&crate::modules::aec::engine::project::ProjectFile>,
+    session: Option<&StyleLibrary>,
+) -> Vec<CombinedMaterialEntry> {
     let standard = load_or_seed();
     let mut entries = Vec::new();
     let mut seen = std::collections::HashSet::new();
@@ -80,6 +92,17 @@ pub fn combined_material_entries(
                 material: material.clone(),
                 source: LibrarySource::Project,
             });
+        }
+    }
+
+    if let Some(session) = session {
+        for material in &session.materials {
+            if seen.insert(material.id.clone()) {
+                entries.push(CombinedMaterialEntry {
+                    material: material.clone(),
+                    source: LibrarySource::Session,
+                });
+            }
         }
     }
 
@@ -100,6 +123,15 @@ pub fn combined_material_entries(
 pub fn combined_wall_style_entries(
     project: Option<&crate::modules::aec::engine::project::ProjectFile>,
 ) -> Vec<CombinedWallStyleEntry> {
+    combined_wall_style_entries_with_session(project, None)
+}
+
+/// Like [`combined_wall_style_entries`], with a session overlay after project
+/// and before Standard.
+pub fn combined_wall_style_entries_with_session(
+    project: Option<&crate::modules::aec::engine::project::ProjectFile>,
+    session: Option<&StyleLibrary>,
+) -> Vec<CombinedWallStyleEntry> {
     let standard = load_or_seed();
     let mut entries = Vec::new();
     let mut seen = std::collections::HashSet::new();
@@ -111,6 +143,17 @@ pub fn combined_wall_style_entries(
                 wall_style: wall_style.clone(),
                 source: LibrarySource::Project,
             });
+        }
+    }
+
+    if let Some(session) = session {
+        for wall_style in &session.wall_styles {
+            if seen.insert(wall_style.style.id.clone()) {
+                entries.push(CombinedWallStyleEntry {
+                    wall_style: wall_style.clone(),
+                    source: LibrarySource::Session,
+                });
+            }
         }
     }
 
@@ -130,11 +173,19 @@ pub fn combined_wall_style_entries(
 pub fn combined_style_library(
     project: Option<&crate::modules::aec::engine::project::ProjectFile>,
 ) -> StyleLibrary {
+    combined_style_library_with_session(project, None)
+}
+
+/// Merged Project + Session + Standard library (project, then session, then Standard).
+pub fn combined_style_library_with_session(
+    project: Option<&crate::modules::aec::engine::project::ProjectFile>,
+    session: Option<&StyleLibrary>,
+) -> StyleLibrary {
     let mut lib = StyleLibrary::empty();
-    for entry in combined_material_entries(project) {
+    for entry in combined_material_entries_with_session(project, session) {
         lib.upsert_material(entry.material);
     }
-    for entry in combined_wall_style_entries(project) {
+    for entry in combined_wall_style_entries_with_session(project, session) {
         lib.upsert_wall_style(entry.wall_style);
     }
     lib
@@ -145,7 +196,15 @@ pub fn material_library_source(
     project: Option<&crate::modules::aec::engine::project::ProjectFile>,
     id: &str,
 ) -> Option<LibrarySource> {
-    combined_material_entries(project)
+    material_library_source_with_session(project, None, id)
+}
+
+pub fn material_library_source_with_session(
+    project: Option<&crate::modules::aec::engine::project::ProjectFile>,
+    session: Option<&StyleLibrary>,
+    id: &str,
+) -> Option<LibrarySource> {
+    combined_material_entries_with_session(project, session)
         .into_iter()
         .find(|e| e.material.id == id)
         .map(|e| e.source)
@@ -156,7 +215,15 @@ pub fn wall_style_library_source(
     project: Option<&crate::modules::aec::engine::project::ProjectFile>,
     id: &str,
 ) -> Option<LibrarySource> {
-    combined_wall_style_entries(project)
+    wall_style_library_source_with_session(project, None, id)
+}
+
+pub fn wall_style_library_source_with_session(
+    project: Option<&crate::modules::aec::engine::project::ProjectFile>,
+    session: Option<&StyleLibrary>,
+    id: &str,
+) -> Option<LibrarySource> {
+    combined_wall_style_entries_with_session(project, session)
         .into_iter()
         .find(|e| e.wall_style.style.id == id)
         .map(|e| e.source)
@@ -649,12 +716,200 @@ impl StyleLibrary {
     }
 }
 
+fn parse_layer_function(s: &str) -> LayerFunction {
+    match s {
+        "Structural" => LayerFunction::Structural,
+        "Insulation" => LayerFunction::Insulation,
+        "Finish" => LayerFunction::Finish,
+        other => LayerFunction::Other(other.to_string()),
+    }
+}
+
+fn wall_layer_signature(layers: &[WallLayer]) -> Vec<(String, String, i64, i64)> {
+    layers
+        .iter()
+        .map(|l| {
+            (
+                l.material.clone(),
+                l.function.clone(),
+                (l.thickness * 1_000_000.0).round() as i64,
+                (l.axis_offset * 1_000_000.0).round() as i64,
+            )
+        })
+        .collect()
+}
+
+fn wall_layers_to_style_layers(layers: &[WallLayer]) -> Vec<Layer> {
+    layers
+        .iter()
+        .map(|l| Layer {
+            material_id: l.material.clone(),
+            thickness: LayerValue::Fixed(l.thickness),
+            function: parse_layer_function(&l.function),
+            axis_offset: LayerValue::Fixed(l.axis_offset),
+            bottom_offset: l.bottom_offset,
+            top_offset: l.top_offset,
+            layer_override: l.layer_override.clone(),
+            hatch_override: l.hatch_override.clone(),
+            role_tag: None,
+            layer_id: l.layer_id,
+        })
+        .collect()
+}
+
+const SESSION_STYLE_NAME_MAX_CHARS: usize = 56;
+
+/// Display name for a reconstructed session style: `style1 (Putz+Mauerwerk+Putz)`
+/// or, if that is too long / materials are empty, `style1 (3 Schalen)`.
+fn session_wall_style_display_name(base: &str, layers: &[WallLayer]) -> String {
+    let n = layers.len();
+    let mats: Vec<&str> = layers
+        .iter()
+        .map(|l| l.material.as_str())
+        .filter(|m| !m.is_empty())
+        .collect();
+    if !mats.is_empty() {
+        let candidate = format!("{base} ({})", mats.join("+"));
+        if candidate.chars().count() <= SESSION_STYLE_NAME_MAX_CHARS {
+            return candidate;
+        }
+    }
+    let unit = if n == 1 { "Schale" } else { "Schalen" };
+    format!("{base} ({n} {unit})")
+}
+
+/// Reconstruct materials and wall styles from wall XDATA snapshots.
+///
+/// One [`WallStyle`] per distinct layer stack under a `style_id`; the first
+/// stack keeps the original id, further stacks get a synthetic id
+/// (`style1#2`, …). When several stacks share a base id, display names include
+/// the construction (materials or shell count). Materials are keyed by the
+/// snapshot material name.
+pub fn extract_style_library_from_walls<'a, I>(walls: I) -> StyleLibrary
+where
+    I: IntoIterator<Item = &'a Wall>,
+{
+    let mut lib = StyleLibrary::empty();
+    let standard = load_or_seed();
+    let mut variants: Vec<(String, String, Vec<WallLayer>)> = Vec::new();
+    let mut style_sigs: std::collections::HashMap<String, Vec<(String, String, i64, i64)>> =
+        std::collections::HashMap::new();
+    let mut style_dupes: std::collections::HashMap<String, usize> =
+        std::collections::HashMap::new();
+    let mut base_variant_count: std::collections::HashMap<String, usize> =
+        std::collections::HashMap::new();
+
+    for wall in walls {
+        for layer in &wall.layers {
+            if layer.material.is_empty() {
+                continue;
+            }
+            if lib.materials.iter().any(|m| m.id == layer.material) {
+                continue;
+            }
+            if let Some(src) = standard.materials.iter().find(|m| {
+                m.id == layer.material || m.name.eq_ignore_ascii_case(&layer.material)
+            }) {
+                let mut copied = src.clone();
+                copied.id = layer.material.clone();
+                copied.name = layer.material.clone();
+                lib.upsert_material(copied);
+            } else {
+                lib.upsert_material(Material::new(
+                    layer.material.clone(),
+                    layer.material.clone(),
+                    "SOLID".to_string(),
+                    0x808080,
+                    "Continuous".to_string(),
+                ));
+            }
+        }
+
+        if wall.style_id.trim().is_empty() {
+            continue;
+        }
+        let sig = wall_layer_signature(&wall.layers);
+        let (id, base) = if let Some(existing) = style_sigs.get(&wall.style_id) {
+            if existing == &sig {
+                continue;
+            }
+            let n = style_dupes.entry(wall.style_id.clone()).or_insert(1);
+            *n += 1;
+            let synthetic = format!("{}#{}", wall.style_id, *n);
+            if style_sigs.contains_key(&synthetic) {
+                continue;
+            }
+            style_sigs.insert(synthetic.clone(), sig);
+            (synthetic, wall.style_id.clone())
+        } else {
+            style_sigs.insert(wall.style_id.clone(), sig);
+            (wall.style_id.clone(), wall.style_id.clone())
+        };
+        *base_variant_count.entry(base.clone()).or_insert(0) += 1;
+        variants.push((id, base, wall.layers.clone()));
+    }
+
+    for (id, base, layers) in variants {
+        let name = if base_variant_count.get(&base).copied().unwrap_or(0) > 1 {
+            session_wall_style_display_name(&base, &layers)
+        } else {
+            base
+        };
+        lib.upsert_wall_style(WallStyle {
+            style: Style {
+                id,
+                name,
+                object_kind: "Wall".to_string(),
+                parent_style_id: None,
+            },
+            layers: wall_layers_to_style_layers(&layers),
+            display_profiles: std::collections::HashMap::new(),
+        });
+    }
+    lib
+}
+
+/// Keep only extracted ids that are absent from Standard and (when present)
+/// the project library. Identical or colliding ids are not copied.
+pub fn session_library_excluding_existing(
+    extracted: &StyleLibrary,
+    project: Option<&crate::modules::aec::engine::project::ProjectFile>,
+) -> StyleLibrary {
+    let standard = load_or_seed();
+    let project_lib = project.map(|p| &p.material_wall_style_library);
+    let mut session = StyleLibrary::empty();
+    for material in &extracted.materials {
+        if material_copy_conflict(&standard, material) != CopyConflict::None {
+            continue;
+        }
+        if let Some(plib) = project_lib {
+            if material_copy_conflict(plib, material) != CopyConflict::None {
+                continue;
+            }
+        }
+        session.upsert_material(material.clone());
+    }
+    for wall_style in &extracted.wall_styles {
+        if wall_style_copy_conflict(&standard, wall_style) != CopyConflict::None {
+            continue;
+        }
+        if let Some(plib) = project_lib {
+            if wall_style_copy_conflict(plib, wall_style) != CopyConflict::None {
+                continue;
+            }
+        }
+        session.upsert_wall_style(wall_style.clone());
+    }
+    session
+}
+
 /// Builds a small, ready-to-use default library so `AEC_WALL`'s style
 /// selection has something to offer out of the box, without requiring the
 /// user to define materials/styles first via `AEC_MATERIAL`/`AEC_STYLE`.
 pub fn seed_default_library() -> StyleLibrary {
     let masonry = Material {
         category: Some("Mauerwerk".to_string()),
+        hatch_scale: 0.0025,
         ..Material::new(
             "mat_masonry".to_string(),
             "Mauerwerk".to_string(),
@@ -686,11 +941,13 @@ pub fn seed_default_library() -> StyleLibrary {
     };
     let plaster = Material {
         category: Some("Putz".to_string()),
+        hatch_scale: 0.0012,
+        hatch_color: Some(acadrust::types::Color::Rgb { r: 180, g: 180, b: 176 }),
         ..Material::new(
             "mat_plaster".to_string(),
             "Putz".to_string(),
-            "SOLID".to_string(),
-            0xFFFFFF,
+            "DOTS".to_string(),
+            0xC8C8C4,
             "Continuous".to_string(),
         )
     };
@@ -1634,6 +1891,122 @@ mod tests {
             .any(|e| e.material.id == "proj_only" && e.source == LibrarySource::Project));
         // Standard-only entries (from load_or_seed) still appear with Standard source.
         assert!(entries.iter().any(|e| e.source == LibrarySource::Standard));
+    }
+
+    fn join_example_walls() -> Vec<Wall> {
+        fn layer(mat: &str, th: f64, func: &str, off: f64) -> WallLayer {
+            WallLayer {
+                material: mat.to_string(),
+                thickness: th,
+                function: func.to_string(),
+                axis_offset: off,
+                bottom_offset: 0.0,
+                top_offset: 0.0,
+                layer_override: None,
+                hatch_override: None,
+                layer_id: uuid::Uuid::nil(),
+            }
+        }
+        let four = vec![
+            layer("Putz", 0.015, "Finish", -0.195),
+            layer("Mauerwerk", 0.24, "Structural", -0.18),
+            layer("Insulation", 0.12, "Insulation", 0.06),
+            layer("Putz", 0.015, "Finish", 0.18),
+        ];
+        let one = vec![layer("Concrete", 0.2, "Structural", -0.1)];
+        vec![
+            Wall {
+                style_id: "style1".into(),
+                height: 3.0,
+                storey_id: 0,
+                layers: one,
+                derived_handles: vec![],
+                justification: crate::modules::aec::engine::wall::WallJustification::Center,
+                phase: crate::modules::aec::engine::plan_view::PlanPhase::New,
+                hatch_override: None,
+            },
+            Wall {
+                style_id: "style1".into(),
+                height: 3.0,
+                storey_id: 0,
+                layers: four,
+                derived_handles: vec![],
+                justification: crate::modules::aec::engine::wall::WallJustification::Center,
+                phase: crate::modules::aec::engine::plan_view::PlanPhase::New,
+                hatch_override: None,
+            },
+        ]
+    }
+
+    #[test]
+    fn extract_style_library_from_join_example_walls() {
+        let lib = extract_style_library_from_walls(&join_example_walls());
+        assert!(lib.materials.iter().any(|m| m.id == "Putz"));
+        assert!(lib.materials.iter().any(|m| m.id == "Mauerwerk"));
+        assert!(lib.materials.iter().any(|m| m.id == "Insulation"));
+        assert!(lib.materials.iter().any(|m| m.id == "Concrete"));
+        assert!(lib.wall_styles.iter().any(|s| s.style.id == "style1"));
+        assert!(lib.wall_styles.iter().any(|s| s.style.id == "style1#2"));
+        let one = lib
+            .wall_styles
+            .iter()
+            .find(|s| s.layers.len() == 1)
+            .expect("1-layer style");
+        let four = lib
+            .wall_styles
+            .iter()
+            .find(|s| s.layers.len() == 4)
+            .expect("4-layer style");
+        assert_eq!(four.layers[1].material_id, "Mauerwerk");
+        assert_eq!(one.style.name, "style1 (Concrete)");
+        assert_eq!(
+            four.style.name,
+            "style1 (Putz+Mauerwerk+Insulation+Putz)"
+        );
+        assert_ne!(one.style.name, four.style.name);
+    }
+
+    #[test]
+    fn extract_single_stack_keeps_plain_style_name() {
+        let walls = vec![join_example_walls().into_iter().next().unwrap()];
+        let lib = extract_style_library_from_walls(&walls);
+        let style = lib.wall_styles.iter().find(|s| s.style.id == "style1");
+        assert_eq!(style.map(|s| s.style.name.as_str()), Some("style1"));
+    }
+
+    #[test]
+    fn combined_entries_include_session_without_project() {
+        let extracted = extract_style_library_from_walls(&join_example_walls());
+        let session = session_library_excluding_existing(&extracted, None);
+        let materials = combined_material_entries_with_session(None, Some(&session));
+        let styles = combined_wall_style_entries_with_session(None, Some(&session));
+        assert!(materials.iter().any(|e| {
+            e.source == LibrarySource::Session && e.material.id == "Putz"
+        }));
+        assert!(styles.iter().any(|e| {
+            e.source == LibrarySource::Session && e.wall_style.style.id == "style1"
+        }));
+        assert!(materials.iter().any(|e| e.source == LibrarySource::Standard));
+    }
+
+    #[test]
+    fn session_library_skips_ids_already_in_standard() {
+        let standard = load_or_seed();
+        let Some(existing) = standard.materials.first().cloned() else {
+            return;
+        };
+        let mut extracted = StyleLibrary::empty();
+        extracted.upsert_material(existing.clone());
+        extracted.upsert_material(Material::new(
+            "session_only_mat".into(),
+            "Session Only".into(),
+            "SOLID".into(),
+            0x111111,
+            "Continuous".into(),
+        ));
+        let session = session_library_excluding_existing(&extracted, None);
+        assert!(session.materials.iter().all(|m| m.id != existing.id));
+        assert!(session.materials.iter().any(|m| m.id == "session_only_mat"));
     }
 
     #[test]

@@ -8,7 +8,7 @@ use iced::{Background, Border, Color, Element, Fill, Theme};
 
 use crate::app::Message;
 use crate::modules::aec::engine::library::{
-    combined_material_entries, LibrarySource, StyleLibrary,
+    combined_material_entries_with_session, LibrarySource, StyleLibrary,
 };
 use crate::modules::aec::engine::material::Material;
 use crate::modules::aec::engine::project::ProjectFile;
@@ -61,11 +61,12 @@ pub struct MaterialFormState<'a> {
 pub fn view_window<'a>(
     library: &'a StyleLibrary,
     project: Option<&'a ProjectFile>,
+    session: Option<&'a StyleLibrary>,
     selected_id: Option<&str>,
     filter: &str,
     material_form: MaterialFormState<'a>,
 ) -> Element<'a, Message> {
-    let entries = combined_material_entries(project);
+    let entries = combined_material_entries_with_session(project, session);
     let standard_ids: std::collections::HashSet<String> =
         crate::modules::aec::engine::library::load_or_seed()
             .materials
@@ -201,6 +202,7 @@ fn source_badge<'a>(source: LibrarySource) -> Element<'a, Message> {
     let label = match source {
         LibrarySource::Standard => t!("Standard"),
         LibrarySource::Project => t!("Projekt"),
+        LibrarySource::Session => t!("Sitzung"),
     };
     container(text(label).size(9))
         .padding([1, 5])

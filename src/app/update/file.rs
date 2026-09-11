@@ -1440,6 +1440,7 @@ pub(super) fn on_open_file(&mut self) -> Task<Message> {
                         self.aec_project_explorer_file.as_ref(),
                     ),
                 );
+                self.aec_install_session_styles_for_tab(i);
 
                 // Open-time breakdown so regressions are visible immediately.
                 // `total` is wall time from the Open click to here (post-xref,

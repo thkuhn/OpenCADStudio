@@ -5,120 +5,77 @@ sessionId: session-260909-111428-10ei
 # Requirements
 
 ### Overview & Goals
-Wand-Joins sollen geometrisch sauber und klassifikationsstabil werden: L vs. T vs. N-Wege, Schicht-Gehrung ohne Lücken, Bogenachsen und Junction-Overrides.
+Eine Zeichnung (z. B. `docs/examples/aec-wall-joins.dxf`) soll ohne aktives `.ocsproj` öffenbar bleiben, und die darin verwendeten Wandstile/Materialien sollen im Style- und Display-Manager sichtbar und bearbeitbar sein.
 
-Ein **JunctionSolver** ist die einzige Quelle für Klassifikation, Achs-Trim und Layer-Footprints; `commands.rs` regeneriert nur noch aus diesen Ergebnissen.
+Gewählte Strategie: **Session-Library aus der Zeichnung**. Beim Öffnen fehlende Stile aus Wand-XDATA rekonstruieren; nicht automatisch ins Projekt oder in `aec_styles.toml` schreiben.
 
 ### Scope
 **In Scope**
-- L/T: End vs. Mid (`END_MID_TOLERANCE`), T-Stamm trifft nicht fälschlich als L bzw. umgekehrt.
-- Schicht-Miter: `match_layer_indices`, unmatched Fallback, Cutout der durchlaufenden Wand.
-- N-Wege: ein Junction-Pass statt paarweiser Überschreibung.
-- Bögen: `*_with_bulges` durch den Solver.
-- Overrides: `JunctionOverride` / `JoinOverrideStyle` (Miter, Butt, NearFace, FarFace, NoExtend).
+- Extraktion von Materialien und `WallStyle`s aus `OPENCAD_AEC` / `wall_from_entity` (`style_id` + `layers`).
+- In-Memory-Session-Library auf `OpenCADStudio`, gemerged in `combined_*_entries`.
+- Style-/Display-Manager ohne Pflichtprojekt, solange Session oder Standard-Library reicht.
+- Edits bleiben in der Session, bis der Nutzer explizit ins Projekt oder in die Standard-Library speichert.
 
 **Out of Scope**
-- 3D-Boolean Öffnungen, IFC-Geometrie, Storey-Persistenz, Display-Profile.
+- Automatisches Anlegen eines `.ocsproj`.
+- IFC, Geschosse, Join-Geometrie.
+- Volle DisplayConfig-Rekonstruktion aus der DXF (liegt nicht in XDATA); Display-Manager fällt auf `load_or_seed_display_config_library` zurück.
 
 ### Functional Requirements
-- `AEC_WALLJOIN` / `join_two_walls_in_document` und `try_auto_join_nearby_walls` nutzen denselben Solver.
-- Nach Grip/Stretch: Junction neu auflösen, durchlaufende Achse nicht kürzen.
-- Override an einem Ende ändert nur dieses Junction; andere Wände bleiben konsistent.
-- Regeneration schreibt Achse getrimmt; sichtbare Kontur kommt aus Solver-Footprints.
+- DXF öffnen ohne Projekt: Wände bleiben darstellbar; Manager listen rekonstruierte Stile (z. B. `style1` aus dem Join-Beispiel).
+- IDs, die schon in Standard oder Projekt existieren, nicht überschreiben (`CopyConflict` / `IdenticalAlreadyPresent`).
+- `aec_require_project` bleibt für Zeichenbefehle (`AEC_WALL` …); Manager und Properties dürfen Session+Standard nutzen.
+- Session verwerfen beim Tab-Schließen / neuer Datei ohne Merge in globale Dateien.
 
 # Technical Design
 
 ### Current Implementation
-- Topologie: `src/modules/aec/engine/join.rs` — `join_wall_axes`, `join_wall_axes_with_bulges`, `join_wall_axes_as_l`, `detect_junctions`, `apply_junction_to_axes`, `junction_rays`.
-- Geometrie: `src/modules/aec/engine/miter.rs` — `JoinMiterContext`, `mitered_layer_footprints*`, `mitered_junction_layer_footprints_with_overrides`, `through_wall_cutout_footprints*`, `merge_end_footprints`.
-- Szene: `commands.rs` — `join_two_walls_in_document_inner`, `try_auto_join_nearby_walls`, `regenerate_wall_representation_with_precomputed_miters*`, `refresh_wall_after_axis_edit`.
-- Problem: mehrere parallele Pfade (Paar-Join vs. N-Wege vs. Auto-Join) können Klassifikation und Footprints überschreiben.
+- Bibliotheken: `StyleLibrary` in `engine/library.rs`; `resolve_style_library` in `engine/project.rs` = Projekt wenn nicht leer, sonst `load_or_seed()` (`aec_styles.toml`).
+- App: `aec_project_explorer_file` / `_path`; `aec_require_project` blockiert ohne Projekt (Modal `AecProjectRequired`).
+- Wände speichern `style_id` plus vollständige `WallLayer`-Snapshots in XDATA (`wall_record` / `wall_from_entity` in `commands.rs`). Das Join-Beispiel nutzt `style1` und Schichten Putz/Mauerwerk/Dämmung — nicht die Seed-Library.
+- `combined_material_entries` / `combined_wall_style_entries`: nur Project + Standard.
 
 ### Key Decisions
-- **Einheitlicher JunctionSolver** (Nutzerwahl): eine `solve(walls) -> Vec<SolvedJunction>` API; bestehende `join_*` / `miter_*` bleiben interne Bausteine.
-- Solver kennt Rollen (`Endpoint` / `Through`), Kind (L/T/N), getrimmte Achsen, pro Wand `Vec<Option<Vec<(f64,f64)>>>` Footprints und Override-Anwendung.
-- `commands` hört auf, `JoinMiterContext` ad hoc zu bauen, wenn der Solver Footprints liefert.
+- **Session overlay, keine Auto-Persistenz** (Nutzerwahl): dritte Quelle `LibrarySource::Session` vor Standard, hinter einem geladenen Projekt.
+- Rekonstruktion: ein `WallStyle` pro distinkter `style_id`; Schichten/Materialien aus dem ersten (oder konsistenten) Snapshot; fehlende Display-Profile bleiben Default des `WallStyle`.
+- Manager ohne Projekt: `aec_require_project` nicht für Style/Material/Display-Manager; Speichern ohne Pfad bleibt Session-only (Hinweis in der Command Line).
 
 ### Proposed Changes
-Neue Datei `src/modules/aec/engine/junction_solver.rs` (Export in `engine/mod.rs`):
-
-```text
-struct WallJoinInput { axis, bulges, layers: Vec<MiterLayer>, override: Option<JunctionOverride> }
-struct SolvedJunction {
-  junction: Junction,
-  kind: JoinKind or NWay,
-  trimmed_axes: Vec<Vec<DVec3>>,
-  footprints: Vec<Vec<Option<polygon>>>, // per participant, per layer
-}
-fn solve(walls: &[WallJoinInput], tol) -> Vec<SolvedJunction>
-```
-
-Ablauf:
-1. `detect_junctions` + End/Mid mit `END_MID_TOLERANCE`.
-2. L: `join_wall_axes_as_l(_with_bulges)`; T: Stem trimmen, Through ungekürzt; N: `apply_junction_to_axes`.
-3. Footprints: 2 Wände → `mitered_layer_footprints_with_override_and_bulges`; ≥3 oder Through → `mitered_junction_layer_footprints_with_overrides` + Cutout.
-4. `join_two_walls_in_document_inner` / `try_auto_join_nearby_walls`: Szene → Inputs → `solve` → Achsen schreiben → `regenerate_*_with_precomputed_miters`.
+1. `extract_style_library_from_scene(scene) -> StyleLibrary` in `library.rs` oder `commands.rs`: alle Wände scannen, Materialien upserten, `WallStyle` aus Layern bauen.
+2. Feld `aec_session_style_library: Option<StyleLibrary>` an `OpenCADStudio`; nach File-Open (`app/update/file.rs`) füllen, fehlende IDs mergen.
+3. `combined_*_entries` um Session erweitern; Style-Manager liest Combined inkl. Session.
+4. `aec_upsert_*` ohne Projekt: in Session schreiben, nicht `Err("no project loaded")`.
 
 ### Architecture Diagram
 ```mermaid
 graph TD
-  Cmd[join_two / auto_join / refresh] --> Sol[JunctionSolver.solve]
-  Sol --> Det[detect_junctions L/T/N]
-  Det --> Trim[trim axes + bulges]
-  Trim --> Mit[miter + overrides + cutout]
-  Mit --> Regen[regenerate precomputed miters]
+  Open[open DXF] --> Ext[extract_style_library_from_scene]
+  Ext --> Sess[aec_session_style_library]
+  Std[aec_styles.toml] --> Comb[combined entries]
+  Proj[ocsproj library] --> Comb
+  Sess --> Comb
+  Comb --> UI[style and display managers]
 ```
 
 ### File Structure
-- **Add** `engine/junction_solver.rs`
-- **Modify** `engine/mod.rs`, `commands.rs` (join/auto-join/refresh)
-- **Reuse** `join.rs`, `miter.rs` (kein großer Rewrite der Geometrie)
-- **Tests** in `junction_solver.rs` + bestehende Join-Tests in `commands.rs` anpassen
+- **Modify** `engine/library.rs` (extract + `LibrarySource::Session` + combined lists)
+- **Modify** `app/mod.rs` (session field), `app/update/file.rs` (on open), `app/update/mod.rs` (upsert/save/manager guards)
+- **Tests** extract from example walls; combined list includes session without project; no write to default toml path
 
 ### Risks
-- Regression der bestehenden `join_two_walls_extends_contours_*` / `try_auto_join_*` Tests — Solver muss deren Ergebnisse reproduzieren, dann Lücken schließen.
-- Doppel-Miter an beiden Enden einer Wand: weiter `merge_end_footprints`.
+- Mehrere Wände mit gleicher `style_id` aber unterschiedlichen Layern: erste gewinnt, weitere nur wenn identisch; sonst eigener synthetischer Style (`style1#2`).
+- Display-Profile fehlen in XDATA: Darstellung editierbar nur soweit Seed-Configs + rekonstruierte Default-Slots reichen.
 
 # Testing
 
 ### Validation Approach
-`cargo test --lib` für `aec::engine::join`, `miter`, `junction_solver` und die Join-Tests in `commands.rs`.
+Gezielte `--lib`-Tests für Extract, Combined-Listen und „kein Write nach default path“.
 
 ### Key Scenarios
-- L-Ecke: beide Achsen am Schnitt, Miter-Schichten ohne Spalt.
-- T: Through-Achse unverändert; Stamm bis Außenfläche; End-nahe Hits bleiben L (`END_MID_TOLERANCE`).
-- N-Wege: ein `solve`, konsistente Footprints für alle Teilnehmer.
-- Bogen: Bulge-Miter, nicht Sehne.
-- Override Apply/Clear: NearFace/Butt vs. Default-Miter.
+- Szene wie Join-Beispiel (`style1`, 1/3/4 Schalen) → Session enthält Materialien Putz/Mauerwerk/Insulation und passende WallStyles.
+- Standard-ID identisch → kein Duplikat.
+- Manager-Listen ohne `ProjectFile` nicht leer, wenn Session gesetzt.
 
 ### Edge Cases
-- Parallel / degeneriert → `JoinError`, keine Szene-Änderung.
-- Unmatched Layer → Corner-Extension-Fallback.
-- Auto-Join ohne Nachbar → No-op.
-
-# Delivery Steps
-
-### ✓ Step 1: JunctionSolver API and L/T/N classification
-Solver klassifiziert Junctions (L/T/N, End vs. Mid) aus Wandachsen.
-
-- Neue Datei `src/modules/aec/engine/junction_solver.rs` mit `WallJoinInput`, `SolvedJunction`, `solve`.
-- Intern `detect_junctions`, `END_MID_TOLERANCE`, `junction_rays`; Through nicht als Endpoint fehlklassifizieren.
-- Export in `engine/mod.rs`.
-- Unit-Tests: L-Ecke, T-Stamm, End-nahe T→L, N-Wege-Cluster.
-
-### ✓ Step 2: Wire solver into document join and auto-join
-`join_two_walls_in_document_inner` und `try_auto_join_nearby_walls` trimmen Achsen nur noch über den Solver.
-
-- Szene → `WallJoinInput` (Achse, Bulges, Layers, Override).
-- Getrimmte Achsen zurückschreiben; bestehende Join-Fehler bleiben stumm bei Auto-Join.
-- `refresh_wall_after_axis_edit` nutzt denselben Pfad.
-- Bestehende Tests `try_auto_join_*` und `join_two_walls_as_l` grün halten.
-
-### ✓ Step 3: Layer miters, N-way footprints, arcs and overrides
-Solver liefert Layer-Footprints; Regen nutzt nur noch precomputed Miters.
-
-- 2-Wand: `mitered_layer_footprints_with_override_and_bulges`.
-- N-Wege/Through: `mitered_junction_layer_footprints_with_overrides` + `through_wall_cutout_footprints*`.
-- Beide Enden: `merge_end_footprints`.
-- `regenerate_wall_representation_with_precomputed_miters*` als Standard nach Join.
-- Tests: Schicht-Match, Cutout, Bogen-Bulge, Override NearFace/Clear, N-Wege ohne paarweise Überschreibung.
+- Leere Zeichnung → Session `None`/leer, Standard bleibt.
+- Tab-Wechsel: Session pro Dokument, nicht global über Tabs mischen.

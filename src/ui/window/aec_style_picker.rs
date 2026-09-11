@@ -5,7 +5,8 @@ use iced::{Alignment, Background, Border, Element, Fill, Theme};
 
 use crate::app::Message;
 use crate::modules::aec::engine::library::{
-    combined_material_entries, combined_wall_style_entries, LibrarySource, StyleLibrary,
+    combined_material_entries_with_session, combined_wall_style_entries_with_session,
+    LibrarySource, StyleLibrary,
 };
 use crate::modules::aec::engine::project::ProjectFile;
 use crate::t;
@@ -14,6 +15,7 @@ fn source_badge<'a>(source: LibrarySource) -> Element<'a, Message> {
     let label = match source {
         LibrarySource::Standard => t!("Standard"),
         LibrarySource::Project => t!("Projekt"),
+        LibrarySource::Session => t!("Sitzung"),
     };
     container(text(label).size(9))
         .padding([1, 5])
@@ -44,6 +46,7 @@ fn list_style(selected: bool) -> impl Fn(&Theme, button::Status) -> button::Styl
 pub fn view_window<'a>(
     library: Option<&'a StyleLibrary>,
     project: Option<&'a ProjectFile>,
+    session: Option<&'a StyleLibrary>,
     target: crate::app::StylePickerTarget,
     filter: &'a str,
     selection: Option<&'a str>,
@@ -57,12 +60,12 @@ pub fn view_window<'a>(
             .into();
     };
     let material_sources: std::collections::HashMap<String, LibrarySource> =
-        combined_material_entries(project)
+        combined_material_entries_with_session(project, session)
             .into_iter()
             .map(|e| (e.material.id, e.source))
             .collect();
     let wall_style_sources: std::collections::HashMap<String, LibrarySource> =
-        combined_wall_style_entries(project)
+        combined_wall_style_entries_with_session(project, session)
             .into_iter()
             .map(|e| (e.wall_style.style.id, e.source))
             .collect();

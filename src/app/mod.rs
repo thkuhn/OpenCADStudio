@@ -1103,6 +1103,9 @@ pub(super) struct OpenCADStudio {
     /// Loaded (or seeded) on `AEC_STYLEMANAGER`; holds the materials + wall
     /// styles the manager shell will browse/edit in a later step.
     aec_style_library: Option<crate::modules::aec::engine::library::StyleLibrary>,
+    /// Session overlay reconstructed from the active drawing (not written to
+    /// `aec_styles.toml` or `.ocsproj` unless the user saves explicitly).
+    aec_session_style_library: Option<crate::modules::aec::engine::library::StyleLibrary>,
     /// Style id of the last wall finished via `AEC_WALL` this session, used
     /// to pre-fill the live Properties-panel style field on the next call.
     aec_last_wall_style_id: Option<String>,
@@ -4391,6 +4394,7 @@ impl OpenCADStudio {
             layer_state_edit_filter: String::new(),
             layer_state_edit_color_open: None,
             aec_style_library: None,
+            aec_session_style_library: None,
             aec_last_wall_style_id: None,
             aec_last_wall_height: None,
             aec_style_manager_filter: String::new(),
