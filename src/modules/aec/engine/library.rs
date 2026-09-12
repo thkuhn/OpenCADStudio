@@ -1915,25 +1915,15 @@ mod tests {
         ];
         let one = vec![layer("Concrete", 0.2, "Structural", -0.1)];
         vec![
-            Wall {
-                style_id: "style1".into(),
-                height: 3.0,
-                storey_id: 0,
-                layers: one,
-                derived_handles: vec![],
-                justification: crate::modules::aec::engine::wall::WallJustification::Center,
-                phase: crate::modules::aec::engine::plan_view::PlanPhase::New,
-                hatch_override: None,
+            {
+                let mut w = Wall::new("style1", 3.0, 0);
+                w.layers = one;
+                w
             },
-            Wall {
-                style_id: "style1".into(),
-                height: 3.0,
-                storey_id: 0,
-                layers: four,
-                derived_handles: vec![],
-                justification: crate::modules::aec::engine::wall::WallJustification::Center,
-                phase: crate::modules::aec::engine::plan_view::PlanPhase::New,
-                hatch_override: None,
+            {
+                let mut w = Wall::new("style1", 3.0, 0);
+                w.layers = four;
+                w
             },
         ]
     }

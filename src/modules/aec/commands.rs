@@ -889,16 +889,37 @@ pub fn write_wall_height(scene: &mut Scene, wall_handle: Handle, height: f64) ->
         return false;
     };
     wall.height = height;
+    wall.base_plane_id = None;
+    wall.top_plane_id = None;
     let mut record = ExtendedDataRecord::new(AEC_APPID);
-    for v in wall_record(
-        &wall.style_id,
-        wall.height,
-        wall.storey_id,
-        &wall.layers,
-        &wall.derived_handles,
-        wall.justification, wall.phase, wall.hatch_override.as_ref()) {
-        record.add_value(v);
+    record.values = wall_record_for_wall(&wall);
+    write_aec_record(&mut scene.document, wall_handle, record)
+}
+
+pub fn write_wall_plane_offsets(
+    scene: &mut Scene,
+    wall_handle: Handle,
+    base_offset: Option<f64>,
+    top_offset: Option<f64>,
+) -> bool {
+    let wall_handle = resolve_wall_package(scene, wall_handle);
+    let Some(entity) = scene.document.get_entity(wall_handle) else {
+        return false;
+    };
+    let Some(mut wall) = wall_from_entity(entity) else {
+        return false;
+    };
+    if let Some(v) = base_offset {
+        wall.base_offset = v;
     }
+    if let Some(v) = top_offset {
+        wall.top_offset = v;
+    }
+    if let Some(h) = wall.height_from_snapshot() {
+        wall.height = h;
+    }
+    let mut record = ExtendedDataRecord::new(AEC_APPID);
+    record.values = wall_record_for_wall(&wall);
     write_aec_record(&mut scene.document, wall_handle, record)
 }
 
@@ -914,15 +935,7 @@ pub fn write_wall_layers(scene: &mut Scene, wall_handle: Handle, layers: Vec<Wal
     };
     wall.layers = layers;
     let mut record = ExtendedDataRecord::new(AEC_APPID);
-    for v in wall_record(
-        &wall.style_id,
-        wall.height,
-        wall.storey_id,
-        &wall.layers,
-        &wall.derived_handles,
-        wall.justification, wall.phase, wall.hatch_override.as_ref()) {
-        record.add_value(v);
-    }
+    record.values = wall_record_for_wall(&wall);
     write_aec_record(&mut scene.document, wall_handle, record)
 }
 
@@ -941,18 +954,7 @@ pub fn write_wall_phase(scene: &mut Scene, wall_handle: Handle, phase: PlanPhase
     };
     wall.phase = phase;
     let mut record = ExtendedDataRecord::new(AEC_APPID);
-    for v in wall_record(
-        &wall.style_id,
-        wall.height,
-        wall.storey_id,
-        &wall.layers,
-        &wall.derived_handles,
-        wall.justification,
-        wall.phase,
-        wall.hatch_override.as_ref(),
-    ) {
-        record.add_value(v);
-    }
+    record.values = wall_record_for_wall(&wall);
     write_aec_record(&mut scene.document, wall_handle, record)
 }
 
@@ -977,18 +979,7 @@ pub fn write_wall_hatch_override(
     };
     wall.hatch_override = hatch_override;
     let mut record = ExtendedDataRecord::new(AEC_APPID);
-    for v in wall_record(
-        &wall.style_id,
-        wall.height,
-        wall.storey_id,
-        &wall.layers,
-        &wall.derived_handles,
-        wall.justification,
-        wall.phase,
-        wall.hatch_override.as_ref(),
-    ) {
-        record.add_value(v);
-    }
+    record.values = wall_record_for_wall(&wall);
     write_aec_record(&mut scene.document, wall_handle, record)
 }
 
@@ -1396,6 +1387,7 @@ fn collect_wall_segments(doc: &CadDocument) -> Vec<((f64, f64), (f64, f64))> {
 /// living on this layer once the visible contour/hatch/solid representation
 /// is regenerated.
 pub const AEC_WALL_AXIS_LAYER: &str = "AEC_WALL_AXIS";
+pub const AEC_CONTROLPLANES_LAYER: &str = "AEC_CONTROLPLANES";
 /// Build a `WALL` XDATA record's values.
 ///
 /// `derived_handles` is appended as a trailing `count` + `Handle` block so
@@ -1483,6 +1475,75 @@ pub fn wall_record(
             values.push(XDataValue::String(String::new()));
         }
     }
+    encode_wall_planes(&mut values, None);
+    values
+}
+
+fn encode_wall_planes(values: &mut Vec<XDataValue>, wall: Option<&Wall>) {
+    values.push(XDataValue::String("planes".to_string()));
+    let (base_id, top_id, bo, to, bo_o, bn, to_o, tn) = if let Some(w) = wall {
+        (
+            w.base_plane_id,
+            w.top_plane_id,
+            w.base_offset,
+            w.top_offset,
+            w.base_origin,
+            w.base_normal,
+            w.top_origin,
+            w.top_normal,
+        )
+    } else {
+        (
+            None,
+            None,
+            0.0,
+            0.0,
+            [0.0, 0.0, 0.0],
+            [0.0, 0.0, 1.0],
+            [0.0, 0.0, 0.0],
+            [0.0, 0.0, 1.0],
+        )
+    };
+    values.push(XDataValue::String(
+        base_id.map(|u| u.to_string()).unwrap_or_default(),
+    ));
+    values.push(XDataValue::String(
+        top_id.map(|u| u.to_string()).unwrap_or_default(),
+    ));
+    values.push(XDataValue::Distance(bo));
+    values.push(XDataValue::Distance(to));
+    for c in bo_o {
+        values.push(XDataValue::Distance(c));
+    }
+    for c in bn {
+        values.push(XDataValue::Distance(c));
+    }
+    for c in to_o {
+        values.push(XDataValue::Distance(c));
+    }
+    for c in tn {
+        values.push(XDataValue::Distance(c));
+    }
+}
+
+pub fn wall_record_for_wall(wall: &Wall) -> Vec<XDataValue> {
+    let mut values = wall_record(
+        &wall.style_id,
+        wall.height,
+        wall.storey_id,
+        &wall.layers,
+        &wall.derived_handles,
+        wall.justification,
+        wall.phase,
+        wall.hatch_override.as_ref(),
+    );
+    // wall_record already appended empty planes; replace the tail.
+    if let Some(pos) = values.iter().rposition(|v| {
+        matches!(v, XDataValue::String(s) if s == "planes")
+    }) {
+        values.truncate(pos);
+    }
+    encode_wall_planes(&mut values, Some(wall));
     values
 }
 
@@ -1737,6 +1798,46 @@ pub fn wall_from_entity(entity: &EntityType) -> Option<Wall> {
         }
     }
 
+    let mut base_plane_id = None;
+    let mut top_plane_id = None;
+    let mut base_offset = 0.0;
+    let mut top_offset = 0.0;
+    let mut base_origin = [0.0, 0.0, 0.0];
+    let mut base_normal = [0.0, 0.0, 1.0];
+    let mut top_origin = [0.0, 0.0, 0.0];
+    let mut top_normal = [0.0, 0.0, 1.0];
+    if let Some(pos) = v.iter().position(|x| matches!(x, XDataValue::String(s) if s == "planes")) {
+        if v.len() >= pos + 1 + 2 + 2 + 12 {
+            if let XDataValue::String(s) = &v[pos + 1] {
+                if !s.is_empty() {
+                    base_plane_id = Uuid::parse_str(s).ok();
+                }
+            }
+            if let XDataValue::String(s) = &v[pos + 2] {
+                if !s.is_empty() {
+                    top_plane_id = Uuid::parse_str(s).ok();
+                }
+            }
+            if let XDataValue::Distance(d) = v[pos + 3] {
+                base_offset = d;
+            }
+            if let XDataValue::Distance(d) = v[pos + 4] {
+                top_offset = d;
+            }
+            let read3 = |at: usize, dest: &mut [f64; 3]| {
+                for i in 0..3 {
+                    if let XDataValue::Distance(d) = v[at + i] {
+                        dest[i] = d;
+                    }
+                }
+            };
+            read3(pos + 5, &mut base_origin);
+            read3(pos + 8, &mut base_normal);
+            read3(pos + 11, &mut top_origin);
+            read3(pos + 14, &mut top_normal);
+        }
+    }
+
     Some(Wall {
         style_id,
         height,
@@ -1746,6 +1847,14 @@ pub fn wall_from_entity(entity: &EntityType) -> Option<Wall> {
         justification,
         phase,
         hatch_override: wall_hatch_override,
+        base_plane_id,
+        top_plane_id,
+        base_offset,
+        top_offset,
+        base_origin,
+        base_normal,
+        top_origin,
+        top_normal,
     })
 }
 
@@ -1929,6 +2038,79 @@ pub fn ensure_wall_axis_layer(scene: &mut Scene) {
 
 /// Session override: show or hide every wall axis via `AEC_WALL_AXIS`.
 /// The layer stays non-plottable. OSNAP still injects axis wires when off.
+pub fn ensure_controlplanes_layer(scene: &mut Scene) {
+    scene.ensure_layer(AEC_CONTROLPLANES_LAYER);
+    if let Some(layer) = scene.document.layers.get_mut(AEC_CONTROLPLANES_LAYER) {
+        layer.is_plottable = false;
+    }
+}
+
+pub fn set_controlplanes_layer_visible(scene: &mut Scene, visible: bool) {
+    ensure_controlplanes_layer(scene);
+    let changed = if let Some(layer) = scene.document.layers.get_mut(AEC_CONTROLPLANES_LAYER) {
+        layer.is_plottable = false;
+        let was_off = layer.flags.off;
+        layer.flags.off = !visible;
+        was_off != !visible
+    } else {
+        false
+    };
+    if changed {
+        scene.invalidate_layer_dependencies(&[AEC_CONTROLPLANES_LAYER.to_string()]);
+    }
+}
+
+pub fn toggle_controlplanes_layer(scene: &mut Scene) -> bool {
+    ensure_controlplanes_layer(scene);
+    let visible = scene
+        .document
+        .layers
+        .get(AEC_CONTROLPLANES_LAYER)
+        .map(|l| l.flags.off)
+        .unwrap_or(true);
+    set_controlplanes_layer_visible(scene, visible);
+    visible
+}
+
+/// Rebuild Face3D previews for a storey's control planes on `AEC_CONTROLPLANES`.
+pub fn regenerate_control_plane_previews(
+    scene: &mut Scene,
+    storey: &mut crate::modules::aec::engine::project::StoreyRef,
+) {
+    ensure_controlplanes_layer(scene);
+    let mut stale = Vec::new();
+    for plane in &storey.control_planes {
+        if let Some(h) = plane.preview_handle {
+            stale.push(Handle::new(h));
+        }
+    }
+    if !stale.is_empty() {
+        scene.erase_entities(&stale);
+    }
+    let half = 20.0;
+    for plane in &mut storey.control_planes {
+        plane.preview_handle = None;
+        if !plane.visible {
+            continue;
+        }
+        let corners = crate::modules::aec::engine::control_plane::preview_rectangle(plane, half);
+        let v = |c: [f64; 3]| Vector3::new(c[0], c[1], c[2]);
+        let face = acadrust::entities::Face3D::new(
+            v(corners[0]),
+            v(corners[1]),
+            v(corners[2]),
+            v(corners[3]),
+        );
+        let handle = scene.add_entity(EntityType::Face3D(face));
+        if let Some(e) = scene.document.get_entity_mut(handle) {
+            let ent = e.as_entity_mut();
+            ent.set_layer(AEC_CONTROLPLANES_LAYER.to_string());
+            ent.set_color(acadrust::types::Color::from_index(4));
+        }
+        plane.preview_handle = Some(handle.value());
+    }
+}
+
 pub fn set_wall_axis_layer_visible(scene: &mut Scene, visible: bool) {
     scene.ensure_layer(AEC_WALL_AXIS_LAYER);
     let changed = if let Some(layer) = scene.document.layers.get_mut(AEC_WALL_AXIS_LAYER) {
@@ -3372,13 +3554,9 @@ pub fn set_wall_derived_handles(
         return false;
     };
     let mut record = ExtendedDataRecord::new(AEC_APPID);
-    record.values = wall_record(
-        &v2.style_id,
-        v2.height,
-        v2.storey_id,
-        &v2.layers,
-        derived_handles,
-        v2.justification, v2.phase, v2.hatch_override.as_ref());
+    let mut wall = v2;
+    wall.derived_handles = derived_handles.to_vec();
+    record.values = wall_record_for_wall(&wall);
     write_aec_record(&mut scene.document, wall_handle, record)
 }
 
@@ -3422,13 +3600,9 @@ pub fn change_wall_justification(
     }
 
     let mut record = ExtendedDataRecord::new(AEC_APPID);
-    record.values = wall_record(
-        &v2.style_id,
-        v2.height,
-        v2.storey_id,
-        &v2.layers,
-        &v2.derived_handles,
-        new_justification, v2.phase, v2.hatch_override.as_ref());
+    let mut wall = v2;
+    wall.justification = new_justification;
+    record.values = wall_record_for_wall(&wall);
     if !write_aec_record(&mut scene.document, wall_handle, record) {
         return false;
     }
@@ -3564,6 +3738,14 @@ impl WallCommand {
     /// finished this session) instead of the hardcoded fallback defaults.
     pub fn new_with_defaults(last_style_id: Option<&str>, last_height: Option<f64>) -> Self {
         Self::new().with_session_defaults(last_style_id, last_height)
+    }
+
+    pub fn with_storey_planes(
+        mut self,
+        storey: &crate::modules::aec::engine::project::StoreyRef,
+    ) -> Self {
+        self.wall.bind_storey_planes(storey, 0.0, 0.0);
+        self
     }
 
     /// Apply last-used style/height against the command's current library.
@@ -3760,14 +3942,17 @@ impl WallCommand {
                 layer_id: Uuid::new_v4(),
             }]
         };
+        let mut wall = self.wall.clone();
+        wall.style_id = style_id;
+        wall.layers = layers;
+        wall.justification = self.justification;
+        if wall.base_plane_id.is_some() {
+            if let Some(h) = wall.height_from_snapshot() {
+                wall.height = h;
+            }
+        }
         let mut record = ExtendedDataRecord::new(AEC_APPID);
-        record.values = wall_record(
-            &style_id,
-            self.wall.height,
-            self.wall.storey_id,
-            &layers,
-            &[],
-            self.justification, self.wall.phase, self.wall.hatch_override.as_ref());
+        record.values = wall_record_for_wall(&wall);
 
         entity.common_mut().extended_data.add_record(record);
         Some(entity)
@@ -8872,6 +9057,59 @@ mod wall_command_tests {
 
         let wall = wall_from_entity(&entity).expect("Should parse WALL");
         assert_eq!(wall.phase, PlanPhase::Demolition);
+    }
+
+    #[test]
+    fn wall_record_round_trips_control_planes() {
+        let mut wall = Wall::new("style1", 2.8, 0);
+        wall.layers = wls(&[("Brick", 0.2, "Structural")]);
+        wall.base_plane_id = Some(Uuid::new_v4());
+        wall.top_plane_id = Some(Uuid::new_v4());
+        wall.base_offset = 0.1;
+        wall.top_offset = -0.05;
+        wall.base_origin = [0.0, 0.0, 1.0];
+        wall.base_normal = [0.0, 0.0, 1.0];
+        wall.top_origin = [0.0, 0.0, 4.0];
+        wall.top_normal = [0.0, 0.0, 1.0];
+        wall.height = wall.height_from_snapshot().unwrap_or(wall.height);
+
+        let mut entity = EntityType::LwPolyline(LwPolyline::new());
+        let mut record = ExtendedDataRecord::new(AEC_APPID);
+        record.values = wall_record_for_wall(&wall);
+        entity.common_mut().extended_data.add_record(record);
+
+        let back = wall_from_entity(&entity).expect("parse");
+        assert_eq!(back.base_plane_id, wall.base_plane_id);
+        assert_eq!(back.top_plane_id, wall.top_plane_id);
+        assert!((back.base_offset - 0.1).abs() < 1e-9);
+        assert!((back.height - 2.85).abs() < 1e-6);
+    }
+
+    #[test]
+    fn wall_from_entity_ignores_missing_plane_block() {
+        let layers = wls(&[("Brick", 0.2, "Structural")]);
+        let mut values = wall_record(
+            "style1",
+            3.0,
+            0,
+            &layers,
+            &[],
+            WallJustification::Center,
+            PlanPhase::New,
+            None,
+        );
+        if let Some(pos) = values.iter().rposition(|v| {
+            matches!(v, XDataValue::String(s) if s == "planes")
+        }) {
+            values.truncate(pos);
+        }
+        let mut entity = EntityType::LwPolyline(LwPolyline::new());
+        let mut record = ExtendedDataRecord::new(AEC_APPID);
+        record.values = values;
+        entity.common_mut().extended_data.add_record(record);
+        let wall = wall_from_entity(&entity).expect("legacy");
+        assert!(wall.base_plane_id.is_none());
+        assert_eq!(wall.height, 3.0);
     }
 
     #[test]

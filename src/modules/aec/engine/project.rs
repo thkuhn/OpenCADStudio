@@ -12,6 +12,9 @@
 //! `aec_display_configs.toml`, see `library.rs`) remain as the fallback for
 //! drawings that are not (yet) part of a project.
 
+use crate::modules::aec::engine::control_plane::{
+    default_floor_ceiling, ControlPlane, intersect_vertical_at_xy,
+};
 use crate::modules::aec::engine::library::{DisplayConfigLibrary, StyleLibrary};
 use serde::{Deserialize, Serialize};
 use std::fs;
@@ -80,19 +83,115 @@ pub struct StoreyRef {
     /// Stable identity, unrelated to `name` — see `new_entity_id()`.
     pub id: Uuid,
     pub name: String,
+    /// Cached floor Z at origin; kept for old `.ocsproj` files. Prefer
+    /// [`StoreyRef::derived_elevation`].
+    #[serde(default)]
     pub elevation: f64,
+    /// Cached floor-to-floor height; default 3.0 for old files without the field.
+    #[serde(default = "default_storey_height")]
+    pub height: f64,
     pub drawing_path: String,
+    #[serde(default)]
+    pub control_planes: Vec<ControlPlane>,
+    #[serde(default = "Uuid::nil")]
+    pub floor_plane_id: Uuid,
+    #[serde(default = "Uuid::nil")]
+    pub ceiling_plane_id: Uuid,
+}
+
+fn default_storey_height() -> f64 {
+    3.0
 }
 
 impl StoreyRef {
-    /// Creates a new storey reference with a fresh unique `id`.
+    /// Creates a new storey reference with a fresh unique `id` and default
+    /// floor/ceiling planes.
     pub fn new(name: impl Into<String>, elevation: f64, drawing_path: impl Into<String>) -> Self {
+        Self::new_with_height(name, elevation, default_storey_height(), drawing_path)
+    }
+
+    pub fn new_with_height(
+        name: impl Into<String>,
+        elevation: f64,
+        height: f64,
+        drawing_path: impl Into<String>,
+    ) -> Self {
+        let name = name.into();
+        let (floor, ceiling) = default_floor_ceiling(&name, elevation, height);
+        let floor_plane_id = floor.id;
+        let ceiling_plane_id = ceiling.id;
         StoreyRef {
             id: new_entity_id(),
-            name: name.into(),
+            name,
             elevation,
+            height,
             drawing_path: drawing_path.into(),
+            control_planes: vec![floor, ceiling],
+            floor_plane_id,
+            ceiling_plane_id,
         }
+    }
+
+    /// Ensure floor/ceiling planes exist (migration for old `.ocsproj`).
+    pub fn ensure_control_planes(&mut self) {
+        if self.control_planes.is_empty() {
+            let (floor, ceiling) =
+                default_floor_ceiling(&self.name, self.elevation, self.height.max(0.01));
+            self.floor_plane_id = floor.id;
+            self.ceiling_plane_id = ceiling.id;
+            self.control_planes = vec![floor, ceiling];
+            return;
+        }
+        if self.plane(self.floor_plane_id).is_none() {
+            self.floor_plane_id = self.control_planes[0].id;
+        }
+        if self.plane(self.ceiling_plane_id).is_none() {
+            if self.control_planes.len() > 1 {
+                self.ceiling_plane_id = self.control_planes[1].id;
+            } else {
+                let extra = ControlPlane::horizontal(
+                    format!("{}_UKRD", self.name),
+                    self.elevation + self.height.max(0.01),
+                );
+                self.ceiling_plane_id = extra.id;
+                self.control_planes.push(extra);
+            }
+        }
+        self.sync_derived_elevation_height();
+    }
+
+    pub fn plane(&self, id: Uuid) -> Option<&ControlPlane> {
+        self.control_planes.iter().find(|p| p.id == id)
+    }
+
+    pub fn plane_mut(&mut self, id: Uuid) -> Option<&mut ControlPlane> {
+        self.control_planes.iter_mut().find(|p| p.id == id)
+    }
+
+    pub fn derived_elevation(&self) -> f64 {
+        self.plane(self.floor_plane_id)
+            .and_then(|p| intersect_vertical_at_xy(p.origin[0], p.origin[1], p).map(|h| h[2]))
+            .or_else(|| self.plane(self.floor_plane_id).map(|p| p.origin[2]))
+            .unwrap_or(self.elevation)
+    }
+
+    pub fn derived_height(&self) -> f64 {
+        let elev = self.derived_elevation();
+        let top = self
+            .plane(self.ceiling_plane_id)
+            .and_then(|p| intersect_vertical_at_xy(p.origin[0], p.origin[1], p).map(|h| h[2]))
+            .or_else(|| self.plane(self.ceiling_plane_id).map(|p| p.origin[2]))
+            .unwrap_or(elev + self.height);
+        (top - elev).abs().max(0.01)
+    }
+
+    pub fn sync_derived_elevation_height(&mut self) {
+        self.elevation = self.derived_elevation();
+        self.height = self.derived_height();
+    }
+
+    pub fn add_control_plane(&mut self, plane: ControlPlane) {
+        self.control_planes.push(plane);
     }
 }
 
@@ -113,6 +212,11 @@ impl ProjectFile {
                     &mut project.display_config_library.configs,
                     &mut project.material_wall_style_library.wall_styles,
                 );
+                for building in &mut project.buildings {
+                    for storey in &mut building.storeys {
+                        storey.ensure_control_planes();
+                    }
+                }
                 Ok(project)
             }
             Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(ProjectFile::default()),
@@ -460,5 +564,31 @@ mod tests {
         let id_og1 = building.storeys[1].id;
         building.storeys.remove(0);
         assert_eq!(building.storey_index(id_og1), Some(0));
+    }
+
+    #[test]
+    fn old_storey_without_control_planes_migrates_floor_and_ceiling() {
+        let json = r#"{
+            "buildings": [{
+                "id": "11111111-1111-1111-1111-111111111111",
+                "name": "Haus",
+                "storeys": [{
+                    "id": "22222222-2222-2222-2222-222222222222",
+                    "name": "EG",
+                    "elevation": 1.5,
+                    "drawing_path": "eg.dwg"
+                }]
+            }]
+        }"#;
+        let path = temp_path("migrate_planes");
+        fs::write(&path, json).expect("write");
+        let loaded = ProjectFile::load(&path).expect("load");
+        let storey = &loaded.buildings[0].storeys[0];
+        assert_eq!(storey.control_planes.len(), 2);
+        assert!(storey.plane(storey.floor_plane_id).is_some());
+        assert!(storey.plane(storey.ceiling_plane_id).is_some());
+        assert!((storey.derived_elevation() - 1.5).abs() < 1e-9);
+        assert!((storey.derived_height() - 3.0).abs() < 1e-9);
+        let _ = fs::remove_file(&path);
     }
 }

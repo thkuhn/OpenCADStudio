@@ -998,12 +998,28 @@ impl OpenCADStudio {
                 let style_library = crate::modules::aec::engine::project::resolve_style_library(
                     self.aec_project_explorer_file.as_ref(),
                 );
-                let new_cmd = WallCommand::new()
+                let mut new_cmd = WallCommand::new()
                     .with_library(style_library)
                     .with_session_defaults(
                         self.aec_last_wall_style_id.as_deref(),
                         self.aec_last_wall_height,
                     );
+                if let Some(storey) = self.aec_project_explorer_file.as_ref().and_then(|p| {
+                    p.buildings.iter().find_map(|b| {
+                        b.storeys.iter().find(|s| {
+                            self.tabs[i].current_path.as_ref().is_some_and(|cur| {
+                                !s.drawing_path.trim().is_empty()
+                                    && (cur.ends_with(&s.drawing_path)
+                                        || cur.file_name().and_then(|n| n.to_str())
+                                            == std::path::Path::new(&s.drawing_path)
+                                                .file_name()
+                                                .and_then(|n| n.to_str()))
+                            })
+                        })
+                    })
+                }) {
+                    new_cmd = new_cmd.with_storey_planes(storey);
+                }
                 self.command_line.push_info(&new_cmd.prompt());
                 self.tabs[i].active_cmd = Some(Box::new(new_cmd));
                 self.sync_wall_axis_layer_for_session(i);
@@ -1280,6 +1296,54 @@ impl OpenCADStudio {
             }
             "AEC_PROJECTEXPLORER" => {
                 return Some(Task::done(Message::AecProjectExplorerOpen));
+            }
+            "AEC_CONTROLPLANES" => {
+                let path = self.tabs[i].current_path.clone();
+                let storey_ids = self.aec_project_explorer_file.as_ref().and_then(|p| {
+                    p.buildings.iter().find_map(|b| {
+                        b.storeys.iter().find(|s| {
+                            if s.drawing_path.trim().is_empty() {
+                                return false;
+                            }
+                            path.as_ref().is_some_and(|cur| {
+                                cur.ends_with(&s.drawing_path)
+                                    || cur.file_name().and_then(|n| n.to_str())
+                                        == std::path::Path::new(&s.drawing_path)
+                                            .file_name()
+                                            .and_then(|n| n.to_str())
+                            })
+                        }).map(|s| (b.id, s.id))
+                    })
+                });
+                if let Some((bid, sid)) = storey_ids {
+                    if let Some(project) = self.aec_project_explorer_file.as_mut() {
+                        if let Some(storey) = project
+                            .buildings
+                            .iter_mut()
+                            .find(|b| b.id == bid)
+                            .and_then(|b| b.storeys.iter_mut().find(|s| s.id == sid))
+                        {
+                            crate::modules::aec::commands::regenerate_control_plane_previews(
+                                &mut self.tabs[i].scene,
+                                storey,
+                            );
+                        }
+                    }
+                    if self.aec_project_explorer_path.is_some() {
+                        let _ = self.aec_project_explorer_file.as_ref().and_then(|p| {
+                            self.aec_project_explorer_path.as_ref().map(|path| p.save(path))
+                        });
+                    }
+                }
+                let on = crate::modules::aec::commands::toggle_controlplanes_layer(
+                    &mut self.tabs[i].scene,
+                );
+                self.command_line.push_info(if on {
+                    "AEC_CONTROLPLANES: on"
+                } else {
+                    "AEC_CONTROLPLANES: off"
+                });
+                self.tabs[i].dirty = true;
             }
             "AEC_STYLEMANAGER" => {
                 return Some(Task::done(Message::AecWallStyleManagerOpen));

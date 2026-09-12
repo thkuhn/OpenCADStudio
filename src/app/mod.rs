@@ -1376,6 +1376,10 @@ pub(super) struct OpenCADStudio {
     /// A pending delete awaiting user confirmation (building or storey), so a
     /// misclick on "Delete" cannot silently drop project structure/files.
     aec_project_explorer_pending_delete: Option<AecProjectExplorerDeleteTarget>,
+    aec_storey_settings_target: Option<(uuid::Uuid, uuid::Uuid)>,
+    aec_storey_settings_new_plane_name: String,
+    aec_storey_settings_elevation: String,
+    aec_storey_settings_height: String,
     /// When true (headless `--serve` / test automation), the AEC
     /// project-required guard seeds a blank in-memory project instead of
     /// opening a blocking modal that nobody can dismiss.
@@ -2150,6 +2154,8 @@ pub enum ModalKind {
     AecJunctionEditor,
     /// AEC Project Explorer — browse a `.ocsproj` Building → Storey tree.
     AecProjectExplorer,
+    /// Child of the project explorer: storey fields + control planes.
+    AecStoreySettings,
     /// AEC DisplayConfig Manager — browse/edit the `DisplayConfig` entries
     /// stored in the AEC plan/display library (`AEC_PLANMANAGER`).
     AecPlanManager,
@@ -2942,6 +2948,21 @@ pub enum Message {
     /// style and `DisplayConfig` libraries into the loaded project (Step 6:
     /// "Projektweite Bibliotheks-Persistenz"), then persists the project.
     AecProjectExplorerMigrateLibraries,
+    AecStoreySettingsOpen(uuid::Uuid, uuid::Uuid),
+    AecStoreySettingsClose,
+    AecStoreySettingsNameChanged(uuid::Uuid, uuid::Uuid, String),
+    AecStoreySettingsDrawingChanged(uuid::Uuid, uuid::Uuid, String),
+    AecStoreySettingsSetFloor(uuid::Uuid, uuid::Uuid, uuid::Uuid),
+    AecStoreySettingsSetCeiling(uuid::Uuid, uuid::Uuid, uuid::Uuid),
+    AecStoreySettingsElevation(uuid::Uuid, uuid::Uuid, String),
+    AecStoreySettingsHeight(uuid::Uuid, uuid::Uuid, String),
+    AecStoreySettingsNewPlaneNameChanged(String),
+    AecStoreySettingsAddPlane(uuid::Uuid, uuid::Uuid),
+    AecStoreySettingsDeletePlane(uuid::Uuid, uuid::Uuid, uuid::Uuid),
+    AecStoreySettingsPlaneName(uuid::Uuid, uuid::Uuid, uuid::Uuid, String),
+    AecStoreySettingsPlaneVisible(uuid::Uuid, uuid::Uuid, uuid::Uuid, bool),
+    AecStoreySettingsPlaneOrigin(uuid::Uuid, uuid::Uuid, uuid::Uuid, u8, String),
+    AecStoreySettingsPlaneNormal(uuid::Uuid, uuid::Uuid, uuid::Uuid, u8, String),
 
     // ── AEC DisplayConfig Manager (`AEC_PLANMANAGER`, Step 5) ─────────────
     /// Open the DisplayConfig Manager modal.
@@ -4585,6 +4606,10 @@ impl OpenCADStudio {
             aec_project_explorer_edit_elevation: String::new(),
             aec_project_explorer_edit_storey_drawing: String::new(),
             aec_project_explorer_pending_delete: None,
+            aec_storey_settings_target: None,
+            aec_storey_settings_new_plane_name: String::new(),
+            aec_storey_settings_elevation: String::new(),
+            aec_storey_settings_height: String::new(),
             automation_session: false,
             aec_project_required_resume: None,
             scale_manager_selected: String::new(),

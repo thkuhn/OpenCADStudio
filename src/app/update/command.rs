@@ -2984,7 +2984,8 @@ pub(super) fn on_tab_close(&mut self, idx: usize) -> Task<Message> {
                                             );
                                         }
                                     }
-                                    "wall_height" | "wall_thickness" | "wall_material" => {
+                                    "wall_height" | "wall_thickness" | "wall_material"
+                                    | "wall_base_offset" | "wall_top_offset" => {
                                         // AEC wall properties live in `WALL`
                                         // XDATA. Height is editable here;
                                         // thickness/material are per-layer and
@@ -3009,6 +3010,33 @@ pub(super) fn on_tab_close(&mut self, idx: usize) -> Task<Message> {
                                                         Some(&style_library),
                                                     );
                                                 }
+                                            }
+                                        } else if field == "wall_base_offset"
+                                            || field == "wall_top_offset"
+                                        {
+                                            if let Some(v) =
+                                                crate::entities::common::parse_f64(&val)
+                                            {
+                                                let (base, top) = if field == "wall_base_offset" {
+                                                    (Some(v), None)
+                                                } else {
+                                                    (None, Some(v))
+                                                };
+                                                crate::modules::aec::commands::write_wall_plane_offsets(
+                                                    &mut self.tabs[i].scene,
+                                                    handle,
+                                                    base,
+                                                    top,
+                                                );
+                                                let style_library =
+                                                    crate::modules::aec::engine::project::resolve_style_library(
+                                                        self.aec_project_explorer_file.as_ref(),
+                                                    );
+                                                let _ = crate::modules::aec::commands::regenerate_wall_representation(
+                                                    &mut self.tabs[i].scene,
+                                                    handle,
+                                                    Some(&style_library),
+                                                );
                                             }
                                         }
                                     }

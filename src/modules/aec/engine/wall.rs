@@ -34,6 +34,14 @@ pub struct Wall {
     /// Only `hatch_angle`/`hatch_angle_relative` are meaningful here; other
     /// fields are unused for this purpose.
     pub hatch_override: Option<ComponentStyleOverride>,
+    pub base_plane_id: Option<uuid::Uuid>,
+    pub top_plane_id: Option<uuid::Uuid>,
+    pub base_offset: f64,
+    pub top_offset: f64,
+    pub base_origin: [f64; 3],
+    pub base_normal: [f64; 3],
+    pub top_origin: [f64; 3],
+    pub top_normal: [f64; 3],
 }
 
 /// One material layer in a wall's cross-section snapshot.
@@ -108,7 +116,89 @@ impl Wall {
             justification: WallJustification::Center,
             phase: PlanPhase::default(),
             hatch_override: None,
+            base_plane_id: None,
+            top_plane_id: None,
+            base_offset: 0.0,
+            top_offset: 0.0,
+            base_origin: [0.0, 0.0, 0.0],
+            base_normal: [0.0, 0.0, 1.0],
+            top_origin: [0.0, 0.0, 0.0],
+            top_normal: [0.0, 0.0, 1.0],
         }
+    }
+
+    /// Bind floor/ceiling of `storey` and bake height at `(x, y)`.
+    pub fn bind_storey_planes(
+        &mut self,
+        storey: &crate::modules::aec::engine::project::StoreyRef,
+        x: f64,
+        y: f64,
+    ) {
+        self.base_plane_id = Some(storey.floor_plane_id);
+        self.top_plane_id = Some(storey.ceiling_plane_id);
+        self.rebake_planes(storey, x, y);
+    }
+
+    pub fn rebake_planes(
+        &mut self,
+        storey: &crate::modules::aec::engine::project::StoreyRef,
+        x: f64,
+        y: f64,
+    ) {
+        use crate::modules::aec::engine::control_plane::resolve_wall_height;
+        let Some(base) = self
+            .base_plane_id
+            .and_then(|id| storey.plane(id).cloned())
+        else {
+            return;
+        };
+        let Some(top) = self
+            .top_plane_id
+            .and_then(|id| storey.plane(id).cloned())
+        else {
+            return;
+        };
+        self.base_origin = base.origin;
+        self.base_normal = base.unit_normal();
+        self.top_origin = top.origin;
+        self.top_normal = top.unit_normal();
+        if let Some(h) = resolve_wall_height(x, y, &base, &top, self.base_offset, self.top_offset) {
+            if h.abs() > 1e-9 {
+                self.height = h.abs();
+            }
+        }
+    }
+
+    /// Height from baked plane Z when live IDs are unavailable.
+    pub fn height_from_snapshot(&self) -> Option<f64> {
+        let base = crate::modules::aec::engine::control_plane::ControlPlane {
+            id: uuid::Uuid::nil(),
+            name: String::new(),
+            origin: self.base_origin,
+            normal: self.base_normal,
+            face_handle: None,
+            preview_handle: None,
+            visible: true,
+        };
+        let top = crate::modules::aec::engine::control_plane::ControlPlane {
+            id: uuid::Uuid::nil(),
+            name: String::new(),
+            origin: self.top_origin,
+            normal: self.top_normal,
+            face_handle: None,
+            preview_handle: None,
+            visible: true,
+        };
+        crate::modules::aec::engine::control_plane::resolve_wall_height(
+            0.0,
+            0.0,
+            &base,
+            &top,
+            self.base_offset,
+            self.top_offset,
+        )
+        .filter(|h| h.abs() > 1e-9)
+        .map(|h| h.abs())
     }
 
     /// Total cross-section width spanning all layers (min start to max end).

@@ -54,6 +54,7 @@ impl OpenCADStudio {
             Some(K::AecWallStyleDisplayProfiles) => t!("Display Profiles").into_owned(),
             Some(K::AecJunctionEditor) => t!("Junction Editor").into_owned(),
             Some(K::AecProjectExplorer) => t!("AEC Project Explorer").into_owned(),
+            Some(K::AecStoreySettings) => t!("Storey settings").into_owned(),
             Some(K::AecPlanManager) => t!("AEC Plan Manager").into_owned(),
             Some(K::AecStylePicker { .. }) => t!("Style Picker").into_owned(),
             Some(K::AecStyleCopyConflict) => t!("Overwrite?").into_owned(),
@@ -1488,6 +1489,9 @@ impl OpenCADStudio {
             super::super::ModalKind::AecProjectExplorer => sized_flow(ex, 860, 560, |_| {
                 self.aec_project_explorer_view()
             }),
+            super::super::ModalKind::AecStoreySettings => sized_flow(ex, 720, 620, |_| {
+                self.aec_storey_settings_view()
+            }),
             super::super::ModalKind::AecPlanManager => sized_flow(ex, 960, 640, |_| {
                 self.aec_plan_manager_view()
             }),
@@ -1751,10 +1755,30 @@ impl OpenCADStudio {
                 new_storey_elevation: &self.aec_project_explorer_new_storey_elevation,
                 new_storey_drawing: &self.aec_project_explorer_new_storey_drawing,
                 edit_building_name: &self.aec_project_explorer_edit_building_name,
-                edit_storey_name: &self.aec_project_explorer_edit_storey_name,
-                edit_elevation: &self.aec_project_explorer_edit_elevation,
-                edit_storey_drawing: &self.aec_project_explorer_edit_storey_drawing,
                 pending_delete: self.aec_project_explorer_pending_delete,
+            },
+        )
+    }
+
+    fn aec_storey_settings_view(&self) -> Element<'_, Message> {
+        let Some((bid, sid)) = self.aec_storey_settings_target else {
+            return iced::widget::text(t!("No storey selected.")).into();
+        };
+        let Some(storey) = self.aec_project_explorer_file.as_ref().and_then(|p| {
+            p.buildings
+                .iter()
+                .find(|b| b.id == bid)
+                .and_then(|b| b.storeys.iter().find(|s| s.id == sid))
+        }) else {
+            return iced::widget::text(t!("Storey not found.")).into();
+        };
+        crate::ui::window::aec_storey_settings::view_window(
+            crate::ui::window::aec_storey_settings::StoreySettingsState {
+                building_id: bid,
+                storey,
+                new_plane_name: &self.aec_storey_settings_new_plane_name,
+                elevation: &self.aec_storey_settings_elevation,
+                height: &self.aec_storey_settings_height,
             },
         )
     }

@@ -3202,6 +3202,30 @@ pub(super) fn wall_prop_section(
                 "wall_height",
                 wall.height,
             ),
+            crate::entities::common::edit_prop(
+                t!("Base offset").as_ref(),
+                "wall_base_offset",
+                wall.base_offset,
+            ),
+            crate::entities::common::edit_prop(
+                t!("Top offset").as_ref(),
+                "wall_top_offset",
+                wall.top_offset,
+            ),
+            crate::entities::common::ro_prop(
+                t!("Base plane").as_ref(),
+                "wall_base_plane",
+                wall.base_plane_id
+                    .map(|id| id.to_string())
+                    .unwrap_or_else(|| t!("(none)").into_owned()),
+            ),
+            crate::entities::common::ro_prop(
+                t!("Top plane").as_ref(),
+                "wall_top_plane",
+                wall.top_plane_id
+                    .map(|id| id.to_string())
+                    .unwrap_or_else(|| t!("(none)").into_owned()),
+            ),
             crate::scene::model::object::Property {
                 label: t!("Style").into_owned(),
                 field: "wall_style",

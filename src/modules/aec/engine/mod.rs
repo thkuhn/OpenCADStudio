@@ -6,6 +6,7 @@
 
 pub mod arc;
 pub mod contour;
+pub mod control_plane;
 pub mod display_component;
 pub mod expr;
 pub mod geometry;
@@ -33,4 +34,5 @@ pub use library::StyleLibrary;
 pub use loop_detection::find_closed_loop;
 pub use room::Room;
 pub use storey::Storey;
+pub use control_plane::ControlPlane;
 pub use wall::{Wall, WallJustification, WallLayer};

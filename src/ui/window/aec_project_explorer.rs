@@ -26,12 +26,6 @@ pub struct ProjectExplorerState<'a> {
     pub new_storey_drawing: &'a str,
     /// Live edit buffer for the name of the currently selected building.
     pub edit_building_name: &'a str,
-    /// Live edit buffer for the name of the currently selected storey.
-    pub edit_storey_name: &'a str,
-    /// Live text buffer for the elevation field of the currently selected storey.
-    pub edit_elevation: &'a str,
-    /// Live edit buffer for the drawing path of the currently selected storey.
-    pub edit_storey_drawing: &'a str,
     /// A delete awaiting confirmation, rendered as an inline Yes/No prompt.
     pub pending_delete: Option<AecProjectExplorerDeleteTarget>,
 }
@@ -238,9 +232,8 @@ fn storey_row<'a>(
 ) -> Element<'a, Message> {
     let sid = storey.id;
     let selected = state.selected_storey == Some((bid, sid));
-    let elev = format!("{:.3}", storey.elevation);
+    let elev = format!("{:.3}", storey.derived_elevation());
 
-    // Row + separate Open button (no nested buttons — iced dislikes that).
     let has_drawing = !storey.drawing_path.trim().is_empty();
     let mut open_button = button(text(t!("Open")).size(10))
         .style(button::primary)
@@ -248,7 +241,10 @@ fn storey_row<'a>(
     if has_drawing {
         open_button = open_button.on_press(Message::AecProjectExplorerOpenStorey(bid, sid));
     }
-    let label_row = row![
+    let settings_button = button(text(t!("Settings…")).size(10))
+        .padding([4, 8])
+        .on_press(Message::AecStoreySettingsOpen(bid, sid));
+    row![
         button(
             row![
                 Space::new().width(14),
@@ -269,70 +265,10 @@ fn storey_row<'a>(
         .padding([6, 9])
         .width(Fill),
         open_button,
+        settings_button,
     ]
     .spacing(6)
-    .align_y(iced::Center);
-
-    if !selected {
-        return label_row.into();
-    }
-
-    // Selected: show inline fields to edit name, elevation and drawing path.
-    // Nothing is applied/persisted until "Speichern" is pressed.
-    column![
-        label_row,
-        row![
-            Space::new().width(28),
-            text(t!("Name")).size(10).style(muted).width(60),
-            text_input("", state.edit_storey_name)
-                .on_input(move |v| Message::AecProjectExplorerEditStoreyName(bid, sid, v))
-                .size(11)
-                .padding([3, 6])
-                .width(Fill),
-            button(text(t!("Delete")).size(10))
-                .style(button::danger)
-                .padding([3, 8])
-                .on_press(Message::AecProjectExplorerRequestDeleteStorey(bid, sid)),
-        ]
-        .spacing(8)
-        .align_y(iced::Center),
-        row![
-            Space::new().width(28),
-            text(t!("Elevation")).size(10).style(muted).width(60),
-            text_input("0.0", state.edit_elevation)
-                .on_input(move |v| Message::AecProjectExplorerEditStoreyElevation(bid, sid, v))
-                .size(11)
-                .padding([3, 6])
-                .width(Fill),
-        ]
-        .spacing(8)
-        .align_y(iced::Center),
-        row![
-            Space::new().width(28),
-            text(t!("Drawing")).size(10).style(muted).width(60),
-            text_input("", state.edit_storey_drawing)
-                .on_input(move |v| Message::AecProjectExplorerEditStoreyDrawing(bid, sid, v))
-                .size(11)
-                .padding([3, 6])
-                .width(Fill),
-            button(text("…").size(11))
-                .padding([3, 8])
-                .on_press(Message::AecProjectExplorerPickEditStoreyDrawing(bid, sid)),
-        ]
-        .spacing(8)
-        .align_y(iced::Center),
-        row![
-            Space::new().width(28),
-            Space::new().width(60),
-            button(text(t!("Save")).size(10))
-                .style(button::primary)
-                .padding([3, 10])
-                .on_press(Message::AecProjectExplorerSaveStoreyEdits(bid, sid)),
-        ]
-        .spacing(8)
-        .align_y(iced::Center),
-    ]
-    .spacing(3)
+    .align_y(iced::Center)
     .into()
 }
 

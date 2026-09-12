@@ -593,6 +593,21 @@ impl OpenCADStudio {
         }
     }
 
+    fn with_storey_mut<R>(
+        &mut self,
+        bid: uuid::Uuid,
+        sid: uuid::Uuid,
+        f: impl FnOnce(&mut crate::modules::aec::engine::project::StoreyRef) -> R,
+    ) -> Option<R> {
+        let project = self.aec_project_explorer_file.as_mut()?;
+        let building = project
+            .building_index(bid)
+            .and_then(|bi| project.buildings.get_mut(bi))?;
+        let si = building.storey_index(sid)?;
+        let storey = building.storeys.get_mut(si)?;
+        Some(f(storey))
+    }
+
     /// Persists `lib` as the effective material/wall-style library: into
     /// the loaded project (fanning out to every drawing/storey referencing
     /// it) when a project is loaded *and* pathed, otherwise falling back to
@@ -4184,7 +4199,11 @@ impl OpenCADStudio {
                 } else {
                     path.to_string_lossy().into_owned()
                 };
-                self.aec_project_explorer_edit_storey_drawing = display;
+                self.aec_project_explorer_edit_storey_drawing = display.clone();
+                if let Some((bid, sid)) = self.aec_storey_settings_target {
+                    self.with_storey_mut(bid, sid, |s| s.drawing_path = display);
+                    self.aec_project_explorer_persist_if_pathed();
+                }
                 Task::none()
             }
             Message::AecProjectExplorerMigrateLibraries => {
@@ -4199,6 +4218,159 @@ impl OpenCADStudio {
                         crate::t!("AEC Project Explorer: no project loaded to migrate into.")
                             .as_ref(),
                     );
+                }
+                Task::none()
+            }
+            Message::AecStoreySettingsOpen(bid, sid) => {
+                self.aec_storey_settings_target = Some((bid, sid));
+                self.aec_storey_settings_new_plane_name.clear();
+                if let Some(s) = self.aec_project_explorer_file.as_ref().and_then(|p| {
+                    p.buildings
+                        .iter()
+                        .find(|b| b.id == bid)
+                        .and_then(|b| b.storeys.iter().find(|st| st.id == sid))
+                }) {
+                    self.aec_storey_settings_elevation =
+                        format!("{:.3}", s.derived_elevation());
+                    self.aec_storey_settings_height = format!("{:.3}", s.derived_height());
+                }
+                self.active_modal = Some(super::ModalKind::AecStoreySettings);
+                Task::none()
+            }
+            Message::AecStoreySettingsClose => {
+                self.aec_storey_settings_target = None;
+                self.active_modal = Some(super::ModalKind::AecProjectExplorer);
+                Task::none()
+            }
+            Message::AecStoreySettingsNameChanged(bid, sid, name) => {
+                self.with_storey_mut(bid, sid, |s| s.name = name);
+                self.aec_project_explorer_persist_if_pathed();
+                Task::none()
+            }
+            Message::AecStoreySettingsDrawingChanged(bid, sid, path) => {
+                self.with_storey_mut(bid, sid, |s| s.drawing_path = path);
+                self.aec_project_explorer_persist_if_pathed();
+                Task::none()
+            }
+            Message::AecStoreySettingsSetFloor(bid, sid, pid) => {
+                self.with_storey_mut(bid, sid, |s| {
+                    s.floor_plane_id = pid;
+                    s.sync_derived_elevation_height();
+                });
+                self.aec_project_explorer_persist_if_pathed();
+                Task::none()
+            }
+            Message::AecStoreySettingsSetCeiling(bid, sid, pid) => {
+                self.with_storey_mut(bid, sid, |s| {
+                    s.ceiling_plane_id = pid;
+                    s.sync_derived_elevation_height();
+                });
+                self.aec_project_explorer_persist_if_pathed();
+                Task::none()
+            }
+            Message::AecStoreySettingsElevation(bid, sid, text) => {
+                self.aec_storey_settings_elevation = text.clone();
+                if let Ok(v) = text.trim().parse::<f64>() {
+                    self.with_storey_mut(bid, sid, |s| {
+                        if let Some(p) = s.plane_mut(s.floor_plane_id) {
+                            p.origin[2] = v;
+                        }
+                        s.sync_derived_elevation_height();
+                    });
+                    self.aec_project_explorer_persist_if_pathed();
+                }
+                Task::none()
+            }
+            Message::AecStoreySettingsHeight(bid, sid, text) => {
+                self.aec_storey_settings_height = text.clone();
+                if let Ok(v) = text.trim().parse::<f64>() {
+                    if v > 0.0 {
+                        self.with_storey_mut(bid, sid, |s| {
+                            let floor_z = s.derived_elevation();
+                            if let Some(p) = s.plane_mut(s.ceiling_plane_id) {
+                                p.origin[2] = floor_z + v;
+                            }
+                            s.sync_derived_elevation_height();
+                        });
+                        self.aec_project_explorer_persist_if_pathed();
+                    }
+                }
+                Task::none()
+            }
+            Message::AecStoreySettingsNewPlaneNameChanged(name) => {
+                self.aec_storey_settings_new_plane_name = name;
+                Task::none()
+            }
+            Message::AecStoreySettingsAddPlane(bid, sid) => {
+                let name = self.aec_storey_settings_new_plane_name.trim().to_string();
+                if name.is_empty() {
+                    return Task::none();
+                }
+                self.with_storey_mut(bid, sid, |s| {
+                    let z = s.derived_elevation();
+                    s.add_control_plane(
+                        crate::modules::aec::engine::control_plane::ControlPlane::horizontal(
+                            name, z,
+                        ),
+                    );
+                });
+                self.aec_storey_settings_new_plane_name.clear();
+                self.aec_project_explorer_persist_if_pathed();
+                Task::none()
+            }
+            Message::AecStoreySettingsDeletePlane(bid, sid, pid) => {
+                self.with_storey_mut(bid, sid, |s| {
+                    if pid == s.floor_plane_id || pid == s.ceiling_plane_id {
+                        return;
+                    }
+                    s.control_planes.retain(|p| p.id != pid);
+                });
+                self.aec_project_explorer_persist_if_pathed();
+                Task::none()
+            }
+            Message::AecStoreySettingsPlaneName(bid, sid, pid, name) => {
+                self.with_storey_mut(bid, sid, |s| {
+                    if let Some(p) = s.plane_mut(pid) {
+                        p.name = name;
+                    }
+                });
+                self.aec_project_explorer_persist_if_pathed();
+                Task::none()
+            }
+            Message::AecStoreySettingsPlaneVisible(bid, sid, pid, visible) => {
+                self.with_storey_mut(bid, sid, |s| {
+                    if let Some(p) = s.plane_mut(pid) {
+                        p.visible = visible;
+                    }
+                });
+                self.aec_project_explorer_persist_if_pathed();
+                Task::none()
+            }
+            Message::AecStoreySettingsPlaneOrigin(bid, sid, pid, axis, text) => {
+                if let Ok(v) = text.trim().parse::<f64>() {
+                    self.with_storey_mut(bid, sid, |s| {
+                        if let Some(p) = s.plane_mut(pid) {
+                            if (axis as usize) < 3 {
+                                p.origin[axis as usize] = v;
+                            }
+                        }
+                        s.sync_derived_elevation_height();
+                    });
+                    self.aec_project_explorer_persist_if_pathed();
+                }
+                Task::none()
+            }
+            Message::AecStoreySettingsPlaneNormal(bid, sid, pid, axis, text) => {
+                if let Ok(v) = text.trim().parse::<f64>() {
+                    self.with_storey_mut(bid, sid, |s| {
+                        if let Some(p) = s.plane_mut(pid) {
+                            if (axis as usize) < 3 {
+                                p.normal[axis as usize] = v;
+                            }
+                        }
+                        s.sync_derived_elevation_height();
+                    });
+                    self.aec_project_explorer_persist_if_pathed();
                 }
                 Task::none()
             }

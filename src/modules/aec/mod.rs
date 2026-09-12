@@ -48,11 +48,18 @@ impl CadModule for AecModule {
             vec![
                 RibbonGroup {
                     title: "Project",
-                    tools: vec![RibbonItem::LargeTool(tool(
-                        "AEC_PROJECTEXPLORER",
-                        "Project Explorer",
-                        PROJECT_ICON,
-                    ))],
+                    tools: vec![
+                        RibbonItem::LargeTool(tool(
+                            "AEC_PROJECTEXPLORER",
+                            "Project Explorer",
+                            PROJECT_ICON,
+                        )),
+                        RibbonItem::LargeTool(tool(
+                            "AEC_CONTROLPLANES",
+                            "Control planes",
+                            PROJECT_ICON,
+                        )),
+                    ],
                 },
                 RibbonGroup {
                     title: "Walls",
