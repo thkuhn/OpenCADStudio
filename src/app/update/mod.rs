@@ -106,6 +106,432 @@ impl OpenCADStudio {
         self.modal_resizing = false;
     }
 
+    /// Fill the Junction Editor's currently chosen wall layer(s) in the
+    /// viewport (transparent orange). Cleared when nothing is selected or the panel closes.
+    fn sync_junction_editor_layer_highlight(&mut self) {
+        let i = self.active_tab;
+        if self.tabs[i].active_cmd.is_some() {
+            return;
+        }
+        let orange = crate::scene::model::wire_model::WireModel::LAYER_PICK;
+        let mut hatches = Vec::new();
+        let mut push = |wall, idx| {
+            if let Some(h) = crate::modules::aec::commands::wall_layer_highlight_hatch(
+                &self.tabs[i].scene,
+                wall,
+                idx,
+                orange,
+            ) {
+                hatches.push(h);
+            }
+        };
+        if self.active_modal == Some(super::ModalKind::AecJunctionEditor) {
+            if let Some((axis, _)) = self.aec_junction_editor_target {
+                if let Some((idx, _)) = self.aec_junction_editor_pair_layer_a {
+                    push(axis, idx);
+                }
+                if let Some((idx, _)) = self.aec_junction_editor_gap_layer.as_ref() {
+                    let gap_wall = self
+                        .aec_junction_editor_target
+                        .and_then(|(h, e)| {
+                            crate::modules::aec::commands::through_wall_at_junction(
+                                &self.tabs[i].scene,
+                                h,
+                                e,
+                            )
+                        })
+                        .map(|p| p.axis_handle)
+                        .unwrap_or(axis);
+                    push(gap_wall, *idx);
+                }
+                if let (Some(wall_b), Some((idx, _))) = (
+                    self.aec_junction_editor_pair_wall_b,
+                    self.aec_junction_editor_pair_layer_b.as_ref(),
+                ) {
+                    push(wall_b, *idx);
+                }
+            }
+        }
+        if let Some(pick) = self.aec_layer_pair_draw.as_ref() {
+            if let Some((wall, idx, _)) = pick.layer_a.as_ref() {
+                push(*wall, *idx);
+            }
+            let cyan = pick
+                .layer_b
+                .as_ref()
+                .map(|(wall, idx, _)| (*wall, *idx))
+                .or(pick.hover);
+            if let Some((wall, idx)) = cyan {
+                if pick.layer_a.as_ref().map(|(w, i, _)| (*w, *i)) != Some((wall, idx)) {
+                    push(wall, idx);
+                }
+            }
+        }
+        if let Some(pick) = self.aec_layer_gap_draw.as_ref() {
+            if let Some((wall, idx, _)) = pick.layer.as_ref() {
+                push(*wall, *idx);
+            }
+            if let Some((wall, idx, _)) = pick.from.as_ref() {
+                push(*wall, *idx);
+            }
+            if let Some((wall, idx)) = pick
+                .to
+                .as_ref()
+                .map(|(w, i, _)| (*w, *i))
+                .or(pick.hover)
+            {
+                let skip = pick.from.as_ref().map(|(w, i, _)| (*w, *i)) == Some((wall, idx))
+                    || pick.layer.as_ref().map(|(w, i, _)| (*w, *i)) == Some((wall, idx));
+                if !skip {
+                    push(wall, idx);
+                }
+            }
+        }
+        self.tabs[i].scene.set_preview_wires(Vec::new());
+        self.tabs[i].scene.set_command_preview_hatches(hatches);
+    }
+
+    fn cancel_layer_pair_draw_pick(&mut self) {
+        if self.aec_layer_pair_draw.take().is_some() {
+            let i = self.active_tab;
+            let mut sel = self.tabs[i].scene.selection.borrow_mut();
+            sel.context_menu = None;
+            sel.junction_menu_only = false;
+            drop(sel);
+            self.sync_junction_editor_layer_highlight();
+            self.command_line.push_info(crate::t!("*Cancel*").as_ref());
+        }
+        if self.aec_layer_gap_draw.take().is_some() {
+            let i = self.active_tab;
+            let mut sel = self.tabs[i].scene.selection.borrow_mut();
+            sel.context_menu = None;
+            sel.junction_menu_only = false;
+            drop(sel);
+            self.sync_junction_editor_layer_highlight();
+            self.command_line.push_info(crate::t!("*Cancel*").as_ref());
+        }
+    }
+
+    pub(in crate::app) fn update_layer_pair_draw_hover(&mut self, world: glam::DVec3) {
+        let Some(pick) = self.aec_layer_pair_draw.as_ref() else {
+            return;
+        };
+        if pick.awaiting_style {
+            return;
+        }
+        let i = self.active_tab;
+        let axis = pick.axis;
+        let end = pick.end_index;
+        let hit = crate::modules::aec::commands::pick_junction_wall_layer(
+            &self.tabs[i].scene,
+            axis,
+            end,
+            world.x,
+            world.y,
+        );
+        if let Some(pick) = self.aec_layer_pair_draw.as_mut() {
+            pick.hover = hit.map(|(h, idx, _)| (h, idx));
+        }
+        self.sync_junction_editor_layer_highlight();
+    }
+
+    pub(in crate::app) fn click_layer_pair_draw(
+        &mut self,
+        world: glam::DVec3,
+        menu_pos: iced::Point,
+    ) {
+        let Some(pick) = self.aec_layer_pair_draw.as_ref() else {
+            return;
+        };
+        if pick.awaiting_style {
+            return;
+        }
+        let i = self.active_tab;
+        let axis = pick.axis;
+        let end = pick.end_index;
+        let hit = crate::modules::aec::commands::pick_junction_wall_layer(
+            &self.tabs[i].scene,
+            axis,
+            end,
+            world.x,
+            world.y,
+        );
+        let near_node = crate::modules::aec::commands::junction_node_xy(
+            &self.tabs[i].scene,
+            axis,
+            end,
+        )
+        .is_some_and(|(jx, jy)| {
+            let r = crate::modules::aec::commands::junction_outer_pick_radius(
+                &self.tabs[i].scene,
+                axis,
+                end,
+            );
+            let dx = world.x - jx;
+            let dy = world.y - jy;
+            dx * dx + dy * dy <= r * r
+        });
+        let picking_a = self
+            .aec_layer_pair_draw
+            .as_ref()
+            .is_some_and(|p| p.layer_a.is_none());
+        if picking_a {
+            let Some(hit) = hit else {
+                return;
+            };
+            if let Some(pick) = self.aec_layer_pair_draw.as_mut() {
+                pick.layer_a = Some(hit);
+                pick.hover = None;
+            }
+            self.sync_junction_editor_layer_highlight();
+            self.command_line.push_info(
+                crate::t!(
+                    "Zweite Schicht am Knoten klicken (Eingabe = Außenkante, Esc = Abbrechen)."
+                )
+                .as_ref(),
+            );
+            return;
+        }
+        if let Some(hit) = hit {
+            if let Some(pick) = self.aec_layer_pair_draw.as_mut() {
+                pick.layer_b = Some(hit);
+                pick.layer_b_outer = false;
+                pick.awaiting_style = true;
+                pick.hover = None;
+            }
+        } else if near_node {
+            if let Some(pick) = self.aec_layer_pair_draw.as_mut() {
+                pick.layer_b = None;
+                pick.layer_b_outer = true;
+                pick.awaiting_style = true;
+                pick.hover = None;
+            }
+        } else {
+            return;
+        }
+        let mut sel = self.tabs[i].scene.selection.borrow_mut();
+        sel.context_menu = Some(menu_pos);
+        sel.junction_menu_only = false;
+        drop(sel);
+        self.sync_junction_editor_layer_highlight();
+        self.command_line
+            .push_info(crate::t!("Verbindungsart wählen.").as_ref());
+    }
+
+    pub(in crate::app) fn update_layer_gap_draw_hover(&mut self, world: glam::DVec3) {
+        let Some(pick) = self.aec_layer_gap_draw.as_ref() else {
+            return;
+        };
+        if pick.to.is_some() {
+            return;
+        }
+        let i = self.active_tab;
+        let axis = pick.axis;
+        let end = pick.end_index;
+        let hit = crate::modules::aec::commands::pick_junction_wall_layer(
+            &self.tabs[i].scene,
+            axis,
+            end,
+            world.x,
+            world.y,
+        );
+        if let Some(pick) = self.aec_layer_gap_draw.as_mut() {
+            pick.hover = hit.map(|(h, idx, _)| (h, idx));
+        }
+        self.sync_junction_editor_layer_highlight();
+    }
+
+    pub(in crate::app) fn click_layer_gap_draw(&mut self, world: glam::DVec3) {
+        let Some(pick) = self.aec_layer_gap_draw.as_ref() else {
+            return;
+        };
+        if pick.to.is_some() {
+            return;
+        }
+        let i = self.active_tab;
+        let axis = pick.axis;
+        let end = pick.end_index;
+        let Some(hit) = crate::modules::aec::commands::pick_junction_wall_layer(
+            &self.tabs[i].scene,
+            axis,
+            end,
+            world.x,
+            world.y,
+        ) else {
+            return;
+        };
+        if pick.layer.is_none() {
+            let through = crate::modules::aec::commands::through_wall_at_junction(
+                &self.tabs[i].scene,
+                axis,
+                end,
+            );
+            if through.as_ref().map(|p| p.axis_handle) != Some(hit.0) {
+                self.command_line.push_info(
+                    crate::t!(
+                        "Bitte eine Schicht der durchlaufenden Wand wählen (Esc = Abbrechen)."
+                    )
+                    .as_ref(),
+                );
+                return;
+            }
+            if let Some(pick) = self.aec_layer_gap_draw.as_mut() {
+                pick.layer = Some(hit);
+                pick.hover = None;
+            }
+            self.sync_junction_editor_layer_highlight();
+            self.command_line.push_info(
+                crate::t!("Erste angrenzende Schicht der Stammwand klicken (Esc = Abbrechen).")
+                    .as_ref(),
+            );
+            return;
+        }
+        if pick.from.is_none() {
+            if let Some(pick) = self.aec_layer_gap_draw.as_mut() {
+                pick.from = Some(hit);
+                pick.hover = None;
+            }
+            self.sync_junction_editor_layer_highlight();
+            self.command_line.push_info(
+                crate::t!("Zweite angrenzende Schicht klicken (Esc = Abbrechen).").as_ref(),
+            );
+            return;
+        }
+        if let Some(pick) = self.aec_layer_gap_draw.as_mut() {
+            pick.to = Some(hit);
+            pick.hover = None;
+        }
+        self.commit_layer_gap_draw();
+    }
+
+    fn commit_layer_gap_draw(&mut self) {
+        let Some(pick) = self.aec_layer_gap_draw.clone() else {
+            return;
+        };
+        let (Some((wall, idx, mat)), Some((w0, i0, m0)), Some((w1, i1, m1))) =
+            (pick.layer, pick.from, pick.to)
+        else {
+            return;
+        };
+        let i = self.active_tab;
+        use crate::modules::aec::commands as aec_cmds;
+        use crate::modules::aec::engine::join::{LayerGapOverride, LayerRef};
+        let participants = aec_cmds::walls_at_junction(&self.tabs[i].scene, pick.axis, pick.end_index);
+        let resolve = |wall: acadrust::Handle, index: usize, material_id: String| {
+            participants
+                .iter()
+                .find(|p| p.axis_handle == wall)
+                .and_then(|p| aec_cmds::selected_junction_layer_ref(&p.layers, index, &material_id))
+                .unwrap_or(LayerRef {
+                    material_id,
+                    role_tag: None,
+                    index,
+                    layer_id: None,
+                })
+        };
+        let mut override_data =
+            aec_cmds::read_junction_override(&self.tabs[i].scene, pick.axis, pick.end_index)
+                .unwrap_or_default();
+        crate::modules::aec::engine::join::upsert_layer_gap(
+            &mut override_data.layer_gaps,
+            LayerGapOverride {
+                layer: resolve(wall, idx, mat),
+                from: resolve(w0, i0, m0),
+                to: resolve(w1, i1, m1),
+            },
+        );
+        let style_library = crate::modules::aec::engine::project::resolve_style_library(
+            self.aec_project_explorer_file.as_ref(),
+        );
+        let (display_rules, style_substitutions) =
+            self.resolve_active_display_config_wall_rules(i, Some(pick.axis));
+        let touched = aec_cmds::apply_junction_override_and_rebuild(
+            &mut self.tabs[i].scene,
+            pick.axis,
+            pick.end_index,
+            Some(&override_data),
+            Some(&style_library),
+            display_rules.as_ref(),
+            style_substitutions.as_ref(),
+        );
+        self.reapply_active_display_config_to_wall_packages(i, &touched);
+        self.aec_layer_gap_draw = None;
+        self.sync_junction_editor_layer_highlight();
+        self.refresh_properties();
+        self.command_line
+            .push_info(crate::t!("Schichtunterbrechung gesetzt.").as_ref());
+    }
+
+    fn apply_layer_pair_draw_style(
+        &mut self,
+        style: crate::modules::aec::engine::join::JoinOverrideStyle,
+    ) {
+        let Some(pick) = self.aec_layer_pair_draw.clone() else {
+            return;
+        };
+        let Some((wall_a, idx_a, mat_a)) = pick.layer_a else {
+            return;
+        };
+        let i = self.active_tab;
+        use crate::modules::aec::commands as aec_cmds;
+        use crate::modules::aec::engine::join::{LayerPairOverride, LayerRef};
+        let participants = aec_cmds::walls_at_junction(&self.tabs[i].scene, pick.axis, pick.end_index);
+        let resolve = |wall: acadrust::Handle, index: usize, material_id: String| {
+            participants
+                .iter()
+                .find(|p| p.axis_handle == wall)
+                .and_then(|p| aec_cmds::selected_junction_layer_ref(&p.layers, index, &material_id))
+                .unwrap_or(LayerRef {
+                    material_id,
+                    role_tag: None,
+                    index,
+                    layer_id: None,
+                })
+        };
+        let layer_a = resolve(wall_a, idx_a, mat_a);
+        let layer_b = if pick.layer_b_outer {
+            None
+        } else {
+            pick.layer_b
+                .map(|(wall, idx, mat)| resolve(wall, idx, mat))
+        };
+        let mut override_data =
+            aec_cmds::read_junction_override(&self.tabs[i].scene, pick.axis, pick.end_index)
+                .unwrap_or_default();
+        crate::modules::aec::engine::join::upsert_layer_pair(
+            &mut override_data.layer_pairs,
+            LayerPairOverride {
+                layer_a,
+                layer_b,
+                style,
+            },
+        );
+        let style_library = crate::modules::aec::engine::project::resolve_style_library(
+            self.aec_project_explorer_file.as_ref(),
+        );
+        let (display_rules, style_substitutions) =
+            self.resolve_active_display_config_wall_rules(i, Some(pick.axis));
+        let touched = aec_cmds::apply_junction_override_and_rebuild(
+            &mut self.tabs[i].scene,
+            pick.axis,
+            pick.end_index,
+            Some(&override_data),
+            Some(&style_library),
+            display_rules.as_ref(),
+            style_substitutions.as_ref(),
+        );
+        self.reapply_active_display_config_to_wall_packages(i, &touched);
+        self.aec_layer_pair_draw = None;
+        let mut sel = self.tabs[i].scene.selection.borrow_mut();
+        sel.context_menu = None;
+        sel.junction_menu = None;
+        drop(sel);
+        self.sync_junction_editor_layer_highlight();
+        self.refresh_properties();
+        self.command_line
+            .push_info(crate::t!("Schichtverbindung gesetzt.").as_ref());
+    }
+
     /// Returns `true` when an AEC project is active. Otherwise opens the
     /// project-required modal and returns `false` so callers abort the
     /// requested entry point. In automation/headless sessions, seeds a blank
@@ -6777,6 +7203,7 @@ impl OpenCADStudio {
                 sel.context_menu = Some(click_pos);
                 sel.draworder_submenu = false;
                 sel.junction_menu_submenu = false;
+                sel.junction_menu_only = false;
                 drop(sel);
                 // If the cursor is hovering a wall axis endpoint grip when the
                 // context menu opens, remember which junction (axis handle +
@@ -6794,7 +7221,13 @@ impl OpenCADStudio {
                     if vertices.len() < 2 {
                         return None;
                     }
-                    if h.grip_id == 0 {
+                    if let Some(end) =
+                        crate::modules::aec::commands::wall_junction_end_from_dropdown_grip(
+                            h.grip_id,
+                        )
+                    {
+                        Some((axis, end))
+                    } else if h.grip_id == 0 {
                         Some((axis, 0usize))
                     } else if h.grip_id == vertices.len() - 1 {
                         Some((axis, 1usize))
@@ -8315,6 +8748,65 @@ impl OpenCADStudio {
                 Task::none()
             }
 
+            Message::AecJunctionLayerPairPickStart(axis_handle, end_index) => {
+                let i = self.active_tab;
+                self.aec_layer_pair_draw = Some(crate::app::AecLayerPairDrawPick {
+                    axis: axis_handle,
+                    end_index,
+                    layer_a: None,
+                    layer_b: None,
+                    layer_b_outer: false,
+                    hover: None,
+                    awaiting_style: false,
+                });
+                let mut sel = self.tabs[i].scene.selection.borrow_mut();
+                sel.context_menu = None;
+                sel.junction_menu = Some((axis_handle, end_index));
+                sel.junction_menu_only = false;
+                drop(sel);
+                self.sync_junction_editor_layer_highlight();
+                self.command_line.push_info(
+                    crate::t!("Erste Schicht am Knoten klicken (Esc = Abbrechen).").as_ref(),
+                );
+                Task::none()
+            }
+
+            Message::AecJunctionLayerGapPickStart(axis_handle, end_index) => {
+                let i = self.active_tab;
+                self.aec_layer_pair_draw = None;
+                self.aec_layer_gap_draw = Some(crate::app::AecLayerGapDrawPick {
+                    axis: axis_handle,
+                    end_index,
+                    layer: None,
+                    from: None,
+                    to: None,
+                    hover: None,
+                });
+                let mut sel = self.tabs[i].scene.selection.borrow_mut();
+                sel.context_menu = None;
+                sel.junction_menu = Some((axis_handle, end_index));
+                sel.junction_menu_only = false;
+                drop(sel);
+                self.sync_junction_editor_layer_highlight();
+                self.command_line.push_info(
+                    crate::t!(
+                        "Schicht der durchlaufenden Wand klicken, die unterbrochen werden soll (Esc = Abbrechen)."
+                    )
+                    .as_ref(),
+                );
+                Task::none()
+            }
+
+            Message::AecJunctionLayerPairPickCancel => {
+                self.cancel_layer_pair_draw_pick();
+                Task::none()
+            }
+
+            Message::AecJunctionLayerPairSetStyle(style) => {
+                self.apply_layer_pair_draw_style(style);
+                Task::none()
+            }
+
             Message::AecJunctionEditorOpen(axis_handle, end_index) => {
                 let i = self.active_tab;
                 use crate::modules::aec::commands as aec_cmds;
@@ -8323,6 +8815,13 @@ impl OpenCADStudio {
                 self.aec_junction_editor_target = Some((axis_handle, end_index));
                 self.aec_junction_editor_default_style = ov.default_style;
                 self.aec_junction_editor_pairs = ov.layer_pairs;
+                self.aec_junction_editor_gaps =
+                    aec_cmds::read_through_layer_gaps(&self.tabs[i].scene, axis_handle, end_index);
+                self.aec_junction_editor_gap_layer = None;
+                self.aec_junction_editor_gap_from_wall = None;
+                self.aec_junction_editor_gap_from = None;
+                self.aec_junction_editor_gap_to_wall = None;
+                self.aec_junction_editor_gap_to = None;
                 self.aec_junction_editor_pair_layer_a = None;
                 self.aec_junction_editor_pair_wall_b = None;
                 self.aec_junction_editor_pair_layer_b = None;
@@ -8333,6 +8832,7 @@ impl OpenCADStudio {
                 sel.junction_menu = None;
                 drop(sel);
                 self.active_modal = Some(super::ModalKind::AecJunctionEditor);
+                self.sync_junction_editor_layer_highlight();
                 Task::none()
             }
 
@@ -8340,6 +8840,7 @@ impl OpenCADStudio {
                 self.aec_junction_editor_target = None;
                 self.active_modal = None;
                 self.reset_modal_geometry();
+                self.sync_junction_editor_layer_highlight();
                 Task::none()
             }
 
@@ -8355,17 +8856,20 @@ impl OpenCADStudio {
 
             Message::AecJunctionEditorPairLayerAChanged(index, material_id) => {
                 self.aec_junction_editor_pair_layer_a = Some((index, material_id));
+                self.sync_junction_editor_layer_highlight();
                 Task::none()
             }
 
             Message::AecJunctionEditorPairWallBChanged(wall_b) => {
                 self.aec_junction_editor_pair_wall_b = wall_b;
                 self.aec_junction_editor_pair_layer_b = None;
+                self.sync_junction_editor_layer_highlight();
                 Task::none()
             }
 
             Message::AecJunctionEditorPairLayerBChanged(index, material_id) => {
                 self.aec_junction_editor_pair_layer_b = Some((index, material_id));
+                self.sync_junction_editor_layer_highlight();
                 Task::none()
             }
 
@@ -8375,6 +8879,7 @@ impl OpenCADStudio {
             }
 
             Message::AecJunctionEditorAddPair => {
+                use crate::modules::aec::commands::selected_junction_layer_ref;
                 use crate::modules::aec::engine::join::LayerRef;
                 if let Some((layer_a_index, layer_a_id)) = self.aec_junction_editor_pair_layer_a.clone() {
                     let i = self.active_tab;
@@ -8386,37 +8891,33 @@ impl OpenCADStudio {
                         )
                     });
                     let resolve_ref = |wall: Option<acadrust::Handle>, index: usize, material_id: String| {
-                        let mut r = LayerRef {
-                            material_id,
-                            role_tag: None,
-                            index,
-                            layer_id: None,
-                        };
-                        if let Some(parts) = participants.as_ref() {
-                            let layers = if let Some(h) = wall {
+                        let layers = participants.as_ref().and_then(|parts| {
+                            if let Some(h) = wall {
                                 parts.iter().find(|p| p.axis_handle == h).map(|p| &p.layers)
                             } else {
-                                self.aec_junction_editor_target
-                                    .and_then(|(h, _)| parts.iter().find(|p| p.axis_handle == h))
-                                    .map(|p| &p.layers)
-                            };
-                            if let Some(layers) = layers {
-                                if let Some(found) = layers.get(index).cloned().or_else(|| {
-                                    layers
+                                self.aec_junction_editor_target.and_then(|(h, e)| {
+                                    parts
                                         .iter()
-                                        .find(|l| l.material_id == r.material_id && l.index == index)
-                                        .cloned()
-                                }) {
-                                    r = found;
-                                }
+                                        .find(|p| p.axis_handle == h && p.end_index == e)
+                                        .or_else(|| parts.iter().find(|p| p.axis_handle == h))
+                                        .map(|p| &p.layers)
+                                })
                             }
-                        }
-                        r
+                        });
+                        layers
+                            .and_then(|ls| selected_junction_layer_ref(ls, index, &material_id))
+                            .unwrap_or(LayerRef {
+                                material_id,
+                                role_tag: None,
+                                index,
+                                layer_id: None,
+                            })
                     };
                     let layer_b = self.aec_junction_editor_pair_layer_b.clone().map(|(index, id)| {
                         resolve_ref(self.aec_junction_editor_pair_wall_b, index, id)
                     });
-                    self.aec_junction_editor_pairs.push(
+                    crate::modules::aec::engine::join::upsert_layer_pair(
+                        &mut self.aec_junction_editor_pairs,
                         crate::modules::aec::engine::join::LayerPairOverride {
                             layer_a: resolve_ref(None, layer_a_index, layer_a_id),
                             layer_b,
@@ -8426,6 +8927,14 @@ impl OpenCADStudio {
                     self.aec_junction_editor_pair_layer_a = None;
                     self.aec_junction_editor_pair_wall_b = None;
                     self.aec_junction_editor_pair_layer_b = None;
+                    self.sync_junction_editor_layer_highlight();
+                }
+                Task::none()
+            }
+
+            Message::AecJunctionEditorSetPairStyle(idx, style) => {
+                if let Some(pair) = self.aec_junction_editor_pairs.get_mut(idx) {
+                    pair.style = style;
                 }
                 Task::none()
             }
@@ -8437,6 +8946,97 @@ impl OpenCADStudio {
                 Task::none()
             }
 
+            Message::AecJunctionEditorGapLayerChanged(index, material_id) => {
+                self.aec_junction_editor_gap_layer = Some((index, material_id));
+                self.sync_junction_editor_layer_highlight();
+                Task::none()
+            }
+            Message::AecJunctionEditorGapFromWallChanged(handle) => {
+                self.aec_junction_editor_gap_from_wall = handle;
+                self.aec_junction_editor_gap_from = None;
+                Task::none()
+            }
+            Message::AecJunctionEditorGapFromChanged(index, material_id) => {
+                self.aec_junction_editor_gap_from = Some((index, material_id));
+                Task::none()
+            }
+            Message::AecJunctionEditorGapToWallChanged(handle) => {
+                self.aec_junction_editor_gap_to_wall = handle;
+                self.aec_junction_editor_gap_to = None;
+                Task::none()
+            }
+            Message::AecJunctionEditorGapToChanged(index, material_id) => {
+                self.aec_junction_editor_gap_to = Some((index, material_id));
+                Task::none()
+            }
+            Message::AecJunctionEditorAddGap => {
+                if let (Some((li, lid)), Some((fi, fid)), Some((ti, tid))) = (
+                    self.aec_junction_editor_gap_layer.clone(),
+                    self.aec_junction_editor_gap_from.clone(),
+                    self.aec_junction_editor_gap_to.clone(),
+                ) {
+                    use crate::modules::aec::commands::selected_junction_layer_ref;
+                    use crate::modules::aec::engine::join::LayerRef;
+                    let i = self.active_tab;
+                    let participants = self.aec_junction_editor_target.map(|(h, e)| {
+                        crate::modules::aec::commands::walls_at_junction(
+                            &self.tabs[i].scene,
+                            h,
+                            e,
+                        )
+                    });
+                    let resolve_ref = |wall: Option<acadrust::Handle>, index: usize, material_id: String| {
+                        let layers = participants.as_ref().and_then(|parts| {
+                            if let Some(h) = wall {
+                                parts.iter().find(|p| p.axis_handle == h).map(|p| &p.layers)
+                            } else {
+                                parts
+                                    .iter()
+                                    .find(|p| p.is_through)
+                                    .or_else(|| {
+                                        self.aec_junction_editor_target.and_then(|(h, e)| {
+                                            parts
+                                                .iter()
+                                                .find(|p| p.axis_handle == h && p.end_index == e)
+                                                .or_else(|| {
+                                                    parts.iter().find(|p| p.axis_handle == h)
+                                                })
+                                        })
+                                    })
+                                    .map(|p| &p.layers)
+                            }
+                        });
+                        layers
+                            .and_then(|ls| selected_junction_layer_ref(ls, index, &material_id))
+                            .unwrap_or(LayerRef {
+                                material_id,
+                                role_tag: None,
+                                index,
+                                layer_id: None,
+                            })
+                    };
+                    crate::modules::aec::engine::join::upsert_layer_gap(
+                        &mut self.aec_junction_editor_gaps,
+                        crate::modules::aec::engine::join::LayerGapOverride {
+                            layer: resolve_ref(None, li, lid),
+                            from: resolve_ref(self.aec_junction_editor_gap_from_wall, fi, fid),
+                            to: resolve_ref(self.aec_junction_editor_gap_to_wall, ti, tid),
+                        },
+                    );
+                    self.aec_junction_editor_gap_layer = None;
+                    self.aec_junction_editor_gap_from = None;
+                    self.aec_junction_editor_gap_to = None;
+                    self.sync_junction_editor_layer_highlight();
+                }
+                Task::none()
+            }
+            Message::AecJunctionEditorRemoveGap(idx) => {
+                if idx < self.aec_junction_editor_gaps.len() {
+                    self.aec_junction_editor_gaps.remove(idx);
+                }
+                Task::none()
+            }
+
             Message::AecJunctionEditorSave => {
                 if let Some((axis_handle, end_index)) = self.aec_junction_editor_target {
                     let i = self.active_tab;
@@ -8444,6 +9044,7 @@ impl OpenCADStudio {
                     let override_data = crate::modules::aec::engine::join::JunctionOverride {
                         default_style: self.aec_junction_editor_default_style.clone(),
                         layer_pairs: self.aec_junction_editor_pairs.clone(),
+                        layer_gaps: self.aec_junction_editor_gaps.clone(),
                     };
                     let style_library =
                         crate::modules::aec::engine::project::resolve_style_library(
@@ -8451,9 +9052,7 @@ impl OpenCADStudio {
                         );
                     let (display_rules, style_substitutions) =
                         self.resolve_active_display_config_wall_rules(i, Some(axis_handle));
-                    let ov = if override_data.default_style.is_none()
-                        && override_data.layer_pairs.is_empty()
-                    {
+                    let ov = if override_data.is_empty() {
                         None
                     } else {
                         Some(override_data)
@@ -8473,6 +9072,7 @@ impl OpenCADStudio {
                 self.aec_junction_editor_target = None;
                 self.active_modal = None;
                 self.reset_modal_geometry();
+                self.sync_junction_editor_layer_highlight();
                 Task::none()
             }
 
@@ -8501,6 +9101,7 @@ impl OpenCADStudio {
                 self.aec_junction_editor_target = None;
                 self.active_modal = None;
                 self.reset_modal_geometry();
+                self.sync_junction_editor_layer_highlight();
                 Task::none()
             }
 

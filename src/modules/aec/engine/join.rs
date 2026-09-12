@@ -40,9 +40,24 @@ pub struct LayerRef {
     pub layer_id: Option<uuid::Uuid>,
 }
 
+impl LayerRef {
+    /// True when both refs name the same source layer (stable `layer_id` when
+    /// both have one, otherwise material/role/index).
+    pub fn same_source_layer(&self, other: &LayerRef) -> bool {
+        match (self.layer_id, other.layer_id) {
+            (Some(a), Some(b)) => a == b,
+            _ => {
+                self.material_id == other.material_id
+                    && self.role_tag == other.role_tag
+                    && self.index == other.index
+            }
+        }
+    }
+}
+
 /// Manual override for how two layers (or a layer and the outer face) are
 /// joined at a specific junction end.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub enum JoinOverrideStyle {
     Miter,
     Butt,
@@ -68,6 +83,19 @@ pub struct LayerPairOverride {
     pub style: JoinOverrideStyle,
 }
 
+/// Interrupt `layer` along its length between two adjacent layers (`from` /
+/// `to`), typically stem-wall layers at a T-junction so a through finish or
+/// insulation does not overlap the stem stack.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct LayerGapOverride {
+    /// Layer that is cut (usually on the through wall).
+    pub layer: LayerRef,
+    /// First bounding adjacent layer (start of the interruption).
+    pub from: LayerRef,
+    /// Second bounding adjacent layer (end of the interruption).
+    pub to: LayerRef,
+}
+
 /// Manual join-constraint overrides for one end of a wall axis (a
 /// "junction"). Persisted as XDATA on the wall axis entity, keyed by which
 /// end of the axis the junction sits at (see `write_junction_override` /
@@ -78,6 +106,43 @@ pub struct JunctionOverride {
     pub default_style: Option<JoinOverrideStyle>,
     #[serde(default)]
     pub layer_pairs: Vec<LayerPairOverride>,
+    /// Manual layer interruptions at this junction (empty = none).
+    #[serde(default)]
+    pub layer_gaps: Vec<LayerGapOverride>,
+}
+
+impl JunctionOverride {
+    pub fn is_empty(&self) -> bool {
+        self.default_style.is_none()
+            && self.layer_pairs.is_empty()
+            && self.layer_gaps.is_empty()
+    }
+}
+
+/// Insert `pair`, or replace the existing pair whose `layer_a` is the same
+/// source layer. A source layer may only connect to one target.
+pub fn upsert_layer_pair(pairs: &mut Vec<LayerPairOverride>, pair: LayerPairOverride) {
+    if let Some(existing) = pairs
+        .iter_mut()
+        .find(|p| p.layer_a.same_source_layer(&pair.layer_a))
+    {
+        *existing = pair;
+    } else {
+        pairs.push(pair);
+    }
+}
+
+/// Insert `gap`, or replace the existing gap whose interrupted `layer` is
+/// the same source layer.
+pub fn upsert_layer_gap(gaps: &mut Vec<LayerGapOverride>, gap: LayerGapOverride) {
+    if let Some(existing) = gaps
+        .iter_mut()
+        .find(|g| g.layer.same_source_layer(&gap.layer))
+    {
+        *existing = gap;
+    } else {
+        gaps.push(gap);
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1080,9 +1145,100 @@ mod tests {
     }
 
     #[test]
+    fn upsert_layer_pair_replaces_same_source_layer() {
+        let src = LayerRef {
+            material_id: "plaster".to_string(),
+            role_tag: Some("Innenputz".to_string()),
+            index: 0,
+            layer_id: None,
+        };
+        let mut pairs = vec![LayerPairOverride {
+            layer_a: src.clone(),
+            layer_b: None,
+            style: JoinOverrideStyle::Miter,
+        }];
+        upsert_layer_pair(
+            &mut pairs,
+            LayerPairOverride {
+                layer_a: src.clone(),
+                layer_b: Some(LayerRef {
+                    material_id: "concrete".to_string(),
+                    role_tag: None,
+                    index: 1,
+                    layer_id: None,
+                }),
+                style: JoinOverrideStyle::Butt,
+            },
+        );
+        assert_eq!(pairs.len(), 1);
+        assert_eq!(pairs[0].style, JoinOverrideStyle::Butt);
+        assert!(pairs[0].layer_b.is_some());
+        upsert_layer_pair(
+            &mut pairs,
+            LayerPairOverride {
+                layer_a: LayerRef {
+                    material_id: "insulation".to_string(),
+                    role_tag: None,
+                    index: 1,
+                    layer_id: None,
+                },
+                layer_b: None,
+                style: JoinOverrideStyle::NearFace,
+            },
+        );
+        assert_eq!(pairs.len(), 2);
+    }
+
+    #[test]
+    fn upsert_layer_gap_replaces_same_source_layer() {
+        let layer = LayerRef {
+            material_id: "plaster".to_string(),
+            role_tag: None,
+            index: 0,
+            layer_id: None,
+        };
+        let mut gaps = vec![LayerGapOverride {
+            layer: layer.clone(),
+            from: LayerRef {
+                material_id: "core".into(),
+                role_tag: None,
+                index: 0,
+                layer_id: None,
+            },
+            to: LayerRef {
+                material_id: "ins".into(),
+                role_tag: None,
+                index: 1,
+                layer_id: None,
+            },
+        }];
+        upsert_layer_gap(
+            &mut gaps,
+            LayerGapOverride {
+                layer: layer.clone(),
+                from: LayerRef {
+                    material_id: "core".into(),
+                    role_tag: None,
+                    index: 0,
+                    layer_id: None,
+                },
+                to: LayerRef {
+                    material_id: "core".into(),
+                    role_tag: None,
+                    index: 0,
+                    layer_id: None,
+                },
+            },
+        );
+        assert_eq!(gaps.len(), 1);
+        assert_eq!(gaps[0].to.material_id, "core");
+    }
+
+    #[test]
     fn junction_override_serde_roundtrip() {
         let ov = JunctionOverride {
             default_style: Some(JoinOverrideStyle::Miter),
+            layer_gaps: Vec::new(),
             layer_pairs: vec![
                 LayerPairOverride {
                     layer_a: LayerRef {

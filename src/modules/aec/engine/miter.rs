@@ -13,7 +13,10 @@
 //! and miters each endpoint wall against its angular neighbors.
 
 use super::contour::{layer_contours, layer_contours_with_bulges};
-use super::join::{JoinKind, JoinOverrideStyle, Junction, JunctionOverride, JunctionRole, LayerRef};
+use super::join::{
+    JoinKind, JoinOverrideStyle, Junction, JunctionOverride, JunctionRole, LayerGapOverride,
+    LayerRef,
+};
 
 /// Minimum angle (5°) below which diagonal miters are rejected as degenerate.
 /// At 5°, the miter intersection distance is ~23x the layer half-offset (1/sin(2.5°)).
@@ -187,20 +190,66 @@ pub fn mitered_layer_footprints_with_bulges(
 }
 
 /// Resolve which [`JoinOverrideStyle`] applies to a layer identified by
-/// `layer_ref`, given `override_data`. A [`super::LayerPairOverride`]
-/// whose `layer_a` matches `layer_ref` (material_id + role_tag) takes
-/// precedence over `default_style`; `None` means no override applies and the
-/// caller should keep the automatic result for that layer.
-fn resolve_layer_override_style<'a>(
+/// `layer_ref`, given `override_data`. A [`LayerPairOverride`]
+/// whose `layer_a` matches `layer_ref` takes precedence over `default_style`.
+/// Returns the style and the optional explicit target layer (`layer_b`).
+fn resolve_layer_override<'a>(
     layer_ref: &LayerRef,
     override_data: &'a JunctionOverride,
-) -> Option<&'a JoinOverrideStyle> {
+) -> Option<(&'a JoinOverrideStyle, Option<&'a LayerRef>)> {
     for pair in &override_data.layer_pairs {
         if layer_ref_matches_one(&pair.layer_a, layer_ref) {
-            return Some(&pair.style);
+            return Some((&pair.style, pair.layer_b.as_ref()));
         }
     }
-    override_data.default_style.as_ref()
+    override_data.default_style.as_ref().map(|s| (s, None))
+}
+
+/// Index of the through-wall layer an override should join to.
+/// Explicit [`LayerPairOverride::layer_b`] wins over material pairing.
+fn override_target_layer_index(
+    layer_b: Option<&LayerRef>,
+    layers_b: &[MiterLayer],
+    layer_refs_b: Option<&[LayerRef]>,
+    pairing_fallback: Option<usize>,
+) -> Option<usize> {
+    let Some(target) = layer_b else {
+        return pairing_fallback;
+    };
+    if let Some(refs) = layer_refs_b {
+        if let Some(i) = refs.iter().position(|r| layer_ref_matches_one(r, target)) {
+            return Some(i);
+        }
+    }
+    if let Some(id) = target.layer_id {
+        if !id.is_nil() {
+            if let Some(i) = layers_b.iter().position(|l| l.layer_id == id) {
+                return Some(i);
+            }
+        }
+    }
+    if target.index < layers_b.len() {
+        let l = &layers_b[target.index];
+        if target.material_id.is_empty()
+            || l.material.eq_ignore_ascii_case(&target.material_id)
+        {
+            return Some(target.index);
+        }
+    }
+    let matches: Vec<usize> = layers_b
+        .iter()
+        .enumerate()
+        .filter(|(_, l)| {
+            !target.material_id.is_empty()
+                && l.material.eq_ignore_ascii_case(&target.material_id)
+        })
+        .map(|(i, _)| i)
+        .collect();
+    if matches.len() == 1 {
+        Some(matches[0])
+    } else {
+        pairing_fallback
+    }
 }
 
 /// Compare two [`LayerRef`]s the same way `commands::layer_ref_matches`
@@ -291,16 +340,17 @@ pub fn mitered_layer_footprints_with_override_and_bulges(
         let Some(layer_ref) = layer_refs_a.get(i) else {
             continue;
         };
-        let Some(style) = resolve_layer_override_style(layer_ref, ov) else {
+        let Some((style, layer_b)) = resolve_layer_override(layer_ref, ov) else {
             continue;
         };
         if i >= contours_a.len() {
             continue;
         }
         let (ref a_b1, ref a_b2) = contours_a[i];
-        let b_idx = pairing.get(i).copied().flatten().or_else(|| {
+        let pairing_fb = pairing.get(i).copied().flatten().or_else(|| {
             closest_layer_index(&layers_a[i], layers_b)
         });
+        let b_idx = override_target_layer_index(layer_b, layers_b, None, pairing_fb);
         let b_contour = b_idx.and_then(|j| contours_b.get(j));
 
         let new_fp = match style {
@@ -1087,14 +1137,21 @@ pub fn mitered_junction_layer_footprints_with_overrides(
             let Some(layer_ref) = refs.get(li) else {
                 continue;
             };
-            let Some(style) = resolve_layer_override_style(layer_ref, ov) else {
+            let Some((style, layer_b)) = resolve_layer_override(layer_ref, ov) else {
                 continue;
             };
             if li >= contours[wi].len() {
                 continue;
             }
             let (ref a_b1, ref a_b2) = contours[wi][li];
-            let b_idx = pairing.get(li).copied().flatten();
+            let pairing_fb = pairing.get(li).copied().flatten();
+            let refs_b = layer_refs.get(other_w).map(|v| v.as_slice());
+            let b_idx = override_target_layer_index(
+                layer_b,
+                &walls[other_w].layers,
+                refs_b,
+                pairing_fb,
+            );
             let b_contour = b_idx.and_then(|j| other_contours.get(j));
 
             let new_fp = match style {
@@ -1703,6 +1760,30 @@ pub fn through_wall_cutout_footprints_with_bulges(
     bulges_through: &[f64],
     bulges_stem: &[f64],
 ) -> Vec<Option<Vec<(f64, f64)>>> {
+    through_wall_cutout_footprints_with_gaps(
+        axis_through,
+        layers_through,
+        axis_stem,
+        layers_stem,
+        stem_end,
+        bulges_through,
+        bulges_stem,
+        &[],
+    )
+}
+
+/// Like [`through_wall_cutout_footprints_with_bulges`], then applies manual
+/// [`LayerGapOverride`]s (user-defined interruptions between two stem layers).
+pub fn through_wall_cutout_footprints_with_gaps(
+    axis_through: &[(f64, f64)],
+    layers_through: &[MiterLayer],
+    axis_stem: &[(f64, f64)],
+    layers_stem: &[MiterLayer],
+    stem_end: usize,
+    bulges_through: &[f64],
+    bulges_stem: &[f64],
+    gaps: &[LayerGapOverride],
+) -> Vec<Option<Vec<(f64, f64)>>> {
     if axis_through.len() < 2 || axis_stem.len() < 2 || layers_through.is_empty() {
         return vec![None; layers_through.len()];
     }
@@ -1713,50 +1794,121 @@ pub fn through_wall_cutout_footprints_with_bulges(
     let geom_s: Vec<(f64, f64)> = layers_stem.iter().map(MiterLayer::as_geom).collect();
     let contours_t = contours_xy(axis_through, bulges_through, &geom_t);
     let contours_s = contours_xy(axis_stem, bulges_stem, &geom_s);
-    let Some((core_s, core_t)) = pair_structural_cores(layers_stem, layers_through) else {
-        return vec![None; layers_through.len()];
-    };
-    if core_t >= contours_t.len() {
-        return vec![None; layers_through.len()];
-    }
-    let (ref core_t1, ref core_t2) = contours_t[core_t];
-    let toward = through_offset_toward_stem(axis_stem, stem_end, axis_through);
-    let punchers = punchers_outside_in(layers_stem, layers_through, Some((core_s, core_t)), toward);
     let mut out = vec![None; layers_through.len()];
-    for ti in 0..layers_through.len() {
-        if ti == core_t || ti >= contours_t.len() {
+    if let Some((core_s, core_t)) = pair_structural_cores(layers_stem, layers_through) {
+        if core_t < contours_t.len() {
+            let (ref core_t1, ref core_t2) = contours_t[core_t];
+            let toward = through_offset_toward_stem(axis_stem, stem_end, axis_through);
+            let punchers =
+                punchers_outside_in(layers_stem, layers_through, Some((core_s, core_t)), toward);
+            for ti in 0..layers_through.len() {
+                if ti == core_t || ti >= contours_t.len() {
+                    continue;
+                }
+                if is_structural_function(&layers_through[ti].function) {
+                    continue;
+                }
+                let (ref t1, ref t2) = contours_t[ti];
+                if !through_layer_on_approach_side(t1, t2, core_t1, core_t2, axis_stem, stem_end)
+                {
+                    continue;
+                }
+                let overlapping: Vec<usize> = punchers
+                    .get(ti)
+                    .map(|v| {
+                        v.iter()
+                            .copied()
+                            .filter(|&si| si < contours_s.len())
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                if overlapping.is_empty() {
+                    continue;
+                }
+                if let Some(fp) = notch_through_layer_from_stem_layers(
+                    t1,
+                    t2,
+                    &layers_through[ti],
+                    &overlapping,
+                    layers_stem,
+                    &contours_s,
+                    stem_end,
+                    axis_stem,
+                ) {
+                    out[ti] = Some(fp);
+                }
+            }
+        }
+    }
+    apply_manual_layer_gaps(
+        &mut out,
+        gaps,
+        layers_through,
+        layers_stem,
+        &contours_t,
+        &contours_s,
+        stem_end,
+        axis_stem,
+    );
+    out
+}
+
+fn miter_layer_index(layers: &[MiterLayer], r: &LayerRef) -> Option<usize> {
+    if let Some(id) = r.layer_id {
+        if !id.is_nil() {
+            if let Some(i) = layers.iter().position(|l| l.layer_id == id) {
+                return Some(i);
+            }
+        }
+    }
+    layers.iter().enumerate().find_map(|(i, l)| {
+        (l.material.eq_ignore_ascii_case(&r.material_id) && i == r.index).then_some(i)
+    })
+}
+
+fn apply_manual_layer_gaps(
+    out: &mut [Option<Vec<(f64, f64)>>],
+    gaps: &[LayerGapOverride],
+    layers_through: &[MiterLayer],
+    layers_stem: &[MiterLayer],
+    contours_t: &[(Vec<(f64, f64)>, Vec<(f64, f64)>)],
+    contours_s: &[(Vec<(f64, f64)>, Vec<(f64, f64)>)],
+    stem_end: usize,
+    axis_stem: &[(f64, f64)],
+) {
+    for gap in gaps {
+        let Some(ti) = miter_layer_index(layers_through, &gap.layer) else {
+            continue;
+        };
+        let Some(si0) = miter_layer_index(layers_stem, &gap.from) else {
+            continue;
+        };
+        let Some(si1) = miter_layer_index(layers_stem, &gap.to) else {
+            continue;
+        };
+        if ti >= contours_t.len() {
             continue;
         }
-        if is_structural_function(&layers_through[ti].function) {
-            continue;
-        }
-        let (ref t1, ref t2) = contours_t[ti];
-        if !through_layer_on_approach_side(
-            t1, t2, core_t1, core_t2, axis_stem, stem_end,
-        ) {
-            continue;
-        }
-        let overlapping: Vec<usize> = punchers
-            .get(ti)
-            .map(|v| v.iter().copied().filter(|&si| si < contours_s.len()).collect())
-            .unwrap_or_default();
+        let lo = si0.min(si1);
+        let hi = si0.max(si1);
+        let overlapping: Vec<usize> = (lo..=hi).filter(|&si| si < contours_s.len()).collect();
         if overlapping.is_empty() {
             continue;
         }
+        let (ref t1, ref t2) = contours_t[ti];
         if let Some(fp) = notch_through_layer_from_stem_layers(
             t1,
             t2,
             &layers_through[ti],
             &overlapping,
             layers_stem,
-            &contours_s,
+            contours_s,
             stem_end,
             axis_stem,
         ) {
             out[ti] = Some(fp);
         }
     }
-    out
 }
 
 /// Leftmost and rightmost stem boundary polylines (full stem envelope).
@@ -3530,6 +3682,7 @@ mod tests {
         let ov = JunctionOverride {
             default_style: Some(JoinOverrideStyle::OuterFace),
             layer_pairs: Vec::new(),
+            layer_gaps: Vec::new(),
         };
         let overridden = mitered_layer_footprints_with_override(
             &stem, &stem_layers, &refs, 0, &through, &through_layers, None, JoinKind::T,
@@ -3572,6 +3725,7 @@ mod tests {
                 layer_b: None,
                 style: JoinOverrideStyle::NoExtend,
             }],
+            layer_gaps: Vec::new(),
         };
         let overridden = mitered_layer_footprints_with_override(
             &axis_a, &layers, &refs, 1, &axis_b, &layers, Some(0), JoinKind::L, Some(&ov),
@@ -3620,6 +3774,7 @@ mod tests {
                 layer_b: None,
                 style: JoinOverrideStyle::NoExtend,
             }],
+            layer_gaps: Vec::new(),
         };
         let overridden = mitered_layer_footprints_with_override(
             &axis_a, &layers, &refs, 1, &axis_b, &layers, Some(0), JoinKind::L, Some(&ov),
@@ -3656,6 +3811,7 @@ mod tests {
                 layer_b: None,
                 style: JoinOverrideStyle::NoExtend,
             }],
+            layer_gaps: Vec::new(),
         };
         let overridden = mitered_layer_footprints_with_override(
             &axis_a, &layers, &refs, 1, &axis_b, &layers, Some(0), JoinKind::L, Some(&ov),
@@ -3689,6 +3845,7 @@ mod tests {
         let ov = JunctionOverride {
             default_style: Some(JoinOverrideStyle::NearFace),
             layer_pairs: Vec::new(),
+            layer_gaps: Vec::new(),
         };
         let overridden = mitered_layer_footprints_with_override(
             &stem, &stem_layers, &refs, 0, &through, &through_layers, None, JoinKind::T,
@@ -3710,6 +3867,7 @@ mod tests {
         let ov = JunctionOverride {
             default_style: Some(JoinOverrideStyle::FarFace),
             layer_pairs: Vec::new(),
+            layer_gaps: Vec::new(),
         };
         let overridden = mitered_layer_footprints_with_override(
             &stem, &stem_layers, &refs, 0, &through, &through_layers, None, JoinKind::T,
@@ -3720,6 +3878,45 @@ mod tests {
             fp.iter().any(|p| close(*p, (4.9, -0.2), 1e-5) || close(*p, (5.1, -0.2), 1e-5)
                 || p.1 < -0.05),
             "far face of matched core is y=-0.2, got {fp:?}"
+        );
+    }
+
+    #[test]
+    fn near_face_override_uses_explicit_target_layer_not_same_material() {
+        // Stem "core" would auto-pair to through "core" (y in [-0.2, 0]).
+        // An explicit layer_b pointing at "other" (y in [0, 0.2]) must NearFace
+        // that layer (approach y=+0.2), not the same-material core (y=0).
+        let stem = vec![(5.0, 0.0), (5.0, 8.0)];
+        let through = vec![(0.0, 0.0), (10.0, 0.0)];
+        let stem_layers = vec![MiterLayer::with_id(0.2, -0.1, "core", "Structural", uuid::Uuid::new_v4())];
+        let through_layers = vec![
+            MiterLayer::with_id(0.2, -0.2, "core", "Structural", uuid::Uuid::new_v4()),
+            MiterLayer::with_id(0.2, 0.0, "other", "Finish", uuid::Uuid::new_v4()),
+        ];
+        let refs = vec![lref("core")];
+        let ov = JunctionOverride {
+            default_style: None,
+            layer_pairs: vec![LayerPairOverride {
+                layer_a: lref("core"),
+                layer_b: Some(lref_at("other", 1)),
+                style: JoinOverrideStyle::NearFace,
+            }],
+            layer_gaps: Vec::new(),
+        };
+        let overridden = mitered_layer_footprints_with_override(
+            &stem, &stem_layers, &refs, 0, &through, &through_layers, None, JoinKind::T,
+            Some(&ov),
+        );
+        let fp = overridden[0]
+            .as_ref()
+            .expect("near-face to explicit other layer");
+        assert!(
+            fp.iter().any(|p| close(*p, (4.9, 0.2), 1e-5) || close(*p, (5.1, 0.2), 1e-5)),
+            "NearFace must use chosen through layer (y=+0.2), not same-material core (y=0), got {fp:?}"
+        );
+        assert!(
+            !fp.iter().any(|p| close(*p, (4.9, 0.0), 1e-5) || close(*p, (5.1, 0.0), 1e-5)),
+            "must not land on same-material core near face, got {fp:?}"
         );
     }
 
@@ -3803,6 +4000,53 @@ mod tests {
         assert!(
             rings.iter().all(|r| !in_ring(r, overlap)),
             "approach putz must be open at the stem core, got {rings:?}"
+        );
+    }
+
+    #[test]
+    fn manual_layer_gap_notches_through_core() {
+        let through = vec![(0.0, 0.0), (10.0, 0.0)];
+        let stem = vec![(5.0, 0.0), (5.0, 8.0)];
+        let through_layers = vec![
+            MiterLayer::with_id(0.2, -0.1, "core", "Structural", uuid::Uuid::new_v4()),
+            MiterLayer::with_id(0.2, 0.1, "ins", "Insulation", uuid::Uuid::new_v4()),
+        ];
+        let stem_layers = through_layers.clone();
+        let auto = through_wall_cutout_footprints(&through, &through_layers, &stem, &stem_layers, 0);
+        assert!(auto[0].is_none(), "core stays rectangular without a gap");
+        let gap = LayerGapOverride {
+            layer: LayerRef {
+                material_id: "core".into(),
+                role_tag: None,
+                index: 0,
+                layer_id: Some(through_layers[0].layer_id),
+            },
+            from: LayerRef {
+                material_id: "core".into(),
+                role_tag: None,
+                index: 0,
+                layer_id: Some(stem_layers[0].layer_id),
+            },
+            to: LayerRef {
+                material_id: "ins".into(),
+                role_tag: None,
+                index: 1,
+                layer_id: Some(stem_layers[1].layer_id),
+            },
+        };
+        let cut = through_wall_cutout_footprints_with_gaps(
+            &through,
+            &through_layers,
+            &stem,
+            &stem_layers,
+            0,
+            &[],
+            &[],
+            &[gap],
+        );
+        assert!(
+            cut[0].is_some(),
+            "manual gap must interrupt the through core, got {cut:?}"
         );
     }
 

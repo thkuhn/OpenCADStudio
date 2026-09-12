@@ -1106,6 +1106,8 @@ pub(super) fn viewport_context_menu_overlay(
     justification_open: bool,
     junction_menu: Option<(acadrust::Handle, usize)>,
     junction_submenu_open: bool,
+    junction_menu_only: bool,
+    junction_layer_pair_style: bool,
 ) -> Element<'static, Message> {
     let item = |label: String, msg: Message| -> Element<'static, Message> {
         button(text(label).size(12))
@@ -1146,6 +1148,80 @@ pub(super) fn viewport_context_menu_overlay(
     };
 
     let mut items: Vec<Element<'static, Message>> = Vec::new();
+
+    if junction_layer_pair_style {
+        use crate::modules::aec::engine::join::JoinOverrideStyle;
+        items.push(item(
+            t!("Miter").into_owned(),
+            Message::AecJunctionLayerPairSetStyle(JoinOverrideStyle::Miter),
+        ));
+        items.push(item(
+            t!("Butt").into_owned(),
+            Message::AecJunctionLayerPairSetStyle(JoinOverrideStyle::Butt),
+        ));
+        items.push(item(
+            t!("Nähere Kante").into_owned(),
+            Message::AecJunctionLayerPairSetStyle(JoinOverrideStyle::NearFace),
+        ));
+        items.push(item(
+            t!("Entferntere Kante").into_owned(),
+            Message::AecJunctionLayerPairSetStyle(JoinOverrideStyle::FarFace),
+        ));
+        items.push(item(
+            t!("Abbrechen").into_owned(),
+            Message::AecJunctionLayerPairPickCancel,
+        ));
+        let menu_col = column(items).spacing(0).width(Length::Fixed(200.0));
+        let menu = container(menu_col)
+            .style(container::bordered_box)
+            .padding([4, 0])
+            .width(Length::Fixed(200.0));
+        return position_canvas_overlay_clamped(pos, bottom_inset, menu.into());
+    }
+
+    if junction_menu_only {
+        use crate::modules::aec::engine::join::JoinOverrideStyle;
+        items.push(item(
+            t!("Miter").into_owned(),
+            Message::WallJunctionOverrideSetStyle(JoinOverrideStyle::Miter),
+        ));
+        items.push(item(
+            t!("Butt").into_owned(),
+            Message::WallJunctionOverrideSetStyle(JoinOverrideStyle::Butt),
+        ));
+        items.push(item(
+            t!("Nähere Kante").into_owned(),
+            Message::WallJunctionOverrideSetStyle(JoinOverrideStyle::NearFace),
+        ));
+        items.push(item(
+            t!("Entferntere Kante").into_owned(),
+            Message::WallJunctionOverrideSetStyle(JoinOverrideStyle::FarFace),
+        ));
+        items.push(item(
+            t!("Automatisch (zur\u{00fc}cksetzen)").into_owned(),
+            Message::WallJunctionOverrideReset,
+        ));
+        if let Some((axis_handle, end_index)) = junction_menu {
+            items.push(item(
+                t!("Schichtverbindung in Zeichnung...").into_owned(),
+                Message::AecJunctionLayerPairPickStart(axis_handle, end_index),
+            ));
+            items.push(item(
+                t!("Schichtunterbrechung in Zeichnung...").into_owned(),
+                Message::AecJunctionLayerGapPickStart(axis_handle, end_index),
+            ));
+            items.push(item(
+                t!("Detailansicht...").into_owned(),
+                Message::AecJunctionEditorOpen(axis_handle, end_index),
+            ));
+        }
+        let menu_col = column(items).spacing(0).width(Length::Fixed(220.0));
+        let menu = container(menu_col)
+            .style(container::bordered_box)
+            .padding([4, 0])
+            .width(Length::Fixed(220.0));
+        return position_canvas_overlay_clamped(pos, bottom_inset, menu.into());
+    }
 
     if has_cmd {
         items.push(item(t!("Cancel").into_owned(), Message::CommandEscape));
@@ -1365,6 +1441,14 @@ pub(super) fn viewport_context_menu_overlay(
                 Message::WallJunctionOverrideReset,
             ));
             if let Some((axis_handle, end_index)) = junction_menu {
+                items.push(subitem(
+                    t!("Schichtverbindung in Zeichnung...").into_owned(),
+                    Message::AecJunctionLayerPairPickStart(axis_handle, end_index),
+                ));
+                items.push(subitem(
+                    t!("Schichtunterbrechung in Zeichnung...").into_owned(),
+                    Message::AecJunctionLayerGapPickStart(axis_handle, end_index),
+                ));
                 items.push(subitem(
                     t!("Detailansicht...").into_owned(),
                     Message::AecJunctionEditorOpen(axis_handle, end_index),

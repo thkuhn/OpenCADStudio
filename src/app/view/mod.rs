@@ -586,13 +586,18 @@ bg={bg_ms:.1}ms n={view_count}"
                                 if vertices.len() < 2 {
                                     return false;
                                 }
-                                let end_index = if grip_id == 0 {
-                                    Some(0usize)
-                                } else if grip_id == vertices.len() - 1 {
-                                    Some(1usize)
-                                } else {
-                                    None
-                                };
+                                let end_index = crate::modules::aec::commands::wall_junction_end_from_dropdown_grip(
+                                    grip_id,
+                                )
+                                .or_else(|| {
+                                    if grip_id == 0 {
+                                        Some(0usize)
+                                    } else if grip_id == vertices.len() - 1 {
+                                        Some(1usize)
+                                    } else {
+                                        None
+                                    }
+                                });
                                 end_index.is_some_and(|end_index| {
                                     crate::modules::aec::commands::read_junction_override(
                                         &tab.scene, axis, end_index,
@@ -1625,7 +1630,7 @@ bg={bg_ms:.1}ms n={view_count}"
         // the cursor position (canvas-relative) anchors the menu under
         // the cursor instead of drifting into window-relative space.
         if !tab.is_start {
-            let (ctx_pos, draworder_open, justification_open, junction_menu, junction_submenu_open) = {
+            let (ctx_pos, draworder_open, justification_open, junction_menu, junction_submenu_open, junction_menu_only) = {
                 let sel = tab.scene.selection.borrow();
                 (
                     sel.context_menu,
@@ -1633,8 +1638,13 @@ bg={bg_ms:.1}ms n={view_count}"
                     sel.wall_justification_submenu,
                     sel.junction_menu,
                     sel.junction_menu_submenu,
+                    sel.junction_menu_only,
                 )
             };
+            let junction_layer_pair_style = self
+                .aec_layer_pair_draw
+                .as_ref()
+                .is_some_and(|p| p.awaiting_style);
             if let Some(p) = ctx_pos {
                 let has_cmd = tab.active_cmd.is_some();
                 let has_selection = !tab.scene.selected.is_empty();
@@ -1669,6 +1679,8 @@ bg={bg_ms:.1}ms n={view_count}"
                     justification_open,
                     junction_menu,
                     junction_submenu_open,
+                    junction_menu_only,
+                    junction_layer_pair_style,
                 ));
             }
         }

@@ -14,7 +14,9 @@ use iced::{Element, Fill};
 
 use crate::app::Message;
 use crate::modules::aec::commands::JunctionParticipant;
-use crate::modules::aec::engine::join::{JoinOverrideStyle, LayerPairOverride};
+use crate::modules::aec::engine::join::{
+    JoinOverrideStyle, LayerGapOverride, LayerPairOverride, LayerRef,
+};
 use crate::modules::aec::engine::library::StyleLibrary;
 use crate::t;
 use crate::tr;
@@ -41,6 +43,29 @@ pub struct JunctionEditorState<'a> {
     pub pair_wall_b: Option<acadrust::Handle>,
     pub pair_layer_b: Option<(usize, &'a str)>,
     pub pair_style: JoinOverrideStyle,
+    pub gaps: &'a [LayerGapOverride],
+    pub gap_layer: Option<(usize, &'a str)>,
+    pub gap_from_wall: Option<acadrust::Handle>,
+    pub gap_from: Option<(usize, &'a str)>,
+    pub gap_to_wall: Option<acadrust::Handle>,
+    pub gap_to: Option<(usize, &'a str)>,
+}
+
+fn layer_matches(a: &LayerRef, b: &LayerRef) -> bool {
+    match (a.layer_id, b.layer_id) {
+        (Some(x), Some(y)) if !x.is_nil() && !y.is_nil() => x == y,
+        _ => a.material_id == b.material_id && a.role_tag == b.role_tag && a.index == b.index,
+    }
+}
+
+/// 1-based stack number of `r` on `owner_layers` (the wall that owns the
+/// reference). Must not scan every participant: the first same-material
+/// layer on another wall would steal the label.
+fn layer_number_on(owner_layers: &[LayerRef], r: &LayerRef) -> Option<usize> {
+    owner_layers
+        .iter()
+        .position(|l| layer_matches(l, r))
+        .map(|i| i + 1)
 }
 
 fn material_name(library: &StyleLibrary, material_id: &str) -> String {
@@ -99,6 +124,12 @@ pub fn view_window<'a>(state: JunctionEditorState<'a>) -> Element<'a, Message> {
         pair_wall_b,
         pair_layer_b,
         pair_style,
+        gaps,
+        gap_layer,
+        gap_from_wall,
+        gap_from,
+        gap_to_wall,
+        gap_to,
     } = state;
 
     // ── Master list: participating walls + their layers ──────────────────
@@ -151,13 +182,13 @@ pub fn view_window<'a>(state: JunctionEditorState<'a>) -> Element<'a, Message> {
     if pairs.is_empty() {
         pairs_col = pairs_col.push(text(t!("Keine Layer-Paar-Overrides.")).size(10));
     } else {
+        let current_layers: &[LayerRef] = participants
+            .iter()
+            .find(|p| p.axis_handle == axis_handle && p.end_index == end_index)
+            .map(|p| p.layers.as_slice())
+            .unwrap_or(&[]);
         for (idx, pair) in pairs.iter().enumerate() {
-            let a_layer_num = participants
-                .iter()
-                .flat_map(|p| p.layers.iter().enumerate())
-                .find(|(_, l)| l.material_id == pair.layer_a.material_id)
-                .map(|(i, _)| i + 1);
-            let a_name = match a_layer_num {
+            let a_name = match layer_number_on(current_layers, &pair.layer_a) {
                 Some(n) => format!("#{} {}", n, material_name(library, &pair.layer_a.material_id)),
                 None => material_name(library, &pair.layer_a.material_id).to_string(),
             };
@@ -165,46 +196,59 @@ pub fn view_window<'a>(state: JunctionEditorState<'a>) -> Element<'a, Message> {
                 .layer_b
                 .as_ref()
                 .map(|b| {
-                    let b_layer_num = participants
-                        .iter()
-                        .flat_map(|p| p.layers.iter().enumerate())
-                        .find(|(_, l)| l.material_id == b.material_id)
-                        .map(|(i, _)| i + 1);
-                    match b_layer_num {
+                    let b_layers: &[LayerRef] = pair_wall_b
+                        .and_then(|h| participants.iter().find(|p| p.axis_handle == h))
+                        .map(|p| p.layers.as_slice())
+                        .or_else(|| {
+                            participants.iter().find(|p| {
+                                p.layers.iter().any(|l| layer_matches(l, b))
+                            }).map(|p| p.layers.as_slice())
+                        })
+                        .unwrap_or(&[]);
+                    match layer_number_on(b_layers, b) {
                         Some(n) => format!("#{} {}", n, material_name(library, &b.material_id)),
                         None => material_name(library, &b.material_id).to_string(),
                     }
                 })
                 .unwrap_or_else(|| t!("Außenkante").into_owned());
             pairs_col = pairs_col.push(
-                row![
-                    text(format!("{} ↔ {}: {}", a_name, b_label, style_label(&pair.style))).size(10),
-                    iced::widget::Space::new(),
-                    button(text(t!("Zurücksetzen")).size(9))
-                        .style(button::secondary)
-                        .padding([2, 6])
-                        .on_press(Message::AecJunctionEditorRemovePair(idx)),
+                column![
+                    row![
+                        text(format!("{} ↔ {}", a_name, b_label)).size(10),
+                        iced::widget::Space::new(),
+                        button(text(t!("Entfernen")).size(9))
+                            .style(button::secondary)
+                            .padding([2, 6])
+                            .on_press(Message::AecJunctionEditorRemovePair(idx)),
+                    ]
+                    .spacing(6),
+                    style_buttons(Some(&pair.style), move |s| {
+                        Message::AecJunctionEditorSetPairStyle(idx, s)
+                    }),
                 ]
-                .spacing(6),
+                .spacing(4),
             );
         }
     }
 
     // ── "Add pair" form ─────────────────────────────────────────────────
-    let current_wall_layers: Vec<&str> = participants
+    let current_wall_layers: &[LayerRef] = participants
         .iter()
         .find(|p| p.axis_handle == axis_handle && p.end_index == end_index)
-        .map(|p| p.layers.iter().map(|l| l.material_id.as_str()).collect())
-        .unwrap_or_default();
+        .map(|p| p.layers.as_slice())
+        .unwrap_or(&[]);
 
     let mut layer_a_row = row![].spacing(4);
-    for (idx, mat_id) in current_wall_layers.iter().enumerate() {
-        let selected = pair_layer_a == Some((idx, *mat_id));
+    for (idx, layer) in current_wall_layers.iter().enumerate() {
+        let selected = pair_layer_a == Some((idx, layer.material_id.as_str()));
         layer_a_row = layer_a_row.push(
-            button(text(format!("#{} {}", idx + 1, material_name(library, mat_id))).size(10))
+            button(text(format!("#{} {}", idx + 1, material_name(library, &layer.material_id))).size(10))
                 .style(if selected { button::primary } else { button::secondary })
                 .padding([3, 6])
-                .on_press(Message::AecJunctionEditorPairLayerAChanged(idx, mat_id.to_string())),
+                .on_press(Message::AecJunctionEditorPairLayerAChanged(
+                    idx,
+                    layer.material_id.clone(),
+                )),
         );
     }
 
@@ -245,6 +289,121 @@ pub fn view_window<'a>(state: JunctionEditorState<'a>) -> Element<'a, Message> {
         layer_b_row = layer_b_row.push(text(t!("(nicht erforderlich)")).size(9));
     }
 
+    let mut gaps_col = column![text(t!("Schichtunterbrechungen")).size(11)].spacing(4);
+    if gaps.is_empty() {
+        gaps_col = gaps_col.push(text(t!("Keine Unterbrechungen.")).size(10));
+    } else {
+        for (idx, gap) in gaps.iter().enumerate() {
+            let name = |r: &LayerRef| material_name(library, &r.material_id);
+            gaps_col = gaps_col.push(
+                row![
+                    text(format!(
+                        "{}  |  {} → {}",
+                        name(&gap.layer),
+                        name(&gap.from),
+                        name(&gap.to)
+                    ))
+                    .size(10),
+                    iced::widget::Space::new(),
+                    button(text(t!("Entfernen")).size(9))
+                        .style(button::secondary)
+                        .padding([2, 6])
+                        .on_press(Message::AecJunctionEditorRemoveGap(idx)),
+                ]
+                .spacing(6),
+            );
+        }
+    }
+
+    let through_part = participants.iter().find(|p| p.is_through);
+    let gap_layer_source: &[LayerRef] = through_part
+        .map(|p| p.layers.as_slice())
+        .unwrap_or(current_wall_layers);
+    let mut gap_layer_row = row![].spacing(4);
+    for (idx, layer) in gap_layer_source.iter().enumerate() {
+        let selected = gap_layer == Some((idx, layer.material_id.as_str()));
+        gap_layer_row = gap_layer_row.push(
+            button(text(format!("#{} {}", idx + 1, material_name(library, &layer.material_id))).size(10))
+                .style(if selected { button::primary } else { button::secondary })
+                .padding([3, 6])
+                .on_press(Message::AecJunctionEditorGapLayerChanged(
+                    idx,
+                    layer.material_id.clone(),
+                )),
+        );
+    }
+
+    let other_walls: Vec<&JunctionParticipant> = participants
+        .iter()
+        .filter(|p| !p.is_through)
+        .collect();
+    let mut gap_from_wall_row = row![].spacing(4);
+    for p in &other_walls {
+        let selected = gap_from_wall == Some(p.axis_handle);
+        gap_from_wall_row = gap_from_wall_row.push(
+            button(text(format!("Wand #{}", p.axis_handle.value())).size(10))
+                .style(if selected { button::primary } else { button::secondary })
+                .padding([3, 6])
+                .on_press(Message::AecJunctionEditorGapFromWallChanged(Some(p.axis_handle))),
+        );
+    }
+    let mut gap_from_row = row![].spacing(4);
+    if let Some(h) = gap_from_wall {
+        if let Some(p) = participants.iter().find(|p| p.axis_handle == h) {
+            for (idx, l) in p.layers.iter().enumerate() {
+                let selected = gap_from == Some((idx, l.material_id.as_str()));
+                gap_from_row = gap_from_row.push(
+                    button(text(format!("#{} {}", idx + 1, material_name(library, &l.material_id))).size(10))
+                        .style(if selected { button::primary } else { button::secondary })
+                        .padding([3, 6])
+                        .on_press(Message::AecJunctionEditorGapFromChanged(idx, l.material_id.clone())),
+                );
+            }
+        }
+    }
+
+    let mut gap_to_wall_row = row![].spacing(4);
+    for p in &other_walls {
+        let selected = gap_to_wall == Some(p.axis_handle);
+        gap_to_wall_row = gap_to_wall_row.push(
+            button(text(format!("Wand #{}", p.axis_handle.value())).size(10))
+                .style(if selected { button::primary } else { button::secondary })
+                .padding([3, 6])
+                .on_press(Message::AecJunctionEditorGapToWallChanged(Some(p.axis_handle))),
+        );
+    }
+    let mut gap_to_row = row![].spacing(4);
+    if let Some(h) = gap_to_wall {
+        if let Some(p) = participants.iter().find(|p| p.axis_handle == h) {
+            for (idx, l) in p.layers.iter().enumerate() {
+                let selected = gap_to == Some((idx, l.material_id.as_str()));
+                gap_to_row = gap_to_row.push(
+                    button(text(format!("#{} {}", idx + 1, material_name(library, &l.material_id))).size(10))
+                        .style(if selected { button::primary } else { button::secondary })
+                        .padding([3, 6])
+                        .on_press(Message::AecJunctionEditorGapToChanged(idx, l.material_id.clone())),
+                );
+            }
+        }
+    }
+
+    let gap_form = column![
+        text(t!("Unterbrechung hinzufügen")).size(11),
+        text(t!("Zu unterbrechende Schicht (durchlaufende Wand)")).size(9),
+        gap_layer_row,
+        text(t!("Von angrenzender Schicht (Stammwand)")).size(9),
+        gap_from_wall_row,
+        gap_from_row,
+        text(t!("Bis angrenzender Schicht")).size(9),
+        gap_to_wall_row,
+        gap_to_row,
+        button(text(t!("Unterbrechung hinzufügen")).size(11))
+            .style(button::primary)
+            .padding([4, 10])
+            .on_press(Message::AecJunctionEditorAddGap),
+    ]
+    .spacing(4);
+
     let add_form = column![
         text(t!("Neues Layer-Paar hinzufügen")).size(11),
         text(t!("Schicht A (diese Wand)")).size(9),
@@ -282,6 +441,8 @@ pub fn view_window<'a>(state: JunctionEditorState<'a>) -> Element<'a, Message> {
         default_style_row,
         pairs_col,
         add_form,
+        gaps_col,
+        gap_form,
         actions,
     ]
     .spacing(10);

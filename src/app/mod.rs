@@ -1332,6 +1332,17 @@ pub(super) struct OpenCADStudio {
     aec_junction_editor_pair_layer_b: Option<(usize, String)>,
     /// "Add pair" form: style to apply to the pair being composed.
     aec_junction_editor_pair_style: crate::modules::aec::engine::join::JoinOverrideStyle,
+    /// Edit buffer: pending layer-gap (interruption) overrides.
+    aec_junction_editor_gaps: Vec<crate::modules::aec::engine::join::LayerGapOverride>,
+    aec_junction_editor_gap_layer: Option<(usize, String)>,
+    aec_junction_editor_gap_from_wall: Option<acadrust::Handle>,
+    aec_junction_editor_gap_from: Option<(usize, String)>,
+    aec_junction_editor_gap_to_wall: Option<acadrust::Handle>,
+    aec_junction_editor_gap_to: Option<(usize, String)>,
+    /// In-drawing layer-pair pick at a junction (click layers, then style).
+    aec_layer_pair_draw: Option<AecLayerPairDrawPick>,
+    /// In-drawing layer-gap pick: interrupted layer, then from/to bounds.
+    aec_layer_gap_draw: Option<AecLayerGapDrawPick>,
 
     // ── AEC Project Explorer ──────────────────────────────────────────────
     /// Loaded `.ocsproj` contents (if any).
@@ -2054,6 +2065,29 @@ pub enum AecProjectExplorerDeleteTarget {
     Building(uuid::Uuid),
     /// `(building_id, storey_id)`.
     Storey(uuid::Uuid, uuid::Uuid),
+}
+
+/// In-drawing layer-pair definition at a wall junction.
+#[derive(Clone, Debug)]
+pub struct AecLayerPairDrawPick {
+    pub axis: acadrust::Handle,
+    pub end_index: usize,
+    pub layer_a: Option<(acadrust::Handle, usize, String)>,
+    pub layer_b: Option<(acadrust::Handle, usize, String)>,
+    pub layer_b_outer: bool,
+    pub hover: Option<(acadrust::Handle, usize)>,
+    pub awaiting_style: bool,
+}
+
+/// In-drawing layer interruption: pick the layer to cut, then two bounding layers.
+#[derive(Clone, Debug)]
+pub struct AecLayerGapDrawPick {
+    pub axis: acadrust::Handle,
+    pub end_index: usize,
+    pub layer: Option<(acadrust::Handle, usize, String)>,
+    pub from: Option<(acadrust::Handle, usize, String)>,
+    pub to: Option<(acadrust::Handle, usize, String)>,
+    pub hover: Option<(acadrust::Handle, usize)>,
 }
 
 /// Which in-canvas modal dialog is currently open (Plan B). At most one shows
@@ -3702,11 +3736,28 @@ pub enum Message {
     /// Commit the "add pair" form as a new `LayerPairOverride` in the edit
     /// buffer (not yet persisted — Save writes the whole `JunctionOverride`).
     AecJunctionEditorAddPair,
+    /// Change the join style of an existing layer-pair override in the edit
+    /// buffer without removing the pair.
+    AecJunctionEditorSetPairStyle(usize, crate::modules::aec::engine::join::JoinOverrideStyle),
     /// Remove the layer-pair override at this index from the edit buffer.
     AecJunctionEditorRemovePair(usize),
+    AecJunctionEditorGapLayerChanged(usize, String),
+    AecJunctionEditorGapFromWallChanged(Option<acadrust::Handle>),
+    AecJunctionEditorGapFromChanged(usize, String),
+    AecJunctionEditorGapToWallChanged(Option<acadrust::Handle>),
+    AecJunctionEditorGapToChanged(usize, String),
+    AecJunctionEditorAddGap,
+    AecJunctionEditorRemoveGap(usize),
     /// Persist the edit buffer as the complete `JunctionOverride` via
     /// `write_junction_override`, then refresh the wall and close the panel.
     AecJunctionEditorSave,
+    /// Start in-drawing layer-pair definition at `(axis_handle, end_index)`.
+    AecJunctionLayerPairPickStart(acadrust::Handle, usize),
+    /// Cancel in-drawing layer-pair definition.
+    AecJunctionLayerPairPickCancel,
+    /// Apply the join style to the pair just picked in the drawing.
+    AecJunctionLayerPairSetStyle(crate::modules::aec::engine::join::JoinOverrideStyle),
+    AecJunctionLayerGapPickStart(acadrust::Handle, usize),
     /// Remove the entire override for the open junction (same effect as
     /// Step 4's context-menu reset) and close the panel.
     AecJunctionEditorFullReset,
@@ -4513,6 +4564,14 @@ impl OpenCADStudio {
             aec_junction_editor_pair_wall_b: None,
             aec_junction_editor_pair_layer_b: None,
             aec_junction_editor_pair_style: crate::modules::aec::engine::join::JoinOverrideStyle::Miter,
+            aec_junction_editor_gaps: Vec::new(),
+            aec_junction_editor_gap_layer: None,
+            aec_junction_editor_gap_from_wall: None,
+            aec_junction_editor_gap_from: None,
+            aec_junction_editor_gap_to_wall: None,
+            aec_junction_editor_gap_to: None,
+            aec_layer_pair_draw: None,
+            aec_layer_gap_draw: None,
             aec_project_explorer_file: None,
             aec_project_explorer_path: None,
             aec_project_explorer_selected_building: None,

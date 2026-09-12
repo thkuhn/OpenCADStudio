@@ -12,7 +12,8 @@ use super::join::{
 };
 use super::miter::{
     junction_wall_geoms, mitered_junction_layer_footprints_with_overrides,
-    mitered_layer_footprints_with_override_and_bulges, through_wall_cutout_footprints_with_bulges,
+    mitered_layer_footprints_with_override_and_bulges,
+    through_wall_cutout_footprints_with_gaps,
     JunctionWallGeom, MiterLayer,
 };
 
@@ -26,6 +27,8 @@ pub struct WallJoinInput {
     pub override_start: Option<JunctionOverride>,
     /// Override at the last vertex, if any.
     pub override_end: Option<JunctionOverride>,
+    /// T-junction layer gaps stored on the through wall (no endpoint).
+    pub override_span: Option<JunctionOverride>,
 }
 
 impl WallJoinInput {
@@ -36,6 +39,7 @@ impl WallJoinInput {
             layers: Vec::new(),
             override_start: None,
             override_end: None,
+            override_span: None,
         }
     }
 
@@ -223,6 +227,27 @@ fn pair_footprints(
     let ov_a = end_a.and_then(|e| a.override_at(e));
     let ov_b = end_b.and_then(|e| b.override_at(e));
 
+    let gaps_a = {
+        let mut g = Vec::new();
+        if let Some(ov) = a.override_span.as_ref() {
+            g.extend(ov.layer_gaps.iter().cloned());
+        }
+        if let Some(ov) = ov_b {
+            g.extend(ov.layer_gaps.iter().cloned());
+        }
+        g
+    };
+    let gaps_b = {
+        let mut g = Vec::new();
+        if let Some(ov) = b.override_span.as_ref() {
+            g.extend(ov.layer_gaps.iter().cloned());
+        }
+        if let Some(ov) = ov_a {
+            g.extend(ov.layer_gaps.iter().cloned());
+        }
+        g
+    };
+
     let fps_a = if let Some(ea) = end_a {
         mitered_layer_footprints_with_override_and_bulges(
             &a2,
@@ -238,7 +263,7 @@ fn pair_footprints(
             &b.bulges,
         )
     } else if let Some(eb) = end_b {
-        through_wall_cutout_footprints_with_bulges(
+        through_wall_cutout_footprints_with_gaps(
             &a2,
             &a.layers,
             &b2,
@@ -246,6 +271,7 @@ fn pair_footprints(
             eb,
             &a.bulges,
             &b.bulges,
+            &gaps_a,
         )
     } else {
         vec![None; a.layers.len()]
@@ -266,7 +292,7 @@ fn pair_footprints(
             &a.bulges,
         )
     } else if let Some(ea) = end_a {
-        through_wall_cutout_footprints_with_bulges(
+        through_wall_cutout_footprints_with_gaps(
             &b2,
             &b.layers,
             &a2,
@@ -274,6 +300,7 @@ fn pair_footprints(
             ea,
             &b.bulges,
             &a.bulges,
+            &gaps_b,
         )
     } else {
         vec![None; b.layers.len()]
@@ -373,7 +400,14 @@ fn compute_footprints(
                         .get(stem.wall_index)
                         .map(|a| axis_2d(a))
                         .unwrap_or_else(|| axis_2d(&stem_w.axis));
-                    fps = through_wall_cutout_footprints_with_bulges(
+                    let mut gaps = Vec::new();
+                    if let Some(ov) = through.override_span.as_ref() {
+                        gaps.extend(ov.layer_gaps.iter().cloned());
+                    }
+                    if let Some(ov) = stem_w.override_at(stem_end) {
+                        gaps.extend(ov.layer_gaps.iter().cloned());
+                    }
+                    fps = through_wall_cutout_footprints_with_gaps(
                         &t_axis,
                         &through.layers,
                         &s_axis,
@@ -381,6 +415,7 @@ fn compute_footprints(
                         stem_end,
                         &through.bulges,
                         &stem_w.bulges,
+                        &gaps,
                     );
                 }
             }
@@ -413,6 +448,7 @@ mod tests {
             layers,
             override_start: None,
             override_end: None,
+            override_span: None,
         }
     }
 
@@ -610,11 +646,13 @@ mod tests {
         stem.override_start = Some(JunctionOverride {
             default_style: Some(JoinOverrideStyle::FarFace),
             layer_pairs: Vec::new(),
+            layer_gaps: Vec::new(),
         });
         let far = solve_pair(&stem, &through, false).unwrap();
         stem.override_start = Some(JunctionOverride {
             default_style: Some(JoinOverrideStyle::NearFace),
             layer_pairs: Vec::new(),
+            layer_gaps: Vec::new(),
         });
         let near = solve_pair(&stem, &through, false).unwrap();
         stem.override_start = None;
@@ -656,6 +694,7 @@ mod tests {
                 layer_b: None,
                 style: JoinOverrideStyle::NoExtend,
             }],
+            layer_gaps: Vec::new(),
         };
 
         let automatic = solve_pair(&stem, &through, false).unwrap();

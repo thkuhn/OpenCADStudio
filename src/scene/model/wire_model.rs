@@ -322,6 +322,8 @@ impl WireModel {
     pub const SELECTED: [f32; 4] = [0.15, 0.55, 1.00, 1.0];
     /// Rollover (hover) highlight — orange, distinct from the blue selection.
     pub const HOVER: [f32; 4] = [0.95, 0.55, 0.10, 1.0];
+    /// Vivid orange for AEC wall-layer pick / junction-editor highlight.
+    pub const LAYER_PICK: [f32; 4] = [1.00, 0.40, 0.00, 1.0];
     /// Sentinel AABB that never rejects any snap query.
     pub const UNBOUNDED_AABB: [f32; 4] = [
         f32::NEG_INFINITY,

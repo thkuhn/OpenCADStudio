@@ -1720,6 +1720,21 @@ impl OpenCADStudio {
                     .as_ref()
                     .map(|(i, s)| (*i, s.as_str())),
                 pair_style: self.aec_junction_editor_pair_style.clone(),
+                gaps: &self.aec_junction_editor_gaps,
+                gap_layer: self
+                    .aec_junction_editor_gap_layer
+                    .as_ref()
+                    .map(|(i, s)| (*i, s.as_str())),
+                gap_from_wall: self.aec_junction_editor_gap_from_wall,
+                gap_from: self
+                    .aec_junction_editor_gap_from
+                    .as_ref()
+                    .map(|(i, s)| (*i, s.as_str())),
+                gap_to_wall: self.aec_junction_editor_gap_to_wall,
+                gap_to: self
+                    .aec_junction_editor_gap_to
+                    .as_ref()
+                    .map(|(i, s)| (*i, s.as_str())),
             },
         )
     }

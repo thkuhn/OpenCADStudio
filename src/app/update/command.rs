@@ -784,6 +784,31 @@ pub(super) fn on_tab_close(&mut self, idx: usize) -> Task<Message> {
                 }
 
                 let i = self.active_tab;
+                if self
+                    .aec_layer_pair_draw
+                    .as_ref()
+                    .is_some_and(|p| p.layer_a.is_some() && !p.awaiting_style)
+                {
+                    let pos = self.tabs[i]
+                        .scene
+                        .selection
+                        .borrow()
+                        .last_move_pos
+                        .unwrap_or(iced::Point::ORIGIN);
+                    if let Some(pick) = self.aec_layer_pair_draw.as_mut() {
+                        pick.layer_b = None;
+                        pick.layer_b_outer = true;
+                        pick.awaiting_style = true;
+                        pick.hover = None;
+                    }
+                    let mut sel = self.tabs[i].scene.selection.borrow_mut();
+                    sel.context_menu = Some(pos);
+                    drop(sel);
+                    self.sync_junction_editor_layer_highlight();
+                    self.command_line
+                        .push_info(crate::t!("Verbindungsart wählen.").as_ref());
+                    return Task::none();
+                }
                 if self.tabs[i].active_cmd.is_some() {
                     self.feed_command(crate::command::StepInput::Enter)
                 } else if let Some(cmd) = self.tabs[i].last_cmd.clone() {
@@ -794,6 +819,10 @@ pub(super) fn on_tab_close(&mut self, idx: usize) -> Task<Message> {
     }
 
     pub(super) fn on_command_escape(&mut self) -> Task<Message> {
+                if self.aec_layer_pair_draw.is_some() {
+                    self.cancel_layer_pair_draw_pick();
+                    return Task::none();
+                }
                 // Esc drops an unconsumed one-shot snap override and closes
                 // its menu (#337). Falls through — Esc keeps its usual effect.
                 self.snap_override_popup = None;

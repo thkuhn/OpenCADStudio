@@ -17,6 +17,7 @@ use acadrust::{CadDocument, EntityType, Handle};
 use glam::{DVec2, DVec3};
 
 use crate::command::{CadCommand, CmdOption, CmdResult, WorkingPlane};
+use crate::scene::model::hatch_model::{HatchModel, HatchPattern};
 use crate::scene::model::wire_model::WireModel;
 use crate::scene::Scene;
 use crate::ui::command_line::CommandLine;
@@ -267,6 +268,271 @@ fn layer_refs_from_materials<'a>(
         .collect()
 }
 
+/// Sentinel grip ids for the screen-offset dropdown at a wall junction
+/// endpoint (`end_index` 0 → start, 1 → last vertex). Kept below
+/// `VIS_GRIP_ID` (`usize::MAX`) and the spline mode grip (`usize::MAX - 1`).
+pub const WALL_JUNCTION_DROPDOWN_GRIP_START: usize = usize::MAX - 3;
+
+/// Dropdown grip id for a wall junction at `end_index` (0 = start, 1 = end).
+pub fn wall_junction_dropdown_grip_id(end_index: usize) -> usize {
+    WALL_JUNCTION_DROPDOWN_GRIP_START + end_index.min(1)
+}
+
+/// Inverse of [`wall_junction_dropdown_grip_id`].
+pub fn wall_junction_end_from_dropdown_grip(grip_id: usize) -> Option<usize> {
+    if grip_id == WALL_JUNCTION_DROPDOWN_GRIP_START {
+        Some(0)
+    } else if grip_id == WALL_JUNCTION_DROPDOWN_GRIP_START + 1 {
+        Some(1)
+    } else {
+        None
+    }
+}
+
+/// Closed 2D loop of layer `index` (outer→inner) from axis + `(thickness, axis_offset)`.
+pub fn wall_layer_contour_loop_xy(
+    centerline: &[(f64, f64)],
+    layers: &[(f64, f64)],
+    index: usize,
+) -> Option<Vec<(f64, f64)>> {
+    let (left, right) = engine::contour::layer_contours(centerline, layers).into_iter().nth(index)?;
+    if left.len() < 2 || right.len() < 2 {
+        return None;
+    }
+    let mut loop_xy = left;
+    loop_xy.extend(right.into_iter().rev());
+    if let Some(first) = loop_xy.first().copied() {
+        loop_xy.push(first);
+    }
+    Some(loop_xy)
+}
+
+/// Preview outline of one wall layer (magenta/orange hover colour).
+pub fn wall_layer_highlight_wire(
+    scene: &Scene,
+    wall_handle: Handle,
+    layer_index: usize,
+    color: [f32; 4],
+) -> Option<WireModel> {
+    let handle = resolve_wall_package(scene, wall_handle);
+    let verts = get_wall_vertices(scene, handle);
+    if verts.len() < 2 {
+        return None;
+    }
+    let wall = wall_from_entity(scene.document.get_entity(handle)?)?;
+    let specs: Vec<(f64, f64)> = wall
+        .layers
+        .iter()
+        .map(|l| (l.thickness, l.axis_offset))
+        .collect();
+    let centerline: Vec<(f64, f64)> = verts.iter().map(|v| (v.x, v.y)).collect();
+    let loop_xy = wall_layer_contour_loop_xy(&centerline, &specs, layer_index)?;
+    let z = verts[0].z;
+    let points: Vec<[f64; 3]> = loop_xy.into_iter().map(|(x, y)| [x, y, z]).collect();
+    let mut wire = WireModel::solid_f64("aec_layer_highlight".into(), points, color, false);
+    wire.line_weight_px = 3.0;
+    Some(wire)
+}
+
+/// Transparent orange (or given RGB) fill of one wall-layer strip.
+pub fn wall_layer_highlight_hatch(
+    scene: &Scene,
+    wall_handle: Handle,
+    layer_index: usize,
+    color: [f32; 4],
+) -> Option<HatchModel> {
+    let handle = resolve_wall_package(scene, wall_handle);
+    let verts = get_wall_vertices(scene, handle);
+    if verts.len() < 2 {
+        return None;
+    }
+    let wall = wall_from_entity(scene.document.get_entity(handle)?)?;
+    let specs: Vec<(f64, f64)> = wall
+        .layers
+        .iter()
+        .map(|l| (l.thickness, l.axis_offset))
+        .collect();
+    let centerline: Vec<(f64, f64)> = verts.iter().map(|v| (v.x, v.y)).collect();
+    let mut loop_xy = wall_layer_contour_loop_xy(&centerline, &specs, layer_index)?;
+    if loop_xy.len() >= 2 && loop_xy.first() == loop_xy.last() {
+        loop_xy.pop();
+    }
+    if loop_xy.len() < 3 {
+        return None;
+    }
+    let origin = [loop_xy[0].0, loop_xy[0].1];
+    let boundary: Vec<[f32; 2]> = loop_xy
+        .iter()
+        .map(|(x, y)| [(*x - origin[0]) as f32, (*y - origin[1]) as f32])
+        .collect();
+    let mut fill = color;
+    fill[3] = if color[3] < 0.99 { color[3] } else { 0.32 };
+    Some(HatchModel {
+        render_instance: None,
+        world_origin: origin,
+        boundary: std::sync::Arc::new(boundary),
+        boundary_wcs: None,
+        fill_plane: None,
+        fill_plane_boundary: None,
+        boundary_exterior: None,
+        boundary_sources: None,
+        boundary_paths: None,
+        style: acadrust::entities::HatchStyleType::Normal,
+        pattern: HatchPattern::Solid,
+        name: "AEC_LAYER_PREVIEW".into(),
+        color: fill,
+        aci: 0,
+        line_weight_px: 1.0,
+        angle_offset: 0.0,
+        scale: 1.0,
+        draw_depth: 0.0,
+    })
+}
+
+/// Even-odd test for a closed XY loop (duplicate closing vertex allowed).
+pub fn point_in_closed_loop_xy(x: f64, y: f64, poly: &[(f64, f64)]) -> bool {
+    if poly.len() < 3 {
+        return false;
+    }
+    let mut inside = false;
+    let n = poly.len();
+    let mut j = n - 1;
+    for i in 0..n {
+        let (xi, yi) = poly[i];
+        let (xj, yj) = poly[j];
+        if (yi > y) != (yj > y) {
+            let denom = yj - yi;
+            if denom.abs() > 1e-18 {
+                let x_int = (xj - xi) * (y - yi) / denom + xi;
+                if x < x_int {
+                    inside = !inside;
+                }
+            }
+        }
+        j = i;
+    }
+    inside
+}
+
+fn polygon_area_xy(poly: &[(f64, f64)]) -> f64 {
+    if poly.len() < 3 {
+        return 0.0;
+    }
+    let mut a = 0.0;
+    for i in 0..poly.len() - 1 {
+        a += poly[i].0 * poly[i + 1].1 - poly[i + 1].0 * poly[i].1;
+    }
+    a.abs() * 0.5
+}
+
+/// Layer strip under `(x, y)` at the junction, preferring the smallest
+/// containing contour so inner layers win over the outer stack.
+pub fn pick_junction_wall_layer(
+    scene: &Scene,
+    axis_handle: Handle,
+    end_index: usize,
+    x: f64,
+    y: f64,
+) -> Option<(Handle, usize, String)> {
+    let participants = walls_at_junction(scene, axis_handle, end_index);
+    let mut best: Option<(Handle, usize, String)> = None;
+    let mut best_area = f64::INFINITY;
+    for part in &participants {
+        let handle = resolve_wall_package(scene, part.axis_handle);
+        let verts = get_wall_vertices(scene, handle);
+        if verts.len() < 2 {
+            continue;
+        }
+        let Some(wall) = scene
+            .document
+            .get_entity(handle)
+            .and_then(wall_from_entity)
+        else {
+            continue;
+        };
+        let specs: Vec<(f64, f64)> = wall
+            .layers
+            .iter()
+            .map(|l| (l.thickness, l.axis_offset))
+            .collect();
+        let centerline: Vec<(f64, f64)> = verts.iter().map(|v| (v.x, v.y)).collect();
+        for (idx, layer) in part.layers.iter().enumerate() {
+            let Some(loop_xy) = wall_layer_contour_loop_xy(&centerline, &specs, idx) else {
+                continue;
+            };
+            if !point_in_closed_loop_xy(x, y, &loop_xy) {
+                continue;
+            }
+            let area = polygon_area_xy(&loop_xy);
+            if area < best_area {
+                best_area = area;
+                best = Some((part.axis_handle, idx, layer.material_id.clone()));
+            }
+        }
+    }
+    best
+}
+
+/// World XY of the junction node used for the in-drawing layer pick.
+pub fn junction_node_xy(
+    scene: &Scene,
+    axis_handle: Handle,
+    end_index: usize,
+) -> Option<(f64, f64)> {
+    let verts = get_wall_vertices(scene, resolve_wall_package(scene, axis_handle));
+    if verts.len() < 2 {
+        return None;
+    }
+    let p = if end_index == 0 {
+        verts[0]
+    } else {
+        verts[verts.len() - 1]
+    };
+    Some((p.x, p.y))
+}
+
+/// Click radius around the node for “outer face / no layer” (2× stack width).
+pub fn junction_outer_pick_radius(
+    scene: &Scene,
+    axis_handle: Handle,
+    end_index: usize,
+) -> f64 {
+    let participants = walls_at_junction(scene, axis_handle, end_index);
+    let mut width = 0.05_f64;
+    for part in &participants {
+        let handle = resolve_wall_package(scene, part.axis_handle);
+        if let Some(wall) = scene.document.get_entity(handle).and_then(wall_from_entity) {
+            let stack: f64 = wall.layers.iter().map(|l| l.thickness.max(0.0)).sum();
+            width = width.max(stack);
+        }
+    }
+    (width * 2.0).max(0.1)
+}
+
+/// Resolve the Junction Editor's chosen source/target layer to the actual
+/// [`join::LayerRef`] in `layers`.
+///
+/// The editor buttons pass `(enumerate index, material_id)`. Identity is the
+/// stack entry at that index when its material still matches — that copies
+/// `layer_id` / `role_tag` from the live layer. Matching "first layer with
+/// this material" is intentionally not used: two plaster layers would then
+/// always bind the outer one.
+pub fn selected_junction_layer_ref(
+    layers: &[join::LayerRef],
+    index: usize,
+    material_id: &str,
+) -> Option<join::LayerRef> {
+    if let Some(layer) = layers.get(index) {
+        if layer.material_id == material_id {
+            return Some(layer.clone());
+        }
+    }
+    layers
+        .iter()
+        .find(|l| l.index == index && l.material_id == material_id)
+        .cloned()
+}
+
 /// Validate a stored [`join::JunctionOverride`] against the current layer
 /// sets of the wall(s) at the junction (`self_layers` and, when known,
 /// `other_layers`): drop any [`join::LayerPairOverride`] whose `layer_a` or
@@ -303,16 +569,29 @@ fn validate_junction_override(
         })
         .cloned()
         .collect();
+    let kept_gaps: Vec<join::LayerGapOverride> = override_data
+        .layer_gaps
+        .iter()
+        .filter(|g| {
+            let ok = matches_any(&g.layer) && matches_any(&g.from) && matches_any(&g.to);
+            if !ok {
+                removed += 1;
+            }
+            ok
+        })
+        .cloned()
+        .collect();
     if removed == 0 {
         return (Some(override_data.clone()), 0);
     }
-    if override_data.default_style.is_none() && kept_pairs.is_empty() {
+    if override_data.default_style.is_none() && kept_pairs.is_empty() && kept_gaps.is_empty() {
         (None, removed)
     } else {
         (
             Some(join::JunctionOverride {
                 default_style: override_data.default_style.clone(),
                 layer_pairs: kept_pairs,
+                layer_gaps: kept_gaps,
             }),
             removed,
         )
@@ -464,6 +743,18 @@ fn write_wall_derived_tag(scene: &mut Scene, handle: Handle, axis_handle: Handle
 /// XDATA lives on a single entity.
 const JOIN_OVERRIDE_TAG: &str = "JOIN_OVERRIDE";
 
+/// XDATA end key for a T-junction override stored on the **through** wall
+/// (no axis endpoint at the node). Maps `usize::MAX` ↔ `-1`.
+pub const THROUGH_SPAN_OVERRIDE_END: usize = usize::MAX;
+
+fn join_override_end_key(end_index: usize) -> i32 {
+    if end_index == THROUGH_SPAN_OVERRIDE_END {
+        -1
+    } else {
+        end_index as i32
+    }
+}
+
 /// Write (or replace) a [`join::JunctionOverride`] as XDATA on `axis_handle`,
 /// tied to `end_index` (`0` = axis start, `1` = axis end). The payload is
 /// serialized as JSON, matching the pattern used for other AEC XDATA blobs.
@@ -487,7 +778,7 @@ pub fn write_junction_override(
     let Some(entity) = scene.document.get_entity_mut(axis_handle) else {
         return false;
     };
-    let end_index = end_index as i32;
+    let end_index = join_override_end_key(end_index);
     let xd = &mut entity.common_mut().extended_data;
     let kept: Vec<_> = xd
         .records()
@@ -532,7 +823,7 @@ pub fn read_junction_override(
     end_index: usize,
 ) -> Option<join::JunctionOverride> {
     let entity = scene.document.get_entity(axis_handle)?;
-    let end_index = end_index as i32;
+    let end_index = join_override_end_key(end_index);
     entity
         .common()
         .extended_data
@@ -558,7 +849,7 @@ pub fn read_junction_override(
 /// empty/meaningless record via [`write_junction_override`]. Returns `true`
 /// when a record was actually removed.
 pub fn remove_junction_override(scene: &mut Scene, axis_handle: Handle, end_index: usize) -> bool {
-    let end_index = end_index as i32;
+    let end_index = join_override_end_key(end_index);
     let Some(entity) = scene.document.get_entity_mut(axis_handle) else {
         return false;
     };
@@ -2343,7 +2634,21 @@ fn find_through_span_cutout_footprints(
         .collect();
     let through_layers = wall_layer_data(scene, wall_handle);
     let stem_layers = wall_layer_data(scene, stem_handle);
-    Some(engine::miter::through_wall_cutout_footprints_with_bulges(
+    let mut gaps = Vec::new();
+    if let Some(ov) = read_junction_override(scene, wall_handle, THROUGH_SPAN_OVERRIDE_END) {
+        gaps.extend(ov.layer_gaps);
+    }
+    if let Some(ov) = read_junction_override(scene, stem_handle, stem_end) {
+        gaps.extend(ov.layer_gaps);
+    }
+    if let Some(ov) = read_junction_override(scene, wall_handle, 0) {
+        gaps.extend(ov.layer_gaps);
+    }
+    if let Some(ov) = read_junction_override(scene, wall_handle, self_axis_2d.len().saturating_sub(1))
+    {
+        gaps.extend(ov.layer_gaps);
+    }
+    Some(engine::miter::through_wall_cutout_footprints_with_gaps(
         self_axis_2d,
         &through_layers,
         &stem_axis,
@@ -2351,6 +2656,7 @@ fn find_through_span_cutout_footprints(
         stem_end,
         &get_wall_bulges(scene, wall_handle),
         &get_wall_bulges(scene, stem_handle),
+        &gaps,
     ))
 }
 
@@ -5902,6 +6208,57 @@ pub fn walls_at_junction(
     }]
 }
 
+/// Through-wall participant at `(axis_handle, end_index)`, if this node is a T.
+pub fn through_wall_at_junction(
+    scene: &Scene,
+    axis_handle: Handle,
+    end_index: usize,
+) -> Option<JunctionParticipant> {
+    walls_at_junction(scene, axis_handle, end_index)
+        .into_iter()
+        .find(|p| p.is_through)
+}
+
+/// Layer interruptions live on the through wall (span key), not the stem end.
+pub fn read_through_layer_gaps(
+    scene: &Scene,
+    axis_handle: Handle,
+    end_index: usize,
+) -> Vec<join::LayerGapOverride> {
+    let mut gaps = Vec::new();
+    if let Some(through) = through_wall_at_junction(scene, axis_handle, end_index) {
+        if let Some(ov) = read_junction_override(scene, through.axis_handle, THROUGH_SPAN_OVERRIDE_END)
+        {
+            gaps.extend(ov.layer_gaps);
+        }
+    }
+    if gaps.is_empty() {
+        if let Some(ov) = read_junction_override(scene, axis_handle, end_index) {
+            gaps.extend(ov.layer_gaps);
+        }
+    }
+    gaps
+}
+
+fn persist_through_layer_gaps(
+    scene: &mut Scene,
+    axis_handle: Handle,
+    end_index: usize,
+    gaps: &[join::LayerGapOverride],
+) {
+    let Some(through) = through_wall_at_junction(scene, axis_handle, end_index) else {
+        return;
+    };
+    let mut ov = read_junction_override(scene, through.axis_handle, THROUGH_SPAN_OVERRIDE_END)
+        .unwrap_or_default();
+    ov.layer_gaps = gaps.to_vec();
+    if ov.is_empty() {
+        remove_junction_override(scene, through.axis_handle, THROUGH_SPAN_OVERRIDE_END);
+    } else {
+        write_junction_override(scene, through.axis_handle, THROUGH_SPAN_OVERRIDE_END, &ov);
+    }
+}
+
 /// Persist a junction override (or clear it) and rebuild every wall in that
 /// junction so layer-pair / default-style edits are visible immediately.
 pub fn apply_junction_override_and_rebuild(
@@ -5913,11 +6270,21 @@ pub fn apply_junction_override_and_rebuild(
     display_rules: Option<&engine::display_component::ComponentRuleSet>,
     style_substitutions: Option<&HashMap<engine::plan_view::WallStyleRef, engine::plan_view::WallStyleRef>>,
 ) -> Vec<Handle> {
+    let gaps = override_data
+        .map(|ov| ov.layer_gaps.clone())
+        .unwrap_or_default();
+    persist_through_layer_gaps(scene, axis_handle, end_index, &gaps);
     match override_data {
-        Some(ov) if ov.default_style.is_some() || !ov.layer_pairs.is_empty() => {
-            write_junction_override(scene, axis_handle, end_index, ov);
+        Some(ov) => {
+            let mut stem = ov.clone();
+            stem.layer_gaps.clear();
+            if stem.is_empty() {
+                remove_junction_override(scene, axis_handle, end_index);
+            } else {
+                write_junction_override(scene, axis_handle, end_index, &stem);
+            }
         }
-        _ => {
+        None => {
             remove_junction_override(scene, axis_handle, end_index);
         }
     }
@@ -6238,6 +6605,7 @@ fn wall_join_input_from_scene(scene: &Scene, handle: Handle) -> WallJoinInput {
         } else {
             read_junction_override(scene, handle, last)
         },
+        override_span: read_junction_override(scene, handle, THROUGH_SPAN_OVERRIDE_END),
     }
 }
 
@@ -7358,6 +7726,7 @@ mod wall_command_tests {
                 layer_b: None,
                 style: join::JoinOverrideStyle::OuterFace,
             }],
+            layer_gaps: Vec::new(),
         };
 
         assert!(write_junction_override(&mut scene, wall, 1, &ov));
@@ -7426,6 +7795,7 @@ mod wall_command_tests {
         let ov = join::JunctionOverride {
             default_style: Some(join::JoinOverrideStyle::Miter),
             layer_pairs: vec![],
+            layer_gaps: Vec::new(),
         };
         assert!(write_junction_override(&mut scene, wall, end_index, &ov));
         assert!(read_junction_override(&scene, wall, end_index).is_some());
@@ -7568,6 +7938,7 @@ mod wall_command_tests {
         let ov = join::JunctionOverride {
             default_style: Some(join::JoinOverrideStyle::Butt),
             layer_pairs: vec![],
+            layer_gaps: Vec::new(),
         };
         assert!(write_junction_override(&mut scene, mid, 0, &ov));
         assert!(write_junction_override(&mut scene, mid, 1, &ov));
@@ -7629,6 +8000,75 @@ mod wall_command_tests {
         ];
         expected_mats.sort();
         assert_eq!(mats, expected_mats);
+    }
+
+    #[test]
+    fn selected_junction_layer_ref_keeps_inner_same_material_layer() {
+        let outer_id = uuid::Uuid::new_v4();
+        let inner_id = uuid::Uuid::new_v4();
+        let layers = vec![
+            join::LayerRef {
+                material_id: "Plaster".to_string(),
+                role_tag: None,
+                index: 0,
+                layer_id: Some(outer_id),
+            },
+            join::LayerRef {
+                material_id: "Brick".to_string(),
+                role_tag: None,
+                index: 1,
+                layer_id: Some(uuid::Uuid::new_v4()),
+            },
+            join::LayerRef {
+                material_id: "Plaster".to_string(),
+                role_tag: None,
+                index: 2,
+                layer_id: Some(inner_id),
+            },
+        ];
+        let chosen = selected_junction_layer_ref(&layers, 2, "Plaster").expect("inner plaster");
+        assert_eq!(chosen.layer_id, Some(inner_id));
+        assert_eq!(chosen.index, 2);
+        assert_ne!(chosen.layer_id, Some(outer_id));
+        let outer = selected_junction_layer_ref(&layers, 0, "Plaster").expect("outer plaster");
+        assert_eq!(outer.layer_id, Some(outer_id));
+    }
+
+    #[test]
+    fn wall_junction_dropdown_grip_ids_roundtrip() {
+        assert_eq!(wall_junction_end_from_dropdown_grip(wall_junction_dropdown_grip_id(0)), Some(0));
+        assert_eq!(wall_junction_end_from_dropdown_grip(wall_junction_dropdown_grip_id(1)), Some(1));
+        assert_eq!(wall_junction_end_from_dropdown_grip(0), None);
+        assert_ne!(wall_junction_dropdown_grip_id(0), usize::MAX);
+    }
+
+    #[test]
+    fn wall_layer_contour_loop_xy_uses_chosen_stack_index() {
+        let axis = [(0.0, 0.0), (10.0, 0.0)];
+        let layers = [(0.1, -0.15), (0.2, -0.05)];
+        let outer = wall_layer_contour_loop_xy(&axis, &layers, 0).expect("outer");
+        let inner = wall_layer_contour_loop_xy(&axis, &layers, 1).expect("inner");
+        assert!(outer.len() >= 5);
+        assert!(inner.len() >= 5);
+        let outer_span: f64 = outer.iter().map(|p| p.1).fold(f64::NEG_INFINITY, f64::max)
+            - outer.iter().map(|p| p.1).fold(f64::INFINITY, f64::min);
+        let inner_span: f64 = inner.iter().map(|p| p.1).fold(f64::NEG_INFINITY, f64::max)
+            - inner.iter().map(|p| p.1).fold(f64::INFINITY, f64::min);
+        assert!((outer_span - 0.1).abs() < 1e-9);
+        assert!((inner_span - 0.2).abs() < 1e-9);
+        assert!(wall_layer_contour_loop_xy(&axis, &layers, 9).is_none());
+    }
+
+    #[test]
+    fn point_in_closed_loop_xy_picks_inner_layer_over_outer() {
+        let axis = [(0.0, 0.0), (10.0, 0.0)];
+        let layers = [(0.2, -0.1), (0.2, 0.1)];
+        let outer = wall_layer_contour_loop_xy(&axis, &layers, 0).expect("outer");
+        let inner = wall_layer_contour_loop_xy(&axis, &layers, 1).expect("inner");
+        assert!(point_in_closed_loop_xy(5.0, 0.1, &inner));
+        assert!(!point_in_closed_loop_xy(5.0, 0.1, &outer));
+        assert!(point_in_closed_loop_xy(5.0, -0.1, &outer));
+        assert!(!point_in_closed_loop_xy(5.0, 2.0, &outer));
     }
 
     /// Step 5 test 2: adding a `LayerPairOverride` via the panel's save logic
@@ -7699,6 +8139,7 @@ mod wall_command_tests {
                     style: join::JoinOverrideStyle::Butt,
                 },
             ],
+            layer_gaps: Vec::new(),
         };
         assert!(write_junction_override(&mut scene, wall, end_index, &override_data));
 
@@ -7733,6 +8174,7 @@ mod wall_command_tests {
                 layer_b: None,
                 style: join::JoinOverrideStyle::Butt,
             }],
+            layer_gaps: Vec::new(),
         };
         assert!(write_junction_override(&mut scene, wall, end_index, &override_data));
         assert!(read_junction_override(&scene, wall, end_index).is_some());
@@ -9993,6 +10435,7 @@ mod wall_command_tests {
                 layer_b: None,
                 style: join::JoinOverrideStyle::NoExtend,
             }],
+            layer_gaps: Vec::new(),
         };
         assert!(write_junction_override(&mut scene, wall_a, 1, &override_data));
         assert_eq!(
@@ -10122,6 +10565,7 @@ mod wall_command_tests {
                 layer_b: None,
                 style: join::JoinOverrideStyle::NoExtend,
             }],
+            layer_gaps: Vec::new(),
         };
 
         // The uninvolved Insulation layer was deleted, so Concrete is now
@@ -10150,6 +10594,7 @@ mod wall_command_tests {
                     layer_b: None,
                     style: join::JoinOverrideStyle::NoExtend,
                 }],
+                layer_gaps: Vec::new(),
             })
         );
     }
@@ -10189,6 +10634,7 @@ mod wall_command_tests {
                 layer_b: None,
                 style: join::JoinOverrideStyle::NoExtend,
             }],
+            layer_gaps: Vec::new(),
         };
         assert!(write_junction_override(&mut scene, wall_a, 1, &override_data));
 
@@ -10248,6 +10694,7 @@ mod wall_command_tests {
                 layer_b: None,
                 style: join::JoinOverrideStyle::OuterFace,
             }],
+            layer_gaps: Vec::new(),
         };
         assert!(write_junction_override(&mut scene, wall_a, 1, &override_data));
 
@@ -10303,6 +10750,7 @@ mod wall_command_tests {
                 layer_b: None,
                 style: join::JoinOverrideStyle::NoExtend,
             }],
+            layer_gaps: Vec::new(),
         };
         assert!(write_junction_override(&mut scene, wall_a, 1, &override_data));
 
@@ -10368,6 +10816,7 @@ mod wall_command_tests {
                 }),
                 style: join::JoinOverrideStyle::Butt,
             }],
+            layer_gaps: Vec::new(),
         };
         let end_1 = if get_wall_vertices(&scene, w1)[0].distance(DVec3::ZERO) < 1e-6 {
             0
@@ -10420,6 +10869,7 @@ mod wall_command_tests {
                 layer_b: None,
                 style: join::JoinOverrideStyle::NoExtend,
             }],
+            layer_gaps: Vec::new(),
         };
         assert!(write_junction_override(&mut scene, wall_a, 1, &override_data));
 
@@ -10470,6 +10920,7 @@ mod wall_command_tests {
                 layer_b: None,
                 style: join::JoinOverrideStyle::NoExtend,
             }],
+            layer_gaps: Vec::new(),
         };
         assert!(write_junction_override(&mut scene, wall_a, 1, &override_data));
         write_wall_layers(
@@ -12615,6 +13066,7 @@ mod wall_command_tests {
         let ov = join::JunctionOverride {
             default_style: Some(join::JoinOverrideStyle::NoExtend),
             layer_pairs: Vec::new(),
+            layer_gaps: Vec::new(),
         };
         let touched = apply_junction_override_and_rebuild(
             &mut scene,
@@ -12627,6 +13079,60 @@ mod wall_command_tests {
         );
         assert!(touched.contains(&wall_a) && touched.contains(&wall_b));
         assert!(read_junction_override(&scene, wall_a, 1).is_some());
+    }
+
+    #[test]
+    fn layer_gaps_persist_on_through_wall_not_stem() {
+        let mut scene = Scene::new();
+        let through = add_single_layer_wall(&mut scene, (0.0, 0.0), (10.0, 0.0));
+        regenerate_wall_representation(&mut scene, through, None).expect("regen through");
+        let stem = add_single_layer_wall(&mut scene, (5.0, 0.05), (5.0, 4.0));
+        regenerate_wall_representation(&mut scene, stem, None).expect("regen stem");
+        let _ = try_auto_join_nearby_walls(&mut scene, stem, None, None, None);
+        let stem_end = walls_at_junction(&scene, stem, 0)
+            .into_iter()
+            .find(|p| p.axis_handle == stem)
+            .map(|p| p.end_index)
+            .unwrap_or(0);
+        let gap = join::LayerGapOverride {
+            layer: join::LayerRef {
+                material_id: "Concrete".into(),
+                role_tag: None,
+                index: 0,
+                layer_id: None,
+            },
+            from: join::LayerRef {
+                material_id: "Concrete".into(),
+                role_tag: None,
+                index: 0,
+                layer_id: None,
+            },
+            to: join::LayerRef {
+                material_id: "Concrete".into(),
+                role_tag: None,
+                index: 0,
+                layer_id: None,
+            },
+        };
+        let ov = join::JunctionOverride {
+            default_style: None,
+            layer_pairs: Vec::new(),
+            layer_gaps: vec![gap.clone()],
+        };
+        apply_junction_override_and_rebuild(&mut scene, stem, stem_end, Some(&ov), None, None, None);
+        assert!(
+            read_junction_override(&scene, stem, stem_end)
+                .map(|o| o.layer_gaps.is_empty())
+                .unwrap_or(true),
+            "stem must not keep layer_gaps"
+        );
+        let stored = read_junction_override(&scene, through, THROUGH_SPAN_OVERRIDE_END)
+            .expect("through span override");
+        assert_eq!(stored.layer_gaps.len(), 1);
+        assert_eq!(
+            read_through_layer_gaps(&scene, stem, stem_end).len(),
+            1
+        );
     }
 
     fn plaster_masonry_plaster() -> Vec<WallLayer> {
@@ -12818,6 +13324,7 @@ mod wall_command_tests {
                     style: join::JoinOverrideStyle::NoExtend,
                 },
             ],
+            layer_gaps: Vec::new(),
         };
         let _ = apply_junction_override_and_rebuild(
             &mut scene, ov_a, 1, Some(&ov), Some(&lib), None, None,

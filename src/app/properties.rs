@@ -2581,6 +2581,30 @@ impl OpenCADStudio {
                     &self.tabs[i].scene.document,
                     handle,
                 ));
+                if crate::modules::aec::commands::wall_from_entity(contextual.as_ref()).is_some() {
+                    let verts = crate::modules::aec::commands::get_wall_vertices(
+                        &self.tabs[i].scene,
+                        handle,
+                    );
+                    if verts.len() >= 2 {
+                        for (end_index, world) in [(0usize, verts[0]), (1usize, verts[verts.len() - 1])]
+                        {
+                            let participants = crate::modules::aec::commands::walls_at_junction(
+                                &self.tabs[i].scene,
+                                handle,
+                                end_index,
+                            );
+                            if participants.len() > 1 {
+                                entity_grips.push(crate::entities::common::dropdown_grip(
+                                    crate::modules::aec::commands::wall_junction_dropdown_grip_id(
+                                        end_index,
+                                    ),
+                                    world,
+                                ));
+                            }
+                        }
+                    }
+                }
                 for mut grip in entity_grips {
                     // Subtract in f64: at UTM magnitudes an f32 cast before
                     // the offset costs ~1 unit and draws the grip off the wire.

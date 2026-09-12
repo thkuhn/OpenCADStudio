@@ -43,6 +43,9 @@ pub struct SelectionState {
     /// True while the context menu's Wall Junction sub-items (Miter/Butt/
     /// Au\u{00df}enkante/Automatisch/Detailansicht) are expanded.
     pub junction_menu_submenu: bool,
+    /// When true, the viewport menu shows only wall-junction items (dropdown
+    /// grip), not the full right-click context menu.
+    pub junction_menu_only: bool,
     pub last_move_pos: Option<Point>,
     pub left_down: bool,
     pub left_press_pos: Option<Point>,

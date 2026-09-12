@@ -739,6 +739,8 @@ impl OpenCADStudio {
                 // hover grip-menu.
                 if self.grip_popup.is_none()
                     && grip_id != crate::app::visibility::VIS_GRIP_ID
+                    && crate::modules::aec::commands::wall_junction_end_from_dropdown_grip(grip_id)
+                        .is_none()
                     && self
                         .grip_hover
                         .as_ref()
@@ -1204,6 +1206,35 @@ impl OpenCADStudio {
             y: p_full.y - tile_b.y,
         };
         let vp_size = (tile_b.width, tile_b.height);
+
+        if self
+            .aec_layer_pair_draw
+            .as_ref()
+            .is_some_and(|pick| !pick.awaiting_style)
+        {
+            let bounds = iced::Rectangle {
+                x: 0.0,
+                y: 0.0,
+                width: vp_size.0,
+                height: vp_size.1,
+            };
+            let world = self.cursor_model_point(i, &edit_cam, p, bounds);
+            self.update_layer_pair_draw_hover(world);
+        }
+        if self
+            .aec_layer_gap_draw
+            .as_ref()
+            .is_some_and(|pick| pick.to.is_none())
+        {
+            let bounds = iced::Rectangle {
+                x: 0.0,
+                y: 0.0,
+                width: vp_size.0,
+                height: vp_size.1,
+            };
+            let world = self.cursor_model_point(i, &edit_cam, p, bounds);
+            self.update_layer_gap_draw_hover(world);
+        }
 
         // ── Grip drag ─────────────────────────────────────────────
         if let Some(grip) = self.tabs[i].active_grip.clone() {
@@ -2894,6 +2925,13 @@ impl OpenCADStudio {
         {
             let mut sel = self.tabs[i].scene.selection.borrow_mut();
             if sel.context_menu.take().is_some() {
+                if let Some(pick) = self.aec_layer_pair_draw.as_mut() {
+                    if pick.awaiting_style {
+                        pick.awaiting_style = false;
+                        pick.layer_b = None;
+                        pick.layer_b_outer = false;
+                    }
+                }
                 return Task::none();
             }
         }
@@ -3001,6 +3039,25 @@ impl OpenCADStudio {
             height: vh,
         };
 
+        if self
+            .aec_layer_pair_draw
+            .as_ref()
+            .is_some_and(|pick| !pick.awaiting_style)
+        {
+            let world = self.cursor_model_point(i, &edit_cam, p, bounds);
+            self.click_layer_pair_draw(world, p_full);
+            return Task::none();
+        }
+        if self
+            .aec_layer_gap_draw
+            .as_ref()
+            .is_some_and(|pick| pick.to.is_none())
+        {
+            let world = self.cursor_model_point(i, &edit_cam, p, bounds);
+            self.click_layer_gap_draw(world);
+            return Task::none();
+        }
+
         if self.tabs[i].active_cmd.is_none()
             && self.tabs[i].active_grip.is_none()
             && !self.tabs[i].selected_grips.is_empty()
@@ -3046,6 +3103,26 @@ impl OpenCADStudio {
                     };
                     let grip_shape = self.tabs[i].selected_grips[grip_index].shape;
                     if grip_shape == crate::scene::model::object::GripShape::Dropdown {
+                        if let Some(end_index) =
+                            crate::modules::aec::commands::wall_junction_end_from_dropdown_grip(
+                                grip_id,
+                            )
+                        {
+                            let axis = crate::modules::aec::commands::resolve_wall_package(
+                                &self.tabs[i].scene,
+                                handle,
+                            );
+                            let mut sel = self.tabs[i].scene.selection.borrow_mut();
+                            sel.context_menu = Some(p_full);
+                            sel.draworder_submenu = false;
+                            sel.junction_menu_submenu = true;
+                            sel.junction_menu_only = true;
+                            sel.junction_menu = Some((axis, end_index));
+                            drop(sel);
+                            self.grip_hover = None;
+                            self.grip_popup = None;
+                            return Task::none();
+                        }
                         use crate::entities::traits::EntityTypeOps;
                         let items = self.tabs[i]
                             .scene
