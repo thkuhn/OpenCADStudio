@@ -6,7 +6,7 @@ use std::path::PathBuf;
 
 mod blocks;
 mod dim;
-mod display;
+pub(crate) mod display;
 mod draw;
 mod fileops;
 mod inquiry;
@@ -65,6 +65,9 @@ impl OpenCADStudio {
         // the first space are left untouched. A non-alias passes through as-is.
         let resolved = self.resolve_alias(cmd);
         let cmd = resolved.as_deref().unwrap_or(cmd);
+        if is_spacemouse_command(cmd) {
+            return self.run_action(cmd);
+        }
         // A drafting aid only flips a flag, so it must not disturb whatever is
         // already running: pressing F8 partway through a LINE means "constrain
         // the rest of this line", not "abandon it". Everything below tears the
@@ -74,6 +77,12 @@ impl OpenCADStudio {
             return self
                 .dispatch_families(cmd, i)
                 .unwrap_or_else(Task::none);
+        }
+        // A new command abandons any grip edit and its numeric input.
+        let had_pending_grip_input = self.grip_pending.take().is_some();
+        let had_active_grip = self.cancel_active_grip_edit();
+        if had_pending_grip_input || had_active_grip {
+            self.command_line.input.clear();
         }
         // Starting a command closes any open ribbon dropdown (e.g. a style
         // combo left open) so it does not stay stuck behind the new tool.
@@ -114,6 +123,9 @@ impl OpenCADStudio {
         // Reset the last committed point so the first click of the new command
         // is not constrained by ortho/polar relative to a previous command's endpoint.
         self.last_point = None;
+        // A new command collects its own points, so the previous command's
+        // accepted snaps must not leak into it.
+        self.clear_accepted_snaps();
         // Starting a command restarts the right-click cycle, so its first
         // right-click acts as Enter rather than opening the context menu.
         self.tabs[i]
@@ -272,9 +284,22 @@ impl OpenCADStudio {
 /// vanish. Nothing here starts a command, opens a document or reads geometry,
 /// so there is nothing for the teardown to protect. (#677)
 pub fn is_transparent(cmd: &str) -> bool {
+    is_spacemouse_command(cmd)
+        || matches!(
+            cmd,
+            "ORTHO" | "GRID" | "SNAP" | "POLAR" | "OSNAP" | "DSETTINGS"
+        )
+}
+
+fn is_spacemouse_command(cmd: &str) -> bool {
     matches!(
         cmd,
-        "ORTHO" | "GRID" | "SNAP" | "POLAR" | "OSNAP" | "DSETTINGS"
+        "SPACEMOUSE"
+            | "SPACEMOUSEPAUSE"
+            | "SPACEMOUSEPAN"
+            | "SPACEMOUSEPANZOOM"
+            | "SPACEMOUSEAUTO"
+            | "SPACEMOUSE3D"
     )
 }
 
@@ -283,7 +308,7 @@ pub fn is_transparent(cmd: &str) -> bool {
 /// source of truth: the dispatch gate refuses everything else, and the ribbon
 /// dims the tools this rejects.
 pub fn start_allowed(cmd: &str) -> bool {
-    matches!(
+    is_spacemouse_command(cmd) || matches!(
         cmd,
         "NEW"
             | "OPEN"
@@ -302,6 +327,10 @@ pub fn start_allowed(cmd: &str) -> bool {
             | "ALIASEDIT"
             | "CUILOAD"
             | "CUIIMPORT"
+            // The start page already offers Options as a button, so the
+            // command that opens the same dialog belongs here too.
+            | "OPTIONS"
+            | "OP"
     )
 }
 
@@ -320,6 +349,7 @@ inventory::submit!(crate::command::CommandRegistration {
         "CLEANSCREEN",
         "CUI",
         "DSETTINGS",
+        "PARAMETERS",
         "GRID",
         "ISODRAFT",
         "ISOPLANE",
@@ -366,6 +396,7 @@ inventory::submit!(crate::command::CommandRegistration {
         "COLOR",
         "COLOUR",
         "CECOLOR",
+        "CETRANSPARENCY",
         "DDCOLOR",
         "BYLAYER",
         // Synchronise block attributes.
@@ -396,6 +427,7 @@ inventory::submit!(crate::command::CommandRegistration {
         "ANNOUPDATE",
         "SCALELISTEDIT",
         "OBJECTSCALE",
+        "ANNORESET",
         // Import CSV into a table + LandXML survey points.
         "DATALINK",
         "DATALINKUPDATE",
@@ -470,6 +502,7 @@ inventory::submit!(crate::command::CommandRegistration {
         "3DALIGN",
         "ALIGN3D",
         "SECTION",
+        "SECTIONPLANE",
         "PYRAMID",
         "PYR",
         "SPLINEFIT",
@@ -556,6 +589,12 @@ inventory::submit!(crate::command::CommandRegistration {
         "GRIPCOLOR",
         "GRIPHOT",
         "GRIPHOVER",
+        "GRIPOBJLIMIT",
+        // Dispatched all along, but absent from the registry, so command-line
+        // completion never offered them.
+        "ISAVEBAK",
+        "SAVETIME",
+        "FILEASSOC",
         // Reset selected entities' overrides to follow their layer.
         "SETBYLAYER",
         // Remove duplicate objects; set drawing base point; audit integrity;
@@ -589,6 +628,10 @@ inventory::submit!(crate::command::CommandRegistration {
         "DIMSTYLE",
         "DONATE",
         "DRAWORDER",
+        "DRAWORDER_FRONT",
+        "DRAWORDER_BACK",
+        "DRAWORDER_ABOVE",
+        "DRAWORDER_UNDER",
         "DWGPROP",
         "DWGPROPS",
         "EATTEXT",
@@ -596,6 +639,7 @@ inventory::submit!(crate::command::CommandRegistration {
         "EXPORT",
         "EXPORTSTEP",
         "EXPORTSTL",
+        "EXTERNALREFERENCES",
         "EXTRIM",
         "FILETAB",
         "FIND",
@@ -697,6 +741,7 @@ inventory::submit!(crate::command::CommandRegistration {
         "XDATA",
         "XR",
         "XREF",
+        "-XREF",
         "XRELOAD",
         "ZOOM",
         "ZS",
@@ -705,7 +750,10 @@ inventory::submit!(crate::command::CommandRegistration {
 
 #[cfg(test)]
 mod marquee_cancel_tests {
-    use crate::app::OpenCADStudio;
+    use crate::app::{GripPendingValue, OpenCADStudio};
+    use crate::scene::model::object::GripMenuAction;
+    use crate::scene::pick::grip::GripEdit;
+    use acadrust::Handle;
     use iced::time::Instant;
 
     fn fresh() -> OpenCADStudio {
@@ -818,5 +866,34 @@ mod marquee_cancel_tests {
         assert!(sel.box_current.is_some());
         assert!(sel.box_crossing);
         assert!(sel.box_crossing_locked);
+    }
+
+    #[test]
+    fn starting_a_command_cancels_a_grip_value_edit() {
+        let mut app = fresh();
+        let i = app.active_tab;
+        let handle = Handle::new(42);
+        app.tabs[i].active_grip = Some(GripEdit::radius(
+            handle,
+            1,
+            glam::DVec3::new(2.0, 0.0, 0.0),
+        ));
+        app.grip_pending = Some(GripPendingValue {
+            handle,
+            grip_id: 1,
+            action: GripMenuAction::Radius,
+            label: "New radius",
+        });
+        app.command_line.input = "5".to_string();
+
+        let _ = app.dispatch_command("LINE");
+
+        assert!(app.tabs[i].active_grip.is_none());
+        assert!(app.grip_pending.is_none());
+        assert!(app.command_line.input.is_empty());
+        assert_eq!(
+            app.tabs[i].active_cmd.as_deref().map(|cmd| cmd.name()),
+            Some("LINE")
+        );
     }
 }

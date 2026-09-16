@@ -5,6 +5,9 @@ pub mod cylinder_cmd;
 pub mod edge_cmd;
 pub mod polysolid_cmd;
 pub mod primitive_cmd;
+pub mod sectionplane_cmd;
+pub mod shell_cmd;
+pub mod slice_cmd;
 
 use crate::modules::{CadModule, IconKind, ModuleEvent, RibbonGroup, RibbonItem, ToolDef};
 
@@ -44,7 +47,7 @@ impl CadModule for ModelModule {
         "model"
     }
     fn title(&self) -> &'static str {
-        "Modelling"
+        "Model"
     }
 
     fn ribbon_groups(&self) -> &[RibbonGroup] {
@@ -88,8 +91,9 @@ impl CadModule for ModelModule {
                 RibbonGroup {
                     title: "Edges",
                     tools: vec![
-                        RibbonItem::LargeTool(tool("SOLIDFILLET", "Fillet", FILLET_ICON)),
-                        RibbonItem::LargeTool(tool("SOLIDCHAMFER", "Chamfer", CHAMFER_ICON)),
+                        RibbonItem::LargeTool(tool("FILLETEDGE", "Fillet Edge", FILLET_ICON)),
+                        RibbonItem::LargeTool(tool("CHAMFEREDGE", "Chamfer", CHAMFER_ICON)),
+                        RibbonItem::LargeTool(tool("SHELL", "Shell", PRESSPULL_ICON)),
                     ],
                 },
             ]

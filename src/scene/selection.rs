@@ -1,40 +1,118 @@
 use super::*;
 
+/// The first PE_URL string is the URL; later strings describe the link.
+pub(crate) fn pe_url_of(entity: &EntityType) -> Option<&str> {
+    entity.common().extended_data.get_record("PE_URL")
+        .and_then(|record| {
+            record.values.iter().find_map(|value| match value {
+                acadrust::xdata::XDataValue::String(text) => Some(text.trim()),
+                _ => None,
+            })
+        })
+        .filter(|text| !text.is_empty())
+}
+
 impl Scene {
     // ── Selection ─────────────────────────────────────────────────────────
     /// Treat a classic LEADER and its attached annotation as one logical object.
     /// Clicking/copying/deleting either side expands to the complete pair.
-    pub(crate) fn handles_expanded_for_leader_annotations(
+    /// Every LEADER that points at `annotation`, resolved once per
+    /// `geometry_epoch` rather than by walking the document per handle.
+    fn leaders_by_annotation(
         &self,
-        handles: &[Handle],
-    ) -> Vec<Handle> {
-        let mut expanded = handles.to_vec();
+    ) -> std::cell::Ref<'_, (u64, HashMap<Handle, Vec<Handle>>)> {
+        {
+            let cache = self.leaders_by_annotation_cache.borrow();
+            if cache.as_ref().is_some_and(|(epoch, _)| *epoch == self.geometry_epoch) {
+                drop(cache);
+                return std::cell::Ref::map(
+                    self.leaders_by_annotation_cache.borrow(),
+                    |c| c.as_ref().unwrap(),
+                );
+            }
+        }
+        let mut by_annotation: HashMap<Handle, Vec<Handle>> = HashMap::default();
+        for entity in self.document.entities() {
+            if let EntityType::Leader(leader) = entity {
+                if !leader.annotation_handle.is_null() {
+                    by_annotation
+                        .entry(leader.annotation_handle)
+                        .or_default()
+                        .push(entity.common().handle);
+                }
+            }
+        }
+        *self.leaders_by_annotation_cache.borrow_mut() =
+            Some((self.geometry_epoch, by_annotation));
+        std::cell::Ref::map(self.leaders_by_annotation_cache.borrow(), |c| {
+            c.as_ref().unwrap()
+        })
+    }
 
+    fn expanded_with_leaders(&self, handles: &[Handle]) -> Vec<Handle> {
+        let leaders = self.leaders_by_annotation();
+        let mut expanded = Vec::with_capacity(handles.len());
         for &handle in handles {
-            // LEADER -> annotation.
+            let start = expanded.len();
+            expanded.push(handle);
             if let Some(EntityType::Leader(leader)) = self.document.get_entity(handle) {
                 if !leader.annotation_handle.is_null() {
                     expanded.push(leader.annotation_handle);
                 }
             }
-
-            // Annotation -> LEADER.
-            expanded.extend(self.document.entities().filter_map(|entity| match entity {
-                EntityType::Leader(leader)
-                    if !leader.annotation_handle.is_null()
-                        && leader.annotation_handle == handle =>
-                {
-                    Some(entity.common().handle)
-                }
-                _ => None,
-            }));
+            if let Some(pointing) = leaders.1.get(&handle) {
+                expanded.extend(pointing.iter().copied());
+            }
+            expanded[start..].sort_unstable_by_key(Handle::value);
         }
+        expanded
+    }
 
+    pub fn select_entities(&mut self, handles: &[Handle]) {
+        if handles.is_empty() {
+            return;
+        }
+        self.selected_constraint = None;
+        let expanded = self.expanded_with_leaders(handles);
+        let mut changed = false;
+        for handle in expanded {
+            if self.selected.insert(handle) {
+                self.selected_order.push(handle);
+                changed = true;
+            }
+        }
+        if changed {
+            self.bump_selection_set();
+        }
+    }
+
+    pub fn deselect_entities(&mut self, handles: &[Handle]) {
+        if handles.is_empty() {
+            return;
+        }
+        let doomed: HashSet<Handle> =
+            self.expanded_with_leaders(handles).into_iter().collect();
+        let mut changed = false;
+        for handle in &doomed {
+            changed |= self.selected.remove(handle);
+        }
+        if changed {
+            self.selected_order.retain(|handle| !doomed.contains(handle));
+            self.bump_selection_set();
+        }
+    }
+
+    pub(crate) fn handles_expanded_for_leader_annotations(
+        &self,
+        handles: &[Handle],
+    ) -> Vec<Handle> {
+        let mut expanded = self.expanded_with_leaders(handles);
         expanded.sort_unstable_by_key(|handle| handle.value());
         expanded.dedup();
         expanded
     }
     pub fn select_entity(&mut self, handle: Handle, exclusive: bool) {
+        self.selected_constraint = None;
         let handles = self.handles_expanded_for_leader_annotations(&[handle]);
         let handles = crate::modules::aec::commands::expand_handles_for_wall_packages(self, &handles);
         let mut changed = false;
@@ -58,6 +136,7 @@ impl Scene {
     }
 
     pub fn deselect_all(&mut self) {
+        self.selected_constraint = None;
         if self.selected.is_empty() {
             return;
         }
@@ -140,6 +219,7 @@ impl Scene {
     /// only when its contents actually changed. History/file/command paths must
     /// use this instead of assigning `selected` directly.
     pub(crate) fn replace_selection(&mut self, selected: HashSet<Handle>) {
+        self.selected_constraint = None;
         let handles: Vec<Handle> = selected.iter().copied().collect();
         let selected: HashSet<Handle> = crate::modules::aec::commands::expand_handles_for_wall_packages(
             self,
@@ -777,6 +857,11 @@ impl Scene {
                     PropValue::Stepper { display, .. } => display,
                     PropValue::ColorVaries
                     | PropValue::LwVaries
+                    | PropValue::FieldLwVaries { .. }
+                    | PropValue::EntityLink { .. }
+                    | PropValue::ParamRow { .. }
+                    | PropValue::ParamAddRow
+                    | PropValue::ParamsVisibilityToggle(_) => return None,
                     | PropValue::FieldLwVaries { .. }
                     | PropValue::Picker { .. }
                     | PropValue::EntityRef { .. }

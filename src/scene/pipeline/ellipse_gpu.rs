@@ -113,7 +113,7 @@ pub fn create_pipelines(
 ) -> (wgpu::RenderPipeline, wgpu::RenderPipeline) {
     let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
         label: Some("ellipse.wgsl"),
-        source: wgpu::ShaderSource::Wgsl(include_str!("../../shaders/ellipse.wgsl").into()),
+        source: wgpu::ShaderSource::Wgsl(draw_order_shader!("ellipse.wgsl").into()),
     });
     let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
         label: Some("ellipse.pipeline.layout"),
@@ -218,7 +218,7 @@ pub fn extract_ellipse_instance_from_geom(
 
     let major_len_sq = major_axis[0] * major_axis[0] + major_axis[1] * major_axis[1] + major_axis[2] * major_axis[2];
     let norm_len_sq = normal[0] * normal[0] + normal[1] * normal[1] + normal[2] * normal[2];
-    if major_len_sq <= 1e-12 || !major_len_sq.is_finite()
+    if major_len_sq <= 1e-12 || !major_len_sq.is_finite() || major_len_sq > 1e12
         || norm_len_sq <= 1e-12 || !norm_len_sq.is_finite()
         || minor_axis_ratio <= 1e-6 || !minor_axis_ratio.is_finite()
         || !start_param.is_finite() || !end_param.is_finite()
@@ -254,7 +254,7 @@ pub fn extract_ellipse_instances(
 ) -> Option<Vec<EllipseInstance>> {
     if wire.tangent_geoms.is_empty()
         || !wire.fill_tris.is_empty()
-        || !wire.pick_tris.is_empty()
+        || wire.fill_is_3d
         || !wire.text_verts.is_empty()
         || wire.render_instance.is_some()
     {
@@ -305,7 +305,7 @@ mod tests {
 
     #[test]
     fn ellipse_shader_validates_with_naga() {
-        let source = include_str!("../../shaders/ellipse.wgsl");
+        let source = draw_order_shader!("ellipse.wgsl");
         let module = naga::front::wgsl::parse_str(source).expect("ellipse.wgsl parses cleanly");
         let mut validator = naga::valid::Validator::new(
             naga::valid::ValidationFlags::all(),

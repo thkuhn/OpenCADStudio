@@ -30,19 +30,9 @@ pub fn general_section(entity: &EntityType) -> PropSection {
         },
     );
 
-    // Hyperlink is stored in XDATA under the "PE_URL" application.
-    let hyperlink = common
-        .extended_data
-        .get_record("PE_URL")
-        .and_then(|r| {
-            r.values.iter().find_map(|v| match v {
-                acadrust::xdata::XDataValue::String(s) if !s.is_empty() => Some(s.clone()),
-                _ => None,
-            })
-        })
-        .unwrap_or_default();
+    let hyperlink = crate::scene::pe_url_of(entity).unwrap_or_default().to_owned();
 
-    let mut section = PropSection {
+    let section = PropSection {
         title: t!("General").into_owned(),
         props: vec![
             Property {
@@ -98,15 +88,6 @@ pub fn general_section(entity: &EntityType) -> PropSection {
         ],
     };
 
-    // Thickness (DXF 39) is a General-group property, but only the entity
-    // types that carry an extrusion thickness expose it (line, circle, arc,
-    // polyline, text, 2D solid, …). Show it right after Hyperlink for those.
-    if let Some(t) = crate::scene::view::dispatch::entity_thickness(entity) {
-        section
-            .props
-            .push(crate::entities::common::edit_prop(t!("Thickness").as_ref(), "thickness", t));
-    }
-
     section
 }
 
@@ -120,6 +101,7 @@ pub fn visualization_section(entity: &EntityType) -> Option<PropSection> {
             | EntityType::BlockEnd(_)
             | EntityType::Seqend(_)
             | EntityType::Leader(_)
+            | EntityType::Wipeout(_)
             | EntityType::Unknown(_)
             // Non-plotting drawing-view border: never rendered, no properties.
             | EntityType::ViewBorder(_)

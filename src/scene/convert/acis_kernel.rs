@@ -24,7 +24,8 @@ pub fn tessellate_sat(
     color: [f32; 4],
     facet_res: f64,
     chordal_deflection: Option<f64>,
-    isolines: usize,
+    isolines: [usize; 2],
+    planar_isolines: bool,
 ) -> Option<MeshLodSet> {
     let (bodies, loss) = lift(document);
     if bodies.is_empty() {
@@ -114,7 +115,8 @@ pub fn tessellate_sat(
             max_angle,
             source_fit * placement_scale,
         )
-        .with_isolines(isolines);
+        .with_uv_isolines(isolines[0], isolines[1])
+        .with_planar_isolines(planar_isolines);
         if let Some(deflection) = chordal_deflection {
             tolerance = tolerance.with_chordal_deflection(deflection);
         }
@@ -177,6 +179,11 @@ pub fn tessellate_sat(
         color,
         None,
     ));
+    if let [single] = bodies.as_slice() {
+        if let Some(properties) = brep::analytic_mass_properties(&single.0) {
+            set.apply_mass_properties(properties);
+        }
+    }
     set.curved_gens = curved_gens;
     for point in edges {
         let high = [point[0] as f32, point[1] as f32, point[2] as f32];

@@ -1,7 +1,8 @@
 use super::{
     document::{
         DeltaSnapshot, HistorySnapshot, ObjectEntryDelta, ObjectVisibilitySnapshot,
-        PendingHistorySnapshot, StructureSnapshot, TableEntryDelta,
+        ParametricConstraintsEntryDelta, PendingHistorySnapshot, StructureSnapshot,
+        TableEntryDelta,
     },
     OpenCADStudio,
 };
@@ -167,8 +168,7 @@ impl OpenCADStudio {
     ) {
         self.finish_pending_history(i);
         let after = self.tabs[i].scene.object_isolation.clone();
-        let selected_after: Vec<Handle> =
-            self.tabs[i].scene.selected.iter().copied().collect();
+        let selected_after: Vec<Handle> = self.tabs[i].scene.selected.iter().copied().collect();
         if before == after && selected_before == selected_after {
             return;
         }
@@ -225,15 +225,15 @@ impl OpenCADStudio {
             dirty_after: true,
             active_layer: None,
             structure: (!objects.is_empty()).then_some(StructureSnapshot::Objects(objects)),
+            parametric_constraints: Vec::new(),
+            named_parameters: None,
             label: label.into(),
         };
-        self.push_undo_entry(i, HistorySnapshot::Delta(delta));
+        self.push_undo_entry(i, HistorySnapshot::Delta(Box::new(delta)));
     }
 
     pub(super) fn defer_live_entity_history_after(&mut self, i: usize, handle: Handle) {
-        let Some(HistorySnapshot::Delta(delta)) =
-            self.tabs[i].history.undo_stack.last_mut()
-        else {
+        let Some(HistorySnapshot::Delta(delta)) = self.tabs[i].history.undo_stack.last_mut() else {
             return;
         };
         if let Some((_, _, after)) = delta
@@ -252,9 +252,7 @@ impl OpenCADStudio {
         let selected_after = self.tabs[i].scene.selected.iter().copied().collect();
         let current_layout_after = self.tabs[i].scene.current_layout.clone();
         let dirty_after = self.tabs[i].dirty;
-        let Some(HistorySnapshot::Delta(delta)) =
-            self.tabs[i].history.undo_stack.last_mut()
-        else {
+        let Some(HistorySnapshot::Delta(delta)) = self.tabs[i].history.undo_stack.last_mut() else {
             return;
         };
         let Some((_, _, entry_after)) = delta
@@ -333,10 +331,13 @@ impl OpenCADStudio {
             dirty_after,
             active_layer: (pending.active_layer != active_layer_after)
                 .then_some((pending.active_layer, active_layer_after)),
-            structure: structure_changed.then_some(StructureSnapshot::Full(pending.structure_before)),
+            structure: structure_changed
+                .then_some(StructureSnapshot::Full(pending.structure_before)),
+            parametric_constraints: Vec::new(),
+            named_parameters: None,
             label: pending.label,
         };
-        self.push_undo_entry(i, HistorySnapshot::Delta(delta));
+        self.push_undo_entry(i, HistorySnapshot::Delta(Box::new(delta)));
     }
 
     pub(super) fn finish_all_pending_history(&mut self) {
@@ -441,9 +442,11 @@ impl OpenCADStudio {
             dirty_after: self.tabs[i].dirty,
             active_layer: None,
             structure: Some(StructureSnapshot::Layers(entries)),
+            parametric_constraints: Vec::new(),
+            named_parameters: None,
             label: pending.label,
         };
-        self.push_undo_entry(i, HistorySnapshot::Delta(delta));
+        self.push_undo_entry(i, HistorySnapshot::Delta(Box::new(delta)));
     }
 
     pub(super) fn begin_text_style_undo(
@@ -496,9 +499,11 @@ impl OpenCADStudio {
             dirty_after: self.tabs[i].dirty,
             active_layer: None,
             structure: Some(StructureSnapshot::TextStyles(entries)),
+            parametric_constraints: Vec::new(),
+            named_parameters: None,
             label: pending.label,
         };
-        self.push_undo_entry(i, HistorySnapshot::Delta(delta));
+        self.push_undo_entry(i, HistorySnapshot::Delta(Box::new(delta)));
     }
 
     pub(super) fn begin_dim_style_undo(
@@ -551,9 +556,11 @@ impl OpenCADStudio {
             dirty_after: self.tabs[i].dirty,
             active_layer: None,
             structure: Some(StructureSnapshot::DimStyles(entries)),
+            parametric_constraints: Vec::new(),
+            named_parameters: None,
             label: pending.label,
         };
-        self.push_undo_entry(i, HistorySnapshot::Delta(delta));
+        self.push_undo_entry(i, HistorySnapshot::Delta(Box::new(delta)));
     }
 
     fn group_object_state(&self, i: usize) -> FxHashMap<Handle, acadrust::objects::ObjectType> {
@@ -614,9 +621,11 @@ impl OpenCADStudio {
             dirty_after: self.tabs[i].dirty,
             active_layer: None,
             structure: Some(StructureSnapshot::Objects(entries)),
+            parametric_constraints: Vec::new(),
+            named_parameters: None,
             label: pending.label,
         };
-        self.push_undo_entry(i, HistorySnapshot::Delta(delta));
+        self.push_undo_entry(i, HistorySnapshot::Delta(Box::new(delta)));
     }
 
     pub(super) fn commit_style_undo(
@@ -647,9 +656,11 @@ impl OpenCADStudio {
                 dim_names,
                 object_handles,
             }),
+            parametric_constraints: Vec::new(),
+            named_parameters: None,
             label: "STYLE".to_string(),
         };
-        self.push_undo_entry(i, HistorySnapshot::Delta(delta));
+        self.push_undo_entry(i, HistorySnapshot::Delta(Box::new(delta)));
     }
 
     /// Dimension copies still need a full snapshot because they clone a fresh
@@ -675,6 +686,10 @@ impl OpenCADStudio {
             entity,
             EntityType::Block(_)
                 | EntityType::BlockEnd(_)
+                | EntityType::Extended(acadrust::entities::ExtendedEntity {
+                    data: acadrust::entities::ExtendedEntityData::SectionObject(_),
+                    ..
+                })
         ) {
             return false;
         }
@@ -723,14 +738,16 @@ impl OpenCADStudio {
                 pending.label
             );
         }
-        let (entity_before, object_before) = rec.into_recorded_images();
-        let entities: Vec<(Handle, Option<Arc<EntityType>>, Option<Arc<EntityType>>)> = entity_before
-            .into_iter()
-            .map(|(h, before)| {
-                let after = self.tabs[i].scene.document.get_entity_arc(h);
-                (h, before, after)
-            })
-            .collect();
+        let (entity_before, object_before, parametric_constraints_before, named_parameters_before) =
+            rec.into_recorded_images();
+        let entities: Vec<(Handle, Option<Arc<EntityType>>, Option<Arc<EntityType>>)> =
+            entity_before
+                .into_iter()
+                .map(|(h, before)| {
+                    let after = self.tabs[i].scene.document.get_entity_arc(h);
+                    (h, before, after)
+                })
+                .collect();
         let objects: Vec<ObjectEntryDelta> = object_before
             .into_iter()
             .filter_map(|(handle, before)| {
@@ -742,6 +759,32 @@ impl OpenCADStudio {
                 })
             })
             .collect();
+        let parametric_constraints: Vec<ParametricConstraintsEntryDelta> =
+            parametric_constraints_before
+                .into_iter()
+                .filter_map(|(scope, before)| {
+                    let after = self.tabs[i]
+                        .scene
+                        .parametric_constraint_set(scope)
+                        .cloned()
+                        .unwrap_or_else(|| {
+                            crate::scene::parametric_constraints::ParametricConstraintSet::new(
+                                scope,
+                            )
+                        });
+                    (before.constraints != after.constraints).then_some(
+                        ParametricConstraintsEntryDelta {
+                            scope,
+                            before,
+                            after,
+                        },
+                    )
+                })
+                .collect();
+        let named_parameters = named_parameters_before.and_then(|before| {
+            let after = self.tabs[i].scene.named_parameters().clone();
+            (before != after).then_some((before, after))
+        });
         let selected_after = self.tabs[i].scene.selected.iter().copied().collect();
         let dirty_after = self.tabs[i].dirty;
         let mut structure = pending.structure_before.map(StructureSnapshot::Full);
@@ -777,9 +820,11 @@ impl OpenCADStudio {
             dirty_after,
             active_layer: None,
             structure,
+            parametric_constraints,
+            named_parameters,
             label: pending.label,
         };
-        self.push_undo_entry(i, HistorySnapshot::Delta(delta));
+        self.push_undo_entry(i, HistorySnapshot::Delta(Box::new(delta)));
     }
 
     /// Apply one side of a delta entry in place: `undo` restores each entity's
@@ -799,9 +844,10 @@ impl OpenCADStudio {
         if let Some(structure) = d.structure.as_mut() {
             match structure {
                 StructureSnapshot::Full(stored) => {
-                    let inverse = self.tabs[i].scene.document.swap_structure(
-                        std::mem::replace(stored, acadrust::CadDocument::new()),
-                    );
+                    let inverse = self.tabs[i]
+                        .scene
+                        .document
+                        .swap_structure(std::mem::replace(stored, acadrust::CadDocument::new()));
                     *stored = inverse;
                     self.tabs[i].scene.invalidate_dependency_index();
                 }
@@ -905,6 +951,13 @@ impl OpenCADStudio {
         }
         let changes = self.tabs[i].scene.apply_entity_delta(&d.entities, undo);
         let scene = &mut self.tabs[i].scene;
+        for entry in &d.parametric_constraints {
+            let value = if undo { &entry.before } else { &entry.after };
+            *scene.parametric_constraint_set_mut(entry.scope) = value.clone();
+        }
+        if let Some((before, after)) = &d.named_parameters {
+            scene.named_parameters = if undo { before } else { after }.clone();
+        }
         let (sel, dirty) = if undo {
             (&d.selected_before, d.dirty_before)
         } else {
@@ -1019,10 +1072,11 @@ impl OpenCADStudio {
                         // references visually stale after BEDIT closes.
                         scene.bump_geometry();
                     } else {
-                        scene.bump_entities(&final_changes);
+                        scene.bump_entities_after_parametric_solve(&final_changes);
                     }
                 }
             }
+            scene.sync_native_parametric_graph();
             scene.clear_preview_wire();
         }
         // UCS state is cached separately from its persisted header/viewport
@@ -1057,7 +1111,8 @@ impl OpenCADStudio {
         let available = self.tabs[i].history.undo_stack.len();
         let steps = steps.min(available);
         if steps == 0 {
-            self.command_line.push_info(crate::t!("Nothing to undo.").as_ref());
+            self.command_line
+                .push_info(crate::t!("Nothing to undo.").as_ref());
             return;
         }
 
@@ -1080,14 +1135,15 @@ impl OpenCADStudio {
                             structure,
                             StructureSnapshot::Full(_) | StructureSnapshot::Layers(_)
                         )
-                    }) || d.active_layer.is_some() || d.entities.iter().any(|(_, before, after)| {
-                        before
-                            .as_deref()
-                            .is_some_and(|entity| matches!(entity, EntityType::Viewport(_)))
-                            || after
+                    }) || d.active_layer.is_some()
+                        || d.entities.iter().any(|(_, before, after)| {
+                            before
                                 .as_deref()
                                 .is_some_and(|entity| matches!(entity, EntityType::Viewport(_)))
-                    });
+                                || after
+                                    .as_deref()
+                                    .is_some_and(|entity| matches!(entity, EntityType::Viewport(_)))
+                        });
                     had_full |= d.structure.as_ref().is_some_and(StructureSnapshot::is_full);
                     changes.extend(self.apply_delta_state(i, &mut d, true));
                     self.tabs[i]
@@ -1115,7 +1171,8 @@ impl OpenCADStudio {
         let available = self.tabs[i].history.redo_stack.len();
         let steps = steps.min(available);
         if steps == 0 {
-            self.command_line.push_info(crate::t!("Nothing to redo.").as_ref());
+            self.command_line
+                .push_info(crate::t!("Nothing to redo.").as_ref());
             return;
         }
 
@@ -1135,14 +1192,15 @@ impl OpenCADStudio {
                             structure,
                             StructureSnapshot::Full(_) | StructureSnapshot::Layers(_)
                         )
-                    }) || d.active_layer.is_some() || d.entities.iter().any(|(_, before, after)| {
-                        before
-                            .as_deref()
-                            .is_some_and(|entity| matches!(entity, EntityType::Viewport(_)))
-                            || after
+                    }) || d.active_layer.is_some()
+                        || d.entities.iter().any(|(_, before, after)| {
+                            before
                                 .as_deref()
                                 .is_some_and(|entity| matches!(entity, EntityType::Viewport(_)))
-                    });
+                                || after
+                                    .as_deref()
+                                    .is_some_and(|entity| matches!(entity, EntityType::Viewport(_)))
+                        });
                     had_full |= d.structure.as_ref().is_some_and(StructureSnapshot::is_full);
                     changes.extend(self.apply_delta_state(i, &mut d, false));
                     self.tabs[i]

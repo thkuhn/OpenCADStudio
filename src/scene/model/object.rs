@@ -26,10 +26,7 @@ pub enum PropValue {
     /// Editable text plus a dropdown of existing options (block reference
     /// Name row): picking an option re-points the reference, submitting a
     /// new name renames the definition.
-    EditChoice {
-        value: String,
-        options: Vec<String>,
-    },
+    EditChoice { value: String, options: Vec<String> },
     /// ACI/RGB/ByLayer/ByBlock color — rendered as a color picker.
     ColorChoice(AcadColor),
     /// Color-book color with its file-provided display name.
@@ -68,6 +65,38 @@ pub enum PropValue {
     EntityRef { display: String, handle: Handle },
     /// Live property for the active command.
     Live(LiveFieldValue),
+    /// A clickable link to one or more entities — the Constraints section's
+    /// row for one parametric constraint. Clicking it selects every
+    /// entity in `handles` in the viewport. `conflicting` mirrors
+    /// `ParametricConstraintSet::conflicts`, tinting the row the same danger
+    /// color the constraint's glyph pill already uses. `id` routes the row's
+    /// delete action back to that constraint in the active scope.
+    EntityLink {
+        id: crate::scene::parametric_constraints::ConstraintId,
+        handles: Vec<Handle>,
+        conflicting: bool,
+    },
+    /// One row of the document-wide named-parameter table (Parameters
+    /// section, shown when nothing is selected). `index` is the row's
+    /// position in `ParameterTable::iter()` order — stable across edits to
+    /// other rows, used to route `PropParamInput`/`PropParamCommit`/
+    /// `PropParamDelete` back to the right parameter without re-keying on a
+    /// name that might itself be mid-edit. `resolved` is the live value or
+    /// error, recomputed fresh every render (same "cheap enough to rebuild"
+    /// approach the old modal's preview column already used).
+    ParamRow {
+        index: usize,
+        name: String,
+        formula: String,
+        resolved: Result<f64, String>,
+    },
+    /// The trailing "+ Add parameter" row in the Parameters section.
+    ParamAddRow,
+    /// The Parameters section's leading header row (no-selection page only):
+    /// a global on/off toggle for whether any constraint pill in the
+    /// viewport shows its driven value/parameter-name text. Mirrors
+    /// `App::show_constraint_values`.
+    ParamsVisibilityToggle(bool),
 }
 
 /// A single property row in the Properties panel.
@@ -108,6 +137,8 @@ pub enum GripShape {
     Circle,
     /// Screen-offset menu selector.
     Dropdown,
+    /// Menu selector placed immediately beside its anchor grip.
+    DropdownAdjacent,
 }
 
 /// Describes one grip point for an entity.
@@ -161,6 +192,10 @@ pub enum GripMenuAction {
     Lengthen,
     Radius,
     ArcLength,
+    RectangleWidth,
+    RectangleHeight,
+    RectangleResize,
+    MoveParallel,
     AddVertex,
     RemoveVertex,
     ConvertToArc,
@@ -190,6 +225,10 @@ pub enum GripMenuAction {
     RefineVertices,
     ShowFit,
     ShowControlVertices,
+    SectionPlane,
+    SectionSlice,
+    SectionBoundary,
+    SectionVolume,
     MoveWithText,
     StackText,
     UnstackText,

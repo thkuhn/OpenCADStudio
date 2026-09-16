@@ -6,11 +6,11 @@ use crate::scene::pick::grip::GripEdit;
 use crate::scene::GripDef;
 use crate::scene::{ObjectIsolationState, Scene};
 use crate::snap::SnapResult;
+use crate::t;
 use crate::ui::{LayerPanel, PropertiesPanel};
 use acadrust::tables::{normalize_name, Ucs};
 use acadrust::{CadDocument, EntityType, Handle};
 use iced;
-use crate::t;
 use std::any::Any;
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -206,6 +206,16 @@ pub(crate) struct DocumentTab {
         Option<crate::modules::aec::engine::library::StyleLibrary>,
     /// Last camera_generation value written back to the document.
     pub(super) last_synced_camera_gen: u64,
+    /// Session set of unloaded reference keys (Task 8b). Owns the set that
+    /// `collect_entries` takes as `unloaded`, so CLI and palette agree.
+    pub(super) xref_unloaded: crate::io::xref_model::UnloadSet,
+    /// Load-time mtimes per reference key (Task 8b). Written on every
+    /// palette refresh; `Stale` is detectable from the second refresh on.
+    pub(super) xref_stat_cache: crate::io::xref_model::RefStatCache,
+    /// NotFound count from the last file-open xref resolution (Task 8b).
+    /// The palette renders a neutral "open EXTERNALREFERENCES" notice while non-zero;
+    /// never auto-opens a modal. Cleared by a clean palette refresh.
+    pub(super) xref_missing: usize,
     /// Sentinel "Welcome / Start" tab. Always at index 0 when present.
     /// Cannot be closed; the viewport area renders a welcome page instead
     /// of the model-space shader. The scene is still constructed so the
@@ -251,6 +261,21 @@ impl DocumentTab {
             .and_then(|index| self.block_edits.get_mut(index))
     }
 
+    /// The [`crate::scene::parametric_constraints::ParametricScope`] a new persistent
+    /// constraint should attach to right now — whatever's actually being
+    /// edited: the open block definition if a BEDIT session is active, model
+    /// space otherwise.
+    pub(super) fn current_parametric_scope(
+        &self,
+    ) -> crate::scene::parametric_constraints::ParametricScope {
+        match self.active_block_edit_session() {
+            Some(session) => {
+                crate::scene::parametric_constraints::ParametricScope::Block(session.br_handle)
+            }
+            None => crate::scene::parametric_constraints::ParametricScope::ModelSpace,
+        }
+    }
+
     /// The active WCS↔UCS converter for this tab — identity when no UCS is set.
     /// Every consumer that needs UCS-relative coordinates goes through this.
     pub(super) fn ucs_xform(&self) -> super::helpers::UcsXform {
@@ -291,8 +316,7 @@ impl DocumentTab {
         u.origin = h.model_space_ucs_origin;
         u.x_axis = h.model_space_ucs_x_axis;
         u.y_axis = h.model_space_ucs_y_axis;
-        if h.model_space_ucs_name.is_empty()
-            && super::helpers::UcsXform::from_ucs(&u).is_identity()
+        if h.model_space_ucs_name.is_empty() && super::helpers::UcsXform::from_ucs(&u).is_identity()
         {
             None
         } else {
@@ -475,31 +499,30 @@ impl DocumentTab {
                 }
             }
         } else {
-            let (origin, x_axis, y_axis, elevation, ortho, named, base) =
-                match &self.active_ucs {
-                    Some(ucs) => (
-                        ucs.origin,
-                        ucs.x_axis,
-                        ucs.y_axis,
-                        ucs.elevation,
-                        ucs.ortho_type,
-                        if ucs.named_ucs_handle.is_valid() {
-                            ucs.named_ucs_handle
-                        } else {
-                            ucs.handle
-                        },
-                        ucs.base_ucs_handle,
-                    ),
-                    None => (
-                        Vector3::ZERO,
-                        Vector3::UNIT_X,
-                        Vector3::UNIT_Y,
-                        0.0,
-                        0,
-                        Handle::NULL,
-                        Handle::NULL,
-                    ),
-                };
+            let (origin, x_axis, y_axis, elevation, ortho, named, base) = match &self.active_ucs {
+                Some(ucs) => (
+                    ucs.origin,
+                    ucs.x_axis,
+                    ucs.y_axis,
+                    ucs.elevation,
+                    ucs.ortho_type,
+                    if ucs.named_ucs_handle.is_valid() {
+                        ucs.named_ucs_handle
+                    } else {
+                        ucs.handle
+                    },
+                    ucs.base_ucs_handle,
+                ),
+                None => (
+                    Vector3::ZERO,
+                    Vector3::UNIT_X,
+                    Vector3::UNIT_Y,
+                    0.0,
+                    0,
+                    Handle::NULL,
+                    Handle::NULL,
+                ),
+            };
             for object in self.scene.document.objects.values_mut() {
                 let acadrust::objects::ObjectType::Layout(layout) = object else {
                     continue;
@@ -616,6 +639,9 @@ impl DocumentTab {
             active_block_edit: None,
             active_mleader_style: "Standard".to_string(),
             last_synced_camera_gen: 0,
+            xref_unloaded: crate::io::xref_model::UnloadSet::default(),
+            xref_stat_cache: crate::io::xref_model::RefStatCache::default(),
+            xref_missing: 0,
             is_start: false,
             pan_mode: false,
             orbit_mode: false,
@@ -658,7 +684,11 @@ impl DocumentTab {
 /// full entity store.
 #[derive(Clone)]
 pub(super) enum HistorySnapshot {
-    Delta(DeltaSnapshot),
+    // Boxed: `DeltaSnapshot` grew past the other variants once
+    // `parametric_constraints` (ERASE-undo fix) was added, and every undo/redo
+    // stack slot costs as much as this enum's largest variant regardless of
+    // which one it actually holds.
+    Delta(Box<DeltaSnapshot>),
     ObjectVisibility(ObjectVisibilitySnapshot),
 }
 
@@ -686,29 +716,33 @@ impl HistorySnapshot {
                 )
                 .saturating_add(d.selected_before.len().saturating_mul(16))
                 .saturating_add(d.selected_after.len().saturating_mul(16))
+                .saturating_add(d.active_layer.as_ref().map_or(0, |(before, after)| {
+                    before.len().saturating_add(after.len())
+                }))
                 .saturating_add(
-                    d.active_layer
-                        .as_ref()
-                        .map_or(0, |(before, after)| before.len().saturating_add(after.len())),
+                    d.parametric_constraints
+                        .iter()
+                        .map(|entry| {
+                            entry
+                                .before
+                                .constraints
+                                .len()
+                                .saturating_add(entry.after.constraints.len())
+                        })
+                        .sum::<usize>()
+                        .saturating_mul(96),
                 )
+                .saturating_add(d.named_parameters.as_ref().map_or(0, |(before, after)| {
+                    before.len().saturating_add(after.len()).saturating_mul(128)
+                }))
                 .saturating_add(d.label.len()),
             HistorySnapshot::ObjectVisibility(v) => v
                 .before
                 .hidden
                 .len()
-                .saturating_add(
-                    v.before
-                        .keep
-                        .as_ref()
-                        .map_or(0, rustc_hash::FxHashSet::len),
-                )
+                .saturating_add(v.before.keep.as_ref().map_or(0, rustc_hash::FxHashSet::len))
                 .saturating_add(v.after.hidden.len())
-                .saturating_add(
-                    v.after
-                        .keep
-                        .as_ref()
-                        .map_or(0, rustc_hash::FxHashSet::len),
-                )
+                .saturating_add(v.after.keep.as_ref().map_or(0, rustc_hash::FxHashSet::len))
                 .saturating_add(v.selected_before.len())
                 .saturating_add(v.selected_after.len())
                 .saturating_mul(16)
@@ -747,6 +781,17 @@ pub(super) struct DeltaSnapshot {
     /// Opposite non-entity document state. `apply_delta_state` swaps this with
     /// the live structure, so the same allocation shuttles between undo/redo.
     pub(super) structure: Option<StructureSnapshot>,
+    /// Parametric-constraint scopes this same command changed alongside its
+    /// entities (e.g. ERASE removing a constraint set's touched constraints)
+    /// — `parametric_constraints` lives on `Scene`, not in `document`/
+    /// `document.objects`, so it needs its own channel here rather than
+    /// riding along with `entities`/`structure`. Almost always empty.
+    pub(super) parametric_constraints: Vec<ParametricConstraintsEntryDelta>,
+    /// Drawing-wide parameter table changed by this transaction.
+    pub(super) named_parameters: Option<(
+        crate::scene::named_parameters::ParameterTable,
+        crate::scene::named_parameters::ParameterTable,
+    )>,
     pub(super) label: String,
 }
 
@@ -805,6 +850,15 @@ pub(super) struct ObjectEntryDelta {
     pub(super) handle: Handle,
     pub(super) before: Option<acadrust::objects::ObjectType>,
     pub(super) after: Option<acadrust::objects::ObjectType>,
+}
+
+/// One parametric-constraint scope's before/after image within an entity delta.
+/// This keeps constraint cleanup atomic with edits such as entity erasure.
+#[derive(Clone)]
+pub(super) struct ParametricConstraintsEntryDelta {
+    pub(super) scope: crate::scene::parametric_constraints::ParametricScope,
+    pub(super) before: crate::scene::parametric_constraints::ParametricConstraintSet,
+    pub(super) after: crate::scene::parametric_constraints::ParametricConstraintSet,
 }
 
 #[derive(Default)]

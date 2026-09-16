@@ -11,6 +11,108 @@
 use crate::snap::SnapType;
 use serde::{Deserialize, Serialize};
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum AutoConstraintKind {
+    Coincident,
+    Collinear,
+    Parallel,
+    Perpendicular,
+    Tangent,
+    Concentric,
+    Horizontal,
+    Vertical,
+    Equal,
+}
+
+impl AutoConstraintKind {
+    pub const ALL: [Self; 9] = [
+        Self::Coincident,
+        Self::Collinear,
+        Self::Parallel,
+        Self::Perpendicular,
+        Self::Tangent,
+        Self::Concentric,
+        Self::Horizontal,
+        Self::Vertical,
+        Self::Equal,
+    ];
+
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Coincident => "Coincident",
+            Self::Collinear => "Collinear",
+            Self::Parallel => "Parallel",
+            Self::Perpendicular => "Perpendicular",
+            Self::Tangent => "Tangent",
+            Self::Concentric => "Concentric",
+            Self::Horizontal => "Horizontal",
+            Self::Vertical => "Vertical",
+            Self::Equal => "Equal",
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct AutoConstrainSettings {
+    pub priority: Vec<AutoConstraintKind>,
+    pub enabled: Vec<AutoConstraintKind>,
+    pub tangent_must_share_point: bool,
+    pub perpendicular_must_intersect: bool,
+    pub distance_tolerance: f64,
+    pub angle_tolerance_deg: f64,
+}
+
+impl Default for AutoConstrainSettings {
+    fn default() -> Self {
+        Self {
+            priority: AutoConstraintKind::ALL.to_vec(),
+            // Keep Equal available without creating redundant relations
+            // between equal-length segments by default.
+            enabled: AutoConstraintKind::ALL
+                .into_iter()
+                .filter(|kind| *kind != AutoConstraintKind::Equal)
+                .collect(),
+            tangent_must_share_point: true,
+            perpendicular_must_intersect: true,
+            distance_tolerance: 0.05,
+            angle_tolerance_deg: 1.0,
+        }
+    }
+}
+
+impl AutoConstrainSettings {
+    pub fn sanitize(&mut self) {
+        let mut priority = Vec::with_capacity(AutoConstraintKind::ALL.len());
+        for kind in self
+            .priority
+            .iter()
+            .copied()
+            .chain(AutoConstraintKind::ALL)
+        {
+            if !priority.contains(&kind) {
+                priority.push(kind);
+            }
+        }
+        self.priority = priority;
+        self.enabled
+            .retain(|kind| AutoConstraintKind::ALL.contains(kind));
+        self.enabled.sort_by_key(|kind| {
+            self.priority
+                .iter()
+                .position(|candidate| candidate == kind)
+                .unwrap_or(usize::MAX)
+        });
+        self.enabled.dedup();
+        if !self.distance_tolerance.is_finite() || self.distance_tolerance < 0.0 {
+            self.distance_tolerance = 0.05;
+        }
+        if !self.angle_tolerance_deg.is_finite() || self.angle_tolerance_deg < 0.0 {
+            self.angle_tolerance_deg = 1.0;
+        }
+    }
+}
+
 /// Cursor shown over the drawing viewport.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum CursorType {
@@ -145,12 +247,49 @@ pub(crate) fn snaps_from_osmode(osmode: i32) -> (Vec<SnapType>, bool) {
     (modes, osmode & OSMODE_SUPPRESS == 0)
 }
 
+fn deserialize_options_tab<'de, D>(
+    deserializer: D,
+) -> Result<crate::ui::window::options::OptionsTab, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    use crate::ui::window::options::OptionsTab;
+    use serde::Deserialize;
+    let name = String::deserialize(deserializer).unwrap_or_default();
+    Ok(match name.as_str() {
+        "files" => OptionsTab::Files,
+        "open-and-save" => OptionsTab::OpenAndSave,
+        "display" => OptionsTab::Display,
+        "drafting" => OptionsTab::Drafting,
+        "modeling" => OptionsTab::Modeling,
+        "selection" => OptionsTab::Selection,
+        "user-preferences" => OptionsTab::UserPreferences,
+        _ => OptionsTab::General,
+    })
+}
+
+/// Render a drafting angle without a trailing `.0`, so `22.5` but `30`.
+///
+/// The polar pop-up formats its presets the same way; both are showing the
+/// same kind of number to the same person.
+pub fn format_snap_angle(deg: f32) -> String {
+    if (deg - deg.round()).abs() < 1e-4 {
+        format!("{}", deg.round() as i32)
+    } else {
+        format!("{deg}")
+    }
+}
+
+/// GRIPOBJLIMIT default: past this many selected objects, no grips are drawn.
+pub const DEFAULT_GRIP_OBJECT_LIMIT: i32 = 100;
+
 /// The "settings" section of the consolidated config ([`crate::app::config`]).
 /// Field defaults mirror the app's in-code defaults so a missing key restores
 /// the value the app boots with.
 #[derive(Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct UserSettings {
+    pub spacemouse: crate::input::spacemouse::Preferences,
     pub dyn_input: bool,
     pub polar: bool,
     pub polar_increment_deg: f32,
@@ -160,6 +299,27 @@ pub struct UserSettings {
     pub cursor_size: i32,
     /// PICKBOX: normalized visible-box and click-aperture size.
     pub pick_box: i32,
+    /// When true, double-clicking a block reference starts REFEDIT instead of BEDIT.
+    pub double_click_block_refedit: bool,
+    /// When true, double-clicking a block with attributes opens ATTEDIT.
+    pub double_click_block_attedit: bool,
+    /// GRIPOBJLIMIT: past this many selected objects, no grips are drawn at
+    /// all. 0 means no limit. The drawing header carries no slot for it.
+    pub grip_object_limit: i32,
+    /// Nested-copy symbol handling: false inserts, true binds.
+    pub ncopy_bind: bool,
+    /// Last Options page; unknown saved names fall back without rejecting the config.
+    #[serde(default, deserialize_with = "deserialize_options_tab")]
+    pub options_tab: crate::ui::window::options::OptionsTab,
+    /// Show the navigation cube (NAVVCUBE).
+    pub show_viewcube: bool,
+    /// Show the UCS icon (UCSICON).
+    pub show_ucs_icon: bool,
+    /// Draw the UCS icon at the origin rather than in the corner
+    /// (UCSICON ORigin / NOorigin).
+    pub ucs_icon_at_origin: bool,
+    /// Selection cycling: a click where objects overlap opens a picker.
+    pub selection_cycling: bool,
     /// CURSORTYPE: crosshair or the platform pointer over the drawing.
     pub cursor_type: CursorType,
     /// Explicit crosshair RGB. `None` keeps automatic background contrast.
@@ -181,6 +341,11 @@ pub struct UserSettings {
     pub default_assoc_prompted: bool,
     /// App version whose donation prompt has been displayed.
     pub donation_prompt_version: String,
+    /// The graphics verdict (`GpuStatus::identity()`) whose warning popup the
+    /// user chose not to see again. Empty = always show. Keyed by verdict so
+    /// silencing "software rendering on llvmpipe" does not silence a later,
+    /// different failure.
+    pub gpu_warning_silenced: String,
     /// Ids of plugins the user turned off in the Plugin Manager. Disabled
     /// plugins keep their manifest listed but drop their ribbon tab and command
     /// dispatch.
@@ -209,6 +374,10 @@ pub struct UserSettings {
     /// the current creation layer/style. Registry-style, app-level preference.
     #[serde(default = "default_dimension_continue_mode")]
     pub dimension_continue_mode: i16,
+    /// DELOBJ: source-geometry deletion policy (0–3). Registry-style,
+    /// app-level preference; first-run default is 1.
+    #[serde(default = "default_delete_objects")]
+    pub delete_objects: i16,
     /// TEXTFILL: fill TrueType glyphs (true) or draw them hollow (false).
     pub textfill: bool,
     /// When true, saving over an existing file first copies it to a sibling
@@ -217,6 +386,25 @@ pub struct UserSettings {
     /// When true (default), the app (re)registers itself as a .dwg/.dxf/.bak
     /// handler on every launch. Toggle with the FILEASSOC command.
     pub file_assoc_enabled: bool,
+    /// When true (default), a sketch constraint's viewport pill shows its
+    /// glyph plus a driven value or named-parameter name. When false, every
+    /// pill shows just the bare glyph, so the value/name text doesn't cover
+    /// canvas detail on a dense sketch.
+    #[serde(default = "default_show_constraint_values")]
+    pub show_constraint_values: bool,
+    /// Inference types, priority, intersection rules, and tolerances used by
+    /// the Auto Constrain command.
+    #[serde(default)]
+    pub auto_constrain: AutoConstrainSettings,
+    /// Keep existing geometry size while solving after a constraint edit.
+    #[serde(default = "default_constraint_solve_mode")]
+    pub constraint_solve_mode: bool,
+    /// Apply eligible geometric constraints while creating geometry.
+    #[serde(default)]
+    pub constraint_infer: bool,
+    /// Constraint bar display bit mask: 1 after applying, 2 on selection.
+    #[serde(default = "default_constraint_bar_display")]
+    pub constraint_bar_display: i16,
     /// Minutes between autosaves to a `.sv$` recovery file (SAVETIME command).
     /// 0 disables autosave.
     pub savetime_min: i32,
@@ -232,12 +420,6 @@ pub struct UserSettings {
     pub pick_drag_rect: bool,
     /// Show the floating Quick Properties panel when objects are selected.
     pub quick_properties: bool,
-    /// Persisted viewport background colours (0–255 RGB); `None` = app default
-    /// (dark grey model / off-white paper). Applied to every drawing tab on
-    /// launch and to tabs opened later, so a chosen background survives restarts
-    /// (#188).
-    pub bg_color: Option<[u8; 3]>,
-    pub paper_bg_color: Option<[u8; 3]>,
     /// Interface language preference. `System` negotiates against the
     /// platform locale on every launch.
     pub language: crate::i18n::Language,
@@ -265,6 +447,10 @@ fn default_clipromptlines() -> i32 {
     3
 }
 
+fn default_delete_objects() -> i16 {
+    1
+}
+
 fn default_commandline_fade_ms() -> i32 {
     3000
 }
@@ -285,6 +471,18 @@ fn default_dimension_continue_mode() -> i16 {
     1
 }
 
+fn default_show_constraint_values() -> bool {
+    true
+}
+
+fn default_constraint_solve_mode() -> bool {
+    true
+}
+
+fn default_constraint_bar_display() -> i16 {
+    3
+}
+
 fn deserialize_clipromptlines<'de, D>(de: D) -> Result<i32, D::Error>
 where
     D: serde::Deserializer<'de>,
@@ -300,6 +498,7 @@ pub fn clamp_clipromptlines(v: i32) -> i32 {
 impl Default for UserSettings {
     fn default() -> Self {
         Self {
+            spacemouse: crate::input::spacemouse::Preferences::default(),
             dyn_input: true,
             polar: false,
             polar_increment_deg: 45.0,
@@ -307,6 +506,15 @@ impl Default for UserSettings {
             zoom_factor: 60,
             cursor_size: 5,
             pick_box: 3,
+            options_tab: crate::ui::window::options::OptionsTab::General,
+            show_viewcube: true,
+            show_ucs_icon: true,
+            ucs_icon_at_origin: true,
+            selection_cycling: false,
+            double_click_block_refedit: false,
+            double_click_block_attedit: true,
+            grip_object_limit: DEFAULT_GRIP_OBJECT_LIMIT,
+            ncopy_bind: false,
             cursor_type: CursorType::Crosshair,
             crosshair_color: None,
             lineweight_display_scale: 100,
@@ -316,6 +524,7 @@ impl Default for UserSettings {
             otrack: false,
             default_assoc_prompted: false,
             donation_prompt_version: String::new(),
+            gpu_warning_silenced: String::new(),
             disabled_plugins: Vec::new(),
             plugin_repos: Vec::new(),
             literal_spaces: false,
@@ -326,16 +535,20 @@ impl Default for UserSettings {
             texteditmode: false,
             quick_dimension_snap_priority: 0,
             dimension_continue_mode: 1,
+            delete_objects: 1,
             textfill: true,
             backup_on_save: true,
             file_assoc_enabled: true,
+            show_constraint_values: true,
+            auto_constrain: AutoConstrainSettings::default(),
+            constraint_solve_mode: true,
+            constraint_infer: false,
+            constraint_bar_display: 3,
             savetime_min: 10,
             default_save_format: crate::io::DEFAULT_SAVE_FORMAT.to_string(),
             pick_add: true,
             pick_drag_rect: false,
             quick_properties: false,
-            bg_color: None,
-            paper_bg_color: None,
             language: crate::i18n::Language::default(),
             cliprompt_lines: 3,
             commandline_fade_ms: 3000,
@@ -384,5 +597,24 @@ mod tests {
         let a: std::collections::HashSet<_> = all.into_iter().collect();
         let b: std::collections::HashSet<_> = back.into_iter().collect();
         assert_eq!(a, b);
+    }
+
+    #[test]
+    fn a_page_name_that_no_longer_exists_does_not_cost_the_other_settings() {
+        let json = r#"{
+            "settings": {
+                "options_tab": "drawing",
+                "pick_add": false,
+                "savetime_min": 42
+            }
+        }"#;
+        let cfg: crate::app::config::AppConfig =
+            serde_json::from_str(json).expect("an unknown page name must not fail the parse");
+        assert_eq!(
+            cfg.settings.options_tab,
+            crate::ui::window::options::OptionsTab::General,
+        );
+        assert!(!cfg.settings.pick_add, "the rest of the file must survive");
+        assert_eq!(cfg.settings.savetime_min, 42);
     }
 }

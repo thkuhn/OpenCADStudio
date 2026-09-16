@@ -357,7 +357,8 @@ impl PlotStyleTable {
         let description = self.description.replace(['\r', '\n'], " ");
         s.push_str(&format!("description=\"{description}\n"));
         s.push_str("aci_table_available=TRUE\n");
-        s.push_str(&format!("scale_factor={:.1}\n", self.scale_factor));
+        // The factor scales every lineweight when applied, so write it in full.
+        s.push_str(&format!("scale_factor={}\n", full_real(self.scale_factor)));
         s.push_str(&format!(
             "apply_factor={}\n",
             if self.apply_factor { "TRUE" } else { "FALSE" }
@@ -414,7 +415,7 @@ impl PlotStyleTable {
         }
         s.push_str("}\ncustom_lineweight_table{\n");
         for (index, weight) in self.lineweights.iter().enumerate() {
-            s.push_str(&format!(" {index}={weight:.2}\n"));
+            s.push_str(&format!(" {index}={}\n", full_real(*weight)));
         }
         s.push_str("}\n");
         s
@@ -504,6 +505,15 @@ fn adler32(bytes: &[u8]) -> u32 {
         b = (b + a) % MOD;
     }
     (b << 16) | a
+}
+
+/// A real number written in full, keeping the decimal point on a whole value.
+fn full_real(value: f32) -> String {
+    let mut text = value.to_string();
+    if text.chars().all(|c| c.is_ascii_digit() || c == '-') {
+        text.push_str(".0");
+    }
+    text
 }
 
 fn packed_rgb([r, g, b]: [u8; 3]) -> i32 {
@@ -742,4 +752,48 @@ fn parse_legacy_plot_style_text(
         }
     }
     Ok(table)
+}
+
+#[cfg(test)]
+mod round_trip_tests {
+    use super::{compress_ctb, PlotStyleTable};
+
+    /// What SAVE writes, read back the way the Plot dialog loads it.
+    fn saved_and_reloaded(table: &PlotStyleTable) -> PlotStyleTable {
+        let bytes = compress_ctb(table.to_text().as_bytes()).expect("compress");
+        PlotStyleTable::from_bytes(table.name.clone(), &bytes).expect("reload")
+    }
+
+    /// Saving a table keeps its global scale factor, which scales every
+    /// lineweight while apply_factor is on. It used to be cut to one decimal.
+    #[test]
+    fn the_scale_factor_survives_a_save() {
+        let mut table = PlotStyleTable::identity("scaled.ctb");
+        table.apply_factor = true;
+        table.scale_factor = 0.25;
+        table.aci_entries[1].lineweight = 13; // 0.50 mm
+        let reloaded = saved_and_reloaded(&table);
+        assert_eq!(reloaded.scale_factor, 0.25);
+        assert_eq!(reloaded.resolve_lineweight(1), Some(0.125));
+    }
+
+    /// A whole factor is still written with its decimal point.
+    #[test]
+    fn a_whole_scale_factor_keeps_its_decimal_point() {
+        let table = PlotStyleTable::identity("plain.ctb");
+        assert!(table.to_text().contains("\nscale_factor=1.0\n"));
+        assert_eq!(saved_and_reloaded(&table).scale_factor, 1.0);
+    }
+
+    /// Saving keeps each custom lineweight as the table holds it. They used to
+    /// be cut to two decimals, so a 0.035 mm pen came back as a 0.04 mm one.
+    #[test]
+    fn custom_lineweights_survive_a_save() {
+        let mut table = PlotStyleTable::identity("pens.ctb");
+        table.lineweights[1] = 0.035;
+        table.aci_entries[1].lineweight = 1;
+        let reloaded = saved_and_reloaded(&table);
+        assert_eq!(reloaded.lineweights, table.lineweights);
+        assert_eq!(reloaded.resolve_lineweight(1), Some(0.035));
+    }
 }

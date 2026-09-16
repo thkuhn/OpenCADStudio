@@ -11,7 +11,7 @@
 
 use acadrust::entities::{EntityCommon, EntityType};
 use acadrust::objects::{
-    Dictionary, DimContext, DimSubtype, EmbeddedMTextContext, HatchScaleContext,
+    Dictionary, DimContext, DimSubtype, EmbeddedMTextContext, HatchLoopContext, HatchScaleContext,
     MTextAttributeContext, MTextContext, ObjectContextData, ObjectContextKind, ObjectType,
 };
 use acadrust::types::{Vector2, Vector3};
@@ -289,12 +289,15 @@ fn context_kind_for(
                 pattern_lines: hatch.pattern.lines.clone(),
                 pattern_scale: hatch.pattern_scale,
                 pattern_base: Vector3::ZERO,
-                loop_types: hatch
+                loops: hatch
                     .paths
                     .iter()
-                    .map(|path| path.flags.bits() as i32)
+                    .map(|path| HatchLoopContext {
+                        loop_type: path.flags.bits() as i32,
+                        supports_context: true,
+                        boundary: None,
+                    })
                     .collect(),
-                supports_context: true,
             }),
         )),
         _ => None,
@@ -641,6 +644,44 @@ pub fn active_object_context_for_scale(
     default.or(first)
 }
 
+/// Reset every alternate annotation-scale representation to the placement of
+/// the representation displayed at `scale_handle`. The leaf identity, scale
+/// handle and default marker stay intact; only the context payload is copied.
+pub fn reset_annotation_context_positions(
+    doc: &mut CadDocument,
+    entity: Handle,
+    scale_handle: Option<Handle>,
+) -> bool {
+    let Some(source) = active_object_context_for_scale(doc, entity, scale_handle) else {
+        return false;
+    };
+    let source_handle = source.handle;
+    let source_kind = source.kind.clone();
+    let targets: Vec<Handle> = annotation_scales_dict(doc, entity)
+        .and_then(|collection| as_dict(doc, collection))
+        .map(|collection| {
+            collection
+                .entries
+                .iter()
+                .map(|(_, handle)| *handle)
+                .filter(|handle| *handle != source_handle)
+                .collect()
+        })
+        .unwrap_or_default();
+
+    let mut changed = false;
+    for handle in targets {
+        let Some(ObjectType::ObjectContextData(context)) = doc.objects.get_mut(&handle) else {
+            continue;
+        };
+        if context.kind != source_kind {
+            context.kind = source_kind.clone();
+            changed = true;
+        }
+    }
+    changed
+}
+
 pub fn effective_annotation_scale_for(
     doc: &CadDocument,
     entity: &EntityType,
@@ -891,9 +932,43 @@ fn apply_hatch_context(hatch: &mut acadrust::entities::Hatch, context: &HatchSca
         line.base_point.x += context.pattern_base.x;
         line.base_point.y += context.pattern_base.y;
     }
-    for (path, bits) in hatch.paths.iter_mut().zip(&context.loop_types) {
-        path.flags = acadrust::entities::BoundaryPathFlags::from_bits(*bits as u32);
-    }
+    let base_paths = std::mem::take(&mut hatch.paths);
+    hatch.paths = context
+        .loops
+        .iter()
+        .enumerate()
+        .map(|(index, loop_data)| {
+            let flags =
+                acadrust::entities::BoundaryPathFlags::from_bits(loop_data.loop_type as u32);
+            let mut path = if loop_data.supports_context {
+                base_paths.get(index).cloned()
+            } else {
+                loop_data.boundary.clone()
+            }
+            .unwrap_or_else(|| acadrust::entities::BoundaryPath::with_flags(flags));
+            path.flags = flags;
+            path
+        })
+        .collect();
+}
+
+fn sync_hatch_loops(loops: &mut Vec<HatchLoopContext>, paths: &[acadrust::entities::BoundaryPath]) {
+    let previous = std::mem::take(loops);
+    *loops = paths
+        .iter()
+        .enumerate()
+        .map(|(index, path)| {
+            let supports_context = previous
+                .get(index)
+                .map(|loop_data| loop_data.supports_context)
+                .unwrap_or(true);
+            HatchLoopContext {
+                loop_type: path.flags.bits() as i32,
+                supports_context,
+                boundary: (!supports_context).then(|| path.clone()),
+            }
+        })
+        .collect();
 }
 
 pub fn entity_for_annotation_context<'a>(
@@ -1235,11 +1310,7 @@ pub fn sync_annotation_context_from_entity(
                 line.base_point.y -= context.pattern_base.y;
             }
             context.pattern_scale = hatch.pattern_scale;
-            context.loop_types = hatch
-                .paths
-                .iter()
-                .map(|path| path.flags.bits() as i32)
-                .collect();
+            sync_hatch_loops(&mut context.loops, &hatch.paths);
         }
         (EntityType::Hatch(hatch), ObjectContextKind::HatchView(context)) => {
             context.hatch.pattern_lines.clone_from(&hatch.pattern.lines);
@@ -1248,11 +1319,7 @@ pub fn sync_annotation_context_from_entity(
                 line.base_point.y -= context.hatch.pattern_base.y;
             }
             context.hatch.pattern_scale = hatch.pattern_scale;
-            context.hatch.loop_types = hatch
-                .paths
-                .iter()
-                .map(|path| path.flags.bits() as i32)
-                .collect();
+            sync_hatch_loops(&mut context.hatch.loops, &hatch.paths);
             context.view_normal = hatch.normal;
         }
         _ => {}

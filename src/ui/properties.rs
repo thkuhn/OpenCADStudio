@@ -884,6 +884,14 @@ impl PropertiesPanel {
                 .width(Length::Fill);
                 prop_row_widget(label, list.into())
             }
+            PropValue::EntityLink { id, handles, conflicting } => {
+                render_entity_link_row(label, *id, handles.clone(), *conflicting)
+            }
+            PropValue::ParamRow { index, name, formula, resolved } => {
+                self.render_param_row(*index, name, formula, resolved)
+            }
+            PropValue::ParamAddRow => render_param_add_row(),
+            PropValue::ParamsVisibilityToggle(value) => render_params_visibility_toggle_row(*value),
         }
     }
 
@@ -963,6 +971,7 @@ impl PropertiesPanel {
                 | "text_color"
                 | "block_content_color"
                 | "background_fill_color"
+                | "indicator_fill_color"
         ) {
             let open = self.open_color_field.as_deref() == Some(field);
             let fsel = field.to_string();
@@ -1408,6 +1417,95 @@ impl PropertiesPanel {
         prop_row_with_active(tag, ti.into(), active)
     }
 
+    /// One named-parameter row: editable name + formula, with the live-
+    /// resolved value (or error) shown alongside, embedded in the panel instead of
+    /// the old separate modal. Each field commits on submit (Enter / losing
+    /// focus), not per keystroke — `ParameterTable::set` validates
+    /// immediately and would otherwise reject a formula mid-type (the same
+    /// reasoning the old modal's buffered-Apply design used, just applied
+    /// per-field instead of per-whole-table).
+    fn render_param_row<'a>(
+        &'a self,
+        index: usize,
+        name: &'a str,
+        formula: &'a str,
+        resolved: &'a Result<f64, String>,
+    ) -> Element<'a, Message> {
+        use crate::ui::window::named_parameters::ParamField;
+
+        let name_key = FieldKey::Param(index, ParamField::Name);
+        let name_display = self.edit_buf.get(&name_key).map(|s| s.as_str()).unwrap_or(name);
+        let name_active = self.active_field.as_ref() == Some(&name_key);
+        let name_input = text_input("name", name_display)
+            .id(name_key.widget_id())
+            .on_input(move |v| Message::PropParamInput { index, field: ParamField::Name, value: v })
+            .on_submit(Message::PropParamCommit { index, field: ParamField::Name })
+            .size(FONT_SZ)
+            .style(text_input_style)
+            .padding([3, 6])
+            .width(Length::FillPortion(3));
+
+        let formula_key = FieldKey::Param(index, ParamField::Formula);
+        let formula_display = self.edit_buf.get(&formula_key).map(|s| s.as_str()).unwrap_or(formula);
+        let formula_active = self.active_field.as_ref() == Some(&formula_key);
+        let formula_input = text_input("formula", formula_display)
+            .id(formula_key.widget_id())
+            .on_input(move |v| Message::PropParamInput { index, field: ParamField::Formula, value: v })
+            .on_submit(Message::PropParamCommit { index, field: ParamField::Formula })
+            .size(FONT_SZ)
+            .style(text_input_style)
+            .padding([3, 6])
+            .width(Length::FillPortion(3));
+
+        let (value_text, is_error) = match resolved {
+            Ok(v) => (format!("{v:.4}"), false),
+            Err(_) => ("—".to_string(), true),
+        };
+        let value_label = container(
+            text(value_text).size(FONT_SZ).style(move |theme: &Theme| iced::widget::text::Style {
+                color: is_error.then_some(theme.palette().danger.base.color),
+            }),
+        )
+        .width(Length::FillPortion(2))
+        .align_x(iced::Right);
+
+        let delete_btn = button(text("\u{2715}").size(FONT_SZ))
+            .on_press(Message::PropParamDelete(index))
+            .style(button::text)
+            .padding([2, 6]);
+
+        let active = name_active || formula_active;
+        let bg = move |theme: &Theme| {
+            if active {
+                Background::Color(theme.palette().primary.weak.color)
+            } else {
+                Background::Color(theme.palette().background.base.color)
+            }
+        };
+        let content = container(row![name_input, formula_input, value_label, delete_btn].spacing(4).align_y(iced::Center))
+            .style(move |theme: &Theme| container::Style { background: Some(bg(theme)), ..Default::default() })
+            .padding([2, 6])
+            .width(Length::Fill);
+
+        if let Err(err) = resolved {
+            tooltip(content, text(err.as_str()).size(FONT_SZ), tooltip::Position::Top)
+                .gap(4.0)
+                .padding(6.0)
+                .style(|theme: &Theme| {
+                    let palette = theme.palette();
+                    container::Style {
+                        background: Some(Background::Color(palette.danger.weak.color)),
+                        text_color: Some(palette.danger.weak.text),
+                        border: Border { color: palette.danger.base.color, width: 1.0, radius: 4.0.into() },
+                        ..Default::default()
+                    }
+                })
+                .into()
+        } else {
+            content.into()
+        }
+    }
+
     fn render_hatch_pattern_row<'a>(
         &'a self,
         label: &'a str,
@@ -1597,68 +1695,6 @@ fn render_stepper_row<'a>(label: &'a str, display: &'a str) -> Element<'a, Messa
     prop_row_widget(label, widget.into())
 }
 
-/// A picker row (e.g. wall style) that opens the AEC Style Picker modal
-/// targeting the given entity handle(s) when clicked.
-fn render_picker_row<'a>(
-    label: &'a str,
-    value: &'a str,
-    handles: Vec<acadrust::Handle>,
-) -> Element<'a, Message> {
-    let btn = button(
-        row![
-            text(crate::ui::text_util::elide(value, 20)).size(FONT_SZ),
-            Space::new().width(Length::Fill),
-            text("...").size(FONT_SZ),
-        ]
-        .padding([0, 4])
-        .align_y(iced::Alignment::Center),
-    )
-    .on_press(Message::Aec(AecMessage::AecStylePickerOpenForWallProperties(handles)))
-    .style(button::subtle)
-    .padding(0)
-    .width(Length::Fill);
-    prop_row_widget(label, btn.into())
-}
-
-/// A read-only reference row (e.g. a wall opening/peer) that selects and
-/// zooms to the referenced entity when clicked.
-fn render_entity_ref_row<'a>(
-    label: &'a str,
-    display: &'a str,
-    handle: acadrust::Handle,
-) -> Element<'a, Message> {
-    let btn = button(
-        text(crate::ui::text_util::elide(display, 24))
-            .size(FONT_SZ),
-    )
-    .on_press(Message::SelectAndZoomTo(handle))
-    .style(button::subtle)
-    .padding([2, 4])
-    .width(Length::Fill);
-    prop_row_widget(label, btn.into())
-}
-
-/// Like [`render_picker_row`], but for a live property of the currently
-/// active command (e.g. the in-progress WALL's style) instead of an already
-/// committed entity — opens the AEC Style Picker targeting the active
-/// command rather than a fixed set of entity handles.
-fn render_picker_row_for_active_command<'a>(label: &'a str, value: &'a str) -> Element<'a, Message> {
-    let btn = button(
-        row![
-            text(crate::ui::text_util::elide(value, 20)).size(FONT_SZ),
-            Space::new().width(Length::Fill),
-            text("...").size(FONT_SZ),
-        ]
-        .padding([0, 4])
-        .align_y(iced::Alignment::Center),
-    )
-    .on_press(Message::Aec(AecMessage::AecStylePickerOpenForActiveCommand))
-    .style(button::subtle)
-    .padding(0)
-    .width(Length::Fill);
-    prop_row_widget(label, btn.into())
-}
-
 fn render_bool_row<'a>(label: &'a str, field: &'static str, value: bool) -> Element<'a, Message> {
     let btn_label = if value {
         t!("Yes").into_owned()
@@ -1727,8 +1763,7 @@ fn coord_group_len(props: &[crate::scene::model::object::Property], idx: usize) 
             p.value,
             PropValue::EditText(_)
                 | PropValue::ReadOnly(_)
-                | PropValue::Picker { .. }
-                | PropValue::EntityRef { .. }
+                | PropValue::ReadOnlyWithTooltip { .. }
         )
     };
     let Some((base, 0)) = coord_suffix(&props[idx].label) else {
@@ -1770,7 +1805,6 @@ fn prop_text_value(prop: &crate::scene::model::object::Property) -> String {
     match &prop.value {
         PropValue::EditText(s)
         | PropValue::ReadOnly(s)
-        | PropValue::Picker { value: s, .. }
         | PropValue::ReadOnlyWithTooltip { value: s, .. } => s.clone(),
         _ => String::new(),
     }
@@ -1908,6 +1942,103 @@ fn render_ro_with_tooltip_row<'a>(
             }
         });
     prop_row_widget(label, wrapped.into())
+}
+
+// ── Constraints section row (clickable entity link) ───────────────────────
+
+/// One persistent-constraint row in the Constraints properties section:
+/// `label` is the glyph + kind name + resolved value (e.g. "↔ Distance:
+/// hole_dia = 12.00"), rendered as the row's own clickable surface — there's
+/// no natural separate "value" for a constraint row, unlike a Layer/Color
+/// field, so this doesn't use the usual `prop_row_widget` label|value split.
+/// Clicking it selects every entity in `handles`; a conflicting/redundant
+/// constraint (mirrors the viewport glyph pill's own color cue) tints red.
+fn render_entity_link_row<'a>(
+    label: &'a str,
+    id: crate::scene::parametric_constraints::ConstraintId,
+    handles: Vec<Handle>,
+    conflicting: bool,
+) -> Element<'a, Message> {
+    let link = button(text(label).size(FONT_SZ).width(Length::Fill))
+        .on_press(Message::PropConstraintLinkClick(handles))
+        .style(move |theme: &Theme, status| {
+            let palette = theme.palette();
+            let pair = if conflicting {
+                palette.danger.weak
+            } else {
+                match status {
+                    button::Status::Hovered | button::Status::Pressed => palette.background.weak,
+                    _ => palette.background.base,
+                }
+            };
+            button::Style {
+                background: Some(Background::Color(pair.color)),
+                border: Border { color: palette.background.neutral.color, width: 1.0, radius: 2.0.into() },
+                text_color: pair.text,
+                ..Default::default()
+            }
+        })
+        .padding([3, 8])
+        .width(Length::Fill);
+    let delete = button(text("\u{2715}").size(FONT_SZ))
+        .on_press(Message::PropConstraintDelete(id))
+        .style(button::text)
+        .padding([2, 6]);
+    container(row![link, delete].spacing(2).align_y(iced::Center))
+        .width(Length::Fill)
+        .into()
+}
+
+// ── Parameters section: "+ Add parameter" row ──────────────────────────────
+
+/// The trailing "+ Add parameter" row: appends a fresh, uniquely-named
+/// parameter (`param1`, `param2`, …) the user then renames/redefines inline
+/// — avoids a separate "pending new row" concept, since every row always
+/// reflects a real committed table entry.
+fn render_param_add_row<'a>() -> Element<'a, Message> {
+    let btn = button(row![text("+").size(FONT_SZ), text(t!("Add parameter").into_owned()).size(FONT_SZ)].spacing(6).align_y(iced::Center))
+        .on_press(Message::PropParamAddNew)
+        .style(button::text)
+        .padding([4, 8])
+        .width(Length::Fill);
+    container(btn).width(Length::Fill).into()
+}
+
+// ── Parameters section: leading global visibility toggle ───────────────────
+
+/// The Parameters section's leading header row (no-selection page): a
+/// global on/off toggle for whether any constraint pill in the viewport
+/// shows its driven value/parameter-name text — lives next to the
+/// named-parameter table it governs.
+fn render_params_visibility_toggle_row<'a>(value: bool) -> Element<'a, Message> {
+    let btn_label = if value { t!("On") } else { t!("Off") }.into_owned();
+    let btn = button(
+        row![
+            crate::ui::icons::semantic(crate::ui::icons::layer_visible(value), 13.0),
+            text(btn_label).size(FONT_SZ),
+        ]
+        .spacing(6)
+        .align_y(iced::Center),
+    )
+    .on_press(Message::ShowConstraintValuesChanged(!value))
+    .style(move |theme: &Theme, status| {
+        let palette = theme.palette();
+        let pair = match status {
+            button::Status::Hovered | button::Status::Pressed => palette.background.weak,
+            _ => palette.background.base,
+        };
+        button::Style {
+            background: Some(Background::Color(pair.color)),
+            border: Border { color: palette.background.neutral.color, width: 1.0, radius: 2.0.into() },
+            text_color: pair.text,
+            ..Default::default()
+        }
+    })
+    .padding([4, 8])
+    .width(Length::Fill);
+    container(row![text(t!("Values").into_owned()).size(FONT_SZ).width(Length::Fill), btn].align_y(iced::Center))
+        .width(Length::Fill)
+        .into()
 }
 
 /// Build a label | widget property row.

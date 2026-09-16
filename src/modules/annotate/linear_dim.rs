@@ -6,7 +6,7 @@ use cadkernel::geom2d::{
 };
 
 use crate::command::{
-    CadCommand, CmdResult, DimensionAssociationInput, InputKind, WorkingPlane,
+    CadCommand, CmdOption, CmdResult, DimensionAssociationInput, InputKind, WorkingPlane,
 };
 use crate::modules::{IconKind, ModuleEvent, ToolDef};
 use crate::scene::model::wire_model::WireModel;
@@ -217,6 +217,24 @@ impl CadCommand for LinearDimensionCommand {
         CmdResult::Cancel
     }
 
+    /// Points and object picks may come through a paper-space viewport;
+    /// the committed dimension then reports the model measurement.
+    fn measures_through_viewports(&self) -> bool {
+        true
+    }
+
+    fn dimension_acquired_points(&self) -> Vec<DVec3> {
+        match self.step {
+            Step::FirstPoint => vec![],
+            Step::SecondPoint(p) => vec![p],
+            Step::DimensionLine { first, second } => vec![first, second],
+        }
+    }
+
+    fn dimension_placement_pending(&self) -> bool {
+        matches!(self.step, Step::DimensionLine { .. })
+    }
+
     fn on_escape(&mut self) -> CmdResult {
         CmdResult::Cancel
     }
@@ -224,9 +242,29 @@ impl CadCommand for LinearDimensionCommand {
     fn input_kind(&self) -> InputKind {
         if self.awaiting_text {
             InputKind::FreeText
-        } else {
+        } else if self.awaiting_angle || self.awaiting_rotation {
             InputKind::SingleToken
+        } else {
+            InputKind::Point
         }
+    }
+
+    fn options(&self) -> Vec<CmdOption> {
+        if !matches!(self.step, Step::DimensionLine { .. })
+            || self.awaiting_text
+            || self.awaiting_angle
+            || self.awaiting_rotation
+        {
+            return Vec::new();
+        }
+        vec![
+            CmdOption::new("MText", "MTEXT"),
+            CmdOption::new("Text", "TEXT"),
+            CmdOption::new("Angle", "ANGLE"),
+            CmdOption::new("Horizontal", "HORIZONTAL"),
+            CmdOption::new("Vertical", "VERTICAL"),
+            CmdOption::new("Rotated", "ROTATED"),
+        ]
     }
 
     fn point_step_accepts_keywords(&self) -> bool {

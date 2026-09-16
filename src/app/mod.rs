@@ -7,9 +7,14 @@ pub(crate) fn automation_action_names() -> &'static [&'static str] {
 pub(crate) mod config;
 #[cfg(not(target_arch = "wasm32"))]
 pub use automation::{export_headless, serve};
+mod annotation_data;
 mod command_driver;
 pub(crate) mod commands;
+pub(crate) mod dim_viewport;
+#[cfg(test)]
+mod viewport_dimension_tests;
 mod document;
+mod drafting_settings;
 pub(crate) mod expr_eval;
 mod find_replace;
 pub(crate) mod helpers;
@@ -18,12 +23,14 @@ mod history;
 mod doc_api;
 mod layers;
 mod model_ops;
+mod navigation;
 mod mtext_editor;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod plugin_host;
-mod properties;
 mod presspull_ops;
+mod properties;
 mod recent;
+mod record_api;
 pub(crate) mod settings;
 mod shortcuts;
 mod startup;
@@ -105,7 +112,6 @@ pub struct GripPendingValue {
     pub action: crate::scene::model::object::GripMenuAction,
     pub label: &'static str,
 }
-
 
 /// Operator the Quick Select filter applies between an entity's
 /// property value and the user-typed test value.
@@ -226,7 +232,10 @@ impl From<&QSelectState> for QSelectSettings {
         Self {
             scope: state.scope,
             type_filter: state.type_filter.clone(),
-            property_field: state.property.as_ref().map(|property| property.field.clone()),
+            property_field: state
+                .property
+                .as_ref()
+                .map(|property| property.field.clone()),
             operator: state.operator,
             value: state.value.clone(),
             mode: state.mode,
@@ -304,6 +313,7 @@ struct AddSelectedRestore {
     layer_name: String,
     layer_handle: acadrust::types::Handle,
     color: AcadColor,
+    transparency: acadrust::types::Transparency,
     linetype_name: String,
     linetype_handle: acadrust::types::Handle,
     line_weight: i16,
@@ -319,9 +329,7 @@ struct AddSelectedRestore {
 }
 
 /// Which Start-page section a narrow (tabbed) Start page is showing.
-#[derive(
-    Clone, Copy, PartialEq, Eq, Default, Debug, serde::Serialize, serde::Deserialize,
-)]
+#[derive(Clone, Copy, PartialEq, Eq, Default, Debug, serde::Serialize, serde::Deserialize)]
 pub enum StartSection {
     Recent,
     Videos,
@@ -346,6 +354,10 @@ pub(crate) enum TextEntryMode {
     FreeText,
 }
 
+pub(crate) fn delobj_deletes_auxiliary(value: i16, creates_surface: bool) -> bool {
+    value == 2 || (value == 3 && !creates_surface)
+}
+
 pub use crate::modules::aec::{
     AecLayerBuffer, AecLayerGapDrawPick, AecLayerPairDrawPick, AecMessage, AecPendingCopy,
     AecProjectExplorerDeleteTarget, AecState, AecWallStyleSort, StylePickerTarget,
@@ -354,11 +366,11 @@ pub use crate::modules::aec::{
 pub(super) struct OpenCADStudio {
     start: Instant,
     control: control::State,
-    pub(crate) tabs: Vec<DocumentTab>,
-    pub(crate) active_tab: usize,
+    tabs: Vec<DocumentTab>,
+    active_tab: usize,
     hovered_doc_tab: Option<usize>,
     tab_counter: usize,
-    pub(crate) ribbon: Ribbon,
+    ribbon: Ribbon,
     /// Recently opened files, newest first — backs the Start page panel.
     recent_files: Vec<std::path::PathBuf>,
     /// Decoded DWG preview thumbnails for the Start page, keyed by path.
@@ -371,7 +383,7 @@ pub(super) struct OpenCADStudio {
     /// Live text of the recent-limit input box (may differ from `recent_limit`
     /// mid-edit; applied on Enter). Kept in sync when the +/- buttons change it.
     recent_limit_input: String,
-    pub(crate) command_line: CommandLine,
+    command_line: CommandLine,
     /// Recent Patreon supporters shown on the Start page (name, USD cents),
     /// fetched once at boot, highest payment first.
     patrons: Vec<(String, i64)>,
@@ -391,6 +403,10 @@ pub(super) struct OpenCADStudio {
     /// though the three factors are currently equal — the user unchecked the
     /// "Uniform scale" box for them (#427). Keyed by entity handle.
     props_asym_scale: std::collections::HashSet<u64>,
+    /// Collapsed Properties-panel section titles. This belongs to the app,
+    /// rather than an individual document tab, so the same view preference is
+    /// used by every currently open drawing/project.
+    collapsed_property_sections: rustc_hash::FxHashSet<String>,
     /// Which Start-page section is shown when the page is too narrow for all
     /// three side by side and falls back to a tab bar.
     start_section: StartSection,
@@ -411,6 +427,9 @@ pub(super) struct OpenCADStudio {
     win_size: (f32, f32),
     snapper: Snapper,
     snap_popup_open: bool,
+    drafting_settings_state: Option<crate::ui::window::drafting_settings::DraftingSettingsState>,
+    drafting_settings_saved: Option<crate::ui::window::drafting_settings::DraftingSettingsState>,
+    drafting_settings_close_confirm: bool,
     scale_popup_open: bool,
     /// True while the polar-tracking angle picker is open.
     polar_popup_open: bool,
@@ -500,12 +519,25 @@ pub(super) struct OpenCADStudio {
     cursor_size: i32,
     /// Selection-box size setting (PICKBOX, 0..=50).
     pick_box: i32,
+    /// Use REFEDIT rather than BEDIT when double-clicking an attribute-free block.
+    double_click_block_refedit: bool,
+    /// Open ATTEDIT when double-clicking a block with attributes.
+    double_click_block_attedit: bool,
+    /// Selected-object count past which grips stop being generated
+    /// (GRIPOBJLIMIT, 0..=32767; 0 = no limit).
+    grip_object_limit: i32,
+    ncopy_bind: bool,
     /// Drawing viewport cursor style (CURSORTYPE).
     cursor_type: settings::CursorType,
     /// Explicit crosshair colour; `None` retains automatic contrast.
     crosshair_color: Option<[u8; 3]>,
     /// Editable Options buffer for the crosshair colour.
     crosshair_color_input: String,
+    /// Defer the ISOLINES mesh rebuild until the slider is released.
+    isolines_awaiting_regen: bool,
+    /// Edit buffer for the SNAPANG field on the Options Drafting page. Kept
+    /// separate from `snap_angle_deg` so a half-typed angle is not parsed.
+    snap_angle_input: String,
     /// Model-space lineweight preview scale, in percent (25..=200).
     lineweight_display_scale: i32,
     /// Isometric drafting state and active axis pair.
@@ -519,6 +551,14 @@ pub(super) struct OpenCADStudio {
     dyn_input: bool,
     /// Currently visible page in the application Options dialog.
     options_tab: crate::ui::window::options::OptionsTab,
+    spacemouse: crate::input::spacemouse::Service,
+    spacemouse_preferences: crate::input::spacemouse::Preferences,
+    spacemouse_paused: bool,
+    spacemouse_focused: bool,
+    spacemouse_details: bool,
+    spacemouse_was_moving: bool,
+    spacemouse_pivot: Option<(crate::input::spacemouse::Target, glam::DVec3)>,
+    spacemouse_selection: navigation::SelectionCache,
     /// Controls whether the TEXTEDIT command repeats automatically (0 = Multiple, 1 = Single).
     pub texteditmode: bool,
     /// QDIM extension-origin priority: 0 = endpoints, 1 = intersections.
@@ -531,6 +571,18 @@ pub(super) struct OpenCADStudio {
     /// When true (default), the app registers itself as a .dwg/.dxf/.bak file
     /// handler on each launch. Toggle with the FILEASSOC command.
     pub file_assoc_enabled: bool,
+    /// When true (default), a parametric constraint's viewport pill shows its
+    /// glyph plus a driven value or named-parameter name. When false, every
+    /// pill shows only the glyph.
+    pub show_constraint_values: bool,
+    pub auto_constrain_settings: settings::AutoConstrainSettings,
+    auto_constrain_saved: Option<settings::AutoConstrainSettings>,
+    auto_constrain_selected_row: usize,
+    auto_constrain_distance_input: String,
+    auto_constrain_angle_input: String,
+    pub constraint_solve_mode: bool,
+    pub constraint_infer: bool,
+    pub constraint_bar_display: i16,
     /// Minutes between autosaves to a `.sv$` recovery file (SAVETIME command);
     /// 0 disables autosave.
     pub savetime_min: i32,
@@ -559,6 +611,8 @@ pub(super) struct OpenCADStudio {
     /// `MIRRTEXT`) — the next command-line entry is its new value, empty keeps
     /// the current one.
     pending_setvar: Option<String>,
+    /// DELOBJ system variable (0–3), shared by every open drawing.
+    delete_objects: i16,
     /// Cursor is hovering over the UCS icon body — drives the hover highlight.
     ucs_icon_hover: bool,
     /// UCS icon is selected (clicked): its grips are shown and draggable.
@@ -604,6 +658,9 @@ pub(super) struct OpenCADStudio {
     /// `HOVER_DWELL_MS`. Skipping the pick mid-stroke avoids the per-frame
     /// O(N) wire+hatch+mesh sweep that froze the cursor on large drawings.
     hover_dwell: Option<HoverDwell>,
+    /// Constraint kind shown after the ordinary rollover dwell while the
+    /// cursor remains over one of its viewport indicators.
+    constraint_glyph_tooltip: Option<crate::scene::parametric_constraints::ConstraintKind>,
     /// Snapshots of edited entities taken at the start of a grip drag. The drag
     /// mutates the document live, so Escape restores this group atomically.
     grip_originals: Vec<(acadrust::Handle, acadrust::EntityType)>,
@@ -655,6 +712,8 @@ pub(super) struct OpenCADStudio {
     show_properties: bool,
     /// Docked Insert Block panel visibility.
     pub(crate) show_block_palette: bool,
+    /// Docked External References panel visibility (EXTERNALREFERENCES).
+    pub(crate) show_external_references: bool,
     /// General edge-stack dock layout for the side panels.
     pub(crate) dock: crate::ui::dock::DockState,
     /// Which panel is currently floated at full height (hovered, or a pinned
@@ -668,14 +727,32 @@ pub(super) struct OpenCADStudio {
     pub(crate) dock_drag_last: Option<iced::Point>,
     /// Live drag target (side + index), shown as a highlight while dragging.
     pub(crate) dock_drag_target: Option<(crate::app::config::DockSide, usize)>,
+    /// Reference-table column currently being width-resized (column index),
+    /// with the last pointer position. Mirrors the Layers Name-column drag.
+    pub(crate) xref_col_drag: Option<usize>,
+    pub(crate) xref_col_last: Option<iced::Point>,
+    /// Table/lower-pane split divider drag in progress.
+    pub(crate) xref_split_drag: bool,
     /// Docked Insert Block panel state (search, preview size, cached thumbnails).
     pub(crate) block_palette: crate::ui::window::block_palette::BlockPalette,
+    /// Reference Manager palette state (display-only in Task 7).
+    pub(crate) xref_manager: crate::ui::window::xref_manager::XrefManagerPanel,
     /// Whether the document file tabs are shown at the top (FILETAB).
     show_file_tabs: bool,
     /// Whether the layout/paper-space tabs are shown at the bottom (LAYOUTTAB).
     show_layout_tabs: bool,
     /// Last point committed by a drawing command — used as ortho/polar base.
     last_point: Option<glam::DVec3>,
+    /// Viewport used by the current snap; the displayed point is in paper space.
+    pub(crate) vp_snap_frame: Option<crate::scene::viewport_ref::ViewportFrame>,
+    /// Acquired coordinates and source identities in command-step order.
+    /// Cleared when the command starts or ends.
+    accepted_snaps: Vec<crate::scene::viewport_ref::AcceptedSnap>,
+    /// Click result retained until the command accepts its point.
+    pending_click_snap: Option<(
+        crate::snap::SnapResult,
+        Option<crate::scene::viewport_ref::ViewportFrame>,
+    )>,
     /// Endpoint + unit exit-tangent of the most recently drawn line/arc, so
     /// `ARC_CONT` (Arc → Continue) can start tangentially from where drawing
     /// ended. `None` once a non-line/arc entity is committed.
@@ -699,13 +776,26 @@ pub(super) struct OpenCADStudio {
     recent_colors: Vec<AcadColor>,
     /// The open in-canvas modal dialog, if any (Plan B: shared overlay instead
     /// of OS windows).
-    pub(crate) active_modal: Option<ModalKind>,
+    active_modal: Option<ModalKind>,
     pending_startup_modals: std::collections::VecDeque<ModalKind>,
+    /// What is drawing the scene, once the first frame has told us. Drives
+    /// the graphics warning (popup, status-bar pill, command line).
+    gpu_status: crate::scene::pipeline::GpuStatus,
+    /// The pipeline's status generation this app has already looked at.
+    gpu_status_generation: u64,
+    /// `GpuStatus::identity()` of the verdict whose popup the user silenced
+    /// with "Don't show again for this device". Persisted in the settings.
+    gpu_warning_silenced: String,
     /// Plot modal geometry preserved while the Plot Style editor is open as
     /// a child dialog. None means Plotstyle was opened directly (e.g. command).
     plotstyle_parent_plot_geometry: Option<(iced::Vector, iced::Vector)>,
     /// FIND dialog inputs and current result cursor.
     find_replace: FindReplaceState,
+    /// Set once the user acknowledges the AEC-drop warning, so re-entering the
+    /// save path proceeds instead of re-showing the warning.
+    aec_drop_acknowledged: bool,
+    /// Number of unsupported objects shown in the AEC-drop warning modal.
+    aec_drop_count: usize,
     /// Layers awaiting a "delete non-empty layer(s)" confirmation: `(names,
     /// total object count)`. Set when the user deletes one or more layers that
     /// still have objects; the warning modal reads it, and confirming erases
@@ -713,7 +803,7 @@ pub(super) struct OpenCADStudio {
     layer_delete_pending: Option<(Vec<String>, usize)>,
     /// Pixel offset of the active modal from screen-centre (drag-to-move).
     /// Reset to zero whenever a modal closes so each dialog opens centred.
-    pub(crate) modal_offset: iced::Vector,
+    modal_offset: iced::Vector,
     /// Cursor position from the previous drag-move while the modal title bar is
     /// held; `None` before the first move of a drag.
     modal_drag_last: Option<Point>,
@@ -727,7 +817,7 @@ pub(super) struct OpenCADStudio {
     /// How far the user has dragged the modal's corner resize grip from the
     /// dialog's natural size (added to its measured width/height). Reset
     /// with `modal_offset` so every dialog opens at its own size.
-    pub(crate) modal_resize: iced::Vector,
+    modal_resize: iced::Vector,
     /// Last body size reported by the shared modal frame. Used for drag bounds
     /// and controls whose range follows the real, automatically measured width.
     modal_content_size: Option<iced::Size>,
@@ -781,15 +871,13 @@ pub(super) struct OpenCADStudio {
     /// Live filter for installed and available plugin cards.
     plugin_search_input: String,
     /// Installable release tags fetched per linked repo (for the dropdown).
-    repo_release_tags:
-        rustc_hash::FxHashMap<String, Vec<crate::plugin::external::ReleaseInfo>>,
+    repo_release_tags: rustc_hash::FxHashMap<String, Vec<crate::plugin::external::ReleaseInfo>>,
     /// The release tag currently selected per linked repo.
     repo_selected_tag: rustc_hash::FxHashMap<String, String>,
     /// Repository currently shown in the Plugin Manager detail pane.
     selected_plugin_repo: Option<String>,
     /// Parsed GitHub README content or the last fetch error, cached per repo.
-    plugin_readmes:
-        rustc_hash::FxHashMap<String, Result<iced::widget::markdown::Content, String>>,
+    plugin_readmes: rustc_hash::FxHashMap<String, Result<iced::widget::markdown::Content, String>>,
     /// README requests in flight, used to render a deterministic loading state.
     plugin_readme_loading: rustc_hash::FxHashSet<String>,
     /// Last marketplace status / error line shown in the Plugin Manager.
@@ -1018,6 +1106,25 @@ pub(super) struct OpenCADStudio {
     /// Working buffer for the ALIASEDIT modal: `(alias, command)` rows being
     /// edited. Seeded from `command_aliases` on open, committed back on close.
     alias_editor_rows: Vec<(String, String)>,
+    /// True while a freshly added (top) row is an unfinished draft: it exists
+    /// only until its alias and command are filled (accept) or it is cancelled
+    /// (Esc / ✕ / dialog close), so the list never keeps an empty row.
+    /// Mirrors `shortcut_pending_add`.
+    alias_pending_add: bool,
+    /// True while the "Reset to default" confirmation is showing.
+    alias_reset_confirm: bool,
+    /// True while the "unsaved changes will be discarded" confirmation
+    /// overlays the editor: the user tried to close with un-applied rows.
+    alias_close_confirm: bool,
+
+    // ── Named Parameters ──────────────────────────────────────────────────
+    /// Working buffer for the PARAMETERS modal. Unlike `alias_editor_rows`,
+    /// this isn't a copy of a separate app-level store — the real state
+    /// lives per-document at `Scene::named_parameters`; this buffer is
+    /// seeded from the active tab's table on open and only written back to
+    /// it on Apply (`apply_named_parameter_editor_rows`,
+    /// `src/app/named_parameters.rs`).
+    named_parameter_editor_rows: Vec<crate::ui::window::named_parameters::ParamEditorRow>,
 
     // ── Layout Manager Panel ──────────────────────────────────────────────
     layout_manager_selected: String,
@@ -1051,6 +1158,12 @@ pub(super) struct OpenCADStudio {
     /// Open transaction for the scale manager — restored if the window closes
     /// without Apply, mirroring the style managers' staging.
     scale_stage: Option<crate::app::style_ops::ScaleStage>,
+
+    // ── Annotation table/data dialogs ────────────────────────────────────
+    table_insert: crate::ui::window::annotation_data::TableInsertState,
+    data_link_manager: crate::ui::window::annotation_data::DataLinkManagerState,
+    data_link_parent_table: bool,
+    data_extraction: crate::ui::window::annotation_data::DataExtractionState,
 
     // ── Plot Style Panel ──────────────────────────────────────────────────
     /// Selected ACI index in the panel (1-255).
@@ -1105,8 +1218,7 @@ pub(super) struct OpenCADStudio {
     save_job_serial: u64,
     /// Destination leases held while Save As workers are active.
     #[cfg(not(target_arch = "wasm32"))]
-    pending_save_leases:
-        std::collections::HashMap<u64, crate::io::edit_lock::EditLease>,
+    pending_save_leases: std::collections::HashMap<u64, crate::io::edit_lock::EditLease>,
     /// Locked-file failure currently shown in the recovery dialog.
     #[cfg(not(target_arch = "wasm32"))]
     pending_save_failure: Option<PendingSaveFailure>,
@@ -1334,32 +1446,6 @@ pub enum ColorPickTarget {
     LayerState(usize),
     /// The MText editor's selection (or global) colour.
     MText,
-    /// The AEC Style Manager's material edit form line colour.
-    AecMaterial,
-    /// The AEC Style Manager's material edit form hatch colour.
-    AecMaterialHatch,
-    /// Plan Manager Stage 2: `demolition_style` line colour.
-    AecPlanDemolitionLineColor,
-    /// Plan Manager Stage 2: `demolition_style` hatch colour.
-    AecPlanDemolitionHatchColor,
-    /// Plan Manager Stage 2: `demolition_style` fill colour.
-    AecPlanDemolitionFillColor,
-    /// Plan Manager Stage 2: `existing_style` line colour.
-    AecPlanExistingLineColor,
-    /// Plan Manager Stage 2: `existing_style` hatch colour.
-    AecPlanExistingHatchColor,
-    /// Plan Manager Stage 2: `existing_style` fill colour.
-    AecPlanExistingFillColor,
-    /// Wall-style per-slot style override: line colour.
-    AecWallStyleSlotLineColor,
-    /// Wall-style per-slot style override: hatch colour.
-    AecWallStyleSlotHatchColor,
-    /// Wall-style per-slot style override: fill colour.
-    AecWallStyleSlotFillColor,
-    AecPlanOverlayLineColor,
-    AecPlanOverlayHatchColor,
-    AecPlanOverlayFillColor,
-    AecPlanContourHatchColor,
 }
 
 /// Table records the clipboard entities depend on, snapshotted from the source
@@ -1481,7 +1567,8 @@ impl ClipboardDeps {
                 if !objects.is_empty() {
                     let mut annotation_scales = Vec::new();
                     for (_, object) in &objects {
-                        let acadrust::objects::ObjectType::ObjectContextData(context) = object else {
+                        let acadrust::objects::ObjectType::ObjectContextData(context) = object
+                        else {
                             continue;
                         };
                         if annotation_scales
@@ -1651,9 +1738,7 @@ impl ClipboardDeps {
     fn snapshot_block(doc: &acadrust::CadDocument, name: &str) -> Option<BlockDef> {
         use acadrust::EntityType;
         let br = doc.block_records.get(name)?;
-        if name.starts_with("*Model_Space")
-            || name.starts_with("*Paper_Space")
-            || br.flags.is_xref
+        if name.starts_with("*Model_Space") || name.starts_with("*Paper_Space") || br.flags.is_xref
         {
             return None;
         }
@@ -1687,7 +1772,6 @@ impl ClipboardDeps {
     }
 }
 
-
 /// Which in-canvas modal dialog is currently open (Plan B). At most one shows
 /// at a time; dialog-specific data lives in its own fields. Closed via the
 /// modal's ✕ (`Message::CloseModal`).
@@ -1704,6 +1788,7 @@ pub enum ModalKind {
     DrawingUnits,
     GeometricTolerance,
     DraftingSettings,
+    AutoConstrainSettings,
     LayerStateEditor,
     Plot,
     PrintAll,
@@ -1731,10 +1816,18 @@ pub enum ModalKind {
     AttributeEditor,
     LayerDeleteWarning,
     Aliases,
+    NamedParameters,
     ScaleManager,
     /// Add / remove the annotation scales a single selected object has a
     /// per-object representation for.
     AnnoObjectScale,
+    InsertTable,
+    DataLinkManager,
+    DataExtraction,
+    /// The scene is drawn by a software rasterizer, or not at all: what that
+    /// means and what usually fixes it. Queued once per verdict; the status
+    /// bar's ⚠ pill reopens it.
+    GpuWarning,
     /// AEC Style Manager — browse/edit the materials + wall styles stored in
     /// the AEC style library (`AEC_STYLEMANAGER`). Empty shell for now; the
     /// view/edit content is added by a later step.
@@ -3504,8 +3597,13 @@ impl OpenCADStudio {
             recent_colors: Vec::new(),
             active_modal: None,
             pending_startup_modals: std::collections::VecDeque::new(),
+            gpu_status: crate::scene::pipeline::GpuStatus::Unknown,
+            gpu_status_generation: 0,
+            gpu_warning_silenced: String::new(),
             plotstyle_parent_plot_geometry: None,
             find_replace: FindReplaceState::default(),
+            aec_drop_acknowledged: false,
+            aec_drop_count: 0,
             layer_delete_pending: None,
             modal_offset: iced::Vector::ZERO,
             modal_drag_last: None,
@@ -3631,6 +3729,10 @@ impl OpenCADStudio {
             // Command aliases (populated from ocad.pgp just after construction)
             command_aliases: rustc_hash::FxHashMap::default(),
             alias_editor_rows: Vec::new(),
+            alias_pending_add: false,
+            alias_reset_confirm: false,
+            alias_close_confirm: false,
+            named_parameter_editor_rows: Vec::new(),
             // Layout Manager
             layout_manager_selected: "Model".to_string(),
             layer_state_selected: None,
@@ -3649,6 +3751,10 @@ impl OpenCADStudio {
             anno_object_scale_target: None,
             scale_rename_buf: String::new(),
             scale_stage: None,
+            table_insert: Default::default(),
+            data_link_manager: Default::default(),
+            data_link_parent_table: false,
+            data_extraction: Default::default(),
             layout_manager_rename_buf: String::new(),
             plotstyle_panel_aci: 1,
             ps_color_buf: String::new(),
@@ -3826,7 +3932,14 @@ impl OpenCADStudio {
     #[cfg(test)]
     pub(crate) fn new_for_test() -> Self {
         let mut app = Self::new();
-        app.automation_session = true;
+        // `new` loads the real settings file, so without this every test runs
+        // against whatever the developer last set in the application — a suite
+        // that passes on a clean machine and fails on a used one. It surfaced
+        // when a persisted `GRIPOBJLIMIT` made the grip-limit test see 32767
+        // where it expected the default, and the number of persisted settings
+        // only grows.
+        app.apply_config(crate::app::config::AppConfig::default());
+        app.last_saved_config = Some(app.current_config());
         app
     }
 
@@ -3860,8 +3973,7 @@ impl OpenCADStudio {
         let state = Self::new();
         let (id, open_task) = window::open(window::Settings {
             maximized: true,
-            icon: build_window_icon()
-                .and_then(|rgba| window::icon::from_rgba(rgba, 32, 32).ok()),
+            icon: build_window_icon().and_then(|rgba| window::icon::from_rgba(rgba, 32, 32).ok()),
             exit_on_close_request: false,
             // A Wayland compositor has no StartupWMClass to go on: it resolves a
             // window's dock icon by matching the window's app_id against the
@@ -3914,7 +4026,7 @@ impl OpenCADStudio {
             Task::batch(
                 cfg.script_lines
                     .into_iter()
-                    .map(|line| Task::done(Message::Command(line))),
+                    .map(|line| Task::done(Message::ScriptLine(line))),
             )
         };
         s.queue_startup_prompts();
@@ -3997,24 +4109,17 @@ impl OpenCADStudio {
         let mut s = Self::new();
         s.queue_startup_prompts();
         let focus = s.focus_cmd_input();
-        let primary_font = crate::scene::text::web_font::preload_language(
-            &crate::i18n::active_language_tag(),
-        );
+        let primary_font =
+            crate::scene::text::web_font::preload_language(&crate::i18n::active_language_tag());
         let fonts = Task::batch([
             Task::done(Message::PollWebFonts),
             Task::done(Message::ApplyWebFont(primary_font)),
         ]);
         // Web can't reach the Patreon API directly (CORS); fetch the CI-built
         // supporters.json served on the same origin instead.
-        let patrons = Task::perform(
-            crate::patreon::fetch_patrons_web(),
-            Message::PatronsFetched,
-        );
+        let patrons = Task::perform(crate::patreon::fetch_patrons_web(), Message::PatronsFetched);
         s.videos_loading = true;
-        let videos = Task::perform(
-            crate::videos::fetch_playlist_web(),
-            Message::VideosFetched,
-        );
+        let videos = Task::perform(crate::videos::fetch_playlist_web(), Message::VideosFetched);
         s.discussions_loading = true;
         let discussions = Task::perform(
             crate::discussions::fetch_discussions_web(),
@@ -4047,7 +4152,12 @@ pub fn run() -> iced::Result {
         if let Some(tab) = state.tabs.get(state.active_tab) {
             let dot = if tab.dirty { "● " } else { "" };
             let name = tab.tab_display_name();
-            format!("{}Open CAD Studio {} - {}", dot, env!("OCS_APP_VERSION"), name)
+            format!(
+                "{}Open CAD Studio {} - {}",
+                dot,
+                env!("OCS_APP_VERSION"),
+                name
+            )
         } else {
             concat!("Open CAD Studio ", env!("OCS_APP_VERSION")).to_string()
         }
@@ -4081,7 +4191,9 @@ pub fn run_web() -> iced::Result {
         OpenCADStudio::view_main,
     )
     .subscription(OpenCADStudio::subscription)
-    .title(|_state: &OpenCADStudio| concat!("Open CAD Studio ", env!("OCS_APP_VERSION")).to_string())
+    .title(|_state: &OpenCADStudio| {
+        concat!("Open CAD Studio ", env!("OCS_APP_VERSION")).to_string()
+    })
     .theme(|state: &OpenCADStudio| state.active_theme.clone())
     .backend(iced::Backend::Hardware(iced::backend::Api::OpenGL))
     .font(iced_aw::ICED_AW_FONT_BYTES)

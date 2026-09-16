@@ -458,6 +458,62 @@ impl SpatialGrid {
         }
     }
 
+    fn query_unordered<T: Copy>(&self, entries: &[Entry3<T>], query: [f64; 4]) -> Vec<T> {
+        let mut indices = Vec::new();
+        self.oversized.query(entries, query, &mut indices);
+        let mut out: Vec<T> = indices
+            .into_iter()
+            .filter_map(|idx| {
+                let entry = entries.get(idx as usize)?;
+                aabb_overlaps(entry_aabb2(entry), query).then_some(entry.value)
+            })
+            .collect();
+
+        let grid_max_x = self.min[0] + self.cols as f64 * self.cell;
+        let grid_max_y = self.min[1] + self.rows as f64 * self.cell;
+        if query[2] < self.min[0]
+            || query[3] < self.min[1]
+            || query[0] > grid_max_x
+            || query[1] > grid_max_y
+        {
+            return out;
+        }
+        let col = |x: f64| {
+            (((x - self.min[0]) / self.cell).floor()).clamp(0.0, (self.cols - 1) as f64) as u32
+        };
+        let row = |y: f64| {
+            (((y - self.min[1]) / self.cell).floor()).clamp(0.0, (self.rows - 1) as f64) as u32
+        };
+        let (row_lo, row_hi) = (row(query[1]), row(query[3]));
+        let (col_lo, col_hi) = (col(query[0]), col(query[2]));
+
+        // One growth instead of a chain of reallocations: a box over the whole
+        // drawing lands nearly every entry here.
+        let spanned: usize = (row_lo..=row_hi)
+            .map(|r| {
+                let base = r as usize * self.cols as usize;
+                let start = self.cell_offsets[base + col_lo as usize] as usize;
+                let end = self.cell_offsets[base + col_hi as usize + 1] as usize;
+                end.saturating_sub(start)
+            })
+            .sum();
+        out.reserve(spanned);
+
+        for r in row_lo..=row_hi {
+            let base = r as usize * self.cols as usize;
+            for c in col_lo..=col_hi {
+                let cell_idx = base + c as usize;
+                let start = self.cell_offsets[cell_idx] as usize;
+                let end = self.cell_offsets[cell_idx + 1] as usize;
+                out.extend(self.cell_entries[start..end].iter().filter_map(|&idx| {
+                    let entry = entries.get(idx as usize)?;
+                    aabb_overlaps(entry_aabb2(entry), query).then_some(entry.value)
+                }));
+            }
+        }
+        out
+    }
+
     fn query<T: Copy + Ord>(&self, entries: &[Entry3<T>], query: [f64; 4]) -> Vec<T> {
         let mut entry_indices = Vec::new();
         self.oversized.query(entries, query, &mut entry_indices);
@@ -520,6 +576,11 @@ impl<T: Copy + Ord + Sync> SpatialSet<T> {
         self.xy.query(&self.entries, aabb)
     }
 
+    /// See [`SpatialGrid::query_unordered`] — same set, no sort, duplicates in.
+    fn query_xy_unordered(&self, aabb: [f64; 4]) -> Vec<T> {
+        self.xy.query_unordered(&self.entries, aabb)
+    }
+
     fn prepare_screen(&self) {
         self.xyz
             .get_or_init(|| SpatialBvh3::build(&self.entries));
@@ -566,8 +627,8 @@ pub struct InteractionHandleIndex {
     handles: SpatialSet<u64>,
 }
 
-struct WireIndexEntries {
-    wire: Option<Entry3<u32>>,
+struct WireIndexBatch {
+    wire_entries: Vec<Entry3<u32>>,
     segments: Vec<Entry3<SegmentRef>>,
     snap_points: Vec<Entry3<SnapPointRef>>,
     key_vertices: Vec<Entry3<KeyVertexRef>>,
@@ -575,37 +636,64 @@ struct WireIndexEntries {
     fill_triangles: Vec<Entry3<TriangleRef>>,
     pick_triangles: Vec<Entry3<TriangleRef>>,
     glyphs: Vec<Entry3<GlyphRef>>,
-    unbounded: bool,
-    screen_unbounded: bool,
+    unbounded_wires: Vec<u32>,
+    screen_unbounded_wires: Vec<u32>,
     max_line_half_width_px: f32,
     max_marker_radius_fraction: f32,
 }
 
-fn collect_wire_index_entries(wire_idx: u32, wire: &WireModel) -> WireIndexEntries {
-    let mut entries = WireIndexEntries {
-        wire: finite_wire_aabb3(wire).map(|aabb| Entry3 {
+impl WireIndexBatch {
+    fn with_capacity_for_chunk(chunk: &[WireModel]) -> Self {
+        let total_segs: usize = chunk.iter().map(|w| w.points.len().saturating_sub(1)).sum();
+        let total_snaps: usize = chunk.iter().map(|w| w.snap_pts.len()).sum();
+        let total_key_verts: usize = chunk.iter().map(|w| w.key_vertices.len()).sum();
+        let total_key_segs: usize = chunk
+            .iter()
+            .map(|w| w.key_vertices.len().saturating_sub(1))
+            .sum();
+        let total_fills: usize = chunk.iter().map(|w| w.fill_tris.len() / 3).sum();
+        let total_picks: usize = chunk.iter().map(|w| w.pick_tris.len() / 3).sum();
+        let total_glyphs: usize = chunk.iter().map(|w| w.text_verts.len() / 6).sum();
+
+        Self {
+            wire_entries: Vec::with_capacity(chunk.len()),
+            segments: Vec::with_capacity(total_segs),
+            snap_points: Vec::with_capacity(total_snaps),
+            key_vertices: Vec::with_capacity(total_key_verts),
+            key_segments: Vec::with_capacity(total_key_segs),
+            fill_triangles: Vec::with_capacity(total_fills),
+            pick_triangles: Vec::with_capacity(total_picks),
+            glyphs: Vec::with_capacity(total_glyphs),
+            unbounded_wires: Vec::new(),
+            screen_unbounded_wires: Vec::new(),
+            max_line_half_width_px: 0.0,
+            max_marker_radius_fraction: 0.0,
+        }
+    }
+}
+
+fn append_wire_index_entries(wire_idx: u32, wire: &WireModel, batch: &mut WireIndexBatch) {
+    if let Some(aabb) = finite_wire_aabb3(wire) {
+        batch.wire_entries.push(Entry3 {
             aabb,
             value: wire_idx,
-        }),
-        segments: Vec::with_capacity(wire.points.len().saturating_sub(1)),
-        snap_points: Vec::with_capacity(wire.snap_pts.len()),
-        key_vertices: Vec::with_capacity(wire.key_vertices.len()),
-        key_segments: Vec::with_capacity(wire.key_vertices.len().saturating_sub(1)),
-        fill_triangles: Vec::with_capacity(wire.fill_tris.len() / 3),
-        pick_triangles: Vec::with_capacity(wire.pick_tris.len() / 3),
-        glyphs: Vec::with_capacity(wire.text_verts.len() / 6),
-        unbounded: false,
-        screen_unbounded: wire.point_marker.is_some(),
-        max_line_half_width_px: if wire.line_weight_px.is_finite() {
-            (wire.line_weight_px * 0.5).max(0.0)
-        } else {
-            0.0
-        },
-        max_marker_radius_fraction: wire.point_marker.map_or(0.0, |marker| {
-            marker.viewport_percent.max(0.0) * 0.01 * std::f32::consts::SQRT_2
-        }),
-    };
-    entries.unbounded = entries.wire.is_none();
+        });
+    } else {
+        batch.unbounded_wires.push(wire_idx);
+    }
+    if wire.point_marker.is_some() {
+        batch.screen_unbounded_wires.push(wire_idx);
+    }
+    if wire.line_weight_px.is_finite() {
+        batch.max_line_half_width_px = batch
+            .max_line_half_width_px
+            .max((wire.line_weight_px * 0.5).max(0.0));
+    }
+    if let Some(marker) = wire.point_marker {
+        batch.max_marker_radius_fraction = batch.max_marker_radius_fraction.max(
+            marker.viewport_percent.max(0.0) * 0.01 * std::f32::consts::SQRT_2,
+        );
+    }
 
     if wire.point_marker.is_none() {
         for start in 0..wire.points.len().saturating_sub(1) {
@@ -615,7 +703,7 @@ fn collect_wire_index_entries(wire_idx: u32, wire: &WireModel) -> WireIndexEntri
             ]) else {
                 continue;
             };
-            entries.segments.push(Entry3 {
+            batch.segments.push(Entry3 {
                 aabb,
                 value: SegmentRef {
                     wire: wire_idx,
@@ -626,7 +714,7 @@ fn collect_wire_index_entries(wire_idx: u32, wire: &WireModel) -> WireIndexEntri
     }
     for (index, (point, _)) in wire.snap_pts.iter().enumerate() {
         if point.is_finite() {
-            entries.snap_points.push(Entry3 {
+            batch.snap_points.push(Entry3 {
                 aabb: [point.x, point.y, point.z, point.x, point.y, point.z],
                 value: SnapPointRef {
                     wire: wire_idx,
@@ -637,7 +725,7 @@ fn collect_wire_index_entries(wire_idx: u32, wire: &WireModel) -> WireIndexEntri
     }
     for (index, &point) in wire.key_vertices.iter().enumerate() {
         if point.iter().all(|value| value.is_finite()) {
-            entries.key_vertices.push(Entry3 {
+            batch.key_vertices.push(Entry3 {
                 aabb: [point[0], point[1], point[2], point[0], point[1], point[2]],
                 value: KeyVertexRef {
                     wire: wire_idx,
@@ -652,7 +740,7 @@ fn collect_wire_index_entries(wire_idx: u32, wire: &WireModel) -> WireIndexEntri
         else {
             continue;
         };
-        entries.key_segments.push(Entry3 {
+        batch.key_segments.push(Entry3 {
             aabb,
             value: KeySegmentRef {
                 wire: wire_idx,
@@ -664,13 +752,13 @@ fn collect_wire_index_entries(wire_idx: u32, wire: &WireModel) -> WireIndexEntri
         wire_idx,
         &wire.fill_tris,
         &wire.fill_tris_low,
-        &mut entries.fill_triangles,
+        &mut batch.fill_triangles,
     );
     append_triangle_entries(
         wire_idx,
         &wire.pick_tris,
         &wire.pick_tris_low,
-        &mut entries.pick_triangles,
+        &mut batch.pick_triangles,
     );
     for start in (0..wire.text_verts.len()).step_by(6) {
         let Some(quad) = wire.text_verts.get(start..start + 6) else {
@@ -685,7 +773,7 @@ fn collect_wire_index_entries(wire_idx: u32, wire: &WireModel) -> WireIndexEntri
         })) else {
             continue;
         };
-        entries.glyphs.push(Entry3 {
+        batch.glyphs.push(Entry3 {
             aabb,
             value: GlyphRef {
                 wire: wire_idx,
@@ -693,20 +781,6 @@ fn collect_wire_index_entries(wire_idx: u32, wire: &WireModel) -> WireIndexEntri
             },
         });
     }
-    entries
-}
-
-fn flatten_entry_parts<T>(mut parts: Vec<Vec<T>>) -> Vec<T> {
-    let Some((largest, _)) = parts.iter().enumerate().max_by_key(|(_, part)| part.len()) else {
-        return Vec::new();
-    };
-    let mut output = parts.swap_remove(largest);
-    let remaining: usize = parts.iter().map(Vec::len).sum();
-    output.reserve(remaining);
-    for mut part in parts {
-        output.append(&mut part);
-    }
-    output
 }
 
 impl InteractionHandleIndex {
@@ -761,127 +835,105 @@ impl InteractionIndex {
         let perf = crate::perf::enabled();
         #[cfg(not(target_arch = "wasm32"))]
         let build_started = iced::time::Instant::now();
-        let wire_handles: Vec<Option<u64>> = wires
-            .iter()
-            .map(|wire| wire.name.parse::<u64>().ok())
-            .collect();
+        let n_wires = wires.len();
+        let mut wire_handles = Vec::with_capacity(n_wires);
+        let mut wire_ordinals = Vec::with_capacity(n_wires);
         let mut next_ordinal: rustc_hash::FxHashMap<u64, u32> =
-            rustc_hash::FxHashMap::default();
-        let wire_ordinals: Vec<Option<u32>> = wire_handles
-            .iter()
-            .map(|handle| {
-                let handle = (*handle)?;
-                let ordinal = next_ordinal.entry(handle).or_default();
-                let current = *ordinal;
-                *ordinal += 1;
-                Some(current)
-            })
-            .collect();
+            rustc_hash::FxHashMap::with_capacity_and_hasher(n_wires.min(4096), Default::default());
+        for wire in wires {
+            let handle = wire.name.parse::<u64>().ok();
+            wire_handles.push(handle);
+            wire_ordinals.push(handle.map(|h| {
+                let entry = next_ordinal.entry(h).or_default();
+                let ord = *entry;
+                *entry += 1;
+                ord
+            }));
+        }
         #[cfg(not(target_arch = "wasm32"))]
         let handles_elapsed = build_started.elapsed();
         #[cfg(not(target_arch = "wasm32"))]
         let collect_started = iced::time::Instant::now();
-        let mut wire_entries = Vec::with_capacity(wires.len());
-        let mut unbounded_wires = Vec::new();
-        let mut screen_unbounded_wires = Vec::new();
-        let mut max_line_half_width_px = 0.0f32;
-        let mut max_marker_radius_fraction = 0.0f32;
+
+        const CHUNK_SIZE: usize = 256;
 
         #[cfg(not(target_arch = "wasm32"))]
-        let per_wire: Vec<WireIndexEntries> = {
+        let batches: Vec<WireIndexBatch> = {
             use crate::par::prelude::*;
             wires
-                .par_iter()
+                .par_chunks(CHUNK_SIZE)
                 .enumerate()
-                .map(|(index, wire)| collect_wire_index_entries(index as u32, wire))
+                .map(|(chunk_idx, chunk)| {
+                    let mut batch = WireIndexBatch::with_capacity_for_chunk(chunk);
+                    let base_idx = (chunk_idx * CHUNK_SIZE) as u32;
+                    for (i, wire) in chunk.iter().enumerate() {
+                        append_wire_index_entries(base_idx + i as u32, wire, &mut batch);
+                    }
+                    batch
+                })
                 .collect()
         };
         #[cfg(target_arch = "wasm32")]
-        let per_wire: Vec<WireIndexEntries> = wires
-            .iter()
+        let batches: Vec<WireIndexBatch> = wires
+            .chunks(CHUNK_SIZE)
             .enumerate()
-            .map(|(index, wire)| collect_wire_index_entries(index as u32, wire))
+            .map(|(chunk_idx, chunk)| {
+                let mut batch = WireIndexBatch::with_capacity_for_chunk(chunk);
+                let base_idx = (chunk_idx * CHUNK_SIZE) as u32;
+                for (i, wire) in chunk.iter().enumerate() {
+                    append_wire_index_entries(base_idx + i as u32, wire, &mut batch);
+                }
+                batch
+            })
             .collect();
+
         #[cfg(not(target_arch = "wasm32"))]
         let collect_elapsed = collect_started.elapsed();
         #[cfg(not(target_arch = "wasm32"))]
         let flatten_started = iced::time::Instant::now();
-        let mut segment_parts = Vec::with_capacity(per_wire.len());
-        let mut snap_point_parts = Vec::with_capacity(per_wire.len());
-        let mut key_vertex_parts = Vec::with_capacity(per_wire.len());
-        let mut key_segment_parts = Vec::with_capacity(per_wire.len());
-        let mut fill_triangle_parts = Vec::with_capacity(per_wire.len());
-        let mut pick_triangle_parts = Vec::with_capacity(per_wire.len());
-        let mut glyph_parts = Vec::with_capacity(per_wire.len());
-        for (wire_idx, entries) in per_wire.into_iter().enumerate() {
+
+        let total_wires: usize = batches.iter().map(|b| b.wire_entries.len()).sum();
+        let total_segments: usize = batches.iter().map(|b| b.segments.len()).sum();
+        let total_snaps: usize = batches.iter().map(|b| b.snap_points.len()).sum();
+        let total_key_verts: usize = batches.iter().map(|b| b.key_vertices.len()).sum();
+        let total_key_segs: usize = batches.iter().map(|b| b.key_segments.len()).sum();
+        let total_fills: usize = batches.iter().map(|b| b.fill_triangles.len()).sum();
+        let total_picks: usize = batches.iter().map(|b| b.pick_triangles.len()).sum();
+        let total_glyphs: usize = batches.iter().map(|b| b.glyphs.len()).sum();
+        let total_unbounded: usize = batches.iter().map(|b| b.unbounded_wires.len()).sum();
+        let total_screen_unbounded: usize =
+            batches.iter().map(|b| b.screen_unbounded_wires.len()).sum();
+
+        let mut wire_entries = Vec::with_capacity(total_wires);
+        let mut segment_entries = Vec::with_capacity(total_segments);
+        let mut snap_point_entries = Vec::with_capacity(total_snaps);
+        let mut key_vertex_entries = Vec::with_capacity(total_key_verts);
+        let mut key_segment_entries = Vec::with_capacity(total_key_segs);
+        let mut fill_triangle_entries = Vec::with_capacity(total_fills);
+        let mut pick_triangle_entries = Vec::with_capacity(total_picks);
+        let mut glyph_entries = Vec::with_capacity(total_glyphs);
+        let mut unbounded_wires = Vec::with_capacity(total_unbounded);
+        let mut screen_unbounded_wires = Vec::with_capacity(total_screen_unbounded);
+        let mut max_line_half_width_px = 0.0f32;
+        let mut max_marker_radius_fraction = 0.0f32;
+
+        for mut batch in batches {
             max_line_half_width_px =
-                max_line_half_width_px.max(entries.max_line_half_width_px);
+                max_line_half_width_px.max(batch.max_line_half_width_px);
             max_marker_radius_fraction =
-                max_marker_radius_fraction.max(entries.max_marker_radius_fraction);
-            if let Some(entry) = entries.wire {
-                wire_entries.push(entry);
-            }
-            if entries.unbounded {
-                unbounded_wires.push(wire_idx as u32);
-            }
-            if entries.screen_unbounded {
-                screen_unbounded_wires.push(wire_idx as u32);
-            }
-            segment_parts.push(entries.segments);
-            snap_point_parts.push(entries.snap_points);
-            key_vertex_parts.push(entries.key_vertices);
-            key_segment_parts.push(entries.key_segments);
-            fill_triangle_parts.push(entries.fill_triangles);
-            pick_triangle_parts.push(entries.pick_triangles);
-            glyph_parts.push(entries.glyphs);
+                max_marker_radius_fraction.max(batch.max_marker_radius_fraction);
+            wire_entries.append(&mut batch.wire_entries);
+            segment_entries.append(&mut batch.segments);
+            snap_point_entries.append(&mut batch.snap_points);
+            key_vertex_entries.append(&mut batch.key_vertices);
+            key_segment_entries.append(&mut batch.key_segments);
+            fill_triangle_entries.append(&mut batch.fill_triangles);
+            pick_triangle_entries.append(&mut batch.pick_triangles);
+            glyph_entries.append(&mut batch.glyphs);
+            unbounded_wires.append(&mut batch.unbounded_wires);
+            screen_unbounded_wires.append(&mut batch.screen_unbounded_wires);
         }
-        #[cfg(not(target_arch = "wasm32"))]
-        let (
-            ((segment_entries, snap_point_entries), (key_vertex_entries, key_segment_entries)),
-            ((fill_triangle_entries, pick_triangle_entries), glyph_entries),
-        ) = rayon::join(
-            || {
-                rayon::join(
-                    || {
-                        rayon::join(
-                            || flatten_entry_parts(segment_parts),
-                            || flatten_entry_parts(snap_point_parts),
-                        )
-                    },
-                    || {
-                        rayon::join(
-                            || flatten_entry_parts(key_vertex_parts),
-                            || flatten_entry_parts(key_segment_parts),
-                        )
-                    },
-                )
-            },
-            || {
-                let (fill, pick) = rayon::join(
-                    || flatten_entry_parts(fill_triangle_parts),
-                    || flatten_entry_parts(pick_triangle_parts),
-                );
-                ((fill, pick), flatten_entry_parts(glyph_parts))
-            },
-        );
-        #[cfg(target_arch = "wasm32")]
-        let (
-            segment_entries,
-            snap_point_entries,
-            key_vertex_entries,
-            key_segment_entries,
-            fill_triangle_entries,
-            pick_triangle_entries,
-            glyph_entries,
-        ) = (
-            flatten_entry_parts(segment_parts),
-            flatten_entry_parts(snap_point_parts),
-            flatten_entry_parts(key_vertex_parts),
-            flatten_entry_parts(key_segment_parts),
-            flatten_entry_parts(fill_triangle_parts),
-            flatten_entry_parts(pick_triangle_parts),
-            flatten_entry_parts(glyph_parts),
-        );
+
         #[cfg(not(target_arch = "wasm32"))]
         let flatten_elapsed = flatten_started.elapsed();
         #[cfg(not(target_arch = "wasm32"))]
@@ -891,17 +943,17 @@ impl InteractionIndex {
         let (
             ((wires, segments), (snap_points, key_vertices)),
             ((key_segments, fill_triangles), (pick_triangles, glyphs)),
-        ) = rayon::join(
+        ) = crate::par::join(
             || {
-                rayon::join(
+                crate::par::join(
                     || {
-                        rayon::join(
+                        crate::par::join(
                             || SpatialSet::build(wire_entries),
                             || SpatialSet::build(segment_entries),
                         )
                     },
                     || {
-                        rayon::join(
+                        crate::par::join(
                             || SpatialSet::build(snap_point_entries),
                             || SpatialSet::build(key_vertex_entries),
                         )
@@ -909,15 +961,15 @@ impl InteractionIndex {
                 )
             },
             || {
-                rayon::join(
+                crate::par::join(
                     || {
-                        rayon::join(
+                        crate::par::join(
                             || SpatialSet::build(key_segment_entries),
                             || SpatialSet::build(fill_triangle_entries),
                         )
                     },
                     || {
-                        rayon::join(
+                        crate::par::join(
                             || SpatialSet::build(pick_triangle_entries),
                             || SpatialSet::build(glyph_entries),
                         )
@@ -979,12 +1031,12 @@ impl InteractionIndex {
     /// thread. Perspective/orbit hover must never pay this one-time cost.
     pub fn prepare_screen(&self) {
         #[cfg(not(target_arch = "wasm32"))]
-        rayon::join(
+        crate::par::join(
             || {
-                rayon::join(
-                    || rayon::join(|| self.wires.prepare_screen(), || self.segments.prepare_screen()),
+                crate::par::join(
+                    || crate::par::join(|| self.wires.prepare_screen(), || self.segments.prepare_screen()),
                     || {
-                        rayon::join(
+                        crate::par::join(
                             || self.snap_points.prepare_screen(),
                             || self.key_vertices.prepare_screen(),
                         )
@@ -992,15 +1044,15 @@ impl InteractionIndex {
                 )
             },
             || {
-                rayon::join(
+                crate::par::join(
                     || {
-                        rayon::join(
+                        crate::par::join(
                             || self.key_segments.prepare_screen(),
                             || self.fill_triangles.prepare_screen(),
                         )
                     },
                     || {
-                        rayon::join(
+                        crate::par::join(
                             || self.pick_triangles.prepare_screen(),
                             || self.glyphs.prepare_screen(),
                         )
@@ -1136,6 +1188,52 @@ impl InteractionIndex {
             .collect()
     }
 
+    pub(crate) fn query_remapped_xy_area(
+        &self,
+        wires: Arc<Vec<WireModel>>,
+        slots: &rustc_hash::FxHashMap<(u64, u32), u32>,
+        aabb: [f64; 4],
+    ) -> InteractionCandidates {
+        InteractionCandidates {
+            wires,
+            wire_indices: Some(self.remap_wire_indices(
+                self.wires.query_xy_unordered(aabb),
+                slots,
+                false,
+            )),
+            segments: Some(self.remap_refs(
+                self.segments.query_xy_unordered(aabb),
+                slots,
+                |value| value.wire,
+                |value, wire| value.wire = wire,
+            )),
+            snap_points: None,
+            key_vertices: None,
+            key_segments: None,
+            fill_triangles: Some(self.remap_refs(
+                self.fill_triangles.query_xy_unordered(aabb),
+                slots,
+                |value| value.wire,
+                |value, wire| value.wire = wire,
+            )),
+            pick_triangles: Some(self.remap_refs(
+                self.pick_triangles.query_xy_unordered(aabb),
+                slots,
+                |value| value.wire,
+                |value, wire| value.wire = wire,
+            )),
+            glyphs: Some(self.remap_refs(
+                self.glyphs.query_xy_unordered(aabb),
+                slots,
+                |value| value.wire,
+                |value, wire| value.wire = wire,
+            )),
+            query_aabb: Some(aabb),
+            screen_rect: None,
+            screen_view: None,
+        }
+    }
+
     pub(crate) fn query_remapped_xy(
         &self,
         wires: Arc<Vec<WireModel>>,
@@ -1266,6 +1364,53 @@ impl InteractionIndex {
             query_aabb: None,
             screen_rect: Some(screen_rect),
             screen_view: Some((view_rot, eye, bounds)),
+        }
+    }
+
+    pub fn query_xy_area(
+        &self,
+        wires: Arc<Vec<WireModel>>,
+        aabb: [f64; 4],
+    ) -> InteractionCandidates {
+        let ((wire_indices, segments), ((fill_triangles, pick_triangles), glyphs)) =
+            crate::par::join(
+                || {
+                    crate::par::join(
+                        || {
+                            let mut indices = self.wires.query_xy_unordered(aabb);
+                            indices.extend_from_slice(&self.unbounded_wires);
+                            indices.sort_unstable();
+                            indices.dedup();
+                            indices
+                        },
+                        || self.segments.query_xy_unordered(aabb),
+                    )
+                },
+                || {
+                    crate::par::join(
+                        || {
+                            crate::par::join(
+                                || self.fill_triangles.query_xy_unordered(aabb),
+                                || self.pick_triangles.query_xy_unordered(aabb),
+                            )
+                        },
+                        || self.glyphs.query_xy_unordered(aabb),
+                    )
+                },
+            );
+        InteractionCandidates {
+            wires,
+            wire_indices: Some(wire_indices),
+            segments: Some(segments),
+            snap_points: None,
+            key_vertices: None,
+            key_segments: None,
+            fill_triangles: Some(fill_triangles),
+            pick_triangles: Some(pick_triangles),
+            glyphs: Some(glyphs),
+            query_aabb: Some(aabb),
+            screen_rect: None,
+            screen_view: None,
         }
     }
 
@@ -1503,6 +1648,29 @@ impl InteractionCandidates {
         self.screen_rect
             .zip(self.screen_view)
             .map(|(rect, (view, eye, bounds))| (rect, view, eye, bounds))
+    }
+
+    pub(crate) fn extend_indexed_area(&mut self, other: Self) {
+        debug_assert!(Arc::ptr_eq(&self.wires, &other.wires));
+
+        fn append<T>(target: &mut Option<Vec<T>>, incoming: Option<Vec<T>>) {
+            let (Some(target), Some(incoming)) = (target.as_mut(), incoming) else {
+                return;
+            };
+            target.extend(incoming);
+        }
+
+        if let (Some(target), Some(incoming)) =
+            (self.wire_indices.as_mut(), other.wire_indices)
+        {
+            target.extend(incoming);
+            target.sort_unstable();
+            target.dedup();
+        }
+        append(&mut self.segments, other.segments);
+        append(&mut self.fill_triangles, other.fill_triangles);
+        append(&mut self.pick_triangles, other.pick_triangles);
+        append(&mut self.glyphs, other.glyphs);
     }
 
     pub(crate) fn extend_indexed(&mut self, other: Self) {
@@ -1829,4 +1997,139 @@ fn aabb3_projects_into(
 
 fn aabb_overlaps(a: [f64; 4], b: [f64; 4]) -> bool {
     a[2] >= b[0] && a[0] <= b[2] && a[3] >= b[1] && a[1] <= b[3]
+}
+
+#[cfg(test)]
+mod area_query_tests {
+    use super::*;
+    use iced::{Point, Rectangle};
+
+    fn wire(name: &str, pts: Vec<[f32; 3]>, aabb: [f32; 4]) -> WireModel {
+        let mut w = WireModel::solid(name.to_string(), pts, [1.0; 4], false);
+        w.aabb = aabb;
+        w
+    }
+
+    fn sample() -> Vec<WireModel> {
+        vec![
+            wire("5", vec![[-0.5, -0.5, 0.0], [0.5, 0.5, 0.0]], [-0.5, -0.5, 0.5, 0.5]),
+            wire("9", vec![[0.1, -0.9, 0.0], [0.9, -0.1, 0.0]], [0.1, -0.9, 0.9, -0.1]),
+            wire("13", vec![[-0.9, 0.2, 0.0], [-0.2, 0.9, 0.0]], [-0.9, 0.2, -0.2, 0.9]),
+        ]
+    }
+
+    #[test]
+    fn area_query_matches_full_query_where_it_is_read() {
+        let wires = sample();
+        let index = InteractionIndex::build(&wires);
+        let arc = Arc::new(wires);
+        let aabb = [-2.0, -2.0, 2.0, 2.0];
+
+        let full = index.query_xy(Arc::clone(&arc), aabb);
+        let area = index.query_xy_area(Arc::clone(&arc), aabb);
+
+        fn normalise<T: Copy + Ord>(v: &Option<Vec<T>>) -> Option<Vec<T>> {
+            v.as_ref().map(|items| {
+                let mut items = items.clone();
+                items.sort_unstable();
+                items.dedup();
+                items
+            })
+        }
+        assert_eq!(area.wire_indices, full.wire_indices);
+        assert_eq!(normalise(&area.segments), normalise(&full.segments));
+        assert_eq!(
+            normalise(&area.fill_triangles),
+            normalise(&full.fill_triangles),
+        );
+        assert_eq!(
+            normalise(&area.pick_triangles),
+            normalise(&full.pick_triangles),
+        );
+        assert_eq!(normalise(&area.glyphs), normalise(&full.glyphs));
+        assert_eq!(area.query_aabb, full.query_aabb);
+
+        // The sample carries no hatches or text, so the equality above is
+        // thin for those three. What matters is that they stay indexed at all:
+        // dropping one to `None` is what would silently unselect a hatch.
+        assert!(area.fill_triangles.is_some());
+        assert!(area.pick_triangles.is_some());
+        assert!(area.glyphs.is_some());
+
+        assert!(area.snap_points.is_none());
+        assert!(area.key_vertices.is_none());
+        assert!(area.key_segments.is_none());
+        assert!(full.snap_points.is_some(), "the full query still snaps");
+    }
+
+    #[test]
+    fn the_area_merge_dedups_wire_indices_and_nothing_else() {
+        let arc = Arc::new(sample());
+        let base = |indices: Vec<u32>, segments: Vec<SegmentRef>| InteractionCandidates {
+            wires: Arc::clone(&arc),
+            wire_indices: Some(indices),
+            segments: Some(segments),
+            snap_points: None,
+            key_vertices: None,
+            key_segments: None,
+            fill_triangles: Some(Vec::new()),
+            pick_triangles: Some(Vec::new()),
+            glyphs: Some(Vec::new()),
+            query_aabb: Some([-2.0, -2.0, 2.0, 2.0]),
+            screen_rect: None,
+            screen_view: None,
+        };
+        let seg = |wire: u32| SegmentRef { wire, start: 0 };
+
+        let mut merged = base(vec![2, 0], vec![seg(2), seg(0)]);
+        merged.extend_indexed_area(base(vec![1, 0], vec![seg(1), seg(0)]));
+
+        assert_eq!(merged.wire_indices, Some(vec![0, 1, 2]));
+        assert_eq!(
+            merged.segments,
+            Some(vec![seg(2), seg(0), seg(1), seg(0)]),
+            "the other categories are appended as they come",
+        );
+    }
+
+    // World (x,y) → screen ((x+1)*100, (1-y)*100) over a 200×200 viewport, the
+    // same identity ortho view the hit-test tests use.
+    #[test]
+    fn box_selection_picks_the_same_handles_from_either_query() {
+        let wires = sample();
+        let index = InteractionIndex::build(&wires);
+        let arc = Arc::new(wires);
+        let aabb = [-2.0, -2.0, 2.0, 2.0];
+        let bounds = Rectangle {
+            x: 0.0,
+            y: 0.0,
+            width: 200.0,
+            height: 200.0,
+        };
+        let eye = glam::DVec3::ZERO;
+
+        for crossing in [false, true] {
+            let full = index.query_xy(Arc::clone(&arc), aabb);
+            let area = index.query_xy_area(Arc::clone(&arc), aabb);
+            let hit = |c: &InteractionCandidates| {
+                let mut names = crate::scene::pick::hit_test::box_hit(
+                    Point::new(0.0, 0.0),
+                    Point::new(200.0, 200.0),
+                    crossing,
+                    c,
+                    glam::Mat4::IDENTITY,
+                    eye,
+                    bounds,
+                )
+                .into_iter()
+                .map(str::to_string)
+                .collect::<Vec<_>>();
+                names.sort();
+                names
+            };
+            let from_full = hit(&full);
+            assert!(!from_full.is_empty(), "the box covers the whole sample");
+            assert_eq!(hit(&area), from_full, "crossing={crossing}");
+        }
+    }
 }

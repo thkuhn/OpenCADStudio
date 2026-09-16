@@ -14,7 +14,6 @@ use iced::widget::{
 use iced::window;
 use iced::{keyboard, Background, Border, Color, Element, Fill, Length, Subscription, Task, Theme};
 use iced_aw::ContextMenu;
-use crate::t;
 
 mod controls;
 mod modal;
@@ -35,6 +34,12 @@ pub(in crate::app) use overlay::{MTEXT_TEXT_ID, TEXT_INLINE_ID};
 pub(in crate::app) const VIEWPORT_CAPTURE_BOUNDS_ID: &str = "viewport-capture-bounds";
 
 const VIEWCUBE_HIT_SIZE: f32 = VIEWCUBE_REGION_PX;
+static MOBILE_SPONSOR_IMAGE: std::sync::LazyLock<iced::widget::image::Handle> =
+    std::sync::LazyLock::new(|| {
+        iced::widget::image::Handle::from_bytes(
+            include_bytes!("../../../assets/sponsors/cad-editor-mobile-dwg-viewer.png").as_slice(),
+        )
+    });
 
 /// Background used by drafting overlays in model or paper space.
 fn crosshair_background(tab: &DocumentTab, is_paper: bool) -> [f32; 4] {
@@ -126,11 +131,9 @@ fn shortcut_key_name(key: &keyboard::Key, modifiers: keyboard::Modifiers) -> Opt
                 "ArrowRight" => "RIGHT".to_string(),
                 "PageUp" => "PAGEUP".to_string(),
                 "PageDown" => "PAGEDOWN".to_string(),
-                "Enter" | "Space" | "Escape" | "Delete" | "Backspace" | "Tab" | "Home"
-                | "End" | "Insert" => name.to_uppercase(),
-                _ if name.starts_with('F')
-                    && name[1..].chars().all(|ch| ch.is_ascii_digit()) =>
-                {
+                "Enter" | "Space" | "Escape" | "Delete" | "Backspace" | "Tab" | "Home" | "End"
+                | "Insert" => name.to_uppercase(),
+                _ if name.starts_with('F') && name[1..].chars().all(|ch| ch.is_ascii_digit()) => {
                     name
                 }
                 _ => return None,
@@ -162,7 +165,7 @@ pub(super) struct RenderModeChoice(pub acadrust::entities::ViewportRenderMode);
 
 impl std::fmt::Display for RenderModeChoice {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(crate::modules::view::visual_style::label_for(self.0))
+        f.write_str(crate::t!(crate::modules::view::visual_style::label_for(self.0)).as_ref())
     }
 }
 
@@ -211,12 +214,7 @@ impl OpenCADStudio {
         let tab = &self.tabs[i];
         let thumbnail_capture_clean = self.thumbnail_capture_clean;
         let theme_text = self.active_theme.palette().background.base.text;
-        let viewcube_text_color = [
-            theme_text.r,
-            theme_text.g,
-            theme_text.b,
-            theme_text.a,
-        ];
+        let viewcube_text_color = [theme_text.r, theme_text.g, theme_text.b, theme_text.a];
         let is_paper = tab.scene.current_layout != "Model";
         let committed_render_mode = if is_paper {
             tab.scene
@@ -340,9 +338,8 @@ impl OpenCADStudio {
                 Space::new().width(Fill).height(Fill)
             })
             .into();
-            let shaders = pane_grid::PaneGrid::new(
-                &scene.model_panes,
-                move |_pane, &idx, _maximized| {
+            let shaders =
+                pane_grid::PaneGrid::new(&scene.model_panes, move |_pane, &idx, _maximized| {
                     pane_grid::Content::new(
                         shader(ViewportPane::for_pane(
                             scene,
@@ -355,12 +352,11 @@ impl OpenCADStudio {
                         .width(Fill)
                         .height(Fill),
                     )
-                },
-            )
-            .width(Fill)
-            .height(Fill)
-            .min_size(scene.model_pane_min_px())
-            .spacing(crate::scene::TILE_DIVIDER_PX);
+                })
+                .width(Fill)
+                .height(Fill)
+                .min_size(scene.model_pane_min_px())
+                .spacing(crate::scene::TILE_DIVIDER_PX);
             stack![size_probe, shaders].width(Fill).height(Fill).into()
         };
 
@@ -369,22 +365,23 @@ impl OpenCADStudio {
         // above the crosshair overlay so it actually receives mouse events, and
         // it owns the divider resize. Only built for the Model layout.
         mark("model_input");
-        let model_input_layer: Option<Element<'_, Message>> = if is_paper || tab.is_start || self.layout_settling {
-            None
-        } else {
-            let scene = &tab.scene;
-            Some(
-                pane_grid::PaneGrid::new(&scene.model_panes, |_pane, &idx, _maximized| {
-                    pane_grid::Content::new(pane_mouse_area(idx))
-                })
-                .width(Fill)
-                .height(Fill)
-                .min_size(scene.model_pane_min_px())
-                .spacing(crate::scene::TILE_DIVIDER_PX)
-                .on_resize(6.0, Message::PaneResized)
-                .into(),
-            )
-        };
+        let model_input_layer: Option<Element<'_, Message>> =
+            if is_paper || tab.is_start || self.layout_settling {
+                None
+            } else {
+                let scene = &tab.scene;
+                Some(
+                    pane_grid::PaneGrid::new(&scene.model_panes, |_pane, &idx, _maximized| {
+                        pane_grid::Content::new(pane_mouse_area(idx))
+                    })
+                    .width(Fill)
+                    .height(Fill)
+                    .min_size(scene.model_pane_min_px())
+                    .spacing(crate::scene::TILE_DIVIDER_PX)
+                    .on_resize(6.0, Message::PaneResized)
+                    .into(),
+                )
+            };
 
         mark("grid");
         let grid_overlay = if self.layout_settling || tab.is_start {
@@ -417,8 +414,7 @@ impl OpenCADStudio {
                     let (origin, mut axes): (glam::DVec3, _) = if is_paper {
                         match tab.ucs_from_viewport(handle) {
                             Some(u) => {
-                                let (o, ux, uy, uz) =
-                                    super::helpers::UcsXform::from_ucs(&u).axes();
+                                let (o, ux, uy, uz) = super::helpers::UcsXform::from_ucs(&u).axes();
                                 (o, (ux.as_vec3(), uy.as_vec3(), uz.as_vec3()))
                             }
                             None => (
@@ -489,6 +485,109 @@ bg={bg_ms:.1}ms n={view_count}"
             let snap_ext_base = tab.snap_result.and_then(|s| s.extension_base);
             let snap_ext_base2 = tab.snap_result.and_then(|s| s.extension_base2);
 
+            let show_grips = tab.active_cmd.is_none()
+                || tab
+                    .active_cmd
+                    .as_ref()
+                    .is_some_and(|cmd| cmd.name() == "STRETCH");
+
+            let grips: Vec<crate::ui::overlay::GripMarker> = if show_grips
+                && !tab.selected_grips.is_empty()
+            {
+                let (vw, vh) = sel_ref.vp_size;
+                // Overlays project through the active tile's camera, so
+                // they must use the active tile's screen rectangle (with
+                // its canvas offset) — not the whole canvas — or they
+                // land in the wrong place in a tiled layout.
+                // Inside a floating viewport the pane is the viewport's own
+                // rect + camera; otherwise the active model tile.
+                let edit_frame = tab.scene.viewport_edit_frame((vw, vh));
+                let bounds = match &edit_frame {
+                    Some((_, full)) => *full,
+                    None => tab.scene.active_model_tile_bounds(vw, vh),
+                };
+                let sel_h = tab.selected_handle;
+                // Mark the Properties panel's current point grip hot.
+                let current_vertex_grip: Option<usize> = tab
+                    .properties
+                    .prop_vertex_indicator_active
+                    .then(|| sel_h)
+                    .flatten()
+                    .and_then(|h| {
+                        let indexed = match tab.scene.document.get_entity(h) {
+                            Some(acadrust::EntityType::LwPolyline(_))
+                            | Some(acadrust::EntityType::Polyline2D(_))
+                            | Some(acadrust::EntityType::Polyline3D(_))
+                            | Some(acadrust::EntityType::Spline(_))
+                            | Some(acadrust::EntityType::Face3D(_))
+                            | Some(acadrust::EntityType::PolygonMesh(_)) => true,
+                            _ => false,
+                        };
+                        indexed.then_some(tab.properties.prop_vertex)
+                    });
+                // In-viewport grips are model-space; project them with the
+                // viewport camera so they sit on the wire the GPU draws.
+                // Paper entities use the 2-D paper transform; the model tab
+                // uses the model camera.
+                let screen_grips = if let Some((cam, _)) = &edit_frame {
+                    grips_to_screen_rte(
+                        &tab.selected_grips,
+                        cam.view_proj_rte(bounds),
+                        cam.eye(),
+                        bounds,
+                    )
+                } else if is_paper {
+                    let cam = tab.scene.camera.borrow();
+                    let aspect = if vh > 0.0 { vw / vh } else { 1.0 };
+                    let half_h = cam.ortho_size();
+                    let half_w = half_h * aspect;
+                    let tx = cam.target.x as f32;
+                    let ty = cam.target.y as f32;
+                    drop(cam);
+                    grips_to_screen_paper(&tab.selected_grips, tx, ty, half_w, half_h, bounds)
+                } else {
+                    let cam = tab.scene.camera.borrow();
+                    grips_to_screen(&tab.selected_grips, &cam, bounds)
+                };
+                screen_grips
+                    .into_iter()
+                    .enumerate()
+                    .filter(|(_, (_, screen, _, _, _))| {
+                        screen.x.is_finite()
+                            && screen.y.is_finite()
+                            && screen.x >= -bounds.width
+                            && screen.x <= bounds.width * 2.0
+                            && screen.y >= -bounds.height
+                            && screen.y <= bounds.height * 2.0
+                    })
+                    .map(|(index, (grip_id, screen, _is_midpoint, shape, dir))| {
+                        let owner = tab.selected_grip_handles.get(index).copied();
+                        let is_hot = owner.is_some_and(|handle| {
+                            tab.hot_grips.contains(&(handle, grip_id))
+                                || tab.active_grip.as_ref().is_some_and(|edit| {
+                                    edit.targets.iter().any(|target| {
+                                        target.handle == handle && target.grip_id == grip_id
+                                    })
+                                })
+                                || (Some(handle) == sel_h && Some(grip_id) == current_vertex_grip)
+                        });
+                        let is_hovered = owner.is_some_and(|handle| {
+                            self.grip_hover.as_ref().is_some_and(|hover| {
+                                hover.handle == handle && hover.grip_id == grip_id
+                            })
+                        });
+                        crate::ui::overlay::GripMarker {
+                            pos: screen,
+                            shape,
+                            is_hot,
+                            is_hovered,
+                            dir,
+                        }
+                    })
+                    .collect()
+            } else {
+                vec![]
+            };
             let grips: Vec<crate::ui::overlay::GripMarker> =
                 if tab.active_cmd.is_none() && !tab.selected_grips.is_empty() {
                     let (vw, vh) = sel_ref.vp_size;
@@ -1626,85 +1725,69 @@ bg={bg_ms:.1}ms n={view_count}"
             }
         }
 
-        // Right-click context menu. Lives inside the viewport stack so
-        // the cursor position (canvas-relative) anchors the menu under
-        // the cursor instead of drifting into window-relative space.
-        if !tab.is_start {
-            let (ctx_pos, draworder_open, justification_open, junction_menu, junction_submenu_open, junction_menu_only) = {
-                let sel = tab.scene.selection.borrow();
-                (
-                    sel.context_menu,
-                    sel.draworder_submenu,
-                    sel.wall_justification_submenu,
-                    sel.junction_menu,
-                    sel.junction_menu_submenu,
-                    sel.junction_menu_only,
-                )
-            };
-            let junction_layer_pair_style = self
-                .aec.aec_layer_pair_draw
-                .as_ref()
-                .is_some_and(|p| p.awaiting_style);
-            if let Some(p) = ctx_pos {
-                let has_cmd = tab.active_cmd.is_some();
-                let has_selection = !tab.scene.selected.is_empty();
-                let isolation_active = tab.scene.is_isolation_active();
-
-                let only_walls = crate::modules::aec::properties::selection_is_all_walls(
-                    &tab.scene,
-                    tab.scene.selected.iter().copied(),
-                );
-
-                let last_cmds: Vec<String> = self
-                    .command_line
-                    .recent_commands
-                    .iter()
-                    .rev()
-                    .take(3)
-                    .cloned()
-                    .collect();
-                viewport_stack = viewport_stack.push(viewport_context_menu_overlay(
-                    p,
-                    command_line_inset,
-                    has_cmd,
-                    has_selection,
-                    isolation_active,
-                    last_cmds,
-                    draworder_open,
-                    only_walls,
-                    justification_open,
-                    junction_menu,
-                    junction_submenu_open,
-                    junction_menu_only,
-                    junction_layer_pair_style,
-                ));
+            // Right-click context menu. Lives inside the viewport stack so
+            // the cursor position (canvas-relative) anchors the menu under
+            // the cursor instead of drifting into window-relative space.
+            if !tab.is_start {
+                let (ctx_pos, draworder_open) = {
+                    let sel = tab.scene.selection.borrow();
+                    (sel.context_menu, sel.draworder_submenu)
+                };
+                if let Some(p) = ctx_pos {
+                    let has_cmd = tab.active_cmd.is_some();
+                    // Same guard as typed MTP/M2P and SnapOverrideMtp.
+                    let has_point_step = tab.active_cmd.as_ref().is_some_and(|c| {
+                        (!c.input_kind().wants_text() || c.point_step_accepts_keywords())
+                            && !c.needs_entity_pick()
+                    });
+                    let has_selection = !tab.scene.selected.is_empty();
+                    let isolation_active = tab.scene.is_isolation_active();
+                    let last_cmds: Vec<String> = self
+                        .command_line
+                        .recent_commands
+                        .iter()
+                        .rev()
+                        .take(3)
+                        .cloned()
+                        .collect();
+                    viewport_stack = viewport_stack.push(viewport_context_menu_overlay(
+                        p,
+                        command_line_inset,
+                        has_cmd,
+                        has_selection,
+                        tab.scene.selected_constraint,
+                        isolation_active,
+                        last_cmds,
+                        draworder_open,
+                        has_point_step,
+                    ));
+                }
             }
-        }
 
-        // In-place MText editor (toolbar + text area), anchored at the
-        // insertion-point click.
-        if !tab.is_start {
-            let canvas = tab.scene.selection.borrow().vp_size;
-            if let Some(ed) = &self.mtext_editor {
-                let styles: Vec<String> = tab
-                    .scene
-                    .document
-                    .text_styles
-                    .iter()
-                    .map(|s| s.name.clone())
-                    .collect();
-                viewport_stack = viewport_stack.push(mtext_editor_overlay(
-                    ed,
-                    styles,
-                    self.modal_offset,
-                    self.modal_resize,
-                    self.modal_content_size,
-                ));
+            // In-place MText editor (toolbar + text area), anchored at the
+            // insertion-point click.
+            if !tab.is_start {
+                let canvas = tab.scene.selection.borrow().vp_size;
+                if let Some(ed) = &self.mtext_editor {
+                    let styles: Vec<String> = tab
+                        .scene
+                        .document
+                        .text_styles
+                        .iter()
+                        .map(|s| s.name.clone())
+                        .collect();
+                    viewport_stack = viewport_stack.push(mtext_editor_overlay(
+                        ed,
+                        styles,
+                        self.modal_offset,
+                        self.modal_resize,
+                        self.modal_content_size,
+                    ));
+                }
+                if let Some(ed) = &self.text_inline {
+                    viewport_stack = viewport_stack.push(text_inline_overlay(ed, canvas));
+                }
             }
-            if let Some(ed) = &self.text_inline {
-                viewport_stack = viewport_stack.push(text_inline_overlay(ed, canvas));
-            }
-        }
         }
 
         // Docked side panels (Properties, block palette, future palettes) live
@@ -1719,22 +1802,22 @@ bg={bg_ms:.1}ms n={view_count}"
             match id {
                 crate::ui::dock::PanelId::Properties => self.show_properties,
                 crate::ui::dock::PanelId::BlockPalette => self.show_block_palette,
+                crate::ui::dock::PanelId::ExternalReferences => self.show_external_references,
             }
         };
-        let edge_stack =
-            |side: crate::app::config::DockSide| -> Option<Element<'_, Message>> {
-                let ids: Vec<crate::ui::dock::PanelId> = match side {
-                    crate::app::config::DockSide::Left => self.dock.left.clone(),
-                    crate::app::config::DockSide::Right => self.dock.right.clone(),
-                }
-                .into_iter()
-                .filter(|id| visible_panel(*id))
-                .collect();
-                if ids.is_empty() {
-                    return None;
-                }
-                Some(self.build_edge_stack(side, &ids, tab))
-            };
+        let edge_stack = |side: crate::app::config::DockSide| -> Option<Element<'_, Message>> {
+            let ids: Vec<crate::ui::dock::PanelId> = match side {
+                crate::app::config::DockSide::Left => self.dock.left.clone(),
+                crate::app::config::DockSide::Right => self.dock.right.clone(),
+            }
+            .into_iter()
+            .filter(|id| visible_panel(*id))
+            .collect();
+            if ids.is_empty() {
+                return None;
+            }
+            Some(self.build_edge_stack(side, &ids, tab))
+        };
         let left_edge = edge_stack(crate::app::config::DockSide::Left);
         let right_edge = edge_stack(crate::app::config::DockSide::Right);
 
@@ -1742,30 +1825,39 @@ bg={bg_ms:.1}ms n={view_count}"
         // viewport stack rather than as a separate row in the main
         // column — frees up vertical space when no command is active
         // and keeps the input close to where the cursor is drawing.
-        // Autocomplete shows only when no command is collecting its
-        // own input (otherwise typed prefixes are coordinates / values).
-        let allow_autocomplete = tab.active_cmd.is_none();
+        // Autocomplete shows only when no command or grip-menu action is
+        // collecting its own input. A pending Lengthen / Radius / Arc Length
+        // value is numeric input, not the prefix of a new command (for example,
+        // `3` must not open the 3DALIGN / 3DARRAY suggestions).
+        let allow_autocomplete = tab.active_cmd.is_none() && self.grip_pending.is_none();
         // Dynamic input captures keystrokes when its fields are showing,
         // so the command-line field must release focus / its on_input.
         // The MText preview also captures keystrokes (typing edits it), so the
         // command line must likewise release its on_input there.
-        let dyn_capturing =
-            (self.dyn_input
-                && (tab.active_cmd.is_some() || tab.active_grip.is_some())
-                && !tab.dyn_fields.is_empty())
-                || self.mtext_editor.as_ref().is_some_and(|e| e.show_preview)
-                || self.text_inline.is_some();
+        let interactive_value_grip = tab.active_grip.as_ref().is_some_and(|grip| {
+            matches!(
+                grip.mode,
+                crate::scene::pick::grip::GripEditMode::Lengthen
+                    | crate::scene::pick::grip::GripEditMode::Radius
+                    | crate::scene::pick::grip::GripEditMode::ArcLength
+                    | crate::scene::pick::grip::GripEditMode::RectangleWidth
+                    | crate::scene::pick::grip::GripEditMode::RectangleHeight
+                    | crate::scene::pick::grip::GripEditMode::MoveParallel
+            )
+        });
+        let dyn_capturing = (self.dyn_input
+            && (tab.active_cmd.is_some() || tab.active_grip.is_some())
+            && !tab.dyn_fields.is_empty()
+            && !interactive_value_grip)
+            || self.mtext_editor.as_ref().is_some_and(|e| e.show_preview)
+            || self.text_inline.is_some();
         // The workspace row is: left edge stack, viewport, right edge stack.
         let mut parts: Vec<Element<'_, Message>> = Vec::new();
         if let Some(e) = left_edge {
             parts.push(e);
         }
         parts.push(
-            crate::ui::wrap_bar::PosReport::new(
-                VIEWPORT_CAPTURE_BOUNDS_ID,
-                viewport_stack,
-            )
-            .into(),
+            crate::ui::wrap_bar::PosReport::new(VIEWPORT_CAPTURE_BOUNDS_ID, viewport_stack).into(),
         );
         if let Some(e) = right_edge {
             parts.push(e);
@@ -1773,7 +1865,8 @@ bg={bg_ms:.1}ms n={view_count}"
         let workspace: Element<'_, Message> = row(parts).width(Fill).height(Fill).into();
 
         let any_dragging = self.dock_dragging.is_some();
-        let any_resizing = self.dock_resizing.is_some();
+        let any_resizing =
+            self.dock_resizing.is_some() || self.xref_col_drag.is_some() || self.xref_split_drag;
         let workspace = if any_dragging {
             let id = self.dock_dragging.expect("guarded by any_dragging");
             let side = self.dock_drag_target.map(|(s, _)| s).unwrap_or(
@@ -1842,9 +1935,7 @@ bg={bg_ms:.1}ms n={view_count}"
                 .style(|theme: &Theme| {
                     let palette = theme.palette();
                     container::Style {
-                        background: Some(Background::Color(
-                            palette.primary.base.color,
-                        )),
+                        background: Some(Background::Color(palette.primary.base.color)),
                         text_color: Some(palette.primary.base.text),
                         ..Default::default()
                     }
@@ -1855,9 +1946,7 @@ bg={bg_ms:.1}ms n={view_count}"
                 .style(|theme: &Theme| {
                     let palette = theme.palette();
                     container::Style {
-                        background: Some(Background::Color(
-                            palette.background.base.color,
-                        )),
+                        background: Some(Background::Color(palette.background.base.color)),
                         border: Border {
                             color: palette.primary.base.color,
                             width: 2.0,
@@ -1871,12 +1960,8 @@ bg={bg_ms:.1}ms n={view_count}"
                 .width(Fill)
                 .height(Fill)
                 .align_x(match side {
-                    crate::app::config::DockSide::Left => {
-                        iced::alignment::Horizontal::Left
-                    }
-                    crate::app::config::DockSide::Right => {
-                        iced::alignment::Horizontal::Right
-                    }
+                    crate::app::config::DockSide::Left => iced::alignment::Horizontal::Left,
+                    crate::app::config::DockSide::Right => iced::alignment::Horizontal::Right,
                 })
                 .align_y(iced::alignment::Vertical::Top)
                 .padding(iced::Padding {
@@ -1891,9 +1976,7 @@ bg={bg_ms:.1}ms n={view_count}"
                     .width(Fill)
                     .height(Length::Fixed(3.0))
                     .style(|theme: &Theme| container::Style {
-                        background: Some(Background::Color(
-                            theme.palette().primary.base.color,
-                        )),
+                        background: Some(Background::Color(theme.palette().primary.base.color)),
                         ..Default::default()
                     }),
             )
@@ -1913,12 +1996,8 @@ bg={bg_ms:.1}ms n={view_count}"
                 .width(Fill)
                 .height(Fill)
                 .align_x(match side {
-                    crate::app::config::DockSide::Left => {
-                        iced::alignment::Horizontal::Left
-                    }
-                    crate::app::config::DockSide::Right => {
-                        iced::alignment::Horizontal::Right
-                    }
+                    crate::app::config::DockSide::Left => iced::alignment::Horizontal::Left,
+                    crate::app::config::DockSide::Right => iced::alignment::Horizontal::Right,
                 });
             stack![workspace, preview].width(Fill).height(Fill).into()
         } else {
@@ -2063,11 +2142,7 @@ bg={bg_ms:.1}ms n={view_count}"
                         current_scale_name: tab.scene.displayed_annotation_scale_name(),
                         scale_list: tab.scene.scale_picker_list(),
                         has_selection: !tab.scene.selected.is_empty(),
-                        selection_types: tab
-                            .scene
-                            .entity_type_names_in_layout()
-                            .as_ref()
-                            .clone(),
+                        selection_types: tab.scene.entity_type_names_in_layout().as_ref().clone(),
                         selection_filter: &tab.scene.selection_filter,
                         tooltip_hidden: self.status_menu_tooltip_hidden,
                         active_project_name: self.aec.aec_project_explorer_file.as_ref().map(|_| {
@@ -2203,13 +2278,26 @@ bg={bg_ms:.1}ms n={view_count}"
 
         // If the Plot Style editor was launched from PLOT, keep the Plot dialog
         // rendered underneath as its blocked parent.
-        let modal_underlay: Element<'_, Message> =
-            if self.active_modal == Some(super::ModalKind::Plotstyle) {
-                if let Some((plot_offset, plot_resize)) =
-                    self.plotstyle_parent_plot_geometry.as_ref()
-                {
-                    let plot_content = self.plot_modal_content(*plot_resize);
+        let modal_underlay: Element<'_, Message> = if self.active_modal
+            == Some(super::ModalKind::Plotstyle)
+        {
+            if let Some((plot_offset, plot_resize)) = self.plotstyle_parent_plot_geometry.as_ref() {
+                let plot_content = self.plot_modal_content(*plot_resize);
 
+                crate::ui::modal::modal(
+                    composed,
+                    crate::tr!("modal", "plot"),
+                    plot_content,
+                    Message::CloseModal,
+                    *plot_offset,
+                    crate::ui::modal::ModalOptions::STANDARD,
+                )
+            } else {
+                composed.into()
+            }
+        } else {
+            composed.into()
+        };
                     crate::ui::modal::modal(
                         composed,
                         crate::tr!("modal", "plot"),

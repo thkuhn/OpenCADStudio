@@ -28,6 +28,7 @@ pub mod aec;
 pub mod annotate;
 pub mod draw;
 pub mod insert;
+pub mod parametric;
 pub mod model;
 pub mod layout;
 pub mod manage;

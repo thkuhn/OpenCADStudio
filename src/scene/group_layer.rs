@@ -183,21 +183,14 @@ impl Scene {
         handles: &[Handle],
     ) -> HashSet<Handle> {
         let mut expanded: HashSet<Handle> = handles.iter().copied().collect();
-        expanded.extend(
-            self.document
-                .objects
-                .values()
-                .filter_map(|obj| match obj {
-                    ObjectType::Group(g)
-                        if g.selectable
-                            && handles.iter().any(|handle| g.contains(*handle)) =>
-                    {
-                        Some(g.entities.clone())
-                    }
-                    _ => None,
-                })
-                .flatten(),
-        );
+        let wanted: HashSet<Handle> = handles.iter().copied().collect();
+        for obj in self.document.objects.values() {
+            if let ObjectType::Group(g) = obj {
+                if g.selectable && g.entities.iter().any(|e| wanted.contains(e)) {
+                    expanded.extend(g.entities.iter().copied());
+                }
+            }
+        }
         expanded
     }
 
@@ -209,5 +202,112 @@ impl Scene {
         if self.selected.len() != previous_len {
             self.bump_selection_set();
         }
+    }
+
+    /// Partition selected entity handles into visual objects for operations
+    /// such as edge alignment. A selectable CAD group is one object and must
+    /// receive one shared transform; treating its member lines independently
+    /// can collapse a rectangle or triangle onto its own edge.
+    pub fn selected_object_units(&self, handles: &[Handle]) -> Vec<Vec<Handle>> {
+        let selected: HashSet<Handle> = handles.iter().copied().collect();
+        let mut claimed = HashSet::default();
+        let mut units = Vec::new();
+        for group in self.groups().filter(|group| group.selectable) {
+            let members: Vec<_> = group
+                .entities
+                .iter()
+                .copied()
+                .filter(|handle| selected.contains(handle))
+                .collect();
+            if !members.is_empty()
+                && members.iter().all(|handle| !claimed.contains(handle))
+                && group
+                    .entities
+                    .iter()
+                    .all(|handle| selected.contains(handle))
+            {
+                claimed.extend(members.iter().copied());
+                units.push(members);
+            }
+        }
+        units.extend(
+            handles
+                .iter()
+                .copied()
+                .filter(|handle| !claimed.contains(handle))
+                .map(|handle| vec![handle]),
+        );
+        units
+    }
+}
+
+#[cfg(test)]
+mod group_expansion_tests {
+    use super::*;
+    use crate::scene::Scene;
+
+    #[test]
+    fn group_expansion_pulls_in_siblings_and_nothing_else() {
+        use acadrust::entities::{EntityType, Line};
+        use acadrust::types::Vector3;
+
+        let mut scene = Scene::new();
+        let mut line = |x: f64| {
+            scene.add_entity(EntityType::Line(Line::from_points(
+                Vector3::new(x, 0.0, 0.0),
+                Vector3::new(x + 1.0, 0.0, 0.0),
+            )))
+        };
+        let (a, b, c) = (line(0.0), line(1.0), line(2.0));
+        let (d, e) = (line(3.0), line(4.0));
+        let lonely = line(9.0);
+        scene.create_group("GRUPPO".to_string(), vec![a, b, c]);
+        scene.create_group("ALTRO".to_string(), vec![d, e]);
+
+        // One member pulls in its siblings, and only its own group's.
+        let from_a = scene.handles_expanded_for_selectable_groups(&[a]);
+        assert_eq!(
+            from_a,
+            [a, b, c].into_iter().collect::<HashSet<_>>(),
+            "selecting a member must select that group and no other",
+        );
+
+        // An entity in no group expands to itself.
+        assert_eq!(
+            scene.handles_expanded_for_selectable_groups(&[lonely]),
+            [lonely].into_iter().collect::<HashSet<_>>(),
+        );
+
+        // Touching both groups pulls in both, and nothing outside them.
+        let both = scene.handles_expanded_for_selectable_groups(&[a, e]);
+        assert_eq!(both, [a, b, c, d, e].into_iter().collect::<HashSet<_>>());
+        assert!(!both.contains(&lonely));
+    }
+
+    /// `selected_object_units` is `Scene::selected_object_units`'s
+    /// counterpart for operations like edge alignment (`ALIGNTOP`, etc.):
+    /// a complete, fully-selected group collapses to one unit sharing a
+    /// single transform, so aligning a triangle's edge to another object
+    /// moves the whole triangle rather than collapsing its own lines onto
+    /// each other.
+    #[test]
+    fn selected_object_units_keep_a_complete_group_together() {
+        use acadrust::entities::{EntityType, Line};
+        use acadrust::types::Vector3;
+
+        let mut scene = Scene::new();
+        let mut line = |x: f64| {
+            scene.add_entity(EntityType::Line(Line::from_points(
+                Vector3::new(x, 0.0, 0.0),
+                Vector3::new(x + 1.0, 0.0, 0.0),
+            )))
+        };
+        let (a, b, c, standalone) = (line(0.0), line(1.0), line(2.0), line(10.0));
+        scene.create_group("triangle".into(), vec![a, b, c]);
+
+        let units = scene.selected_object_units(&[a, b, c, standalone]);
+        assert_eq!(units.len(), 2);
+        assert!(units.iter().any(|unit| unit == &vec![a, b, c]));
+        assert!(units.iter().any(|unit| unit == &vec![standalone]));
     }
 }

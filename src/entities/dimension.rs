@@ -3,7 +3,6 @@ use acadrust::entities::{
     DimensionBase, DimensionDiameter, DimensionLargeRadial, DimensionLinear, DimensionOrdinate,
     DimensionRadius,
 };
-use acadrust::Entity;
 use glam::{DVec3, Vec3};
 
 use crate::command::EntityTransform;
@@ -833,226 +832,12 @@ fn large_radial_rotation(d: &DimensionLargeRadial) -> f64 {
 }
 
 fn apply_transform(dim: &mut Dimension, t: &EntityTransform) {
-    if matches!(dim, Dimension::Ordinate(_)) {
-        match t {
-            EntityTransform::Translate(delta) => dim.translate(Vector3::new(
-                delta.x, delta.y, delta.z,
-            )),
-            EntityTransform::Rotate {
-                center,
-                axis,
-                angle_rad,
-            } => crate::scene::view::transform::apply_standard_transform(
-                dim,
-                *center,
-                *axis,
-                *angle_rad,
-            ),
-            EntityTransform::Scale { center, factor } => {
-                crate::scene::view::transform::apply_standard_scale(dim, *center, *factor)
-            }
-            EntityTransform::Mirror {
-                p1,
-                p2,
-                working_normal,
-            } => acadrust::Entity::apply_transform(
-                dim,
-                &crate::scene::view::transform::reflection_about_working_line(
-                    *p1,
-                    *p2,
-                    *working_normal,
-                ),
-            ),
-            EntityTransform::Affine(transform) => {
-                acadrust::Entity::apply_transform(dim, transform)
-            }
-        }
-        return;
-    }
-    match t {
-        EntityTransform::Translate(d) => dim.translate(acadrust::types::Vector3::new(
-            d.x as f64, d.y as f64, d.z as f64,
-        )),
-        EntityTransform::Rotate { center, axis, angle_rad } => {
-            if axis.normalize_or(DVec3::Z).abs_diff_eq(DVec3::Z, 1e-10) {
-                transform_dimension_points(dim, |pt| rotate_point(pt, *center, *angle_rad))
-            } else {
-                crate::scene::view::transform::apply_standard_transform(
-                    dim,
-                    *center,
-                    *axis,
-                    *angle_rad,
-                );
-            }
-        }
-        EntityTransform::Scale { center, factor } => {
-            transform_dimension_points(dim, |pt| scale_point(pt, *center, *factor))
-        }
-        EntityTransform::Mirror { p1, p2, working_normal } => {
-            if working_normal.normalize_or(DVec3::Z).abs_diff_eq(DVec3::Z, 1e-10) {
-                transform_dimension_points(dim, |pt| mirror_point(pt, *p1, *p2))
-            } else {
-                acadrust::Entity::apply_transform(
-                    dim,
-                    &crate::scene::view::transform::reflection_about_working_line(
-                        *p1,
-                        *p2,
-                        *working_normal,
-                    ),
-                );
-            }
-        }
-        EntityTransform::Affine(transform) => {
-            let old_normal = dim.base().normal;
-            let text_rotation =
-                transformed_dimension_angle(old_normal, dim.base().text_rotation, transform);
-            let horizontal_direction = transformed_dimension_angle(
-                old_normal,
-                dim.base().horizontal_direction,
-                transform,
-            );
-            let insertion_rotation = transformed_dimension_angle(
-                old_normal,
-                dim.base().insertion_rotation,
-                transform,
-            );
-            let linear_angles = match dim {
-                Dimension::Linear(value) => Some((
-                    transformed_dimension_angle(old_normal, value.rotation, transform),
-                    transformed_dimension_angle(old_normal, value.ext_line_rotation, transform),
-                )),
-                _ => None,
-            };
-            transform_dimension_points(dim, |point| {
-                *point = transform.apply(*point);
-            });
-            let transformed_normal = transform.apply_rotation(old_normal);
-            let base = dim.base_mut();
-            base.normal = if transformed_normal.length() > 1e-12 {
-                transformed_normal.normalize()
-            } else {
-                old_normal
-            };
-            base.text_rotation = text_rotation;
-            base.horizontal_direction = horizontal_direction;
-            base.insertion_rotation = insertion_rotation;
-            if let Some((rotation, ext_line_rotation)) = linear_angles {
-                if let Dimension::Linear(value) = dim {
-                    value.rotation = rotation;
-                    value.ext_line_rotation = ext_line_rotation;
-                }
-            }
-        }
-    }
-    dim.base_mut().actual_measurement = dim.measurement();
-}
-
-fn transform_dimension_points<F>(dim: &mut Dimension, mut f: F)
-where
-    F: FnMut(&mut acadrust::types::Vector3),
-{
-    f(&mut dim.base_mut().definition_point);
-    f(&mut dim.base_mut().text_middle_point);
-    f(&mut dim.base_mut().insertion_point);
-    match dim {
-        Dimension::Aligned(d) => {
-            f(&mut d.first_point);
-            f(&mut d.second_point);
-            f(&mut d.definition_point);
-        }
-        Dimension::Linear(d) => {
-            f(&mut d.first_point);
-            f(&mut d.second_point);
-            f(&mut d.definition_point);
-        }
-        Dimension::Radius(d) => {
-            f(&mut d.angle_vertex);
-            f(&mut d.definition_point);
-        }
-        Dimension::Diameter(d) => {
-            f(&mut d.angle_vertex);
-            f(&mut d.definition_point);
-        }
-        Dimension::Angular2Ln(d) => {
-            f(&mut d.dimension_arc);
-            f(&mut d.first_point);
-            f(&mut d.second_point);
-            f(&mut d.angle_vertex);
-            f(&mut d.definition_point);
-        }
-        Dimension::Angular3Pt(d) => {
-            f(&mut d.first_point);
-            f(&mut d.second_point);
-            f(&mut d.angle_vertex);
-            f(&mut d.definition_point);
-        }
-        Dimension::Ordinate(d) => {
-            f(&mut d.definition_point);
-            f(&mut d.feature_location);
-            f(&mut d.leader_endpoint);
-        }
-        Dimension::Arc(d) => {
-            f(&mut d.definition_point);
-            f(&mut d.first_extension_point);
-            f(&mut d.second_extension_point);
-            f(&mut d.center_point);
-            if d.has_leader {
-                f(&mut d.first_leader_point);
-                f(&mut d.second_leader_point);
-            }
-        }
-        Dimension::LargeRadial(d) => {
-            f(&mut d.definition_point);
-            f(&mut d.chord_point);
-            f(&mut d.override_center);
-            f(&mut d.jog_point);
-        }
-    }
-}
-
-fn transformed_dimension_angle(
-    normal: acadrust::types::Vector3,
-    angle: f64,
-    transform: &acadrust::types::Transform,
-) -> f64 {
-    let ((xx, xy, xz), (yx, yy, yz)) =
-        crate::scene::view::transform::ocs_axes((normal.x, normal.y, normal.z));
-    let direction = acadrust::types::Vector3::new(
-        xx * angle.cos() + yx * angle.sin(),
-        xy * angle.cos() + yy * angle.sin(),
-        xz * angle.cos() + yz * angle.sin(),
-    );
-    let transformed_normal = transform.apply_rotation(normal).normalize();
-    let transformed_direction = transform.apply_rotation(direction).normalize();
-    let ((nxx, nxy, nxz), (nyx, nyy, nyz)) = crate::scene::view::transform::ocs_axes((
-        transformed_normal.x,
-        transformed_normal.y,
-        transformed_normal.z,
-    ));
-    let new_x = acadrust::types::Vector3::new(nxx, nxy, nxz);
-    let new_y = acadrust::types::Vector3::new(nyx, nyy, nyz);
-    transformed_direction
-        .dot(&new_y)
-        .atan2(transformed_direction.dot(&new_x))
-}
-
-fn rotate_point(p: &mut acadrust::types::Vector3, center: DVec3, angle_rad: f64) {
-    let dx = p.x - center.x;
-    let dy = p.y - center.y;
-    let (s, c) = angle_rad.sin_cos();
-    p.x = center.x + dx * c - dy * s;
-    p.y = center.y + dx * s + dy * c;
-}
-
-fn scale_point(p: &mut acadrust::types::Vector3, center: DVec3, factor: f64) {
-    let f = factor;
-    p.x = center.x + (p.x - center.x) * f;
-    p.y = center.y + (p.y - center.y) * f;
-    p.z = center.z + (p.z - center.z) * f;
-}
-
-fn mirror_point(p: &mut acadrust::types::Vector3, p1: DVec3, p2: DVec3) {
-    crate::scene::view::transform::reflect_xy_point(&mut p.x, &mut p.y, p1, p2);
+    crate::scene::view::transform::apply_standard_entity_transform(dim, t, |entity, p1, p2| {
+        acadrust::Entity::apply_transform(
+            entity,
+            &crate::scene::view::transform::reflection_about_xy_line(p1, p2),
+        );
+    });
 }
 
 impl PropertyEditable for Dimension {
@@ -1828,7 +1613,54 @@ pub(crate) fn resolved_dimension_style(
             style.dimtxsty = record.name.clone();
         }
     }
+
+    // Negative DIMLFAC applies only in paper space; preserve its sign on export.
+    if style.dimlfac < 0.0 {
+        style.dimlfac = crate::scene::viewport_ref::MeasurementScale::user_lfac_for_space(
+            style.dimlfac,
+            dimension_in_paper_space(dimension, document),
+        );
+    }
     style
+}
+
+/// Whether the dimension's owner is paper space, even without a Layout object.
+pub(crate) fn dimension_in_paper_space(dimension: &Dimension, document: &CadDocument) -> bool {
+    let owner = dimension.base().common.owner_handle;
+    if !owner.is_valid() {
+        return false;
+    }
+    document.objects.values().any(|object| {
+        matches!(object,
+            acadrust::objects::ObjectType::Layout(layout)
+                if layout.name != "Model" && layout.block_record == owner
+        )
+    }) || document.block_records.iter().any(|block| {
+        block.handle == owner && block.name.to_ascii_uppercase().starts_with("*PAPER_SPACE")
+    })
+}
+
+/// The value a dimension's text reports for its measurement: the raw
+/// geometric measurement times the resolved linear factor. Angular dimensions
+/// never scale.
+///
+/// `actual_measurement` (DXF group 42) stays **raw** — that is what the format
+/// specifies and what export writes — so this is the one helper UI surfaces
+/// use when they want the number the user reads.
+pub(crate) fn displayed_measurement(dimension: &Dimension, style: Option<&DimStyle>) -> f64 {
+    let raw = dimension.measurement();
+    if matches!(
+        dimension,
+        Dimension::Angular2Ln(_) | Dimension::Angular3Pt(_)
+    ) {
+        return raw;
+    }
+    let lfac = style.map(|s| s.dimlfac).unwrap_or(1.0);
+    if lfac.abs() < 1e-12 {
+        raw
+    } else {
+        raw * lfac
+    }
 }
 
 /// Build the linear-dimension property groups from the assigned style plus
@@ -2312,7 +2144,13 @@ pub fn style_sections(
                 property(
                     t!("Measurement").as_ref(),
                     "measurement",
-                    PropValue::ReadOnly(format!("{:.4}", dimension.measurement())),
+                    // The value the dimension text reports (DIMLFAC applied,
+                    // including viewport compensation) — not the raw paper
+                    // distance, which would disagree with what is drawn.
+                    PropValue::ReadOnly(format!(
+                        "{:.4}",
+                        displayed_measurement(dimension, Some(s))
+                    )),
                 ),
                 property(
                     t!("Text override").as_ref(),
@@ -2411,7 +2249,12 @@ pub fn style_sections(
                 number(
                     t!("Dim scale linear").as_ref(),
                     "dim_scale_linear",
-                    real(ov::DIMLFAC, s.dimlfac),
+                    // The *raw* signed DIMLFAC: a negative value is the
+                    // paper-space / viewport-compensation convention, and
+                    // hiding its sign would make the row uneditable in
+                    // practice. `s.dimlfac` is sign-resolved, so fall back to
+                    // the unresolved source style instead.
+                    real(ov::DIMLFAC, style.dimlfac),
                     true,
                 ),
                 number(
@@ -3450,6 +3293,92 @@ fn apply_dimension_breaks(
     *lines = output;
 }
 
+fn dimension_jog_point(dimension: &Dimension) -> Option<Vec3> {
+    if !matches!(dimension, Dimension::Linear(_) | Dimension::Aligned(_)) {
+        return None;
+    }
+    dimension
+        .base()
+        .common
+        .extended_data
+        .get_record("ACAD_DSTYLE_DIMJAG_POSITION")
+        .and_then(|record| {
+            record.values.iter().rev().find_map(|value| match value {
+                acadrust::xdata::XDataValue::Point3D(point) => Some(vec3_local(*point)),
+                _ => None,
+            })
+        })
+}
+
+fn apply_dimension_jog(
+    lines: &mut Vec<[f32; 3]>,
+    requested: Vec3,
+    normal: Vec3,
+    size: f32,
+    angle: f32,
+) {
+    if lines.len() < 2 {
+        return;
+    }
+    let segments = lines
+        .windows(2)
+        .enumerate()
+        .filter(|(_, segment)| segment[0][0].is_finite() && segment[1][0].is_finite())
+        .map(|(index, segment)| {
+            (
+                index,
+                [segment[0].map(f64::from), segment[1].map(f64::from)],
+            )
+        })
+        .collect::<Vec<_>>();
+    let coordinates = segments.iter().map(|(_, segment)| *segment).collect::<Vec<_>>();
+    let Some((candidate, center)) = cadkernel::space::nearest_segment_point(
+        &coordinates,
+        requested.to_array().map(f64::from),
+    ) else {
+        return;
+    };
+    let target = segments[candidate].0;
+    let Some(jog) = cadkernel::space::dimension_jog_points(
+        coordinates[candidate],
+        center,
+        normal.to_array().map(f64::from),
+        size as f64,
+        angle as f64,
+    ) else {
+        return;
+    };
+    let jog = jog.map(|point| point.map(|value| value as f32));
+    let first = lines[target];
+    let second = lines[target + 1];
+
+    let mut output = Vec::with_capacity(lines.len() + 4);
+    output.extend_from_slice(&lines[..target]);
+    if !output.is_empty() && !output.last().is_some_and(|point| point[0].is_nan()) {
+        output.push([f32::NAN; 3]);
+    }
+    if first != jog[0] {
+        output.push(first);
+        output.push(jog[0]);
+        output.push([f32::NAN; 3]);
+    }
+    output.extend(jog);
+    if jog[3] != second {
+        output.push([f32::NAN; 3]);
+        output.push(jog[3]);
+        output.push(second);
+    }
+    if target + 2 < lines.len() {
+        if !output.last().is_some_and(|point| point[0].is_nan())
+            && !lines[target + 2][0].is_nan()
+        {
+            output.push([f32::NAN; 3]);
+        }
+        output.extend_from_slice(&lines[target + 2..]);
+    }
+    *lines = output;
+}
+
 pub trait DimensionTess {
     fn tessellate(
         &self,
@@ -3559,6 +3488,26 @@ fn tessellate_dimension_inner(
             }
             return wires;
         }
+    }
+    if let Some((local, normal)) = linear_dimension_in_ocs(dim) {
+        let mut wires = tessellate_dimension_inner(
+            document,
+            handle,
+            &local,
+            selected,
+            entity_color,
+            line_weight_px,
+            anno_scale,
+            selected_set,
+            active_viewport,
+            bg_color,
+            None,
+            world_per_pixel,
+        );
+        for wire in &mut wires {
+            map_wire_ocs_to_wcs(wire, normal);
+        }
+        return wires;
     }
     let name = handle.value().to_string();
     // (Baked-block fast path moved up into scene::tessellate_entity so the
@@ -3768,9 +3717,9 @@ fn tessellate_dimension_inner(
     // DIMTMOVE=1 connects the dimension line to rendered text.
     if let Some(s) = style {
         if s.dimtmove == 1 {
-            if let Some((anchor, txt)) = dimtmove_leader_endpoints(dim, text_layout.position) {
+            if let Some((anchor, txt, under_text)) = dimtmove_leader_endpoints(dim, text_layout) {
                 let gap = dim_txt as f32 * 0.5;
-                if (txt - anchor).length() > gap * 2.0 {
+                if under_text || (txt - anchor).length() > gap * 2.0 {
                     add_segment_with_text_break(
                         &mut geom.dim_lines,
                         anchor,
@@ -3783,12 +3732,25 @@ fn tessellate_dimension_inner(
         // DIMUPT governs interactive creation-time text placement; saved
         // geometry already carries the resulting position.
         let _ = s.dimupt;
-        let _ = (s.dimarcsym, s.dimjogang);
+        let _ = s.dimarcsym;
         // DIMUNIT is the obsolete pre-R2000 linear unit format; DIMLUNIT
         // supersedes it. Read but not honoured.
         let _ = s.dimunit;
     }
+    if let Some(point) = dimension_jog_point(dim) {
+        let jog_angle = style
+            .map(|style| style.dimjogang as f32)
+            .unwrap_or(std::f32::consts::FRAC_PI_4);
+        apply_dimension_jog(
+            &mut geom.dim_lines,
+            point,
+            vec3_local(dim.base().normal),
+            dim_txt as f32 * 0.6,
+            jog_angle,
+        );
+    }
     apply_dimension_breaks(document, handle, &mut geom.dim_lines);
+    apply_dimension_breaks(document, handle, &mut geom.ext_lines);
     // Dimension entity fields that the render path doesn't yet use but are
     // preserved on save:
     //   - base.insertion_point: legacy anchor reference; render uses
@@ -4297,28 +4259,51 @@ fn split_ext_lines(points: &[[f32; 3]]) -> (Vec<[f32; 3]>, Vec<[f32; 3]>) {
 }
 
 /// Endpoints for the DIMTMOVE=1 leader.
-fn dimtmove_leader_endpoints(dim: &Dimension, txt: Vec3) -> Option<(Vec3, Vec3)> {
+fn dimtmove_leader_endpoints(
+    dim: &Dimension,
+    text: DimensionTextLayout,
+) -> Option<(Vec3, Vec3, bool)> {
     let lv = |v| vec3_local(v);
-    let anchor = match dim {
+    let txt = text.position;
+    let linear = |first: Vec3, second: Vec3, definition: Vec3, axis: [f64; 2]| {
+        let bounds = text.break_box?;
+        let xy = |point: Vec3| [point.x as f64, point.y as f64];
+        let (leader, under_text) = cadkernel::geom2d::linear_dimension_leader(
+            cadkernel::geom2d::Line { start: xy(first), end: xy(second) },
+            xy(definition),
+            axis,
+            xy(txt),
+            [
+                (bounds.half_width + bounds.padding) as f64,
+                (bounds.half_height + bounds.padding) as f64,
+            ],
+            bounds.rotation,
+        )?;
+        let point = |p: [f64; 2]| Vec3::new(p[0] as f32, p[1] as f32, first.z);
+        Some((point(leader.start), point(leader.end), under_text))
+    };
+    match dim {
         Dimension::Linear(d) => {
-            let perp = Vec3::new(-(d.rotation.sin() as f32), d.rotation.cos() as f32, 0.0);
-            let first = lv(d.first_point);
-            let second = lv(d.second_point);
-            let def = lv(d.definition_point);
-            let off1 = def.dot(perp) - first.dot(perp);
-            let off2 = def.dot(perp) - second.dot(perp);
-            (first + perp * off1 + second + perp * off2) * 0.5
+            return linear(
+                lv(d.first_point),
+                lv(d.second_point),
+                lv(d.definition_point),
+                [d.rotation.cos(), d.rotation.sin()],
+            );
         }
         Dimension::Aligned(d) => {
             let first = lv(d.first_point);
             let second = lv(d.second_point);
-            let axis = normalized_or(second - first, Vec3::X);
-            let perp = Vec3::new(-axis.y, axis.x, 0.0);
-            let def = lv(d.definition_point);
-            let off1 = def.dot(perp) - first.dot(perp);
-            let off2 = def.dot(perp) - second.dot(perp);
-            (first + perp * off1 + second + perp * off2) * 0.5
+            return linear(
+                first,
+                second,
+                lv(d.definition_point),
+                [d.second_point.x - d.first_point.x, d.second_point.y - d.first_point.y],
+            );
         }
+        _ => {}
+    }
+    let anchor = match dim {
         Dimension::Radius(_) => return None,
         Dimension::Diameter(d) => {
             let chord = lv(d.angle_vertex);
@@ -4353,7 +4338,7 @@ fn dimtmove_leader_endpoints(dim: &Dimension, txt: Vec3) -> Option<(Vec3, Vec3)>
         }
         _ => return None,
     };
-    Some((anchor, txt))
+    Some((anchor, txt, false))
 }
 
 /// Build a rectangle of filled triangles sitting under the dim text, used
@@ -5316,6 +5301,50 @@ pub(crate) fn large_radial_dimension_in_ocs(
     local.base.text_middle_point = on_plane(dimension.base.text_middle_point);
     local.base.insertion_point = on_plane(dimension.base.insertion_point);
     local.base.normal = Vector3::UNIT_Z;
+    Some((local, normal))
+}
+
+/// A linear or aligned dimension in a plane off world Z, moved into its own
+/// OCS. Their builders read the offset and extension directions in XY, so
+/// they draw it there and the result is mapped back onto the plane. `None`
+/// for a dimension in world XY or of another kind.
+pub(crate) fn linear_dimension_in_ocs(dimension: &Dimension) -> Option<(Dimension, Vector3)> {
+    let length = dimension.base().normal.length();
+    if !length.is_finite() || length <= 1.0e-12 {
+        return None;
+    }
+    let normal = dimension.base().normal / length;
+    if (normal - Vector3::UNIT_Z).length() <= 1.0e-12 {
+        return None;
+    }
+    let normal_tuple = (normal.x, normal.y, normal.z);
+    let to_ocs = |point: Vector3| {
+        let point = crate::scene::view::transform::wcs_point_to_ocs(
+            (point.x, point.y, point.z),
+            normal_tuple,
+        );
+        Vector3::new(point.0, point.1, point.2)
+    };
+    let mut local = dimension.clone();
+    match &mut local {
+        Dimension::Linear(d) => {
+            d.first_point = to_ocs(d.first_point);
+            d.second_point = to_ocs(d.second_point);
+            d.definition_point = to_ocs(d.definition_point);
+            d.base.definition_point = d.definition_point;
+            d.base.text_middle_point = to_ocs(d.base.text_middle_point);
+            d.base.normal = Vector3::UNIT_Z;
+        }
+        Dimension::Aligned(d) => {
+            d.first_point = to_ocs(d.first_point);
+            d.second_point = to_ocs(d.second_point);
+            d.definition_point = to_ocs(d.definition_point);
+            d.base.definition_point = d.definition_point;
+            d.base.text_middle_point = to_ocs(d.base.text_middle_point);
+            d.base.normal = Vector3::UNIT_Z;
+        }
+        _ => return None,
+    }
     Some((local, normal))
 }
 
@@ -6432,7 +6461,14 @@ fn format_linear_value(measurement: f64, style: Option<&DimStyle>) -> String {
         })
         .unwrap_or((4, 8, 1.0, 0.0, 46, 2, 0, 1.0, ""));
 
-    let lfac = if lfac.abs() < 1e-12 { 1.0 } else { lfac };
+    // `resolved_dimension_style` has already applied the DXF sign convention,
+    // so a negative value here means the caller passed an unresolved style;
+    // fall back to 1.0 rather than reporting a negative length.
+    let lfac = if lfac.abs() < 1e-12 || lfac < 0.0 {
+        1.0
+    } else {
+        lfac
+    };
     let scaled = measurement * lfac;
     let use_sub_units = zin & 4 != 0 && scaled.abs() < 1.0 && sub_factor.abs() > 1e-12;
     // For values below one unit, DIMMZF replaces DIMLFAC; applying it after
@@ -7188,8 +7224,10 @@ pub(crate) fn baked_large_radial_geometry(
         }
     }
     if style.is_some_and(|style| style.dimtmove == 1) {
-        if let Some((anchor, endpoint)) = dimtmove_leader_endpoints(dimension, text.position) {
-            if anchor.distance(endpoint) > text_height as f32 {
+        if let Some((anchor, endpoint, under_text)) =
+            dimtmove_leader_endpoints(dimension, text)
+        {
+            if under_text || anchor.distance(endpoint) > text_height as f32 {
                 add_segment_with_text_break(
                     &mut geometry.dim_lines,
                     anchor,
@@ -7203,6 +7241,11 @@ pub(crate) fn baked_large_radial_geometry(
         document,
         dimension.base().common.handle,
         &mut geometry.dim_lines,
+    );
+    apply_dimension_breaks(
+        document,
+        dimension.base().common.handle,
+        &mut geometry.ext_lines,
     );
     Some(geometry)
 }
@@ -7525,5 +7568,327 @@ mod arch_format_tests {
     #[test]
     fn engineering_negative_zero_has_no_sign() {
         assert_eq!(format_engineering(-0.001, 2), "0'-0.00\"");
+    }
+}
+
+#[cfg(test)]
+mod dimtmove_leader_tests {
+    use super::*;
+    use acadrust::entities::DimensionLinear;
+    use acadrust::types::Vector3;
+
+    fn v(x: f64, y: f64) -> Vector3 {
+        Vector3::new(x, y, 0.0)
+    }
+
+    fn layout(position: Vec3, half_width: f32) -> DimensionTextLayout {
+        DimensionTextLayout {
+            position,
+            width: half_width * 2.0,
+            break_box: Some(TextBreak {
+                center: position,
+                half_width,
+                half_height: 1.0,
+                padding: 0.0,
+                rotation: 0.0,
+            }),
+            horizontal: true,
+        }
+    }
+
+    /// Text outside along the axis → the dim line extends underneath the text.
+    #[test]
+    fn text_outside_extends_dim_line_under_text() {
+        let mut d = DimensionLinear::horizontal(v(0.0, 0.0), v(20.0, 0.0));
+        d.definition_point = v(0.0, -5.0); // dimension line at y=-5
+        let dim = Dimension::Linear(d);
+        // text anchor outside on the right: centre x=30, half width 3 → far edge 33
+        let txt = vec3_local(v(30.0, -3.0));
+        let (anchor, end, under) = dimtmove_leader_endpoints(&dim, layout(txt, 3.0)).expect("leader");
+        assert!(under, "outside text extends the dimension line");
+        assert!((anchor.x - 20.0).abs() < 1e-4 && (anchor.y + 5.0).abs() < 1e-4, "near end should be the dim line's right end (20,-5), got {anchor:?}");
+        assert!((end.x - 33.0).abs() < 1e-4 && (end.y + 5.0).abs() < 1e-4, "far end should be the text's far edge (33,-5), got {end:?}");
+    }
+
+    /// Text outside on the left → extends leftwards.
+    #[test]
+    fn text_outside_left_extends_leftwards() {
+        let mut d = DimensionLinear::horizontal(v(0.0, 0.0), v(20.0, 0.0));
+        d.definition_point = v(0.0, -5.0);
+        let dim = Dimension::Linear(d);
+        let txt = vec3_local(v(-12.0, -3.0));
+        let (anchor, end, under) = dimtmove_leader_endpoints(&dim, layout(txt, 2.0)).expect("leader");
+        assert!(under);
+        assert!((anchor.x - 0.0).abs() < 1e-4, "near end should be the dim line's left end, got {anchor:?}");
+        assert!((end.x + 14.0).abs() < 1e-4, "far end should be the text's far edge at -14, got {end:?}");
+    }
+
+    /// Text still inside (only moved up/down) → leader from the dim line to the text.
+    #[test]
+    fn text_inside_connects_to_text() {
+        let mut d = DimensionLinear::horizontal(v(0.0, 0.0), v(20.0, 0.0));
+        d.definition_point = v(0.0, -5.0);
+        let dim = Dimension::Linear(d);
+        let txt = vec3_local(v(10.0, 2.0));
+        let (anchor, end, under) = dimtmove_leader_endpoints(&dim, layout(txt, 3.0)).expect("leader");
+        assert!(!under, "inside → keep the connect-to-text leader (text break allowed)");
+        assert!((anchor.x - 10.0).abs() < 1e-4 && (anchor.y + 5.0).abs() < 1e-4, "anchor should be the dim line point facing the text, got {anchor:?}");
+        assert!((end.y - 2.0).abs() < 1e-4, "end should be the text position, got {end:?}");
+    }
+
+    /// Radius dimensions draw no leader (unchanged).
+    #[test]
+    fn radius_has_no_leader() {
+        let r = acadrust::entities::DimensionRadius::new(v(0.0, 0.0), v(0.0, 5.0));
+        assert!(dimtmove_leader_endpoints(&Dimension::Radius(r), layout(vec3_local(v(0.0, 8.0)), 2.0)).is_none());
+    }
+
+    #[test]
+    fn extension_does_not_draw_through_text() {
+        let mut d = DimensionLinear::horizontal(v(0.0, 0.0), v(20.0, 0.0));
+        d.definition_point = v(0.0, -5.0);
+        let text = layout(Vec3::new(30.0, -5.0, 0.0), 3.0);
+        let (start, end, outside) = dimtmove_leader_endpoints(&Dimension::Linear(d), text).unwrap();
+        assert!(outside);
+        let mut points = Vec::new();
+        add_segment_with_text_break(&mut points, start, end, text.break_box);
+        let finite: Vec<_> = points.into_iter().filter(|point| point[0].is_finite()).collect();
+        assert_eq!(finite, vec![[20.0, -5.0, 0.0], [27.0, -5.0, 0.0]]);
+    }
+}
+
+#[cfg(test)]
+mod linear_transform_tests {
+    use super::*;
+    use acadrust::entities::DimensionLinear;
+    use std::f64::consts::FRAC_PI_2;
+
+    /// A horizontal linear dimension measuring 10 units along X.
+    fn horizontal() -> Dimension {
+        let mut d =
+            DimensionLinear::horizontal(Vector3::new(0.0, 0.0, 0.0), Vector3::new(10.0, 0.0, 0.0));
+        d.definition_point = Vector3::new(0.0, 5.0, 0.0);
+        Dimension::Linear(d)
+    }
+
+    fn rotation(dim: &Dimension) -> f64 {
+        match dim {
+            Dimension::Linear(d) => d.rotation,
+            _ => unreachable!("linear dimension expected"),
+        }
+    }
+
+    /// The stored and the live value both still read 10.
+    fn assert_measures_ten(dim: &Dimension) {
+        let stored = dim.base().actual_measurement;
+        assert!(
+            (stored - 10.0).abs() < 1e-9,
+            "stored measurement must stay 10, got {stored}"
+        );
+        let live = dim.measurement();
+        assert!(
+            (live - 10.0).abs() < 1e-9,
+            "measurement must stay 10, got {live}"
+        );
+    }
+
+    /// ROTATE in the drawing plane turns the measured axis with the points.
+    /// Left at 0, a horizontal dimension turned 90° measured its now-vertical
+    /// points along X and dropped to 0.
+    #[test]
+    fn rotate_turns_the_measured_axis() {
+        let mut dim = horizontal();
+        apply_transform(
+            &mut dim,
+            &EntityTransform::Rotate {
+                center: DVec3::ZERO,
+                axis: DVec3::Z,
+                angle_rad: FRAC_PI_2,
+            },
+        );
+        assert_measures_ten(&dim);
+        let turned = rotation(&dim);
+        assert!(
+            (turned - FRAC_PI_2).abs() < 1e-9,
+            "rotation must follow the rotate, got {turned}"
+        );
+    }
+
+    /// MIRROR in the drawing plane reflects the measured axis. Mirrored about
+    /// y = x, the horizontal dimension becomes a vertical one of the same value.
+    #[test]
+    fn mirror_reflects_the_measured_axis() {
+        let mut dim = horizontal();
+        apply_transform(
+            &mut dim,
+            &EntityTransform::Mirror {
+                p1: DVec3::ZERO,
+                p2: DVec3::new(1.0, 1.0, 0.0),
+                working_normal: DVec3::Z,
+            },
+        );
+        assert_measures_ten(&dim);
+        let reflected = rotation(&dim);
+        assert!(
+            (reflected - FRAC_PI_2).abs() < 1e-9,
+            "rotation must be reflected, got {reflected}"
+        );
+    }
+
+    /// A zero-length mirror line leaves the points alone, so the axis too.
+    #[test]
+    fn degenerate_mirror_keeps_the_measured_axis() {
+        let mut dim = horizontal();
+        apply_transform(
+            &mut dim,
+            &EntityTransform::Mirror {
+                p1: DVec3::new(3.0, 3.0, 0.0),
+                p2: DVec3::new(3.0, 3.0, 0.0),
+                working_normal: DVec3::Z,
+            },
+        );
+        assert_eq!(rotation(&dim), 0.0);
+        assert_measures_ten(&dim);
+    }
+
+    /// The point the dimension line passes through.
+    fn definition_point(dim: &Dimension) -> DVec3 {
+        let p = dimension_definition_point(dim);
+        DVec3::new(p.x, p.y, p.z)
+    }
+
+    fn assert_near(actual: DVec3, expected: DVec3, what: &str) {
+        assert!(
+            actual.abs_diff_eq(expected, 1e-9),
+            "{what}: expected {expected:?}, got {actual:?}"
+        );
+    }
+
+    /// ROTATE about an axis off world Z (a working plane other than world XY)
+    /// turns the dimension like the geometry it measures. It used to only move
+    /// by where the origin went, leaving the dimension line and plane unturned.
+    #[test]
+    fn rotate_off_world_z_turns_the_dimension() {
+        let center = DVec3::new(0.0, 10.0, 0.0);
+        let turn = glam::DQuat::from_axis_angle(DVec3::X, FRAC_PI_2);
+        let mut dim = horizontal();
+        apply_transform(
+            &mut dim,
+            &EntityTransform::Rotate {
+                center,
+                axis: DVec3::X,
+                angle_rad: FRAC_PI_2,
+            },
+        );
+        assert_near(
+            definition_point(&dim),
+            turn * (DVec3::new(0.0, 5.0, 0.0) - center) + center,
+            "definition point",
+        );
+        let normal = dim.base().normal;
+        assert_near(
+            DVec3::new(normal.x, normal.y, normal.z),
+            turn * DVec3::Z,
+            "normal",
+        );
+        assert_measures_ten(&dim);
+    }
+
+    /// MIRROR in a working plane off world Z reflects the dimension through
+    /// the mirror plane instead of only moving it.
+    #[test]
+    fn mirror_off_world_z_reflects_the_dimension() {
+        // Working plane YZ; the line runs along Z at y = 2, so the mirror
+        // plane is y = 2.
+        let mut dim = horizontal();
+        apply_transform(
+            &mut dim,
+            &EntityTransform::Mirror {
+                p1: DVec3::new(0.0, 2.0, 0.0),
+                p2: DVec3::new(0.0, 2.0, 1.0),
+                working_normal: DVec3::X,
+            },
+        );
+        assert_near(
+            definition_point(&dim),
+            DVec3::new(0.0, -1.0, 0.0),
+            "definition point",
+        );
+        assert_measures_ten(&dim);
+    }
+
+    /// Every stroke point the dimension draws, with its low residual added.
+    fn stroke_points(dim: &Dimension) -> Vec<DVec3> {
+        let document = CadDocument::new();
+        let wires = dim.tessellate(
+            &document,
+            Handle::new(0x40),
+            false,
+            [1.0; 4],
+            1.0,
+            1.0,
+            &rustc_hash::FxHashSet::default(),
+            None,
+            [0.0, 0.0, 0.0, 1.0],
+            None,
+            None,
+        );
+        let mut points = Vec::new();
+        for wire in &wires {
+            for (index, high) in wire.points.iter().enumerate() {
+                if !high[0].is_finite() {
+                    continue;
+                }
+                let low = wire.points_low.get(index).copied().unwrap_or([0.0; 3]);
+                points.push(DVec3::new(
+                    high[0] as f64 + low[0] as f64,
+                    high[1] as f64 + low[1] as f64,
+                    high[2] as f64 + low[2] as f64,
+                ));
+            }
+        }
+        points
+    }
+
+    /// Turned 90° about X into the XZ plane, the dimension has to draw the
+    /// same strokes turned with it.
+    fn assert_draws_turned_with_its_plane(flat: Dimension) {
+        let turn = glam::DQuat::from_axis_angle(DVec3::X, FRAC_PI_2);
+        let expected: Vec<DVec3> = stroke_points(&flat).into_iter().map(|p| turn * p).collect();
+        assert!(!expected.is_empty(), "the dimension draws no strokes");
+        let mut turned = flat;
+        apply_transform(
+            &mut turned,
+            &EntityTransform::Rotate {
+                center: DVec3::ZERO,
+                axis: DVec3::X,
+                angle_rad: FRAC_PI_2,
+            },
+        );
+        let drawn = stroke_points(&turned);
+        assert_eq!(drawn.len(), expected.len(), "stroke point count");
+        for (index, (got, want)) in drawn.iter().zip(&expected).enumerate() {
+            assert!(
+                got.abs_diff_eq(*want, 1e-3),
+                "point {index}: expected {want:?}, got {got:?}"
+            );
+        }
+    }
+
+    /// A linear dimension in a working plane off world Z draws in that plane.
+    /// Its offset used to be read in world XY only, so once it ran along Z the
+    /// dimension line fell onto the measured points and the extension lines
+    /// stuck out along world Y.
+    #[test]
+    fn a_linear_dimension_off_world_z_draws_in_its_own_plane() {
+        assert_draws_turned_with_its_plane(horizontal());
+    }
+
+    /// An aligned dimension draws through the same builder and plane.
+    #[test]
+    fn an_aligned_dimension_off_world_z_draws_in_its_own_plane() {
+        let mut d = DimensionAligned::new(Vector3::new(0.0, 0.0, 0.0), Vector3::new(6.0, 8.0, 0.0));
+        d.definition_point = Vector3::new(2.0, 11.0, 0.0);
+        assert_draws_turned_with_its_plane(Dimension::Aligned(d));
     }
 }

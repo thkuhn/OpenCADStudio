@@ -9,7 +9,7 @@ use cadkernel::space::{PlanarCurve, Plane, Vec3};
 use glam::DVec3;
 use rustc_hash::FxHashMap;
 
-use crate::command::{CadCommand, CmdOption, CmdResult, WorkingPlane};
+use crate::command::{CadCommand, CmdOption, CmdResult, InputKind, WorkingPlane};
 use crate::entities::curve::{curve_points, entity_curve, ocs_plane};
 use crate::entities::lwpolyline::{is_revision_cloud, revision_cloud_from_curve};
 use crate::modules::{IconKind, ModuleEvent, ToolDef};
@@ -198,6 +198,12 @@ impl RevCloudCommand {
                 *entity.common_mut() = source.common().clone();
                 entity.common_mut().handle = Handle::NULL;
             }
+        }
+        if replacement.is_none()
+            && matches!(self.creation, CreationMode::Rectangular | CreationMode::Polygonal)
+        {
+            self.message = None;
+            return CmdResult::CommitAndExit(entity);
         }
         self.stage = Stage::Reverse(PendingCloud {
             entity,
@@ -660,6 +666,17 @@ impl CadCommand for RevCloudCommand {
         true
     }
 
+    fn input_kind(&self) -> InputKind {
+        match self.stage {
+            Stage::ArcLength | Stage::Style | Stage::Reverse(_) => InputKind::SingleToken,
+            Stage::Create
+            | Stage::Object
+            | Stage::ModifySelect
+            | Stage::ModifyDraw(_)
+            | Stage::ModifyErase(_) => InputKind::Point,
+        }
+    }
+
     fn point_step_accepts_keywords(&self) -> bool {
         matches!(self.stage, Stage::Create | Stage::ModifyDraw(_))
     }
@@ -719,6 +736,9 @@ impl CadCommand for RevCloudCommand {
                 return self.on_undo_step();
             }
             Stage::Create => match keyword.as_str() {
+                "C" | "CLOSE" if self.creation == CreationMode::Polygonal => {
+                    return Some(if self.points.len() >= 3 { self.on_enter() } else { CmdResult::NeedPoint });
+                }
                 "A" | "ARC" | "ARCLENGTH" => self.stage = Stage::ArcLength,
                 "O" | "OBJECT" => {
                     self.stage = Stage::Object;
@@ -933,4 +953,43 @@ fn style_from_entity(entity: &EntityType) -> Option<CloudStyle> {
     })
 }
 
-inventory::submit!(crate::command::CommandRegistration { names: &["REVCLOUD"] });
+inventory::submit!(crate::command::CommandRegistration {
+    names: &["REVCLOUD", "REVCLOUD_RECTANGULAR", "REVCLOUD_POLYGONAL", "REVCLOUD_FREEHAND"]
+});
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn command(mode: CreationMode) -> RevCloudCommand {
+        let mut command = RevCloudCommand::new(1.0, FxHashMap::default());
+        command.set_creation(mode);
+        command
+    }
+
+    #[test]
+    fn rectangular_creation_commits_after_the_opposite_corner() {
+        let mut command = command(CreationMode::Rectangular);
+        assert!(matches!(command.on_point(DVec3::ZERO), CmdResult::NeedPoint));
+        assert!(matches!(
+            command.on_point(DVec3::new(10.0, 5.0, 0.0)),
+            CmdResult::CommitAndExit(_)
+        ));
+    }
+
+    #[test]
+    fn polygon_close_keyword_commits_three_points() {
+        let mut command = command(CreationMode::Polygonal);
+        for point in [
+            DVec3::ZERO,
+            DVec3::new(10.0, 0.0, 0.0),
+            DVec3::new(10.0, 10.0, 0.0),
+        ] {
+            assert!(matches!(command.on_point(point), CmdResult::NeedPoint));
+        }
+        assert!(matches!(
+            command.on_text_input("close"),
+            Some(CmdResult::CommitAndExit(_))
+        ));
+    }
+}

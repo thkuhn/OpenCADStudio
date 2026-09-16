@@ -1,12 +1,14 @@
 use acadrust::entities::{LwPolyline, LwVertex};
-use cadkernel::geom2d::{signed_area, Curve, Polyline, PolylineVertex, Vec2};
+use cadkernel::geom2d::{
+    signed_area, Curve, Polyline, PolylineVertex, RectangleFrame, Tolerance, Vec2,
+};
 
 use crate::t;
 
 use crate::command::EntityTransform;
 use crate::entities::common::{
     edit_prop as edit, edit_scalar_prop as edit_scalar, format_area, format_length, parse_f64,
-    rectangle_grip, ro_prop as ro, square_grip, stepper_prop as stepper,
+    rectangle_grip, ro_prop as ro, square_grip, stepper_prop as stepper, VARIES_LABEL,
 };
 use crate::entities::traits::RenderConvertible;
 use crate::scene::convert::acad_to_render::{extrusion_wall_tris, RenderEntity, RenderObject};
@@ -18,12 +20,36 @@ const REVCLOUD_BULGE: f64 = 0.5;
 const MAX_REVCLOUD_VERTICES: usize = 100_000;
 const WIDTH_EPSILON: f64 = 1.0e-9;
 
-fn effective_width(width: f64, constant_width: f64) -> f64 {
-    if width > WIDTH_EPSILON {
-        width
+pub(crate) fn vertex_segment_widths(vertex: &LwVertex, constant_width: f64) -> (f64, f64) {
+    if vertex.start_width > WIDTH_EPSILON || vertex.end_width > WIDTH_EPSILON {
+        (vertex.start_width, vertex.end_width)
     } else {
-        constant_width
+        (constant_width, constant_width)
     }
+}
+
+pub(crate) fn lwpolyline_global_width(pline: &LwPolyline) -> Option<f64> {
+    let count = pline.vertices.len();
+    let seg_count = if pline.is_closed {
+        count
+    } else {
+        count.saturating_sub(1)
+    };
+    if seg_count == 0 {
+        return Some(pline.constant_width);
+    }
+    let (w0_start, w0_end) = vertex_segment_widths(&pline.vertices[0], pline.constant_width);
+    if (w0_start - w0_end).abs() > 1e-6 {
+        return None;
+    }
+    let w0 = w0_start;
+    for i in 1..seg_count {
+        let (sw, ew) = vertex_segment_widths(&pline.vertices[i], pline.constant_width);
+        if (sw - ew).abs() > 1e-6 || (sw - w0).abs() > 1e-6 {
+            return None;
+        }
+    }
+    Some(w0)
 }
 
 /// Midpoint position on an arc segment defined by its bulge.
@@ -504,8 +530,7 @@ fn band_verts(pline: &LwPolyline) -> Vec<([f64; 2], f64, f64, f64)> {
         .vertices
         .iter()
         .map(|v| {
-            let sw = effective_width(v.start_width, c);
-            let ew = effective_width(v.end_width, c);
+            let (sw, ew) = vertex_segment_widths(v, c);
             ([v.location.x, v.location.y], v.bulge, sw, ew)
         })
         .collect()
@@ -861,31 +886,19 @@ fn set_revision_cloud_arc_length(pline: &mut LwPolyline, requested: f64) {
     pline.vertices = cloud_vertices(&points, magnitude * sign, width_ratios);
 }
 
+pub(crate) fn rectangle_frame(
+    pline: &LwPolyline,
+) -> Option<(RectangleFrame, cadkernel::space::Plane)> {
+    let planar = crate::entities::curve::lwpolyline_curve(pline)?;
+    let Curve::Polyline(polyline) = &planar.curve else {
+        return None;
+    };
+    let rectangle = polyline.rectangle_frame(Tolerance::default())?;
+    Some((rectangle, planar.plane))
+}
+
 pub(crate) fn is_rectangle(pline: &LwPolyline) -> bool {
-    if pline.common.extended_data.get_record("OCS_RECTANGLE").is_some() {
-        return true;
-    }
-    if !pline.is_closed
-        || pline.vertices.len() != 4
-        || pline.vertices.iter().any(|vertex| vertex.bulge.abs() > 1.0e-9)
-    {
-        return false;
-    }
-    let edges: Vec<Vec2> = (0..4)
-        .map(|index| {
-            let from = pline.vertices[index].location;
-            let to = pline.vertices[(index + 1) % 4].location;
-            Vec2::new(to.x - from.x, to.y - from.y)
-        })
-        .collect();
-    let lengths: Vec<f64> = edges.iter().map(|edge| edge.length()).collect();
-    if lengths.iter().any(|length| *length <= 1.0e-12) {
-        return false;
-    }
-    let tolerance = 1.0e-9;
-    edges[0].dot(edges[1]).abs() <= tolerance * lengths[0] * lengths[1]
-        && edges[0].cross(edges[2]).abs() <= tolerance * lengths[0] * lengths[2]
-        && edges[1].cross(edges[3]).abs() <= tolerance * lengths[1] * lengths[3]
+    rectangle_frame(pline).is_some()
 }
 
 fn properties(pline: &LwPolyline) -> Vec<PropSection> {
@@ -899,11 +912,8 @@ fn properties(pline: &LwPolyline) -> Vec<PropSection> {
     let v = pline.vertices.get(vi);
     let vx = v.map_or(0.0, |v| v.location.x);
     let vy = v.map_or(0.0, |v| v.location.y);
-    let start_w = v.map_or(0.0, |v| {
-        effective_width(v.start_width, pline.constant_width)
-    });
-    let end_w = v.map_or(0.0, |v| {
-        effective_width(v.end_width, pline.constant_width)
+    let (start_w, end_w) = v.map_or((0.0, 0.0), |v| {
+        vertex_segment_widths(v, pline.constant_width)
     });
     let mp = <LwPolyline as crate::entities::traits::MassPropsCalc>::mass_props(pline);
     let cloud_arc_length = revision_cloud_arc_length(pline);
@@ -937,6 +947,14 @@ fn properties(pline: &LwPolyline) -> Vec<PropSection> {
             arc_length,
         ));
     }
+    let global_width_prop = match lwpolyline_global_width(pline) {
+        Some(gw) => edit(t!("Global width").as_ref(), "global_width", gw),
+        None => Property {
+            label: t!("Global width").into_owned(),
+            field: "global_width",
+            value: PropValue::EditText(VARIES_LABEL.to_string()),
+        },
+    };
     let mut geometry_props = vec![
         stepper(t!("Current Vertex").as_ref(), "current_vertex", vertex_label),
         edit(t!("Vertex X").as_ref(), "vertex_x", vx),
@@ -948,7 +966,7 @@ fn properties(pline: &LwPolyline) -> Vec<PropSection> {
         geometry_props.push(edit(t!("End segment width").as_ref(), "end_width", end_w));
     }
     geometry_props.extend([
-        edit(t!("Global width").as_ref(), "global_width", pline.constant_width),
+        global_width_prop,
         edit(t!("Elevation").as_ref(), "elevation", pline.elevation),
         ro(t!("Area").as_ref(), "area", format_area(mp.area)),
         ro(t!("Length").as_ref(), "length", format_length(mp.perimeter)),
@@ -1015,7 +1033,13 @@ fn apply_geom_prop(pline: &mut LwPolyline, field: &str, value: &str) {
     };
     match field {
         "elevation" => pline.elevation = v,
-        "global_width" if v.is_finite() && v >= 0.0 => pline.constant_width = v,
+        "global_width" if v.is_finite() && v >= 0.0 => {
+            pline.constant_width = v;
+            for vtx in &mut pline.vertices {
+                vtx.start_width = v;
+                vtx.end_width = v;
+            }
+        }
         "vertex_x" => {
             if let Some(vtx) = pline.vertices.get_mut(vi) {
                 vtx.location.x = v;
@@ -1027,11 +1051,31 @@ fn apply_geom_prop(pline: &mut LwPolyline, field: &str, value: &str) {
             }
         }
         "start_width" if v.is_finite() && v >= 0.0 => {
+            if pline.constant_width > WIDTH_EPSILON {
+                let c = pline.constant_width;
+                for vtx in &mut pline.vertices {
+                    if vtx.start_width <= WIDTH_EPSILON && vtx.end_width <= WIDTH_EPSILON {
+                        vtx.start_width = c;
+                        vtx.end_width = c;
+                    }
+                }
+                pline.constant_width = 0.0;
+            }
             if let Some(vtx) = pline.vertices.get_mut(vi) {
                 vtx.start_width = v;
             }
         }
         "end_width" if v.is_finite() && v >= 0.0 => {
+            if pline.constant_width > WIDTH_EPSILON {
+                let c = pline.constant_width;
+                for vtx in &mut pline.vertices {
+                    if vtx.start_width <= WIDTH_EPSILON && vtx.end_width <= WIDTH_EPSILON {
+                        vtx.start_width = c;
+                        vtx.end_width = c;
+                    }
+                }
+                pline.constant_width = 0.0;
+            }
             if let Some(vtx) = pline.vertices.get_mut(vi) {
                 vtx.end_width = v;
             }
@@ -1118,6 +1162,57 @@ fn apply_grip(pline: &mut LwPolyline, grip_id: usize, apply: GripApply) {
     }
 }
 
+fn kernel_polyline(polyline: &LwPolyline) -> Polyline {
+    Polyline {
+        vertices: polyline
+            .vertices
+            .iter()
+            .map(|vertex| PolylineVertex {
+                position: [vertex.location.x, vertex.location.y],
+                bulge: vertex.bulge,
+            })
+            .collect(),
+        closed: polyline.is_closed,
+    }
+}
+
+fn edit_polyline_geometry(
+    polyline: &mut LwPolyline,
+    edit: impl FnOnce(&mut Polyline) -> bool,
+) {
+    let mut geometry = kernel_polyline(polyline);
+    if edit(&mut geometry) {
+        for (target, source) in polyline.vertices.iter_mut().zip(geometry.vertices) {
+            target.location = acadrust::types::Vector2::new(source.position[0], source.position[1]);
+            target.bulge = source.bulge;
+        }
+    }
+}
+
+fn move_segment_parallel(polyline: &mut LwPolyline, segment: usize, offset: f64) {
+    edit_polyline_geometry(polyline, |geometry| {
+        cadkernel::geom2d::move_polyline_segment_parallel(geometry, segment, offset)
+    });
+}
+
+#[cfg(test)]
+fn resize_arc_concentrically(polyline: &mut LwPolyline, segment: usize, offset: f64) {
+    edit_polyline_geometry(polyline, |geometry| {
+        geometry
+            .segment_arc(segment)
+            .is_some_and(|arc| cadkernel::geom2d::resize_polyline_arc(
+                geometry,
+                segment,
+                arc.radius + offset,
+            ))
+    });
+}
+
+fn resize_arc_segment_radius(polyline: &mut LwPolyline, segment: usize, radius: f64) {
+    edit_polyline_geometry(polyline, |geometry| {
+        cadkernel::geom2d::resize_polyline_arc(geometry, segment, radius)
+    });
+}
 fn apply_transform(pline: &mut LwPolyline, t: &EntityTransform) {
     crate::scene::view::transform::apply_standard_entity_transform(pline, t, |entity, p1, p2| {
         for v in &mut entity.vertices {
@@ -1149,7 +1244,14 @@ impl crate::entities::traits::Grippable for LwPolyline {
             // Vertex grip. Break only where a split is possible: any vertex
             // of a closed polyline, interior vertices of an open one.
             let breakable = n >= 3 && (self.is_closed || (grip_id > 0 && grip_id < n - 1));
-            let mut items = vec![
+            let mut items = Vec::new();
+            if is_rectangle(self) {
+                items.push(GripMenuItem {
+                    label: "Resize",
+                    action: GripMenuAction::RectangleResize,
+                });
+            }
+            items.extend([
                 GripMenuItem {
                     label: "Stretch",
                     action: GripMenuAction::Stretch,
@@ -1162,7 +1264,7 @@ impl crate::entities::traits::Grippable for LwPolyline {
                     label: "Remove Vertex",
                     action: GripMenuAction::RemoveVertex,
                 },
-            ];
+            ]);
             if breakable {
                 items.push(GripMenuItem {
                     label: "Break",
@@ -1188,7 +1290,30 @@ impl crate::entities::traits::Grippable for LwPolyline {
                 action: GripMenuAction::ConvertToArc,
             }
         };
-        vec![
+        let mut items = Vec::new();
+        if is_arc {
+            items.push(GripMenuItem {
+                label: "Radius",
+                action: GripMenuAction::Radius,
+            });
+        } else {
+            items.push(GripMenuItem {
+                label: "Move Parallel",
+                action: GripMenuAction::MoveParallel,
+            });
+        }
+        if is_rectangle(self) && seg < 4 {
+            // Moving an edge changes the dimension perpendicular to it.
+            items.push(GripMenuItem {
+                label: if seg % 2 == 0 { "Height" } else { "Width" },
+                action: if seg % 2 == 0 {
+                    GripMenuAction::RectangleHeight
+                } else {
+                    GripMenuAction::RectangleWidth
+                },
+            });
+        }
+        items.extend([
             GripMenuItem {
                 label: "Stretch",
                 action: GripMenuAction::Stretch,
@@ -1198,7 +1323,145 @@ impl crate::entities::traits::Grippable for LwPolyline {
                 action: GripMenuAction::AddVertex,
             },
             convert,
-        ]
+        ]);
+        items
+    }
+
+    fn grip_menu_value_prompt(
+        &self,
+        grip_id: usize,
+        action: crate::scene::model::object::GripMenuAction,
+    ) -> Option<&'static str> {
+        use crate::scene::model::object::GripMenuAction as A;
+        let n = self.vertices.len();
+        if action == A::MoveParallel && grip_id >= n {
+            let seg = grip_id - n;
+            let count = if self.is_closed {
+                n
+            } else {
+                n.saturating_sub(1)
+            };
+            return (seg < count && self.vertices[seg].bulge.abs() < 1.0e-9)
+                .then_some("Parallel offset");
+        }
+        if action == A::Radius && grip_id >= n {
+            let seg = grip_id - n;
+            let count = if self.is_closed { n } else { n.saturating_sub(1) };
+            return (seg < count && self.vertices[seg].bulge.abs() >= 1.0e-9)
+                .then_some("New radius");
+        }
+        (is_rectangle(self)
+            && n == 4
+            && (n..n + 4).contains(&grip_id)
+            && matches!(action, A::RectangleWidth | A::RectangleHeight))
+        .then_some(match action {
+            A::RectangleWidth => "New width",
+            _ => "New height",
+        })
+    }
+
+    fn grip_menu_point_value(
+        &self,
+        grip_id: usize,
+        action: crate::scene::model::object::GripMenuAction,
+        point: glam::DVec3,
+    ) -> Option<f64> {
+        use crate::scene::model::object::GripMenuAction as A;
+        if action == A::Radius {
+            let n = self.vertices.len();
+            let seg = grip_id.checked_sub(n)?;
+            let plane = crate::entities::curve::lwpolyline_curve(self)?.plane;
+            let point = Vec2::from(plane.project(point.to_array())?);
+            return cadkernel::geom2d::polyline_arc_radius_from_point(
+                &kernel_polyline(self),
+                seg,
+                point.into(),
+            );
+        }
+        if action == A::MoveParallel {
+            let n = self.vertices.len();
+            let seg = grip_id.checked_sub(n)?;
+            let plane = crate::entities::curve::lwpolyline_curve(self)?.plane;
+            let point = Vec2::from(plane.project(point.to_array())?);
+            return cadkernel::geom2d::polyline_segment_parallel_offset(
+                &kernel_polyline(self),
+                seg,
+                point.into(),
+            );
+        }
+        let (frame, plane) = rectangle_frame(self)?;
+        let seg = grip_id.checked_sub(4)?;
+        if seg >= 4 {
+            return None;
+        }
+        let axis = match (seg % 2, action) {
+            (0, A::RectangleHeight) => Vec2::from(frame.height_axis),
+            (1, A::RectangleWidth) => Vec2::from(frame.width_axis),
+            _ => return None,
+        };
+        let opposite_mid = {
+            let a = self.vertices[(seg + 2) % 4].location;
+            let b = self.vertices[(seg + 3) % 4].location;
+            Vec2::new((a.x + b.x) * 0.5, (a.y + b.y) * 0.5)
+        };
+        let point = Vec2::from(plane.project(point.to_array())?);
+        let value = (point - opposite_mid).dot(axis).abs();
+        (value > Tolerance::default().linear()).then_some(value)
+    }
+
+    fn apply_grip_menu_value(
+        &mut self,
+        grip_id: usize,
+        action: crate::scene::model::object::GripMenuAction,
+        value: f64,
+    ) {
+        use crate::scene::model::object::GripMenuAction as A;
+        if action == A::Radius {
+            if let Some(seg) = grip_id.checked_sub(self.vertices.len()) {
+                resize_arc_segment_radius(self, seg, value);
+            }
+            return;
+        }
+        if action == A::MoveParallel {
+            if let Some(seg) = grip_id.checked_sub(self.vertices.len()) {
+                if self.vertices.get(seg).is_some_and(|vertex| vertex.bulge.abs() < 1.0e-9) {
+                    move_segment_parallel(self, seg, value);
+                }
+            }
+            return;
+        }
+        if value <= Tolerance::default().linear() {
+            return;
+        }
+        let Some((frame, _)) = rectangle_frame(self) else {
+            return;
+        };
+        let Some(seg) = grip_id.checked_sub(4) else {
+            return;
+        };
+        if seg >= 4 {
+            return;
+        }
+        let axis = match (seg % 2, action) {
+            (0, A::RectangleHeight) => frame.height_axis,
+            (1, A::RectangleWidth) => frame.width_axis,
+            _ => return,
+        };
+        let i0 = seg;
+        let i1 = (seg + 1) % 4;
+        let o0 = (seg + 3) % 4;
+        let o1 = (seg + 2) % 4;
+        let selected_mid = (self.vertices[i0].location + self.vertices[i1].location) * 0.5;
+        let opposite_mid = (self.vertices[o0].location + self.vertices[o1].location) * 0.5;
+        let delta = selected_mid - opposite_mid;
+        let signed_distance = delta.x * axis[0] + delta.y * axis[1];
+        if signed_distance.abs() <= Tolerance::default().linear() {
+            return;
+        }
+        let direction = acadrust::types::Vector2::new(axis[0], axis[1])
+            * signed_distance.signum();
+        self.vertices[i0].location = self.vertices[o0].location + direction * value;
+        self.vertices[i1].location = self.vertices[o1].location + direction * value;
     }
     fn apply_grip_menu(&mut self, grip_id: usize, action: crate::scene::model::object::GripMenuAction) {
         use crate::scene::model::object::GripMenuAction as A;
@@ -1252,8 +1515,8 @@ impl crate::entities::traits::Grippable for LwPolyline {
                 new_v.location.x = midpoint[0];
                 new_v.location.y = midpoint[1];
                 new_v.vertex_id = 0;
-                let effective_start = effective_width(v0.start_width, self.constant_width);
-                let effective_end = effective_width(v0.end_width, self.constant_width);
+                let (effective_start, effective_end) =
+                    vertex_segment_widths(&v0, self.constant_width);
                 let middle_width = (effective_start + effective_end) * 0.5;
                 self.vertices[i0].end_width = middle_width;
                 new_v.start_width = middle_width;
@@ -1325,8 +1588,9 @@ pub(crate) fn wide_fills(pl: &acadrust::entities::LwPolyline) -> ([f64; 2], Vec<
     for i in 0..seg_count {
         let v0 = &verts[i];
         let v1 = &verts[(i + 1) % n];
-        let hw0 = effective_width(v0.start_width, pl.constant_width) as f32 * 0.5;
-        let hw1 = effective_width(v0.end_width, pl.constant_width) as f32 * 0.5;
+        let (sw, ew) = vertex_segment_widths(v0, pl.constant_width);
+        let hw0 = sw as f32 * 0.5;
+        let hw1 = ew as f32 * 0.5;
         if hw0 < 1e-6 && hw1 < 1e-6 {
             continue;
         }
@@ -1379,5 +1643,409 @@ impl crate::entities::traits::MassPropsCalc for acadrust::entities::LwPolyline {
             cx,
             cy,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    use crate::entities::traits::{Grippable, PropertyEditable};
+    use crate::scene::model::object::GripMenuAction;
+    use acadrust::entities::{LwPolyline, LwVertex};
+    use acadrust::{Vector2, Vector3};
+
+    fn make_test_lwpolyline(count: usize, constant_width: f64) -> LwPolyline {
+        let mut pl = LwPolyline::default();
+        pl.constant_width = constant_width;
+        for i in 0..count {
+            pl.vertices.push(LwVertex::new(Vector2::new(i as f64 * 10.0, 0.0)));
+        }
+        pl
+    }
+
+    fn make_test_rectangle() -> LwPolyline {
+        let mut pl = LwPolyline::default();
+        pl.is_closed = true;
+        pl.vertices = [(0.0, 0.0), (10.0, 0.0), (10.0, 5.0), (0.0, 5.0)]
+            .into_iter()
+            .map(|(x, y)| LwVertex::new(Vector2::new(x, y)))
+            .collect();
+        pl
+    }
+
+    #[test]
+    fn rectangle_midpoint_offers_dimension_before_stretch() {
+        let pl = make_test_rectangle();
+        let bottom = pl.grip_menu(4);
+        assert_eq!(bottom[0].action, GripMenuAction::MoveParallel);
+        assert_eq!(bottom[1].action, GripMenuAction::RectangleHeight);
+        assert_eq!(bottom[2].action, GripMenuAction::Stretch);
+
+        let right = pl.grip_menu(5);
+        assert_eq!(right[0].action, GripMenuAction::MoveParallel);
+        assert_eq!(right[1].action, GripMenuAction::RectangleWidth);
+        assert_eq!(right[2].action, GripMenuAction::Stretch);
+    }
+
+    #[test]
+    fn arc_midpoint_offers_radius_first_without_move_parallel() {
+        let mut pl = make_test_lwpolyline(2, 0.0);
+        pl.vertices[0].bulge = 0.5;
+        let menu = pl.grip_menu(2);
+        assert_eq!(menu[0].action, GripMenuAction::Radius);
+        assert_eq!(menu[1].action, GripMenuAction::Stretch);
+        assert!(!menu.iter().any(|item| item.action == GripMenuAction::MoveParallel));
+    }
+
+    #[test]
+    fn rectangle_corner_offers_resize_before_stretch() {
+        let pl = make_test_rectangle();
+        let corner = pl.grip_menu(0);
+        assert_eq!(corner[0].action, GripMenuAction::RectangleResize);
+        assert_eq!(corner[1].action, GripMenuAction::Stretch);
+    }
+
+    #[test]
+    fn rectangle_dimension_edit_keeps_opposite_edge_fixed() {
+        let mut pl = make_test_rectangle();
+        pl.apply_grip_menu_value(6, GripMenuAction::RectangleHeight, 8.0);
+        assert_eq!(pl.vertices[0].location, Vector2::new(0.0, 0.0));
+        assert_eq!(pl.vertices[1].location, Vector2::new(10.0, 0.0));
+        assert_eq!(pl.vertices[2].location, Vector2::new(10.0, 8.0));
+        assert_eq!(pl.vertices[3].location, Vector2::new(0.0, 8.0));
+        assert!(is_rectangle(&pl));
+    }
+
+    #[test]
+    fn rectangle_point_preview_reports_full_dimension() {
+        let pl = make_test_rectangle();
+        let value = pl.grip_menu_point_value(
+            5,
+            GripMenuAction::RectangleWidth,
+            glam::DVec3::new(14.0, 2.5, 0.0),
+        );
+        assert_eq!(value, Some(14.0));
+    }
+
+    #[test]
+    fn rectangle_point_preview_uses_entity_plane() {
+        let mut pl = make_test_rectangle();
+        pl.normal = Vector3::new(0.0, 1.0, 0.0);
+        pl.elevation = 5.0;
+        let (_, plane) = rectangle_frame(&pl).expect("rectangle frame");
+        let point = glam::DVec3::from_array(plane.point_at([14.0, 2.5]));
+
+        let value = pl.grip_menu_point_value(5, GripMenuAction::RectangleWidth, point);
+
+        assert_eq!(value, Some(14.0));
+    }
+
+    fn polyline(points: &[(f64, f64)], closed: bool) -> LwPolyline {
+        let mut pl = LwPolyline::default();
+        pl.is_closed = closed;
+        pl.vertices = points
+            .iter()
+            .map(|&(x, y)| LwVertex::new(Vector2::new(x, y)))
+            .collect();
+        pl
+    }
+
+    #[test]
+    fn move_parallel_reconnects_internal_edge_to_adjacent_lines() {
+        let mut pl = polyline(
+            &[(0.0, 0.0), (2.0, 2.0), (8.0, 2.0), (10.0, 0.0)],
+            false,
+        );
+        move_segment_parallel(&mut pl, 1, 2.0);
+        assert_eq!(pl.vertices[0].location, Vector2::new(0.0, 0.0));
+        assert_eq!(pl.vertices[1].location, Vector2::new(4.0, 4.0));
+        assert_eq!(pl.vertices[2].location, Vector2::new(6.0, 4.0));
+        assert_eq!(pl.vertices[3].location, Vector2::new(10.0, 0.0));
+    }
+
+    #[test]
+    fn moving_a_line_parallel_only_changes_the_connected_arcs_length() {
+        let mut pl = polyline(&[(-5.0, 0.0), (0.0, 0.0), (5.0, 5.0)], false);
+        pl.vertices[1].bulge = -(std::f64::consts::FRAC_PI_2 * 0.25).tan();
+        let before = crate::entities::common::BulgeArc::from_bulge(
+            [0.0, 0.0], [5.0, 5.0], pl.vertices[1].bulge,
+        ).unwrap();
+
+        move_segment_parallel(&mut pl, 0, 1.0);
+
+        let after = crate::entities::common::BulgeArc::from_bulge(
+            [pl.vertices[1].location.x, pl.vertices[1].location.y],
+            [pl.vertices[2].location.x, pl.vertices[2].location.y],
+            pl.vertices[1].bulge,
+        ).unwrap();
+        assert!(Vec2::from(after.center).distance(Vec2::from(before.center)) < 1.0e-9);
+        assert!((after.radius - before.radius).abs() < 1.0e-9);
+        assert_eq!(pl.vertices[2].location, Vector2::new(5.0, 5.0));
+        assert!((after.sweep - before.sweep).abs() > 1.0e-6);
+        assert!((pl.vertices[0].location.y - 1.0).abs() < 1.0e-9);
+        assert!((pl.vertices[1].location.y - 1.0).abs() < 1.0e-9);
+    }
+
+    #[test]
+    fn radius_offsets_arc_concentrically() {
+        let mut pl = polyline(&[(0.0, 0.0), (10.0, 0.0)], false);
+        pl.vertices[0].bulge = 1.0;
+        let original = crate::entities::common::BulgeArc::from_bulge(
+            [0.0, 0.0],
+            [10.0, 0.0],
+            pl.vertices[0].bulge,
+        )
+        .unwrap();
+
+        resize_arc_concentrically(&mut pl, 0, 2.0);
+
+        let moved = crate::entities::common::BulgeArc::from_bulge(
+            [pl.vertices[0].location.x, pl.vertices[0].location.y],
+            [pl.vertices[1].location.x, pl.vertices[1].location.y],
+            pl.vertices[0].bulge,
+        )
+        .unwrap();
+        assert!(Vec2::from(moved.center).distance(original.center.into()) < 1.0e-9);
+        assert!((moved.radius - original.radius - 2.0).abs() < 1.0e-9);
+        assert_eq!(moved.sweep.signum(), original.sweep.signum());
+    }
+
+    #[test]
+    fn radius_allows_an_open_arc_with_a_duplicate_end_vertex() {
+        let mut pl = polyline(&[(0.0, 0.0), (10.0, 0.0), (10.0, 0.0)], false);
+        pl.vertices[0].bulge = 1.0;
+
+        resize_arc_concentrically(&mut pl, 0, 2.0);
+
+        let moved = crate::entities::common::BulgeArc::from_bulge(
+            [pl.vertices[0].location.x, pl.vertices[0].location.y],
+            [pl.vertices[1].location.x, pl.vertices[1].location.y],
+            pl.vertices[0].bulge,
+        ).unwrap();
+        assert!((moved.radius - 7.0).abs() < 1.0e-9);
+        assert_eq!(pl.vertices[2].location, pl.vertices[1].location);
+    }
+
+    #[test]
+    fn resizing_an_end_arc_only_changes_the_connected_arcs_length() {
+        let shared = Vec2::new(3.0, 4.0);
+        let mut pl = polyline(&[(-5.0, 0.0), (shared.x, shared.y), (11.0, 0.0)], false);
+        let ccw_bulge = |center: Vec2, start: Vec2, end: Vec2| {
+            let a0 = (start.y - center.y).atan2(start.x - center.x);
+            let a1 = (end.y - center.y).atan2(end.x - center.x);
+            ((a1 - a0).rem_euclid(TAU) * 0.25).tan()
+        };
+        pl.vertices[0].bulge = ccw_bulge(Vec2::ZERO, Vec2::new(-5.0, 0.0), shared);
+        pl.vertices[1].bulge = ccw_bulge(Vec2::new(6.0, 0.0), shared, Vec2::new(11.0, 0.0));
+        let before = crate::entities::common::BulgeArc::from_bulge(
+            [shared.x, shared.y], [11.0, 0.0], pl.vertices[1].bulge,
+        ).unwrap();
+
+        resize_arc_concentrically(&mut pl, 0, 1.0);
+
+        let after = crate::entities::common::BulgeArc::from_bulge(
+            [pl.vertices[1].location.x, pl.vertices[1].location.y],
+            [pl.vertices[2].location.x, pl.vertices[2].location.y],
+            pl.vertices[1].bulge,
+        ).unwrap();
+        assert!(Vec2::from(after.center).distance(Vec2::from(before.center)) < 1.0e-9);
+        assert!((after.radius - before.radius).abs() < 1.0e-9);
+        assert_eq!(pl.vertices[2].location, Vector2::new(11.0, 0.0));
+        assert!((after.sweep - before.sweep).abs() > 1.0e-6);
+    }
+
+    #[test]
+    fn radius_menu_resizes_a_corner_as_a_tangent_fillet() {
+        let mut pl = polyline(
+            &[(0.0, 0.0), (8.0, 0.0), (10.0, 2.0), (10.0, 10.0)], false,
+        );
+        pl.vertices[1].bulge = (std::f64::consts::FRAC_PI_2 / 4.0).tan();
+        let grip = pl.vertices.len() + 1;
+        assert!(pl.grip_menu(grip).iter().any(|item| item.action == GripMenuAction::Radius));
+        pl.apply_grip_menu_value(grip, GripMenuAction::Radius, 4.0);
+        assert_eq!(pl.vertices[0].location, Vector2::new(0.0, 0.0));
+        assert!((pl.vertices[1].location.x - 6.0).abs() < 1.0e-9);
+        assert!(pl.vertices[1].location.y.abs() < 1.0e-9);
+        assert!((pl.vertices[2].location.x - 10.0).abs() < 1.0e-9);
+        assert!((pl.vertices[2].location.y - 4.0).abs() < 1.0e-9);
+        assert_eq!(pl.vertices[3].location, Vector2::new(10.0, 10.0));
+        let arc = crate::entities::common::BulgeArc::from_bulge(
+            [pl.vertices[1].location.x, pl.vertices[1].location.y],
+            [pl.vertices[2].location.x, pl.vertices[2].location.y],
+            pl.vertices[1].bulge,
+        ).unwrap();
+        assert!((arc.radius - 4.0).abs() < 1.0e-9);
+        assert!(arc.sweep > 0.0);
+    }
+
+    #[test]
+    fn radius_cursor_tracks_the_fillet_midpoint_ray() {
+        let mut pl = polyline(
+            &[(0.0, 0.0), (8.0, 0.0), (10.0, 2.0), (10.0, 10.0)], false,
+        );
+        pl.vertices[1].bulge = (std::f64::consts::FRAC_PI_2 / 4.0).tan();
+        let arc = crate::entities::common::BulgeArc::from_bulge(
+            [pl.vertices[1].location.x, pl.vertices[1].location.y],
+            [pl.vertices[2].location.x, pl.vertices[2].location.y],
+            pl.vertices[1].bulge,
+        ).unwrap();
+        let midpoint = Vec2::from(arc.sample(0.5));
+        let cursor = Vec2::new(10.0, 0.0) + (midpoint - Vec2::new(10.0, 0.0)) * 2.0;
+        let value = pl.grip_menu_point_value(
+            pl.vertices.len() + 1, GripMenuAction::Radius,
+            glam::DVec3::new(cursor.x, cursor.y, 0.0),
+        ).unwrap();
+        assert!((value - 4.0).abs() < 1.0e-9);
+    }
+
+    #[test]
+    fn radius_on_an_open_endpoint_arc_stays_concentric() {
+        let mut pl = polyline(&[(0.0, 0.0), (10.0, 0.0)], false);
+        pl.vertices[0].bulge = 1.0;
+        resize_arc_segment_radius(&mut pl, 0, 8.0);
+        let arc = crate::entities::common::BulgeArc::from_bulge(
+            [pl.vertices[0].location.x, pl.vertices[0].location.y],
+            [pl.vertices[1].location.x, pl.vertices[1].location.y],
+            pl.vertices[0].bulge,
+        ).unwrap();
+        assert!((arc.radius - 8.0).abs() < 1.0e-9);
+        assert!(Vec2::from(arc.center).distance(Vec2::new(5.0, 0.0)) < 1.0e-9);
+        assert!(arc.sweep > 0.0);
+    }
+
+    #[test]
+    fn radius_edit_ignores_an_invalid_segment_grip() {
+        let mut pl = polyline(&[(0.0, 0.0), (10.0, 0.0)], false);
+        pl.vertices[0].bulge = 1.0;
+        let before = pl.clone();
+
+        pl.apply_grip_menu_value(99, GripMenuAction::Radius, 8.0);
+
+        assert_eq!(pl, before);
+    }
+
+    #[test]
+    fn radius_on_a_non_tangent_internal_arc_keeps_center_and_side_angles() {
+        let mut pl = polyline(
+            &[(0.0, 0.0), (8.0, 0.0), (10.0, 2.0), (10.0, 10.0)], false,
+        );
+        pl.vertices[1].bulge = 1.0;
+        let before = crate::entities::common::BulgeArc::from_bulge(
+            [8.0, 0.0], [10.0, 2.0], pl.vertices[1].bulge,
+        ).unwrap();
+        resize_arc_segment_radius(&mut pl, 1, 4.0);
+        let after = crate::entities::common::BulgeArc::from_bulge(
+            [pl.vertices[1].location.x, pl.vertices[1].location.y],
+            [pl.vertices[2].location.x, pl.vertices[2].location.y],
+            pl.vertices[1].bulge,
+        ).unwrap();
+        assert!(Vec2::from(after.center).distance(Vec2::from(before.center)) < 1.0e-9);
+        assert!((after.radius - 4.0).abs() < 1.0e-9);
+        let incoming = Vec2::new(
+            pl.vertices[1].location.x - pl.vertices[0].location.x,
+            pl.vertices[1].location.y - pl.vertices[0].location.y,
+        );
+        let outgoing = Vec2::new(
+            pl.vertices[3].location.x - pl.vertices[2].location.x,
+            pl.vertices[3].location.y - pl.vertices[2].location.y,
+        );
+        assert!(incoming.cross(Vec2::new(1.0, 0.0)).abs() < 1.0e-9);
+        assert!(outgoing.cross(Vec2::new(0.0, 1.0)).abs() < 1.0e-9);
+    }
+
+    #[test]
+    fn move_parallel_translates_free_endpoint_of_open_polyline() {
+        let mut pl = polyline(&[(0.0, 0.0), (6.0, 0.0), (8.0, 2.0)], false);
+        move_segment_parallel(&mut pl, 0, 2.0);
+        assert_eq!(pl.vertices[0].location, Vector2::new(0.0, 2.0));
+        assert_eq!(pl.vertices[1].location, Vector2::new(8.0, 2.0));
+        assert_eq!(pl.vertices[2].location, Vector2::new(8.0, 2.0));
+    }
+
+    #[test]
+    fn move_parallel_wraps_closed_polyline_indices() {
+        let mut pl = polyline(&[(0.0, 0.0), (4.0, 0.0), (4.0, 4.0), (0.0, 4.0)], true);
+        move_segment_parallel(&mut pl, 3, -1.0);
+        assert_eq!(pl.vertices[0].location, Vector2::new(-1.0, 0.0));
+        assert_eq!(pl.vertices[3].location, Vector2::new(-1.0, 4.0));
+        assert_eq!(pl.vertices[1].location, Vector2::new(4.0, 0.0));
+        assert_eq!(pl.vertices[2].location, Vector2::new(4.0, 4.0));
+    }
+
+    #[test]
+    fn move_parallel_rejects_parallel_adjacent_line() {
+        let mut pl = polyline(&[(0.0, 0.0), (2.0, 0.0), (5.0, 0.0), (6.0, 2.0)], false);
+        let original = pl.vertices.clone();
+        move_segment_parallel(&mut pl, 1, 1.0);
+        assert_eq!(pl.vertices, original);
+    }
+
+    #[test]
+    fn test_lwpolyline_uniform_width_shows_global_width() {
+        let pl = make_test_lwpolyline(3, 5.0);
+        assert_eq!(lwpolyline_global_width(&pl), Some(5.0));
+
+        let props = pl.geometry_properties(&[]);
+        let geom_props = &props[0].props;
+        let gw = geom_props.iter().find(|p| p.field == "global_width").unwrap();
+        match &gw.value {
+            PropValue::EditText(val) => assert_eq!(parse_f64(val), Some(5.0)),
+            _ => panic!("expected EditText"),
+        }
+    }
+
+    #[test]
+    fn test_lwpolyline_varying_vertex_width_shows_varies() {
+        let mut pl = make_test_lwpolyline(3, 5.0);
+        pl.vertices[0].start_width = 2.0;
+        pl.vertices[0].end_width = 3.0;
+
+        assert_eq!(lwpolyline_global_width(&pl), None);
+
+        let props = pl.geometry_properties(&[]);
+        let geom_props = &props[0].props;
+        let gw = geom_props.iter().find(|p| p.field == "global_width").unwrap();
+        match &gw.value {
+            PropValue::EditText(val) => assert_eq!(val, VARIES_LABEL),
+            _ => panic!("expected EditText with VARIES_LABEL"),
+        }
+    }
+
+    #[test]
+    fn test_lwpolyline_modifying_global_width_sets_all_vertex_widths() {
+        let mut pl = make_test_lwpolyline(3, 5.0);
+        pl.vertices[0].start_width = 2.0;
+        pl.vertices[0].end_width = 3.0;
+
+        pl.apply_geom_prop("global_width", "10.0");
+
+        assert_eq!(pl.constant_width, 10.0);
+        for v in &pl.vertices {
+            assert_eq!(v.start_width, 10.0);
+            assert_eq!(v.end_width, 10.0);
+        }
+        assert_eq!(lwpolyline_global_width(&pl), Some(10.0));
+    }
+
+    #[test]
+    fn test_lwpolyline_modifying_segment_width_materializes_constant_width() {
+        let mut pl = make_test_lwpolyline(3, 5.0);
+        // Initially constant_width is 5.0, vertices start/end are 0.0
+        assert_eq!(pl.vertices[0].start_width, 0.0);
+
+        // Edit start width of current vertex (vertex 0) to 2.0
+        pl.apply_geom_prop("start_width", "2.0");
+
+        // Vertex 0 start width should be 2.0, end width materialized to 5.0
+        assert_eq!(pl.vertices[0].start_width, 2.0);
+        assert_eq!(pl.vertices[0].end_width, 5.0);
+
+        // Vertex 1 and 2 should have materialized 5.0 instead of collapsing to 0.0
+        assert_eq!(pl.vertices[1].start_width, 5.0);
+        assert_eq!(pl.vertices[1].end_width, 5.0);
+
+        // Global width must now be VARIES
+        assert_eq!(lwpolyline_global_width(&pl), None);
     }
 }

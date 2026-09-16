@@ -21,6 +21,9 @@ use crate::plugin::all_ribbon_modules;
 use crate::ui::properties::{linetype_display_name, lw_options, LinetypeItem};
 
 mod widgets;
+mod draw_panel;
+mod modify_panel;
+mod color_dropdown;
 use widgets::{StyleContext, *};
 mod collapse;
 use collapse::{CollapsePanels, Panel};
@@ -339,12 +342,30 @@ impl Ribbon {
             self.open_dropdown = None;
         } else {
             self.open_dropdown = Some(id.to_string());
+            if draw_panel::owns_dropdown(id) {
+                self.collapsed_open = None;
+            }
         }
     }
     pub fn close_dropdown(&mut self) {
         self.open_dropdown = None;
         self.collapsed_open = None;
         self.layer_filter.clear();
+    }
+
+    pub fn escape_extension(&mut self) -> bool {
+        let Some(id) = self.open_dropdown.as_deref() else {
+            return false;
+        };
+        let Some(parent) = draw_panel::parent_panel(id) else {
+            return false;
+        };
+        if id == parent {
+            self.close_dropdown();
+        } else {
+            self.open_dropdown = Some(parent.to_string());
+        }
+        true
     }
 
     /// Toggle the flyout of a collapsed ribbon panel (identified by its title).
@@ -391,7 +412,7 @@ impl Ribbon {
 
     pub fn select_dropdown_item(&mut self, dropdown_id: &'static str, cmd: &'static str) {
         self.last_cmd.insert(dropdown_id, cmd);
-        self.open_dropdown = None;
+        self.close_dropdown();
     }
 
     // ── View ──────────────────────────────────────────────────────────────
@@ -719,11 +740,16 @@ impl Ribbon {
         redo_labels: &[String],
         win: (f32, f32),
         is_start: bool,
+        recent_colors: &[AcadColor],
     ) -> Option<Element<'_, Message>> {
         if is_start {
             return None;
         }
         let open_id = self.open_dropdown.as_deref()?;
+
+        if draw_panel::owns_dropdown(open_id) {
+            return Some(draw_panel::overlay(self, open_id, win));
+        }
 
         if open_id == UNDO_HISTORY_ID || open_id == REDO_HISTORY_ID {
             let is_undo = open_id == UNDO_HISTORY_ID;
@@ -796,7 +822,7 @@ impl Ribbon {
         }
 
         if open_id == PROP_COLOR_ID {
-            return self.prop_color_overlay(win);
+            return self.prop_color_overlay(win, recent_colors);
         }
         if open_id == PROP_LINETYPE_ID {
             return self.prop_linetype_overlay(win);
@@ -824,6 +850,9 @@ impl Ribbon {
                     RibbonItem::Dropdown {
                         id, items, default, ..
                     } => (*id, items, *default),
+                    RibbonItem::LabeledDropdown { id, items, default, .. } => {
+                        (*id, items, *default)
+                    }
                     RibbonItem::LargeDropdown {
                         id, items, default, ..
                     } => (*id, items, *default),
@@ -1142,27 +1171,17 @@ impl Ribbon {
         )))
     }
 
-    fn prop_color_overlay(&self, win: (f32, f32)) -> Option<Element<'_, Message>> {
-        let picker = crate::ui::color_select::color_list(
-            crate::ui::color_select::ColorExtras {
-                by_layer: true,
-                by_block: true,
-                ..Default::default()
-            },
-            Message::RibbonColorChanged,
-            Message::OpenColorWindow(
-                crate::app::ColorPickTarget::Ribbon,
-                self.active_color,
-            ),
-        );
+    fn prop_color_overlay(
+        &self,
+        win: (f32, f32),
+        recent_colors: &[AcadColor],
+    ) -> Option<Element<'_, Message>> {
+        let panel = color_dropdown::color_dropdown_panel(self.active_color, recent_colors);
 
-        let panel = container(picker)
-            .style(popup_panel_style)
-            .width(Length::Fixed(200.0));
-
-        let (align_right, h_pad, top) = self.dd_anchor(PROP_COLOR_ID, 200.0, win.0);
+        let (align_right, h_pad, top) =
+            self.dd_anchor(PROP_COLOR_ID, color_dropdown::PANEL_W, win.0);
         Some(dropdown_backdrop(position_ribbon_dropdown(
-            panel.into(),
+            panel,
             align_right,
             h_pad,
             top,
@@ -1332,7 +1351,8 @@ fn render_group<'a>(
     for item in &group.tools {
         let is_large = match item {
             RibbonItem::LargeTool(_) | RibbonItem::LargeDropdown { .. } => !compact,
-            RibbonItem::LayerComboGroup { .. }
+            RibbonItem::ToolGrid { .. }
+            | RibbonItem::LayerComboGroup { .. }
             | RibbonItem::PropertiesGroup { .. }
             | RibbonItem::StyleComboGroup { .. } => true,
             _ => false,
@@ -1364,7 +1384,7 @@ fn render_group<'a>(
 
     column![
         tools_el,
-        container(text(t!(group.title)).size(9).style(muted_text_style)).padding([1, 4]),
+        draw_panel::group_title(group.title, open_dd),
     ]
     .align_x(iced::Center)
     .spacing(0)
@@ -1376,8 +1396,10 @@ fn render_group<'a>(
 /// The top-level command id of a ribbon item, if it has one.
 fn item_id(it: &RibbonItem) -> Option<&'static str> {
     match it {
-        RibbonItem::Tool(t) | RibbonItem::LargeTool(t) => Some(t.id),
-        RibbonItem::Dropdown { id, .. } | RibbonItem::LargeDropdown { id, .. } => Some(*id),
+        RibbonItem::Tool(t) | RibbonItem::LabeledTool(t) | RibbonItem::LargeTool(t) => Some(t.id),
+        RibbonItem::Dropdown { id, .. }
+        | RibbonItem::LabeledDropdown { id, .. }
+        | RibbonItem::LargeDropdown { id, .. } => Some(*id),
         RibbonItem::PropertiesGroup { match_prop } => Some(match_prop.id),
         _ => None,
     }
@@ -1403,13 +1425,17 @@ fn representative<'g>(group: &'g RibbonGroup, last_used: Option<&str>) -> Option
 /// still get a representative icon.
 fn first_tool_icon(group: &RibbonGroup) -> Option<IconKind> {
     group.tools.iter().find_map(|it| match it {
-        RibbonItem::Tool(t) | RibbonItem::LargeTool(t) => Some(t.icon),
-        RibbonItem::Dropdown { icon, .. } | RibbonItem::LargeDropdown { icon, .. } => Some(*icon),
+        RibbonItem::Tool(t) | RibbonItem::LabeledTool(t) | RibbonItem::LargeTool(t) => Some(t.icon),
+        RibbonItem::Dropdown { icon, .. }
+        | RibbonItem::LabeledDropdown { icon, .. }
+        | RibbonItem::LargeDropdown { icon, .. } => Some(*icon),
         RibbonItem::PropertiesGroup { match_prop } => Some(match_prop.icon),
         RibbonItem::LayerComboGroup { row2, .. } => row2.first().map(|t| t.icon),
         RibbonItem::StyleComboGroup { rows, .. } => {
             rows.first().and_then(|r| r.first()).map(|t| t.icon)
-        }
+        },
+        RibbonItem::ToolGrid { columns } => columns.first()
+            .and_then(|column| column.first()).map(|tool| tool.icon),
     })
 }
 
@@ -1576,75 +1602,14 @@ mod tests {
         assert!(!is_active_tool("BLOCKPALETTE", &None, &off));
     }
 
-    /// Reproducible element-construction benchmark for the ribbon view. Run with:
-    /// `cargo test --lib --release -- --ignored --nocapture bench_ribbon_view_construction`
-    ///
-    /// Times `Ribbon::view()` element construction — the dominant cost in the
-    /// cheap (non-render) part of a ribbon frame, and the thing Mission #4
-    /// reworked. `#[ignore]`d so normal runs stay silent; state is populated so
-    /// Auto-mode panels actually have four densities to build.
     #[test]
-    #[ignore]
-    fn bench_ribbon_view_construction() {
-        use std::time::Instant;
-        use super::*;
+    fn escape_returns_from_an_extension_submenu_then_closes_the_panel() {
+        let mut ribbon = Ribbon::default();
+        ribbon.open_dropdown = Some("DRAWORDER_FRONT".to_string());
 
-        let mut ribbon = Ribbon::new();
-        ribbon.set_styles(
-            vec![
-                "Standard".to_string(),
-                "Title".to_string(),
-                "Annotative".to_string(),
-            ],
-            "Standard",
-            vec!["Standard".to_string()],
-            "Standard",
-            vec!["Standard".to_string()],
-            "Standard",
-            vec!["Standard".to_string()],
-            "Standard",
-        );
-        ribbon.set_layers(
-            vec![
-                LayerInfo {
-                    name: "0".to_string(),
-                    color: Color::TRANSPARENT,
-                    visible: true,
-                    frozen: false,
-                    locked: false,
-                },
-                LayerInfo {
-                    name: "DRAWING".to_string(),
-                    color: Color::TRANSPARENT,
-                    visible: true,
-                    frozen: false,
-                    locked: false,
-                },
-            ],
-            "0",
-        );
-        ribbon.set_available_linetypes(vec![
-            LinetypeItem {
-                name: "Continuous".to_string(),
-                art: String::new(),
-            },
-            LinetypeItem {
-                name: "DASHED".to_string(),
-                art: String::new(),
-            },
-        ]);
-
-        let n = 200u32;
-        // Warm-up for allocator/tree-slot settling before timing begins.
-        let _ = ribbon.view(false, false, 0, 0, false);
-        let start = Instant::now();
-        for _ in 0..n {
-            let _ = ribbon.view(false, false, 0, 0, false);
-        }
-        let per_frame = start.elapsed() / n;
-        println!(
-            "bench_ribbon_view_construction: {per_frame:?} per `Ribbon::view()` \
-             element build (n = {n}, release measurement recommended)"
-        );
+        assert!(ribbon.escape_extension());
+        assert_eq!(ribbon.open_dropdown.as_deref(), Some("modify_extension"));
+        assert!(ribbon.escape_extension());
+        assert_eq!(ribbon.open_dropdown, None);
     }
 }

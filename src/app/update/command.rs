@@ -191,7 +191,11 @@ pub(super) fn on_tab_close(&mut self, idx: usize) -> Task<Message> {
                             c.is_ascii_digit()
                                 || matches!(c, '.' | '-' | '+' | '*' | '/' | '^' | '%' | '(' | ')')
                         });
-                    if dyn_field_char && self.dyn_input && !self.tabs[i].dyn_fields.is_empty() {
+                    if dyn_field_char
+                        && self.command_line.input.is_empty()
+                        && self.dyn_input
+                        && !self.tabs[i].dyn_fields.is_empty()
+                    {
                         let a = self.tabs[i]
                             .dyn_active
                             .min(self.tabs[i].dyn_fields.len() - 1);
@@ -199,6 +203,13 @@ pub(super) fn on_tab_close(&mut self, idx: usize) -> Task<Message> {
                             .buffer
                             .get_or_insert_with(String::new)
                             .push_str(&s);
+                        if self.tabs[i]
+                            .active_grip
+                            .as_ref()
+                            .is_some_and(|grip| grip.mode.uses_scalar_dynamic_input())
+                        {
+                            self.command_line.input.push_str(&s);
+                        }
                     } else {
                         // Command-line entry is shown uppercase — except in
                         // free-form text prompts, where the typed case is the
@@ -242,6 +253,13 @@ pub(super) fn on_tab_close(&mut self, idx: usize) -> Task<Message> {
                         if buf.is_empty() {
                             self.tabs[i].dyn_fields[a].buffer = None;
                         }
+                        if self.tabs[i]
+                            .active_grip
+                            .as_ref()
+                            .is_some_and(|grip| grip.mode.uses_scalar_dynamic_input())
+                        {
+                            self.command_line.input.pop();
+                        }
                         return self.focus_cmd_input();
                     }
                 }
@@ -277,13 +295,58 @@ pub(super) fn on_tab_close(&mut self, idx: usize) -> Task<Message> {
                 }
                 // Grip-menu value prompt — consume the typed number and
                 // route it through `apply_grip_menu_value`.
+                // Interactive grip prompts are valid only while their matching
+                // grip edit is alive. Do not let a stale Radius / Lengthen /
+                // Arc Length prompt consume Enter or coordinates from a later
+                // drawing command.
+                let stale_interactive_grip_prompt = self.grip_pending.as_ref().is_some_and(|pending| {
+                    let expected_mode = match pending.action {
+                        crate::scene::model::object::GripMenuAction::Lengthen => {
+                            Some(GripEditMode::Lengthen)
+                        }
+                        crate::scene::model::object::GripMenuAction::Radius => {
+                            Some(GripEditMode::Radius)
+                        }
+                        crate::scene::model::object::GripMenuAction::ArcLength => {
+                            Some(GripEditMode::ArcLength)
+                        }
+                        crate::scene::model::object::GripMenuAction::RectangleWidth => {
+                            Some(GripEditMode::RectangleWidth)
+                        }
+                        crate::scene::model::object::GripMenuAction::RectangleHeight => {
+                            Some(GripEditMode::RectangleHeight)
+                        }
+                        crate::scene::model::object::GripMenuAction::MoveParallel => {
+                            Some(GripEditMode::MoveParallel)
+                        }
+                        _ => None,
+                    };
+                    expected_mode.is_some_and(|mode| {
+                        !self.tabs[self.active_tab].active_grip.as_ref().is_some_and(|grip| {
+                            grip.mode == mode
+                                && grip.handle == pending.handle
+                                && grip.grip_id == pending.grip_id
+                        })
+                    })
+                });
+                if stale_interactive_grip_prompt {
+                    self.grip_pending = None;
+                }
                 if let Some(pending) = self.grip_pending.take() {
                     let i = self.active_tab;
                     if self.reject_locked_edit(i, pending.handle) {
                         self.cancel_active_grip_edit();
                         return Task::none();
                     }
-                    let raw = crate::app::expr_eval::eval_to_string(self.command_line.input.trim());
+                    // Dynamic Input keeps numeric typing in its focused field.
+                    // Fall back to the command-line buffer so the established
+                    // prompt workflow remains unchanged when DYN is disabled.
+                    let dyn_value = self.tabs[i]
+                        .dyn_fields
+                        .iter()
+                        .find_map(|field| field.buffer.as_deref());
+                    let entered = dyn_value.unwrap_or(self.command_line.input.trim());
+                    let raw = crate::app::expr_eval::eval_to_string(entered);
                     self.command_line.input.clear();
                     let Ok(v) = raw.parse::<f64>() else {
                         self.command_line.push_error(crate::tf!(
@@ -293,15 +356,36 @@ pub(super) fn on_tab_close(&mut self, idx: usize) -> Task<Message> {
                         self.grip_pending = Some(pending);
                         return self.focus_cmd_input();
                     };
-                    let interactive_lengthen = self.tabs[i]
+                    let interactive_value_grip = self.tabs[i]
                         .active_grip
                         .as_ref()
                         .is_some_and(|grip| {
-                            grip.mode == GripEditMode::Lengthen
+                            matches!(
+                                (grip.mode, pending.action),
+                                (
+                                    GripEditMode::Lengthen,
+                                    crate::scene::model::object::GripMenuAction::Lengthen,
+                                ) | (
+                                    GripEditMode::Radius,
+                                    crate::scene::model::object::GripMenuAction::Radius,
+                                ) | (
+                                    GripEditMode::ArcLength,
+                                    crate::scene::model::object::GripMenuAction::ArcLength,
+                                ) | (
+                                    GripEditMode::RectangleWidth,
+                                    crate::scene::model::object::GripMenuAction::RectangleWidth,
+                                ) | (
+                                    GripEditMode::RectangleHeight,
+                                    crate::scene::model::object::GripMenuAction::RectangleHeight,
+                                ) | (
+                                    GripEditMode::MoveParallel,
+                                    crate::scene::model::object::GripMenuAction::MoveParallel,
+                                )
+                            )
                                 && grip.handle == pending.handle
                                 && grip.grip_id == pending.grip_id
                         });
-                    if interactive_lengthen {
+                    if interactive_value_grip {
                         self.cancel_active_grip_edit();
                     }
                     use crate::entities::traits::EntityTypeOps;
@@ -335,13 +419,37 @@ pub(super) fn on_tab_close(&mut self, idx: usize) -> Task<Message> {
                     let i = self.active_tab;
 
                     if let Some(grip) = self.tabs[i].active_grip.clone() {
-                        if grip.mode == GripEditMode::Stretch {
+                        if matches!(grip.mode, GripEditMode::Stretch | GripEditMode::RectangleResize) {
                             let dyn_locked = self.tabs[i]
                                 .dyn_fields
                                 .iter()
                                 .any(|field| field.buffer.is_some());
 
-                            let target = if dyn_locked {
+                            let target = if matches!(grip.mode, GripEditMode::RectangleResize) {
+                                grip.rectangle_frame.map(|(opposite, width_axis, height_axis)| {
+                                    let cursor_delta = self.tabs[i].last_cursor_world - opposite;
+                                    let mut width = cursor_delta.dot(width_axis);
+                                    let mut height = cursor_delta.dot(height_axis);
+                                    for field in &self.tabs[i].dyn_fields {
+                                        let value = field
+                                            .buffer
+                                            .as_ref()
+                                            .and_then(|buffer| crate::app::expr_eval::eval_number(buffer));
+                                        if let Some(value) = value {
+                                            match field.role {
+                                                crate::command::DynRole::Width => {
+                                                    width = value.abs().copysign(width);
+                                                }
+                                                crate::command::DynRole::Height => {
+                                                    height = value.abs().copysign(height);
+                                                }
+                                                _ => {}
+                                            }
+                                        }
+                                    }
+                                    opposite + width_axis * width + height_axis * height
+                                })
+                            } else if dyn_locked {
                                 // Distance only:
                                 //   keep the cursor's current direction.
                                 //
@@ -418,10 +526,32 @@ pub(super) fn on_tab_close(&mut self, idx: usize) -> Task<Message> {
                                 }
                                 let delta = target - grip.last_world;
 
-                                let actions: Vec<_> = grip
-                                    .targets
-                                    .iter()
-                                    .map(|target_grip| {
+                                let actions: Vec<_> = if let Some((opposite, width_axis, height_axis)) = grip.rectangle_frame {
+                                    let opposite_id = (grip.grip_id + 2) % 4;
+                                    let mut edits = Vec::with_capacity(3);
+                                    for adjacent_id in [(opposite_id + 1) % 4, (opposite_id + 3) % 4] {
+                                        if let Some(original) = self.tabs[i]
+                                            .selected_grip_handles
+                                            .iter()
+                                            .zip(self.tabs[i].selected_grips.iter())
+                                            .find(|(owner, candidate)| **owner == grip.handle && candidate.id == adjacent_id)
+                                            .map(|(_, candidate)| candidate.world)
+                                        {
+                                            let d = original - opposite;
+                                            let axis = if d.dot(width_axis).abs() >= d.dot(height_axis).abs() {
+                                                width_axis
+                                            } else {
+                                                height_axis
+                                            };
+                                            edits.push((grip.handle, adjacent_id, GripApply::Absolute(
+                                                opposite + axis * (target - opposite).dot(axis),
+                                            )));
+                                        }
+                                    }
+                                    edits.push((grip.handle, grip.grip_id, GripApply::Absolute(target)));
+                                    edits
+                                } else {
+                                    grip.targets.iter().map(|target_grip| {
                                         let apply = if target_grip.is_translate {
                                             GripApply::Translate(delta)
                                         } else {
@@ -435,14 +565,15 @@ pub(super) fn on_tab_close(&mut self, idx: usize) -> Task<Message> {
                                             target_grip.grip_id,
                                             apply,
                                         )
-                                    })
-                                    .collect();
+                                    }).collect()
+                                };
 
                                 for (handle, grip_id, apply) in actions {
                                     self.tabs[i]
                                         .scene
                                         .apply_grip(handle, grip_id, apply);
                                 }
+                                self.solve_grip_constraints(i, &grip);
 
                                 // Keep GripEdit synchronized so the normal commit
                                 // path records the exact final position.
@@ -566,6 +697,30 @@ pub(super) fn on_tab_close(&mut self, idx: usize) -> Task<Message> {
                         .map(|c| c.is_free_text_step())
                         .unwrap_or(false);
                     let raw = self.command_line.input.trim().to_string();
+                    let is_mtp = raw.trim_start_matches('_').eq_ignore_ascii_case("MTP")
+                        || raw.trim_start_matches('_').eq_ignore_ascii_case("M2P");
+                    if is_mtp {
+                        let is_point_step = !self.tabs[i]
+                            .active_cmd
+                            .as_ref()
+                            .map(|c| c.input_kind().wants_text())
+                            .unwrap_or(true)
+                            || self.tabs[i]
+                                .active_cmd
+                                .as_ref()
+                                .map(|c| c.point_step_accepts_keywords())
+                                .unwrap_or(false);
+                        let not_entity_pick = !self.tabs[i]
+                            .active_cmd
+                            .as_ref()
+                            .map(|c| c.needs_entity_pick())
+                            .unwrap_or(false);
+                        if is_point_step && not_entity_pick {
+                            self.command_line.input.clear();
+                            self.start_mtp_modifier(i);
+                            return self.focus_cmd_input();
+                        }
+                    }
                     let text = if free_text {
                         raw
                     } else {
@@ -819,6 +974,9 @@ pub(super) fn on_tab_close(&mut self, idx: usize) -> Task<Message> {
     }
 
     pub(super) fn on_command_escape(&mut self) -> Task<Message> {
+        if self.ribbon.escape_extension() {
+            return Task::none();
+        }
                 if self.aec.aec_layer_pair_draw.is_some() {
                     self.cancel_layer_pair_draw_pick();
                     return Task::none();
