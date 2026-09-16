@@ -50,6 +50,9 @@ pub struct ProjectFile {
     /// for the same old-format-compatibility reason as above.
     #[serde(default)]
     pub display_config_library: DisplayConfigLibrary,
+    /// Absolute height of finished floor level 0 / EG above NN (metres). Optional.
+    #[serde(default)]
+    pub ffl0_nn_m: Option<f64>,
 }
 
 /// One building containing ordered storey references.
@@ -150,7 +153,7 @@ impl StoreyRef {
                 self.ceiling_plane_id = self.control_planes[1].id;
             } else {
                 let extra = ControlPlane::horizontal(
-                    format!("{}_UKRD", self.name),
+                    format!("{}_OKGH", self.name),
                     self.elevation + self.height.max(0.01),
                 );
                 self.ceiling_plane_id = extra.id;
@@ -176,22 +179,68 @@ impl StoreyRef {
     }
 
     pub fn derived_height(&self) -> f64 {
-        let elev = self.derived_elevation();
-        let top = self
-            .plane(self.ceiling_plane_id)
-            .and_then(|p| intersect_vertical_at_xy(p.origin[0], p.origin[1], p).map(|h| h[2]))
-            .or_else(|| self.plane(self.ceiling_plane_id).map(|p| p.origin[2]))
-            .unwrap_or(elev + self.height);
-        (top - elev).abs().max(0.01)
+        self.height.max(0.01)
     }
 
     pub fn sync_derived_elevation_height(&mut self) {
         self.elevation = self.derived_elevation();
-        self.height = self.derived_height();
+    }
+
+    /// Main plane Z becomes `z`; other planes keep their ΔZ relative to it.
+    /// Storey height is unchanged and does not move any plane.
+    pub fn set_elevation(&mut self, z: f64) {
+        let dz = z - self.derived_elevation();
+        if dz.abs() < 1e-12 {
+            return;
+        }
+        for plane in &mut self.control_planes {
+            plane.origin[2] += dz;
+        }
+        self.sync_derived_elevation_height();
+    }
+
+    /// Storey height is a numeric property only; control planes are not moved.
+    /// `height <= 0` is a no-op.
+    pub fn set_height(&mut self, height: f64) {
+        if !(height > 0.0) {
+            return;
+        }
+        self.height = height;
     }
 
     pub fn add_control_plane(&mut self, plane: ControlPlane) {
         self.control_planes.push(plane);
+    }
+
+    /// World-Z of one plane's origin; floor/OKGH caches follow if that plane is a role.
+    /// Moving the floor plane is [`set_elevation`] so relative offsets of other planes stay.
+    pub fn set_plane_origin_z(&mut self, id: Uuid, z: f64) -> bool {
+        if id == self.floor_plane_id {
+            self.set_elevation(z);
+            return self.plane(id).is_some();
+        }
+        if let Some(p) = self.plane_mut(id) {
+            p.origin[2] = z;
+            self.sync_derived_elevation_height();
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Vertical offset of `id` relative to the main (floor) control plane.
+    pub fn plane_z_relative_to_floor(&self, id: Uuid) -> Option<f64> {
+        let floor_z = self.derived_elevation();
+        self.plane(id).map(|p| p.origin[2] - floor_z)
+    }
+
+    /// Set a non-floor plane by ΔZ from the main control plane. Floor is a no-op.
+    pub fn set_plane_z_relative_to_floor(&mut self, id: Uuid, rel: f64) -> bool {
+        if id == self.floor_plane_id {
+            return false;
+        }
+        let floor_z = self.derived_elevation();
+        self.set_plane_origin_z(id, floor_z + rel)
     }
 }
 
@@ -199,6 +248,14 @@ impl ProjectFile {
     /// Finds the index of the building with the given `id`, if present.
     pub fn building_index(&self, id: Uuid) -> Option<usize> {
         self.buildings.iter().position(|b| b.id == id)
+    }
+
+    /// Control plane by id in any building/storey.
+    pub fn control_plane(&self, id: Uuid) -> Option<&ControlPlane> {
+        self.buildings
+            .iter()
+            .flat_map(|b| b.storeys.iter())
+            .find_map(|s| s.plane(id))
     }
 
     /// Load a project from `path`. A missing file yields `Ok(ProjectFile::default())`
@@ -376,6 +433,7 @@ mod tests {
             buildings: vec![Building::new("Building A")],
             material_wall_style_library: seeded_style_library(),
             display_config_library: seeded_display_config_library(),
+            ..ProjectFile::default()
         };
         let path = temp_path("roundtrip_with_libraries");
         project.save(&path).expect("save");
@@ -589,6 +647,97 @@ mod tests {
         assert!(storey.plane(storey.ceiling_plane_id).is_some());
         assert!((storey.derived_elevation() - 1.5).abs() < 1e-9);
         assert!((storey.derived_height() - 3.0).abs() < 1e-9);
+        let _ = fs::remove_file(&path);
+    }
+
+    #[test]
+    fn set_elevation_translates_all_planes_and_keeps_height() {
+        let mut s = StoreyRef::new_with_height("EG", 0.0, 3.0, "eg.dwg");
+        s.add_control_plane(ControlPlane::horizontal("extra", 1.5));
+        s.set_elevation(3.0);
+        assert!((s.derived_elevation() - 3.0).abs() < 1e-9);
+        assert!((s.derived_height() - 3.0).abs() < 1e-9);
+        let top = s.plane(s.ceiling_plane_id).unwrap();
+        assert!((top.origin[2] - 6.0).abs() < 1e-9);
+        let extra = s.control_planes.iter().find(|p| p.name == "extra").unwrap();
+        assert!((extra.origin[2] - 4.5).abs() < 1e-9);
+    }
+
+    #[test]
+    fn set_height_does_not_move_planes() {
+        let mut s = StoreyRef::new_with_height("EG", 1.0, 3.0, "eg.dwg");
+        let extra = ControlPlane::horizontal("UKRD", 2.8);
+        let extra_id = extra.id;
+        s.add_control_plane(extra);
+        let top_z = s.plane(s.ceiling_plane_id).unwrap().origin[2];
+        s.set_height(4.0);
+        assert!((s.derived_elevation() - 1.0).abs() < 1e-9);
+        assert!((s.derived_height() - 4.0).abs() < 1e-9);
+        assert!((s.plane(s.ceiling_plane_id).unwrap().origin[2] - top_z).abs() < 1e-9);
+        assert!((s.plane(extra_id).unwrap().origin[2] - 2.8).abs() < 1e-9);
+    }
+
+    #[test]
+    fn set_height_non_positive_is_noop() {
+        let mut s = StoreyRef::new_with_height("EG", 0.0, 3.0, "eg.dwg");
+        s.set_height(0.0);
+        s.set_height(-1.0);
+        assert!((s.derived_height() - 3.0).abs() < 1e-9);
+        assert!((s.plane(s.ceiling_plane_id).unwrap().origin[2] - 3.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn default_top_plane_is_okgh_not_ukrd() {
+        let s = StoreyRef::new("EG", 0.0, "eg.dwg");
+        let top = s.plane(s.ceiling_plane_id).unwrap();
+        assert!(top.name.ends_with("_OKGH"));
+        assert!(!top.name.contains("UKRD"));
+    }
+
+    #[test]
+    fn set_plane_origin_z_does_not_move_other_planes() {
+        let mut s = StoreyRef::new_with_height("EG", 0.0, 3.0, "eg.dwg");
+        let extra = ControlPlane::horizontal("UKRD", 2.8);
+        let id = extra.id;
+        s.add_control_plane(extra);
+        assert!(s.set_plane_origin_z(id, 2.65));
+        assert!((s.plane(id).unwrap().origin[2] - 2.65).abs() < 1e-9);
+        assert!((s.derived_elevation() - 0.0).abs() < 1e-9);
+        assert!((s.derived_height() - 3.0).abs() < 1e-9);
+        assert!((s.plane(s.ceiling_plane_id).unwrap().origin[2] - 3.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn floor_origin_z_translates_other_planes() {
+        let mut s = StoreyRef::new_with_height("EG", 0.0, 3.0, "eg.dwg");
+        let extra = ControlPlane::horizontal("UKRD", 2.8);
+        let id = extra.id;
+        s.add_control_plane(extra);
+        assert!(s.set_plane_origin_z(s.floor_plane_id, 1.0));
+        assert!((s.derived_elevation() - 1.0).abs() < 1e-9);
+        assert!((s.plane(id).unwrap().origin[2] - 3.8).abs() < 1e-9);
+        assert!((s.plane_z_relative_to_floor(id).unwrap() - 2.8).abs() < 1e-9);
+    }
+
+    #[test]
+    fn relative_z_is_from_floor() {
+        let mut s = StoreyRef::new_with_height("EG", 1.0, 3.0, "eg.dwg");
+        let ceil = s.ceiling_plane_id;
+        assert!((s.plane_z_relative_to_floor(ceil).unwrap() - 3.0).abs() < 1e-9);
+        assert!(s.set_plane_z_relative_to_floor(ceil, 2.7));
+        assert!((s.plane(ceil).unwrap().origin[2] - 3.7).abs() < 1e-9);
+        assert!(!s.set_plane_z_relative_to_floor(s.floor_plane_id, 5.0));
+        assert!((s.derived_elevation() - 1.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn ffl0_nn_round_trips() {
+        let mut project = ProjectFile::default();
+        project.ffl0_nn_m = Some(112.4);
+        let path = temp_path("ffl0_nn");
+        project.save(&path).expect("save");
+        let loaded = ProjectFile::load(&path).expect("load");
+        assert_eq!(loaded.ffl0_nn_m, Some(112.4));
         let _ = fs::remove_file(&path);
     }
 }

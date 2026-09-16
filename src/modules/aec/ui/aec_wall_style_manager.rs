@@ -7,7 +7,7 @@ use iced::widget::{
 };
 use iced::{Background, Border, Element, Fill, Theme};
 
-use crate::app::Message;
+use crate::app::{AecMessage, Message};
 use crate::modules::aec::engine::display_component::WallComponentSlot;
 use crate::modules::aec::engine::join::LayerRef;
 use crate::modules::aec::engine::library::{LibrarySource, StyleLibrary};
@@ -103,7 +103,7 @@ pub fn view_display_profiles_window<'a>(
             Space::new(),
             button(text(t!("Schließen")).size(11))
                 .padding([5, 12])
-                .on_press(Message::AecWallStyleManagerDisplayProfilesClose),
+                .on_press(Message::Aec(AecMessage::AecWallStyleManagerDisplayProfilesClose)),
         ]
         .spacing(8),
     ]
@@ -188,11 +188,11 @@ pub fn view_window<'a>(
     let sidebar = column![
         row![
             text_input(t!("Search wall styles…").as_ref(), filter)
-                .on_input(Message::AecStyleManagerFilter)
+                .on_input(|v| Message::Aec(AecMessage::AecStyleManagerFilter(v)))
                 .size(11)
                 .padding([4, 6]),
             button(text("+").size(11))
-                .on_press(Message::AecStyleManagerWallStyleNew)
+                .on_press(Message::Aec(AecMessage::AecStyleManagerWallStyleNew))
                 .padding([4, 8]),
         ]
         .spacing(4),
@@ -277,9 +277,9 @@ fn wall_style_tree_row<'a>(
             .spacing(2),
         ),
     )
-    .on_press(Message::AecStyleManagerSelectWallStyle(
+    .on_press(Message::Aec(AecMessage::AecStyleManagerSelectWallStyle(
         wall_style.style.id.clone(),
-    ))
+    )))
     .style(list_style(selected))
     .padding([6, 9])
     .width(Fill)
@@ -327,7 +327,7 @@ fn wall_style_form_view<'a>(
         row![
             text(t!("Name")).size(10).style(muted).width(100),
             text_input("", wall_style_form.name)
-                .on_input(Message::AecStyleManagerWallStyleNameChanged)
+                .on_input(|v| Message::Aec(AecMessage::AecStyleManagerWallStyleNameChanged(v)))
                 .size(11)
                 .padding([4, 6]),
         ]
@@ -342,9 +342,9 @@ fn wall_style_form_view<'a>(
                 ]
                 .align_y(iced::Center),
             )
-            .on_press(Message::AecStylePickerOpen(
+            .on_press(Message::Aec(AecMessage::AecStylePickerOpen(
                 crate::app::StylePickerTarget::WallStyleParent
-            ))
+            )))
             .style(button::subtle)
             .padding([4, 6])
             .width(Fill),
@@ -382,7 +382,7 @@ fn wall_style_form_view<'a>(
             text(t!("Layers")).size(10).style(muted),
             Space::new(),
             button(text(t!("Add Layer")).size(10))
-                .on_press(Message::AecStyleManagerWallStyleLayerAdd)
+                .on_press(Message::Aec(AecMessage::AecStyleManagerWallStyleLayerAdd))
                 .padding([2, 8]),
         ]
         .spacing(8)
@@ -472,7 +472,7 @@ fn wall_style_form_view<'a>(
             button(text(t!("Plan-Manager öffnen…")).size(11))
                 .style(button::secondary)
                 .padding([5, 12])
-                .on_press(Message::AecPlanManagerOpen),
+                .on_press(Message::Aec(AecMessage::AecPlanManagerOpen)),
         );
 
     let mut actions = row![
@@ -480,11 +480,11 @@ fn wall_style_form_view<'a>(
         button(text(t!("Save")).size(11))
             .style(button::subtle)
             .padding([5, 12])
-            .on_press(Message::AecStyleManagerWallStyleSave),
+            .on_press(Message::Aec(AecMessage::AecStyleManagerWallStyleSave)),
         button(text(t!("Save & Update Drawing")).size(11))
             .style(button::primary)
             .padding([5, 12])
-            .on_press(Message::AecStyleManagerWallStyleSaveAndApply),
+            .on_press(Message::Aec(AecMessage::AecStyleManagerWallStyleSaveAndApply)),
     ]
     .spacing(8);
 
@@ -493,14 +493,14 @@ fn wall_style_form_view<'a>(
             button(text(t!("Delete")).size(11))
                 .style(button::danger)
                 .padding([5, 12])
-                .on_press(Message::AecStyleManagerWallStyleDelete),
+                .on_press(Message::Aec(AecMessage::AecStyleManagerWallStyleDelete)),
         );
         // → Standard: only pure project entries without a global counterpart.
         if selected_source == Some(LibrarySource::Project) && !has_standard_counterpart {
             actions = actions.push(
                 button(text(t!("→ Standard")).size(11))
                     .padding([5, 12])
-                    .on_press(Message::AecStyleManagerCopyWallStyleToGlobal),
+                    .on_press(Message::Aec(AecMessage::AecStyleManagerCopyWallStyleToGlobal)),
             );
         }
         // → Projekt: only Standard entries (copy into the project library).
@@ -508,7 +508,7 @@ fn wall_style_form_view<'a>(
             actions = actions.push(
                 button(text(t!("→ Projekt")).size(11))
                     .padding([5, 12])
-                    .on_press(Message::AecStyleManagerCopyWallStyleToProject),
+                    .on_press(Message::Aec(AecMessage::AecStyleManagerCopyWallStyleToProject)),
             );
         }
     }
@@ -554,11 +554,11 @@ fn layer_row<'a>(
 
     let mut up_button = button(text("▲").size(10)).padding([2, 5]);
     if index > 0 {
-        up_button = up_button.on_press(Message::AecStyleManagerWallStyleLayerMoveUp(index));
+        up_button = up_button.on_press(Message::Aec(AecMessage::AecStyleManagerWallStyleLayerMoveUp(index)));
     }
     let mut down_button = button(text("▼").size(10)).padding([2, 5]);
     if index + 1 < layer_count {
-        down_button = down_button.on_press(Message::AecStyleManagerWallStyleLayerMoveDown(index));
+        down_button = down_button.on_press(Message::Aec(AecMessage::AecStyleManagerWallStyleLayerMoveDown(index)));
     }
 
     let armed = drag_index == Some(index);
@@ -567,11 +567,11 @@ fn layer_row<'a>(
             .style(if armed { button::primary } else { button::subtle })
             .padding([2, 6])
             .on_press(if armed {
-                Message::AecStyleManagerWallStyleLayerDragEnd
+                Message::Aec(AecMessage::AecStyleManagerWallStyleLayerDragEnd)
             } else if drag_index.is_some() {
-                Message::AecStyleManagerWallStyleLayerDragOver(index)
+                Message::Aec(AecMessage::AecStyleManagerWallStyleLayerDragOver(index))
             } else {
-                Message::AecStyleManagerWallStyleLayerDragStart(index)
+                Message::Aec(AecMessage::AecStyleManagerWallStyleLayerDragStart(index))
             }),
     )
     .interaction(iced::mouse::Interaction::Grab);
@@ -606,7 +606,7 @@ fn layer_row<'a>(
                     .find(|(_, n)| n == &name)
                     .map(|(id, _)| id.clone())
                     .unwrap_or_default();
-                Message::AecStyleManagerWallStyleLayerMaterialChanged(index, id)
+                Message::Aec(AecMessage::AecStyleManagerWallStyleLayerMaterialChanged(index, id))
             })
             .text_size(11)
             .width(LAYER_COL_MATERIAL_W)
@@ -628,7 +628,7 @@ fn layer_row<'a>(
             };
             let input = text_input("", &buffer.thickness)
                 .on_input(move |v| {
-                    Message::AecStyleManagerWallStyleLayerThicknessChanged(index, v)
+                    Message::Aec(AecMessage::AecStyleManagerWallStyleLayerThicknessChanged(index, v))
                 })
                 .size(11)
                 .width(LAYER_COL_THICKNESS_W);
@@ -639,21 +639,21 @@ fn layer_row<'a>(
             }
         },
         text_input(tr!("aec", "placeholder-axis-offset").as_str(), &buffer.axis_offset)
-            .on_input(move |v| Message::AecStyleManagerWallStyleLayerAxisOffsetChanged(index, v))
+            .on_input(move |v| Message::Aec(AecMessage::AecStyleManagerWallStyleLayerAxisOffsetChanged(index, v)))
             .size(11)
             .width(LAYER_COL_GAP_W),
         text_input(tr!("aec", "placeholder-bottom-cm").as_str(), &buffer.bottom_offset)
-            .on_input(move |v| Message::AecStyleManagerWallStyleLayerBottomOffsetChanged(index, v))
+            .on_input(move |v| Message::Aec(AecMessage::AecStyleManagerWallStyleLayerBottomOffsetChanged(index, v)))
             .size(11)
             .width(LAYER_COL_OFFSET_W),
         text_input(tr!("aec", "placeholder-top-cm").as_str(), &buffer.top_offset)
-            .on_input(move |v| Message::AecStyleManagerWallStyleLayerTopOffsetChanged(index, v))
+            .on_input(move |v| Message::Aec(AecMessage::AecStyleManagerWallStyleLayerTopOffsetChanged(index, v)))
             .size(11)
             .width(LAYER_COL_OFFSET_W),
         pick_list(Some(buffer.function.clone()), functions, |func: &String| {
             func.clone()
         })
-        .on_select(move |func| Message::AecStyleManagerWallStyleLayerFunctionChanged(index, func))
+        .on_select(move |func| Message::Aec(AecMessage::AecStyleManagerWallStyleLayerFunctionChanged(index, func)))
         .text_size(11)
         .width(LAYER_COL_FUNCTION_W),
         {
@@ -670,24 +670,24 @@ fn layer_row<'a>(
                 ]
                 .align_y(iced::Center),
             )
-            .on_press(Message::AecStylePickerOpen(
+            .on_press(Message::Aec(AecMessage::AecStylePickerOpen(
                 crate::app::StylePickerTarget::LayerOverride(index),
-            ))
+            )))
             .style(button::subtle)
             .padding([4, 6])
             .width(LAYER_COL_OVERRIDE_W)
         },
         text_input(tr!("aec", "placeholder-role").as_str(), &buffer.role_tag)
-            .on_input(move |v| Message::AecStyleManagerWallStyleLayerRoleTagChanged(index, v))
+            .on_input(move |v| Message::Aec(AecMessage::AecStyleManagerWallStyleLayerRoleTagChanged(index, v)))
             .size(11)
             .width(LAYER_COL_ROLE_W),
         text_input(tr!("aec", "placeholder-hatch").as_str(), &buffer.hatch_override)
-            .on_input(move |v| Message::AecStyleManagerWallStyleLayerHatchOverrideChanged(index, v))
+            .on_input(move |v| Message::Aec(AecMessage::AecStyleManagerWallStyleLayerHatchOverrideChanged(index, v)))
             .size(11)
             .width(LAYER_COL_HATCH_W),
         button(text("✕").size(10))
             .style(button::danger)
-            .on_press(Message::AecStyleManagerWallStyleLayerRemove(index))
+            .on_press(Message::Aec(AecMessage::AecStyleManagerWallStyleLayerRemove(index)))
             .padding([4, 8]),
     ]
     .spacing(8)
@@ -770,7 +770,7 @@ fn component_slot_table_view<'a>(
                 row![
                     iced::widget::checkbox(visible)
                         .on_toggle(move |v| {
-                            Message::AecStyleManagerProfileSlotVisibilityToggle(slot, v)
+                            Message::Aec(AecMessage::AecStyleManagerProfileSlotVisibilityToggle(slot, v))
                         })
                         .size(13),
                     text(label).size(11).width(220),
@@ -778,7 +778,7 @@ fn component_slot_table_view<'a>(
                     button(text(badge_label).size(9))
                         .style(badge_style)
                         .padding([2, 6])
-                        .on_press(Message::AecStyleManagerProfileSlotStyleOpen(slot)),
+                        .on_press(Message::Aec(AecMessage::AecStyleManagerProfileSlotStyleOpen(slot))),
                 ]
                 .spacing(8)
                 .align_y(iced::Center),
@@ -832,7 +832,7 @@ pub fn display_profiles_section<'a>(
                 .spacing(4)
                 .align_y(iced::Center),
             )
-            .on_press(Message::AecStyleManagerProfileSelect(name_owned))
+            .on_press(Message::Aec(AecMessage::AecStyleManagerProfileSelect(name_owned)))
             .style(list_style(is_selected))
             .padding([5, 8])
             .width(Fill),
@@ -851,17 +851,17 @@ pub fn display_profiles_section<'a>(
             section = section.push(super::aec_ui_util::style_editor_form(
                 format!("{} — {}", t!("Stil-Override"), slot_label(slot)),
                 profiles.slot_style_editor,
-                Message::AecStyleManagerProfileSlotStyleLineTypeChanged,
-                Message::AecStyleManagerProfileSlotStyleLineColorChanged,
-                Message::AecStyleManagerProfileSlotStyleLineColorPickerToggle,
+                |v| Message::Aec(AecMessage::AecStyleManagerProfileSlotStyleLineTypeChanged(v)),
+                |v| Message::Aec(AecMessage::AecStyleManagerProfileSlotStyleLineColorChanged(v)),
+                Message::Aec(AecMessage::AecStyleManagerProfileSlotStyleLineColorPickerToggle),
                 crate::app::ColorPickTarget::AecWallStyleSlotLineColor,
-                Message::AecStyleManagerProfileSlotStyleHatchPatternChanged,
-                Message::AecStyleManagerProfileSlotStyleHatchPickerToggle,
-                Message::AecStyleManagerProfileSlotStyleHatchColorChanged,
-                Message::AecStyleManagerProfileSlotStyleHatchColorPickerToggle,
+                |v| Message::Aec(AecMessage::AecStyleManagerProfileSlotStyleHatchPatternChanged(v)),
+                Message::Aec(AecMessage::AecStyleManagerProfileSlotStyleHatchPickerToggle),
+                |v| Message::Aec(AecMessage::AecStyleManagerProfileSlotStyleHatchColorChanged(v)),
+                Message::Aec(AecMessage::AecStyleManagerProfileSlotStyleHatchColorPickerToggle),
                 crate::app::ColorPickTarget::AecWallStyleSlotHatchColor,
-                Message::AecStyleManagerProfileSlotStyleFillColorChanged,
-                Message::AecStyleManagerProfileSlotStyleFillColorPickerToggle,
+                |v| Message::Aec(AecMessage::AecStyleManagerProfileSlotStyleFillColorChanged(v)),
+                Message::Aec(AecMessage::AecStyleManagerProfileSlotStyleFillColorPickerToggle),
                 crate::app::ColorPickTarget::AecWallStyleSlotFillColor,
             ));
             section = section.push(
@@ -870,14 +870,14 @@ pub fn display_profiles_section<'a>(
                     button(text(t!("Übernehmen")).size(11))
                         .style(button::primary)
                         .padding([4, 10])
-                        .on_press(Message::AecStyleManagerProfileSlotStyleApply),
+                        .on_press(Message::Aec(AecMessage::AecStyleManagerProfileSlotStyleApply)),
                     button(text(t!("Entfernen")).size(11))
                         .style(button::danger)
                         .padding([4, 10])
-                        .on_press(Message::AecStyleManagerProfileSlotStyleClear),
+                        .on_press(Message::Aec(AecMessage::AecStyleManagerProfileSlotStyleClear)),
                     button(text(t!("Schließen")).size(11))
                         .padding([4, 10])
-                        .on_press(Message::AecStyleManagerProfileSlotStyleClose),
+                        .on_press(Message::Aec(AecMessage::AecStyleManagerProfileSlotStyleClose)),
                 ]
                 .spacing(8),
             );
@@ -889,29 +889,29 @@ pub fn display_profiles_section<'a>(
             layers,
             profiles.contour_explicit,
             profiles.contour_selected,
-            Message::AecStyleManagerProfileContourModeToggle,
-            Message::AecStyleManagerProfileContourLayerToggle,
+            |v| Message::Aec(AecMessage::AecStyleManagerProfileContourModeToggle(v)),
+            |v| Message::Aec(AecMessage::AecStyleManagerProfileContourLayerToggle(v)),
         ));
         section = section.push(layer_filter_slot_view(
             t!("Schichten für 3D-Gesamtkörper (Solid3D)").into_owned(),
             layers,
             profiles.solid_explicit,
             profiles.solid_selected,
-            Message::AecStyleManagerProfileSolidModeToggle,
-            Message::AecStyleManagerProfileSolidLayerToggle,
+            |v| Message::Aec(AecMessage::AecStyleManagerProfileSolidModeToggle(v)),
+            |v| Message::Aec(AecMessage::AecStyleManagerProfileSolidLayerToggle(v)),
         ));
 
         section = section.push(
             row![
                 text(t!("Hatch-Winkel")).size(10).style(muted).width(100),
                 text_input(tr!("aec", "placeholder-hatch-angle").as_str(), profiles.hatch_angle)
-                    .on_input(Message::AecStyleManagerProfileHatchAngleChanged)
+                    .on_input(|v| Message::Aec(AecMessage::AecStyleManagerProfileHatchAngleChanged(v)))
                     .size(11)
                     .padding([4, 6])
                     .width(80),
                 iced::widget::checkbox(profiles.hatch_relative)
                     .label(t!("Relativ zur Wand").into_owned())
-                    .on_toggle(Message::AecStyleManagerProfileHatchRelativeToggle)
+                    .on_toggle(|v| Message::Aec(AecMessage::AecStyleManagerProfileHatchRelativeToggle(v)))
                     .size(13)
                     .text_size(11),
             ]
@@ -925,11 +925,11 @@ pub fn display_profiles_section<'a>(
                 button(text(t!("Entfernen")).size(11))
                     .style(button::danger)
                     .padding([4, 10])
-                    .on_press(Message::AecStyleManagerProfileRemove),
+                    .on_press(Message::Aec(AecMessage::AecStyleManagerProfileRemove)),
                 button(text(t!("Profil speichern")).size(11))
                     .style(button::primary)
                     .padding([4, 10])
-                    .on_press(Message::AecStyleManagerProfileSave),
+                    .on_press(Message::Aec(AecMessage::AecStyleManagerProfileSave)),
             ]
             .spacing(8),
         );

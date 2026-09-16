@@ -21,7 +21,7 @@ pub const LAYOUT_TABS_SCROLL_ID: &str = "statusbar-layout-tabs";
 /// keyboard focus the moment it opens (issue #86).
 pub const LAYOUT_RENAME_INPUT_ID: &str = "layout_rename_input";
 
-use crate::app::Message;
+use crate::app::{AecMessage, Message};
 use crate::snap::Snapper;
 use crate::ui::statusbar::statusbar_config::{StatusBarConfig, StatusPill};
 use crate::ui::statusbar::status_menu::Entry as StatusMenuEntry;
@@ -257,7 +257,7 @@ impl StatusBar {
             status_pill(project_label),
             t!("Active AEC project\nRight-click opens the Project Explorer"),
         ))
-        .on_right_press(Message::AecProjectExplorerOpen)
+        .on_right_press(Message::Aec(AecMessage::AecProjectExplorerOpen))
         .into();
         // Plan (AEC DisplayConfig) pill: opens the DisplayConfig picker popup,
         // right-click opens the full Plan Manager. Mirrors the scale pill above.
@@ -279,7 +279,7 @@ impl StatusBar {
                 150.0,
             ),
         )
-        .on_right_press(Message::AecPlanManagerOpen)
+        .on_right_press(Message::Aec(AecMessage::AecPlanManagerOpen))
         .into();
         let mode_short = match representation_mode {
             crate::modules::aec::engine::display_component::RepresentationMode::TwoD => "2D",

@@ -18,7 +18,7 @@ use iced::widget::{button, column, container, pick_list, row, scrollable, text, 
 use iced::{Element, Fill};
 use uuid::Uuid;
 
-use crate::app::Message;
+use crate::app::{AecMessage, Message};
 use crate::modules::aec::engine::display_component::{
     ComponentStyleOverride, RepresentationMode, StyleDisplayOverlay, WallComponentKind,
 };
@@ -158,11 +158,11 @@ pub fn view_window<'a>(
     let sidebar = column![
         row![
             text_input(t!("Search configs…").as_ref(), filter)
-                .on_input(Message::AecPlanManagerFilter)
+                .on_input(|v| Message::Aec(AecMessage::AecPlanManagerFilter(v)))
                 .size(11)
                 .padding([4, 6]),
             button(text("+").size(11))
-                .on_press(Message::AecPlanManagerNew)
+                .on_press(Message::Aec(AecMessage::AecPlanManagerNew))
                 .padding([4, 8]),
         ]
         .spacing(4),
@@ -206,7 +206,7 @@ fn config_row<'a>(config: &'a DisplayConfig, selected: bool) -> Element<'a, Mess
         ]
         .spacing(2),
     )
-    .on_press(Message::AecPlanManagerSelect(config.name.clone()))
+    .on_press(Message::Aec(AecMessage::AecPlanManagerSelect(config.name.clone())))
     .style(list_style(selected))
     .padding([6, 9])
     .width(Fill)
@@ -223,26 +223,26 @@ fn config_form_view<'a>(form: PlanConfigFormState<'a>) -> Element<'a, Message> {
     let mut actions = row![button(text(t!("Übernehmen")).size(11))
         .style(button::primary)
         .padding([5, 12])
-        .on_press(Message::AecPlanManagerApply)]
+        .on_press(Message::Aec(AecMessage::AecPlanManagerApply))]
     .spacing(8);
 
     if !form.is_new {
         actions = actions.push(
             button(text(t!("Duplizieren")).size(11))
                 .padding([5, 12])
-                .on_press(Message::AecPlanManagerDuplicate),
+                .on_press(Message::Aec(AecMessage::AecPlanManagerDuplicate)),
         );
         actions = actions.push(
             button(text(t!("Löschen")).size(11))
                 .style(button::danger)
                 .padding([5, 12])
-                .on_press(Message::AecPlanManagerDelete),
+                .on_press(Message::Aec(AecMessage::AecPlanManagerDelete)),
         );
     }
     actions = actions.push(
         button(text(t!("Schließen")).size(11))
             .padding([5, 12])
-            .on_press(Message::AecPlanManagerClose),
+            .on_press(Message::Aec(AecMessage::AecPlanManagerClose)),
     );
 
     let phase_filter_section = phase_filter_section_view(
@@ -258,7 +258,7 @@ fn config_form_view<'a>(form: PlanConfigFormState<'a>) -> Element<'a, Message> {
         row![
             text(t!("Name")).size(10).style(muted).width(100),
             text_input("", form.name)
-                .on_input(Message::AecPlanManagerNameChanged)
+                .on_input(|v| Message::Aec(AecMessage::AecPlanManagerNameChanged(v)))
                 .size(11)
                 .padding([4, 6]),
         ]
@@ -266,7 +266,7 @@ fn config_form_view<'a>(form: PlanConfigFormState<'a>) -> Element<'a, Message> {
         row![
             text(t!("Disziplin")).size(10).style(muted).width(100),
             text_input("", form.discipline)
-                .on_input(Message::AecPlanManagerDisciplineChanged)
+                .on_input(|v| Message::Aec(AecMessage::AecPlanManagerDisciplineChanged(v)))
                 .size(11)
                 .padding([4, 6]),
         ]
@@ -274,7 +274,7 @@ fn config_form_view<'a>(form: PlanConfigFormState<'a>) -> Element<'a, Message> {
         row![
             text(t!("Maßstab (info)")).size(10).style(muted).width(100),
             text_input(tr!("aec", "scale-placeholder").as_str(), form.scale)
-                .on_input(Message::AecPlanManagerScaleChanged)
+                .on_input(|v| Message::Aec(AecMessage::AecPlanManagerScaleChanged(v)))
                 .size(11)
                 .padding([4, 6])
                 .width(120),
@@ -287,7 +287,7 @@ fn config_form_view<'a>(form: PlanConfigFormState<'a>) -> Element<'a, Message> {
                 &PLANNING_STAGES[..],
                 |stage: &PlanningStage| planning_stage_label(*stage),
             )
-            .on_select(Message::AecPlanManagerPlanningStageChanged)
+            .on_select(|v| Message::Aec(AecMessage::AecPlanManagerPlanningStageChanged(v)))
             .text_size(11)
             .width(160),
         ]
@@ -299,7 +299,7 @@ fn config_form_view<'a>(form: PlanConfigFormState<'a>) -> Element<'a, Message> {
                 &VIEW_TYPES[..],
                 |view_type: &ViewType| view_type_label(*view_type),
             )
-            .on_select(Message::AecPlanManagerViewTypeChanged)
+            .on_select(|v| Message::Aec(AecMessage::AecPlanManagerViewTypeChanged(v)))
             .text_size(11)
             .width(160),
         ]
@@ -451,7 +451,7 @@ fn global_display_section<'a>(
         kinds = kinds.push(
             iced::widget::checkbox(checked)
                 .label(kind_label(*kind))
-                .on_toggle(move |v| Message::AecPlanManagerComponentVisibleToggle(*kind, v))
+                .on_toggle(move |v| Message::Aec(AecMessage::AecPlanManagerComponentVisibleToggle(*kind, v)))
                 .size(13)
                 .text_size(11),
         );
@@ -466,7 +466,7 @@ fn global_display_section<'a>(
                     &REPRESENTATION_MODES[..],
                     |mode: &RepresentationMode| representation_label(*mode),
                 )
-                .on_select(Message::AecPlanManagerRepresentationChanged)
+                .on_select(|v| Message::Aec(AecMessage::AecPlanManagerRepresentationChanged(v)))
                 .text_size(11)
                 .width(120),
             ]
@@ -515,8 +515,8 @@ fn contour_hatch_section_view<'a>(form: &PlanConfigFormState<'a>) -> Element<'a,
                     form.contour_hatch_pattern,
                     form.contour_hatch_picker_open,
                     Some(tr!("aec", "inherit")),
-                    Message::AecPlanManagerContourHatchPickerToggle,
-                    Message::AecPlanManagerContourHatchPatternChanged,
+                    Message::Aec(AecMessage::AecPlanManagerContourHatchPickerToggle),
+                    |v| Message::Aec(AecMessage::AecPlanManagerContourHatchPatternChanged(v)),
                 ),
             ]
             .spacing(8),
@@ -524,14 +524,14 @@ fn contour_hatch_section_view<'a>(form: &PlanConfigFormState<'a>) -> Element<'a,
                 t!("Schraffurfarbe"),
                 form.contour_hatch_color,
                 form.contour_hatch_color_picker_open,
-                Message::AecPlanManagerContourHatchColorChanged,
-                Message::AecPlanManagerContourHatchColorPickerToggle,
+                |v| Message::Aec(AecMessage::AecPlanManagerContourHatchColorChanged(v)),
+                Message::Aec(AecMessage::AecPlanManagerContourHatchColorPickerToggle),
                 crate::app::ColorPickTarget::AecPlanContourHatchColor,
             ),
             row![
                 text(t!("Schraffur-Skalierung")).size(10).style(muted).width(110),
                 text_input(t!("leer = erben").as_ref(), form.contour_hatch_scale)
-                    .on_input(Message::AecPlanManagerContourHatchScaleChanged)
+                    .on_input(|v| Message::Aec(AecMessage::AecPlanManagerContourHatchScaleChanged(v)))
                     .size(11)
                     .padding([4, 6])
                     .width(120),
@@ -540,7 +540,7 @@ fn contour_hatch_section_view<'a>(form: &PlanConfigFormState<'a>) -> Element<'a,
             row![
                 text(t!("Schraffurwinkel")).size(10).style(muted).width(110),
                 text_input(t!("leer = erben").as_ref(), form.contour_hatch_angle)
-                    .on_input(Message::AecPlanManagerContourHatchAngleChanged)
+                    .on_input(|v| Message::Aec(AecMessage::AecPlanManagerContourHatchAngleChanged(v)))
                     .size(11)
                     .padding([4, 6])
                     .width(120),
@@ -554,9 +554,9 @@ fn contour_hatch_section_view<'a>(form: &PlanConfigFormState<'a>) -> Element<'a,
                     |choice: &HatchAngleRelChoice| hatch_angle_relative_label(hatch_angle_rel_value(*choice)),
                 )
                 .on_select(|choice| {
-                    Message::AecPlanManagerContourHatchAngleRelativeChanged(
+                    Message::Aec(AecMessage::AecPlanManagerContourHatchAngleRelativeChanged(
                         hatch_angle_rel_value(choice),
-                    )
+                    ))
                 })
                 .text_size(11)
                 .width(120),
@@ -587,7 +587,7 @@ fn overlay_section_view<'a>(form: &PlanConfigFormState<'a>) -> Element<'a, Messa
             let selected = form.overlay_style_id == Some(sid.as_str());
             exception_rows = exception_rows.push(
                 button(text(label).size(11))
-                    .on_press(Message::AecPlanManagerOverlayStyleSelect(sid))
+                    .on_press(Message::Aec(AecMessage::AecPlanManagerOverlayStyleSelect(sid)))
                     .style(list_style(selected))
                     .padding([4, 8])
                     .width(Fill),
@@ -605,7 +605,7 @@ fn overlay_section_view<'a>(form: &PlanConfigFormState<'a>) -> Element<'a, Messa
         add_row = add_row.push(
             button(text(name.clone()).size(10))
                 .padding([3, 8])
-                .on_press(Message::AecPlanManagerOverlayAddStyle(id.clone())),
+                .on_press(Message::Aec(AecMessage::AecPlanManagerOverlayAddStyle(id.clone()))),
         );
     }
     if !added_any {
@@ -641,7 +641,7 @@ fn overlay_section_view<'a>(form: &PlanConfigFormState<'a>) -> Element<'a, Messa
             };
             layer_col = layer_col.push(
                 button(text(shown).size(11))
-                    .on_press(Message::AecPlanManagerOverlayLayerSelect(lid))
+                    .on_press(Message::Aec(AecMessage::AecPlanManagerOverlayLayerSelect(lid)))
                     .style(list_style(selected))
                     .padding([4, 8])
                     .width(Fill),
@@ -663,7 +663,7 @@ fn overlay_section_view<'a>(form: &PlanConfigFormState<'a>) -> Element<'a, Messa
                 form.overlay_line_type,
                 form.overlay_linetype_items,
                 form.overlay_linetype_combo,
-                Message::AecPlanManagerOverlayLineTypeChanged,
+                |v| Message::Aec(AecMessage::AecPlanManagerOverlayLineTypeChanged(v)),
             ),
         ]
         .spacing(8),
@@ -671,8 +671,8 @@ fn overlay_section_view<'a>(form: &PlanConfigFormState<'a>) -> Element<'a, Messa
             t!("Linienfarbe"),
             form.overlay_line_color,
             form.overlay_line_color_picker_open,
-            Message::AecPlanManagerOverlayLineColorChanged,
-            Message::AecPlanManagerOverlayLineColorPickerToggle,
+            |v| Message::Aec(AecMessage::AecPlanManagerOverlayLineColorChanged(v)),
+            Message::Aec(AecMessage::AecPlanManagerOverlayLineColorPickerToggle),
             crate::app::ColorPickTarget::AecPlanOverlayLineColor,
         ),
         row![
@@ -681,8 +681,8 @@ fn overlay_section_view<'a>(form: &PlanConfigFormState<'a>) -> Element<'a, Messa
                 form.overlay_hatch_pattern,
                 form.overlay_hatch_picker_open,
                 Some(tr!("aec", "inherit")),
-                Message::AecPlanManagerOverlayHatchPickerToggle,
-                Message::AecPlanManagerOverlayHatchPatternChanged,
+                Message::Aec(AecMessage::AecPlanManagerOverlayHatchPickerToggle),
+                |v| Message::Aec(AecMessage::AecPlanManagerOverlayHatchPatternChanged(v)),
             ),
         ]
         .spacing(8),
@@ -690,14 +690,14 @@ fn overlay_section_view<'a>(form: &PlanConfigFormState<'a>) -> Element<'a, Messa
             t!("Schraffurfarbe"),
             form.overlay_hatch_color,
             form.overlay_hatch_color_picker_open,
-            Message::AecPlanManagerOverlayHatchColorChanged,
-            Message::AecPlanManagerOverlayHatchColorPickerToggle,
+            |v| Message::Aec(AecMessage::AecPlanManagerOverlayHatchColorChanged(v)),
+            Message::Aec(AecMessage::AecPlanManagerOverlayHatchColorPickerToggle),
             crate::app::ColorPickTarget::AecPlanOverlayHatchColor,
         ),
         row![
             text(t!("Schraffur-Skalierung")).size(10).style(muted).width(110),
             text_input(t!("leer = erben").as_ref(), form.overlay_hatch_scale)
-                .on_input(Message::AecPlanManagerOverlayHatchScaleChanged)
+                .on_input(|v| Message::Aec(AecMessage::AecPlanManagerOverlayHatchScaleChanged(v)))
                 .size(11)
                 .padding([4, 6])
                 .width(120),
@@ -706,7 +706,7 @@ fn overlay_section_view<'a>(form: &PlanConfigFormState<'a>) -> Element<'a, Messa
         row![
             text(t!("Schraffurwinkel")).size(10).style(muted).width(110),
             text_input(t!("leer = erben").as_ref(), form.overlay_hatch_angle)
-                .on_input(Message::AecPlanManagerOverlayHatchAngleChanged)
+                .on_input(|v| Message::Aec(AecMessage::AecPlanManagerOverlayHatchAngleChanged(v)))
                 .size(11)
                 .padding([4, 6])
                 .width(120),
@@ -720,9 +720,9 @@ fn overlay_section_view<'a>(form: &PlanConfigFormState<'a>) -> Element<'a, Messa
                 |choice: &HatchAngleRelChoice| hatch_angle_relative_label(hatch_angle_rel_value(*choice)),
             )
             .on_select(|choice| {
-                Message::AecPlanManagerOverlayHatchAngleRelativeChanged(
+                Message::Aec(AecMessage::AecPlanManagerOverlayHatchAngleRelativeChanged(
                     hatch_angle_rel_value(choice),
-                )
+                ))
             })
             .text_size(11)
             .width(120),
@@ -732,19 +732,19 @@ fn overlay_section_view<'a>(form: &PlanConfigFormState<'a>) -> Element<'a, Messa
             t!("Füllfarbe"),
             form.overlay_fill_color,
             form.overlay_fill_color_picker_open,
-            Message::AecPlanManagerOverlayFillColorChanged,
-            Message::AecPlanManagerOverlayFillColorPickerToggle,
+            |v| Message::Aec(AecMessage::AecPlanManagerOverlayFillColorChanged(v)),
+            Message::Aec(AecMessage::AecPlanManagerOverlayFillColorPickerToggle),
             crate::app::ColorPickTarget::AecPlanOverlayFillColor,
         ),
         row![
             iced::widget::checkbox(vis.visible_2d)
                 .label(t!("Sichtbar 2D").into_owned())
-                .on_toggle(Message::AecPlanManagerOverlayLayerVis2d)
+                .on_toggle(|v| Message::Aec(AecMessage::AecPlanManagerOverlayLayerVis2d(v)))
                 .size(13)
                 .text_size(11),
             iced::widget::checkbox(vis.visible_3d)
                 .label(t!("Sichtbar 3D").into_owned())
-                .on_toggle(Message::AecPlanManagerOverlayLayerVis3d)
+                .on_toggle(|v| Message::Aec(AecMessage::AecPlanManagerOverlayLayerVis3d(v)))
                 .size(13)
                 .text_size(11),
         ]
@@ -767,7 +767,7 @@ fn overlay_section_view<'a>(form: &PlanConfigFormState<'a>) -> Element<'a, Messa
             button(text(t!("Ausnahme entfernen")).size(11))
                 .style(button::danger)
                 .padding([4, 10])
-                .on_press(Message::AecPlanManagerOverlayRemoveStyle),
+                .on_press(Message::Aec(AecMessage::AecPlanManagerOverlayRemoveStyle)),
         );
     }
     if form.overlay_style_id.is_some() {
@@ -802,20 +802,20 @@ fn phase_filter_section_view<'a>(
         row![
             iced::widget::checkbox(visible_new)
                 .label(t!("Neubau").into_owned())
-                .on_toggle(|checked| Message::AecPlanManagerPhaseVisibleToggle(PlanPhase::New, checked))
+                .on_toggle(|checked| Message::Aec(AecMessage::AecPlanManagerPhaseVisibleToggle(PlanPhase::New, checked)))
                 .size(13)
                 .text_size(11),
             iced::widget::checkbox(visible_demolition)
                 .label(t!("Abbruch").into_owned())
                 .on_toggle(|checked| {
-                    Message::AecPlanManagerPhaseVisibleToggle(PlanPhase::Demolition, checked)
+                    Message::Aec(AecMessage::AecPlanManagerPhaseVisibleToggle(PlanPhase::Demolition, checked))
                 })
                 .size(13)
                 .text_size(11),
             iced::widget::checkbox(visible_existing)
                 .label(t!("Bestand").into_owned())
                 .on_toggle(|checked| {
-                    Message::AecPlanManagerPhaseVisibleToggle(PlanPhase::Existing, checked)
+                    Message::Aec(AecMessage::AecPlanManagerPhaseVisibleToggle(PlanPhase::Existing, checked))
                 })
                 .size(13)
                 .text_size(11),
@@ -848,17 +848,17 @@ fn phase_style_form_demolition<'a>(editor: StyleEditorFormState<'a>) -> Element<
     style_editor_form(
         t!("Abbruch-Darstellung").into_owned(),
         editor,
-        Message::AecPlanManagerDemolitionStyleLineTypeChanged,
-        Message::AecPlanManagerDemolitionStyleLineColorChanged,
-        Message::AecPlanManagerDemolitionStyleLineColorPickerToggle,
+        |v| Message::Aec(AecMessage::AecPlanManagerDemolitionStyleLineTypeChanged(v)),
+        |v| Message::Aec(AecMessage::AecPlanManagerDemolitionStyleLineColorChanged(v)),
+        Message::Aec(AecMessage::AecPlanManagerDemolitionStyleLineColorPickerToggle),
         crate::app::ColorPickTarget::AecPlanDemolitionLineColor,
-        Message::AecPlanManagerDemolitionStyleHatchPatternChanged,
-        Message::AecPlanManagerDemolitionStyleHatchPickerToggle,
-        Message::AecPlanManagerDemolitionStyleHatchColorChanged,
-        Message::AecPlanManagerDemolitionStyleHatchColorPickerToggle,
+        |v| Message::Aec(AecMessage::AecPlanManagerDemolitionStyleHatchPatternChanged(v)),
+        Message::Aec(AecMessage::AecPlanManagerDemolitionStyleHatchPickerToggle),
+        |v| Message::Aec(AecMessage::AecPlanManagerDemolitionStyleHatchColorChanged(v)),
+        Message::Aec(AecMessage::AecPlanManagerDemolitionStyleHatchColorPickerToggle),
         crate::app::ColorPickTarget::AecPlanDemolitionHatchColor,
-        Message::AecPlanManagerDemolitionStyleFillColorChanged,
-        Message::AecPlanManagerDemolitionStyleFillColorPickerToggle,
+        |v| Message::Aec(AecMessage::AecPlanManagerDemolitionStyleFillColorChanged(v)),
+        Message::Aec(AecMessage::AecPlanManagerDemolitionStyleFillColorPickerToggle),
         crate::app::ColorPickTarget::AecPlanDemolitionFillColor,
     )
 }
@@ -868,17 +868,17 @@ fn phase_style_form_existing<'a>(editor: StyleEditorFormState<'a>) -> Element<'a
     style_editor_form(
         t!("Bestand-Darstellung").into_owned(),
         editor,
-        Message::AecPlanManagerExistingStyleLineTypeChanged,
-        Message::AecPlanManagerExistingStyleLineColorChanged,
-        Message::AecPlanManagerExistingStyleLineColorPickerToggle,
+        |v| Message::Aec(AecMessage::AecPlanManagerExistingStyleLineTypeChanged(v)),
+        |v| Message::Aec(AecMessage::AecPlanManagerExistingStyleLineColorChanged(v)),
+        Message::Aec(AecMessage::AecPlanManagerExistingStyleLineColorPickerToggle),
         crate::app::ColorPickTarget::AecPlanExistingLineColor,
-        Message::AecPlanManagerExistingStyleHatchPatternChanged,
-        Message::AecPlanManagerExistingStyleHatchPickerToggle,
-        Message::AecPlanManagerExistingStyleHatchColorChanged,
-        Message::AecPlanManagerExistingStyleHatchColorPickerToggle,
+        |v| Message::Aec(AecMessage::AecPlanManagerExistingStyleHatchPatternChanged(v)),
+        Message::Aec(AecMessage::AecPlanManagerExistingStyleHatchPickerToggle),
+        |v| Message::Aec(AecMessage::AecPlanManagerExistingStyleHatchColorChanged(v)),
+        Message::Aec(AecMessage::AecPlanManagerExistingStyleHatchColorPickerToggle),
         crate::app::ColorPickTarget::AecPlanExistingHatchColor,
-        Message::AecPlanManagerExistingStyleFillColorChanged,
-        Message::AecPlanManagerExistingStyleFillColorPickerToggle,
+        |v| Message::Aec(AecMessage::AecPlanManagerExistingStyleFillColorChanged(v)),
+        Message::Aec(AecMessage::AecPlanManagerExistingStyleFillColorPickerToggle),
         crate::app::ColorPickTarget::AecPlanExistingFillColor,
     )
 }

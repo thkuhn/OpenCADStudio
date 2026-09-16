@@ -30,7 +30,7 @@ const PATTERN_PREVIEW_H: f32 = 58.0;
 const PATTERN_PICKER_W: f32 = 348.0;
 const PATTERN_PICKER_H: f32 = 720.0;
 const LINETYPE_MENU_W: f32 = 220.0;
-use crate::app::Message;
+use crate::app::{AecMessage, Message};
 use crate::scene::model::object::{PropSection, PropValue};
 
 const VARIES_LABEL: &str = "*VARIES*";
@@ -1613,7 +1613,7 @@ fn render_picker_row<'a>(
         .padding([0, 4])
         .align_y(iced::Alignment::Center),
     )
-    .on_press(Message::AecStylePickerOpenForWallProperties(handles))
+    .on_press(Message::Aec(AecMessage::AecStylePickerOpenForWallProperties(handles)))
     .style(button::subtle)
     .padding(0)
     .width(Length::Fill);
@@ -1652,7 +1652,7 @@ fn render_picker_row_for_active_command<'a>(label: &'a str, value: &'a str) -> E
         .padding([0, 4])
         .align_y(iced::Alignment::Center),
     )
-    .on_press(Message::AecStylePickerOpenForActiveCommand)
+    .on_press(Message::Aec(AecMessage::AecStylePickerOpenForActiveCommand))
     .style(button::subtle)
     .padding(0)
     .width(Length::Fill);

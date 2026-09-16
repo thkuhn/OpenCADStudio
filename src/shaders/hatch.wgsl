@@ -45,6 +45,9 @@ struct HatchInstance {
     family_count:    u32,
     draw_depth:      f32,          // signed (-1,1) draw-order bias; 0 = neutral
     grad_kind:       u32,         // shape (0=linear,1=cyl,2=sph,3=hemi,4=curved), bit4=invert
+    world_z:         f32,
+    world_z_low:     f32,
+    _pad_z:          vec2<f32>,
 }
 
 // Draw-order depth bias (see wire.wgsl). Higher draw_depth → smaller z →
@@ -117,10 +120,10 @@ struct VOut {
     // term keeps full precision at UTM-scale anchors.
     let hi = vec3<f32>(inst.world_origin.x + v.translation.x - u.eye_high.x,
                        inst.world_origin.y + v.translation.y - u.eye_high.y,
-                       -u.eye_high.z);
+                       inst.world_z - u.eye_high.z);
     let lo = vec3<f32>(local.x + inst.world_origin_low.x + v.translation_low.x - u.eye_low.x,
                        local.y + inst.world_origin_low.y + v.translation_low.y - u.eye_low.y,
-                       -u.eye_low.z);
+                       inst.world_z_low - u.eye_low.z);
     o.clip = u.view_rot * vec4<f32>(hi + lo, 1.0);
     o.clip.z = o.clip.z
         - (inst.draw_depth + v.draw_depth) * DRAW_ORDER_BIAS * o.clip.w;

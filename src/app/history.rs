@@ -345,7 +345,7 @@ impl OpenCADStudio {
         }
     }
 
-    pub(super) fn push_undo_snapshot(&mut self, i: usize, label: impl Into<String>) {
+    pub(crate) fn push_undo_snapshot(&mut self, i: usize, label: impl Into<String>) {
         self.finish_pending_history(i);
         let label = label.into();
         let current_layout = self.tabs[i].scene.current_layout.clone();

@@ -3,7 +3,7 @@ use iced::widget::{
 };
 use iced::{Alignment, Background, Border, Element, Fill, Theme};
 
-use crate::app::Message;
+use crate::app::{AecMessage, Message};
 use crate::modules::aec::engine::library::{
     combined_material_entries_with_session, combined_wall_style_entries_with_session,
     LibrarySource, StyleLibrary,
@@ -126,7 +126,7 @@ pub fn view_window<'a>(
                         ]
                         .align_y(Alignment::Center),
                     )
-                    .on_press(Message::AecStylePickerSelect(node.style.style.id.clone()))
+                    .on_press(Message::Aec(AecMessage::AecStylePickerSelect(node.style.style.id.clone())))
                     .style(list_style(is_selected))
                     .padding([4, 8])
                     .width(Fill)
@@ -153,7 +153,7 @@ pub fn view_window<'a>(
                         ]
                         .align_y(Alignment::Center),
                     )
-                        .on_press(Message::AecStylePickerSelect(m.id.clone()))
+                        .on_press(Message::Aec(AecMessage::AecStylePickerSelect(m.id.clone())))
                         .style(list_style(is_selected))
                         .padding([4, 8])
                         .width(Fill)
@@ -172,7 +172,7 @@ pub fn view_window<'a>(
                     let is_selected = selection == Some(value.as_str())
                         || (selection.is_none() && name == default_label);
                     button(text(name).size(12))
-                        .on_press(Message::AecStylePickerSelect(value))
+                        .on_press(Message::Aec(AecMessage::AecStylePickerSelect(value)))
                         .style(list_style(is_selected))
                         .padding([4, 8])
                         .width(Fill)
@@ -189,11 +189,11 @@ pub fn view_window<'a>(
             Space::new().width(Fill),
             button(text("✕").size(12))
                 .style(button::subtle)
-                .on_press(Message::AecStylePickerCancel),
+                .on_press(Message::Aec(AecMessage::AecStylePickerCancel)),
         ]
         .align_y(Alignment::Center),
         text_input(t!("Search...").as_ref(), filter)
-            .on_input(Message::AecStylePickerFilterChanged)
+            .on_input(|v| Message::Aec(AecMessage::AecStylePickerFilterChanged(v)))
             .size(12)
             .padding([4, 8]),
         {
@@ -302,11 +302,11 @@ pub fn view_window<'a>(
             button(text(t!("Cancel")).size(12))
                 .style(button::subtle)
                 .padding([6, 12])
-                .on_press(Message::AecStylePickerCancel),
+                .on_press(Message::Aec(AecMessage::AecStylePickerCancel)),
             button(text(t!("Select")).size(12))
                 .style(button::primary)
                 .padding([6, 12])
-                .on_press(Message::AecStylePickerConfirm),
+                .on_press(Message::Aec(AecMessage::AecStylePickerConfirm)),
         ]
         .spacing(10)
     ]

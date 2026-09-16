@@ -1642,7 +1642,7 @@ bg={bg_ms:.1}ms n={view_count}"
                 )
             };
             let junction_layer_pair_style = self
-                .aec_layer_pair_draw
+                .aec.aec_layer_pair_draw
                 .as_ref()
                 .is_some_and(|p| p.awaiting_style);
             if let Some(p) = ctx_pos {
@@ -1650,14 +1650,10 @@ bg={bg_ms:.1}ms n={view_count}"
                 let has_selection = !tab.scene.selected.is_empty();
                 let isolation_active = tab.scene.is_isolation_active();
 
-                let only_walls = has_selection && tab.scene.selected.iter().all(|&h| {
-                    let resolved = crate::modules::aec::commands::resolve_wall_package(&tab.scene, h);
-                    if let Some(entity) = tab.scene.document.get_entity(resolved) {
-                        crate::modules::aec::commands::wall_from_entity(entity).is_some()
-                    } else {
-                        false
-                    }
-                });
+                let only_walls = crate::modules::aec::properties::selection_is_all_walls(
+                    &tab.scene,
+                    tab.scene.selected.iter().copied(),
+                );
 
                 let last_cmds: Vec<String> = self
                     .command_line
@@ -2074,8 +2070,8 @@ bg={bg_ms:.1}ms n={view_count}"
                             .clone(),
                         selection_filter: &tab.scene.selection_filter,
                         tooltip_hidden: self.status_menu_tooltip_hidden,
-                        active_project_name: self.aec_project_explorer_file.as_ref().map(|_| {
-                            self.aec_project_explorer_path
+                        active_project_name: self.aec.aec_project_explorer_file.as_ref().map(|_| {
+                            self.aec.aec_project_explorer_path
                                 .as_ref()
                                 .and_then(|p| p.file_stem())
                                 .map(|s| s.to_string_lossy().into_owned())
@@ -2083,7 +2079,7 @@ bg={bg_ms:.1}ms n={view_count}"
                         }),
                         active_plan_name: tab.active_display_config.clone(),
                         plan_names: self
-                            .aec_plan_library
+                            .aec.aec_plan_library
                             .as_ref()
                             .map(|lib| lib.configs.iter().map(|c| c.name.clone()).collect())
                             .unwrap_or_default(),
@@ -2095,7 +2091,7 @@ bg={bg_ms:.1}ms n={view_count}"
                                 tab.active_display_config
                                     .as_deref()
                                     .and_then(|name| {
-                                        self.aec_plan_library
+                                        self.aec.aec_plan_library
                                             .as_ref()
                                             .and_then(|lib| lib.find(name))
                                     })
@@ -2227,7 +2223,7 @@ bg={bg_ms:.1}ms n={view_count}"
                 }
             } else if self.active_modal == Some(super::ModalKind::AecWallStyleDisplayProfiles) {
                 if let Some((parent_offset, parent_resize)) =
-                    self.aec_wall_style_manager_parent_geometry.as_ref()
+                    self.aec.aec_wall_style_manager_parent_geometry.as_ref()
                 {
                     let parent_content = self.aec_wall_style_manager_modal_content(*parent_resize);
                     crate::ui::modal::modal(

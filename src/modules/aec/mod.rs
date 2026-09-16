@@ -7,32 +7,31 @@
 
 pub mod commands;
 pub mod engine;
+pub mod ifc;
+pub mod message;
+pub mod project;
+pub mod properties;
+pub mod rooms;
+pub mod spawn;
+pub mod state;
+pub mod styles;
+pub mod ui;
+pub mod update;
+pub mod walls;
 
-use crate::modules::{CadModule, IconKind, ModuleEvent, RibbonGroup, RibbonItem, ToolDef};
+pub use message::AecMessage;
+pub(crate) use update::update;
+pub use spawn::spawn_command;
+pub(crate) use spawn::try_dispatch;
+pub use state::{
+    AecLayerBuffer, AecLayerGapDrawPick, AecLayerPairDrawPick, AecPendingCopy,
+    AecProjectExplorerDeleteTarget, AecState, AecWallStyleSort, StylePickerTarget,
+};
+
+
+use crate::modules::{CadModule, RibbonGroup, RibbonItem};
 
 pub struct AecModule;
-
-const WALL_ICON: &[u8] = include_bytes!("../../../assets/icons/aec/wall_create.svg");
-const WALL_REFRESH_ICON: &[u8] = include_bytes!("../../../assets/icons/aec/wall_refresh.svg");
-const JOIN_ICON: &[u8] = include_bytes!("../../../assets/icons/aec/wall_join.svg");
-const EXTEND_ICON: &[u8] = include_bytes!("../../../assets/icons/aec/wall_extend.svg");
-const ROOM_ICON: &[u8] = include_bytes!("../../../assets/icons/array_rect.svg");
-const SCHEDULE_ICON: &[u8] = include_bytes!("../../../assets/icons/table.svg");
-const IFC_ICON: &[u8] = include_bytes!("../../../assets/icons/cui_export.svg");
-const MATERIAL_ICON: &[u8] = include_bytes!("../../../assets/icons/aec/material_manager.svg");
-const STYLE_ICON: &[u8] = include_bytes!("../../../assets/icons/aec/wall_style_manager.svg");
-const PROJECT_ICON: &[u8] = include_bytes!("../../../assets/icons/layers/panel.svg");
-const PLAN_ICON: &[u8] = include_bytes!("../../../assets/icons/aec/wall_style_manager.svg");
-
-/// Helper to declare a ribbon tool that fires a named command.
-fn tool(id: &'static str, label: &'static str, icon: &'static [u8]) -> ToolDef {
-    ToolDef {
-        id,
-        label,
-        icon: IconKind::Svg(icon),
-        event: ModuleEvent::Command(id.to_string()),
-    }
-}
 
 impl CadModule for AecModule {
     fn id(&self) -> &'static str {
@@ -43,77 +42,51 @@ impl CadModule for AecModule {
     }
 
     fn ribbon_groups(&self) -> &[RibbonGroup] {
+        use ifc::export as ifc_export;
+        use project::{control_planes, explorer};
+        use rooms::{room, schedule};
+        use styles::{material_manager, plan_manager, wall_style_manager};
+        use walls::{door, extend, join, refresh, wall, window};
+
         static GROUPS: std::sync::OnceLock<Vec<RibbonGroup>> = std::sync::OnceLock::new();
         GROUPS.get_or_init(|| {
             vec![
                 RibbonGroup {
                     title: "Project",
                     tools: vec![
-                        RibbonItem::LargeTool(tool(
-                            "AEC_PROJECTEXPLORER",
-                            "Project Explorer",
-                            PROJECT_ICON,
-                        )),
-                        RibbonItem::LargeTool(tool(
-                            "AEC_CONTROLPLANES",
-                            "Control planes",
-                            PROJECT_ICON,
-                        )),
+                        RibbonItem::LargeTool(explorer::tool()),
+                        RibbonItem::LargeTool(control_planes::tool()),
                     ],
                 },
                 RibbonGroup {
                     title: "Walls",
                     tools: vec![
-                        RibbonItem::LargeTool(tool("AEC_WALL", "Wall", WALL_ICON)),
-                        RibbonItem::LargeTool(tool(
-                            "AEC_WALL_REFRESH",
-                            "Refresh Walls",
-                            WALL_REFRESH_ICON,
-                        )),
-                        RibbonItem::LargeTool(tool("AEC_WALLJOIN", "Join Walls", JOIN_ICON)),
-                        RibbonItem::LargeTool(tool("AEC_WALLEXTEND", "Extend Wall", EXTEND_ICON)),
-                        RibbonItem::LargeTool(tool("AEC_WINDOW", "Window", WALL_ICON)),
-                        RibbonItem::LargeTool(tool("AEC_DOOR", "Door", WALL_ICON)),
+                        RibbonItem::LargeTool(wall::tool()),
+                        RibbonItem::LargeTool(refresh::tool()),
+                        RibbonItem::LargeTool(join::tool()),
+                        RibbonItem::LargeTool(extend::tool()),
+                        RibbonItem::LargeTool(window::tool()),
+                        RibbonItem::LargeTool(door::tool()),
                     ],
                 },
                 RibbonGroup {
                     title: "Styles",
                     tools: vec![
-                        RibbonItem::LargeTool(tool(
-                            "AEC_MATERIALMANAGER",
-                            "Material Manager",
-                            MATERIAL_ICON,
-                        )),
-                        RibbonItem::LargeTool(tool(
-                            "AEC_STYLEMANAGER",
-                            "Wall Style Manager",
-                            STYLE_ICON,
-                        )),
-                        RibbonItem::LargeTool(tool(
-                            "AEC_PLANMANAGER",
-                            "DisplayConfig Manager",
-                            PLAN_ICON,
-                        )),
+                        RibbonItem::LargeTool(material_manager::tool()),
+                        RibbonItem::LargeTool(wall_style_manager::tool()),
+                        RibbonItem::LargeTool(plan_manager::tool()),
                     ],
                 },
                 RibbonGroup {
                     title: "Rooms",
                     tools: vec![
-                        RibbonItem::LargeTool(tool("AEC_ROOM", "Room", ROOM_ICON)),
-                        RibbonItem::LargeTool(tool(
-                            "AEC_ROOMSCHEDULE",
-                            "Schedule",
-                            SCHEDULE_ICON,
-                        )),
+                        RibbonItem::LargeTool(room::tool()),
+                        RibbonItem::LargeTool(schedule::tool()),
                     ],
                 },
                 RibbonGroup {
                     title: "IFC",
-                    tools: vec![RibbonItem::LargeTool(tool(
-                        "AEC_IFCEXPORT",
-                        "Export IFC",
-                        IFC_ICON,
-                    ))],
+                    tools: vec![RibbonItem::LargeTool(ifc_export::tool())],
                 },
             ]
         })

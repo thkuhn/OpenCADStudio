@@ -19,6 +19,7 @@ pub fn hex_to_acad_color(hex: &str) -> acadrust::types::Color {
 /// Encode a true/indexed colour as a bare `"RRGGBB"` hex string (no `#`
 /// prefix), the inverse of [`hex_to_acad_color`]. Indexed colours are
 /// resolved to their RGB value via the ACI table first.
+#[allow(dead_code)]
 pub fn acad_color_to_hex(color: acadrust::types::Color) -> String {
     let (r, g, b) = match color {
         acadrust::types::Color::Rgb { r, g, b } => (r, g, b),

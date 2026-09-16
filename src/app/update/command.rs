@@ -785,7 +785,7 @@ pub(super) fn on_tab_close(&mut self, idx: usize) -> Task<Message> {
 
                 let i = self.active_tab;
                 if self
-                    .aec_layer_pair_draw
+                    .aec.aec_layer_pair_draw
                     .as_ref()
                     .is_some_and(|p| p.layer_a.is_some() && !p.awaiting_style)
                 {
@@ -795,7 +795,7 @@ pub(super) fn on_tab_close(&mut self, idx: usize) -> Task<Message> {
                         .borrow()
                         .last_move_pos
                         .unwrap_or(iced::Point::ORIGIN);
-                    if let Some(pick) = self.aec_layer_pair_draw.as_mut() {
+                    if let Some(pick) = self.aec.aec_layer_pair_draw.as_mut() {
                         pick.layer_b = None;
                         pick.layer_b_outer = true;
                         pick.awaiting_style = true;
@@ -819,7 +819,7 @@ pub(super) fn on_tab_close(&mut self, idx: usize) -> Task<Message> {
     }
 
     pub(super) fn on_command_escape(&mut self) -> Task<Message> {
-                if self.aec_layer_pair_draw.is_some() {
+                if self.aec.aec_layer_pair_draw.is_some() {
                     self.cancel_layer_pair_draw_pick();
                     return Task::none();
                 }
@@ -2596,12 +2596,30 @@ pub(super) fn on_tab_close(&mut self, idx: usize) -> Task<Message> {
                             }
                             let style_library =
                                 crate::modules::aec::engine::project::resolve_style_library(
-                                    self.aec_project_explorer_file.as_ref(),
+                                    self.aec.aec_project_explorer_file.as_ref(),
                                 );
                             crate::modules::aec::commands::change_wall_justification(
                                 &mut self.tabs[i].scene,
                                 handle,
                                 new_justification,
+                                Some(&style_library),
+                            );
+                        }
+                    } else if field == "wall_base_plane" || field == "wall_top_plane" {
+                        let style_library =
+                            crate::modules::aec::engine::project::resolve_style_library(
+                                self.aec.aec_project_explorer_file.as_ref(),
+                            );
+                        for &handle in &handles {
+                            if self.tabs[i].scene.is_layer_locked(handle) {
+                                continue;
+                            }
+                            crate::modules::aec::project::wall_planes::apply_wall_plane_choice(
+                                &mut self.tabs[i].scene,
+                                self.aec.aec_project_explorer_file.as_ref(),
+                                handle,
+                                field == "wall_base_plane",
+                                &value,
                                 Some(&style_library),
                             );
                         }
@@ -2984,8 +3002,17 @@ pub(super) fn on_tab_close(&mut self, idx: usize) -> Task<Message> {
                                             );
                                         }
                                     }
+                                    "control_plane_name" => {
+                                        crate::modules::aec::properties::apply_control_plane_name(
+                                            &mut self.tabs[i].scene,
+                                            self.aec.aec_project_explorer_file.as_mut(),
+                                            handle,
+                                            &val,
+                                        );
+                                        self.aec_project_explorer_persist_if_pathed();
+                                    }
                                     "wall_height" | "wall_thickness" | "wall_material"
-                                    | "wall_base_offset" | "wall_top_offset" => {
+                                    | "wall_base_offset" | "wall_top_offset" | "wall_base_z" => {
                                         // AEC wall properties live in `WALL`
                                         // XDATA. Height is editable here;
                                         // thickness/material are per-layer and
@@ -3002,7 +3029,7 @@ pub(super) fn on_tab_close(&mut self, idx: usize) -> Task<Message> {
                                                     );
                                                     let style_library =
                                                         crate::modules::aec::engine::project::resolve_style_library(
-                                                            self.aec_project_explorer_file.as_ref(),
+                                                            self.aec.aec_project_explorer_file.as_ref(),
                                                         );
                                                     let _ = crate::modules::aec::commands::regenerate_wall_representation(
                                                         &mut self.tabs[i].scene,
@@ -3010,6 +3037,16 @@ pub(super) fn on_tab_close(&mut self, idx: usize) -> Task<Message> {
                                                         Some(&style_library),
                                                     );
                                                 }
+                                            }
+                                        } else if field == "wall_base_z" {
+                                            if let Some(v) =
+                                                crate::entities::common::parse_f64(&val)
+                                            {
+                                                crate::modules::aec::project::wall_planes::apply_wall_base_z(
+                                                    &mut self.tabs[i].scene,
+                                                    handle,
+                                                    v,
+                                                );
                                             }
                                         } else if field == "wall_base_offset"
                                             || field == "wall_top_offset"
@@ -3030,7 +3067,7 @@ pub(super) fn on_tab_close(&mut self, idx: usize) -> Task<Message> {
                                                 );
                                                 let style_library =
                                                     crate::modules::aec::engine::project::resolve_style_library(
-                                                        self.aec_project_explorer_file.as_ref(),
+                                                        self.aec.aec_project_explorer_file.as_ref(),
                                                     );
                                                 let _ = crate::modules::aec::commands::regenerate_wall_representation(
                                                     &mut self.tabs[i].scene,

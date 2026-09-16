@@ -31,7 +31,7 @@ fn visual_style_properties_text(style: &acadrust::objects::VisualStyle) -> Strin
 impl OpenCADStudio {
     /// Rebuild the PropertiesPanel from the current entity selection.
     /// Preserves UI state (open pickers, edit buffer) across refreshes.
-    pub(super) fn refresh_properties(&mut self) {
+    pub(crate) fn refresh_properties(&mut self) {
         let i = self.active_tab;
         if !crate::entities::object_data::cache_is_prepared(
             &self.tabs[i].scene.object_data_cache,
@@ -187,7 +187,7 @@ impl OpenCADStudio {
             }
         } else {
             let selected_raw = self.tabs[i].scene.selected_entities();
-            let selected = collapse_selection_to_wall_package(
+            let selected = crate::modules::aec::properties::collapse_selection_to_wall_package(
                 &self.tabs[i].scene,
                 selected_raw,
             );
@@ -532,38 +532,14 @@ impl OpenCADStudio {
                         }
                     }
 
-                    // AEC wall — only entities carrying an `OPENCAD_AEC`/`WALL`
-                    // XDATA record get this section, so ordinary polylines are
-                    // left untouched. Edits are written back through the same
-                    // `wall_record` layout used by the interactive `AEC_WALL`
-                    // draw command (see `on_prop_geom_commit`'s "wall_*" arms).
-                    {
-                        let wall_handle = crate::modules::aec::commands::resolve_wall_package(
-                            &self.tabs[i].scene,
-                            handle,
-                        );
-                        let wall_entity = self.tabs[i]
-                            .scene
-                            .document
-                            .get_entity(wall_handle)
-                            .unwrap_or(entity);
-                        if let Some(wall_section) =
-                            wall_prop_section(wall_entity, self.aec_style_library.as_ref())
-                        {
-                            sections.push(wall_section);
-                            sections.extend(wall_relation_sections(
-                                &self.tabs[i].scene,
-                                wall_handle,
-                            ));
-                        }
-                    }
-
-                    // AEC storey entity — show metadata + owner-index members.
-                    if let Some(storey_section) =
-                        storey_prop_section(&self.tabs[i].scene, entity)
-                    {
-                        sections.push(storey_section);
-                    }
+                    crate::modules::aec::properties::extend_entity_sections(
+                        &self.tabs[i].scene,
+                        handle,
+                        entity,
+                        self.aec.aec_style_library.as_ref(),
+                        self.aec.aec_project_explorer_file.as_ref(),
+                        &mut sections,
+                    );
 
                     {
                         let doc = &self.tabs[i].scene.document;
@@ -2237,7 +2213,8 @@ impl OpenCADStudio {
                     let mut sections = aggregate_sections(
                                             &local_refs,
                                             &text_style_names,
-                                            self.aec_style_library.as_ref(),
+                                            self.aec.aec_style_library.as_ref(),
+                                            self.aec.aec_project_explorer_file.as_ref(),
                     );
                     if local_refs.iter().all(|(handle, _)| {
                         crate::scene::model::solid_history::has_compact_solid_properties(
@@ -2478,7 +2455,7 @@ impl OpenCADStudio {
             let wall_owners: Vec<Handle> = selected
                 .iter()
                 .map(|(handle, _)| {
-                    crate::modules::aec::commands::resolve_wall_package(
+                    crate::modules::aec::properties::resolve_wall_package(
                         &self.tabs[i].scene,
                         *handle,
                     )
@@ -2491,8 +2468,7 @@ impl OpenCADStudio {
                         .scene
                         .document
                         .get_entity(*owner)
-                        .and_then(crate::modules::aec::commands::wall_from_entity)
-                        .is_some()
+                        .is_some_and(|e| crate::modules::aec::properties::wall_from_entity(e))
             });
             let single_handle = if let Some(owner) = single_wall {
                 (!self.tabs[i].scene.is_layer_locked(owner)).then_some(owner)
@@ -2513,7 +2489,7 @@ impl OpenCADStudio {
                 selected
             };
             for (handle, entity) in selected {
-                if crate::modules::aec::commands::is_wall_derived_non_axis(
+                if crate::modules::aec::properties::is_wall_derived_non_axis(
                     &self.tabs[i].scene,
                     handle,
                 ) {
@@ -2581,30 +2557,12 @@ impl OpenCADStudio {
                     &self.tabs[i].scene.document,
                     handle,
                 ));
-                if crate::modules::aec::commands::wall_from_entity(contextual.as_ref()).is_some() {
-                    let verts = crate::modules::aec::commands::get_wall_vertices(
-                        &self.tabs[i].scene,
-                        handle,
-                    );
-                    if verts.len() >= 2 {
-                        for (end_index, world) in [(0usize, verts[0]), (1usize, verts[verts.len() - 1])]
-                        {
-                            let participants = crate::modules::aec::commands::walls_at_junction(
-                                &self.tabs[i].scene,
-                                handle,
-                                end_index,
-                            );
-                            if participants.len() > 1 {
-                                entity_grips.push(crate::entities::common::dropdown_grip(
-                                    crate::modules::aec::commands::wall_junction_dropdown_grip_id(
-                                        end_index,
-                                    ),
-                                    world,
-                                ));
-                            }
-                        }
-                    }
-                }
+                crate::modules::aec::properties::append_wall_junction_grips(
+                    &self.tabs[i].scene,
+                    handle,
+                    contextual.as_ref(),
+                    &mut entity_grips,
+                );
                 for mut grip in entity_grips {
                     // Subtract in f64: at UTM magnitudes an f32 cast before
                     // the offset costs ~1 unit and draws the grip off the wire.
@@ -3130,30 +3088,6 @@ fn make_sections_read_only(
 
 // ── Multi-selection property aggregation ───────────────────────────────────
 
-fn collapse_selection_to_wall_package<'a>(
-    scene: &'a crate::scene::Scene,
-    selected: Vec<(Handle, &'a EntityType)>,
-) -> Vec<(Handle, &'a EntityType)> {
-    if selected.is_empty() {
-        return selected;
-    }
-    let owners: Vec<Handle> = selected
-        .iter()
-        .map(|(handle, _)| crate::modules::aec::commands::resolve_wall_package(scene, *handle))
-        .collect();
-    let owner = owners[0];
-    if owner.is_null() || owners.iter().any(|h| *h != owner) {
-        return selected;
-    }
-    let Some(entity) = scene.document.get_entity(owner) else {
-        return selected;
-    };
-    if crate::modules::aec::commands::wall_from_entity(entity).is_none() {
-        return selected;
-    }
-    vec![(owner, entity)]
-}
-
 pub(super) fn build_selection_groups(
     selected: &[(Handle, &EntityType)],
 ) -> Vec<ui::properties::SelectionGroup> {
@@ -3181,319 +3115,12 @@ pub(super) fn build_selection_groups(
     groups
 }
 
-/// Builds the "Wall"/"Wall Layers" property section for a single entity, if
-/// it carries an `OPENCAD_AEC` `WALL` XDATA record. Shared between
-/// the single-selection panel and multi-selection aggregation so wall
-/// properties (style, height) are available and editable regardless of how
-/// many walls are selected at once.
-pub(super) fn wall_prop_section(
-    entity: &EntityType,
-    style_library: Option<&crate::modules::aec::engine::library::StyleLibrary>,
-) -> Option<crate::scene::model::object::PropSection> {
-    if let Some(wall) = crate::modules::aec::commands::wall_from_entity(entity) {
-        let style_name = style_library
-            .and_then(|lib| lib.wall_styles.iter().find(|ws| ws.style.id == wall.style_id))
-            .map(|ws| ws.style.name.clone())
-            .unwrap_or_else(|| wall.style_id.clone());
-
-        let mut props = vec![
-            crate::entities::common::edit_prop(
-                t!("Height").as_ref(),
-                "wall_height",
-                wall.height,
-            ),
-            crate::entities::common::edit_prop(
-                t!("Base offset").as_ref(),
-                "wall_base_offset",
-                wall.base_offset,
-            ),
-            crate::entities::common::edit_prop(
-                t!("Top offset").as_ref(),
-                "wall_top_offset",
-                wall.top_offset,
-            ),
-            crate::entities::common::ro_prop(
-                t!("Base plane").as_ref(),
-                "wall_base_plane",
-                wall.base_plane_id
-                    .map(|id| id.to_string())
-                    .unwrap_or_else(|| t!("(none)").into_owned()),
-            ),
-            crate::entities::common::ro_prop(
-                t!("Top plane").as_ref(),
-                "wall_top_plane",
-                wall.top_plane_id
-                    .map(|id| id.to_string())
-                    .unwrap_or_else(|| t!("(none)").into_owned()),
-            ),
-            crate::scene::model::object::Property {
-                label: t!("Style").into_owned(),
-                field: "wall_style",
-                value: crate::scene::model::object::PropValue::Picker {
-                    value: style_name,
-                    handles: vec![entity.common().handle],
-                },
-            },
-            crate::scene::model::object::Property {
-                label: t!("Justification").into_owned(),
-                field: "wall_justification",
-                value: crate::scene::model::object::PropValue::Choice {
-                    selected: wall.justification.as_str().to_string(),
-                    options: vec![
-                        "Interior".to_string(),
-                        "Center".to_string(),
-                        "Exterior".to_string(),
-                    ],
-                },
-            },
-            crate::scene::model::object::Property {
-                label: t!("Phase").into_owned(),
-                field: "wall_phase",
-                value: crate::scene::model::object::PropValue::Choice {
-                    selected: wall.phase.display_label().to_string(),
-                    options: vec![
-                        crate::modules::aec::engine::plan_view::PlanPhase::New
-                            .display_label()
-                            .to_string(),
-                        crate::modules::aec::engine::plan_view::PlanPhase::Demolition
-                            .display_label()
-                            .to_string(),
-                        crate::modules::aec::engine::plan_view::PlanPhase::Existing
-                            .display_label()
-                            .to_string(),
-                    ],
-                },
-            },
-        ];
-
-        // Optional per-instance hatch-angle override (Step 6): checkbox to
-        // enable/disable the override, plus (only while enabled) the angle
-        // value and "Relativ zur Wand" flag. Clearing the checkbox drops the
-        // override entirely (`Wall.hatch_override = None`), falling back to
-        // the style-profile/material tiers of the hatch-angle chain.
-        let hatch_enabled = wall.hatch_override.is_some();
-        props.push(crate::scene::model::object::Property {
-            label: t!("Hatch Angle Override").into_owned(),
-            field: "wall_hatch_override_enabled",
-            value: crate::scene::model::object::PropValue::BoolToggle {
-                field: "wall_hatch_override_enabled",
-                value: hatch_enabled,
-            },
-        });
-        if let Some(ov) = wall.hatch_override.as_ref() {
-            props.push(crate::entities::common::edit_scalar_prop(
-                t!("Hatch Angle").as_ref(),
-                "wall_hatch_angle",
-                ov.hatch_angle.unwrap_or(0.0),
-            ));
-            props.push(crate::scene::model::object::Property {
-                label: t!("Relative to Wall").into_owned(),
-                field: "wall_hatch_relative",
-                value: crate::scene::model::object::PropValue::BoolToggle {
-                    field: "wall_hatch_relative",
-                    value: ov.hatch_angle_relative.unwrap_or(true),
-                },
-            });
-        }
-        // Purely informational summary of the effective value/source,
-        // regardless of whether a per-instance override is active, so a
-        // user can see where the currently-applied angle comes from.
-        let effective_text = if let Some(ov) = wall.hatch_override.as_ref() {
-            format!(
-                "{}° ({}) — {}",
-                ov.hatch_angle.unwrap_or(0.0),
-                if ov.hatch_angle_relative.unwrap_or(true) {
-                    t!("relative")
-                } else {
-                    t!("absolute")
-                },
-                t!("Wall override")
-            )
-        } else {
-            format!(
-                "{}",
-                t!("No wall override (uses style/material default)")
-            )
-        };
-        props.push(crate::entities::common::ro_prop(
-            t!("Effective Hatch Angle").as_ref(),
-            "wall_hatch_effective",
-            effective_text,
-        ));
-
-        for (i, layer) in wall.layers.iter().enumerate() {
-            let thickness_str = crate::entities::common::format_length(layer.thickness);
-            let layer_info = format!(
-                "{} — {} ({})",
-                layer.material,
-                thickness_str,
-                layer.function
-            );
-            props.push(crate::entities::common::ro_prop(
-                t!("Layer").as_ref(),
-                "wall_layer",
-                format!("{} — {}", i + 1, layer_info),
-            ));
-        }
-
-        Some(crate::scene::model::object::PropSection {
-            title: t!("Wall Layers").into_owned(),
-            props,
-        })
-    } else {
-        None
-    }
-}
-
-/// Read-only "Linked Openings" / "Joined Walls" sections sourced from the
-/// owner-index (`children_of` / `peers_of`). Each row is clickable and zooms
-/// to the referenced entity.
-pub(super) fn wall_relation_sections(
-    scene: &crate::scene::Scene,
-    wall_handle: Handle,
-) -> Vec<crate::scene::model::object::PropSection> {
-    use crate::scene::model::object::{PropSection, PropValue, Property};
-
-    let openings =
-        crate::modules::aec::commands::openings_for_host_wall(scene, wall_handle);
-    let mut opening_props = Vec::with_capacity(openings.len().max(1));
-    if openings.is_empty() {
-        opening_props.push(crate::entities::common::ro_prop(
-            t!("(none)").as_ref(),
-            "wall_opening_none",
-            String::new(),
-        ));
-    } else {
-        for (idx, opening) in openings.iter().enumerate() {
-            let kind = opening.kind.as_str();
-            let display = format!(
-                "{kind}  w={} h={} sill={}  (#{:X})",
-                crate::entities::common::format_length(opening.width),
-                crate::entities::common::format_length(opening.height),
-                crate::entities::common::format_length(opening.sill_height),
-                opening.handle.value()
-            );
-            opening_props.push(Property {
-                label: format!("{} {}", t!("Opening"), idx + 1),
-                field: "wall_opening",
-                value: PropValue::EntityRef {
-                    display,
-                    handle: opening.handle,
-                },
-            });
-        }
-    }
-
-    let peers = crate::modules::aec::engine::owner_index::peers_of(
-        &scene.document,
-        wall_handle,
-    );
-    let mut peer_props = Vec::with_capacity(peers.len().max(1));
-    if peers.is_empty() {
-        peer_props.push(crate::entities::common::ro_prop(
-            t!("(none)").as_ref(),
-            "wall_peer_none",
-            String::new(),
-        ));
-    } else {
-        for (idx, peer) in peers.iter().enumerate() {
-            let display = format!("Wall #{:X}", peer.value());
-            peer_props.push(Property {
-                label: format!("{} {}", t!("Wall"), idx + 1),
-                field: "wall_peer",
-                value: PropValue::EntityRef {
-                    display,
-                    handle: *peer,
-                },
-            });
-        }
-    }
-
-    vec![
-        PropSection {
-            title: t!("Linked Openings").into_owned(),
-            props: opening_props,
-        },
-        PropSection {
-            title: t!("Joined Walls").into_owned(),
-            props: peer_props,
-        },
-    ]
-}
-
-/// Storey entity property section: name/elevation/height plus owner-index
-/// members list (`walls_for_storey` / `children_of`).
-pub(super) fn storey_prop_section(
-    scene: &crate::scene::Scene,
-    entity: &EntityType,
-) -> Option<crate::scene::model::object::PropSection> {
-    use crate::scene::model::object::{PropSection, PropValue, Property};
-
-    let (storey_id, storey) =
-        crate::modules::aec::commands::storey_from_entity(entity)?;
-    let storey_handle = entity.common().handle;
-    let members =
-        crate::modules::aec::commands::walls_for_storey(scene, storey_handle);
-
-    let mut props = vec![
-        crate::entities::common::ro_prop(
-            t!("Name").as_ref(),
-            "storey_name",
-            storey.name.clone(),
-        ),
-        crate::entities::common::ro_prop(
-            t!("Id").as_ref(),
-            "storey_id",
-            storey_id.to_string(),
-        ),
-        crate::entities::common::ro_prop(
-            t!("Elevation").as_ref(),
-            "storey_elevation",
-            crate::entities::common::format_length(storey.elevation),
-        ),
-        crate::entities::common::ro_prop(
-            t!("Height").as_ref(),
-            "storey_height",
-            crate::entities::common::format_length(storey.height),
-        ),
-        crate::entities::common::ro_prop(
-            t!("Members").as_ref(),
-            "storey_members_count",
-            members.len().to_string(),
-        ),
-    ];
-
-    for (idx, member) in members.iter().enumerate() {
-        let display = if scene
-            .document
-            .get_entity(*member)
-            .and_then(crate::modules::aec::commands::wall_from_entity)
-            .is_some()
-        {
-            format!("Wall #{:X}", member.value())
-        } else {
-            format!("Entity #{:X}", member.value())
-        };
-        props.push(Property {
-            label: format!("{} {}", t!("Member"), idx + 1),
-            field: "storey_member",
-            value: PropValue::EntityRef {
-                display,
-                handle: *member,
-            },
-        });
-    }
-
-    Some(PropSection {
-        title: t!("Storey").into_owned(),
-        props,
-    })
-}
 
 pub(super) fn aggregate_sections(
     selected: &[(Handle, &EntityType)],
     text_style_names: &[String],
     style_library: Option<&crate::modules::aec::engine::library::StyleLibrary>,
+    project: Option<&crate::modules::aec::engine::project::ProjectFile>,
 ) -> Vec<crate::scene::model::object::PropSection> {
     if selected.is_empty() {
         return vec![];
@@ -3504,7 +3131,9 @@ pub(super) fn aggregate_sections(
         .map(|(_handle, entity)| {
             let mut sections =
                 dispatch::properties_sectioned(*_handle, entity, text_style_names);
-            if let Some(wall_section) = wall_prop_section(entity, style_library) {
+            if let Some(wall_section) =
+                crate::modules::aec::properties::wall_prop_section(entity, style_library, project)
+            {
                 sections.push(wall_section);
             }
             sections
@@ -4426,7 +4055,7 @@ mod chprop_integration_tests {
 
 #[cfg(test)]
 mod wall_package_selection_tests {
-    use super::{collapse_selection_to_wall_package, wall_prop_section};
+    use crate::modules::aec::properties::{collapse_selection_to_wall_package, wall_prop_section};
     use crate::modules::aec::commands::{
         regenerate_wall_representation, resolve_wall_package, wall_from_entity, wall_record,
         AEC_APPID, WallJustification, WallLayer,
@@ -4484,7 +4113,7 @@ mod wall_package_selection_tests {
         let collapsed = collapse_selection_to_wall_package(&scene, selected);
         assert_eq!(collapsed.len(), 1);
         assert_eq!(collapsed[0].0, wall);
-        let section = wall_prop_section(collapsed[0].1, None).expect("wall section");
+        let section = wall_prop_section(collapsed[0].1, None, None).expect("wall section");
         assert!(
             section.props.iter().any(|p| p.field == "wall_style"),
             "package selection must expose wall_style, got {:?}",

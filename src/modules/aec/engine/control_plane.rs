@@ -10,6 +10,10 @@ use uuid::Uuid;
 
 const EPS: f64 = 1e-9;
 
+/// Default preview rectangle: origin at (−5 m, −5 m), 50 × 50 m.
+pub const DEFAULT_PREVIEW_ORIGIN_XY: f64 = -5.0;
+pub const DEFAULT_PREVIEW_SIZE: f64 = 50.0;
+
 /// A named plane in world space.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ControlPlane {
@@ -46,7 +50,7 @@ impl ControlPlane {
     }
 
     pub fn horizontal(name: impl Into<String>, z: f64) -> Self {
-        Self::new(name, [0.0, 0.0, z], [0.0, 0.0, 1.0])
+        Self::new(name, [DEFAULT_PREVIEW_ORIGIN_XY, DEFAULT_PREVIEW_ORIGIN_XY, z], [0.0, 0.0, 1.0])
     }
 
     pub fn unit_normal(&self) -> [f64; 3] {
@@ -129,35 +133,46 @@ pub fn resolve_wall_height(
     Some(top_pt[2] - base_pt[2])
 }
 
-/// Four corners of a preview rectangle of half-size `half` around `origin`.
-pub fn preview_rectangle(plane: &ControlPlane, half: f64) -> [[f64; 3]; 4] {
+/// Four corners of a preview rectangle of `size` starting at `origin` (SW).
+pub fn preview_rectangle(plane: &ControlPlane, size: f64) -> [[f64; 3]; 4] {
     let n = plane.unit_normal();
-    let up = if n[2].abs() < 0.9 {
-        [0.0, 0.0, 1.0]
+    // Horizontal: +X then +Y so origin is the SW (lower-left) corner.
+    let (mut u, mut v) = if n[2].abs() >= 0.9 {
+        ([1.0, 0.0, 0.0], [0.0, 1.0, 0.0])
     } else {
-        [0.0, 1.0, 0.0]
+        let up = [0.0, 0.0, 1.0];
+        let u = [
+            n[1] * up[2] - n[2] * up[1],
+            n[2] * up[0] - n[0] * up[2],
+            n[0] * up[1] - n[1] * up[0],
+        ];
+        let ulen = (u[0] * u[0] + u[1] * u[1] + u[2] * u[2]).sqrt().max(EPS);
+        let u = [u[0] / ulen, u[1] / ulen, u[2] / ulen];
+        let v = [
+            n[1] * u[2] - n[2] * u[1],
+            n[2] * u[0] - n[0] * u[2],
+            n[0] * u[1] - n[1] * u[0],
+        ];
+        (u, v)
     };
-    let u = [
-        n[1] * up[2] - n[2] * up[1],
-        n[2] * up[0] - n[0] * up[2],
-        n[0] * up[1] - n[1] * up[0],
-    ];
     let ulen = (u[0] * u[0] + u[1] * u[1] + u[2] * u[2]).sqrt().max(EPS);
-    let u = [u[0] / ulen, u[1] / ulen, u[2] / ulen];
-    let v = [
-        n[1] * u[2] - n[2] * u[1],
-        n[2] * u[0] - n[0] * u[2],
-        n[0] * u[1] - n[1] * u[0],
-    ];
-    let o = plane.origin;
+    u = [u[0] / ulen, u[1] / ulen, u[2] / ulen];
+    let vlen = (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt().max(EPS);
+    v = [v[0] / vlen, v[1] / vlen, v[2] / vlen];
+    // Horizontal previews always use SW origin (-5, -5); Z stays on the plane.
+    let o = if n[2].abs() >= 0.9 {
+        [DEFAULT_PREVIEW_ORIGIN_XY, DEFAULT_PREVIEW_ORIGIN_XY, plane.origin[2]]
+    } else {
+        plane.origin
+    };
     let corner = |su: f64, sv: f64| {
         [
-            o[0] + su * half * u[0] + sv * half * v[0],
-            o[1] + su * half * u[1] + sv * half * v[1],
-            o[2] + su * half * u[2] + sv * half * v[2],
+            o[0] + su * size * u[0] + sv * size * v[0],
+            o[1] + su * size * u[1] + sv * size * v[1],
+            o[2] + su * size * u[2] + sv * size * v[2],
         ]
     };
-    [corner(-1.0, -1.0), corner(1.0, -1.0), corner(1.0, 1.0), corner(-1.0, 1.0)]
+    [corner(0.0, 0.0), corner(1.0, 0.0), corner(1.0, 1.0), corner(0.0, 1.0)]
 }
 
 /// Default floor (z = elevation) and ceiling (z = elevation + height).
@@ -166,8 +181,8 @@ pub fn default_floor_ceiling(
     elevation: f64,
     height: f64,
 ) -> (ControlPlane, ControlPlane) {
-    let floor = ControlPlane::horizontal(format!("{storey_name}_OKFF"), elevation);
-    let ceiling = ControlPlane::horizontal(format!("{storey_name}_UKRD"), elevation + height);
+    let floor = ControlPlane::horizontal(format!("{storey_name}_ELEVATION"), elevation);
+    let ceiling = ControlPlane::horizontal(format!("{storey_name}_OKGH"), elevation + height);
     (floor, ceiling)
 }
 
@@ -213,7 +228,24 @@ mod tests {
         let (f, c) = default_floor_ceiling("EG", 1.0, 3.2);
         assert!((f.origin[2] - 1.0).abs() < 1e-9);
         assert!((c.origin[2] - 4.2).abs() < 1e-9);
-        assert!(f.name.contains("EG"));
-        assert!(c.name.contains("EG"));
+        assert!(f.name.ends_with("_ELEVATION"));
+        assert!(c.name.ends_with("_OKGH"));
+        assert!(!c.name.contains("UKRD"));
+        assert!((f.origin[0] + 5.0).abs() < 1e-9);
+        assert!((f.origin[1] + 5.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn preview_rectangle_sw_origin_plus_xy_50() {
+        let p = ControlPlane::horizontal("F", 0.0);
+        let c = preview_rectangle(&p, DEFAULT_PREVIEW_SIZE);
+        assert!((c[0][0] + 5.0).abs() < 1e-9);
+        assert!((c[0][1] + 5.0).abs() < 1e-9);
+        assert!((c[1][0] - 45.0).abs() < 1e-9);
+        assert!((c[1][1] + 5.0).abs() < 1e-9);
+        assert!((c[2][0] - 45.0).abs() < 1e-9);
+        assert!((c[2][1] - 45.0).abs() < 1e-9);
+        assert!((c[3][0] + 5.0).abs() < 1e-9);
+        assert!((c[3][1] - 45.0).abs() < 1e-9);
     }
 }

@@ -1,4 +1,4 @@
-use super::super::Message;
+use super::super::{AecMessage, Message};
 use iced::advanced::layout;
 use iced::advanced::mouse;
 use iced::advanced::overlay;
@@ -1153,23 +1153,23 @@ pub(super) fn viewport_context_menu_overlay(
         use crate::modules::aec::engine::join::JoinOverrideStyle;
         items.push(item(
             t!("Miter").into_owned(),
-            Message::AecJunctionLayerPairSetStyle(JoinOverrideStyle::Miter),
+            Message::Aec(AecMessage::AecJunctionLayerPairSetStyle(JoinOverrideStyle::Miter)),
         ));
         items.push(item(
             t!("Butt").into_owned(),
-            Message::AecJunctionLayerPairSetStyle(JoinOverrideStyle::Butt),
+            Message::Aec(AecMessage::AecJunctionLayerPairSetStyle(JoinOverrideStyle::Butt)),
         ));
         items.push(item(
             t!("Nähere Kante").into_owned(),
-            Message::AecJunctionLayerPairSetStyle(JoinOverrideStyle::NearFace),
+            Message::Aec(AecMessage::AecJunctionLayerPairSetStyle(JoinOverrideStyle::NearFace)),
         ));
         items.push(item(
             t!("Entferntere Kante").into_owned(),
-            Message::AecJunctionLayerPairSetStyle(JoinOverrideStyle::FarFace),
+            Message::Aec(AecMessage::AecJunctionLayerPairSetStyle(JoinOverrideStyle::FarFace)),
         ));
         items.push(item(
             t!("Abbrechen").into_owned(),
-            Message::AecJunctionLayerPairPickCancel,
+            Message::Aec(AecMessage::AecJunctionLayerPairPickCancel),
         ));
         let menu_col = column(items).spacing(0).width(Length::Fixed(200.0));
         let menu = container(menu_col)
@@ -1183,36 +1183,36 @@ pub(super) fn viewport_context_menu_overlay(
         use crate::modules::aec::engine::join::JoinOverrideStyle;
         items.push(item(
             t!("Miter").into_owned(),
-            Message::WallJunctionOverrideSetStyle(JoinOverrideStyle::Miter),
+            Message::Aec(AecMessage::WallJunctionOverrideSetStyle(JoinOverrideStyle::Miter)),
         ));
         items.push(item(
             t!("Butt").into_owned(),
-            Message::WallJunctionOverrideSetStyle(JoinOverrideStyle::Butt),
+            Message::Aec(AecMessage::WallJunctionOverrideSetStyle(JoinOverrideStyle::Butt)),
         ));
         items.push(item(
             t!("Nähere Kante").into_owned(),
-            Message::WallJunctionOverrideSetStyle(JoinOverrideStyle::NearFace),
+            Message::Aec(AecMessage::WallJunctionOverrideSetStyle(JoinOverrideStyle::NearFace)),
         ));
         items.push(item(
             t!("Entferntere Kante").into_owned(),
-            Message::WallJunctionOverrideSetStyle(JoinOverrideStyle::FarFace),
+            Message::Aec(AecMessage::WallJunctionOverrideSetStyle(JoinOverrideStyle::FarFace)),
         ));
         items.push(item(
             t!("Automatisch (zur\u{00fc}cksetzen)").into_owned(),
-            Message::WallJunctionOverrideReset,
+            Message::Aec(AecMessage::WallJunctionOverrideReset),
         ));
         if let Some((axis_handle, end_index)) = junction_menu {
             items.push(item(
                 t!("Schichtverbindung in Zeichnung...").into_owned(),
-                Message::AecJunctionLayerPairPickStart(axis_handle, end_index),
+                Message::Aec(AecMessage::AecJunctionLayerPairPickStart(axis_handle, end_index)),
             ));
             items.push(item(
                 t!("Schichtunterbrechung in Zeichnung...").into_owned(),
-                Message::AecJunctionLayerGapPickStart(axis_handle, end_index),
+                Message::Aec(AecMessage::AecJunctionLayerGapPickStart(axis_handle, end_index)),
             ));
             items.push(item(
                 t!("Detailansicht...").into_owned(),
-                Message::AecJunctionEditorOpen(axis_handle, end_index),
+                Message::Aec(AecMessage::AecJunctionEditorOpen(axis_handle, end_index)),
             ));
         }
         let menu_col = column(items).spacing(0).width(Length::Fixed(220.0));
@@ -1413,7 +1413,7 @@ pub(super) fn viewport_context_menu_overlay(
                 ]
                 .align_y(iced::Center),
             )
-            .on_press(Message::WallJunctionSubmenuToggle)
+            .on_press(Message::Aec(AecMessage::WallJunctionSubmenuToggle))
             .style(button::subtle)
             .padding([4, 12])
             .width(Fill)
@@ -1422,36 +1422,36 @@ pub(super) fn viewport_context_menu_overlay(
         if junction_submenu_open {
             items.push(subitem(
                 t!("Miter").into_owned(),
-                Message::WallJunctionOverrideSetStyle(JoinOverrideStyle::Miter),
+                Message::Aec(AecMessage::WallJunctionOverrideSetStyle(JoinOverrideStyle::Miter)),
             ));
             items.push(subitem(
                 t!("Butt").into_owned(),
-                Message::WallJunctionOverrideSetStyle(JoinOverrideStyle::Butt),
+                Message::Aec(AecMessage::WallJunctionOverrideSetStyle(JoinOverrideStyle::Butt)),
             ));
             items.push(subitem(
                 t!("Nähere Kante").into_owned(),
-                Message::WallJunctionOverrideSetStyle(JoinOverrideStyle::NearFace),
+                Message::Aec(AecMessage::WallJunctionOverrideSetStyle(JoinOverrideStyle::NearFace)),
             ));
             items.push(subitem(
                 t!("Entferntere Kante").into_owned(),
-                Message::WallJunctionOverrideSetStyle(JoinOverrideStyle::FarFace),
+                Message::Aec(AecMessage::WallJunctionOverrideSetStyle(JoinOverrideStyle::FarFace)),
             ));
             items.push(subitem(
                 t!("Automatisch (zur\u{00fc}cksetzen)").into_owned(),
-                Message::WallJunctionOverrideReset,
+                Message::Aec(AecMessage::WallJunctionOverrideReset),
             ));
             if let Some((axis_handle, end_index)) = junction_menu {
                 items.push(subitem(
                     t!("Schichtverbindung in Zeichnung...").into_owned(),
-                    Message::AecJunctionLayerPairPickStart(axis_handle, end_index),
+                    Message::Aec(AecMessage::AecJunctionLayerPairPickStart(axis_handle, end_index)),
                 ));
                 items.push(subitem(
                     t!("Schichtunterbrechung in Zeichnung...").into_owned(),
-                    Message::AecJunctionLayerGapPickStart(axis_handle, end_index),
+                    Message::Aec(AecMessage::AecJunctionLayerGapPickStart(axis_handle, end_index)),
                 ));
                 items.push(subitem(
                     t!("Detailansicht...").into_owned(),
-                    Message::AecJunctionEditorOpen(axis_handle, end_index),
+                    Message::Aec(AecMessage::AecJunctionEditorOpen(axis_handle, end_index)),
                 ));
             }
         }

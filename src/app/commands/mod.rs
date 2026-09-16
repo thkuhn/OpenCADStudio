@@ -216,6 +216,9 @@ impl OpenCADStudio {
         if let Some(t) = self.dispatch_blocks(cmd, i) {
             return Some(t);
         }
+        if let Some(t) = crate::modules::aec::try_dispatch(self, cmd, i) {
+            return Some(t);
+        }
         if let Some(t) = self.dispatch_draw(cmd, i) {
             return Some(t);
         }

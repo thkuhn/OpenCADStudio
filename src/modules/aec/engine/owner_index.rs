@@ -95,12 +95,9 @@ fn write_handles(doc: &mut CadDocument, owner: Handle, tag: &str, handles: &[Han
         xd.add_record(record);
     }
     if let Some(ah) = app_handle {
-        // Only strip raw DWG EED when no AEC records remain; otherwise leave
-        // it alone so other AEC kinds on the same entity are not disturbed.
-        let still_has_aec = xd.records().iter().any(|r| r.application_name == AEC_APPID);
-        if !still_has_aec {
-            xd.raw_dwg_eed.retain(|(a, _)| *a != ah);
-        }
+        // The verbatim DWG blob is per APPID, not per record. Leaving it would
+        // overwrite every structured AEC record (WALL, CHILD_HANDLES, …) on save.
+        xd.raw_dwg_eed.retain(|(a, _)| *a != ah);
     }
     true
 }

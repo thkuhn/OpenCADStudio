@@ -4,7 +4,7 @@ use iced::widget::{button, row, text};
 use iced::{Element, Fill};
 use crate::t;
 
-use crate::app::Message;
+use crate::app::{AecMessage, Message};
 use crate::ui::statusbar::status_menu::Entry;
 
 /// - `current_name`: name of the active `DisplayConfig` for the tab, if any.
@@ -14,12 +14,12 @@ pub fn menu_entries(current_name: Option<&str>, plan_names: Vec<String>) -> Vec<
     let mut entries: Vec<Entry<'static>> = vec![Entry::close(plan_row(
         t!("Kein Plan").into_owned(),
         current_name.is_none(),
-        Message::AecActiveDisplayConfigSelected(None),
+        Message::Aec(AecMessage::AecActiveDisplayConfigSelected(None)),
     ))];
 
     entries.extend(plan_names.into_iter().map(|name| {
         let active = current_name == Some(name.as_str());
-        let msg = Message::AecActiveDisplayConfigSelected(Some(name.clone()));
+        let msg = Message::Aec(AecMessage::AecActiveDisplayConfigSelected(Some(name.clone())));
         Entry::close(plan_row(name, active, msg))
     }));
 
@@ -44,7 +44,7 @@ fn plan_row(label: String, active: bool, msg: Message) -> Element<'static, Messa
 
 fn manage_row() -> Element<'static, Message> {
     button(text(t!("Manage...")).size(11))
-        .on_press(Message::AecPlanManagerOpen)
+        .on_press(Message::Aec(AecMessage::AecPlanManagerOpen))
         .style(button::primary)
         .width(Fill)
         .padding([5, 10])

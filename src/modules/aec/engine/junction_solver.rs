@@ -7,7 +7,7 @@ use glam::DVec3;
 
 use super::join::{
     apply_junction_to_axes, detect_junctions, join_wall_axes_as_l_with_bulges,
-    join_wall_axes_with_bulges, junction_rays, END_MID_TOLERANCE, JoinError, JoinKind, Junction,
+    join_wall_axes_with_bulges, junction_rays, JoinError, JoinKind, Junction,
     JunctionOverride, JunctionRole, LayerRef, JUNCTION_TOLERANCE,
 };
 use super::miter::{
@@ -508,12 +508,12 @@ mod tests {
 
     #[test]
     fn solve_end_near_hit_is_l_not_t() {
-        let near = END_MID_TOLERANCE * 0.4;
+        let near = SOLVER_END_MID_TOLERANCE * 0.4;
         let walls = vec![
             WallJoinInput::from_axis(vec![p(0.0, 0.0), p(10.0, 0.0)]),
             WallJoinInput::from_axis(vec![p(10.0 - near, 0.0), p(10.0 - near, 8.0)]),
         ];
-        let solved = solve(&walls, END_MID_TOLERANCE);
+        let solved = solve(&walls, SOLVER_END_MID_TOLERANCE);
         assert_eq!(solved.len(), 1, "expected one clustered junction, got {solved:?}");
         assert_eq!(solved[0].kind, SolvedJoinKind::L);
         assert!(solved[0]

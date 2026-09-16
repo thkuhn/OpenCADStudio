@@ -1208,7 +1208,7 @@ impl OpenCADStudio {
         let vp_size = (tile_b.width, tile_b.height);
 
         if self
-            .aec_layer_pair_draw
+            .aec.aec_layer_pair_draw
             .as_ref()
             .is_some_and(|pick| !pick.awaiting_style)
         {
@@ -1222,7 +1222,7 @@ impl OpenCADStudio {
             self.update_layer_pair_draw_hover(world);
         }
         if self
-            .aec_layer_gap_draw
+            .aec.aec_layer_gap_draw
             .as_ref()
             .is_some_and(|pick| pick.to.is_none())
         {
@@ -2925,7 +2925,7 @@ impl OpenCADStudio {
         {
             let mut sel = self.tabs[i].scene.selection.borrow_mut();
             if sel.context_menu.take().is_some() {
-                if let Some(pick) = self.aec_layer_pair_draw.as_mut() {
+                if let Some(pick) = self.aec.aec_layer_pair_draw.as_mut() {
                     if pick.awaiting_style {
                         pick.awaiting_style = false;
                         pick.layer_b = None;
@@ -3040,7 +3040,7 @@ impl OpenCADStudio {
         };
 
         if self
-            .aec_layer_pair_draw
+            .aec.aec_layer_pair_draw
             .as_ref()
             .is_some_and(|pick| !pick.awaiting_style)
         {
@@ -3049,7 +3049,7 @@ impl OpenCADStudio {
             return Task::none();
         }
         if self
-            .aec_layer_gap_draw
+            .aec.aec_layer_gap_draw
             .as_ref()
             .is_some_and(|pick| pick.to.is_none())
         {

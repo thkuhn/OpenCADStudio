@@ -1,4 +1,5 @@
 use super::*;
+use crate::app::AecMessage;
 
 impl OpenCADStudio {
     pub(super) fn dispatch_draw(&mut self, cmd: &str, i: usize) -> Option<Task<Message>> {
@@ -996,15 +997,15 @@ impl OpenCADStudio {
                     &mut self.tabs[i].scene.document,
                 );
                 let style_library = crate::modules::aec::engine::project::resolve_style_library(
-                    self.aec_project_explorer_file.as_ref(),
+                    self.aec.aec_project_explorer_file.as_ref(),
                 );
                 let mut new_cmd = WallCommand::new()
                     .with_library(style_library)
                     .with_session_defaults(
-                        self.aec_last_wall_style_id.as_deref(),
-                        self.aec_last_wall_height,
+                        self.aec.aec_last_wall_style_id.as_deref(),
+                        self.aec.aec_last_wall_height,
                     );
-                if let Some(storey) = self.aec_project_explorer_file.as_ref().and_then(|p| {
+                if let Some(storey) = self.aec.aec_project_explorer_file.as_ref().and_then(|p| {
                     p.buildings.iter().find_map(|b| {
                         b.storeys.iter().find(|s| {
                             self.tabs[i].current_path.as_ref().is_some_and(|cur| {
@@ -1034,7 +1035,7 @@ impl OpenCADStudio {
             }
             "AEC_WALL_REFRESH" => {
                 let style_library = crate::modules::aec::engine::project::resolve_style_library(
-                    self.aec_project_explorer_file.as_ref(),
+                    self.aec.aec_project_explorer_file.as_ref(),
                 );
                 crate::modules::aec::commands::aec_wall_refresh(
                     &mut self.tabs[i].scene,
@@ -1072,7 +1073,7 @@ impl OpenCADStudio {
                 if wall_handles.len() >= 2 {
                     let style_library =
                         crate::modules::aec::engine::project::resolve_style_library(
-                            self.aec_project_explorer_file.as_ref(),
+                            self.aec.aec_project_explorer_file.as_ref(),
                         );
                     let (display_rules, style_substitutions) =
                         self.resolve_active_display_config_wall_rules(i, wall_handles.first().copied());
@@ -1087,18 +1088,18 @@ impl OpenCADStudio {
                     self.reapply_active_display_config_to_wall_packages(i, &wall_handles);
                     self.tabs[i].dirty = true;
                 } else {
-                    use crate::modules::aec::commands::WallJoinCommand;
-                    let cmd = WallJoinCommand::new();
+                    let cmd = crate::modules::aec::spawn_command("AEC_WALLJOIN")
+                        .expect("AEC_WALLJOIN is registered in aec::spawn_command");
                     self.command_line.push_info(&cmd.prompt());
-                    self.tabs[i].active_cmd = Some(Box::new(cmd));
+                    self.tabs[i].active_cmd = Some(cmd);
                     self.sync_wall_axis_layer_for_session(i);
                 }
             }
             "AEC_WALLEXTEND" => {
-                use crate::modules::aec::commands::WallExtendCommand;
-                let cmd = WallExtendCommand::new();
+                let cmd = crate::modules::aec::spawn_command("AEC_WALLEXTEND")
+                    .expect("AEC_WALLEXTEND is registered in aec::spawn_command");
                 self.command_line.push_info(&cmd.prompt());
-                self.tabs[i].active_cmd = Some(Box::new(cmd));
+                self.tabs[i].active_cmd = Some(cmd);
                 self.sync_wall_axis_layer_for_session(i);
             }
             "AEC_WALLREVERSE" => {
@@ -1131,7 +1132,7 @@ impl OpenCADStudio {
                 if !wall_handles.is_empty() {
                     let style_library =
                         crate::modules::aec::engine::project::resolve_style_library(
-                            self.aec_project_explorer_file.as_ref(),
+                            self.aec.aec_project_explorer_file.as_ref(),
                         );
                     let (display_rules, style_substitutions) =
                         self.resolve_active_display_config_wall_rules(i, wall_handles.first().copied());
@@ -1169,7 +1170,7 @@ impl OpenCADStudio {
             cmd if cmd.starts_with("AEC_WALLOPENING_DO ") => {
                 let args = cmd["AEC_WALLOPENING_DO ".len()..].to_string();
                 let style_library = crate::modules::aec::engine::project::resolve_style_library(
-                    self.aec_project_explorer_file.as_ref(),
+                    self.aec.aec_project_explorer_file.as_ref(),
                 );
                 let (display_rules, style_substitutions) =
                     self.resolve_active_display_config_wall_rules(i, None);
@@ -1186,7 +1187,7 @@ impl OpenCADStudio {
             cmd if cmd.starts_with("AEC_WALLJOIN_DO ") => {
                 let args = cmd["AEC_WALLJOIN_DO ".len()..].to_string();
                 let style_library = crate::modules::aec::engine::project::resolve_style_library(
-                    self.aec_project_explorer_file.as_ref(),
+                    self.aec.aec_project_explorer_file.as_ref(),
                 );
                 let join_handles: Vec<acadrust::Handle> = args
                     .split('|')
@@ -1214,7 +1215,7 @@ impl OpenCADStudio {
             cmd if cmd.starts_with("AEC_WALLEXTEND_DO ") => {
                 let args = cmd["AEC_WALLEXTEND_DO ".len()..].to_string();
                 let style_library = crate::modules::aec::engine::project::resolve_style_library(
-                    self.aec_project_explorer_file.as_ref(),
+                    self.aec.aec_project_explorer_file.as_ref(),
                 );
                 let first = args
                     .split('|')
@@ -1245,7 +1246,7 @@ impl OpenCADStudio {
             cmd if cmd.starts_with("AEC_WALLREVERSE_DO ") => {
                 let args = cmd["AEC_WALLREVERSE_DO ".len()..].to_string();
                 let style_library = crate::modules::aec::engine::project::resolve_style_library(
-                    self.aec_project_explorer_file.as_ref(),
+                    self.aec.aec_project_explorer_file.as_ref(),
                 );
                 let first = args
                     .parse::<u64>()
@@ -1292,14 +1293,14 @@ impl OpenCADStudio {
                 );
             }
             "AEC_MATERIALMANAGER" => {
-                return Some(Task::done(Message::AecMaterialManagerOpen));
+                return Some(Task::done(Message::Aec(AecMessage::AecMaterialManagerOpen)));
             }
             "AEC_PROJECTEXPLORER" => {
-                return Some(Task::done(Message::AecProjectExplorerOpen));
+                return Some(Task::done(Message::Aec(AecMessage::AecProjectExplorerOpen)));
             }
             "AEC_CONTROLPLANES" => {
                 let path = self.tabs[i].current_path.clone();
-                let storey_ids = self.aec_project_explorer_file.as_ref().and_then(|p| {
+                let storey_ids = self.aec.aec_project_explorer_file.as_ref().and_then(|p| {
                     p.buildings.iter().find_map(|b| {
                         b.storeys.iter().find(|s| {
                             if s.drawing_path.trim().is_empty() {
@@ -1316,7 +1317,7 @@ impl OpenCADStudio {
                     })
                 });
                 if let Some((bid, sid)) = storey_ids {
-                    if let Some(project) = self.aec_project_explorer_file.as_mut() {
+                    if let Some(project) = self.aec.aec_project_explorer_file.as_mut() {
                         if let Some(storey) = project
                             .buildings
                             .iter_mut()
@@ -1329,9 +1330,9 @@ impl OpenCADStudio {
                             );
                         }
                     }
-                    if self.aec_project_explorer_path.is_some() {
-                        let _ = self.aec_project_explorer_file.as_ref().and_then(|p| {
-                            self.aec_project_explorer_path.as_ref().map(|path| p.save(path))
+                    if self.aec.aec_project_explorer_path.is_some() {
+                        let _ = self.aec.aec_project_explorer_file.as_ref().and_then(|p| {
+                            self.aec.aec_project_explorer_path.as_ref().map(|path| p.save(path))
                         });
                     }
                 }
@@ -1346,10 +1347,10 @@ impl OpenCADStudio {
                 self.tabs[i].dirty = true;
             }
             "AEC_STYLEMANAGER" => {
-                return Some(Task::done(Message::AecWallStyleManagerOpen));
+                return Some(Task::done(Message::Aec(AecMessage::AecWallStyleManagerOpen)));
             }
             "AEC_PLANMANAGER" => {
-                return Some(Task::done(Message::AecPlanManagerOpen));
+                return Some(Task::done(Message::Aec(AecMessage::AecPlanManagerOpen)));
             }
 
             // ── Model commands (3D primitives) ─────────────────────────────

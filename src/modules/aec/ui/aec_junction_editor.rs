@@ -12,7 +12,7 @@
 use iced::widget::{button, column, container, row, scrollable, text};
 use iced::{Element, Fill};
 
-use crate::app::Message;
+use crate::app::{AecMessage, Message};
 use crate::modules::aec::commands::JunctionParticipant;
 use crate::modules::aec::engine::join::{
     JoinOverrideStyle, LayerGapOverride, LayerPairOverride, LayerRef,
@@ -169,11 +169,11 @@ pub fn view_window<'a>(state: JunctionEditorState<'a>) -> Element<'a, Message> {
     // ── Node-level default style ──────────────────────────────────────────
     let default_style_row = column![
         text(t!("Standardstil (default_style)")).size(11),
-        style_buttons(default_style.as_ref(), Message::AecJunctionEditorSetDefaultStyle),
+        style_buttons(default_style.as_ref(), |s| Message::Aec(AecMessage::AecJunctionEditorSetDefaultStyle(s))),
         button(text(t!("Zurücksetzen")).size(10))
             .style(button::secondary)
             .padding([3, 8])
-            .on_press(Message::AecJunctionEditorResetDefaultStyle),
+            .on_press(Message::Aec(AecMessage::AecJunctionEditorResetDefaultStyle)),
     ]
     .spacing(6);
 
@@ -219,11 +219,11 @@ pub fn view_window<'a>(state: JunctionEditorState<'a>) -> Element<'a, Message> {
                         button(text(t!("Entfernen")).size(9))
                             .style(button::secondary)
                             .padding([2, 6])
-                            .on_press(Message::AecJunctionEditorRemovePair(idx)),
+                            .on_press(Message::Aec(AecMessage::AecJunctionEditorRemovePair(idx))),
                     ]
                     .spacing(6),
                     style_buttons(Some(&pair.style), move |s| {
-                        Message::AecJunctionEditorSetPairStyle(idx, s)
+                        Message::Aec(AecMessage::AecJunctionEditorSetPairStyle(idx, s))
                     }),
                 ]
                 .spacing(4),
@@ -245,10 +245,10 @@ pub fn view_window<'a>(state: JunctionEditorState<'a>) -> Element<'a, Message> {
             button(text(format!("#{} {}", idx + 1, material_name(library, &layer.material_id))).size(10))
                 .style(if selected { button::primary } else { button::secondary })
                 .padding([3, 6])
-                .on_press(Message::AecJunctionEditorPairLayerAChanged(
+                .on_press(Message::Aec(AecMessage::AecJunctionEditorPairLayerAChanged(
                     idx,
                     layer.material_id.clone(),
-                )),
+                ))),
         );
     }
 
@@ -257,7 +257,7 @@ pub fn view_window<'a>(state: JunctionEditorState<'a>) -> Element<'a, Message> {
         button(text(t!("Außenkante / keine")).size(10))
             .style(if pair_wall_b.is_none() { button::primary } else { button::secondary })
             .padding([3, 6])
-            .on_press(Message::AecJunctionEditorPairWallBChanged(None)),
+            .on_press(Message::Aec(AecMessage::AecJunctionEditorPairWallBChanged(None))),
     );
     for p in &participants {
         if p.axis_handle == axis_handle && p.end_index == end_index {
@@ -268,7 +268,7 @@ pub fn view_window<'a>(state: JunctionEditorState<'a>) -> Element<'a, Message> {
             button(text(format!("Wand #{}", p.axis_handle.value())).size(10))
                 .style(if selected { button::primary } else { button::secondary })
                 .padding([3, 6])
-                .on_press(Message::AecJunctionEditorPairWallBChanged(Some(p.axis_handle))),
+                .on_press(Message::Aec(AecMessage::AecJunctionEditorPairWallBChanged(Some(p.axis_handle)))),
         );
     }
 
@@ -281,7 +281,7 @@ pub fn view_window<'a>(state: JunctionEditorState<'a>) -> Element<'a, Message> {
                     button(text(format!("#{} {}", idx + 1, material_name(library, &l.material_id))).size(10))
                         .style(if selected { button::primary } else { button::secondary })
                         .padding([3, 6])
-                        .on_press(Message::AecJunctionEditorPairLayerBChanged(idx, l.material_id.clone())),
+                        .on_press(Message::Aec(AecMessage::AecJunctionEditorPairLayerBChanged(idx, l.material_id.clone()))),
                 );
             }
         }
@@ -308,7 +308,7 @@ pub fn view_window<'a>(state: JunctionEditorState<'a>) -> Element<'a, Message> {
                     button(text(t!("Entfernen")).size(9))
                         .style(button::secondary)
                         .padding([2, 6])
-                        .on_press(Message::AecJunctionEditorRemoveGap(idx)),
+                        .on_press(Message::Aec(AecMessage::AecJunctionEditorRemoveGap(idx))),
                 ]
                 .spacing(6),
             );
@@ -326,10 +326,10 @@ pub fn view_window<'a>(state: JunctionEditorState<'a>) -> Element<'a, Message> {
             button(text(format!("#{} {}", idx + 1, material_name(library, &layer.material_id))).size(10))
                 .style(if selected { button::primary } else { button::secondary })
                 .padding([3, 6])
-                .on_press(Message::AecJunctionEditorGapLayerChanged(
+                .on_press(Message::Aec(AecMessage::AecJunctionEditorGapLayerChanged(
                     idx,
                     layer.material_id.clone(),
-                )),
+                ))),
         );
     }
 
@@ -344,7 +344,7 @@ pub fn view_window<'a>(state: JunctionEditorState<'a>) -> Element<'a, Message> {
             button(text(format!("Wand #{}", p.axis_handle.value())).size(10))
                 .style(if selected { button::primary } else { button::secondary })
                 .padding([3, 6])
-                .on_press(Message::AecJunctionEditorGapFromWallChanged(Some(p.axis_handle))),
+                .on_press(Message::Aec(AecMessage::AecJunctionEditorGapFromWallChanged(Some(p.axis_handle)))),
         );
     }
     let mut gap_from_row = row![].spacing(4);
@@ -356,7 +356,7 @@ pub fn view_window<'a>(state: JunctionEditorState<'a>) -> Element<'a, Message> {
                     button(text(format!("#{} {}", idx + 1, material_name(library, &l.material_id))).size(10))
                         .style(if selected { button::primary } else { button::secondary })
                         .padding([3, 6])
-                        .on_press(Message::AecJunctionEditorGapFromChanged(idx, l.material_id.clone())),
+                        .on_press(Message::Aec(AecMessage::AecJunctionEditorGapFromChanged(idx, l.material_id.clone()))),
                 );
             }
         }
@@ -369,7 +369,7 @@ pub fn view_window<'a>(state: JunctionEditorState<'a>) -> Element<'a, Message> {
             button(text(format!("Wand #{}", p.axis_handle.value())).size(10))
                 .style(if selected { button::primary } else { button::secondary })
                 .padding([3, 6])
-                .on_press(Message::AecJunctionEditorGapToWallChanged(Some(p.axis_handle))),
+                .on_press(Message::Aec(AecMessage::AecJunctionEditorGapToWallChanged(Some(p.axis_handle)))),
         );
     }
     let mut gap_to_row = row![].spacing(4);
@@ -381,7 +381,7 @@ pub fn view_window<'a>(state: JunctionEditorState<'a>) -> Element<'a, Message> {
                     button(text(format!("#{} {}", idx + 1, material_name(library, &l.material_id))).size(10))
                         .style(if selected { button::primary } else { button::secondary })
                         .padding([3, 6])
-                        .on_press(Message::AecJunctionEditorGapToChanged(idx, l.material_id.clone())),
+                        .on_press(Message::Aec(AecMessage::AecJunctionEditorGapToChanged(idx, l.material_id.clone()))),
                 );
             }
         }
@@ -400,7 +400,7 @@ pub fn view_window<'a>(state: JunctionEditorState<'a>) -> Element<'a, Message> {
         button(text(t!("Unterbrechung hinzufügen")).size(11))
             .style(button::primary)
             .padding([4, 10])
-            .on_press(Message::AecJunctionEditorAddGap),
+            .on_press(Message::Aec(AecMessage::AecJunctionEditorAddGap)),
     ]
     .spacing(4);
 
@@ -413,11 +413,11 @@ pub fn view_window<'a>(state: JunctionEditorState<'a>) -> Element<'a, Message> {
         text(t!("Schicht B")).size(9),
         layer_b_row,
         text(t!("Stil")).size(9),
-        style_buttons(Some(&pair_style), Message::AecJunctionEditorPairStyleChanged),
+        style_buttons(Some(&pair_style), |s| Message::Aec(AecMessage::AecJunctionEditorPairStyleChanged(s))),
         button(text(t!("Paar hinzufügen")).size(11))
             .style(button::primary)
             .padding([4, 10])
-            .on_press(Message::AecJunctionEditorAddPair),
+            .on_press(Message::Aec(AecMessage::AecJunctionEditorAddPair)),
     ]
     .spacing(4);
 
@@ -425,14 +425,14 @@ pub fn view_window<'a>(state: JunctionEditorState<'a>) -> Element<'a, Message> {
         button(text(t!("Speichern")).size(11))
             .style(button::primary)
             .padding([5, 12])
-            .on_press(Message::AecJunctionEditorSave),
+            .on_press(Message::Aec(AecMessage::AecJunctionEditorSave)),
         button(text(t!("Gesamten Override zurücksetzen")).size(11))
             .style(button::danger)
             .padding([5, 12])
-            .on_press(Message::AecJunctionEditorFullReset),
+            .on_press(Message::Aec(AecMessage::AecJunctionEditorFullReset)),
         button(text(t!("Abbrechen")).size(11))
             .padding([5, 12])
-            .on_press(Message::AecJunctionEditorClose),
+            .on_press(Message::Aec(AecMessage::AecJunctionEditorClose)),
     ]
     .spacing(8);
 

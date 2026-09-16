@@ -103,11 +103,11 @@ fn default_role_for(component: DynComponent) -> crate::command::DynRole {
 
 // ── Per-document tab state ─────────────────────────────────────────────────
 
-pub(super) struct DocumentTab {
+pub(crate) struct DocumentTab {
     /// Stable identity across tab insert/remove operations. Background work
     /// must never target a tab by its transient vector index.
     pub(super) id: u64,
-    pub(super) scene: Scene,
+    pub(crate) scene: Scene,
     pub(super) current_path: Option<PathBuf>,
     /// Persistent native edit lease for the drawing currently at
     /// `current_path`. The sidecar portion survives atomic file replacement.
@@ -120,7 +120,7 @@ pub(super) struct DocumentTab {
     /// Disk state observed after open or the latest successful save.
     #[cfg(not(target_arch = "wasm32"))]
     pub(super) disk_fingerprint: Option<crate::io::edit_lock::FileFingerprint>,
-    pub(super) dirty: bool,
+    pub(crate) dirty: bool,
     /// Direct Save is redirected to Save As after open-time repairs so the
     /// source drawing cannot be overwritten accidentally.
     pub(super) recovery_save_as_required: bool,
@@ -130,7 +130,7 @@ pub(super) struct DocumentTab {
     pub(super) tab_title: String,
     pub(super) properties: PropertiesPanel,
     pub(super) layers: LayerPanel,
-    pub(super) active_cmd: Option<Box<dyn CadCommand>>,
+    pub(crate) active_cmd: Option<Box<dyn CadCommand>>,
     /// The selection set the most recent command worked on, captured when a
     /// finishing command drops the live selection — re-selectable with the
     /// "Previous" keyword at any Select objects prompt (#426).
@@ -196,9 +196,9 @@ pub(super) struct DocumentTab {
     /// Name of the `DisplayConfig` (AEC plan/display library) currently
     /// active for this tab, if any (`AEC_PLANMANAGER` Step 5 — in-memory
     /// only, not yet persisted to XDATA/project files; see Step 6).
-    pub(super) active_display_config: Option<String>,
+    pub(crate) active_display_config: Option<String>,
     /// Session 2D/3D/All filter. `None` uses the plan-type default.
-    pub(super) representation_override: Option<
+    pub(crate) representation_override: Option<
         crate::modules::aec::engine::display_component::RepresentationMode,
     >,
     /// Drawing-local AEC styles reconstructed from wall XDATA (not persisted).
@@ -210,7 +210,7 @@ pub(super) struct DocumentTab {
     /// Cannot be closed; the viewport area renders a welcome page instead
     /// of the model-space shader. The scene is still constructed so the
     /// rest of the code can treat it as a normal tab when reading.
-    pub(super) is_start: bool,
+    pub(crate) is_start: bool,
     /// Interactive PAN mode (the PAN command / tool). While active, a left-
     /// button drag pans the view instead of selecting — the only pan path on a
     /// device with no middle mouse button (a trackpad / web client). Exited

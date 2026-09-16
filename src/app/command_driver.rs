@@ -688,7 +688,7 @@ impl OpenCADStudio {
     /// pick-first selector relaunching MOVE on the picked set works this way).
     /// Pure-selection commands (SELECTALL, QSELECT, …) run without an active
     /// command, so `was_active` is false and their selection is preserved.
-    pub(in crate::app) fn apply_cmd_result(&mut self, result: CmdResult) -> Task<Message> {
+    pub(crate) fn apply_cmd_result(&mut self, result: CmdResult) -> Task<Message> {
         let settings = self.tabs[self.active_tab]
             .active_cmd
             .as_ref()
@@ -3493,7 +3493,7 @@ impl OpenCADStudio {
                 wall_owners.dedup();
                 let style_library =
                     crate::modules::aec::engine::project::resolve_style_library(
-                        self.aec_project_explorer_file.as_ref(),
+                        self.aec.aec_project_explorer_file.as_ref(),
                     );
                 let (display_rules, style_substitutions) =
                     self.resolve_active_display_config_wall_rules(i, wall_owners.first().copied());

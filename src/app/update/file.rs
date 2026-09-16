@@ -1435,11 +1435,11 @@ pub(super) fn on_open_file(&mut self) -> Task<Message> {
                 // `aec_plan_library`). Refreshed unconditionally (not just
                 // `get_or_insert_with`) so a freshly opened project's own
                 // library always wins over a stale one from a previous tab.
-                self.aec_plan_library = Some(
-                    crate::modules::aec::engine::project::resolve_display_config_library(
-                        self.aec_project_explorer_file.as_ref(),
-                    ),
+                let (plan_library, _) = crate::modules::aec::properties::on_document_loaded(
+                    &self.tabs[i].scene,
+                    self.aec.aec_project_explorer_file.as_ref(),
                 );
+                self.aec.aec_plan_library = Some(plan_library);
                 self.aec_install_session_styles_for_tab(i);
 
                 // Open-time breakdown so regressions are visible immediately.
@@ -2536,7 +2536,7 @@ pub(super) fn on_open_file(&mut self) -> Task<Message> {
                 .unwrap_or_else(|| "drawing".to_string());
             self.save_dialog_filename = format!("{stem}_recovered.{ext}");
         }
-        self.aec_drop_acknowledged = false;
+        self.aec.aec_drop_acknowledged = false;
         self.on_save_dialog_confirm()
     }
 
@@ -2546,7 +2546,7 @@ pub(super) fn on_open_file(&mut self) -> Task<Message> {
                 // (AEC / application) objects kept only as verbatim
                 // source-version bytes — let the user keep them by saving in the
                 // source version, or proceed and drop them.
-                if !self.aec_drop_acknowledged {
+                if !self.aec.aec_drop_acknowledged {
                     let is_dxf = ext.eq_ignore_ascii_case("dxf");
                     let n = crate::io::dropped_on_save_count(
                         &self.tabs[self.active_tab].scene.document,
@@ -2554,7 +2554,7 @@ pub(super) fn on_open_file(&mut self) -> Task<Message> {
                         is_dxf,
                     );
                     if n > 0 {
-                        self.aec_drop_count = n;
+                        self.aec.aec_drop_count = n;
                         self.active_modal = Some(crate::app::ModalKind::AecDropWarning);
                         return Task::none();
                     }
@@ -2685,7 +2685,7 @@ pub(super) fn on_open_file(&mut self) -> Task<Message> {
     /// AEC-drop warning → "Save anyway": accept the loss and proceed with the
     /// format the user already chose.
     pub(super) fn on_aec_drop_proceed(&mut self) -> Task<Message> {
-        self.aec_drop_acknowledged = true;
+        self.aec.aec_drop_acknowledged = true;
         self.active_modal = Some(crate::app::ModalKind::SaveDialog);
         self.on_save_dialog_confirm()
     }
@@ -2708,7 +2708,7 @@ pub(super) fn on_open_file(&mut self) -> Task<Message> {
             .map(|s| s.to_string_lossy().into_owned())
             .unwrap_or_else(|| self.save_dialog_filename.clone());
         self.save_dialog_filename = stem;
-        self.aec_drop_acknowledged = true;
+        self.aec.aec_drop_acknowledged = true;
         self.active_modal = Some(crate::app::ModalKind::SaveDialog);
         self.on_save_dialog_confirm()
     }

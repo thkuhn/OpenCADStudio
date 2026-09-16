@@ -6,7 +6,7 @@ use iced::widget::{
 };
 use iced::{Background, Border, Color, Element, Fill, Theme};
 
-use crate::app::Message;
+use crate::app::{AecMessage, Message};
 use crate::modules::aec::engine::library::{
     combined_material_entries_with_session, LibrarySource, StyleLibrary,
 };
@@ -163,11 +163,11 @@ pub fn view_window<'a>(
     let sidebar = column![
         row![
             text_input(t!("Search materials…").as_ref(), filter)
-                .on_input(Message::AecStyleManagerFilter)
+                .on_input(|v| Message::Aec(AecMessage::AecStyleManagerFilter(v)))
                 .size(11)
                 .padding([4, 6]),
             button(text("+").size(11))
-                .on_press(Message::AecStyleManagerMaterialNew)
+                .on_press(Message::Aec(AecMessage::AecStyleManagerMaterialNew))
                 .padding([4, 8]),
         ]
         .spacing(4),
@@ -260,7 +260,7 @@ fn material_row<'a>(
         .spacing(6)
         .align_y(iced::Center),
     )
-    .on_press(Message::AecStyleManagerSelectMaterial(material.id.clone()))
+    .on_press(Message::Aec(AecMessage::AecStyleManagerSelectMaterial(material.id.clone())))
     .style(list_style(selected))
     .padding([6, 9])
     .width(Fill)
@@ -290,27 +290,27 @@ fn material_form_view<'a>(
     let mut actions = row![button(text(t!("Save")).size(11))
         .style(button::primary)
         .padding([5, 12])
-        .on_press(Message::AecStyleManagerMaterialSave)]
+        .on_press(Message::Aec(AecMessage::AecStyleManagerMaterialSave))]
     .spacing(8);
 
     if !material_form.is_new {
         actions = actions.push(
             button(text(t!("Duplizieren")).size(11))
                 .padding([5, 12])
-                .on_press(Message::AecStyleManagerMaterialDuplicate),
+                .on_press(Message::Aec(AecMessage::AecStyleManagerMaterialDuplicate)),
         );
         actions = actions.push(
             button(text(t!("Delete")).size(11))
                 .style(button::danger)
                 .padding([5, 12])
-                .on_press(Message::AecStyleManagerMaterialDelete),
+                .on_press(Message::Aec(AecMessage::AecStyleManagerMaterialDelete)),
         );
         // → Standard: only pure project entries without a global counterpart.
         if selected_source == Some(LibrarySource::Project) && !has_standard_counterpart {
             actions = actions.push(
                 button(text(t!("→ Standard")).size(11))
                     .padding([5, 12])
-                    .on_press(Message::AecStyleManagerCopyMaterialToGlobal),
+                    .on_press(Message::Aec(AecMessage::AecStyleManagerCopyMaterialToGlobal)),
             );
         }
         // → Projekt: only Standard entries (copy into the project library).
@@ -318,7 +318,7 @@ fn material_form_view<'a>(
             actions = actions.push(
                 button(text(t!("→ Projekt")).size(11))
                     .padding([5, 12])
-                    .on_press(Message::AecStyleManagerCopyMaterialToProject),
+                    .on_press(Message::Aec(AecMessage::AecStyleManagerCopyMaterialToProject)),
             );
         }
     }
@@ -330,7 +330,7 @@ fn material_form_view<'a>(
         row![
             text(t!("Name")).size(10).style(muted).width(100),
             text_input("", material_form.name)
-                .on_input(Message::AecStyleManagerMaterialNameChanged)
+                .on_input(|v| Message::Aec(AecMessage::AecStyleManagerMaterialNameChanged(v)))
                 .size(11)
                 .padding([4, 6]),
         ]
@@ -338,7 +338,7 @@ fn material_form_view<'a>(
         row![
             text(t!("Category")).size(10).style(muted).width(100),
             text_input("", material_form.category)
-                .on_input(Message::AecStyleManagerMaterialCategoryChanged)
+                .on_input(|v| Message::Aec(AecMessage::AecStyleManagerMaterialCategoryChanged(v)))
                 .size(11)
                 .padding([4, 6]),
         ]
@@ -349,8 +349,8 @@ fn material_form_view<'a>(
                 material_form.hatch,
                 material_form.hatch_picker_open,
                 None,
-                Message::AecStyleManagerMaterialHatchPickerToggle,
-                Message::AecStyleManagerMaterialHatchSelected,
+                Message::Aec(AecMessage::AecStyleManagerMaterialHatchPickerToggle),
+                |v| Message::Aec(AecMessage::AecStyleManagerMaterialHatchSelected(v)),
             ),
         ]
         .spacing(8),
@@ -364,8 +364,8 @@ fn material_form_view<'a>(
                     by_block: false,
                     ..Default::default()
                 },
-                Message::AecStyleManagerMaterialColorPicked,
-                Message::AecStyleManagerMaterialColorPickerToggle,
+                |v| Message::Aec(AecMessage::AecStyleManagerMaterialColorPicked(v)),
+                Message::Aec(AecMessage::AecStyleManagerMaterialColorPickerToggle),
                 Message::OpenColorWindow(
                     crate::app::ColorPickTarget::AecMaterial,
                     hex_to_acad_color(material_form.color),
@@ -396,9 +396,9 @@ fn material_form_view<'a>(
                         }
                         _ => 0xFFFFFF,
                     };
-                    Message::AecStyleManagerMaterialHatchColorChanged(value)
+                    Message::Aec(AecMessage::AecStyleManagerMaterialHatchColorChanged(value))
                 },
-                Message::AecStyleManagerMaterialHatchColorPickerToggle,
+                Message::Aec(AecMessage::AecStyleManagerMaterialHatchColorPickerToggle),
                 Message::OpenColorWindow(
                     crate::app::ColorPickTarget::AecMaterialHatch,
                     hatch_acad,
@@ -410,7 +410,7 @@ fn material_form_view<'a>(
         row![
             text(t!("Hatch scale")).size(10).style(muted).width(100),
             text_input("1.0", material_form.hatch_scale)
-                .on_input(Message::AecStyleManagerMaterialHatchScaleChanged)
+                .on_input(|v| Message::Aec(AecMessage::AecStyleManagerMaterialHatchScaleChanged(v)))
                 .size(11)
                 .padding([4, 6])
                 .width(180),
@@ -419,12 +419,12 @@ fn material_form_view<'a>(
         row![
             text(t!("Hatch angle")).size(10).style(muted).width(100),
             text_input("0.0", material_form.hatch_angle)
-                .on_input(Message::AecStyleManagerMaterialHatchAngleChanged)
+                .on_input(|v| Message::Aec(AecMessage::AecStyleManagerMaterialHatchAngleChanged(v)))
                 .size(11)
                 .padding([4, 6])
                 .width(90),
             iced::widget::checkbox(material_form.hatch_angle_relative)
-                .on_toggle(|_| Message::AecStyleManagerMaterialHatchAngleRelativeToggle)
+                .on_toggle(|_| Message::Aec(AecMessage::AecStyleManagerMaterialHatchAngleRelativeToggle))
                 .size(13),
             text(t!("Relativ zur Wand")).size(11),
         ]
@@ -436,14 +436,14 @@ fn material_form_view<'a>(
                 material_form.line_type,
                 material_form.linetype_items,
                 material_form.linetype_combo,
-                Message::AecStyleManagerMaterialLineTypeChanged,
+                |v| Message::Aec(AecMessage::AecStyleManagerMaterialLineTypeChanged(v)),
             ),
         ]
         .spacing(8),
         row![
             text(t!("Render ref")).size(10).style(muted).width(100),
             text_input("", material_form.render_material_ref)
-                .on_input(Message::AecStyleManagerMaterialRenderRefChanged)
+                .on_input(|v| Message::Aec(AecMessage::AecStyleManagerMaterialRenderRefChanged(v)))
                 .size(11)
                 .padding([4, 6]),
         ]

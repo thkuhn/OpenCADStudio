@@ -4,7 +4,7 @@ use iced::widget::{button, row, text};
 use iced::{Element, Fill};
 use crate::t;
 
-use crate::app::Message;
+use crate::app::{AecMessage, Message};
 use crate::modules::aec::engine::display_component::RepresentationMode;
 use crate::ui::statusbar::status_menu::Entry;
 
@@ -12,7 +12,7 @@ pub fn menu_entries(current: Option<RepresentationMode>) -> Vec<Entry<'static>> 
     let mut entries = vec![Entry::close(mode_row(
         t!("Planart").into_owned(),
         current.is_none(),
-        Message::AecRepresentationOverrideSelected(None),
+        Message::Aec(AecMessage::AecRepresentationOverrideSelected(None)),
     ))];
     for (label, mode) in [
         (t!("2D").into_owned(), RepresentationMode::TwoD),
@@ -23,7 +23,7 @@ pub fn menu_entries(current: Option<RepresentationMode>) -> Vec<Entry<'static>> 
         entries.push(Entry::close(mode_row(
             label,
             active,
-            Message::AecRepresentationOverrideSelected(Some(mode)),
+            Message::Aec(AecMessage::AecRepresentationOverrideSelected(Some(mode))),
         )));
     }
     entries

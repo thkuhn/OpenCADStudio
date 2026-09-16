@@ -60,14 +60,14 @@ impl OpenCADStudio {
                 .unwrap_or_else(|| self.tabs[tab_idx].tab_display_name());
             self.save_dialog_filename = format!("{stem}_recovered.{ext}");
         }
-        self.aec_drop_acknowledged = false;
+        self.aec.aec_drop_acknowledged = false;
         self.active_modal = Some(crate::app::ModalKind::SaveDialog);
         Task::none()
     }
 
 
     pub(in crate::app) fn close_save_dialog_window(&mut self) -> Task<Message> {
-        self.aec_drop_acknowledged = false;
+        self.aec.aec_drop_acknowledged = false;
         if self.active_modal == Some(crate::app::ModalKind::SaveDialog) {
             self.active_modal = None;
             self.reset_modal_geometry();

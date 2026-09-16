@@ -36,6 +36,9 @@ pub struct Wall {
     pub hatch_override: Option<ComponentStyleOverride>,
     pub base_plane_id: Option<uuid::Uuid>,
     pub top_plane_id: Option<uuid::Uuid>,
+    /// Last persisted plane names (XDATA); used when the project is not loaded.
+    pub base_plane_name: Option<String>,
+    pub top_plane_name: Option<String>,
     pub base_offset: f64,
     pub top_offset: f64,
     pub base_origin: [f64; 3],
@@ -118,6 +121,8 @@ impl Wall {
             hatch_override: None,
             base_plane_id: None,
             top_plane_id: None,
+            base_plane_name: None,
+            top_plane_name: None,
             base_offset: 0.0,
             top_offset: 0.0,
             base_origin: [0.0, 0.0, 0.0],
@@ -136,6 +141,8 @@ impl Wall {
     ) {
         self.base_plane_id = Some(storey.floor_plane_id);
         self.top_plane_id = Some(storey.ceiling_plane_id);
+        self.base_plane_name = storey.plane(storey.floor_plane_id).map(|p| p.name.clone());
+        self.top_plane_name = storey.plane(storey.ceiling_plane_id).map(|p| p.name.clone());
         self.rebake_planes(storey, x, y);
     }
 
@@ -145,27 +152,69 @@ impl Wall {
         x: f64,
         y: f64,
     ) {
-        use crate::modules::aec::engine::control_plane::resolve_wall_height;
-        let Some(base) = self
-            .base_plane_id
-            .and_then(|id| storey.plane(id).cloned())
-        else {
+        self.rebake_lookup(|id| storey.plane(id).cloned(), x, y);
+    }
+
+    pub fn rebake_from_project(
+        &mut self,
+        project: &crate::modules::aec::engine::project::ProjectFile,
+        x: f64,
+        y: f64,
+    ) {
+        self.rebake_lookup(|id| project.control_plane(id).cloned(), x, y);
+    }
+
+    fn rebake_lookup(
+        &mut self,
+        lookup: impl Fn(uuid::Uuid) -> Option<crate::modules::aec::engine::control_plane::ControlPlane>,
+        x: f64,
+        y: f64,
+    ) {
+        use crate::modules::aec::engine::control_plane::{
+            intersect_vertical_at_xy, resolve_wall_height,
+        };
+        let Some(base) = self.base_plane_id.and_then(&lookup) else {
             return;
         };
-        let Some(top) = self
-            .top_plane_id
-            .and_then(|id| storey.plane(id).cloned())
-        else {
-            return;
-        };
-        self.base_origin = base.origin;
         self.base_normal = base.unit_normal();
+        let offset_base = base.offset(self.base_offset);
+        if let Some(pt) = intersect_vertical_at_xy(x, y, &offset_base) {
+            self.base_origin = pt;
+        } else {
+            self.base_origin = offset_base.origin;
+        }
+        let Some(top) = self.top_plane_id.and_then(&lookup) else {
+            return;
+        };
         self.top_origin = top.origin;
         self.top_normal = top.unit_normal();
         if let Some(h) = resolve_wall_height(x, y, &base, &top, self.base_offset, self.top_offset) {
             if h.abs() > 1e-9 {
                 self.height = h.abs();
             }
+        }
+    }
+
+    /// Shift the wall base along its normal by Δ(base offset). Height is
+    /// adjusted so the top world-Z stays put; top offset only changes height.
+    pub fn apply_plane_offsets(&mut self, base: Option<f64>, top: Option<f64>) {
+        let old_base = self.base_offset;
+        let old_top = self.top_offset;
+        if let Some(v) = base {
+            self.base_offset = v;
+        }
+        if let Some(v) = top {
+            self.top_offset = v;
+        }
+        let db = self.base_offset - old_base;
+        let dt = self.top_offset - old_top;
+        let n = self.base_normal;
+        self.base_origin[0] += n[0] * db;
+        self.base_origin[1] += n[1] * db;
+        self.base_origin[2] += n[2] * db;
+        let h = self.height - db + dt;
+        if h.abs() > 1e-9 {
+            self.height = h.abs();
         }
     }
 
@@ -241,6 +290,54 @@ mod tests {
             layer_id: uuid::Uuid::new_v4(),
         });
         assert!((wall.volume(5.0) - 2.8).abs() < 1e-9);
+    }
+
+    #[test]
+    fn base_plane_sets_wall_base_z() {
+        use crate::modules::aec::engine::project::StoreyRef;
+        let storey = StoreyRef::new_with_height("EG", 3.0, 2.8, "eg.dwg");
+        let mut wall = Wall::new("s", 2.5, 0);
+        wall.base_origin[2] = 0.0;
+        wall.base_plane_id = Some(storey.floor_plane_id);
+        wall.rebake_planes(&storey, 1.0, 2.0);
+        assert!((wall.base_origin[2] - 3.0).abs() < 1e-9);
+        assert!((wall.height - 2.5).abs() < 1e-9);
+        wall.base_offset = 0.1;
+        wall.rebake_planes(&storey, 1.0, 2.0);
+        assert!((wall.base_origin[2] - 3.1).abs() < 1e-9);
+    }
+
+    #[test]
+    fn rebake_base_and_top_from_different_storeys() {
+        use crate::modules::aec::engine::project::{Building, ProjectFile, StoreyRef};
+        let eg = StoreyRef::new_with_height("EG", 0.0, 3.0, "eg.dwg");
+        let og = StoreyRef::new_with_height("OG", 3.0, 3.0, "og.dwg");
+        let eg_floor = eg.floor_plane_id;
+        let og_top = og.ceiling_plane_id;
+        let mut project = ProjectFile::default();
+        let mut building = Building::new("B");
+        building.storeys.push(eg);
+        building.storeys.push(og);
+        project.buildings.push(building);
+        let mut wall = Wall::new("s", 2.5, 0);
+        wall.base_origin[2] = 3.0;
+        wall.base_plane_id = Some(eg_floor);
+        wall.top_plane_id = Some(og_top);
+        wall.rebake_from_project(&project, 0.0, 0.0);
+        assert!((wall.base_origin[2] - 0.0).abs() < 1e-9);
+        assert!((wall.height - 6.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn apply_base_offset_moves_underside_not_top() {
+        let mut wall = Wall::new("s", 3.0, 0);
+        wall.base_origin[2] = 0.0;
+        wall.apply_plane_offsets(Some(0.2), None);
+        assert!((wall.base_origin[2] - 0.2).abs() < 1e-9);
+        assert!((wall.height - 2.8).abs() < 1e-9);
+        wall.apply_plane_offsets(None, Some(-0.1));
+        assert!((wall.base_origin[2] - 0.2).abs() < 1e-9);
+        assert!((wall.height - 2.7).abs() < 1e-9);
     }
 
     #[test]

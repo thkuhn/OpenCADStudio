@@ -33,9 +33,13 @@ pub struct HatchInstance {
     pub draw_depth: f32,            // 104
     /// Gradient shape (`GradientKind::shader_kind`), bit 4 = inverted stops.
     pub grad_kind: u32,             // 108
+    /// World Z of the fill plane (high half).
+    pub world_z: f32,               // 112
+    pub world_z_low: f32,           // 116
+    pub _pad_z: [f32; 2],           // 120
 }
 
-const _: () = assert!(std::mem::size_of::<HatchInstance>() == 112);
+const _: () = assert!(std::mem::size_of::<HatchInstance>() == 128);
 
 /// Split a hatch's f64 world-origin anchor into double-single (high, low) f32
 /// pairs so the GPU keeps sub-unit precision at UTM-scale coordinates.
@@ -44,6 +48,12 @@ fn split_origin_ds(o: [f64; 2]) -> ([f32; 2], [f32; 2]) {
     let hx = o[0] as f32;
     let hy = o[1] as f32;
     ([hx, hy], [(o[0] - hx as f64) as f32, (o[1] - hy as f64) as f32])
+}
+
+fn split_z_ds(h: &HatchModel) -> (f32, f32) {
+    let z = h.fill_plane.map(|p| p.origin[2]).unwrap_or(0.0);
+    let hi = z as f32;
+    (hi, (z - hi as f64) as f32)
 }
 
 /// Mirrors the per-family struct used by the existing per-hatch shader,
@@ -342,6 +352,7 @@ impl StorageHatchBatch {
                 // Empty / all-NaN — skip but keep the slot so indices
                 // stay in lockstep with the input list (visibility=0).
                 let (wo_hi, wo_lo) = split_origin_ds(h.world_origin);
+                let (wz_hi, wz_lo) = split_z_ds(h);
                 instances.push(HatchInstance {
                     color: h.color,
                     color2,
@@ -360,11 +371,15 @@ impl StorageHatchBatch {
                     family_count,
                     draw_depth: if group.len() == 1 { h.draw_depth } else { 0.0 },
                     grad_kind,
+                    world_z: wz_hi,
+                    world_z_low: wz_lo,
+                    _pad_z: [0.0; 2],
                 });
                 continue;
             }
 
             let (wo_hi, wo_lo) = split_origin_ds(h.world_origin);
+            let (wz_hi, wz_lo) = split_z_ds(h);
             instances.push(HatchInstance {
                 color: h.color,
                 color2,
@@ -383,6 +398,9 @@ impl StorageHatchBatch {
                 family_count,
                 draw_depth: if group.len() == 1 { h.draw_depth } else { 0.0 },
                 grad_kind,
+                world_z: wz_hi,
+                world_z_low: wz_lo,
+                _pad_z: [0.0; 2],
             });
         }
         // Empty fallbacks — storage buffers can't be zero-sized.

@@ -4,7 +4,7 @@
 use iced::widget::{button, column, container, row, scrollable, text, text_input, Space};
 use iced::{Element, Fill};
 
-use crate::app::{AecProjectExplorerDeleteTarget, Message};
+use crate::app::{AecMessage, AecProjectExplorerDeleteTarget, Message};
 use crate::modules::aec::engine::project::{Building, ProjectFile, StoreyRef};
 use crate::t;
 use crate::tr;
@@ -28,6 +28,7 @@ pub struct ProjectExplorerState<'a> {
     pub edit_building_name: &'a str,
     /// A delete awaiting confirmation, rendered as an inline Yes/No prompt.
     pub pending_delete: Option<AecProjectExplorerDeleteTarget>,
+    pub ffl0_nn: &'a str,
 }
 
 pub fn view_window<'a>(
@@ -41,23 +42,23 @@ pub fn view_window<'a>(
 
     let mut migrate_button = button(text(t!("Bibliotheken migrieren")).size(11)).padding([5, 10]);
     if project.is_some() {
-        migrate_button = migrate_button.on_press(Message::AecProjectExplorerMigrateLibraries);
+        migrate_button = migrate_button.on_press(Message::Aec(AecMessage::AecProjectExplorerMigrateLibraries));
     }
 
     let toolbar = row![
         button(text(t!("New Project")).size(11))
             .padding([5, 10])
-            .on_press(Message::AecProjectExplorerNew),
+            .on_press(Message::Aec(AecMessage::AecProjectExplorerNew)),
         button(text(t!("Open…")).size(11))
             .padding([5, 10])
-            .on_press(Message::AecProjectExplorerLoad),
+            .on_press(Message::Aec(AecMessage::AecProjectExplorerLoad)),
         button(text(t!("Save")).size(11))
             .style(button::primary)
             .padding([5, 10])
-            .on_press(Message::AecProjectExplorerSave),
+            .on_press(Message::Aec(AecMessage::AecProjectExplorerSave)),
         button(text(t!("Save As…")).size(11))
             .padding([5, 10])
-            .on_press(Message::AecProjectExplorerSaveAs),
+            .on_press(Message::Aec(AecMessage::AecProjectExplorerSaveAs)),
         migrate_button,
         Space::new().width(Fill),
         text(path_label).size(10).style(muted),
@@ -77,7 +78,18 @@ pub fn view_window<'a>(
         .into(),
     };
 
-    let mut content = column![toolbar].spacing(10);
+    let nn_row = row![
+        text(t!("aec.ffl0-nn")).size(11).style(muted),
+        text_input(t!("aec.ffl0-nn-placeholder").as_ref(), state.ffl0_nn)
+            .on_input(|v| Message::Aec(AecMessage::AecProjectExplorerFfl0NnChanged(v)))
+            .size(11)
+            .padding([4, 6])
+            .width(120),
+    ]
+    .spacing(8)
+    .align_y(iced::Center);
+
+    let mut content = column![toolbar, nn_row].spacing(10);
     if let Some(bar) = delete_confirm_bar(project, state.pending_delete) {
         content = content.push(bar);
     }
@@ -124,11 +136,11 @@ fn delete_confirm_bar<'a>(
                 Space::new().width(Fill),
                 button(text(t!("Cancel")).size(11))
                     .padding([4, 10])
-                    .on_press(Message::AecProjectExplorerCancelDelete),
+                    .on_press(Message::Aec(AecMessage::AecProjectExplorerCancelDelete)),
                 button(text(t!("Delete")).size(11))
                     .style(button::danger)
                     .padding([4, 10])
-                    .on_press(Message::AecProjectExplorerConfirmDelete),
+                    .on_press(Message::Aec(AecMessage::AecProjectExplorerConfirmDelete)),
             ]
             .spacing(8)
             .align_y(iced::Center),
@@ -187,7 +199,7 @@ fn building_row<'a>(
         .spacing(6)
         .align_y(iced::Center),
     )
-    .on_press(Message::AecProjectExplorerSelectBuilding(bid))
+    .on_press(Message::Aec(AecMessage::AecProjectExplorerSelectBuilding(bid)))
     .style(list_style(selected))
     .padding([6, 9])
     .width(Fill);
@@ -205,18 +217,18 @@ fn building_row<'a>(
             Space::new().width(20),
             text(t!("Name")).size(10).style(muted),
             text_input("", state.edit_building_name)
-                .on_input(move |v| Message::AecProjectExplorerEditBuildingName(bid, v))
+                .on_input(move |v| Message::Aec(AecMessage::AecProjectExplorerEditBuildingName(bid, v)))
                 .size(11)
                 .padding([3, 6])
                 .width(Fill),
             button(text(t!("Save")).size(10))
                 .style(button::primary)
                 .padding([3, 8])
-                .on_press(Message::AecProjectExplorerSaveBuildingEdits(bid)),
+                .on_press(Message::Aec(AecMessage::AecProjectExplorerSaveBuildingEdits(bid))),
             button(text(t!("Delete")).size(10))
                 .style(button::danger)
                 .padding([3, 8])
-                .on_press(Message::AecProjectExplorerRequestDeleteBuilding(bid)),
+                .on_press(Message::Aec(AecMessage::AecProjectExplorerRequestDeleteBuilding(bid))),
         ]
         .spacing(8)
         .align_y(iced::Center),
@@ -239,18 +251,24 @@ fn storey_row<'a>(
         .style(button::primary)
         .padding([4, 8]);
     if has_drawing {
-        open_button = open_button.on_press(Message::AecProjectExplorerOpenStorey(bid, sid));
+        open_button = open_button.on_press(Message::Aec(AecMessage::AecProjectExplorerOpenStorey(bid, sid)));
     }
     let settings_button = button(text(t!("Settings…")).size(10))
         .padding([4, 8])
-        .on_press(Message::AecStoreySettingsOpen(bid, sid));
+        .on_press(Message::Aec(AecMessage::AecStoreySettingsOpen(bid, sid)));
     row![
         button(
             row![
                 Space::new().width(14),
                 column![
                     text(storey.name.as_str()).size(12),
-                    text(tr!("aec", "elev-path", elev = elev.as_str(), path = storey.drawing_path.as_str()))
+                    text(tr!(
+                        "aec",
+                        "storey-list-meta",
+                        location = elev.as_str(),
+                        height = format!("{:.3}", storey.derived_height()),
+                        path = storey.drawing_path.as_str()
+                    ))
                         .size(10)
                         .style(muted),
                 ]
@@ -260,7 +278,7 @@ fn storey_row<'a>(
             .spacing(8)
             .align_y(iced::Center),
         )
-        .on_press(Message::AecProjectExplorerSelectStorey(bid, sid))
+        .on_press(Message::Aec(AecMessage::AecProjectExplorerSelectStorey(bid, sid)))
         .style(list_style(selected))
         .padding([6, 9])
         .width(Fill),
@@ -278,12 +296,12 @@ fn add_building_form<'a>(name: &'a str) -> Element<'a, Message> {
         section_title(t!("Add Building")),
         row![
             text_input(t!("Building name").as_ref(), name)
-                .on_input(Message::AecProjectExplorerNewBuildingNameChanged)
+                .on_input(|v| Message::Aec(AecMessage::AecProjectExplorerNewBuildingNameChanged(v)))
                 .size(11)
                 .padding([4, 6]),
             button(text(t!("Add")).size(11))
                 .padding([4, 10])
-                .on_press(Message::AecProjectExplorerAddBuilding),
+                .on_press(Message::Aec(AecMessage::AecProjectExplorerAddBuilding)),
         ]
         .spacing(6),
     ]
@@ -309,16 +327,16 @@ fn add_storey_form<'a>(project: &'a ProjectFile, state: &ProjectExplorerState<'a
         row![
             text(t!("Name")).size(10).style(muted).width(70),
             text_input("", state.new_storey_name)
-                .on_input(Message::AecProjectExplorerNewStoreyNameChanged)
+                .on_input(|v| Message::Aec(AecMessage::AecProjectExplorerNewStoreyNameChanged(v)))
                 .size(11)
                 .padding([4, 6]),
         ]
         .spacing(8)
         .align_y(iced::Center),
         row![
-            text(t!("Elevation")).size(10).style(muted).width(70),
+            text(t!("aec.storey-location")).size(10).style(muted).width(70),
             text_input("0.0", state.new_storey_elevation)
-                .on_input(Message::AecProjectExplorerNewStoreyElevationChanged)
+                .on_input(|v| Message::Aec(AecMessage::AecProjectExplorerNewStoreyElevationChanged(v)))
                 .size(11)
                 .padding([4, 6]),
         ]
@@ -327,19 +345,19 @@ fn add_storey_form<'a>(project: &'a ProjectFile, state: &ProjectExplorerState<'a
         row![
             text(t!("Drawing")).size(10).style(muted).width(70),
             text_input(t!("path/to/storey.dwg").as_ref(), state.new_storey_drawing)
-                .on_input(Message::AecProjectExplorerNewStoreyDrawingChanged)
+                .on_input(|v| Message::Aec(AecMessage::AecProjectExplorerNewStoreyDrawingChanged(v)))
                 .size(11)
                 .padding([4, 6]),
             button(text("…").size(11))
                 .padding([4, 8])
-                .on_press(Message::AecProjectExplorerPickStoreyDrawing),
+                .on_press(Message::Aec(AecMessage::AecProjectExplorerPickStoreyDrawing)),
         ]
         .spacing(6)
         .align_y(iced::Center),
         button(text(t!("Add Storey")).size(11))
             .style(button::primary)
             .padding([5, 12])
-            .on_press(Message::AecProjectExplorerAddStorey),
+            .on_press(Message::Aec(AecMessage::AecProjectExplorerAddStorey)),
     ]
     .spacing(5)
     .into()

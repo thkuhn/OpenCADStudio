@@ -721,7 +721,7 @@ impl OpenCADStudio {
     /// mouse-move event, so without this the rubber-band preview keeps
     /// dangling from the previous `last_point` until the user actually
     /// moves the mouse. See #32.
-    pub(in crate::app) fn refresh_active_cmd_preview(&mut self, i: usize) {
+    pub(crate) fn refresh_active_cmd_preview(&mut self, i: usize) {
         if self.tabs[i].active_cmd.is_none() {
             return;
         }
