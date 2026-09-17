@@ -3,7 +3,6 @@ use super::{OpenCADStudio, VARIES_LABEL};
 use crate::io::linetypes;
 use crate::scene::view::dispatch;
 use crate::scene::model::object::PropValue;
-use crate::scene::view::dispatch;
 use crate::t;
 use crate::ui;
 use acadrust::types::{Transform, Vector3};
@@ -32,7 +31,7 @@ fn visual_style_properties_text(style: &acadrust::objects::VisualStyle) -> Strin
 impl OpenCADStudio {
     /// Rebuild the PropertiesPanel from the current entity selection.
     /// Preserves UI state (open pickers, edit buffer) across refreshes.
-    pub(super) fn refresh_properties(&mut self) {
+    pub(crate) fn refresh_properties(&mut self) {
         // A 186 468-entity selection spends ~112 ms in here. Split it into the
         // three phases that can own that: resolving the selected handles,
         // building the panel, and syncing the ribbon.
@@ -53,7 +52,7 @@ impl OpenCADStudio {
         // Section state belongs to the app, not a drawing tab, so the user's
         // collapsed sections carry across every currently open drawing/project.
         // The empty app-level default keeps a first-run palette fully expanded.
-        let collapsed_sections = self.collapsed_property_sections.clone();
+        let _collapsed_sections = self.collapsed_property_sections.clone();
         // Which entities the previous panel was built for — an uncommitted
         // edit buffer only survives a rebuild for the *same* selection.
         let prev_handles = std::mem::take(&mut self.tabs[i].properties.source_handles);
@@ -442,6 +441,41 @@ impl OpenCADStudio {
                                 read_only(t!("Visual Style").as_ref(), tab.visual_style.clone()),
                             ],
                         },
+                        PropSection {
+                            title: t!("Parameters").into_owned(),
+                            props: {
+                                let mut props = vec![Property {
+                                    label: String::new(),
+                                    field: "show_constraint_values",
+                                    value: PropValue::ParamsVisibilityToggle(
+                                        self.show_constraint_values,
+                                    ),
+                                }];
+                                props.extend(scene
+                                    .named_parameters()
+                                    .iter()
+                                    .enumerate()
+                                    .map(|(index, parameter)| Property {
+                                        label: String::new(),
+                                        field: "named_parameter",
+                                        value: PropValue::ParamRow {
+                                            index,
+                                            name: parameter.name.clone(),
+                                            formula: parameter.source.clone(),
+                                            resolved: scene
+                                                .named_parameters()
+                                                .resolve(&parameter.name)
+                                                .map_err(|error| error.to_string()),
+                                        },
+                                    }));
+                                props.push(Property {
+                                    label: String::new(),
+                                    field: "named_parameter_add",
+                                    value: PropValue::ParamAddRow,
+                                });
+                                props
+                            },
+                        },
                     ];
                     ui::PropertiesPanel {
                         title: t!("No selection").into_owned(),
@@ -495,6 +529,14 @@ impl OpenCADStudio {
                         );
                     let mut sections =
                         dispatch::properties_sectioned(handle, entity, &text_style_names);
+                    crate::modules::aec::properties::extend_entity_sections(
+                        &self.tabs[i].scene,
+                        handle,
+                        entity,
+                        self.aec.aec_style_library.as_ref(),
+                        self.aec.aec_project_explorer_file.as_ref(),
+                        &mut sections,
+                    );
                     if compact_solid {
                         retain_compact_solid_sections(&mut sections);
                     }
@@ -2304,7 +2346,13 @@ impl OpenCADStudio {
                         .map(|(handle, entity)| (*handle, entity.as_ref()))
                         .collect();
                     let t_local = t_arm.map(|t| t.elapsed().as_secs_f64() * 1000.0);
-                    let mut sections = aggregate_sections(&local_refs, &text_style_names);
+                    let mut sections = aggregate_sections(
+                        &local_refs,
+                        &text_style_names,
+                        self.aec.aec_style_library.as_ref(),
+                        self.aec.aec_project_explorer_file.as_ref(),
+                        Some(&self.tabs[i].scene),
+                    );
                     if let (Some(t), Some(groups_ms), Some(filter_ms), Some(local_ms)) =
                         (t_arm, t_groups, t_filter, t_local)
                     {
@@ -2321,13 +2369,6 @@ filter={:.1} local={:.1} aggregate={:.1} entities={}",
                         }
                     }
                     let compact_solids = local_refs.iter().all(|(handle, _)| {
-                    let mut sections = aggregate_sections(
-                                            &local_refs,
-                                            &text_style_names,
-                                            self.aec.aec_style_library.as_ref(),
-                                            self.aec.aec_project_explorer_file.as_ref(),
-                    );
-                    if local_refs.iter().all(|(handle, _)| {
                         crate::scene::model::solid_history::has_compact_solid_properties(
                             &self.tabs[i].scene.document,
                             *handle,
@@ -2402,7 +2443,6 @@ filter={:.1} local={:.1} aggregate={:.1} entities={}",
                 None
             };
             panel.expanded_groups = expanded_groups;
-            panel.collapsed_sections = collapsed_sections;
             panel.source_handles = new_handles;
             panel.prop_vertex = prop_vertex;
             panel.prop_vertex_indicator_active = prop_vertex_indicator_active;
@@ -3289,29 +3329,27 @@ pub(super) fn aggregate_sections(
     text_style_names: &[String],
     style_library: Option<&crate::modules::aec::engine::library::StyleLibrary>,
     project: Option<&crate::modules::aec::engine::project::ProjectFile>,
+    scene: Option<&crate::scene::Scene>,
 ) -> Vec<crate::scene::model::object::PropSection> {
     if selected.is_empty() {
         return vec![];
     }
 
-    let mut entities = selected.iter();
-    let Some((handle, entity)) = entities.next() else {
-        return vec![];
-    };
-    let mut result = dispatch::properties_sectioned(*handle, entity, text_style_names);
-    for (handle, entity) in entities {
-        // Nothing in common left to narrow: every later entity can only
-        // intersect against an empty set.
-        if result.is_empty() {
-            break;
-        }
-        let sections = dispatch::properties_sectioned(*handle, entity, text_style_names);
     let mut all_sections: Vec<Vec<crate::scene::model::object::PropSection>> = selected
         .iter()
-        .map(|(_handle, entity)| {
+        .map(|(handle, entity)| {
             let mut sections =
-                dispatch::properties_sectioned(*_handle, entity, text_style_names);
-            if let Some(wall_section) =
+                dispatch::properties_sectioned(*handle, entity, text_style_names);
+            if let Some(scene) = scene {
+                crate::modules::aec::properties::extend_entity_sections(
+                    scene,
+                    *handle,
+                    entity,
+                    style_library,
+                    project,
+                    &mut sections,
+                );
+            } else if let Some(wall_section) =
                 crate::modules::aec::properties::wall_prop_section(entity, style_library, project)
             {
                 sections.push(wall_section);
@@ -4559,7 +4597,7 @@ mod aggregation_tests {
             .map(|(i, entity)| (Handle::new(i as u64 + 1), entity))
             .collect();
 
-        let sections = aggregate_sections(&selected, &[]);
+        let sections = aggregate_sections(&selected, &[], None, None, None);
         assert!(!sections.is_empty(), "three lines share their layer rows");
 
         // A colour the entities disagree on has its own variant rather than
@@ -4584,7 +4622,7 @@ mod aggregation_tests {
     fn a_single_entity_aggregates_to_its_own_rows() {
         let entity = line("WALLS", 1);
         let selected = [(Handle::new(1), &entity)];
-        let sections = aggregate_sections(&selected, &[]);
+        let sections = aggregate_sections(&selected, &[], None, None, None);
         let layer = row(&sections, "layer").expect("a layer row");
         assert!(format!("{:?}", layer.value).contains("WALLS"));
     }

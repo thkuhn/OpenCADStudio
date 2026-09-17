@@ -131,6 +131,7 @@ impl canvas::Program<Message> for HatchPatternPreview {
             }
             HatchPattern::Pattern(_) => {
                 let model = HatchModel {
+                    pattern_origin: None,
                     render_instance: None,
                     world_origin: [0.0, 0.0],
                     boundary: Arc::new(vec![
@@ -267,6 +268,7 @@ pub enum FieldKey {
     Geom(&'static str),
     /// A block attribute value field, keyed by its tag.
     Attr(String),
+    Param(usize, crate::ui::window::named_parameters::ParamField),
 }
 
 impl FieldKey {
@@ -277,6 +279,14 @@ impl FieldKey {
         match self {
             FieldKey::Geom(field) => prop_geom_field_id(field),
             FieldKey::Attr(tag) => prop_attr_field_id(tag),
+            FieldKey::Param(index, field) => iced::widget::Id::from(format!(
+                "props-param-{}-{}",
+                index,
+                match field {
+                    crate::ui::window::named_parameters::ParamField::Name => "name",
+                    crate::ui::window::named_parameters::ParamField::Formula => "formula",
+                }
+            )),
         }
     }
 }
@@ -333,6 +343,9 @@ pub fn build_field_key_map(
                     Some(FieldKey::Geom(prop.field))
                 }
                 PropValue::AttrText { tag, .. } => Some(FieldKey::Attr(tag.clone())),
+                PropValue::ParamRow { index, .. } => {
+                    Some(FieldKey::Param(*index, crate::ui::window::named_parameters::ParamField::Name))
+                }
                 _ => None,
             };
             if let Some(key) = key {
@@ -811,13 +824,23 @@ impl PropertiesPanel {
                 self.render_hatch_pattern_row(label, current)
             }
             PropValue::AttrText { tag, value } => self.render_attr_row(tag, value),
+            PropValue::Live(value) => self.render_live_row(label, prop.field, value),
             PropValue::Picker { value, handles } => {
                 render_picker_row(label, value, handles.clone())
             }
             PropValue::EntityRef { display, handle } => {
                 render_entity_ref_row(label, display, *handle)
             }
-            PropValue::Live(value) => self.render_live_row(label, prop.field, value),
+            PropValue::EntityLink { id, handles, conflicting } => {
+                render_entity_link_row(label, *id, handles.clone(), *conflicting)
+            }
+            PropValue::ParamRow { index, name, formula, resolved } => {
+                self.render_param_row(*index, name, formula, resolved)
+            }
+            PropValue::ParamAddRow => render_param_add_row(),
+            PropValue::ParamsVisibilityToggle(value) => {
+                render_params_visibility_toggle_row(*value)
+            }
         }
     }
 
@@ -884,14 +907,6 @@ impl PropertiesPanel {
                 .width(Length::Fill);
                 prop_row_widget(label, list.into())
             }
-            PropValue::EntityLink { id, handles, conflicting } => {
-                render_entity_link_row(label, *id, handles.clone(), *conflicting)
-            }
-            PropValue::ParamRow { index, name, formula, resolved } => {
-                self.render_param_row(*index, name, formula, resolved)
-            }
-            PropValue::ParamAddRow => render_param_add_row(),
-            PropValue::ParamsVisibilityToggle(value) => render_params_visibility_toggle_row(*value),
         }
     }
 
@@ -1658,6 +1673,68 @@ impl PropertiesPanel {
 
 // ── Standalone helpers ────────────────────────────────────────────────────
 
+/// A picker row (e.g. wall style) that opens the AEC Style Picker modal
+/// targeting the given entity handle(s) when clicked.
+fn render_picker_row<'a>(
+    label: &'a str,
+    value: &'a str,
+    handles: Vec<acadrust::Handle>,
+) -> Element<'a, Message> {
+    let btn = button(
+        row![
+            text(crate::ui::text_util::elide(value, 20)).size(FONT_SZ),
+            Space::new().width(Length::Fill),
+            text("...").size(FONT_SZ),
+        ]
+        .padding([0, 4])
+        .align_y(iced::Alignment::Center),
+    )
+    .on_press(Message::Aec(AecMessage::AecStylePickerOpenForWallProperties(handles)))
+    .style(button::subtle)
+    .padding(0)
+    .width(Length::Fill);
+    prop_row_widget(label, btn.into())
+}
+
+/// A read-only reference row (e.g. a wall opening/peer) that selects and
+/// zooms to the referenced entity when clicked.
+fn render_entity_ref_row<'a>(
+    label: &'a str,
+    display: &'a str,
+    handle: acadrust::Handle,
+) -> Element<'a, Message> {
+    let btn = button(
+        text(crate::ui::text_util::elide(display, 24))
+            .size(FONT_SZ),
+    )
+    .on_press(Message::SelectAndZoomTo(handle))
+    .style(button::subtle)
+    .padding([2, 4])
+    .width(Length::Fill);
+    prop_row_widget(label, btn.into())
+}
+
+/// Like [`render_picker_row`], but for a live property of the currently
+/// active command (e.g. the in-progress WALL's style) instead of an already
+/// committed entity — opens the AEC Style Picker targeting the active
+/// command rather than a fixed set of entity handles.
+fn render_picker_row_for_active_command<'a>(label: &'a str, value: &'a str) -> Element<'a, Message> {
+    let btn = button(
+        row![
+            text(crate::ui::text_util::elide(value, 20)).size(FONT_SZ),
+            Space::new().width(Length::Fill),
+            text("...").size(FONT_SZ),
+        ]
+        .padding([0, 4])
+        .align_y(iced::Alignment::Center),
+    )
+    .on_press(Message::Aec(AecMessage::AecStylePickerOpenForActiveCommand))
+    .style(button::subtle)
+    .padding(0)
+    .width(Length::Fill);
+    prop_row_widget(label, btn.into())
+}
+
 /// A boolean toggle button row (for "Invisible" etc.).
 fn render_stepper_row<'a>(label: &'a str, display: &'a str) -> Element<'a, Message> {
     let arrow = |glyph: &'static str, delta: i8| {
@@ -1764,6 +1841,8 @@ fn coord_group_len(props: &[crate::scene::model::object::Property], idx: usize) 
             PropValue::EditText(_)
                 | PropValue::ReadOnly(_)
                 | PropValue::ReadOnlyWithTooltip { .. }
+                | PropValue::Picker { .. }
+                | PropValue::EntityRef { .. }
         )
     };
     let Some((base, 0)) = coord_suffix(&props[idx].label) else {

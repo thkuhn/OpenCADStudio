@@ -1351,8 +1351,6 @@ retained_contributors={}",
             // rejects negative origins, and a clamped cube would scale
             // distortedly. The active viewport is normally fully visible.
             if vp.show_viewcube
-                && surface_dest.width == placement.size.width
-                && surface_dest.height == placement.size.height
                 && vp_full_x >= clip.x as i32
                 && vp_full_y >= clip.y as i32
                 && vp_full_x + vp_full_w <= clip_right as i32
