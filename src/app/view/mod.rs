@@ -213,6 +213,12 @@ impl OpenCADStudio {
 
         let i = self.active_tab;
         let tab = &self.tabs[i];
+        // Dynamic input is built before the status bar and properties panel,
+        // so seed its shared formatter here rather than relying on either of
+        // those later views to have done it for this drawing/thread.
+        crate::entities::common::set_unit_context(
+            crate::entities::common::UnitContext::from_header(&tab.scene.document.header),
+        );
         let thumbnail_capture_clean = self.thumbnail_capture_clean;
         let theme_text = self.active_theme.palette().background.base.text;
         let viewcube_text_color = [theme_text.r, theme_text.g, theme_text.b, theme_text.a];
@@ -437,18 +443,32 @@ impl OpenCADStudio {
                         );
                         axes = (ux.as_vec3(), uy.as_vec3(), uz.as_vec3());
                     }
+                    // BUG FIX: the display step used to ignore GRIDUNIT entirely
+                    // (hardcoded 1.0 base). It now resizes from the DSettings
+                    // grid spacing, and honors "Display grid beyond Limits".
+                    let (step_x, step_y) = crate::ui::overlay::compute_grid_steps(
+                        self.grid_spacing_x,
+                        self.grid_spacing_y,
+                        cam.distance,
+                        cam.fov_y,
+                        bounds,
+                        self.grid_adaptive,
+                    );
+                    let limits = if self.grid_beyond_limits {
+                        None
+                    } else {
+                        tab.scene.grid_limits_for_viewport(handle)
+                    };
                     crate::ui::overlay::GridParams {
                         view_rot: cam.view_proj_rte(bounds),
                         eye: cam.eye(),
                         bounds,
-                        step: crate::ui::overlay::compute_grid_step(
-                            cam.distance,
-                            cam.fov_y,
-                            bounds,
-                        ),
+                        step_x,
+                        step_y,
+                        major_every: self.grid_major_every,
                         origin,
                         axes,
-                        limits: tab.scene.grid_limits_for_viewport(handle),
+                        limits,
                     }
                 })
                 .collect();
@@ -748,7 +768,8 @@ bg={bg_ms:.1}ms n={view_count}"
                 };
             let control_polygon = tab.selected_handle.and_then(|handle| {
                 let spline = match tab.scene.document.get_entity(handle) {
-                    Some(acadrust::EntityType::Spline(spline)) if spline.cv_frame_visible => spline,
+                    Some(acadrust::EntityType::Spline(spline))
+                        if crate::entities::spline::shows_control_vertices(spline) => spline,
                     _ => return None,
                 };
                 if tab
@@ -962,9 +983,27 @@ bg={bg_ms:.1}ms n={view_count}"
                 .hover_highlight
                 .map(|h| tab.scene.is_layer_locked(h))
                 .unwrap_or(false);
-            let point_cursor = tab.active_cmd.as_ref().is_some_and(|cmd| {
-                !cmd.needs_entity_pick() && !cmd.is_selection_gathering()
-            });
+            let point_cursor = tab
+                .active_cmd
+                .as_ref()
+                .is_some_and(|cmd| !cmd.needs_entity_pick() && !cmd.is_selection_gathering());
+            let constraint_cursor_badge = if is_paper {
+                None
+            } else {
+                tab.scene.hover_highlight.and_then(|handle| {
+                    tab.scene
+                        .parametric_constraint_set(tab.current_parametric_scope())
+                        .and_then(|set| {
+                            set.constraints_touching(handle)
+                                .find(|constraint| {
+                                    constraint.kind
+                                        == crate::scene::parametric_constraints::ConstraintKind::Concentric
+                                })
+                                .or_else(|| set.constraints_touching(handle).next())
+                        })
+                        .map(|constraint| constraint.kind.glyph_symbol().to_string())
+                })
+            };
             let constraint_glyphs: Vec<(
                 iced::Point,
                 [f32; 2],
@@ -982,6 +1021,7 @@ bg={bg_ms:.1}ms n={view_count}"
                         sel_ref.vp_size,
                         self.show_constraint_values,
                         self.constraint_bar_display,
+                        self.constraint_bar_mode,
                     )
                     .into_iter()
                     .map(|(id, point, direction, label, is_conflicting, hover_points)| {
@@ -1042,6 +1082,7 @@ bg={bg_ms:.1}ms n={view_count}"
                 constraint_glyphs,
                 self.constraint_glyph_tooltip
                     .map(|kind| crate::t!(kind.label()).into_owned()),
+                constraint_cursor_badge,
             )
         };
 
@@ -1091,106 +1132,209 @@ bg={bg_ms:.1}ms n={view_count}"
             .as_ref()
             .map(|c| c.needs_entity_pick() || c.needs_structure_point_pick())
             .unwrap_or(false);
-        let dyn_input_overlay: Option<Element<'_, Message>> =
-            if self.dyn_input
-                && (tab.active_cmd.is_some() || tab.active_grip.is_some())
-                && (!tab.dyn_fields.is_empty() || dyn_picks_object)
-            {
-                let w = tab.last_cursor_world;
-                let base = tab.dyn_anchor.or(self.last_point);
-                let label_screen = tab
-                    .active_cmd
-                    .as_ref()
-                    .and_then(|command| command.dyn_label_point(w))
-                    .and_then(|world| {
-                        let (vw, vh) = tab.scene.selection.borrow().vp_size;
-                        let (camera, bounds) = tab
-                            .scene
-                            .viewport_edit_frame((vw, vh))
-                            .unwrap_or_else(|| {
-                                (
-                                    tab.scene.camera.borrow().clone(),
-                                    tab.scene.active_model_tile_bounds(vw, vh),
-                                )
-                            });
-                        camera.project(world, bounds).and_then(|point| {
-                            (point.x.is_finite() && point.y.is_finite()).then(|| {
-                                iced::Point::new(bounds.x + point.x, bounds.y + point.y)
-                            })
+        let dyn_input_overlay: Option<Element<'_, Message>> = if self.dyn_input
+            && (tab.active_cmd.is_some() || tab.active_grip.is_some())
+            && (!tab.dyn_fields.is_empty() || dyn_picks_object)
+        {
+            let w = tab.last_cursor_world;
+            let base = tab.dyn_anchor.or(self.last_point);
+            let label_screen = tab
+                .active_cmd
+                .as_ref()
+                .and_then(|command| command.dyn_label_point(w))
+                .and_then(|world| {
+                    let (vw, vh) = tab.scene.selection.borrow().vp_size;
+                    let (camera, bounds) =
+                        tab.scene.viewport_edit_frame((vw, vh)).unwrap_or_else(|| {
+                            (
+                                tab.scene.camera.borrow().clone(),
+                                tab.scene.active_model_tile_bounds(vw, vh),
+                            )
+                        });
+                    camera.project(world, bounds).and_then(|point| {
+                        (point.x.is_finite() && point.y.is_finite())
+                            .then(|| iced::Point::new(bounds.x + point.x, bounds.y + point.y))
+                    })
+                });
+            // A command may drive a typed scalar by mouse (e.g. a
+            // perpendicular distance to a picked object); show that live
+            // value in the box until the user types over it.
+            let live = tab
+                .active_cmd
+                .as_ref()
+                .and_then(|c| c.dyn_live_value(w))
+                .or_else(|| {
+                    let grip = tab.active_grip.as_ref()?;
+                    let action = match grip.mode {
+                        crate::scene::pick::grip::GripEditMode::Lengthen => {
+                            crate::scene::model::object::GripMenuAction::Lengthen
+                        }
+                        crate::scene::pick::grip::GripEditMode::Radius => {
+                            crate::scene::model::object::GripMenuAction::Radius
+                        }
+                        crate::scene::pick::grip::GripEditMode::ArcLength => {
+                            crate::scene::model::object::GripMenuAction::ArcLength
+                        }
+                        crate::scene::pick::grip::GripEditMode::RectangleWidth => {
+                            crate::scene::model::object::GripMenuAction::RectangleWidth
+                        }
+                        crate::scene::pick::grip::GripEditMode::RectangleHeight => {
+                            crate::scene::model::object::GripMenuAction::RectangleHeight
+                        }
+                        crate::scene::pick::grip::GripEditMode::MoveParallel => {
+                            crate::scene::model::object::GripMenuAction::MoveParallel
+                        }
+                        _ => return None,
+                    };
+                    let original = self
+                        .grip_originals
+                        .iter()
+                        .find(|(handle, _)| *handle == grip.handle)
+                        .map(|(_, entity)| entity)?;
+                    crate::scene::view::dispatch::grip_menu_point_value(
+                        original,
+                        grip.grip_id,
+                        action,
+                        w,
+                    )
+                });
+            let rectangle_values = tab
+                .active_grip
+                .as_ref()
+                .and_then(|grip| grip.rectangle_frame)
+                .map(|(opposite, width_axis, height_axis)| {
+                    let delta = w - opposite;
+                    (delta.dot(width_axis).abs(), delta.dot(height_axis).abs())
+                });
+            let rectangle_label_screens = tab
+                .active_grip
+                .as_ref()
+                .and_then(|grip| grip.rectangle_frame)
+                .and_then(|(opposite, width_axis, height_axis)| {
+                    let delta = w - opposite;
+                    let width = delta.dot(width_axis);
+                    let height = delta.dot(height_axis);
+                    let width_center = opposite + width_axis * (width * 0.5);
+                    let height_center =
+                        opposite + width_axis * width + height_axis * (height * 0.5);
+                    let rectangle_center =
+                        opposite + width_axis * (width * 0.5) + height_axis * (height * 0.5);
+                    let (vw, vh) = tab.scene.selection.borrow().vp_size;
+                    let (camera, bounds) =
+                        tab.scene.viewport_edit_frame((vw, vh)).unwrap_or_else(|| {
+                            (
+                                tab.scene.camera.borrow().clone(),
+                                tab.scene.active_model_tile_bounds(vw, vh),
+                            )
+                        });
+                    let project = |point| {
+                        camera.project(point, bounds).map(|screen| {
+                            iced::Point::new(bounds.x + screen.x, bounds.y + screen.y)
                         })
-                    });
-                // A command may drive a typed scalar by mouse (e.g. a
-                // perpendicular distance to a picked object); show that live
-                // value in the box until the user types over it.
-                let live = tab.active_cmd.as_ref().and_then(|c| c.dyn_live_value(w));
-                let boxes: Vec<crate::ui::overlay::DynBox> = tab
-                    .dyn_fields
-                    .iter()
-                    .enumerate()
-                    .map(|(idx, f)| {
-                        let value = match (&f.buffer, live) {
-                            (Some(b), _) => b.clone(),
-                            // An angle step with a command-supplied live value
-                            // (ARC span / direction) shows it in degrees.
-                            (None, Some(lv)) if f.component == DynComponent::Angle => {
-                                format!("{lv:.1}")
+                    };
+                    let center = project(rectangle_center)?;
+                    let offset_from_center = |side: iced::Point, pixels: f32| {
+                        let dx = side.x - center.x;
+                        let dy = side.y - center.y;
+                        let length = dx.hypot(dy);
+                        if length > 1.0e-3 {
+                            iced::Point::new(
+                                side.x + dx / length * pixels,
+                                side.y + dy / length * pixels,
+                            )
+                        } else {
+                            side
+                        }
+                    };
+                    Some((
+                        offset_from_center(project(width_center)?, 14.0),
+                        offset_from_center(project(height_center)?, 18.0),
+                    ))
+                });
+            let boxes: Vec<crate::ui::overlay::DynBox> = tab
+                .dyn_fields
+                .iter()
+                .enumerate()
+                .map(|(idx, f)| {
+                    let value = match (&f.buffer, live) {
+                        (Some(b), _) => b.clone(),
+                        (None, _) if rectangle_values.is_some() => {
+                            let (width, height) = rectangle_values.unwrap();
+                            match f.role {
+                                crate::command::DynRole::Width => crate::entities::common::format_length(width),
+                                crate::command::DynRole::Height => crate::entities::common::format_length(height),
+                                _ => String::new(),
                             }
-                            (None, Some(lv))
-                                if matches!(
-                                    f.component,
-                                    DynComponent::Scalar | DynComponent::Distance
-                                ) =>
-                            {
+                        }
+                        // An angle step with a command-supplied live value
+                        // (ARC span / direction) shows it in degrees.
+                        (None, Some(lv)) if f.component == DynComponent::Angle => {
+                            crate::entities::common::format_angle(lv.to_radians())
+                        }
+                        (None, Some(lv))
+                            if matches!(
+                                f.component,
+                                DynComponent::Scalar | DynComponent::Distance
+                            ) =>
+                        {
+                            if f.component == DynComponent::Distance {
+                                crate::entities::common::format_length(lv)
+                            } else {
                                 format!("{lv:.4}")
                             }
-                            _ => dyn_component_value(
-                                f,
-                                w,
-                                base,
-                                &tab.ucs_xform(),
-                                self.dyn_user_reshaped,
-                                self.dyn_coord_absolute,
-                            ),
-                        };
-                        crate::ui::overlay::DynBox {
-                            label: f.role.label().to_string(),
-                            value,
-                            active: idx == tab.dyn_active,
-                            locked: f.locked(),
-                            role: f.role,
-                            center: None,
                         }
-                    })
-                    .collect();
-                let prompt = tab
-                    .active_cmd
-                    .as_ref()
-                    .map(|c| c.prompt())
-                    .unwrap_or_default();
-
-                let tracking_hint = match self.otrack_kind {
-                    Some(crate::snap::TrackingKind::Perpendicular) => {
-                        Some(crate::tr!("common", "perpendicular"))
+                        _ => dyn_component_value(
+                            f,
+                            w,
+                            base,
+                            &tab.ucs_xform(),
+                            self.dyn_user_reshaped,
+                            self.dyn_coord_absolute,
+                        ),
+                    };
+                    crate::ui::overlay::DynBox {
+                        label: f.role.label().to_string(),
+                        value,
+                        active: idx == tab.dyn_active,
+                        locked: f.locked(),
+                        role: f.role,
+                        center: rectangle_label_screens.and_then(|(width, height)| match f.role {
+                            crate::command::DynRole::Width => Some(width),
+                            crate::command::DynRole::Height => Some(height),
+                            _ => None,
+                        }),
                     }
-                    Some(crate::snap::TrackingKind::Extension) => {
-                        Some(crate::tr!("common", "extension"))
-                    }
-                    _ => None,
-                };
+                })
+                .collect();
+            let prompt = tab
+                .active_cmd
+                .as_ref()
+                .map(|c| c.prompt())
+                .unwrap_or_default();
 
-                Some(crate::ui::overlay::dynamic_input_overlay(
-                    tab.last_cursor_screen,
-                    tab.last_point_screen,
-                    tab.dyn_ref_screen,
-                    label_screen,
-                    tab.dyn_guide,
-                    boxes,
-                    prompt,
-                    tracking_hint,
-                ))
-            } else {
-                None
+            let tracking_hint = match self.otrack_kind {
+                Some(crate::snap::TrackingKind::Perpendicular) => {
+                    Some(crate::tr!("common", "perpendicular"))
+                }
+                Some(crate::snap::TrackingKind::Extension) => {
+                    Some(crate::tr!("common", "extension"))
+                }
+                _ => None,
             };
+
+            Some(crate::ui::overlay::dynamic_input_overlay(
+                tab.last_cursor_screen,
+                tab.last_point_screen,
+                tab.dyn_ref_screen,
+                label_screen,
+                tab.dyn_guide,
+                boxes,
+                prompt,
+                tracking_hint,
+            ))
+        } else {
+            None
+        };
 
         mark("viewport_stack");
         let mut viewport_stack = if tab.is_start || self.layout_settling {
@@ -1472,78 +1616,76 @@ bg={bg_ms:.1}ms n={view_count}"
             }
         }
 
-        if let Some(popup) = self.grip_popup.as_ref() {
-            if !tab.is_start {
-                let labels: Vec<String> = popup
-                    .items
-                    .iter()
-                    .map(|item| {
-                        let (mark, raw) = item
-                            .label
-                            .strip_prefix("✓ ")
-                            .map_or(("", item.label), |raw| ("✓ ", raw));
-                        format!("{mark}{}", crate::i18n::translate(raw))
-                    })
-                    .collect();
-                let max_len = labels
-                    .iter()
-                    .map(|label| label.chars().count())
-                    .max()
-                    .unwrap_or(8) as f32;
-                let row_w = max_len * 7.0 + 24.0;
-                let mut col = column![].spacing(0).width(iced::Length::Fixed(row_w));
-                for (idx, label) in labels.into_iter().enumerate() {
-                    let is_sel = idx == popup.selected;
-                    let btn = button(text(label).size(12))
-                        .on_press(Message::GripMenuPick(idx))
-                        .padding([3, 10])
-                        .width(Fill)
-                        .style(move |theme: &Theme, status| {
-                            let palette = theme.palette();
-                            let pair = match (is_sel, status) {
-                                (true, _) => Some(palette.primary.strong),
-                                (_, iced::widget::button::Status::Hovered) => {
-                                    Some(palette.background.strong)
+            if let Some(popup) = self.grip_popup.as_ref() {
+                if !tab.is_start {
+                    let labels: Vec<String> = popup
+                        .items
+                        .iter()
+                        .map(|item| {
+                            let (mark, raw) = item
+                                .label
+                                .strip_prefix("✓ ")
+                                .map_or(("", item.label), |raw| ("✓ ", raw));
+                            format!("{mark}{}", crate::i18n::translate(raw))
+                        })
+                        .collect();
+                    let max_len = labels
+                        .iter()
+                        .map(|label| label.chars().count())
+                        .max()
+                        .unwrap_or(8) as f32;
+                    let row_w = max_len * 7.0 + 24.0;
+                    let mut col = column![].spacing(0).width(iced::Length::Fixed(row_w));
+                    for (idx, label) in labels.into_iter().enumerate() {
+                        let is_sel = idx == popup.selected;
+                        let btn = button(text(label).size(12))
+                            .on_press(Message::GripMenuPick(idx))
+                            .padding([3, 10])
+                            .width(Fill)
+                            .style(move |theme: &Theme, status| {
+                                let palette = theme.palette();
+                                let pair = match (is_sel, status) {
+                                    (true, _) => Some(palette.primary.strong),
+                                    (_, iced::widget::button::Status::Hovered) => {
+                                        Some(palette.background.strong)
+                                    }
+                                    _ => None,
+                                };
+                                iced::widget::button::Style {
+                                    background: pair.map(|p| Background::Color(p.color)),
+                                    border: Border {
+                                        color: Color::TRANSPARENT,
+                                        width: 0.0,
+                                        radius: 0.0.into(),
+                                    },
+                                    text_color: pair
+                                        .map(|p| p.text)
+                                        .unwrap_or(palette.background.base.text),
+                                    ..Default::default()
                                 }
-                                _ => None,
-                            };
-                            iced::widget::button::Style {
-                            background: pair.map(|p| Background::Color(p.color)),
-                            border: Border {
-                                color: Color::TRANSPARENT,
-                                width: 0.0,
-                                radius: 0.0.into(),
-                            },
-                            text_color: pair
-                                .map(|p| p.text)
-                                .unwrap_or(palette.background.base.text),
-                            ..Default::default()
-                            }
-                        });
-                    col = col.push(btn);
-                }
-                let menu_panel = container(col)
-                    .padding(2)
-                    .style(|theme: &Theme| {
+                            });
+                        col = col.push(btn);
+                    }
+                    let menu_panel = container(col).padding(2).style(|theme: &Theme| {
                         let palette = theme.palette();
                         container::Style {
-                        background: Some(Background::Color(palette.background.weak.color)),
-                        border: Border {
-                            color: palette.background.neutral.color,
-                            width: 1.0,
-                            radius: 3.0.into(),
-                        },
-                        ..Default::default()
+                            background: Some(Background::Color(palette.background.weak.color)),
+                            border: Border {
+                                color: palette.background.neutral.color,
+                                width: 1.0,
+                                radius: 3.0.into(),
+                            },
+                            ..Default::default()
                         }
                     });
-                // Offset the menu by 12 px so the cursor doesn't land on
-                // the first item immediately, matching the right-click
-                // context menu's "panel below the click point" feel.
-                let anchor = iced::Point::new(popup.anchor.x + 12.0, popup.anchor.y + 12.0);
-                viewport_stack =
-                    viewport_stack.push(position_canvas_overlay(anchor, menu_panel.into()));
+                    // Offset the menu by 12 px so the cursor doesn't land on
+                    // the first item immediately, matching the right-click
+                    // context menu's "panel below the click point" feel.
+                    let anchor = iced::Point::new(popup.anchor.x + 12.0, popup.anchor.y + 12.0);
+                    viewport_stack =
+                        viewport_stack.push(position_canvas_overlay(anchor, menu_panel.into()));
+                }
             }
-        }
 
         // Dynamic-block visibility-state dropdown.
         if let Some(popup) = self.visibility_popup.as_ref() {
@@ -1797,58 +1939,17 @@ bg={bg_ms:.1}ms n={view_count}"
             // the cursor position (canvas-relative) anchors the menu under
             // the cursor instead of drifting into window-relative space.
             if !tab.is_start {
-                let (ctx_pos, draworder_open, justification_open, junction_menu, junction_submenu_open, junction_menu_only) = {
+                let (ctx_pos, highlighted) = {
                     let sel = tab.scene.selection.borrow();
-                    (
-                        sel.context_menu,
-                        sel.draworder_submenu,
-                        sel.wall_justification_submenu,
-                        sel.junction_menu,
-                        sel.junction_menu_submenu,
-                        sel.junction_menu_only,
-                    )
+                    (sel.context_menu, sel.context_menu_ui.highlighted)
                 };
-                let junction_layer_pair_style = self
-                    .aec.aec_layer_pair_draw
-                    .as_ref()
-                    .is_some_and(|p| p.awaiting_style);
                 if let Some(p) = ctx_pos {
-                    let has_cmd = tab.active_cmd.is_some();
-                    // Same guard as typed MTP/M2P and SnapOverrideMtp.
-                    let has_point_step = tab.active_cmd.as_ref().is_some_and(|c| {
-                        (!c.input_kind().wants_text() || c.point_step_accepts_keywords())
-                            && !c.needs_entity_pick()
-                    });
-                    let has_selection = !tab.scene.selected.is_empty();
-                    let isolation_active = tab.scene.is_isolation_active();
-                    let only_walls = crate::modules::aec::properties::selection_is_all_walls(
-                        &tab.scene,
-                        tab.scene.selected.iter().copied(),
-                    );
-                    let last_cmds: Vec<String> = self
-                        .command_line
-                        .recent_commands
-                        .iter()
-                        .rev()
-                        .take(3)
-                        .cloned()
-                        .collect();
+                    let menu = self.current_context_menu();
                     viewport_stack = viewport_stack.push(viewport_context_menu_overlay(
                         p,
                         command_line_inset,
-                        has_cmd,
-                        has_selection,
-                        tab.scene.selected_constraint,
-                        isolation_active,
-                        last_cmds,
-                        draworder_open,
-                        only_walls,
-                        justification_open,
-                        junction_menu,
-                        junction_submenu_open,
-                        junction_menu_only,
-                        junction_layer_pair_style,
-                        has_point_step,
+                        &menu,
+                        highlighted,
                     ));
                 }
             }

@@ -132,6 +132,43 @@ impl CursorType {
     }
 }
 
+/// What a right-click in the drawing area does (SHORTCUTMENU in commercial solutions /
+/// "Right-click Customization").
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum RightClickMode {
+    /// The default of commercial solutions: a right-click always opens the shortcut menu (Enter /
+    /// Cancel / the command's options while a command runs; Repeat / edit
+    /// tools when idle).
+    #[default]
+    ShortcutMenu,
+    /// The "time-sensitive right-click" of commercial solutions: a quick click is Enter (or
+    /// repeats the last command when idle); holding the button longer than
+    /// `right_click_hold_ms` opens the shortcut menu.
+    TimeSensitive,
+    /// Original Open CAD Studio behaviour: while a command runs the first
+    /// right-click is Enter and a second consecutive one opens the menu;
+    /// when idle a right-click opens the menu.
+    EnterFirst,
+}
+
+impl RightClickMode {
+    pub const ALL: [Self; 3] = [Self::ShortcutMenu, Self::TimeSensitive, Self::EnterFirst];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::ShortcutMenu => "Shortcut menu",
+            Self::TimeSensitive => "Time-sensitive (quick click = Enter)",
+            Self::EnterFirst => "Enter first, second click = menu",
+        }
+    }
+}
+
+/// SHORTCUTMENUDURATION bounds: below 100 ms every click reads as a hold,
+/// above 1000 ms the menu becomes unreachable in practice.
+pub fn clamp_right_click_hold_ms(v: i32) -> i32 {
+    v.clamp(100, 1000)
+}
+
 /// Active pair of axes while isometric drafting is enabled.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum IsoPlane {
@@ -193,7 +230,9 @@ const SNAP_ORDER: &[SnapType] = &[
 ];
 
 /// `$OSMODE` bit for each running object-snap mode.
-/// `None` for OCS-only snaps (Grid, ObjectPick) that have no standard bit.
+/// `None` for OCS-only snaps (Grid, ObjectPick) and the 3D solid snaps
+/// (Vertex, EdgeMidpoint, FaceCenter, Knot, FacePerpendicular, NearestFace),
+/// which live in the separate 3D set and have no standard bit.
 fn snap_bit(s: SnapType) -> Option<i32> {
     Some(match s {
         SnapType::Endpoint => 1,
@@ -209,7 +248,14 @@ fn snap_bit(s: SnapType) -> Option<i32> {
         SnapType::ApparentIntersection => 2048,
         SnapType::Extension => 4096,
         SnapType::Parallel => 8192,
-        SnapType::Grid | SnapType::ObjectPick => return None,
+        SnapType::Grid
+        | SnapType::ObjectPick
+        | SnapType::Vertex
+        | SnapType::EdgeMidpoint
+        | SnapType::FaceCenter
+        | SnapType::Knot
+        | SnapType::FacePerpendicular
+        | SnapType::NearestFace => return None,
     })
 }
 
@@ -303,6 +349,11 @@ pub struct UserSettings {
     pub double_click_block_refedit: bool,
     /// When true, double-clicking a block with attributes opens ATTEDIT.
     pub double_click_block_attedit: bool,
+    /// What a right-click in the drawing area does (SHORTCUTMENU).
+    pub right_click_mode: RightClickMode,
+    /// Hold duration that turns a time-sensitive right-click into the menu,
+    /// in milliseconds (SHORTCUTMENUDURATION, 100..=1000).
+    pub right_click_hold_ms: i32,
     /// GRIPOBJLIMIT: past this many selected objects, no grips are drawn at
     /// all. 0 means no limit. The drawing header carries no slot for it.
     pub grip_object_limit: i32,
@@ -339,6 +390,15 @@ pub struct UserSettings {
     /// prompt has already been shown. Set once the user answers (either way),
     /// so we never nag again on subsequent launches.
     pub default_assoc_prompted: bool,
+    /// Offer to download missing `.shx` fonts from the community repository
+    /// when a drawing opens (see `crate::io::font_repo`).
+    #[serde(default = "default_check_missing_fonts")]
+    pub check_missing_fonts: bool,
+    /// Custom font source base URL (empty = the OpenCADStudio community
+    /// repository). Each missing font is fetched as `{base}/{file_name}`,
+    /// so an intranet folder or a private GitHub raw folder both work.
+    #[serde(default)]
+    pub font_source_url: String,
     /// App version whose donation prompt has been displayed.
     pub donation_prompt_version: String,
     /// The graphics verdict (`GpuStatus::identity()`) whose warning popup the
@@ -405,6 +465,9 @@ pub struct UserSettings {
     /// Constraint bar display bit mask: 1 after applying, 2 on selection.
     #[serde(default = "default_constraint_bar_display")]
     pub constraint_bar_display: i16,
+    /// Geometric constraint type bit mask (1..2048, combined; default all).
+    #[serde(default = "default_constraint_bar_mode")]
+    pub constraint_bar_mode: i16,
     /// Minutes between autosaves to a `.sv$` recovery file (SAVETIME command).
     /// 0 disables autosave.
     pub savetime_min: i32,
@@ -434,6 +497,27 @@ pub struct UserSettings {
         deserialize_with = "deserialize_commandline_fade_ms"
     )]
     pub commandline_fade_ms: i32,
+    /// SNAPUNIT X/Y spacing used by grid snap. 10 matches the Drafting
+    /// Settings dialog defaults; older configs without these keys fall
+    /// back via `default_snap_spacing`.
+    #[serde(default = "default_snap_spacing")]
+    pub snap_spacing_x: f32,
+    #[serde(default = "default_snap_spacing")]
+    pub snap_spacing_y: f32,
+    /// GRIDUNIT X/Y display spacing (grid resizing). Falls back to 10.
+    #[serde(default = "default_snap_spacing")]
+    pub grid_spacing_x: f32,
+    #[serde(default = "default_snap_spacing")]
+    pub grid_spacing_y: f32,
+    /// GRIDMAJOR: every Nth grid line is a brighter major line.
+    #[serde(default = "default_grid_major")]
+    pub grid_major_every: u32,
+    /// Adaptive grid scaling (default on).
+    #[serde(default = "default_true")]
+    pub grid_adaptive: bool,
+    /// Display grid beyond LIMITS (default on, matches dialog).
+    #[serde(default = "default_true")]
+    pub grid_beyond_limits: bool,
     /// Most-recently-inserted block names, most recent first, capped to 20.
     /// Used to rank INSERT suggestions without touching the drawing file.
     #[serde(default)]
@@ -455,6 +539,33 @@ fn default_commandline_fade_ms() -> i32 {
     3000
 }
 
+/// Default SNAPUNIT spacing shown in the Drafting Settings dialog.
+fn default_snap_spacing() -> f32 {
+    10.0
+}
+
+fn default_grid_major() -> u32 {
+    5
+}
+
+fn default_true() -> bool {
+    true
+}
+
+/// Clamp a major-line interval to the range the dialog accepts.
+pub fn sanitize_grid_major(v: u32) -> u32 {
+    v.clamp(2, 100)
+}
+
+/// Clamp a snap spacing to the positive range the dialog accepts.
+pub fn sanitize_snap_spacing(v: f32) -> f32 {
+    if v.is_finite() && v > 0.0 && v <= 1e9 {
+        v
+    } else {
+        10.0
+    }
+}
+
 fn deserialize_commandline_fade_ms<'de, D>(de: D) -> Result<i32, D::Error>
 where
     D: serde::Deserializer<'de>,
@@ -471,6 +582,10 @@ fn default_dimension_continue_mode() -> i16 {
     1
 }
 
+fn default_check_missing_fonts() -> bool {
+    true
+}
+
 fn default_show_constraint_values() -> bool {
     true
 }
@@ -481,6 +596,10 @@ fn default_constraint_solve_mode() -> bool {
 
 fn default_constraint_bar_display() -> i16 {
     3
+}
+
+fn default_constraint_bar_mode() -> i16 {
+    4095
 }
 
 fn deserialize_clipromptlines<'de, D>(de: D) -> Result<i32, D::Error>
@@ -513,6 +632,8 @@ impl Default for UserSettings {
             selection_cycling: false,
             double_click_block_refedit: false,
             double_click_block_attedit: true,
+            right_click_mode: RightClickMode::ShortcutMenu,
+            right_click_hold_ms: 250,
             grip_object_limit: DEFAULT_GRIP_OBJECT_LIMIT,
             ncopy_bind: false,
             cursor_type: CursorType::Crosshair,
@@ -523,6 +644,8 @@ impl Default for UserSettings {
             snap_angle_deg: 0.0,
             otrack: false,
             default_assoc_prompted: false,
+            check_missing_fonts: true,
+            font_source_url: String::new(),
             donation_prompt_version: String::new(),
             gpu_warning_silenced: String::new(),
             disabled_plugins: Vec::new(),
@@ -544,6 +667,7 @@ impl Default for UserSettings {
             constraint_solve_mode: true,
             constraint_infer: false,
             constraint_bar_display: 3,
+            constraint_bar_mode: 4095,
             savetime_min: 10,
             default_save_format: crate::io::DEFAULT_SAVE_FORMAT.to_string(),
             pick_add: true,
@@ -552,6 +676,13 @@ impl Default for UserSettings {
             language: crate::i18n::Language::default(),
             cliprompt_lines: 3,
             commandline_fade_ms: 3000,
+            snap_spacing_x: 10.0,
+            snap_spacing_y: 10.0,
+            grid_spacing_x: 10.0,
+            grid_spacing_y: 10.0,
+            grid_major_every: 5,
+            grid_adaptive: true,
+            grid_beyond_limits: true,
             block_mru: Vec::new(),
             block_freq: std::collections::HashMap::new(),
         }

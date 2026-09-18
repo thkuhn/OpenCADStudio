@@ -13,6 +13,8 @@ pub(crate) mod commands;
 pub(crate) mod dim_viewport;
 #[cfg(test)]
 mod viewport_dimension_tests;
+#[cfg(test)]
+mod dimension_preview_tests;
 mod document;
 mod drafting_settings;
 pub(crate) mod expr_eval;
@@ -86,6 +88,17 @@ pub const HOVER_DWELL_MS: u128 = 500;
 /// Dense resident sets also retain the previous rollover while moving; this
 /// threshold gates that extra redraw-avoidance behavior.
 pub const HOVER_DWELL_DENSE_WIRES: usize = 50_000;
+
+/// Keyboard navigation inside the open right-click context menu.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ContextMenuNav {
+    Up,
+    Down,
+    /// Pick the highlighted row (or the default row when none is highlighted).
+    Enter,
+    /// Pick the next row whose mnemonic letter matches.
+    Mnemonic(char),
+}
 
 /// Open multi-functional-grip popup state.
 #[derive(Clone, Debug)]
@@ -521,6 +534,10 @@ pub(crate) struct OpenCADStudio {
     double_click_block_refedit: bool,
     /// Open ATTEDIT when double-clicking a block with attributes.
     double_click_block_attedit: bool,
+    /// What a right-click in the drawing area does (SHORTCUTMENU).
+    right_click_mode: settings::RightClickMode,
+    /// Time-sensitive right-click hold threshold, ms (SHORTCUTMENUDURATION).
+    right_click_hold_ms: i32,
     /// Selected-object count past which grips stop being generated
     /// (GRIPOBJLIMIT, 0..=32767; 0 = no limit).
     grip_object_limit: i32,
@@ -545,6 +562,15 @@ pub(crate) struct OpenCADStudio {
     snap_angle_deg: f32,
     /// Show grid lines in the viewport (F7).
     show_grid: bool,
+    /// GRIDUNIT X/Y display spacing backing the DSettings grid-resize inputs.
+    pub grid_spacing_x: f32,
+    pub grid_spacing_y: f32,
+    /// GRIDMAJOR: every Nth line draws as a brighter major line.
+    pub grid_major_every: u32,
+    /// Adaptive grid: scale GRIDUNIT up by 5x steps to stay readable.
+    pub grid_adaptive: bool,
+    /// Display the grid beyond LIMITS (infinite) instead of clipping to them.
+    pub grid_beyond_limits: bool,
     /// Dynamic input overlay (F12): show coordinate tooltip near cursor.
     dyn_input: bool,
     /// Currently visible page in the application Options dialog.
@@ -581,6 +607,7 @@ pub(crate) struct OpenCADStudio {
     pub constraint_solve_mode: bool,
     pub constraint_infer: bool,
     pub constraint_bar_display: i16,
+    pub constraint_bar_mode: i16,
     /// Minutes between autosaves to a `.sv$` recovery file (SAVETIME command);
     /// 0 disables autosave.
     pub savetime_min: i32,
@@ -888,6 +915,12 @@ pub(crate) struct OpenCADStudio {
     point_size_relative: bool,
     /// Whether the default-association prompt has been answered.
     default_assoc_prompted: bool,
+    /// Offer to download missing `.shx` fonts on open (see `io::font_repo`).
+    check_missing_fonts: bool,
+    /// Custom font source base URL; empty selects the community repository.
+    font_source_url: String,
+    /// Editable copy of `font_source_url` shown in the missing-fonts prompt.
+    font_source_input: String,
     donation_prompt_version: String,
     /// Read-only session (`--read-only`): editing is allowed but every save
     /// path is refused. Set once at boot from the CLI config.
@@ -948,8 +981,10 @@ pub(crate) struct OpenCADStudio {
     mtext_click_count: u8,
     /// Pending model-space plot window (x0, y0, x1, y1) in world XY, or None.
     plot_window: Option<(f64, f64, f64, f64)>,
-    plot_format: crate::io::paper_sizes::PaperSize,
-    plot_orientation: crate::io::paper_sizes::Orientation,
+    /// Sheet the Plot dialog opens with when the layout has no page setup;
+    /// updated from every plot / apply so the next dialog remembers it.
+    plot_paper: crate::io::paper_catalog::PaperSize,
+    plot_orientation: crate::io::paper_catalog::Orientation,
     /// Backing state for the full Plot / Print dialog.
     plot_dialog: crate::ui::window::plot::PlotDialogState,
     /// Snapshot of the dialog's settings taken when it opened, restored by the
@@ -1180,6 +1215,9 @@ pub(crate) struct OpenCADStudio {
     open_job_serial: u64,
     /// Last repair or failed-open report shown in the recovery modal.
     recovery_report: Option<crate::io::recovery::RecoveryReport>,
+    /// Missing SHX fonts of the last opened drawing, offered for download
+    /// from the community repository (see `crate::io::font_repo`).
+    missing_fonts: Option<Vec<String>>,
     /// Drawings handed to us by other launches while `opening` was busy.
     /// `opening` is a single slot that a second `OpenPathPicked` would
     /// overwrite, and `on_file_opened` drops any result arriving once it is
@@ -1815,6 +1853,8 @@ pub enum ModalKind {
     Unsaved,
     SaveDialog,
     Recovery,
+    /// Fonts referenced by the drawing are missing on this machine.
+    MissingFonts,
     RecoveryPrompt,
     Options,
     FindReplace,
@@ -1871,6 +1911,8 @@ pub enum ModalKind {
     /// Blocking prompt when an AEC entry point is used without an active
     /// project — offers open/create project only.
     AecProjectRequired,
+    /// Reference Manager help window (toolbar Help button).
+    XrefHelp,
 }
 
 /// A property group controlled by a layer state's restore mask.
@@ -2059,6 +2101,8 @@ pub enum Message {
     /// Mid Between 2 Points from the snap menu: modal 2-pick modifier over
     /// the active point prompt.
     SnapOverrideMtp,
+    /// Snap Overrides ▸ None: the next pick ignores object snaps.
+    SnapOverrideNone,
     /// Close the one-shot snap override menu without picking.
     SnapOverrideClose,
     /// Open a path from the Start tab's recent-documents list (skips the
@@ -2190,6 +2234,10 @@ pub enum Message {
     ZoomWheelReversedChanged(bool),
     /// Change how far one wheel notch zooms (ZOOMFACTOR, 3..=100).
     ZoomFactorChanged(i32),
+    /// Options → User Preferences: right-click behaviour (SHORTCUTMENU).
+    RightClickModeChanged(settings::RightClickMode),
+    /// Options → User Preferences: time-sensitive hold threshold, ms.
+    RightClickHoldMsChanged(i32),
     /// Toggle TEXTEDIT ending after one object (TEXTEDITMODE).
     TextEditModeChanged(bool),
     /// Toggle continued dimensions inheriting the base style (DIMCONTINUEMODE).
@@ -2484,6 +2532,8 @@ pub enum Message {
     XrefManagerRefreshMenu,
     /// Toggle the Change Path dropdown menu.
     XrefManagerPathMenu,
+    /// Open the Reference Manager help window.
+    XrefHelpOpen,
     /// Close all palette dropdown menus (overlay dismissal).
     XrefManagerDismissMenus,
     /// Open the file picker for Select New Path (anchor entry).
@@ -2636,6 +2686,8 @@ pub enum Message {
     CommandEscape,
     /// Toggle the global snap on/off (OSNAP button body click).
     ToggleSnapEnabled,
+    /// Toggle 3D object snap on/off — F4.
+    ToggleSnap3dEnabled,
     /// Toggle grid-snap on/off — F9 / SNAP status-bar button.
     ToggleGridSnap,
     /// Enable or disable isometric drafting.
@@ -2797,6 +2849,14 @@ pub enum Message {
     DraftingSettingsTabChanged(crate::ui::window::drafting_settings::DraftingSettingsTab),
     DraftingSettingsToggleGrid,
     DraftingSettingsToggleSnap,
+    DraftingSettingsSnapXChanged(String),
+    DraftingSettingsSnapYChanged(String),
+    DraftingSettingsGridXChanged(String),
+    DraftingSettingsGridYChanged(String),
+    DraftingSettingsGridMajorChanged(String),
+    DraftingSettingsToggleAdaptiveGrid,
+    DraftingSettingsToggleBeyondLimits,
+    DraftingSettingsToggleEqualSnap,
     DraftingSettingsToggleIsometric,
     DraftingSettingsSetIsoPlane(crate::app::settings::IsoPlane),
     DraftingSettingsResetRotation,
@@ -2805,6 +2865,7 @@ pub enum Message {
     DraftingSettingsToggleOsnap,
     DraftingSettingsToggleOtrack,
     DraftingSettingsToggleSnapMode(crate::snap::SnapType),
+    DraftingSettingsToggleSnapMode3d(crate::snap::SnapType),
     DraftingSettingsSnapSelectAll,
     DraftingSettingsSnapClearAll,
     DraftingSettingsToggle3dOsnap,
@@ -3312,9 +3373,15 @@ pub enum Message {
     TextInlineInput(String),
     /// Commit the editor: create or update the TEXT entity.
     TextInlineOk,
-    // ── Draw Order context menu ─────────────────────────────────────────
-    /// Toggle the Draw Order sub-items in the viewport context menu.
-    DrawOrderSubmenuToggle,
+    // ── Viewport right-click context menu ───────────────────────────────
+    /// A context-menu row was picked (mouse or keyboard). Closes the menu and
+    /// runs the row's action through the same message the equivalent typed
+    /// input / shortcut would have produced.
+    ContextMenuPick(crate::ui::popup::context_menu::MenuAction),
+    /// Expand / collapse an accordion submenu of the open context menu.
+    ContextMenuSubmenuToggle(crate::ui::popup::context_menu::SubmenuId),
+    /// Keyboard navigation inside the open context menu.
+    ContextMenuNavigate(ContextMenuNav),
     /// Begin an interactive reference-object pick to move the current
     /// selection above (`true`) or below (`false`) the picked object.
     DrawOrderPickRef(bool),
@@ -3370,10 +3437,6 @@ pub enum Message {
     PlotExport,
     /// Callback after the user picks (or cancels) the export path.
     PlotExportPath(Option<std::path::PathBuf>),
-    /// User picked a paper size for the model-space window plot.
-    PlotFormat(crate::io::paper_sizes::PaperSize),
-    /// User picked a sheet orientation for the model-space window plot.
-    PlotOrientation(crate::io::paper_sizes::Orientation),
     /// Export the pending model-space plot window (from PLOTWINDOW) to PDF.
     PlotWindowExport,
     /// Callback after the user picks (or cancels) the window-export path.
@@ -3632,6 +3695,20 @@ pub enum Message {
     ImagePick,
     /// Result of the image file picker + pixel dimension decode.
     ImagePickResult(Result<(std::path::PathBuf, u32, u32), String>),
+    /// Open file-picker dialog for IMAGEEMBED command (async).
+    ImageEmbedPick,
+    /// Result of the embedded-image picker: bytes prepared for an OLE2FRAME.
+    ImageEmbedPickResult(Result<crate::io::ole_embed::EmbeddedImage, String>),
+    // ── Missing fonts ─────────────────────────────────────────────────────
+    /// Download the offered missing fonts from the community repository.
+    MissingFontsDownload,
+    /// Edit the custom font source URL in the missing-fonts prompt.
+    MissingFontsSourceChanged(String),
+    /// Close the missing-fonts prompt without downloading.
+    MissingFontsDismiss,
+    /// Fonts fetched (or failed); payload lists (name, saved-path) pairs.
+    #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+    MissingFontsResult(Result<Vec<(String, std::path::PathBuf)>, String>),
     // ── PDF Underlay ──────────────────────────────────────────────────────
     /// Open file-picker dialog for PDFATTACH command (async).
     PdfAttachPick,
@@ -3860,6 +3937,12 @@ impl OpenCADStudio {
             zoom_factor: 60,
             cursor_size: 5,
             pick_box: 3,
+            double_click_block_refedit: false,
+            double_click_block_attedit: true,
+            right_click_mode: settings::RightClickMode::ShortcutMenu,
+            right_click_hold_ms: 250,
+            grip_object_limit: settings::DEFAULT_GRIP_OBJECT_LIMIT,
+            ncopy_bind: false,
             cursor_type: settings::CursorType::Crosshair,
             crosshair_color: None,
             crosshair_color_input: String::new(),
@@ -3868,6 +3951,11 @@ impl OpenCADStudio {
             iso_plane: settings::IsoPlane::Left,
             snap_angle_deg: 0.0,
             show_grid: false,
+            grid_spacing_x: 10.0,
+            grid_spacing_y: 10.0,
+            grid_major_every: 5,
+            grid_adaptive: true,
+            grid_beyond_limits: true,
             dyn_input: true,
             options_tab: crate::ui::window::options::OptionsTab::General,
             texteditmode: false,
@@ -3875,6 +3963,16 @@ impl OpenCADStudio {
             dimension_continue_mode: 1,
             backup_on_save: true,
             file_assoc_enabled: true,
+            show_constraint_values: true,
+            auto_constrain_settings: settings::AutoConstrainSettings::default(),
+            auto_constrain_saved: None,
+            auto_constrain_selected_row: 0,
+            auto_constrain_distance_input: "0.05".to_string(),
+            auto_constrain_angle_input: "1".to_string(),
+            constraint_solve_mode: true,
+            constraint_infer: false,
+            constraint_bar_display: 3,
+            constraint_bar_mode: 4095,
             savetime_min: 10,
             default_bg_color: None,
             default_paper_bg_color: None,
@@ -3979,6 +4077,9 @@ impl OpenCADStudio {
             point_size_buf: String::new(),
             point_size_relative: true,
             default_assoc_prompted: false,
+            check_missing_fonts: true,
+            font_source_url: String::new(),
+            font_source_input: String::new(),
             donation_prompt_version: String::new(),
             read_only: false,
             update_notice_version: None,
@@ -4003,8 +4104,8 @@ impl OpenCADStudio {
             mtext_click_off: 0,
             mtext_click_count: 0,
             plot_window: None,
-            plot_format: crate::io::paper_sizes::PaperSize::A4,
-            plot_orientation: crate::io::paper_sizes::Orientation::Landscape,
+            plot_paper: crate::io::paper_catalog::default_paper().clone(),
+            plot_orientation: crate::io::paper_catalog::Orientation::Landscape,
             plot_dialog: crate::ui::window::plot::PlotDialogState::default(),
             plot_prev: None,
             plot_setup_template: None,
@@ -4019,6 +4120,7 @@ impl OpenCADStudio {
             layout_settling: false,
             open_job_serial: 0,
             recovery_report: None,
+            missing_fonts: None,
             pending_opens: std::collections::VecDeque::new(),
             active_interaction_index: None,
             queued_interaction_indices: std::collections::VecDeque::new(),
@@ -4346,6 +4448,17 @@ impl OpenCADStudio {
         // `--read-only` disables saving. `--script` queues command lines.
         let cfg = crate::cli::gui_config();
         s.read_only = cfg.read_only;
+        // GPU backend / renderer fallback: the resolver ran before iced
+        // booted, so surface its verdict here where the user can see it.
+        if let Some(notice) = cfg.gpu_fallback_notice {
+            s.command_line.push_warning(&notice);
+            crate::scene::pipeline::report_gpu_line(&format!("[gpu] {notice}"));
+        }
+        if cfg.gpu_compat_auto {
+            let notice = crate::gpu_backend::compat_notice();
+            s.command_line.push_warning(&notice);
+            crate::scene::pipeline::report_gpu_line(&format!("[gpu] {notice}"));
+        }
         let cli_open: Task<Message> = if !cfg.files.is_empty() {
             Task::batch(
                 cfg.files

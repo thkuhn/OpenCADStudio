@@ -39,6 +39,12 @@ pub fn resolve_text_style(style_name: &str, document: &CadDocument) -> ResolvedT
                         .map(std::path::Path::new)
                         .and_then(|p| p.parent());
                     crate::io::resolve_image_file(file, base)
+                        // Fonts fetched from the community repository live in
+                        // the per-user fonts folder — search it last.
+                        .or_else(|| {
+                        crate::io::font_repo::local_font_file(file)
+                            .map(|path| path.to_string_lossy().into_owned())
+                    })
                 })
                 .flatten();
             if let Some(p) = shx_path {
@@ -191,7 +197,7 @@ pub fn text_local_bounds(
 /// Expand DXF `%%x` special-character sequences that appear in both TEXT and MTEXT values:
 /// - `%%d` / `%%D` → `°`
 /// - `%%p` / `%%P` → `±`
-/// - `%%c` / `%%C` → `⌀`
+/// - `%%c` / `%%C` → `∅` (U+2205, the native diameter sign)
 /// - `%%u` / `%%U` → underline toggle (stripped — not renderable with stroke fonts)
 /// - `%%o` / `%%O` → overline toggle (stripped)
 /// - `%%%%` → `%`
@@ -218,7 +224,7 @@ pub fn resolve_dxf_special_chars(s: &str) -> String {
             }
             Some('c') => {
                 chars.next();
-                out.push('⌀');
+                out.push('∅');
             }
             Some('u') | Some('o') => {
                 chars.next();

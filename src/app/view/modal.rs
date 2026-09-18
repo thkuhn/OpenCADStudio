@@ -54,6 +54,7 @@ impl OpenCADStudio {
             Some(K::AttributeEditor) => crate::tr!("modal", "attribute-editor"),
             Some(K::SaveDialog) => crate::tr!("modal", "save-drawing-as"),
             Some(K::Recovery) => crate::tr!("modal", "recovery-report"),
+            Some(K::MissingFonts) => crate::t!("Missing fonts").into_owned(),
             Some(K::RecoveryPrompt) => crate::tr!("modal", "recovery-prompt"),
             Some(K::AecMaterialManager) => t!("AEC Material Manager").into_owned(),
             Some(K::AecWallStyleManager) => t!("AEC Wall Style Manager").into_owned(),
@@ -66,6 +67,7 @@ impl OpenCADStudio {
             Some(K::AecStyleCopyConflict) => t!("Overwrite?").into_owned(),
             Some(K::AecProjectRequired) => t!("Project Required").into_owned(),
             Some(K::GpuWarning) => crate::tr!("gpu", "title"),
+            Some(K::XrefHelp) => crate::t!("Reference Manager Help").into_owned(),
             None => String::new(),
         }
     }
@@ -75,8 +77,8 @@ impl OpenCADStudio {
     ) -> Element<'s, Message> {
         sized_flow(
             extra,
-            760,
-            540,
+            940,
+            620,
             |flow| {
                 crate::ui::window::plot::view_window(
                     &self.plot_dialog,
@@ -94,6 +96,9 @@ impl OpenCADStudio {
         Some(match self.active_modal? {
             super::super::ModalKind::About => {
                 automatic_flow(ex, crate::ui::window::about::view_window)
+            }
+            super::super::ModalKind::XrefHelp => {
+                automatic_flow(ex, crate::ui::window::xref_help::view_window)
             }
             super::super::ModalKind::Shortcuts => {
                 // Keys claimed by two rows — the cells turn red and a
@@ -307,6 +312,8 @@ impl OpenCADStudio {
                             show_viewcube: self.show_viewcube,
                             show_ucs_icon: self.show_ucs_icon,
                             ucs_icon_at_origin: self.ucs_icon_at_origin,
+                            right_click_mode: self.right_click_mode,
+                            right_click_hold_ms: self.right_click_hold_ms,
                         },
                         crate::ui::window::options::spacemouse::view(
                             self.spacemouse_preferences, self.spacemouse.status(),
@@ -1644,6 +1651,17 @@ impl OpenCADStudio {
                     save_as_dialog_window(
                         &self.save_dialog_filename,
                         &self.save_dialog_format,
+                        flow,
+                    )
+                })
+            }
+            super::super::ModalKind::MissingFonts => {
+                let fonts = self.missing_fonts.as_ref()?;
+                let font_source = &self.font_source_input;
+                automatic_flow(ex, |flow| {
+                    crate::ui::window::missing_fonts::view_window(
+                        fonts,
+                        &font_source,
                         flow,
                     )
                 })
