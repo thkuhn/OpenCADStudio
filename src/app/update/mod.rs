@@ -1,4 +1,4 @@
-use super::{ArrowKey, Message, OpenCADStudio, TextEntryMode};
+use super::{AecPendingCopy, ArrowKey, Message, OpenCADStudio, TextEntryMode};
 use crate::scene::VIEWCUBE_DRAW_PX;
 use crate::ui::PropertiesPanel;
 use iced::time::Instant;
@@ -98,7 +98,7 @@ mod viewport;
 mod viewport_snap;
 
 impl OpenCADStudio {
-    pub(in crate::app) fn reset_modal_geometry(&mut self) {
+    pub(crate) fn reset_modal_geometry(&mut self) {
         self.modal_offset = iced::Vector::ZERO;
         self.modal_resize = iced::Vector::ZERO;
         self.modal_content_size = None;
@@ -1874,7 +1874,7 @@ impl OpenCADStudio {
     /// Close the active in-canvas modal (Plan B), mirroring what closing the
     /// old OS window did: a style editor discards its staged (un-applied)
     /// changes, and the ribbon tool that launched the dialog is de-highlighted.
-    fn close_active_modal(&mut self) {
+    pub(crate) fn close_active_modal(&mut self) {
         self.mark_startup_modal_shown();
         use super::ModalKind::*;
         // Plot Style opened from PLOT behaves as a child modal.
@@ -2047,6 +2047,7 @@ impl OpenCADStudio {
             }
         }
         let task = self.update_inner(msg);
+        self.refresh_gpu_status();
         self.show_next_startup_modal();
         self.sync_open_command_history();
         // Close the document-level first-touch transaction started by
@@ -2071,6 +2072,9 @@ impl OpenCADStudio {
         // The block panel watches the drawing's block list and rebuilds its
         // thumbnails whenever the names change (BLOCK define, file open, …).
         self.refresh_block_palette_if_stale();
+        // The Reference Manager watches the active drawing and re-scans when
+        // the palette is open on another tab's entries.
+        self.refresh_xref_manager_if_stale();
         // Let V4 plugins observe selection changes that happened while handling
         // this message (picking, window select, QSELECT, SELECTALL, grip edits,
         // and plugin request draining).
@@ -2118,6 +2122,48 @@ impl OpenCADStudio {
 
     fn update_inner(&mut self, msg: Message) -> Task<Message> {
         match msg {
+            Message::SpaceMouseWake => self.on_spacemouse_wake(),
+            Message::SpaceMouseFrame(time) => {
+                self.spacemouse.frame(
+                    time.saturating_duration_since(self.start).as_secs_f64() * 1000.,
+                );
+                Task::none()
+            }
+            Message::SpaceMouseFocus(id, focused) => {
+                if Some(id) == self.main_window {
+                    self.spacemouse_focused = focused;
+                }
+                Task::none()
+            }
+            Message::SpaceMouseEnabled(enabled) => {
+                self.spacemouse_preferences.enabled = enabled;
+                Task::none()
+            }
+            Message::SpaceMouseMode(mode) => {
+                self.spacemouse_preferences.mode = mode;
+                Task::none()
+            }
+            Message::SpaceMousePanSpeed(speed) => {
+                self.spacemouse_preferences.pan_speed = speed.clamp(10, 300);
+                Task::none()
+            }
+            Message::SpaceMousePanReversed(reversed) => {
+                self.spacemouse_preferences.pan_reversed = reversed;
+                Task::none()
+            }
+            Message::SpaceMousePause => {
+                self.spacemouse_paused = !self.spacemouse_paused;
+                Task::none()
+            }
+            Message::SpaceMousePreferences => {
+                self.open_spacemouse_preferences();
+                Task::none()
+            }
+            Message::SpaceMouseDriverSettings => self.open_spacemouse_driver_settings(),
+            Message::SpaceMouseDetails => {
+                self.spacemouse_details = !self.spacemouse_details;
+                Task::none()
+            }
             Message::ControlRequest(envelope) => {
                 let (response, task) = self.control_request(envelope.request);
                 envelope.reply.send(response);
@@ -2677,14 +2723,17 @@ impl OpenCADStudio {
                         .await;
 
                     match handle {
-                        Some(h) => Ok(crate::sys::handle_path(&h)),
+                        Some(h) => Ok((
+                            crate::sys::handle_path(&h),
+                            std::sync::Arc::new(Vec::new()),
+                        )),
                         None => Err("Cancelled".to_string()),
                     }
                 },
                 Message::PdfAttachPickResult,
             ),
 
-            Message::PdfAttachPickResult(Ok(path)) => {
+            Message::PdfAttachPickResult(Ok((path, _))) => {
                 use acadrust::objects::{ObjectType, UnderlayDefinition};
                 use crate::command::CadCommand;
                 use crate::modules::insert::pdf_attach::PdfAttachCommand;
@@ -4058,9 +4107,6 @@ impl OpenCADStudio {
                 self.active_modal = Some(super::ModalKind::LayerStateManager);
                 Task::none()
             }
-            // ── Layer Translator (#624) ──────────────────────────────────
-            Message::LayerTranslatorLoad => {
-                Task::perform(crate::io::pick_layer_standard_path(), |path| match path {
             Message::Aec(msg) => crate::modules::aec::update(self, msg),
             Message::SelectAndZoomTo(handle) => {
                 let i = self.active_tab;
@@ -4122,13 +4168,14 @@ impl OpenCADStudio {
                 }
                 Task::none()
             }
+            // ── Layer Translator (#624) ──────────────────────────────────
             Message::LayerTranslatorLoad => Task::perform(
                 crate::io::pick_layer_standard_path(),
                 |path| match path {
                     Some(path) => Message::LayerTranslatorLoaded(path),
                     None => Message::Noop,
-                })
-            }
+                },
+            ),
             Message::LayerTranslatorLoaded(path) => {
                 use crate::modules::draw::layers::laytrans;
                 match laytrans::load_targets(&path) {
@@ -6434,7 +6481,7 @@ impl OpenCADStudio {
                     self.delete_parametric_constraint(id);
                     return Task::none();
                 }
-                let handles: Vec<_> = self.tabs[i].scene.selected.iter().cloned().collect();
+                let mut handles: Vec<_> = self.tabs[i].scene.selected.iter().cloned().collect();
                 if !handles.is_empty() {
                     crate::modules::aec::commands::expand_with_wall_derived_handles(
                         &self.tabs[i].scene,
@@ -7530,10 +7577,7 @@ impl OpenCADStudio {
                 }
                 // Keep already-built panels in other open documents in sync,
                 // rather than waiting for each one to rebuild on selection.
-                let sections = self.collapsed_property_sections.clone();
-                for tab in &mut self.tabs {
-                    tab.properties.collapsed_sections = sections.clone();
-                }
+                let _sections = self.collapsed_property_sections.clone();
                 Task::none()
             }
 
@@ -11201,6 +11245,7 @@ impl OpenCADStudio {
                 self.on_color_window_pick(color)
             }
             Message::DsSetHandle { field, value } => self.on_ds_set_handle(field, value),
+            _ => Task::none(),
         }
     }
 

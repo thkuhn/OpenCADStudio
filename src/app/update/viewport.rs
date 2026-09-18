@@ -3254,7 +3254,6 @@ impl OpenCADStudio {
                         crate::scene::model::object::GripShape::Dropdown
                             | crate::scene::model::object::GripShape::DropdownAdjacent
                     ) {
-                    if grip_shape == crate::scene::model::object::GripShape::Dropdown {
                         if let Some(end_index) =
                             crate::modules::aec::commands::wall_junction_end_from_dropdown_grip(
                                 grip_id,
@@ -3517,7 +3516,8 @@ impl OpenCADStudio {
                 }
                 self.tabs[i].scene.clear_preview_wire();
                 let changes: Vec<_> = handles
-                    .into_iter()
+                    .iter()
+                    .copied()
                     .map(|handle| (handle, crate::scene::ChangeKind::Modified))
                     .collect();
                 self.tabs[i].scene.bump_entities(&changes);
@@ -4734,6 +4734,12 @@ properties={:.1}ms picked={}",
                             // Selection filter: drop a pick whose type is excluded.
                             let hit =
                                 hit.filter(|&h| self.tabs[i].scene.passes_selection_filter(h));
+                            let hit = hit.map(|h| {
+                                crate::modules::aec::commands::resolve_wall_package(
+                                    &self.tabs[i].scene,
+                                    h,
+                                )
+                            });
                             if let Some(handle) = hit {
                                 // Individual picks accumulate (issue #47):
                                 // each plain click adds to the selection,
@@ -4800,119 +4806,6 @@ was_selected={}",
                                 if !sel.box_crossing_locked {
                                     sel.box_crossing = false;
                                 }
-                    if !handled_by_cycling {
-                        let hit = scene::pick::hit_test::click_hit(
-                            p,
-                            &click_candidates,
-                            view_rot,
-                            eye,
-                            bounds,
-                            self.tabs[i].scene.document.header.lineweight_display,
-                            crate::ui::overlay::pick_box_aperture_px(self.pick_box),
-                        )
-                        .and_then(|s| Scene::handle_from_wire_name(s))
-                        .or_else(|| {
-                            scene::pick::hit_test::click_hit_hatch(
-                                p,
-                                &self.tabs[i]
-                                    .scene
-                                    .visible_hatches_for_click(candidate_handles.as_ref()),
-                                view_rot,
-                                eye,
-                                bounds,
-                                candidate_handles.as_ref(),
-                            )
-                        })
-                        .or_else(|| {
-                            // Block-internal hatch: resolve to the parent Insert.
-                            scene::pick::hit_test::click_hit_insert_hatch(
-                                p,
-                                self.tabs[i].scene.insert_hatches_for_click().as_ref(),
-                                view_rot,
-                                eye,
-                                bounds,
-                                candidate_handles.as_ref(),
-                            )
-                        })
-                        .or_else(|| {
-                            // Normal 3D selection follows the displayed B-rep
-                            // edges. Face-interior picking remains reserved for
-                            // modelling commands that explicitly request it.
-                            self.tabs[i].scene.solid_edge_click_hit(
-                                p,
-                                view_rot,
-                                eye,
-                                bounds,
-                                candidate_handles.as_ref(),
-                                crate::ui::overlay::pick_box_aperture_px(self.pick_box),
-                            )
-                        });
-                        // Selection filter: drop a pick whose type is excluded.
-                        let hit = hit.filter(|&h| self.tabs[i].scene.passes_selection_filter(h));
-                        // A click on a wall's derived contour/hatch/solid
-                        // resolves to the wall axis, so selecting/moving it
-                        // acts on the actual wall entity.
-                        let hit = hit.map(|h| {
-                            crate::modules::aec::commands::resolve_wall_package(
-                                &self.tabs[i].scene,
-                                h,
-                            )
-                        });
-                        if let Some(handle) = hit {
-                            // Individual picks accumulate (issue #47):
-                            // each plain click adds to the selection,
-                            // Shift+click removes the picked entity.
-                            // PICKADD 0 (#226): a plain click
-                            // REPLACES the selection instead and
-                            // Shift+click toggles membership.
-                            if self.shift_down || self.select_remove_mode {
-                                // Remove was asked for by name, so it only
-                                // ever takes away — the toggle below is
-                                // Shift's PICKADD-0 behaviour, not its.
-                                if !self.select_remove_mode
-                                    && !selection_pick_add
-                                    && !self.tabs[i].scene.selected.contains(&handle)
-                                {
-                                    self.tabs[i].scene.select_entity(handle, false);
-                                    self.tabs[i].scene.expand_selection_for_groups(&[handle]);
-                                } else {
-                                    self.tabs[i].scene.deselect_entity(handle);
-                                }
-                            } else {
-                                self.tabs[i]
-                                    .scene
-                                    .select_entity(handle, !selection_pick_add);
-                                self.tabs[i].scene.expand_selection_for_groups(&[handle]);
-                            }
-                            self.refresh_properties();
-                            selection_just_completed = true;
-                        } else {
-                            // Empty-space click only ARMS a box here; it
-                            // no longer clears the selection, so a box can
-                            // add to it (issue #83). The box completion
-                            // (or Esc) decides what happens to the
-                            // selection.
-                            // PICKADD 0 (#226): OS convention — the
-                            // empty click also drops the selection.
-                            if !selection_pick_add && !self.shift_down {
-                                self.tabs[i].scene.deselect_all();
-                                self.refresh_properties();
-                            }
-                            // Pin the anchor to the world point under it
-                            // so a zoom/pan mid-drag re-projects it
-                            // instead of leaving it frozen in pixels
-                            // (#234). Computed before the selection
-                            // borrow so the &self projection can't clash.
-                            let anchor_world = self.cursor_model_point(i, &edit_cam, p, bounds);
-                            let mut sel = self.tabs[i].scene.selection.borrow_mut();
-                            // Full-canvas space: ViewportMove updates
-                            // box_current in canvas coords and the overlay
-                            // draws there; release maps back into the tile.
-                            sel.box_anchor = Some(p_full);
-                            sel.box_current = Some(p_full);
-                            sel.box_anchor_world = Some(anchor_world);
-                            if !sel.box_crossing_locked {
-                                sel.box_crossing = false;
                             }
                         }
                     }
@@ -5618,7 +5511,7 @@ was_selected={}",
     /// model-space view moves (zoom/pan), so the selection rectangle tracks the
     /// drawing instead of staying frozen at its original pixel. No-op when no
     /// box is in progress. (#234)
-    pub(super) fn reproject_box_anchor(&mut self, i: usize, vw: f32, vh: f32) {
+    pub(crate) fn reproject_box_anchor(&mut self, i: usize, vw: f32, vh: f32) {
         let world = self.tabs[i].scene.selection.borrow().box_anchor_world;
         let Some(world) = world else { return };
         let tile_b = self.tabs[i].scene.active_model_tile_bounds(vw, vh);

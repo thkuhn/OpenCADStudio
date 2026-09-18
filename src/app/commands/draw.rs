@@ -614,7 +614,7 @@ impl OpenCADStudio {
                     .collect();
                 let handles = crate::modules::aec::commands::expand_handles_for_wall_packages(
                     &self.tabs[i].scene,
-                    &selected,
+                    &handles,
                 );
                 if handles.is_empty() {
                     use crate::modules::draw::select::SelectObjectsCommand;
@@ -925,7 +925,7 @@ impl OpenCADStudio {
             }
 
             "ERASE" => {
-                let handles: Vec<_> = self.tabs[i]
+                let mut handles: Vec<_> = self.tabs[i]
                     .scene
                     .selected_entities()
                     .into_iter()

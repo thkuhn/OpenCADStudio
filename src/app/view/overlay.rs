@@ -1099,6 +1099,7 @@ pub(super) fn viewport_context_menu_overlay(
     bottom_inset: f32,
     has_cmd: bool,
     has_selection: bool,
+    selected_constraint: Option<crate::scene::parametric_constraints::ConstraintId>,
     isolation_active: bool,
     last_cmds: Vec<String>,
     draworder_open: bool,
@@ -1385,9 +1386,6 @@ pub(super) fn viewport_context_menu_overlay(
                 Message::InvertSelection,
             ));
         } else if let Some(id) = selected_constraint {
-            // A selected constraint-glyph pill gets its own minimal menu —
-            // none of the entity-selection actions above (Move/Copy/Isolate/
-            // Select Similar) apply to it.
             items.push(item(
                 t!("Delete").into_owned(),
                 Message::PropConstraintDelete(id),

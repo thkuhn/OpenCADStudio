@@ -5152,9 +5152,17 @@ impl Scene {
     /// remains the picked member for hit-test/UI bookkeeping; rendering expands
     /// it to the same selectable group that a click would select.
     pub fn hover_highlight_handles(&self) -> HashSet<Handle> {
-        let mut handles = self
+        let mut handles: HashSet<Handle> = self
             .hover_highlight
-            .map(|handle| self.handles_expanded_for_selectable_groups(&[handle]))
+            .map(|handle| {
+                let grouped: Vec<Handle> = self
+                    .handles_expanded_for_selectable_groups(&[handle])
+                    .into_iter()
+                    .collect();
+                crate::modules::aec::commands::expand_handles_for_wall_packages(self, &grouped)
+                    .into_iter()
+                    .collect()
+            })
             .unwrap_or_default();
         handles.extend(self.constraint_hover_highlights.iter().copied());
         handles
@@ -5202,17 +5210,6 @@ impl Scene {
         self.constraint_hover_highlights = handles;
         self.constraint_hover_wires = wires;
         self.bump_selection();
-        self.hover_highlight
-            .map(|handle| {
-                let grouped: Vec<Handle> = self
-                    .handles_expanded_for_selectable_groups(&[handle])
-                    .into_iter()
-                    .collect();
-                crate::modules::aec::commands::expand_handles_for_wall_packages(self, &grouped)
-                    .into_iter()
-                    .collect()
-            })
-            .unwrap_or_default()
     }
 
     /// Keep the current selection visible and temporarily filter every other
@@ -9535,8 +9532,6 @@ impl Scene {
         if matches!(e, EntityType::Block(_) | EntityType::BlockEnd(_)) {
             return false;
         }
-        if layer
-        let layer = self.document.layers.get(&c.layer);
         let layer_off = layer
             .map(|l| l.flags.off || l.flags.frozen)
             .unwrap_or(false);

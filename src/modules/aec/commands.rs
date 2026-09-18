@@ -365,6 +365,7 @@ pub fn wall_layer_highlight_hatch(
     let mut fill = color;
     fill[3] = if color[3] < 0.99 { color[3] } else { 0.32 };
     Some(HatchModel {
+        pattern_origin: None,
         render_instance: None,
         world_origin: origin,
         boundary: std::sync::Arc::new(boundary),
@@ -3428,6 +3429,7 @@ pub(crate) fn regenerate_wall_representation_inner(
                     origin,
                 );
                 let hatch_model = crate::scene::model::hatch_model::HatchModel {
+                    pattern_origin: None,
                     render_instance: None,
                     boundary: std::sync::Arc::new(rel.clone()),
                     pattern: crate::scene::model::hatch_model::HatchPattern::Pattern(phased),

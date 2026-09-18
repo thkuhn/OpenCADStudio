@@ -14,6 +14,7 @@ use iced::widget::{
 use iced::window;
 use iced::{keyboard, Background, Border, Color, Element, Fill, Length, Subscription, Task, Theme};
 use iced_aw::ContextMenu;
+use crate::t;
 
 mod controls;
 mod modal;
@@ -582,6 +583,34 @@ bg={bg_ms:.1}ms n={view_count}"
                             is_hot,
                             is_hovered,
                             dir,
+                            has_override: owner.is_some_and(|handle| {
+                                let axis = crate::modules::aec::commands::resolve_wall_package(
+                                    &tab.scene, handle,
+                                );
+                                let vertices =
+                                    crate::modules::aec::commands::get_wall_vertices(&tab.scene, axis);
+                                if vertices.len() < 2 {
+                                    return false;
+                                }
+                                let end_index = crate::modules::aec::commands::wall_junction_end_from_dropdown_grip(
+                                    grip_id,
+                                )
+                                .or_else(|| {
+                                    if grip_id == 0 {
+                                        Some(0usize)
+                                    } else if grip_id == vertices.len() - 1 {
+                                        Some(1usize)
+                                    } else {
+                                        None
+                                    }
+                                });
+                                end_index.is_some_and(|end_index| {
+                                    crate::modules::aec::commands::read_junction_override(
+                                        &tab.scene, axis, end_index,
+                                    )
+                                    .is_some()
+                                })
+                            }),
                         }
                     })
                     .collect()
@@ -936,6 +965,38 @@ bg={bg_ms:.1}ms n={view_count}"
             let point_cursor = tab.active_cmd.as_ref().is_some_and(|cmd| {
                 !cmd.needs_entity_pick() && !cmd.is_selection_gathering()
             });
+            let constraint_glyphs: Vec<(
+                iced::Point,
+                [f32; 2],
+                String,
+                bool,
+                bool,
+                Vec<iced::Point>,
+            )> = if is_paper {
+                Vec::new()
+            } else {
+                let scope = tab.current_parametric_scope();
+                tab.scene
+                    .constraint_glyph_placements_screen(
+                        scope,
+                        sel_ref.vp_size,
+                        self.show_constraint_values,
+                        self.constraint_bar_display,
+                    )
+                    .into_iter()
+                    .map(|(id, point, direction, label, is_conflicting, hover_points)| {
+                        let selected = tab.scene.selected_constraint == Some(id);
+                        (
+                            point,
+                            direction,
+                            label,
+                            is_conflicting,
+                            selected,
+                            hover_points,
+                        )
+                    })
+                    .collect()
+            };
             crate::ui::overlay::selection_overlay(
                 std::sync::Arc::clone(&tab.scene.selection),
                 snap_info,
@@ -978,6 +1039,9 @@ bg={bg_ms:.1}ms n={view_count}"
                     grip_hot: self.model_space.grip_hot,
                     grip_hover: self.model_space.grip_hover,
                 },
+                constraint_glyphs,
+                self.constraint_glyph_tooltip
+                    .map(|kind| crate::t!(kind.label()).into_owned()),
             )
         };
 
@@ -1094,6 +1158,7 @@ bg={bg_ms:.1}ms n={view_count}"
                             active: idx == tab.dyn_active,
                             locked: f.locked(),
                             role: f.role,
+                            center: None,
                         }
                     })
                     .collect();
@@ -1190,6 +1255,9 @@ bg={bg_ms:.1}ms n={view_count}"
         };
 
         if !thumbnail_capture_clean && !self.layout_settling {
+            if let Some(pivot) = self.spacemouse_pivot_overlay() {
+                viewport_stack = viewport_stack.push(pivot);
+            }
         // Per-pane input pane_grid goes ABOVE the crosshair overlay so it
         // receives mouse events (the overlay's `Hidden` cursor would otherwise
         // starve any layer beneath it). The controls bar is pushed on top of it.
@@ -1729,10 +1797,21 @@ bg={bg_ms:.1}ms n={view_count}"
             // the cursor position (canvas-relative) anchors the menu under
             // the cursor instead of drifting into window-relative space.
             if !tab.is_start {
-                let (ctx_pos, draworder_open) = {
+                let (ctx_pos, draworder_open, justification_open, junction_menu, junction_submenu_open, junction_menu_only) = {
                     let sel = tab.scene.selection.borrow();
-                    (sel.context_menu, sel.draworder_submenu)
+                    (
+                        sel.context_menu,
+                        sel.draworder_submenu,
+                        sel.wall_justification_submenu,
+                        sel.junction_menu,
+                        sel.junction_menu_submenu,
+                        sel.junction_menu_only,
+                    )
                 };
+                let junction_layer_pair_style = self
+                    .aec.aec_layer_pair_draw
+                    .as_ref()
+                    .is_some_and(|p| p.awaiting_style);
                 if let Some(p) = ctx_pos {
                     let has_cmd = tab.active_cmd.is_some();
                     // Same guard as typed MTP/M2P and SnapOverrideMtp.
@@ -1742,6 +1821,10 @@ bg={bg_ms:.1}ms n={view_count}"
                     });
                     let has_selection = !tab.scene.selected.is_empty();
                     let isolation_active = tab.scene.is_isolation_active();
+                    let only_walls = crate::modules::aec::properties::selection_is_all_walls(
+                        &tab.scene,
+                        tab.scene.selected.iter().copied(),
+                    );
                     let last_cmds: Vec<String> = self
                         .command_line
                         .recent_commands
@@ -1759,6 +1842,12 @@ bg={bg_ms:.1}ms n={view_count}"
                         isolation_active,
                         last_cmds,
                         draworder_open,
+                        only_walls,
+                        justification_open,
+                        junction_menu,
+                        junction_submenu_open,
+                        junction_menu_only,
+                        junction_layer_pair_style,
                         has_point_step,
                     ));
                 }
@@ -2214,6 +2303,26 @@ bg={bg_ms:.1}ms n={view_count}"
                         self.selection_cycling,
                         &self.statusbar_config,
                         status_menu_data,
+                        tab.scene
+                            .parametric_constraint_set(tab.current_parametric_scope())
+                            .and_then(|s| s.dof),
+                        tab.scene
+                            .parametric_constraint_set(tab.current_parametric_scope())
+                            .map(|s| s.conflicts.len())
+                            .unwrap_or(0),
+                        &self.gpu_status,
+                        (self.spacemouse.visible()
+                            || self.spacemouse_preferences.mode
+                                != crate::input::spacemouse::NavigationMode::Auto)
+                            .then(|| {
+                                crate::ui::statusbar::spacemouse::view(
+                                    self.spacemouse_preferences,
+                                    self.spacemouse.status(),
+                                    self.spacemouse_paused,
+                                    self.spacemouse_label(),
+                                    self.spacemouse_sheet(),
+                                )
+                            }),
                     )
                 })
                 .width(Fill)
@@ -2235,6 +2344,7 @@ bg={bg_ms:.1}ms n={view_count}"
                 &history_dropdown_labels(&self.tabs[self.active_tab].history.redo_stack),
                 self.win_size,
                 self.tabs[self.active_tab].is_start,
+                &self.recent_colors,
             )
             .unwrap_or_else(|| iced::widget::Space::new().width(0).height(0).into());
 
@@ -2295,39 +2405,25 @@ bg={bg_ms:.1}ms n={view_count}"
             } else {
                 composed.into()
             }
+        } else if self.active_modal == Some(super::ModalKind::AecWallStyleDisplayProfiles) {
+            if let Some((parent_offset, parent_resize)) =
+                self.aec.aec_wall_style_manager_parent_geometry.as_ref()
+            {
+                let parent_content = self.aec_wall_style_manager_modal_content(*parent_resize);
+                crate::ui::modal::modal(
+                    composed,
+                    t!("AEC Wall Style Manager"),
+                    parent_content,
+                    Message::CloseModal,
+                    *parent_offset,
+                    crate::ui::modal::ModalOptions::STANDARD,
+                )
+            } else {
+                composed.into()
+            }
         } else {
             composed.into()
         };
-                    crate::ui::modal::modal(
-                        composed,
-                        crate::tr!("modal", "plot"),
-                        plot_content,
-                        Message::CloseModal,
-                        *plot_offset,
-                        crate::ui::modal::ModalOptions::STANDARD,
-                    )
-                } else {
-                    composed.into()
-                }
-            } else if self.active_modal == Some(super::ModalKind::AecWallStyleDisplayProfiles) {
-                if let Some((parent_offset, parent_resize)) =
-                    self.aec.aec_wall_style_manager_parent_geometry.as_ref()
-                {
-                    let parent_content = self.aec_wall_style_manager_modal_content(*parent_resize);
-                    crate::ui::modal::modal(
-                        composed,
-                        t!("AEC Wall Style Manager"),
-                        parent_content,
-                        Message::CloseModal,
-                        *parent_offset,
-                        crate::ui::modal::ModalOptions::STANDARD,
-                    )
-                } else {
-                    composed.into()
-                }
-            } else {
-                composed.into()
-            };
 
         // ── In-canvas modal dialogs (Plan B) ───────────────────────────────
         // Former pop-up windows render as overlays here, so they work on both
@@ -2696,6 +2792,21 @@ impl OpenCADStudio {
         #[cfg(target_arch = "wasm32")]
         let control = iced::time::every(std::time::Duration::from_millis(50)).map(|_|Message::PollWebControl);
         iced::Subscription::batch([
+            if self.spacemouse.moving() && self.spacemouse_focused && !self.spacemouse_paused {
+                window::frames().map(Message::SpaceMouseFrame)
+            } else {
+                Subscription::none()
+            },
+            self.spacemouse.subscription().map(|_| Message::SpaceMouseWake),
+            event::listen_with(|event, _, id| match event {
+                iced::Event::Window(window::Event::Focused) => {
+                    Some(Message::SpaceMouseFocus(id, true))
+                }
+                iced::Event::Window(window::Event::Unfocused) => {
+                    Some(Message::SpaceMouseFocus(id, false))
+                }
+                _ => None,
+            }),
             control,
             frames,
             history_tick,
@@ -2878,6 +2989,12 @@ impl OpenCADStudio {
             crate::ui::dock::PanelId::BlockPalette => {
                 crate::ui::window::block_palette::view(&self.block_palette, width, auto_collapse)
             }
+            crate::ui::dock::PanelId::ExternalReferences => self.xref_manager.view(
+                width,
+                auto_collapse,
+                tab.xref_missing,
+                &tab.scene.document,
+            ),
         };
         let divider = dock_divider(id);
         match side {
@@ -3495,6 +3612,18 @@ fn start_page_content<'a>(
         )
         .interaction(iced::mouse::Interaction::Pointer)
         .on_press(Message::OpenUrl("https://open-aec.com/".to_string())),
+        mouse_area(
+            container(
+                iced::widget::image(MOBILE_SPONSOR_IMAGE.clone())
+                    .width(Fill)
+                    .content_fit(iced::ContentFit::Contain),
+            )
+            .width(Fill),
+        )
+        .interaction(iced::mouse::Interaction::Pointer)
+        .on_press(Message::OpenUrl(
+            "https://play.google.com/store/apps/details?id=net.cadeditor.app".to_string(),
+        )),
     ]
     .spacing(10)
     .align_x(iced::alignment::Horizontal::Center)

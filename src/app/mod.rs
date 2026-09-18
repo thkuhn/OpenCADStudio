@@ -19,8 +19,6 @@ pub(crate) mod expr_eval;
 mod find_replace;
 pub(crate) mod helpers;
 mod history;
-#[cfg(not(target_arch = "wasm32"))]
-mod doc_api;
 mod layers;
 mod model_ops;
 mod navigation;
@@ -363,14 +361,14 @@ pub use crate::modules::aec::{
     AecProjectExplorerDeleteTarget, AecState, AecWallStyleSort, StylePickerTarget,
 };
 
-pub(super) struct OpenCADStudio {
+pub(crate) struct OpenCADStudio {
     start: Instant,
     control: control::State,
-    tabs: Vec<DocumentTab>,
-    active_tab: usize,
+    pub(crate) tabs: Vec<DocumentTab>,
+    pub(crate) active_tab: usize,
     hovered_doc_tab: Option<usize>,
     tab_counter: usize,
-    ribbon: Ribbon,
+    pub(crate) ribbon: Ribbon,
     /// Recently opened files, newest first — backs the Start page panel.
     recent_files: Vec<std::path::PathBuf>,
     /// Decoded DWG preview thumbnails for the Start page, keyed by path.
@@ -383,7 +381,7 @@ pub(super) struct OpenCADStudio {
     /// Live text of the recent-limit input box (may differ from `recent_limit`
     /// mid-edit; applied on Enter). Kept in sync when the +/- buttons change it.
     recent_limit_input: String,
-    command_line: CommandLine,
+    pub(crate) command_line: CommandLine,
     /// Recent Patreon supporters shown on the Start page (name, USD cents),
     /// fetched once at boot, highest payment first.
     patrons: Vec<(String, i64)>,
@@ -776,7 +774,7 @@ pub(super) struct OpenCADStudio {
     recent_colors: Vec<AcadColor>,
     /// The open in-canvas modal dialog, if any (Plan B: shared overlay instead
     /// of OS windows).
-    active_modal: Option<ModalKind>,
+    pub(crate) active_modal: Option<ModalKind>,
     pending_startup_modals: std::collections::VecDeque<ModalKind>,
     /// What is drawing the scene, once the first frame has told us. Drives
     /// the graphics warning (popup, status-bar pill, command line).
@@ -803,7 +801,7 @@ pub(super) struct OpenCADStudio {
     layer_delete_pending: Option<(Vec<String>, usize)>,
     /// Pixel offset of the active modal from screen-centre (drag-to-move).
     /// Reset to zero whenever a modal closes so each dialog opens centred.
-    modal_offset: iced::Vector,
+    pub(crate) modal_offset: iced::Vector,
     /// Cursor position from the previous drag-move while the modal title bar is
     /// held; `None` before the first move of a drag.
     modal_drag_last: Option<Point>,
@@ -817,7 +815,7 @@ pub(super) struct OpenCADStudio {
     /// How far the user has dragged the modal's corner resize grip from the
     /// dialog's natural size (added to its measured width/height). Reset
     /// with `modal_offset` so every dialog opens at its own size.
-    modal_resize: iced::Vector,
+    pub(crate) modal_resize: iced::Vector,
     /// Last body size reported by the shared modal frame. Used for drag bounds
     /// and controls whose range follows the real, automatically measured width.
     modal_content_size: Option<iced::Size>,
@@ -1446,6 +1444,21 @@ pub enum ColorPickTarget {
     LayerState(usize),
     /// The MText editor's selection (or global) colour.
     MText,
+    AecMaterial,
+    AecMaterialHatch,
+    AecPlanDemolitionLineColor,
+    AecPlanDemolitionHatchColor,
+    AecPlanDemolitionFillColor,
+    AecPlanExistingLineColor,
+    AecPlanExistingHatchColor,
+    AecPlanExistingFillColor,
+    AecWallStyleSlotLineColor,
+    AecWallStyleSlotHatchColor,
+    AecWallStyleSlotFillColor,
+    AecPlanOverlayLineColor,
+    AecPlanOverlayHatchColor,
+    AecPlanOverlayFillColor,
+    AecPlanContourHatchColor,
 }
 
 /// Table records the clipboard entities depend on, snapshotted from the source
@@ -1970,6 +1983,17 @@ pub enum ArrowKey {
 
 #[derive(Debug, Clone)]
 pub enum Message {
+    SpaceMouseWake,
+    SpaceMouseFrame(iced::time::Instant),
+    SpaceMouseFocus(iced::window::Id, bool),
+    SpaceMouseEnabled(bool),
+    SpaceMouseMode(crate::input::spacemouse::NavigationMode),
+    SpaceMousePanSpeed(u16),
+    SpaceMousePanReversed(bool),
+    SpaceMousePause,
+    SpaceMousePreferences,
+    SpaceMouseDriverSettings,
+    SpaceMouseDetails,
     ControlRequest(control::Envelope),
     PollWebControl,
     ControlStep(String, Box<Message>),
@@ -1992,10 +2016,7 @@ pub enum Message {
     /// Register a font already held by the shared web store with the UI renderer.
     ApplyWebFont(crate::scene::text::web_font::Script),
     /// Completion of the UI renderer's runtime font registration.
-    WebUiFontLoaded(
-        crate::scene::text::web_font::Script,
-        Result<(), String>,
-    ),
+    WebUiFontLoaded(crate::scene::text::web_font::Script, Result<(), String>),
     /// Ctrl+V. Routed by `update` into an open text editor, the drawing-object
     /// clipboard, or the system text clipboard.
     PasteShortcut,
@@ -2032,9 +2053,12 @@ pub enum Message {
     WebFieldCopy,
     /// Web only: the focused field's text — write it to the clipboard.
     WebFieldCopyText(Option<String>),
-    /// Pick from the one-shot snap override menu (Shift+RMB): only this snap
-    /// applies to the next point pick, then the configuration restores (#337).
+    /// Pick from the one-shot snap override menu (Shift+RMB): only this
+    /// snap applies to the next point pick, then the configuration restores (#337).
     SnapOverridePick(crate::snap::SnapType),
+    /// Mid Between 2 Points from the snap menu: modal 2-pick modifier over
+    /// the active point prompt.
+    SnapOverrideMtp,
     /// Close the one-shot snap override menu without picking.
     SnapOverrideClose,
     /// Open a path from the Start tab's recent-documents list (skips the
@@ -2063,10 +2087,13 @@ pub enum Message {
     WebFileOpened(u64, crate::io::WebOpenOutcome),
     #[cfg(target_arch = "wasm32")]
     WebFileCached(u64, crate::io::WebOpenOutcome, Result<(), String>),
-    FileOpened(u64, Result<
-        (String, PathBuf, CadDocument, crate::scene::DerivedCaches),
-        crate::io::OpenLoadError,
-    >),
+    FileOpened(
+        u64,
+        Result<
+            (String, PathBuf, CadDocument, crate::scene::DerivedCaches),
+            crate::io::OpenLoadError,
+        >,
+    ),
     RecoveryClose,
     RecoveryAttempt,
     RecoveryDecline,
@@ -2092,6 +2119,10 @@ pub enum Message {
     CursorSizeChanged(i32),
     /// Set PICKBOX from the Selection-page slider.
     PickBoxChanged(i32),
+    /// Choose whether double-clicking a block starts BEDIT or REFEDIT.
+    DoubleClickBlockRefeditChanged(bool),
+    /// Choose whether double-clicking a block with attributes starts ATTEDIT.
+    DoubleClickBlockAtteditChanged(bool),
     /// Set CURSORTYPE from Options.
     CursorTypeChanged(settings::CursorType),
     /// Set the model-space lineweight preview scale from Options.
@@ -2132,6 +2163,71 @@ pub enum Message {
     GripHotChanged(u8),
     /// Change Hover/Warm Grip color ACI index (0 = Theme Primary Strong, 1..=255 = ACI, GRIPHOVER).
     GripHoverChanged(u8),
+    /// Change the selected-object count past which grips stop being drawn
+    /// (0..=32767, 0 = no limit, GRIPOBJLIMIT).
+    GripObjectLimitChanged(i32),
+    /// Toggle the solid selection highlight (SELECTIONEFFECT).
+    SelectionEffectToggled(bool),
+    /// Toggle rollover preview while no command is running (SELECTIONPREVIEW bit 1).
+    SelectionPreviewIdleToggled(bool),
+    /// Toggle rollover preview during a command (SELECTIONPREVIEW bit 2).
+    SelectionPreviewCommandToggled(bool),
+    /// Toggle "use Shift to add to selection"; this is the inverse of PICKADD.
+    ShiftToAddToggled(bool),
+    /// Toggle press-and-drag drawing a rectangle instead of a lasso (PICKDRAG).
+    PickDragRectToggled(bool),
+    /// Change the automatic-save interval in minutes; 0 disables it (SAVETIME).
+    SaveTimeChanged(i32),
+    /// Toggle keeping a `.bak` copy when overwriting a drawing (ISAVEBAK).
+    BackupOnSaveChanged(bool),
+    /// Toggle filled TrueType glyphs (TEXTFILL).
+    TextFillChanged(bool),
+    /// Change how many prompt lines sit above the command window (CLIPROMPTLINES).
+    ClipromptLinesChanged(i32),
+    /// Change how long command-line history lines stay visible (COMMANDLINEFADETIME).
+    CommandLineFadeChanged(i32),
+    /// Toggle reversing the mouse-wheel zoom direction (ZOOMWHEEL).
+    ZoomWheelReversedChanged(bool),
+    /// Change how far one wheel notch zooms (ZOOMFACTOR, 3..=100).
+    ZoomFactorChanged(i32),
+    /// Toggle TEXTEDIT ending after one object (TEXTEDITMODE).
+    TextEditModeChanged(bool),
+    /// Toggle continued dimensions inheriting the base style (DIMCONTINUEMODE).
+    DimContinueModeChanged(bool),
+    /// Change which points QDIM measures from (0 endpoints, 1 intersections).
+    QdimSnapPriorityChanged(u8),
+    /// Change which annotative objects pick up a new scale (ANNOAUTOSCALE).
+    AnnoAutoScaleChanged(i8),
+    /// Edit the drafting rotation field; parsed when it holds a valid angle (SNAPANG).
+    SnapAngleInputChanged(String),
+    /// Change the polar tracking increment in degrees.
+    PolarIncrementChanged(f32),
+    /// Toggle the navigation cube (NAVVCUBE).
+    ShowViewCubeChanged(bool),
+    /// Toggle the UCS icon (UCSICON).
+    ShowUcsIconChanged(bool),
+    /// Toggle drawing the UCS icon at the origin (UCSICON ORigin).
+    UcsIconAtOriginChanged(bool),
+    /// Toggle selection cycling from Options; the status-bar pill toggles the same flag.
+    SelectionCyclingChanged(bool),
+    /// Reveal one of the application's own folders in the system file manager.
+    OpenFolder(String),
+    /// Change isolines per surface in the current drawing (ISOLINES).
+    IsolinesChanged(i16),
+    /// The isolines slider was released; rebuild the meshes if it moved.
+    IsolinesReleased,
+    /// Toggle silhouette edges in the current drawing (DISPSILH).
+    DispSilhChanged(bool),
+    /// Change surface density U in the current drawing (SURFU).
+    SurfaceUChanged(i16),
+    /// Change surface density V in the current drawing (SURFV).
+    SurfaceVChanged(i16),
+    /// Change the surface type in the current drawing (SURFTYPE).
+    SurfaceTypeChanged(i16),
+    /// Toggle recording composite-solid history in the current drawing (SOLIDHIST).
+    SolidHistChanged(bool),
+    /// Change when solid history is shown in the current drawing (SHOWHIST).
+    ShowHistChanged(i16),
     /// Restore Model Space display/canvas appearance to defaults.
     RestoreModelSpaceDisplayDefaults,
     /// Restore Selection visual effect settings to defaults.
@@ -2139,6 +2235,9 @@ pub enum Message {
     /// Register or unregister as the .dwg/.dxf handler, from Options. Same
     /// setting the FILEASSOC command carries.
     FileAssocChanged(bool),
+    /// Toggle showing driven values/named-parameter names on constraint
+    /// pills, from Options. See `show_constraint_values`'s doc comment.
+    ShowConstraintValuesChanged(bool),
     /// Switch the interface language and redraw localized views.
     LanguageChanged(crate::i18n::Language),
     /// Drop every entity from the active drawing.
@@ -2274,6 +2373,10 @@ pub enum Message {
     CommandInput(String),
     CommandSubmit,
     Command(String),
+    /// Execute one complete line read from a command script. Unlike UI/ribbon
+    /// dispatch, this accepts an interactive verb and all of its arguments on
+    /// the same line (`BOX 0,0,0 10,10,0 10`).
+    ScriptLine(String),
     /// Append one typed character to the command-line input from the
     /// global key-press subscription. Used when the text-input widget
     /// itself isn't focused (focus parked on viewport / button / etc.)
@@ -2303,9 +2406,16 @@ pub enum Message {
     },
     /// A widget captured Up/Down; resolve it only if the command input owns
     /// keyboard focus.
-    CommandLineArrowProbe { direction: ArrowKey, extend_selection: bool },
+    CommandLineArrowProbe {
+        direction: ArrowKey,
+        extend_selection: bool,
+    },
     /// Result of the command-input focus query for a captured Up/Down key.
-    CommandLineArrowResolved { direction: ArrowKey, focused: bool, extend_selection: bool },
+    CommandLineArrowResolved {
+        direction: ArrowKey,
+        focused: bool,
+        extend_selection: bool,
+    },
     /// Toggle the dropdown listing the full command-line history.
     CommandHistoryToggle,
     /// Grab/move/release the expanded history panel's top resize edge.
@@ -2324,6 +2434,8 @@ pub enum Message {
     /// clipboard as plain text — issue #232, so output can be pasted for
     /// debugging instead of screenshotted.
     CommandHistoryCopy,
+    #[cfg(target_arch = "wasm32")]
+    CommandHistoryCopied(bool),
     /// Clear every line from the command-line history.
     CommandHistoryClear,
     /// Copy every line currently retained by the PERF panel.
@@ -2341,6 +2453,61 @@ pub enum Message {
     /// active command as if typed (empty keyword = Enter). (#304)
     CommandOptionPick(String),
     ToggleLayers,
+    /// Open/focus (or close) the Reference Manager palette.
+    ToggleXrefManager,
+    /// Rescan the active drawing's references into the palette.
+    XrefManagerRefresh,
+    /// Toggle one palette row (entry index) in the multi-selection set.
+    XrefManagerSelect(usize),
+    /// Right-click on a palette row: single-select it when outside the
+    /// selection (the context menu then acts on the selection).
+    XrefRowRightClick(usize),
+    /// Flip the palette's list/tree presentation.
+    XrefManagerToggleTree,
+    /// Start a reference-table column divider drag (column index).
+    XrefColGrab(usize),
+    /// Pointer moved (table header space) during a column drag.
+    XrefColMove(iced::Point),
+    /// Pointer released during a column drag.
+    XrefColRelease,
+    /// Start a table/lower-pane split divider drag.
+    XrefSplitGrab,
+    /// Pointer moved (panel space) during a split drag.
+    XrefSplitMove(iced::Point),
+    /// Pointer released during a split drag.
+    XrefSplitRelease,
+    /// Flip the palette's details/preview lower pane.
+    XrefManagerTogglePreview,
+    /// Toggle the Attach dropdown menu.
+    XrefManagerAttachMenu,
+    /// Toggle the Refresh dropdown menu.
+    XrefManagerRefreshMenu,
+    /// Toggle the Change Path dropdown menu.
+    XrefManagerPathMenu,
+    /// Close all palette dropdown menus (overlay dismissal).
+    XrefManagerDismissMenus,
+    /// Open the file picker for Select New Path (anchor entry).
+    XrefPathPick,
+    /// Result of the Select New Path picker.
+    XrefPathPickResult(Result<std::path::PathBuf, String>),
+    /// Reload every direct reference (toolbar Reload All).
+    XrefManagerReloadAll,
+    /// Expand/collapse one tree parent (block-record handle key).
+    XrefManagerToggleExpand(u64),
+    /// Selection-scoped palette operation (detach/unload/reload/overlay/pathtype).
+    XrefManagerOp(crate::ui::window::xref_manager::XrefPaletteOp),
+    /// Row-scoped palette operation: selects row `index`, then applies the
+    /// operation to it.
+    XrefRowOp(usize, crate::ui::window::xref_manager::XrefPaletteOp),
+    /// Prefill the command line for Find & Replace across references
+    /// (`XREF Path Find <old> <new>`); the CLI parses and runs it.
+    XrefFindReplacePrompt,
+    /// Pick a new path for a specific row index.
+    XrefRowPathPick(usize),
+    /// Prefill the command line for Find & Replace for a specific row index.
+    XrefRowFindReplacePrompt(usize),
+    XrefRowChangePathEnter,
+    XrefRowChangePathLeave,
     LayerToggleVisible(usize),
     LayerToggleLock(usize),
     LayerToggleFreeze(usize),
@@ -2389,20 +2556,6 @@ pub enum Message {
     LayerStateEditorFilter(String),
     LayerStateEditorSave,
     LayerStateEditorCancel,
-    /// AEC UI / managers / junction editor. Core keeps a single arm.
-    Aec(crate::modules::aec::AecMessage),
-    /// Live change of a property field on the active command.
-    ActiveCommandLivePropertyChanged(&'static str, crate::command::LiveFieldValue),
-    /// Raw text typed into a live numeric command-property field (buffered,
-    /// not yet applied — mirrors `PropGeomInput` for regular entity fields).
-    ActiveCommandLiveTextInput(&'static str, String),
-    /// Enter pressed on a live numeric command-property field: parse the
-    /// buffered text and apply it (mirrors `PropGeomCommit`).
-    ActiveCommandLiveTextCommit(&'static str),
-
-
-    /// Select an entity and zoom the viewport to it (properties handle links).
-    SelectAndZoomTo(acadrust::Handle),
     /// ViewCube-local cursor movement, tagged with the floating viewport that
     /// owned the overlay when the event was produced (`None` = Model layout).
     CursorMoved(Point, Option<acadrust::Handle>),
@@ -2470,9 +2623,7 @@ pub enum Message {
         epoch: u64,
         source: usize,
         wires: std::sync::Weak<Vec<crate::scene::WireModel>>,
-        index: std::sync::Arc<
-            crate::scene::pick::interaction_index::InteractionIndex,
-        >,
+        index: std::sync::Arc<crate::scene::pick::interaction_index::InteractionIndex>,
         build_ms: f64,
     },
     WindowResized(f32, f32),
@@ -2565,6 +2716,10 @@ pub enum Message {
     CloseLayoutList,
     /// Cycle the coordinate readout mode ($COORDS): static → live → polar.
     CycleCoordsMode,
+    /// Removes one flagged redundant or conflicting constraint from the
+    /// current parametric scope.
+    /// No-op if the scope currently has no flagged conflict.
+    ResolveOneParametricConflict,
     /// Toggle the status-bar customization menu open/closed.
     ToggleStatusBarMenu,
     /// Close the status-bar customization menu.
@@ -2638,6 +2793,43 @@ pub enum Message {
     SnapSelectAll,
     /// Disable all snap modes.
     SnapClearAll,
+    // ── Drafting Settings Dialog ──────────────────────────────────────────
+    DraftingSettingsTabChanged(crate::ui::window::drafting_settings::DraftingSettingsTab),
+    DraftingSettingsToggleGrid,
+    DraftingSettingsToggleSnap,
+    DraftingSettingsToggleIsometric,
+    DraftingSettingsSetIsoPlane(crate::app::settings::IsoPlane),
+    DraftingSettingsResetRotation,
+    DraftingSettingsTogglePolar,
+    DraftingSettingsToggleOrtho,
+    DraftingSettingsToggleOsnap,
+    DraftingSettingsToggleOtrack,
+    DraftingSettingsToggleSnapMode(crate::snap::SnapType),
+    DraftingSettingsSnapSelectAll,
+    DraftingSettingsSnapClearAll,
+    DraftingSettingsToggle3dOsnap,
+    DraftingSettingsToggleDynInput,
+    DraftingSettingsToggleQuickProps,
+    DraftingSettingsToggleSelCycling,
+    DraftingSettingsApply,
+    DraftingSettingsOk,
+    DraftingSettingsClose,
+    DraftingSettingsCloseDiscard,
+    DraftingSettingsCloseKeep,
+    AutoConstrainSelectRow(usize),
+    AutoConstrainToggleKind(settings::AutoConstraintKind),
+    AutoConstrainMoveUp,
+    AutoConstrainMoveDown,
+    AutoConstrainSelectAll,
+    AutoConstrainClearAll,
+    AutoConstrainReset,
+    AutoConstrainToggleTangentPoint,
+    AutoConstrainTogglePerpendicularIntersection,
+    AutoConstrainDistanceChanged(String),
+    AutoConstrainAngleChanged(String),
+    AutoConstrainApply,
+    AutoConstrainOk,
+    AutoConstrainCancel,
     /// Toggle a ribbon dropdown open/closed.
     ToggleRibbonDropdown(String),
     /// Toggle a collapsed ribbon panel's flyout open/closed (by panel title).
@@ -2722,11 +2914,16 @@ pub enum Message {
     /// Toggle a collapsed coordinate group ("Position", "Scale", …) open or
     /// closed in the Properties panel, keyed `section:base`.
     PropGroupToggle(String),
+    /// Toggle an entire Properties-panel section, keyed by its title.
+    PropSectionToggle(String),
     /// Toggle the editable-dropdown (block Name) option list open/closed.
     PropEditChoiceToggle,
     /// User is typing in a block-attribute value field (live buffer update),
     /// keyed by the attribute tag.
-    PropAttrInput { tag: String, value: String },
+    PropAttrInput {
+        tag: String,
+        value: String,
+    },
     /// User committed a block-attribute value edit (Enter pressed).
     PropAttrCommit(String),
     /// Reports the currently keyboard-focused widget (if any) after a
@@ -2752,7 +2949,10 @@ pub enum Message {
     PropColorFieldToggle(String),
     /// User picked a colour for a generic per-field colour row (hatch gradient
     /// `Color 1` / `Color 2`), routed by the field name.
-    PropColorFieldChanged { field: String, color: AcadColor },
+    PropColorFieldChanged {
+        field: String,
+        color: AcadColor,
+    },
     /// Collapse the inline color picker dropdown. Fired when another
     /// properties-panel dropdown (a combo_box) opens, so at most one panel
     /// dropdown is open at a time and they can't overlap. (#235)
@@ -2852,8 +3052,72 @@ pub enum Message {
     AliasEditorRemove(usize),
     /// Commit the edited rows to the alias table (Apply button); stays open.
     AliasEditorApply,
+    /// Apply the working rows and close the dialog.
+    AliasEditorApplyExit,
+    /// The check button on a draft row: finish the addition without applying.
+    AliasEditorDraftAccept,
+    /// Cancel a pending draft row (Esc / Cancel add).
+    AliasEditorDraftCancel,
+    /// Show the "Reset to default" confirmation.
+    AliasEditorResetAsk,
+    /// Reset aliases to the shipped defaults.
+    AliasEditorResetConfirm,
+    /// Hide the reset confirmation without resetting.
+    AliasEditorResetDeny,
+    /// Discard un-applied rows and close the editor.
+    AliasEditorCloseDiscard,
+    /// Keep editing: hide the discard confirmation.
+    AliasEditorCloseKeep,
+    // ── Named Parameters (PARAMETERS) ───────────────────────────────────
+    /// Open the named-parameter editor, seeding rows from the active tab's
+    /// `Scene::named_parameters`.
+    NamedParametersOpen,
+    /// Live edit of the name or formula in row `idx`.
+    NamedParametersInput {
+        idx: usize,
+        field: crate::ui::window::named_parameters::ParamField,
+        value: String,
+    },
+    /// Append a blank parameter row.
+    NamedParametersAdd,
+    /// Remove parameter row `idx`.
+    NamedParametersRemove(usize),
+    /// Commit the edited rows to `Scene::named_parameters` (Apply button)
+    /// and re-solve every constraint that reads a named parameter; stays
+    /// open.
+    NamedParametersApply,
+    // ── Parameters / Constraints sections embedded in Properties ──────────
+    /// Live text of one column of parameter row `index`, keyed by its
+    /// `ParameterTable::iter()` position — see `PropValue::ParamRow`.
+    PropParamInput {
+        index: usize,
+        field: crate::ui::window::named_parameters::ParamField,
+        value: String,
+    },
+    /// Commit row `index`'s buffered edit for `field` to `Scene::
+    /// named_parameters` (Enter / losing focus) and re-solve whatever it
+    /// drives.
+    PropParamCommit {
+        index: usize,
+        field: crate::ui::window::named_parameters::ParamField,
+    },
+    /// Remove parameter row `index` immediately.
+    PropParamDelete(usize),
+    /// Append a fresh, uniquely-named parameter to `Scene::named_parameters`.
+    PropParamAddNew,
+    /// A Constraints-section row was clicked: select every entity in the
+    /// list (replacing the current selection) in the viewport.
+    PropConstraintLinkClick(Vec<acadrust::Handle>),
+    /// Remove one parametric constraint selected from Properties or the viewport.
+    PropConstraintDelete(crate::scene::parametric_constraints::ConstraintId),
     // ── About window ────────────────────────────────────────────────────
     AboutOpen,
+    // ── Graphics warning ────────────────────────────────────────────────
+    /// The status bar's ⚠ pill: reopen the graphics warning.
+    GpuWarningOpen,
+    /// "Don't show again for this device": close the warning and remember
+    /// the verdict it described, so only a different one prompts again.
+    GpuWarningSilence,
     /// Close whatever in-canvas modal dialog is open (Plan B).
     CloseModal,
     // ── Attribute editor dialog ───────────────────────────────────────────
@@ -2864,7 +3128,10 @@ pub enum Message {
     /// Select the row the Text Options / Properties tabs act on.
     AttrEditorSelect(usize),
     /// Live edit of the attribute value at row `idx` (Attribute tab).
-    AttrEditorInput { idx: usize, value: String },
+    AttrEditorInput {
+        idx: usize,
+        value: String,
+    },
     // Text Options — all act on the selected row:
     AttrEditorTextStyle(String),
     AttrEditorJustify(String),
@@ -2919,9 +3186,7 @@ pub enum Message {
     /// GitHub Discussions fetched at boot for the Start page.
     DiscussionsFetched(Result<Vec<crate::discussions::DiscussionEntry>, String>),
     /// Recent-file DWG preview thumbnails decoded on a background thread.
-    RecentThumbsLoaded(
-        Vec<(std::path::PathBuf, Option<iced::widget::image::Handle>)>,
-    ),
+    RecentThumbsLoaded(Vec<(std::path::PathBuf, Option<iced::widget::image::Handle>)>),
     /// Installable releases and manifest API versions fetched for `owner/repo`.
     PluginReleasesFetched(
         String,
@@ -2962,7 +3227,10 @@ pub enum Message {
     InvertSelection,
     /// Keyboard modifier state changed — tracks whether Shift is held so the
     /// pick path can do subtractive (Shift+click) selection.
-    SetModifiers { shift: bool, ctrl: bool },
+    SetModifiers {
+        shift: bool,
+        ctrl: bool,
+    },
     // ── In-place MText editor ───────────────────────────────────────────
     /// Text-area edit action from the multi-line editor widget.
     MTextEdit(iced::widget::text_editor::Action),
@@ -3047,8 +3315,6 @@ pub enum Message {
     // ── Draw Order context menu ─────────────────────────────────────────
     /// Toggle the Draw Order sub-items in the viewport context menu.
     DrawOrderSubmenuToggle,
-    /// Toggle the Wall Justification sub-items in the viewport context menu.
-    WallJustificationSubmenuToggle,
     /// Begin an interactive reference-object pick to move the current
     /// selection above (`true`) or below (`false`) the picked object.
     DrawOrderPickRef(bool),
@@ -3370,7 +3636,7 @@ pub enum Message {
     /// Open file-picker dialog for PDFATTACH command (async).
     PdfAttachPick,
     /// Result of the PDFATTACH file picker.
-    PdfAttachPickResult(Result<std::path::PathBuf, String>),
+    PdfAttachPickResult(Result<(std::path::PathBuf, std::sync::Arc<Vec<u8>>), String>),
 
     // ── XREF ──────────────────────────────────────────────────────────────
     /// Open file-picker dialog for XATTACH command (async).
@@ -3385,6 +3651,35 @@ pub enum Message {
     /// Background extraction/write completion.
     WblockWriteFinished(String, std::path::PathBuf, Result<(), String>),
     // ── DATAEXTRACTION ────────────────────────────────────────────────────
+    TableInsertStyle(String),
+    TableInsertField(crate::ui::window::annotation_data::TableInsertField),
+    TableInsertApply,
+    DataLinkManagerOpen,
+    DataLinkNew,
+    DataLinkSelect(acadrust::types::Handle),
+    DataLinkEdit,
+    DataLinkEditCancel,
+    DataLinkField(crate::ui::window::annotation_data::DataLinkField),
+    DataLinkBrowse,
+    DataLinkBrowseResult(Option<std::path::PathBuf>),
+    DataLinkSave,
+    DataLinkDelete,
+    DataLinkInsert,
+    DataLinkClose,
+    DataExtractionOpen,
+    DataExtractionField(crate::ui::window::annotation_data::DataExtractionField),
+    DataExtractionBack,
+    DataExtractionNext,
+    DataExtractionBrowseSettings,
+    DataExtractionBrowseSettingsResult(Option<std::path::PathBuf>),
+    DataExtractionAddDrawings,
+    DataExtractionAddDrawingsResult(Vec<std::path::PathBuf>),
+    DataExtractionAddFolder,
+    DataExtractionAddFolderResult(Option<std::path::PathBuf>),
+    DataExtractionClearSources,
+    DataExtractionBrowseOutput,
+    DataExtractionBrowseOutputResult(Option<std::path::PathBuf>),
+    DataExtractionFinish,
     /// Save the pre-built CSV string to a file chosen by the user.
     DataExtractionSave(String),
     /// Path chosen (or None = cancelled).
@@ -3411,6 +3706,13 @@ pub enum Message {
         std::path::PathBuf,
         Result<crate::scene::model::mesh_model::MeshModel, String>,
     ),
+    Aec(crate::modules::aec::AecMessage),
+    ActiveCommandLivePropertyChanged(&'static str, crate::command::LiveFieldValue),
+    ActiveCommandLiveTextInput(&'static str, String),
+    ActiveCommandLiveTextCommit(&'static str),
+    SelectAndZoomTo(acadrust::Handle),
+    WallJustificationSubmenuToggle,
+
 }
 
 #[derive(Debug, Clone)]
@@ -3483,6 +3785,43 @@ impl OpenCADStudio {
             vp_size: (1280.0, 720.0),
             win_size: (1280.0, 720.0),
             snapper: Snapper::default(),
+            collapsed_property_sections: rustc_hash::FxHashSet::default(),
+            drafting_settings_state: None,
+            drafting_settings_saved: None,
+            drafting_settings_close_confirm: false,
+            double_click_block_refedit: false,
+            double_click_block_attedit: true,
+            grip_object_limit: 100,
+            ncopy_bind: false,
+            isolines_awaiting_regen: false,
+            snap_angle_input: String::new(),
+            spacemouse: crate::input::spacemouse::Service::default(),
+            spacemouse_preferences: crate::input::spacemouse::Preferences::default(),
+            spacemouse_paused: false,
+            spacemouse_focused: false,
+            spacemouse_details: false,
+            spacemouse_was_moving: false,
+            spacemouse_pivot: None,
+            spacemouse_selection: crate::app::navigation::SelectionCache::default(),
+            show_constraint_values: true,
+            auto_constrain_settings: crate::app::settings::AutoConstrainSettings::default(),
+            auto_constrain_saved: None,
+            auto_constrain_selected_row: 0,
+            auto_constrain_distance_input: String::new(),
+            auto_constrain_angle_input: String::new(),
+            constraint_solve_mode: false,
+            constraint_infer: false,
+            constraint_bar_display: 1,
+            delete_objects: 1,
+            constraint_glyph_tooltip: None,
+            show_external_references: false,
+            xref_col_drag: None,
+            xref_col_last: None,
+            xref_split_drag: false,
+            xref_manager: crate::ui::window::xref_manager::XrefManagerPanel::default(),
+            vp_snap_frame: None,
+            accepted_snaps: Vec::new(),
+            pending_click_snap: None,
             snap_popup_open: false,
             scale_popup_open: false,
             polar_popup_open: false,
