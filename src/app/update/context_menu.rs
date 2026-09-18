@@ -26,7 +26,45 @@ impl OpenCADStudio {
     /// the view (to render) and by the keyboard handler (to resolve picks), so
     /// both always see the same rows.
     pub(in crate::app) fn context_menu_context(&self) -> MenuContext {
+        use crate::modules::aec::ui::context_menu::{AecMenuExclusive, AecMenuSnapshot};
         let tab = &self.tabs[self.active_tab];
+        let (junction, junction_menu_only) = {
+            let sel = tab.scene.selection.borrow();
+            (sel.junction_menu, sel.junction_menu_only)
+        };
+        let exclusive = if self
+            .aec
+            .aec_layer_pair_draw
+            .as_ref()
+            .is_some_and(|p| p.awaiting_style)
+        {
+            AecMenuExclusive::LayerPairStyle
+        } else if junction_menu_only {
+            AecMenuExclusive::JunctionOnly
+        } else {
+            AecMenuExclusive::None
+        };
+        let aec = AecMenuSnapshot {
+            only_walls: crate::modules::aec::properties::selection_is_all_walls(
+                &tab.scene,
+                tab.scene.selected.iter().copied(),
+            ),
+            junction,
+            exclusive,
+        };
+        if exclusive != AecMenuExclusive::None {
+            return MenuContext::Idle {
+                has_selection: false,
+                selected_constraint: None,
+                isolation_active: false,
+                recent_cmds: Vec::new(),
+                clipboard_nonempty: false,
+                undo_label: None,
+                redo_label: None,
+                props_open: self.show_properties,
+                aec,
+            };
+        }
         if let Some(grip) = tab.active_grip.as_ref() {
             return MenuContext::Grip(GripMenuContext {
                 mode: grip.mode,
@@ -62,6 +100,7 @@ impl OpenCADStudio {
             undo_label: tab.history.undo_stack.last().map(|s| s.label().to_string()),
             redo_label: tab.history.redo_stack.last().map(|s| s.label().to_string()),
             props_open: self.show_properties,
+            aec,
         }
     }
 
@@ -158,6 +197,7 @@ impl OpenCADStudio {
             MenuAction::DrawOrderPickRef(above) => self.update(Message::DrawOrderPickRef(above)),
             MenuAction::ConstraintDelete(id) => self.update(Message::PropConstraintDelete(id)),
             MenuAction::Grip(cmd) => self.on_grip_context_pick(cmd),
+            MenuAction::Aec(action) => self.update(action.to_message()),
             MenuAction::ToggleSubmenu(_) => Task::none(),
         };
         Task::batch(vec![focus, task])

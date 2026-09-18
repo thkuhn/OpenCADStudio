@@ -42,6 +42,8 @@ pub enum SubmenuId {
     DrawOrder,
     Isolate,
     SnapOverrides,
+    WallJustification,
+    WallJunction,
 }
 
 /// Glyph drawn in a row's icon gutter (commercial solutions show one for object snaps
@@ -102,6 +104,8 @@ pub enum MenuAction {
     DrawOrderPickRef(bool),
     ConstraintDelete(ConstraintId),
     Grip(GripMenuCmd),
+    /// AEC-only row (wall junction / justification). Thin hook.
+    Aec(crate::modules::aec::ui::context_menu::AecMenuAction),
     /// Expand / collapse an accordion submenu (never "picked" as a command).
     ToggleSubmenu(SubmenuId),
 }
@@ -128,7 +132,7 @@ pub struct MenuItem {
 }
 
 impl MenuItem {
-    fn new(label: impl Into<String>, action: MenuAction) -> Self {
+    pub(crate) fn new(label: impl Into<String>, action: MenuAction) -> Self {
         Self {
             label: label.into(),
             hint: None,
@@ -368,6 +372,7 @@ pub enum MenuContext {
         undo_label: Option<String>,
         redo_label: Option<String>,
         props_open: bool,
+        aec: crate::modules::aec::ui::context_menu::AecMenuSnapshot,
     },
     /// A grip is hot / being dragged.
     Grip(GripMenuContext),
@@ -375,7 +380,11 @@ pub enum MenuContext {
 
 /// Build the menu rows for `ctx`, with `open_submenu` expanded.
 pub fn build_context_menu(ctx: &MenuContext, open_submenu: Option<SubmenuId>) -> ContextMenu {
+    use crate::modules::aec::ui::context_menu as aec_menu;
     let rows = match ctx {
+        MenuContext::Idle { aec, .. } if aec_menu::exclusive_rows(aec).is_some() => {
+            aec_menu::exclusive_rows(aec).expect("exclusive")
+        }
         MenuContext::Command {
             options,
             has_point_step,
@@ -390,17 +399,22 @@ pub fn build_context_menu(ctx: &MenuContext, open_submenu: Option<SubmenuId>) ->
             undo_label,
             redo_label,
             props_open,
-        } => idle_rows(
-            *has_selection,
-            *selected_constraint,
-            *isolation_active,
-            recent_cmds,
-            *clipboard_nonempty,
-            undo_label.as_deref(),
-            redo_label.as_deref(),
-            *props_open,
-            open_submenu,
-        ),
+            aec,
+        } => {
+            let mut rows = idle_rows(
+                *has_selection,
+                *selected_constraint,
+                *isolation_active,
+                recent_cmds,
+                *clipboard_nonempty,
+                undo_label.as_deref(),
+                redo_label.as_deref(),
+                *props_open,
+                open_submenu,
+            );
+            aec_menu::extend_idle_rows(&mut rows, aec, open_submenu);
+            rows
+        }
         MenuContext::Grip(grip) => grip_rows(grip),
     };
     let mut menu = ContextMenu { rows, width: MENU_WIDTH };
@@ -924,6 +938,7 @@ mod tests {
             undo_label: Some("LINE".into()),
             redo_label: None,
             props_open: false,
+            aec: crate::modules::aec::ui::context_menu::AecMenuSnapshot::default(),
         }
     }
 
