@@ -37,3 +37,10 @@ __pycache__/
 .claude/launch.json
 
 .idea
+
+# Local agent/test logs and packaging artifacts
+.output*.txt
+.testout*.txt
+test_errs.log
+*.AppImage
+AppDir/
