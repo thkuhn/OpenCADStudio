@@ -2756,62 +2756,6 @@ pub(super) fn on_tab_close(&mut self, idx: usize) -> Task<Message> {
                                 }
                             }
                         }
-                    } else if field == "wall_justification" {
-                        // Justification pick on a WALL wall: shift the axis
-                        // sideways by the delta between the old and new
-                        // offsets (same math as `WallCommand::build_entity`)
-                        // and regenerate the contour/hatch/solid layers.
-                        let new_justification =
-                            crate::modules::aec::commands::WallJustification::from_str(&value);
-                        for &handle in &handles {
-                            if self.tabs[i].scene.is_layer_locked(handle) {
-                                continue;
-                            }
-                            let style_library =
-                                crate::modules::aec::engine::project::resolve_style_library(
-                                    self.aec.aec_project_explorer_file.as_ref(),
-                                );
-                            crate::modules::aec::commands::change_wall_justification(
-                                &mut self.tabs[i].scene,
-                                handle,
-                                new_justification,
-                                Some(&style_library),
-                            );
-                        }
-                    } else if field == "wall_base_plane" || field == "wall_top_plane" {
-                        let style_library =
-                            crate::modules::aec::engine::project::resolve_style_library(
-                                self.aec.aec_project_explorer_file.as_ref(),
-                            );
-                        for &handle in &handles {
-                            if self.tabs[i].scene.is_layer_locked(handle) {
-                                continue;
-                            }
-                            crate::modules::aec::project::wall_planes::apply_wall_plane_choice(
-                                &mut self.tabs[i].scene,
-                                self.aec.aec_project_explorer_file.as_ref(),
-                                handle,
-                                field == "wall_base_plane",
-                                &value,
-                                Some(&style_library),
-                            );
-                        }
-                    } else if field == "wall_phase" {
-                        let new_phase =
-                            crate::modules::aec::engine::plan_view::PlanPhase::from_str(&value);
-                        for &handle in &handles {
-                            if self.tabs[i].scene.is_layer_locked(handle) {
-                                continue;
-                            }
-                            crate::modules::aec::commands::write_wall_phase(
-                                &mut self.tabs[i].scene,
-                                handle,
-                                new_phase,
-                            );
-                            let _ = self.regenerate_wall_respecting_active_display_config(
-                                i, handle,
-                            );
-                        }
                     } else {
                         let plane = if self.tabs[i].editing_model_space() {
                             self.tabs[i].ucs_xform().working_plane()
@@ -2819,6 +2763,9 @@ pub(super) fn on_tab_close(&mut self, idx: usize) -> Task<Message> {
                             crate::command::WorkingPlane::default()
                         };
                         for &handle in &handles {
+                            if self.aec_apply_property_field(i, handle, field, &value) {
+                                continue;
+                            }
                             let mline_style = self.tabs[i]
                                 .scene
                                 .document
@@ -3066,6 +3013,9 @@ pub(super) fn on_tab_close(&mut self, idx: usize) -> Task<Message> {
                                 if self.tabs[i].scene.is_layer_locked(handle) {
                                     continue;
                                 }
+                                if self.aec_apply_property_field(i, handle, field, &val) {
+                                    continue;
+                                }
                                 match field {
                                     "tol_text_height" => {
                                         use crate::entities::dim_override as dov;
@@ -3173,104 +3123,6 @@ pub(super) fn on_tab_close(&mut self, idx: usize) -> Task<Message> {
                                             crate::scene::view::dispatch::apply_common_prop(
                                                 entity, field, &val,
                                             );
-                                        }
-                                    }
-                                    "control_plane_name" => {
-                                        crate::modules::aec::properties::apply_control_plane_name(
-                                            &mut self.tabs[i].scene,
-                                            self.aec.aec_project_explorer_file.as_mut(),
-                                            handle,
-                                            &val,
-                                        );
-                                        self.aec_project_explorer_persist_if_pathed();
-                                    }
-                                    "wall_height" | "wall_thickness" | "wall_material"
-                                    | "wall_base_offset" | "wall_top_offset" | "wall_base_z" => {
-                                        // AEC wall properties live in `WALL`
-                                        // XDATA. Height is editable here;
-                                        // thickness/material are per-layer and
-                                        // edited via the AEC Style Manager.
-                                        if field == "wall_height" {
-                                            if let Some(v) =
-                                                crate::entities::common::parse_f64(&val)
-                                            {
-                                                if v > 0.0 {
-                                                    crate::modules::aec::commands::write_wall_height(
-                                                        &mut self.tabs[i].scene,
-                                                        handle,
-                                                        v,
-                                                    );
-                                                    let style_library =
-                                                        crate::modules::aec::engine::project::resolve_style_library(
-                                                            self.aec.aec_project_explorer_file.as_ref(),
-                                                        );
-                                                    let _ = crate::modules::aec::commands::regenerate_wall_representation(
-                                                        &mut self.tabs[i].scene,
-                                                        handle,
-                                                        Some(&style_library),
-                                                    );
-                                                }
-                                            }
-                                        } else if field == "wall_base_z" {
-                                            if let Some(v) =
-                                                crate::entities::common::parse_f64(&val)
-                                            {
-                                                crate::modules::aec::project::wall_planes::apply_wall_base_z(
-                                                    &mut self.tabs[i].scene,
-                                                    handle,
-                                                    v,
-                                                );
-                                            }
-                                        } else if field == "wall_base_offset"
-                                            || field == "wall_top_offset"
-                                        {
-                                            if let Some(v) =
-                                                crate::entities::common::parse_f64(&val)
-                                            {
-                                                let (base, top) = if field == "wall_base_offset" {
-                                                    (Some(v), None)
-                                                } else {
-                                                    (None, Some(v))
-                                                };
-                                                crate::modules::aec::commands::write_wall_plane_offsets(
-                                                    &mut self.tabs[i].scene,
-                                                    handle,
-                                                    base,
-                                                    top,
-                                                );
-                                                let style_library =
-                                                    crate::modules::aec::engine::project::resolve_style_library(
-                                                        self.aec.aec_project_explorer_file.as_ref(),
-                                                    );
-                                                let _ = crate::modules::aec::commands::regenerate_wall_representation(
-                                                    &mut self.tabs[i].scene,
-                                                    handle,
-                                                    Some(&style_library),
-                                                );
-                                            }
-                                        }
-                                    }
-                                    "wall_hatch_angle" => {
-                                        // Angle row for the per-wall hatch
-                                        // override (Step 6): only meaningful
-                                        // while the override checkbox is on,
-                                        // so a wall with no `hatch_override`
-                                        // simply ignores the edit here.
-                                        if let Some(v) = crate::entities::common::parse_f64(&val) {
-                                            let existing_override = self.tabs[i]
-                                                .scene
-                                                .document
-                                                .get_entity(handle)
-                                                .and_then(crate::modules::aec::commands::wall_from_entity)
-                                                .and_then(|wall| wall.hatch_override);
-                                            if let Some(mut ov) = existing_override {
-                                                ov.hatch_angle = Some(v);
-                                                crate::modules::aec::commands::write_wall_hatch_override(
-                                                    &mut self.tabs[i].scene,
-                                                    handle,
-                                                    Some(ov),
-                                                );
-                                            }
                                         }
                                     }
                                     _ => {

@@ -5,9 +5,9 @@
 
 use iced::Task;
 
-use crate::app::{
-    AecPendingCopy, AecProjectExplorerDeleteTarget, Message, OpenCADStudio,
-};
+use crate::app::{AecModalKind, AecPendingCopy, AecProjectExplorerDeleteTarget, Message, OpenCADStudio};
+use crate::modules::aec::engine::join_ops;
+use crate::modules::aec::engine::xdata;
 use crate::modules::aec::message::AecMessage;
 
 /// Stable core hook: dispatch one AEC UI/update message.
@@ -30,7 +30,7 @@ impl OpenCADStudio {
                 self.aec.aec_style_manager_wall_style_form_open = false;
                 self.aec.aec_style_manager_wall_style_layers.clear();
                 self.refresh_aec_material_linetype_combo();
-                self.active_modal = Some(crate::app::ModalKind::AecMaterialManager);
+                self.active_modal = Some(crate::app::ModalKind::Aec(AecModalKind::MaterialManager));
                 Task::none()
             }
             AecMessage::AecWallStyleManagerOpen => {
@@ -59,12 +59,12 @@ impl OpenCADStudio {
                         self.aec.aec_project_explorer_file.as_ref(),
                     ),
                 );
-                self.active_modal = Some(crate::app::ModalKind::AecWallStyleManager);
+                self.active_modal = Some(crate::app::ModalKind::Aec(AecModalKind::WallStyleManager));
                 Task::none()
             }
             AecMessage::AecProjectExplorerOpen => {
                 self.ribbon.close_dropdown();
-                self.active_modal = Some(crate::app::ModalKind::AecProjectExplorer);
+                self.active_modal = Some(crate::app::ModalKind::Aec(AecModalKind::ProjectExplorer));
                 Task::none()
             }
             AecMessage::AecProjectExplorerNew => {
@@ -93,13 +93,13 @@ impl OpenCADStudio {
                 // opening the explorer and leaving them stuck; fall back to
                 // opening the explorer if there is nothing to resume (i.e.
                 // this was invoked directly via AEC_PROJECTEXPLORER).
-                if self.active_modal == Some(crate::app::ModalKind::AecProjectRequired) {
+                if self.active_modal == Some(crate::app::ModalKind::Aec(AecModalKind::ProjectRequired)) {
                     self.reset_modal_geometry();
                     self.active_modal = None;
                     if let Some(resume) = self.aec.aec_project_required_resume.take() {
                         return Task::done(resume);
                     }
-                    self.active_modal = Some(crate::app::ModalKind::AecProjectExplorer);
+                    self.active_modal = Some(crate::app::ModalKind::Aec(AecModalKind::ProjectExplorer));
                 }
                 Task::none()
             }
@@ -139,13 +139,13 @@ impl OpenCADStudio {
                         // Same reasoning as `AecProjectExplorerNew`: replay
                         // the originally requested tool instead of just
                         // opening the explorer and leaving the user stuck.
-                        if self.active_modal == Some(crate::app::ModalKind::AecProjectRequired) {
+                        if self.active_modal == Some(crate::app::ModalKind::Aec(AecModalKind::ProjectRequired)) {
                             self.reset_modal_geometry();
                             self.active_modal = None;
                             if let Some(resume) = self.aec.aec_project_required_resume.take() {
                                 return Task::done(resume);
                             }
-                            self.active_modal = Some(crate::app::ModalKind::AecProjectExplorer);
+                            self.active_modal = Some(crate::app::ModalKind::Aec(AecModalKind::ProjectExplorer));
                         }
                     }
                     Err(e) => {
@@ -509,12 +509,12 @@ impl OpenCADStudio {
                         })
                         .collect();
                 }
-                self.active_modal = Some(crate::app::ModalKind::AecStoreySettings);
+                self.active_modal = Some(crate::app::ModalKind::Aec(AecModalKind::StoreySettings));
                 Task::none()
             }
             AecMessage::AecStoreySettingsClose => {
                 self.aec.aec_storey_settings_target = None;
-                self.active_modal = Some(crate::app::ModalKind::AecProjectExplorer);
+                self.active_modal = Some(crate::app::ModalKind::Aec(AecModalKind::ProjectExplorer));
                 Task::none()
             }
             AecMessage::AecStoreySettingsNameChanged(bid, sid, name) => {
@@ -767,7 +767,7 @@ impl OpenCADStudio {
                             .collect()
                     })
                     .unwrap_or_default();
-                self.active_modal = Some(crate::app::ModalKind::AecPlanManager);
+                self.active_modal = Some(crate::app::ModalKind::Aec(AecModalKind::PlanManager));
                 Task::none()
             }
             AecMessage::AecPlanManagerClose => {
@@ -1570,7 +1570,7 @@ impl OpenCADStudio {
                     crate::app::StylePickerTarget::WallPropertiesStyle
                     | crate::app::StylePickerTarget::ActiveCommand => None,
                 };
-                self.active_modal = Some(crate::app::ModalKind::AecStylePicker { target });
+                self.active_modal = Some(crate::app::ModalKind::Aec(AecModalKind::StylePicker { target }));
                 Task::none()
             }
             AecMessage::AecStylePickerOpenForWallProperties(handles) => {
@@ -1584,13 +1584,13 @@ impl OpenCADStudio {
                         .scene
                         .document
                         .get_entity(*h)
-                        .and_then(crate::modules::aec::commands::wall_from_entity)
+                        .and_then(crate::modules::aec::engine::xdata::wall_from_entity)
                         .map(|v2| v2.style_id)
                 });
                 self.aec.aec_style_picker_wall_handles = handles;
-                self.active_modal = Some(crate::app::ModalKind::AecStylePicker {
+                self.active_modal = Some(crate::app::ModalKind::Aec(AecModalKind::StylePicker {
                     target: crate::app::StylePickerTarget::WallPropertiesStyle,
-                });
+                }));
                 Task::none()
             }
             AecMessage::AecStylePickerOpenForActiveCommand => {
@@ -1603,9 +1603,9 @@ impl OpenCADStudio {
                     .active_cmd
                     .as_ref()
                     .and_then(|c| c.live_property_id("wall_style"));
-                self.active_modal = Some(crate::app::ModalKind::AecStylePicker {
+                self.active_modal = Some(crate::app::ModalKind::Aec(AecModalKind::StylePicker {
                     target: crate::app::StylePickerTarget::ActiveCommand,
-                });
+                }));
                 Task::none()
             }
             AecMessage::AecStylePickerFilterChanged(v) => {
@@ -1619,7 +1619,7 @@ impl OpenCADStudio {
             AecMessage::AecStylePickerCancel => {
                 // Targets opened from within the Wall Style Manager return
                 // there on cancel, instead of closing the modal entirely.
-                if let Some(crate::app::ModalKind::AecStylePicker { target }) = self.active_modal
+                if let Some(crate::app::ModalKind::Aec(AecModalKind::StylePicker { target })) = self.active_modal
                 {
                     if matches!(
                         target,
@@ -1627,7 +1627,7 @@ impl OpenCADStudio {
                             | crate::app::StylePickerTarget::LayerMaterial(_)
                             | crate::app::StylePickerTarget::LayerOverride(_)
                     ) {
-                        self.active_modal = Some(crate::app::ModalKind::AecWallStyleManager);
+                        self.active_modal = Some(crate::app::ModalKind::Aec(AecModalKind::WallStyleManager));
                         return Task::none();
                     }
                 }
@@ -1882,7 +1882,7 @@ impl OpenCADStudio {
                 // modal can restore it (Plot → Plotstyle pattern).
                 self.aec.aec_wall_style_manager_parent_geometry =
                     Some((self.modal_offset, self.modal_resize));
-                self.active_modal = Some(crate::app::ModalKind::AecWallStyleDisplayProfiles);
+                self.active_modal = Some(crate::app::ModalKind::Aec(AecModalKind::WallStyleDisplayProfiles));
                 self.reset_modal_geometry();
                 Task::none()
             }
@@ -2089,7 +2089,7 @@ impl OpenCADStudio {
                 Task::none()
             }
             AecMessage::AecStylePickerConfirm => {
-                if let (Some(crate::app::ModalKind::AecStylePicker { target }), Some(selection)) =
+                if let (Some(crate::app::ModalKind::Aec(AecModalKind::StylePicker { target })), Some(selection)) =
                     (self.active_modal, self.aec.aec_style_picker_selection.clone())
                 {
                     match target {
@@ -2099,17 +2099,17 @@ impl OpenCADStudio {
                             } else {
                                 Some(selection)
                             };
-                            self.active_modal = Some(crate::app::ModalKind::AecWallStyleManager);
+                            self.active_modal = Some(crate::app::ModalKind::Aec(AecModalKind::WallStyleManager));
                             return self.update(Message::Aec(AecMessage::AecStyleManagerWallStyleParentChanged(id)));
                         }
                         crate::app::StylePickerTarget::LayerMaterial(index) => {
-                            self.active_modal = Some(crate::app::ModalKind::AecWallStyleManager);
+                            self.active_modal = Some(crate::app::ModalKind::Aec(AecModalKind::WallStyleManager));
                             return self.update(Message::Aec(AecMessage::AecStyleManagerWallStyleLayerMaterialChanged(
                                 index, selection,
                             )));
                         }
                         crate::app::StylePickerTarget::LayerOverride(index) => {
-                            self.active_modal = Some(crate::app::ModalKind::AecWallStyleManager);
+                            self.active_modal = Some(crate::app::ModalKind::Aec(AecModalKind::WallStyleManager));
                             return self.update(Message::Aec(AecMessage::AecStyleManagerWallStyleLayerOverrideChanged(
                                 index, selection,
                             )));
@@ -2120,7 +2120,7 @@ impl OpenCADStudio {
                                 return Task::none();
                             };
 
-                            let wall_layers = crate::modules::aec::commands::resolve_wall_style_layers_ids(
+                            let wall_layers = crate::modules::aec::engine::xdata::resolve_wall_style_layers_ids(
                                 lib,
                                 &selection,
                                 None,
@@ -2132,22 +2132,22 @@ impl OpenCADStudio {
 
                             let handles = self.aec.aec_style_picker_wall_handles.clone();
                             for handle in handles {
-                                let handle = crate::modules::aec::commands::resolve_wall_package(
+                                let handle = crate::modules::aec::engine::wall_package::resolve_wall_package(
                                     &self.tabs[i].scene,
                                     handle,
                                 );
                                 let mut record = acadrust::xdata::ExtendedDataRecord::new(
-                                    crate::modules::aec::commands::AEC_APPID,
+                                    crate::modules::aec::engine::xdata::AEC_APPID,
                                 );
 
                                 if let Some(entity) = self.tabs[i].scene.document.get_entity(handle) {
                                     if let Some(mut wall) =
-                                        crate::modules::aec::commands::wall_from_entity(entity)
+                                        crate::modules::aec::engine::xdata::wall_from_entity(entity)
                                     {
                                         wall.style_id = selection.clone();
                                         wall.layers = wall_layers.clone();
 
-                                        record.values = crate::modules::aec::commands::wall_record(
+                                        record.values = crate::modules::aec::engine::xdata::wall_record(
                                             &wall.style_id,
                                             wall.height,
                                             wall.storey_id,
@@ -2165,7 +2165,7 @@ impl OpenCADStudio {
                                         .scene
                                         .document
                                         .app_ids
-                                        .get(crate::modules::aec::commands::AEC_APPID)
+                                        .get(crate::modules::aec::engine::xdata::AEC_APPID)
                                         .map(|a| a.handle.value());
 
                                     if let Some(entity) =
@@ -2177,7 +2177,7 @@ impl OpenCADStudio {
                                             .iter()
                                             .filter(|r| {
                                                 r.application_name
-                                                    != crate::modules::aec::commands::AEC_APPID
+                                                    != crate::modules::aec::engine::xdata::AEC_APPID
                                             })
                                             .cloned()
                                             .collect();
@@ -2250,7 +2250,7 @@ impl OpenCADStudio {
                     let mut affected_handles = Vec::new();
                     for entity in self.tabs[tab_index].scene.document.entities() {
                         if let Some(wall) =
-                            crate::modules::aec::commands::wall_from_entity(entity)
+                            crate::modules::aec::engine::xdata::wall_from_entity(entity)
                         {
                             if wall.style_id == id {
                                 affected_handles.push(entity.common().handle);
@@ -2271,7 +2271,7 @@ impl OpenCADStudio {
                     for handle in affected_handles {
                         if let Some(entity) = self.tabs[tab_index].scene.document.get_entity(handle) {
                             if let Some(wall) =
-                                crate::modules::aec::commands::wall_from_entity(entity)
+                                crate::modules::aec::engine::xdata::wall_from_entity(entity)
                             {
                                 // Prefer the wall's current total thickness as BB so
                                 // formula layers scale with the placed wall width;
@@ -2285,13 +2285,13 @@ impl OpenCADStudio {
                                     }
                                 };
                                 if let Some(wall_layers) =
-                                    crate::modules::aec::commands::resolve_wall_style_layers_ids(
+                                    crate::modules::aec::engine::xdata::resolve_wall_style_layers_ids(
                                         &lib,
                                         &wall.style_id,
                                         bb,
                                     )
                                 {
-                                    crate::modules::aec::commands::write_wall_layers(
+                                    crate::modules::aec::engine::xdata::write_wall_layers(
                                         &mut self.tabs[tab_index].scene,
                                         handle,
                                         wall_layers,
@@ -2554,7 +2554,7 @@ impl OpenCADStudio {
                 let id = self
                     .aec.aec_style_manager_material_editing_id
                     .clone()
-                    .unwrap_or_else(|| crate::modules::aec::commands::unique_id("mat", &name));
+                    .unwrap_or_else(|| crate::modules::aec::engine::xdata::unique_id("mat", &name));
 
                 let material = crate::modules::aec::engine::material::Material {
                     id: id.clone(),
@@ -2644,12 +2644,12 @@ impl OpenCADStudio {
                 self.aec.aec_style_manager_copy_conflict_open = false;
                 let return_modal = match &self.aec.aec_style_manager_pending_copy {
                     Some(AecPendingCopy::Material { .. }) => {
-                        crate::app::ModalKind::AecMaterialManager
+                        crate::app::ModalKind::Aec(AecModalKind::MaterialManager)
                     }
                     Some(AecPendingCopy::WallStyle { .. }) => {
-                        crate::app::ModalKind::AecWallStyleManager
+                        crate::app::ModalKind::Aec(AecModalKind::WallStyleManager)
                     }
-                    None => crate::app::ModalKind::AecMaterialManager,
+                    None => crate::app::ModalKind::Aec(AecModalKind::MaterialManager),
                 };
                 if confirmed {
                     if let Some(pending) = self.aec.aec_style_manager_pending_copy.take() {
@@ -2673,9 +2673,8 @@ impl OpenCADStudio {
                 let i = self.active_tab;
                 let junction = self.tabs[i].scene.selection.borrow().junction_menu;
                 if let Some((axis_handle, end_index)) = junction {
-                    use crate::modules::aec::commands as aec_cmds;
-                    let mut override_data =
-                        aec_cmds::read_junction_override(&self.tabs[i].scene, axis_handle, end_index)
+                                        let mut override_data =
+                        xdata::read_junction_override(&self.tabs[i].scene, axis_handle, end_index)
                             .unwrap_or_default();
                     override_data.default_style = Some(style);
                     let style_library =
@@ -2684,7 +2683,7 @@ impl OpenCADStudio {
                         );
                     let (display_rules, style_substitutions) =
                         self.resolve_active_display_config_wall_rules(i, Some(axis_handle));
-                    let touched = aec_cmds::apply_junction_override_and_rebuild(
+                    let touched = join_ops::apply_junction_override_and_rebuild(
                         &mut self.tabs[i].scene,
                         axis_handle,
                         end_index,
@@ -2707,14 +2706,13 @@ impl OpenCADStudio {
                 let i = self.active_tab;
                 let junction = self.tabs[i].scene.selection.borrow().junction_menu;
                 if let Some((axis_handle, end_index)) = junction {
-                    use crate::modules::aec::commands as aec_cmds;
-                    let style_library =
+                                        let style_library =
                         crate::modules::aec::engine::project::resolve_style_library(
                             self.aec.aec_project_explorer_file.as_ref(),
                         );
                     let (display_rules, style_substitutions) =
                         self.resolve_active_display_config_wall_rules(i, Some(axis_handle));
-                    let touched = aec_cmds::apply_junction_override_and_rebuild(
+                    let touched = join_ops::apply_junction_override_and_rebuild(
                         &mut self.tabs[i].scene,
                         axis_handle,
                         end_index,
@@ -2794,14 +2792,13 @@ impl OpenCADStudio {
 
             AecMessage::AecJunctionEditorOpen(axis_handle, end_index) => {
                 let i = self.active_tab;
-                use crate::modules::aec::commands as aec_cmds;
-                let ov = aec_cmds::read_junction_override(&self.tabs[i].scene, axis_handle, end_index)
+                                let ov = xdata::read_junction_override(&self.tabs[i].scene, axis_handle, end_index)
                     .unwrap_or_default();
                 self.aec.aec_junction_editor_target = Some((axis_handle, end_index));
                 self.aec.aec_junction_editor_default_style = ov.default_style;
                 self.aec.aec_junction_editor_pairs = ov.layer_pairs;
                 self.aec.aec_junction_editor_gaps =
-                    aec_cmds::read_through_layer_gaps(&self.tabs[i].scene, axis_handle, end_index);
+                    join_ops::read_through_layer_gaps(&self.tabs[i].scene, axis_handle, end_index);
                 self.aec.aec_junction_editor_gap_layer = None;
                 self.aec.aec_junction_editor_gap_from_wall = None;
                 self.aec.aec_junction_editor_gap_from = None;
@@ -2816,7 +2813,7 @@ impl OpenCADStudio {
                 sel.context_menu = None;
                 sel.junction_menu = None;
                 drop(sel);
-                self.active_modal = Some(crate::app::ModalKind::AecJunctionEditor);
+                self.active_modal = Some(crate::app::ModalKind::Aec(AecModalKind::JunctionEditor));
                 self.sync_junction_editor_layer_highlight();
                 Task::none()
             }
@@ -2864,12 +2861,12 @@ impl OpenCADStudio {
             }
 
             AecMessage::AecJunctionEditorAddPair => {
-                use crate::modules::aec::commands::selected_junction_layer_ref;
+                use crate::modules::aec::engine::junction_pick::selected_junction_layer_ref;
                 use crate::modules::aec::engine::join::LayerRef;
                 if let Some((layer_a_index, layer_a_id)) = self.aec.aec_junction_editor_pair_layer_a.clone() {
                     let i = self.active_tab;
                     let participants = self.aec.aec_junction_editor_target.map(|(h, e)| {
-                        crate::modules::aec::commands::walls_at_junction(
+                        crate::modules::aec::engine::join_ops::walls_at_junction(
                             &self.tabs[i].scene,
                             h,
                             e,
@@ -2960,11 +2957,11 @@ impl OpenCADStudio {
                     self.aec.aec_junction_editor_gap_from.clone(),
                     self.aec.aec_junction_editor_gap_to.clone(),
                 ) {
-                    use crate::modules::aec::commands::selected_junction_layer_ref;
+                    use crate::modules::aec::engine::junction_pick::selected_junction_layer_ref;
                     use crate::modules::aec::engine::join::LayerRef;
                     let i = self.active_tab;
                     let participants = self.aec.aec_junction_editor_target.map(|(h, e)| {
-                        crate::modules::aec::commands::walls_at_junction(
+                        crate::modules::aec::engine::join_ops::walls_at_junction(
                             &self.tabs[i].scene,
                             h,
                             e,
@@ -3025,8 +3022,7 @@ impl OpenCADStudio {
             AecMessage::AecJunctionEditorSave => {
                 if let Some((axis_handle, end_index)) = self.aec.aec_junction_editor_target {
                     let i = self.active_tab;
-                    use crate::modules::aec::commands as aec_cmds;
-                    let override_data = crate::modules::aec::engine::join::JunctionOverride {
+                                        let override_data = crate::modules::aec::engine::join::JunctionOverride {
                         default_style: self.aec.aec_junction_editor_default_style.clone(),
                         layer_pairs: self.aec.aec_junction_editor_pairs.clone(),
                         layer_gaps: self.aec.aec_junction_editor_gaps.clone(),
@@ -3042,7 +3038,7 @@ impl OpenCADStudio {
                     } else {
                         Some(override_data)
                     };
-                    let touched = aec_cmds::apply_junction_override_and_rebuild(
+                    let touched = join_ops::apply_junction_override_and_rebuild(
                         &mut self.tabs[i].scene,
                         axis_handle,
                         end_index,
@@ -3064,14 +3060,13 @@ impl OpenCADStudio {
             AecMessage::AecJunctionEditorFullReset => {
                 if let Some((axis_handle, end_index)) = self.aec.aec_junction_editor_target {
                     let i = self.active_tab;
-                    use crate::modules::aec::commands as aec_cmds;
-                    let style_library =
+                                        let style_library =
                         crate::modules::aec::engine::project::resolve_style_library(
                             self.aec.aec_project_explorer_file.as_ref(),
                         );
                     let (display_rules, style_substitutions) =
                         self.resolve_active_display_config_wall_rules(i, Some(axis_handle));
-                    let touched = aec_cmds::apply_junction_override_and_rebuild(
+                    let touched = join_ops::apply_junction_override_and_rebuild(
                         &mut self.tabs[i].scene,
                         axis_handle,
                         end_index,
@@ -3089,48 +3084,6 @@ impl OpenCADStudio {
                 self.sync_junction_editor_layer_highlight();
                 Task::none()
             }
-
-
-        }
-    }
-
-    fn apply_storey_z_to_active_scene(&mut self, bid: uuid::Uuid, sid: uuid::Uuid) {
-        let i = self.active_tab;
-        let library = crate::modules::aec::engine::project::resolve_style_library(
-            self.aec.aec_project_explorer_file.as_ref(),
-        );
-        let project_snap = self.aec.aec_project_explorer_file.clone();
-        if let Some(storey) = self.aec.aec_project_explorer_file.as_mut().and_then(|p| {
-            p.buildings
-                .iter_mut()
-                .find(|b| b.id == bid)
-                .and_then(|b| b.storeys.iter_mut().find(|s| s.id == sid))
-        }) {
-            crate::modules::aec::project::storey_z::apply_storey_z_to_scene(
-                &mut self.tabs[i].scene,
-                storey,
-                project_snap.as_ref(),
-                Some(&library),
-            );
-        }
-    }
-
-    fn sync_storey_from_active_drawing(&mut self, bid: uuid::Uuid, sid: uuid::Uuid) {
-        let i = self.active_tab;
-        let scene = &self.tabs[i].scene;
-        let changed = self.aec.aec_project_explorer_file.as_mut().and_then(|p| {
-            p.buildings
-                .iter_mut()
-                .find(|b| b.id == bid)
-                .and_then(|b| b.storeys.iter_mut().find(|s| s.id == sid))
-                .map(|s| {
-                    crate::modules::aec::project::drawing_sync::sync_storey_planes_from_drawing(
-                        scene, s,
-                    )
-                })
-        });
-        if changed == Some(true) {
-            self.aec_project_explorer_persist_if_pathed();
         }
     }
 }

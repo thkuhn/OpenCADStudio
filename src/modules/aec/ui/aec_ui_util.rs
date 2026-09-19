@@ -1,4 +1,4 @@
-use iced::widget::{button, canvas, column, combo_box, container, row, scrollable, text, Space};
+use iced::widget::{button, canvas, column, combo_box, container, mouse_area, row, scrollable, text, Space};
 use iced::{Element, Theme};
 use crate::app::Message;
 use crate::t;
@@ -275,7 +275,8 @@ pub fn hatch_pattern_field<'a>(
     } else {
         current.to_string()
     };
-    let head = button(
+    let selected_gpu = crate::scene::model::hatch_patterns::find(current).map(|e| e.gpu.clone());
+    let head_btn = button(
         row![
             text(label).size(11),
             Space::new(),
@@ -290,7 +291,21 @@ pub fn hatch_pattern_field<'a>(
     .on_press(on_toggle)
     .style(button::subtle)
     .padding([4, 6])
-    .width(180);
+    .width(if selected_gpu.is_some() { 126 } else { 180 });
+    let head: Element<'a, Message> = if let Some(pattern) = selected_gpu {
+        row![
+            canvas(crate::ui::properties::HatchPatternPreview { pattern })
+                .width(48)
+                .height(22),
+            head_btn,
+        ]
+        .spacing(6)
+        .align_y(iced::Center)
+        .width(180)
+        .into()
+    } else {
+        head_btn.into()
+    };
 
     if !open {
         return head.into();
@@ -320,7 +335,7 @@ pub fn hatch_pattern_field<'a>(
             })
             .width(70)
             .height(36);
-            let card = button(
+            let body = container(
                 column![
                     preview,
                     text(crate::ui::text_util::elide(&entry.name, 12)).size(9),
@@ -328,15 +343,29 @@ pub fn hatch_pattern_field<'a>(
                 .spacing(2)
                 .align_x(iced::Center),
             )
-            .on_press(on_select(name))
-            .style(if selected {
-                button::primary
-            } else {
-                button::subtle
-            })
             .padding(3)
-            .width(84);
-            cards = cards.push(card);
+            .width(84)
+            .style(move |theme: &Theme| {
+                let palette = theme.palette();
+                container::Style {
+                    background: Some(iced::Background::Color(if selected {
+                        palette.primary.weak.color
+                    } else {
+                        palette.background.weak.color
+                    })),
+                    border: iced::Border {
+                        color: if selected {
+                            palette.primary.base.color
+                        } else {
+                            palette.background.neutral.color
+                        },
+                        width: if selected { 2.0 } else { 1.0 },
+                        radius: 4.0.into(),
+                    },
+                    ..Default::default()
+                }
+            });
+            cards = cards.push(mouse_area(body).on_press(on_select(name)));
         }
         grid = grid.push(cards);
     }

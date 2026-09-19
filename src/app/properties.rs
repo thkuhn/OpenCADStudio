@@ -4366,10 +4366,10 @@ mod chprop_integration_tests {
 #[cfg(test)]
 mod wall_package_selection_tests {
     use crate::modules::aec::properties::{collapse_selection_to_wall_package, wall_prop_section};
-    use crate::modules::aec::commands::{
-        regenerate_wall_representation, resolve_wall_package, wall_from_entity, wall_record,
-        AEC_APPID, WallJustification, WallLayer,
-    };
+    use crate::modules::aec::engine::wall_regen::regenerate_wall_representation;
+use crate::modules::aec::engine::wall_package::resolve_wall_package;
+use crate::modules::aec::engine::xdata::{wall_from_entity, wall_record, AEC_APPID};
+use crate::modules::aec::engine::{WallJustification, WallLayer};
     use crate::modules::aec::engine::plan_view::PlanPhase;
     use crate::scene::Scene;
     use acadrust::entities::lwpolyline::{LwPolyline, LwVertex};

@@ -3,9 +3,8 @@
 use acadrust::Handle;
 use acadrust::xdata::XDataValue;
 
-use crate::modules::aec::commands::{
-    read_aec_record, regenerate_wall_representation, wall_from_entity,
-};
+use crate::modules::aec::engine::xdata::{read_aec_record, wall_from_entity};
+use crate::modules::aec::engine::wall_regen::regenerate_wall_representation;
 use crate::modules::aec::engine::StyleLibrary;
 use crate::modules::{IconKind, ModuleEvent, ToolDef};
 use crate::scene::Scene;

@@ -4,9 +4,8 @@ use acadrust::Handle;
 use glam::DVec3;
 
 use crate::command::{CadCommand, CmdResult};
-use crate::modules::aec::commands::{
-    is_wall_pick_target, resolve_wall_package, reverse_wall_in_document,
-};
+use crate::modules::aec::engine::wall_package::{is_wall_pick_target, resolve_wall_package};
+use crate::modules::aec::engine::join_ops::reverse_wall_in_document;
 use crate::modules::aec::engine::{self, StyleLibrary};
 use crate::scene::Scene;
 use crate::ui::command_line::CommandLine;

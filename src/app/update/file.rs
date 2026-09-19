@@ -6,7 +6,7 @@ use super::{format_size, VIEWCUBE_HIT_SIZE};
 use crate::app::helpers::{
     parse_coord, polar_constrain_near, ucs_rotate_vec, ucs_to_wcs, ucs_z_axis, CoordKind,
 };
-use crate::app::{Message, OpenCADStudio, POLY_START_DELAY_MS};
+use crate::app::{AecModalKind, Message, OpenCADStudio, POLY_START_DELAY_MS};
 use crate::modules::ModuleEvent;
 use crate::scene::model::object::GripApply;
 use crate::scene::pick::grip::{find_hit_grip, find_hit_grip_paper, find_hit_grip_rte, GripEdit};
@@ -1730,28 +1730,19 @@ impl OpenCADStudio {
             )
             .as_ref(),
         );
-                // Eagerly resolve the AEC `DisplayConfig` (plan type) library
-                // right after loading, so the status-bar picker already
-                // lists every plan even before the user ever opens the Plan
-                // Manager (which used to be the only place populating
-                // `aec_plan_library`). Refreshed unconditionally (not just
-                // `get_or_insert_with`) so a freshly opened project's own
-                // library always wins over a stale one from a previous tab.
-                let (plan_library, _) = crate::modules::aec::properties::on_document_loaded(
-                    &self.tabs[i].scene,
-                    self.aec.aec_project_explorer_file.as_ref(),
-                );
-                self.aec.aec_plan_library = Some(plan_library);
-                self.aec_install_session_styles_for_tab(i);
-
-                // Open-time breakdown so regressions are visible immediately.
-                // `total` is wall time from the Open click to here (post-xref,
-                // pre-first-frame); the phase figures are the background-thread
-                // parse/purge/cache spans plus the UI-thread xref resolve.
-                self.command_line.push_info(crate::tf!(
-                    "  parse {}ms · purge {}ms · caches {}ms · xref {}ms · total {}ms",
-                    timings.parse_ms, timings.purge_ms, timings.caches_ms, timings.xref_ms, total_ms
-                ).as_ref());
+        // Eagerly resolve the AEC `DisplayConfig` (plan type) library
+        // right after loading, so the status-bar picker already
+        // lists every plan even before the user ever opens the Plan
+        // Manager (which used to be the only place populating
+        // `aec_plan_library`). Refreshed unconditionally (not just
+        // `get_or_insert_with`) so a freshly opened project's own
+        // library always wins over a stale one from a previous tab.
+        let (plan_library, _) = crate::modules::aec::properties::on_document_loaded(
+            &self.tabs[i].scene,
+            self.aec.aec_project_explorer_file.as_ref(),
+        );
+        self.aec.aec_plan_library = Some(plan_library);
+        self.aec_install_session_styles_for_tab(i);
 
         // Caches were built on the background thread inside open_path().
         self.tabs[i].scene.local_extent_max = caches.local_extent_max;
@@ -2885,7 +2876,7 @@ impl OpenCADStudio {
         // (AEC / application) objects kept only as verbatim
         // source-version bytes — let the user keep them by saving in the
         // source version, or proceed and drop them.
-        if !self.aec_drop_acknowledged {
+        if !self.aec.aec_drop_acknowledged {
             let is_dxf = ext.eq_ignore_ascii_case("dxf");
             let n = crate::io::dropped_on_save_count(
                 &self.tabs[self.active_tab].scene.document,
@@ -2893,8 +2884,8 @@ impl OpenCADStudio {
                 is_dxf,
             );
             if n > 0 {
-                self.aec_drop_count = n;
-                self.active_modal = Some(crate::app::ModalKind::AecDropWarning);
+                self.aec.aec_drop_count = n;
+                self.active_modal = Some(crate::app::ModalKind::Aec(AecModalKind::DropWarning));
                 return Task::none();
             }
         }
@@ -2910,36 +2901,6 @@ impl OpenCADStudio {
         };
         self.save_dialog_filename = filename.clone();
         let i = self.active_tab;
-                let (ext, version) = crate::io::parse_save_format(&self.save_dialog_format);
-                // Warn before a lossy Save-As that would drop unsupported
-                // (AEC / application) objects kept only as verbatim
-                // source-version bytes — let the user keep them by saving in the
-                // source version, or proceed and drop them.
-                if !self.aec.aec_drop_acknowledged {
-                    let is_dxf = ext.eq_ignore_ascii_case("dxf");
-                    let n = crate::io::dropped_on_save_count(
-                        &self.tabs[self.active_tab].scene.document,
-                        version,
-                        is_dxf,
-                    );
-                    if n > 0 {
-                        self.aec.aec_drop_count = n;
-                        self.active_modal = Some(crate::app::ModalKind::AecDropWarning);
-                        return Task::none();
-                    }
-                }
-                // The user need not type an extension: append the selected
-                // format's one when the entered name carries none.
-                let name = self.save_dialog_filename.trim();
-                let filename = if name.is_empty() {
-                    format!("drawing.{ext}")
-                } else if std::path::Path::new(name).extension().is_none() {
-                    format!("{name}.{ext}")
-                } else {
-                    name.to_string()
-                };
-                self.save_dialog_filename = filename.clone();
-                let i = self.active_tab;
 
         // Native: hand the destination choice to the OS save dialog —
         // it provides folder browsing and overwrite confirmation. The

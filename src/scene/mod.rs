@@ -5570,7 +5570,7 @@ impl Scene {
                         .handles_expanded_for_selectable_groups(&[handle])
                         .into_iter()
                         .collect();
-                    crate::modules::aec::commands::expand_handles_for_wall_packages(
+                    crate::modules::aec::engine::wall_package::expand_handles_for_wall_packages(
                         scene, &grouped,
                     )
                     .into_iter()
@@ -5599,7 +5599,7 @@ impl Scene {
                     .handles_expanded_for_selectable_groups(&[handle])
                     .into_iter()
                     .collect();
-                crate::modules::aec::commands::expand_handles_for_wall_packages(self, &grouped)
+                crate::modules::aec::engine::wall_package::expand_handles_for_wall_packages(self, &grouped)
                     .into_iter()
                     .collect()
             })
@@ -9981,7 +9981,7 @@ impl Scene {
             .unwrap_or(false);
         if layer_off {
             let wall_axis_selected = c.layer
-                == crate::modules::aec::commands::AEC_WALL_AXIS_LAYER
+                == crate::modules::aec::engine::wall_regen::AEC_WALL_AXIS_LAYER
                 && (self.selected.contains(&c.handle)
                     || self.hover_highlight == Some(c.handle));
             if !wall_axis_selected {

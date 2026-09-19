@@ -4,11 +4,10 @@ use acadrust::Handle;
 use glam::DVec3;
 
 use crate::command::{CadCommand, CmdOption, CmdResult};
-use crate::modules::aec::commands::{
-    get_wall_bulges, get_wall_vertices, is_wall_pick_target, regenerate_wall_representation_with_corner_rules_and_substitutions,
-    regenerate_wall_representation_with_rules_and_substitutions, resolve_wall_package,
-    update_wall_vertices, wall_layer_data,
-};
+use crate::modules::aec::engine::xdata::{get_wall_bulges, get_wall_vertices, update_wall_vertices};
+use crate::modules::aec::engine::wall_package::{is_wall_pick_target, resolve_wall_package};
+use crate::modules::aec::engine::wall_regen::{regenerate_wall_representation_with_corner_rules_and_substitutions, regenerate_wall_representation_with_rules_and_substitutions};
+use crate::modules::aec::engine::join_ops::wall_layer_data;
 use crate::modules::aec::engine::{self, join, StyleLibrary};
 use crate::modules::aec::engine::join::JoinKind;
 use crate::modules::{IconKind, ModuleEvent, ToolDef};

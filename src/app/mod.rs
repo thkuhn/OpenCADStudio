@@ -370,8 +370,9 @@ pub(crate) fn delobj_deletes_auxiliary(value: i16, creates_surface: bool) -> boo
 }
 
 pub use crate::modules::aec::{
-    AecLayerBuffer, AecLayerGapDrawPick, AecLayerPairDrawPick, AecMessage, AecPendingCopy,
-    AecProjectExplorerDeleteTarget, AecState, AecWallStyleSort, StylePickerTarget,
+    AecColorPickTarget, AecLayerBuffer, AecLayerGapDrawPick, AecLayerPairDrawPick, AecMessage,
+    AecModalKind, AecPendingCopy, AecProjectExplorerDeleteTarget, AecState, AecWallStyleSort,
+    StylePickerTarget,
 };
 
 pub(crate) struct OpenCADStudio {
@@ -816,11 +817,6 @@ pub(crate) struct OpenCADStudio {
     plotstyle_parent_plot_geometry: Option<(iced::Vector, iced::Vector)>,
     /// FIND dialog inputs and current result cursor.
     find_replace: FindReplaceState,
-    /// Set once the user acknowledges the AEC-drop warning, so re-entering the
-    /// save path proceeds instead of re-showing the warning.
-    aec_drop_acknowledged: bool,
-    /// Number of unsupported objects shown in the AEC-drop warning modal.
-    aec_drop_count: usize,
     /// Layers awaiting a "delete non-empty layer(s)" confirmation: `(names,
     /// total object count)`. Set when the user deletes one or more layers that
     /// still have objects; the warning modal reads it, and confirming erases
@@ -1482,21 +1478,9 @@ pub enum ColorPickTarget {
     LayerState(usize),
     /// The MText editor's selection (or global) colour.
     MText,
-    AecMaterial,
-    AecMaterialHatch,
-    AecPlanDemolitionLineColor,
-    AecPlanDemolitionHatchColor,
-    AecPlanDemolitionFillColor,
-    AecPlanExistingLineColor,
-    AecPlanExistingHatchColor,
-    AecPlanExistingFillColor,
-    AecWallStyleSlotLineColor,
-    AecWallStyleSlotHatchColor,
-    AecWallStyleSlotFillColor,
-    AecPlanOverlayLineColor,
-    AecPlanOverlayHatchColor,
-    AecPlanOverlayFillColor,
-    AecPlanContourHatchColor,
+    /// AEC palette destinations. New AEC colour fields add variants on
+    /// [`AecColorPickTarget`], not here.
+    Aec(AecColorPickTarget),
 }
 
 /// Table records the clipboard entities depend on, snapshotted from the source
@@ -1858,7 +1842,6 @@ pub enum ModalKind {
     RecoveryPrompt,
     Options,
     FindReplace,
-    AecDropWarning,
     #[cfg(not(target_arch = "wasm32"))]
     FileInUse,
     #[cfg(not(target_arch = "wasm32"))]
@@ -1881,36 +1864,8 @@ pub enum ModalKind {
     /// means and what usually fixes it. Queued once per verdict; the status
     /// bar's ⚠ pill reopens it.
     GpuWarning,
-    /// AEC Style Manager — browse/edit the materials + wall styles stored in
-    /// the AEC style library (`AEC_STYLEMANAGER`). Empty shell for now; the
-    /// view/edit content is added by a later step.
-    AecMaterialManager,
-    AecWallStyleManager,
-    /// Child modal of [`Self::AecWallStyleManager`]: plan-type display-profile
-    /// editor (mirrors Plot → Plotstyle).
-    AecWallStyleDisplayProfiles,
-    /// Junction Editor Panel (Step 5) — edit a wall junction's node-level
-    /// default style and per-layer-pair join overrides.
-    AecJunctionEditor,
-    /// AEC Project Explorer — browse a `.ocsproj` Building → Storey tree.
-    AecProjectExplorer,
-    /// Child of the project explorer: storey fields + control planes.
-    AecStoreySettings,
-    /// AEC DisplayConfig Manager — browse/edit the `DisplayConfig` entries
-    /// stored in the AEC plan/display library (`AEC_PLANMANAGER`).
-    AecPlanManager,
-    /// AEC Style Picker — hierarchical modal for selecting wall styles,
-    /// materials, or layer overrides.
-    AecStylePicker {
-        /// Which field is being picked for.
-        target: StylePickerTarget,
-    },
-    /// Overwrite confirmation shown when a project↔global copy (Step 9)
-    /// collides with a different-content entry sharing the same id.
-    AecStyleCopyConflict,
-    /// Blocking prompt when an AEC entry point is used without an active
-    /// project — offers open/create project only.
-    AecProjectRequired,
+    /// AEC dialogs. New AEC windows add variants on [`AecModalKind`], not here.
+    Aec(AecModalKind),
     /// Reference Manager help window (toolbar Help button).
     XrefHelp,
 }
@@ -4026,8 +3981,6 @@ impl OpenCADStudio {
             gpu_warning_silenced: String::new(),
             plotstyle_parent_plot_geometry: None,
             find_replace: FindReplaceState::default(),
-            aec_drop_acknowledged: false,
-            aec_drop_count: 0,
             layer_delete_pending: None,
             modal_offset: iced::Vector::ZERO,
             modal_drag_last: None,
@@ -4355,6 +4308,10 @@ impl OpenCADStudio {
         app.last_saved_config = Some(app.current_config());
         app.sync_ribbon_layers();
         app
+    }
+
+    pub(crate) fn save_dialog_format(&self) -> &str {
+        &self.save_dialog_format
     }
 
     #[cfg(test)]

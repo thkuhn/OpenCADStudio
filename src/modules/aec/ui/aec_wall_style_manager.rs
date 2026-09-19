@@ -7,7 +7,7 @@ use iced::widget::{
 };
 use iced::{Background, Border, Element, Fill, Theme};
 
-use crate::app::{AecMessage, Message};
+use crate::app::{AecColorPickTarget, AecMessage, Message};
 use crate::modules::aec::engine::display_component::WallComponentSlot;
 use crate::modules::aec::engine::join::LayerRef;
 use crate::modules::aec::engine::library::{LibrarySource, StyleLibrary};
@@ -92,7 +92,7 @@ pub struct DisplayProfileFormState<'a> {
 
 
 /// Standalone modal content for plan-type display-profile editing
-/// (`ModalKind::AecWallStyleDisplayProfiles`).
+/// (`ModalKind::Aec(AecModalKind::WallStyleDisplayProfiles)`).
 pub fn view_display_profiles_window<'a>(
     profiles: DisplayProfileFormState<'a>,
     layers: &'a [crate::app::AecLayerBuffer],
@@ -854,15 +854,15 @@ pub fn display_profiles_section<'a>(
                 |v| Message::Aec(AecMessage::AecStyleManagerProfileSlotStyleLineTypeChanged(v)),
                 |v| Message::Aec(AecMessage::AecStyleManagerProfileSlotStyleLineColorChanged(v)),
                 Message::Aec(AecMessage::AecStyleManagerProfileSlotStyleLineColorPickerToggle),
-                crate::app::ColorPickTarget::AecWallStyleSlotLineColor,
+                crate::app::ColorPickTarget::Aec(AecColorPickTarget::WallStyleSlotLineColor),
                 |v| Message::Aec(AecMessage::AecStyleManagerProfileSlotStyleHatchPatternChanged(v)),
                 Message::Aec(AecMessage::AecStyleManagerProfileSlotStyleHatchPickerToggle),
                 |v| Message::Aec(AecMessage::AecStyleManagerProfileSlotStyleHatchColorChanged(v)),
                 Message::Aec(AecMessage::AecStyleManagerProfileSlotStyleHatchColorPickerToggle),
-                crate::app::ColorPickTarget::AecWallStyleSlotHatchColor,
+                crate::app::ColorPickTarget::Aec(AecColorPickTarget::WallStyleSlotHatchColor),
                 |v| Message::Aec(AecMessage::AecStyleManagerProfileSlotStyleFillColorChanged(v)),
                 Message::Aec(AecMessage::AecStyleManagerProfileSlotStyleFillColorPickerToggle),
-                crate::app::ColorPickTarget::AecWallStyleSlotFillColor,
+                crate::app::ColorPickTarget::Aec(AecColorPickTarget::WallStyleSlotFillColor),
             ));
             section = section.push(
                 row![

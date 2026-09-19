@@ -1954,7 +1954,7 @@ impl OpenCADStudio {
                     let mut cmd = self.tabs[i].active_cmd.take();
                     if let Some(ref mut c) = cmd {
                         c.on_entities_committed(&mut self.tabs[i].scene, &[handle]);
-                        for msg in crate::modules::aec::commands::take_pending_override_warnings() {
+                        for msg in crate::modules::aec::engine::display_apply::take_pending_override_warnings() {
                             self.command_line.push_info(&msg);
                         }
                     }
@@ -4165,24 +4165,7 @@ impl OpenCADStudio {
                     self.tabs[i].last_draw_anchor = Some(handle);
                 }
                 if finish {
-                    let is_wall = self.tabs[i]
-                        .scene
-                        .document
-                        .get_entity(handle)
-                        .is_some_and(|e| {
-                            crate::modules::aec::commands::wall_thickness_and_height(e).is_some()
-                        });
-                    if is_wall {
-                        let companions: Vec<acadrust::Handle> = Vec::new();
-                        crate::modules::aec::commands::erase_wall_live_preview_companions(
-                            &mut self.tabs[i].scene,
-                            handle,
-                            &companions,
-                        );
-                        let _ = self.regenerate_wall_respecting_active_display_config(i, handle);
-                        self.reapply_active_display_config_to_wall_packages(i, &[handle]);
-                        self.remember_last_wall_defaults(i, handle);
-                    }
+                    self.aec_on_live_entity_finished(i, handle, &[]);
                     self.finish_live_entity_history(i, handle);
                     self.tabs[i].scene.clear_preview_wire();
                     self.tabs[i].active_cmd = None;
@@ -4259,28 +4242,12 @@ impl OpenCADStudio {
                 }
                 if finish {
                     if let Some(handle) = first_handle {
-                        let is_wall = self.tabs[i]
-                            .scene
-                            .document
-                            .get_entity(handle)
-                            .is_some_and(|e| {
-                                crate::modules::aec::commands::wall_thickness_and_height(e).is_some()
-                            });
-                        if is_wall {
-                            let companions: Vec<_> = all_live_handles
-                                .iter()
-                                .copied()
-                                .filter(|&h| h != handle)
-                                .collect();
-                            crate::modules::aec::commands::erase_wall_live_preview_companions(
-                                &mut self.tabs[i].scene,
-                                handle,
-                                &companions,
-                            );
-                            let _ = self.regenerate_wall_respecting_active_display_config(i, handle);
-                            self.reapply_active_display_config_to_wall_packages(i, &[handle]);
-                            self.remember_last_wall_defaults(i, handle);
-                        }
+                        let companions: Vec<_> = all_live_handles
+                            .iter()
+                            .copied()
+                            .filter(|&h| h != handle)
+                            .collect();
+                        self.aec_on_live_entity_finished(i, handle, &companions);
                         self.finish_live_entity_history(i, handle);
                     }
                     self.tabs[i].scene.clear_preview_wire();
@@ -5425,7 +5392,7 @@ impl OpenCADStudio {
                 let mut wall_owner_of: rustc_hash::FxHashMap<acadrust::Handle, acadrust::Handle> =
                     rustc_hash::FxHashMap::default();
                 for &handle in &handles {
-                    let owner = crate::modules::aec::commands::resolve_wall_package(
+                    let owner = crate::modules::aec::engine::wall_package::resolve_wall_package(
                         &self.tabs[i].scene,
                         handle,
                     );
@@ -5434,7 +5401,7 @@ impl OpenCADStudio {
                         .document
                         .get_entity(owner)
                         .is_some_and(|e| {
-                            crate::modules::aec::commands::wall_thickness_and_height(e).is_some()
+                            crate::modules::aec::engine::wall_regen::wall_thickness_and_height(e).is_some()
                         });
                     if is_wall {
                         wall_owner_of.insert(handle, owner);
@@ -5452,7 +5419,7 @@ impl OpenCADStudio {
                     self.resolve_active_display_config_wall_rules(i, wall_owners.first().copied());
                 for owner in &wall_owners {
                     let before = self.tabs[i].scene.document.get_entity_arc(*owner);
-                    let Some(touched) = crate::modules::aec::commands::stretch_wall_axis_in_window(
+                    let Some(touched) = crate::modules::aec::engine::wall_regen::stretch_wall_axis_in_window(
                         &mut self.tabs[i].scene,
                         *owner,
                         &in_win,

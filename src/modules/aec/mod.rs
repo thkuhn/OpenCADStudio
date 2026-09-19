@@ -5,7 +5,6 @@
 //   Storeys group : in-memory storey list (scaffold)
 //   IFC group     : minimal IFC4 SPF export
 
-pub mod commands;
 pub mod engine;
 pub mod ifc;
 pub mod message;
@@ -27,6 +26,7 @@ pub use state::{
     AecLayerBuffer, AecLayerGapDrawPick, AecLayerPairDrawPick, AecPendingCopy,
     AecProjectExplorerDeleteTarget, AecState, AecWallStyleSort, StylePickerTarget,
 };
+pub use ui::{AecColorPickTarget, AecModalKind};
 
 
 use crate::modules::{CadModule, RibbonGroup, RibbonItem};

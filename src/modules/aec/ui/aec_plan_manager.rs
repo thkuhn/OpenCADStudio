@@ -18,7 +18,7 @@ use iced::widget::{button, column, container, pick_list, row, scrollable, text, 
 use iced::{Element, Fill};
 use uuid::Uuid;
 
-use crate::app::{AecMessage, Message};
+use crate::app::{AecColorPickTarget, AecMessage, Message};
 use crate::modules::aec::engine::display_component::{
     ComponentStyleOverride, RepresentationMode, StyleDisplayOverlay, WallComponentKind,
 };
@@ -526,7 +526,7 @@ fn contour_hatch_section_view<'a>(form: &PlanConfigFormState<'a>) -> Element<'a,
                 form.contour_hatch_color_picker_open,
                 |v| Message::Aec(AecMessage::AecPlanManagerContourHatchColorChanged(v)),
                 Message::Aec(AecMessage::AecPlanManagerContourHatchColorPickerToggle),
-                crate::app::ColorPickTarget::AecPlanContourHatchColor,
+                crate::app::ColorPickTarget::Aec(AecColorPickTarget::PlanContourHatchColor),
             ),
             row![
                 text(t!("Schraffur-Skalierung")).size(10).style(muted).width(110),
@@ -673,7 +673,7 @@ fn overlay_section_view<'a>(form: &PlanConfigFormState<'a>) -> Element<'a, Messa
             form.overlay_line_color_picker_open,
             |v| Message::Aec(AecMessage::AecPlanManagerOverlayLineColorChanged(v)),
             Message::Aec(AecMessage::AecPlanManagerOverlayLineColorPickerToggle),
-            crate::app::ColorPickTarget::AecPlanOverlayLineColor,
+            crate::app::ColorPickTarget::Aec(AecColorPickTarget::PlanOverlayLineColor),
         ),
         row![
             text(t!("Schraffurmuster")).size(10).style(muted).width(110),
@@ -692,7 +692,7 @@ fn overlay_section_view<'a>(form: &PlanConfigFormState<'a>) -> Element<'a, Messa
             form.overlay_hatch_color_picker_open,
             |v| Message::Aec(AecMessage::AecPlanManagerOverlayHatchColorChanged(v)),
             Message::Aec(AecMessage::AecPlanManagerOverlayHatchColorPickerToggle),
-            crate::app::ColorPickTarget::AecPlanOverlayHatchColor,
+            crate::app::ColorPickTarget::Aec(AecColorPickTarget::PlanOverlayHatchColor),
         ),
         row![
             text(t!("Schraffur-Skalierung")).size(10).style(muted).width(110),
@@ -734,7 +734,7 @@ fn overlay_section_view<'a>(form: &PlanConfigFormState<'a>) -> Element<'a, Messa
             form.overlay_fill_color_picker_open,
             |v| Message::Aec(AecMessage::AecPlanManagerOverlayFillColorChanged(v)),
             Message::Aec(AecMessage::AecPlanManagerOverlayFillColorPickerToggle),
-            crate::app::ColorPickTarget::AecPlanOverlayFillColor,
+            crate::app::ColorPickTarget::Aec(AecColorPickTarget::PlanOverlayFillColor),
         ),
         row![
             iced::widget::checkbox(vis.visible_2d)
@@ -851,15 +851,15 @@ fn phase_style_form_demolition<'a>(editor: StyleEditorFormState<'a>) -> Element<
         |v| Message::Aec(AecMessage::AecPlanManagerDemolitionStyleLineTypeChanged(v)),
         |v| Message::Aec(AecMessage::AecPlanManagerDemolitionStyleLineColorChanged(v)),
         Message::Aec(AecMessage::AecPlanManagerDemolitionStyleLineColorPickerToggle),
-        crate::app::ColorPickTarget::AecPlanDemolitionLineColor,
+        crate::app::ColorPickTarget::Aec(AecColorPickTarget::PlanDemolitionLineColor),
         |v| Message::Aec(AecMessage::AecPlanManagerDemolitionStyleHatchPatternChanged(v)),
         Message::Aec(AecMessage::AecPlanManagerDemolitionStyleHatchPickerToggle),
         |v| Message::Aec(AecMessage::AecPlanManagerDemolitionStyleHatchColorChanged(v)),
         Message::Aec(AecMessage::AecPlanManagerDemolitionStyleHatchColorPickerToggle),
-        crate::app::ColorPickTarget::AecPlanDemolitionHatchColor,
+        crate::app::ColorPickTarget::Aec(AecColorPickTarget::PlanDemolitionHatchColor),
         |v| Message::Aec(AecMessage::AecPlanManagerDemolitionStyleFillColorChanged(v)),
         Message::Aec(AecMessage::AecPlanManagerDemolitionStyleFillColorPickerToggle),
-        crate::app::ColorPickTarget::AecPlanDemolitionFillColor,
+        crate::app::ColorPickTarget::Aec(AecColorPickTarget::PlanDemolitionFillColor),
     )
 }
 
@@ -871,15 +871,15 @@ fn phase_style_form_existing<'a>(editor: StyleEditorFormState<'a>) -> Element<'a
         |v| Message::Aec(AecMessage::AecPlanManagerExistingStyleLineTypeChanged(v)),
         |v| Message::Aec(AecMessage::AecPlanManagerExistingStyleLineColorChanged(v)),
         Message::Aec(AecMessage::AecPlanManagerExistingStyleLineColorPickerToggle),
-        crate::app::ColorPickTarget::AecPlanExistingLineColor,
+        crate::app::ColorPickTarget::Aec(AecColorPickTarget::PlanExistingLineColor),
         |v| Message::Aec(AecMessage::AecPlanManagerExistingStyleHatchPatternChanged(v)),
         Message::Aec(AecMessage::AecPlanManagerExistingStyleHatchPickerToggle),
         |v| Message::Aec(AecMessage::AecPlanManagerExistingStyleHatchColorChanged(v)),
         Message::Aec(AecMessage::AecPlanManagerExistingStyleHatchColorPickerToggle),
-        crate::app::ColorPickTarget::AecPlanExistingHatchColor,
+        crate::app::ColorPickTarget::Aec(AecColorPickTarget::PlanExistingHatchColor),
         |v| Message::Aec(AecMessage::AecPlanManagerExistingStyleFillColorChanged(v)),
         Message::Aec(AecMessage::AecPlanManagerExistingStyleFillColorPickerToggle),
-        crate::app::ColorPickTarget::AecPlanExistingFillColor,
+        crate::app::ColorPickTarget::Aec(AecColorPickTarget::PlanExistingFillColor),
     )
 }
 

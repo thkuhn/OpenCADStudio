@@ -4,7 +4,8 @@ use acadrust::Handle;
 use glam::DVec3;
 
 use crate::command::{CadCommand, CmdResult};
-use crate::modules::aec::commands::{is_wall_pick_target, place_wall_opening};
+use crate::modules::aec::engine::wall_package::is_wall_pick_target;
+use crate::modules::aec::engine::opening_xdata::place_wall_opening;
 use crate::modules::aec::engine::{self, StyleLibrary};
 use crate::modules::{IconKind, ModuleEvent, ToolDef};
 use crate::scene::Scene;

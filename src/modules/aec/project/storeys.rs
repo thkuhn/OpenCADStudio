@@ -1,6 +1,6 @@
 //! `AEC_STOREY` one-shot command.
 
-use crate::modules::aec::commands::{ensure_storey_entity, STOREYS};
+use crate::modules::aec::engine::storey_xdata::{ensure_storey_entity, STOREYS};
 use crate::modules::aec::engine::Storey;
 use crate::modules::{IconKind, ModuleEvent, ToolDef};
 use crate::scene::Scene;

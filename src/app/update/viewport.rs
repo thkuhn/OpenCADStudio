@@ -1883,6 +1883,32 @@ impl OpenCADStudio {
             self.tabs[i].last_cursor_world = world;
         }
 
+        // In-drawing wall-layer pick (junction context menu): suppress
+        // entity rollover and highlight a single layer instead.
+        let layer_pair_pick = self
+            .aec
+            .aec_layer_pair_draw
+            .as_ref()
+            .is_some_and(|p| !p.awaiting_style);
+        let layer_gap_pick = self.aec.aec_layer_gap_draw.is_some();
+        if layer_pair_pick || layer_gap_pick {
+            self.tabs[i].scene.set_hover_highlight(None);
+            self.hover_dwell = None;
+            let bounds = iced::Rectangle {
+                x: 0.0,
+                y: 0.0,
+                width: vp_size.0,
+                height: vp_size.1,
+            };
+            let world = self.cursor_model_point(i, &edit_cam, p, bounds);
+            if layer_pair_pick {
+                self.update_layer_pair_draw_hover(world);
+            } else {
+                self.update_layer_gap_draw_hover(world);
+            }
+            return Task::none();
+        }
+
         // Rollover highlight: when idle (no active command, no
         // drag), defer the pick until the cursor stops. The full
         // pick (wires + hatches + block hatches + shaded meshes) is
@@ -2851,7 +2877,7 @@ impl OpenCADStudio {
             self.tabs[i].scene.hit_test_wires()
         };
         let all_wires =
-            crate::modules::aec::commands::wall_axis_snap_wires(&self.tabs[i].scene, all_wires);
+            crate::modules::aec::engine::wall_package::wall_axis_snap_wires(&self.tabs[i].scene, all_wires);
         let snap_candidates = self.tabs[i].scene.interaction_candidates_near(
             all_wires,
             raw,
@@ -3150,6 +3176,38 @@ impl OpenCADStudio {
         };
         let (vw, vh) = vp_size;
 
+        let layer_pair_pick = self
+            .aec
+            .aec_layer_pair_draw
+            .as_ref()
+            .is_some_and(|pick| !pick.awaiting_style);
+        let layer_gap_pick = self.aec.aec_layer_gap_draw.is_some();
+        if layer_pair_pick || layer_gap_pick {
+            let edit_frame = self.tabs[i].scene.viewport_edit_frame((vw, vh));
+            let tile_b = match &edit_frame {
+                Some((_, full)) => *full,
+                None => self.tabs[i].scene.active_model_tile_bounds(vw, vh),
+            };
+            let edit_cam = edit_frame.map(|(cam, _)| cam);
+            let local = iced::Point {
+                x: p.x - tile_b.x,
+                y: p.y - tile_b.y,
+            };
+            let bounds = iced::Rectangle {
+                x: 0.0,
+                y: 0.0,
+                width: tile_b.width,
+                height: tile_b.height,
+            };
+            let world = self.cursor_model_point(i, &edit_cam, local, bounds);
+            if layer_pair_pick {
+                self.click_layer_pair_draw(world, p);
+            } else {
+                self.click_layer_gap_draw(world);
+            }
+            return Task::none();
+        }
+
         if self.tabs[i].active_cmd.is_none() {
             if let Some((kind, references)) = self.constraint_glyph_under(i, p) {
                 let mut handles: Vec<_> = references.iter().map(|reference| reference.entity).collect();
@@ -3324,11 +3382,11 @@ impl OpenCADStudio {
                             | crate::scene::model::object::GripShape::DropdownAdjacent
                     ) {
                         if let Some(end_index) =
-                            crate::modules::aec::commands::wall_junction_end_from_dropdown_grip(
+                            crate::modules::aec::engine::junction_pick::wall_junction_end_from_dropdown_grip(
                                 grip_id,
                             )
                         {
-                            let axis = crate::modules::aec::commands::resolve_wall_package(
+                            let axis = crate::modules::aec::engine::wall_package::resolve_wall_package(
                                 &self.tabs[i].scene,
                                 handle,
                             );
@@ -4735,7 +4793,7 @@ properties={:.1}ms picked={}",
                             let hit =
                                 hit.filter(|&h| self.tabs[i].scene.passes_selection_filter(h));
                             let hit = hit.map(|h| {
-                                crate::modules::aec::commands::resolve_wall_package(
+                                crate::modules::aec::engine::wall_package::resolve_wall_package(
                                     &self.tabs[i].scene,
                                     h,
                                 )
@@ -6339,7 +6397,7 @@ was_selected={}",
             self.reapply_active_display_config_to_wall_packages(i, &handles);
             self.sync_wall_axis_layer_for_session(i);
             for &handle in &handles {
-                let owner = crate::modules::aec::commands::resolve_wall_package(
+                let owner = crate::modules::aec::engine::wall_package::resolve_wall_package(
                     &self.tabs[i].scene,
                     handle,
                 );
@@ -6347,7 +6405,7 @@ was_selected={}",
                     .scene
                     .document
                     .get_entity(owner)
-                    .and_then(crate::modules::aec::commands::wall_from_entity)
+                    .and_then(crate::modules::aec::engine::xdata::wall_from_entity)
                     .is_some()
                 {
                     self.tabs[i].scene.select_entity(owner, false);

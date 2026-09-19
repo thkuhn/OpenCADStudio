@@ -160,7 +160,7 @@ impl Scene {
             .copied()
             .filter(|&h| !self.is_layer_locked(h))
             .collect();
-        let handles = crate::modules::aec::commands::expand_handles_for_wall_packages(self, &handles);
+        let handles = crate::modules::aec::engine::wall_package::expand_handles_for_wall_packages(self, &handles);
         let handles = &handles[..];
         let retained_originals: Vec<(Handle, EntityType)> = handles
             .iter()

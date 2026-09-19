@@ -2,7 +2,12 @@
 
 use acadrust::{EntityType, Handle};
 
-use crate::modules::aec::commands;
+use crate::modules::aec::engine::join_ops;
+use crate::modules::aec::engine::junction_pick;
+use crate::modules::aec::engine::opening_xdata;
+use crate::modules::aec::engine::storey_xdata;
+use crate::modules::aec::engine::xdata;
+use crate::modules::aec::engine::wall_package;
 use crate::modules::aec::engine::library::StyleLibrary;
 use crate::t;
 
@@ -15,7 +20,7 @@ pub fn collapse_selection_to_wall_package<'a>(
     }
     let owners: Vec<Handle> = selected
         .iter()
-        .map(|(handle, _)| commands::resolve_wall_package(scene, *handle))
+        .map(|(handle, _)| wall_package::resolve_wall_package(scene, *handle))
         .collect();
     let owner = owners[0];
     if owner.is_null() || owners.iter().any(|h| *h != owner) {
@@ -24,7 +29,7 @@ pub fn collapse_selection_to_wall_package<'a>(
     let Some(entity) = scene.document.get_entity(owner) else {
         return selected;
     };
-    if commands::wall_from_entity(entity).is_none() {
+    if xdata::wall_from_entity(entity).is_none() {
         return selected;
     }
     vec![(owner, entity)]
@@ -37,7 +42,7 @@ pub fn wall_prop_section(
     style_library: Option<&StyleLibrary>,
     project: Option<&crate::modules::aec::engine::project::ProjectFile>,
 ) -> Option<crate::scene::model::object::PropSection> {
-    if let Some(wall) = commands::wall_from_entity(entity) {
+    if let Some(wall) = xdata::wall_from_entity(entity) {
         let style_name = style_library
             .and_then(|lib| lib.wall_styles.iter().find(|ws| ws.style.id == wall.style_id))
             .map(|ws| ws.style.name.clone())
@@ -232,7 +237,7 @@ pub fn wall_relation_sections(
 ) -> Vec<crate::scene::model::object::PropSection> {
     use crate::scene::model::object::{PropSection, PropValue, Property};
 
-    let openings = commands::openings_for_host_wall(scene, wall_handle);
+    let openings = opening_xdata::openings_for_host_wall(scene, wall_handle);
     let mut opening_props = Vec::with_capacity(openings.len().max(1));
     if openings.is_empty() {
         opening_props.push(crate::entities::common::ro_prop(
@@ -301,9 +306,9 @@ pub fn storey_prop_section(
 ) -> Option<crate::scene::model::object::PropSection> {
     use crate::scene::model::object::{PropSection, PropValue, Property};
 
-    let (storey_id, storey) = commands::storey_from_entity(entity)?;
+    let (storey_id, storey) = storey_xdata::storey_from_entity(entity)?;
     let storey_handle = entity.common().handle;
-    let members = commands::walls_for_storey(scene, storey_handle);
+    let members = storey_xdata::walls_for_storey(scene, storey_handle);
 
     let mut props = vec![
         crate::entities::common::ro_prop(t!("Name").as_ref(), "storey_name", storey.name.clone()),
@@ -329,7 +334,7 @@ pub fn storey_prop_section(
         let display = if scene
             .document
             .get_entity(*member)
-            .and_then(commands::wall_from_entity)
+            .and_then(xdata::wall_from_entity)
             .is_some()
         {
             format!("Wall #{:X}", member.value())
@@ -400,7 +405,7 @@ pub fn extend_entity_sections(
     project: Option<&crate::modules::aec::engine::project::ProjectFile>,
     sections: &mut Vec<crate::scene::model::object::PropSection>,
 ) {
-    let wall_handle = commands::resolve_wall_package(scene, handle);
+    let wall_handle = wall_package::resolve_wall_package(scene, handle);
     let wall_entity = scene.document.get_entity(wall_handle).unwrap_or(entity);
     if let Some(wall_section) = wall_prop_section(wall_entity, style_library, project) {
         sections.push(wall_section);
@@ -418,7 +423,7 @@ pub fn session_styles_for_scene(
     scene: &crate::scene::Scene,
     project: Option<&crate::modules::aec::engine::project::ProjectFile>,
 ) -> Option<StyleLibrary> {
-    let extracted = commands::extract_style_library_from_scene(scene);
+    let extracted = xdata::extract_style_library_from_scene(scene);
     let session =
         crate::modules::aec::engine::library::session_library_excluding_existing(&extracted, project);
     if session.materials.is_empty() && session.wall_styles.is_empty() {
@@ -441,15 +446,15 @@ pub fn on_document_loaded(
 }
 
 pub fn is_wall_derived_non_axis(scene: &crate::scene::Scene, handle: Handle) -> bool {
-    commands::is_wall_derived_non_axis(scene, handle)
+    wall_package::is_wall_derived_non_axis(scene, handle)
 }
 
 pub fn resolve_wall_package(scene: &crate::scene::Scene, handle: Handle) -> Handle {
-    commands::resolve_wall_package(scene, handle)
+    wall_package::resolve_wall_package(scene, handle)
 }
 
 pub fn wall_from_entity(entity: &EntityType) -> bool {
-    commands::wall_from_entity(entity).is_some()
+    xdata::wall_from_entity(entity).is_some()
 }
 
 pub fn selection_is_all_walls(
@@ -459,15 +464,168 @@ pub fn selection_is_all_walls(
     let mut any = false;
     for h in handles {
         any = true;
-        let resolved = commands::resolve_wall_package(scene, h);
+        let resolved = wall_package::resolve_wall_package(scene, h);
         let Some(entity) = scene.document.get_entity(resolved) else {
             return false;
         };
-        if commands::wall_from_entity(entity).is_none() {
+        if xdata::wall_from_entity(entity).is_none() {
             return false;
         }
     }
     any
+}
+
+impl crate::app::OpenCADStudio {
+    /// Apply an AEC properties field. Returns `true` when `field` is AEC-owned
+    /// so Core must skip the generic geom path.
+    pub(crate) fn aec_apply_property_field(
+        &mut self,
+        tab: usize,
+        handle: acadrust::Handle,
+        field: &str,
+        val: &str,
+    ) -> bool {
+        let is_aec = matches!(
+            field,
+            "wall_justification"
+                | "wall_base_plane"
+                | "wall_top_plane"
+                | "wall_phase"
+                | "control_plane_name"
+                | "wall_height"
+                | "wall_thickness"
+                | "wall_material"
+                | "wall_base_offset"
+                | "wall_top_offset"
+                | "wall_base_z"
+                | "wall_hatch_angle"
+        );
+        if !is_aec {
+            return false;
+        }
+        if self.tabs[tab].scene.is_layer_locked(handle) {
+            return true;
+        }
+        match field {
+            "wall_justification" => {
+                let new_justification =
+                    crate::modules::aec::engine::WallJustification::from_str(val);
+                let style_library = crate::modules::aec::engine::project::resolve_style_library(
+                    self.aec.aec_project_explorer_file.as_ref(),
+                );
+                crate::modules::aec::engine::wall_regen::change_wall_justification(
+                    &mut self.tabs[tab].scene,
+                    handle,
+                    new_justification,
+                    Some(&style_library),
+                );
+            }
+            "wall_base_plane" | "wall_top_plane" => {
+                let style_library = crate::modules::aec::engine::project::resolve_style_library(
+                    self.aec.aec_project_explorer_file.as_ref(),
+                );
+                crate::modules::aec::project::wall_planes::apply_wall_plane_choice(
+                    &mut self.tabs[tab].scene,
+                    self.aec.aec_project_explorer_file.as_ref(),
+                    handle,
+                    field == "wall_base_plane",
+                    val,
+                    Some(&style_library),
+                );
+            }
+            "wall_phase" => {
+                let new_phase = crate::modules::aec::engine::plan_view::PlanPhase::from_str(val);
+                crate::modules::aec::engine::xdata::write_wall_phase(
+                    &mut self.tabs[tab].scene,
+                    handle,
+                    new_phase,
+                );
+                let _ = self.regenerate_wall_respecting_active_display_config(tab, handle);
+            }
+            "control_plane_name" => {
+                apply_control_plane_name(
+                    &mut self.tabs[tab].scene,
+                    self.aec.aec_project_explorer_file.as_mut(),
+                    handle,
+                    val,
+                );
+                self.aec_project_explorer_persist_if_pathed();
+            }
+            "wall_height" => {
+                if let Some(v) = crate::entities::common::parse_f64(val) {
+                    if v > 0.0 {
+                        crate::modules::aec::engine::xdata::write_wall_height(
+                            &mut self.tabs[tab].scene,
+                            handle,
+                            v,
+                        );
+                        let style_library =
+                            crate::modules::aec::engine::project::resolve_style_library(
+                                self.aec.aec_project_explorer_file.as_ref(),
+                            );
+                        let _ = crate::modules::aec::engine::wall_regen::regenerate_wall_representation(
+                            &mut self.tabs[tab].scene,
+                            handle,
+                            Some(&style_library),
+                        );
+                    }
+                }
+            }
+            "wall_base_z" => {
+                if let Some(v) = crate::entities::common::parse_f64(val) {
+                    crate::modules::aec::project::wall_planes::apply_wall_base_z(
+                        &mut self.tabs[tab].scene,
+                        handle,
+                        v,
+                    );
+                }
+            }
+            "wall_base_offset" | "wall_top_offset" => {
+                if let Some(v) = crate::entities::common::parse_f64(val) {
+                    let (base, top) = if field == "wall_base_offset" {
+                        (Some(v), None)
+                    } else {
+                        (None, Some(v))
+                    };
+                    crate::modules::aec::engine::xdata::write_wall_plane_offsets(
+                        &mut self.tabs[tab].scene,
+                        handle,
+                        base,
+                        top,
+                    );
+                    let style_library = crate::modules::aec::engine::project::resolve_style_library(
+                        self.aec.aec_project_explorer_file.as_ref(),
+                    );
+                    let _ = crate::modules::aec::engine::wall_regen::regenerate_wall_representation(
+                        &mut self.tabs[tab].scene,
+                        handle,
+                        Some(&style_library),
+                    );
+                }
+            }
+            "wall_hatch_angle" => {
+                if let Some(v) = crate::entities::common::parse_f64(val) {
+                    let existing_override = self.tabs[tab]
+                        .scene
+                        .document
+                        .get_entity(handle)
+                        .and_then(crate::modules::aec::engine::xdata::wall_from_entity)
+                        .and_then(|wall| wall.hatch_override);
+                    if let Some(mut ov) = existing_override {
+                        ov.hatch_angle = Some(v);
+                        crate::modules::aec::engine::xdata::write_wall_hatch_override(
+                            &mut self.tabs[tab].scene,
+                            handle,
+                            Some(ov),
+                        );
+                    }
+                }
+            }
+            "wall_thickness" | "wall_material" => {}
+            _ => {}
+        }
+        true
+    }
 }
 
 pub fn append_wall_junction_grips(
@@ -476,18 +634,18 @@ pub fn append_wall_junction_grips(
     entity: &EntityType,
     entity_grips: &mut Vec<crate::scene::model::object::GripDef>,
 ) {
-    if commands::wall_from_entity(entity).is_none() {
+    if xdata::wall_from_entity(entity).is_none() {
         return;
     }
-    let verts = commands::get_wall_vertices(scene, handle);
+    let verts = xdata::get_wall_vertices(scene, handle);
     if verts.len() < 2 {
         return;
     }
     for (end_index, world) in [(0usize, verts[0]), (1usize, verts[verts.len() - 1])] {
-        let participants = commands::walls_at_junction(scene, handle, end_index);
+        let participants = join_ops::walls_at_junction(scene, handle, end_index);
         if participants.len() > 1 {
             entity_grips.push(crate::entities::common::dropdown_grip(
-                commands::wall_junction_dropdown_grip_id(end_index),
+                junction_pick::wall_junction_dropdown_grip_id(end_index),
                 world,
             ));
         }
@@ -499,7 +657,7 @@ mod tests {
     use super::*;
     use acadrust::entities::LwPolyline;
     use acadrust::xdata::ExtendedDataRecord;
-    use crate::modules::aec::commands::{wall_record_for_wall, AEC_APPID};
+    use crate::modules::aec::engine::xdata::{wall_record_for_wall, AEC_APPID};
     use crate::modules::aec::engine::project::{Building, ProjectFile, StoreyRef};
     use crate::modules::aec::engine::wall::Wall;
 

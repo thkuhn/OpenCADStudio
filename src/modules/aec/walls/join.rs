@@ -4,10 +4,9 @@ use acadrust::Handle;
 use glam::DVec3;
 
 use crate::command::{CadCommand, CmdResult};
-use crate::modules::aec::commands::{
-    all_wall_axis_handles, get_wall_vertices, is_wall_pick_target, resolve_wall_package,
-    WALL_JOIN_SNAP_RADIUS,
-};
+use crate::modules::aec::engine::wall_package::{all_wall_axis_handles, is_wall_pick_target, resolve_wall_package};
+use crate::modules::aec::engine::xdata::get_wall_vertices;
+use crate::modules::aec::engine::join_ops::WALL_JOIN_SNAP_RADIUS;
 use crate::modules::aec::engine::join;
 use crate::modules::{IconKind, ModuleEvent, ToolDef};
 use crate::scene::model::wire_model::WireModel;

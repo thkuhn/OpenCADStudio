@@ -13,7 +13,7 @@ use iced::widget::{button, column, container, row, scrollable, text};
 use iced::{Element, Fill};
 
 use crate::app::{AecMessage, Message};
-use crate::modules::aec::commands::JunctionParticipant;
+use crate::modules::aec::engine::join_ops::JunctionParticipant;
 use crate::modules::aec::engine::join::{
     JoinOverrideStyle, LayerGapOverride, LayerPairOverride, LayerRef,
 };
@@ -29,7 +29,7 @@ pub struct JunctionEditorState<'a> {
     pub end_index: usize,
     /// Every wall participating in this junction (including the wall the
     /// panel was opened from), discovered via
-    /// `commands::walls_at_junction`.
+    /// `join_ops::walls_at_junction`.
     pub participants: Vec<JunctionParticipant>,
     pub library: &'a StyleLibrary,
     /// Pending edit buffer for the node-level default style.

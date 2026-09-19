@@ -6,7 +6,7 @@ use iced::widget::{
 };
 use iced::{Background, Border, Color, Element, Fill, Theme};
 
-use crate::app::{AecMessage, Message};
+use crate::app::{AecColorPickTarget, AecMessage, Message};
 use crate::modules::aec::engine::library::{
     combined_material_entries_with_session, LibrarySource, StyleLibrary,
 };
@@ -367,7 +367,7 @@ fn material_form_view<'a>(
                 |v| Message::Aec(AecMessage::AecStyleManagerMaterialColorPicked(v)),
                 Message::Aec(AecMessage::AecStyleManagerMaterialColorPickerToggle),
                 Message::OpenColorWindow(
-                    crate::app::ColorPickTarget::AecMaterial,
+                    crate::app::ColorPickTarget::Aec(AecColorPickTarget::Material),
                     hex_to_acad_color(material_form.color),
                 ),
             ))
@@ -400,7 +400,7 @@ fn material_form_view<'a>(
                 },
                 Message::Aec(AecMessage::AecStyleManagerMaterialHatchColorPickerToggle),
                 Message::OpenColorWindow(
-                    crate::app::ColorPickTarget::AecMaterialHatch,
+                    crate::app::ColorPickTarget::Aec(AecColorPickTarget::MaterialHatch),
                     hatch_acad,
                 ),
             ))

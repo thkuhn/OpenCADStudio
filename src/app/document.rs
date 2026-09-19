@@ -12,7 +12,7 @@ use acadrust::{CadDocument, EntityType, Handle};
 use iced;
 use std::any::Any;
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
@@ -203,9 +203,8 @@ pub(crate) struct DocumentTab {
     /// only, not yet persisted to XDATA/project files; see Step 6).
     pub(crate) active_display_config: Option<String>,
     /// Session 2D/3D/All filter. `None` uses the plan-type default.
-    pub(crate) representation_override: Option<
-        crate::modules::aec::engine::display_component::RepresentationMode,
-    >,
+    pub(crate) representation_override:
+        Option<crate::modules::aec::engine::display_component::RepresentationMode>,
     /// Drawing-local AEC styles reconstructed from wall XDATA (not persisted).
     pub(super) aec_session_style_library:
         Option<crate::modules::aec::engine::library::StyleLibrary>,
@@ -247,6 +246,29 @@ pub(crate) struct DocumentTab {
 }
 
 impl DocumentTab {
+    pub(crate) fn active_grip(&self) -> Option<&GripEdit> {
+        self.active_grip.as_ref()
+    }
+
+    pub(crate) fn aec_session_style_library(
+        &self,
+    ) -> Option<&crate::modules::aec::engine::library::StyleLibrary> {
+        self.aec_session_style_library.as_ref()
+    }
+
+    pub(crate) fn aec_session_style_library_mut(
+        &mut self,
+    ) -> &mut Option<crate::modules::aec::engine::library::StyleLibrary> {
+        &mut self.aec_session_style_library
+    }
+
+    pub(crate) fn set_aec_session_style_library(
+        &mut self,
+        library: Option<crate::modules::aec::engine::library::StyleLibrary>,
+    ) {
+        self.aec_session_style_library = library;
+    }
+
     pub(super) fn rename_layer(&mut self, old_name: &str, new_name: &str) -> bool {
         let active = normalize_name(&self.active_layer) == normalize_name(old_name);
         if !self.scene.rename_layer(old_name, new_name) {
@@ -653,6 +675,12 @@ impl DocumentTab {
         t.tab_title = "Start".to_string();
         t.is_start = true;
         t
+    }
+
+    /// Drawing file path for this tab, if the drawing has been saved or opened.
+    /// Thin crate-wide hook so AEC dispatch can match storeys without a public field.
+    pub(crate) fn drawing_path(&self) -> Option<&Path> {
+        self.current_path.as_deref()
     }
 
     pub(super) fn tab_display_name(&self) -> String {

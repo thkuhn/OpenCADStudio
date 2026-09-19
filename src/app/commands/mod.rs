@@ -180,8 +180,9 @@ impl OpenCADStudio {
         // the single place that decides; `on_ribbon_tool_click` defers to it
         // rather than keeping a second, blunter copy (#388, #389).
         if self.tabs[i].is_start && !start_allowed(cmd) {
-            self.command_line
-                .push_info(crate::t!("No drawing open. Use NEW or OPEN to start a drawing.").as_ref());
+            self.command_line.push_info(
+                crate::t!("No drawing open. Use NEW or OPEN to start a drawing.").as_ref(),
+            );
             return Task::none();
         }
 
@@ -278,7 +279,7 @@ impl OpenCADStudio {
     /// Shared tail run after a `dispatch_*` family handler whose matched arm
     /// did not early-return. Focuses the command line whenever a command just
     /// became active.
-    fn finish_dispatch(&mut self, cmd: &str) -> Task<Message> {
+    pub(crate) fn finish_dispatch(&mut self, cmd: &str) -> Task<Message> {
         let i = self.active_tab;
         if self.tabs[i].active_cmd.is_some() {
             self.tabs[i].last_cmd = Some(cmd.to_string());
@@ -306,7 +307,13 @@ impl OpenCADStudio {
 /// Commands that may run transparently (`'PAN`, `'ZOOM …`): the navigation
 /// set, which never edits the drawing.
 fn is_transparent_capable(cmd: &str) -> bool {
-    cmd == "PAN" || cmd == "ZOOM" || cmd.starts_with("ZOOM ") || matches!(cmd, "ZW" | "ZE" | "ZA" | "ZP" | "ZI" | "ZO" | "ZD" | "ZEA" | "ZOBJ")
+    cmd == "PAN"
+        || cmd == "ZOOM"
+        || cmd.starts_with("ZOOM ")
+        || matches!(
+            cmd,
+            "ZW" | "ZE" | "ZA" | "ZP" | "ZI" | "ZO" | "ZD" | "ZEA" | "ZOBJ"
+        )
 }
 
 /// ZOOM forms that install an interactive prompt (window corners, object
@@ -343,9 +350,10 @@ fn is_spacemouse_command(cmd: &str) -> bool {
 /// source of truth: the dispatch gate refuses everything else, and the ribbon
 /// dims the tools this rejects.
 pub fn start_allowed(cmd: &str) -> bool {
-    is_spacemouse_command(cmd) || matches!(
-        cmd,
-        "NEW"
+    is_spacemouse_command(cmd)
+        || matches!(
+            cmd,
+            "NEW"
             | "OPEN"
             | "EXIT"
             | "QUIT"
@@ -366,7 +374,7 @@ pub fn start_allowed(cmd: &str) -> bool {
             // command that opens the same dialog belongs here too.
             | "OPTIONS"
             | "OP"
-    )
+        )
 }
 
 // ── Autocomplete registry — one-shot commands ──────────────────────────────
@@ -824,10 +832,7 @@ mod marquee_cancel_tests {
         sel.left_press_time = Some(Instant::now());
         sel.left_dragging = true;
         sel.poly_active = true;
-        sel.poly_points = vec![
-            iced::Point::new(10.0, 10.0),
-            iced::Point::new(20.0, 30.0),
-        ];
+        sel.poly_points = vec![iced::Point::new(10.0, 10.0), iced::Point::new(20.0, 30.0)];
         sel.poly_crossing = true;
     }
 
@@ -911,11 +916,8 @@ mod marquee_cancel_tests {
         let mut app = fresh();
         let i = app.active_tab;
         let handle = Handle::new(42);
-        app.tabs[i].active_grip = Some(GripEdit::radius(
-            handle,
-            1,
-            glam::DVec3::new(2.0, 0.0, 0.0),
-        ));
+        app.tabs[i].active_grip =
+            Some(GripEdit::radius(handle, 1, glam::DVec3::new(2.0, 0.0, 0.0)));
         app.grip_pending = Some(GripPendingValue {
             handle,
             grip_id: 1,

@@ -22,6 +22,12 @@ use serde_json::{json, Value};
 
 use super::OpenCADStudio;
 
+impl OpenCADStudio {
+    pub(crate) fn is_automation_session(&self) -> bool {
+        self.automation_session
+    }
+}
+
 /// Run the headless JSON server. Default transport is stdin/stdout; with
 /// `--port <N>` it instead listens on `127.0.0.1:<N>` and serves one client at
 /// a time (the document session persists across reconnects).

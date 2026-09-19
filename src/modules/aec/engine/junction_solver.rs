@@ -7,8 +7,8 @@ use glam::DVec3;
 
 use super::join::{
     apply_junction_to_axes, detect_junctions, join_wall_axes_as_l_with_bulges,
-    join_wall_axes_with_bulges, junction_rays, JoinError, JoinKind, Junction,
-    JunctionOverride, JunctionRole, LayerRef, JUNCTION_TOLERANCE,
+    join_wall_axes_with_bulges, junction_rays, merge_partner_junction_override, JoinError,
+    JoinKind, Junction, JunctionOverride, JunctionRole, LayerRef, JUNCTION_TOLERANCE,
 };
 use super::miter::{
     junction_wall_geoms, mitered_junction_layer_footprints_with_overrides,
@@ -224,15 +224,19 @@ fn pair_footprints(
     let b2 = axis_2d(axis_b);
     let refs_a = layer_refs(&a.layers);
     let refs_b = layer_refs(&b.layers);
-    let ov_a = end_a.and_then(|e| a.override_at(e));
-    let ov_b = end_b.and_then(|e| b.override_at(e));
+    let ov_a_raw = end_a.and_then(|e| a.override_at(e));
+    let ov_b_raw = end_b.and_then(|e| b.override_at(e));
+    let ov_a_merged = merge_partner_junction_override(ov_a_raw, ov_b_raw);
+    let ov_b_merged = merge_partner_junction_override(ov_b_raw, ov_a_raw);
+    let ov_a = ov_a_merged.as_ref();
+    let ov_b = ov_b_merged.as_ref();
 
     let gaps_a = {
         let mut g = Vec::new();
         if let Some(ov) = a.override_span.as_ref() {
             g.extend(ov.layer_gaps.iter().cloned());
         }
-        if let Some(ov) = ov_b {
+        if let Some(ov) = ov_b_raw {
             g.extend(ov.layer_gaps.iter().cloned());
         }
         g
@@ -242,7 +246,7 @@ fn pair_footprints(
         if let Some(ov) = b.override_span.as_ref() {
             g.extend(ov.layer_gaps.iter().cloned());
         }
-        if let Some(ov) = ov_a {
+        if let Some(ov) = ov_a_raw {
             g.extend(ov.layer_gaps.iter().cloned());
         }
         g
@@ -738,6 +742,61 @@ mod tests {
         assert_ne!(
             n_automatic[0].footprints[0][0], n_overridden[0].footprints[0][0],
             "persisted layer_pairs NoExtend must override the automatic N-way footprint"
+        );
+    }
+
+    fn close(a: (f64, f64), b: (f64, f64), eps: f64) -> bool {
+        (a.0 - b.0).abs() < eps && (a.1 - b.1).abs() < eps
+    }
+
+    #[test]
+    fn layer_pair_miter_on_one_wall_trims_both_stacks() {
+        let id_a0 = uuid::Uuid::new_v4();
+        let id_a1 = uuid::Uuid::new_v4();
+        let id_b0 = uuid::Uuid::new_v4();
+        let id_b1 = uuid::Uuid::new_v4();
+        let mut wall_a = wall_with_layers(
+            vec![p(0.0, 0.0), p(10.0, 0.0)],
+            vec![
+                MiterLayer::with_id(0.1, -0.2, "inner", "Finish", id_a0),
+                MiterLayer::with_id(0.1, 0.1, "outer", "Finish", id_a1),
+            ],
+        );
+        let wall_b = wall_with_layers(
+            vec![p(10.0, 0.0), p(10.0, 10.0)],
+            vec![
+                MiterLayer::with_id(0.1, -0.2, "inner", "Finish", id_b0),
+                MiterLayer::with_id(0.1, 0.1, "outer", "Finish", id_b1),
+            ],
+        );
+        wall_a.override_end = Some(JunctionOverride {
+            default_style: None,
+            layer_pairs: vec![super::super::join::LayerPairOverride {
+                layer_a: LayerRef {
+                    material_id: "inner".into(),
+                    role_tag: None,
+                    index: 0,
+                    layer_id: Some(id_a0),
+                },
+                layer_b: Some(LayerRef {
+                    material_id: "outer".into(),
+                    role_tag: None,
+                    index: 1,
+                    layer_id: Some(id_b1),
+                }),
+                style: JoinOverrideStyle::Miter,
+            }],
+            layer_gaps: Vec::new(),
+        });
+        let solved = solve_pair(&wall_a, &wall_b, true).unwrap();
+        let a0 = solved.footprints_a[0].as_ref().expect("A inner mitered");
+        let b1 = solved.footprints_b[1].as_ref().expect("B outer must miter too");
+        let shared = a0
+            .iter()
+            .any(|pa| b1.iter().any(|pb| close(*pa, *pb, 1e-5)));
+        assert!(
+            shared,
+            "reciprocal miter must share a vertex, A={a0:?} B={b1:?}"
         );
     }
 

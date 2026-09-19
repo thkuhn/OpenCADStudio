@@ -8,11 +8,9 @@ use uuid::Uuid;
 use glam::{DVec2, DVec3};
 
 use crate::command::{CadCommand, CmdOption, CmdResult, WorkingPlane};
-use crate::modules::aec::commands::{
-    auto_join_committed_wall_segment, erase_wall_live_preview_companions, regenerate_wall_representation,
-    resolve_wall_style_layers, tessellate_bulge_segment, wall_from_entity, wall_record_for_wall,
-    AEC_APPID,
-};
+use crate::modules::aec::engine::join_ops::auto_join_committed_wall_segment;
+use crate::modules::aec::engine::wall_regen::{erase_wall_live_preview_companions, regenerate_wall_representation, tessellate_bulge_segment};
+use crate::modules::aec::engine::xdata::{resolve_wall_style_layers, wall_from_entity, wall_record_for_wall, AEC_APPID};
 use crate::modules::aec::engine::{self, StyleLibrary, Wall, WallJustification, WallLayer};
 use crate::modules::{IconKind, ModuleEvent, ToolDef};
 use crate::scene::model::wire_model::WireModel;

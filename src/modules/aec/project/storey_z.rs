@@ -3,13 +3,12 @@
 use acadrust::xdata::ExtendedDataRecord;
 use acadrust::Handle;
 
-use crate::modules::aec::commands::{
-    regenerate_wall_representation, wall_from_entity, wall_record_for_wall, write_aec_record,
-    AEC_APPID,
-};
+use crate::modules::aec::engine::wall_regen::regenerate_wall_representation;
+use crate::modules::aec::engine::xdata::{wall_from_entity, wall_record_for_wall, write_aec_record, AEC_APPID};
 use crate::modules::aec::engine::library::StyleLibrary;
 use crate::modules::aec::engine::project::{ProjectFile, StoreyRef};
 use crate::modules::aec::project::preview::regenerate_control_plane_previews;
+use crate::app::OpenCADStudio;
 use crate::scene::Scene;
 
 pub fn apply_storey_z_to_scene(
@@ -76,6 +75,29 @@ fn rebake_bound_walls(
             if !changes.is_empty() {
                 scene.bump_entities(&changes);
             }
+        }
+    }
+}
+
+impl OpenCADStudio {
+    pub(crate) fn apply_storey_z_to_active_scene(&mut self, bid: uuid::Uuid, sid: uuid::Uuid) {
+        let i = self.active_tab;
+        let library = crate::modules::aec::engine::project::resolve_style_library(
+            self.aec.aec_project_explorer_file.as_ref(),
+        );
+        let project_snap = self.aec.aec_project_explorer_file.clone();
+        if let Some(storey) = self.aec.aec_project_explorer_file.as_mut().and_then(|p| {
+            p.buildings
+                .iter_mut()
+                .find(|b| b.id == bid)
+                .and_then(|b| b.storeys.iter_mut().find(|s| s.id == sid))
+        }) {
+            apply_storey_z_to_scene(
+                &mut self.tabs[i].scene,
+                storey,
+                project_snap.as_ref(),
+                Some(&library),
+            );
         }
     }
 }

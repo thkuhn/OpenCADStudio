@@ -1,5 +1,4 @@
 use super::*;
-use crate::app::AecMessage;
 
 impl OpenCADStudio {
     pub(super) fn dispatch_draw(&mut self, cmd: &str, i: usize) -> Option<Task<Message>> {
@@ -130,25 +129,29 @@ impl OpenCADStudio {
                             if rest.is_empty() {
                                 // List attributes.
                                 if ins.attributes.is_empty() {
-                                    self.command_line.push_output(crate::tf!(
-                                        "  Insert {:x}: no attributes.",
-                                        sh.value()
-                                    ).as_ref());
+                                    self.command_line.push_output(
+                                        crate::tf!("  Insert {:x}: no attributes.", sh.value())
+                                            .as_ref(),
+                                    );
                                 } else {
                                     for attr in &ins.attributes {
-                                        self.command_line.push_output(crate::tf!(
-                                            "  [{tag}] = {val}",
-                                            tag = attr.tag,
-                                            val = attr.get_value()
-                                        ).as_ref());
+                                        self.command_line.push_output(
+                                            crate::tf!(
+                                                "  [{tag}] = {val}",
+                                                tag = attr.tag,
+                                                val = attr.get_value()
+                                            )
+                                            .as_ref(),
+                                        );
                                     }
                                 }
                             }
                         }
                     }
                     if !found_any {
-                        self.command_line
-                            .push_error(crate::t!("ATTEDIT: no Insert entities in selection.").as_ref());
+                        self.command_line.push_error(
+                            crate::t!("ATTEDIT: no Insert entities in selection.").as_ref(),
+                        );
                     }
                     // If tag + value supplied, mutate attributes.
                     if parts.len() == 2 && !parts[0].is_empty() {
@@ -176,13 +179,17 @@ impl OpenCADStudio {
                         }
                         if changed > 0 {
                             self.tabs[i].dirty = true;
-                            self.command_line.push_output(crate::tf!(
+                            self.command_line.push_output(
+                                crate::tf!(
                                 "ATTEDIT: updated {changed} attribute(s) [{tag_up}] = {new_val}."
-                            ).as_ref());
+                            )
+                                .as_ref(),
+                            );
                         } else {
-                            self.command_line.push_error(crate::tf!(
-                                "ATTEDIT: tag '{tag_up}' not found in selection."
-                            ).as_ref());
+                            self.command_line.push_error(
+                                crate::tf!("ATTEDIT: tag '{tag_up}' not found in selection.")
+                                    .as_ref(),
+                            );
                         }
                     }
                 }
@@ -240,9 +247,10 @@ impl OpenCADStudio {
                             }
                         }
                         self.tabs[i].dirty = true;
-                        self.command_line.push_output(crate::tf!(
-                            "ATTDISP {sub}: {count} attribute definition(s) updated."
-                        ).as_ref());
+                        self.command_line.push_output(
+                            crate::tf!("ATTDISP {sub}: {count} attribute definition(s) updated.")
+                                .as_ref(),
+                        );
                     }
                     _ => {
                         self.command_line
@@ -385,8 +393,10 @@ impl OpenCADStudio {
                         self.tabs[i].active_cmd = Some(Box::new(new_cmd));
                     }
                     None => {
-                        self.command_line
-                            .push_info(crate::t!("ARC Continue  No previous line or arc to continue.").as_ref());
+                        self.command_line.push_info(
+                            crate::t!("ARC Continue  No previous line or arc to continue.")
+                                .as_ref(),
+                        );
                     }
                 }
             }
@@ -525,16 +535,26 @@ impl OpenCADStudio {
                 if count > 0 {
                     self.tabs[i].dirty = true;
                 }
-                self.command_line
-                    .push_output(&crate::tf!("CENTERRESET: {count} center object(s) updated."));
+                self.command_line.push_output(&crate::tf!(
+                    "CENTERRESET: {count} center object(s) updated."
+                ));
             }
 
             "CENTERREASSOCIATE" => {
                 let handles = self.tabs[i].scene.selected_handles_in_order();
-                let mark_targets: Vec<_> = handles.iter().copied().filter(|handle| {
-                    let Some(acadrust::EntityType::Line(line)) = self.tabs[i].scene.document.get_entity(*handle) else { return false; };
-                    acadrust::entities::CenterMarkAssociation::read(&line.common.extended_data).is_some()
-                }).collect();
+                let mark_targets: Vec<_> = handles
+                    .iter()
+                    .copied()
+                    .filter(|handle| {
+                        let Some(acadrust::EntityType::Line(line)) =
+                            self.tabs[i].scene.document.get_entity(*handle)
+                        else {
+                            return false;
+                        };
+                        acadrust::entities::CenterMarkAssociation::read(&line.common.extended_data)
+                            .is_some()
+                    })
+                    .collect();
                 if mark_targets.len() == 1 && handles.len() == 1 {
                     use crate::modules::draw::draw::dimcenter::CenterMarkReassociateCommand;
                     let new_cmd = CenterMarkReassociateCommand::new(mark_targets[0]);
@@ -543,25 +563,35 @@ impl OpenCADStudio {
                     return Some(self.finish_dispatch(cmd));
                 }
                 self.push_undo_snapshot(i, "CENTERREASSOCIATE");
-                let count = self.tabs[i].scene.set_centerline_association(&handles, true)
-                    + self.tabs[i].scene.set_center_mark_association(&handles, true);
+                let count = self.tabs[i]
+                    .scene
+                    .set_centerline_association(&handles, true)
+                    + self.tabs[i]
+                        .scene
+                        .set_center_mark_association(&handles, true);
                 if count > 0 {
                     self.tabs[i].dirty = true;
                 }
-                self.command_line
-                    .push_output(&crate::tf!("CENTERREASSOCIATE: {count} center object(s) associated."));
+                self.command_line.push_output(&crate::tf!(
+                    "CENTERREASSOCIATE: {count} center object(s) associated."
+                ));
             }
 
             "CENTERDISASSOCIATE" => {
                 let handles = self.tabs[i].scene.selected_handles_in_order();
                 self.push_undo_snapshot(i, "CENTERDISASSOCIATE");
-                let count = self.tabs[i].scene.set_centerline_association(&handles, false)
-                    + self.tabs[i].scene.set_center_mark_association(&handles, false);
+                let count = self.tabs[i]
+                    .scene
+                    .set_centerline_association(&handles, false)
+                    + self.tabs[i]
+                        .scene
+                        .set_center_mark_association(&handles, false);
                 if count > 0 {
                     self.tabs[i].dirty = true;
                 }
-                self.command_line
-                    .push_output(&crate::tf!("CENTERDISASSOCIATE: {count} center object(s) detached."));
+                self.command_line.push_output(&crate::tf!(
+                    "CENTERDISASSOCIATE: {count} center object(s) detached."
+                ));
             }
 
             "DIMCENTER" => {
@@ -616,7 +646,7 @@ impl OpenCADStudio {
                     .map(|(h, _)| h)
                     .filter(|handle| !self.tabs[i].scene.is_layer_locked(*handle))
                     .collect();
-                let handles = crate::modules::aec::commands::expand_handles_for_wall_packages(
+                let handles = crate::modules::aec::engine::wall_package::expand_handles_for_wall_packages(
                     &self.tabs[i].scene,
                     &handles,
                 );
@@ -754,9 +784,7 @@ impl OpenCADStudio {
                     glam::DVec3::from_array(storage.x_axis),
                     glam::DVec3::from_array(storage.y_axis),
                 );
-                let boundary_sources = self.tabs[i]
-                    .scene
-                    .boundary_sources_on_plane(plane, 1.0e-6);
+                let boundary_sources = self.tabs[i].scene.boundary_sources_on_plane(plane, 1.0e-6);
                 let outlines = crate::scene::boundary_faces(&boundary_sources, 1.0e-6);
                 let selected = self.tabs[i]
                     .scene
@@ -764,20 +792,13 @@ impl OpenCADStudio {
                     .into_iter()
                     .map(|(handle, _)| handle)
                     .collect::<Vec<_>>();
-                let inherited = selected
-                    .iter()
-                    .find_map(|handle| {
-                        let model = self.tabs[i].scene.hatches.get(handle)?.clone();
-                        let common = self.tabs[i].scene.document.get_entity(*handle)?.common();
-                        Some((model, common.color.clone(), common.transparency))
-                    });
-                let new_cmd = HatchCommand::new(
-                    outlines,
-                    boundary_sources,
-                    selected,
-                    inherited,
-                    plane,
-                );
+                let inherited = selected.iter().find_map(|handle| {
+                    let model = self.tabs[i].scene.hatches.get(handle)?.clone();
+                    let common = self.tabs[i].scene.document.get_entity(*handle)?.common();
+                    Some((model, common.color.clone(), common.transparency))
+                });
+                let new_cmd =
+                    HatchCommand::new(outlines, boundary_sources, selected, inherited, plane);
                 self.command_line.push_info(&new_cmd.prompt());
                 self.tabs[i].active_cmd = Some(Box::new(new_cmd));
                 self.refresh_area_preview(i);
@@ -792,11 +813,11 @@ impl OpenCADStudio {
                     if let Some(model) = self.tabs[i].scene.hatches.get(&h).cloned() {
                         let entity = self.tabs[i].scene.document.get_entity(h);
                         let annotative = entity.is_some_and(|entity| {
-                                crate::scene::annotative::is_annotative(
-                                    &self.tabs[i].scene.document,
-                                    entity,
-                                )
-                            });
+                            crate::scene::annotative::is_annotative(
+                                &self.tabs[i].scene.document,
+                                entity,
+                            )
+                        });
                         let (scale, angle) = match entity {
                             Some(acadrust::EntityType::Hatch(hatch)) => (
                                 hatch.pattern_scale as f32,
@@ -814,8 +835,9 @@ impl OpenCADStudio {
                         self.command_line.push_info(&cmd.prompt());
                         self.tabs[i].active_cmd = Some(Box::new(cmd));
                     } else {
-                        self.command_line
-                            .push_error(crate::t!("HATCHEDIT: selected entity is not a hatch.").as_ref());
+                        self.command_line.push_error(
+                            crate::t!("HATCHEDIT: selected entity is not a hatch.").as_ref(),
+                        );
                     }
                 } else {
                     let cmd = HatcheditCommand::new();
@@ -842,9 +864,7 @@ impl OpenCADStudio {
                 } else {
                     crate::command::WorkingPlane::default()
                 };
-                let sources = self.tabs[i]
-                    .scene
-                    .boundary_sources_on_plane(plane, 1.0e-6);
+                let sources = self.tabs[i].scene.boundary_sources_on_plane(plane, 1.0e-6);
                 let selected = self.tabs[i]
                     .scene
                     .selected_entities()
@@ -919,8 +939,7 @@ impl OpenCADStudio {
                     self.tabs[i].active_cmd = Some(Box::new(cmd));
                 } else {
                     use crate::modules::draw::modify::mirror::MirrorCommand;
-                    let (wires, text_ghosts) =
-                        self.tabs[i].scene.mirror_preview_parts(&handles);
+                    let (wires, text_ghosts) = self.tabs[i].scene.mirror_preview_parts(&handles);
                     let mirror_text = self.tabs[i].scene.document.header.mirror_text;
                     let new_cmd = MirrorCommand::new(handles, wires, text_ghosts, mirror_text);
                     self.command_line.push_info(&new_cmd.prompt());
@@ -942,11 +961,11 @@ impl OpenCADStudio {
                     self.command_line.push_info(&cmd.prompt());
                     self.tabs[i].active_cmd = Some(Box::new(cmd));
                 } else {
-                    crate::modules::aec::commands::expand_with_wall_derived_handles(
+                    crate::modules::aec::engine::wall_package::expand_with_wall_derived_handles(
                         &self.tabs[i].scene,
                         &mut handles,
                     );
-                    crate::modules::aec::commands::unregister_walls_from_storeys(
+                    crate::modules::aec::engine::storey_xdata::unregister_walls_from_storeys(
                         &mut self.tabs[i].scene,
                         &handles,
                     );
@@ -967,389 +986,6 @@ impl OpenCADStudio {
                         self.commit_undo_delta(i, pd);
                     }
                 }
-            }
-
-            // ── AEC commands (Architecture / basic BIM) ────────────────────
-            // AEC_WALL is an interactive multi-point CadCommand (like PLINE);
-            // the rest remain immediate scaffold commands — create entities +
-            // XDATA without multi-click interaction (former plugin behaviour).
-            "AEC_WALL" => {
-                if !self.aec_require_project(Message::Command("AEC_WALL".to_string())) {
-                    // The project-required modal was just opened as a side
-                    // effect of `aec_require_project()`. Returning `None`
-                    // here would tell `dispatch_families` that "AEC_WALL"
-                    // was not matched at all, which sends it into the
-                    // "Unknown command" / autocomplete-suggestion fallback
-                    // in `dispatch_command_inner` — in the worst case
-                    // silently re-dispatching an unrelated command (e.g.
-                    // another "AEC_WALL*" verb) right after the blocking
-                    // modal appears. Returning `Some(Task::none())` marks
-                    // the command as handled (just aborted), so nothing
-                    // further runs until the user picks/creates a project.
-                    return Some(Task::none());
-                }
-                use crate::modules::aec::commands::WallCommand;
-                // Register the APPID up front: the interactive command has no
-                // document access while collecting points, so XDATA is
-                // embedded directly on the entities it builds.
-                crate::modules::aec::commands::ensure_wall_app_id(
-                    &mut self.tabs[i].scene.document,
-                );
-                let style_library = crate::modules::aec::engine::project::resolve_style_library(
-                    self.aec.aec_project_explorer_file.as_ref(),
-                );
-                let mut new_cmd = WallCommand::new()
-                    .with_library(style_library)
-                    .with_session_defaults(
-                        self.aec.aec_last_wall_style_id.as_deref(),
-                        self.aec.aec_last_wall_height,
-                    );
-                if let Some(storey) = self.aec.aec_project_explorer_file.as_ref().and_then(|p| {
-                    p.buildings.iter().find_map(|b| {
-                        b.storeys.iter().find(|s| {
-                            self.tabs[i].current_path.as_ref().is_some_and(|cur| {
-                                !s.drawing_path.trim().is_empty()
-                                    && (cur.ends_with(&s.drawing_path)
-                                        || cur.file_name().and_then(|n| n.to_str())
-                                            == std::path::Path::new(&s.drawing_path)
-                                                .file_name()
-                                                .and_then(|n| n.to_str()))
-                            })
-                        })
-                    })
-                }) {
-                    new_cmd = new_cmd.with_storey_planes(storey);
-                }
-                self.command_line.push_info(&new_cmd.prompt());
-                self.tabs[i].active_cmd = Some(Box::new(new_cmd));
-                self.sync_wall_axis_layer_for_session(i);
-                self.refresh_properties();
-            }
-            "AEC_ROOM" => {
-                crate::modules::aec::commands::aec_room(
-                    &mut self.tabs[i].scene,
-                    &mut self.command_line,
-                );
-                self.tabs[i].dirty = true;
-            }
-            "AEC_WALL_REFRESH" => {
-                let style_library = crate::modules::aec::engine::project::resolve_style_library(
-                    self.aec.aec_project_explorer_file.as_ref(),
-                );
-                crate::modules::aec::commands::aec_wall_refresh(
-                    &mut self.tabs[i].scene,
-                    &mut self.command_line,
-                    Some(&style_library),
-                );
-            }
-            "AEC_WALLJOIN" => {
-                // If two (or more) walls are already selected — as when
-                // invoked from the context menu on a selection — join the
-                // first two directly instead of making the user pick again;
-                // the pick would otherwise silently wait for a click the
-                // context-menu flow never delivers (same fix as
-                // AEC_WALLREVERSE below).
-                let selected_handles: Vec<acadrust::Handle> = self.tabs[i]
-                    .scene
-                    .selected_entities()
-                    .into_iter()
-                    .map(|(h, _)| h)
-                    .collect();
-                let mut wall_handles: Vec<acadrust::Handle> = Vec::new();
-                for h in selected_handles {
-                    let resolved = crate::modules::aec::commands::resolve_wall_package(
-                        &self.tabs[i].scene,
-                        h,
-                    );
-                    if crate::modules::aec::commands::is_wall_pick_target(
-                        &self.tabs[i].scene,
-                        resolved,
-                    ) && !wall_handles.contains(&resolved)
-                    {
-                        wall_handles.push(resolved);
-                    }
-                }
-                if wall_handles.len() >= 2 {
-                    let style_library =
-                        crate::modules::aec::engine::project::resolve_style_library(
-                            self.aec.aec_project_explorer_file.as_ref(),
-                        );
-                    let (display_rules, style_substitutions) =
-                        self.resolve_active_display_config_wall_rules(i, wall_handles.first().copied());
-                    crate::modules::aec::commands::aec_walljoin_do(
-                        &mut self.tabs[i].scene,
-                        &mut self.command_line,
-                        &format!("{}|{}", wall_handles[0].value(), wall_handles[1].value()),
-                        Some(&style_library),
-                        display_rules.as_ref(),
-                        style_substitutions.as_ref(),
-                    );
-                    self.reapply_active_display_config_to_wall_packages(i, &wall_handles);
-                    self.tabs[i].dirty = true;
-                } else {
-                    let cmd = crate::modules::aec::spawn_command("AEC_WALLJOIN")
-                        .expect("AEC_WALLJOIN is registered in aec::spawn_command");
-                    self.command_line.push_info(&cmd.prompt());
-                    self.tabs[i].active_cmd = Some(cmd);
-                    self.sync_wall_axis_layer_for_session(i);
-                }
-            }
-            "AEC_WALLEXTEND" => {
-                let cmd = crate::modules::aec::spawn_command("AEC_WALLEXTEND")
-                    .expect("AEC_WALLEXTEND is registered in aec::spawn_command");
-                self.command_line.push_info(&cmd.prompt());
-                self.tabs[i].active_cmd = Some(cmd);
-                self.sync_wall_axis_layer_for_session(i);
-            }
-            "AEC_WALLREVERSE" => {
-                // If one or more walls (or their derived contour/hatch/solid
-                // entities) are already selected — as when invoked from the
-                // context menu on a selection — act on all of them directly
-                // instead of making the user pick again; the pick would
-                // otherwise silently wait for a click the context-menu flow
-                // never delivers.
-                let selected_handles: Vec<acadrust::Handle> = self.tabs[i]
-                    .scene
-                    .selected_entities()
-                    .into_iter()
-                    .map(|(h, _)| h)
-                    .collect();
-                let mut wall_handles: Vec<acadrust::Handle> = Vec::new();
-                for h in selected_handles {
-                    let resolved = crate::modules::aec::commands::resolve_wall_package(
-                        &self.tabs[i].scene,
-                        h,
-                    );
-                    if crate::modules::aec::commands::is_wall_pick_target(
-                        &self.tabs[i].scene,
-                        resolved,
-                    ) && !wall_handles.contains(&resolved)
-                    {
-                        wall_handles.push(resolved);
-                    }
-                }
-                if !wall_handles.is_empty() {
-                    let style_library =
-                        crate::modules::aec::engine::project::resolve_style_library(
-                            self.aec.aec_project_explorer_file.as_ref(),
-                        );
-                    let (display_rules, style_substitutions) =
-                        self.resolve_active_display_config_wall_rules(i, wall_handles.first().copied());
-                    for h in &wall_handles {
-                        crate::modules::aec::commands::aec_wallreverse_do(
-                            &mut self.tabs[i].scene,
-                            &mut self.command_line,
-                            &h.value().to_string(),
-                            Some(&style_library),
-                            display_rules.as_ref(),
-                            style_substitutions.as_ref(),
-                        );
-                    }
-                    self.reapply_active_display_config_to_wall_packages(i, &wall_handles);
-                    self.tabs[i].dirty = true;
-                } else {
-                    use crate::modules::aec::commands::WallReverseCommand;
-                    let cmd = WallReverseCommand::new();
-                    self.command_line.push_info(&cmd.prompt());
-                    self.tabs[i].active_cmd = Some(Box::new(cmd));
-                }
-            }
-            "AEC_WINDOW" => {
-                use crate::modules::aec::commands::WallOpeningCommand;
-                let cmd = WallOpeningCommand::new_window();
-                self.command_line.push_info(&cmd.prompt());
-                self.tabs[i].active_cmd = Some(Box::new(cmd));
-            }
-            "AEC_DOOR" => {
-                use crate::modules::aec::commands::WallOpeningCommand;
-                let cmd = WallOpeningCommand::new_door();
-                self.command_line.push_info(&cmd.prompt());
-                self.tabs[i].active_cmd = Some(Box::new(cmd));
-            }
-            cmd if cmd.starts_with("AEC_WALLOPENING_DO ") => {
-                let args = cmd["AEC_WALLOPENING_DO ".len()..].to_string();
-                let style_library = crate::modules::aec::engine::project::resolve_style_library(
-                    self.aec.aec_project_explorer_file.as_ref(),
-                );
-                let (display_rules, style_substitutions) =
-                    self.resolve_active_display_config_wall_rules(i, None);
-                crate::modules::aec::commands::aec_wallopening_do(
-                    &mut self.tabs[i].scene,
-                    &mut self.command_line,
-                    &args,
-                    Some(&style_library),
-                    display_rules.as_ref(),
-                    style_substitutions.as_ref(),
-                );
-                self.tabs[i].dirty = true;
-            }
-            cmd if cmd.starts_with("AEC_WALLJOIN_DO ") => {
-                let args = cmd["AEC_WALLJOIN_DO ".len()..].to_string();
-                let style_library = crate::modules::aec::engine::project::resolve_style_library(
-                    self.aec.aec_project_explorer_file.as_ref(),
-                );
-                let join_handles: Vec<acadrust::Handle> = args
-                    .split('|')
-                    .filter_map(|p| p.parse::<u64>().ok().map(acadrust::Handle::new))
-                    .collect();
-                let first = join_handles.first().copied().map(|h| {
-                    crate::modules::aec::commands::resolve_wall_package(
-                        &self.tabs[i].scene,
-                        h,
-                    )
-                });
-                let (display_rules, style_substitutions) =
-                    self.resolve_active_display_config_wall_rules(i, first);
-                crate::modules::aec::commands::aec_walljoin_do(
-                    &mut self.tabs[i].scene,
-                    &mut self.command_line,
-                    &args,
-                    Some(&style_library),
-                    display_rules.as_ref(),
-                    style_substitutions.as_ref(),
-                );
-                self.reapply_active_display_config_to_wall_packages(i, &join_handles);
-                self.tabs[i].dirty = true;
-            }
-            cmd if cmd.starts_with("AEC_WALLEXTEND_DO ") => {
-                let args = cmd["AEC_WALLEXTEND_DO ".len()..].to_string();
-                let style_library = crate::modules::aec::engine::project::resolve_style_library(
-                    self.aec.aec_project_explorer_file.as_ref(),
-                );
-                let first = args
-                    .split('|')
-                    .next()
-                    .and_then(|p| p.parse::<u64>().ok())
-                    .map(acadrust::Handle::new)
-                    .map(|h| {
-                        crate::modules::aec::commands::resolve_wall_package(
-                            &self.tabs[i].scene,
-                            h,
-                        )
-                    });
-                let (display_rules, style_substitutions) =
-                    self.resolve_active_display_config_wall_rules(i, first);
-                crate::modules::aec::commands::aec_wallextend_do(
-                    &mut self.tabs[i].scene,
-                    &mut self.command_line,
-                    &args,
-                    Some(&style_library),
-                    display_rules.as_ref(),
-                    style_substitutions.as_ref(),
-                );
-                if let Some(h) = first {
-                    self.reapply_active_display_config_to_wall_packages(i, &[h]);
-                }
-                self.tabs[i].dirty = true;
-            }
-            cmd if cmd.starts_with("AEC_WALLREVERSE_DO ") => {
-                let args = cmd["AEC_WALLREVERSE_DO ".len()..].to_string();
-                let style_library = crate::modules::aec::engine::project::resolve_style_library(
-                    self.aec.aec_project_explorer_file.as_ref(),
-                );
-                let first = args
-                    .parse::<u64>()
-                    .ok()
-                    .map(acadrust::Handle::new)
-                    .or_else(|| {
-                        args.split('|')
-                            .next()
-                            .and_then(|p| p.parse::<u64>().ok())
-                            .map(acadrust::Handle::new)
-                    })
-                    .map(|h| {
-                        crate::modules::aec::commands::resolve_wall_package(
-                            &self.tabs[i].scene,
-                            h,
-                        )
-                    });
-                let (display_rules, style_substitutions) =
-                    self.resolve_active_display_config_wall_rules(i, first);
-                crate::modules::aec::commands::aec_wallreverse_do(
-                    &mut self.tabs[i].scene,
-                    &mut self.command_line,
-                    &args,
-                    Some(&style_library),
-                    display_rules.as_ref(),
-                    style_substitutions.as_ref(),
-                );
-                if let Some(h) = first {
-                    self.reapply_active_display_config_to_wall_packages(i, &[h]);
-                }
-                self.tabs[i].dirty = true;
-            }
-            "AEC_ROOMSCHEDULE" => {
-                crate::modules::aec::commands::aec_room_schedule(
-                    &mut self.tabs[i].scene,
-                    &mut self.command_line,
-                );
-                self.tabs[i].dirty = true;
-            }
-            "AEC_IFCEXPORT" => {
-                crate::modules::aec::commands::aec_ifc_export(
-                    &mut self.tabs[i].scene,
-                    &mut self.command_line,
-                );
-            }
-            "AEC_MATERIALMANAGER" => {
-                return Some(Task::done(Message::Aec(AecMessage::AecMaterialManagerOpen)));
-            }
-            "AEC_PROJECTEXPLORER" => {
-                return Some(Task::done(Message::Aec(AecMessage::AecProjectExplorerOpen)));
-            }
-            "AEC_CONTROLPLANES" => {
-                let path = self.tabs[i].current_path.clone();
-                let storey_ids = self.aec.aec_project_explorer_file.as_ref().and_then(|p| {
-                    p.buildings.iter().find_map(|b| {
-                        b.storeys.iter().find(|s| {
-                            if s.drawing_path.trim().is_empty() {
-                                return false;
-                            }
-                            path.as_ref().is_some_and(|cur| {
-                                cur.ends_with(&s.drawing_path)
-                                    || cur.file_name().and_then(|n| n.to_str())
-                                        == std::path::Path::new(&s.drawing_path)
-                                            .file_name()
-                                            .and_then(|n| n.to_str())
-                            })
-                        }).map(|s| (b.id, s.id))
-                    })
-                });
-                if let Some((bid, sid)) = storey_ids {
-                    if let Some(project) = self.aec.aec_project_explorer_file.as_mut() {
-                        if let Some(storey) = project
-                            .buildings
-                            .iter_mut()
-                            .find(|b| b.id == bid)
-                            .and_then(|b| b.storeys.iter_mut().find(|s| s.id == sid))
-                        {
-                            crate::modules::aec::commands::regenerate_control_plane_previews(
-                                &mut self.tabs[i].scene,
-                                storey,
-                            );
-                        }
-                    }
-                    if self.aec.aec_project_explorer_path.is_some() {
-                        let _ = self.aec.aec_project_explorer_file.as_ref().and_then(|p| {
-                            self.aec.aec_project_explorer_path.as_ref().map(|path| p.save(path))
-                        });
-                    }
-                }
-                let on = crate::modules::aec::commands::toggle_controlplanes_layer(
-                    &mut self.tabs[i].scene,
-                );
-                self.command_line.push_info(if on {
-                    "AEC_CONTROLPLANES: on"
-                } else {
-                    "AEC_CONTROLPLANES: off"
-                });
-                self.tabs[i].dirty = true;
-            }
-            "AEC_STYLEMANAGER" => {
-                return Some(Task::done(Message::Aec(AecMessage::AecWallStyleManagerOpen)));
-            }
-            "AEC_PLANMANAGER" => {
-                return Some(Task::done(Message::Aec(AecMessage::AecPlanManagerOpen)));
             }
 
             // ── Persistent constraints ────────────────────────────────────
@@ -1417,9 +1053,8 @@ impl OpenCADStudio {
                         false,
                         true,
                     );
-                    self.command_line.push_output(
-                        format!("{} constraint bar(s) reset.", count).as_str(),
-                    );
+                    self.command_line
+                        .push_output(format!("{} constraint bar(s) reset.", count).as_str());
                 }
             }
 
@@ -1511,20 +1146,15 @@ impl OpenCADStudio {
                     self.tabs[i].active_cmd = Some(Box::new(sel));
                 } else {
                     let scope = self.tabs[i].current_parametric_scope();
-                    let inferred = self.tabs[i]
-                        .scene
-                        .inferred_parametric_constraints(
-                            scope,
-                            &handles,
-                            &self.auto_constrain_settings,
-                        );
+                    let inferred = self.tabs[i].scene.inferred_parametric_constraints(
+                        scope,
+                        &handles,
+                        &self.auto_constrain_settings,
+                    );
                     if inferred.is_empty() {
                         self.command_line.push_output(
-                            format!(
-                                "0 constraint(s) applied to {} object(s).",
-                                handles.len()
-                            )
-                            .as_str(),
+                            format!("0 constraint(s) applied to {} object(s).", handles.len())
+                                .as_str(),
                         );
                         self.tabs[i].scene.deselect_all();
                         self.refresh_selected_grips();
@@ -1728,13 +1358,14 @@ impl OpenCADStudio {
                         .push_error("Horizontal: select exactly one compatible object.");
                 } else {
                     let handle = handles[0];
-                    let reference = self.tabs[i]
-                        .scene
-                        .document
-                        .get_entity(handle)
-                        .and_then(|entity| {
-                            HorizontalConstraintCommand::preselected_reference(entity, handle)
-                        });
+                    let reference =
+                        self.tabs[i]
+                            .scene
+                            .document
+                            .get_entity(handle)
+                            .and_then(|entity| {
+                                HorizontalConstraintCommand::preselected_reference(entity, handle)
+                            });
                     if let Some(reference) = reference {
                         let direction = self.tabs[i].ucs_xform().working_plane().x;
                         return Some(self.apply_cmd_result(CmdResult::AddHorizontalConstraint {
@@ -1826,13 +1457,15 @@ impl OpenCADStudio {
                         })
                         .collect::<Vec<_>>();
                     if picks.len() == 2 && picks[0].reference != picks[1].reference {
-                        return Some(self.apply_cmd_result(CmdResult::AddPerpendicularConstraint {
-                            first: picks[0].reference,
-                            second: picks[1].reference,
-                            first_fixed: picks[0].fixed_reference,
-                            second_start: picks[1].start_reference,
-                            label: "Perpendicular constraint",
-                        }));
+                        return Some(self.apply_cmd_result(
+                            CmdResult::AddPerpendicularConstraint {
+                                first: picks[0].reference,
+                                second: picks[1].reference,
+                                first_fixed: picks[0].fixed_reference,
+                                second_start: picks[1].start_reference,
+                                label: "Perpendicular constraint",
+                            },
+                        ));
                     }
                     self.tabs[i].scene.deselect_all();
                     self.command_line.push_error(
@@ -1881,8 +1514,7 @@ impl OpenCADStudio {
                 }
             }
 
-            "PCONSTRAINT" | "ECONSTRAINT" | "LCONSTRAINT"
-            | "NRCONSTRAINT" => {
+            "PCONSTRAINT" | "ECONSTRAINT" | "LCONSTRAINT" | "NRCONSTRAINT" => {
                 let handles = self.tabs[i].scene.selected_handles_in_order();
                 if handles.is_empty() {
                     use crate::modules::draw::select::SelectObjectsCommand;

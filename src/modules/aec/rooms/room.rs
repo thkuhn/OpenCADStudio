@@ -5,7 +5,7 @@ use acadrust::types::Vector2;
 use acadrust::xdata::{ExtendedDataRecord, XDataValue};
 use acadrust::EntityType;
 
-use crate::modules::aec::commands::{collect_wall_segments, write_aec_record, AEC_APPID};
+use crate::modules::aec::engine::xdata::{collect_wall_segments, write_aec_record, AEC_APPID};
 use crate::modules::aec::engine::{find_closed_loop, Room};
 use crate::modules::{IconKind, ModuleEvent, ToolDef};
 use crate::scene::Scene;

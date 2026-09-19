@@ -604,32 +604,9 @@ bg={bg_ms:.1}ms n={view_count}"
                             is_hovered,
                             dir,
                             has_override: owner.is_some_and(|handle| {
-                                let axis = crate::modules::aec::commands::resolve_wall_package(
-                                    &tab.scene, handle,
-                                );
-                                let vertices =
-                                    crate::modules::aec::commands::get_wall_vertices(&tab.scene, axis);
-                                if vertices.len() < 2 {
-                                    return false;
-                                }
-                                let end_index = crate::modules::aec::commands::wall_junction_end_from_dropdown_grip(
-                                    grip_id,
+                                crate::modules::aec::engine::junction_pick::grip_has_join_override(
+                                    &tab.scene, handle, grip_id,
                                 )
-                                .or_else(|| {
-                                    if grip_id == 0 {
-                                        Some(0usize)
-                                    } else if grip_id == vertices.len() - 1 {
-                                        Some(1usize)
-                                    } else {
-                                        None
-                                    }
-                                });
-                                end_index.is_some_and(|end_index| {
-                                    crate::modules::aec::commands::read_junction_override(
-                                        &tab.scene, axis, end_index,
-                                    )
-                                    .is_some()
-                                })
                             }),
                         }
                     })
@@ -726,32 +703,9 @@ bg={bg_ms:.1}ms n={view_count}"
                             // join-constraint override gets a distinguishing
                             // color (#join-constraints step 4).
                             let has_override = owner.is_some_and(|handle| {
-                                let axis = crate::modules::aec::commands::resolve_wall_package(
-                                    &tab.scene, handle,
-                                );
-                                let vertices =
-                                    crate::modules::aec::commands::get_wall_vertices(&tab.scene, axis);
-                                if vertices.len() < 2 {
-                                    return false;
-                                }
-                                let end_index = crate::modules::aec::commands::wall_junction_end_from_dropdown_grip(
-                                    grip_id,
+                                crate::modules::aec::engine::junction_pick::grip_has_join_override(
+                                    &tab.scene, handle, grip_id,
                                 )
-                                .or_else(|| {
-                                    if grip_id == 0 {
-                                        Some(0usize)
-                                    } else if grip_id == vertices.len() - 1 {
-                                        Some(1usize)
-                                    } else {
-                                        None
-                                    }
-                                });
-                                end_index.is_some_and(|end_index| {
-                                    crate::modules::aec::commands::read_junction_override(
-                                        &tab.scene, axis, end_index,
-                                    )
-                                    .is_some()
-                                })
                             });
                             crate::ui::overlay::GripMarker {
                                 pos: screen,
@@ -2506,19 +2460,23 @@ bg={bg_ms:.1}ms n={view_count}"
             } else {
                 composed.into()
             }
-        } else if self.active_modal == Some(super::ModalKind::AecWallStyleDisplayProfiles) {
-            if let Some((parent_offset, parent_resize)) =
-                self.aec.aec_wall_style_manager_parent_geometry.as_ref()
-            {
-                let parent_content = self.aec_wall_style_manager_modal_content(*parent_resize);
-                crate::ui::modal::modal(
-                    composed,
-                    t!("AEC Wall Style Manager"),
-                    parent_content,
-                    Message::CloseModal,
-                    *parent_offset,
-                    crate::ui::modal::ModalOptions::STANDARD,
-                )
+        } else if let Some(super::ModalKind::Aec(kind)) = self.active_modal {
+            if let Some(parent) = kind.parent_on_close() {
+                if let Some((parent_offset, parent_resize)) =
+                    self.aec.aec_wall_style_manager_parent_geometry.as_ref()
+                {
+                    let parent_content = self.aec_modal_flow(parent, *parent_resize);
+                    crate::ui::modal::modal(
+                        composed,
+                        parent.title(),
+                        parent_content,
+                        Message::CloseModal,
+                        *parent_offset,
+                        crate::ui::modal::ModalOptions::STANDARD,
+                    )
+                } else {
+                    composed.into()
+                }
             } else {
                 composed.into()
             }

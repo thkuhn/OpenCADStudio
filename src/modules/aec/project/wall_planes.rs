@@ -4,10 +4,8 @@ use acadrust::xdata::ExtendedDataRecord;
 use acadrust::Handle;
 use uuid::Uuid;
 
-use crate::modules::aec::commands::{
-    regenerate_wall_representation, wall_from_entity, wall_record_for_wall, write_aec_record,
-    AEC_APPID,
-};
+use crate::modules::aec::engine::wall_regen::regenerate_wall_representation;
+use crate::modules::aec::engine::xdata::{wall_from_entity, wall_record_for_wall, write_aec_record, AEC_APPID};
 use crate::modules::aec::engine::library::StyleLibrary;
 use crate::modules::aec::engine::project::ProjectFile;
 use crate::scene::Scene;

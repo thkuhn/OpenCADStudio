@@ -2,6 +2,7 @@
 
 use acadrust::entities::EntityType;
 
+use crate::app::OpenCADStudio;
 use crate::modules::aec::engine::project::StoreyRef;
 use crate::modules::aec::project::preview::control_plane_from_entity;
 use crate::scene::Scene;
@@ -28,6 +29,23 @@ pub fn sync_storey_planes_from_drawing(scene: &Scene, storey: &mut StoreyRef) ->
         storey.sync_derived_elevation_height();
     }
     changed
+}
+
+impl OpenCADStudio {
+    pub(crate) fn sync_storey_from_active_drawing(&mut self, bid: uuid::Uuid, sid: uuid::Uuid) {
+        let i = self.active_tab;
+        let scene = &self.tabs[i].scene;
+        let changed = self.aec.aec_project_explorer_file.as_mut().and_then(|p| {
+            p.buildings
+                .iter_mut()
+                .find(|b| b.id == bid)
+                .and_then(|b| b.storeys.iter_mut().find(|s| s.id == sid))
+                .map(|s| sync_storey_planes_from_drawing(scene, s))
+        });
+        if changed == Some(true) {
+            self.aec_project_explorer_persist_if_pathed();
+        }
+    }
 }
 
 #[cfg(test)]

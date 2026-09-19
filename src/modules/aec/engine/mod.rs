@@ -7,16 +7,20 @@
 pub mod arc;
 pub mod contour;
 pub mod control_plane;
+pub mod display_apply;
 pub mod display_component;
 pub mod expr;
 pub mod geometry;
 pub mod ifc;
 pub mod join;
+pub mod join_ops;
+pub mod junction_pick;
 pub mod junction_solver;
 pub mod library;
 pub mod loop_detection;
 pub mod material;
 pub mod miter;
+pub mod opening_xdata;
 pub mod openings;
 pub mod owner_index;
 pub mod plan_view;
@@ -24,9 +28,17 @@ pub mod project;
 pub mod representation;
 pub mod room;
 pub mod storey;
+pub mod storey_xdata;
 pub mod style;
 pub mod wall;
+pub mod wall_package;
+pub mod wall_regen;
 pub mod wall_style;
+pub mod xdata;
+
+#[cfg(test)]
+mod wall_command_tests;
+
 
 pub use geometry::get_offset_directions;
 pub use ifc::Scene;

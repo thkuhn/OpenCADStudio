@@ -1,7 +1,7 @@
 //! `AEC_MATERIAL` / `AEC_MATERIALMANAGER`.
 
 use crate::command::{CadCommand, CmdResult};
-use crate::modules::aec::commands::unique_id;
+use crate::modules::aec::engine::xdata::unique_id;
 use crate::modules::aec::engine;
 use crate::modules::aec::engine::library::load_or_seed;
 use crate::modules::aec::engine::material::Material;

@@ -167,7 +167,7 @@ pub fn mitered_layer_footprints_with_bulges(
         );
     }
 
-    let pairing = match_layer_indices(layers_a, layers_b);
+    let pairing = match_layer_indices_for_l_join(layers_a, layers_b, end_a, end_b);
     let mut out = Vec::with_capacity(layers_a.len());
 
     for (i, b_idx) in pairing.into_iter().enumerate() {
@@ -205,8 +205,26 @@ fn resolve_layer_override<'a>(
     override_data.default_style.as_ref().map(|s| (s, None))
 }
 
-/// Index of the through-wall layer an override should join to.
-/// Explicit [`LayerPairOverride::layer_b`] wins over material pairing.
+/// For an L-miter, a same-index `layer_b` (Innenputz↔Innenputz) can sit on
+/// opposite world faces of the corner. Prefer the geometric pairing then.
+fn l_miter_target_index(
+    style: JoinOverrideStyle,
+    end_b: Option<usize>,
+    layer_a_index: usize,
+    layer_b: Option<&LayerRef>,
+    pairing_fb: Option<usize>,
+    explicit: Option<usize>,
+) -> Option<usize> {
+    if style == JoinOverrideStyle::Miter && end_b.is_some() {
+        if let (Some(paired), Some(picked)) = (pairing_fb, explicit) {
+            if paired != picked && layer_b.is_some_and(|r| r.index == layer_a_index) {
+                return Some(paired);
+            }
+        }
+    }
+    explicit.or(pairing_fb)
+}
+
 fn override_target_layer_index(
     layer_b: Option<&LayerRef>,
     layers_b: &[MiterLayer],
@@ -252,7 +270,7 @@ fn override_target_layer_index(
     }
 }
 
-/// Compare two [`LayerRef`]s the same way `commands::layer_ref_matches`
+/// Compare two [`LayerRef`]s the same way `display_apply::layer_ref_matches`
 /// does: prioritize the stable `layer_id` when both sides have one set,
 /// otherwise fall back to the `material_id`/`role_tag`/`index` triple. This
 /// keeps legacy/hand-written overrides (with `layer_id: None`) matching a
@@ -332,7 +350,7 @@ pub fn mitered_layer_footprints_with_override_and_bulges(
     if contours_a.is_empty() || contours_b.is_empty() {
         return out;
     }
-    let pairing = match_layer_indices(layers_a, layers_b);
+    let pairing = match_layer_indices_for_l_join(layers_a, layers_b, end_a, end_b);
     let outer_target =
         through_outer_near_face_line(axis_a, end_a, axis_b, layers_b, &contours_b);
 
@@ -350,7 +368,8 @@ pub fn mitered_layer_footprints_with_override_and_bulges(
         let pairing_fb = pairing.get(i).copied().flatten().or_else(|| {
             closest_layer_index(&layers_a[i], layers_b)
         });
-        let b_idx = override_target_layer_index(layer_b, layers_b, None, pairing_fb);
+        let explicit = override_target_layer_index(layer_b, layers_b, None, pairing_fb);
+        let b_idx = l_miter_target_index(*style, end_b, i, layer_b, pairing_fb, explicit);
         let b_contour = b_idx.and_then(|j| contours_b.get(j));
 
         let new_fp = match style {
@@ -781,6 +800,43 @@ pub fn match_layer_indices(layers_a: &[MiterLayer], layers_b: &[MiterLayer]) -> 
     out
 }
 
+/// When both walls use the same endpoint polarity at the joint (both start
+/// vertices or both end vertices), they arrive from opposite circulation.
+/// Matching against a mirrored copy of B then pairs finishes that share a
+/// world-side of the L (inner plaster to the concave/convex bisector)
+/// instead of cutting the innermost strip short of the corner.
+fn l_join_mirror_other_stack(end_a: usize, end_b: Option<usize>) -> bool {
+    let Some(end_b) = end_b else {
+        return false;
+    };
+    (end_a == 0) == (end_b == 0)
+}
+
+fn mirror_layer_offsets_for_match(layers: &[MiterLayer]) -> Vec<MiterLayer> {
+    layers
+        .iter()
+        .map(|layer| {
+            let mut mirrored = layer.clone();
+            mirrored.axis_offset = -(layer.axis_offset + layer.thickness);
+            mirrored.layer_id = uuid::Uuid::nil();
+            mirrored
+        })
+        .collect()
+}
+
+fn match_layer_indices_for_l_join(
+    layers_a: &[MiterLayer],
+    layers_b: &[MiterLayer],
+    end_a: usize,
+    end_b: Option<usize>,
+) -> Vec<Option<usize>> {
+    if l_join_mirror_other_stack(end_a, end_b) {
+        match_layer_indices(layers_a, &mirror_layer_offsets_for_match(layers_b))
+    } else {
+        match_layer_indices(layers_a, layers_b)
+    }
+}
+
 /// Identity match class: 0 = same layer_id, 1 = material+function,
 /// 2 = material only, 3 = offset-only. Lower is better.
 fn identity_class(a: &MiterLayer, b: &MiterLayer) -> u8 {
@@ -1110,21 +1166,31 @@ pub fn mitered_junction_layer_footprints_with_overrides(
         let Some(end_a) = walls[wi].end else {
             continue;
         };
-        let Some(ov) = overrides.get(wi).and_then(|o| o.as_ref()) else {
-            continue;
-        };
         let Some(refs) = layer_refs.get(wi) else {
             continue;
         };
         let n_rays = rays.len();
         let prev = &rays[(ri + n_rays - 1) % n_rays];
+        let ov_self = overrides.get(wi).and_then(|o| o.as_ref());
+        let ov_partner = overrides.get(prev.wall_index).and_then(|o| o.as_ref());
+        let ov_merged = crate::modules::aec::engine::join::merge_partner_junction_override(
+            ov_self, ov_partner,
+        );
+        let Some(ov) = ov_merged.as_ref() else {
+            continue;
+        };
         let other_w = prev.wall_index;
         if other_w == wi {
             continue;
         }
         let other_axis = &walls[other_w].axis;
         let other_contours = &contours[other_w];
-        let pairing = match_layer_indices(&walls[wi].layers, &walls[other_w].layers);
+        let pairing = match_layer_indices_for_l_join(
+            &walls[wi].layers,
+            &walls[other_w].layers,
+            end_a,
+            walls[other_w].end,
+        );
         let outer_target = through_outer_near_face_line(
             &walls[wi].axis,
             end_a,
@@ -1146,11 +1212,19 @@ pub fn mitered_junction_layer_footprints_with_overrides(
             let (ref a_b1, ref a_b2) = contours[wi][li];
             let pairing_fb = pairing.get(li).copied().flatten();
             let refs_b = layer_refs.get(other_w).map(|v| v.as_slice());
-            let b_idx = override_target_layer_index(
+            let explicit = override_target_layer_index(
                 layer_b,
                 &walls[other_w].layers,
                 refs_b,
                 pairing_fb,
+            );
+            let b_idx = l_miter_target_index(
+                *style,
+                walls[other_w].end,
+                li,
+                layer_b,
+                pairing_fb,
+                explicit,
             );
             let b_contour = b_idx.and_then(|j| other_contours.get(j));
 
@@ -1572,7 +1646,174 @@ fn miter_one_layer(
     }
     let (new_a1, new_a2) =
         miter_end_points(a_b1, a_b2, end_a, b_b1, b_b2, end_b, axis_a, axis_b)?;
-    Some(rebuild_footprint(a_b1, a_b2, end_a, new_a1, new_a2))
+    let mut fp = rebuild_footprint(a_b1, a_b2, end_a, new_a1, new_a2);
+    if end_a < axis_a.len() && end_a < a_b1.len() {
+        let prev = if end_a == 0 { 1 } else { end_a - 1 };
+        let keep = if prev < a_b1.len() {
+            a_b1[prev]
+        } else {
+            axis_a[if end_a == 0 { 1 } else { end_a - 1 }]
+        };
+        let clipped = clip_closed_to_halfplane(&fp, new_a1, new_a2, keep);
+        if clipped.len() >= 3 {
+            fp = clipped;
+        }
+    }
+    Some(fp)
+}
+
+fn clip_closed_to_halfplane(
+    poly: &[(f64, f64)],
+    a: (f64, f64),
+    b: (f64, f64),
+    keep: (f64, f64),
+) -> Vec<(f64, f64)> {
+    let side = |p: (f64, f64)| (b.0 - a.0) * (p.1 - a.1) - (b.1 - a.1) * (p.0 - a.0);
+    let keep_s = side(keep);
+    if keep_s.abs() < 1e-14 {
+        return poly.to_vec();
+    }
+    let inside = |p: (f64, f64)| side(p) * keep_s >= -1e-12;
+    let n = poly.len();
+    if n < 3 {
+        return poly.to_vec();
+    }
+    let mut out = Vec::with_capacity(n + 2);
+    for i in 0..n {
+        let cur = poly[i];
+        let nxt = poly[(i + 1) % n];
+        let cin = inside(cur);
+        let nin = inside(nxt);
+        if cin {
+            out.push(cur);
+        }
+        if cin != nin {
+            if let Some(hit) = intersect_lines_2d(cur, nxt, a, b) {
+                if out.last().is_none_or(|p| dist(*p, hit) > 1e-12) {
+                    out.push(hit);
+                }
+            }
+        }
+    }
+    if let (Some(&first), Some(&last)) = (out.first(), out.last()) {
+        if dist(first, last) < 1e-12 {
+            out.pop();
+        }
+    }
+    out
+}
+
+/// Intersect `subject` with convex CCW `clip` (Sutherland–Hodgman).
+fn clip_subject_to_convex_clip(
+    subject: &[(f64, f64)],
+    clip: &[(f64, f64)],
+) -> Vec<(f64, f64)> {
+    let mut clip_poly = clip.to_vec();
+    ensure_ccw(&mut clip_poly);
+    if subject.len() < 3 || clip_poly.len() < 3 {
+        return subject.to_vec();
+    }
+    let mut output = subject.to_vec();
+    let n = clip_poly.len();
+    for i in 0..n {
+        let a = clip_poly[i];
+        let b = clip_poly[(i + 1) % n];
+        let input = std::mem::take(&mut output);
+        if input.is_empty() {
+            break;
+        }
+        let inside = |p: (f64, f64)| {
+            (b.0 - a.0) * (p.1 - a.1) - (b.1 - a.1) * (p.0 - a.0) >= -1e-12
+        };
+        for j in 0..input.len() {
+            let cur = input[j];
+            let prev = input[(j + input.len() - 1) % input.len()];
+            let cin = inside(cur);
+            let pin = inside(prev);
+            if cin {
+                if !pin {
+                    if let Some(hit) = intersect_lines_2d(prev, cur, a, b) {
+                        if output.last().is_none_or(|p| dist(*p, hit) > 1e-12) {
+                            output.push(hit);
+                        }
+                    }
+                }
+                if output.last().is_none_or(|p| dist(*p, cur) > 1e-12) {
+                    output.push(cur);
+                }
+            } else if pin {
+                if let Some(hit) = intersect_lines_2d(prev, cur, a, b) {
+                    if output.last().is_none_or(|p| dist(*p, hit) > 1e-12) {
+                        output.push(hit);
+                    }
+                }
+            }
+        }
+    }
+    output
+}
+
+/// Keep a T-junction / manual gap cutout without discarding an L-miter
+/// already computed for the same layer (square cutout caps at the wall
+/// ends would otherwise replace the diagonal).
+pub fn merge_through_cutout_preserving_miter(
+    mitered: Option<&[(f64, f64)]>,
+    cutout: &[(f64, f64)],
+) -> Vec<(f64, f64)> {
+    let Some(m) = mitered.filter(|p| {
+        p.len() >= 3 && p.iter().all(|q| q.0.is_finite() && q.1.is_finite())
+    }) else {
+        return cutout.to_vec();
+    };
+    let rings = split_footprint_rings(cutout);
+    if rings.is_empty() {
+        return m.to_vec();
+    }
+    let mut out = Vec::new();
+    for (ri, ring) in rings.iter().enumerate() {
+        if ring.len() < 3 {
+            continue;
+        }
+        // Notch face = ring edge closest to another cutout piece. Clip the
+        // mitered polygon to that half-plane so square end caps of the
+        // cutout cannot overwrite an L-miter beyond the axis.
+        let mut best: Option<((f64, f64), (f64, f64), f64)> = None;
+        for i in 0..ring.len() {
+            let a = ring[i];
+            let b = ring[(i + 1) % ring.len()];
+            let mid = ((a.0 + b.0) * 0.5, (a.1 + b.1) * 0.5);
+            for (rj, other) in rings.iter().enumerate() {
+                if rj == ri {
+                    continue;
+                }
+                let d = other
+                    .iter()
+                    .map(|p| dist(*p, mid))
+                    .fold(f64::INFINITY, f64::min);
+                if best.is_none_or(|(_, _, bd)| d < bd) {
+                    best = Some((a, b, d));
+                }
+            }
+        }
+        let clipped = if let Some((ea, eb, _)) = best {
+            let n = ring.len() as f64;
+            let keep = ring.iter().fold((0.0, 0.0), |s, p| (s.0 + p.0, s.1 + p.1));
+            clip_closed_to_halfplane(m, ea, eb, (keep.0 / n, keep.1 / n))
+        } else {
+            clip_subject_to_convex_clip(m, ring)
+        };
+        if clipped.len() >= 3 {
+            if !out.is_empty() {
+                out.push((f64::NAN, f64::NAN));
+            }
+            out.extend(clipped);
+        }
+    }
+    if out.is_empty() {
+        cutout.to_vec()
+    } else {
+        out
+    }
 }
 
 /// Straight-extend stem layer boundaries to a single target face line
@@ -1863,6 +2104,10 @@ fn miter_layer_index(layers: &[MiterLayer], r: &LayerRef) -> Option<usize> {
     }
     layers.iter().enumerate().find_map(|(i, l)| {
         (l.material.eq_ignore_ascii_case(&r.material_id) && i == r.index).then_some(i)
+    }).or_else(|| {
+        layers
+            .iter()
+            .position(|l| l.material.eq_ignore_ascii_case(&r.material_id))
     })
 }
 
@@ -2486,6 +2731,46 @@ mod tests {
         // Mismatched vertex count is ignored (falls back to the other side).
         let bad = vec![(0.0, 0.0)];
         assert_eq!(merge_end_footprints(&base, Some(&bad), Some(&end1)), Some(end1.clone()));
+    }
+
+    #[test]
+    fn through_cutout_does_not_square_off_mitered_end() {
+        let mitered = vec![
+            (0.0, -0.1),
+            (10.2, -0.1),
+            (10.2, 0.1),
+            (0.0, 0.1),
+        ];
+        let mut cutout = vec![
+            (0.0, -0.1),
+            (4.5, -0.1),
+            (4.5, 0.1),
+            (0.0, 0.1),
+        ];
+        cutout.push((f64::NAN, f64::NAN));
+        cutout.extend([
+            (5.5, -0.1),
+            (10.0, -0.1),
+            (10.0, 0.1),
+            (5.5, 0.1),
+        ]);
+        let merged = merge_through_cutout_preserving_miter(Some(&mitered), &cutout);
+        let rings = split_footprint_rings(&merged);
+        assert_eq!(rings.len(), 2, "gap must stay two rings, got {merged:?}");
+        let max_x = merged
+            .iter()
+            .filter(|p| p.0.is_finite())
+            .map(|p| p.0)
+            .fold(f64::NEG_INFINITY, f64::max);
+        assert!(
+            max_x > 10.05,
+            "L-miter beyond the axis end must survive the T cutout, max_x={max_x} pts={merged:?}"
+        );
+        assert!(
+            merged.iter().any(|p| p.0.is_finite() && p.0 < 4.6)
+                && merged.iter().any(|p| p.0.is_finite() && (p.0 - 5.5).abs() < 0.2),
+            "notch around x=5 must remain, pts={merged:?}"
+        );
     }
 
     #[test]
@@ -4158,6 +4443,198 @@ mod tests {
         assert!(
             !filled,
             "hatch tessellation must not fill the stem pocket, triangles={triangles:?} pts={points:?}"
+        );
+    }
+
+    fn insulated_masonry_layers() -> Vec<MiterLayer> {
+        vec![
+            MiterLayer::with_id(0.015, -0.1725, "Putz", "Finish", uuid::Uuid::new_v4()),
+            MiterLayer::with_id(0.175, -0.1575, "Mauerwerk", "Structural", uuid::Uuid::new_v4()),
+            MiterLayer::with_id(0.14, 0.0175, "Daemmung", "Insulation", uuid::Uuid::new_v4()),
+            MiterLayer::with_id(0.015, 0.1575, "Putz", "Finish", uuid::Uuid::new_v4()),
+        ]
+    }
+
+    #[test]
+    fn l_join_identical_insulated_stack_miters_inner_plaster() {
+        let axis_a = vec![(0.0, 0.0), (10.0, 0.0)];
+        let axis_b = vec![(10.0, 0.0), (10.0, 10.0)];
+        let layers_a = insulated_masonry_layers();
+        let layers_b = insulated_masonry_layers();
+        let pairing = match_layer_indices(&layers_a, &layers_b);
+        assert_eq!(
+            pairing,
+            vec![Some(0), Some(1), Some(2), Some(3)],
+            "identical stacks must pair same-index layers, got {pairing:?}"
+        );
+        let fps = mitered_layer_footprints(
+            &axis_a,
+            &layers_a,
+            1,
+            &axis_b,
+            &layers_b,
+            Some(0),
+            JoinKind::L,
+        );
+        assert_eq!(fps.len(), 4);
+        for (i, fp) in fps.iter().enumerate() {
+            assert!(
+                fp.as_ref().is_some_and(|p| p.len() >= 3),
+                "layer {i} should miter, pairing={pairing:?} fps={fps:?}"
+            );
+        }
+        let inner = fps[0].as_ref().unwrap();
+        // Same-hand inner plaster sits on the right of each axis (+X → −Y, +Y → +X).
+        let inner_outer = (10.0 + 0.1725, -0.1725);
+        let inner_core = (10.0 + 0.1575, -0.1575);
+        assert!(
+            inner.iter().any(|p| close(*p, inner_outer, 1e-6))
+                && inner.iter().any(|p| close(*p, inner_core, 1e-6)),
+            "inner plaster must meet on the layer miter, got {inner:?}"
+        );
+
+        let fps_b = mitered_layer_footprints(
+            &axis_b,
+            &layers_b,
+            0,
+            &axis_a,
+            &layers_a,
+            Some(1),
+            JoinKind::L,
+        );
+        for i in 0..4 {
+            let a = fps[i].as_ref().expect("A layer miter");
+            let b = fps_b[i].as_ref().expect("B layer miter");
+            let shared = a.iter().any(|pa| b.iter().any(|pb| close(*pa, *pb, 1e-5)));
+            assert!(
+                shared,
+                "layer {i} must share a miter vertex between A and B, A={a:?} B={b:?}"
+            );
+        }
+        let outer = fps[3].as_ref().unwrap();
+        let concave_outer = (10.0 - 0.1725, 0.1725);
+        let concave_core = (10.0 - 0.1575, 0.1575);
+        assert!(
+            outer.iter().any(|p| close(*p, concave_outer, 1e-6))
+                && outer.iter().any(|p| close(*p, concave_core, 1e-6)),
+            "outer plaster (inner L-corner) must miter, got {outer:?}"
+        );
+        let max_x = outer.iter().map(|p| p.0).fold(f64::NEG_INFINITY, f64::max);
+        assert!(
+            max_x < 9.99,
+            "concave plaster must shorten behind the axis end, max_x={max_x} pts={outer:?}"
+        );
+
+        // Room L: B drawn toward the joint so both interiors face the concave side.
+        let axis_b_rev = vec![(10.0, 10.0), (10.0, 0.0)];
+        let fps_rev = mitered_layer_footprints(
+            &axis_a,
+            &layers_a,
+            1,
+            &axis_b_rev,
+            &layers_b,
+            Some(1),
+            JoinKind::L,
+        );
+        let inner_rev = fps_rev[0]
+            .as_ref()
+            .expect("reversed-B inner plaster should miter");
+        // Layer 0 lives south of A; with B arriving at the joint it must miter
+        // on the convex SE bisector, not stop short of x=10.
+        assert!(
+            inner_rev.iter().any(|p| close(*p, inner_outer, 1e-6))
+                && inner_rev.iter().any(|p| close(*p, inner_core, 1e-6)),
+            "inner plaster must miter at the convex corner when both walls arrive, got {inner_rev:?}"
+        );
+        let outer_rev = fps_rev[3]
+            .as_ref()
+            .expect("reversed-B outer plaster should miter");
+        assert!(
+            outer_rev.iter().any(|p| close(*p, concave_outer, 1e-6))
+                && outer_rev.iter().any(|p| close(*p, concave_core, 1e-6)),
+            "outer plaster must miter at the concave L-corner when both walls arrive, got {outer_rev:?}"
+        );
+    }
+
+    #[test]
+    fn concave_first_layer_shortens_when_walls_run_clockwise() {
+        // Innenputz is stack index 0 (negative offset). Clockwise room walls
+        // put that finish on the concave L side — it must not keep the square
+        // cap at the axis endpoint.
+        let axis_a = vec![(10.0, 0.0), (0.0, 0.0)];
+        let axis_b = vec![(10.0, 0.0), (10.0, 10.0)];
+        let layers_a = insulated_masonry_layers();
+        let layers_b = insulated_masonry_layers();
+        let fps = mitered_layer_footprints(
+            &axis_a,
+            &layers_a,
+            0,
+            &axis_b,
+            &layers_b,
+            Some(0),
+            JoinKind::L,
+        );
+        let inner = fps[0]
+            .as_ref()
+            .expect("index-0 plaster on the concave side must miter");
+        let max_x = inner.iter().map(|p| p.0).fold(f64::NEG_INFINITY, f64::max);
+        assert!(
+            max_x < 9.99,
+            "concave layer 0 must shorten behind the axis end, max_x={max_x} pts={inner:?}"
+        );
+        let concave_outer = (10.0 - 0.1725, 0.1725);
+        let concave_core = (10.0 - 0.1575, 0.1575);
+        assert!(
+            inner.iter().any(|p| close(*p, concave_outer, 1e-6))
+                && inner.iter().any(|p| close(*p, concave_core, 1e-6)),
+            "layer 0 must meet on the inner bisector, got {inner:?}"
+        );
+
+        let refs_a: Vec<LayerRef> = layers_a
+            .iter()
+            .enumerate()
+            .map(|(i, l)| LayerRef {
+                material_id: l.material.clone(),
+                role_tag: None,
+                index: i,
+                layer_id: Some(l.layer_id),
+            })
+            .collect();
+        let ov = JunctionOverride {
+            default_style: None,
+            layer_pairs: vec![super::super::join::LayerPairOverride {
+                layer_a: refs_a[0].clone(),
+                layer_b: Some(LayerRef {
+                    material_id: layers_b[0].material.clone(),
+                    role_tag: None,
+                    index: 0,
+                    layer_id: Some(layers_b[0].layer_id),
+                }),
+                style: JoinOverrideStyle::Miter,
+            }],
+            layer_gaps: Vec::new(),
+        };
+        let fps_ov = mitered_layer_footprints_with_override(
+            &axis_a,
+            &layers_a,
+            &refs_a,
+            0,
+            &axis_b,
+            &layers_b,
+            Some(0),
+            JoinKind::L,
+            Some(&ov),
+        );
+        let inner_ov = fps_ov[0]
+            .as_ref()
+            .expect("manual miter on concave layer 0");
+        let max_x_ov = inner_ov
+            .iter()
+            .map(|p| p.0)
+            .fold(f64::NEG_INFINITY, f64::max);
+        assert!(
+            max_x_ov < 9.99,
+            "manual miter must still shorten concave layer 0, max_x={max_x_ov} pts={inner_ov:?}"
         );
     }
 

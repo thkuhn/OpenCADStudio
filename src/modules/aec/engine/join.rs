@@ -35,7 +35,7 @@ pub struct LayerRef {
     /// to the correct layer across reorders/insertions/deletions. Additive
     /// field: `None` for records persisted before this field existed (or
     /// hand-written in tests), in which case callers fall back to the triple
-    /// comparison — see `commands::layer_ref_matches`.
+    /// comparison — see `display_apply::layer_ref_matches`.
     #[serde(default)]
     pub layer_id: Option<uuid::Uuid>,
 }
@@ -142,6 +142,47 @@ pub fn upsert_layer_gap(gaps: &mut Vec<LayerGapOverride>, gap: LayerGapOverride)
         *existing = gap;
     } else {
         gaps.push(gap);
+    }
+}
+
+/// Reciprocal of a layer pair: the target wall must miter/butt the same
+/// connection, not keep its automatic square cap.
+pub fn invert_layer_pair(pair: &LayerPairOverride) -> Option<LayerPairOverride> {
+    let layer_b = pair.layer_b.clone()?;
+    Some(LayerPairOverride {
+        layer_a: layer_b,
+        layer_b: Some(pair.layer_a.clone()),
+        style: pair.style,
+    })
+}
+
+/// Overlay the partner wall's pairs (inverted) and default style so a
+/// connection stored on only one end still trims both stacks.
+pub fn merge_partner_junction_override(
+    self_ov: Option<&JunctionOverride>,
+    partner_ov: Option<&JunctionOverride>,
+) -> Option<JunctionOverride> {
+    let mut merged = self_ov.cloned().unwrap_or_default();
+    if let Some(partner) = partner_ov {
+        if merged.default_style.is_none() {
+            merged.default_style = partner.default_style;
+        }
+        for pair in &partner.layer_pairs {
+            if let Some(inv) = invert_layer_pair(pair) {
+                if !merged
+                    .layer_pairs
+                    .iter()
+                    .any(|p| p.layer_a.same_source_layer(&inv.layer_a))
+                {
+                    merged.layer_pairs.push(inv);
+                }
+            }
+        }
+    }
+    if merged.is_empty() {
+        None
+    } else {
+        Some(merged)
     }
 }
 
@@ -1142,6 +1183,39 @@ mod tests {
         assert_eq!(new_a[1], DVec3::new(5.0, 0.0, 0.0));
         assert_eq!(new_b[0], DVec3::new(5.0, 0.0, 0.0));
         assert_eq!(new_a[0], DVec3::new(0.0, 0.0, 0.0));
+    }
+
+    #[test]
+    fn merge_partner_inverts_layer_pair() {
+        let a = LayerRef {
+            material_id: "inner".into(),
+            role_tag: None,
+            index: 0,
+            layer_id: None,
+        };
+        let b = LayerRef {
+            material_id: "outer".into(),
+            role_tag: None,
+            index: 1,
+            layer_id: None,
+        };
+        let ov = JunctionOverride {
+            default_style: None,
+            layer_pairs: vec![LayerPairOverride {
+                layer_a: a.clone(),
+                layer_b: Some(b.clone()),
+                style: JoinOverrideStyle::Miter,
+            }],
+            layer_gaps: Vec::new(),
+        };
+        let merged = merge_partner_junction_override(None, Some(&ov)).unwrap();
+        assert_eq!(merged.layer_pairs.len(), 1);
+        assert!(merged.layer_pairs[0].layer_a.same_source_layer(&b));
+        assert!(merged.layer_pairs[0]
+            .layer_b
+            .as_ref()
+            .is_some_and(|r| r.same_source_layer(&a)));
+        assert_eq!(merged.layer_pairs[0].style, JoinOverrideStyle::Miter);
     }
 
     #[test]

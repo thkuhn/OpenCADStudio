@@ -1,7 +1,9 @@
 pub mod control_planes;
+mod display;
 pub mod drawing_sync;
 pub mod hatch_origin;
 pub mod explorer;
+mod persist;
 pub mod preview;
 pub mod storey_z;
 pub mod storeys;
