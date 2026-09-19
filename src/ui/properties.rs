@@ -2402,4 +2402,54 @@ mod tests {
         assert!(scale.is_finite());
         assert!((0.01..=100.0).contains(&scale));
     }
+
+    #[test]
+    fn hatch_preview_emits_pattern_segments_in_picker_bounds() {
+        use crate::scene::model::hatch_model::HatchModel;
+        use std::sync::Arc;
+
+        let ansi31 = crate::scene::model::hatch_patterns::find("ANSI31").unwrap();
+        let w = 70.0f32;
+        let h = 36.0f32;
+        let pad = 4.0f32;
+        let model = HatchModel {
+            pattern_origin: None,
+            render_instance: None,
+            world_origin: [0.0, 0.0],
+            boundary: Arc::new(vec![
+                [pad, pad],
+                [w - pad, pad],
+                [w - pad, h - pad],
+                [pad, h - pad],
+            ]),
+            boundary_wcs: None,
+            fill_plane: None,
+            fill_plane_boundary: None,
+            boundary_exterior: None,
+            boundary_sources: None,
+            boundary_paths: None,
+            style: acadrust::entities::HatchStyleType::Normal,
+            pattern: ansi31.gpu.clone(),
+            name: String::new(),
+            color: [1.0; 4],
+            aci: 0,
+            line_weight_px: 1.0,
+            angle_offset: 0.0,
+            scale: hatch_preview_scale(&ansi31.gpu),
+            draw_depth: 0.0,
+        };
+        let segs = model.pattern_segments();
+        assert!(
+            !segs.is_empty(),
+            "picker preview must rasterise ANSI31 inside a 70×36 card"
+        );
+        assert!(
+            segs.iter().any(|s| {
+                s.iter().all(|p| {
+                    p[0] >= 0.0 && p[0] <= f64::from(w) && p[1] >= 0.0 && p[1] <= f64::from(h)
+                })
+            }),
+            "at least one segment must lie in the preview rectangle"
+        );
+    }
 }
