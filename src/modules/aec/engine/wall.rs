@@ -186,8 +186,13 @@ impl Wall {
         let Some(top) = self.top_plane_id.and_then(&lookup) else {
             return;
         };
-        self.top_origin = top.origin;
         self.top_normal = top.unit_normal();
+        let offset_top = top.offset(self.top_offset);
+        if let Some(pt) = intersect_vertical_at_xy(x, y, &offset_top) {
+            self.top_origin = pt;
+        } else {
+            self.top_origin = offset_top.origin;
+        }
         if let Some(h) = resolve_wall_height(x, y, &base, &top, self.base_offset, self.top_offset) {
             if h.abs() > 1e-9 {
                 self.height = h.abs();
@@ -212,13 +217,19 @@ impl Wall {
         self.base_origin[0] += n[0] * db;
         self.base_origin[1] += n[1] * db;
         self.base_origin[2] += n[2] * db;
+        let tn = self.top_normal;
+        self.top_origin[0] += tn[0] * dt;
+        self.top_origin[1] += tn[1] * dt;
+        self.top_origin[2] += tn[2] * dt;
         let h = self.height - db + dt;
         if h.abs() > 1e-9 {
             self.height = h.abs();
         }
     }
 
-    /// Height from baked plane Z when live IDs are unavailable.
+    /// Height from baked underside/top world points. Offsets are already
+    /// folded into [`Self::base_origin`] / [`Self::top_origin`] by rebake
+    /// and must not be applied again.
     pub fn height_from_snapshot(&self) -> Option<f64> {
         let base = crate::modules::aec::engine::control_plane::ControlPlane {
             id: uuid::Uuid::nil(),
@@ -239,12 +250,12 @@ impl Wall {
             visible: true,
         };
         crate::modules::aec::engine::control_plane::resolve_wall_height(
-            0.0,
-            0.0,
+            self.base_origin[0],
+            self.base_origin[1],
             &base,
             &top,
-            self.base_offset,
-            self.top_offset,
+            0.0,
+            0.0,
         )
         .filter(|h| h.abs() > 1e-9)
         .map(|h| h.abs())
@@ -305,6 +316,26 @@ mod tests {
         wall.base_offset = 0.1;
         wall.rebake_planes(&storey, 1.0, 2.0);
         assert!((wall.base_origin[2] - 3.1).abs() < 1e-9);
+    }
+
+    #[test]
+    fn rebake_bakes_offset_top_and_snapshot_matches_height() {
+        use crate::modules::aec::engine::project::StoreyRef;
+        let storey = StoreyRef::new_with_height("EG", 0.0, 3.0, "eg.dwg");
+        let mut wall = Wall::new("s", 2.5, 0);
+        wall.bind_storey_planes(&storey, 1.0, 2.0);
+        wall.base_offset = 0.1;
+        wall.top_offset = -0.05;
+        wall.rebake_planes(&storey, 1.0, 2.0);
+        assert!((wall.base_origin[2] - 0.1).abs() < 1e-9);
+        assert!((wall.top_origin[2] - 2.95).abs() < 1e-9);
+        assert!((wall.height - 2.85).abs() < 1e-9);
+        let snap = wall.height_from_snapshot().expect("snapshot");
+        assert!(
+            (snap - wall.height).abs() < 1e-12,
+            "snapshot must not re-apply offsets, got {snap} vs {}",
+            wall.height
+        );
     }
 
     #[test]

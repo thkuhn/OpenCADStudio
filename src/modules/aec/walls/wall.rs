@@ -353,7 +353,12 @@ impl WallCommand {
         wall.style_id = style_id;
         wall.layers = layers;
         wall.justification = self.justification;
-        if wall.base_plane_id.is_some() {
+        // Plane-bound height is already baked by `bind_storey_planes` /
+        // rebake. Recomputing from the snapshot used to re-apply base/top
+        // offsets and overwrite a live Properties height. Only fill height
+        // from baked Z when the user has not set it and the stored value is
+        // still empty/non-positive.
+        if wall.base_plane_id.is_some() && !self.height_live_set && wall.height <= 1e-9 {
             if let Some(h) = wall.height_from_snapshot() {
                 wall.height = h;
             }

@@ -1301,9 +1301,9 @@ fn wall_record_round_trips_control_planes() {
     wall.top_plane_id = Some(Uuid::new_v4());
     wall.base_offset = 0.1;
     wall.top_offset = -0.05;
-    wall.base_origin = [0.0, 0.0, 1.0];
+    wall.base_origin = [0.0, 0.0, 1.1];
     wall.base_normal = [0.0, 0.0, 1.0];
-    wall.top_origin = [0.0, 0.0, 4.0];
+    wall.top_origin = [0.0, 0.0, 3.95];
     wall.top_normal = [0.0, 0.0, 1.0];
     wall.height = wall.height_from_snapshot().unwrap_or(wall.height);
 
@@ -1659,6 +1659,60 @@ fn wall_command_live_properties_reports_style_and_height_while_drawing() {
 
     let live_after = cmd.live_properties().expect("still drawing");
     assert!(matches!(&live_after.fields[1].value, LiveFieldValue::Number(h) if (*h - 3.5).abs() < 1e-9));
+}
+
+#[test]
+fn bound_wall_commit_keeps_live_height_and_rebake_height() {
+    use crate::command::LiveFieldValue;
+    use crate::modules::aec::engine::project::StoreyRef;
+
+    let storey = StoreyRef::new_with_height("EG", 0.0, 3.0, "eg.dwg");
+    let mut cmd = WallCommand::new_with_library(None).with_storey_planes(&storey);
+    assert!((cmd.wall.height - 3.0).abs() < 1e-9);
+    cmd.on_point(DVec3::new(0.0, 0.0, 0.0));
+    let unbound = match cmd.on_point(DVec3::new(4.0, 0.0, 0.0)) {
+        CmdResult::CommitEntity(e) => e,
+        _ => panic!("expected commit"),
+    };
+    let baked = wall_from_entity(&unbound).expect("wall");
+    assert!(
+        (baked.height - 3.0).abs() < 1e-12,
+        "rebake height must survive commit, got {}",
+        baked.height
+    );
+    assert!((baked.base_origin[2] - 0.0).abs() < 1e-12);
+
+    let mut cmd = WallCommand::new_with_library(None).with_storey_planes(&storey);
+    cmd.wall.base_offset = 0.1;
+    cmd.wall.top_offset = -0.05;
+    cmd.wall.rebake_planes(&storey, 0.0, 0.0);
+    cmd.on_point(DVec3::new(0.0, 0.0, 0.0));
+    let offset_entity = match cmd.on_point(DVec3::new(4.0, 0.0, 0.0)) {
+        CmdResult::CommitEntity(e) => e,
+        _ => panic!("expected commit"),
+    };
+    let offset_wall = wall_from_entity(&offset_entity).expect("wall");
+    assert!(
+        (offset_wall.height - 2.85).abs() < 1e-12,
+        "offsets must not be applied twice on commit, got {}",
+        offset_wall.height
+    );
+    assert!((offset_wall.base_origin[2] - 0.1).abs() < 1e-12);
+    assert!((offset_wall.top_origin[2] - 2.95).abs() < 1e-12);
+
+    let mut cmd = WallCommand::new_with_library(None).with_storey_planes(&storey);
+    cmd.apply_live_property("wall_height", LiveFieldValue::Number(2.5));
+    cmd.on_point(DVec3::new(0.0, 0.0, 0.0));
+    let live_entity = match cmd.on_point(DVec3::new(4.0, 0.0, 0.0)) {
+        CmdResult::CommitEntity(e) => e,
+        _ => panic!("expected commit"),
+    };
+    let live_wall = wall_from_entity(&live_entity).expect("wall");
+    assert!(
+        (live_wall.height - 2.5).abs() < 1e-12,
+        "live Properties height must survive commit, got {}",
+        live_wall.height
+    );
 }
 
 #[test]
