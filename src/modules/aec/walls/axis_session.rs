@@ -6,6 +6,77 @@
 use crate::app::OpenCADStudio;
 
 impl OpenCADStudio {
+    /// Apply one interactive opening grip without letting the native POINT
+    /// grip handler move the host marker independently of its XDATA.
+    pub(crate) fn apply_aec_opening_grip(
+        &mut self,
+        tab: usize,
+        handle: acadrust::Handle,
+        grip_id: usize,
+        apply: &crate::scene::model::object::GripApply,
+    ) -> bool {
+        if grip_id > 2 {
+            return false;
+        }
+        let scene = &self.tabs[tab].scene;
+        let Some(owner) =
+            crate::modules::aec::engine::opening_display::opening_owner_if_any(scene, handle)
+        else {
+            return false;
+        };
+        let Some(entity) = scene.document.get_entity(owner) else {
+            return false;
+        };
+        let Some(mut opening) =
+            crate::modules::aec::engine::opening_xdata::opening_from_entity(entity, owner)
+        else {
+            return false;
+        };
+        let wall = crate::modules::aec::engine::wall_package::resolve_wall_package(
+            scene,
+            opening.host_wall,
+        );
+        let axis: Vec<(f64, f64)> =
+            crate::modules::aec::engine::xdata::get_wall_vertices(scene, wall)
+                .iter()
+                .map(|v| (v.x, v.y))
+                .collect();
+        if axis.len() < 2 {
+            return false;
+        }
+
+        let world = match apply {
+            crate::scene::model::object::GripApply::Absolute(point) => *point,
+            crate::scene::model::object::GripApply::Translate(delta) => {
+                let Some(acadrust::EntityType::Point(point)) = scene.document.get_entity(owner)
+                else {
+                    return false;
+                };
+                glam::DVec3::new(point.location.x, point.location.y, point.location.z) + *delta
+            }
+        };
+        crate::modules::aec::engine::opening_display::apply_opening_axis_grip(
+            &axis,
+            &mut opening,
+            grip_id,
+            world,
+        );
+
+        let style_library = crate::modules::aec::engine::project::resolve_style_library(
+            self.aec.aec_project_explorer_file.as_ref(),
+        );
+        let (rules, _) =
+            self.resolve_active_display_config_wall_rules(tab, Some(opening.host_wall));
+        crate::modules::aec::engine::opening_display::commit_opening_instance(
+            &mut self.tabs[tab].scene,
+            &opening,
+            Some(&style_library),
+            rules.as_ref(),
+        );
+        self.tabs[tab].dirty = true;
+        true
+    }
+
     pub(crate) fn remember_last_wall_defaults(
         &mut self,
         tab_index: usize,
@@ -41,6 +112,23 @@ impl OpenCADStudio {
                 crate::modules::aec::engine::wall_regen::wall_thickness_and_height(e).is_some()
             });
         if !is_wall {
+            let owner = crate::modules::aec::engine::opening_display::opening_owner_if_any(
+                &self.tabs[tab].scene,
+                handle,
+            );
+            if let Some(owner) = owner {
+                let style_library = crate::modules::aec::engine::project::resolve_style_library(
+                    self.aec.aec_project_explorer_file.as_ref(),
+                );
+                let (rules, _) =
+                    self.resolve_active_display_config_wall_rules(tab, Some(owner));
+                crate::modules::aec::engine::opening_display::sync_opening_from_point_location(
+                    &mut self.tabs[tab].scene,
+                    owner,
+                    Some(&style_library),
+                    rules.as_ref(),
+                );
+            }
             return;
         }
         crate::modules::aec::engine::wall_regen::erase_wall_live_preview_companions(

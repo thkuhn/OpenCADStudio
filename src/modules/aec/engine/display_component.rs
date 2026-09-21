@@ -139,6 +139,60 @@ impl WallComponentSlot {
     }
 }
 
+/// Independently visible display slots for an opening (window / door / breakthrough).
+///
+/// Keys are name-based so a `DisplayConfig` persisted before a slot existed
+/// still treats the unknown slot as visible (additive catalogue).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum OpeningComponentSlot {
+    HostCut2D,
+    Frame2D,
+    Leaf2D,
+    Swing2D,
+    Sill2D,
+    Mark2D,
+    Solid3D,
+}
+
+impl OpeningComponentSlot {
+    pub fn key(self) -> &'static str {
+        match self {
+            OpeningComponentSlot::HostCut2D => "HostCut2D",
+            OpeningComponentSlot::Frame2D => "Frame2D",
+            OpeningComponentSlot::Leaf2D => "Leaf2D",
+            OpeningComponentSlot::Swing2D => "Swing2D",
+            OpeningComponentSlot::Sill2D => "Sill2D",
+            OpeningComponentSlot::Mark2D => "Mark2D",
+            OpeningComponentSlot::Solid3D => "Solid3D",
+        }
+    }
+
+    pub fn all() -> &'static [OpeningComponentSlot] {
+        &[
+            OpeningComponentSlot::HostCut2D,
+            OpeningComponentSlot::Frame2D,
+            OpeningComponentSlot::Leaf2D,
+            OpeningComponentSlot::Swing2D,
+            OpeningComponentSlot::Sill2D,
+            OpeningComponentSlot::Mark2D,
+            OpeningComponentSlot::Solid3D,
+        ]
+    }
+
+    pub fn from_key(key: &str) -> Option<Self> {
+        match key {
+            "HostCut2D" => Some(OpeningComponentSlot::HostCut2D),
+            "Frame2D" => Some(OpeningComponentSlot::Frame2D),
+            "Leaf2D" => Some(OpeningComponentSlot::Leaf2D),
+            "Swing2D" => Some(OpeningComponentSlot::Swing2D),
+            "Sill2D" => Some(OpeningComponentSlot::Sill2D),
+            "Mark2D" => Some(OpeningComponentSlot::Mark2D),
+            "Solid3D" => Some(OpeningComponentSlot::Solid3D),
+            _ => None,
+        }
+    }
+}
+
 /// Viewport / plan-type representation filter: 2D, 3D, or both.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
 pub enum RepresentationMode {
@@ -404,13 +458,26 @@ pub struct ComponentRuleSet {
     /// means `All` — see [`Self::layer_filter_for`].
     #[serde(default)]
     pub layer_filter: HashMap<String, LayerSelection>,
+    /// Active `DisplayConfig` name, used to pick opening-style display profiles.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub plan_name: Option<String>,
 }
 
 impl ComponentRuleSet {
     /// Returns whether `slot` is visible under this rule set. Slots without
     /// an explicit entry are visible by default (non-regression guarantee).
     pub fn is_visible(&self, slot: WallComponentSlot) -> bool {
-        self.visibility.get(slot.key()).copied().unwrap_or(true)
+        self.is_key_visible(slot.key())
+    }
+
+    /// Name-keyed visibility: unknown keys default to visible (additive).
+    pub fn is_key_visible(&self, key: &str) -> bool {
+        self.visibility.get(key).copied().unwrap_or(true)
+    }
+
+    /// Opening-slot visibility. Unknown / absent slots are visible.
+    pub fn is_opening_visible(&self, slot: OpeningComponentSlot) -> bool {
+        self.is_key_visible(slot.key())
     }
 
     /// Returns the style override for `slot`, if any was configured.
@@ -583,6 +650,8 @@ mod tests {
         assert!(rules.is_visible(WallComponentSlot::AxisLine));
         assert!(rules.is_visible(WallComponentSlot::Layers2D));
         assert!(rules.style_for(WallComponentSlot::Layers2D).is_none());
+        assert!(rules.is_opening_visible(OpeningComponentSlot::Mark2D));
+        assert!(rules.is_opening_visible(OpeningComponentSlot::Swing2D));
     }
 
     #[test]
@@ -594,6 +663,17 @@ mod tests {
         assert!(!rules.is_visible(WallComponentSlot::AxisLine));
         // Unrelated slots remain visible.
         assert!(rules.is_visible(WallComponentSlot::Contour2D));
+    }
+
+    #[test]
+    fn unknown_opening_slot_name_is_visible() {
+        let mut rules = ComponentRuleSet::default();
+        rules
+            .visibility
+            .insert(OpeningComponentSlot::Swing2D.key().to_string(), false);
+        assert!(!rules.is_opening_visible(OpeningComponentSlot::Swing2D));
+        assert!(rules.is_opening_visible(OpeningComponentSlot::Mark2D));
+        assert!(rules.is_key_visible("FutureOpeningSlot"));
     }
 
     #[test]

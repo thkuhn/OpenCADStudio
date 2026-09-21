@@ -4,7 +4,11 @@ use acadrust::{EntityType, Handle};
 
 use crate::modules::aec::engine::join_ops;
 use crate::modules::aec::engine::junction_pick;
+use crate::modules::aec::engine::opening_display;
+use crate::modules::aec::engine::opening_shape::OpeningShape;
+use crate::modules::aec::engine::opening_style::{apply_style_defaults, HingeSide};
 use crate::modules::aec::engine::opening_xdata;
+use crate::modules::aec::engine::openings::Opening;
 use crate::modules::aec::engine::storey_xdata;
 use crate::modules::aec::engine::xdata;
 use crate::modules::aec::engine::wall_package;
@@ -17,6 +21,18 @@ pub fn collapse_selection_to_wall_package<'a>(
 ) -> Vec<(Handle, &'a EntityType)> {
     if selected.is_empty() {
         return selected;
+    }
+    let opening_owners: Vec<Option<Handle>> = selected
+        .iter()
+        .map(|(handle, _)| opening_display::opening_owner_if_any(scene, *handle))
+        .collect();
+    if opening_owners.iter().all(|o| o.is_some()) {
+        let owner = opening_owners[0].unwrap();
+        if opening_owners.iter().all(|o| *o == Some(owner)) {
+            if let Some(entity) = scene.document.get_entity(owner) {
+                return vec![(owner, entity)];
+            }
+        }
     }
     let owners: Vec<Handle> = selected
         .iter()
@@ -397,6 +413,262 @@ pub fn apply_control_plane_name(
 }
 
 /// Append wall/storey property sections when the selection is AEC-related.
+fn shape_options() -> Vec<String> {
+    vec![
+        OpeningShape::Rectangle.as_str().to_string(),
+        OpeningShape::Circle.as_str().to_string(),
+        OpeningShape::Triangle(
+            crate::modules::aec::engine::opening_shape::TriangleVariant::IsoscelesUp,
+        )
+        .as_str()
+        .to_string(),
+        OpeningShape::Triangle(
+            crate::modules::aec::engine::opening_shape::TriangleVariant::IsoscelesDown,
+        )
+        .as_str()
+        .to_string(),
+        OpeningShape::Triangle(
+            crate::modules::aec::engine::opening_shape::TriangleVariant::Equilateral,
+        )
+        .as_str()
+        .to_string(),
+        OpeningShape::Triangle(
+            crate::modules::aec::engine::opening_shape::TriangleVariant::RightLeft,
+        )
+        .as_str()
+        .to_string(),
+        OpeningShape::Triangle(
+            crate::modules::aec::engine::opening_shape::TriangleVariant::RightRight,
+        )
+        .as_str()
+        .to_string(),
+        OpeningShape::Arch.as_str().to_string(),
+    ]
+}
+
+/// Apply a properties-panel field onto an opening instance (no I/O).
+pub fn apply_opening_property(
+    opening: &mut Opening,
+    field: &str,
+    val: &str,
+    library: Option<&StyleLibrary>,
+) -> bool {
+    match field {
+        "opening_style" => {
+            let Some(lib) = library else {
+                return true;
+            };
+            let style = lib
+                .opening_styles
+                .iter()
+                .find(|s| s.style.name == val || s.style.id == val);
+            if let Some(style) = style {
+                apply_style_defaults(opening, style);
+            }
+            true
+        }
+        "opening_width" => {
+            let Some(v) = crate::entities::common::parse_f64(val) else {
+                return true;
+            };
+            if v <= 0.0 {
+                return true;
+            }
+            let (w, h) = opening.shape.lock_size(v, opening.height, true);
+            opening.width = w;
+            opening.height = h;
+            true
+        }
+        "opening_height" => {
+            let Some(v) = crate::entities::common::parse_f64(val) else {
+                return true;
+            };
+            if v <= 0.0 {
+                return true;
+            }
+            let (w, h) = opening.shape.lock_size(opening.width, v, false);
+            opening.width = w;
+            opening.height = h;
+            opening.unbind_head_plane();
+            true
+        }
+        "opening_sill" => {
+            let Some(v) = crate::entities::common::parse_f64(val) else {
+                return true;
+            };
+            opening.sill_height = v.max(0.0);
+            opening.unbind_sill_plane();
+            true
+        }
+        "opening_spring" => {
+            let Some(v) = crate::entities::common::parse_f64(val) else {
+                return true;
+            };
+            opening.spring_height =
+                crate::modules::aec::engine::opening_shape::clamp_spring(v, opening.height);
+            true
+        }
+        "opening_hinge" => {
+            opening.hinge = HingeSide::from_str(val);
+            true
+        }
+        "opening_shape" => {
+            opening.shape = OpeningShape::from_str(val);
+            let (w, h) = opening.shape.lock_size(opening.width, opening.height, true);
+            opening.width = w;
+            opening.height = h;
+            if opening.shape == OpeningShape::Arch && opening.spring_height <= 1e-12 {
+                opening.spring_height =
+                    OpeningShape::default_spring_height(opening.width, opening.height);
+            }
+            true
+        }
+        _ => false,
+    }
+}
+
+pub fn opening_prop_section(
+    opening: &Opening,
+    opening_handle: Handle,
+    style_library: Option<&StyleLibrary>,
+    project: Option<&crate::modules::aec::engine::project::ProjectFile>,
+) -> crate::scene::model::object::PropSection {
+    let style_name = opening
+        .style_id
+        .as_deref()
+        .and_then(|id| {
+            style_library.and_then(|lib| {
+                lib.find_opening_style(id)
+                    .map(|s| s.style.name.clone())
+            })
+        })
+        .unwrap_or_else(|| {
+            opening
+                .style_id
+                .clone()
+                .unwrap_or_else(|| crate::tr!("aec", "opening-no-style"))
+        });
+    let none = t!("(none)").into_owned();
+    let mut plane_options = vec![none.clone()];
+    if let Some(project) = project {
+        for b in &project.buildings {
+            for s in &b.storeys {
+                for p in &s.control_planes {
+                    if !plane_options.iter().any(|n| n == &p.name) {
+                        plane_options.push(p.name.clone());
+                    }
+                }
+            }
+        }
+    }
+    let plane_label = |id: Option<uuid::Uuid>, stored_name: Option<&str>| {
+        id.and_then(|id| {
+            project.and_then(|proj| {
+                proj.buildings.iter().find_map(|b| {
+                    b.storeys
+                        .iter()
+                        .find_map(|s| s.plane(id).map(|p| p.name.clone()))
+                })
+            })
+        })
+        .or_else(|| {
+            stored_name
+                .map(str::trim)
+                .filter(|n| !n.is_empty())
+                .map(|n| n.to_string())
+        })
+        .or_else(|| id.map(|id| id.to_string()))
+        .unwrap_or_else(|| none.clone())
+    };
+    let ensure_option = |opts: &mut Vec<String>, label: &str| {
+        if !opts.iter().any(|n| n == label) {
+            opts.push(label.to_string());
+        }
+    };
+    let sill_label = plane_label(opening.sill_plane_id, opening.sill_plane_name.as_deref());
+    let head_label = plane_label(opening.head_plane_id, opening.head_plane_name.as_deref());
+    ensure_option(&mut plane_options, &sill_label);
+    ensure_option(&mut plane_options, &head_label);
+    let mut props = vec![
+        crate::scene::model::object::Property {
+            label: crate::tr!("aec", "opening-kind"),
+            field: "opening_kind",
+            value: crate::scene::model::object::PropValue::ReadOnly(opening.kind.as_str().into()),
+        },
+        crate::scene::model::object::Property {
+            label: t!("Style").into_owned(),
+            field: "opening_style",
+            value: crate::scene::model::object::PropValue::Picker {
+                value: style_name,
+                handles: vec![opening_handle],
+            },
+        },
+        crate::scene::model::object::Property {
+            label: crate::tr!("aec", "opening-shape"),
+            field: "opening_shape",
+            value: crate::scene::model::object::PropValue::Choice {
+                selected: opening.shape.as_str().to_string(),
+                options: shape_options(),
+            },
+        },
+        crate::entities::common::edit_prop(t!("Width").as_ref(), "opening_width", opening.width),
+        crate::entities::common::edit_prop(t!("Height").as_ref(), "opening_height", opening.height),
+        crate::entities::common::edit_prop(
+            crate::tr!("aec", "opening-sill").as_str(),
+            "opening_sill",
+            opening.sill_height,
+        ),
+        crate::scene::model::object::Property {
+            label: crate::tr!("aec", "opening-sill-plane"),
+            field: "opening_sill_plane",
+            value: crate::scene::model::object::PropValue::Choice {
+                selected: sill_label,
+                options: plane_options.clone(),
+            },
+        },
+        crate::entities::common::edit_prop(
+            crate::tr!("aec", "opening-sill-offset").as_str(),
+            "opening_sill_offset",
+            opening.sill_offset,
+        ),
+        crate::scene::model::object::Property {
+            label: crate::tr!("aec", "opening-head-plane"),
+            field: "opening_head_plane",
+            value: crate::scene::model::object::PropValue::Choice {
+                selected: head_label,
+                options: plane_options,
+            },
+        },
+        crate::entities::common::edit_prop(
+            crate::tr!("aec", "opening-head-offset").as_str(),
+            "opening_head_offset",
+            opening.head_offset,
+        ),
+        crate::scene::model::object::Property {
+            label: crate::tr!("aec", "opening-hinge"),
+            field: "opening_hinge",
+            value: crate::scene::model::object::PropValue::Choice {
+                selected: opening.hinge.as_str().to_string(),
+                options: vec![
+                    HingeSide::Left.as_str().into(),
+                    HingeSide::Right.as_str().into(),
+                ],
+            },
+        },
+    ];
+    if opening.shape == OpeningShape::Arch {
+        props.push(crate::entities::common::edit_prop(
+            crate::tr!("aec", "opening-spring").as_str(),
+            "opening_spring",
+            opening.spring_height,
+        ));
+    }
+    crate::scene::model::object::PropSection {
+        title: crate::tr!("aec", "opening-section"),
+        props,
+    }
+}
+
 pub fn extend_entity_sections(
     scene: &crate::scene::Scene,
     handle: Handle,
@@ -405,11 +677,25 @@ pub fn extend_entity_sections(
     project: Option<&crate::modules::aec::engine::project::ProjectFile>,
     sections: &mut Vec<crate::scene::model::object::PropSection>,
 ) {
-    let wall_handle = wall_package::resolve_wall_package(scene, handle);
-    let wall_entity = scene.document.get_entity(wall_handle).unwrap_or(entity);
-    if let Some(wall_section) = wall_prop_section(wall_entity, style_library, project) {
-        sections.push(wall_section);
-        sections.extend(wall_relation_sections(scene, wall_handle));
+    if let Some(opening_handle) = opening_display::opening_owner_if_any(scene, handle) {
+        if let Some(opening_entity) = scene.document.get_entity(opening_handle) {
+            if let Some(opening) = opening_xdata::opening_from_entity(opening_entity, opening_handle)
+            {
+                sections.push(opening_prop_section(
+                    &opening,
+                    opening_handle,
+                    style_library,
+                    project,
+                ));
+            }
+        }
+    } else {
+        let wall_handle = wall_package::resolve_wall_package(scene, handle);
+        let wall_entity = scene.document.get_entity(wall_handle).unwrap_or(entity);
+        if let Some(wall_section) = wall_prop_section(wall_entity, style_library, project) {
+            sections.push(wall_section);
+            sections.extend(wall_relation_sections(scene, wall_handle));
+        }
     }
     if let Some(storey_section) = storey_prop_section(scene, entity) {
         sections.push(storey_section);
@@ -485,25 +771,90 @@ impl crate::app::OpenCADStudio {
         field: &str,
         val: &str,
     ) -> bool {
-        let is_aec = matches!(
-            field,
-            "wall_justification"
-                | "wall_base_plane"
-                | "wall_top_plane"
-                | "wall_phase"
-                | "control_plane_name"
-                | "wall_height"
-                | "wall_thickness"
-                | "wall_material"
-                | "wall_base_offset"
-                | "wall_top_offset"
-                | "wall_base_z"
-                | "wall_hatch_angle"
-        );
+        let is_aec = field.starts_with("opening_")
+            || matches!(
+                field,
+                "wall_justification"
+                    | "wall_base_plane"
+                    | "wall_top_plane"
+                    | "wall_phase"
+                    | "control_plane_name"
+                    | "wall_height"
+                    | "wall_thickness"
+                    | "wall_material"
+                    | "wall_base_offset"
+                    | "wall_top_offset"
+                    | "wall_base_z"
+                    | "wall_hatch_angle"
+            );
         if !is_aec {
             return false;
         }
         if self.tabs[tab].scene.is_layer_locked(handle) {
+            return true;
+        }
+        if field.starts_with("opening_") {
+            let owner = opening_display::opening_owner_if_any(&self.tabs[tab].scene, handle)
+                .unwrap_or(handle);
+            let style_library = crate::modules::aec::engine::project::resolve_style_library(
+                self.aec.aec_project_explorer_file.as_ref(),
+            );
+            match field {
+                "opening_sill_plane" | "opening_head_plane" => {
+                    crate::modules::aec::project::opening_planes::apply_opening_plane_choice(
+                        &mut self.tabs[tab].scene,
+                        self.aec.aec_project_explorer_file.as_ref(),
+                        owner,
+                        field == "opening_sill_plane",
+                        val,
+                        Some(&style_library),
+                    );
+                    return true;
+                }
+                "opening_sill_offset" | "opening_head_offset" => {
+                    if let Some(v) = crate::entities::common::parse_f64(val) {
+                        let (sill, head) = if field == "opening_sill_offset" {
+                            (Some(v), None)
+                        } else {
+                            (None, Some(v))
+                        };
+                        crate::modules::aec::project::opening_planes::apply_opening_plane_offsets(
+                            &mut self.tabs[tab].scene,
+                            self.aec.aec_project_explorer_file.as_ref(),
+                            owner,
+                            sill,
+                            head,
+                            Some(&style_library),
+                        );
+                    }
+                    return true;
+                }
+                _ => {}
+            }
+            let Some(entity) = self.tabs[tab].scene.document.get_entity(owner).cloned() else {
+                return true;
+            };
+            let Some(mut opening) = opening_xdata::opening_from_entity(&entity, owner) else {
+                return true;
+            };
+            if apply_opening_property(&mut opening, field, val, Some(&style_library)) {
+                let (rules, _) =
+                    self.resolve_active_display_config_wall_rules(tab, Some(opening.host_wall));
+                let _ = opening_display::commit_opening_instance(
+                    &mut self.tabs[tab].scene,
+                    &opening,
+                    Some(&style_library),
+                    rules.as_ref(),
+                );
+                if opening.has_plane_binding() {
+                    crate::modules::aec::project::opening_planes::rebake_opening_in_scene(
+                        &mut self.tabs[tab].scene,
+                        self.aec.aec_project_explorer_file.as_ref(),
+                        owner,
+                        Some(&style_library),
+                    );
+                }
+            }
             return true;
         }
         match field {
@@ -628,6 +979,33 @@ impl crate::app::OpenCADStudio {
     }
 }
 
+pub fn append_opening_axis_grips(
+    scene: &crate::scene::Scene,
+    handle: Handle,
+    entity_grips: &mut Vec<crate::scene::model::object::GripDef>,
+) {
+    let Some(owner) = opening_display::opening_owner_if_any(scene, handle) else {
+        return;
+    };
+    let Some(entity) = scene.document.get_entity(owner) else {
+        return;
+    };
+    let Some(opening) = opening_xdata::opening_from_entity(entity, owner) else {
+        return;
+    };
+    let wall = wall_package::resolve_wall_package(scene, opening.host_wall);
+    let axis: Vec<(f64, f64)> = xdata::get_wall_vertices(scene, wall)
+        .iter()
+        .map(|v| (v.x, v.y))
+        .collect();
+    let grips = opening_display::opening_axis_grips(&axis, &opening);
+    if grips.is_empty() {
+        return;
+    }
+    entity_grips.clear();
+    entity_grips.extend(grips);
+}
+
 pub fn append_wall_junction_grips(
     scene: &crate::scene::Scene,
     handle: Handle,
@@ -693,5 +1071,89 @@ mod tests {
         };
         assert!(base_sel.contains("ELEVATION") || !base_sel.is_empty());
         assert_ne!(base_sel, "(none)");
+    }
+
+    #[test]
+    fn circle_width_edit_locks_height() {
+        let mut o = Opening::window(Handle::new(1), Handle::new(2), 1.0);
+        o.shape = OpeningShape::Circle;
+        o.width = 1.2;
+        o.height = 1.2;
+        assert!(apply_opening_property(&mut o, "opening_width", "1.8", None));
+        assert!((o.width - 1.8).abs() < 1e-12);
+        assert!((o.height - 1.8).abs() < 1e-12);
+        assert!(apply_opening_property(&mut o, "opening_height", "1.0", None));
+        assert!((o.width - 1.0).abs() < 1e-12);
+        assert!((o.height - 1.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn equilateral_width_sets_height() {
+        let mut o = Opening::window(Handle::new(1), Handle::new(2), 1.0);
+        o.shape = OpeningShape::Triangle(
+            crate::modules::aec::engine::opening_shape::TriangleVariant::Equilateral,
+        );
+        assert!(apply_opening_property(&mut o, "opening_width", "2.0", None));
+        assert!((o.height - OpeningShape::equilateral_height(2.0)).abs() < 1e-12);
+    }
+
+    #[test]
+    fn hinge_and_arch_spring_apply() {
+        let mut o = Opening::door(Handle::new(1), Handle::new(2), 1.0);
+        assert!(apply_opening_property(&mut o, "opening_hinge", "Right", None));
+        assert_eq!(o.hinge, HingeSide::Right);
+        assert!(apply_opening_property(&mut o, "opening_shape", "Arch", None));
+        assert_eq!(o.shape, OpeningShape::Arch);
+        assert!(o.spring_height > 0.0);
+        assert!(apply_opening_property(&mut o, "opening_spring", "0.4", None));
+        assert!((o.spring_height - 0.4).abs() < 1e-12);
+    }
+
+    #[test]
+    fn numeric_sill_and_height_unbind_planes() {
+        let mut o = Opening::window(Handle::new(1), Handle::new(2), 1.0);
+        o.sill_plane_id = Some(uuid::Uuid::new_v4());
+        o.head_plane_id = Some(uuid::Uuid::new_v4());
+        o.sill_plane_name = Some("A".into());
+        o.head_plane_name = Some("B".into());
+        assert!(apply_opening_property(&mut o, "opening_sill", "0.4", None));
+        assert!((o.sill_height - 0.4).abs() < 1e-12);
+        assert!(o.sill_plane_id.is_none());
+        assert!(o.head_plane_id.is_some());
+        assert!(apply_opening_property(&mut o, "opening_height", "1.5", None));
+        assert!((o.height - 1.5).abs() < 1e-12);
+        assert!(o.head_plane_id.is_none());
+    }
+
+    #[test]
+    fn opening_plane_fields_follow_sill_then_offsets() {
+        let storey = StoreyRef::new_with_height("EG", 0.0, 3.0, "eg.dwg");
+        let mut o = Opening::window(Handle::new(1), Handle::new(2), 1.0);
+        o.sill_plane_id = Some(storey.floor_plane_id);
+        o.head_plane_id = Some(storey.ceiling_plane_id);
+        let mut project = ProjectFile::default();
+        let mut building = Building::new("B");
+        building.storeys.push(storey);
+        project.buildings.push(building);
+        let section = opening_prop_section(&o, Handle::new(1), None, Some(&project));
+        let fields: Vec<&str> = section.props.iter().map(|p| p.field).collect();
+        let sill = fields.iter().position(|f| *f == "opening_sill").unwrap();
+        let sill_pl = fields
+            .iter()
+            .position(|f| *f == "opening_sill_plane")
+            .unwrap();
+        let sill_off = fields
+            .iter()
+            .position(|f| *f == "opening_sill_offset")
+            .unwrap();
+        let head_pl = fields
+            .iter()
+            .position(|f| *f == "opening_head_plane")
+            .unwrap();
+        let head_off = fields
+            .iter()
+            .position(|f| *f == "opening_head_offset")
+            .unwrap();
+        assert!(sill < sill_pl && sill_pl < sill_off && sill_off < head_pl && head_pl < head_off);
     }
 }

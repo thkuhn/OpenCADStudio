@@ -5,7 +5,7 @@ use std::collections::HashMap;
 use std::sync::Mutex;
 use uuid::Uuid;
 
-use acadrust::entities::{LwPolyline, LwVertex, Point};
+use acadrust::entities::{LwPolyline, LwVertex, Point, Polyline3D};
 use acadrust::tables::AppId;
 use acadrust::types::{Vector2, Vector3};
 use acadrust::{CadDocument, EntityType, Handle};
@@ -764,6 +764,321 @@ pub fn regenerate_wall_representation_with_precomputed_miters_rules_and_substitu
     )
 }
 
+fn find_end_peer_layers(
+    scene: &Scene,
+    wall_handle: Handle,
+    self_axis_2d: &[(f64, f64)],
+    handled_end: usize,
+) -> Option<(Vec<engine::miter::MiterLayer>, Option<usize>)> {
+    if self_axis_2d.len() < 2 || handled_end >= self_axis_2d.len() {
+        return None;
+    }
+    let pt = self_axis_2d[handled_end];
+    let pt3 = DVec3::new(pt.0, pt.1, 0.0);
+    let tol = join::JUNCTION_TOLERANCE.max(1e-4);
+
+    let candidates = engine::owner_index::peers_of(&scene.document, wall_handle);
+    if candidates.is_empty() {
+        return None;
+    }
+    for peer in candidates {
+        if peer == wall_handle {
+            continue;
+        }
+        let peer_axis = get_wall_vertices(scene, peer);
+        if peer_axis.len() < 2 {
+            continue;
+        }
+        if peer_axis[0].distance(pt3) <= tol {
+            let layers = wall_layer_data(scene, peer);
+            return Some((layers, Some(0)));
+        } else if peer_axis.last().unwrap().distance(pt3) <= tol {
+            let layers = wall_layer_data(scene, peer);
+            return Some((layers, Some(peer_axis.len() - 1)));
+        }
+    }
+    None
+}
+
+fn layer_has_same_material_peer(
+    layer: &WallLayer,
+    layer_idx: usize,
+    self_end: usize,
+    all_layers: &[WallLayer],
+    peer_data: Option<&(Vec<engine::miter::MiterLayer>, Option<usize>)>,
+) -> bool {
+    let Some((peer_layers, peer_end)) = peer_data else {
+        return false;
+    };
+    let miter_self_layers: Vec<engine::miter::MiterLayer> = all_layers
+        .iter()
+        .map(|l| engine::miter::MiterLayer::with_id(l.thickness, l.axis_offset, l.material.clone(), l.function.clone(), l.layer_id))
+        .collect();
+    let pairing = engine::miter::match_layer_indices_for_l_join(&miter_self_layers, peer_layers, self_end, *peer_end);
+    if let Some(Some(other_idx)) = pairing.get(layer_idx) {
+        if let Some(other_l) = peer_layers.get(*other_idx) {
+            return !layer.material.is_empty() && layer.material.eq_ignore_ascii_case(&other_l.material);
+        }
+    }
+    false
+}
+
+fn filter_opening_surface_edges(
+    set: &mut crate::scene::model::mesh_model::MeshLodSet,
+    wires: &mut Vec<acadrust::entities::Wire>,
+    openings: &[engine::openings::Opening],
+    centerline: &[(f64, f64)],
+    solid_height: f64,
+    solid_base: f64,
+) {
+    if openings.is_empty() || centerline.len() < 2 {
+        return;
+    }
+
+    struct CutPlane {
+        origin: (f64, f64),
+        tangent: (f64, f64),
+        jamb_intervals: Vec<(f64, f64)>,
+    }
+
+    let mut cut_planes: Vec<CutPlane> = Vec::new();
+    let zones = engine::elevation_cut::opening_zones(openings);
+    for zone in &zones {
+        let width = zone.width();
+        let xs = engine::elevation_cut::opening_slice_x_positions(width, &zone.holes);
+        for x in xs {
+            let s_axis = zone.s0 + x;
+            if let Some((origin, tangent)) =
+                engine::openings::point_and_tangent_at_distance(centerline, s_axis)
+            {
+                let mut jambs = Vec::new();
+                for hole in &zone.holes {
+                    let n = hole.len();
+                    for i in 0..n {
+                        let p_a = hole[i];
+                        let p_b = hole[(i + 1) % n];
+                        if (p_a.0 - x).abs() <= 1e-3 && (p_b.0 - x).abs() <= 1e-3 {
+                            let dz = (p_b.1 - p_a.1).abs();
+                            if dz > 1e-3 {
+                                let z_low = p_a.1.min(p_b.1) + solid_base;
+                                let z_high = p_a.1.max(p_b.1) + solid_base;
+                                jambs.push((z_low, z_high));
+                            }
+                        }
+                    }
+                }
+
+                if let Some(existing) = cut_planes.iter_mut().find(|cp| {
+                    (cp.origin.0 - origin.0).hypot(cp.origin.1 - origin.1) <= 1e-3
+                }) {
+                    existing.jamb_intervals.extend(jambs);
+                } else {
+                    cut_planes.push(CutPlane {
+                        origin,
+                        tangent,
+                        jamb_intervals: jambs,
+                    });
+                }
+            }
+        }
+    }
+
+    let is_on_plane = |p: [f64; 3], cp: &CutPlane| -> bool {
+        let dot = (p[0] - cp.origin.0) * cp.tangent.0 + (p[1] - cp.origin.1) * cp.tangent.1;
+        dot.abs() <= 2e-3
+    };
+
+    let process_segment = |p0: [f64; 3], p1: [f64; 3]| -> Vec<([f64; 3], [f64; 3])> {
+        let matched_cp = cut_planes.iter().find(|cp| is_on_plane(p0, cp) && is_on_plane(p1, cp));
+        let Some(cp) = matched_cp else {
+            return vec![(p0, p1)];
+        };
+
+        let dxy = (p1[0] - p0[0]).hypot(p1[1] - p0[1]);
+        let dz = (p1[2] - p0[2]).abs();
+
+        // Transverse horizontal edge at wall crown
+        if (p0[2] - (solid_base + solid_height)).abs() <= 2e-3
+            && (p1[2] - (solid_base + solid_height)).abs() <= 2e-3
+        {
+            return Vec::new();
+        }
+        // Transverse horizontal edge at wall base
+        if (p0[2] - solid_base).abs() <= 2e-3 && (p1[2] - solid_base).abs() <= 2e-3 {
+            return Vec::new();
+        }
+
+        // Vertical edge on wall face
+        if dxy <= 1e-3 && dz > 1e-3 {
+            let z_low = p0[2].min(p1[2]);
+            let z_high = p0[2].max(p1[2]);
+            let mut kept = Vec::new();
+            for &(jamb_low, jamb_high) in &cp.jamb_intervals {
+                let overlap_low = z_low.max(jamb_low);
+                let overlap_high = z_high.min(jamb_high);
+                if overlap_high - overlap_low > 1e-4 {
+                    let v_a = [p0[0], p0[1], overlap_low];
+                    let v_b = [p0[0], p0[1], overlap_high];
+                    kept.push((v_a, v_b));
+                }
+            }
+            return kept;
+        }
+
+        vec![(p0, p1)]
+    };
+
+    let old_verts = std::mem::take(&mut set.edge_verts);
+    let mut new_verts = Vec::with_capacity(old_verts.len());
+    let mut new_verts_low = Vec::with_capacity(old_verts.len());
+
+    for chunk in old_verts.chunks_exact(2) {
+        let p0 = [chunk[0][0] as f64, chunk[0][1] as f64, chunk[0][2] as f64];
+        let p1 = [chunk[1][0] as f64, chunk[1][1] as f64, chunk[1][2] as f64];
+        let kept = process_segment(p0, p1);
+        for (v0, v1) in kept {
+            let h0 = [v0[0] as f32, v0[1] as f32, v0[2] as f32];
+            let l0 = [(v0[0] - h0[0] as f64) as f32, (v0[1] - h0[1] as f64) as f32, (v0[2] - h0[2] as f64) as f32];
+            let h1 = [v1[0] as f32, v1[1] as f32, v1[2] as f32];
+            let l1 = [(v1[0] - h1[0] as f64) as f32, (v1[1] - h1[1] as f64) as f32, (v1[2] - h1[2] as f64) as f32];
+            new_verts.push(h0);
+            new_verts_low.push(l0);
+            new_verts.push(h1);
+            new_verts_low.push(l1);
+        }
+    }
+    set.edge_verts = new_verts;
+    set.edge_verts_low = new_verts_low;
+
+    let old_wires = std::mem::take(wires);
+    let mut new_wires = Vec::new();
+    for wire in old_wires {
+        if wire.points.len() < 2 {
+            continue;
+        }
+        for window in wire.points.windows(2) {
+            let p0 = [window[0].x, window[0].y, window[0].z];
+            let p1 = [window[1].x, window[1].y, window[1].z];
+            let kept = process_segment(p0, p1);
+            for (v0, v1) in kept {
+                let w = acadrust::entities::Wire::from_points(vec![
+                    acadrust::types::Vector3::new(v0[0], v0[1], v0[2]),
+                    acadrust::types::Vector3::new(v1[0], v1[1], v1[2]),
+                ]);
+                new_wires.push(w);
+            }
+        }
+    }
+    *wires = new_wires;
+}
+
+fn filter_miter_deck_edges(
+    set: &mut crate::scene::model::mesh_model::MeshLodSet,
+    wires: &mut Vec<acadrust::entities::Wire>,
+    miter_segments_2d: &[((f64, f64), (f64, f64))],
+    z_base: f64,
+    z_top: f64,
+) {
+    if miter_segments_2d.is_empty() {
+        return;
+    }
+
+    let is_deck_miter_segment = |p0: [f64; 3], p1: [f64; 3]| -> bool {
+        let is_at_deck = (p0[2] - z_top).abs() <= 2e-3 && (p1[2] - z_top).abs() <= 2e-3;
+        let is_at_base = (p0[2] - z_base).abs() <= 2e-3 && (p1[2] - z_base).abs() <= 2e-3;
+        if !is_at_deck && !is_at_base {
+            return false;
+        }
+
+        for &(v_a, v_b) in miter_segments_2d {
+            let d0a = (p0[0] - v_a.0).hypot(p0[1] - v_a.1);
+            let d1b = (p1[0] - v_b.0).hypot(p1[1] - v_b.1);
+            let d0b = (p0[0] - v_b.0).hypot(p0[1] - v_b.1);
+            let d1a = (p1[0] - v_a.0).hypot(p1[1] - v_a.1);
+            if (d0a <= 5e-3 && d1b <= 5e-3) || (d0b <= 5e-3 && d1a <= 5e-3) {
+                return true;
+            }
+        }
+        false
+    };
+
+    let old_verts = std::mem::take(&mut set.edge_verts);
+    let old_low = std::mem::take(&mut set.edge_verts_low);
+    let mut new_verts = Vec::with_capacity(old_verts.len());
+    let mut new_verts_low = Vec::with_capacity(old_low.len());
+
+    for (i, chunk) in old_verts.chunks_exact(2).enumerate() {
+        let p0 = [chunk[0][0] as f64, chunk[0][1] as f64, chunk[0][2] as f64];
+        let p1 = [chunk[1][0] as f64, chunk[1][1] as f64, chunk[1][2] as f64];
+        if !is_deck_miter_segment(p0, p1) {
+            new_verts.push(chunk[0]);
+            new_verts.push(chunk[1]);
+            if let Some(low_chunk) = old_low.get(i * 2..i * 2 + 2) {
+                new_verts_low.push(low_chunk[0]);
+                new_verts_low.push(low_chunk[1]);
+            }
+        }
+    }
+    set.edge_verts = new_verts;
+    set.edge_verts_low = new_verts_low;
+
+    let old_wires = std::mem::take(wires);
+    let mut new_wires = Vec::new();
+    for wire in old_wires {
+        if wire.points.len() < 2 {
+            continue;
+        }
+        let mut filtered_segments = Vec::new();
+        for win in wire.points.windows(2) {
+            let p0 = [win[0].x, win[0].y, win[0].z];
+            let p1 = [win[1].x, win[1].y, win[1].z];
+            if !is_deck_miter_segment(p0, p1) {
+                filtered_segments.push((win[0], win[1]));
+            }
+        }
+        for (w0, w1) in filtered_segments {
+            new_wires.push(acadrust::entities::Wire::from_points(vec![w0, w1]));
+        }
+    }
+    *wires = new_wires;
+}
+
+fn find_cap_edge_index(
+    footprint: &[(f64, f64)],
+    target_pt: (f64, f64),
+    axis_tangent: (f64, f64),
+    max_dist: f64,
+) -> Option<usize> {
+    let n = footprint.len();
+    if n < 3 {
+        return None;
+    }
+    let mut best_idx = None;
+    let mut best_dist = f64::MAX;
+
+    for i in 0..n {
+        let p0 = footprint[i];
+        let p1 = footprint[(i + 1) % n];
+        let mid = ((p0.0 + p1.0) * 0.5, (p0.1 + p1.1) * 0.5);
+        let dist = ((mid.0 - target_pt.0).powi(2) + (mid.1 - target_pt.1).powi(2)).sqrt();
+        if dist > max_dist {
+            continue;
+        }
+        let edge = (p1.0 - p0.0, p1.1 - p0.1);
+        let edge_len = (edge.0.powi(2) + edge.1.powi(2)).sqrt();
+        if edge_len < 1e-6 {
+            continue;
+        }
+        let edge_dir = (edge.0 / edge_len, edge.1 / edge_len);
+        let dot = (edge_dir.0 * axis_tangent.0 + edge_dir.1 * axis_tangent.1).abs();
+        if dot <= 0.85 && dist < best_dist {
+            best_dist = dist;
+            best_idx = Some(i);
+        }
+    }
+    best_idx
+}
+
 /// Locate a wall's already-established join(s) — pairwise (L/T) or N-way —
 /// at the axis end that is *not* `handled_end`, using the peer-link index
 /// maintained by `engine::owner_index`, cross-referenced against which of
@@ -1100,9 +1415,17 @@ pub(crate) fn regenerate_wall_representation_inner(
         .map(|(_, b)| b.clone())
         .collect();
 
-    // Openings hosted by this wall — used to split 2D contours/hatches into
-    // disconnected pieces. 3D solids stay uncut in this step (deferred).
-    let wall_openings = openings_for_host_wall(scene, wall_handle);
+    // Openings hosted by this wall — split 2D contours/hatches into
+    // disconnected pieces. 3D rest-wall solids use those pieces; the opening
+    // zone is an elevation-cut extrusion through each layer.
+    let host_cut_visible = rules.map_or(true, |r| {
+        r.is_opening_visible(engine::display_component::OpeningComponentSlot::HostCut2D)
+    });
+    let wall_openings = if host_cut_visible {
+        openings_for_host_wall(scene, wall_handle)
+    } else {
+        Vec::new()
+    };
     let (centerline, bulges) = wall_axis_points_and_bulges(&axis_entity);
     let layer_data: Vec<(f64, f64)> =
         layers.iter().map(|l| (l.thickness, l.axis_offset)).collect();
@@ -1123,12 +1446,6 @@ pub(crate) fn regenerate_wall_representation_inner(
         &wall_openings,
         &layer_extrusion,
     );
-    let opening_cut_layers: Option<Vec<Vec<Vec<(f64, f64)>>>> =
-        if display.rep2d.cut_layer_pieces_2d.is_empty() {
-            None
-        } else {
-            Some(display.rep2d.cut_layer_pieces_2d.clone())
-        };
 
     // Fallback footprints: axis with a single vertex pushed past the join into
     // the other wall's footprint (legacy corner-overlap path).
@@ -1244,6 +1561,17 @@ pub(crate) fn regenerate_wall_representation_inner(
     // rendering would revert to a plain unjoined cap whenever this wall is
     // regenerated for a *different* join event (see module-level bug notes
     // on `find_other_end_join_miter`).
+    let mut peer_at_end0: Option<(Vec<engine::miter::MiterLayer>, Option<usize>)> = None;
+    let mut peer_at_end1: Option<(Vec<engine::miter::MiterLayer>, Option<usize>)> = None;
+
+    if let Some(ctx) = join_miter {
+        if ctx.self_end == 0 {
+            peer_at_end0 = Some((ctx.other_layers.clone(), ctx.other_end));
+        } else {
+            peer_at_end1 = Some((ctx.other_layers.clone(), ctx.other_end));
+        }
+    }
+
     if self_axis_2d.len() >= 2 {
         let mut candidate_ends = vec![0usize, self_axis_2d.len() - 1];
         candidate_ends.dedup();
@@ -1254,6 +1582,13 @@ pub(crate) fn regenerate_wall_representation_inner(
             if let Some(other_footprints) =
                 find_other_end_junction_footprints(scene, wall_handle, &self_axis_2d, end_idx)
             {
+                if let Some(peer_data) = find_end_peer_layers(scene, wall_handle, &self_axis_2d, end_idx) {
+                    if end_idx == 0 {
+                        peer_at_end0 = Some(peer_data);
+                    } else {
+                        peer_at_end1 = Some(peer_data);
+                    }
+                }
                 for (i, base_fp) in base_footprints.iter().enumerate() {
                     let merged = engine::miter::merge_end_footprints(
                         base_fp,
@@ -1379,21 +1714,29 @@ pub(crate) fn regenerate_wall_representation_inner(
                 )
             };
 
-        let use_opening_cuts = mitered_footprints.get(i).and_then(|o| o.as_ref()).is_none()
-            && extended_footprints.get(i).is_none()
-            && opening_cut_layers.is_some();
-
-        let pieces_2d: Vec<(Vec<(f64, f64)>, Vec<f64>)> = if use_opening_cuts {
-            opening_cut_layers
-                .as_ref()
-                .and_then(|cuts| cuts.get(i))
-                .map(|pieces| {
-                    pieces
-                        .iter()
-                        .map(|p| (p.clone(), vec![0.0; p.len()]))
-                        .collect()
+        let pieces_2d: Vec<(Vec<(f64, f64)>, Vec<f64>)> = if !wall_openings.is_empty() {
+            let split_rings = engine::miter::split_mitered_footprint_by_openings(
+                &uncut_footprint.0,
+                &centerline,
+                &wall_openings,
+            );
+            split_rings
+                .into_iter()
+                .map(|p| {
+                    let b = if uncut_footprint.1.is_empty()
+                        || uncut_footprint.1.iter().all(|&x| x.abs() < 1e-12)
+                    {
+                        vec![0.0; p.len()]
+                    } else {
+                        retarget_closed_footprint_bulges(
+                            &base_footprints[i],
+                            base_footprint_bulges.get(i).map(|b| b.as_slice()).unwrap_or(&[]),
+                            &p,
+                        )
+                    };
+                    (p, b)
                 })
-                .unwrap_or_else(|| vec![uncut_footprint.clone()])
+                .collect()
         } else {
             let rings = engine::miter::split_footprint_rings(&uncut_footprint.0);
             if rings.len() > 1 {
@@ -1404,8 +1747,10 @@ pub(crate) fn regenerate_wall_representation_inner(
                         (r, vec![0.0; n])
                     })
                     .collect()
-            } else {
+            } else if !uncut_footprint.0.is_empty() {
                 vec![uncut_footprint.clone()]
+            } else {
+                Vec::new()
             }
         };
 
@@ -1552,45 +1897,157 @@ pub(crate) fn regenerate_wall_representation_inner(
             })
             .unwrap_or_default();
 
+        let has_explicit_contour_filter = matches!(
+            rules.map(|r| r.layer_filter_for(WallComponentSlot::Contour2D)),
+            Some(LayerSelection::Explicit(_))
+        );
+        let has_explicit_layers2d_filter = matches!(
+            rules.map(|r| r.layer_filter_for(WallComponentSlot::Layers2D)),
+            Some(LayerSelection::Explicit(_))
+        );
+
+        let same_mat_end0 = layer_has_same_material_peer(layer, i, 0, &layers, peer_at_end0.as_ref());
+        let same_mat_end1 = layer_has_same_material_peer(
+            layer,
+            i,
+            self_axis_2d.len().saturating_sub(1),
+            &layers,
+            peer_at_end1.as_ref(),
+        );
+
+        let (p_start, t_start) = if centerline.len() >= 2 {
+            let p0 = centerline[0];
+            let p1 = centerline[1];
+            let dx = p1.0 - p0.0;
+            let dy = p1.1 - p0.1;
+            let len = (dx * dx + dy * dy).sqrt().max(1e-9);
+            (p0, (dx / len, dy / len))
+        } else {
+            ((0.0, 0.0), (1.0, 0.0))
+        };
+        let (p_end, t_end) = if centerline.len() >= 2 {
+            let p0 = centerline[centerline.len() - 2];
+            let p1 = centerline[centerline.len() - 1];
+            let dx = p1.0 - p0.0;
+            let dy = p1.1 - p0.1;
+            let len = (dx * dx + dy * dy).sqrt().max(1e-9);
+            (p1, (dx / len, dy / len))
+        } else {
+            ((0.0, 0.0), (1.0, 0.0))
+        };
+
         // 2D contour + hatch for each remaining piece after openings.
         for (footprint, footprint_bulges) in &pieces_2d {
             if footprint.len() < 3 {
                 continue;
             }
 
-            let draw_contour = (layers2d_visible && layer_included_layers2d)
-                || (contour2d_visible && is_envelope && layer_included_contour);
+            let draw_contour = if has_explicit_contour_filter {
+                contour2d_visible && layer_included_contour
+            } else if has_explicit_layers2d_filter {
+                layers2d_visible && layer_included_layers2d
+            } else {
+                (layers2d_visible && layer_included_layers2d)
+                    || (contour2d_visible && is_envelope && layer_included_contour)
+            };
             let draw_hatch = (layer_hatch_visible && layer_included_hatch)
                 || (contour_hatch_visible && is_envelope);
 
             if draw_contour {
-                let mut pl = LwPolyline::new();
-                for (idx, &(x, y)) in footprint.iter().enumerate() {
-                    let bulge = footprint_bulges.get(idx).copied().unwrap_or(0.0);
-                    pl.add_vertex(LwVertex::with_bulge(Vector2::new(x, y), bulge));
-                }
-                pl.is_closed = true;
-                pl.elevation = wall_base_z;
-                let contour_handle =
-                    reuse_or_add_wall_contour(scene, &mut reusable_contours, pl);
-                if let Some(layer_name) = layer.layer_override.as_deref().filter(|s| !s.is_empty()) {
-                    scene.ensure_layer(layer_name);
-                    if let Some(e) = scene.document.get_entity_mut(contour_handle) {
-                        e.as_entity_mut().set_layer(layer_name.to_string());
+                let n = footprint.len();
+                let total_thick: f64 = layers.iter().map(|l| l.thickness).sum();
+                let cap0 = if same_mat_end0 {
+                    find_cap_edge_index(footprint, p_start, t_start, total_thick.max(0.2) * 2.5)
+                } else {
+                    None
+                };
+                let cap1 = if same_mat_end1 {
+                    find_cap_edge_index(footprint, p_end, t_end, total_thick.max(0.2) * 2.5)
+                } else {
+                    None
+                };
+
+                let polylines_to_emit: Vec<LwPolyline> = match (cap0, cap1) {
+                    (Some(c0), Some(c1)) if c0 != c1 && n >= 4 => {
+                        let imin = c0.min(c1);
+                        let imax = c0.max(c1);
+                        let mut pl1 = LwPolyline::new();
+                        for step in 0..=(imax - imin - 1) {
+                            let idx = imin + 1 + step;
+                            let bulge = if step < imax - imin - 1 {
+                                footprint_bulges.get(idx).copied().unwrap_or(0.0)
+                            } else {
+                                0.0
+                            };
+                            let (x, y) = footprint[idx];
+                            pl1.add_vertex(LwVertex::with_bulge(Vector2::new(x, y), bulge));
+                        }
+                        pl1.is_closed = false;
+
+                        let mut pl2 = LwPolyline::new();
+                        let count2 = n - (imax - imin);
+                        for step in 0..count2 {
+                            let idx = (imax + 1 + step) % n;
+                            let bulge = if step < count2 - 1 {
+                                footprint_bulges.get(idx).copied().unwrap_or(0.0)
+                            } else {
+                                0.0
+                            };
+                            let (x, y) = footprint[idx];
+                            pl2.add_vertex(LwVertex::with_bulge(Vector2::new(x, y), bulge));
+                        }
+                        pl2.is_closed = false;
+                        vec![pl1, pl2]
                     }
-                }
-                if let Some(color) = line_color {
-                    if let Some(e) = scene.document.get_entity_mut(contour_handle) {
-                        e.as_entity_mut().set_color(color);
+                    (Some(c), _) | (_, Some(c)) if n >= 3 => {
+                        let mut pl = LwPolyline::new();
+                        for step in 0..n {
+                            let idx = (c + 1 + step) % n;
+                            let bulge = if step < n - 1 {
+                                footprint_bulges.get(idx).copied().unwrap_or(0.0)
+                            } else {
+                                0.0
+                            };
+                            let (x, y) = footprint[idx];
+                            pl.add_vertex(LwVertex::with_bulge(Vector2::new(x, y), bulge));
+                        }
+                        pl.is_closed = false;
+                        vec![pl]
                     }
-                }
-                if let Some(lt) = contour_style_override.line_type.as_deref().filter(|s| !s.is_empty()) {
-                    if let Some(e) = scene.document.get_entity_mut(contour_handle) {
-                        e.common_mut().linetype = lt.to_string();
+                    _ => {
+                        let mut pl = LwPolyline::new();
+                        for (idx, &(x, y)) in footprint.iter().enumerate() {
+                            let bulge = footprint_bulges.get(idx).copied().unwrap_or(0.0);
+                            pl.add_vertex(LwVertex::with_bulge(Vector2::new(x, y), bulge));
+                        }
+                        pl.is_closed = true;
+                        vec![pl]
                     }
+                };
+
+                for mut pl in polylines_to_emit {
+                    pl.elevation = wall_base_z;
+                    let contour_handle =
+                        reuse_or_add_wall_contour(scene, &mut reusable_contours, pl);
+                    if let Some(layer_name) = layer.layer_override.as_deref().filter(|s| !s.is_empty()) {
+                        scene.ensure_layer(layer_name);
+                        if let Some(e) = scene.document.get_entity_mut(contour_handle) {
+                            e.as_entity_mut().set_layer(layer_name.to_string());
+                        }
+                    }
+                    if let Some(color) = line_color {
+                        if let Some(e) = scene.document.get_entity_mut(contour_handle) {
+                            e.as_entity_mut().set_color(color);
+                        }
+                    }
+                    if let Some(lt) = contour_style_override.line_type.as_deref().filter(|s| !s.is_empty()) {
+                        if let Some(e) = scene.document.get_entity_mut(contour_handle) {
+                            e.common_mut().linetype = lt.to_string();
+                        }
+                    }
+                    write_wall_display_tag(scene, contour_handle, wall_handle, WALL_REP_ROLE_CONTOUR);
+                    new_derived.push(contour_handle);
                 }
-                write_wall_display_tag(scene, contour_handle, wall_handle, WALL_REP_ROLE_CONTOUR);
-                new_derived.push(contour_handle);
             }
 
             if draw_hatch {
@@ -1645,32 +2102,22 @@ pub(crate) fn regenerate_wall_representation_inner(
             }
         }
 
-        // Extruded solid for this layer — same rings as 2D (miter/cutout/
-        // corner override, else WallDisplaySet solids). 3D opening boolean
-        // remains deferred.
+        // Rest-wall solids: Z-extrude remaining band pieces (or mitered /
+        // corner-extended footprints). Opening-zone remainders are extruded
+        // through the layer thickness separately below.
+        let rest_for_layer: Vec<&engine::representation::WallLayerSolidPath> = display
+            .solids
+            .iter()
+            .filter(|s| s.layer_index == i)
+            .collect();
         let (solid_height, solid_base) = if let Some(ex) = extrusions.get(i) {
             (ex.height, ex.base_offset + wall_base_z)
-        } else if let Some(solid) = display.solids.get(i) {
+        } else if let Some(solid) = rest_for_layer.first() {
             (solid.height, solid.base_offset + wall_base_z)
         } else {
             (height, wall_base_z)
         };
-        let solid_rings: Vec<(Vec<(f64, f64)>, Vec<f64>)> = if !pieces_2d.is_empty()
-            && mitered_footprints.get(i).and_then(|o| o.as_ref()).is_some()
-        {
-            pieces_2d.clone()
-        } else if let Some(fp) = extended_footprints.get(i) {
-            let bg = retarget_closed_footprint_bulges(
-                &base_footprints[i],
-                base_footprint_bulges.get(i).map(|b| b.as_slice()).unwrap_or(&[]),
-                fp,
-            );
-            vec![(fp.clone(), bg)]
-        } else if let Some(solid) = display.solids.get(i) {
-            vec![(solid.footprint.clone(), solid.bulges.clone())]
-        } else {
-            vec![uncut_footprint.clone()]
-        };
+        let solid_rings: Vec<(Vec<(f64, f64)>, Vec<f64>)> = pieces_2d.clone();
         if solid_visible && layer_included_solid && solid_height.abs() > 1e-9 {
             for (footprint, footprint_bulges) in &solid_rings {
                 if footprint.len() < 3 {
@@ -1698,10 +2145,42 @@ pub(crate) fn regenerate_wall_representation_inner(
                 if let Some(body) =
                     crate::scene::model::sweep_model::extruded(entity_to_use, solid_height)
                 {
-                    let mut s3d = acadrust::entities::Solid3D::new();
-                    s3d.wires = crate::scene::model::solid_model::edge_wires(&body);
+                    let s3d = acadrust::entities::Solid3D::new();
                     let solid_handle = scene.add_entity(EntityType::Solid3D(s3d));
-                    scene.register_solid_model(solid_handle, body);
+                    if let Some(mut display_geom) = scene.prepare_solid_model_display(solid_handle, &body) {
+                        let mut miter_seams = Vec::new();
+                        let total_thick: f64 = layers.iter().map(|l| l.thickness).sum();
+                        if same_mat_end0 {
+                            if let Some(c0) = find_cap_edge_index(footprint, p_start, t_start, total_thick.max(0.2) * 2.5) {
+                                miter_seams.push((footprint[c0], footprint[(c0 + 1) % footprint.len()]));
+                            }
+                        }
+                        if same_mat_end1 {
+                            if let Some(c1) = find_cap_edge_index(footprint, p_end, t_end, total_thick.max(0.2) * 2.5) {
+                                miter_seams.push((footprint[c1], footprint[(c1 + 1) % footprint.len()]));
+                            }
+                        }
+                        if !miter_seams.is_empty() {
+                            filter_miter_deck_edges(
+                                &mut display_geom.0,
+                                &mut display_geom.1,
+                                &miter_seams,
+                                solid_base,
+                                solid_base + solid_height,
+                            );
+                        }
+                        if !wall_openings.is_empty() {
+                            filter_opening_surface_edges(
+                                &mut display_geom.0,
+                                &mut display_geom.1,
+                                &wall_openings,
+                                &centerline,
+                                solid_height,
+                                solid_base,
+                            );
+                        }
+                        scene.register_prepared_solid_model(solid_handle, body, display_geom);
+                    }
                     if let Some(color) = fill_color {
                         if let Some(e) = scene.document.get_entity_mut(solid_handle) {
                             e.as_entity_mut().set_color(color);
@@ -1709,6 +2188,54 @@ pub(crate) fn regenerate_wall_representation_inner(
                     }
                     write_wall_display_tag(scene, solid_handle, wall_handle, WALL_REP_ROLE_SOLID);
                     new_derived.push(solid_handle);
+                }
+            }
+            // Opening zone: elevation remainder extruded through the layer
+            // thickness.
+            if !wall_openings.is_empty() {
+                for zone in display.zone_solids.iter().filter(|z| z.layer_index == i) {
+                    if zone.loop_xyz.len() < 3 {
+                        continue;
+                    }
+                    let pts: Vec<Vector3> = zone
+                        .loop_xyz
+                        .iter()
+                        .map(|p| Vector3::new(p[0], p[1], p[2] + wall_base_z))
+                        .collect();
+                    let mut pl = Polyline3D::from_points(pts);
+                    pl.flags.closed = true;
+                    let entity = EntityType::Polyline3D(pl);
+                    if let Some(body) = crate::scene::model::sweep_model::extruded_direction(
+                        &entity,
+                        zone.direction,
+                        0.0,
+                    ) {
+                        let s3d = acadrust::entities::Solid3D::new();
+                        let solid_handle = scene.add_entity(EntityType::Solid3D(s3d));
+                        if let Some(mut display_geom) = scene.prepare_solid_model_display(solid_handle, &body) {
+                            filter_opening_surface_edges(
+                                &mut display_geom.0,
+                                &mut display_geom.1,
+                                &wall_openings,
+                                &centerline,
+                                solid_height,
+                                solid_base,
+                            );
+                            scene.register_prepared_solid_model(solid_handle, body, display_geom);
+                        }
+                        if let Some(color) = fill_color {
+                            if let Some(e) = scene.document.get_entity_mut(solid_handle) {
+                                e.as_entity_mut().set_color(color);
+                            }
+                        }
+                        write_wall_display_tag(
+                            scene,
+                            solid_handle,
+                            wall_handle,
+                            WALL_REP_ROLE_SOLID,
+                        );
+                        new_derived.push(solid_handle);
+                    }
                 }
             }
         }
@@ -1721,9 +2248,22 @@ pub(crate) fn regenerate_wall_representation_inner(
     let _ = set_wall_derived_handles(scene, wall_handle, &new_derived);
     // Keep storey membership index in sync whenever a wall is (re)built.
     register_wall_in_storey(scene, wall_handle);
+    engine::opening_display::regenerate_openings_for_wall(
+        scene,
+        wall_handle,
+        library_override,
+        rules,
+    );
     let mut touched = Vec::with_capacity(1 + new_derived.len());
     touched.push(wall_handle);
     touched.extend(new_derived.iter().copied());
+    for opening in openings_for_host_wall(scene, wall_handle) {
+        touched.push(opening.handle);
+        touched.extend(engine::opening_display::collect_opening_display_children(
+            scene,
+            opening.handle,
+        ));
+    }
     Ok(touched)
 }
 

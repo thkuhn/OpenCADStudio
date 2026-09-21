@@ -26,19 +26,24 @@
 //!   polyline. Arc-axis openings use the same polyline chord length (not true
 //!   arc length) — an acceptable approximation for placement; document callers
 //!   that need arc-length precision can upgrade later.
-//! - 3D solid cutting (sill/head box boolean) is deferred; 2D plan cutting is
-//!   the primary deliverable.
+//! - 3D opening-zone solids are produced by [`super::elevation_cut`] (elevation
+//!   rectangle minus shape, extruded through layer thickness). Plan cuts stay
+//!   a bounding-width band split.
 
 use acadrust::Handle;
+use serde::{Deserialize, Serialize};
 
 use super::contour::outer_contour;
 use super::geometry::area;
+use super::opening_shape::OpeningShape;
+use super::opening_style::HingeSide;
 
-/// Window or door.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Window, door, or breakthrough (same POINT + XDATA host).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum OpeningKind {
     Window,
     Door,
+    Breakthrough,
 }
 
 impl OpeningKind {
@@ -46,18 +51,35 @@ impl OpeningKind {
         match self {
             OpeningKind::Window => "Window",
             OpeningKind::Door => "Door",
+            OpeningKind::Breakthrough => "Breakthrough",
         }
     }
 
     pub fn from_str(s: &str) -> Self {
         match s {
             "Door" | "door" | "DOOR" => OpeningKind::Door,
+            "Breakthrough" | "breakthrough" | "BREAKTHROUGH" | "Opening" | "opening" => {
+                OpeningKind::Breakthrough
+            }
             _ => OpeningKind::Window,
+        }
+    }
+
+    /// Default `(width, height, sill)` in drawing units for this kind.
+    pub fn default_dimensions(self) -> (f64, f64, f64) {
+        match self {
+            OpeningKind::Window => (DEFAULT_WINDOW_WIDTH, DEFAULT_WINDOW_HEIGHT, DEFAULT_WINDOW_SILL),
+            OpeningKind::Door => (DEFAULT_DOOR_WIDTH, DEFAULT_DOOR_HEIGHT, DEFAULT_DOOR_SILL),
+            OpeningKind::Breakthrough => (
+                DEFAULT_BREAKTHROUGH_WIDTH,
+                DEFAULT_BREAKTHROUGH_HEIGHT,
+                DEFAULT_BREAKTHROUGH_SILL,
+            ),
         }
     }
 }
 
-/// A wall opening (window or door) hosted by a wall axis entity.
+/// A wall opening (window, door, or breakthrough) hosted by a wall axis entity.
 ///
 /// `distance_along_axis` is the distance from the wall axis **start** vertex to
 /// the opening's center, measured along the axis polyline as the sum of
@@ -71,6 +93,26 @@ pub struct Opening {
     pub height: f64,
     pub sill_height: f64,
     pub kind: OpeningKind,
+    /// Library style; `None` on legacy 7-value XDATA records.
+    pub style_id: Option<String>,
+    pub hinge: HingeSide,
+    pub shape: OpeningShape,
+    /// Arch Kämpfer above the sill. Unused for other shapes; `0` on legacy records.
+    pub spring_height: f64,
+    /// Optional sill/head control planes (same project planes as wall base/top).
+    /// Numeric [`sill_height`] / [`height`] remain the baked cache relative to the
+    /// host wall base at the opening XY.
+    pub sill_plane_id: Option<uuid::Uuid>,
+    pub head_plane_id: Option<uuid::Uuid>,
+    /// Last persisted plane names (XDATA); used when the project is not loaded.
+    pub sill_plane_name: Option<String>,
+    pub head_plane_name: Option<String>,
+    pub sill_offset: f64,
+    pub head_offset: f64,
+    pub sill_origin: [f64; 3],
+    pub sill_normal: [f64; 3],
+    pub head_origin: [f64; 3],
+    pub head_normal: [f64; 3],
 }
 
 /// Default window width (drawing units / metres).
@@ -85,38 +127,207 @@ pub const DEFAULT_DOOR_WIDTH: f64 = 0.9;
 pub const DEFAULT_DOOR_HEIGHT: f64 = 2.1;
 /// Default door sill height (flush with floor).
 pub const DEFAULT_DOOR_SILL: f64 = 0.0;
+/// Default breakthrough width (not wall length).
+pub const DEFAULT_BREAKTHROUGH_WIDTH: f64 = 1.0;
+/// Default breakthrough height (not wall height).
+pub const DEFAULT_BREAKTHROUGH_HEIGHT: f64 = 2.0;
+/// Default breakthrough sill above the wall base.
+pub const DEFAULT_BREAKTHROUGH_SILL: f64 = 0.1;
 
 impl Opening {
-    /// Construct a window with default dimensions.
-    pub fn window(handle: Handle, host_wall: Handle, distance_along_axis: f64) -> Self {
+    /// Construct an opening of `kind` with kind-default dimensions and unbound style extras.
+    pub fn new(
+        handle: Handle,
+        host_wall: Handle,
+        distance_along_axis: f64,
+        width: f64,
+        height: f64,
+        sill_height: f64,
+        kind: OpeningKind,
+    ) -> Self {
         Self {
             handle,
             host_wall,
             distance_along_axis,
-            width: DEFAULT_WINDOW_WIDTH,
-            height: DEFAULT_WINDOW_HEIGHT,
-            sill_height: DEFAULT_WINDOW_SILL,
-            kind: OpeningKind::Window,
+            width,
+            height,
+            sill_height,
+            kind,
+            style_id: None,
+            hinge: HingeSide::Left,
+            shape: OpeningShape::Rectangle,
+            spring_height: 0.0,
+            sill_plane_id: None,
+            head_plane_id: None,
+            sill_plane_name: None,
+            head_plane_name: None,
+            sill_offset: 0.0,
+            head_offset: 0.0,
+            sill_origin: [0.0, 0.0, 0.0],
+            sill_normal: [0.0, 0.0, 1.0],
+            head_origin: [0.0, 0.0, 0.0],
+            head_normal: [0.0, 0.0, 1.0],
         }
+    }
+
+    /// Construct an opening of `kind` using [`OpeningKind::default_dimensions`].
+    pub fn from_kind(
+        handle: Handle,
+        host_wall: Handle,
+        distance_along_axis: f64,
+        kind: OpeningKind,
+    ) -> Self {
+        let (width, height, sill_height) = kind.default_dimensions();
+        Self::new(
+            handle,
+            host_wall,
+            distance_along_axis,
+            width,
+            height,
+            sill_height,
+            kind,
+        )
+    }
+
+    /// Construct a window with default dimensions.
+    pub fn window(handle: Handle, host_wall: Handle, distance_along_axis: f64) -> Self {
+        Self::from_kind(handle, host_wall, distance_along_axis, OpeningKind::Window)
     }
 
     /// Construct a door with default dimensions.
     pub fn door(handle: Handle, host_wall: Handle, distance_along_axis: f64) -> Self {
-        Self {
+        Self::from_kind(handle, host_wall, distance_along_axis, OpeningKind::Door)
+    }
+
+    /// Construct a breakthrough with default dimensions (not wall-high).
+    pub fn breakthrough(handle: Handle, host_wall: Handle, distance_along_axis: f64) -> Self {
+        Self::from_kind(
             handle,
             host_wall,
             distance_along_axis,
-            width: DEFAULT_DOOR_WIDTH,
-            height: DEFAULT_DOOR_HEIGHT,
-            sill_height: DEFAULT_DOOR_SILL,
-            kind: OpeningKind::Door,
-        }
+            OpeningKind::Breakthrough,
+        )
     }
 
     /// Axis-parameter interval `[start, end]` occupied by this opening.
     pub fn axis_span(&self) -> (f64, f64) {
         let half = self.width * 0.5;
         (self.distance_along_axis - half, self.distance_along_axis + half)
+    }
+
+    pub fn has_plane_binding(&self) -> bool {
+        self.sill_plane_id.is_some() || self.head_plane_id.is_some()
+    }
+
+    /// Numeric sill/height edits drop the matching plane (wall `write_wall_height`).
+    pub fn unbind_sill_plane(&mut self) {
+        self.sill_plane_id = None;
+        self.sill_plane_name = None;
+    }
+
+    pub fn unbind_head_plane(&mut self) {
+        self.head_plane_id = None;
+        self.head_plane_name = None;
+    }
+
+    pub fn rebake_planes(
+        &mut self,
+        storey: &crate::modules::aec::engine::project::StoreyRef,
+        x: f64,
+        y: f64,
+        host_base_z: f64,
+    ) {
+        self.rebake_lookup(|id| storey.plane(id).cloned(), x, y, host_base_z);
+    }
+
+    pub fn rebake_from_project(
+        &mut self,
+        project: &crate::modules::aec::engine::project::ProjectFile,
+        x: f64,
+        y: f64,
+        host_base_z: f64,
+    ) {
+        self.rebake_lookup(|id| project.control_plane(id).cloned(), x, y, host_base_z);
+    }
+
+    fn rebake_lookup(
+        &mut self,
+        lookup: impl Fn(uuid::Uuid) -> Option<crate::modules::aec::engine::control_plane::ControlPlane>,
+        x: f64,
+        y: f64,
+        host_base_z: f64,
+    ) {
+        use crate::modules::aec::engine::control_plane::intersect_vertical_at_xy;
+
+        let sill = self.sill_plane_id.and_then(&lookup);
+        if let Some(sill) = sill.as_ref() {
+            self.sill_normal = sill.unit_normal();
+            let offset_sill = sill.offset(self.sill_offset);
+            if let Some(pt) = intersect_vertical_at_xy(x, y, &offset_sill) {
+                self.sill_origin = pt;
+            } else {
+                self.sill_origin = offset_sill.origin;
+            }
+            self.sill_height = self.sill_origin[2] - host_base_z;
+        }
+
+        let head = self.head_plane_id.and_then(&lookup);
+        if let Some(head) = head.as_ref() {
+            self.head_normal = head.unit_normal();
+            let offset_head = head.offset(self.head_offset);
+            if let Some(pt) = intersect_vertical_at_xy(x, y, &offset_head) {
+                self.head_origin = pt;
+            } else {
+                self.head_origin = offset_head.origin;
+            }
+            let sill_z = if sill.is_some() {
+                self.sill_origin[2]
+            } else {
+                host_base_z + self.sill_height
+            };
+            let h = self.head_origin[2] - sill_z;
+            if h.abs() > 1e-9 {
+                self.height = h.abs();
+            }
+        }
+    }
+
+    /// Shift baked origins by Δ(offset) along each plane normal and refresh
+    /// the numeric cache. Prefer [`Self::rebake_from_project`] when planes
+    /// can be resolved.
+    pub fn apply_plane_offsets(&mut self, sill: Option<f64>, head: Option<f64>, host_base_z: f64) {
+        let old_sill = self.sill_offset;
+        let old_head = self.head_offset;
+        if let Some(v) = sill {
+            self.sill_offset = v;
+        }
+        if let Some(v) = head {
+            self.head_offset = v;
+        }
+        let ds = self.sill_offset - old_sill;
+        let dh = self.head_offset - old_head;
+        if self.sill_plane_id.is_some() {
+            let n = self.sill_normal;
+            self.sill_origin[0] += n[0] * ds;
+            self.sill_origin[1] += n[1] * ds;
+            self.sill_origin[2] += n[2] * ds;
+            self.sill_height = self.sill_origin[2] - host_base_z;
+        }
+        if self.head_plane_id.is_some() {
+            let n = self.head_normal;
+            self.head_origin[0] += n[0] * dh;
+            self.head_origin[1] += n[1] * dh;
+            self.head_origin[2] += n[2] * dh;
+            let sill_z = if self.sill_plane_id.is_some() {
+                self.sill_origin[2]
+            } else {
+                host_base_z + self.sill_height
+            };
+            let h = self.head_origin[2] - sill_z;
+            if h.abs() > 1e-9 {
+                self.height = h.abs();
+            }
+        }
     }
 }
 
@@ -283,7 +494,7 @@ fn merge_intervals(mut intervals: Vec<(f64, f64)>) -> Vec<(f64, f64)> {
 /// degenerate slivers — this keeps an opening placed almost flush with a
 /// wall end (or two openings placed almost edge-to-edge) from producing a
 /// near-zero-width extra piece alongside the real one.
-fn remaining_axis_spans(length: f64, openings: &[Opening]) -> Vec<(f64, f64)> {
+pub(crate) fn remaining_axis_spans(length: f64, openings: &[Opening]) -> Vec<(f64, f64)> {
     if length <= 1e-12 {
         return Vec::new();
     }
@@ -458,15 +669,15 @@ mod tests {
     use crate::modules::aec::engine::geometry::area;
 
     fn dummy_opening(dist: f64, width: f64) -> Opening {
-        Opening {
-            handle: Handle::new(1),
-            host_wall: Handle::new(2),
-            distance_along_axis: dist,
+        Opening::new(
+            Handle::new(1),
+            Handle::new(2),
+            dist,
             width,
-            height: 1.2,
-            sill_height: 0.9,
-            kind: OpeningKind::Window,
-        }
+            1.2,
+            0.9,
+            OpeningKind::Window,
+        )
     }
 
     fn approx(a: f64, b: f64) -> bool {
@@ -714,5 +925,46 @@ mod tests {
                 assert!(area(p) > 1e-9, "layer {li} produced a degenerate piece");
             }
         }
+    }
+
+    #[test]
+    fn only_sill_bound_keeps_height_parametric() {
+        use crate::modules::aec::engine::project::StoreyRef;
+        let storey = StoreyRef::new_with_height("EG", 0.0, 3.0, "eg.dwg");
+        let mut o = Opening::window(Handle::new(1), Handle::new(2), 1.0);
+        o.height = 1.2;
+        o.sill_height = 0.9;
+        o.sill_plane_id = Some(storey.floor_plane_id);
+        o.rebake_planes(&storey, 1.0, 0.0, 0.0);
+        assert!((o.sill_height - 0.0).abs() < 1e-9);
+        assert!((o.height - 1.2).abs() < 1e-9);
+        assert!(o.head_plane_id.is_none());
+    }
+
+    #[test]
+    fn both_planes_derive_height_from_world_z() {
+        use crate::modules::aec::engine::project::StoreyRef;
+        let storey = StoreyRef::new_with_height("EG", 1.0, 3.0, "eg.dwg");
+        let mut o = Opening::breakthrough(Handle::new(1), Handle::new(2), 1.0);
+        o.sill_height = 0.1;
+        o.height = 2.0;
+        o.sill_plane_id = Some(storey.floor_plane_id);
+        o.head_plane_id = Some(storey.ceiling_plane_id);
+        o.rebake_planes(&storey, 0.0, 0.0, 1.0);
+        assert!((o.sill_height - 0.0).abs() < 1e-9);
+        assert!((o.height - 3.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn opening_plane_independent_of_host_wall_base() {
+        use crate::modules::aec::engine::project::StoreyRef;
+        let storey = StoreyRef::new_with_height("OG", 3.0, 3.0, "og.dwg");
+        let mut o = Opening::window(Handle::new(1), Handle::new(2), 1.0);
+        o.sill_plane_id = Some(storey.floor_plane_id);
+        o.head_plane_id = Some(storey.ceiling_plane_id);
+        // Host wall sits on a different plane (base Z = 0).
+        o.rebake_planes(&storey, 0.0, 0.0, 0.0);
+        assert!((o.sill_height - 3.0).abs() < 1e-9);
+        assert!((o.height - 3.0).abs() < 1e-6);
     }
 }

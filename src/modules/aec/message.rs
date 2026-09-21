@@ -9,6 +9,7 @@ pub enum AecMessage {
     /// manager modal shell.
     AecMaterialManagerOpen,
     AecWallStyleManagerOpen,
+    AecOpeningStyleManagerOpen,
     /// Filter text changed in the AEC Style Manager's master lists.
     AecStyleManagerFilter(String),
     /// A material row was selected in the AEC Style Manager.
@@ -115,6 +116,43 @@ pub enum AecMessage {
     AecStylePickerOpenForWallProperties(Vec<acadrust::Handle>),
     /// Open the AEC Style Picker for the currently active interactive command.
     AecStylePickerOpenForActiveCommand,
+    /// Open the AEC Style Picker for opening instance properties.
+    AecStylePickerOpenForOpeningProperties(Vec<acadrust::Handle>),
+
+    // ── AEC Opening Style Manager (`AEC_OPENINGSTYLEMANAGER`) ─────────────
+    AecOpeningStyleManagerFilter(String),
+    AecOpeningStyleManagerSelect(String),
+    AecOpeningStyleManagerNew,
+    AecOpeningStyleManagerNameChanged(String),
+    AecOpeningStyleManagerParentChanged(Option<String>),
+    AecOpeningStyleManagerKindChanged(String),
+    AecOpeningStyleManagerShapeChanged(String),
+    AecOpeningStyleManagerWidthChanged(String),
+    AecOpeningStyleManagerHeightChanged(String),
+    AecOpeningStyleManagerSillChanged(String),
+    AecOpeningStyleManagerFrameChanged(String),
+    AecOpeningStyleManagerAngleChanged(String),
+    AecOpeningStyleManagerSpringChanged(String),
+    AecOpeningStyleManagerHingeChanged(String),
+    AecOpeningStyleManagerSlotSourceChanged(usize, String),
+    AecOpeningStyleManagerSlotGeneratorChanged(usize, String),
+    /// Empty string = default slots for all plan types.
+    AecOpeningStyleManagerProfileSelect(String),
+    AecOpeningStyleManagerSlotVisible(usize, bool),
+    AecOpeningStyleManagerSketchSlotSelect(usize),
+    /// Canvas click in instance-local coordinates (manager preview).
+    AecOpeningStyleManagerSketchClick(f64, f64),
+    AecOpeningStyleManagerSketchClosePath,
+    AecOpeningStyleManagerSketchFinishPath,
+    AecOpeningStyleManagerSketchUndo,
+    AecOpeningStyleManagerSketchDeletePath,
+    AecOpeningStyleManagerSketchClear,
+    AecOpeningStyleManagerSketchAddFrame,
+    AecOpeningStyleManagerSketchArc,
+    AecOpeningStyleManagerSave,
+    AecOpeningStyleManagerDelete,
+    AecStyleManagerCopyOpeningStyleToProject,
+    AecStyleManagerCopyOpeningStyleToGlobal,
     /// Live search filter change in the AEC Style Picker.
     AecStylePickerFilterChanged(String),
     /// Selection/highlight change in the AEC Style Picker.

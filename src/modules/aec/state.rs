@@ -48,6 +48,27 @@ pub enum AecPendingCopy {
         wall_style: crate::modules::aec::engine::wall_style::WallStyle,
         to_project: bool,
     },
+    OpeningStyle {
+        opening_style: crate::modules::aec::engine::opening_style::OpeningStyle,
+        to_project: bool,
+    },
+}
+
+/// Geometry source for one opening-style slot in the manager form.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AecOpeningSlotSource {
+    Generator,
+    Sketch,
+}
+
+/// Edit-buffer row for an opening-style display slot.
+#[derive(Clone, Debug)]
+pub struct AecOpeningSlotBuffer {
+    pub slot: crate::modules::aec::engine::display_component::OpeningComponentSlot,
+    pub source: AecOpeningSlotSource,
+    pub generator: crate::modules::aec::engine::opening_style::OpeningGenerator,
+    pub sketch: crate::modules::aec::engine::opening_style::OpeningSketch,
+    pub visible: bool,
 }
 
 impl AecWallStyleSort {
@@ -87,6 +108,11 @@ pub enum StylePickerTarget {
     /// Selecting a new style for the currently active interactive command
     /// (e.g. while drawing a wall).
     ActiveCommand,
+    /// Selecting a parent style for an opening style being edited.
+    OpeningStyleParent,
+    /// Selecting a new style for one or more opening entities in the
+    /// properties panel. Handles live in `aec_style_picker_wall_handles`.
+    OpeningPropertiesStyle,
 }
 
 /// A pending delete in the AEC Project Explorer, awaiting user confirmation
@@ -257,6 +283,37 @@ pub struct AecState {
     /// Geometry of the wall-style manager while the display-profiles child
     /// modal is open (Plot → Plotstyle pattern).
     pub aec_wall_style_manager_parent_geometry: Option<(iced::Vector, iced::Vector)>,
+
+    // ── AEC Opening Style Manager ─────────────────────────────────────────
+    pub aec_opening_style_manager_filter: String,
+    pub aec_opening_style_manager_selected: Option<String>,
+    pub aec_opening_style_manager_editing_id: Option<String>,
+    pub aec_opening_style_manager_form_open: bool,
+    pub aec_opening_style_manager_name: String,
+    pub aec_opening_style_manager_parent: Option<String>,
+    pub aec_opening_style_manager_kind: crate::modules::aec::engine::openings::OpeningKind,
+    pub aec_opening_style_manager_width: String,
+    pub aec_opening_style_manager_height: String,
+    pub aec_opening_style_manager_sill: String,
+    pub aec_opening_style_manager_frame: String,
+    pub aec_opening_style_manager_angle: String,
+    pub aec_opening_style_manager_spring: String,
+    pub aec_opening_style_manager_hinge: crate::modules::aec::engine::opening_style::HingeSide,
+    pub aec_opening_style_manager_shape: crate::modules::aec::engine::opening_shape::OpeningShape,
+    pub aec_opening_style_manager_slots: Vec<AecOpeningSlotBuffer>,
+    /// Active plan-type name while editing slot overrides (`None` = default).
+    pub aec_opening_style_manager_profile_selected: Option<String>,
+    /// Default slot map (not plan-specific) while the form is open.
+    pub aec_opening_style_manager_default_slots:
+        std::collections::HashMap<crate::modules::aec::engine::display_component::OpeningComponentSlot, crate::modules::aec::engine::opening_style::SlotGeometry>,
+    /// Plan-type slot overlays while the form is open.
+    pub aec_opening_style_manager_display_profiles:
+        std::collections::HashMap<String, crate::modules::aec::engine::opening_style::OpeningDisplayProfile>,
+    /// Slot-table row currently targeted by the manager sketch canvas.
+    pub aec_opening_style_manager_sketch_slot: Option<usize>,
+    /// In-progress polyline in the selected slot's reference box.
+    pub aec_opening_style_manager_sketch_draft: Vec<(f64, f64)>,
+    pub aec_opening_style_manager_sketch_draft_bulges: Vec<f64>,
 
     // ── AEC DisplayConfig Manager (Step 5) ─────────────────────────────────
     /// Loaded (or seeded) on `AEC_PLANMANAGER`; holds the `DisplayConfig`
@@ -480,6 +537,28 @@ impl Default for AecState {
             aec_style_manager_profile_slot_style_fill_color_picker_open: false,
             aec_style_manager_profile_slot_style_hatch_picker_open: false,
             aec_wall_style_manager_parent_geometry: None,
+            aec_opening_style_manager_filter: String::new(),
+            aec_opening_style_manager_selected: None,
+            aec_opening_style_manager_editing_id: None,
+            aec_opening_style_manager_form_open: false,
+            aec_opening_style_manager_name: String::new(),
+            aec_opening_style_manager_parent: None,
+            aec_opening_style_manager_kind: crate::modules::aec::engine::openings::OpeningKind::Window,
+            aec_opening_style_manager_width: "1.2".to_string(),
+            aec_opening_style_manager_height: "1.2".to_string(),
+            aec_opening_style_manager_sill: "0.9".to_string(),
+            aec_opening_style_manager_frame: "0.06".to_string(),
+            aec_opening_style_manager_angle: "90".to_string(),
+            aec_opening_style_manager_spring: String::new(),
+            aec_opening_style_manager_hinge: crate::modules::aec::engine::opening_style::HingeSide::Left,
+            aec_opening_style_manager_shape: crate::modules::aec::engine::opening_shape::OpeningShape::Rectangle,
+            aec_opening_style_manager_slots: Vec::new(),
+            aec_opening_style_manager_profile_selected: None,
+            aec_opening_style_manager_default_slots: std::collections::HashMap::new(),
+            aec_opening_style_manager_display_profiles: std::collections::HashMap::new(),
+            aec_opening_style_manager_sketch_slot: None,
+            aec_opening_style_manager_sketch_draft: Vec::new(),
+            aec_opening_style_manager_sketch_draft_bulges: Vec::new(),
             aec_plan_library: None,
             aec_plan_manager_filter: String::new(),
             aec_plan_manager_selected: None,

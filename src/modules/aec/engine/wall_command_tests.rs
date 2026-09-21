@@ -17,7 +17,7 @@ use super::{
     join::{self, JoinError, JoinKind},
     wall_style::{
         effective_layers_for_wall_bb, migrate_gap_before_to_axis_offset, LayerFunction,
-        ResolvedLayer, WallStyle,
+        WallStyle,
     },
 };
 
@@ -32,7 +32,6 @@ use crate::command::{CadCommand, CmdResult};
 use crate::modules::aec::engine::material::Material;
 use crate::modules::aec::engine::style::Style;
 use crate::modules::aec::engine::wall_style::{Layer, LayerValue};
-use crate::modules::aec::ifc::export::aec_ifc_export;
 use crate::modules::aec::rooms::room::aec_room;
 use crate::modules::aec::styles::material_manager::MaterialCommand;
 use crate::modules::aec::styles::wall_style_manager::StyleCommand;
@@ -1455,11 +1454,8 @@ fn wall_without_phase_tail_defaults_to_new() {
         PlanPhase::Demolition,
         None,
     );
-    // Drop the trailing wall-hatch-override block (3 values) and the
-    // phase tag itself, simulating a record written before either
-    // field existed.
-    for _ in 0..4 {
-        values.pop();
+    if let Some(pos) = values.iter().position(|v| matches!(v, XDataValue::String(s) if s == "Demolition")) {
+        values.truncate(pos);
     }
     let pl = LwPolyline::new();
     let mut entity = EntityType::LwPolyline(pl);
@@ -1599,6 +1595,7 @@ fn wall_command_with_library_uses_ask_style_and_finalizes() {
     let lib = StyleLibrary {
         materials: vec![material],
         wall_styles: vec![style],
+        ..Default::default()
     };
 
     let mut cmd = WallCommand::new_with_library(Some(lib));
@@ -1753,6 +1750,7 @@ fn wall_command_apply_live_property_updates_style_and_resolved_layers() {
     let lib = StyleLibrary {
         materials: vec![material],
         wall_styles: vec![style],
+        ..Default::default()
     };
 
     let mut cmd = WallCommand::new_with_library(Some(lib));
@@ -1813,6 +1811,7 @@ fn wall_command_refuses_to_finish_without_a_style_when_styles_are_available() {
     let lib = StyleLibrary {
         materials: vec![material],
         wall_styles: vec![style],
+        ..Default::default()
     };
 
     let mut cmd = WallCommand::new_with_library(Some(lib));
@@ -3970,6 +3969,7 @@ fn style_substitution_swaps_hatch_look_but_keeps_axis_and_thickness() {
     let lib = StyleLibrary {
         materials: vec![source_material, target_material],
         wall_styles: vec![source_style, target_style],
+        ..Default::default()
     };
 
     with_test_library(&lib, || {
@@ -3995,7 +3995,7 @@ fn style_substitution_swaps_hatch_look_but_keeps_axis_and_thickness() {
             wall_handle,
             None,
             Some(&substitutions),
-        None)
+            Some(&lib))
         .expect("regeneration with a style substitution should succeed");
 
         let axis_after = get_wall_vertices(&scene, wall_handle);
@@ -4091,6 +4091,7 @@ fn detailed_style_override_wins_over_style_substitution() {
     let lib = StyleLibrary {
         materials: vec![source_material, target_material],
         wall_styles: vec![source_style, target_style],
+        ..Default::default()
     };
 
     with_test_library(&lib, || {
@@ -5133,7 +5134,7 @@ fn join_l_corner_layer_footprints_share_miter_boundary() {
         wall.derived_handles
             .iter()
             .filter_map(|dh| match scene.document.get_entity(*dh) {
-                Some(EntityType::LwPolyline(pl)) if pl.is_closed => Some(
+                Some(EntityType::LwPolyline(pl)) => Some(
                     pl.vertices
                         .iter()
                         .map(|v| (v.location.x, v.location.y))
@@ -6055,6 +6056,26 @@ fn add_example_note(scene: &mut Scene, x: f64, y: f64, value: &str) {
     scene.add_entity(EntityType::MText(t));
 }
 
+fn place_example_opening(
+    scene: &mut Scene,
+    wall: Handle,
+    pt: (f64, f64),
+    kind: engine::openings::OpeningKind,
+    lib: &StyleLibrary,
+) -> Handle {
+    let (handle, _) = place_wall_opening(
+        scene,
+        wall,
+        DVec3::new(pt.0, pt.1, 0.0),
+        kind,
+        Some(lib),
+        None,
+        None,
+    )
+    .expect("place example opening");
+    handle
+}
+
 #[test]
 fn write_aec_wall_join_examples_dxf() {
     let mut scene = Scene::new();
@@ -6221,6 +6242,85 @@ fn write_aec_wall_join_examples_dxf() {
         "L vierschalig mit Schicht-Overrides\\PStil: style1 (Putz+Mauerwerk+Insulation+Putz)\\PVerbindung: L\\PDefault: Miter\\PPutz außen/innen: NoExtend\\PMauerwerk: Miter\\PDämmung: Butt",
     );
 
+    // Öffnungen: eigene Zeile unter den N-Wege-Beispielen (Achse y = 34).
+    let win_wall = add_single_layer_wall(&mut scene, (0.0, 34.0), (6.0, 34.0));
+    let win_opening = place_example_opening(
+        &mut scene,
+        win_wall,
+        (3.0, 34.0),
+        engine::openings::OpeningKind::Window,
+        &lib,
+    );
+    add_example_note(
+        &mut scene,
+        0.0,
+        32.6,
+        "Fenster\\PStil: style_window_standard\\P1.2 × 1.2, Brüstung 0.9",
+    );
+
+    let door_wall = add_single_layer_wall(&mut scene, (10.0, 34.0), (16.0, 34.0));
+    let door_opening = place_example_opening(
+        &mut scene,
+        door_wall,
+        (13.0, 34.0),
+        engine::openings::OpeningKind::Door,
+        &lib,
+    );
+    add_example_note(
+        &mut scene,
+        10.0,
+        32.6,
+        "Tür\\PStil: style_door_standard\\P0.9 × 2.1, Brüstung 0.0, Anschlag links",
+    );
+
+    let br_wall = add_single_layer_wall(&mut scene, (20.0, 34.0), (26.0, 34.0));
+    let br_opening = place_example_opening(
+        &mut scene,
+        br_wall,
+        (23.0, 34.0),
+        engine::openings::OpeningKind::Breakthrough,
+        &lib,
+    );
+    add_example_note(
+        &mut scene,
+        20.0,
+        32.6,
+        "Durchbruch\\PStil: style_breakthrough_standard\\P1.0 × 2.0, Brüstung 0.1\\PMark2D: Kreuz",
+    );
+
+    let placed = [
+        (
+            win_wall,
+            win_opening,
+            engine::openings::OpeningKind::Window,
+        ),
+        (
+            door_wall,
+            door_opening,
+            engine::openings::OpeningKind::Door,
+        ),
+        (
+            br_wall,
+            br_opening,
+            engine::openings::OpeningKind::Breakthrough,
+        ),
+    ];
+    for (wall, opening, kind) in placed {
+        let parsed = opening_from_entity(scene.document.get_entity(opening).unwrap(), opening)
+            .expect("opening xdata");
+        assert_eq!(parsed.kind, kind);
+        assert_eq!(parsed.host_wall, wall);
+        assert!(
+            engine::owner_index::children_of(&scene.document, wall).contains(&opening),
+            "opening {opening:?} must be a child of host wall {wall:?}"
+        );
+        assert!(
+            !engine::opening_display::collect_opening_display_children(&scene, opening)
+                .is_empty(),
+            "opening {kind:?} must have OPENING_REP children"
+        );
+    }
+
     let out = std::path::Path::new("docs/examples/aec-wall-joins.dxf");
     if let Some(parent) = out.parent() {
         let _ = std::fs::create_dir_all(parent);
@@ -6376,13 +6476,13 @@ fn reverse_wall_keeps_joined_corner_intersection() {
     );
 }
 
-/// Helper: closed LwPolyline layer footprints for a wall package.
+/// Helper: LwPolyline layer footprints for a wall package.
 fn wall_closed_footprints(scene: &Scene, h: Handle) -> Vec<Vec<(f64, f64)>> {
     let wall = wall_from_entity(scene.document.get_entity(h).unwrap()).unwrap();
     wall.derived_handles
         .iter()
         .filter_map(|dh| match scene.document.get_entity(*dh) {
-            Some(EntityType::LwPolyline(pl)) if pl.is_closed => Some(
+            Some(EntityType::LwPolyline(pl)) => Some(
                 pl.vertices
                     .iter()
                     .map(|v| (v.location.x, v.location.y))
@@ -7317,5 +7417,630 @@ fn adding_new_wall_to_existing_junction_keeps_other_walls_mitered() {
     assert!(
         !plain_origin_cap.iter().all(|p| has_point(&w3_after, *p, 1e-6)),
         "w3 must still show a real miter at the junction after w4 joins, not revert to a plain cap, got {w3_after:?}"
+    );
+}
+
+#[test]
+fn l_corner_with_window_keeps_miter_in_2d_and_3d() {
+    use crate::ui::command_line::CommandLine;
+
+    let mut scene = Scene::new();
+    let layers = vec![wl("Concrete", 0.2, "Structural")];
+
+    // Wall 1: horizontal along Y=0 from X=0 to X=10.
+    let mut pl1 = LwPolyline::new();
+    pl1.add_vertex(LwVertex::new(Vector2::new(0.0, 0.0)));
+    pl1.add_vertex(LwVertex::new(Vector2::new(10.0, 0.0)));
+    let mut ent1 = EntityType::LwPolyline(pl1);
+    let mut rec1 = ExtendedDataRecord::new(AEC_APPID);
+    rec1.values = wall_record("s1", 3.0, 0, &layers, &[], WallJustification::Center, PlanPhase::New, None);
+    ent1.common_mut().extended_data.add_record(rec1);
+    let w1 = scene.add_entity(ent1);
+
+    // Wall 2: vertical along X=0 from Y=0 to Y=10.
+    let mut pl2 = LwPolyline::new();
+    pl2.add_vertex(LwVertex::new(Vector2::new(0.0, 0.0)));
+    pl2.add_vertex(LwVertex::new(Vector2::new(0.0, 10.0)));
+    let mut ent2 = EntityType::LwPolyline(pl2);
+    let mut rec2 = ExtendedDataRecord::new(AEC_APPID);
+    rec2.values = wall_record("s2", 3.0, 0, &layers, &[], WallJustification::Center, PlanPhase::New, None);
+    ent2.common_mut().extended_data.add_record(rec2);
+    let w2 = scene.add_entity(ent2);
+
+    // Join w1 and w2 as an L-corner at (0, 0).
+    let mut command_line = CommandLine::default();
+    aec_walljoin_do(
+        &mut scene,
+        &mut command_line,
+        &format!("{}|{}", w1.value(), w2.value()),
+        None, None, None,
+    );
+
+    // Place a window on w1 at X=5.0 (width 1.2m).
+    let (_window_h, _) = place_wall_opening(
+        &mut scene,
+        w1,
+        DVec3::new(5.0, 0.0, 0.0),
+        engine::openings::OpeningKind::Window,
+        None, None, None,
+    ).expect("place window");
+
+    // Regenerate w1 with its miter preserved.
+    regenerate_wall_representation(&mut scene, w1, None).expect("regen w1");
+
+    let wall_rec = wall_from_entity(scene.document.get_entity(w1).unwrap()).unwrap();
+
+    // Check 2D contours: must have 2 pieces (one from corner to window, one from window to end).
+    let mut contours = Vec::new();
+    let mut solids = Vec::new();
+    for h in &wall_rec.derived_handles {
+        match scene.document.get_entity(*h) {
+            Some(EntityType::LwPolyline(pl)) => contours.push(pl.clone()),
+            Some(EntityType::Solid3D(s3d)) => solids.push(s3d.clone()),
+            _ => {}
+        }
+    }
+
+    assert_eq!(contours.len(), 2, "Wall with window must have 2 contour pieces");
+    // The start piece must have a miter vertex (at -0.1, -0.1).
+    let has_miter_vertex_2d = contours.iter().any(|pl| {
+        pl.vertices.iter().any(|v| v.location.x < -0.05 && v.location.y < -0.05)
+    });
+    assert!(has_miter_vertex_2d, "2D contour must retain miter corner vertex at (-0.1, -0.1)");
+
+    // Check 3D solids: rest wall solids (2 pieces) plus opening zone solids (lintel + sill).
+    assert!(solids.len() >= 2, "3D wall must have at least 2 rest-wall solids");
+
+    // The first 3D rest-wall solid must have wires reaching the corner miter vertex (-0.1, -0.1).
+    let has_miter_wire_3d = solids.iter().any(|s| {
+        s.wires.iter().any(|wire| {
+            wire.points.iter().any(|p| p.x < -0.05 && p.y < -0.05)
+        })
+    });
+    assert!(has_miter_wire_3d, "3D solid must retain miter corner geometry at (-0.1, -0.1)");
+}
+
+#[test]
+fn l_corner_same_material_suppresses_miter_in_2d_contour_while_hatch_stays_closed() {
+    use crate::ui::command_line::CommandLine;
+
+    let mut scene = Scene::new();
+    let layers = vec![wl("Concrete", 0.2, "Structural")];
+
+    let mut pl1 = LwPolyline::new();
+    pl1.add_vertex(LwVertex::new(Vector2::new(0.0, 0.0)));
+    pl1.add_vertex(LwVertex::new(Vector2::new(5.0, 0.0)));
+    let mut ent1 = EntityType::LwPolyline(pl1);
+    let mut rec1 = ExtendedDataRecord::new(AEC_APPID);
+    rec1.values = wall_record("s1", 3.0, 0, &layers, &[], WallJustification::Center, PlanPhase::New, None);
+    ent1.common_mut().extended_data.add_record(rec1);
+    let w1 = scene.add_entity(ent1);
+
+    let mut pl2 = LwPolyline::new();
+    pl2.add_vertex(LwVertex::new(Vector2::new(0.0, 0.0)));
+    pl2.add_vertex(LwVertex::new(Vector2::new(0.0, 5.0)));
+    let mut ent2 = EntityType::LwPolyline(pl2);
+    let mut rec2 = ExtendedDataRecord::new(AEC_APPID);
+    rec2.values = wall_record("s2", 3.0, 0, &layers, &[], WallJustification::Center, PlanPhase::New, None);
+    ent2.common_mut().extended_data.add_record(rec2);
+    let w2 = scene.add_entity(ent2);
+
+    let mut command_line = CommandLine::default();
+    aec_walljoin_do(
+        &mut scene,
+        &mut command_line,
+        &format!("{}|{}", w1.value(), w2.value()),
+        None, None, None,
+    );
+
+    let wall1 = wall_from_entity(scene.document.get_entity(w1).unwrap()).unwrap();
+    let wall2 = wall_from_entity(scene.document.get_entity(w2).unwrap()).unwrap();
+
+    let mut w1_contours = Vec::new();
+    let mut w1_has_hatch = false;
+    for h in &wall1.derived_handles {
+        match scene.document.get_entity(*h) {
+            Some(EntityType::LwPolyline(pl)) => w1_contours.push(pl.clone()),
+            Some(EntityType::Hatch(_)) => w1_has_hatch = true,
+            _ => {}
+        }
+    }
+    let mut w2_contours = Vec::new();
+    for h in &wall2.derived_handles {
+        if let Some(EntityType::LwPolyline(pl)) = scene.document.get_entity(*h) {
+            w2_contours.push(pl.clone());
+        }
+    }
+
+    assert!(!w1_contours.is_empty(), "Wall 1 must have 2D contour");
+    assert!(!w2_contours.is_empty(), "Wall 2 must have 2D contour");
+    assert!(w1_has_hatch, "Wall 1 must have Hatch entity");
+
+    // Both contours must be open polylines because the miter edge was suppressed.
+    assert!(!w1_contours[0].is_closed, "Wall 1 contour must be an open polyline (no miter line)");
+    assert!(!w2_contours[0].is_closed, "Wall 2 contour must be an open polyline (no miter line)");
+
+    // Neither contour should draw a segment between (-0.1, -0.1) and (0.1, 0.1).
+    let draws_miter_segment = |pl: &LwPolyline| {
+        let n = pl.vertices.len();
+        let limit = if pl.is_closed { n } else { n - 1 };
+        for i in 0..limit {
+            let p0 = pl.vertices[i].location;
+            let p1 = pl.vertices[(i + 1) % n].location;
+            let d00 = (p0.x - -0.1).hypot(p0.y - -0.1);
+            let d11 = (p1.x - 0.1).hypot(p1.y - 0.1);
+            let d01 = (p0.x - 0.1).hypot(p0.y - 0.1);
+            let d10 = (p1.x - -0.1).hypot(p1.y - -0.1);
+            if (d00 < 1e-4 && d11 < 1e-4) || (d01 < 1e-4 && d10 < 1e-4) {
+                return true;
+            }
+        }
+        false
+    };
+
+    assert!(
+        !draws_miter_segment(&w1_contours[0]),
+        "Wall 1 must NOT draw the diagonal miter edge across identical material"
+    );
+    assert!(
+        !draws_miter_segment(&w2_contours[0]),
+        "Wall 2 must NOT draw the diagonal miter edge across identical material"
+    );
+}
+
+#[test]
+fn l_corner_different_materials_keeps_miter_boundary_line() {
+    use crate::ui::command_line::CommandLine;
+
+    let mut scene = Scene::new();
+    let layers1 = vec![wl("Concrete", 0.2, "Structural")];
+    let layers2 = vec![wl("Brick", 0.2, "Structural")];
+
+    let mut pl1 = LwPolyline::new();
+    pl1.add_vertex(LwVertex::new(Vector2::new(0.0, 0.0)));
+    pl1.add_vertex(LwVertex::new(Vector2::new(5.0, 0.0)));
+    let mut ent1 = EntityType::LwPolyline(pl1);
+    let mut rec1 = ExtendedDataRecord::new(AEC_APPID);
+    rec1.values = wall_record("s1", 3.0, 0, &layers1, &[], WallJustification::Center, PlanPhase::New, None);
+    ent1.common_mut().extended_data.add_record(rec1);
+    let w1 = scene.add_entity(ent1);
+
+    let mut pl2 = LwPolyline::new();
+    pl2.add_vertex(LwVertex::new(Vector2::new(0.0, 0.0)));
+    pl2.add_vertex(LwVertex::new(Vector2::new(0.0, 5.0)));
+    let mut ent2 = EntityType::LwPolyline(pl2);
+    let mut rec2 = ExtendedDataRecord::new(AEC_APPID);
+    rec2.values = wall_record("s2", 3.0, 0, &layers2, &[], WallJustification::Center, PlanPhase::New, None);
+    ent2.common_mut().extended_data.add_record(rec2);
+    let w2 = scene.add_entity(ent2);
+
+    let mut command_line = CommandLine::default();
+    aec_walljoin_do(
+        &mut scene,
+        &mut command_line,
+        &format!("{}|{}", w1.value(), w2.value()),
+        None, None, None,
+    );
+
+    let wall1 = wall_from_entity(scene.document.get_entity(w1).unwrap()).unwrap();
+    let mut w1_contours = Vec::new();
+    for h in &wall1.derived_handles {
+        if let Some(EntityType::LwPolyline(pl)) = scene.document.get_entity(*h) {
+            w1_contours.push(pl.clone());
+        }
+    }
+
+    assert!(!w1_contours.is_empty(), "Wall 1 must have 2D contour");
+    assert!(
+        w1_contours[0].is_closed,
+        "Wall 1 contour must remain a closed polyline to show the material boundary between Concrete and Brick"
+    );
+}
+
+#[test]
+fn wall_with_window_3d_cleans_coplanar_seams_while_preserving_reveal_edges() {
+    let mut scene = Scene::new();
+    let layers = vec![wl("Concrete", 0.2, "Structural")];
+
+    let mut pl = LwPolyline::new();
+    pl.add_vertex(LwVertex::new(Vector2::new(0.0, 0.0)));
+    pl.add_vertex(LwVertex::new(Vector2::new(10.0, 0.0)));
+    let mut ent = EntityType::LwPolyline(pl);
+    let mut rec = ExtendedDataRecord::new(AEC_APPID);
+    rec.values = wall_record("s", 3.0, 0, &layers, &[], WallJustification::Center, PlanPhase::New, None);
+    ent.common_mut().extended_data.add_record(rec);
+    let wall_h = scene.add_entity(ent);
+
+    // Place window at X=5.0, width 1.2 (span 4.4 to 5.6), sill 0.9, height 1.3 (head 2.2).
+    let (_win_h, _) = place_wall_opening(
+        &mut scene,
+        wall_h,
+        DVec3::new(5.0, 0.0, 0.0),
+        engine::openings::OpeningKind::Window,
+        None, None, None,
+    ).expect("place window");
+
+    regenerate_wall_representation(&mut scene, wall_h, None).expect("regen wall");
+
+    let wall_rec = wall_from_entity(scene.document.get_entity(wall_h).unwrap()).unwrap();
+    let mut solids = Vec::new();
+    for h in &wall_rec.derived_handles {
+        if let Some(EntityType::Solid3D(s3d)) = scene.document.get_entity(*h) {
+            solids.push(s3d.clone());
+        }
+    }
+
+    assert!(solids.len() >= 3, "Wall with window must have rest solids and zone solids");
+
+    // Collect all wire segments from all 3D solids of the wall.
+    let mut all_segments: Vec<([f64; 3], [f64; 3])> = Vec::new();
+    for s in &solids {
+        for w in &s.wires {
+            for win in w.points.windows(2) {
+                all_segments.push(([win[0].x, win[0].y, win[0].z], [win[1].x, win[1].y, win[1].z]));
+            }
+        }
+    }
+
+    // Check for coplanar vertical seams at X=4.4 or X=5.6:
+    // Any vertical segment below the sill (z_max <= 0.89) or above the lintel (z_min >= 2.21)
+    // at X near 4.4 or 5.6 must be suppressed.
+    let has_vertical_seam_below_sill = all_segments.iter().any(|(p0, p1)| {
+        let is_at_cut = (p0[0] - 4.4).abs() < 1e-3 || (p0[0] - 5.6).abs() < 1e-3;
+        let is_vertical = (p1[0] - p0[0]).hypot(p1[1] - p0[1]) < 1e-3 && (p1[2] - p0[2]).abs() > 0.05;
+        let z_max = p0[2].max(p1[2]);
+        is_at_cut && is_vertical && z_max <= 0.89
+    });
+    assert!(
+        !has_vertical_seam_below_sill,
+        "Vertical coplanar seams below the window sill (z <= 0.9) must be suppressed in 3D"
+    );
+
+    let has_vertical_seam_above_head = all_segments.iter().any(|(p0, p1)| {
+        let is_at_cut = (p0[0] - 4.4).abs() < 1e-3 || (p0[0] - 5.6).abs() < 1e-3;
+        let is_vertical = (p1[0] - p0[0]).hypot(p1[1] - p0[1]) < 1e-3 && (p1[2] - p0[2]).abs() > 0.05;
+        let z_min = p0[2].min(p1[2]);
+        is_at_cut && is_vertical && z_min >= 2.21
+    });
+    assert!(
+        !has_vertical_seam_above_head,
+        "Vertical coplanar seams above the window lintel (z >= 2.2) must be suppressed in 3D"
+    );
+
+    // Check that window reveal edges (jambs between z=0.9 and 2.2) ARE preserved:
+    let has_reveal_jamb = all_segments.iter().any(|(p0, p1)| {
+        let is_at_cut = (p0[0] - 4.4).abs() < 1e-3 || (p0[0] - 5.6).abs() < 1e-3;
+        let is_vertical = (p1[0] - p0[0]).hypot(p1[1] - p0[1]) < 1e-3 && (p1[2] - p0[2]).abs() > 0.1;
+        let z_min = p0[2].min(p1[2]);
+        let z_max = p0[2].max(p1[2]);
+        is_at_cut && is_vertical && z_min >= 0.89 && z_max <= 2.21
+    });
+    assert!(
+        has_reveal_jamb,
+        "Window reveal jamb edges (between z=0.9 and 2.2) must be preserved and sharp"
+    );
+
+    // Check that horizontal reveal edges (sill top z=0.9 across wall thickness) are preserved:
+    let has_sill_top_edge = all_segments.iter().any(|(p0, p1)| {
+        let is_at_cut = (p0[0] - 4.4).abs() < 1e-3 || (p0[0] - 5.6).abs() < 1e-3;
+        let is_transverse = (p1[1] - p0[1]).abs() > 0.1;
+        let is_at_sill = (p0[2] - 0.9).abs() < 1e-3 && (p1[2] - 0.9).abs() < 1e-3;
+        is_at_cut && is_transverse && is_at_sill
+    });
+    assert!(
+        has_sill_top_edge,
+        "Window sill top horizontal edge across wall thickness must be preserved"
+    );
+}
+
+#[test]
+fn wall_with_arch_window_3d_cleans_coplanar_seams_while_preserving_reveal_edges() {
+    let mut scene = Scene::new();
+    let layers = vec![wl("Concrete", 0.2, "Structural")];
+
+    let mut pl = LwPolyline::new();
+    pl.add_vertex(LwVertex::new(Vector2::new(0.0, 0.0)));
+    pl.add_vertex(LwVertex::new(Vector2::new(10.0, 0.0)));
+    let mut ent = EntityType::LwPolyline(pl);
+    let mut rec = ExtendedDataRecord::new(AEC_APPID);
+    rec.values = wall_record("s", 3.0, 0, &layers, &[], WallJustification::Center, PlanPhase::New, None);
+    ent.common_mut().extended_data.add_record(rec);
+    let wall_h = scene.add_entity(ent);
+
+    // Place window at X=5.0, width 1.2 (span 4.4 to 5.6), sill 0.9, height 1.3, Arch with spring 0.7.
+    let (win_h, _) = place_wall_opening(
+        &mut scene,
+        wall_h,
+        DVec3::new(5.0, 0.0, 0.0),
+        engine::openings::OpeningKind::Window,
+        None, None, None,
+    ).expect("place window");
+
+    let mut opening = engine::opening_xdata::openings_for_host_wall(&scene, wall_h)
+        .into_iter()
+        .find(|o| o.handle == win_h)
+        .expect("opening found");
+    opening.shape = engine::opening_shape::OpeningShape::Arch;
+    opening.spring_height = 0.7;
+    engine::opening_xdata::write_opening_instance(&mut scene, &opening);
+
+    regenerate_wall_representation(&mut scene, wall_h, None).expect("regen wall");
+
+    let wall_rec = wall_from_entity(scene.document.get_entity(wall_h).unwrap()).unwrap();
+    let mut solids = Vec::new();
+    for h in &wall_rec.derived_handles {
+        if let Some(EntityType::Solid3D(s3d)) = scene.document.get_entity(*h) {
+            solids.push(s3d.clone());
+        }
+    }
+
+    assert!(solids.len() >= 3, "Wall with arch window must have rest solids and zone solids");
+
+    let mut all_segments: Vec<([f64; 3], [f64; 3])> = Vec::new();
+    for s in &solids {
+        for w in &s.wires {
+            for win in w.points.windows(2) {
+                all_segments.push(([win[0].x, win[0].y, win[0].z], [win[1].x, win[1].y, win[1].z]));
+            }
+        }
+    }
+
+    // Check for coplanar vertical seams above the arch lintel in the span (4.4 < X < 5.6):
+    let has_internal_vertical_seam_above_arch = all_segments.iter().any(|(p0, p1)| {
+        let is_inside_zone = p0[0] > 4.41 && p0[0] < 5.59;
+        let is_vertical = (p1[0] - p0[0]).hypot(p1[1] - p0[1]) < 1e-3 && (p1[2] - p0[2]).abs() > 0.05;
+        is_inside_zone && is_vertical
+    });
+    assert!(
+        !has_internal_vertical_seam_above_arch,
+        "All internal vertical slice seams inside the arch opening zone must be suppressed in 3D"
+    );
+
+    // Check that transverse crown lines across top deck (z=3.0) inside the zone (4.4 < X < 5.6) are suppressed:
+    let has_transverse_crown_seam = all_segments.iter().any(|(p0, p1)| {
+        let is_inside_zone = p0[0] > 4.41 && p0[0] < 5.59;
+        let is_at_crown = (p0[2] - 3.0).abs() < 1e-3 && (p1[2] - 3.0).abs() < 1e-3;
+        let is_transverse = (p1[1] - p0[1]).abs() > 0.05;
+        is_inside_zone && is_at_crown && is_transverse
+    });
+    assert!(
+        !has_transverse_crown_seam,
+        "Transverse crown seam lines across the top deck of the arch window must be suppressed"
+    );
+
+    // Check that arch reveal edges (curved arc chords) ARE preserved:
+    let has_arch_curve = all_segments.iter().any(|(p0, p1)| {
+        let is_inside_zone = p0[0] > 4.4 && p0[0] < 5.6 && p1[0] > 4.4 && p1[0] < 5.6;
+        let dx = (p1[0] - p0[0]).abs();
+        let at_arch_z = p0[2] >= 1.59 && p0[2] <= 2.21 && p1[2] >= 1.59 && p1[2] <= 2.21;
+        is_inside_zone && dx > 0.01 && at_arch_z
+    });
+    assert!(
+        has_arch_curve,
+        "Arch curve reveal edges must be preserved"
+    );
+
+    // Check that straight side jambs (between z=0.9 and 1.6) ARE preserved:
+    let has_straight_jamb = all_segments.iter().any(|(p0, p1)| {
+        let is_at_cut = (p0[0] - 4.4).abs() < 1e-3 || (p0[0] - 5.6).abs() < 1e-3;
+        let is_vertical = (p1[0] - p0[0]).hypot(p1[1] - p0[1]) < 1e-3 && (p1[2] - p0[2]).abs() > 0.1;
+        let z_min = p0[2].min(p1[2]);
+        let z_max = p0[2].max(p1[2]);
+        is_at_cut && is_vertical && z_min >= 0.89 && z_max <= 1.61
+    });
+    assert!(
+        has_straight_jamb,
+        "Arch straight side jambs below spring height must be preserved"
+    );
+}
+
+#[test]
+fn wall_with_circle_window_3d_cleans_coplanar_seams_while_preserving_reveal_edges() {
+    let mut scene = Scene::new();
+    let layers = vec![wl("Concrete", 0.2, "Structural")];
+
+    let mut pl = LwPolyline::new();
+    pl.add_vertex(LwVertex::new(Vector2::new(0.0, 0.0)));
+    pl.add_vertex(LwVertex::new(Vector2::new(10.0, 0.0)));
+    let mut ent = EntityType::LwPolyline(pl);
+    let mut rec = ExtendedDataRecord::new(AEC_APPID);
+    rec.values = wall_record("s", 3.0, 0, &layers, &[], WallJustification::Center, PlanPhase::New, None);
+    ent.common_mut().extended_data.add_record(rec);
+    let wall_h = scene.add_entity(ent);
+
+    // Place window at X=5.0, width 1.2 (span 4.4 to 5.6), sill 0.9, height 1.2, Circle shape.
+    let (win_h, _) = place_wall_opening(
+        &mut scene,
+        wall_h,
+        DVec3::new(5.0, 0.0, 0.0),
+        engine::openings::OpeningKind::Window,
+        None, None, None,
+    ).expect("place window");
+
+    let mut opening = engine::opening_xdata::openings_for_host_wall(&scene, wall_h)
+        .into_iter()
+        .find(|o| o.handle == win_h)
+        .expect("opening found");
+    opening.shape = engine::opening_shape::OpeningShape::Circle;
+    opening.height = 1.2;
+    engine::opening_xdata::write_opening_instance(&mut scene, &opening);
+
+    regenerate_wall_representation(&mut scene, wall_h, None).expect("regen wall");
+
+    let wall_rec = wall_from_entity(scene.document.get_entity(wall_h).unwrap()).unwrap();
+    let mut solids = Vec::new();
+    for h in &wall_rec.derived_handles {
+        if let Some(EntityType::Solid3D(s3d)) = scene.document.get_entity(*h) {
+            solids.push(s3d.clone());
+        }
+    }
+
+    assert!(solids.len() >= 3, "Wall with circle window must have rest solids and zone solids");
+
+    let mut all_segments: Vec<([f64; 3], [f64; 3])> = Vec::new();
+    for s in &solids {
+        for w in &s.wires {
+            for win in w.points.windows(2) {
+                all_segments.push(([win[0].x, win[0].y, win[0].z], [win[1].x, win[1].y, win[1].z]));
+            }
+        }
+    }
+
+    // Check that ALL vertical seams across the entire zone [4.4, 5.6] on the wall surface are suppressed:
+    let has_vertical_surface_seam = all_segments.iter().any(|(p0, p1)| {
+        let is_in_zone = p0[0] >= 4.39 && p0[0] <= 5.61;
+        let is_vertical = (p1[0] - p0[0]).hypot(p1[1] - p0[1]) < 1e-3 && (p1[2] - p0[2]).abs() > 0.05;
+        let on_face = (p0[1].abs() - 0.1).abs() < 1e-3;
+        is_in_zone && is_vertical && on_face
+    });
+    assert!(
+        !has_vertical_surface_seam,
+        "All vertical surface seam lines around a circle window must be suppressed"
+    );
+
+    // Check that transverse crown lines across top deck (z=3.0) inside the zone are suppressed:
+    let has_transverse_crown_seam = all_segments.iter().any(|(p0, p1)| {
+        let is_inside_zone = p0[0] >= 4.39 && p0[0] <= 5.61;
+        let is_at_crown = (p0[2] - 3.0).abs() < 1e-3 && (p1[2] - 3.0).abs() < 1e-3;
+        let is_transverse = (p1[1] - p0[1]).abs() > 0.05;
+        is_inside_zone && is_at_crown && is_transverse
+    });
+    assert!(
+        !has_transverse_crown_seam,
+        "Transverse crown seam lines across the top deck of the circle window must be suppressed"
+    );
+
+    // Check that circular reveal edges ARE preserved:
+    let has_circular_reveal = all_segments.iter().any(|(p0, p1)| {
+        let is_inside_zone = p0[0] > 4.4 && p0[0] < 5.6 && p1[0] > 4.4 && p1[0] < 5.6;
+        let dx = (p1[0] - p0[0]).abs();
+        let dz = (p1[2] - p0[2]).abs();
+        let at_circle_z = p0[2] >= 0.89 && p0[2] <= 2.11 && p1[2] >= 0.89 && p1[2] <= 2.11;
+        is_inside_zone && dx > 0.01 && dz > 0.01 && at_circle_z
+    });
+    assert!(
+        has_circular_reveal,
+        "Circular reveal edges must be preserved"
+    );
+}
+
+#[test]
+fn l_corner_same_material_suppresses_3d_deck_miter_fuge_while_different_material_keeps_it() {
+    use crate::ui::command_line::CommandLine;
+
+    // --- Scenario A: Same material (Concrete + Concrete) ---
+    let mut scene = Scene::new();
+    let layers_conc = vec![wl("Concrete", 0.2, "Structural")];
+
+    let mut pl1 = LwPolyline::new();
+    pl1.add_vertex(LwVertex::new(Vector2::new(0.0, 0.0)));
+    pl1.add_vertex(LwVertex::new(Vector2::new(5.0, 0.0)));
+    let mut ent1 = EntityType::LwPolyline(pl1);
+    let mut rec1 = ExtendedDataRecord::new(AEC_APPID);
+    rec1.values = wall_record("s1", 3.0, 0, &layers_conc, &[], WallJustification::Center, PlanPhase::New, None);
+    ent1.common_mut().extended_data.add_record(rec1);
+    let w1 = scene.add_entity(ent1);
+
+    let mut pl2 = LwPolyline::new();
+    pl2.add_vertex(LwVertex::new(Vector2::new(0.0, 0.0)));
+    pl2.add_vertex(LwVertex::new(Vector2::new(0.0, 5.0)));
+    let mut ent2 = EntityType::LwPolyline(pl2);
+    let mut rec2 = ExtendedDataRecord::new(AEC_APPID);
+    rec2.values = wall_record("s2", 3.0, 0, &layers_conc, &[], WallJustification::Center, PlanPhase::New, None);
+    ent2.common_mut().extended_data.add_record(rec2);
+    let w2 = scene.add_entity(ent2);
+
+    let mut command_line = CommandLine::default();
+    aec_walljoin_do(
+        &mut scene,
+        &mut command_line,
+        &format!("{}|{}", w1.value(), w2.value()),
+        None, None, None,
+    );
+
+    let wall1 = wall_from_entity(scene.document.get_entity(w1).unwrap()).unwrap();
+    let s1 = wall1.derived_handles.iter().find_map(|h| match scene.document.get_entity(*h) {
+        Some(EntityType::Solid3D(s)) => Some(s.clone()),
+        _ => None,
+    }).expect("Wall 1 must have 3D solid");
+
+    let draws_diagonal_deck_wire = |s: &acadrust::entities::Solid3D, z_level: f64| {
+        for w in &s.wires {
+            for win in w.points.windows(2) {
+                let p0 = &win[0];
+                let p1 = &win[1];
+                let at_z = (p0.z - z_level).abs() < 1e-3 && (p1.z - z_level).abs() < 1e-3;
+                let d0a = (p0.x - -0.1).hypot(p0.y - -0.1);
+                let d1b = (p1.x - 0.1).hypot(p1.y - 0.1);
+                let d0b = (p0.x - 0.1).hypot(p0.y - 0.1);
+                let d1a = (p1.x - -0.1).hypot(p1.y - -0.1);
+                if at_z && ((d0a < 1e-3 && d1b < 1e-3) || (d0b < 1e-3 && d1a < 1e-3)) {
+                    return true;
+                }
+            }
+        }
+        false
+    };
+
+    assert!(
+        !draws_diagonal_deck_wire(&s1, 3.0),
+        "Wall 1 must NOT draw 45-degree diagonal fuge on top deck (z=3.0) when joining same material"
+    );
+    assert!(
+        !draws_diagonal_deck_wire(&s1, 0.0),
+        "Wall 1 must NOT draw 45-degree diagonal fuge on bottom base (z=0.0) when joining same material"
+    );
+
+    // Verify outer corner vertical wire is still present!
+    let has_outer_corner_wire = s1.wires.iter().any(|w| {
+        w.points.windows(2).any(|win| {
+            let p0 = &win[0];
+            let p1 = &win[1];
+            (p0.x - -0.1).hypot(p0.y - -0.1) < 1e-3
+                && (p1.x - -0.1).hypot(p1.y - -0.1) < 1e-3
+                && (p1.z - p0.z).abs() > 2.0
+        })
+    });
+    assert!(has_outer_corner_wire, "Outer vertical corner wire must remain intact and sharp");
+
+    // --- Scenario B: Different materials (Concrete + Brick) ---
+    let mut scene2 = Scene::new();
+    let layers_brick = vec![wl("Brick", 0.2, "Structural")];
+
+    let mut pl3 = LwPolyline::new();
+    pl3.add_vertex(LwVertex::new(Vector2::new(0.0, 0.0)));
+    pl3.add_vertex(LwVertex::new(Vector2::new(5.0, 0.0)));
+    let mut ent3 = EntityType::LwPolyline(pl3);
+    let mut rec3 = ExtendedDataRecord::new(AEC_APPID);
+    rec3.values = wall_record("s3", 3.0, 0, &layers_conc, &[], WallJustification::Center, PlanPhase::New, None);
+    ent3.common_mut().extended_data.add_record(rec3);
+    let w3 = scene2.add_entity(ent3);
+
+    let mut pl4 = LwPolyline::new();
+    pl4.add_vertex(LwVertex::new(Vector2::new(0.0, 0.0)));
+    pl4.add_vertex(LwVertex::new(Vector2::new(0.0, 5.0)));
+    let mut ent4 = EntityType::LwPolyline(pl4);
+    let mut rec4 = ExtendedDataRecord::new(AEC_APPID);
+    rec4.values = wall_record("s4", 3.0, 0, &layers_brick, &[], WallJustification::Center, PlanPhase::New, None);
+    ent4.common_mut().extended_data.add_record(rec4);
+    let w4 = scene2.add_entity(ent4);
+
+    let mut command_line2 = CommandLine::default();
+    aec_walljoin_do(
+        &mut scene2,
+        &mut command_line2,
+        &format!("{}|{}", w3.value(), w4.value()),
+        None, None, None,
+    );
+
+    let wall3 = wall_from_entity(scene2.document.get_entity(w3).unwrap()).unwrap();
+    let s3 = wall3.derived_handles.iter().find_map(|h| match scene2.document.get_entity(*h) {
+        Some(EntityType::Solid3D(s)) => Some(s.clone()),
+        _ => None,
+    }).expect("Wall 3 must have 3D solid");
+
+    assert!(
+        draws_diagonal_deck_wire(&s3, 3.0),
+        "Wall 3 MUST draw 45-degree diagonal boundary on top deck (z=3.0) when joining DIFFERENT materials"
     );
 }

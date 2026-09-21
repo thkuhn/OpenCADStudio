@@ -20,6 +20,7 @@ impl OpenCADStudio {
             AecModalKind::DropWarning => self.aec_drop_warning_view(sizing),
             AecModalKind::MaterialManager => self.aec_material_manager_view(),
             AecModalKind::WallStyleManager => self.aec_wall_style_manager_view(),
+            AecModalKind::OpeningStyleManager => self.aec_opening_style_manager_view(),
             AecModalKind::WallStyleDisplayProfiles => self.aec_wall_style_display_profiles_view(),
             AecModalKind::JunctionEditor => self.aec_junction_editor_view(),
             AecModalKind::ProjectExplorer => self.aec_project_explorer_view(),
@@ -114,6 +115,53 @@ fn aec_material_manager_view(&self) -> Element<'_, Message> {
             hatch_color_picker_open: self.aec.aec_style_manager_material_hatch_color_picker_open,
             linetype_items: &self.aec.aec_style_manager_material_linetype_items,
             linetype_combo: &self.aec.aec_style_manager_material_linetype_combo,
+        },
+    )
+}
+
+fn aec_opening_style_manager_view(&self) -> Element<'_, Message> {
+    let Some(library) = self.aec.aec_style_library.as_ref() else {
+        return iced::widget::text(t!("No style library loaded.")).into();
+    };
+    let parent_name = self.aec.aec_opening_style_manager_parent.as_deref().and_then(|id| {
+        library
+            .opening_styles
+            .iter()
+            .find(|s| s.style.id == id)
+            .map(|s| s.style.name.as_str())
+    });
+    crate::modules::aec::ui::aec_opening_style_manager::view_window(
+        library,
+        self.aec.aec_project_explorer_file.as_ref(),
+        self.aec.aec_session_style_library.as_ref(),
+        self.aec.aec_opening_style_manager_selected.as_deref(),
+        &self.aec.aec_opening_style_manager_filter,
+        crate::modules::aec::ui::aec_opening_style_manager::OpeningStyleFormState {
+            open: self.aec.aec_opening_style_manager_form_open,
+            is_new: self.aec.aec_opening_style_manager_editing_id.is_none(),
+            name: &self.aec.aec_opening_style_manager_name,
+            parent_id: self.aec.aec_opening_style_manager_parent.as_deref(),
+            parent_name,
+            kind: self.aec.aec_opening_style_manager_kind,
+            shape: self.aec.aec_opening_style_manager_shape,
+            width: &self.aec.aec_opening_style_manager_width,
+            height: &self.aec.aec_opening_style_manager_height,
+            sill: &self.aec.aec_opening_style_manager_sill,
+            frame: &self.aec.aec_opening_style_manager_frame,
+            angle: &self.aec.aec_opening_style_manager_angle,
+            spring: &self.aec.aec_opening_style_manager_spring,
+            hinge: self.aec.aec_opening_style_manager_hinge,
+            slots: &self.aec.aec_opening_style_manager_slots,
+            profile_selected: self.aec.aec_opening_style_manager_profile_selected.as_deref(),
+            plan_names: self
+                .aec
+                .aec_plan_library
+                .as_ref()
+                .map(|lib| lib.configs.iter().map(|c| c.name.clone()).collect())
+                .unwrap_or_default(),
+            sketch_slot: self.aec.aec_opening_style_manager_sketch_slot,
+            sketch_draft: &self.aec.aec_opening_style_manager_sketch_draft,
+            sketch_draft_bulges: &self.aec.aec_opening_style_manager_sketch_draft_bulges,
         },
     )
 }

@@ -17,6 +17,7 @@ use super::join::{
     JoinKind, JoinOverrideStyle, Junction, JunctionOverride, JunctionRole, LayerGapOverride,
     LayerRef,
 };
+use super::openings::{axis_length, point_and_tangent_at_distance, remaining_axis_spans, Opening};
 
 /// Minimum angle (5°) below which diagonal miters are rejected as degenerate.
 /// At 5°, the miter intersection distance is ~23x the layer half-offset (1/sin(2.5°)).
@@ -824,7 +825,7 @@ fn mirror_layer_offsets_for_match(layers: &[MiterLayer]) -> Vec<MiterLayer> {
         .collect()
 }
 
-fn match_layer_indices_for_l_join(
+pub(crate) fn match_layer_indices_for_l_join(
     layers_a: &[MiterLayer],
     layers_b: &[MiterLayer],
     end_a: usize,
@@ -1813,6 +1814,85 @@ pub fn merge_through_cutout_preserving_miter(
         cutout.to_vec()
     } else {
         out
+    }
+}
+
+/// Split a layer footprint (which may have mitered, extended, or butt-joined
+/// ends) by wall openings.
+///
+/// For each remaining free span along the axis:
+/// - If the span starts at the wall start (s0 ≈ 0), the start of the footprint
+///   (including any join/miter at end 0) is preserved untouched.
+///   Otherwise, it is sliced cleanly by the opening reveal perpendicular to the axis at s0.
+/// - If the span ends at the wall end (s1 ≈ L), the end of the footprint
+///   (including any join/miter at end L) is preserved untouched.
+///   Otherwise, it is sliced cleanly by the opening reveal perpendicular to the axis at s1.
+///
+/// Multiple rings (e.g. from T-through cutouts) separated by NaN are supported.
+pub fn split_mitered_footprint_by_openings(
+    footprint: &[(f64, f64)],
+    axis: &[(f64, f64)],
+    openings: &[Opening],
+) -> Vec<Vec<(f64, f64)>> {
+    if openings.is_empty() || axis.len() < 2 || footprint.len() < 3 {
+        let rings = split_footprint_rings(footprint);
+        return if rings.is_empty() {
+            vec![footprint.to_vec()]
+        } else {
+            rings
+        };
+    }
+    let length = axis_length(axis);
+    if length <= 1e-9 {
+        return vec![footprint.to_vec()];
+    }
+    let spans = remaining_axis_spans(length, openings);
+    let rings = split_footprint_rings(footprint);
+    let mut pieces = Vec::new();
+
+    for (s0, s1) in spans {
+        if s1 - s0 <= 1e-6 {
+            continue;
+        }
+        for ring in &rings {
+            if ring.len() < 3 {
+                continue;
+            }
+            let mut clipped = ring.clone();
+
+            // 1. Cut at start of span (s0) if s0 is strictly after the wall start
+            if s0 > 1e-4 {
+                if let Some((p0, t0)) = point_and_tangent_at_distance(axis, s0) {
+                    let n0 = (-t0.1, t0.0);
+                    let a = p0;
+                    let b = (p0.0 + n0.0, p0.1 + n0.1);
+                    let keep = (p0.0 + t0.0, p0.1 + t0.1);
+                    clipped = clip_closed_to_halfplane(&clipped, a, b, keep);
+                }
+            }
+
+            // 2. Cut at end of span (s1) if s1 is strictly before the wall end
+            if s1 < length - 1e-4 {
+                if let Some((p1, t1)) = point_and_tangent_at_distance(axis, s1) {
+                    let n1 = (-t1.1, t1.0);
+                    let a = p1;
+                    let b = (p1.0 + n1.0, p1.1 + n1.1);
+                    let keep = (p1.0 - t1.0, p1.1 - t1.1);
+                    clipped = clip_closed_to_halfplane(&clipped, a, b, keep);
+                }
+            }
+
+            if clipped.len() >= 3 && super::geometry::area(&clipped) > 1e-6 {
+                ensure_ccw(&mut clipped);
+                pieces.push(clipped);
+            }
+        }
+    }
+
+    if pieces.is_empty() {
+        rings
+    } else {
+        pieces
     }
 }
 

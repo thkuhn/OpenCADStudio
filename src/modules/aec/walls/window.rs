@@ -2,15 +2,24 @@
 
 use acadrust::Handle;
 use glam::DVec3;
+use std::cell::RefCell;
+use std::collections::HashMap;
 
 use crate::command::{CadCommand, CmdResult};
-use crate::modules::aec::engine::wall_package::is_wall_pick_target;
+use crate::modules::aec::engine::opening_display::{
+    preview_opening_hatches, preview_opening_wires,
+};
+use crate::modules::aec::engine::opening_style::{apply_style_defaults, OpeningStyle};
 use crate::modules::aec::engine::opening_xdata::place_wall_opening;
+use crate::modules::aec::engine::openings::{distance_along_axis_from_point, Opening};
+use crate::modules::aec::engine::wall_package::{is_wall_pick_target, resolve_wall_package};
+use crate::modules::aec::engine::xdata::{get_wall_vertices, wall_from_entity};
 use crate::modules::aec::engine::{self, StyleLibrary};
 use crate::modules::{IconKind, ModuleEvent, ToolDef};
+use crate::scene::model::hatch_model::HatchModel;
+use crate::scene::model::wire_model::WireModel;
 use crate::scene::Scene;
 use crate::ui::command_line::CommandLine;
-use std::collections::HashMap;
 
 pub fn tool() -> ToolDef {
     ToolDef {
@@ -21,28 +30,75 @@ pub fn tool() -> ToolDef {
     }
 }
 
-/// `AEC_WINDOW` / `AEC_DOOR` — pick a wall, then a point along it to place
-/// an opening with default dimensions.
+struct CachedWall {
+    axis: Vec<(f64, f64)>,
+    thickness: f64,
+}
+
+/// `AEC_WINDOW` / `AEC_DOOR` / `AEC_OPENING` — pick a wall, then a point
+/// along it. Dimensions come from the kind's seed style (library on place).
 pub struct WallOpeningCommand {
     kind: engine::openings::OpeningKind,
     wall: Option<Handle>,
+    cached: RefCell<Option<CachedWall>>,
+    preview_hatches: Vec<HatchModel>,
 }
 
 impl WallOpeningCommand {
-    #[allow(clippy::new_without_default)]
-    pub fn new_window() -> Self {
+    fn new(kind: engine::openings::OpeningKind) -> Self {
         Self {
-            kind: engine::openings::OpeningKind::Window,
+            kind,
             wall: None,
+            cached: RefCell::new(None),
+            preview_hatches: Vec::new(),
         }
     }
 
     #[allow(clippy::new_without_default)]
+    pub fn new_window() -> Self {
+        Self::new(engine::openings::OpeningKind::Window)
+    }
+
+    #[allow(clippy::new_without_default)]
     pub fn new_door() -> Self {
-        Self {
-            kind: engine::openings::OpeningKind::Door,
-            wall: None,
+        Self::new(engine::openings::OpeningKind::Door)
+    }
+
+    #[allow(clippy::new_without_default)]
+    pub fn new_opening() -> Self {
+        Self::new(engine::openings::OpeningKind::Breakthrough)
+    }
+
+    fn seed_style(&self) -> OpeningStyle {
+        match self.kind {
+            engine::openings::OpeningKind::Window => OpeningStyle::standard_window(),
+            engine::openings::OpeningKind::Door => OpeningStyle::standard_door(),
+            engine::openings::OpeningKind::Breakthrough => OpeningStyle::standard_breakthrough(),
         }
+    }
+
+    fn preview_instance(&self, distance: f64) -> Opening {
+        let mut opening = Opening::from_kind(Handle::NULL, Handle::NULL, distance, self.kind);
+        apply_style_defaults(&mut opening, &self.seed_style());
+        opening
+    }
+
+    fn cache_from_scene(&self, scene: &Scene, handle: Handle) {
+        let axis_h = resolve_wall_package(scene, handle);
+        let verts = get_wall_vertices(scene, axis_h);
+        if verts.len() < 2 {
+            return;
+        }
+        let thickness = scene
+            .document
+            .get_entity(axis_h)
+            .and_then(wall_from_entity)
+            .map(|w| w.total_thickness())
+            .unwrap_or(0.3);
+        *self.cached.borrow_mut() = Some(CachedWall {
+            axis: verts.iter().map(|v| (v.x, v.y)).collect(),
+            thickness,
+        });
     }
 }
 
@@ -51,6 +107,7 @@ impl CadCommand for WallOpeningCommand {
         match self.kind {
             engine::openings::OpeningKind::Window => "AEC_WINDOW",
             engine::openings::OpeningKind::Door => "AEC_DOOR",
+            engine::openings::OpeningKind::Breakthrough => "AEC_OPENING",
         }
     }
 
@@ -72,7 +129,11 @@ impl CadCommand for WallOpeningCommand {
     }
 
     fn entity_pick_hover_highlights_handle(&self, scene: &Scene, handle: Handle) -> bool {
-        is_wall_pick_target(scene, handle)
+        let ok = is_wall_pick_target(scene, handle);
+        if ok {
+            self.cache_from_scene(scene, handle);
+        }
+        ok
     }
 
     fn on_entity_pick(&mut self, handle: Handle, _pt: DVec3) -> CmdResult {
@@ -83,6 +144,34 @@ impl CadCommand for WallOpeningCommand {
         CmdResult::NeedPoint
     }
 
+    fn on_preview_wires(&mut self, pt: DVec3) -> Vec<WireModel> {
+        if self.wall.is_none() {
+            self.preview_hatches.clear();
+            return Vec::new();
+        }
+        let (axis, thickness) = {
+            let cache = self.cached.borrow();
+            let Some(cache) = cache.as_ref() else {
+                return Vec::new();
+            };
+            (cache.axis.clone(), cache.thickness)
+        };
+        let Some(distance) = distance_along_axis_from_point(&axis, (pt.x, pt.y)) else {
+            return Vec::new();
+        };
+        let opening = self.preview_instance(distance);
+        self.preview_hatches = preview_opening_hatches(&axis, thickness, &opening, None, None);
+        preview_opening_wires(&axis, thickness, &opening, None, None)
+    }
+
+    fn hatch_preview_models(&self) -> Option<Vec<HatchModel>> {
+        if self.preview_hatches.is_empty() {
+            None
+        } else {
+            Some(self.preview_hatches.clone())
+        }
+    }
+
     fn on_point(&mut self, pt: DVec3) -> CmdResult {
         let Some(wall) = self.wall else {
             return CmdResult::NeedPoint;
@@ -90,6 +179,7 @@ impl CadCommand for WallOpeningCommand {
         let kind_flag = match self.kind {
             engine::openings::OpeningKind::Window => "W",
             engine::openings::OpeningKind::Door => "D",
+            engine::openings::OpeningKind::Breakthrough => "B",
         };
         CmdResult::Dispatch(format!(
             "AEC_WALLOPENING_DO {}|{}|{},{},{}",
@@ -127,6 +217,7 @@ pub fn aec_wallopening_do(
     };
     let kind = match parts[1] {
         "D" | "d" | "Door" | "door" => engine::openings::OpeningKind::Door,
+        "B" | "b" | "Breakthrough" | "breakthrough" => engine::openings::OpeningKind::Breakthrough,
         _ => engine::openings::OpeningKind::Window,
     };
     let xyz: Vec<&str> = parts[2].split(',').collect();

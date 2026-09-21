@@ -63,9 +63,19 @@ pub(crate) fn collect_wall_display_children(scene: &Scene, owner: Handle) -> Vec
         }
     }
     for h in engine::owner_index::children_of(&scene.document, owner) {
-        if !out.contains(&h) {
-            out.push(h);
+        if out.contains(&h) {
+            continue;
         }
+        // Openings (and their OPENING_REP children) share CHILD_HANDLES with
+        // wall display children; they must not be erased as wall representation.
+        if let Some(entity) = scene.document.get_entity(h) {
+            if opening_from_entity(entity, h).is_some()
+                || engine::opening_display::opening_rep_owner_from_entity(entity).is_some()
+            {
+                continue;
+            }
+        }
+        out.push(h);
     }
     for entity in scene.document.entities() {
         let handle = entity.common().handle;
@@ -217,6 +227,11 @@ pub fn resolve_wall_package(scene: &Scene, clicked: Handle) -> Handle {
     let Some(entity) = scene.document.get_entity(clicked) else {
         return clicked;
     };
+    if opening_from_entity(entity, clicked).is_some()
+        || engine::opening_display::opening_rep_owner_from_entity(entity).is_some()
+    {
+        return clicked;
+    }
     if wall_from_entity(entity).is_some() {
         return clicked;
     }
@@ -238,6 +253,11 @@ pub fn resolve_wall_package(scene: &Scene, clicked: Handle) -> Handle {
             .iter()
             .any(|h| *h == clicked)
             && wall_from_entity(entity).is_some()
+            && opening_from_entity(
+                scene.document.get_entity(clicked).unwrap_or(entity),
+                clicked,
+            )
+            .is_none()
         {
             return owner;
         }
@@ -256,6 +276,14 @@ pub fn expand_handles_for_wall_packages(scene: &Scene, handles: &[Handle]) -> Ve
     let mut out = Vec::with_capacity(handles.len());
     let mut seen = rustc_hash::FxHashSet::default();
     for &handle in handles {
+        if let Some(opening) = engine::opening_display::opening_owner_if_any(scene, handle) {
+            for package in engine::opening_display::opening_package_handles(scene, opening) {
+                if seen.insert(package) {
+                    out.push(package);
+                }
+            }
+            continue;
+        }
         let owner = resolve_wall_package(scene, handle);
         for package in wall_package_handles(scene, owner) {
             if seen.insert(package) {
@@ -377,6 +405,18 @@ pub fn expand_with_wall_derived_handles(scene: &Scene, handles: &mut Vec<Handle>
         }
         if let Some(v2) = wall_from_entity(entity) {
             extra.extend(v2.derived_handles.iter().copied());
+        }
+        for child in engine::owner_index::children_of(&scene.document, owner) {
+            extra.push(child);
+            extra.extend(engine::opening_display::collect_opening_display_children(
+                scene, child,
+            ));
+        }
+        if let Some(opening) = engine::opening_display::opening_owner_if_any(scene, *handle) {
+            extra.push(opening);
+            extra.extend(engine::opening_display::collect_opening_display_children(
+                scene, opening,
+            ));
         }
     }
     for h in extra {

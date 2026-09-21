@@ -12,7 +12,7 @@ use crate::scene::Scene;
 
 pub const UNBOUND_LABEL: &str = "(none)";
 
-fn is_unbound_label(choice: &str) -> bool {
+pub(crate) fn is_unbound_label(choice: &str) -> bool {
     choice == UNBOUND_LABEL || choice == crate::t!("(none)").as_ref()
 }
 
@@ -87,7 +87,7 @@ pub fn apply_wall_base_z(scene: &mut Scene, handle: Handle, z: f64) -> bool {
     write_aec_record(&mut scene.document, handle, record)
 }
 
-fn parse_plane_choice(project: Option<&ProjectFile>, choice: &str) -> Option<Uuid> {
+pub(crate) fn parse_plane_choice(project: Option<&ProjectFile>, choice: &str) -> Option<Uuid> {
     let choice = choice.trim();
     if choice.is_empty() || is_unbound_label(choice) {
         return None;

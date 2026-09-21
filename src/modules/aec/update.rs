@@ -62,6 +62,103 @@ impl OpenCADStudio {
                 self.active_modal = Some(crate::app::ModalKind::Aec(AecModalKind::WallStyleManager));
                 Task::none()
             }
+            AecMessage::AecOpeningStyleManagerOpen => self.aec_opening_style_manager_open(),
+            AecMessage::AecOpeningStyleManagerFilter(value) => {
+                self.aec.aec_opening_style_manager_filter = value;
+                Task::none()
+            }
+            AecMessage::AecOpeningStyleManagerSelect(id) => {
+                self.aec_opening_style_manager_select(id)
+            }
+            AecMessage::AecOpeningStyleManagerNew => self.aec_opening_style_manager_new(),
+            AecMessage::AecOpeningStyleManagerNameChanged(value) => {
+                self.aec.aec_opening_style_manager_name = value;
+                Task::none()
+            }
+            AecMessage::AecOpeningStyleManagerParentChanged(value) => {
+                self.aec.aec_opening_style_manager_parent = value;
+                Task::none()
+            }
+            AecMessage::AecOpeningStyleManagerKindChanged(value) => {
+                self.aec_opening_style_manager_kind_changed(value)
+            }
+            AecMessage::AecOpeningStyleManagerShapeChanged(value) => {
+                self.aec_opening_style_manager_shape_changed(value)
+            }
+            AecMessage::AecOpeningStyleManagerWidthChanged(value) => {
+                self.aec_opening_style_manager_width_changed(value)
+            }
+            AecMessage::AecOpeningStyleManagerHeightChanged(value) => {
+                self.aec_opening_style_manager_height_changed(value)
+            }
+            AecMessage::AecOpeningStyleManagerSillChanged(value) => {
+                self.aec.aec_opening_style_manager_sill = value;
+                Task::none()
+            }
+            AecMessage::AecOpeningStyleManagerFrameChanged(value) => {
+                self.aec.aec_opening_style_manager_frame = value;
+                Task::none()
+            }
+            AecMessage::AecOpeningStyleManagerAngleChanged(value) => {
+                self.aec.aec_opening_style_manager_angle = value;
+                Task::none()
+            }
+            AecMessage::AecOpeningStyleManagerSpringChanged(value) => {
+                self.aec.aec_opening_style_manager_spring = value;
+                Task::none()
+            }
+            AecMessage::AecOpeningStyleManagerHingeChanged(value) => {
+                self.aec.aec_opening_style_manager_hinge =
+                    crate::modules::aec::engine::opening_style::HingeSide::from_str(&value);
+                Task::none()
+            }
+            AecMessage::AecOpeningStyleManagerSlotSourceChanged(index, value) => {
+                self.aec_opening_style_manager_slot_source_changed(index, value)
+            }
+            AecMessage::AecOpeningStyleManagerSlotGeneratorChanged(index, value) => {
+                self.aec_opening_style_manager_slot_generator_changed(index, value)
+            }
+            AecMessage::AecOpeningStyleManagerProfileSelect(value) => {
+                self.aec_opening_style_manager_profile_select(value)
+            }
+            AecMessage::AecOpeningStyleManagerSlotVisible(index, visible) => {
+                self.aec_opening_style_manager_slot_visible(index, visible)
+            }
+            AecMessage::AecOpeningStyleManagerSketchSlotSelect(index) => {
+                self.aec_opening_style_manager_sketch_slot_select(index)
+            }
+            AecMessage::AecOpeningStyleManagerSketchClick(x, y) => {
+                self.aec_opening_style_manager_sketch_click(x, y)
+            }
+            AecMessage::AecOpeningStyleManagerSketchClosePath => {
+                self.aec_opening_style_manager_sketch_close_path()
+            }
+            AecMessage::AecOpeningStyleManagerSketchFinishPath => {
+                self.aec_opening_style_manager_sketch_finish_path()
+            }
+            AecMessage::AecOpeningStyleManagerSketchUndo => {
+                self.aec_opening_style_manager_sketch_undo()
+            }
+            AecMessage::AecOpeningStyleManagerSketchDeletePath => {
+                self.aec_opening_style_manager_sketch_delete_path()
+            }
+            AecMessage::AecOpeningStyleManagerSketchClear => {
+                self.aec_opening_style_manager_sketch_clear()
+            }
+            AecMessage::AecOpeningStyleManagerSketchAddFrame => {
+                self.aec_opening_style_manager_sketch_add_frame()
+            }
+            AecMessage::AecOpeningStyleManagerSketchArc => {
+                self.aec_opening_style_manager_sketch_arc()
+            }
+            AecMessage::AecOpeningStyleManagerSave => self.aec_opening_style_manager_save(),
+            AecMessage::AecOpeningStyleManagerDelete => self.aec_opening_style_manager_delete(),
+            AecMessage::AecStyleManagerCopyOpeningStyleToProject => {
+                self.aec_handle_copy_opening_style(true)
+            }
+            AecMessage::AecStyleManagerCopyOpeningStyleToGlobal => {
+                self.aec_handle_copy_opening_style(false)
+            }
             AecMessage::AecProjectExplorerOpen => {
                 self.ribbon.close_dropdown();
                 self.active_modal = Some(crate::app::ModalKind::Aec(AecModalKind::ProjectExplorer));
@@ -1568,7 +1665,11 @@ impl OpenCADStudio {
                         .get(index)
                         .map(|l| l.layer_override.clone()),
                     crate::app::StylePickerTarget::WallPropertiesStyle
-                    | crate::app::StylePickerTarget::ActiveCommand => None,
+                    | crate::app::StylePickerTarget::ActiveCommand
+                    | crate::app::StylePickerTarget::OpeningPropertiesStyle => None,
+                    crate::app::StylePickerTarget::OpeningStyleParent => {
+                        self.aec.aec_opening_style_manager_parent.clone()
+                    }
                 };
                 self.active_modal = Some(crate::app::ModalKind::Aec(AecModalKind::StylePicker { target }));
                 Task::none()
@@ -1590,6 +1691,29 @@ impl OpenCADStudio {
                 self.aec.aec_style_picker_wall_handles = handles;
                 self.active_modal = Some(crate::app::ModalKind::Aec(AecModalKind::StylePicker {
                     target: crate::app::StylePickerTarget::WallPropertiesStyle,
+                }));
+                Task::none()
+            }
+            AecMessage::AecStylePickerOpenForOpeningProperties(handles) => {
+                self.aec_refresh_combined_style_library();
+                self.aec.aec_style_picker_filter.clear();
+                self.aec.aec_style_picker_selection = handles.first().and_then(|h| {
+                    let owner = crate::modules::aec::engine::opening_display::resolve_opening_package(
+                        &self.tabs[self.active_tab].scene,
+                        *h,
+                    );
+                    self.tabs[self.active_tab]
+                        .scene
+                        .document
+                        .get_entity(owner)
+                        .and_then(|e| {
+                            crate::modules::aec::engine::opening_xdata::opening_from_entity(e, owner)
+                        })
+                        .and_then(|o| o.style_id)
+                });
+                self.aec.aec_style_picker_wall_handles = handles;
+                self.active_modal = Some(crate::app::ModalKind::Aec(AecModalKind::StylePicker {
+                    target: crate::app::StylePickerTarget::OpeningPropertiesStyle,
                 }));
                 Task::none()
             }
@@ -1628,6 +1752,14 @@ impl OpenCADStudio {
                             | crate::app::StylePickerTarget::LayerOverride(_)
                     ) {
                         self.active_modal = Some(crate::app::ModalKind::Aec(AecModalKind::WallStyleManager));
+                        return Task::none();
+                    }
+                    if matches!(
+                        target,
+                        crate::app::StylePickerTarget::OpeningStyleParent
+                    ) {
+                        self.active_modal =
+                            Some(crate::app::ModalKind::Aec(AecModalKind::OpeningStyleManager));
                         return Task::none();
                     }
                 }
@@ -2197,6 +2329,22 @@ impl OpenCADStudio {
                             }
                             self.refresh_properties();
                         }
+                        crate::app::StylePickerTarget::OpeningStyleParent => {
+                            let id = if selection.is_empty() {
+                                None
+                            } else {
+                                Some(selection)
+                            };
+                            self.active_modal =
+                                Some(crate::app::ModalKind::Aec(AecModalKind::OpeningStyleManager));
+                            return self.update(Message::Aec(
+                                AecMessage::AecOpeningStyleManagerParentChanged(id),
+                            ));
+                        }
+                        crate::app::StylePickerTarget::OpeningPropertiesStyle => {
+                            self.active_modal = None;
+                            return self.aec_apply_picked_opening_style(selection);
+                        }
                         crate::app::StylePickerTarget::ActiveCommand => {
                             let i = self.active_tab;
                             if !selection.is_empty() {
@@ -2648,6 +2796,9 @@ impl OpenCADStudio {
                     }
                     Some(AecPendingCopy::WallStyle { .. }) => {
                         crate::app::ModalKind::Aec(AecModalKind::WallStyleManager)
+                    }
+                    Some(AecPendingCopy::OpeningStyle { .. }) => {
+                        crate::app::ModalKind::Aec(AecModalKind::OpeningStyleManager)
                     }
                     None => crate::app::ModalKind::Aec(AecModalKind::MaterialManager),
                 };

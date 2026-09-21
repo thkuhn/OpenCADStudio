@@ -5,8 +5,8 @@ use iced::{Alignment, Background, Border, Element, Fill, Theme};
 
 use crate::app::{AecMessage, Message};
 use crate::modules::aec::engine::library::{
-    combined_material_entries_with_session, combined_wall_style_entries_with_session,
-    LibrarySource, StyleLibrary,
+    combined_material_entries_with_session, combined_opening_style_entries_with_session,
+    combined_wall_style_entries_with_session, LibrarySource, StyleLibrary,
 };
 use crate::modules::aec::engine::project::ProjectFile;
 use crate::t;
@@ -76,6 +76,8 @@ pub fn view_window<'a>(
         crate::app::StylePickerTarget::LayerOverride(_) => t!("Select Layer Override"),
         crate::app::StylePickerTarget::WallPropertiesStyle => t!("Select Wall Style"),
         crate::app::StylePickerTarget::ActiveCommand => t!("Select Wall Style"),
+        crate::app::StylePickerTarget::OpeningStyleParent => t!("Select Parent Style"),
+        crate::app::StylePickerTarget::OpeningPropertiesStyle => t!("Select Opening Style"),
     };
 
     let query = filter.trim().to_lowercase();
@@ -133,6 +135,84 @@ pub fn view_window<'a>(
                     .into()
                 })
                 .collect();
+            scrollable(column(rows).spacing(2)).into()
+        }
+        crate::app::StylePickerTarget::OpeningStyleParent
+        | crate::app::StylePickerTarget::OpeningPropertiesStyle => {
+            let opening_style_sources: std::collections::HashMap<String, LibrarySource> =
+                combined_opening_style_entries_with_session(project, session)
+                    .into_iter()
+                    .map(|e| (e.opening_style.style.id, e.source))
+                    .collect();
+            let tree = library.opening_style_tree();
+            let mut visible_ids = std::collections::HashSet::new();
+            if !query.is_empty() {
+                let styles_map: std::collections::HashMap<_, _> = library
+                    .opening_styles
+                    .iter()
+                    .map(|os| (os.style.id.clone(), os.style.clone()))
+                    .collect();
+                for node in &tree {
+                    if node.style.style.name.to_lowercase().contains(&query) {
+                        if let Ok(chain) = crate::modules::aec::engine::style::resolve_chain(
+                            &styles_map,
+                            &node.style.style.id,
+                        ) {
+                            for id in chain {
+                                visible_ids.insert(id);
+                            }
+                        }
+                    }
+                }
+            }
+            let mut rows: Vec<Element<'_, Message>> = Vec::new();
+            if matches!(
+                target,
+                crate::app::StylePickerTarget::OpeningStyleParent
+            ) {
+                let none_label = t!("(None)").into_owned();
+                let is_selected = selection.is_none() || selection == Some("");
+                rows.push(
+                    button(text(none_label).size(12))
+                        .on_press(Message::Aec(AecMessage::AecStylePickerSelect(
+                            String::new(),
+                        )))
+                        .style(list_style(is_selected))
+                        .padding([4, 8])
+                        .width(Fill)
+                        .into(),
+                );
+            }
+            rows.extend(tree.into_iter().filter(|node| {
+                query.is_empty() || visible_ids.contains(&node.style.style.id)
+            }).map(|node| {
+                let is_selected = selection == Some(node.style.style.id.as_str());
+                let source = opening_style_sources
+                    .get(&node.style.style.id)
+                    .copied()
+                    .unwrap_or(LibrarySource::Standard);
+                button(
+                    row![
+                        Space::new().width(node.depth as f32 * 20.0),
+                        text(format!(
+                            "{} [{}]",
+                            node.style.style.name,
+                            node.style.kind.as_str()
+                        ))
+                        .size(12),
+                        Space::new().width(6),
+                        source_badge(source),
+                    ]
+                    .align_y(Alignment::Center),
+                )
+                .on_press(Message::Aec(AecMessage::AecStylePickerSelect(
+                    node.style.style.id.clone(),
+                )))
+                .style(list_style(is_selected))
+                .padding([4, 8])
+                .width(Fill)
+                .into()
+            }));
             scrollable(column(rows).spacing(2)).into()
         }
         crate::app::StylePickerTarget::LayerMaterial(_) => {

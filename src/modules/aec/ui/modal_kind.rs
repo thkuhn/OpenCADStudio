@@ -8,6 +8,7 @@ pub enum AecModalKind {
     DropWarning,
     MaterialManager,
     WallStyleManager,
+    OpeningStyleManager,
     WallStyleDisplayProfiles,
     JunctionEditor,
     ProjectExplorer,
@@ -24,6 +25,7 @@ impl AecModalKind {
             Self::DropWarning => crate::tr!("modal", "save-warning"),
             Self::MaterialManager => crate::t!("AEC Material Manager").into_owned(),
             Self::WallStyleManager => crate::t!("AEC Wall Style Manager").into_owned(),
+            Self::OpeningStyleManager => crate::t!("AEC Opening Style Manager").into_owned(),
             Self::WallStyleDisplayProfiles => crate::t!("Display Profiles").into_owned(),
             Self::JunctionEditor => crate::t!("Junction Editor").into_owned(),
             Self::ProjectExplorer => crate::t!("AEC Project Explorer").into_owned(),
@@ -40,6 +42,7 @@ impl AecModalKind {
         match self {
             Self::MaterialManager => Some((900, 560)),
             Self::WallStyleManager => Some((960, 640)),
+            Self::OpeningStyleManager => Some((980, 680)),
             Self::WallStyleDisplayProfiles => Some((760, 540)),
             Self::JunctionEditor => Some((720, 520)),
             Self::ProjectExplorer => Some((860, 560)),

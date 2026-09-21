@@ -2629,9 +2629,6 @@ handles={handles_ms:.1} panel={:.1} ribbon={ribbon_ms:.1} tail={:.1} selected={}
         let (new_handle, new_grips, new_grip_handles) = {
             let annotation_scale_handle = self.tabs[i].scene.displayed_annotation_scale_handle();
             let selected = self.tabs[i].scene.selected_entities();
-            let single_handle = (selected.len() == 1
-                && !self.tabs[i].scene.is_layer_locked(selected[0].0))
-            .then(|| selected[0].0);
             let wall_owners: Vec<Handle> = selected
                 .iter()
                 .map(|(handle, _)| {
@@ -2749,6 +2746,11 @@ handles={handles_ms:.1} panel={:.1} ribbon={ribbon_ms:.1} tail={:.1} selected={}
                     &self.tabs[i].scene,
                     handle,
                     contextual.as_ref(),
+                    &mut entity_grips,
+                );
+                crate::modules::aec::properties::append_opening_axis_grips(
+                    &self.tabs[i].scene,
+                    handle,
                     &mut entity_grips,
                 );
                 for mut grip in entity_grips {

@@ -826,7 +826,7 @@ impl PropertiesPanel {
             PropValue::AttrText { tag, value } => self.render_attr_row(tag, value),
             PropValue::Live(value) => self.render_live_row(label, prop.field, value),
             PropValue::Picker { value, handles } => {
-                render_picker_row(label, value, handles.clone())
+                render_picker_row(label, prop.field, value, handles.clone())
             }
             PropValue::EntityRef { display, handle } => {
                 render_entity_ref_row(label, display, *handle)
@@ -1677,9 +1677,15 @@ impl PropertiesPanel {
 /// targeting the given entity handle(s) when clicked.
 fn render_picker_row<'a>(
     label: &'a str,
+    field: &'static str,
     value: &'a str,
     handles: Vec<acadrust::Handle>,
 ) -> Element<'a, Message> {
+    let press = if field == "opening_style" {
+        Message::Aec(AecMessage::AecStylePickerOpenForOpeningProperties(handles))
+    } else {
+        Message::Aec(AecMessage::AecStylePickerOpenForWallProperties(handles))
+    };
     let btn = button(
         row![
             text(crate::ui::text_util::elide(value, 20)).size(FONT_SZ),
@@ -1689,7 +1695,7 @@ fn render_picker_row<'a>(
         .padding([0, 4])
         .align_y(iced::Alignment::Center),
     )
-    .on_press(Message::Aec(AecMessage::AecStylePickerOpenForWallProperties(handles)))
+    .on_press(press)
     .style(button::subtle)
     .padding(0)
     .width(Length::Fill);

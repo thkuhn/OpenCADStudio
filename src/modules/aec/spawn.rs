@@ -36,6 +36,7 @@ pub fn spawn_command(name: &str) -> Option<Box<dyn CadCommand>> {
         "AEC_WALLREVERSE" => Some(Box::new(WallReverseCommand::new())),
         "AEC_WINDOW" => Some(Box::new(WallOpeningCommand::new_window())),
         "AEC_DOOR" => Some(Box::new(WallOpeningCommand::new_door())),
+        "AEC_OPENING" => Some(Box::new(WallOpeningCommand::new_opening())),
         _ => None,
     }
 }
@@ -55,6 +56,9 @@ pub(crate) fn try_dispatch(
         "AEC_STYLEMANAGER" => Some(Task::done(Message::Aec(
             AecMessage::AecWallStyleManagerOpen,
         ))),
+        "AEC_OPENINGSTYLEMANAGER" => Some(Task::done(Message::Aec(
+            AecMessage::AecOpeningStyleManagerOpen,
+        ))),
         "AEC_PLANMANAGER" => Some(Task::done(Message::Aec(AecMessage::AecPlanManagerOpen))),
         "AEC_CONTROLPLANES" => Some(dispatch_control_planes(app, tab)),
         "AEC_WALL" => Some(dispatch_wall(app, tab, cmd)),
@@ -63,6 +67,7 @@ pub(crate) fn try_dispatch(
         "AEC_WALLREVERSE" => Some(dispatch_wallreverse(app, tab, cmd)),
         "AEC_WINDOW" => Some(install_spawned(app, tab, cmd, "AEC_WINDOW")),
         "AEC_DOOR" => Some(install_spawned(app, tab, cmd, "AEC_DOOR")),
+        "AEC_OPENING" => Some(install_spawned(app, tab, cmd, "AEC_OPENING")),
         "AEC_WALL_REFRESH" => {
             let style_library = crate::modules::aec::engine::project::resolve_style_library(
                 app.aec.aec_project_explorer_file.as_ref(),
@@ -429,6 +434,7 @@ mod tests {
             "AEC_WALLREVERSE",
             "AEC_WINDOW",
             "AEC_DOOR",
+            "AEC_OPENING",
         ] {
             let cmd = spawn_command(name).unwrap_or_else(|| panic!("missing spawn for {name}"));
             assert_eq!(cmd.name(), name);

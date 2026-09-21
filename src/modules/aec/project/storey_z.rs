@@ -19,6 +19,9 @@ pub fn apply_storey_z_to_scene(
 ) {
     regenerate_control_plane_previews(scene, storey);
     rebake_bound_walls(scene, storey, project, library);
+    crate::modules::aec::project::opening_planes::rebake_bound_openings(
+        scene, storey, project, library,
+    );
 }
 
 fn rebake_bound_walls(

@@ -92,6 +92,23 @@ impl OpenCADStudio {
         );
     }
 
+    pub(crate) fn aec_upsert_opening_style_into_session(
+        &mut self,
+        opening_style: crate::modules::aec::engine::opening_style::OpeningStyle,
+    ) {
+        let lib = self.tabs[self.active_tab]
+            .aec_session_style_library_mut()
+            .get_or_insert_with(crate::modules::aec::engine::library::StyleLibrary::empty);
+        lib.upsert_opening_style(opening_style);
+        self.aec_refresh_combined_style_library();
+        self.command_line.push_info(
+            crate::t!(
+                "AEC Style Manager: saved in this drawing session only (not written to a project or the standard library)."
+            )
+            .as_ref(),
+        );
+    }
+
     /// Upserts a single material into the active project's library (never the
     /// Standard library). Used for normal project edits and copy-on-write
     /// saves of Standard entries. Refreshes the combined in-memory view.
@@ -130,6 +147,29 @@ impl OpenCADStudio {
         project
             .material_wall_style_library
             .upsert_wall_style(wall_style);
+        let lib = project.material_wall_style_library.clone();
+        if let Some(path) = path {
+            crate::modules::aec::engine::project::save_style_library_to_project(
+                project, &path, lib,
+            )
+            .map_err(|e| e.to_string())?;
+        }
+        self.aec_refresh_combined_style_library();
+        Ok(())
+    }
+
+    /// Upserts a single opening style into the active project's library.
+    pub(crate) fn aec_upsert_opening_style_into_project(
+        &mut self,
+        opening_style: crate::modules::aec::engine::opening_style::OpeningStyle,
+    ) -> Result<(), String> {
+        let path = self.aec.aec_project_explorer_path.clone();
+        let Some(project) = self.aec.aec_project_explorer_file.as_mut() else {
+            return Err("no project loaded".to_string());
+        };
+        project
+            .material_wall_style_library
+            .upsert_opening_style(opening_style);
         let lib = project.material_wall_style_library.clone();
         if let Some(path) = path {
             crate::modules::aec::engine::project::save_style_library_to_project(
@@ -263,6 +303,14 @@ impl OpenCADStudio {
                 };
                 (lib, *to_project, crate::t!("wall style"))
             }
+            AecPendingCopy::OpeningStyle { to_project, .. } => {
+                let lib = if *to_project {
+                    project_lib_before
+                } else {
+                    global_lib_before
+                };
+                (lib, *to_project, crate::t!("opening style"))
+            }
         };
         match &pending {
             AecPendingCopy::Material { material, .. } => {
@@ -280,6 +328,9 @@ impl OpenCADStudio {
                     );
                 }
                 target_lib.upsert_wall_style(ws);
+            }
+            AecPendingCopy::OpeningStyle { opening_style, .. } => {
+                target_lib.upsert_opening_style(opening_style.clone());
             }
         }
         let save_result = if to_project {

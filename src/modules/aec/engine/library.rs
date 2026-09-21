@@ -6,6 +6,7 @@ use crate::modules::aec::engine::display_component::{
 };
 use crate::modules::aec::engine::join::LayerRef;
 use crate::modules::aec::engine::material::Material;
+use crate::modules::aec::engine::opening_style::OpeningStyle;
 use crate::modules::aec::engine::plan_view::{DisplayConfig, ScaleDisplayConfigMapping};
 use crate::modules::aec::engine::style::Style;
 use crate::modules::aec::engine::wall::{Wall, WallLayer};
@@ -21,6 +22,9 @@ pub struct StyleLibrary {
     pub materials: Vec<Material>,
     /// List of available wall styles.
     pub wall_styles: Vec<WallStyle>,
+    /// Opening styles (window / door / breakthrough). Absent in legacy files.
+    #[serde(default)]
+    pub opening_styles: Vec<OpeningStyle>,
 }
 
 /// A node in a hierarchical wall-style tree.
@@ -28,6 +32,12 @@ pub struct TreeNode<'a> {
     /// The wall style at this node.
     pub style: &'a WallStyle,
     /// Indentation depth (0 for roots).
+    pub depth: usize,
+}
+
+/// A node in a hierarchical opening-style tree.
+pub struct OpeningTreeNode<'a> {
+    pub style: &'a OpeningStyle,
     pub depth: usize,
 }
 
@@ -64,6 +74,13 @@ pub struct CombinedMaterialEntry {
 #[derive(Debug, Clone, PartialEq)]
 pub struct CombinedWallStyleEntry {
     pub wall_style: WallStyle,
+    pub source: LibrarySource,
+}
+
+/// An opening style shown in the combined Standard+Project list, with provenance.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CombinedOpeningStyleEntry {
+    pub opening_style: OpeningStyle,
     pub source: LibrarySource,
 }
 
@@ -169,6 +186,56 @@ pub fn combined_wall_style_entries_with_session(
     entries
 }
 
+/// Builds a combined opening-style list. Project wins, then session, then Standard.
+pub fn combined_opening_style_entries(
+    project: Option<&crate::modules::aec::engine::project::ProjectFile>,
+) -> Vec<CombinedOpeningStyleEntry> {
+    combined_opening_style_entries_with_session(project, None)
+}
+
+/// Like [`combined_opening_style_entries`], with a session overlay after project
+/// and before Standard.
+pub fn combined_opening_style_entries_with_session(
+    project: Option<&crate::modules::aec::engine::project::ProjectFile>,
+    session: Option<&StyleLibrary>,
+) -> Vec<CombinedOpeningStyleEntry> {
+    let standard = load_or_seed();
+    let mut entries = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+
+    if let Some(project) = project {
+        for opening_style in &project.material_wall_style_library.opening_styles {
+            seen.insert(opening_style.style.id.clone());
+            entries.push(CombinedOpeningStyleEntry {
+                opening_style: opening_style.clone(),
+                source: LibrarySource::Project,
+            });
+        }
+    }
+
+    if let Some(session) = session {
+        for opening_style in &session.opening_styles {
+            if seen.insert(opening_style.style.id.clone()) {
+                entries.push(CombinedOpeningStyleEntry {
+                    opening_style: opening_style.clone(),
+                    source: LibrarySource::Session,
+                });
+            }
+        }
+    }
+
+    for opening_style in standard.opening_styles {
+        if seen.insert(opening_style.style.id.clone()) {
+            entries.push(CombinedOpeningStyleEntry {
+                opening_style,
+                source: LibrarySource::Standard,
+            });
+        }
+    }
+
+    entries
+}
+
 /// Merged Standard+Project style library for UI lookups (project wins on id).
 pub fn combined_style_library(
     project: Option<&crate::modules::aec::engine::project::ProjectFile>,
@@ -187,6 +254,9 @@ pub fn combined_style_library_with_session(
     }
     for entry in combined_wall_style_entries_with_session(project, session) {
         lib.upsert_wall_style(entry.wall_style);
+    }
+    for entry in combined_opening_style_entries_with_session(project, session) {
+        lib.upsert_opening_style(entry.opening_style);
     }
     lib
 }
@@ -226,6 +296,25 @@ pub fn wall_style_library_source_with_session(
     combined_wall_style_entries_with_session(project, session)
         .into_iter()
         .find(|e| e.wall_style.style.id == id)
+        .map(|e| e.source)
+}
+
+/// Source of an opening-style id in the combined view, if present.
+pub fn opening_style_library_source(
+    project: Option<&crate::modules::aec::engine::project::ProjectFile>,
+    id: &str,
+) -> Option<LibrarySource> {
+    opening_style_library_source_with_session(project, None, id)
+}
+
+pub fn opening_style_library_source_with_session(
+    project: Option<&crate::modules::aec::engine::project::ProjectFile>,
+    session: Option<&StyleLibrary>,
+    id: &str,
+) -> Option<LibrarySource> {
+    combined_opening_style_entries_with_session(project, session)
+        .into_iter()
+        .find(|e| e.opening_style.style.id == id)
         .map(|e| e.source)
 }
 
@@ -299,6 +388,7 @@ pub fn build_effective_rule_set(
             apply_overlay_layer_visibility(&mut rules, overlay, style);
         }
     }
+    rules.plan_name = Some(config.name.clone());
     rules
 }
 
@@ -621,12 +711,33 @@ pub fn wall_style_copy_conflict(target: &StyleLibrary, wall_style: &WallStyle) -
     }
 }
 
+/// Checks whether copying `opening_style` into `target` would collide.
+pub fn opening_style_copy_conflict(
+    target: &StyleLibrary,
+    opening_style: &OpeningStyle,
+) -> CopyConflict {
+    if let Some(existing) = target
+        .opening_styles
+        .iter()
+        .find(|s| s.style.id == opening_style.style.id)
+    {
+        if existing == opening_style {
+            CopyConflict::IdenticalAlreadyPresent
+        } else {
+            CopyConflict::DifferentContentCollision
+        }
+    } else {
+        CopyConflict::None
+    }
+}
+
 impl StyleLibrary {
-    /// An empty library (no materials, no wall styles).
+    /// An empty library (no materials, no wall/opening styles).
     pub fn empty() -> Self {
         Self {
             materials: Vec::new(),
             wall_styles: Vec::new(),
+            opening_styles: Vec::new(),
         }
     }
 
@@ -652,6 +763,34 @@ impl StyleLibrary {
         }
     }
 
+    /// Inserts or replaces (by `style.id`) an opening style.
+    pub fn upsert_opening_style(&mut self, opening_style: OpeningStyle) {
+        if let Some(existing) = self
+            .opening_styles
+            .iter_mut()
+            .find(|s| s.style.id == opening_style.style.id)
+        {
+            *existing = opening_style;
+        } else {
+            self.opening_styles.push(opening_style);
+        }
+    }
+
+    /// Looks up an opening style by id.
+    pub fn find_opening_style(&self, id: &str) -> Option<&OpeningStyle> {
+        self.opening_styles.iter().find(|s| s.style.id == id)
+    }
+
+    /// Seed style for `kind`, else the first library style of that kind.
+    pub fn opening_style_for_kind(
+        &self,
+        kind: crate::modules::aec::engine::openings::OpeningKind,
+    ) -> Option<&OpeningStyle> {
+        let id = crate::modules::aec::engine::opening_style::seed_style_id_for_kind(kind);
+        self.find_opening_style(id)
+            .or_else(|| self.opening_styles.iter().find(|s| s.kind == kind))
+    }
+
     /// Removes a material by `id`. Returns `true` if a material was removed.
     pub fn remove_material(&mut self, id: &str) -> bool {
         let before = self.materials.len();
@@ -664,6 +803,13 @@ impl StyleLibrary {
         let before = self.wall_styles.len();
         self.wall_styles.retain(|s| s.style.id != id);
         self.wall_styles.len() != before
+    }
+
+    /// Removes an opening style by `id`. Returns `true` if one was removed.
+    pub fn remove_opening_style(&mut self, id: &str) -> bool {
+        let before = self.opening_styles.len();
+        self.opening_styles.retain(|s| s.style.id != id);
+        self.opening_styles.len() != before
     }
 
     /// Returns all wall styles in a hierarchical tree order: roots first,
@@ -694,6 +840,41 @@ impl StyleLibrary {
         while let Some((ws, depth)) = stack.pop() {
             ordered.push(TreeNode { style: ws, depth });
             if let Some(kids) = children.get(ws.style.id.as_str()) {
+                for kid in kids.iter().rev() {
+                    stack.push((kid, depth + 1));
+                }
+            }
+        }
+        ordered
+    }
+
+    /// Hierarchical opening-style order: roots first, then descendants.
+    pub fn opening_style_tree(&self) -> Vec<OpeningTreeNode<'_>> {
+        let mut children: std::collections::HashMap<&str, Vec<&OpeningStyle>> =
+            std::collections::HashMap::new();
+        let mut roots: Vec<&OpeningStyle> = Vec::new();
+        for os in &self.opening_styles {
+            match &os.style.parent_style_id {
+                Some(pid) if self.opening_styles.iter().any(|other| &other.style.id == pid) => {
+                    children.entry(pid.as_str()).or_default().push(os);
+                }
+                _ => roots.push(os),
+            }
+        }
+        roots.sort_by(|a, b| a.style.name.to_lowercase().cmp(&b.style.name.to_lowercase()));
+        for siblings in children.values_mut() {
+            siblings.sort_by(|a, b| a.style.name.to_lowercase().cmp(&b.style.name.to_lowercase()));
+        }
+
+        let mut ordered = Vec::with_capacity(self.opening_styles.len());
+        let mut stack: Vec<(&OpeningStyle, usize)> = roots
+            .into_iter()
+            .rev()
+            .map(|os| (os, 0))
+            .collect();
+        while let Some((os, depth)) = stack.pop() {
+            ordered.push(OpeningTreeNode { style: os, depth });
+            if let Some(kids) = children.get(os.style.id.as_str()) {
                 for kid in kids.iter().rev() {
                     stack.push((kid, depth + 1));
                 }
@@ -899,6 +1080,17 @@ pub fn session_library_excluding_existing(
             }
         }
         session.upsert_wall_style(wall_style.clone());
+    }
+    for opening_style in &extracted.opening_styles {
+        if opening_style_copy_conflict(&standard, opening_style) != CopyConflict::None {
+            continue;
+        }
+        if let Some(plib) = project_lib {
+            if opening_style_copy_conflict(plib, opening_style) != CopyConflict::None {
+                continue;
+            }
+        }
+        session.upsert_opening_style(opening_style.clone());
     }
     session
 }
@@ -1129,6 +1321,7 @@ pub fn seed_default_library() -> StyleLibrary {
             insulated_wall,
             insulated_wall_variant,
         ],
+        opening_styles: crate::modules::aec::engine::opening_style::seed_opening_styles(),
     }
 }
 
@@ -1452,6 +1645,7 @@ mod tests {
         let lib = StyleLibrary {
             materials: vec![material],
             wall_styles: vec![wall_style],
+            ..Default::default()
         };
 
         let serialized = to_toml(&lib).expect("Serialization failed");
@@ -1504,6 +1698,7 @@ mod tests {
         let mut lib = StyleLibrary {
             materials: vec![material],
             wall_styles: Vec::new(),
+            ..Default::default()
         };
 
         assert!(lib.remove_material("mat1"));
@@ -1526,6 +1721,7 @@ mod tests {
         let mut lib = StyleLibrary {
             materials: Vec::new(),
             wall_styles: vec![wall_style],
+            ..Default::default()
         };
 
         assert!(lib.remove_wall_style("style1"));
@@ -1683,6 +1879,45 @@ mod tests {
         let layer = &lib.wall_styles[0].layers[0];
         assert_eq!(layer.hatch_override, None);
         assert_eq!(layer.role_tag, None);
+        assert!(lib.opening_styles.is_empty());
+    }
+
+    #[test]
+    fn seed_default_library_includes_opening_styles() {
+        use crate::modules::aec::engine::opening_style::{
+            OpeningGenerator, SlotGeometry, SEED_BREAKTHROUGH_STYLE_ID, SEED_DOOR_STYLE_ID,
+            SEED_WINDOW_STYLE_ID,
+        };
+        use crate::modules::aec::engine::display_component::OpeningComponentSlot;
+        use crate::modules::aec::engine::openings::OpeningKind;
+
+        let lib = seed_default_library();
+        assert_eq!(lib.opening_styles.len(), 3);
+        let window = lib.find_opening_style(SEED_WINDOW_STYLE_ID).expect("window seed");
+        assert_eq!(window.kind, OpeningKind::Window);
+        assert!((window.frame_thickness - 0.06).abs() < 1e-12);
+        let door = lib.find_opening_style(SEED_DOOR_STYLE_ID).expect("door seed");
+        assert_eq!(door.kind, OpeningKind::Door);
+        let br = lib
+            .find_opening_style(SEED_BREAKTHROUGH_STYLE_ID)
+            .expect("breakthrough seed");
+        assert_eq!(br.kind, OpeningKind::Breakthrough);
+        assert!((br.default_width - 1.0).abs() < 1e-12);
+        assert!((br.default_height - 2.0).abs() < 1e-12);
+        assert!((br.default_sill - 0.1).abs() < 1e-12);
+        assert_eq!(
+            br.slots.get(&OpeningComponentSlot::Mark2D),
+            Some(&SlotGeometry::Generator(OpeningGenerator::Cross))
+        );
+        assert!(!br.slots.contains_key(&OpeningComponentSlot::Swing2D));
+    }
+
+    #[test]
+    fn opening_style_library_roundtrip() {
+        let lib = seed_default_library();
+        let serialized = to_toml(&lib).expect("serialize");
+        let back = from_toml(&serialized).expect("deserialize");
+        assert_eq!(lib.opening_styles, back.opening_styles);
     }
 
     #[test]

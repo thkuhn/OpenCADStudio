@@ -197,6 +197,10 @@ pub fn extend_idle_rows(
                 t!("Add Door").into_owned(),
                 MenuAction::Command("AEC_DOOR".into()),
             )),
+            MenuRow::Item(MenuItem::new(
+                t!("Add Opening").into_owned(),
+                MenuAction::Command("AEC_OPENING".into()),
+            )),
             MenuRow::Submenu {
                 id: SubmenuId::WallJustification,
                 label: t!("Change Justification").into_owned(),

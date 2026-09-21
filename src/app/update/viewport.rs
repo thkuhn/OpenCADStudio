@@ -1746,7 +1746,9 @@ impl OpenCADStudio {
                 })
                 .collect();
             for (handle, grip_id, apply) in actions {
-                if !rebuilt_arcs.contains(&handle) {
+                if !rebuilt_arcs.contains(&handle)
+                    && !self.apply_aec_opening_grip(i, handle, grip_id, &apply)
+                {
                     self.tabs[i].scene.apply_grip(handle, grip_id, apply);
                 }
             }

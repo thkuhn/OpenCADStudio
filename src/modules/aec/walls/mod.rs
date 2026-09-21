@@ -6,6 +6,7 @@ mod layer_pick;
 pub mod refresh;
 pub mod reverse;
 pub mod wall;
+pub mod opening;
 pub mod window;
 
 pub use wall::WallCommand;
