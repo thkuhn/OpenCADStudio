@@ -549,7 +549,11 @@ fn slot_rows(
     selected: Option<usize>,
     show_visible: bool,
 ) -> Vec<Element<'_, Message>> {
-    let sources = vec!["Generator".to_string(), "Sketch".to_string()];
+    let sources = vec![
+        "Generator".to_string(),
+        "Block".to_string(),
+        "Sketch".to_string(),
+    ];
     let generators: Vec<String> = OpeningGenerator::catalogue()
         .iter()
         .map(|g| g.as_str().to_string())
@@ -560,6 +564,7 @@ fn slot_rows(
         .map(|(index, buf)| {
             let source = match buf.source {
                 AecOpeningSlotSource::Generator => "Generator",
+                AecOpeningSlotSource::Block => "Block",
                 AecOpeningSlotSource::Sketch => "Sketch",
             };
             let mut gen = pick_list(

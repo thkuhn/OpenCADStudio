@@ -382,6 +382,21 @@ pub fn build_effective_rule_set(
                 .or_insert(vis);
         }
     }
+
+    for (&slot, &vis) in &config.opening_visibility {
+        rules.visibility.insert(slot.key().to_string(), vis);
+    }
+    for slot in crate::modules::aec::engine::display_component::OpeningComponentSlot::all() {
+        let key = slot.key().to_string();
+        let allowed_by_mode = match mode {
+            RepresentationMode::All => true,
+            RepresentationMode::TwoD => slot.is_2d_plan() || slot.is_elevation(),
+            RepresentationMode::ThreeD => slot.is_3d(),
+        };
+        if !allowed_by_mode {
+            rules.visibility.insert(key, false);
+        }
+    }
     if let Some(style) = style {
         if let Some(overlay) = config.style_overlays.get(&style.style.id) {
             merge_style_overlay_into_rules(&mut rules, overlay);
@@ -1441,6 +1456,88 @@ impl DisplayConfigLibrary {
         }
     }
 
+    /// Seed default discipline configurations: Architektur 1:50, Statik 1:50, Entwurf 1:100, Ansicht Fassade.
+    pub fn seed_default_configs() -> Self {
+        use crate::modules::aec::engine::display_component::OpeningComponentSlot;
+        use crate::modules::aec::engine::plan_view::{PlanningStage, ViewType};
+
+        // 1. "Architektur 1:50": all plan slots active
+        let mut arch_50 = DisplayConfig::new(
+            "Architektur 1:50".to_string(),
+            "Architektur".to_string(),
+            PlanningStage::Execution,
+            ViewType::FloorPlan,
+        );
+        arch_50.scale = Some(50.0);
+        arch_50.default_representation = RepresentationMode::TwoD;
+        arch_50.opening_visibility.insert(OpeningComponentSlot::HostCut2D, true);
+        arch_50.opening_visibility.insert(OpeningComponentSlot::Frame2D, true);
+        arch_50.opening_visibility.insert(OpeningComponentSlot::Leaf2D, true);
+        arch_50.opening_visibility.insert(OpeningComponentSlot::Swing2D, true);
+        arch_50.opening_visibility.insert(OpeningComponentSlot::Glazing2D, true);
+        arch_50.opening_visibility.insert(OpeningComponentSlot::Sill2D, true);
+        arch_50.opening_visibility.insert(OpeningComponentSlot::Threshold2D, true);
+        arch_50.opening_visibility.insert(OpeningComponentSlot::OpeningLabel2D, true);
+
+        // 2. "Statik 1:50": only HostCut2D and OpeningLabel2D active!
+        let mut stat_50 = DisplayConfig::new(
+            "Statik 1:50".to_string(),
+            "Statik".to_string(),
+            PlanningStage::Execution,
+            ViewType::FloorPlan,
+        );
+        stat_50.scale = Some(50.0);
+        stat_50.default_representation = RepresentationMode::TwoD;
+        stat_50.opening_visibility.insert(OpeningComponentSlot::HostCut2D, true);
+        stat_50.opening_visibility.insert(OpeningComponentSlot::Frame2D, false);
+        stat_50.opening_visibility.insert(OpeningComponentSlot::Leaf2D, false);
+        stat_50.opening_visibility.insert(OpeningComponentSlot::Swing2D, false);
+        stat_50.opening_visibility.insert(OpeningComponentSlot::Glazing2D, false);
+        stat_50.opening_visibility.insert(OpeningComponentSlot::Sill2D, false);
+        stat_50.opening_visibility.insert(OpeningComponentSlot::Threshold2D, false);
+        stat_50.opening_visibility.insert(OpeningComponentSlot::BreakthroughSymbol2D, true);
+        stat_50.opening_visibility.insert(OpeningComponentSlot::OpeningLabel2D, true);
+
+        // 3. "Entwurf 1:100": standard details without glazing line or threshold
+        let mut entw_100 = DisplayConfig::new(
+            "Entwurf 1:100".to_string(),
+            "Architektur".to_string(),
+            PlanningStage::Design,
+            ViewType::FloorPlan,
+        );
+        entw_100.scale = Some(100.0);
+        entw_100.default_representation = RepresentationMode::TwoD;
+        entw_100.opening_visibility.insert(OpeningComponentSlot::HostCut2D, true);
+        entw_100.opening_visibility.insert(OpeningComponentSlot::Frame2D, true);
+        entw_100.opening_visibility.insert(OpeningComponentSlot::Leaf2D, true);
+        entw_100.opening_visibility.insert(OpeningComponentSlot::Swing2D, true);
+        entw_100.opening_visibility.insert(OpeningComponentSlot::Glazing2D, false);
+        entw_100.opening_visibility.insert(OpeningComponentSlot::Sill2D, true);
+        entw_100.opening_visibility.insert(OpeningComponentSlot::Threshold2D, false);
+        entw_100.opening_visibility.insert(OpeningComponentSlot::OpeningLabel2D, true);
+
+        // 4. "Ansicht Fassade": all elevation slots active, plan slots inactive
+        let mut elev = DisplayConfig::new(
+            "Ansicht Fassade".to_string(),
+            "Architektur".to_string(),
+            PlanningStage::Design,
+            ViewType::Elevation,
+        );
+        elev.default_representation = RepresentationMode::TwoD;
+        elev.opening_visibility.insert(OpeningComponentSlot::ElevationContour2D, true);
+        elev.opening_visibility.insert(OpeningComponentSlot::ElevationMuntins2D, true);
+        elev.opening_visibility.insert(OpeningComponentSlot::ElevationSwing2D, true);
+        elev.opening_visibility.insert(OpeningComponentSlot::ElevationSill2D, true);
+        elev.opening_visibility.insert(OpeningComponentSlot::Frame2D, false);
+        elev.opening_visibility.insert(OpeningComponentSlot::Leaf2D, false);
+        elev.opening_visibility.insert(OpeningComponentSlot::Swing2D, false);
+
+        Self {
+            configs: vec![arch_50, stat_50, entw_100, elev],
+            scale_display_config_mappings: Vec::new(),
+        }
+    }
+
     /// Inserts or replaces (by `name`) a display config.
     pub fn upsert(&mut self, config: DisplayConfig) {
         if let Some(existing) = self.configs.iter_mut().find(|c| c.name == config.name) {
@@ -1529,12 +1626,16 @@ pub fn load_or_seed_display_config_library() -> DisplayConfigLibrary {
         if path.exists() {
             if let Ok(content) = std::fs::read_to_string(&path) {
                 if let Ok(lib) = display_config_library_from_toml(&content) {
-                    return lib;
+                    if !lib.configs.is_empty() {
+                        return lib;
+                    }
                 }
             }
         }
     }
-    DisplayConfigLibrary::empty()
+    let seed = DisplayConfigLibrary::seed_default_configs();
+    let _ = save_display_config_library_to_default_path(&seed);
+    seed
 }
 
 #[cfg(test)]

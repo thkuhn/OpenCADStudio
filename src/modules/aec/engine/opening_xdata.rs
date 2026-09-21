@@ -64,6 +64,12 @@ pub(crate) fn opening_record(opening: &engine::openings::Opening) -> ExtendedDat
     record.add_value(XDataValue::String(opening.hinge.as_str().to_string()));
     record.add_value(XDataValue::String(opening.shape.as_str().to_string()));
     record.add_value(XDataValue::Distance(opening.spring_height));
+    record.add_value(XDataValue::String(
+        opening.reference_side.as_str().to_string(),
+    ));
+    record.add_value(XDataValue::Distance(opening.cross_axis_offset));
+    record.add_value(XDataValue::Distance(opening.depth.unwrap_or(-1.0)));
+    record.add_value(XDataValue::String(opening.niche_side.as_str().to_string()));
     encode_opening_planes(&mut record.values, opening);
     record
 }
@@ -229,30 +235,58 @@ pub fn opening_from_values(
     let mut hinge = engine::opening_style::HingeSide::Left;
     let mut shape = engine::opening_shape::OpeningShape::Rectangle;
     let mut spring_height = 0.0;
+    let mut reference_side = engine::openings::OpeningReferenceSide::Center;
+    let mut cross_axis_offset = 0.0;
+    let mut depth = None;
+    let mut niche_side = engine::openings::NicheSide::Exterior;
 
-    // Optional extras; a following `"planes"` trailer is parsed separately.
-    if v.len() > 7 {
-        match &v[7] {
-            XDataValue::String(s) if s == "planes" => {}
-            XDataValue::String(s) => {
-                if !s.is_empty() {
-                    style_id = Some(s.clone());
-                }
-                if let Some(XDataValue::String(h)) = v.get(8) {
-                    if h != "planes" {
-                        hinge = engine::opening_style::HingeSide::from_str(h);
-                    }
-                }
-                if let Some(XDataValue::String(sh)) = v.get(9) {
-                    if sh != "planes" {
-                        shape = engine::opening_shape::OpeningShape::from_str(sh);
-                    }
-                }
-                if let Some(XDataValue::Distance(d)) = v.get(10) {
-                    spring_height = *d;
-                }
+    let planes_pos = v
+        .iter()
+        .position(|x| matches!(x, XDataValue::String(s) if s == "planes"))
+        .unwrap_or(v.len());
+
+    if planes_pos > 7 {
+        if let Some(XDataValue::String(s)) = v.get(7) {
+            if !s.is_empty() {
+                style_id = Some(s.clone());
             }
-            _ => {}
+        }
+    }
+    if planes_pos > 8 {
+        if let Some(XDataValue::String(h)) = v.get(8) {
+            hinge = engine::opening_style::HingeSide::from_str(h);
+        }
+    }
+    if planes_pos > 9 {
+        if let Some(XDataValue::String(sh)) = v.get(9) {
+            shape = engine::opening_shape::OpeningShape::from_str(sh);
+        }
+    }
+    if planes_pos > 10 {
+        if let Some(XDataValue::Distance(d)) = v.get(10) {
+            spring_height = *d;
+        }
+    }
+    if planes_pos > 11 {
+        if let Some(XDataValue::String(s)) = v.get(11) {
+            reference_side = engine::openings::OpeningReferenceSide::from_str(s);
+        }
+    }
+    if planes_pos > 12 {
+        if let Some(XDataValue::Distance(d)) = v.get(12) {
+            cross_axis_offset = *d;
+        }
+    }
+    if planes_pos > 13 {
+        if let Some(XDataValue::Distance(d)) = v.get(13) {
+            if *d >= 0.0 {
+                depth = Some(*d);
+            }
+        }
+    }
+    if planes_pos > 14 {
+        if let Some(XDataValue::String(s)) = v.get(14) {
+            niche_side = engine::openings::NicheSide::from_str(s);
         }
     }
 
@@ -281,6 +315,10 @@ pub fn opening_from_values(
         hinge,
         shape,
         spring_height,
+        reference_side,
+        cross_axis_offset,
+        depth,
+        niche_side,
         sill_plane_id,
         head_plane_id,
         sill_plane_name,

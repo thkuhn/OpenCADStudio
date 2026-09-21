@@ -11,7 +11,7 @@
 //! holes are united (interval union on each scanline) and subtracted once.
 
 use super::geometry::{area, signed_area};
-use super::openings::Opening;
+use super::openings::{Opening, OpeningKind};
 
 const EPS: f64 = 1e-9;
 const MIN_SPAN: f64 = 1e-6;
@@ -505,6 +505,51 @@ pub fn zone_solid_paths(
                         loop_xyz,
                         direction,
                     });
+                }
+            }
+
+            for op in openings {
+                if op.kind == OpeningKind::Breakthrough {
+                    if let Some(depth) = op.depth {
+                        let total_t = thickness.abs();
+                        if depth > 1e-4 && depth < total_t - 1e-4 {
+                            let (op_s0, op_s1) = op.axis_span();
+                            if op_s1 > zone.s0 + 1e-4 && op_s0 < zone.s1 - 1e-4 {
+                                let local_s0 = (op_s0 - zone.s0).max(0.0);
+                                let local_s1 = (op_s1 - zone.s0).min(width);
+                                let z0 = op.sill_height;
+                                let z1 = z0 + op.height;
+                                let niche_ring = vec![
+                                    (local_s0, z0),
+                                    (local_s1, z0),
+                                    (local_s1, z1),
+                                    (local_s0, z1),
+                                ];
+                                let rest_thickness = total_t - depth;
+                                let (back_offset, back_thick) = match op.niche_side {
+                                    super::openings::NicheSide::Exterior => {
+                                        (axis_offset + depth, rest_thickness)
+                                    }
+                                    super::openings::NicheSide::Interior => {
+                                        (axis_offset, rest_thickness)
+                                    }
+                                };
+                                if let Some((loop_xyz, direction)) = elevation_loop_to_layer_face(
+                                    axis,
+                                    zone.s0,
+                                    back_offset,
+                                    back_thick,
+                                    &niche_ring,
+                                ) {
+                                    out.push(OpeningZoneSolidPath {
+                                        layer_index: li,
+                                        loop_xyz,
+                                        direction,
+                                    });
+                                }
+                            }
+                        }
+                    }
                 }
             }
         }

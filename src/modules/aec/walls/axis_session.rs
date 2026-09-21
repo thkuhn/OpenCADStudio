@@ -15,7 +15,7 @@ impl OpenCADStudio {
         grip_id: usize,
         apply: &crate::scene::model::object::GripApply,
     ) -> bool {
-        if grip_id > 2 {
+        if grip_id > 3 {
             return false;
         }
         let scene = &self.tabs[tab].scene;
@@ -62,17 +62,34 @@ impl OpenCADStudio {
             world,
         );
 
+        crate::modules::aec::engine::opening_xdata::write_opening_instance(
+            &mut self.tabs[tab].scene,
+            &opening,
+        );
+        crate::modules::aec::engine::opening_display::sync_opening_point_to_axis(
+            &mut self.tabs[tab].scene,
+            &opening,
+            &axis,
+        );
+
         let style_library = crate::modules::aec::engine::project::resolve_style_library(
             self.aec.aec_project_explorer_file.as_ref(),
         );
         let (rules, _) =
             self.resolve_active_display_config_wall_rules(tab, Some(opening.host_wall));
-        crate::modules::aec::engine::opening_display::commit_opening_instance(
-            &mut self.tabs[tab].scene,
+        let thickness = crate::modules::aec::engine::opening_display::host_thickness(
+            &self.tabs[tab].scene,
+            wall,
+        );
+        let preview_wires = crate::modules::aec::engine::opening_display::preview_opening_wires(
+            &axis,
+            thickness,
             &opening,
             Some(&style_library),
             rules.as_ref(),
         );
+        self.tabs[tab].scene.set_preview_wires(preview_wires);
+
         self.tabs[tab].dirty = true;
         true
     }

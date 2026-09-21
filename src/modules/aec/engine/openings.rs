@@ -79,11 +79,81 @@ impl OpeningKind {
     }
 }
 
+/// Reference side along the wall axis used to position and measure the opening.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
+pub enum OpeningReferenceSide {
+    /// Left / start reveal edge along wall axis direction.
+    Start,
+    /// Geometric center of the opening (default for backward compatibility).
+    #[default]
+    Center,
+    /// Right / end reveal edge along wall axis direction.
+    End,
+}
+
+impl OpeningReferenceSide {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            OpeningReferenceSide::Start => "Start",
+            OpeningReferenceSide::Center => "Center",
+            OpeningReferenceSide::End => "End",
+        }
+    }
+
+    pub fn from_str(s: &str) -> Self {
+        match s {
+            "Start" | "start" => OpeningReferenceSide::Start,
+            "End" | "end" => OpeningReferenceSide::End,
+            _ => OpeningReferenceSide::Center,
+        }
+    }
+
+    pub fn flipped(self) -> Self {
+        match self {
+            OpeningReferenceSide::Start => OpeningReferenceSide::End,
+            OpeningReferenceSide::End => OpeningReferenceSide::Start,
+            OpeningReferenceSide::Center => OpeningReferenceSide::Center,
+        }
+    }
+}
+
+/// Wall face side for partial-depth breakthrough niches.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
+pub enum NicheSide {
+    /// Exterior face (+Normal of wall axis).
+    #[default]
+    Exterior,
+    /// Interior face (-Normal of wall axis).
+    Interior,
+}
+
+impl NicheSide {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            NicheSide::Exterior => "Exterior",
+            NicheSide::Interior => "Interior",
+        }
+    }
+
+    pub fn from_str(s: &str) -> Self {
+        match s {
+            "Interior" | "interior" => NicheSide::Interior,
+            _ => NicheSide::Exterior,
+        }
+    }
+
+    pub fn flipped(self) -> Self {
+        match self {
+            NicheSide::Exterior => NicheSide::Interior,
+            NicheSide::Interior => NicheSide::Exterior,
+        }
+    }
+}
+
 /// A wall opening (window, door, or breakthrough) hosted by a wall axis entity.
 ///
-/// `distance_along_axis` is the distance from the wall axis **start** vertex to
-/// the opening's center, measured along the axis polyline as the sum of
-/// straight segment lengths (chord length on arc segments).
+/// `distance_along_axis` is measured from the wall axis **start** vertex to
+/// the chosen `reference_side` (start reveal, center, or end reveal).
 #[derive(Debug, Clone, PartialEq)]
 pub struct Opening {
     pub handle: Handle,
@@ -99,6 +169,10 @@ pub struct Opening {
     pub shape: OpeningShape,
     /// Arch Kämpfer above the sill. Unused for other shapes; `0` on legacy records.
     pub spring_height: f64,
+    pub reference_side: OpeningReferenceSide,
+    pub cross_axis_offset: f64,
+    pub depth: Option<f64>,
+    pub niche_side: NicheSide,
     /// Optional sill/head control planes (same project planes as wall base/top).
     /// Numeric [`sill_height`] / [`height`] remain the baked cache relative to the
     /// host wall base at the opening XY.
@@ -157,6 +231,10 @@ impl Opening {
             hinge: HingeSide::Left,
             shape: OpeningShape::Rectangle,
             spring_height: 0.0,
+            reference_side: OpeningReferenceSide::default(),
+            cross_axis_offset: 0.0,
+            depth: None,
+            niche_side: NicheSide::default(),
             sill_plane_id: None,
             head_plane_id: None,
             sill_plane_name: None,
@@ -209,10 +287,26 @@ impl Opening {
         )
     }
 
+    /// Returns the distance along the wall axis to the geometric opening center.
+    pub fn center_along_axis(&self) -> f64 {
+        match self.reference_side {
+            OpeningReferenceSide::Center => self.distance_along_axis,
+            OpeningReferenceSide::Start => self.distance_along_axis + self.width * 0.5,
+            OpeningReferenceSide::End => self.distance_along_axis - self.width * 0.5,
+        }
+    }
+
     /// Axis-parameter interval `[start, end]` occupied by this opening.
     pub fn axis_span(&self) -> (f64, f64) {
+        let center = self.center_along_axis();
         let half = self.width * 0.5;
-        (self.distance_along_axis - half, self.distance_along_axis + half)
+        (center - half, center + half)
+    }
+
+    /// Flips reference side (Start <-> End) and hinge (Left <-> Right).
+    pub fn flip(&mut self) {
+        self.reference_side = self.reference_side.flipped();
+        self.hinge = self.hinge.mirrored();
     }
 
     pub fn has_plane_binding(&self) -> bool {
@@ -487,6 +581,13 @@ fn merge_intervals(mut intervals: Vec<(f64, f64)>) -> Vec<(f64, f64)> {
     out
 }
 
+/// Returns true if this opening is a breakthrough with a depth strictly less than the wall thickness.
+pub fn is_partial_niche(o: &Opening, total_thickness: f64) -> bool {
+    o.kind == OpeningKind::Breakthrough
+        && o.depth
+            .map_or(false, |d| d > 1e-4 && d < total_thickness - 1e-4)
+}
+
 /// Remaining axis spans after subtracting opening intervals from `[0, length]`.
 ///
 /// Free spans (including the leading/trailing spans at the wall ends)
@@ -494,13 +595,20 @@ fn merge_intervals(mut intervals: Vec<(f64, f64)>) -> Vec<(f64, f64)> {
 /// degenerate slivers — this keeps an opening placed almost flush with a
 /// wall end (or two openings placed almost edge-to-edge) from producing a
 /// near-zero-width extra piece alongside the real one.
-pub(crate) fn remaining_axis_spans(length: f64, openings: &[Opening]) -> Vec<(f64, f64)> {
+pub(crate) fn remaining_axis_spans_for_thickness(
+    length: f64,
+    openings: &[Opening],
+    total_thickness: f64,
+) -> Vec<(f64, f64)> {
     if length <= 1e-12 {
         return Vec::new();
     }
     let mut intervals = Vec::new();
     for o in openings {
         if o.width <= 1e-12 {
+            continue;
+        }
+        if is_partial_niche(o, total_thickness) {
             continue;
         }
         let (a, b) = o.axis_span();
@@ -523,6 +631,10 @@ pub(crate) fn remaining_axis_spans(length: f64, openings: &[Opening]) -> Vec<(f6
         free.push((cursor, length));
     }
     free
+}
+
+pub(crate) fn remaining_axis_spans(length: f64, openings: &[Opening]) -> Vec<(f64, f64)> {
+    remaining_axis_spans_for_thickness(length, openings, 0.0)
 }
 
 /// Sample the axis polyline restricted to parameter range `[s0, s1]`.
@@ -574,6 +686,130 @@ pub fn sub_axis(axis: &[(f64, f64)], s0: f64, s1: f64) -> Vec<(f64, f64)> {
     }
 }
 
+/// Rebuilds a wall piece contour with partial niches indented into the wall face.
+pub fn outer_contour_with_niches(
+    sub_axis: &[(f64, f64)],
+    s0: f64,
+    s1: f64,
+    total_thickness: f64,
+    centerline_offset: f64,
+    openings: &[Opening],
+) -> Vec<(f64, f64)> {
+    let niches: Vec<_> = openings
+        .iter()
+        .filter(|o| is_partial_niche(o, total_thickness))
+        .filter(|o| {
+            let (op_s0, op_s1) = o.axis_span();
+            op_s1 > s0 + 1e-4 && op_s0 < s1 - 1e-4
+        })
+        .collect();
+
+    if niches.is_empty() {
+        return outer_contour(sub_axis, total_thickness, centerline_offset);
+    }
+
+    let half_thickness = total_thickness * 0.5;
+    let b1_offset = centerline_offset - half_thickness; // exterior
+    let b2_offset = centerline_offset + half_thickness; // interior
+
+    // Build b1 points:
+    let mut b1_pts = Vec::new();
+    let ext_niches: Vec<_> = niches
+        .iter()
+        .filter(|o| o.niche_side == NicheSide::Exterior)
+        .collect();
+
+    if ext_niches.is_empty() {
+        b1_pts = crate::modules::aec::engine::contour::offset_centerline(sub_axis, &[], b1_offset).points;
+    } else {
+        let sub_len = axis_length(sub_axis);
+        let mut stations: Vec<f64> = vec![0.0, sub_len];
+        for o in &ext_niches {
+            let (op_s0, op_s1) = o.axis_span();
+            let local_0 = (op_s0 - s0).clamp(0.0, sub_len);
+            let local_1 = (op_s1 - s0).clamp(0.0, sub_len);
+            if local_1 - local_0 > 1e-4 {
+                stations.push(local_0);
+                stations.push(local_1);
+            }
+        }
+        stations.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        stations.dedup_by(|a, b| (*a - *b).abs() < 1e-4);
+
+        for w in stations.windows(2) {
+            let mid = (w[0] + w[1]) * 0.5;
+            let world_mid = s0 + mid;
+            let active_niche = ext_niches.iter().find(|o| {
+                let (op_s0, op_s1) = o.axis_span();
+                world_mid >= op_s0 && world_mid <= op_s1
+            });
+            let d = active_niche.and_then(|o| o.depth).unwrap_or(0.0);
+            let current_offset = b1_offset + d;
+
+            let (p_start, t_start) = point_and_tangent_at_distance(sub_axis, w[0]).unwrap();
+            let n_start = (-t_start.1, t_start.0);
+
+            let (p_end, t_end) = point_and_tangent_at_distance(sub_axis, w[1]).unwrap();
+            let n_end = (-t_end.1, t_end.0);
+
+            b1_pts.push((p_start.0 + n_start.0 * current_offset, p_start.1 + n_start.1 * current_offset));
+            b1_pts.push((p_end.0 + n_end.0 * current_offset, p_end.1 + n_end.1 * current_offset));
+        }
+    }
+
+    let int_niches: Vec<_> = niches
+        .iter()
+        .filter(|o| o.niche_side == NicheSide::Interior)
+        .collect();
+
+    let b2_pts = if int_niches.is_empty() {
+        let mut b2 = crate::modules::aec::engine::contour::offset_centerline(sub_axis, &[], b2_offset).points;
+        b2.reverse();
+        b2
+    } else {
+        let sub_len = axis_length(sub_axis);
+        let mut stations: Vec<f64> = vec![0.0, sub_len];
+        for o in &int_niches {
+            let (op_s0, op_s1) = o.axis_span();
+            let local_0 = (op_s0 - s0).clamp(0.0, sub_len);
+            let local_1 = (op_s1 - s0).clamp(0.0, sub_len);
+            if local_1 - local_0 > 1e-4 {
+                stations.push(local_0);
+                stations.push(local_1);
+            }
+        }
+        stations.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        stations.dedup_by(|a, b| (*a - *b).abs() < 1e-4);
+
+        let mut forward_b2 = Vec::new();
+        for w in stations.windows(2) {
+            let mid = (w[0] + w[1]) * 0.5;
+            let world_mid = s0 + mid;
+            let active_niche = int_niches.iter().find(|o| {
+                let (op_s0, op_s1) = o.axis_span();
+                world_mid >= op_s0 && world_mid <= op_s1
+            });
+            let d = active_niche.and_then(|o| o.depth).unwrap_or(0.0);
+            let current_offset = b2_offset - d;
+
+            let (p_start, t_start) = point_and_tangent_at_distance(sub_axis, w[0]).unwrap();
+            let n_start = (-t_start.1, t_start.0);
+
+            let (p_end, t_end) = point_and_tangent_at_distance(sub_axis, w[1]).unwrap();
+            let n_end = (-t_end.1, t_end.0);
+
+            forward_b2.push((p_start.0 + n_start.0 * current_offset, p_start.1 + n_start.1 * current_offset));
+            forward_b2.push((p_end.0 + n_end.0 * current_offset, p_end.1 + n_end.1 * current_offset));
+        }
+        forward_b2.reverse();
+        forward_b2
+    };
+
+    let mut points = b1_pts;
+    points.extend(b2_pts);
+    points
+}
+
 /// Subtract opening footprints from a wall-band polygon by splitting the band
 /// along the axis parameter around each opening span.
 ///
@@ -606,14 +842,14 @@ pub fn subtract_openings_from_band(
         return Vec::new();
     }
     let length = axis_length(axis);
-    let spans = remaining_axis_spans(length, openings);
+    let spans = remaining_axis_spans_for_thickness(length, openings, total_thickness);
     let mut pieces = Vec::new();
     for (s0, s1) in spans {
         let sub = sub_axis(axis, s0, s1);
         if sub.len() < 2 {
             continue;
         }
-        let piece = outer_contour(&sub, total_thickness, 0.0);
+        let piece = outer_contour_with_niches(&sub, s0, s1, total_thickness, 0.0, openings);
         if piece.len() >= 3 && area(&piece) > 1e-12 {
             pieces.push(piece);
         }

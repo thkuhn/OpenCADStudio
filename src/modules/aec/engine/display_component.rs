@@ -145,24 +145,87 @@ impl WallComponentSlot {
 /// still treats the unknown slot as visible (additive catalogue).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum OpeningComponentSlot {
+    // 2D Grundriss & Horizontalschnitt
     HostCut2D,
     Frame2D,
     Leaf2D,
     Swing2D,
+    Glazing2D,
     Sill2D,
+    Threshold2D,
+    BreakthroughSymbol2D,
+    OpeningLabel2D,
     Mark2D,
+
+    // 2D Ansicht & Aufriss
+    ElevationContour2D,
+    ElevationMuntins2D,
+    ElevationSwing2D,
+    ElevationSill2D,
+
+    // 3D Modell
+    Frame3D,
+    Leaf3D,
+    Glazing3D,
     Solid3D,
 }
 
 impl OpeningComponentSlot {
+    pub fn is_2d_plan(self) -> bool {
+        matches!(
+            self,
+            OpeningComponentSlot::HostCut2D
+                | OpeningComponentSlot::Frame2D
+                | OpeningComponentSlot::Leaf2D
+                | OpeningComponentSlot::Swing2D
+                | OpeningComponentSlot::Glazing2D
+                | OpeningComponentSlot::Sill2D
+                | OpeningComponentSlot::Threshold2D
+                | OpeningComponentSlot::BreakthroughSymbol2D
+                | OpeningComponentSlot::OpeningLabel2D
+                | OpeningComponentSlot::Mark2D
+        )
+    }
+
+    pub fn is_elevation(self) -> bool {
+        matches!(
+            self,
+            OpeningComponentSlot::ElevationContour2D
+                | OpeningComponentSlot::ElevationMuntins2D
+                | OpeningComponentSlot::ElevationSwing2D
+                | OpeningComponentSlot::ElevationSill2D
+        )
+    }
+
+    pub fn is_3d(self) -> bool {
+        matches!(
+            self,
+            OpeningComponentSlot::Frame3D
+                | OpeningComponentSlot::Leaf3D
+                | OpeningComponentSlot::Glazing3D
+                | OpeningComponentSlot::Solid3D
+        )
+    }
+
     pub fn key(self) -> &'static str {
         match self {
             OpeningComponentSlot::HostCut2D => "HostCut2D",
             OpeningComponentSlot::Frame2D => "Frame2D",
             OpeningComponentSlot::Leaf2D => "Leaf2D",
             OpeningComponentSlot::Swing2D => "Swing2D",
+            OpeningComponentSlot::Glazing2D => "Glazing2D",
             OpeningComponentSlot::Sill2D => "Sill2D",
+            OpeningComponentSlot::Threshold2D => "Threshold2D",
+            OpeningComponentSlot::BreakthroughSymbol2D => "BreakthroughSymbol2D",
+            OpeningComponentSlot::OpeningLabel2D => "OpeningLabel2D",
             OpeningComponentSlot::Mark2D => "Mark2D",
+            OpeningComponentSlot::ElevationContour2D => "ElevationContour2D",
+            OpeningComponentSlot::ElevationMuntins2D => "ElevationMuntins2D",
+            OpeningComponentSlot::ElevationSwing2D => "ElevationSwing2D",
+            OpeningComponentSlot::ElevationSill2D => "ElevationSill2D",
+            OpeningComponentSlot::Frame3D => "Frame3D",
+            OpeningComponentSlot::Leaf3D => "Leaf3D",
+            OpeningComponentSlot::Glazing3D => "Glazing3D",
             OpeningComponentSlot::Solid3D => "Solid3D",
         }
     }
@@ -173,8 +236,19 @@ impl OpeningComponentSlot {
             OpeningComponentSlot::Frame2D,
             OpeningComponentSlot::Leaf2D,
             OpeningComponentSlot::Swing2D,
+            OpeningComponentSlot::Glazing2D,
             OpeningComponentSlot::Sill2D,
+            OpeningComponentSlot::Threshold2D,
+            OpeningComponentSlot::BreakthroughSymbol2D,
+            OpeningComponentSlot::OpeningLabel2D,
             OpeningComponentSlot::Mark2D,
+            OpeningComponentSlot::ElevationContour2D,
+            OpeningComponentSlot::ElevationMuntins2D,
+            OpeningComponentSlot::ElevationSwing2D,
+            OpeningComponentSlot::ElevationSill2D,
+            OpeningComponentSlot::Frame3D,
+            OpeningComponentSlot::Leaf3D,
+            OpeningComponentSlot::Glazing3D,
             OpeningComponentSlot::Solid3D,
         ]
     }
@@ -185,8 +259,19 @@ impl OpeningComponentSlot {
             "Frame2D" => Some(OpeningComponentSlot::Frame2D),
             "Leaf2D" => Some(OpeningComponentSlot::Leaf2D),
             "Swing2D" => Some(OpeningComponentSlot::Swing2D),
+            "Glazing2D" => Some(OpeningComponentSlot::Glazing2D),
             "Sill2D" => Some(OpeningComponentSlot::Sill2D),
+            "Threshold2D" => Some(OpeningComponentSlot::Threshold2D),
+            "BreakthroughSymbol2D" => Some(OpeningComponentSlot::BreakthroughSymbol2D),
+            "OpeningLabel2D" => Some(OpeningComponentSlot::OpeningLabel2D),
             "Mark2D" => Some(OpeningComponentSlot::Mark2D),
+            "ElevationContour2D" => Some(OpeningComponentSlot::ElevationContour2D),
+            "ElevationMuntins2D" => Some(OpeningComponentSlot::ElevationMuntins2D),
+            "ElevationSwing2D" => Some(OpeningComponentSlot::ElevationSwing2D),
+            "ElevationSill2D" => Some(OpeningComponentSlot::ElevationSill2D),
+            "Frame3D" => Some(OpeningComponentSlot::Frame3D),
+            "Leaf3D" => Some(OpeningComponentSlot::Leaf3D),
+            "Glazing3D" => Some(OpeningComponentSlot::Glazing3D),
             "Solid3D" => Some(OpeningComponentSlot::Solid3D),
             _ => None,
         }

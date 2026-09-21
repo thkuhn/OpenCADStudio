@@ -8,7 +8,7 @@ use crate::modules::aec::engine::opening_display;
 use crate::modules::aec::engine::opening_shape::OpeningShape;
 use crate::modules::aec::engine::opening_style::{apply_style_defaults, HingeSide};
 use crate::modules::aec::engine::opening_xdata;
-use crate::modules::aec::engine::openings::Opening;
+use crate::modules::aec::engine::openings::{NicheSide, Opening, OpeningKind, OpeningReferenceSide};
 use crate::modules::aec::engine::storey_xdata;
 use crate::modules::aec::engine::xdata;
 use crate::modules::aec::engine::wall_package;
@@ -512,6 +512,36 @@ pub fn apply_opening_property(
             opening.hinge = HingeSide::from_str(val);
             true
         }
+        "opening_reference_side" => {
+            opening.reference_side = OpeningReferenceSide::from_str(val);
+            true
+        }
+        "opening_cross_offset" => {
+            if let Some(v) = crate::entities::common::parse_f64(val) {
+                opening.cross_axis_offset = v;
+            }
+            true
+        }
+        "opening_flip" => {
+            opening.flip();
+            true
+        }
+        "opening_depth" => {
+            if let Some(v) = crate::entities::common::parse_f64(val) {
+                if v > 0.0 {
+                    opening.depth = Some(v);
+                } else {
+                    opening.depth = None;
+                }
+            } else if val.trim().is_empty() || val.eq_ignore_ascii_case("none") {
+                opening.depth = None;
+            }
+            true
+        }
+        "opening_niche_side" => {
+            opening.niche_side = NicheSide::from_str(val);
+            true
+        }
         "opening_shape" => {
             opening.shape = OpeningShape::from_str(val);
             let (w, h) = opening.shape.lock_size(opening.width, opening.height, true);
@@ -655,7 +685,57 @@ pub fn opening_prop_section(
                 ],
             },
         },
+        crate::scene::model::object::Property {
+            label: crate::tr!("aec", "opening-reference-side"),
+            field: "opening_reference_side",
+            value: crate::scene::model::object::PropValue::Choice {
+                selected: opening.reference_side.as_str().to_string(),
+                options: vec![
+                    OpeningReferenceSide::Start.as_str().into(),
+                    OpeningReferenceSide::Center.as_str().into(),
+                    OpeningReferenceSide::End.as_str().into(),
+                ],
+            },
+        },
+        crate::entities::common::edit_prop(
+            crate::tr!("aec", "opening-cross-offset").as_str(),
+            "opening_cross_offset",
+            opening.cross_axis_offset,
+        ),
+        crate::scene::model::object::Property {
+            label: crate::tr!("aec", "opening-flip"),
+            field: "opening_flip",
+            value: crate::scene::model::object::PropValue::Choice {
+                selected: format!("{} / {}", opening.reference_side.as_str(), opening.hinge.as_str()),
+                options: vec![
+                    "Start / Left".into(),
+                    "Start / Right".into(),
+                    "End / Left".into(),
+                    "End / Right".into(),
+                    "Center / Left".into(),
+                    "Center / Right".into(),
+                ],
+            },
+        },
     ];
+    if opening.kind == OpeningKind::Breakthrough {
+        props.push(crate::entities::common::edit_prop(
+            crate::tr!("aec", "opening-depth").as_str(),
+            "opening_depth",
+            opening.depth.unwrap_or(0.0),
+        ));
+        props.push(crate::scene::model::object::Property {
+            label: crate::tr!("aec", "opening-niche-side"),
+            field: "opening_niche_side",
+            value: crate::scene::model::object::PropValue::Choice {
+                selected: opening.niche_side.as_str().to_string(),
+                options: vec![
+                    NicheSide::Exterior.as_str().into(),
+                    NicheSide::Interior.as_str().into(),
+                ],
+            },
+        });
+    }
     if opening.shape == OpeningShape::Arch {
         props.push(crate::entities::common::edit_prop(
             crate::tr!("aec", "opening-spring").as_str(),

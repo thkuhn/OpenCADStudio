@@ -1846,7 +1846,12 @@ pub fn split_mitered_footprint_by_openings(
     if length <= 1e-9 {
         return vec![footprint.to_vec()];
     }
-    let spans = remaining_axis_spans(length, openings);
+    let through_openings: Vec<Opening> = openings
+        .iter()
+        .filter(|o| !(o.kind == super::openings::OpeningKind::Breakthrough && o.depth.is_some()))
+        .cloned()
+        .collect();
+    let spans = remaining_axis_spans(length, &through_openings);
     let rings = split_footprint_rings(footprint);
     let mut pieces = Vec::new();
 

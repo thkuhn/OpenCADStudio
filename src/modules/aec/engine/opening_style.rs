@@ -57,12 +57,43 @@ impl HingeSide {
     }
 }
 
+/// Placement mode for a reusable block in an opening slot.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
+pub enum BlockPlacementMode {
+    /// Places the block 1:1 on the left reveal edge and horizontally mirrored 1:1 on the right reveal edge.
+    #[default]
+    JambPair,
+    /// Stretches the block between the reveals along the opening width.
+    StretchToFit,
+    /// Centers the block unscaled in the opening width.
+    CenterAnchor,
+}
+
+impl BlockPlacementMode {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            BlockPlacementMode::JambPair => "JambPair",
+            BlockPlacementMode::StretchToFit => "StretchToFit",
+            BlockPlacementMode::CenterAnchor => "CenterAnchor",
+        }
+    }
+
+    pub fn from_str(s: &str) -> Self {
+        match s {
+            "StretchToFit" => BlockPlacementMode::StretchToFit,
+            "CenterAnchor" => BlockPlacementMode::CenterAnchor,
+            _ => BlockPlacementMode::JambPair,
+        }
+    }
+}
+
 /// Parametric plan-symbol generator for one display slot.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
 pub enum OpeningGenerator {
     #[default]
     None,
     FrameRect,
+    DoorFrame,
     LeafLine,
     SwingArc,
     SillLines,
@@ -70,6 +101,22 @@ pub enum OpeningGenerator {
     Cross,
     /// Breakthrough: one diagonal plus a fill of the opening area.
     DiagonalFill,
+    GlazingLine,
+    ThresholdLine,
+    OpeningLabel,
+
+    // Ansichts-Generatoren
+    ElevationFrameRect,
+    ElevationFrameArch,
+    ElevationMuntinsSingle,
+    ElevationMuntinsDouble,
+    ElevationSwingTriangle,
+    ElevationSillLine,
+
+    // 3D-Generatoren
+    SolidFrame,
+    SolidLeaf,
+    SolidGlazing,
 }
 
 impl OpeningGenerator {
@@ -77,11 +124,24 @@ impl OpeningGenerator {
         match self {
             OpeningGenerator::None => "None",
             OpeningGenerator::FrameRect => "FrameRect",
+            OpeningGenerator::DoorFrame => "DoorFrame",
             OpeningGenerator::LeafLine => "LeafLine",
             OpeningGenerator::SwingArc => "SwingArc",
             OpeningGenerator::SillLines => "SillLines",
             OpeningGenerator::Cross => "Cross",
             OpeningGenerator::DiagonalFill => "DiagonalFill",
+            OpeningGenerator::GlazingLine => "GlazingLine",
+            OpeningGenerator::ThresholdLine => "ThresholdLine",
+            OpeningGenerator::OpeningLabel => "OpeningLabel",
+            OpeningGenerator::ElevationFrameRect => "ElevationFrameRect",
+            OpeningGenerator::ElevationFrameArch => "ElevationFrameArch",
+            OpeningGenerator::ElevationMuntinsSingle => "ElevationMuntinsSingle",
+            OpeningGenerator::ElevationMuntinsDouble => "ElevationMuntinsDouble",
+            OpeningGenerator::ElevationSwingTriangle => "ElevationSwingTriangle",
+            OpeningGenerator::ElevationSillLine => "ElevationSillLine",
+            OpeningGenerator::SolidFrame => "SolidFrame",
+            OpeningGenerator::SolidLeaf => "SolidLeaf",
+            OpeningGenerator::SolidGlazing => "SolidGlazing",
         }
     }
 
@@ -89,22 +149,48 @@ impl OpeningGenerator {
         &[
             OpeningGenerator::None,
             OpeningGenerator::FrameRect,
+            OpeningGenerator::DoorFrame,
             OpeningGenerator::LeafLine,
             OpeningGenerator::SwingArc,
             OpeningGenerator::SillLines,
             OpeningGenerator::Cross,
             OpeningGenerator::DiagonalFill,
+            OpeningGenerator::GlazingLine,
+            OpeningGenerator::ThresholdLine,
+            OpeningGenerator::OpeningLabel,
+            OpeningGenerator::ElevationFrameRect,
+            OpeningGenerator::ElevationFrameArch,
+            OpeningGenerator::ElevationMuntinsSingle,
+            OpeningGenerator::ElevationMuntinsDouble,
+            OpeningGenerator::ElevationSwingTriangle,
+            OpeningGenerator::ElevationSillLine,
+            OpeningGenerator::SolidFrame,
+            OpeningGenerator::SolidLeaf,
+            OpeningGenerator::SolidGlazing,
         ]
     }
 
     pub fn from_str(s: &str) -> Self {
         match s {
             "FrameRect" => OpeningGenerator::FrameRect,
+            "DoorFrame" => OpeningGenerator::DoorFrame,
             "LeafLine" => OpeningGenerator::LeafLine,
             "SwingArc" => OpeningGenerator::SwingArc,
             "SillLines" => OpeningGenerator::SillLines,
             "Cross" => OpeningGenerator::Cross,
             "DiagonalFill" => OpeningGenerator::DiagonalFill,
+            "GlazingLine" => OpeningGenerator::GlazingLine,
+            "ThresholdLine" => OpeningGenerator::ThresholdLine,
+            "OpeningLabel" => OpeningGenerator::OpeningLabel,
+            "ElevationFrameRect" => OpeningGenerator::ElevationFrameRect,
+            "ElevationFrameArch" => OpeningGenerator::ElevationFrameArch,
+            "ElevationMuntinsSingle" => OpeningGenerator::ElevationMuntinsSingle,
+            "ElevationMuntinsDouble" => OpeningGenerator::ElevationMuntinsDouble,
+            "ElevationSwingTriangle" => OpeningGenerator::ElevationSwingTriangle,
+            "ElevationSillLine" => OpeningGenerator::ElevationSillLine,
+            "SolidFrame" => OpeningGenerator::SolidFrame,
+            "SolidLeaf" => OpeningGenerator::SolidLeaf,
+            "SolidGlazing" => OpeningGenerator::SolidGlazing,
             _ => OpeningGenerator::None,
         }
     }
@@ -115,6 +201,11 @@ impl OpeningGenerator {
 #[serde(tag = "kind", content = "value")]
 pub enum SlotGeometry {
     Generator(OpeningGenerator),
+    Block {
+        block_name: String,
+        #[serde(default)]
+        placement: BlockPlacementMode,
+    },
     Sketch(OpeningSketch),
 }
 
@@ -176,8 +267,28 @@ impl OpeningStyle {
             SlotGeometry::Generator(OpeningGenerator::LeafLine),
         );
         slots.insert(
+            OpeningComponentSlot::Glazing2D,
+            SlotGeometry::Generator(OpeningGenerator::GlazingLine),
+        );
+        slots.insert(
             OpeningComponentSlot::Sill2D,
             SlotGeometry::Generator(OpeningGenerator::SillLines),
+        );
+        slots.insert(
+            OpeningComponentSlot::OpeningLabel2D,
+            SlotGeometry::Generator(OpeningGenerator::OpeningLabel),
+        );
+        slots.insert(
+            OpeningComponentSlot::Frame3D,
+            SlotGeometry::Generator(OpeningGenerator::SolidFrame),
+        );
+        slots.insert(
+            OpeningComponentSlot::Leaf3D,
+            SlotGeometry::Generator(OpeningGenerator::SolidLeaf),
+        );
+        slots.insert(
+            OpeningComponentSlot::Glazing3D,
+            SlotGeometry::Generator(OpeningGenerator::SolidGlazing),
         );
         Self {
             style: Style {
@@ -214,6 +325,22 @@ impl OpeningStyle {
             OpeningComponentSlot::Swing2D,
             SlotGeometry::Generator(OpeningGenerator::SwingArc),
         );
+        slots.insert(
+            OpeningComponentSlot::Threshold2D,
+            SlotGeometry::Generator(OpeningGenerator::ThresholdLine),
+        );
+        slots.insert(
+            OpeningComponentSlot::OpeningLabel2D,
+            SlotGeometry::Generator(OpeningGenerator::OpeningLabel),
+        );
+        slots.insert(
+            OpeningComponentSlot::Frame3D,
+            SlotGeometry::Generator(OpeningGenerator::SolidFrame),
+        );
+        slots.insert(
+            OpeningComponentSlot::Leaf3D,
+            SlotGeometry::Generator(OpeningGenerator::SolidLeaf),
+        );
         Self {
             style: Style {
                 id: SEED_DOOR_STYLE_ID.to_string(),
@@ -238,8 +365,16 @@ impl OpeningStyle {
     pub fn standard_breakthrough() -> Self {
         let mut slots = HashMap::new();
         slots.insert(
+            OpeningComponentSlot::BreakthroughSymbol2D,
+            SlotGeometry::Generator(OpeningGenerator::Cross),
+        );
+        slots.insert(
             OpeningComponentSlot::Mark2D,
             SlotGeometry::Generator(OpeningGenerator::Cross),
+        );
+        slots.insert(
+            OpeningComponentSlot::OpeningLabel2D,
+            SlotGeometry::Generator(OpeningGenerator::OpeningLabel),
         );
         Self {
             style: Style {

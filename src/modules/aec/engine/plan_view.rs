@@ -144,6 +144,9 @@ pub struct DisplayConfig {
     /// Global component visibility (absent key = visible).
     #[serde(default)]
     pub component_visibility: HashMap<WallComponentKind, bool>,
+    /// Opening slot visibility overrides per plan type (absent = default/visible).
+    #[serde(default)]
+    pub opening_visibility: HashMap<crate::modules::aec::engine::display_component::OpeningComponentSlot, bool>,
     /// Sparse per-wall-style exceptions, keyed by `Style.id`.
     #[serde(default)]
     pub style_overlays: HashMap<String, StyleDisplayOverlay>,
@@ -208,6 +211,7 @@ impl DisplayConfig {
             phase_filter: None,
             default_representation: RepresentationMode::All,
             component_visibility: HashMap::new(),
+            opening_visibility: HashMap::new(),
             style_overlays: HashMap::new(),
             contour_hatch: None,
         }

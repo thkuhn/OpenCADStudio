@@ -8044,3 +8044,956 @@ fn l_corner_same_material_suppresses_3d_deck_miter_fuge_while_different_material
         "Wall 3 MUST draw 45-degree diagonal boundary on top deck (z=3.0) when joining DIFFERENT materials"
     );
 }
+
+#[test]
+fn test_opening_realistic_post_profiles() {
+    use crate::modules::aec::engine::display_component::OpeningComponentSlot;
+    use crate::modules::aec::engine::opening_display::{bake_opening_generators, OpeningBakeParams};
+    use crate::modules::aec::engine::opening_style::{
+        HingeSide, OpeningGenerator, SlotGeometry, DEFAULT_FRAME_THICKNESS,
+    };
+    use crate::modules::aec::engine::openings::OpeningKind;
+    use std::collections::HashMap;
+
+    let mut slots = HashMap::new();
+    slots.insert(
+        OpeningComponentSlot::Frame2D,
+        SlotGeometry::Generator(OpeningGenerator::FrameRect),
+    );
+
+    let width = 1.4;
+    let thickness = 0.3;
+    let ft = DEFAULT_FRAME_THICKNESS; // 0.07
+    let p = OpeningBakeParams {
+        width,
+        height: 1.2,
+        sill_height: 0.9,
+        thickness,
+        frame_thickness: ft,
+        cross_axis_offset: 0.0,
+        hinge: HingeSide::Left,
+        shape: crate::modules::aec::engine::opening_shape::OpeningShape::Rectangle,
+        spring_height: 0.0,
+        opening_angle_deg: 90.0,
+        kind: OpeningKind::Window,
+    };
+
+    let baked = bake_opening_generators(&slots, p, None);
+    let frames: Vec<_> = baked
+        .iter()
+        .filter(|b| b.slot == OpeningComponentSlot::Frame2D && b.closed)
+        .collect();
+
+    assert_eq!(frames.len(), 2, "Window Frame2D must emit two separate post profiles");
+
+    let hw = width * 0.5; // 0.7
+    let post_a = &frames[0];
+    let post_b = &frames[1];
+
+    let min_x_a = post_a.points.iter().map(|pt| pt.0).fold(f64::INFINITY, f64::min);
+    let max_x_a = post_a.points.iter().map(|pt| pt.0).fold(f64::NEG_INFINITY, f64::max);
+    let min_x_b = post_b.points.iter().map(|pt| pt.0).fold(f64::INFINITY, f64::min);
+    let max_x_b = post_b.points.iter().map(|pt| pt.0).fold(f64::NEG_INFINITY, f64::max);
+
+    // Left post: [-0.70, -0.63]
+    let (left_min, left_max, right_min, right_max) = if min_x_a < min_x_b {
+        (min_x_a, max_x_a, min_x_b, max_x_b)
+    } else {
+        (min_x_b, max_x_b, min_x_a, max_x_a)
+    };
+
+    assert!((left_min - (-hw)).abs() < 1e-6, "Left post must sit at left reveal -hw");
+    assert!((left_max - (-hw + ft)).abs() < 1e-6, "Left post width must equal ft");
+    assert!((right_min - (hw - ft)).abs() < 1e-6, "Right post inner edge must be at hw - ft");
+    assert!((right_max - hw).abs() < 1e-6, "Right post outer edge must be at right reveal hw");
+
+    let clear_width = right_min - left_max;
+    assert!((clear_width - (width - 2.0 * ft)).abs() < 1e-6, "Clear opening between posts must be width - 2*ft");
+}
+
+#[test]
+fn test_opening_dynamic_sill_lines_with_wall_thickness() {
+    use crate::modules::aec::engine::display_component::OpeningComponentSlot;
+    use crate::modules::aec::engine::opening_display::{bake_opening_generators, OpeningBakeParams};
+    use crate::modules::aec::engine::opening_style::{
+        HingeSide, OpeningGenerator, SlotGeometry, DEFAULT_FRAME_THICKNESS,
+    };
+    use crate::modules::aec::engine::openings::OpeningKind;
+    use std::collections::HashMap;
+
+    let mut slots = HashMap::new();
+    slots.insert(
+        OpeningComponentSlot::Sill2D,
+        SlotGeometry::Generator(OpeningGenerator::SillLines),
+    );
+
+    for thickness in [0.24, 0.365, 0.42] {
+        let hw = 0.6;
+        let ht = thickness * 0.5;
+        let p = OpeningBakeParams {
+            width: hw * 2.0,
+            height: 1.2,
+            sill_height: 0.9,
+            thickness,
+            frame_thickness: DEFAULT_FRAME_THICKNESS,
+            cross_axis_offset: 0.0,
+            hinge: HingeSide::Left,
+            shape: crate::modules::aec::engine::opening_shape::OpeningShape::Rectangle,
+            spring_height: 0.0,
+            opening_angle_deg: 90.0,
+            kind: OpeningKind::Window,
+        };
+
+        let baked = bake_opening_generators(&slots, p, None);
+        let sills: Vec<_> = baked
+            .iter()
+            .filter(|b| b.slot == OpeningComponentSlot::Sill2D)
+            .collect();
+        assert!(!sills.is_empty(), "Sill lines must be generated for thickness {thickness}");
+
+        // Find the exterior sill front edge (lowest y)
+        let min_y = sills
+            .iter()
+            .flat_map(|b| b.points.iter().map(|pt| pt.1))
+            .fold(f64::INFINITY, f64::min);
+        // Find the interior board front edge (highest y)
+        let max_y = sills
+            .iter()
+            .flat_map(|b| b.points.iter().map(|pt| pt.1))
+            .fold(f64::NEG_INFINITY, f64::max);
+
+        // Exterior sill front is at -ht - 0.035
+        assert!((min_y - (-ht - 0.035)).abs() < 1e-4, "Exterior sill must track wall exterior at -ht for thickness {thickness}");
+        // Interior board front is at +ht + 0.025
+        assert!((max_y - (ht + 0.025)).abs() < 1e-4, "Interior board must track wall interior at +ht for thickness {thickness}");
+
+        // Wall face reveal line exists at -ht and +ht
+        let has_ext_wall_line = sills.iter().any(|b| {
+            b.points.len() == 2 && (b.points[0].1 - (-ht)).abs() < 1e-4 && (b.points[1].1 - (-ht)).abs() < 1e-4
+        });
+        let has_int_wall_line = sills.iter().any(|b| {
+            b.points.len() == 2 && (b.points[0].1 - ht).abs() < 1e-4 && (b.points[1].1 - ht).abs() < 1e-4
+        });
+        assert!(has_ext_wall_line, "Must have reveal line at exterior wall face -ht");
+        assert!(has_int_wall_line, "Must have reveal line at interior wall face +ht");
+    }
+}
+
+#[test]
+fn test_opening_component_blocks_resolution_and_placement() {
+    use crate::modules::aec::engine::display_component::OpeningComponentSlot;
+    use crate::modules::aec::engine::opening_display::{
+        bake_opening_generators_with_doc, OpeningBakeParams,
+    };
+    use crate::modules::aec::engine::opening_style::{
+        BlockPlacementMode, HingeSide, SlotGeometry, DEFAULT_FRAME_THICKNESS,
+    };
+    use crate::modules::aec::engine::openings::OpeningKind;
+    use acadrust::entities::Line;
+    use acadrust::tables::BlockRecord;
+    use acadrust::types::Vector3;
+    use acadrust::{CadDocument, EntityType};
+    use std::collections::HashMap;
+
+    let mut doc = CadDocument::new();
+    let block_name = "TEST_JAMB_PROFILE";
+    let block_h = doc.allocate_handle();
+    let mut rec = BlockRecord::new(block_name);
+    rec.handle = block_h;
+    doc.block_records.add(rec).expect("add block record");
+
+    // Add a line inside the block record representing a profile from (0, -0.04) to (0.08, 0.04):
+    let mut line = Line::new();
+    line.start = Vector3::new(0.0, -0.04, 0.0);
+    line.end = Vector3::new(0.08, 0.04, 0.0);
+    line.common.owner_handle = block_h;
+    doc.add_entity(EntityType::Line(line)).expect("add line");
+
+    let p = OpeningBakeParams {
+        width: 1.2,
+        height: 1.2,
+        sill_height: 0.9,
+        thickness: 0.3,
+        frame_thickness: DEFAULT_FRAME_THICKNESS,
+        cross_axis_offset: 0.0,
+        hinge: HingeSide::Left,
+        shape: crate::modules::aec::engine::opening_shape::OpeningShape::Rectangle,
+        spring_height: 0.0,
+        opening_angle_deg: 90.0,
+        kind: OpeningKind::Window,
+    };
+
+    // 1. JambPair mode
+    let mut slots_jamb = HashMap::new();
+    slots_jamb.insert(
+        OpeningComponentSlot::Frame2D,
+        SlotGeometry::Block {
+            block_name: block_name.to_string(),
+            placement: BlockPlacementMode::JambPair,
+        },
+    );
+    let baked_jamb = bake_opening_generators_with_doc(&slots_jamb, p, None, Some(&doc));
+    assert_eq!(baked_jamb.len(), 2, "JambPair must place left and right jambs");
+    let hw = 0.6;
+    // Left jamb sits at -hw + (0..0.08) -> [-0.60, -0.52]
+    let left_pts = &baked_jamb[0].points;
+    assert!((left_pts[0].0 - (-hw)).abs() < 1e-6);
+    assert!((left_pts[1].0 - (-hw + 0.08)).abs() < 1e-6);
+    // Right jamb sits at hw - (0..0.08) -> [0.60, 0.52]
+    let right_pts = &baked_jamb[1].points;
+    assert!((right_pts[0].0 - hw).abs() < 1e-6);
+    assert!((right_pts[1].0 - (hw - 0.08)).abs() < 1e-6);
+
+    // 2. StretchToFit mode
+    let mut slots_stretch = HashMap::new();
+    slots_stretch.insert(
+        OpeningComponentSlot::Frame2D,
+        SlotGeometry::Block {
+            block_name: block_name.to_string(),
+            placement: BlockPlacementMode::StretchToFit,
+        },
+    );
+    let baked_stretch = bake_opening_generators_with_doc(&slots_stretch, p, None, Some(&doc));
+    assert_eq!(baked_stretch.len(), 1);
+    let stretch_pts = &baked_stretch[0].points;
+    assert!((stretch_pts[0].0 - (-hw)).abs() < 1e-6, "StretchToFit start must be at -hw");
+    assert!((stretch_pts[1].0 - hw).abs() < 1e-6, "StretchToFit end must be at hw");
+
+    // 3. CenterAnchor mode
+    let mut slots_center = HashMap::new();
+    slots_center.insert(
+        OpeningComponentSlot::Frame2D,
+        SlotGeometry::Block {
+            block_name: block_name.to_string(),
+            placement: BlockPlacementMode::CenterAnchor,
+        },
+    );
+    let baked_center = bake_opening_generators_with_doc(&slots_center, p, None, Some(&doc));
+    assert_eq!(baked_center.len(), 1);
+    let center_pts = &baked_center[0].points;
+    // u was 0.0 to 0.08, mid was 0.04. Centered: -0.04 to +0.04
+    assert!((center_pts[0].0 - (-0.04)).abs() < 1e-6);
+    assert!((center_pts[1].0 - 0.04).abs() < 1e-6);
+}
+
+#[test]
+fn test_opening_din1356_label_formatting() {
+    use crate::modules::aec::engine::opening_display::format_din1356_label;
+    use crate::modules::aec::engine::openings::Opening;
+    use acadrust::Handle;
+
+    let mut door = Opening::door(Handle::new(1), Handle::new(2), 2.5);
+    door.width = 1.01;
+    door.height = 2.135;
+    assert_eq!(format_din1356_label(&door), "1.01 / 2.135");
+
+    let mut window = Opening::window(Handle::new(3), Handle::new(4), 4.0);
+    window.width = 1.26;
+    window.height = 1.40;
+    window.sill_height = 0.90;
+    assert_eq!(format_din1356_label(&window), "1.26 / 1.40\\PBRH 0.90");
+
+    let mut breakthrough = Opening::breakthrough(Handle::new(5), Handle::new(6), 1.0);
+    breakthrough.width = 0.50;
+    breakthrough.height = 0.60;
+    breakthrough.sill_height = 2.20;
+    assert_eq!(format_din1356_label(&breakthrough), "0.50 / 0.60\\PUK 2.20");
+}
+
+#[test]
+fn test_opening_reference_side_positioning_and_flip() {
+    use crate::modules::aec::engine::opening_style::HingeSide;
+    use crate::modules::aec::engine::openings::{Opening, OpeningReferenceSide};
+    use acadrust::Handle;
+
+    let mut win = Opening::window(Handle::new(10), Handle::new(20), 2.0);
+    win.width = 1.2;
+    win.reference_side = OpeningReferenceSide::Start;
+    win.hinge = HingeSide::Left;
+
+    // Start reveal is at 2.0, so center is at 2.0 + 0.6 = 2.6, end reveal is at 3.2:
+    assert!((win.center_along_axis() - 2.6).abs() < 1e-6);
+    let (s0, s1) = win.axis_span();
+    assert!((s0 - 2.0).abs() < 1e-6);
+    assert!((s1 - 3.2).abs() < 1e-6);
+
+    // Flip: reference side switches from Start to End, hinge from Left to Right
+    win.flip();
+    assert_eq!(win.reference_side, OpeningReferenceSide::End);
+    assert_eq!(win.hinge, HingeSide::Right);
+
+    // If dimensioned from End reveal at 3.2, center and span remain unchanged:
+    win.distance_along_axis = 3.2;
+    assert!((win.center_along_axis() - 2.6).abs() < 1e-6);
+    let (s0_flipped, s1_flipped) = win.axis_span();
+    assert!((s0_flipped - 2.0).abs() < 1e-6);
+    assert!((s1_flipped - 3.2).abs() < 1e-6);
+
+    // Center reference side:
+    win.reference_side = OpeningReferenceSide::Center;
+    win.distance_along_axis = 2.6;
+    assert!((win.center_along_axis() - 2.6).abs() < 1e-6);
+    let (s0_c, s1_c) = win.axis_span();
+    assert!((s0_c - 2.0).abs() < 1e-6);
+    assert!((s1_c - 3.2).abs() < 1e-6);
+}
+
+#[test]
+fn test_opening_cross_axis_offset_shifts_geometry_and_sills() {
+    use crate::modules::aec::engine::display_component::OpeningComponentSlot;
+    use crate::modules::aec::engine::opening_display::bake_opening_world;
+    use crate::modules::aec::engine::openings::Opening;
+    use acadrust::Handle;
+
+    let axis = vec![(0.0, 0.0), (10.0, 0.0)]; // Wall runs along +X, normal along +Y
+    let thickness = 0.30; // ht = 0.15; ext face at y = -0.15, int face at y = +0.15
+
+    let mut win = Opening::window(Handle::new(1), Handle::new(2), 5.0);
+    win.width = 1.0;
+    win.cross_axis_offset = 0.06; // shifted +6cm towards interior (+Y)
+
+    let paths = bake_opening_world(&axis, thickness, &win, None, None);
+    assert!(!paths.is_empty());
+
+    // Window frame posts should be centered around y = +0.06:
+    let frame_paths: Vec<_> = paths
+        .iter()
+        .filter(|p| p.slot == OpeningComponentSlot::Frame2D)
+        .collect();
+    assert_eq!(frame_paths.len(), 2);
+    for fp in &frame_paths {
+        let mid_y = fp.points.iter().map(|p| p.1).sum::<f64>() / (fp.points.len() as f64);
+        assert!((mid_y - 0.06).abs() < 1e-3, "Frame posts must center at cross_axis_offset = +0.06");
+    }
+
+    // Sill lines should adapt so that the exterior sill front nose terminates at exterior face (-ht - 0.035)
+    // and interior board front nose terminates at interior face (+ht + 0.025)
+    let sill_paths: Vec<_> = paths
+        .iter()
+        .filter(|p| p.slot == OpeningComponentSlot::Sill2D)
+        .collect();
+    assert!(!sill_paths.is_empty());
+
+    let min_y = sill_paths
+        .iter()
+        .flat_map(|p| p.points.iter().map(|pt| pt.1))
+        .fold(f64::INFINITY, f64::min);
+    let max_y = sill_paths
+        .iter()
+        .flat_map(|p| p.points.iter().map(|pt| pt.1))
+        .fold(f64::NEG_INFINITY, f64::max);
+
+    // Wall exterior face is at y = -0.15, nose with 0.035 overhang is at -0.185:
+    assert!((min_y - (-0.15 - 0.035)).abs() < 1e-4, "Exterior sill must track true exterior wall face");
+    // Wall interior face is at y = +0.15, board with 0.025 overhang is at +0.175:
+    assert!((max_y - (0.15 + 0.025)).abs() < 1e-4, "Interior board must track true interior wall face");
+}
+
+#[test]
+fn test_opening_xdata_roundtrip_reference_side_and_offset() {
+    use crate::modules::aec::engine::opening_style::HingeSide;
+    use crate::modules::aec::engine::opening_xdata::{opening_from_values, opening_record};
+    use crate::modules::aec::engine::openings::{NicheSide, Opening, OpeningReferenceSide};
+    use acadrust::Handle;
+
+    let mut win = Opening::window(Handle::new(101), Handle::new(202), 4.5);
+    win.reference_side = OpeningReferenceSide::Start;
+    win.cross_axis_offset = 0.08;
+    win.depth = Some(0.12);
+    win.niche_side = NicheSide::Interior;
+    win.hinge = HingeSide::Right;
+
+    let record = opening_record(&win);
+    let parsed = opening_from_values(win.handle, &record.values).expect("parse opening record");
+
+    assert_eq!(parsed.handle, win.handle);
+    assert_eq!(parsed.host_wall, win.host_wall);
+    assert!((parsed.distance_along_axis - win.distance_along_axis).abs() < 1e-9);
+    assert_eq!(parsed.reference_side, OpeningReferenceSide::Start);
+    assert!((parsed.cross_axis_offset - 0.08).abs() < 1e-9);
+    assert_eq!(parsed.depth, Some(0.12));
+    assert_eq!(parsed.niche_side, NicheSide::Interior);
+    assert_eq!(parsed.hinge, HingeSide::Right);
+
+    // Test legacy record with only 11 entries (missing the 4 new fields)
+    let legacy_values = record.values[..11].to_vec();
+    let legacy_parsed = opening_from_values(win.handle, &legacy_values).expect("parse legacy record");
+    assert_eq!(legacy_parsed.reference_side, OpeningReferenceSide::Center);
+    assert_eq!(legacy_parsed.cross_axis_offset, 0.0);
+    assert_eq!(legacy_parsed.depth, None);
+    assert_eq!(legacy_parsed.niche_side, NicheSide::Exterior);
+}
+
+#[test]
+fn test_opening_grips_definition_and_flip_handle() {
+    use crate::modules::aec::engine::opening_display::{
+        apply_opening_axis_grip, opening_axis_grips,
+    };
+    use crate::modules::aec::engine::opening_style::HingeSide;
+    use crate::modules::aec::engine::openings::{Opening, OpeningReferenceSide};
+    use acadrust::Handle;
+    use glam::DVec3;
+
+    let axis = vec![(0.0, 0.0), (10.0, 0.0)];
+    let mut win = Opening::window(Handle::new(1), Handle::new(2), 4.0);
+    win.width = 1.2;
+    win.reference_side = OpeningReferenceSide::Start;
+    win.hinge = HingeSide::Left;
+
+    let grips = opening_axis_grips(&axis, &win);
+    assert_eq!(grips.len(), 4, "Must have 4 grips: Center, Start, End, Flip");
+    assert_eq!(grips[0].id, 0);
+    assert_eq!(grips[1].id, 1);
+    assert_eq!(grips[2].id, 2);
+    assert_eq!(grips[3].id, 3);
+
+    // Center grip is at s = 4.0 + 0.6 = 4.6
+    assert!((grips[0].world.x - 4.6).abs() < 1e-6);
+    // Start grip is at s = 4.0
+    assert!((grips[1].world.x - 4.0).abs() < 1e-6);
+    // End grip is at s = 5.2
+    assert!((grips[2].world.x - 5.2).abs() < 1e-6);
+
+    // 1. Move position along axis using Grip 0 to x = 6.0
+    apply_opening_axis_grip(&axis, &mut win, 0, DVec3::new(6.0, 0.0, 0.0));
+    // Since reference_side is Start, start reveal moves so center is at 6.0: start = 6.0 - 0.6 = 5.4
+    assert!((win.distance_along_axis - 5.4).abs() < 1e-6);
+    assert!((win.center_along_axis() - 6.0).abs() < 1e-6);
+
+    // 2. Resize start jamb using Grip 1 to x = 5.0
+    apply_opening_axis_grip(&axis, &mut win, 1, DVec3::new(5.0, 0.0, 0.0));
+    // End was at 6.6, new start is at 5.0 -> width becomes 1.6, start is at 5.0
+    assert!((win.width - 1.6).abs() < 1e-6);
+    assert!((win.distance_along_axis - 5.0).abs() < 1e-6);
+
+    // 3. Flip using Grip 3
+    apply_opening_axis_grip(&axis, &mut win, 3, DVec3::ZERO);
+    assert_eq!(win.reference_side, OpeningReferenceSide::End);
+    assert_eq!(win.hinge, HingeSide::Right);
+}
+
+#[test]
+fn test_opening_grip_simulation_preserves_handles() {
+    use crate::modules::aec::engine::opening_display::{
+        apply_opening_axis_grip, collect_opening_display_children, commit_opening_instance,
+    };
+    use crate::modules::aec::engine::opening_xdata::{
+        openings_for_host_wall, place_wall_opening, write_opening_instance,
+    };
+    use crate::modules::aec::engine::openings::OpeningKind;
+    use crate::modules::aec::engine::wall::WallJustification;
+    use crate::modules::aec::engine::wall_package::resolve_wall_package;
+    use crate::modules::aec::engine::wall_regen::regenerate_wall_representation;
+    use crate::modules::aec::engine::xdata::{wall_record, AEC_APPID};
+    use crate::scene::Scene;
+    use acadrust::entities::{LwPolyline, LwVertex};
+    use acadrust::types::Vector2;
+    use acadrust::xdata::ExtendedDataRecord;
+    use acadrust::EntityType;
+    use glam::DVec3;
+
+    let mut scene = Scene::new();
+    let layers = vec![wl("Brick", 0.3, "Structural")];
+    let mut pl = LwPolyline::new();
+    pl.add_vertex(LwVertex::new(Vector2::new(0.0, 0.0)));
+    pl.add_vertex(LwVertex::new(Vector2::new(10.0, 0.0)));
+    let mut ent = EntityType::LwPolyline(pl);
+    let mut rec = ExtendedDataRecord::new(AEC_APPID);
+    rec.values = wall_record("s", 3.0, 0, &layers, &[], WallJustification::Center, crate::modules::aec::engine::plan_view::PlanPhase::New, None);
+    ent.common_mut().extended_data.add_record(rec);
+    let wall_h = scene.add_entity(ent);
+
+    let (win_h, _) = place_wall_opening(
+        &mut scene,
+        wall_h,
+        DVec3::new(4.0, 0.0, 0.0),
+        OpeningKind::Window,
+        None,
+        None,
+        None,
+    ).expect("place window");
+
+    regenerate_wall_representation(&mut scene, wall_h, None).expect("regen wall");
+
+    let children_before = collect_opening_display_children(&scene, win_h);
+    assert!(!children_before.is_empty(), "Window must have display children");
+
+    let axis = vec![(0.0, 0.0), (10.0, 0.0)];
+    let mut opening = openings_for_host_wall(&scene, wall_h)
+        .into_iter()
+        .find(|o| o.handle == win_h)
+        .expect("opening exists");
+
+    // Simulate mouse-drag: 10 intermediate mouse move events
+    for step in 1..=10 {
+        let new_x = 4.0 + (step as f64) * 0.1;
+        apply_opening_axis_grip(&axis, &mut opening, 0, DVec3::new(new_x, 0.0, 0.0));
+        write_opening_instance(&mut scene, &opening);
+
+        // Verify that throughout the drag, the window handle win_h and its children handles remain valid!
+        assert!(scene.document.get_entity(win_h).is_some(), "Opening entity handle must stay alive during drag");
+        for child_h in &children_before {
+            assert!(scene.document.get_entity(*child_h).is_some(), "Child entity handle must stay alive during drag");
+        }
+    }
+
+    // Now simulate mouse release: commit
+    commit_opening_instance(&mut scene, &opening, None, None);
+
+    let wall_pkg = resolve_wall_package(&scene, wall_h);
+    regenerate_wall_representation(&mut scene, wall_pkg, None).expect("regen wall on commit");
+
+    let final_opening = openings_for_host_wall(&scene, wall_h)
+        .into_iter()
+        .find(|o| o.handle == win_h)
+        .expect("opening exists after commit");
+    assert!((final_opening.distance_along_axis - 5.0).abs() < 1e-6, "Final position must be committed at 5.0");
+}
+
+#[test]
+fn test_niche_2d_preserves_single_continuous_wall_with_correct_rest_thickness() {
+    use crate::modules::aec::engine::openings::{
+        subtract_openings_from_band, NicheSide, Opening,
+    };
+    use acadrust::Handle;
+
+    let axis = vec![(0.0, 0.0), (10.0, 0.0)];
+    let total_thickness = 0.30; // 30cm wall
+
+    let mut niche_ext = Opening::breakthrough(Handle::new(1), Handle::new(2), 5.0);
+    niche_ext.width = 1.2;
+    niche_ext.height = 1.0;
+    niche_ext.sill_height = 0.8;
+    niche_ext.depth = Some(0.15); // 15cm deep niche in 30cm wall
+    niche_ext.niche_side = NicheSide::Exterior;
+
+    let pieces = subtract_openings_from_band(&[], &axis, total_thickness, &[niche_ext.clone()]);
+    assert_eq!(
+        pieces.len(),
+        1,
+        "Partial-depth niche MUST NOT split the wall into separate pieces"
+    );
+
+    let poly = &pieces[0];
+    assert!(poly.len() >= 6, "Indented polygon must have extra vertices for the niche indentation");
+
+    // In the niche span [4.4, 5.6], the exterior edge is indented to y = -0.15 + 0.15 = 0.0,
+    // while the interior edge remains at y = +0.15.
+    // The wall thickness across the niche is 0.15 - 0.0 = 0.15 m!
+    let niche_y_at_reveal: Vec<f64> = poly
+        .iter()
+        .filter(|p| (p.0 - 4.4).abs() < 1e-4 || (p.0 - 5.6).abs() < 1e-4)
+        .map(|p| p.1)
+        .collect();
+
+    assert!(
+        niche_y_at_reveal.iter().any(|&y| (y - 0.0).abs() < 1e-4),
+        "Niche reveal must have back-face vertex indented to y = 0.0"
+    );
+    assert!(
+        niche_y_at_reveal.iter().any(|&y| (y - (-0.15)).abs() < 1e-4),
+        "Niche reveal must have corner vertex at original wall face y = -0.15"
+    );
+
+    // Interior face across the wall stays at y = +0.15:
+    let max_y_at_niche = poly
+        .iter()
+        .filter(|p| (p.0 - 4.4).abs() < 1e-4 || (p.0 - 5.6).abs() < 1e-4)
+        .map(|p| p.1)
+        .fold(f64::NEG_INFINITY, f64::max);
+    assert!((max_y_at_niche - 0.0).abs() < 1e-4 || (max_y_at_niche - 0.15).abs() < 1e-4);
+
+    // Remaining thickness at the niche is 0.15 - 0.0 = 0.15:
+    let interior_y = poly.iter().map(|p| p.1).fold(f64::NEG_INFINITY, f64::max);
+    assert!((interior_y - 0.15).abs() < 1e-4);
+    let niche_back_y = 0.0;
+    let rest_thickness = interior_y - niche_back_y;
+    assert!((rest_thickness - 0.15).abs() < 1e-4, "Rest wall thickness must be exactly 15cm");
+
+    // Outside the niche span (e.g. x < 4.0 or x > 6.0), the wall thickness remains 0.30 m:
+    let min_y_rest = poly
+        .iter()
+        .filter(|p| p.0 < 4.0)
+        .map(|p| p.1)
+        .fold(f64::INFINITY, f64::min);
+    assert!((min_y_rest - (-0.15)).abs() < 1e-4, "Undisturbed exterior face must be at y = -0.15");
+
+    // Interior niche test:
+    let mut niche_int = niche_ext.clone();
+    niche_int.niche_side = NicheSide::Interior;
+    let pieces_int = subtract_openings_from_band(&[], &axis, total_thickness, &[niche_int]);
+    assert_eq!(pieces_int.len(), 1);
+    let poly_int = &pieces_int[0];
+    let int_y_at_reveal: Vec<f64> = poly_int
+        .iter()
+        .filter(|p| (p.0 - 4.4).abs() < 1e-4 || (p.0 - 5.6).abs() < 1e-4)
+        .map(|p| p.1)
+        .collect();
+    // Interior face indents from 0.15 down to 0.0:
+    assert!(
+        int_y_at_reveal.iter().any(|&y| (y - 0.0).abs() < 1e-4),
+        "Interior niche must indent to y = 0.0"
+    );
+    assert!(
+        int_y_at_reveal.iter().any(|&y| (y - 0.15).abs() < 1e-4),
+        "Interior niche must have corner at original interior face y = 0.15"
+    );
+}
+
+#[test]
+fn test_niche_3d_preserves_solid_back_wall() {
+    use crate::modules::aec::engine::elevation_cut::zone_solid_paths;
+    use crate::modules::aec::engine::opening_display::format_din1356_label;
+    use crate::modules::aec::engine::openings::{NicheSide, Opening};
+    use acadrust::Handle;
+
+    let axis = vec![(0.0, 0.0), (10.0, 0.0)];
+    let layers = vec![(0.30, -0.15)]; // thickness 0.30, axis_offset -0.15
+    let layer_ext = vec![(2.80, 0.0)]; // height 2.80, base 0.0
+
+    let mut niche = Opening::breakthrough(Handle::new(1), Handle::new(2), 5.0);
+    niche.width = 1.20;
+    niche.height = 1.00;
+    niche.sill_height = 0.80;
+    niche.depth = Some(0.12); // 12cm deep niche
+    niche.niche_side = NicheSide::Exterior;
+
+    let z_paths = zone_solid_paths(&axis, &layers, &layer_ext, &[niche.clone()]);
+    // Must contain: sill solid, head solid, AND the back-wall solid!
+    assert!(z_paths.len() >= 3, "Zone solids must include sill, head, and niche back wall");
+
+    // The back-wall solid has thickness 0.30 - 0.12 = 0.18:
+    let back_wall = z_paths
+        .iter()
+        .find(|zp| (zp.direction[1].abs() - 0.18).abs() < 1e-4)
+        .expect("Must have 3D back-wall solid with thickness 18cm");
+
+    let z_min = back_wall.loop_xyz.iter().map(|p| p[2]).fold(f64::INFINITY, f64::min);
+    let z_max = back_wall.loop_xyz.iter().map(|p| p[2]).fold(f64::NEG_INFINITY, f64::max);
+    assert!((z_min - 0.80).abs() < 1e-4, "Back-wall solid z_min must match niche sill 0.80");
+    assert!((z_max - 1.80).abs() < 1e-4, "Back-wall solid z_max must match niche head 1.80");
+
+    // Test label formatting with 3 dimensions:
+    let label = format_din1356_label(&niche);
+    assert_eq!(label, "1.20 / 1.00 / 0.12\\PUK 0.80", "Niche label must display width / height / depth and UK");
+}
+
+#[test]
+fn test_elevation_generators_contour_muntins_and_triangles() {
+    use crate::modules::aec::engine::display_component::OpeningComponentSlot;
+    use crate::modules::aec::engine::opening_display::{bake_opening_generators, OpeningBakeParams};
+    use crate::modules::aec::engine::opening_shape::OpeningShape;
+    use crate::modules::aec::engine::opening_style::{
+        HingeSide, OpeningGenerator, SlotGeometry, DEFAULT_FRAME_THICKNESS,
+    };
+    use crate::modules::aec::engine::openings::OpeningKind;
+    use std::collections::HashMap;
+
+    let mut slots = HashMap::new();
+    slots.insert(
+        OpeningComponentSlot::ElevationContour2D,
+        SlotGeometry::Generator(OpeningGenerator::ElevationFrameRect),
+    );
+    slots.insert(
+        OpeningComponentSlot::ElevationMuntins2D,
+        SlotGeometry::Generator(OpeningGenerator::ElevationMuntinsDouble),
+    );
+    slots.insert(
+        OpeningComponentSlot::ElevationSwing2D,
+        SlotGeometry::Generator(OpeningGenerator::ElevationSwingTriangle),
+    );
+    slots.insert(
+        OpeningComponentSlot::ElevationSill2D,
+        SlotGeometry::Generator(OpeningGenerator::ElevationSillLine),
+    );
+
+    let p_left = OpeningBakeParams {
+        width: 1.20,
+        height: 1.40,
+        sill_height: 0.90,
+        thickness: 0.30,
+        frame_thickness: DEFAULT_FRAME_THICKNESS,
+        cross_axis_offset: 0.0,
+        hinge: HingeSide::Left,
+        shape: OpeningShape::Rectangle,
+        spring_height: 0.0,
+        opening_angle_deg: 90.0,
+        kind: OpeningKind::Window,
+    };
+
+    let baked_left = bake_opening_generators(&slots, p_left, None);
+
+    // 1. ElevationContour2D: outer frame + inner frame
+    let contours: Vec<_> = baked_left
+        .iter()
+        .filter(|p| p.slot == OpeningComponentSlot::ElevationContour2D)
+        .collect();
+    assert_eq!(contours.len(), 2, "ElevationFrameRect must emit outer and inner frame loops");
+
+    // 2. ElevationMuntins2D: mullion + left leaf + right leaf
+    let muntins: Vec<_> = baked_left
+        .iter()
+        .filter(|p| p.slot == OpeningComponentSlot::ElevationMuntins2D)
+        .collect();
+    assert_eq!(muntins.len(), 3, "ElevationMuntinsDouble must emit central mullion and two leaves");
+
+    // 3. ElevationSwing2D: DIN opening triangle pointing to left hinge
+    let swing_left: Vec<_> = baked_left
+        .iter()
+        .filter(|p| p.slot == OpeningComponentSlot::ElevationSwing2D)
+        .collect();
+    assert_eq!(swing_left.len(), 1);
+    let pts_left = &swing_left[0].points;
+    assert_eq!(pts_left.len(), 3);
+    // Tip of triangle is the middle vertex (index 1) and must be on the left (negative u):
+    assert!(pts_left[1].0 < 0.0, "Left-hinged triangle tip must point to left jamb");
+    assert!(pts_left[0].0 > 0.0, "Left-hinged triangle base start must be on right side");
+    assert!(pts_left[2].0 > 0.0, "Left-hinged triangle base end must be on right side");
+
+    // Right-hinged test:
+    let mut p_right = p_left;
+    p_right.hinge = HingeSide::Right;
+    let baked_right = bake_opening_generators(&slots, p_right, None);
+    let swing_right: Vec<_> = baked_right
+        .iter()
+        .filter(|p| p.slot == OpeningComponentSlot::ElevationSwing2D)
+        .collect();
+    let pts_right = &swing_right[0].points;
+    // Tip of triangle is the middle vertex (index 1) and must be on the right (positive u):
+    assert!(pts_right[1].0 > 0.0, "Right-hinged triangle tip must point to right jamb");
+    assert!(pts_right[0].0 < 0.0, "Right-hinged triangle base start must be on left side");
+    assert!(pts_right[2].0 < 0.0, "Right-hinged triangle base end must be on left side");
+
+    // 4. ElevationSill2D:
+    let sill_elev: Vec<_> = baked_left
+        .iter()
+        .filter(|p| p.slot == OpeningComponentSlot::ElevationSill2D)
+        .collect();
+    assert_eq!(sill_elev.len(), 2, "ElevationSillLine must emit top line and drop nose");
+
+    // 5. Arch shape test:
+    let mut slots_arch = HashMap::new();
+    slots_arch.insert(
+        OpeningComponentSlot::ElevationContour2D,
+        SlotGeometry::Generator(OpeningGenerator::ElevationFrameArch),
+    );
+    let mut p_arch = p_left;
+    p_arch.shape = OpeningShape::Arch;
+    p_arch.spring_height = 0.80;
+    let baked_arch = bake_opening_generators(&slots_arch, p_arch, None);
+    let arch_contour = &baked_arch[0];
+    assert!(arch_contour.points.len() > 10, "Arch contour must tessellate circular curved top");
+    let max_z = arch_contour.points.iter().map(|p| p.1).fold(f64::NEG_INFINITY, f64::max);
+    assert!((max_z - 1.40).abs() < 1e-4, "Arch top must reach total height 1.40");
+}
+
+#[test]
+fn test_elevation_components_world_regeneration_creates_3d_polylines() {
+    use crate::modules::aec::engine::display_component::OpeningComponentSlot;
+    use crate::modules::aec::engine::opening_display::collect_opening_display_children;
+    use crate::modules::aec::engine::opening_style::{OpeningGenerator, SlotGeometry};
+    use crate::modules::aec::engine::opening_xdata::{
+        openings_for_host_wall, place_wall_opening, write_opening_instance,
+    };
+    use crate::modules::aec::engine::openings::OpeningKind;
+    use crate::modules::aec::engine::wall::WallJustification;
+    use crate::modules::aec::engine::wall_regen::regenerate_wall_representation;
+    use crate::modules::aec::engine::xdata::{wall_record, AEC_APPID};
+    use crate::scene::Scene;
+    use acadrust::entities::{LwPolyline, LwVertex};
+    use acadrust::types::Vector2;
+    use acadrust::xdata::ExtendedDataRecord;
+    use acadrust::EntityType;
+    use glam::DVec3;
+
+    let mut scene = Scene::new();
+    let layers = vec![wl("Concrete", 0.2, "Structural")];
+    let mut pl = LwPolyline::new();
+    pl.add_vertex(LwVertex::new(Vector2::new(0.0, 0.0)));
+    pl.add_vertex(LwVertex::new(Vector2::new(10.0, 0.0)));
+    let mut ent = EntityType::LwPolyline(pl);
+    let mut rec = ExtendedDataRecord::new(AEC_APPID);
+    rec.values = wall_record("s", 3.0, 0, &layers, &[], WallJustification::Center, crate::modules::aec::engine::plan_view::PlanPhase::New, None);
+    ent.common_mut().extended_data.add_record(rec);
+    let wall_h = scene.add_entity(ent);
+
+    let (win_h, _) = place_wall_opening(
+        &mut scene,
+        wall_h,
+        DVec3::new(5.0, 0.0, 0.0),
+        OpeningKind::Window,
+        None,
+        None,
+        None,
+    ).expect("place window");
+
+    // Configure elevation slots on the opening:
+    let mut opening = openings_for_host_wall(&scene, wall_h)
+        .into_iter()
+        .find(|o| o.handle == win_h)
+        .expect("opening found");
+
+    let mut style = crate::modules::aec::engine::opening_style::OpeningStyle::standard_window();
+    style.slots.insert(
+        OpeningComponentSlot::ElevationContour2D,
+        SlotGeometry::Generator(OpeningGenerator::ElevationFrameRect),
+    );
+    style.slots.insert(
+        OpeningComponentSlot::ElevationSwing2D,
+        SlotGeometry::Generator(OpeningGenerator::ElevationSwingTriangle),
+    );
+    style.slots.insert(
+        OpeningComponentSlot::ElevationSill2D,
+        SlotGeometry::Generator(OpeningGenerator::ElevationSillLine),
+    );
+
+    let mut lib = crate::modules::aec::engine::library::StyleLibrary::default();
+    lib.opening_styles.push(style.clone());
+    opening.style_id = Some(style.style.id.clone());
+    write_opening_instance(&mut scene, &opening);
+
+    regenerate_wall_representation(&mut scene, wall_h, Some(&lib)).expect("regen wall");
+
+    let children = collect_opening_display_children(&scene, win_h);
+    assert!(!children.is_empty());
+
+    // Verify that Polyline3D entities are created in the façade plane for elevation components:
+    let polylines3d: Vec<_> = children
+        .iter()
+        .filter_map(|h| match scene.document.get_entity(*h) {
+            Some(EntityType::Polyline3D(p3d)) => Some(p3d.clone()),
+            _ => None,
+        })
+        .collect();
+
+    assert!(!polylines3d.is_empty(), "Façade elevation slots must generate Polyline3D entities");
+
+    // Verify Z-coordinates match sill (0.90) and height (1.20 -> head at 2.10):
+    let all_z: Vec<f64> = polylines3d
+        .iter()
+        .flat_map(|p| p.vertices.iter().map(|v| v.position.z))
+        .collect();
+
+    let min_z = all_z.iter().fold(f64::INFINITY, |a, &b| a.min(b));
+    let max_z = all_z.iter().fold(f64::NEG_INFINITY, |a, &b| a.max(b));
+
+    // Elevation sill drop goes to sill - 0.05 = 0.85:
+    assert!((min_z - 0.85).abs() < 1e-4, "Min Z must match elevation sill drop (0.85)");
+    assert!((max_z - (0.90 + 1.20)).abs() < 1e-4, "Max Z must match window head (2.10)");
+}
+
+#[test]
+fn test_parametric_3d_solids_for_openings() {
+    use crate::modules::aec::engine::opening_display::{
+        build_opening_frame_3d, build_opening_glazing_3d, build_opening_leaf_3d,
+    };
+    use crate::modules::aec::engine::opening_style::HingeSide;
+
+    let width = 1.20;
+    let height = 1.40;
+    let ft = 0.07;
+    let depth = 0.08;
+
+    // 1. Frame3D
+    let frame_body = build_opening_frame_3d(width, height, ft, depth).expect("build frame 3d");
+    assert!(frame_body.validate().is_empty(), "Frame B-Rep body must be topologically valid");
+    let (min_f, max_f) = crate::scene::model::solid_model::extent(&frame_body).expect("frame extent");
+    assert!((max_f[0] - min_f[0] - width).abs() < 1e-3, "Frame width must match 1.20");
+    assert!((max_f[2] - min_f[2] - height).abs() < 1e-3, "Frame height must match 1.40");
+    assert!((max_f[1] - min_f[1] - depth).abs() < 1e-3, "Frame depth must match 0.08");
+
+    // 2. Leaf3D
+    let leaf_body = build_opening_leaf_3d(width, height, ft, 45.0, HingeSide::Left, false)
+        .expect("build leaf 3d");
+    assert!(leaf_body.validate().is_empty(), "Leaf B-Rep body must be topologically valid");
+
+    // 3. Glazing3D
+    let glass_body = build_opening_glazing_3d(width, height, ft).expect("build glass 3d");
+    assert!(glass_body.validate().is_empty(), "Glass B-Rep body must be topologically valid");
+    let (min_g, max_g) = crate::scene::model::solid_model::extent(&glass_body).expect("glass extent");
+    assert!((max_g[1] - min_g[1] - 0.02).abs() < 1e-3, "Glass pane thickness must be 0.02m (2cm)");
+}
+
+#[test]
+fn test_2d_3d_representation_filtering() {
+    use crate::modules::aec::engine::display_component::{OpeningComponentSlot, RepresentationMode};
+    use crate::modules::aec::engine::library::build_effective_rule_set;
+    use crate::modules::aec::engine::plan_view::DisplayConfig;
+
+    let cfg = DisplayConfig::new(
+        "Standard".to_string(),
+        "Architektur".to_string(),
+        crate::modules::aec::engine::plan_view::PlanningStage::Design,
+        crate::modules::aec::engine::plan_view::ViewType::FloorPlan,
+    );
+
+    // 1. TwoD Mode: all 3D slots must be false
+    let rules_2d = build_effective_rule_set(&cfg, None, Some(RepresentationMode::TwoD));
+    assert!(rules_2d.is_opening_visible(OpeningComponentSlot::Frame2D));
+    assert!(rules_2d.is_opening_visible(OpeningComponentSlot::Glazing2D));
+    assert!(!rules_2d.is_opening_visible(OpeningComponentSlot::Frame3D), "Frame3D must be hidden in 2D mode");
+    assert!(!rules_2d.is_opening_visible(OpeningComponentSlot::Leaf3D), "Leaf3D must be hidden in 2D mode");
+    assert!(!rules_2d.is_opening_visible(OpeningComponentSlot::Glazing3D), "Glazing3D must be hidden in 2D mode");
+
+    // 2. ThreeD Mode: all 2D plan and elevation slots must be false
+    let rules_3d = build_effective_rule_set(&cfg, None, Some(RepresentationMode::ThreeD));
+    assert!(!rules_3d.is_opening_visible(OpeningComponentSlot::Frame2D), "Frame2D must be hidden in 3D mode");
+    assert!(!rules_3d.is_opening_visible(OpeningComponentSlot::Swing2D), "Swing2D must be hidden in 3D mode");
+    assert!(!rules_3d.is_opening_visible(OpeningComponentSlot::Sill2D), "Sill2D must be hidden in 3D mode");
+    assert!(!rules_3d.is_opening_visible(OpeningComponentSlot::ElevationContour2D), "ElevationContour must be hidden in 3D mode");
+    assert!(rules_3d.is_opening_visible(OpeningComponentSlot::Frame3D), "Frame3D must be visible in 3D mode");
+    assert!(rules_3d.is_opening_visible(OpeningComponentSlot::Leaf3D), "Leaf3D must be visible in 3D mode");
+    assert!(rules_3d.is_opening_visible(OpeningComponentSlot::Glazing3D), "Glazing3D must be visible in 3D mode");
+}
+
+#[test]
+fn test_discipline_templates_slot_visibilities() {
+    use crate::modules::aec::engine::display_component::OpeningComponentSlot;
+    use crate::modules::aec::engine::library::{build_effective_rule_set, DisplayConfigLibrary};
+
+    let seed_lib = DisplayConfigLibrary::seed_default_configs();
+
+    // 1. Architektur 1:50
+    let arch_50 = seed_lib.find("Architektur 1:50").expect("find Architektur 1:50");
+    let rules_arch = build_effective_rule_set(arch_50, None, None);
+    assert!(rules_arch.is_opening_visible(OpeningComponentSlot::HostCut2D));
+    assert!(rules_arch.is_opening_visible(OpeningComponentSlot::Frame2D));
+    assert!(rules_arch.is_opening_visible(OpeningComponentSlot::Leaf2D));
+    assert!(rules_arch.is_opening_visible(OpeningComponentSlot::Swing2D));
+    assert!(rules_arch.is_opening_visible(OpeningComponentSlot::Glazing2D));
+    assert!(rules_arch.is_opening_visible(OpeningComponentSlot::Sill2D));
+    assert!(rules_arch.is_opening_visible(OpeningComponentSlot::Threshold2D));
+    assert!(rules_arch.is_opening_visible(OpeningComponentSlot::OpeningLabel2D));
+
+    // 2. Statik 1:50: only HostCut2D and OpeningLabel2D are visible, all architectural symbols hidden!
+    let stat_50 = seed_lib.find("Statik 1:50").expect("find Statik 1:50");
+    let rules_stat = build_effective_rule_set(stat_50, None, None);
+    assert!(rules_stat.is_opening_visible(OpeningComponentSlot::HostCut2D));
+    assert!(rules_stat.is_opening_visible(OpeningComponentSlot::OpeningLabel2D));
+    assert!(!rules_stat.is_opening_visible(OpeningComponentSlot::Frame2D), "Statik must hide Frame2D");
+    assert!(!rules_stat.is_opening_visible(OpeningComponentSlot::Leaf2D), "Statik must hide Leaf2D");
+    assert!(!rules_stat.is_opening_visible(OpeningComponentSlot::Swing2D), "Statik must hide Swing2D");
+    assert!(!rules_stat.is_opening_visible(OpeningComponentSlot::Glazing2D), "Statik must hide Glazing2D");
+    assert!(!rules_stat.is_opening_visible(OpeningComponentSlot::Sill2D), "Statik must hide Sill2D");
+    assert!(!rules_stat.is_opening_visible(OpeningComponentSlot::Threshold2D), "Statik must hide Threshold2D");
+
+    // 3. Entwurf 1:100: Glazing2D and Threshold2D inactive
+    let entw_100 = seed_lib.find("Entwurf 1:100").expect("find Entwurf 1:100");
+    let rules_entw = build_effective_rule_set(entw_100, None, None);
+    assert!(rules_entw.is_opening_visible(OpeningComponentSlot::Frame2D));
+    assert!(rules_entw.is_opening_visible(OpeningComponentSlot::Leaf2D));
+    assert!(rules_entw.is_opening_visible(OpeningComponentSlot::Swing2D));
+    assert!(!rules_entw.is_opening_visible(OpeningComponentSlot::Glazing2D), "Entwurf 1:100 hides Glazing2D");
+    assert!(!rules_entw.is_opening_visible(OpeningComponentSlot::Threshold2D), "Entwurf 1:100 hides Threshold2D");
+
+    // 4. Ansicht Fassade: all elevation slots active, floor plan slots inactive
+    let elev = seed_lib.find("Ansicht Fassade").expect("find Ansicht Fassade");
+    let rules_elev = build_effective_rule_set(elev, None, None);
+    assert!(rules_elev.is_opening_visible(OpeningComponentSlot::ElevationContour2D));
+    assert!(rules_elev.is_opening_visible(OpeningComponentSlot::ElevationMuntins2D));
+    assert!(rules_elev.is_opening_visible(OpeningComponentSlot::ElevationSwing2D));
+    assert!(rules_elev.is_opening_visible(OpeningComponentSlot::ElevationSill2D));
+    assert!(!rules_elev.is_opening_visible(OpeningComponentSlot::Frame2D));
+    assert!(!rules_elev.is_opening_visible(OpeningComponentSlot::Leaf2D));
+    assert!(!rules_elev.is_opening_visible(OpeningComponentSlot::Swing2D));
+}

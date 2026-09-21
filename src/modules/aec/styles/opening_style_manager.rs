@@ -15,8 +15,9 @@ use crate::modules::aec::engine::opening_sketch::{
     commit_draft, draft_append, draft_set_last_arc, snap_ref_point, TwoRectBake,
 };
 use crate::modules::aec::engine::opening_style::{
-    default_slots_for_kind, OpeningDisplayProfile, OpeningGenerator, OpeningSketch, OpeningStyle,
-    SlotGeometry, HingeSide, DEFAULT_FRAME_THICKNESS, DEFAULT_OPENING_ANGLE_DEG,
+    default_slots_for_kind, BlockPlacementMode, OpeningDisplayProfile, OpeningGenerator,
+    OpeningSketch, OpeningStyle, SlotGeometry, HingeSide, DEFAULT_FRAME_THICKNESS,
+    DEFAULT_OPENING_ANGLE_DEG,
 };
 use crate::modules::aec::engine::openings::OpeningKind;
 use crate::modules::aec::engine::style::Style;
@@ -31,7 +32,18 @@ pub const EDITABLE_SLOTS: &[OpeningComponentSlot] = &[
     OpeningComponentSlot::Frame2D,
     OpeningComponentSlot::Leaf2D,
     OpeningComponentSlot::Swing2D,
+    OpeningComponentSlot::Glazing2D,
     OpeningComponentSlot::Sill2D,
+    OpeningComponentSlot::Threshold2D,
+    OpeningComponentSlot::BreakthroughSymbol2D,
+    OpeningComponentSlot::OpeningLabel2D,
+    OpeningComponentSlot::ElevationContour2D,
+    OpeningComponentSlot::ElevationMuntins2D,
+    OpeningComponentSlot::ElevationSwing2D,
+    OpeningComponentSlot::ElevationSill2D,
+    OpeningComponentSlot::Frame3D,
+    OpeningComponentSlot::Leaf3D,
+    OpeningComponentSlot::Glazing3D,
     OpeningComponentSlot::Mark2D,
     OpeningComponentSlot::Solid3D,
 ];
@@ -75,6 +87,20 @@ pub fn slot_buffers_from_map(
                 slot: *slot,
                 source: AecOpeningSlotSource::Generator,
                 generator: *gen,
+                block_name: String::new(),
+                block_placement: BlockPlacementMode::default(),
+                sketch: OpeningSketch::default(),
+                visible: true,
+            },
+            Some(SlotGeometry::Block {
+                block_name,
+                placement,
+            }) => AecOpeningSlotBuffer {
+                slot: *slot,
+                source: AecOpeningSlotSource::Block,
+                generator: OpeningGenerator::None,
+                block_name: block_name.clone(),
+                block_placement: *placement,
                 sketch: OpeningSketch::default(),
                 visible: true,
             },
@@ -82,6 +108,8 @@ pub fn slot_buffers_from_map(
                 slot: *slot,
                 source: AecOpeningSlotSource::Sketch,
                 generator: OpeningGenerator::None,
+                block_name: String::new(),
+                block_placement: BlockPlacementMode::default(),
                 sketch: sketch.clone(),
                 visible: true,
             },
@@ -89,6 +117,8 @@ pub fn slot_buffers_from_map(
                 slot: *slot,
                 source: AecOpeningSlotSource::Generator,
                 generator: OpeningGenerator::None,
+                block_name: String::new(),
+                block_placement: BlockPlacementMode::default(),
                 sketch: OpeningSketch::default(),
                 visible: true,
             },
@@ -107,6 +137,10 @@ pub fn slots_from_buffers(
     for buf in buffers {
         let geom = match buf.source {
             AecOpeningSlotSource::Generator => SlotGeometry::Generator(buf.generator),
+            AecOpeningSlotSource::Block => SlotGeometry::Block {
+                block_name: buf.block_name.clone(),
+                placement: buf.block_placement,
+            },
             AecOpeningSlotSource::Sketch => SlotGeometry::Sketch(buf.sketch.clone()),
         };
         slots.insert(buf.slot, geom);
@@ -119,6 +153,10 @@ fn profile_from_buffers(buffers: &[AecOpeningSlotBuffer]) -> OpeningDisplayProfi
     for buf in buffers {
         let geom = match buf.source {
             AecOpeningSlotSource::Generator => SlotGeometry::Generator(buf.generator),
+            AecOpeningSlotSource::Block => SlotGeometry::Block {
+                block_name: buf.block_name.clone(),
+                placement: buf.block_placement,
+            },
             AecOpeningSlotSource::Sketch => SlotGeometry::Sketch(buf.sketch.clone()),
         };
         profile.slots.insert(buf.slot, geom);
@@ -234,9 +272,14 @@ pub fn preview_baked_paths(style: &OpeningStyle, preview_width: f64) -> Vec<Bake
     let (width, _) = style.shape.lock_size(width, style.default_height, true);
     let params = OpeningBakeParams {
         width,
+        height: style.default_height,
+        sill_height: style.default_sill,
         thickness: PREVIEW_WALL_THICKNESS,
         frame_thickness: style.frame_thickness,
+        cross_axis_offset: 0.0,
         hinge: style.hinge,
+        shape: style.shape,
+        spring_height: style.spring_height,
         opening_angle_deg: style.opening_angle_deg,
         kind: style.kind,
     };

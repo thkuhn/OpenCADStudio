@@ -14,10 +14,12 @@ use acadrust::{EntityType, Handle};
 use glam::DVec3;
 
 use crate::modules::aec::engine::display_component::{ComponentRuleSet, OpeningComponentSlot};
+use crate::modules::aec::engine::opening_shape::OpeningShape;
 use crate::modules::aec::engine::opening_sketch::bake_sketch;
 use crate::modules::aec::engine::opening_style::{
-    apply_plan_visibility, default_slots_for_kind, effective_slots_for_plan, OpeningGenerator,
-    OpeningStyle, SlotGeometry, HingeSide, DEFAULT_FRAME_THICKNESS, DEFAULT_OPENING_ANGLE_DEG,
+    apply_plan_visibility, default_slots_for_kind, effective_slots_for_plan, BlockPlacementMode,
+    OpeningGenerator, OpeningStyle, SlotGeometry, HingeSide, DEFAULT_FRAME_THICKNESS,
+    DEFAULT_OPENING_ANGLE_DEG,
 };
 use crate::modules::aec::engine::opening_xdata::{
     opening_from_entity, openings_for_host_wall, write_opening_instance,
@@ -54,9 +56,14 @@ pub struct BakedPath {
 #[derive(Debug, Clone, Copy)]
 pub struct OpeningBakeParams {
     pub width: f64,
+    pub height: f64,
+    pub sill_height: f64,
     pub thickness: f64,
     pub frame_thickness: f64,
+    pub cross_axis_offset: f64,
     pub hinge: HingeSide,
+    pub shape: OpeningShape,
+    pub spring_height: f64,
     pub opening_angle_deg: f64,
     pub kind: OpeningKind,
 }
@@ -72,9 +79,14 @@ impl OpeningBakeParams {
         };
         Self {
             width: opening.width,
+            height: opening.height,
+            sill_height: opening.sill_height,
             thickness,
             frame_thickness,
+            cross_axis_offset: opening.cross_axis_offset,
             hinge: opening.hinge,
+            shape: opening.shape,
+            spring_height: opening.spring_height,
             opening_angle_deg: angle,
             kind: opening.kind,
         }
@@ -144,6 +156,15 @@ pub fn bake_opening_generators(
     params: OpeningBakeParams,
     rules: Option<&ComponentRuleSet>,
 ) -> Vec<BakedPath> {
+    bake_opening_generators_with_doc(slots, params, rules, None)
+}
+
+pub fn bake_opening_generators_with_doc(
+    slots: &HashMap<OpeningComponentSlot, SlotGeometry>,
+    params: OpeningBakeParams,
+    rules: Option<&ComponentRuleSet>,
+    doc: Option<&acadrust::CadDocument>,
+) -> Vec<BakedPath> {
     let mut out = Vec::new();
     let mut keys: Vec<_> = slots.keys().copied().collect();
     keys.sort_by_key(|s| s.key());
@@ -155,10 +176,153 @@ pub fn bake_opening_generators(
             Some(SlotGeometry::Generator(gen)) => {
                 out.extend(bake_generator(slot, *gen, params));
             }
+            Some(SlotGeometry::Block {
+                block_name,
+                placement,
+            }) => {
+                out.extend(bake_block_slot(slot, block_name, *placement, params, doc));
+            }
             Some(SlotGeometry::Sketch(sketch)) => {
                 out.extend(bake_sketch_slot(slot, sketch, params));
             }
             None => {}
+        }
+    }
+    out
+}
+
+pub fn extract_block_paths(
+    doc: &acadrust::CadDocument,
+    block_name: &str,
+) -> Vec<(Vec<(f64, f64)>, bool)> {
+    let Some(rec) = doc.block_records.get(block_name) else {
+        return Vec::new();
+    };
+    let mut paths = Vec::new();
+    for entity in doc.entities() {
+        if entity.common().owner_handle != rec.handle {
+            continue;
+        }
+        match entity {
+            EntityType::Line(line) => {
+                paths.push((
+                    vec![(line.start.x, line.start.y), (line.end.x, line.end.y)],
+                    false,
+                ));
+            }
+            EntityType::LwPolyline(pl) => {
+                if pl.vertices.len() >= 2 {
+                    let pts: Vec<(f64, f64)> = pl
+                        .vertices
+                        .iter()
+                        .map(|v| (v.location.x, v.location.y))
+                        .collect();
+                    paths.push((pts, pl.is_closed));
+                }
+            }
+            EntityType::Arc(arc) => {
+                let n = 16;
+                let start_a = arc.start_angle.to_radians();
+                let end_a = arc.end_angle.to_radians();
+                let sweep = if end_a >= start_a {
+                    end_a - start_a
+                } else {
+                    end_a + 2.0 * std::f64::consts::PI - start_a
+                };
+                let pts: Vec<(f64, f64)> = (0..=n)
+                    .map(|i| {
+                        let a = start_a + sweep * (i as f64) / (n as f64);
+                        (
+                            arc.center.x + arc.radius * a.cos(),
+                            arc.center.y + arc.radius * a.sin(),
+                        )
+                    })
+                    .collect();
+                paths.push((pts, false));
+            }
+            EntityType::Circle(circ) => {
+                let n = 32;
+                let pts: Vec<(f64, f64)> = (0..=n)
+                    .map(|i| {
+                        let a = 2.0 * std::f64::consts::PI * (i as f64) / (n as f64);
+                        (
+                            circ.center.x + circ.radius * a.cos(),
+                            circ.center.y + circ.radius * a.sin(),
+                        )
+                    })
+                    .collect();
+                paths.push((pts, true));
+            }
+            _ => {}
+        }
+    }
+    paths
+}
+
+fn bake_block_slot(
+    slot: OpeningComponentSlot,
+    block_name: &str,
+    placement: BlockPlacementMode,
+    p: OpeningBakeParams,
+    doc: Option<&acadrust::CadDocument>,
+) -> Vec<BakedPath> {
+    let Some(doc) = doc else {
+        return Vec::new();
+    };
+    let raw_paths = extract_block_paths(doc, block_name);
+    if raw_paths.is_empty() {
+        return Vec::new();
+    }
+    let mut min_u = f64::INFINITY;
+    let mut max_u = f64::NEG_INFINITY;
+    for (pts, _) in &raw_paths {
+        for &(u, _) in pts {
+            min_u = min_u.min(u);
+            max_u = max_u.max(u);
+        }
+    }
+    if !min_u.is_finite() || !max_u.is_finite() {
+        return Vec::new();
+    }
+    let u_span = (max_u - min_u).max(1e-9);
+    let hw = p.width * 0.5;
+
+    let mut out = Vec::new();
+    match placement {
+        BlockPlacementMode::JambPair => {
+            for (pts, closed) in &raw_paths {
+                let left_pts: Vec<(f64, f64)> = pts
+                    .iter()
+                    .map(|&(u, v)| (-hw + (u - min_u), v))
+                    .collect();
+                out.push(path(slot, left_pts, *closed, false));
+            }
+            for (pts, closed) in &raw_paths {
+                let right_pts: Vec<(f64, f64)> = pts
+                    .iter()
+                    .map(|&(u, v)| (hw - (u - min_u), v))
+                    .collect();
+                out.push(path(slot, right_pts, *closed, false));
+            }
+        }
+        BlockPlacementMode::StretchToFit => {
+            for (pts, closed) in &raw_paths {
+                let stretched: Vec<(f64, f64)> = pts
+                    .iter()
+                    .map(|&(u, v)| (-hw + ((u - min_u) / u_span) * (2.0 * hw), v))
+                    .collect();
+                out.push(path(slot, stretched, *closed, false));
+            }
+        }
+        BlockPlacementMode::CenterAnchor => {
+            let u_mid = (min_u + max_u) * 0.5;
+            for (pts, closed) in &raw_paths {
+                let centered: Vec<(f64, f64)> = pts
+                    .iter()
+                    .map(|&(u, v)| (u - u_mid, v))
+                    .collect();
+                out.push(path(slot, centered, *closed, false));
+            }
         }
     }
     out
@@ -188,10 +352,11 @@ fn bake_generator(
     let ft = p.frame_thickness.max(0.0);
     match gen {
         OpeningGenerator::None => Vec::new(),
-        OpeningGenerator::FrameRect => bake_frame_rect(slot, hw, ht, ft),
+        OpeningGenerator::FrameRect => bake_frame_rect(slot, p, hw, ht, ft),
+        OpeningGenerator::DoorFrame => bake_door_frame(slot, hw, ht, ft),
         OpeningGenerator::LeafLine => bake_leaf_line(slot, p, hw, ht, ft),
         OpeningGenerator::SwingArc => bake_swing_arc(slot, p, hw),
-        OpeningGenerator::SillLines => bake_sill_lines(slot, hw, ht),
+        OpeningGenerator::SillLines => bake_sill_lines(slot, hw, ht, ft, p.cross_axis_offset),
         OpeningGenerator::Cross => vec![
             path(slot, vec![(-hw, -ht), (hw, ht)], false, false),
             path(slot, vec![(-hw, ht), (hw, -ht)], false, false),
@@ -205,6 +370,28 @@ fn bake_generator(
                 true,
             ),
         ],
+        OpeningGenerator::GlazingLine => bake_glazing_line(slot, hw, ft),
+        OpeningGenerator::ThresholdLine => bake_threshold_line(slot, hw, ht),
+        OpeningGenerator::OpeningLabel => bake_opening_label_preview(slot, hw),
+        OpeningGenerator::ElevationFrameRect => {
+            bake_elevation_contour(slot, p, hw, p.height, ft)
+        }
+        OpeningGenerator::ElevationFrameArch => {
+            bake_elevation_contour(slot, p, hw, p.height, ft)
+        }
+        OpeningGenerator::ElevationMuntinsSingle => {
+            bake_elevation_muntins_single(slot, hw, p.height, ft)
+        }
+        OpeningGenerator::ElevationMuntinsDouble => {
+            bake_elevation_muntins_double(slot, hw, p.height, ft)
+        }
+        OpeningGenerator::ElevationSwingTriangle => {
+            bake_elevation_swing_triangle(slot, p, hw, p.height, ft)
+        }
+        OpeningGenerator::ElevationSillLine => {
+            bake_elevation_sill_line(slot, hw, p.height)
+        }
+        _ => Vec::new(),
     }
 }
 
@@ -224,32 +411,75 @@ fn path(
 
 fn bake_frame_rect(
     slot: OpeningComponentSlot,
+    p: OpeningBakeParams,
     hw: f64,
     ht: f64,
     ft: f64,
 ) -> Vec<BakedPath> {
-    let mut out = vec![path(
-        slot,
-        vec![(-hw, -ht), (hw, -ht), (hw, ht), (-hw, ht)],
-        true,
-        false,
-    )];
-    let inner_w = hw - ft;
-    let inner_t = ht - ft;
-    if inner_w > 1e-9 && inner_t > 1e-9 {
-        out.push(path(
-            slot,
-            vec![
-                (-inner_w, -inner_t),
-                (inner_w, -inner_t),
-                (inner_w, inner_t),
-                (-inner_w, inner_t),
-            ],
-            true,
-            false,
-        ));
+    if p.kind == OpeningKind::Door {
+        bake_door_frame(slot, hw, ht, ft)
+    } else {
+        bake_window_posts(slot, hw, ht, ft)
     }
-    out
+}
+
+fn bake_window_posts(
+    slot: OpeningComponentSlot,
+    hw: f64,
+    ht: f64,
+    ft: f64,
+) -> Vec<BakedPath> {
+    let frame_depth = (ft.max(0.07)).min(ht * 2.0);
+    let half_depth = frame_depth * 0.5;
+    let post_w = ft.min(hw * 0.45).max(1e-4);
+
+    let left_post = vec![
+        (-hw, -half_depth),
+        (-hw + post_w, -half_depth),
+        (-hw + post_w, half_depth),
+        (-hw, half_depth),
+    ];
+    let right_post = vec![
+        (hw - post_w, -half_depth),
+        (hw, -half_depth),
+        (hw, half_depth),
+        (hw - post_w, half_depth),
+    ];
+
+    vec![
+        path(slot, left_post, true, false),
+        path(slot, right_post, true, false),
+    ]
+}
+
+fn bake_door_frame(
+    slot: OpeningComponentSlot,
+    hw: f64,
+    ht: f64,
+    ft: f64,
+) -> Vec<BakedPath> {
+    let post_w = ft.min(hw * 0.45).max(1e-4);
+    let rebate_w = post_w * 0.5;
+    let left_jamb = vec![
+        (-hw, -ht),
+        (-hw + post_w, -ht),
+        (-hw + post_w, 0.0),
+        (-hw + rebate_w, 0.0),
+        (-hw + rebate_w, ht),
+        (-hw, ht),
+    ];
+    let right_jamb = vec![
+        (hw, -ht),
+        (hw - post_w, -ht),
+        (hw - post_w, 0.0),
+        (hw - rebate_w, 0.0),
+        (hw - rebate_w, ht),
+        (hw, ht),
+    ];
+    vec![
+        path(slot, left_jamb, true, false),
+        path(slot, right_jamb, true, false),
+    ]
 }
 
 fn bake_leaf_line(
@@ -323,17 +553,414 @@ fn bake_swing_arc(slot: OpeningComponentSlot, p: OpeningBakeParams, hw: f64) -> 
     vec![path(slot, pts, false, false)]
 }
 
-fn bake_sill_lines(slot: OpeningComponentSlot, hw: f64, ht: f64) -> Vec<BakedPath> {
-    let tick = (0.04_f64).min(ht.max(0.02));
+fn bake_sill_lines(
+    slot: OpeningComponentSlot,
+    hw: f64,
+    ht: f64,
+    ft: f64,
+    cross_offset: f64,
+) -> Vec<BakedPath> {
+    let frame_depth = (ft.max(0.07)).min(ht * 2.0);
+    let frame_half_d = frame_depth * 0.5;
+
+    let mut out = Vec::new();
+    let sill_overhang = 0.035;
+    let wall_ext_y = -ht - cross_offset;
+    let wall_int_y = ht - cross_offset;
+    let sill_y_outer = wall_ext_y - sill_overhang;
+    let sill_ear = 0.02;
+
+    // Exterior sill front nose
+    out.push(path(
+        slot,
+        vec![
+            (-hw - sill_ear, sill_y_outer),
+            (hw + sill_ear, sill_y_outer),
+            (hw + sill_ear, wall_ext_y),
+            (-hw - sill_ear, wall_ext_y),
+        ],
+        true,
+        false,
+    ));
+    // Reveal line along exterior wall face
+    out.push(path(
+        slot,
+        vec![(-hw, wall_ext_y), (hw, wall_ext_y)],
+        false,
+        false,
+    ));
+
+    // Exterior reveal side lines (connecting frame to exterior wall)
+    if -frame_half_d > wall_ext_y + 1e-4 {
+        out.push(path(
+            slot,
+            vec![(-hw, -frame_half_d), (-hw, wall_ext_y)],
+            false,
+            false,
+        ));
+        out.push(path(
+            slot,
+            vec![(hw, -frame_half_d), (hw, wall_ext_y)],
+            false,
+            false,
+        ));
+    }
+
+    let board_overhang = 0.025;
+    let board_y_inner = wall_int_y + board_overhang;
+    let board_ear = 0.02;
+
+    // Interior board front nose
+    out.push(path(
+        slot,
+        vec![
+            (-hw - board_ear, board_y_inner),
+            (hw + board_ear, board_y_inner),
+            (hw + board_ear, wall_int_y),
+            (-hw - board_ear, wall_int_y),
+        ],
+        true,
+        false,
+    ));
+    // Reveal line along interior wall face
+    out.push(path(
+        slot,
+        vec![(-hw, wall_int_y), (hw, wall_int_y)],
+        false,
+        false,
+    ));
+
+    // Interior reveal side lines (connecting frame to interior wall)
+    if frame_half_d < wall_int_y - 1e-4 {
+        out.push(path(
+            slot,
+            vec![(-hw, frame_half_d), (-hw, wall_int_y)],
+            false,
+            false,
+        ));
+        out.push(path(
+            slot,
+            vec![(hw, frame_half_d), (hw, wall_int_y)],
+            false,
+            false,
+        ));
+    }
+
+    out
+}
+
+fn bake_glazing_line(slot: OpeningComponentSlot, hw: f64, ft: f64) -> Vec<BakedPath> {
+    let post_w = ft.min(hw * 0.45).max(1e-4);
+    let clear_hw = (hw - post_w).max(0.0);
+    if clear_hw <= 1e-6 {
+        return Vec::new();
+    }
     vec![
-        path(slot, vec![(-hw, -ht), (hw, -ht)], false, false),
+        path(slot, vec![(-clear_hw, -0.012), (clear_hw, -0.012)], false, false),
+        path(slot, vec![(-clear_hw, 0.012), (clear_hw, 0.012)], false, false),
+    ]
+}
+
+fn bake_threshold_line(slot: OpeningComponentSlot, hw: f64, ht: f64) -> Vec<BakedPath> {
+    let t_w = (0.05_f64).min(ht);
+    vec![path(
+        slot,
+        vec![(-hw, -t_w), (hw, -t_w), (hw, t_w), (-hw, t_w)],
+        true,
+        false,
+    )]
+}
+
+fn bake_opening_label_preview(slot: OpeningComponentSlot, hw: f64) -> Vec<BakedPath> {
+    let stroke = hw.min(0.2);
+    vec![path(slot, vec![(-stroke, 0.0), (stroke, 0.0)], false, false)]
+}
+
+fn bake_elevation_contour(
+    slot: OpeningComponentSlot,
+    p: OpeningBakeParams,
+    hw: f64,
+    h: f64,
+    ft: f64,
+) -> Vec<BakedPath> {
+    match p.shape {
+        OpeningShape::Arch => {
+            let spring = p.spring_height.min(h).max(0.0);
+            let mut outer = vec![(-hw, 0.0), (hw, 0.0), (hw, spring)];
+            let n = 16;
+            for i in 0..=n {
+                let angle = (i as f64) / (n as f64) * std::f64::consts::PI;
+                let x = hw * angle.cos();
+                let z = spring + (h - spring) * angle.sin();
+                outer.push((x, z));
+            }
+            outer.push((-hw, spring));
+            let mut res = vec![path(slot, outer, true, false)];
+            if ft > 1e-4 && hw > ft && h > 2.0 * ft {
+                let inner_hw = hw - ft;
+                let inner_h = h - ft;
+                let mut inner = vec![(-inner_hw, ft), (inner_hw, ft), (inner_hw, spring)];
+                for i in 0..=n {
+                    let angle = (i as f64) / (n as f64) * std::f64::consts::PI;
+                    let x = inner_hw * angle.cos();
+                    let z = spring + (inner_h - spring) * angle.sin();
+                    inner.push((x, z));
+                }
+                inner.push((-inner_hw, spring));
+                res.push(path(slot, inner, true, false));
+            }
+            res
+        }
+        _ => {
+            let outer = vec![(-hw, 0.0), (hw, 0.0), (hw, h), (-hw, h)];
+            let mut res = vec![path(slot, outer, true, false)];
+            if ft > 1e-4 && hw > ft && h > 2.0 * ft {
+                let inner = vec![
+                    (-hw + ft, ft),
+                    (hw - ft, ft),
+                    (hw - ft, h - ft),
+                    (-hw + ft, h - ft),
+                ];
+                res.push(path(slot, inner, true, false));
+            }
+            res
+        }
+    }
+}
+
+fn bake_elevation_muntins_single(
+    slot: OpeningComponentSlot,
+    hw: f64,
+    h: f64,
+    ft: f64,
+) -> Vec<BakedPath> {
+    if hw <= ft || h <= 2.0 * ft {
+        return Vec::new();
+    }
+    vec![path(
+        slot,
+        vec![
+            (-hw + ft, ft),
+            (hw - ft, ft),
+            (hw - ft, h - ft),
+            (-hw + ft, h - ft),
+        ],
+        true,
+        false,
+    )]
+}
+
+fn bake_elevation_muntins_double(
+    slot: OpeningComponentSlot,
+    hw: f64,
+    h: f64,
+    ft: f64,
+) -> Vec<BakedPath> {
+    if hw <= ft || h <= 2.0 * ft {
+        return Vec::new();
+    }
+    let mullion_half = ft * 0.5;
+    let left_leaf = vec![
+        (-hw + ft, ft),
+        (-mullion_half, ft),
+        (-mullion_half, h - ft),
+        (-hw + ft, h - ft),
+    ];
+    let right_leaf = vec![
+        (mullion_half, ft),
+        (hw - ft, ft),
+        (hw - ft, h - ft),
+        (mullion_half, h - ft),
+    ];
+    let mullion = vec![
+        (-mullion_half, 0.0),
+        (mullion_half, 0.0),
+        (mullion_half, h),
+        (-mullion_half, h),
+    ];
+    vec![
+        path(slot, mullion, true, false),
+        path(slot, left_leaf, true, false),
+        path(slot, right_leaf, true, false),
+    ]
+}
+
+fn bake_elevation_swing_triangle(
+    slot: OpeningComponentSlot,
+    p: OpeningBakeParams,
+    hw: f64,
+    h: f64,
+    ft: f64,
+) -> Vec<BakedPath> {
+    let inset_w = (hw - ft).max(0.0);
+    let inset_bot = ft;
+    let inset_top = (h - ft).max(ft);
+    let mid_h = (inset_bot + inset_top) * 0.5;
+
+    match p.hinge {
+        HingeSide::Left => {
+            let pts = vec![
+                (inset_w, inset_bot),
+                (-inset_w, mid_h),
+                (inset_w, inset_top),
+            ];
+            vec![path(slot, pts, false, false)]
+        }
+        HingeSide::Right => {
+            let pts = vec![
+                (-inset_w, inset_bot),
+                (inset_w, mid_h),
+                (-inset_w, inset_top),
+            ];
+            vec![path(slot, pts, false, false)]
+        }
+    }
+}
+
+fn bake_elevation_sill_line(slot: OpeningComponentSlot, hw: f64, _h: f64) -> Vec<BakedPath> {
+    let ear = 0.035;
+    let sill_drop = -0.05;
+    vec![
+        path(slot, vec![(-hw - ear, 0.0), (hw + ear, 0.0)], false, false),
         path(
             slot,
-            vec![(-hw, -ht - tick), (hw, -ht - tick)],
-            false,
+            vec![
+                (-hw - ear, 0.0),
+                (-hw - ear, sill_drop),
+                (hw + ear, sill_drop),
+                (hw + ear, 0.0),
+            ],
+            true,
             false,
         ),
     ]
+}
+
+fn format_din1356_num(v: f64) -> String {
+    let s3 = format!("{v:.3}");
+    if s3.ends_with('0') {
+        format!("{v:.2}")
+    } else {
+        s3
+    }
+}
+
+/// Formats the opening annotation according to DIN 1356:
+/// - Doors: `W / H`
+/// - Windows: `W / H` and `BRH ...`
+/// - Breakthroughs: `W / H` and `UK ...`
+pub fn format_din1356_label(opening: &Opening) -> String {
+    let w = format_din1356_num(opening.width);
+    let h = format_din1356_num(opening.height);
+    let sill = format_din1356_num(opening.sill_height);
+    match opening.kind {
+        OpeningKind::Door => {
+            format!("{w} / {h}")
+        }
+        OpeningKind::Window => {
+            format!("{w} / {h}\\PBRH {sill}")
+        }
+        OpeningKind::Breakthrough => {
+            if let Some(d) = opening.depth {
+                let d_str = format_din1356_num(d);
+                format!("{w} / {h} / {d_str}\\PUK {sill}")
+            } else {
+                format!("{w} / {h}\\PUK {sill}")
+            }
+        }
+    }
+}
+
+pub fn build_opening_frame_3d(
+    width: f64,
+    height: f64,
+    frame_thickness: f64,
+    depth: f64,
+) -> Option<cadkernel::brep::Body> {
+    let hw = width * 0.5;
+    let hd = depth * 0.5;
+    let ft = frame_thickness.max(0.02).min(hw * 0.45);
+
+    let left = cadkernel::brep::make::cuboid([-hw, -hd, 0.0], [ft, depth, height])?;
+    let right = cadkernel::brep::make::cuboid([hw - ft, -hd, 0.0], [ft, depth, height])?;
+    let top = cadkernel::brep::make::cuboid([-hw, -hd, height - ft], [width, depth, ft])?;
+    let bot = cadkernel::brep::make::cuboid([-hw, -hd, 0.0], [width, depth, ft])?;
+
+    let u1 = crate::scene::model::solid_model::boolean(
+        crate::scene::model::solid_model::Bool::Union,
+        &top,
+        &left,
+    ).unwrap_or(top);
+    let u2 = crate::scene::model::solid_model::boolean(
+        crate::scene::model::solid_model::Bool::Union,
+        &u1,
+        &right,
+    ).unwrap_or(u1);
+    let u3 = crate::scene::model::solid_model::boolean(
+        crate::scene::model::solid_model::Bool::Union,
+        &u2,
+        &bot,
+    ).unwrap_or(u2);
+    Some(u3)
+}
+
+pub fn build_opening_leaf_3d(
+    width: f64,
+    height: f64,
+    frame_thickness: f64,
+    opening_angle_deg: f64,
+    hinge: HingeSide,
+    is_door: bool,
+) -> Option<cadkernel::brep::Body> {
+    let hw = width * 0.5;
+    let ft = frame_thickness.max(0.02).min(hw * 0.45);
+    let leaf_w = (width - 2.0 * ft).max(0.1);
+    let leaf_h = if is_door { (height - ft).max(0.1) } else { (height - 2.0 * ft).max(0.1) };
+    let leaf_t = 0.04;
+    let leaf_ht = leaf_t * 0.5;
+    let base_z = if is_door { 0.0 } else { ft };
+
+    let body = match hinge {
+        HingeSide::Left => {
+            let cub = cadkernel::brep::make::cuboid([0.0, -leaf_ht, base_z], [leaf_w, leaf_t, leaf_h])?;
+            let ang = opening_angle_deg.to_radians();
+            let rotated = crate::scene::model::solid_model::turned(&cub, 2, ang, [0.0, 0.0, 0.0])?;
+            crate::scene::model::solid_model::placed(
+                &rotated,
+                [1.0, 0.0, 0.0],
+                [0.0, 1.0, 0.0],
+                [0.0, 0.0, 1.0],
+                [-hw + ft, 0.0, 0.0],
+            )
+        }
+        HingeSide::Right => {
+            let cub = cadkernel::brep::make::cuboid([-leaf_w, -leaf_ht, base_z], [leaf_w, leaf_t, leaf_h])?;
+            let ang = -opening_angle_deg.to_radians();
+            let rotated = crate::scene::model::solid_model::turned(&cub, 2, ang, [0.0, 0.0, 0.0])?;
+            crate::scene::model::solid_model::placed(
+                &rotated,
+                [1.0, 0.0, 0.0],
+                [0.0, 1.0, 0.0],
+                [0.0, 0.0, 1.0],
+                [hw - ft, 0.0, 0.0],
+            )
+        }
+    };
+    body
+}
+
+pub fn build_opening_glazing_3d(
+    width: f64,
+    height: f64,
+    frame_thickness: f64,
+) -> Option<cadkernel::brep::Body> {
+    let hw = width * 0.5;
+    let ft = frame_thickness.max(0.02).min(hw * 0.45);
+    let clear_w = (width - 2.0 * ft).max(0.05);
+    let clear_h = (height - 2.0 * ft).max(0.05);
+    let half_w = clear_w * 0.5;
+    let half_t = 0.01;
+    cadkernel::brep::make::cuboid([-half_w, -half_t, ft], [clear_w, 2.0 * half_t, clear_h])
 }
 
 fn local_to_world(
@@ -357,15 +984,30 @@ fn transform_paths(
 ) -> Vec<BakedPath> {
     paths
         .iter()
-        .map(|p| BakedPath {
-            slot: p.slot,
-            closed: p.closed,
-            filled: p.filled,
-            points: p
-                .points
-                .iter()
-                .map(|&(x, y)| local_to_world(x, y, origin, tangent, normal))
-                .collect(),
+        .map(|p| {
+            if p.slot.is_elevation() {
+                BakedPath {
+                    slot: p.slot,
+                    closed: p.closed,
+                    filled: p.filled,
+                    points: p
+                        .points
+                        .iter()
+                        .map(|&(u, v)| (origin.0 + tangent.0 * u, origin.1 + tangent.1 * u + v))
+                        .collect(),
+                }
+            } else {
+                BakedPath {
+                    slot: p.slot,
+                    closed: p.closed,
+                    filled: p.filled,
+                    points: p
+                        .points
+                        .iter()
+                        .map(|&(x, y)| local_to_world(x, y, origin, tangent, normal))
+                        .collect(),
+                }
+            }
         })
         .collect()
 }
@@ -378,17 +1020,33 @@ pub fn bake_opening_world(
     library: Option<&StyleLibrary>,
     rules: Option<&ComponentRuleSet>,
 ) -> Vec<BakedPath> {
-    let Some(((cx, cy), (tx, ty))) = point_and_tangent_at_distance(axis, opening.distance_along_axis)
+    bake_opening_world_with_doc(axis, thickness, opening, library, rules, None)
+}
+
+pub fn bake_opening_world_with_doc(
+    axis: &[(f64, f64)],
+    thickness: f64,
+    opening: &Opening,
+    library: Option<&StyleLibrary>,
+    rules: Option<&ComponentRuleSet>,
+    doc: Option<&acadrust::CadDocument>,
+) -> Vec<BakedPath> {
+    let center_s = opening.center_along_axis();
+    let Some(((cx, cy), (tx, ty))) = point_and_tangent_at_distance(axis, center_s)
     else {
         return Vec::new();
     };
     let normal = (-ty, tx);
+    let origin = (
+        cx + normal.0 * opening.cross_axis_offset,
+        cy + normal.1 * opening.cross_axis_offset,
+    );
     let plan = rules.and_then(|r| r.plan_name.as_deref());
     let (slots, style) = resolved_slots_for_plan(opening, library, plan);
     let params = OpeningBakeParams::from_opening(opening, thickness, style.as_ref());
     let merged = rules_with_plan_visibility(opening, library, rules);
-    let local = bake_opening_generators(&slots, params, merged.as_ref());
-    transform_paths(&local, (cx, cy), (tx, ty), normal)
+    let local = bake_opening_generators_with_doc(&slots, params, merged.as_ref(), doc);
+    transform_paths(&local, origin, (tx, ty), normal)
 }
 
 /// Rubber-band wires for live placement preview.
@@ -606,52 +1264,102 @@ pub fn opening_package_handles(scene: &Scene, opening_handle: Handle) -> Vec<Han
     handles
 }
 
-/// Grips along the host axis: center (0), start jamb (1), end jamb (2).
+/// Grips along the host axis: center (0), start jamb (1), end jamb (2), flip handle (3).
 pub fn opening_axis_grips(
     axis: &[(f64, f64)],
     opening: &Opening,
 ) -> Vec<crate::scene::model::object::GripDef> {
-    let Some(((cx, cy), (tx, ty))) = point_and_tangent_at_distance(axis, opening.distance_along_axis)
+    let center_s = opening.center_along_axis();
+    let Some(((cx, cy), (tx, ty))) = point_and_tangent_at_distance(axis, center_s)
     else {
         return Vec::new();
     };
+    let normal = (-ty, tx);
+    let offset_cx = cx + normal.0 * opening.cross_axis_offset;
+    let offset_cy = cy + normal.1 * opening.cross_axis_offset;
+
     let hw = opening.width * 0.5;
-    let center = DVec3::new(cx, cy, 0.0);
-    let start = DVec3::new(cx - tx * hw, cy - ty * hw, 0.0);
-    let end = DVec3::new(cx + tx * hw, cy + ty * hw, 0.0);
+    let center = DVec3::new(offset_cx, offset_cy, 0.0);
+    let start = DVec3::new(offset_cx - tx * hw, offset_cy - ty * hw, 0.0);
+    let end = DVec3::new(offset_cx + tx * hw, offset_cy + ty * hw, 0.0);
+    let flip_handle = DVec3::new(offset_cx + normal.0 * 0.25, offset_cy + normal.1 * 0.25, 0.0);
     vec![
         crate::entities::common::square_grip(0, center),
         crate::entities::common::rectangle_grip(1, start, [tx as f32, ty as f32]),
         crate::entities::common::rectangle_grip(2, end, [tx as f32, ty as f32]),
+        crate::entities::common::square_grip(3, flip_handle),
     ]
 }
 
-/// Apply a center/width grip. `grip_id` 0 moves the opening along the axis;
-/// 1/2 stretch a jamb (width + recentre).
+/// Apply a center/width/flip grip. `grip_id` 0 moves the opening along the axis;
+/// 1/2 stretch a jamb (width + recentre); 3 flips reference side and swing.
 pub fn apply_opening_axis_grip(
     axis: &[(f64, f64)],
     opening: &mut Opening,
     grip_id: usize,
     world: DVec3,
 ) {
+    if grip_id == 3 {
+        opening.flip();
+        return;
+    }
     let Some(s) = engine::openings::distance_along_axis_from_point(axis, (world.x, world.y)) else {
         return;
     };
     match grip_id {
-        0 => opening.distance_along_axis = s.max(0.0),
-        1 | 2 => {
-            let center = opening.distance_along_axis;
-            let hw = opening.width * 0.5;
-            let (start, end) = if grip_id == 1 {
-                (s, center + hw)
-            } else {
-                (center - hw, s)
-            };
-            let lo = start.min(end);
-            let hi = start.max(end);
-            let width = (hi - lo).max(1e-6);
+        0 => match opening.reference_side {
+            engine::openings::OpeningReferenceSide::Center => {
+                opening.distance_along_axis = s.max(0.0);
+            }
+            engine::openings::OpeningReferenceSide::Start => {
+                opening.distance_along_axis = (s - opening.width * 0.5).max(0.0);
+            }
+            engine::openings::OpeningReferenceSide::End => {
+                opening.distance_along_axis = (s + opening.width * 0.5).max(0.0);
+            }
+        },
+        1 => {
+            let (_start, end) = opening.axis_span();
+            let new_start = s;
+            let lo = new_start.min(end);
+            let hi = new_start.max(end);
+            let width = (hi - lo).max(1e-4);
             opening.width = width;
-            opening.distance_along_axis = (lo + hi) * 0.5;
+            let center = (lo + hi) * 0.5;
+            match opening.reference_side {
+                engine::openings::OpeningReferenceSide::Center => {
+                    opening.distance_along_axis = center;
+                }
+                engine::openings::OpeningReferenceSide::Start => {
+                    opening.distance_along_axis = lo;
+                }
+                engine::openings::OpeningReferenceSide::End => {
+                    opening.distance_along_axis = hi;
+                }
+            }
+            let (w, h) = opening.shape.lock_size(opening.width, opening.height, true);
+            opening.width = w;
+            opening.height = h;
+        }
+        2 => {
+            let (start, _end) = opening.axis_span();
+            let new_end = s;
+            let lo = start.min(new_end);
+            let hi = start.max(new_end);
+            let width = (hi - lo).max(1e-4);
+            opening.width = width;
+            let center = (lo + hi) * 0.5;
+            match opening.reference_side {
+                engine::openings::OpeningReferenceSide::Center => {
+                    opening.distance_along_axis = center;
+                }
+                engine::openings::OpeningReferenceSide::Start => {
+                    opening.distance_along_axis = lo;
+                }
+                engine::openings::OpeningReferenceSide::End => {
+                    opening.distance_along_axis = hi;
+                }
+            }
             let (w, h) = opening.shape.lock_size(opening.width, opening.height, true);
             opening.width = w;
             opening.height = h;
@@ -660,7 +1368,7 @@ pub fn apply_opening_axis_grip(
     }
 }
 
-fn host_thickness(scene: &Scene, wall_handle: Handle) -> f64 {
+pub fn host_thickness(scene: &Scene, wall_handle: Handle) -> f64 {
     scene
         .document
         .get_entity(wall_handle)
@@ -671,12 +1379,15 @@ fn host_thickness(scene: &Scene, wall_handle: Handle) -> f64 {
 
 /// Move the opening POINT onto the current axis location.
 pub fn sync_opening_point_to_axis(scene: &mut Scene, opening: &Opening, axis: &[(f64, f64)]) {
-    let Some(((x, y), _)) = point_and_tangent_at_distance(axis, opening.distance_along_axis) else {
+    let Some(((x, y), (tx, ty))) = point_and_tangent_at_distance(axis, opening.distance_along_axis) else {
         return;
     };
+    let normal = (-ty, tx);
+    let px = x + normal.0 * opening.cross_axis_offset;
+    let py = y + normal.1 * opening.cross_axis_offset;
     if let Some(EntityType::Point(pt)) = scene.document.get_entity_mut(opening.handle) {
-        pt.location.x = x;
-        pt.location.y = y;
+        pt.location.x = px;
+        pt.location.y = py;
     }
     scene.bump_entities(&[(opening.handle, crate::scene::ChangeKind::Modified)]);
 }
@@ -710,13 +1421,59 @@ pub fn regenerate_opening_display(
         }
     }
     let thickness = host_thickness(scene, wall_handle);
-    let paths = bake_opening_world(&axis, thickness, &opening, library, rules);
-    for baked in paths {
+    let plan = rules.and_then(|r| r.plan_name.as_deref());
+    let (slots, style) = resolved_slots_for_plan(&opening, library, plan);
+    let params = OpeningBakeParams::from_opening(&opening, thickness, style.as_ref());
+    let merged_rules = rules_with_plan_visibility(&opening, library, rules);
+    let local = bake_opening_generators_with_doc(
+        &slots,
+        params,
+        merged_rules.as_ref(),
+        Some(&scene.document),
+    );
+
+    let center_s = opening.center_along_axis();
+    let Some(((cx, cy), (tx, ty))) = point_and_tangent_at_distance(&axis, center_s) else {
+        return;
+    };
+    let normal = (-ty, tx);
+    let origin = (
+        cx + normal.0 * opening.cross_axis_offset,
+        cy + normal.1 * opening.cross_axis_offset,
+    );
+
+    for baked in local {
         if baked.points.len() < 2 {
             continue;
         }
+        if baked.slot.is_elevation() {
+            let pts: Vec<acadrust::types::Vector3> = baked
+                .points
+                .iter()
+                .map(|&(u, v)| {
+                    acadrust::types::Vector3::new(
+                        origin.0 + tx * u,
+                        origin.1 + ty * u,
+                        opening.sill_height + v,
+                    )
+                })
+                .collect();
+            let mut pl = acadrust::entities::Polyline3D::from_points(pts);
+            pl.flags.closed = baked.closed;
+            let handle = scene.add_entity(EntityType::Polyline3D(pl));
+            write_opening_display_tag(scene, handle, opening_handle, baked.slot);
+            engine::owner_index::add_child(&mut scene.document, opening_handle, handle);
+            continue;
+        }
+
+        let world_pts: Vec<(f64, f64)> = baked
+            .points
+            .iter()
+            .map(|&(x, y)| local_to_world(x, y, origin, (tx, ty), normal))
+            .collect();
+
         if baked.filled {
-            if let Some(model) = solid_hatch_from_ring(&baked.points) {
+            if let Some(model) = solid_hatch_from_ring(&world_pts) {
                 let hatch = scene.add_hatch(model, None, None);
                 write_opening_display_tag(scene, hatch, opening_handle, baked.slot);
                 engine::owner_index::add_child(&mut scene.document, opening_handle, hatch);
@@ -724,13 +1481,161 @@ pub fn regenerate_opening_display(
             continue;
         }
         let mut pl = LwPolyline::new();
-        for &(x, y) in &baked.points {
+        for &(x, y) in &world_pts {
             pl.add_vertex(LwVertex::new(Vector2::new(x, y)));
         }
         pl.is_closed = baked.closed;
         let handle = scene.add_entity(EntityType::LwPolyline(pl));
         write_opening_display_tag(scene, handle, opening_handle, baked.slot);
         engine::owner_index::add_child(&mut scene.document, opening_handle, handle);
+    }
+
+    let plan = rules.and_then(|r| r.plan_name.as_deref());
+    let (slots, _) = resolved_slots_for_plan(&opening, library, plan);
+    let merged_rules = rules_with_plan_visibility(&opening, library, rules);
+    if merged_rules
+        .as_ref()
+        .map_or(true, |r| r.is_opening_visible(OpeningComponentSlot::OpeningLabel2D))
+        && slots.contains_key(&OpeningComponentSlot::OpeningLabel2D)
+    {
+        if let Some(((cx, cy), (tx, ty))) =
+            point_and_tangent_at_distance(&axis, opening.center_along_axis())
+        {
+            let normal = (-ty, tx);
+            let lx = cx + normal.0 * opening.cross_axis_offset;
+            let ly = cy + normal.1 * opening.cross_axis_offset;
+            let label_text = format_din1356_label(&opening);
+            let mut mtext = acadrust::entities::MText::new();
+            mtext.value = label_text;
+            mtext.insertion_point = acadrust::types::Vector3::new(lx, ly, 0.0);
+            mtext.height = 0.15;
+            let mut rot = ty.atan2(tx);
+            if rot > std::f64::consts::FRAC_PI_2 {
+                rot -= std::f64::consts::PI;
+            } else if rot < -std::f64::consts::FRAC_PI_2 {
+                rot += std::f64::consts::PI;
+            }
+            mtext.rotation = rot;
+            mtext.attachment_point = acadrust::entities::mtext::AttachmentPoint::MiddleCenter;
+            let handle = scene.add_entity(EntityType::MText(mtext));
+            write_opening_display_tag(
+                scene,
+                handle,
+                opening_handle,
+                OpeningComponentSlot::OpeningLabel2D,
+            );
+            engine::owner_index::add_child(&mut scene.document, opening_handle, handle);
+        }
+    }
+
+    let frame_depth = 0.08_f64.min(thickness * 0.8);
+    let frame_3d_vis = merged_rules
+        .as_ref()
+        .map_or(true, |r| r.is_opening_visible(OpeningComponentSlot::Frame3D))
+        && (slots.contains_key(&OpeningComponentSlot::Frame3D)
+            || slots.contains_key(&OpeningComponentSlot::Solid3D));
+
+    if frame_3d_vis && opening.kind != OpeningKind::Breakthrough {
+        if let Some(body) = build_opening_frame_3d(
+            opening.width,
+            opening.height,
+            params.frame_thickness,
+            frame_depth,
+        ) {
+            let world_body = crate::scene::model::solid_model::placed(
+                &body,
+                [tx, ty, 0.0],
+                [normal.0, normal.1, 0.0],
+                [0.0, 0.0, 1.0],
+                [origin.0, origin.1, opening.sill_height],
+            );
+            if let Some(body) = world_body {
+                let solid_handle = scene.add_entity(EntityType::Solid3D(acadrust::entities::Solid3D::new()));
+                if let Some(geom) = scene.prepare_solid_model_display(solid_handle, &body) {
+                    scene.register_prepared_solid_model(solid_handle, body, geom);
+                }
+                write_opening_display_tag(
+                    scene,
+                    solid_handle,
+                    opening_handle,
+                    OpeningComponentSlot::Frame3D,
+                );
+                engine::owner_index::add_child(&mut scene.document, opening_handle, solid_handle);
+            }
+        }
+    }
+
+    let leaf_3d_vis = merged_rules
+        .as_ref()
+        .map_or(true, |r| r.is_opening_visible(OpeningComponentSlot::Leaf3D))
+        && (slots.contains_key(&OpeningComponentSlot::Leaf3D)
+            || slots.contains_key(&OpeningComponentSlot::Solid3D));
+
+    if leaf_3d_vis && opening.kind != OpeningKind::Breakthrough {
+        if let Some(body) = build_opening_leaf_3d(
+            opening.width,
+            opening.height,
+            params.frame_thickness,
+            params.opening_angle_deg,
+            opening.hinge,
+            opening.kind == OpeningKind::Door,
+        ) {
+            let world_body = crate::scene::model::solid_model::placed(
+                &body,
+                [tx, ty, 0.0],
+                [normal.0, normal.1, 0.0],
+                [0.0, 0.0, 1.0],
+                [origin.0, origin.1, opening.sill_height],
+            );
+            if let Some(body) = world_body {
+                let solid_handle = scene.add_entity(EntityType::Solid3D(acadrust::entities::Solid3D::new()));
+                if let Some(geom) = scene.prepare_solid_model_display(solid_handle, &body) {
+                    scene.register_prepared_solid_model(solid_handle, body, geom);
+                }
+                write_opening_display_tag(
+                    scene,
+                    solid_handle,
+                    opening_handle,
+                    OpeningComponentSlot::Leaf3D,
+                );
+                engine::owner_index::add_child(&mut scene.document, opening_handle, solid_handle);
+            }
+        }
+    }
+
+    let glazing_3d_vis = merged_rules
+        .as_ref()
+        .map_or(true, |r| r.is_opening_visible(OpeningComponentSlot::Glazing3D))
+        && (slots.contains_key(&OpeningComponentSlot::Glazing3D)
+            || slots.contains_key(&OpeningComponentSlot::Solid3D));
+
+    if glazing_3d_vis && opening.kind == OpeningKind::Window {
+        if let Some(body) = build_opening_glazing_3d(
+            opening.width,
+            opening.height,
+            params.frame_thickness,
+        ) {
+            let world_body = crate::scene::model::solid_model::placed(
+                &body,
+                [tx, ty, 0.0],
+                [normal.0, normal.1, 0.0],
+                [0.0, 0.0, 1.0],
+                [origin.0, origin.1, opening.sill_height],
+            );
+            if let Some(body) = world_body {
+                let solid_handle = scene.add_entity(EntityType::Solid3D(acadrust::entities::Solid3D::new()));
+                if let Some(geom) = scene.prepare_solid_model_display(solid_handle, &body) {
+                    scene.register_prepared_solid_model(solid_handle, body, geom);
+                }
+                write_opening_display_tag(
+                    scene,
+                    solid_handle,
+                    opening_handle,
+                    OpeningComponentSlot::Glazing3D,
+                );
+                engine::owner_index::add_child(&mut scene.document, opening_handle, solid_handle);
+            }
+        }
     }
 }
 
@@ -829,9 +1734,14 @@ mod tests {
     fn params(width: f64, kind: OpeningKind, hinge: HingeSide) -> OpeningBakeParams {
         OpeningBakeParams {
             width,
+            height: 1.2,
+            sill_height: 0.9,
             thickness: 0.3,
             frame_thickness: DEFAULT_FRAME_THICKNESS,
+            cross_axis_offset: 0.0,
             hinge,
+            shape: OpeningShape::Rectangle,
+            spring_height: 0.0,
             opening_angle_deg: 90.0,
             kind,
         }
@@ -842,15 +1752,51 @@ mod tests {
             .iter()
             .filter(|p| p.slot == OpeningComponentSlot::Frame2D && p.closed)
             .collect();
-        let inner = frames.iter().min_by(|a, b| {
-            let wa = a.points.iter().map(|p| p.0).fold(f64::NAN, f64::max)
-                - a.points.iter().map(|p| p.0).fold(f64::NAN, f64::min);
-            let wb = b.points.iter().map(|p| p.0).fold(f64::NAN, f64::max)
-                - b.points.iter().map(|p| p.0).fold(f64::NAN, f64::min);
-            wa.partial_cmp(&wb).unwrap()
-        })?;
-        let max_x = inner.points.iter().map(|p| p.0).fold(f64::NEG_INFINITY, f64::max);
-        Some(max_x)
+        if frames.is_empty() {
+            return None;
+        }
+        if frames.len() == 1 {
+            let max_x = frames[0]
+                .points
+                .iter()
+                .map(|p| p.0)
+                .fold(f64::NEG_INFINITY, f64::max);
+            return Some(max_x);
+        }
+        let has_two_separated_posts = frames.len() == 2 && {
+            let p0_center_x = frames[0].points.iter().map(|p| p.0).sum::<f64>()
+                / (frames[0].points.len() as f64);
+            let p1_center_x = frames[1].points.iter().map(|p| p.0).sum::<f64>()
+                / (frames[1].points.len() as f64);
+            (p0_center_x * p1_center_x) < 0.0
+        };
+        if has_two_separated_posts {
+            let right = frames.iter().max_by(|a, b| {
+                let ax = a.points.iter().map(|p| p.0).fold(f64::NEG_INFINITY, f64::max);
+                let bx = b.points.iter().map(|p| p.0).fold(f64::NEG_INFINITY, f64::max);
+                ax.partial_cmp(&bx).unwrap()
+            })?;
+            let min_x = right
+                .points
+                .iter()
+                .map(|p| p.0)
+                .fold(f64::INFINITY, f64::min);
+            Some(min_x)
+        } else {
+            let inner = frames.iter().min_by(|a, b| {
+                let wa = a.points.iter().map(|p| p.0).fold(f64::NAN, f64::max)
+                    - a.points.iter().map(|p| p.0).fold(f64::NAN, f64::min);
+                let wb = b.points.iter().map(|p| p.0).fold(f64::NAN, f64::max)
+                    - b.points.iter().map(|p| p.0).fold(f64::NAN, f64::min);
+                wa.partial_cmp(&wb).unwrap()
+            })?;
+            let max_x = inner
+                .points
+                .iter()
+                .map(|p| p.0)
+                .fold(f64::NEG_INFINITY, f64::max);
+            Some(max_x)
+        }
     }
 
     #[test]
@@ -904,7 +1850,11 @@ mod tests {
             params(1.0, OpeningKind::Breakthrough, HingeSide::Left),
             None,
         );
-        assert!(baked.iter().all(|p| p.slot == OpeningComponentSlot::Mark2D));
+        assert!(baked.iter().all(|p| {
+            p.slot == OpeningComponentSlot::Mark2D
+                || p.slot == OpeningComponentSlot::BreakthroughSymbol2D
+                || p.slot == OpeningComponentSlot::OpeningLabel2D
+        }));
         assert!(baked
             .iter()
             .any(|p| p.slot == OpeningComponentSlot::Mark2D && p.points.len() == 2));

@@ -58,6 +58,7 @@ pub enum AecPendingCopy {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum AecOpeningSlotSource {
     Generator,
+    Block,
     Sketch,
 }
 
@@ -67,6 +68,8 @@ pub struct AecOpeningSlotBuffer {
     pub slot: crate::modules::aec::engine::display_component::OpeningComponentSlot,
     pub source: AecOpeningSlotSource,
     pub generator: crate::modules::aec::engine::opening_style::OpeningGenerator,
+    pub block_name: String,
+    pub block_placement: crate::modules::aec::engine::opening_style::BlockPlacementMode,
     pub sketch: crate::modules::aec::engine::opening_style::OpeningSketch,
     pub visible: bool,
 }

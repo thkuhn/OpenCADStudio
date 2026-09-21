@@ -6396,6 +6396,36 @@ was_selected={}",
                 .copied()
                 .map(|handle| (handle, crate::scene::ChangeKind::Modified))
                 .collect();
+            for &handle in &handles {
+                if let Some(opening_owner) =
+                    crate::modules::aec::engine::opening_display::opening_owner_if_any(
+                        &self.tabs[i].scene,
+                        handle,
+                    )
+                {
+                    if let Some(entity) = self.tabs[i].scene.document.get_entity(opening_owner) {
+                        if let Some(opening) =
+                            crate::modules::aec::engine::opening_xdata::opening_from_entity(
+                                entity,
+                                opening_owner,
+                            )
+                        {
+                            let style_library =
+                                crate::modules::aec::engine::project::resolve_style_library(
+                                    self.aec.aec_project_explorer_file.as_ref(),
+                                );
+                            let (rules, _) = self
+                                .resolve_active_display_config_wall_rules(i, Some(opening.host_wall));
+                            crate::modules::aec::engine::opening_display::commit_opening_instance(
+                                &mut self.tabs[i].scene,
+                                &opening,
+                                Some(&style_library),
+                                rules.as_ref(),
+                            );
+                        }
+                    }
+                }
+            }
             self.reapply_active_display_config_to_wall_packages(i, &handles);
             self.sync_wall_axis_layer_for_session(i);
             for &handle in &handles {
