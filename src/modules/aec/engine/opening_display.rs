@@ -1056,13 +1056,15 @@ pub fn preview_opening_wires(
     opening: &Opening,
     library: Option<&StyleLibrary>,
     rules: Option<&ComponentRuleSet>,
+    base_z: f64,
 ) -> Vec<WireModel> {
     let paths = bake_opening_world(axis, thickness, opening, library, rules);
     let mut wires = Vec::new();
+    let z = base_z as f32;
     if let Some(cut) = engine::openings::opening_footprint_2d(axis, thickness, opening) {
         let mut pts: Vec<[f32; 3]> = cut
             .iter()
-            .map(|&(x, y)| [x as f32, y as f32, 0.0])
+            .map(|&(x, y)| [x as f32, y as f32, z])
             .collect();
         if let Some(first) = pts.first().copied() {
             pts.push(first);
@@ -1081,7 +1083,7 @@ pub fn preview_opening_wires(
         let mut pts: Vec<[f32; 3]> = path
             .points
             .iter()
-            .map(|&(x, y)| [x as f32, y as f32, 0.0])
+            .map(|&(x, y)| [x as f32, y as f32, z])
             .collect();
         if path.closed {
             if let Some(first) = pts.first().copied() {
@@ -1268,6 +1270,7 @@ pub fn opening_package_handles(scene: &Scene, opening_handle: Handle) -> Vec<Han
 pub fn opening_axis_grips(
     axis: &[(f64, f64)],
     opening: &Opening,
+    base_z: f64,
 ) -> Vec<crate::scene::model::object::GripDef> {
     let center_s = opening.center_along_axis();
     let Some(((cx, cy), (tx, ty))) = point_and_tangent_at_distance(axis, center_s)
@@ -1279,10 +1282,10 @@ pub fn opening_axis_grips(
     let offset_cy = cy + normal.1 * opening.cross_axis_offset;
 
     let hw = opening.width * 0.5;
-    let center = DVec3::new(offset_cx, offset_cy, 0.0);
-    let start = DVec3::new(offset_cx - tx * hw, offset_cy - ty * hw, 0.0);
-    let end = DVec3::new(offset_cx + tx * hw, offset_cy + ty * hw, 0.0);
-    let flip_handle = DVec3::new(offset_cx + normal.0 * 0.25, offset_cy + normal.1 * 0.25, 0.0);
+    let center = DVec3::new(offset_cx, offset_cy, base_z);
+    let start = DVec3::new(offset_cx - tx * hw, offset_cy - ty * hw, base_z);
+    let end = DVec3::new(offset_cx + tx * hw, offset_cy + ty * hw, base_z);
+    let flip_handle = DVec3::new(offset_cx + normal.0 * 0.25, offset_cy + normal.1 * 0.25, base_z);
     vec![
         crate::entities::common::square_grip(0, center),
         crate::entities::common::rectangle_grip(1, start, [tx as f32, ty as f32]),
@@ -1377,8 +1380,22 @@ pub fn host_thickness(scene: &Scene, wall_handle: Handle) -> f64 {
         .unwrap_or(0.0)
 }
 
+pub fn host_base_z(scene: &Scene, wall_handle: Handle) -> f64 {
+    scene
+        .document
+        .get_entity(wall_handle)
+        .and_then(wall_from_entity)
+        .map(|w| w.base_origin[2])
+        .unwrap_or(0.0)
+}
+
 /// Move the opening POINT onto the current axis location.
-pub fn sync_opening_point_to_axis(scene: &mut Scene, opening: &Opening, axis: &[(f64, f64)]) {
+pub fn sync_opening_point_to_axis(
+    scene: &mut Scene,
+    opening: &Opening,
+    axis: &[(f64, f64)],
+    base_z: f64,
+) {
     let Some(((x, y), (tx, ty))) = point_and_tangent_at_distance(axis, opening.distance_along_axis) else {
         return;
     };
@@ -1388,6 +1405,7 @@ pub fn sync_opening_point_to_axis(scene: &mut Scene, opening: &Opening, axis: &[
     if let Some(EntityType::Point(pt)) = scene.document.get_entity_mut(opening.handle) {
         pt.location.x = px;
         pt.location.y = py;
+        pt.location.z = base_z;
     }
     scene.bump_entities(&[(opening.handle, crate::scene::ChangeKind::Modified)]);
 }
@@ -1406,12 +1424,13 @@ pub fn regenerate_opening_display(
         return;
     };
     let wall_handle = resolve_wall_package(scene, opening.host_wall);
+    let wall_base_z = host_base_z(scene, wall_handle);
     let axis: Vec<(f64, f64)> = get_wall_vertices(scene, wall_handle)
         .iter()
         .map(|v| (v.x, v.y))
         .collect();
     if axis.len() >= 2 {
-        sync_opening_point_to_axis(scene, &opening, &axis);
+        sync_opening_point_to_axis(scene, &opening, &axis, wall_base_z);
     }
     let stale = collect_opening_display_children(scene, opening_handle);
     if !stale.is_empty() {
@@ -1454,7 +1473,7 @@ pub fn regenerate_opening_display(
                     acadrust::types::Vector3::new(
                         origin.0 + tx * u,
                         origin.1 + ty * u,
-                        opening.sill_height + v,
+                        wall_base_z + opening.sill_height + v,
                     )
                 })
                 .collect();
@@ -1475,6 +1494,9 @@ pub fn regenerate_opening_display(
         if baked.filled {
             if let Some(model) = solid_hatch_from_ring(&world_pts) {
                 let hatch = scene.add_hatch(model, None, None);
+                if let Some(EntityType::Hatch(h)) = scene.document.get_entity_mut(hatch) {
+                    h.elevation = wall_base_z;
+                }
                 write_opening_display_tag(scene, hatch, opening_handle, baked.slot);
                 engine::owner_index::add_child(&mut scene.document, opening_handle, hatch);
             }
@@ -1485,6 +1507,7 @@ pub fn regenerate_opening_display(
             pl.add_vertex(LwVertex::new(Vector2::new(x, y)));
         }
         pl.is_closed = baked.closed;
+        pl.elevation = wall_base_z;
         let handle = scene.add_entity(EntityType::LwPolyline(pl));
         write_opening_display_tag(scene, handle, opening_handle, baked.slot);
         engine::owner_index::add_child(&mut scene.document, opening_handle, handle);
@@ -1507,7 +1530,7 @@ pub fn regenerate_opening_display(
             let label_text = format_din1356_label(&opening);
             let mut mtext = acadrust::entities::MText::new();
             mtext.value = label_text;
-            mtext.insertion_point = acadrust::types::Vector3::new(lx, ly, 0.0);
+            mtext.insertion_point = acadrust::types::Vector3::new(lx, ly, wall_base_z);
             mtext.height = 0.15;
             let mut rot = ty.atan2(tx);
             if rot > std::f64::consts::FRAC_PI_2 {
@@ -1547,7 +1570,7 @@ pub fn regenerate_opening_display(
                 [tx, ty, 0.0],
                 [normal.0, normal.1, 0.0],
                 [0.0, 0.0, 1.0],
-                [origin.0, origin.1, opening.sill_height],
+                [origin.0, origin.1, wall_base_z + opening.sill_height],
             );
             if let Some(body) = world_body {
                 let solid_handle = scene.add_entity(EntityType::Solid3D(acadrust::entities::Solid3D::new()));
@@ -1585,7 +1608,7 @@ pub fn regenerate_opening_display(
                 [tx, ty, 0.0],
                 [normal.0, normal.1, 0.0],
                 [0.0, 0.0, 1.0],
-                [origin.0, origin.1, opening.sill_height],
+                [origin.0, origin.1, wall_base_z + opening.sill_height],
             );
             if let Some(body) = world_body {
                 let solid_handle = scene.add_entity(EntityType::Solid3D(acadrust::entities::Solid3D::new()));
@@ -1620,7 +1643,7 @@ pub fn regenerate_opening_display(
                 [tx, ty, 0.0],
                 [normal.0, normal.1, 0.0],
                 [0.0, 0.0, 1.0],
-                [origin.0, origin.1, opening.sill_height],
+                [origin.0, origin.1, wall_base_z + opening.sill_height],
             );
             if let Some(body) = world_body {
                 let solid_handle = scene.add_entity(EntityType::Solid3D(acadrust::entities::Solid3D::new()));

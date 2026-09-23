@@ -1074,11 +1074,12 @@ pub fn append_opening_axis_grips(
         return;
     };
     let wall = wall_package::resolve_wall_package(scene, opening.host_wall);
+    let base_z = opening_display::host_base_z(scene, wall);
     let axis: Vec<(f64, f64)> = xdata::get_wall_vertices(scene, wall)
         .iter()
         .map(|v| (v.x, v.y))
         .collect();
-    let grips = opening_display::opening_axis_grips(&axis, &opening);
+    let grips = opening_display::opening_axis_grips(&axis, &opening, base_z);
     if grips.is_empty() {
         return;
     }

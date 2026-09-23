@@ -287,10 +287,16 @@ fn material_form_view<'a>(
         t!("Material")
     };
 
-    let mut actions = row![button(text(t!("Save")).size(11))
-        .style(button::primary)
-        .padding([5, 12])
-        .on_press(Message::Aec(AecMessage::AecStyleManagerMaterialSave))]
+    let mut actions = row![
+        button(text(t!("Übernehmen")).size(11))
+            .style(button::primary)
+            .padding([5, 12])
+            .on_press(Message::Aec(AecMessage::AecStyleManagerMaterialSaveAndApply)),
+        button(text(t!("Speichern")).size(11))
+            .style(button::subtle)
+            .padding([5, 12])
+            .on_press(Message::Aec(AecMessage::AecStyleManagerMaterialSave)),
+    ]
     .spacing(8);
 
     if !material_form.is_new {

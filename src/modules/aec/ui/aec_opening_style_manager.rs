@@ -455,7 +455,11 @@ fn form_view<'a>(
 
     let mut actions = row![
         Space::new(),
-        button(text(t!("Save")).size(11))
+        button(text(t!("Übernehmen")).size(11))
+            .style(button::primary)
+            .padding([5, 12])
+            .on_press(Message::Aec(AecMessage::AecOpeningStyleManagerSaveAndApply)),
+        button(text(t!("Speichern")).size(11))
             .style(button::subtle)
             .padding([5, 12])
             .on_press(Message::Aec(AecMessage::AecOpeningStyleManagerSave)),

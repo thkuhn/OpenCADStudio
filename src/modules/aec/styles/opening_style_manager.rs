@@ -728,6 +728,13 @@ impl OpenCADStudio {
     }
 
     pub(crate) fn aec_opening_style_manager_save(&mut self) -> Task<Message> {
+        self.aec_opening_style_manager_save_internal();
+        Task::none()
+    }
+
+    pub(crate) fn aec_opening_style_manager_save_internal(
+        &mut self,
+    ) -> Option<(String, crate::modules::aec::engine::library::StyleLibrary)> {
         commit_sketch_draft(self, false);
         let style = match self.aec_opening_style_from_form() {
             Ok(style) => style,
@@ -736,7 +743,7 @@ impl OpenCADStudio {
                     crate::t!("AEC Style Manager: opening style name cannot be empty.")
                         .as_ref(),
                 );
-                return Task::none();
+                return None;
             }
         };
 
@@ -749,7 +756,7 @@ impl OpenCADStudio {
                     crate::t!("AEC Style Manager: an opening style cannot be its own parent.")
                         .as_ref(),
                 );
-                return Task::none();
+                return None;
             }
             let mut styles = HashMap::new();
             for os in &lib.opening_styles {
@@ -765,7 +772,7 @@ impl OpenCADStudio {
                     crate::t!("AEC Style Manager: cycle detected in opening style inheritance.")
                         .as_ref(),
                 );
-                return Task::none();
+                return None;
             }
         }
 
@@ -795,20 +802,32 @@ impl OpenCADStudio {
                         );
                     }
                     self.aec.aec_opening_style_manager_selected = Some(id.clone());
-                    self.aec.aec_opening_style_manager_editing_id = Some(id);
+                    self.aec.aec_opening_style_manager_editing_id = Some(id.clone());
+                    let lib_snapshot = self
+                        .aec
+                        .aec_style_library
+                        .clone()
+                        .unwrap_or_else(crate::modules::aec::engine::library::StyleLibrary::empty);
+                    Some((id, lib_snapshot))
                 }
                 Err(e) => {
                     self.command_line.push_error(
                         crate::tf!("AEC Style Manager: failed to save library: {e}").as_ref(),
                     );
+                    None
                 }
             }
         } else {
             self.aec_upsert_opening_style_into_session(style);
             self.aec.aec_opening_style_manager_selected = Some(id.clone());
-            self.aec.aec_opening_style_manager_editing_id = Some(id);
+            self.aec.aec_opening_style_manager_editing_id = Some(id.clone());
+            let lib_snapshot = self
+                .aec
+                .aec_style_library
+                .clone()
+                .unwrap_or_else(crate::modules::aec::engine::library::StyleLibrary::empty);
+            Some((id, lib_snapshot))
         }
-        Task::none()
     }
 
     pub(crate) fn aec_opening_style_manager_delete(&mut self) -> Task<Message> {
@@ -982,19 +1001,19 @@ mod tests {
         style.frame_thickness = DEFAULT_FRAME_THICKNESS;
         let narrow = preview_baked_paths(&style, 1.2);
         let wide = preview_baked_paths(&style, 1.8);
-        let inset = |paths: &[BakedPath]| {
+        let post_width = |paths: &[BakedPath]| {
             let frame: Vec<_> = paths
                 .iter()
                 .filter(|p| p.slot == OpeningComponentSlot::Frame2D && p.closed)
                 .collect();
             assert!(frame.len() >= 2);
-            let outer = frame[0].points[1].0 - frame[0].points[0].0;
-            let inner = frame[1].points[1].0 - frame[1].points[0].0;
-            (outer - inner) * 0.5
+            let left_w = (frame[0].points[1].0 - frame[0].points[0].0).abs();
+            let right_w = (frame[1].points[1].0 - frame[1].points[0].0).abs();
+            assert!((left_w - right_w).abs() < 1e-9);
+            left_w
         };
-        assert!((inset(&narrow) - DEFAULT_FRAME_THICKNESS).abs() < 1e-9);
-        assert!((inset(&wide) - DEFAULT_FRAME_THICKNESS).abs() < 1e-9);
-        assert!((inset(&narrow) - inset(&wide)).abs() < 1e-12);
+        assert!((post_width(&narrow) - DEFAULT_FRAME_THICKNESS).abs() < 1e-9);
+        assert!((post_width(&wide) - DEFAULT_FRAME_THICKNESS).abs() < 1e-9);
     }
 
     #[test]

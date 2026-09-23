@@ -186,7 +186,20 @@ fn dispatch_wall(app: &mut OpenCADStudio, tab: usize, cmd: &str) -> Task<Message
         .aec
         .aec_project_explorer_file
         .as_ref()
-        .and_then(|p| storey_matching_tab(p, app.tabs[tab].drawing_path()))
+        .and_then(|p| {
+            storey_matching_tab(p, app.tabs[tab].drawing_path())
+                .or_else(|| {
+                    app.aec
+                        .aec_project_explorer_selected_storey
+                        .and_then(|(bid, sid)| {
+                            p.buildings
+                                .iter()
+                                .find(|b| b.id == bid)
+                                .and_then(|b| b.storeys.iter().find(|s| s.id == sid))
+                        })
+                })
+                .or_else(|| p.buildings.first().and_then(|b| b.storeys.first()))
+        })
     {
         new_cmd = new_cmd.with_storey_planes(storey);
     }

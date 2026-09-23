@@ -319,7 +319,13 @@ pub fn write_wall_plane_offsets(
     wall.apply_plane_offsets(base_offset, top_offset);
     let mut record = ExtendedDataRecord::new(AEC_APPID);
     record.values = wall_record_for_wall(&wall);
-    write_aec_record(&mut scene.document, wall_handle, record)
+    let ok = write_aec_record(&mut scene.document, wall_handle, record);
+    if ok {
+        if let Some(EntityType::LwPolyline(pl)) = scene.document.get_entity_mut(wall_handle) {
+            pl.elevation = wall.base_origin[2];
+        }
+    }
+    ok
 }
 
 /// Overwrites only the layer-snapshot portion of a wall's `WALL` XDATA record,
@@ -403,7 +409,7 @@ pub(crate) fn aec_value_as_handle(value: &XDataValue) -> Option<Handle> {
 /// Extracts vertices from a wall's axis polyline.
 pub(crate) fn get_wall_vertices(scene: &Scene, handle: Handle) -> Vec<DVec3> {
     if let Some(EntityType::LwPolyline(pl)) = scene.document.get_entity(handle) {
-        pl.vertices.iter().map(|v| DVec3::new(v.location.x, v.location.y, 0.0)).collect()
+        pl.vertices.iter().map(|v| DVec3::new(v.location.x, v.location.y, pl.elevation)).collect()
     } else {
         Vec::new()
     }

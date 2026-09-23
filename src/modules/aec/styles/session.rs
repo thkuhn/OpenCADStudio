@@ -367,6 +367,136 @@ impl OpenCADStudio {
         self.aec_refresh_combined_style_library();
     }
 
+    pub(crate) fn aec_style_manager_material_save_internal(
+        &mut self,
+    ) -> Option<(String, crate::modules::aec::engine::library::StyleLibrary)> {
+        let name = self.aec.aec_style_manager_material_name.trim().to_string();
+        if name.is_empty() {
+            self.command_line.push_error(
+                crate::t!("AEC Style Manager: material name cannot be empty.").as_ref(),
+            );
+            return None;
+        }
+        let hatch = if self.aec.aec_style_manager_material_hatch.trim().is_empty() {
+            "SOLID".to_string()
+        } else {
+            self.aec.aec_style_manager_material_hatch.trim().to_string()
+        };
+        let color_hex = self
+            .aec.aec_style_manager_material_color
+            .trim()
+            .trim_start_matches('#');
+        let color = u32::from_str_radix(color_hex, 16).unwrap_or(0);
+        let line_type = if self.aec.aec_style_manager_material_line_type.trim().is_empty() {
+            "Continuous".to_string()
+        } else {
+            self.aec.aec_style_manager_material_line_type.trim().to_string()
+        };
+        let category = {
+            let c = self.aec.aec_style_manager_material_category.trim();
+            if c.is_empty() {
+                None
+            } else {
+                Some(c.to_string())
+            }
+        };
+        let mut hatch_scale = self
+            .aec.aec_style_manager_material_hatch_scale
+            .trim()
+            .parse::<f64>()
+            .unwrap_or(1.0);
+        if hatch_scale <= 0.0 {
+            hatch_scale = 0.01;
+        }
+        let render_material_ref = {
+            let r = self.aec.aec_style_manager_material_render_ref.trim();
+            if r.is_empty() {
+                None
+            } else {
+                Some(r.to_string())
+            }
+        };
+        let hatch_angle = self
+            .aec.aec_style_manager_material_hatch_angle
+            .trim()
+            .parse::<f64>()
+            .unwrap_or(0.0);
+        let hatch_angle_relative = self.aec.aec_style_manager_material_hatch_angle_relative;
+        let id = self
+            .aec.aec_style_manager_material_editing_id
+            .clone()
+            .unwrap_or_else(|| crate::modules::aec::engine::xdata::unique_id("mat", &name));
+
+        let material = crate::modules::aec::engine::material::Material {
+            id: id.clone(),
+            name,
+            hatch_pattern: hatch,
+            line_color: color,
+            line_type,
+            render_material_ref,
+            category,
+            hatch_color: Some(acadrust::types::Color::Rgb {
+                r: ((self.aec.aec_style_manager_material_hatch_color >> 16) & 0xFF) as u8,
+                g: ((self.aec.aec_style_manager_material_hatch_color >> 8) & 0xFF) as u8,
+                b: (self.aec.aec_style_manager_material_hatch_color & 0xFF) as u8,
+            }),
+            hatch_scale,
+            hatch_angle,
+            hatch_angle_relative,
+        };
+
+        let source = crate::modules::aec::engine::library::material_library_source_with_session(
+            self.aec.aec_project_explorer_file.as_ref(),
+            self.aec.aec_session_style_library.as_ref(),
+            &id,
+        );
+        let cow_from_standard = source
+            == Some(crate::modules::aec::engine::library::LibrarySource::Standard);
+
+        if self.aec.aec_project_explorer_file.is_some() {
+            match self.aec_upsert_material_into_project(material) {
+                Ok(()) => {
+                    if cow_from_standard {
+                        self.command_line.push_info(
+                            crate::t!(
+                                "AEC Style Manager: Standard material was copied into the project and saved."
+                            )
+                            .as_ref(),
+                        );
+                    } else {
+                        self.command_line.push_info(
+                            crate::t!("AEC Style Manager: material saved.").as_ref(),
+                        );
+                    }
+                    self.aec.aec_style_manager_selected_material = Some(id.clone());
+                    self.aec.aec_style_manager_material_editing_id = Some(id.clone());
+                    let lib_snapshot = self
+                        .aec
+                        .aec_style_library
+                        .clone()
+                        .unwrap_or_else(crate::modules::aec::engine::library::StyleLibrary::empty);
+                    Some((id, lib_snapshot))
+                }
+                Err(e) => {
+                    self.command_line.push_error(
+                        crate::tf!("AEC Style Manager: failed to save library: {e}").as_ref(),
+                    );
+                    None
+                }
+            }
+        } else {
+            self.aec_upsert_material_into_session(material);
+            self.aec.aec_style_manager_selected_material = Some(id.clone());
+            self.aec.aec_style_manager_material_editing_id = Some(id.clone());
+            let lib_snapshot = self
+                .aec
+                .aec_style_library
+                .clone()
+                .unwrap_or_else(crate::modules::aec::engine::library::StyleLibrary::empty);
+            Some((id, lib_snapshot))
+        }
+    }
+
     pub(crate) fn aec_style_manager_wall_style_save_internal(
         &mut self,
     ) -> Option<(String, crate::modules::aec::engine::library::StyleLibrary)> {

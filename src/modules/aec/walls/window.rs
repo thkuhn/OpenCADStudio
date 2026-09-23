@@ -33,6 +33,7 @@ pub fn tool() -> ToolDef {
 struct CachedWall {
     axis: Vec<(f64, f64)>,
     thickness: f64,
+    base_z: f64,
 }
 
 /// `AEC_WINDOW` / `AEC_DOOR` / `AEC_OPENING` — pick a wall, then a point
@@ -89,15 +90,16 @@ impl WallOpeningCommand {
         if verts.len() < 2 {
             return;
         }
-        let thickness = scene
+        let wall = scene
             .document
             .get_entity(axis_h)
-            .and_then(wall_from_entity)
-            .map(|w| w.total_thickness())
-            .unwrap_or(0.3);
+            .and_then(wall_from_entity);
+        let thickness = wall.as_ref().map(|w| w.total_thickness()).unwrap_or(0.3);
+        let base_z = wall.as_ref().map(|w| w.base_origin[2]).unwrap_or(0.0);
         *self.cached.borrow_mut() = Some(CachedWall {
             axis: verts.iter().map(|v| (v.x, v.y)).collect(),
             thickness,
+            base_z,
         });
     }
 }
@@ -149,19 +151,19 @@ impl CadCommand for WallOpeningCommand {
             self.preview_hatches.clear();
             return Vec::new();
         }
-        let (axis, thickness) = {
+        let (axis, thickness, base_z) = {
             let cache = self.cached.borrow();
             let Some(cache) = cache.as_ref() else {
                 return Vec::new();
             };
-            (cache.axis.clone(), cache.thickness)
+            (cache.axis.clone(), cache.thickness, cache.base_z)
         };
         let Some(distance) = distance_along_axis_from_point(&axis, (pt.x, pt.y)) else {
             return Vec::new();
         };
         let opening = self.preview_instance(distance);
         self.preview_hatches = preview_opening_hatches(&axis, thickness, &opening, None, None);
-        preview_opening_wires(&axis, thickness, &opening, None, None)
+        preview_opening_wires(&axis, thickness, &opening, None, None, base_z)
     }
 
     fn hatch_preview_models(&self) -> Option<Vec<HatchModel>> {

@@ -66,10 +66,15 @@ impl OpenCADStudio {
             &mut self.tabs[tab].scene,
             &opening,
         );
+        let base_z = crate::modules::aec::engine::opening_display::host_base_z(
+            &self.tabs[tab].scene,
+            wall,
+        );
         crate::modules::aec::engine::opening_display::sync_opening_point_to_axis(
             &mut self.tabs[tab].scene,
             &opening,
             &axis,
+            base_z,
         );
 
         let style_library = crate::modules::aec::engine::project::resolve_style_library(
@@ -87,6 +92,7 @@ impl OpenCADStudio {
             &opening,
             Some(&style_library),
             rules.as_ref(),
+            base_z,
         );
         self.tabs[tab].scene.set_preview_wires(preview_wires);
 

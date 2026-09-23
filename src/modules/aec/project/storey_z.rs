@@ -83,6 +83,25 @@ fn rebake_bound_walls(
 }
 
 impl OpenCADStudio {
+    pub(crate) fn commit_storey_settings_buffers(&mut self, bid: uuid::Uuid, sid: uuid::Uuid) {
+        if let Ok(v) = self.aec.aec_storey_settings_elevation.trim().parse::<f64>() {
+            self.with_storey_mut(bid, sid, |s| s.set_elevation(v));
+        }
+        if let Ok(v) = self.aec.aec_storey_settings_height.trim().parse::<f64>() {
+            if v > 0.0 {
+                self.with_storey_mut(bid, sid, |s| s.set_height(v));
+            }
+        }
+        let plane_z_map = self.aec.aec_storey_settings_plane_z.clone();
+        for (pid, text) in plane_z_map {
+            if let Ok(v) = text.trim().parse::<f64>() {
+                self.with_storey_mut(bid, sid, |s| {
+                    s.set_plane_z_relative_to_floor(pid, v);
+                });
+            }
+        }
+    }
+
     pub(crate) fn apply_storey_z_to_active_scene(&mut self, bid: uuid::Uuid, sid: uuid::Uuid) {
         let i = self.active_tab;
         let library = crate::modules::aec::engine::project::resolve_style_library(

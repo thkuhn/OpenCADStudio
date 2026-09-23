@@ -17,7 +17,7 @@ ANSI_1252
   9
 $HANDSEED
   5
-16D
+172
   9
 $INSBASE
  10
@@ -5485,7 +5485,7 @@ axis_offset
 1000
 layer_id
 1000
-a59e2335-56ae-494a-b2b9-c23ef5f6d563
+ea884abc-44a6-418a-93ae-150d27b3e89d
 1000
 New
 1000
@@ -5615,7 +5615,7 @@ axis_offset
 1000
 layer_id
 1000
-638fbf02-7df9-4e54-9cf6-0c22f4d32ffc
+0b3c2b85-7c42-4b61-8453-16c7b6b5bab1
 1000
 New
 1000
@@ -5797,9 +5797,9 @@ F6
 1005
 130
 1005
-14A
+14D
 1005
-15B
+160
   0
 LWPOLYLINE
   5
@@ -6273,11 +6273,11 @@ DOTS
 1000
 layer_id
 1000
-36f001d2-097c-49b6-80ef-9ed9530f76b8
+b7b1a72a-89c0-4734-9854-9a210581ba7a
 1000
-aa284720-2519-4a5d-ac06-c126e003f753
+a3d1b03c-2f4c-486e-b2a7-deca1e00b924
 1000
-bcb65877-6b58-4708-a620-236e34682e9c
+b911d202-7a51-49cd-b471-7d9c61af4ae3
 1000
 New
 1000
@@ -6451,11 +6451,11 @@ DOTS
 1000
 layer_id
 1000
-38688496-6869-42c2-b2e5-9db6d1b3666f
+1256796e-c2ca-4c86-bdb1-8161af80ce33
 1000
-ba42477d-1bf2-496b-ba28-55914967e5af
+73d2e511-1e9e-4fa6-b4cb-a6806abe45b2
 1000
-e801f526-d4bf-40e5-a5e7-794bcf5fd7be
+97fae573-7c20-479a-93eb-a8076c7f3ce1
 1000
 New
 1000
@@ -7901,13 +7901,13 @@ DOTS
 1000
 layer_id
 1000
-a7b8cf42-2263-459d-af4a-6598c5ba3db1
+7b4ebfa7-90ef-4237-ba55-b3b022904890
 1000
-1a8a7801-736e-4685-a241-ddb92664d2b6
+d0a1a3a8-c20a-4773-be24-6b826f98e781
 1000
-59ee978e-757d-48bc-8d80-c7d7acf95c99
+e8f385e7-0699-4d56-827c-fb6e968594f2
 1000
-7b7782f6-b729-46be-920a-440a319c69e1
+a6d4269d-22fe-4ec6-9743-02ca24c90147
 1000
 New
 1000
@@ -8103,13 +8103,13 @@ DOTS
 1000
 layer_id
 1000
-b01b39e5-fc62-42ab-8733-2c4d3ab32936
+78fc9c9d-970b-4567-9337-224535434176
 1000
-37fd0f49-1269-4ddd-b168-2a8c8e627949
+05adc300-3a2b-45b2-a51c-1e6e90f33c3a
 1000
-78af37f1-8aac-4115-a6bd-c7a8f2b4a237
+dc47c253-1196-4c55-a966-fa2cca71837c
 1000
-8c5c6b64-7378-40bb-9af4-9a38f0cc58cc
+913bff38-5fe7-415c-9bd3-3c5a42933930
 1000
 New
 1000
@@ -9955,13 +9955,13 @@ DOTS
 1000
 layer_id
 1000
-383462d3-7fb1-4e79-a0e5-d1e120381c12
+7ce06a3b-fbd3-4b39-b264-66d49ea5b7dd
 1000
-ffc8c56a-9230-4fec-9263-8538f4055f6d
+a08a3244-525d-49d1-8b58-a2f047fdb483
 1000
-8530b10e-41ba-4ba5-bbc7-fea7d9acde0f
+ac54b326-5f4d-48b3-aa84-d5595a611054
 1000
-6b63d5a9-bf99-48da-b0f8-ca48e6495afb
+6c0226b5-c6f7-4d32-b468-9e18b8072c3d
 1000
 New
 1000
@@ -10157,13 +10157,13 @@ DOTS
 1000
 layer_id
 1000
-fc0f1273-1106-4343-bc86-8494b5430951
+bf65de5f-4ba0-48a0-bbbb-3ef4c3767e3b
 1000
-817e520b-ce04-40c7-a3d4-05f47bfb807e
+d9a461aa-39be-46a8-9493-e6df1b888cf9
 1000
-6e2d5bb4-10a6-4cc8-bede-9b147b1e3b48
+32fd13f8-cd37-4f47-9624-d522a3f53713
 1000
-d1246cfa-ddce-475c-a86a-2178a38be1e7
+7ec3b497-2396-4080-8527-27a6a36fd86f
 1000
 New
 1000
@@ -12379,11 +12379,11 @@ DOTS
 1000
 layer_id
 1000
-f2984a3c-4a5a-4a04-9fd7-c792e2cf2616
+6309a8b1-b112-404d-a5b4-695dd0941bc0
 1000
-d9bfeda5-3383-4847-b59a-16b10a89f963
+5cd96e62-cf0b-4b20-88e1-27ef0bcba369
 1000
-305d0ec3-7d67-4b66-9a0b-431127155eb1
+31baaa2f-8094-4be9-af9d-b03bd5bbe339
 1000
 New
 1000
@@ -12557,11 +12557,11 @@ DOTS
 1000
 layer_id
 1000
-54e57a3d-be6c-461f-ac7b-2ccff19328b4
+53fdbe52-4f53-46a9-896a-d3527545040f
 1000
-7853c1c1-2b06-4e2a-9959-38cbbf1b2af5
+4bd707dd-24b3-4ac8-9d55-fbca1bdf5082
 1000
-9e29f8b0-dff7-40be-90da-73cc29c0e230
+d32f10d5-04c5-411c-99c9-3527ca7d8ae8
 1000
 New
 1000
@@ -14145,7 +14145,7 @@ axis_offset
 1000
 layer_id
 1000
-e4d25276-441a-41a5-bb68-b1e16d0656b3
+3ea5aba8-2279-4ee4-959f-46b7a5928b35
 1000
 New
 1000
@@ -14277,7 +14277,7 @@ axis_offset
 1000
 layer_id
 1000
-e22bb9d5-c2d8-461f-b60c-aa9cb48bf8be
+61205ef2-ad01-4f38-8898-4be89b4fcf4b
 1000
 New
 1000
@@ -14409,7 +14409,7 @@ axis_offset
 1000
 layer_id
 1000
-e056a1f5-48bc-48c0-96f4-ae2619dded6d
+18ac46e5-337a-49b6-9cd6-fb193c38bcae
 1000
 New
 1000
@@ -15115,7 +15115,7 @@ JOIN_OVERRIDE
 1071
      1
 1000
-{"default_style":"Miter","layer_pairs":[{"layer_a":{"material_id":"Putz","role_tag":null,"index":0,"layer_id":"54c3e377-22d8-4df2-95e6-94eb322273ac"},"layer_b":null,"style":"NoExtend"},{"layer_a":{"material_id":"Mauerwerk","role_tag":null,"index":1,"layer_id":"cf92464d-bd40-4a47-821e-baead664a010"},"layer_b":{"material_id":"Mauerwerk","role_tag":null,"index":1,"layer_id":"cf92464d-bd40-4a47-821e-baead664a010"},"style":"Miter"},{"layer_a":{"material_id":"Insulation","role_tag":null,"index":2,"layer_id":"114b1bea-c744-4523-8bd1-f9d70b625268"},"layer_b":null,"style":"Butt"},{"layer_a":{"material_id":"Putz","role_tag":null,"index":3,"layer_id":"78e2c62a-4b37-4752-a722-ea06f01a4d9f"},"layer_b":null,"style":"NoExtend"}],"layer_gaps":[]}
+{"default_style":"Miter","layer_pairs":[{"layer_a":{"material_id":"Putz","role_tag":null,"index":0,"layer_id":"58643f74-b078-4e17-abfa-273a4337f483"},"layer_b":null,"style":"NoExtend"},{"layer_a":{"material_id":"Mauerwerk","role_tag":null,"index":1,"layer_id":"d04159bb-fd53-4db0-af0c-b3f2f1cee7e7"},"layer_b":{"material_id":"Mauerwerk","role_tag":null,"index":1,"layer_id":"d04159bb-fd53-4db0-af0c-b3f2f1cee7e7"},"style":"Miter"},{"layer_a":{"material_id":"Insulation","role_tag":null,"index":2,"layer_id":"5762a9a7-37a1-4127-a32f-8ba4f5a7af7b"},"layer_b":null,"style":"Butt"},{"layer_a":{"material_id":"Putz","role_tag":null,"index":3,"layer_id":"b3c852db-6785-46fc-9b39-37cbfad4dd78"},"layer_b":null,"style":"NoExtend"}],"layer_gaps":[]}
 1001
 OPENCAD_AEC
 1000
@@ -15225,13 +15225,13 @@ DOTS
 1000
 layer_id
 1000
-54c3e377-22d8-4df2-95e6-94eb322273ac
+58643f74-b078-4e17-abfa-273a4337f483
 1000
-cf92464d-bd40-4a47-821e-baead664a010
+d04159bb-fd53-4db0-af0c-b3f2f1cee7e7
 1000
-114b1bea-c744-4523-8bd1-f9d70b625268
+5762a9a7-37a1-4127-a32f-8ba4f5a7af7b
 1000
-78e2c62a-4b37-4752-a722-ea06f01a4d9f
+b3c852db-6785-46fc-9b39-37cbfad4dd78
 1000
 New
 1000
@@ -15427,13 +15427,13 @@ DOTS
 1000
 layer_id
 1000
-83dc6e42-edb2-444f-bc32-0cea25ba8452
+32473a11-e508-4916-811b-0951af634141
 1000
-fa1e302c-ff1f-43a1-90c9-848862f27cc4
+c0e0030b-2f4f-48e6-8f5a-80d2a41675f4
 1000
-9010e6de-9721-4bad-a19f-69a7123d5ede
+a7926d94-1a55-4f00-9499-1460f004c91e
 1000
-5507f056-8b5a-4a12-a112-5cb200f2ed66
+8ed5dfec-d7fa-48e3-b358-f93ad04e0b01
 1000
 New
 1000
@@ -17211,7 +17211,7 @@ axis_offset
 1000
 layer_id
 1000
-1351a1f2-3c5c-4e61-9c17-902c6ac0ee10
+926c696c-ca72-45db-8208-e83646270e44
 1000
 New
 1000
@@ -17372,6 +17372,12 @@ CHILD_HANDLES
 147
 1005
 148
+1005
+149
+1005
+14A
+1005
+14B
   0
 LWPOLYLINE
   5
@@ -18575,9 +18581,93 @@ OPENING_REP
 1000
 OpeningLabel2D
   0
-MTEXT
+3DSOLID
   5
 149
+330
+15
+100
+AcDbEntity
+  8
+0
+100
+AcDbModelerGeometry
+290
+     0
+  2
+{00000000-0000-0000-0000-000000000000}
+100
+AcDb3dSolid
+350
+0
+1001
+OPENCAD_AEC
+1000
+OPENING_REP
+1005
+131
+1000
+Frame3D
+  0
+3DSOLID
+  5
+14A
+330
+15
+100
+AcDbEntity
+  8
+0
+100
+AcDbModelerGeometry
+290
+     0
+  2
+{00000000-0000-0000-0000-000000000000}
+100
+AcDb3dSolid
+350
+0
+1001
+OPENCAD_AEC
+1000
+OPENING_REP
+1005
+131
+1000
+Leaf3D
+  0
+3DSOLID
+  5
+14B
+330
+15
+100
+AcDbEntity
+  8
+0
+100
+AcDbModelerGeometry
+290
+     0
+  2
+{00000000-0000-0000-0000-000000000000}
+100
+AcDb3dSolid
+350
+0
+1001
+OPENCAD_AEC
+1000
+OPENING_REP
+1005
+131
+1000
+Glazing3D
+  0
+MTEXT
+  5
+14C
 330
 15
 100
@@ -18611,7 +18701,7 @@ Standard
   0
 LWPOLYLINE
   5
-14A
+14D
 330
 15
 100
@@ -18651,7 +18741,7 @@ OPENCAD_AEC
 1000
 CHILD_HANDLES
 1005
-14B
+14E
 1001
 OPENCAD_AEC
 1000
@@ -18673,12 +18763,6 @@ Structural
 1071
      7
 1005
-14C
-1005
-14D
-1005
-14E
-1005
 14F
 1005
 150
@@ -18686,6 +18770,12 @@ Structural
 151
 1005
 152
+1005
+153
+1005
+154
+1005
+155
 1000
 Center
 1000
@@ -18703,7 +18793,7 @@ axis_offset
 1000
 layer_id
 1000
-a4907b29-f13d-4911-83db-2b9874bd0c4c
+742edb33-bcf7-4599-aea8-5ac3133e43e6
 1000
 New
 1000
@@ -18749,7 +18839,7 @@ planes
   0
 POINT
   5
-14B
+14E
 330
 15
 100
@@ -18769,7 +18859,7 @@ OPENCAD_AEC
 1000
 OPENING
 1005
-14A
+14D
 1041
 3.0
 1041
@@ -18835,12 +18925,6 @@ OPENCAD_AEC
 1000
 CHILD_HANDLES
 1005
-153
-1005
-154
-1005
-155
-1005
 156
 1005
 157
@@ -18848,10 +18932,20 @@ CHILD_HANDLES
 158
 1005
 159
+1005
+15A
+1005
+15B
+1005
+15C
+1005
+15D
+1005
+15E
   0
 LWPOLYLINE
   5
-14C
+14F
 330
 15
 100
@@ -18911,13 +19005,13 @@ OPENCAD_AEC
 1000
 WALL_REP
 1005
-14A
+14D
 1000
 contour
   0
 HATCH
   5
-14D
+150
 330
 15
 100
@@ -19007,13 +19101,13 @@ OPENCAD_AEC
 1000
 WALL_REP
 1005
-14A
+14D
 1000
 hatch
   0
 LWPOLYLINE
   5
-14E
+151
 330
 15
 100
@@ -19073,13 +19167,13 @@ OPENCAD_AEC
 1000
 WALL_REP
 1005
-14A
+14D
 1000
 contour
   0
 HATCH
   5
-14F
+152
 330
 15
 100
@@ -19169,95 +19263,11 @@ OPENCAD_AEC
 1000
 WALL_REP
 1005
-14A
+14D
 1000
 hatch
   0
 3DSOLID
-  5
-150
-330
-15
-100
-AcDbEntity
-  8
-0
-100
-AcDbModelerGeometry
-290
-     0
-  2
-{00000000-0000-0000-0000-000000000000}
-100
-AcDb3dSolid
-350
-0
-1001
-OPENCAD_AEC
-1000
-WALL_REP
-1005
-14A
-1000
-solid
-  0
-3DSOLID
-  5
-151
-330
-15
-100
-AcDbEntity
-  8
-0
-100
-AcDbModelerGeometry
-290
-     0
-  2
-{00000000-0000-0000-0000-000000000000}
-100
-AcDb3dSolid
-350
-0
-1001
-OPENCAD_AEC
-1000
-WALL_REP
-1005
-14A
-1000
-solid
-  0
-3DSOLID
-  5
-152
-330
-15
-100
-AcDbEntity
-  8
-0
-100
-AcDbModelerGeometry
-290
-     0
-  2
-{00000000-0000-0000-0000-000000000000}
-100
-AcDb3dSolid
-350
-0
-1001
-OPENCAD_AEC
-1000
-WALL_REP
-1005
-14A
-1000
-solid
-  0
-LWPOLYLINE
   5
 153
 330
@@ -19267,6 +19277,90 @@ AcDbEntity
   8
 0
 100
+AcDbModelerGeometry
+290
+     0
+  2
+{00000000-0000-0000-0000-000000000000}
+100
+AcDb3dSolid
+350
+0
+1001
+OPENCAD_AEC
+1000
+WALL_REP
+1005
+14D
+1000
+solid
+  0
+3DSOLID
+  5
+154
+330
+15
+100
+AcDbEntity
+  8
+0
+100
+AcDbModelerGeometry
+290
+     0
+  2
+{00000000-0000-0000-0000-000000000000}
+100
+AcDb3dSolid
+350
+0
+1001
+OPENCAD_AEC
+1000
+WALL_REP
+1005
+14D
+1000
+solid
+  0
+3DSOLID
+  5
+155
+330
+15
+100
+AcDbEntity
+  8
+0
+100
+AcDbModelerGeometry
+290
+     0
+  2
+{00000000-0000-0000-0000-000000000000}
+100
+AcDb3dSolid
+350
+0
+1001
+OPENCAD_AEC
+1000
+WALL_REP
+1005
+14D
+1000
+solid
+  0
+LWPOLYLINE
+  5
+156
+330
+15
+100
+AcDbEntity
+  8
+0
+100
 AcDbPolyline
  90
      6
@@ -19339,13 +19433,13 @@ OPENCAD_AEC
 1000
 OPENING_REP
 1005
-14B
+14E
 1000
 Frame2D
   0
 LWPOLYLINE
   5
-154
+157
 330
 15
 100
@@ -19425,13 +19519,13 @@ OPENCAD_AEC
 1000
 OPENING_REP
 1005
-14B
+14E
 1000
 Frame2D
   0
 LWPOLYLINE
   5
-155
+158
 330
 15
 100
@@ -19471,13 +19565,13 @@ OPENCAD_AEC
 1000
 OPENING_REP
 1005
-14B
+14E
 1000
 Leaf2D
   0
 LWPOLYLINE
   5
-156
+159
 330
 15
 100
@@ -19517,13 +19611,13 @@ OPENCAD_AEC
 1000
 OPENING_REP
 1005
-14B
+14E
 1000
 OpeningLabel2D
   0
 LWPOLYLINE
   5
-157
+15A
 330
 15
 100
@@ -19713,13 +19807,13 @@ OPENCAD_AEC
 1000
 OPENING_REP
 1005
-14B
+14E
 1000
 Swing2D
   0
 LWPOLYLINE
   5
-158
+15B
 330
 15
 100
@@ -19779,13 +19873,13 @@ OPENCAD_AEC
 1000
 OPENING_REP
 1005
-14B
+14E
 1000
 Threshold2D
   0
 MTEXT
   5
-159
+15C
 330
 15
 100
@@ -19821,13 +19915,69 @@ OPENCAD_AEC
 1000
 OPENING_REP
 1005
-14B
+14E
 1000
 OpeningLabel2D
   0
+3DSOLID
+  5
+15D
+330
+15
+100
+AcDbEntity
+  8
+0
+100
+AcDbModelerGeometry
+290
+     0
+  2
+{00000000-0000-0000-0000-000000000000}
+100
+AcDb3dSolid
+350
+0
+1001
+OPENCAD_AEC
+1000
+OPENING_REP
+1005
+14E
+1000
+Frame3D
+  0
+3DSOLID
+  5
+15E
+330
+15
+100
+AcDbEntity
+  8
+0
+100
+AcDbModelerGeometry
+290
+     0
+  2
+{00000000-0000-0000-0000-000000000000}
+100
+AcDb3dSolid
+350
+0
+1001
+OPENCAD_AEC
+1000
+OPENING_REP
+1005
+14E
+1000
+Leaf3D
+  0
 MTEXT
   5
-15A
+15F
 330
 15
 100
@@ -19861,7 +20011,7 @@ Standard
   0
 LWPOLYLINE
   5
-15B
+160
 330
 15
 100
@@ -19901,7 +20051,7 @@ OPENCAD_AEC
 1000
 CHILD_HANDLES
 1005
-15C
+161
 1001
 OPENCAD_AEC
 1000
@@ -19923,21 +20073,21 @@ Structural
 1071
      8
 1005
-15D
-1005
-15E
-1005
-15F
-1005
-160
-1005
-161
-1005
 162
 1005
 163
 1005
 164
+1005
+165
+1005
+166
+1005
+167
+1005
+168
+1005
+169
 1000
 Center
 1000
@@ -19955,7 +20105,7 @@ axis_offset
 1000
 layer_id
 1000
-6a3b7168-27da-4399-bd58-3b9d2d9ee55c
+3ed70102-5755-495c-a1cd-f7ffe2c28512
 1000
 New
 1000
@@ -20001,7 +20151,7 @@ planes
   0
 POINT
   5
-15C
+161
 330
 15
 100
@@ -20021,7 +20171,7 @@ OPENCAD_AEC
 1000
 OPENING
 1005
-15B
+160
 1041
 3.0
 1041
@@ -20087,21 +20237,21 @@ OPENCAD_AEC
 1000
 CHILD_HANDLES
 1005
-165
-1005
-166
-1005
-167
-1005
-168
-1005
-169
-1005
 16A
+1005
+16B
+1005
+16C
+1005
+16D
+1005
+16E
+1005
+16F
   0
 LWPOLYLINE
   5
-15D
+162
 330
 15
 100
@@ -20161,13 +20311,13 @@ OPENCAD_AEC
 1000
 WALL_REP
 1005
-15B
+160
 1000
 contour
   0
 HATCH
   5
-15E
+163
 330
 15
 100
@@ -20257,13 +20407,13 @@ OPENCAD_AEC
 1000
 WALL_REP
 1005
-15B
+160
 1000
 hatch
   0
 LWPOLYLINE
   5
-15F
+164
 330
 15
 100
@@ -20323,13 +20473,13 @@ OPENCAD_AEC
 1000
 WALL_REP
 1005
-15B
+160
 1000
 contour
   0
 HATCH
   5
-160
+165
 330
 15
 100
@@ -20419,169 +20569,11 @@ OPENCAD_AEC
 1000
 WALL_REP
 1005
-15B
+160
 1000
 hatch
   0
 3DSOLID
-  5
-161
-330
-15
-100
-AcDbEntity
-  8
-0
-100
-AcDbModelerGeometry
-290
-     0
-  2
-{00000000-0000-0000-0000-000000000000}
-100
-AcDb3dSolid
-350
-0
-1001
-OPENCAD_AEC
-1000
-WALL_REP
-1005
-15B
-1000
-solid
-  0
-3DSOLID
-  5
-162
-330
-15
-100
-AcDbEntity
-  8
-0
-100
-AcDbModelerGeometry
-290
-     0
-  2
-{00000000-0000-0000-0000-000000000000}
-100
-AcDb3dSolid
-350
-0
-1001
-OPENCAD_AEC
-1000
-WALL_REP
-1005
-15B
-1000
-solid
-  0
-3DSOLID
-  5
-163
-330
-15
-100
-AcDbEntity
-  8
-0
-100
-AcDbModelerGeometry
-290
-     0
-  2
-{00000000-0000-0000-0000-000000000000}
-100
-AcDb3dSolid
-350
-0
-1001
-OPENCAD_AEC
-1000
-WALL_REP
-1005
-15B
-1000
-solid
-  0
-3DSOLID
-  5
-164
-330
-15
-100
-AcDbEntity
-  8
-0
-100
-AcDbModelerGeometry
-290
-     0
-  2
-{00000000-0000-0000-0000-000000000000}
-100
-AcDb3dSolid
-350
-0
-1001
-OPENCAD_AEC
-1000
-WALL_REP
-1005
-15B
-1000
-solid
-  0
-LWPOLYLINE
-  5
-165
-330
-15
-100
-AcDbEntity
-  8
-0
-100
-AcDbPolyline
- 90
-     2
- 70
-     0
- 38
-0.0
- 10
-22.5
- 20
-33.9
- 40
-0.0
- 41
-0.0
- 42
-0.0
- 10
-23.5
- 20
-34.1
- 40
-0.0
- 41
-0.0
- 42
-0.0
-1001
-OPENCAD_AEC
-1000
-OPENING_REP
-1005
-15C
-1000
-BreakthroughSymbol2D
-  0
-LWPOLYLINE
   5
 166
 330
@@ -20591,43 +20583,25 @@ AcDbEntity
   8
 0
 100
-AcDbPolyline
- 90
-     2
- 70
+AcDbModelerGeometry
+290
      0
- 38
-0.0
- 10
-22.5
- 20
-34.1
- 40
-0.0
- 41
-0.0
- 42
-0.0
- 10
-23.5
- 20
-33.9
- 40
-0.0
- 41
-0.0
- 42
-0.0
+  2
+{00000000-0000-0000-0000-000000000000}
+100
+AcDb3dSolid
+350
+0
 1001
 OPENCAD_AEC
 1000
-OPENING_REP
+WALL_REP
 1005
-15C
+160
 1000
-BreakthroughSymbol2D
+solid
   0
-LWPOLYLINE
+3DSOLID
   5
 167
 330
@@ -20637,6 +20611,90 @@ AcDbEntity
   8
 0
 100
+AcDbModelerGeometry
+290
+     0
+  2
+{00000000-0000-0000-0000-000000000000}
+100
+AcDb3dSolid
+350
+0
+1001
+OPENCAD_AEC
+1000
+WALL_REP
+1005
+160
+1000
+solid
+  0
+3DSOLID
+  5
+168
+330
+15
+100
+AcDbEntity
+  8
+0
+100
+AcDbModelerGeometry
+290
+     0
+  2
+{00000000-0000-0000-0000-000000000000}
+100
+AcDb3dSolid
+350
+0
+1001
+OPENCAD_AEC
+1000
+WALL_REP
+1005
+160
+1000
+solid
+  0
+3DSOLID
+  5
+169
+330
+15
+100
+AcDbEntity
+  8
+0
+100
+AcDbModelerGeometry
+290
+     0
+  2
+{00000000-0000-0000-0000-000000000000}
+100
+AcDb3dSolid
+350
+0
+1001
+OPENCAD_AEC
+1000
+WALL_REP
+1005
+160
+1000
+solid
+  0
+LWPOLYLINE
+  5
+16A
+330
+15
+100
+AcDbEntity
+  8
+0
+100
 AcDbPolyline
  90
      2
@@ -20669,13 +20727,13 @@ OPENCAD_AEC
 1000
 OPENING_REP
 1005
-15C
+161
 1000
-Mark2D
+BreakthroughSymbol2D
   0
 LWPOLYLINE
   5
-168
+16B
 330
 15
 100
@@ -20715,13 +20773,105 @@ OPENCAD_AEC
 1000
 OPENING_REP
 1005
-15C
+161
+1000
+BreakthroughSymbol2D
+  0
+LWPOLYLINE
+  5
+16C
+330
+15
+100
+AcDbEntity
+  8
+0
+100
+AcDbPolyline
+ 90
+     2
+ 70
+     0
+ 38
+0.0
+ 10
+22.5
+ 20
+33.9
+ 40
+0.0
+ 41
+0.0
+ 42
+0.0
+ 10
+23.5
+ 20
+34.1
+ 40
+0.0
+ 41
+0.0
+ 42
+0.0
+1001
+OPENCAD_AEC
+1000
+OPENING_REP
+1005
+161
 1000
 Mark2D
   0
 LWPOLYLINE
   5
-169
+16D
+330
+15
+100
+AcDbEntity
+  8
+0
+100
+AcDbPolyline
+ 90
+     2
+ 70
+     0
+ 38
+0.0
+ 10
+22.5
+ 20
+34.1
+ 40
+0.0
+ 41
+0.0
+ 42
+0.0
+ 10
+23.5
+ 20
+33.9
+ 40
+0.0
+ 41
+0.0
+ 42
+0.0
+1001
+OPENCAD_AEC
+1000
+OPENING_REP
+1005
+161
+1000
+Mark2D
+  0
+LWPOLYLINE
+  5
+16E
 330
 15
 100
@@ -20761,13 +20911,13 @@ OPENCAD_AEC
 1000
 OPENING_REP
 1005
-15C
+161
 1000
 OpeningLabel2D
   0
 MTEXT
   5
-16A
+16F
 330
 15
 100
@@ -20803,13 +20953,13 @@ OPENCAD_AEC
 1000
 OPENING_REP
 1005
-15C
+161
 1000
 OpeningLabel2D
   0
 MTEXT
   5
-16B
+170
 330
 15
 100

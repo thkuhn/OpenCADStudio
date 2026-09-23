@@ -557,3 +557,14 @@ Fenster und Türen erhalten eigenständige 3D-Körper (Zarge, Flügel, Glas), 2D
   - *"Ansicht Fassade"*: Alle `Elevation*`-Slots aktiv; Grundriss- und 3D-Slots inaktiv.
 - In UI (`opening_style_manager.rs`, `aec_opening_style_manager.rs`, `aec_plan_manager.rs`) Slots, Querschnitts-Offset und Planart-Checkboxen einbinden.
 - Abschließende Integrationstests für das Gesamtsystem ausführen.
+
+### ✓ Step 7: Entkopplung der Zeichnungsaktualisierung in Managern & "Übernehmen" / "Speichern"-Buttons
+Entkopplung von Werteingaben in allen AEC-Managern von der Zeichnungsregenerierung. Keine Live-Regenerierung mehr bei Tastatureingaben. Integration von "Übernehmen" (Speichern & Zeichnung aktualisieren) und "Speichern" (nur Speichern) in Geschosseinstellungen (`StoreySettings`), Öffnungsstil-Manager (`OpeningStyleManager`), Material-Manager (`MaterialManager`) und Plan-Manager (`PlanManager`).
+
+- In `src/modules/aec/update.rs` den Aufruf von `apply_storey_z_to_active_scene` aus allen Tastatur- und Toggle-Handlern von `StoreySettings` (`Elevation`, `Height`, `PlaneZ`, `AddPlane`, `SetFloor`, etc.) entfernen.
+- Neue AecMessages für `AecStoreySettingsSave` und `AecStoreySettingsSaveAndApply` implementieren.
+- In `src/modules/aec/ui/aec_storey_settings.rs` im Footer "Übernehmen" (`SaveAndApply`), "Speichern" (`Save`) und "Schließen" integrieren.
+- In `src/modules/aec/ui/aec_opening_style_manager.rs` und `styles/opening_style_manager.rs` "Übernehmen" (`AecOpeningStyleManagerSaveAndApply`) ergänzen, das alle betroffenen Öffnungen in der Zeichnung aktualisiert, während "Speichern" (`AecOpeningStyleManagerSave`) nur die Bibliotheksdaten sichert.
+- In `src/modules/aec/ui/aec_material_manager.rs` und `update.rs` "Übernehmen" (`AecStyleManagerMaterialSaveAndApply`) integrieren, das alle betroffenen Wände/Öffnungen in der Zeichnung aktualisiert, während "Speichern" nur die Bibliothek sichert.
+- In `src/modules/aec/ui/aec_plan_manager.rs` "Speichern" (`AecPlanManagerSave`) ergänzen, um DisplayConfigs ohne sofortige Tab-Anwendung zu sichern.
+- Automatisierte Tests für die Entkopplung und das Anwenden-Verhalten in `wall_command_tests.rs` erstellen.

@@ -220,10 +220,16 @@ fn config_form_view<'a>(form: PlanConfigFormState<'a>) -> Element<'a, Message> {
         t!("DisplayConfig")
     };
 
-    let mut actions = row![button(text(t!("Übernehmen")).size(11))
-        .style(button::primary)
-        .padding([5, 12])
-        .on_press(Message::Aec(AecMessage::AecPlanManagerApply))]
+    let mut actions = row![
+        button(text(t!("Übernehmen")).size(11))
+            .style(button::primary)
+            .padding([5, 12])
+            .on_press(Message::Aec(AecMessage::AecPlanManagerApply)),
+        button(text(t!("Speichern")).size(11))
+            .style(button::subtle)
+            .padding([5, 12])
+            .on_press(Message::Aec(AecMessage::AecPlanManagerSave)),
+    ]
     .spacing(8);
 
     if !form.is_new {

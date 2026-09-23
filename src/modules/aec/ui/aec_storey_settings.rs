@@ -134,6 +134,23 @@ pub fn view_window<'a>(state: StoreySettingsState<'a>) -> Element<'a, Message> {
         .align_y(iced::Center),
     );
 
+    let footer = row![
+        Space::new().width(Fill),
+        button(text(t!("Übernehmen")).size(11))
+            .style(button::primary)
+            .padding([5, 14])
+            .on_press(Message::Aec(AecMessage::AecStoreySettingsSaveAndApply(bid, sid))),
+        button(text(t!("Speichern")).size(11))
+            .style(button::subtle)
+            .padding([5, 14])
+            .on_press(Message::Aec(AecMessage::AecStoreySettingsSave(bid, sid))),
+        button(text(t!("Schließen")).size(11))
+            .padding([5, 14])
+            .on_press(Message::Aec(AecMessage::AecStoreySettingsClose)),
+    ]
+    .spacing(8)
+    .align_y(iced::Center);
+
     column![
         header,
         name_row,
@@ -142,6 +159,7 @@ pub fn view_window<'a>(state: StoreySettingsState<'a>) -> Element<'a, Message> {
         floor_opts,
         ceil_opts,
         scrollable(planes).height(Fill),
+        footer,
     ]
     .spacing(8)
     .padding(10)

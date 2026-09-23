@@ -322,4 +322,62 @@ impl OpenCADStudio {
             Some(contour)
         };
     }
+
+    pub(crate) fn aec_plan_manager_save_internal(&mut self) -> Option<String> {
+        let name = self.aec.aec_plan_manager_name.trim().to_string();
+        if name.is_empty() {
+            self.command_line.push_error(
+                crate::t!("AEC DisplayConfig Manager: name cannot be empty.").as_ref(),
+            );
+            return None;
+        }
+        let discipline = self.aec.aec_plan_manager_discipline.trim().to_string();
+        let scale = self.aec.aec_plan_manager_scale.trim().parse::<f64>().ok();
+
+        let mut config = crate::modules::aec::engine::plan_view::DisplayConfig::new(
+            name.clone(),
+            discipline,
+            self.aec.aec_plan_manager_planning_stage,
+            self.aec.aec_plan_manager_view_type.clone(),
+        );
+        config.scale = scale;
+        if let Some(id) = self.aec.aec_plan_manager_editing_id {
+            config.id = id;
+        }
+        self.aec_plan_manager_write_overlay_buffers();
+        self.aec_plan_manager_write_overlay_contour_hatch();
+        config.default_representation = self.aec.aec_plan_manager_default_representation;
+        config.component_visibility = self.aec.aec_plan_manager_component_visibility.clone();
+        config.style_overlays = self.aec.aec_plan_manager_style_overlays.clone();
+        config.contour_hatch = None;
+
+        config.phase_filter = self.aec_plan_manager_build_phase_filter();
+
+        if let Some(old_name) = self.aec.aec_plan_manager_editing_name.clone() {
+            if old_name != name {
+                if let Some(lib) = self.aec.aec_plan_library.as_mut() {
+                    lib.remove(&old_name);
+                }
+            }
+        }
+
+        let lib = self
+            .aec.aec_plan_library
+            .get_or_insert_with(crate::modules::aec::engine::library::DisplayConfigLibrary::empty);
+        lib.upsert(config.clone());
+        let lib_snapshot = lib.clone();
+        match self.aec_save_display_config_library_preferring_project(&lib_snapshot) {
+            Ok(()) => self.command_line.push_info(
+                crate::t!("AEC DisplayConfig Manager: config saved.").as_ref(),
+            ),
+            Err(e) => self.command_line.push_error(
+                crate::tf!("AEC DisplayConfig Manager: failed to save library: {e}").as_ref(),
+            ),
+        }
+
+        self.aec.aec_plan_manager_editing_name = Some(name.clone());
+        self.aec.aec_plan_manager_selected = Some(name.clone());
+        self.aec.aec_plan_manager_editing_id = Some(config.id);
+        Some(name)
+    }
 }

@@ -53,6 +53,9 @@ pub enum AecMessage {
     AecStyleManagerMaterialDuplicate,
     /// "Save" pressed in the material edit form — upserts and persists.
     AecStyleManagerMaterialSave,
+    /// "Save & Apply" pressed in the material edit form — upserts and persists,
+    /// and regenerates all walls in the active drawing using this material.
+    AecStyleManagerMaterialSaveAndApply,
     /// "Delete" pressed for the currently selected material.
     AecStyleManagerMaterialDelete,
     /// Copy the currently selected material from global library to project library.
@@ -150,6 +153,7 @@ pub enum AecMessage {
     AecOpeningStyleManagerSketchAddFrame,
     AecOpeningStyleManagerSketchArc,
     AecOpeningStyleManagerSave,
+    AecOpeningStyleManagerSaveAndApply,
     AecOpeningStyleManagerDelete,
     AecStyleManagerCopyOpeningStyleToProject,
     AecStyleManagerCopyOpeningStyleToGlobal,
@@ -283,6 +287,8 @@ pub enum AecMessage {
     AecProjectExplorerMigrateLibraries,
     AecStoreySettingsOpen(uuid::Uuid, uuid::Uuid),
     AecStoreySettingsClose,
+    AecStoreySettingsSave(uuid::Uuid, uuid::Uuid),
+    AecStoreySettingsSaveAndApply(uuid::Uuid, uuid::Uuid),
     AecStoreySettingsNameChanged(uuid::Uuid, uuid::Uuid, String),
     AecStoreySettingsDrawingChanged(uuid::Uuid, uuid::Uuid, String),
     AecStoreySettingsSetFloor(uuid::Uuid, uuid::Uuid, uuid::Uuid),
@@ -397,6 +403,9 @@ pub enum AecMessage {
     /// if the config being edited is the active tab's active DisplayConfig,
     /// re-applies it to the active scene's walls.
     AecPlanManagerApply,
+    /// Save pressed — persists the edit buffer to the library without
+    /// immediately updating the active tab.
+    AecPlanManagerSave,
     /// The active-DisplayConfig dropdown selected a config by name for the
     /// active document tab; immediately regenerates the tab's walls.
     AecActiveDisplayConfigSelected(Option<String>),

@@ -8440,7 +8440,7 @@ fn test_opening_grips_definition_and_flip_handle() {
     win.reference_side = OpeningReferenceSide::Start;
     win.hinge = HingeSide::Left;
 
-    let grips = opening_axis_grips(&axis, &win);
+    let grips = opening_axis_grips(&axis, &win, 0.0);
     assert_eq!(grips.len(), 4, "Must have 4 grips: Center, Start, End, Flip");
     assert_eq!(grips[0].id, 0);
     assert_eq!(grips[1].id, 1);
@@ -8996,4 +8996,525 @@ fn test_discipline_templates_slot_visibilities() {
     assert!(!rules_elev.is_opening_visible(OpeningComponentSlot::Frame2D));
     assert!(!rules_elev.is_opening_visible(OpeningComponentSlot::Leaf2D));
     assert!(!rules_elev.is_opening_visible(OpeningComponentSlot::Swing2D));
+}
+
+#[test]
+fn test_wall_base_control_plane_elevation_alignment() {
+    use crate::modules::aec::engine::opening_display::{
+        collect_opening_display_children, host_base_z, opening_axis_grips,
+    };
+    use crate::modules::aec::engine::opening_xdata::{openings_for_host_wall, place_wall_opening};
+    use crate::modules::aec::engine::openings::OpeningKind;
+    use crate::modules::aec::engine::project::{Building, ProjectFile, StoreyRef};
+    use crate::modules::aec::engine::wall::Wall;
+    use crate::modules::aec::engine::wall_package::resolve_wall_package;
+    use crate::modules::aec::engine::wall_regen::regenerate_wall_representation;
+    use crate::modules::aec::engine::xdata::AEC_APPID;
+    use crate::scene::Scene;
+    use acadrust::entities::{LwPolyline, LwVertex};
+    use acadrust::types::Vector2;
+    use acadrust::xdata::ExtendedDataRecord;
+    use acadrust::EntityType;
+    use glam::DVec3;
+
+    let mut scene = Scene::new();
+    let storey_elevation = 2.80;
+    let storey_height = 3.00;
+    let storey = StoreyRef::new_with_height("OG1", storey_elevation, storey_height, "og1.dwg");
+    let floor_plane_id = storey.floor_plane_id;
+    let ceiling_plane_id = storey.ceiling_plane_id;
+
+    let mut project = ProjectFile::default();
+    let mut building = Building::new("Haus A");
+    building.storeys.push(storey);
+    project.buildings.push(building);
+
+    let layers = vec![wl("Beton", 0.24, "Structural")];
+    let mut pl = LwPolyline::new();
+    pl.add_vertex(LwVertex::new(Vector2::new(0.0, 0.0)));
+    pl.add_vertex(LwVertex::new(Vector2::new(8.0, 0.0)));
+    pl.elevation = storey_elevation;
+
+    let mut wall = Wall::new("Standard", storey_height, 0);
+    wall.layers = layers.clone();
+    wall.base_plane_id = Some(floor_plane_id);
+    wall.top_plane_id = Some(ceiling_plane_id);
+    wall.base_origin = [0.0, 0.0, storey_elevation];
+    wall.base_normal = [0.0, 0.0, 1.0];
+    wall.top_origin = [0.0, 0.0, storey_elevation + storey_height];
+    wall.top_normal = [0.0, 0.0, 1.0];
+
+    let mut ent = EntityType::LwPolyline(pl);
+    let mut rec = ExtendedDataRecord::new(AEC_APPID);
+    rec.values = crate::modules::aec::engine::xdata::wall_record_for_wall(&wall);
+    ent.common_mut().extended_data.add_record(rec);
+    let wall_h = scene.add_entity(ent);
+
+    // Regenerate wall
+    let touched = regenerate_wall_representation(&mut scene, wall_h, None).expect("regen wall");
+
+    // 1. Check Wall Axis elevation
+    let wall_ent = scene.document.get_entity(wall_h).expect("wall entity");
+    if let EntityType::LwPolyline(pl) = wall_ent {
+        assert!(
+            (pl.elevation - storey_elevation).abs() < 1e-4,
+            "Axis polyline elevation must be {storey_elevation}, got {}",
+            pl.elevation
+        );
+    } else {
+        panic!("Wall must be LwPolyline");
+    }
+
+    // 2. Check 2D Contours elevation
+    for h in &touched {
+        if *h == wall_h {
+            continue;
+        }
+        if let Some(EntityType::LwPolyline(c_pl)) = scene.document.get_entity(*h) {
+            assert!(
+                (c_pl.elevation - storey_elevation).abs() < 1e-4,
+                "2D contour polyline elevation must be {storey_elevation}, got {}",
+                c_pl.elevation
+            );
+        }
+    }
+
+    // 3. Check 3D Solids Z extents
+    let mut solid_found = false;
+    for (handle, body) in &scene.solid_models {
+        if touched.contains(handle) {
+            let (min, max) = crate::scene::model::solid_model::extent(body).expect("extent");
+            assert!(
+                (min[2] - storey_elevation).abs() < 1e-3,
+                "Solid min Z must start at {storey_elevation}, got {}",
+                min[2]
+            );
+            assert!(
+                (max[2] - (storey_elevation + storey_height)).abs() < 1e-3,
+                "Solid max Z must reach {}, got {}",
+                storey_elevation + storey_height,
+                max[2]
+            );
+            solid_found = true;
+        }
+    }
+    assert!(solid_found, "Must have generated 3D wall solids");
+
+    // 4. Place a Window on the wall
+    let sill_height = 0.90;
+    let win_height = 1.30;
+    let (win_h, _) = place_wall_opening(
+        &mut scene,
+        wall_h,
+        DVec3::new(3.0, 0.0, 0.0),
+        OpeningKind::Window,
+        None,
+        None,
+        None,
+    )
+    .expect("place window");
+
+    // Configure window dimensions
+    let mut opening = openings_for_host_wall(&scene, wall_h)
+        .into_iter()
+        .find(|o| o.handle == win_h)
+        .expect("window opening");
+    opening.sill_height = sill_height;
+    opening.height = win_height;
+    opening.width = 1.20;
+    crate::modules::aec::engine::opening_xdata::write_opening_instance(&mut scene, &opening);
+
+    // Regenerate opening
+    let wall_pkg = resolve_wall_package(&scene, wall_h);
+    regenerate_wall_representation(&mut scene, wall_pkg, None).expect("regen wall with window");
+
+    // 5. Verify Window POINT location Z matches wall base
+    if let Some(EntityType::Point(pt)) = scene.document.get_entity(win_h) {
+        assert!(
+            (pt.location.z - storey_elevation).abs() < 1e-4,
+            "Opening point Z must match wall base {storey_elevation}, got {}",
+            pt.location.z
+        );
+    } else {
+        panic!("Opening entity must be a POINT");
+    }
+
+    // 6. Verify Window 2D plan children elevation
+    let children = collect_opening_display_children(&scene, win_h);
+    assert!(!children.is_empty(), "Window must have display children");
+    for child_h in &children {
+        if let Some(EntityType::LwPolyline(pl)) = scene.document.get_entity(*child_h) {
+            assert!(
+                (pl.elevation - storey_elevation).abs() < 1e-4,
+                "Window 2D polyline elevation must match wall base {storey_elevation}, got {}",
+                pl.elevation
+            );
+        } else if let Some(EntityType::MText(mtext)) = scene.document.get_entity(*child_h) {
+            assert!(
+                (mtext.insertion_point.z - storey_elevation).abs() < 1e-4,
+                "Window label MText insertion point Z must match wall base {storey_elevation}, got {}",
+                mtext.insertion_point.z
+            );
+        }
+    }
+
+    // 7. Verify Window 3D solid models have their base at wall_base_z + sill_height
+    let mut win_solids_found = 0;
+    let expected_sill_z = storey_elevation + sill_height;
+    let expected_head_z = expected_sill_z + win_height;
+    let mut overall_min_z = f64::INFINITY;
+    let mut overall_max_z = f64::NEG_INFINITY;
+    for (handle, body) in &scene.solid_models {
+        if children.contains(handle) {
+            let (min, max) = crate::scene::model::solid_model::extent(body).expect("extent");
+            overall_min_z = overall_min_z.min(min[2]);
+            overall_max_z = overall_max_z.max(max[2]);
+            win_solids_found += 1;
+        }
+    }
+    assert!(win_solids_found >= 2, "Must have generated window 3D frame and glazing solids");
+    assert!(
+        (overall_min_z - expected_sill_z).abs() < 1e-2,
+        "Window 3D overall min Z must be at {expected_sill_z}, got {overall_min_z}"
+    );
+    assert!(
+        (overall_max_z - expected_head_z).abs() < 1e-2,
+        "Window 3D overall max Z must reach {expected_head_z}, got {overall_max_z}"
+    );
+
+    // 8. Verify Window Grips elevation
+    let axis = vec![(0.0, 0.0), (8.0, 0.0)];
+    let grips = opening_axis_grips(&axis, &opening, host_base_z(&scene, wall_pkg));
+    assert_eq!(grips.len(), 4);
+    for grip in &grips {
+        assert!(
+            (grip.world.z - storey_elevation).abs() < 1e-4,
+            "Grip Z must match wall base {storey_elevation}, got {}",
+            grip.world.z
+        );
+    }
+}
+
+#[test]
+fn test_wall_and_opening_track_control_plane_vertical_movement() {
+    use crate::modules::aec::engine::opening_display::{
+        collect_opening_display_children, host_base_z, opening_axis_grips,
+    };
+    use crate::modules::aec::engine::opening_xdata::{openings_for_host_wall, place_wall_opening};
+    use crate::modules::aec::engine::openings::OpeningKind;
+    use crate::modules::aec::engine::project::{Building, ProjectFile, StoreyRef};
+    use crate::modules::aec::engine::wall::Wall;
+    use crate::modules::aec::engine::wall_package::resolve_wall_package;
+    use crate::modules::aec::engine::wall_regen::regenerate_wall_representation;
+    use crate::modules::aec::engine::xdata::AEC_APPID;
+    use crate::scene::Scene;
+    use acadrust::entities::{LwPolyline, LwVertex};
+    use acadrust::types::Vector2;
+    use acadrust::xdata::ExtendedDataRecord;
+    use acadrust::EntityType;
+    use glam::DVec3;
+
+    let mut scene = Scene::new();
+    let initial_elevation = 0.0;
+    let new_elevation = 3.50;
+    let storey_height = 2.80;
+
+    let storey = StoreyRef::new_with_height("EG", initial_elevation, storey_height, "eg.dwg");
+    let floor_plane_id = storey.floor_plane_id;
+    let ceiling_plane_id = storey.ceiling_plane_id;
+
+    let mut project = ProjectFile::default();
+    let mut building = Building::new("Gebaeude 1");
+    building.storeys.push(storey);
+    project.buildings.push(building);
+
+    let layers = vec![wl("Kalksandstein", 0.20, "Structural")];
+    let mut pl = LwPolyline::new();
+    pl.add_vertex(LwVertex::new(Vector2::new(0.0, 0.0)));
+    pl.add_vertex(LwVertex::new(Vector2::new(6.0, 0.0)));
+    pl.elevation = initial_elevation;
+
+    let mut wall = Wall::new("Standard", storey_height, 0);
+    wall.layers = layers.clone();
+    wall.base_plane_id = Some(floor_plane_id);
+    wall.top_plane_id = Some(ceiling_plane_id);
+    wall.base_origin = [0.0, 0.0, initial_elevation];
+    wall.top_origin = [0.0, 0.0, initial_elevation + storey_height];
+
+    let mut ent = EntityType::LwPolyline(pl);
+    let mut rec = ExtendedDataRecord::new(AEC_APPID);
+    rec.values = crate::modules::aec::engine::xdata::wall_record_for_wall(&wall);
+    ent.common_mut().extended_data.add_record(rec);
+    let wall_h = scene.add_entity(ent);
+
+    // Initial regen
+    let _ = regenerate_wall_representation(&mut scene, wall_h, None);
+
+    // Place window
+    let (win_h, _) = place_wall_opening(
+        &mut scene,
+        wall_h,
+        DVec3::new(2.5, 0.0, 0.0),
+        OpeningKind::Window,
+        None,
+        None,
+        None,
+    )
+    .expect("place window");
+
+    let mut opening = openings_for_host_wall(&scene, wall_h)
+        .into_iter()
+        .find(|o| o.handle == win_h)
+        .expect("window");
+    opening.sill_height = 0.85;
+    opening.height = 1.25;
+    opening.width = 1.00;
+    crate::modules::aec::engine::opening_xdata::write_opening_instance(&mut scene, &opening);
+    let wall_pkg = resolve_wall_package(&scene, wall_h);
+    let _ = regenerate_wall_representation(&mut scene, wall_pkg, None);
+
+    // NOW: Move the storey / control plane elevation up to 3.50m!
+    let storey_mut = &mut project.buildings[0].storeys[0];
+    storey_mut.elevation = new_elevation;
+    if let Some(fp) = storey_mut.plane_mut(floor_plane_id) {
+        fp.origin[2] = new_elevation;
+    }
+    if let Some(cp) = storey_mut.plane_mut(ceiling_plane_id) {
+        cp.origin[2] = new_elevation + storey_height;
+    }
+
+    let project_snap = project.clone();
+    let storey_mut = &mut project.buildings[0].storeys[0];
+    // Apply storey elevation update to scene
+    crate::modules::aec::project::storey_z::apply_storey_z_to_scene(
+        &mut scene,
+        storey_mut,
+        Some(&project_snap),
+        None,
+    );
+
+    // 1. Verify wall axis polyline elevation updated to 3.50m
+    if let Some(EntityType::LwPolyline(pl)) = scene.document.get_entity(wall_h) {
+        assert!(
+            (pl.elevation - new_elevation).abs() < 1e-4,
+            "Wall axis polyline elevation must update to {new_elevation}, got {}",
+            pl.elevation
+        );
+    }
+
+    // 2. Verify wall 3D solids updated to start at 3.50m
+    let children = collect_opening_display_children(&scene, win_h);
+    let mut wall_min_z = f64::INFINITY;
+    for (handle, body) in &scene.solid_models {
+        if (*handle == wall_pkg || scene.document.get_entity(*handle).is_some())
+            && !children.contains(handle)
+        {
+            let (min, _max) = crate::scene::model::solid_model::extent(body).expect("extent");
+            wall_min_z = wall_min_z.min(min[2]);
+        }
+    }
+    assert!(
+        (wall_min_z - new_elevation).abs() < 1e-3,
+        "Wall 3D solid min Z must start at {new_elevation}, got {wall_min_z}"
+    );
+
+    // 3. Verify window POINT location updated to 3.50m
+    if let Some(EntityType::Point(pt)) = scene.document.get_entity(win_h) {
+        assert!(
+            (pt.location.z - new_elevation).abs() < 1e-4,
+            "Window point location Z must update to {new_elevation}, got {}",
+            pt.location.z
+        );
+    }
+
+    // 4. Verify window 3D solids moved up to new_elevation + sill_height = 3.50 + 0.85 = 4.35m
+    let children = collect_opening_display_children(&scene, win_h);
+    let expected_sill_z = new_elevation + 0.85;
+    let expected_head_z = expected_sill_z + 1.25;
+    let mut win_solids = 0;
+    let mut overall_min_z = f64::INFINITY;
+    let mut overall_max_z = f64::NEG_INFINITY;
+    for (handle, body) in &scene.solid_models {
+        if children.contains(handle) {
+            let (min, max) = crate::scene::model::solid_model::extent(body).expect("extent");
+            overall_min_z = overall_min_z.min(min[2]);
+            overall_max_z = overall_max_z.max(max[2]);
+            win_solids += 1;
+        }
+    }
+    assert!(win_solids >= 2, "Must find updated window 3D solids");
+    assert!(
+        (overall_min_z - expected_sill_z).abs() < 1e-2,
+        "Window 3D overall min Z must move to {expected_sill_z}, got {overall_min_z}"
+    );
+    assert!(
+        (overall_max_z - expected_head_z).abs() < 1e-2,
+        "Window 3D overall max Z must move to {expected_head_z}, got {overall_max_z}"
+    );
+
+    // 5. Verify window grips moved up to 3.50m
+    let axis = vec![(0.0, 0.0), (6.0, 0.0)];
+    let grips = opening_axis_grips(&axis, &opening, host_base_z(&scene, wall_pkg));
+    for grip in &grips {
+        assert!(
+            (grip.world.z - new_elevation).abs() < 1e-4,
+            "Window grip Z must be at {new_elevation}, got {}",
+            grip.world.z
+        );
+    }
+}
+
+#[test]
+fn test_manager_save_vs_save_and_apply_decoupling() {
+    use crate::modules::aec::engine::material::Material;
+    use crate::modules::aec::engine::opening_display::collect_opening_display_children;
+    use crate::modules::aec::engine::opening_style::{OpeningStyle, DEFAULT_FRAME_THICKNESS};
+    use crate::modules::aec::engine::opening_xdata::place_wall_opening;
+    use crate::modules::aec::engine::openings::OpeningKind;
+    use crate::modules::aec::engine::project::{Building, ProjectFile, StoreyRef};
+    use crate::modules::aec::engine::wall::Wall;
+    use crate::modules::aec::engine::wall_package::resolve_wall_package;
+    use crate::modules::aec::engine::wall_regen::regenerate_wall_representation;
+    use crate::modules::aec::engine::xdata::AEC_APPID;
+    use crate::scene::Scene;
+    use acadrust::entities::{LwPolyline, LwVertex};
+    use acadrust::types::Vector2;
+    use acadrust::xdata::ExtendedDataRecord;
+    use acadrust::EntityType;
+    use glam::DVec3;
+
+    let mut scene = Scene::new();
+    let initial_elevation = 1.00;
+    let storey_height = 2.80;
+    let mut storey = StoreyRef::new_with_height("EG", initial_elevation, storey_height, "eg.dwg");
+    let floor_plane_id = storey.floor_plane_id;
+    let ceiling_plane_id = storey.ceiling_plane_id;
+
+    let mut project = ProjectFile::default();
+    let mut building = Building::new("Bau A");
+    building.storeys.push(storey.clone());
+    project.buildings.push(building);
+
+    let mat_id = "mat_brick_red".to_string();
+    let initial_material = Material {
+        id: mat_id.clone(),
+        name: "Ziegel".to_string(),
+        hatch_pattern: "ANSI31".to_string(),
+        line_color: 0xCC3333,
+        line_type: "Continuous".to_string(),
+        render_material_ref: None,
+        category: Some("Mauerwerk".to_string()),
+        hatch_color: None,
+        hatch_scale: 1.0,
+        hatch_angle: 0.0,
+        hatch_angle_relative: true,
+    };
+    let mut library = crate::modules::aec::engine::library::StyleLibrary::empty();
+    library.upsert_material(initial_material.clone());
+
+    let mut win_style = OpeningStyle::standard_window();
+    let win_style_id = "test_window_style".to_string();
+    win_style.style.id = win_style_id.clone();
+    win_style.frame_thickness = DEFAULT_FRAME_THICKNESS;
+    library.upsert_opening_style(win_style.clone());
+
+    let mut pl = LwPolyline::new();
+    pl.add_vertex(LwVertex::new(Vector2::new(0.0, 0.0)));
+    pl.add_vertex(LwVertex::new(Vector2::new(6.0, 0.0)));
+    pl.elevation = initial_elevation;
+
+    let mut wall = Wall::new("Standard", storey_height, 0);
+    wall.layers = vec![wl(&mat_id, 0.30, "Structural")];
+    wall.base_plane_id = Some(floor_plane_id);
+    wall.top_plane_id = Some(ceiling_plane_id);
+    wall.base_origin = [0.0, 0.0, initial_elevation];
+    wall.base_normal = [0.0, 0.0, 1.0];
+    wall.top_origin = [0.0, 0.0, initial_elevation + storey_height];
+    wall.top_normal = [0.0, 0.0, 1.0];
+
+    let mut ent = EntityType::LwPolyline(pl);
+    let mut rec = ExtendedDataRecord::new(AEC_APPID);
+    rec.values = crate::modules::aec::engine::xdata::wall_record_for_wall(&wall);
+    ent.common_mut().extended_data.add_record(rec);
+    let wall_h = scene.add_entity(ent);
+
+    // Initial regen
+    let _ = regenerate_wall_representation(&mut scene, wall_h, Some(&library));
+
+    // Place window
+    let (win_h, _) = place_wall_opening(
+        &mut scene,
+        wall_h,
+        DVec3::new(2.0, 0.0, 0.0),
+        OpeningKind::Window,
+        Some(&library),
+        None,
+        None,
+    )
+    .expect("place window");
+    let mut opening = crate::modules::aec::engine::opening_xdata::openings_for_host_wall(&scene, wall_h)
+        .into_iter()
+        .find(|o| o.handle == win_h)
+        .expect("window");
+    opening.style_id = Some(win_style_id.clone());
+    crate::modules::aec::engine::opening_xdata::write_opening_instance(&mut scene, &opening);
+    let wall_pkg = resolve_wall_package(&scene, wall_h);
+    let _ = regenerate_wall_representation(&mut scene, wall_pkg, Some(&library));
+
+    // Case 1: Storey height/elevation edited, but "Save" only (no apply to scene yet).
+    // The storey in-memory updates, but scene entities stay at initial_elevation!
+    let new_elevation = 4.00;
+    storey.set_elevation(new_elevation);
+    project.buildings[0].storeys[0] = storey.clone();
+    // Wall axis elevation in scene MUST STILL BE initial_elevation (1.00)
+    if let Some(EntityType::LwPolyline(pl)) = scene.document.get_entity(wall_h) {
+        assert_eq!(pl.elevation, initial_elevation, "Wall elevation must not change before Apply");
+    }
+
+    // Now call apply to scene (Save and Apply):
+    let project_snap = project.clone();
+    crate::modules::aec::project::storey_z::apply_storey_z_to_scene(
+        &mut scene,
+        &mut storey,
+        Some(&project_snap),
+        Some(&library),
+    );
+    // Wall axis elevation in scene MUST NOW BE new_elevation (4.00)
+    if let Some(EntityType::LwPolyline(pl)) = scene.document.get_entity(wall_h) {
+        assert_eq!(pl.elevation, new_elevation, "Wall elevation must update after Apply");
+    }
+
+    // Case 2: Opening style modified (frame_thickness 0.06 -> 0.12), "Save" only.
+    // Library updates, but scene opening children still have the old geometry!
+    let mut updated_style = win_style.clone();
+    let new_frame_thickness = 0.12;
+    updated_style.frame_thickness = new_frame_thickness;
+    library.upsert_opening_style(updated_style);
+
+    let old_children = collect_opening_display_children(&scene, win_h);
+    assert!(!old_children.is_empty());
+
+    // When "Save and Apply" is triggered, regenerate_wall_representation is called with the updated library:
+    let _ = regenerate_wall_representation(&mut scene, wall_pkg, Some(&library));
+    let new_children = collect_opening_display_children(&scene, win_h);
+    assert!(!new_children.is_empty());
+
+    // Case 3: Material modified (change hatch pattern from ANSI31 to AR-B816), "Save" only.
+    let mut updated_mat = initial_material.clone();
+    updated_mat.hatch_pattern = "AR-B816".to_string();
+    library.upsert_material(updated_mat);
+
+    // Apply updates the wall with the new material
+    let _ = regenerate_wall_representation(&mut scene, wall_pkg, Some(&library));
+    // Verify hatch entity was updated in the scene
+    let mut found_hatch = false;
+    for entity in scene.document.entities() {
+        if let EntityType::Hatch(h) = entity {
+            if h.pattern.name == "AR-B816" {
+                found_hatch = true;
+                break;
+            }
+        }
+    }
+    assert!(found_hatch, "Hatch must reflect updated material after Apply");
 }
