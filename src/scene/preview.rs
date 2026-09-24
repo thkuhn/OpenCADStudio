@@ -369,19 +369,20 @@ impl Scene {
     }
 
     /// Boundary wire for edit previews and selected hatches.
-    pub(super) fn hatch_outline_wire(&self, handle: Handle) -> Option<WireModel> {
+    pub fn hatch_outline_wire(&self, handle: Handle) -> Option<WireModel> {
         let m = self.hatches.get(&handle)?;
         Self::hatch_model_outline_wire(handle, m)
     }
 
     fn hatch_model_outline_wire(handle: Handle, m: &HatchModel) -> Option<WireModel> {
         let (wx, wy) = (m.world_origin[0], m.world_origin[1]);
+        let z = m.fill_plane.as_ref().map(|p| p.origin[2]).unwrap_or(0.0);
         let pts: Vec<[f64; 3]> = m
             .boundary
             .iter()
             .map(|&[x, y]| {
                 if x.is_finite() && y.is_finite() {
-                    [wx + x as f64, wy + y as f64, 0.0]
+                    [wx + x as f64, wy + y as f64, z]
                 } else {
                     [f64::NAN; 3]
                 }

@@ -186,6 +186,9 @@ pub struct AecState {
     /// Target wall entity handle(s) for `StylePickerTarget::WallPropertiesStyle`
     /// (one per selected wall; more than one when editing a multi-selection).
     pub aec_style_picker_wall_handles: Vec<acadrust::Handle>,
+    /// Cache of last applied AEC property target (handle, field, val) to dedup
+    /// batch-invocations on package child entities in the properties panel.
+    pub aec_last_applied_property: Option<(acadrust::Handle, String, String)>,
     /// Id of the material currently being edited, if the edit buffer holds
     /// an existing material (`None` while composing a new/unsaved one).
     pub aec_style_manager_material_editing_id: Option<String>,
@@ -494,6 +497,7 @@ impl Default for AecState {
             aec_style_picker_filter: String::new(),
             aec_style_picker_selection: None,
             aec_style_picker_wall_handles: Vec::new(),
+            aec_last_applied_property: None,
             aec_style_manager_material_editing_id: None,
             aec_style_manager_material_form_open: false,
             aec_style_manager_material_name: String::new(),

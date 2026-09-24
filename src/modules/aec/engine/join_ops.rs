@@ -1055,12 +1055,12 @@ pub(crate) fn join_two_walls_in_document_inner(
                         }
                         let end_hit = [axis[0], *axis.last().unwrap()]
                             .iter()
-                            .any(|e| e.distance(pt) <= join::JUNCTION_TOLERANCE.max(1e-4));
+                            .any(|e| (e.x - pt.x).hypot(e.y - pt.y) <= join::JUNCTION_TOLERANCE.max(1e-4));
                         let through_hit = (0..axis.len() - 1).any(|i| {
                             let d = point_to_segment_dist_2d(pt, axis[i], axis[i + 1]);
                             d <= join::JUNCTION_TOLERANCE.max(1e-4)
-                                && axis[i].distance(pt) > join::END_MID_TOLERANCE
-                                && axis[i + 1].distance(pt) > join::END_MID_TOLERANCE
+                                && (axis[i].x - pt.x).hypot(axis[i].y - pt.y) > join::END_MID_TOLERANCE
+                                && (axis[i + 1].x - pt.x).hypot(axis[i + 1].y - pt.y) > join::END_MID_TOLERANCE
                         });
                         if end_hit || through_hit {
                             participants.push(h);

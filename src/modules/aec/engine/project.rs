@@ -221,6 +221,13 @@ impl StoreyRef {
         }
         if let Some(p) = self.plane_mut(id) {
             p.origin[2] = z;
+            if id == self.ceiling_plane_id {
+                let floor_z = self.derived_elevation();
+                let h = z - floor_z;
+                if h > 0.0 {
+                    self.height = h;
+                }
+            }
             self.sync_derived_elevation_height();
             true
         } else {

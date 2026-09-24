@@ -456,37 +456,51 @@ pub fn apply_opening_property(
     match field {
         "opening_style" => {
             let Some(lib) = library else {
-                return true;
+                return false;
             };
             let style = lib
                 .opening_styles
                 .iter()
                 .find(|s| s.style.name == val || s.style.id == val);
             if let Some(style) = style {
+                if opening.style_id.as_deref() == Some(style.style.id.as_str()) {
+                    return false;
+                }
                 apply_style_defaults(opening, style);
+                true
+            } else {
+                false
             }
-            true
         }
         "opening_width" => {
             let Some(v) = crate::entities::common::parse_f64(val) else {
-                return true;
+                return false;
             };
             if v <= 0.0 {
-                return true;
+                return false;
             }
             let (w, h) = opening.shape.lock_size(v, opening.height, true);
+            if (opening.width - w).abs() < 1e-9 && (opening.height - h).abs() < 1e-9 {
+                return false;
+            }
             opening.width = w;
             opening.height = h;
             true
         }
         "opening_height" => {
             let Some(v) = crate::entities::common::parse_f64(val) else {
-                return true;
+                return false;
             };
             if v <= 0.0 {
-                return true;
+                return false;
             }
             let (w, h) = opening.shape.lock_size(opening.width, v, false);
+            if (opening.width - w).abs() < 1e-9
+                && (opening.height - h).abs() < 1e-9
+                && opening.head_plane_id.is_none()
+            {
+                return false;
+            }
             opening.width = w;
             opening.height = h;
             opening.unbind_head_plane();
@@ -494,63 +508,104 @@ pub fn apply_opening_property(
         }
         "opening_sill" => {
             let Some(v) = crate::entities::common::parse_f64(val) else {
-                return true;
+                return false;
             };
-            opening.sill_height = v.max(0.0);
+            let v = v.max(0.0);
+            if (opening.sill_height - v).abs() < 1e-9 && opening.sill_plane_id.is_none() {
+                return false;
+            }
+            opening.sill_height = v;
             opening.unbind_sill_plane();
             true
         }
         "opening_spring" => {
             let Some(v) = crate::entities::common::parse_f64(val) else {
-                return true;
+                return false;
             };
-            opening.spring_height =
+            let clamped =
                 crate::modules::aec::engine::opening_shape::clamp_spring(v, opening.height);
+            if (opening.spring_height - clamped).abs() < 1e-9 {
+                return false;
+            }
+            opening.spring_height = clamped;
             true
         }
         "opening_hinge" => {
-            opening.hinge = HingeSide::from_str(val);
+            let h = HingeSide::from_str(val);
+            if opening.hinge == h {
+                return false;
+            }
+            opening.hinge = h;
             true
         }
         "opening_reference_side" => {
-            opening.reference_side = OpeningReferenceSide::from_str(val);
+            let r = OpeningReferenceSide::from_str(val);
+            if opening.reference_side == r {
+                return false;
+            }
+            opening.reference_side = r;
             true
         }
         "opening_cross_offset" => {
             if let Some(v) = crate::entities::common::parse_f64(val) {
+                if (opening.cross_axis_offset - v).abs() < 1e-9 {
+                    return false;
+                }
                 opening.cross_axis_offset = v;
+                true
+            } else {
+                false
             }
-            true
         }
         "opening_flip" => {
             opening.flip();
             true
         }
         "opening_depth" => {
-            if let Some(v) = crate::entities::common::parse_f64(val) {
+            let new_depth = if let Some(v) = crate::entities::common::parse_f64(val) {
                 if v > 0.0 {
-                    opening.depth = Some(v);
+                    Some(v)
                 } else {
-                    opening.depth = None;
+                    None
                 }
             } else if val.trim().is_empty() || val.eq_ignore_ascii_case("none") {
-                opening.depth = None;
+                None
+            } else {
+                return false;
+            };
+            if opening.depth == new_depth {
+                return false;
             }
+            opening.depth = new_depth;
             true
         }
         "opening_niche_side" => {
-            opening.niche_side = NicheSide::from_str(val);
+            let ns = NicheSide::from_str(val);
+            if opening.niche_side == ns {
+                return false;
+            }
+            opening.niche_side = ns;
             true
         }
         "opening_shape" => {
-            opening.shape = OpeningShape::from_str(val);
-            let (w, h) = opening.shape.lock_size(opening.width, opening.height, true);
+            let sh = OpeningShape::from_str(val);
+            let (w, h) = sh.lock_size(opening.width, opening.height, true);
+            let spring = if sh == OpeningShape::Arch && opening.spring_height <= 1e-12 {
+                OpeningShape::default_spring_height(w, h)
+            } else {
+                opening.spring_height
+            };
+            if opening.shape == sh
+                && (opening.width - w).abs() < 1e-9
+                && (opening.height - h).abs() < 1e-9
+                && (opening.spring_height - spring).abs() < 1e-9
+            {
+                return false;
+            }
+            opening.shape = sh;
             opening.width = w;
             opening.height = h;
-            if opening.shape == OpeningShape::Arch && opening.spring_height <= 1e-12 {
-                opening.spring_height =
-                    OpeningShape::default_spring_height(opening.width, opening.height);
-            }
+            opening.spring_height = spring;
             true
         }
         _ => false,
@@ -876,9 +931,25 @@ impl crate::app::OpenCADStudio {
         if field.starts_with("opening_") {
             let owner = opening_display::opening_owner_if_any(&self.tabs[tab].scene, handle)
                 .unwrap_or(handle);
+            if self.aec.aec_last_applied_property
+                == Some((owner, field.to_string(), val.to_string()))
+            {
+                return true;
+            }
+            self.aec.aec_last_applied_property =
+                Some((owner, field.to_string(), val.to_string()));
+
             let style_library = crate::modules::aec::engine::project::resolve_style_library(
                 self.aec.aec_project_explorer_file.as_ref(),
             );
+            let Some(entity) = self.tabs[tab].scene.document.get_entity(owner).cloned() else {
+                return true;
+            };
+            let Some(mut opening) = opening_xdata::opening_from_entity(&entity, owner) else {
+                return true;
+            };
+            let (rules, _) =
+                self.resolve_active_display_config_wall_rules(tab, Some(opening.host_wall));
             match field {
                 "opening_sill_plane" | "opening_head_plane" => {
                     crate::modules::aec::project::opening_planes::apply_opening_plane_choice(
@@ -888,6 +959,7 @@ impl crate::app::OpenCADStudio {
                         field == "opening_sill_plane",
                         val,
                         Some(&style_library),
+                        rules.as_ref(),
                     );
                     return true;
                 }
@@ -905,38 +977,35 @@ impl crate::app::OpenCADStudio {
                             sill,
                             head,
                             Some(&style_library),
+                            rules.as_ref(),
                         );
                     }
                     return true;
                 }
                 _ => {}
             }
-            let Some(entity) = self.tabs[tab].scene.document.get_entity(owner).cloned() else {
-                return true;
-            };
-            let Some(mut opening) = opening_xdata::opening_from_entity(&entity, owner) else {
-                return true;
-            };
             if apply_opening_property(&mut opening, field, val, Some(&style_library)) {
-                let (rules, _) =
-                    self.resolve_active_display_config_wall_rules(tab, Some(opening.host_wall));
                 let _ = opening_display::commit_opening_instance(
                     &mut self.tabs[tab].scene,
                     &opening,
                     Some(&style_library),
                     rules.as_ref(),
                 );
-                if opening.has_plane_binding() {
-                    crate::modules::aec::project::opening_planes::rebake_opening_in_scene(
-                        &mut self.tabs[tab].scene,
-                        self.aec.aec_project_explorer_file.as_ref(),
-                        owner,
-                        Some(&style_library),
-                    );
-                }
             }
             return true;
         }
+        let wall_owner = crate::modules::aec::engine::wall_package::resolve_wall_package(
+            &self.tabs[tab].scene,
+            handle,
+        );
+        if self.aec.aec_last_applied_property
+            == Some((wall_owner, field.to_string(), val.to_string()))
+        {
+            return true;
+        }
+        self.aec.aec_last_applied_property =
+            Some((wall_owner, field.to_string(), val.to_string()));
+
         match field {
             "wall_justification" => {
                 let new_justification =
@@ -946,7 +1015,7 @@ impl crate::app::OpenCADStudio {
                 );
                 crate::modules::aec::engine::wall_regen::change_wall_justification(
                     &mut self.tabs[tab].scene,
-                    handle,
+                    wall_owner,
                     new_justification,
                     Some(&style_library),
                 );
@@ -958,7 +1027,7 @@ impl crate::app::OpenCADStudio {
                 crate::modules::aec::project::wall_planes::apply_wall_plane_choice(
                     &mut self.tabs[tab].scene,
                     self.aec.aec_project_explorer_file.as_ref(),
-                    handle,
+                    wall_owner,
                     field == "wall_base_plane",
                     val,
                     Some(&style_library),
@@ -968,16 +1037,16 @@ impl crate::app::OpenCADStudio {
                 let new_phase = crate::modules::aec::engine::plan_view::PlanPhase::from_str(val);
                 crate::modules::aec::engine::xdata::write_wall_phase(
                     &mut self.tabs[tab].scene,
-                    handle,
+                    wall_owner,
                     new_phase,
                 );
-                let _ = self.regenerate_wall_respecting_active_display_config(tab, handle);
+                let _ = self.regenerate_wall_respecting_active_display_config(tab, wall_owner);
             }
             "control_plane_name" => {
                 apply_control_plane_name(
                     &mut self.tabs[tab].scene,
                     self.aec.aec_project_explorer_file.as_mut(),
-                    handle,
+                    wall_owner,
                     val,
                 );
                 self.aec_project_explorer_persist_if_pathed();
@@ -987,18 +1056,11 @@ impl crate::app::OpenCADStudio {
                     if v > 0.0 {
                         crate::modules::aec::engine::xdata::write_wall_height(
                             &mut self.tabs[tab].scene,
-                            handle,
+                            wall_owner,
                             v,
                         );
-                        let style_library =
-                            crate::modules::aec::engine::project::resolve_style_library(
-                                self.aec.aec_project_explorer_file.as_ref(),
-                            );
-                        let _ = crate::modules::aec::engine::wall_regen::regenerate_wall_representation(
-                            &mut self.tabs[tab].scene,
-                            handle,
-                            Some(&style_library),
-                        );
+                        let _ =
+                            self.regenerate_wall_respecting_active_display_config(tab, wall_owner);
                     }
                 }
             }
@@ -1006,7 +1068,7 @@ impl crate::app::OpenCADStudio {
                 if let Some(v) = crate::entities::common::parse_f64(val) {
                     crate::modules::aec::project::wall_planes::apply_wall_base_z(
                         &mut self.tabs[tab].scene,
-                        handle,
+                        wall_owner,
                         v,
                     );
                 }
@@ -1020,18 +1082,12 @@ impl crate::app::OpenCADStudio {
                     };
                     crate::modules::aec::engine::xdata::write_wall_plane_offsets(
                         &mut self.tabs[tab].scene,
-                        handle,
+                        wall_owner,
                         base,
                         top,
                     );
-                    let style_library = crate::modules::aec::engine::project::resolve_style_library(
-                        self.aec.aec_project_explorer_file.as_ref(),
-                    );
-                    let _ = crate::modules::aec::engine::wall_regen::regenerate_wall_representation(
-                        &mut self.tabs[tab].scene,
-                        handle,
-                        Some(&style_library),
-                    );
+                    let _ =
+                        self.regenerate_wall_respecting_active_display_config(tab, wall_owner);
                 }
             }
             "wall_hatch_angle" => {
@@ -1039,14 +1095,14 @@ impl crate::app::OpenCADStudio {
                     let existing_override = self.tabs[tab]
                         .scene
                         .document
-                        .get_entity(handle)
+                        .get_entity(wall_owner)
                         .and_then(crate::modules::aec::engine::xdata::wall_from_entity)
                         .and_then(|wall| wall.hatch_override);
                     if let Some(mut ov) = existing_override {
                         ov.hatch_angle = Some(v);
                         crate::modules::aec::engine::xdata::write_wall_hatch_override(
                             &mut self.tabs[tab].scene,
-                            handle,
+                            wall_owner,
                             Some(ov),
                         );
                     }

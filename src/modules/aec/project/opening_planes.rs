@@ -79,8 +79,9 @@ fn persist_and_regen(
     scene: &mut Scene,
     opening: &Opening,
     library: Option<&StyleLibrary>,
+    rules: Option<&crate::modules::aec::engine::display_component::ComponentRuleSet>,
 ) {
-    let _ = commit_opening_instance(scene, opening, library, None);
+    let _ = commit_opening_instance(scene, opening, library, rules);
 }
 
 pub fn apply_opening_plane_choice(
@@ -90,6 +91,7 @@ pub fn apply_opening_plane_choice(
     sill: bool,
     choice: &str,
     library: Option<&StyleLibrary>,
+    rules: Option<&crate::modules::aec::engine::display_component::ComponentRuleSet>,
 ) -> bool {
     let Some((mut opening, (x, y))) = load_opening(scene, handle) else {
         return false;
@@ -101,9 +103,15 @@ pub fn apply_opening_plane_choice(
         Some(choice.trim().to_string())
     };
     if sill {
+        if opening.sill_plane_id == id {
+            return false;
+        }
         opening.sill_plane_id = id;
         opening.sill_plane_name = name;
     } else {
+        if opening.head_plane_id == id {
+            return false;
+        }
         opening.head_plane_id = id;
         opening.head_plane_name = name;
     }
@@ -113,7 +121,7 @@ pub fn apply_opening_plane_choice(
             .unwrap_or(0.0);
         rebake_opening(&mut opening, project, None, x, y, host_base_z);
     }
-    persist_and_regen(scene, &opening, library);
+    persist_and_regen(scene, &opening, library, rules);
     true
 }
 
@@ -124,10 +132,16 @@ pub fn apply_opening_plane_offsets(
     sill_offset: Option<f64>,
     head_offset: Option<f64>,
     library: Option<&StyleLibrary>,
+    rules: Option<&crate::modules::aec::engine::display_component::ComponentRuleSet>,
 ) -> bool {
     let Some((mut opening, (x, y))) = load_opening(scene, handle) else {
         return false;
     };
+    if sill_offset.map(|s| (opening.sill_offset - s).abs() < 1e-9).unwrap_or(true)
+        && head_offset.map(|h| (opening.head_offset - h).abs() < 1e-9).unwrap_or(true)
+    {
+        return false;
+    }
     let host_base_z = host_wall(scene, &opening)
         .map(|w| host_base_z_at_xy(&w, project, x, y))
         .unwrap_or(0.0);
@@ -135,7 +149,7 @@ pub fn apply_opening_plane_offsets(
     if opening.has_plane_binding() {
         rebake_opening(&mut opening, project, None, x, y, host_base_z);
     }
-    persist_and_regen(scene, &opening, library);
+    persist_and_regen(scene, &opening, library, rules);
     true
 }
 
@@ -218,6 +232,7 @@ pub fn rebake_opening_in_scene(
     project: Option<&ProjectFile>,
     handle: Handle,
     library: Option<&StyleLibrary>,
+    rules: Option<&crate::modules::aec::engine::display_component::ComponentRuleSet>,
 ) -> bool {
     let Some((mut opening, (x, y))) = load_opening(scene, handle) else {
         return false;
@@ -229,7 +244,7 @@ pub fn rebake_opening_in_scene(
         .map(|w| host_base_z_at_xy(&w, project, x, y))
         .unwrap_or(0.0);
     rebake_opening(&mut opening, project, None, x, y, host_base_z);
-    persist_and_regen(scene, &opening, library);
+    persist_and_regen(scene, &opening, library, rules);
     true
 }
 
@@ -423,6 +438,7 @@ mod tests {
             true,
             &floor_name,
             None,
+            None,
         ));
         let bound = opening_from_entity(scene.document.get_entity(handle).unwrap(), handle).unwrap();
         assert_eq!(bound.sill_plane_id, Some(storey.floor_plane_id));
@@ -435,6 +451,7 @@ mod tests {
             handle,
             true,
             UNBOUND_LABEL,
+            None,
             None,
         ));
         let unbound =

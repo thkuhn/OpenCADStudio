@@ -356,6 +356,7 @@ impl Opening {
         let sill = self.sill_plane_id.and_then(&lookup);
         if let Some(sill) = sill.as_ref() {
             self.sill_normal = sill.unit_normal();
+            self.sill_plane_name = Some(sill.name.clone());
             let offset_sill = sill.offset(self.sill_offset);
             if let Some(pt) = intersect_vertical_at_xy(x, y, &offset_sill) {
                 self.sill_origin = pt;
@@ -368,6 +369,7 @@ impl Opening {
         let head = self.head_plane_id.and_then(&lookup);
         if let Some(head) = head.as_ref() {
             self.head_normal = head.unit_normal();
+            self.head_plane_name = Some(head.name.clone());
             let offset_head = head.offset(self.head_offset);
             if let Some(pt) = intersect_vertical_at_xy(x, y, &offset_head) {
                 self.head_origin = pt;

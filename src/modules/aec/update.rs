@@ -434,7 +434,7 @@ impl OpenCADStudio {
                         storey.name = name;
                         storey.drawing_path = drawing;
                         if let Some(value) = elevation {
-                            storey.elevation = value;
+                            storey.set_elevation(value);
                         }
                     }
                 }

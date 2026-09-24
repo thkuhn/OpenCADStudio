@@ -89,7 +89,11 @@ impl OpenCADStudio {
         }
         if let Ok(v) = self.aec.aec_storey_settings_height.trim().parse::<f64>() {
             if v > 0.0 {
-                self.with_storey_mut(bid, sid, |s| s.set_height(v));
+                self.with_storey_mut(bid, sid, |s| {
+                    s.set_height(v);
+                    let cid = s.ceiling_plane_id;
+                    s.set_plane_z_relative_to_floor(cid, v);
+                });
             }
         }
         let plane_z_map = self.aec.aec_storey_settings_plane_z.clone();

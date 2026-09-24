@@ -265,7 +265,7 @@ pub fn join_wall_axes_with_bulges(
             let bulge_b = end_segment_bulge(axis_b, bulges_b, *idx_b);
             let (b0, b1) = polyline_order(*p3, *p4, *idx_b, *inward_b);
             if let Some(isect) = intersect_axis_dvec(a0, a1, bulge_a, b0, b1, bulge_b, *p1) {
-                let dist = p1.distance(isect) + p3.distance(isect);
+                let dist = (p1.x - isect.x).hypot(p1.y - isect.y) + (p3.x - isect.x).hypot(p3.y - isect.y);
                 if dist < best_l_dist {
                     best_l_dist = dist;
                     best_l = Some((isect, *idx_a, *idx_b));
@@ -289,7 +289,7 @@ pub fn join_wall_axes_with_bulges(
             let bulge_b = bulges_b.get(i).copied().unwrap_or(0.0);
             if let Some(isect) = intersect_axis_dvec(a0, a1, bulge_a, p3, p4, bulge_b, *p1) {
                 if is_on_axis_segment_interior(isect, p3, p4, bulge_b, tol) {
-                    let dist = p1.distance(isect);
+                    let dist = (p1.x - isect.x).hypot(p1.y - isect.y);
                     if dist < best_t_dist {
                         best_t_dist = dist;
                         best_t = Some((isect, *idx_a, i, true));
@@ -308,7 +308,7 @@ pub fn join_wall_axes_with_bulges(
             let bulge_a = bulges_a.get(i).copied().unwrap_or(0.0);
             if let Some(isect) = intersect_axis_dvec(b0, b1, bulge_b, p1, p2, bulge_a, *p3) {
                 if is_on_axis_segment_interior(isect, p1, p2, bulge_a, tol) {
-                    let dist = p3.distance(isect);
+                    let dist = (p3.x - isect.x).hypot(p3.y - isect.y);
                     if dist < best_t_dist {
                         best_t_dist = dist;
                         best_t = Some((isect, *idx_b, i, false));
@@ -341,9 +341,9 @@ pub fn join_wall_axes_with_bulges(
         let use_l = (both_end || (!a_mid && !b_mid)) && !(a_head ^ b_head);
         if use_l {
             let mut new_a = axis_a.to_vec();
-            new_a[idx_a] = isect;
+            new_a[idx_a] = DVec3::new(isect.x, isect.y, axis_a[idx_a].z);
             let mut new_b = axis_b.to_vec();
-            new_b[idx_b] = isect;
+            new_b[idx_b] = DVec3::new(isect.x, isect.y, axis_b[idx_b].z);
             return Ok((new_a, new_b, JoinKind::L, Some(idx_a), Some(idx_b)));
         }
         // Intersection classified as T via head-wall overhang: keep the
@@ -351,11 +351,11 @@ pub fn join_wall_axes_with_bulges(
         if a_head ^ b_head {
             if a_head {
                 let mut new_b = axis_b.to_vec();
-                new_b[idx_b] = isect;
+                new_b[idx_b] = DVec3::new(isect.x, isect.y, axis_b[idx_b].z);
                 return Ok((axis_a.to_vec(), new_b, JoinKind::T, None, Some(idx_b)));
             } else {
                 let mut new_a = axis_a.to_vec();
-                new_a[idx_a] = isect;
+                new_a[idx_a] = DVec3::new(isect.x, isect.y, axis_a[idx_a].z);
                 return Ok((new_a, axis_b.to_vec(), JoinKind::T, Some(idx_a), None));
             }
         }
@@ -374,11 +374,11 @@ pub fn join_wall_axes_with_bulges(
         if stem_is_end && through_is_mid {
             if a_is_stem {
                 let mut new_a = axis_a.to_vec();
-                new_a[idx_stem] = isect;
+                new_a[idx_stem] = DVec3::new(isect.x, isect.y, axis_a[idx_stem].z);
                 return Ok((new_a, axis_b.to_vec(), JoinKind::T, Some(idx_stem), None));
             } else {
                 let mut new_b = axis_b.to_vec();
-                new_b[idx_stem] = isect;
+                new_b[idx_stem] = DVec3::new(isect.x, isect.y, axis_b[idx_stem].z);
                 return Ok((axis_a.to_vec(), new_b, JoinKind::T, None, Some(idx_stem)));
             }
         }
@@ -426,7 +426,7 @@ pub fn join_wall_axes_as_l_with_bulges(
             let bulge_b = end_segment_bulge(axis_b, bulges_b, idx_b);
             let (b0, b1) = polyline_order(p3, p4, idx_b, inward_b);
             if let Some(isect) = intersect_axis_dvec(a0, a1, bulge_a, b0, b1, bulge_b, p1) {
-                let dist = p1.distance(isect) + p3.distance(isect);
+                let dist = (p1.x - isect.x).hypot(p1.y - isect.y) + (p3.x - isect.x).hypot(p3.y - isect.y);
                 let idx_sum = idx_a + idx_b;
                 // On a tie (typical 2-point through wall, both ends equally
                 // far from the hit) snap the later vertices so the original
@@ -444,9 +444,9 @@ pub fn join_wall_axes_as_l_with_bulges(
         return Err(JoinError::NoIntersection);
     };
     let mut new_a = axis_a.to_vec();
-    new_a[idx_a] = isect;
+    new_a[idx_a] = DVec3::new(isect.x, isect.y, axis_a[idx_a].z);
     let mut new_b = axis_b.to_vec();
-    new_b[idx_b] = isect;
+    new_b[idx_b] = DVec3::new(isect.x, isect.y, axis_b[idx_b].z);
     Ok((new_a, new_b, JoinKind::L, Some(idx_a), Some(idx_b)))
 }
 
@@ -468,7 +468,7 @@ pub fn extend_axis_to_other(
     for (idx, p1, p2) in ends {
         for i in 0..target.len() - 1 {
             if let Some(isect) = intersect_lines_2d(p1, p2, target[i], target[i + 1]) {
-                let dist = p1.distance(isect);
+                let dist = (p1.x - isect.x).hypot(p1.y - isect.y);
                 if dist < best_dist {
                     best_dist = dist;
                     best = Some((isect, idx));
@@ -480,7 +480,7 @@ pub fn extend_axis_to_other(
         return Err(JoinError::NoIntersection);
     };
     let mut new_source = source.to_vec();
-    new_source[idx] = isect;
+    new_source[idx] = DVec3::new(isect.x, isect.y, source[idx].z);
     Ok((new_source, idx, isect))
 }
 
@@ -551,9 +551,9 @@ fn intersect_lines_2d(p1: DVec3, p2: DVec3, p3: DVec3, p4: DVec3) -> Option<DVec
 }
 
 fn is_on_segment_2d(p: DVec3, a: DVec3, b: DVec3, tol: f64) -> bool {
-    let dist_ap = a.distance(p);
-    let dist_pb = p.distance(b);
-    let dist_ab = a.distance(b);
+    let dist_ap = (p.x - a.x).hypot(p.y - a.y);
+    let dist_pb = (p.x - b.x).hypot(p.y - b.y);
+    let dist_ab = (b.x - a.x).hypot(b.y - a.y);
     (dist_ap + dist_pb - dist_ab).abs() < tol
 }
 
@@ -563,7 +563,9 @@ fn is_on_segment_interior_2d(p: DVec3, a: DVec3, b: DVec3, tol: f64) -> bool {
     if !is_on_segment_2d(p, a, b, tol) {
         return false;
     }
-    p.distance(a) > tol && p.distance(b) > tol
+    let d_a = (p.x - a.x).hypot(p.y - a.y);
+    let d_b = (p.x - b.x).hypot(p.y - b.y);
+    d_a > tol && d_b > tol
 }
 
 /// Default clustering tolerance for multi-wall junction detection.
@@ -813,7 +815,9 @@ fn axis_overhangs_both_sides(axis: &[DVec3], point: DVec3, min_overhang: f64) ->
     }
     let start = axis[0];
     let end = *axis.last().unwrap();
-    if start.distance(point) <= min_overhang || end.distance(point) <= min_overhang {
+    let d_start = (start.x - point.x).hypot(start.y - point.y);
+    let d_end = (end.x - point.x).hypot(end.y - point.y);
+    if d_start <= min_overhang || d_end <= min_overhang {
         return false;
     }
     // Closest point on any segment must be interior, and the leftovers to
@@ -831,8 +835,9 @@ fn axis_overhangs_both_sides(axis: &[DVec3], point: DVec3, min_overhang: f64) ->
         }
         let t = ((point.x - a.x) * abx + (point.y - a.y) * aby) / len2;
         let t_clamped = t.clamp(0.0, 1.0);
-        let proj = DVec3::new(a.x + abx * t_clamped, a.y + aby * t_clamped, a.z);
-        let d = proj.distance(point);
+        let proj_x = a.x + abx * t_clamped;
+        let proj_y = a.y + aby * t_clamped;
+        let d = (proj_x - point.x).hypot(proj_y - point.y);
         if d < best_d {
             best_d = d;
             best_on = t > 0.0 && t < 1.0;
@@ -848,11 +853,11 @@ fn classify_axis_at_point(axis: &[DVec3], point: DVec3, tol: f64) -> Option<Junc
     if axis.len() < 2 {
         return None;
     }
-    if point.distance(axis[0]) <= tol {
+    if (point.x - axis[0].x).hypot(point.y - axis[0].y) <= tol {
         return Some(JunctionRole::Endpoint(0));
     }
     let last = axis.len() - 1;
-    if point.distance(axis[last]) <= tol {
+    if (point.x - axis[last].x).hypot(point.y - axis[last].y) <= tol {
         return Some(JunctionRole::Endpoint(last));
     }
     find_through_segment(point, axis, tol).map(JunctionRole::Through)

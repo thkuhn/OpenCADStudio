@@ -26,7 +26,10 @@ use acadrust::types::{Vector2, Vector3};
 use acadrust::xdata::{ExtendedDataRecord, XDataValue};
 use acadrust::Handle;
 use glam::DVec3;
+use crate::modules::aec::engine::openings::OpeningKind;
+use crate::modules::aec::engine::opening_style::OpeningStyle;
 use crate::modules::aec::engine::plan_view::{PhaseFilter, PlanPhase};
+use crate::modules::aec::engine::project::{Building, ProjectFile, StoreyRef};
 
 use crate::command::{CadCommand, CmdResult};
 use crate::modules::aec::engine::material::Material;
@@ -9517,4 +9520,413 @@ fn test_manager_save_vs_save_and_apply_decoupling() {
         }
     }
     assert!(found_hatch, "Hatch must reflect updated material after Apply");
+}
+
+#[test]
+fn test_storey_height_change_moves_walls_and_keeps_opening_sill() {
+    let mut scene = Scene::new();
+    let initial_elevation = 0.0;
+    let initial_height = 2.80;
+
+    let mut storey = StoreyRef::new_with_height("EG", initial_elevation, initial_height, "eg.dwg");
+    let floor_plane_id = storey.floor_plane_id;
+    let ceiling_plane_id = storey.ceiling_plane_id;
+
+    let mut project = ProjectFile::default();
+    let mut building = Building::new("B1");
+    building.storeys.push(storey.clone());
+    project.buildings.push(building);
+
+    let mut library = crate::modules::aec::engine::library::StyleLibrary::empty();
+    let win_style = OpeningStyle::standard_window();
+    library.upsert_opening_style(win_style);
+
+    let mut pl = LwPolyline::new();
+    pl.add_vertex(LwVertex::new(Vector2::new(0.0, 0.0)));
+    pl.add_vertex(LwVertex::new(Vector2::new(5.0, 0.0)));
+    pl.elevation = initial_elevation;
+
+    let mut wall = Wall::new("Standard", initial_height, 0);
+    wall.layers = vec![wl("mat1", 0.30, "Structural")];
+    wall.base_plane_id = Some(floor_plane_id);
+    wall.top_plane_id = Some(ceiling_plane_id);
+    wall.base_origin = [0.0, 0.0, initial_elevation];
+    wall.base_normal = [0.0, 0.0, 1.0];
+    wall.top_origin = [0.0, 0.0, initial_elevation + initial_height];
+    wall.top_normal = [0.0, 0.0, 1.0];
+
+    let mut ent = EntityType::LwPolyline(pl);
+    let mut rec = ExtendedDataRecord::new(AEC_APPID);
+    rec.values = crate::modules::aec::engine::xdata::wall_record_for_wall(&wall);
+    ent.common_mut().extended_data.add_record(rec);
+    let wall_h = scene.add_entity(ent);
+
+    let _ = regenerate_wall_representation(&mut scene, wall_h, Some(&library));
+
+    // Place window with sill height 0.90 m
+    let (win_h, _) = place_wall_opening(
+        &mut scene,
+        wall_h,
+        DVec3::new(2.0, 0.0, 0.0),
+        OpeningKind::Window,
+        Some(&library),
+        None,
+        None,
+    )
+    .expect("place window");
+
+    let wall_pkg = resolve_wall_package(&scene, wall_h);
+    let _ = regenerate_wall_representation(&mut scene, wall_pkg, Some(&library));
+
+    // Initial check: wall height is 2.80, window sill height is 0.90 relative to wall base
+    let wall_init = wall_from_entity(scene.document.get_entity(wall_h).unwrap()).unwrap();
+    assert!((wall_init.height - 2.80).abs() < 1e-6);
+    let win_init = crate::modules::aec::engine::opening_xdata::openings_for_host_wall(&scene, wall_h)
+        .into_iter()
+        .find(|o| o.handle == win_h)
+        .expect("window");
+    assert!((win_init.sill_height - 0.90).abs() < 1e-4);
+
+    // Scenario: Storey height is increased from 2.80 m to 3.20 m
+    let new_height = 3.20;
+    storey.set_height(new_height);
+    storey.set_plane_z_relative_to_floor(ceiling_plane_id, new_height);
+    project.buildings[0].storeys[0] = storey.clone();
+
+    // Apply storey Z to scene
+    crate::modules::aec::project::storey_z::apply_storey_z_to_scene(
+        &mut scene,
+        &mut storey,
+        Some(&project),
+        Some(&library),
+    );
+
+    // Verification:
+    // 1. Wall height grew to 3.20 m
+    let wall_updated = wall_from_entity(scene.document.get_entity(wall_h).unwrap()).unwrap();
+    assert!(
+        (wall_updated.height - 3.20).abs() < 1e-6,
+        "Wall height should be 3.20, got {}",
+        wall_updated.height
+    );
+    assert!(
+        (wall_updated.base_origin[2] - 0.0).abs() < 1e-6,
+        "Wall base origin Z should stay at 0.0"
+    );
+    assert!(
+        (wall_updated.top_origin[2] - 3.20).abs() < 1e-6,
+        "Wall top origin Z should be 3.20"
+    );
+
+    // 2. Window sill height remains 0.90 m relative to wall base
+    let win_updated = crate::modules::aec::engine::opening_xdata::openings_for_host_wall(&scene, wall_h)
+        .into_iter()
+        .find(|o| o.handle == win_h)
+        .expect("window");
+    assert!(
+        (win_updated.sill_height - 0.90).abs() < 1e-4,
+        "Window sill height should stay at 0.90 relative to wall base, got {}",
+        win_updated.sill_height
+    );
+}
+
+#[test]
+fn test_negative_plane_offsets_and_partial_bindings() {
+    let storey = StoreyRef::new_with_height("EG", 0.0, 3.0, "eg.dwg");
+    let floor_id = storey.floor_plane_id;
+    let ceil_id = storey.ceiling_plane_id;
+
+    // Case 1: Wall with negative base offset (-0.15) and negative top offset (-0.20)
+    let mut wall = Wall::new("Standard", 3.0, 0);
+    wall.base_plane_id = Some(floor_id);
+    wall.top_plane_id = Some(ceil_id);
+    wall.base_offset = -0.15;
+    wall.top_offset = -0.20;
+
+    wall.rebake_planes(&storey, 0.0, 0.0);
+    assert!(
+        (wall.base_origin[2] - (-0.15)).abs() < 1e-6,
+        "Base origin Z should be -0.15, got {}",
+        wall.base_origin[2]
+    );
+    assert!(
+        (wall.top_origin[2] - 2.80).abs() < 1e-6,
+        "Top origin Z should be 2.80, got {}",
+        wall.top_origin[2]
+    );
+    assert!(
+        (wall.height - 2.95).abs() < 1e-6,
+        "Height should be 2.95 (2.80 - (-0.15)), got {}",
+        wall.height
+    );
+
+    // Case 2: Wall with ONLY top plane bound (e.g., hanging curtain wall / parapet)
+    let mut top_only_wall = Wall::new("TopOnly", 2.0, 0);
+    top_only_wall.base_origin = [0.0, 0.0, 1.0];
+    top_only_wall.top_plane_id = Some(ceil_id);
+    top_only_wall.top_offset = 0.0;
+    top_only_wall.rebake_planes(&storey, 0.0, 0.0);
+    assert!(
+        (top_only_wall.top_origin[2] - 3.0).abs() < 1e-6,
+        "Top origin Z should be 3.0"
+    );
+    assert!(
+        (top_only_wall.height - 2.0).abs() < 1e-6,
+        "Height should be 3.0 - 1.0 = 2.0, got {}",
+        top_only_wall.height
+    );
+
+    // Case 3: Wall with ONLY base plane bound (fixed height wall)
+    let mut base_only_wall = Wall::new("BaseOnly", 1.20, 0);
+    base_only_wall.base_plane_id = Some(floor_id);
+    base_only_wall.base_offset = 0.05;
+    base_only_wall.rebake_planes(&storey, 0.0, 0.0);
+    assert!(
+        (base_only_wall.base_origin[2] - 0.05).abs() < 1e-6,
+        "Base origin Z should be 0.05"
+    );
+    assert!(
+        (base_only_wall.top_origin[2] - 1.25).abs() < 1e-6,
+        "Top origin Z should follow base + height = 1.25"
+    );
+    assert!(
+        (base_only_wall.height - 1.20).abs() < 1e-6,
+        "Height should remain fixed at 1.20"
+    );
+}
+
+#[test]
+fn test_storey_rename_preserves_plane_bindings() {
+    let mut storey = StoreyRef::new_with_height("EG", 0.0, 3.0, "eg.dwg");
+    let floor_id = storey.floor_plane_id;
+    let ceil_id = storey.ceiling_plane_id;
+
+    let mut wall = Wall::new("Standard", 3.0, 0);
+    wall.base_plane_id = Some(floor_id);
+    wall.top_plane_id = Some(ceil_id);
+    wall.rebake_planes(&storey, 0.0, 0.0);
+
+    assert_eq!(wall.base_plane_name.as_deref(), Some("EG_ELEVATION"));
+    assert_eq!(wall.top_plane_name.as_deref(), Some("EG_OKGH"));
+
+    // Rename storey and its control planes
+    storey.name = "Erdgeschoss".to_string();
+    if let Some(p) = storey.plane_mut(floor_id) {
+        p.name = "Erdgeschoss_ELEVATION".to_string();
+    }
+    if let Some(p) = storey.plane_mut(ceil_id) {
+        p.name = "Erdgeschoss_OKGH".to_string();
+    }
+
+    // Rebake with renamed storey: plane bindings by UUID stay intact and refresh names
+    wall.rebake_planes(&storey, 0.0, 0.0);
+    assert_eq!(wall.base_plane_id, Some(floor_id));
+    assert_eq!(wall.top_plane_id, Some(ceil_id));
+    assert_eq!(wall.base_plane_name.as_deref(), Some("Erdgeschoss_ELEVATION"));
+    assert_eq!(wall.top_plane_name.as_deref(), Some("Erdgeschoss_OKGH"));
+    assert!((wall.height - 3.0).abs() < 1e-6);
+}
+
+#[test]
+fn test_multilayer_wall_layer_offsets_during_storey_height_change() {
+    let mut storey = StoreyRef::new_with_height("EG", 0.0, 2.80, "eg.dwg");
+    let floor_id = storey.floor_plane_id;
+    let ceil_id = storey.ceiling_plane_id;
+
+    let mut wall = Wall::new("MultiLayer", 2.80, 0);
+    let mut l1 = wl("brick", 0.20, "Structural");
+    l1.bottom_offset = 0.0;
+    l1.top_offset = 0.0;
+    let mut l2 = wl("insulation", 0.10, "Insulation");
+    l2.bottom_offset = -0.05; // starts 5cm lower
+    l2.top_offset = 0.10; // stops 10cm higher
+    wall.layers = vec![l1, l2];
+    wall.base_plane_id = Some(floor_id);
+    wall.top_plane_id = Some(ceil_id);
+
+    wall.rebake_planes(&storey, 0.0, 0.0);
+    assert!((wall.height - 2.80).abs() < 1e-6);
+
+    // Height increases to 3.50 m
+    storey.set_plane_z_relative_to_floor(ceil_id, 3.50);
+    wall.rebake_planes(&storey, 0.0, 0.0);
+    assert!((wall.height - 3.50).abs() < 1e-6);
+
+    // Effective heights of individual layers
+    let l1_eff_height = (wall.height - wall.layers[0].bottom_offset - wall.layers[0].top_offset).max(0.0);
+    let l2_eff_height = (wall.height - wall.layers[1].bottom_offset - wall.layers[1].top_offset).max(0.0);
+    assert!((l1_eff_height - 3.50).abs() < 1e-6);
+    assert!((l2_eff_height - (3.50 - (-0.05) - 0.10)).abs() < 1e-6);
+    assert!((l2_eff_height - 3.45).abs() < 1e-6);
+}
+
+#[test]
+fn test_hatch_outline_wire_respects_fill_plane_elevation() {
+    let mut scene = Scene::new();
+    let z_elev = 2.75;
+    let mut pl = LwPolyline::new();
+    pl.add_vertex(LwVertex::new(Vector2::new(0.0, 0.0)));
+    pl.add_vertex(LwVertex::new(Vector2::new(4.0, 0.0)));
+    pl.elevation = z_elev;
+
+    let mut wall = Wall::new("Standard", 2.80, 0);
+    wall.base_origin = [0.0, 0.0, z_elev];
+    wall.layers = vec![wl("brick", 0.30, "Structural")];
+
+    let mut library = crate::modules::aec::engine::library::StyleLibrary::empty();
+    let mat = Material::new(
+        "brick".to_string(),
+        "Brick".to_string(),
+        "ANSI31".to_string(),
+        0xFFFFFF,
+        "Continuous".to_string(),
+    );
+    library.upsert_material(mat);
+
+    let mut ent = EntityType::LwPolyline(pl);
+    let mut rec = ExtendedDataRecord::new(AEC_APPID);
+    rec.values = crate::modules::aec::engine::xdata::wall_record_for_wall(&wall);
+    ent.common_mut().extended_data.add_record(rec);
+    let wall_h = scene.add_entity(ent);
+
+    let touched = regenerate_wall_representation(&mut scene, wall_h, Some(&library)).expect("regen");
+    let hatch_handle = touched
+        .into_iter()
+        .find(|h| matches!(scene.document.get_entity(*h), Some(EntityType::Hatch(_))))
+        .expect("hatch generated");
+
+    let wire = scene.hatch_outline_wire(hatch_handle).expect("outline wire");
+    for pt in &wire.points {
+        assert!(
+            (pt[2] as f64 - z_elev).abs() < 1e-5,
+            "Hatch outline wire point Z should be {}, got {}",
+            z_elev,
+            pt[2]
+        );
+    }
+}
+
+#[test]
+fn test_l_join_at_nonzero_elevation() {
+    let mut scene = Scene::new();
+    let z_elev = 3.50;
+
+    let mut pl1 = LwPolyline::new();
+    pl1.add_vertex(LwVertex::new(Vector2::new(0.0, 0.0)));
+    pl1.add_vertex(LwVertex::new(Vector2::new(4.0, 0.0)));
+    pl1.elevation = z_elev;
+    let mut wall1 = Wall::new("Standard", 2.80, 0);
+    wall1.base_origin = [0.0, 0.0, z_elev];
+    wall1.layers = vec![wl("brick", 0.30, "Structural")];
+    let mut ent1 = EntityType::LwPolyline(pl1);
+    let mut rec1 = ExtendedDataRecord::new(AEC_APPID);
+    rec1.values = crate::modules::aec::engine::xdata::wall_record_for_wall(&wall1);
+    ent1.common_mut().extended_data.add_record(rec1);
+    let h1 = scene.add_entity(ent1);
+
+    let mut pl2 = LwPolyline::new();
+    pl2.add_vertex(LwVertex::new(Vector2::new(3.0, -2.0)));
+    pl2.add_vertex(LwVertex::new(Vector2::new(3.0, 3.0)));
+    pl2.elevation = z_elev;
+    let mut wall2 = Wall::new("Standard", 2.80, 0);
+    wall2.base_origin = [0.0, 0.0, z_elev];
+    wall2.layers = vec![wl("brick", 0.30, "Structural")];
+    let mut ent2 = EntityType::LwPolyline(pl2);
+    let mut rec2 = ExtendedDataRecord::new(AEC_APPID);
+    rec2.values = crate::modules::aec::engine::xdata::wall_record_for_wall(&wall2);
+    ent2.common_mut().extended_data.add_record(rec2);
+    let h2 = scene.add_entity(ent2);
+
+    regenerate_wall_representation(&mut scene, h1, None).expect("regen h1");
+    regenerate_wall_representation(&mut scene, h2, None).expect("regen h2");
+
+    let (kind, _) = join_two_walls_as_l_in_document(&mut scene, h1, h2, None, None, None)
+        .expect("L-join between walls at Z={z_elev} should succeed");
+    assert_eq!(kind, JoinKind::L);
+
+    // Check that both wall polylines maintain their elevation
+    let e1 = scene.document.get_entity(h1).unwrap();
+    if let EntityType::LwPolyline(p) = e1 {
+        assert!((p.elevation - z_elev).abs() < 1e-6, "Wall 1 elevation maintained");
+    } else {
+        panic!("Expected LwPolyline");
+    }
+    let e2 = scene.document.get_entity(h2).unwrap();
+    if let EntityType::LwPolyline(p) = e2 {
+        assert!((p.elevation - z_elev).abs() < 1e-6, "Wall 2 elevation maintained");
+    } else {
+        panic!("Expected LwPolyline");
+    }
+}
+
+#[test]
+fn test_opening_edit_dedup_and_display_rule_preservation() {
+    let mut scene = Scene::new();
+    let initial_elevation = 1.0;
+    let initial_height = 2.80;
+
+    let mut pl = LwPolyline::new();
+    pl.add_vertex(LwVertex::new(Vector2::new(0.0, 0.0)));
+    pl.add_vertex(LwVertex::new(Vector2::new(6.0, 0.0)));
+    pl.elevation = initial_elevation;
+
+    let mut wall = Wall::new("Standard", initial_height, 0);
+    wall.base_origin = [0.0, 0.0, initial_elevation];
+    let mut ent = EntityType::LwPolyline(pl);
+    let mut rec = ExtendedDataRecord::new(AEC_APPID);
+    rec.values = crate::modules::aec::engine::xdata::wall_record_for_wall(&wall);
+    ent.common_mut().extended_data.add_record(rec);
+    let wall_h = scene.add_entity(ent);
+
+    let mut library = crate::modules::aec::engine::library::StyleLibrary::empty();
+    let win_style = OpeningStyle::standard_window();
+    library.upsert_opening_style(win_style);
+
+    let (win_h, _) = place_wall_opening(
+        &mut scene,
+        wall_h,
+        DVec3::new(3.0, 0.0, initial_elevation),
+        OpeningKind::Window,
+        Some(&library),
+        None,
+        None,
+    )
+    .expect("place window");
+
+    let entity = scene.document.get_entity(win_h).cloned().unwrap();
+    let mut opening = crate::modules::aec::engine::opening_xdata::opening_from_entity(&entity, win_h).unwrap();
+
+    // Verify apply_opening_property detects changes and rejects no-ops
+    let changed = crate::modules::aec::properties::apply_opening_property(
+        &mut opening,
+        "opening_width",
+        "1.50",
+        Some(&library),
+    );
+    assert!(changed, "Width change from 1.20 to 1.50 should report change");
+    assert!((opening.width - 1.50).abs() < 1e-6);
+
+    let same = crate::modules::aec::properties::apply_opening_property(
+        &mut opening,
+        "opening_width",
+        "1.50",
+        Some(&library),
+    );
+    assert!(!same, "Applying same width 1.50 must return false to skip regen");
+
+    // Commit opening with rules
+    let mut rules = crate::modules::aec::engine::display_component::ComponentRuleSet::default();
+    rules.visibility.insert("Layers2D".to_string(), false);
+
+    let touched = crate::modules::aec::engine::opening_display::commit_opening_instance(
+        &mut scene,
+        &opening,
+        Some(&library),
+        Some(&rules),
+    );
+    assert!(!touched.is_empty());
+
+    // Verify that the opening was committed with new width
+    let reloaded = crate::modules::aec::engine::opening_xdata::opening_from_entity(scene.document.get_entity(win_h).unwrap(), win_h).unwrap();
+    assert!((reloaded.width - 1.50).abs() < 1e-6);
 }

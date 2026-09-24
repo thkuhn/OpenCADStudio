@@ -173,30 +173,53 @@ impl Wall {
         use crate::modules::aec::engine::control_plane::{
             intersect_vertical_at_xy, resolve_wall_height,
         };
-        let Some(base) = self.base_plane_id.and_then(&lookup) else {
-            return;
-        };
-        self.base_normal = base.unit_normal();
-        let offset_base = base.offset(self.base_offset);
-        if let Some(pt) = intersect_vertical_at_xy(x, y, &offset_base) {
-            self.base_origin = pt;
-        } else {
-            self.base_origin = offset_base.origin;
-        }
-        let Some(top) = self.top_plane_id.and_then(&lookup) else {
-            return;
-        };
-        self.top_normal = top.unit_normal();
-        let offset_top = top.offset(self.top_offset);
-        if let Some(pt) = intersect_vertical_at_xy(x, y, &offset_top) {
-            self.top_origin = pt;
-        } else {
-            self.top_origin = offset_top.origin;
-        }
-        if let Some(h) = resolve_wall_height(x, y, &base, &top, self.base_offset, self.top_offset) {
-            if h.abs() > 1e-9 {
-                self.height = h.abs();
+        let base = self.base_plane_id.and_then(&lookup);
+        if let Some(base) = base.as_ref() {
+            self.base_normal = base.unit_normal();
+            self.base_plane_name = Some(base.name.clone());
+            let offset_base = base.offset(self.base_offset);
+            if let Some(pt) = intersect_vertical_at_xy(x, y, &offset_base) {
+                self.base_origin = pt;
+            } else {
+                self.base_origin = offset_base.origin;
             }
+        }
+
+        let top = self.top_plane_id.and_then(&lookup);
+        if let Some(top) = top.as_ref() {
+            self.top_normal = top.unit_normal();
+            self.top_plane_name = Some(top.name.clone());
+            let offset_top = top.offset(self.top_offset);
+            if let Some(pt) = intersect_vertical_at_xy(x, y, &offset_top) {
+                self.top_origin = pt;
+            } else {
+                self.top_origin = offset_top.origin;
+            }
+        }
+
+        match (base.as_ref(), top.as_ref()) {
+            (Some(b), Some(t)) => {
+                if let Some(h) = resolve_wall_height(x, y, b, t, self.base_offset, self.top_offset) {
+                    if h.abs() > 1e-9 {
+                        self.height = h.abs();
+                    }
+                }
+            }
+            (None, Some(_)) => {
+                let h = self.top_origin[2] - self.base_origin[2];
+                if h.abs() > 1e-9 {
+                    self.height = h.abs();
+                }
+            }
+            (Some(_), None) => {
+                self.top_origin = [
+                    self.base_origin[0],
+                    self.base_origin[1],
+                    self.base_origin[2] + self.height,
+                ];
+                self.top_normal = [0.0, 0.0, 1.0];
+            }
+            (None, None) => {}
         }
     }
 

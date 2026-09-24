@@ -774,7 +774,6 @@ fn find_end_peer_layers(
         return None;
     }
     let pt = self_axis_2d[handled_end];
-    let pt3 = DVec3::new(pt.0, pt.1, 0.0);
     let tol = join::JUNCTION_TOLERANCE.max(1e-4);
 
     let candidates = engine::owner_index::peers_of(&scene.document, wall_handle);
@@ -789,10 +788,10 @@ fn find_end_peer_layers(
         if peer_axis.len() < 2 {
             continue;
         }
-        if peer_axis[0].distance(pt3) <= tol {
+        if (peer_axis[0].x - pt.0).hypot(peer_axis[0].y - pt.1) <= tol {
             let layers = wall_layer_data(scene, peer);
             return Some((layers, Some(0)));
-        } else if peer_axis.last().unwrap().distance(pt3) <= tol {
+        } else if (peer_axis.last().unwrap().x - pt.0).hypot(peer_axis.last().unwrap().y - pt.1) <= tol {
             let layers = wall_layer_data(scene, peer);
             return Some((layers, Some(peer_axis.len() - 1)));
         }
@@ -1112,7 +1111,6 @@ pub(crate) fn find_other_end_junction_footprints(
         return None;
     }
     let pt = self_axis_2d[other_end];
-    let pt3 = DVec3::new(pt.0, pt.1, 0.0);
     let tol = join::JUNCTION_TOLERANCE.max(1e-4);
 
     // Participants: this wall plus every currently-linked peer whose axis is
@@ -1133,11 +1131,13 @@ pub(crate) fn find_other_end_junction_footprints(
         if peer_axis.len() < 2 {
             continue;
         }
-        let end_hit = peer_axis[0].distance(pt3) <= tol || peer_axis.last().unwrap().distance(pt3) <= tol;
+        let end_hit = (peer_axis[0].x - pt.0).hypot(peer_axis[0].y - pt.1) <= tol
+            || (peer_axis.last().unwrap().x - pt.0).hypot(peer_axis.last().unwrap().y - pt.1) <= tol;
         let through_hit = (0..peer_axis.len() - 1).any(|i| {
+            let pt3 = DVec3::new(pt.0, pt.1, peer_axis[i].z);
             point_to_segment_dist_2d(pt3, peer_axis[i], peer_axis[i + 1]) <= WALL_JOIN_SNAP_RADIUS
-                && peer_axis[i].distance(pt3) > join::END_MID_TOLERANCE
-                && peer_axis[i + 1].distance(pt3) > join::END_MID_TOLERANCE
+                && (peer_axis[i].x - pt.0).hypot(peer_axis[i].y - pt.1) > join::END_MID_TOLERANCE
+                && (peer_axis[i + 1].x - pt.0).hypot(peer_axis[i + 1].y - pt.1) > join::END_MID_TOLERANCE
         });
         if end_hit || through_hit {
             handles.push(peer);
@@ -1153,7 +1153,7 @@ pub(crate) fn find_other_end_junction_footprints(
     }
     let axis_refs: Vec<&[DVec3]> = axes.iter().map(|a| a.as_slice()).collect();
     let junctions = join::detect_junctions(&axis_refs, tol);
-    let junc = junctions.into_iter().find(|j| j.point.distance(pt3) <= tol.max(1e-3))?;
+    let junc = junctions.into_iter().find(|j| (j.point.x - pt.0).hypot(j.point.y - pt.1) <= tol.max(1e-3))?;
 
     // Confirm this wall (`handles[0]`) actually participates as an endpoint
     // at `other_end` in the detected junction (guards against picking up an

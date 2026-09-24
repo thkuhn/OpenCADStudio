@@ -49,7 +49,7 @@ pub fn apply_wall_plane_choice(
         wall.top_plane_id = id;
         wall.top_plane_name = name;
     }
-    if wall.base_plane_id.is_some() {
+    if wall.base_plane_id.is_some() || wall.top_plane_id.is_some() {
         if let Some(project) = project {
             wall.rebake_from_project(project, x, y);
         }
@@ -57,15 +57,13 @@ pub fn apply_wall_plane_choice(
     let mut record = ExtendedDataRecord::new(AEC_APPID);
     record.values = wall_record_for_wall(&wall);
     write_aec_record(&mut scene.document, handle, record);
-    if wall.base_plane_id.is_some() {
-        if let Ok(touched) = regenerate_wall_representation(scene, handle, library) {
-            let changes: Vec<_> = touched
-                .into_iter()
-                .map(|h| (h, crate::scene::ChangeKind::Modified))
-                .collect();
-            if !changes.is_empty() {
-                scene.bump_entities(&changes);
-            }
+    if let Ok(touched) = regenerate_wall_representation(scene, handle, library) {
+        let changes: Vec<_> = touched
+            .into_iter()
+            .map(|h| (h, crate::scene::ChangeKind::Modified))
+            .collect();
+        if !changes.is_empty() {
+            scene.bump_entities(&changes);
         }
     }
     true
