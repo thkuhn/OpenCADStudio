@@ -283,10 +283,6 @@ impl OpeningStyle {
             SlotGeometry::Generator(OpeningGenerator::SolidFrame),
         );
         slots.insert(
-            OpeningComponentSlot::Leaf3D,
-            SlotGeometry::Generator(OpeningGenerator::SolidLeaf),
-        );
-        slots.insert(
             OpeningComponentSlot::Glazing3D,
             SlotGeometry::Generator(OpeningGenerator::SolidGlazing),
         );

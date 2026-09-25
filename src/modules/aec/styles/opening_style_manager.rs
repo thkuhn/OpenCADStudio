@@ -277,6 +277,8 @@ pub fn preview_baked_paths(style: &OpeningStyle, preview_width: f64) -> Vec<Bake
         thickness: PREVIEW_WALL_THICKNESS,
         frame_thickness: style.frame_thickness,
         cross_axis_offset: 0.0,
+        wall_y_min: -PREVIEW_WALL_THICKNESS * 0.5,
+        wall_y_max: PREVIEW_WALL_THICKNESS * 0.5,
         hinge: style.hinge,
         shape: style.shape,
         spring_height: style.spring_height,

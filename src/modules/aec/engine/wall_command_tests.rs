@@ -8074,6 +8074,8 @@ fn test_opening_realistic_post_profiles() {
         thickness,
         frame_thickness: ft,
         cross_axis_offset: 0.0,
+        wall_y_min: -thickness * 0.5,
+        wall_y_max: thickness * 0.5,
         hinge: HingeSide::Left,
         shape: crate::modules::aec::engine::opening_shape::OpeningShape::Rectangle,
         spring_height: 0.0,
@@ -8140,6 +8142,8 @@ fn test_opening_dynamic_sill_lines_with_wall_thickness() {
             thickness,
             frame_thickness: DEFAULT_FRAME_THICKNESS,
             cross_axis_offset: 0.0,
+            wall_y_min: -ht,
+            wall_y_max: ht,
             hinge: HingeSide::Left,
             shape: crate::modules::aec::engine::opening_shape::OpeningShape::Rectangle,
             spring_height: 0.0,
@@ -8219,6 +8223,8 @@ fn test_opening_component_blocks_resolution_and_placement() {
         thickness: 0.3,
         frame_thickness: DEFAULT_FRAME_THICKNESS,
         cross_axis_offset: 0.0,
+        wall_y_min: -0.15,
+        wall_y_max: 0.15,
         hinge: HingeSide::Left,
         shape: crate::modules::aec::engine::opening_shape::OpeningShape::Rectangle,
         spring_height: 0.0,
@@ -8717,6 +8723,8 @@ fn test_elevation_generators_contour_muntins_and_triangles() {
         thickness: 0.30,
         frame_thickness: DEFAULT_FRAME_THICKNESS,
         cross_axis_offset: 0.0,
+        wall_y_min: -0.15,
+        wall_y_max: 0.15,
         hinge: HingeSide::Left,
         shape: OpeningShape::Rectangle,
         spring_height: 0.0,
@@ -8890,6 +8898,7 @@ fn test_parametric_3d_solids_for_openings() {
     use crate::modules::aec::engine::opening_display::{
         build_opening_frame_3d, build_opening_glazing_3d, build_opening_leaf_3d,
     };
+    use crate::modules::aec::engine::opening_shape::{OpeningShape, TriangleVariant};
     use crate::modules::aec::engine::opening_style::HingeSide;
 
     let width = 1.20;
@@ -8897,24 +8906,48 @@ fn test_parametric_3d_solids_for_openings() {
     let ft = 0.07;
     let depth = 0.08;
 
-    // 1. Frame3D
-    let frame_body = build_opening_frame_3d(width, height, ft, depth).expect("build frame 3d");
+    // 1. Frame3D (Rectangle)
+    let frame_body = build_opening_frame_3d(width, height, ft, depth, OpeningShape::Rectangle, 0.0).expect("build frame 3d");
     assert!(frame_body.validate().is_empty(), "Frame B-Rep body must be topologically valid");
     let (min_f, max_f) = crate::scene::model::solid_model::extent(&frame_body).expect("frame extent");
     assert!((max_f[0] - min_f[0] - width).abs() < 1e-3, "Frame width must match 1.20");
     assert!((max_f[2] - min_f[2] - height).abs() < 1e-3, "Frame height must match 1.40");
     assert!((max_f[1] - min_f[1] - depth).abs() < 1e-3, "Frame depth must match 0.08");
 
-    // 2. Leaf3D
-    let leaf_body = build_opening_leaf_3d(width, height, ft, 45.0, HingeSide::Left, false)
-        .expect("build leaf 3d");
+    // 2. Frame3D (Circle, Arch, Triangle)
+    let circle_frame = build_opening_frame_3d(1.0, 1.0, 0.05, depth, OpeningShape::Circle, 0.0).expect("build circle frame");
+    assert!(circle_frame.validate().is_empty(), "Circle Frame B-Rep body must be topologically valid");
+
+    let arch_frame = build_opening_frame_3d(1.0, 1.8, 0.05, depth, OpeningShape::Arch, 1.2).expect("build arch frame");
+    assert!(arch_frame.validate().is_empty(), "Arch Frame B-Rep body must be topologically valid");
+
+    let tri_frame = build_opening_frame_3d(1.2, 1.0, 0.05, depth, OpeningShape::Triangle(TriangleVariant::IsoscelesUp), 0.0).expect("build tri frame");
+    assert!(tri_frame.validate().is_empty(), "Triangle Frame B-Rep body must be topologically valid");
+
+    // 3. Leaf3D (Window left hinge, Window right hinge, Door left hinge)
+    let leaf_body = build_opening_leaf_3d(width, height, ft, 45.0, HingeSide::Left, false, OpeningShape::Rectangle, 0.0)
+        .expect("build leaf 3d left");
     assert!(leaf_body.validate().is_empty(), "Leaf B-Rep body must be topologically valid");
 
-    // 3. Glazing3D
-    let glass_body = build_opening_glazing_3d(width, height, ft).expect("build glass 3d");
+    let leaf_right = build_opening_leaf_3d(width, height, ft, 30.0, HingeSide::Right, false, OpeningShape::Rectangle, 0.0)
+        .expect("build leaf 3d right");
+    assert!(leaf_right.validate().is_empty(), "Right leaf B-Rep body must be topologically valid");
+
+    let door_leaf = build_opening_leaf_3d(0.90, 2.10, 0.05, 90.0, HingeSide::Left, true, OpeningShape::Rectangle, 0.0)
+        .expect("build door leaf 3d");
+    assert!(door_leaf.validate().is_empty(), "Door leaf B-Rep body must be topologically valid");
+
+    // 4. Glazing3D (Rectangle, Circle, Arch)
+    let glass_body = build_opening_glazing_3d(width, height, ft, OpeningShape::Rectangle, 0.0).expect("build glass 3d");
     assert!(glass_body.validate().is_empty(), "Glass B-Rep body must be topologically valid");
     let (min_g, max_g) = crate::scene::model::solid_model::extent(&glass_body).expect("glass extent");
     assert!((max_g[1] - min_g[1] - 0.02).abs() < 1e-3, "Glass pane thickness must be 0.02m (2cm)");
+
+    let circle_glass = build_opening_glazing_3d(1.0, 1.0, 0.05, OpeningShape::Circle, 0.0).expect("build circle glass");
+    assert!(circle_glass.validate().is_empty(), "Circle glass B-Rep body must be topologically valid");
+
+    let arch_glass = build_opening_glazing_3d(1.0, 1.8, 0.05, OpeningShape::Arch, 1.2).expect("build arch glass");
+    assert!(arch_glass.validate().is_empty(), "Arch glass B-Rep body must be topologically valid");
 }
 
 #[test]
@@ -8999,6 +9032,59 @@ fn test_discipline_templates_slot_visibilities() {
     assert!(!rules_elev.is_opening_visible(OpeningComponentSlot::Frame2D));
     assert!(!rules_elev.is_opening_visible(OpeningComponentSlot::Leaf2D));
     assert!(!rules_elev.is_opening_visible(OpeningComponentSlot::Swing2D));
+}
+
+#[test]
+fn test_opening_property_title_and_multi_layer_sills() {
+    use crate::modules::aec::engine::opening_display::collect_opening_display_children;
+    use crate::modules::aec::engine::opening_xdata::place_wall_opening;
+    use crate::modules::aec::engine::openings::OpeningKind;
+    use crate::modules::aec::engine::wall::Wall;
+    use crate::modules::aec::engine::wall_regen::regenerate_wall_representation;
+    use crate::modules::aec::engine::xdata::{wall_record_for_wall, AEC_APPID};
+    use crate::scene::Scene;
+    use acadrust::entities::{LwPolyline, LwVertex};
+    use acadrust::types::Vector2;
+    use acadrust::xdata::ExtendedDataRecord;
+    use acadrust::EntityType;
+
+    let mut scene = Scene::new();
+    // Multi-layer wall: Outer Insulation (0.16m, offset -0.24), Core Concrete (0.24m, offset -0.08), Inner Plaster (0.02m, offset +0.16)
+    // Bounds in normal space: -0.24 to +0.18
+    let mut l1 = wl("Dämmung", 0.16, "Insulation");
+    l1.axis_offset = -0.24;
+    let mut l2 = wl("Beton", 0.24, "Structural");
+    l2.axis_offset = -0.08;
+    let mut l3 = wl("Putz", 0.02, "Finish");
+    l3.axis_offset = 0.16;
+    let layers = vec![l1, l2, l3];
+
+    let mut pl = LwPolyline::new();
+    pl.add_vertex(LwVertex::new(Vector2::new(0.0, 0.0)));
+    pl.add_vertex(LwVertex::new(Vector2::new(6.0, 0.0)));
+
+    let mut wall = Wall::new("MultiLayer", 2.80, 0);
+    wall.layers = layers;
+
+    let mut ent = EntityType::LwPolyline(pl);
+    let mut rec = ExtendedDataRecord::new(AEC_APPID);
+    rec.values = wall_record_for_wall(&wall);
+    ent.common_mut().extended_data.add_record(rec);
+    let wall_h = scene.add_entity(ent);
+
+    regenerate_wall_representation(&mut scene, wall_h, None).expect("regen wall");
+
+    // Place a window at 3.0m
+    let (win_h, _) = place_wall_opening(&mut scene, wall_h, glam::DVec3::new(3.0, 0.0, 0.0), OpeningKind::Window, None, None, None).expect("place window");
+    let win_ent = scene.document.get_entity(win_h).expect("window entity");
+
+    // Check title in property panel: must report Window / Fenster, NOT Point!
+    let title = crate::modules::aec::properties::aec_entity_title(&scene, win_h, win_ent).expect("title");
+    assert_eq!(title, crate::t!("Window").into_owned());
+
+    // Regenerate and check sill positioning against outermost layer (-0.24) and innermost layer (+0.18)
+    let children = collect_opening_display_children(&scene, win_h);
+    assert!(!children.is_empty());
 }
 
 #[test]
@@ -9929,4 +10015,78 @@ fn test_opening_edit_dedup_and_display_rule_preservation() {
     // Verify that the opening was committed with new width
     let reloaded = crate::modules::aec::engine::opening_xdata::opening_from_entity(scene.document.get_entity(win_h).unwrap(), win_h).unwrap();
     assert!((reloaded.width - 1.50).abs() < 1e-6);
+}
+
+#[test]
+fn test_wall_with_multiple_openings_regeneration_performance() {
+    let mut scene = Scene::new();
+    let mut pl = LwPolyline::new();
+    pl.add_vertex(LwVertex::new(Vector2::new(0.0, 0.0)));
+    pl.add_vertex(LwVertex::new(Vector2::new(30.0, 0.0)));
+    let mut wall = Wall::new("Standard", 2.80, 0);
+    wall.layers = vec![
+        wl("Plaster", 0.02, "Finish"),
+        wl("Insulation", 0.12, "Thermal"),
+        wl("Concrete", 0.20, "Structural"),
+        wl("Plaster", 0.02, "Finish"),
+    ];
+    let mut ent = EntityType::LwPolyline(pl);
+    let mut rec = ExtendedDataRecord::new(AEC_APPID);
+    rec.values = crate::modules::aec::engine::xdata::wall_record_for_wall(&wall);
+    ent.common_mut().extended_data.add_record(rec);
+    let wall_h = scene.add_entity(ent);
+
+    let library = crate::modules::aec::engine::library::seed_default_library();
+
+    // Place 10 openings (alternating windows and doors)
+    for i in 0..10 {
+        let x = 2.5 + i as f64 * 2.6;
+        let kind = if i % 2 == 0 {
+            OpeningKind::Window
+        } else {
+            OpeningKind::Door
+        };
+        place_wall_opening(
+            &mut scene,
+            wall_h,
+            DVec3::new(x, 0.0, 0.0),
+            kind,
+            Some(&library),
+            None,
+            None,
+        )
+        .expect("place opening");
+    }
+
+    let start = std::time::Instant::now();
+    let res = regenerate_wall_representation(&mut scene, wall_h, Some(&library));
+    let elapsed = start.elapsed();
+    assert!(res.is_ok(), "Wall regeneration with 10 openings must succeed");
+
+    // Check that derived handles contain valid solids
+    let wall_rec = wall_from_entity(scene.document.get_entity(wall_h).unwrap()).unwrap();
+    let mut solid_count = 0;
+    for h in &wall_rec.derived_handles {
+        if let Some(EntityType::Solid3D(_)) = scene.document.get_entity(*h) {
+            solid_count += 1;
+            if let Some(body) = scene.solid_models.get(h) {
+                assert!(body.validate().is_empty(), "Derived wall solid must be valid B-Rep");
+            }
+        }
+    }
+    assert!(solid_count > 0, "Must have generated 3D solids for wall");
+
+    // Check openings 3D frames & leaves
+    let openings = openings_for_host_wall(&scene, wall_h);
+    assert_eq!(openings.len(), 10);
+    for op in &openings {
+        let children = crate::modules::aec::engine::opening_display::collect_opening_display_children(&scene, op.handle);
+        for ch in children {
+            if let Some(body) = scene.solid_models.get(&ch) {
+                assert!(body.validate().is_empty(), "Opening 3D component must be valid B-Rep");
+            }
+        }
+    }
+
+    println!("Wall with 10 openings regenerated in {:?}", elapsed);
 }

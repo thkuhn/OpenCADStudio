@@ -829,8 +829,9 @@ fn filter_opening_surface_edges(
     centerline: &[(f64, f64)],
     solid_height: f64,
     solid_base: f64,
+    wall_base_z: f64,
 ) {
-    if openings.is_empty() || centerline.len() < 2 {
+    if openings.is_empty() || centerline.len() < 2 || (set.edge_verts.is_empty() && wires.is_empty()) {
         return;
     }
 
@@ -859,8 +860,8 @@ fn filter_opening_surface_edges(
                         if (p_a.0 - x).abs() <= 1e-3 && (p_b.0 - x).abs() <= 1e-3 {
                             let dz = (p_b.1 - p_a.1).abs();
                             if dz > 1e-3 {
-                                let z_low = p_a.1.min(p_b.1) + solid_base;
-                                let z_high = p_a.1.max(p_b.1) + solid_base;
+                                let z_low = p_a.1.min(p_b.1) + wall_base_z;
+                                let z_high = p_a.1.max(p_b.1) + wall_base_z;
                                 jambs.push((z_low, z_high));
                             }
                         }
@@ -882,15 +883,20 @@ fn filter_opening_surface_edges(
         }
     }
 
+    if cut_planes.is_empty() {
+        return;
+    }
+
     let is_on_plane = |p: [f64; 3], cp: &CutPlane| -> bool {
         let dot = (p[0] - cp.origin.0) * cp.tangent.0 + (p[1] - cp.origin.1) * cp.tangent.1;
         dot.abs() <= 2e-3
     };
 
-    let process_segment = |p0: [f64; 3], p1: [f64; 3]| -> Vec<([f64; 3], [f64; 3])> {
+    let process_segment_cb = |p0: [f64; 3], p1: [f64; 3], emit: &mut dyn FnMut([f64; 3], [f64; 3])| {
         let matched_cp = cut_planes.iter().find(|cp| is_on_plane(p0, cp) && is_on_plane(p1, cp));
         let Some(cp) = matched_cp else {
-            return vec![(p0, p1)];
+            emit(p0, p1);
+            return;
         };
 
         let dxy = (p1[0] - p0[0]).hypot(p1[1] - p0[1]);
@@ -900,31 +906,30 @@ fn filter_opening_surface_edges(
         if (p0[2] - (solid_base + solid_height)).abs() <= 2e-3
             && (p1[2] - (solid_base + solid_height)).abs() <= 2e-3
         {
-            return Vec::new();
+            return;
         }
         // Transverse horizontal edge at wall base
         if (p0[2] - solid_base).abs() <= 2e-3 && (p1[2] - solid_base).abs() <= 2e-3 {
-            return Vec::new();
+            return;
         }
 
         // Vertical edge on wall face
         if dxy <= 1e-3 && dz > 1e-3 {
             let z_low = p0[2].min(p1[2]);
             let z_high = p0[2].max(p1[2]);
-            let mut kept = Vec::new();
             for &(jamb_low, jamb_high) in &cp.jamb_intervals {
                 let overlap_low = z_low.max(jamb_low);
                 let overlap_high = z_high.min(jamb_high);
                 if overlap_high - overlap_low > 1e-4 {
                     let v_a = [p0[0], p0[1], overlap_low];
                     let v_b = [p0[0], p0[1], overlap_high];
-                    kept.push((v_a, v_b));
+                    emit(v_a, v_b);
                 }
             }
-            return kept;
+            return;
         }
 
-        vec![(p0, p1)]
+        emit(p0, p1);
     };
 
     let old_verts = std::mem::take(&mut set.edge_verts);
@@ -934,8 +939,7 @@ fn filter_opening_surface_edges(
     for chunk in old_verts.chunks_exact(2) {
         let p0 = [chunk[0][0] as f64, chunk[0][1] as f64, chunk[0][2] as f64];
         let p1 = [chunk[1][0] as f64, chunk[1][1] as f64, chunk[1][2] as f64];
-        let kept = process_segment(p0, p1);
-        for (v0, v1) in kept {
+        let mut emit = |v0: [f64; 3], v1: [f64; 3]| {
             let h0 = [v0[0] as f32, v0[1] as f32, v0[2] as f32];
             let l0 = [(v0[0] - h0[0] as f64) as f32, (v0[1] - h0[1] as f64) as f32, (v0[2] - h0[2] as f64) as f32];
             let h1 = [v1[0] as f32, v1[1] as f32, v1[2] as f32];
@@ -944,13 +948,14 @@ fn filter_opening_surface_edges(
             new_verts_low.push(l0);
             new_verts.push(h1);
             new_verts_low.push(l1);
-        }
+        };
+        process_segment_cb(p0, p1, &mut emit);
     }
     set.edge_verts = new_verts;
     set.edge_verts_low = new_verts_low;
 
     let old_wires = std::mem::take(wires);
-    let mut new_wires = Vec::new();
+    let mut new_wires = Vec::with_capacity(old_wires.len());
     for wire in old_wires {
         if wire.points.len() < 2 {
             continue;
@@ -958,14 +963,13 @@ fn filter_opening_surface_edges(
         for window in wire.points.windows(2) {
             let p0 = [window[0].x, window[0].y, window[0].z];
             let p1 = [window[1].x, window[1].y, window[1].z];
-            let kept = process_segment(p0, p1);
-            for (v0, v1) in kept {
-                let w = acadrust::entities::Wire::from_points(vec![
+            let mut emit = |v0: [f64; 3], v1: [f64; 3]| {
+                new_wires.push(acadrust::entities::Wire::from_points(vec![
                     acadrust::types::Vector3::new(v0[0], v0[1], v0[2]),
                     acadrust::types::Vector3::new(v1[0], v1[1], v1[2]),
-                ]);
-                new_wires.push(w);
-            }
+                ]));
+            };
+            process_segment_cb(p0, p1, &mut emit);
         }
     }
     *wires = new_wires;
@@ -978,14 +982,38 @@ fn filter_miter_deck_edges(
     z_base: f64,
     z_top: f64,
 ) {
-    if miter_segments_2d.is_empty() {
+    if miter_segments_2d.is_empty() || (set.edge_verts.is_empty() && wires.is_empty()) {
         return;
     }
+
+    let mut min_x = f64::INFINITY;
+    let mut max_x = f64::NEG_INFINITY;
+    let mut min_y = f64::INFINITY;
+    let mut max_y = f64::NEG_INFINITY;
+    for &((x0, y0), (x1, y1)) in miter_segments_2d {
+        min_x = min_x.min(x0.min(x1));
+        max_x = max_x.max(x0.max(x1));
+        min_y = min_y.min(y0.min(y1));
+        max_y = max_y.max(y0.max(y1));
+    }
+    let margin = 0.02;
+    let bbox_min_x = min_x - margin;
+    let bbox_max_x = max_x + margin;
+    let bbox_min_y = min_y - margin;
+    let bbox_max_y = max_y + margin;
 
     let is_deck_miter_segment = |p0: [f64; 3], p1: [f64; 3]| -> bool {
         let is_at_deck = (p0[2] - z_top).abs() <= 2e-3 && (p1[2] - z_top).abs() <= 2e-3;
         let is_at_base = (p0[2] - z_base).abs() <= 2e-3 && (p1[2] - z_base).abs() <= 2e-3;
         if !is_at_deck && !is_at_base {
+            return false;
+        }
+
+        let seg_min_x = p0[0].min(p1[0]);
+        let seg_max_x = p0[0].max(p1[0]);
+        let seg_min_y = p0[1].min(p1[1]);
+        let seg_max_y = p0[1].max(p1[1]);
+        if seg_max_x < bbox_min_x || seg_min_x > bbox_max_x || seg_max_y < bbox_min_y || seg_min_y > bbox_max_y {
             return false;
         }
 
@@ -1022,7 +1050,7 @@ fn filter_miter_deck_edges(
     set.edge_verts_low = new_verts_low;
 
     let old_wires = std::mem::take(wires);
-    let mut new_wires = Vec::new();
+    let mut new_wires = Vec::with_capacity(old_wires.len());
     for wire in old_wires {
         if wire.points.len() < 2 {
             continue;
@@ -2177,6 +2205,7 @@ pub(crate) fn regenerate_wall_representation_inner(
                                 &centerline,
                                 solid_height,
                                 solid_base,
+                                wall_base_z,
                             );
                         }
                         scene.register_prepared_solid_model(solid_handle, body, display_geom);
@@ -2192,7 +2221,7 @@ pub(crate) fn regenerate_wall_representation_inner(
             }
             // Opening zone: elevation remainder extruded through the layer
             // thickness.
-            if !wall_openings.is_empty() {
+            if solid_visible && layer_included_solid && !wall_openings.is_empty() {
                 for zone in display.zone_solids.iter().filter(|z| z.layer_index == i) {
                     if zone.loop_xyz.len() < 3 {
                         continue;
@@ -2220,6 +2249,7 @@ pub(crate) fn regenerate_wall_representation_inner(
                                 &centerline,
                                 solid_height,
                                 solid_base,
+                                wall_base_z,
                             );
                             scene.register_prepared_solid_model(solid_handle, body, display_geom);
                         }

@@ -2227,34 +2227,43 @@ impl OpenCADStudio {
                     if compact_solid {
                         retain_compact_solid_sections(&mut sections);
                     }
-                    let title = match entity {
-                        acadrust::EntityType::Insert(ins) => {
-                            let is_xref = self.tabs[i]
-                                .scene
-                                .document
-                                .block_records
-                                .iter()
-                                .find(|br| br.name == ins.block_name)
-                                .map(|br| br.flags.is_xref || br.flags.is_xref_overlay)
-                                .unwrap_or(false);
-                            if is_xref {
-                                t!("External Reference").into_owned()
-                            } else {
-                                entity_type_label(entity)
+                    let aec_title = crate::modules::aec::properties::aec_entity_title(
+                        &self.tabs[i].scene,
+                        handle,
+                        entity,
+                    );
+                    let title = if let Some(t) = aec_title {
+                        t
+                    } else {
+                        match entity {
+                            acadrust::EntityType::Insert(ins) => {
+                                let is_xref = self.tabs[i]
+                                    .scene
+                                    .document
+                                    .block_records
+                                    .iter()
+                                    .find(|br| br.name == ins.block_name)
+                                    .map(|br| br.flags.is_xref || br.flags.is_xref_overlay)
+                                    .unwrap_or(false);
+                                if is_xref {
+                                    t!("External Reference").into_owned()
+                                } else {
+                                    entity_type_label(entity)
+                                }
                             }
+                            acadrust::EntityType::Surface(_)
+                                if matches!(
+                                    crate::scene::model::solid_history::primitive_property_operation(
+                                        &self.tabs[i].scene.document,
+                                        handle,
+                                    ),
+                                    Some(acadrust::objects::SolidHistoryOperation::Extrusion(_))
+                                ) =>
+                            {
+                                format!("{} ({})", t!("Surface"), t!("Extrusion"))
+                            }
+                            _ => entity_type_label(entity),
                         }
-                        acadrust::EntityType::Surface(_)
-                            if matches!(
-                                crate::scene::model::solid_history::primitive_property_operation(
-                                    &self.tabs[i].scene.document,
-                                    handle,
-                                ),
-                                Some(acadrust::objects::SolidHistoryOperation::Extrusion(_))
-                            ) =>
-                        {
-                            format!("{} ({})", t!("Surface"), t!("Extrusion"))
-                        }
-                        _ => entity_type_label(entity),
                     };
                     ui::PropertiesPanel {
                         choice_combos: sections
@@ -2303,7 +2312,7 @@ impl OpenCADStudio {
                 },
                 _ => {
                     let t_arm = crate::perf::enabled().then(iced::time::Instant::now);
-                    let groups = build_selection_groups(&selected);
+                    let groups = build_selection_groups(&selected, Some(&self.tabs[i].scene));
                     let t_groups = t_arm.map(|t| t.elapsed().as_secs_f64() * 1000.0);
                     let active_group = selected_group
                         .and_then(|group| groups.iter().find(|g| g.label == group.label).cloned())
@@ -3301,6 +3310,7 @@ fn make_sections_read_only(sections: &mut [crate::scene::model::object::PropSect
 
 pub(super) fn build_selection_groups(
     selected: &[(Handle, &EntityType)],
+    scene: Option<&crate::scene::Scene>,
 ) -> Vec<ui::properties::SelectionGroup> {
     let mut groups = vec![ui::properties::SelectionGroup {
         label: format!("{} ({})", t!("All").into_owned(), selected.len()),
@@ -3310,15 +3320,26 @@ pub(super) fn build_selection_groups(
     let mut by_type: std::collections::BTreeMap<String, Vec<Handle>> =
         std::collections::BTreeMap::new();
     for (handle, entity) in selected {
+        let label = if let Some(sc) = scene {
+            if let Some(aec_title) =
+                crate::modules::aec::properties::aec_entity_title(sc, *handle, entity)
+            {
+                aec_title
+            } else {
+                t!(title_case_word(&entity_type_key(entity))).into_owned()
+            }
+        } else {
+            t!(title_case_word(&entity_type_key(entity))).into_owned()
+        };
         by_type
-            .entry(entity_type_key(entity))
+            .entry(label)
             .or_default()
             .push(*handle);
     }
 
-    for (kind, handles) in by_type {
+    for (label, handles) in by_type {
         groups.push(ui::properties::SelectionGroup {
-            label: format!("{}({})", t!(title_case_word(&kind)), handles.len()),
+            label: format!("{}({})", label, handles.len()),
             handles,
         });
     }
@@ -4355,7 +4376,7 @@ mod chprop_integration_tests {
     #[test]
     fn ribbon_lineweight_updates_after_change() {
         let mut app = OpenCADStudio::new_for_test();
-        let i = app.active_tab;
+        let _i = app.active_tab;
         let _h = line_handle(&mut app);
         let _ = app.automation_op(r#"{"op":"select","type":"Line"}"#);
 

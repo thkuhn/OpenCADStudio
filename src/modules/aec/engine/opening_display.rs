@@ -61,6 +61,8 @@ pub struct OpeningBakeParams {
     pub thickness: f64,
     pub frame_thickness: f64,
     pub cross_axis_offset: f64,
+    pub wall_y_min: f64,
+    pub wall_y_max: f64,
     pub hinge: HingeSide,
     pub shape: OpeningShape,
     pub spring_height: f64,
@@ -77,6 +79,7 @@ impl OpeningBakeParams {
         } else {
             (DEFAULT_FRAME_THICKNESS, DEFAULT_OPENING_ANGLE_DEG)
         };
+        let ht = thickness * 0.5;
         Self {
             width: opening.width,
             height: opening.height,
@@ -84,12 +87,20 @@ impl OpeningBakeParams {
             thickness,
             frame_thickness,
             cross_axis_offset: opening.cross_axis_offset,
+            wall_y_min: -ht,
+            wall_y_max: ht,
             hinge: opening.hinge,
             shape: opening.shape,
             spring_height: opening.spring_height,
             opening_angle_deg: angle,
             kind: opening.kind,
         }
+    }
+
+    pub fn with_wall_bounds(mut self, y_min: f64, y_max: f64) -> Self {
+        self.wall_y_min = y_min;
+        self.wall_y_max = y_max;
+        self
     }
 }
 
@@ -356,20 +367,28 @@ fn bake_generator(
         OpeningGenerator::DoorFrame => bake_door_frame(slot, hw, ht, ft),
         OpeningGenerator::LeafLine => bake_leaf_line(slot, p, hw, ht, ft),
         OpeningGenerator::SwingArc => bake_swing_arc(slot, p, hw),
-        OpeningGenerator::SillLines => bake_sill_lines(slot, hw, ht, ft, p.cross_axis_offset),
-        OpeningGenerator::Cross => vec![
-            path(slot, vec![(-hw, -ht), (hw, ht)], false, false),
-            path(slot, vec![(-hw, ht), (hw, -ht)], false, false),
-        ],
-        OpeningGenerator::DiagonalFill => vec![
-            path(slot, vec![(-hw, -ht), (hw, ht)], false, false),
-            path(
-                slot,
-                vec![(-hw, -ht), (hw, -ht), (hw, ht), (-hw, ht)],
-                true,
-                true,
-            ),
-        ],
+        OpeningGenerator::SillLines => bake_sill_lines(slot, hw, ht, ft, p.cross_axis_offset, p.wall_y_min, p.wall_y_max),
+        OpeningGenerator::Cross => {
+            let y_ext = p.wall_y_min - p.cross_axis_offset;
+            let y_int = p.wall_y_max - p.cross_axis_offset;
+            vec![
+                path(slot, vec![(-hw, y_ext), (hw, y_int)], false, false),
+                path(slot, vec![(-hw, y_int), (hw, y_ext)], false, false),
+            ]
+        }
+        OpeningGenerator::DiagonalFill => {
+            let y_ext = p.wall_y_min - p.cross_axis_offset;
+            let y_int = p.wall_y_max - p.cross_axis_offset;
+            vec![
+                path(slot, vec![(-hw, y_ext), (hw, y_int)], false, false),
+                path(
+                    slot,
+                    vec![(-hw, y_ext), (hw, y_ext), (hw, y_int), (-hw, y_int)],
+                    true,
+                    true,
+                ),
+            ]
+        }
         OpeningGenerator::GlazingLine => bake_glazing_line(slot, hw, ft),
         OpeningGenerator::ThresholdLine => bake_threshold_line(slot, hw, ht),
         OpeningGenerator::OpeningLabel => bake_opening_label_preview(slot, hw),
@@ -559,14 +578,16 @@ fn bake_sill_lines(
     ht: f64,
     ft: f64,
     cross_offset: f64,
+    wall_y_min: f64,
+    wall_y_max: f64,
 ) -> Vec<BakedPath> {
     let frame_depth = (ft.max(0.07)).min(ht * 2.0);
     let frame_half_d = frame_depth * 0.5;
 
     let mut out = Vec::new();
     let sill_overhang = 0.035;
-    let wall_ext_y = -ht - cross_offset;
-    let wall_int_y = ht - cross_offset;
+    let wall_ext_y = wall_y_min - cross_offset;
+    let wall_int_y = wall_y_max - cross_offset;
     let sill_y_outer = wall_ext_y - sill_overhang;
     let sill_ear = 0.02;
 
@@ -871,37 +892,190 @@ pub fn format_din1356_label(opening: &Opening) -> String {
     }
 }
 
+pub fn opening_elevation_loops(
+    shape: OpeningShape,
+    width: f64,
+    height: f64,
+    spring_height: f64,
+    frame_thickness: f64,
+    is_door: bool,
+) -> (Vec<(f64, f64)>, Vec<(f64, f64)>) {
+    let hw = width * 0.5;
+    let ft = frame_thickness.max(0.01).min(hw * 0.45);
+    let bot_in = if is_door { 0.0 } else { ft };
+
+    match shape {
+        OpeningShape::Rectangle => {
+            let outer = vec![
+                (-hw, 0.0),
+                (hw, 0.0),
+                (hw, height),
+                (-hw, height),
+            ];
+            let inner = vec![
+                (-hw + ft, bot_in),
+                (hw - ft, bot_in),
+                (hw - ft, (height - ft).max(bot_in + 0.01)),
+                (-hw + ft, (height - ft).max(bot_in + 0.01)),
+            ];
+            (outer, inner)
+        }
+        OpeningShape::Circle => {
+            let (w, h) = shape.lock_size(width, height, true);
+            let r_out = w * 0.5;
+            let cy = h * 0.5;
+            let r_in = (r_out - ft).max(0.01);
+            let n = crate::modules::aec::engine::opening_shape::CIRCLE_CHORD_COUNT.max(16);
+            let mut outer = Vec::with_capacity(n);
+            let mut inner = Vec::with_capacity(n);
+            for i in 0..n {
+                let t = (i as f64) * std::f64::consts::TAU / (n as f64);
+                outer.push((r_out * t.cos(), cy + r_out * t.sin()));
+                inner.push((r_in * t.cos(), cy + r_in * t.sin()));
+            }
+            (outer, inner)
+        }
+        OpeningShape::Arch => {
+            let spring = crate::modules::aec::engine::opening_shape::clamp_spring(spring_height, height);
+            let rise = height - spring;
+            let mut outer = vec![(-hw, 0.0), (hw, 0.0), (hw, spring)];
+            let n = crate::modules::aec::engine::opening_shape::ARCH_CHORD_COUNT.max(8);
+            if rise > 1e-6 {
+                let chord = width;
+                let radius = chord * chord / (8.0 * rise) + rise * 0.5;
+                let cy = height - radius;
+                let a0 = (spring - cy).atan2(hw);
+                let mut a1 = (spring - cy).atan2(-hw);
+                while a1 <= a0 {
+                    a1 += std::f64::consts::TAU;
+                }
+                for i in 1..n {
+                    let t = a0 + (a1 - a0) * (i as f64) / (n as f64);
+                    outer.push((radius * t.cos(), cy + radius * t.sin()));
+                }
+            }
+            outer.push((-hw, spring));
+
+            let in_hw = (hw - ft).max(0.01);
+            let in_h = (height - ft).max(bot_in + 0.02);
+            let in_spring = crate::modules::aec::engine::opening_shape::clamp_spring(spring, in_h);
+            let in_rise = in_h - in_spring;
+            let mut inner = vec![(-in_hw, bot_in), (in_hw, bot_in), (in_hw, in_spring)];
+            if in_rise > 1e-6 {
+                let in_chord = 2.0 * in_hw;
+                let in_radius = in_chord * in_chord / (8.0 * in_rise) + in_rise * 0.5;
+                let in_cy = in_h - in_radius;
+                let a0 = (in_spring - in_cy).atan2(in_hw);
+                let mut a1 = (in_spring - in_cy).atan2(-in_hw);
+                while a1 <= a0 {
+                    a1 += std::f64::consts::TAU;
+                }
+                for i in 1..n {
+                    let t = a0 + (a1 - a0) * (i as f64) / (n as f64);
+                    inner.push((in_radius * t.cos(), in_cy + in_radius * t.sin()));
+                }
+            }
+            inner.push((-in_hw, in_spring));
+
+            (outer, inner)
+        }
+        OpeningShape::Triangle(variant) => {
+            let outer_raw = crate::modules::aec::engine::opening_shape::triangle_polygon(variant, width, height);
+            let outer: Vec<(f64, f64)> = outer_raw.into_iter().map(|(s, z)| (s - hw, z)).collect();
+            let cx = outer.iter().map(|p| p.0).sum::<f64>() / 3.0;
+            let cz = outer.iter().map(|p| p.1).sum::<f64>() / 3.0;
+            let scale = ((hw - ft) / hw).max(0.1).min(0.95);
+            let inner: Vec<(f64, f64)> = outer.iter().map(|&(x, z)| (cx + (x - cx) * scale, cz + (z - cz) * scale)).collect();
+            (outer, inner)
+        }
+    }
+}
+
+pub fn build_faceted_hollow_prism(
+    outer_loop: &[(f64, f64)],
+    inner_loop: &[(f64, f64)],
+    y_min: f64,
+    y_max: f64,
+) -> Option<cadkernel::brep::Body> {
+    let n = outer_loop.len();
+    if n < 3 || inner_loop.len() != n {
+        return None;
+    }
+
+    let mut vertices: Vec<[f64; 3]> = Vec::with_capacity(4 * n);
+    for &(x, z) in outer_loop {
+        vertices.push([x, y_min, z]);
+    }
+    for &(x, z) in outer_loop {
+        vertices.push([x, y_max, z]);
+    }
+    for &(x, z) in inner_loop {
+        vertices.push([x, y_min, z]);
+    }
+    for &(x, z) in inner_loop {
+        vertices.push([x, y_max, z]);
+    }
+
+    let mut faces: Vec<Vec<usize>> = Vec::with_capacity(4 * n);
+    for i in 0..n {
+        let next = (i + 1) % n;
+        // Outer side face (y_min to y_max)
+        faces.push(vec![i, next, next + n, i + n]);
+        // Inner side face (normal points inwards)
+        faces.push(vec![2 * n + i, 3 * n + i, 3 * n + next, 2 * n + next]);
+        // Back face quad (y = y_min, normal -Y)
+        faces.push(vec![i, 2 * n + i, 2 * n + next, next]);
+        // Front face quad (y = y_max, normal +Y)
+        faces.push(vec![n + i, n + next, 3 * n + next, 3 * n + i]);
+    }
+
+    cadkernel::brep::make::faceted_solid(&vertices, &faces)
+}
+
+pub fn build_faceted_prism(
+    polygon: &[(f64, f64)],
+    y_min: f64,
+    y_max: f64,
+) -> Option<cadkernel::brep::Body> {
+    let n = polygon.len();
+    if n < 3 {
+        return None;
+    }
+
+    let mut vertices: Vec<[f64; 3]> = Vec::with_capacity(2 * n);
+    for &(x, z) in polygon {
+        vertices.push([x, y_min, z]);
+    }
+    for &(x, z) in polygon {
+        vertices.push([x, y_max, z]);
+    }
+
+    let mut faces: Vec<Vec<usize>> = Vec::with_capacity(n + 2);
+    for i in 0..n {
+        let next = (i + 1) % n;
+        faces.push(vec![i, next, next + n, i + n]);
+    }
+    let back_face: Vec<usize> = (0..n).rev().collect();
+    faces.push(back_face);
+    let front_face: Vec<usize> = (n..2 * n).collect();
+    faces.push(front_face);
+
+    cadkernel::brep::make::faceted_solid(&vertices, &faces)
+}
+
 pub fn build_opening_frame_3d(
     width: f64,
     height: f64,
     frame_thickness: f64,
     depth: f64,
+    shape: OpeningShape,
+    spring_height: f64,
 ) -> Option<cadkernel::brep::Body> {
     let hw = width * 0.5;
     let hd = depth * 0.5;
     let ft = frame_thickness.max(0.02).min(hw * 0.45);
-
-    let left = cadkernel::brep::make::cuboid([-hw, -hd, 0.0], [ft, depth, height])?;
-    let right = cadkernel::brep::make::cuboid([hw - ft, -hd, 0.0], [ft, depth, height])?;
-    let top = cadkernel::brep::make::cuboid([-hw, -hd, height - ft], [width, depth, ft])?;
-    let bot = cadkernel::brep::make::cuboid([-hw, -hd, 0.0], [width, depth, ft])?;
-
-    let u1 = crate::scene::model::solid_model::boolean(
-        crate::scene::model::solid_model::Bool::Union,
-        &top,
-        &left,
-    ).unwrap_or(top);
-    let u2 = crate::scene::model::solid_model::boolean(
-        crate::scene::model::solid_model::Bool::Union,
-        &u1,
-        &right,
-    ).unwrap_or(u1);
-    let u3 = crate::scene::model::solid_model::boolean(
-        crate::scene::model::solid_model::Bool::Union,
-        &u2,
-        &bot,
-    ).unwrap_or(u2);
-    Some(u3)
+    let (outer, inner) = opening_elevation_loops(shape, width, height, spring_height, ft, false);
+    build_faceted_hollow_prism(&outer, &inner, -hd, hd)
 }
 
 pub fn build_opening_leaf_3d(
@@ -911,56 +1085,43 @@ pub fn build_opening_leaf_3d(
     opening_angle_deg: f64,
     hinge: HingeSide,
     is_door: bool,
+    shape: OpeningShape,
+    spring_height: f64,
 ) -> Option<cadkernel::brep::Body> {
     let hw = width * 0.5;
     let ft = frame_thickness.max(0.02).min(hw * 0.45);
-    let leaf_w = (width - 2.0 * ft).max(0.1);
-    let leaf_h = if is_door { (height - ft).max(0.1) } else { (height - 2.0 * ft).max(0.1) };
+    let (_outer, inner) = opening_elevation_loops(shape, width, height, spring_height, ft, is_door);
     let leaf_t = 0.04;
     let leaf_ht = leaf_t * 0.5;
-    let base_z = if is_door { 0.0 } else { ft };
+    let cub = build_faceted_prism(&inner, -leaf_ht, leaf_ht)?;
 
-    let body = match hinge {
-        HingeSide::Left => {
-            let cub = cadkernel::brep::make::cuboid([0.0, -leaf_ht, base_z], [leaf_w, leaf_t, leaf_h])?;
-            let ang = opening_angle_deg.to_radians();
-            let rotated = crate::scene::model::solid_model::turned(&cub, 2, ang, [0.0, 0.0, 0.0])?;
-            crate::scene::model::solid_model::placed(
-                &rotated,
-                [1.0, 0.0, 0.0],
-                [0.0, 1.0, 0.0],
-                [0.0, 0.0, 1.0],
-                [-hw + ft, 0.0, 0.0],
-            )
-        }
-        HingeSide::Right => {
-            let cub = cadkernel::brep::make::cuboid([-leaf_w, -leaf_ht, base_z], [leaf_w, leaf_t, leaf_h])?;
-            let ang = -opening_angle_deg.to_radians();
-            let rotated = crate::scene::model::solid_model::turned(&cub, 2, ang, [0.0, 0.0, 0.0])?;
-            crate::scene::model::solid_model::placed(
-                &rotated,
-                [1.0, 0.0, 0.0],
-                [0.0, 1.0, 0.0],
-                [0.0, 0.0, 1.0],
-                [hw - ft, 0.0, 0.0],
-            )
-        }
+    let hinge_x = match hinge {
+        HingeSide::Left => -hw + ft,
+        HingeSide::Right => hw - ft,
     };
-    body
+    let ang = match hinge {
+        HingeSide::Left => opening_angle_deg.to_radians(),
+        HingeSide::Right => -opening_angle_deg.to_radians(),
+    };
+    if ang.abs() > 1e-6 {
+        crate::scene::model::solid_model::turned(&cub, 2, ang, [hinge_x, 0.0, 0.0])
+    } else {
+        Some(cub)
+    }
 }
 
 pub fn build_opening_glazing_3d(
     width: f64,
     height: f64,
     frame_thickness: f64,
+    shape: OpeningShape,
+    spring_height: f64,
 ) -> Option<cadkernel::brep::Body> {
     let hw = width * 0.5;
     let ft = frame_thickness.max(0.02).min(hw * 0.45);
-    let clear_w = (width - 2.0 * ft).max(0.05);
-    let clear_h = (height - 2.0 * ft).max(0.05);
-    let half_w = clear_w * 0.5;
+    let (_outer, inner) = opening_elevation_loops(shape, width, height, spring_height, ft, false);
     let half_t = 0.01;
-    cadkernel::brep::make::cuboid([-half_w, -half_t, ft], [clear_w, 2.0 * half_t, clear_h])
+    build_faceted_prism(&inner, -half_t, half_t)
 }
 
 fn local_to_world(
@@ -1041,9 +1202,24 @@ pub fn bake_opening_world_with_doc(
         cx + normal.0 * opening.cross_axis_offset,
         cy + normal.1 * opening.cross_axis_offset,
     );
+    let (wall_y_min, wall_y_max) = doc
+        .and_then(|d| d.get_entity(opening.host_wall))
+        .and_then(wall_from_entity)
+        .filter(|w| !w.layers.is_empty())
+        .map(|w| {
+            let mut y_min = f64::INFINITY;
+            let mut y_max = f64::NEG_INFINITY;
+            for l in &w.layers {
+                y_min = y_min.min(l.axis_offset).min(l.axis_offset + l.thickness);
+                y_max = y_max.max(l.axis_offset).max(l.axis_offset + l.thickness);
+            }
+            (y_min, y_max)
+        })
+        .unwrap_or((-thickness * 0.5, thickness * 0.5));
     let plan = rules.and_then(|r| r.plan_name.as_deref());
     let (slots, style) = resolved_slots_for_plan(opening, library, plan);
-    let params = OpeningBakeParams::from_opening(opening, thickness, style.as_ref());
+    let params = OpeningBakeParams::from_opening(opening, thickness, style.as_ref())
+        .with_wall_bounds(wall_y_min, wall_y_max);
     let merged = rules_with_plan_visibility(opening, library, rules);
     let local = bake_opening_generators_with_doc(&slots, params, merged.as_ref(), doc);
     transform_paths(&local, origin, (tx, ty), normal)
@@ -1440,9 +1616,25 @@ pub fn regenerate_opening_display(
         }
     }
     let thickness = host_thickness(scene, wall_handle);
+    let (wall_y_min, wall_y_max) = scene
+        .document
+        .get_entity(wall_handle)
+        .and_then(wall_from_entity)
+        .filter(|w| !w.layers.is_empty())
+        .map(|w| {
+            let mut y_min = f64::INFINITY;
+            let mut y_max = f64::NEG_INFINITY;
+            for l in &w.layers {
+                y_min = y_min.min(l.axis_offset).min(l.axis_offset + l.thickness);
+                y_max = y_max.max(l.axis_offset).max(l.axis_offset + l.thickness);
+            }
+            (y_min, y_max)
+        })
+        .unwrap_or((-thickness * 0.5, thickness * 0.5));
     let plan = rules.and_then(|r| r.plan_name.as_deref());
     let (slots, style) = resolved_slots_for_plan(&opening, library, plan);
-    let params = OpeningBakeParams::from_opening(&opening, thickness, style.as_ref());
+    let params = OpeningBakeParams::from_opening(&opening, thickness, style.as_ref())
+        .with_wall_bounds(wall_y_min, wall_y_max);
     let merged_rules = rules_with_plan_visibility(&opening, library, rules);
     let local = bake_opening_generators_with_doc(
         &slots,
@@ -1564,6 +1756,8 @@ pub fn regenerate_opening_display(
             opening.height,
             params.frame_thickness,
             frame_depth,
+            params.shape,
+            params.spring_height,
         ) {
             let world_body = crate::scene::model::solid_model::placed(
                 &body,
@@ -1602,6 +1796,8 @@ pub fn regenerate_opening_display(
             params.opening_angle_deg,
             opening.hinge,
             opening.kind == OpeningKind::Door,
+            params.shape,
+            params.spring_height,
         ) {
             let world_body = crate::scene::model::solid_model::placed(
                 &body,
@@ -1637,6 +1833,8 @@ pub fn regenerate_opening_display(
             opening.width,
             opening.height,
             params.frame_thickness,
+            params.shape,
+            params.spring_height,
         ) {
             let world_body = crate::scene::model::solid_model::placed(
                 &body,
@@ -1762,6 +1960,8 @@ mod tests {
             thickness: 0.3,
             frame_thickness: DEFAULT_FRAME_THICKNESS,
             cross_axis_offset: 0.0,
+            wall_y_min: -0.15,
+            wall_y_max: 0.15,
             hinge,
             shape: OpeningShape::Rectangle,
             spring_height: 0.0,

@@ -15,6 +15,43 @@ use crate::modules::aec::engine::wall_package;
 use crate::modules::aec::engine::library::StyleLibrary;
 use crate::t;
 
+pub fn aec_entity_title(
+    scene: &crate::scene::Scene,
+    handle: Handle,
+    entity: &EntityType,
+) -> Option<String> {
+    if xdata::wall_from_entity(entity).is_some() {
+        return Some(t!("Wall").into_owned());
+    }
+    if let Some(opening) = opening_xdata::opening_from_entity(entity, handle) {
+        let name = match opening.kind {
+            OpeningKind::Window => t!("Window").into_owned(),
+            OpeningKind::Door => t!("Door").into_owned(),
+            OpeningKind::Breakthrough => t!("Opening").into_owned(),
+        };
+        return Some(name);
+    }
+    if let Some(owner) = opening_display::opening_owner_if_any(scene, handle) {
+        if let Some(owner_ent) = scene.document.get_entity(owner) {
+            if let Some(opening) = opening_xdata::opening_from_entity(owner_ent, owner) {
+                let name = match opening.kind {
+                    OpeningKind::Window => t!("Window").into_owned(),
+                    OpeningKind::Door => t!("Door").into_owned(),
+                    OpeningKind::Breakthrough => t!("Opening").into_owned(),
+                };
+                return Some(name);
+            }
+        }
+    }
+    if storey_xdata::storey_from_entity(entity).is_some() {
+        return Some(t!("Storey").into_owned());
+    }
+    if crate::modules::aec::project::preview::control_plane_from_entity(entity).is_some() {
+        return Some(t!("aec.control-plane").into_owned());
+    }
+    None
+}
+
 pub fn collapse_selection_to_wall_package<'a>(
     scene: &'a crate::scene::Scene,
     selected: Vec<(Handle, &'a EntityType)>,

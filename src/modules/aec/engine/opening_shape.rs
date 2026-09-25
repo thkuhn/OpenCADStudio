@@ -166,7 +166,7 @@ impl OpeningShape {
     }
 }
 
-fn triangle_polygon(variant: TriangleVariant, width: f64, height: f64) -> Vec<(f64, f64)> {
+pub fn triangle_polygon(variant: TriangleVariant, width: f64, height: f64) -> Vec<(f64, f64)> {
     match variant {
         TriangleVariant::IsoscelesUp | TriangleVariant::Equilateral => {
             vec![(0.0, 0.0), (width, 0.0), (width * 0.5, height)]
