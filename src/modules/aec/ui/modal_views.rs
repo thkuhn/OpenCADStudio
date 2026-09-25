@@ -139,6 +139,7 @@ fn aec_opening_style_manager_view(&self) -> Element<'_, Message> {
         crate::modules::aec::ui::aec_opening_style_manager::OpeningStyleFormState {
             open: self.aec.aec_opening_style_manager_form_open,
             is_new: self.aec.aec_opening_style_manager_editing_id.is_none(),
+            preview_mode: self.aec.aec_opening_style_manager_preview_mode,
             name: &self.aec.aec_opening_style_manager_name,
             parent_id: self.aec.aec_opening_style_manager_parent.as_deref(),
             parent_name,

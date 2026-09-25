@@ -150,6 +150,39 @@ impl NicheSide {
     }
 }
 
+/// Swing side / inside vs outside orientation through the wall thickness.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
+pub enum SwingSide {
+    /// Standard / exterior swing direction (positive normal in opening local coordinates).
+    #[default]
+    Exterior,
+    /// Inverted / interior swing direction through the wall thickness.
+    Interior,
+}
+
+impl SwingSide {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            SwingSide::Exterior => "Exterior",
+            SwingSide::Interior => "Interior",
+        }
+    }
+
+    pub fn from_str(s: &str) -> Self {
+        match s {
+            "Interior" | "interior" | "INTERIOR" => SwingSide::Interior,
+            _ => SwingSide::Exterior,
+        }
+    }
+
+    pub fn flipped(self) -> Self {
+        match self {
+            SwingSide::Exterior => SwingSide::Interior,
+            SwingSide::Interior => SwingSide::Exterior,
+        }
+    }
+}
+
 /// A wall opening (window, door, or breakthrough) hosted by a wall axis entity.
 ///
 /// `distance_along_axis` is measured from the wall axis **start** vertex to
@@ -173,6 +206,7 @@ pub struct Opening {
     pub cross_axis_offset: f64,
     pub depth: Option<f64>,
     pub niche_side: NicheSide,
+    pub swing_side: SwingSide,
     /// Optional sill/head control planes (same project planes as wall base/top).
     /// Numeric [`sill_height`] / [`height`] remain the baked cache relative to the
     /// host wall base at the opening XY.
@@ -235,6 +269,7 @@ impl Opening {
             cross_axis_offset: 0.0,
             depth: None,
             niche_side: NicheSide::default(),
+            swing_side: SwingSide::default(),
             sill_plane_id: None,
             head_plane_id: None,
             sill_plane_name: None,
@@ -307,6 +342,17 @@ impl Opening {
     pub fn flip(&mut self) {
         self.reference_side = self.reference_side.flipped();
         self.hinge = self.hinge.mirrored();
+    }
+
+    /// Flips hinge (Left <-> Right) and reference side (Start <-> End).
+    pub fn flip_hinge(&mut self) {
+        self.hinge = self.hinge.mirrored();
+        self.reference_side = self.reference_side.flipped();
+    }
+
+    /// Flips swing direction through the wall (Exterior <-> Interior).
+    pub fn flip_swing(&mut self) {
+        self.swing_side = self.swing_side.flipped();
     }
 
     pub fn has_plane_binding(&self) -> bool {

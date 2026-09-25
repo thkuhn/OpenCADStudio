@@ -25,7 +25,7 @@ use crate::modules::aec::engine::opening_xdata::{
     opening_from_entity, openings_for_host_wall, write_opening_instance,
 };
 use crate::modules::aec::engine::openings::{
-    point_and_tangent_at_distance, Opening, OpeningKind,
+    point_and_tangent_at_distance, Opening, OpeningKind, SwingSide,
 };
 use crate::modules::aec::engine::wall_package::resolve_wall_package;
 use crate::modules::aec::engine::xdata::{
@@ -64,6 +64,7 @@ pub struct OpeningBakeParams {
     pub wall_y_min: f64,
     pub wall_y_max: f64,
     pub hinge: HingeSide,
+    pub swing_side: SwingSide,
     pub shape: OpeningShape,
     pub spring_height: f64,
     pub opening_angle_deg: f64,
@@ -90,6 +91,7 @@ impl OpeningBakeParams {
             wall_y_min: -ht,
             wall_y_max: ht,
             hinge: opening.hinge,
+            swing_side: opening.swing_side,
             shape: opening.shape,
             spring_height: opening.spring_height,
             opening_angle_deg: angle,
@@ -366,7 +368,7 @@ fn bake_generator(
         OpeningGenerator::FrameRect => bake_frame_rect(slot, p, hw, ht, ft),
         OpeningGenerator::DoorFrame => bake_door_frame(slot, hw, ht, ft),
         OpeningGenerator::LeafLine => bake_leaf_line(slot, p, hw, ht, ft),
-        OpeningGenerator::SwingArc => bake_swing_arc(slot, p, hw),
+        OpeningGenerator::SwingArc => bake_swing_arc(slot, p, hw, ft),
         OpeningGenerator::SillLines => bake_sill_lines(slot, hw, ht, ft, p.cross_axis_offset, p.wall_y_min, p.wall_y_max),
         OpeningGenerator::Cross => {
             let y_ext = p.wall_y_min - p.cross_axis_offset;
@@ -510,7 +512,7 @@ fn bake_leaf_line(
 ) -> Vec<BakedPath> {
     match p.kind {
         OpeningKind::Door => {
-            let (start, end) = leaf_segment(p.hinge, hw, p.opening_angle_deg);
+            let (start, end) = leaf_segment(p.hinge, p.swing_side, hw, p.opening_angle_deg, ft);
             vec![path(slot, vec![start, end], false, false)]
         }
         _ => {
@@ -525,46 +527,74 @@ fn bake_leaf_line(
     }
 }
 
-fn leaf_segment(hinge: HingeSide, hw: f64, angle_deg: f64) -> ((f64, f64), (f64, f64)) {
-    let width = hw * 2.0;
+fn leaf_segment(
+    hinge: HingeSide,
+    swing: SwingSide,
+    hw: f64,
+    angle_deg: f64,
+    ft: f64,
+) -> ((f64, f64), (f64, f64)) {
+    let post_w = ft.min(hw * 0.45).max(1e-4);
+    let rebate_w = post_w * 0.5;
+    let clear_w = (hw - rebate_w) * 2.0;
     let ang = angle_deg.to_radians();
+    let swing_sign = match swing {
+        SwingSide::Exterior => 1.0,
+        SwingSide::Interior => -1.0,
+    };
     match hinge {
         HingeSide::Left => {
-            let start = (-hw, 0.0);
-            let end = (-hw + width * ang.cos(), width * ang.sin());
+            let start = (-hw + rebate_w, 0.0);
+            let end = (
+                -hw + rebate_w + clear_w * ang.cos(),
+                swing_sign * clear_w * ang.sin(),
+            );
             (start, end)
         }
         HingeSide::Right => {
-            let start = (hw, 0.0);
-            let end = (hw - width * ang.cos(), width * ang.sin());
+            let start = (hw - rebate_w, 0.0);
+            let end = (
+                hw - rebate_w - clear_w * ang.cos(),
+                swing_sign * clear_w * ang.sin(),
+            );
             (start, end)
         }
     }
 }
 
-fn bake_swing_arc(slot: OpeningComponentSlot, p: OpeningBakeParams, hw: f64) -> Vec<BakedPath> {
-    let width = hw * 2.0;
-    if width <= 1e-12 {
+fn bake_swing_arc(slot: OpeningComponentSlot, p: OpeningBakeParams, hw: f64, ft: f64) -> Vec<BakedPath> {
+    let post_w = if p.kind == OpeningKind::Door {
+        ft.min(hw * 0.45).max(1e-4)
+    } else {
+        0.0
+    };
+    let rebate_w = post_w * 0.5;
+    let clear_w = (hw - rebate_w) * 2.0;
+    if clear_w <= 1e-12 {
         return Vec::new();
     }
     let ang = p.opening_angle_deg.to_radians().abs().max(1e-6);
     let n = SWING_CHORD_COUNT.max(4);
+    let swing_sign = match p.swing_side {
+        SwingSide::Exterior => 1.0,
+        SwingSide::Interior => -1.0,
+    };
     let pts = match p.hinge {
         HingeSide::Left => {
-            let cx = -hw;
+            let cx = -hw + rebate_w;
             (0..=n)
                 .map(|i| {
                     let t = ang * (i as f64) / (n as f64);
-                    (cx + width * t.cos(), width * t.sin())
+                    (cx + clear_w * t.cos(), swing_sign * clear_w * t.sin())
                 })
                 .collect()
         }
         HingeSide::Right => {
-            let cx = hw;
+            let cx = hw - rebate_w;
             (0..=n)
                 .map(|i| {
                     let t = ang * (i as f64) / (n as f64);
-                    (cx - width * t.cos(), width * t.sin())
+                    (cx - clear_w * t.cos(), swing_sign * clear_w * t.sin())
                 })
                 .collect()
         }
@@ -1084,6 +1114,7 @@ pub fn build_opening_leaf_3d(
     frame_thickness: f64,
     opening_angle_deg: f64,
     hinge: HingeSide,
+    swing: SwingSide,
     is_door: bool,
     shape: OpeningShape,
     spring_height: f64,
@@ -1099,9 +1130,13 @@ pub fn build_opening_leaf_3d(
         HingeSide::Left => -hw + ft,
         HingeSide::Right => hw - ft,
     };
+    let swing_sign = match swing {
+        SwingSide::Exterior => 1.0,
+        SwingSide::Interior => -1.0,
+    };
     let ang = match hinge {
-        HingeSide::Left => opening_angle_deg.to_radians(),
-        HingeSide::Right => -opening_angle_deg.to_radians(),
+        HingeSide::Left => swing_sign * opening_angle_deg.to_radians(),
+        HingeSide::Right => -swing_sign * opening_angle_deg.to_radians(),
     };
     if ang.abs() > 1e-6 {
         crate::scene::model::solid_model::turned(&cub, 2, ang, [hinge_x, 0.0, 0.0])
@@ -1442,7 +1477,7 @@ pub fn opening_package_handles(scene: &Scene, opening_handle: Handle) -> Vec<Han
     handles
 }
 
-/// Grips along the host axis: center (0), start jamb (1), end jamb (2), flip handle (3).
+/// Grips along the host axis: center (0), start jamb (1), end jamb (2), hinge flip handle (3), swing flip handle (4).
 pub fn opening_axis_grips(
     axis: &[(f64, f64)],
     opening: &Opening,
@@ -1461,17 +1496,38 @@ pub fn opening_axis_grips(
     let center = DVec3::new(offset_cx, offset_cy, base_z);
     let start = DVec3::new(offset_cx - tx * hw, offset_cy - ty * hw, base_z);
     let end = DVec3::new(offset_cx + tx * hw, offset_cy + ty * hw, base_z);
-    let flip_handle = DVec3::new(offset_cx + normal.0 * 0.25, offset_cy + normal.1 * 0.25, base_z);
+
+    let swing_sign = match opening.swing_side {
+        SwingSide::Exterior => 1.0,
+        SwingSide::Interior => -1.0,
+    };
+    let hinge_sign = match opening.hinge {
+        HingeSide::Left => -1.0,
+        HingeSide::Right => 1.0,
+    };
+
+    let hinge_handle = DVec3::new(
+        offset_cx + tx * (hinge_sign * hw * 0.4) + normal.0 * (swing_sign * 0.25),
+        offset_cy + ty * (hinge_sign * hw * 0.4) + normal.1 * (swing_sign * 0.25),
+        base_z,
+    );
+    let swing_handle = DVec3::new(
+        offset_cx - normal.0 * (swing_sign * 0.25),
+        offset_cy - normal.1 * (swing_sign * 0.25),
+        base_z,
+    );
+
     vec![
         crate::entities::common::square_grip(0, center),
         crate::entities::common::rectangle_grip(1, start, [tx as f32, ty as f32]),
         crate::entities::common::rectangle_grip(2, end, [tx as f32, ty as f32]),
-        crate::entities::common::square_grip(3, flip_handle),
+        crate::entities::common::square_grip(3, hinge_handle),
+        crate::entities::common::square_grip(4, swing_handle),
     ]
 }
 
 /// Apply a center/width/flip grip. `grip_id` 0 moves the opening along the axis;
-/// 1/2 stretch a jamb (width + recentre); 3 flips reference side and swing.
+/// 1/2 stretch a jamb (width + recentre); 3 flips hinge (left/right); 4 flips swing side (interior/exterior).
 pub fn apply_opening_axis_grip(
     axis: &[(f64, f64)],
     opening: &mut Opening,
@@ -1479,7 +1535,11 @@ pub fn apply_opening_axis_grip(
     world: DVec3,
 ) {
     if grip_id == 3 {
-        opening.flip();
+        opening.flip_hinge();
+        return;
+    }
+    if grip_id == 4 {
+        opening.flip_swing();
         return;
     }
     let Some(s) = engine::openings::distance_along_axis_from_point(axis, (world.x, world.y)) else {
@@ -1795,6 +1855,7 @@ pub fn regenerate_opening_display(
             params.frame_thickness,
             params.opening_angle_deg,
             opening.hinge,
+            opening.swing_side,
             opening.kind == OpeningKind::Door,
             params.shape,
             params.spring_height,
@@ -1945,7 +2006,7 @@ mod tests {
     };
     use crate::modules::aec::engine::opening_xdata::place_wall_opening;
     use crate::modules::aec::engine::openings::{
-        OpeningKind, DEFAULT_WINDOW_WIDTH,
+        OpeningKind, DEFAULT_WINDOW_WIDTH, SwingSide,
     };
     use crate::modules::aec::engine::wall::{Wall, WallJustification, WallLayer};
     use crate::modules::aec::engine::wall_regen::regenerate_wall_representation;
@@ -1963,6 +2024,7 @@ mod tests {
             wall_y_min: -0.15,
             wall_y_max: 0.15,
             hinge,
+            swing_side: SwingSide::Exterior,
             shape: OpeningShape::Rectangle,
             spring_height: 0.0,
             opening_angle_deg: 90.0,
@@ -2066,6 +2128,96 @@ mod tests {
     }
 
     #[test]
+    fn door_swing_direction_interior_vs_exterior_flips_y_deflection() {
+        use crate::modules::aec::engine::openings::SwingSide;
+
+        let slots = default_slots_for_kind(OpeningKind::Door);
+
+        // Exterior swing (default): leaf deflects in +Y direction
+        let mut params_ext = params(0.9, OpeningKind::Door, HingeSide::Left);
+        params_ext.swing_side = SwingSide::Exterior;
+        let exterior = bake_opening_generators(&slots, params_ext, None);
+
+        // Interior swing: leaf deflects in -Y direction
+        let mut params_int = params(0.9, OpeningKind::Door, HingeSide::Left);
+        params_int.swing_side = SwingSide::Interior;
+        let interior = bake_opening_generators(&slots, params_int, None);
+
+        // Extract leaf segments (Leaf2D slot)
+        let leaf_ext = exterior
+            .iter()
+            .find(|p| p.slot == OpeningComponentSlot::Leaf2D)
+            .expect("exterior should have Leaf2D");
+        let leaf_int = interior
+            .iter()
+            .find(|p| p.slot == OpeningComponentSlot::Leaf2D)
+            .expect("interior should have Leaf2D");
+
+        // Both should have 2 points: start and end
+        assert_eq!(leaf_ext.points.len(), 2, "exterior leaf should have 2 points");
+        assert_eq!(leaf_int.points.len(), 2, "interior leaf should have 2 points");
+
+        // Start points (hinge) should be identical
+        assert!(
+            (leaf_ext.points[0].0 - leaf_int.points[0].0).abs() < 1e-9,
+            "hinge X should be identical"
+        );
+        assert!(
+            (leaf_ext.points[0].1 - leaf_int.points[0].1).abs() < 1e-9,
+            "hinge Y should be identical"
+        );
+
+        // End points (leaf tip) should have opposite Y deflection
+        let ext_y = leaf_ext.points[1].1;
+        let int_y = leaf_int.points[1].1;
+        assert!(ext_y > 0.0, "exterior leaf should deflect in +Y");
+        assert!(int_y < 0.0, "interior leaf should deflect in -Y");
+        assert!((ext_y + int_y).abs() < 1e-9, "Y deflections should be symmetric");
+
+        // Extract swing arcs (Swing2D slot)
+        let swing_ext = exterior
+            .iter()
+            .find(|p| p.slot == OpeningComponentSlot::Swing2D)
+            .expect("exterior should have Swing2D");
+        let swing_int = interior
+            .iter()
+            .find(|p| p.slot == OpeningComponentSlot::Swing2D)
+            .expect("interior should have Swing2D");
+
+        // Swing arcs should have same number of points
+        assert_eq!(
+            swing_ext.points.len(),
+            swing_int.points.len(),
+            "swing arcs should have same point count"
+        );
+
+        // All Y coordinates of exterior swing should be >= 0, interior should be <= 0
+        for (i, &(_, y_ext)) in swing_ext.points.iter().enumerate() {
+            let (_, y_int) = swing_int.points[i];
+            assert!(
+                y_ext >= -1e-9,
+                "exterior swing arc point {} should have Y >= 0, got {}",
+                i,
+                y_ext
+            );
+            assert!(
+                y_int <= 1e-9,
+                "interior swing arc point {} should have Y <= 0, got {}",
+                i,
+                y_int
+            );
+            // Symmetric around Y=0
+            assert!(
+                (y_ext + y_int).abs() < 1e-9,
+                "swing arc point {} Y values should be symmetric, got {} and {}",
+                i,
+                y_ext,
+                y_int
+            );
+        }
+    }
+
+    #[test]
     fn breakthrough_mark2d_has_no_swing_or_frame() {
         let slots = default_slots_for_kind(OpeningKind::Breakthrough);
         let baked = bake_opening_generators(
@@ -2077,6 +2229,7 @@ mod tests {
             p.slot == OpeningComponentSlot::Mark2D
                 || p.slot == OpeningComponentSlot::BreakthroughSymbol2D
                 || p.slot == OpeningComponentSlot::OpeningLabel2D
+                || p.slot == OpeningComponentSlot::ElevationContour2D
         }));
         assert!(baked
             .iter()

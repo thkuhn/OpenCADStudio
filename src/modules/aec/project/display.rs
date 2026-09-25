@@ -209,6 +209,75 @@ impl OpenCADStudio {
         )
     }
 
+    /// Removes a wall opening while honoring `tabs[tab_index]`'s active
+    /// `DisplayConfig` for the host wall's regeneration.
+    pub(crate) fn remove_wall_opening_respecting_active_display_config(
+        &mut self,
+        tab_index: usize,
+        opening_handle: acadrust::Handle,
+    ) -> Result<Vec<acadrust::Handle>, String> {
+        let style_library = crate::modules::aec::engine::project::resolve_style_library(
+            self.aec.aec_project_explorer_file.as_ref(),
+        );
+        let host_wall = self.tabs[tab_index]
+            .scene
+            .document
+            .get_entity(opening_handle)
+            .and_then(|entity| {
+                crate::modules::aec::engine::opening_xdata::opening_from_entity(entity, opening_handle)
+            })
+            .map(|op| wall_package::resolve_wall_package(&self.tabs[tab_index].scene, op.host_wall));
+        let (rules, substitutions) =
+            self.resolve_active_display_config_wall_rules(tab_index, host_wall);
+        crate::modules::aec::engine::opening_xdata::remove_wall_opening_with_rules_and_substitutions(
+            &mut self.tabs[tab_index].scene,
+            opening_handle,
+            Some(&style_library),
+            rules.as_ref(),
+            substitutions.as_ref(),
+        )
+    }
+
+    /// Interactively erase openings in `handles` whose host walls are not being
+    /// deleted, unlinking them from host walls and regenerating those host walls
+    /// according to the tab's active display configuration.
+    pub(crate) fn aec_erase_openings_respecting_active_display_config(
+        &mut self,
+        tab_index: usize,
+        handles: &[acadrust::Handle],
+    ) {
+        let mut openings_to_remove = Vec::new();
+        let scene = &self.tabs[tab_index].scene;
+        for &h in handles {
+            let Some(opening_owner) =
+                crate::modules::aec::engine::opening_display::opening_owner_if_any(scene, h)
+            else {
+                continue;
+            };
+            if openings_to_remove.contains(&opening_owner) {
+                continue;
+            }
+            let Some(entity) = scene.document.get_entity(opening_owner) else {
+                continue;
+            };
+            let Some(opening) =
+                crate::modules::aec::engine::opening_xdata::opening_from_entity(entity, opening_owner)
+            else {
+                continue;
+            };
+            let host_wall =
+                wall_package::resolve_wall_package(scene, opening.host_wall);
+            // If the host wall is itself being deleted in `handles`, skip individual removal
+            // as the entire wall and all its children will be erased together.
+            if !handles.contains(&host_wall) {
+                openings_to_remove.push(opening_owner);
+            }
+        }
+        for opening_handle in openings_to_remove {
+            let _ = self.remove_wall_opening_respecting_active_display_config(tab_index, opening_handle);
+        }
+    }
+
     /// After a join (or a new wall segment that auto-joins), rebuild each
     /// participating wall with *its* plan-type/style profile. Shared join
     /// regenerations often pass `None` or the first wall's rules, which

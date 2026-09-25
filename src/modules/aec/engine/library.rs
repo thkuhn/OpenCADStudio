@@ -1206,6 +1206,30 @@ pub fn seed_default_library() -> StyleLibrary {
             "Continuous".to_string(),
         )
     };
+    let clinker = Material {
+        category: Some("Mauerwerk".to_string()),
+        hatch_color: Some(acadrust::types::Color::Rgb { r: 178, g: 34, b: 34 }),
+        hatch_scale: 0.002,
+        ..Material::new(
+            "mat_clinker".to_string(),
+            "Klinker / Verblender".to_string(),
+            "ANSI31".to_string(),
+            0x8B2500,
+            "Continuous".to_string(),
+        )
+    };
+    let air = Material {
+        category: Some("Daemmung".to_string()),
+        hatch_color: None,
+        hatch_scale: 1.0,
+        ..Material::new(
+            "mat_air".to_string(),
+            "Luftschicht".to_string(),
+            "SOLID".to_string(),
+            0xE0E0E0,
+            "Continuous".to_string(),
+        )
+    };
 
     let masonry_wall = WallStyle {
         style: Style {
@@ -1226,7 +1250,29 @@ pub fn seed_default_library() -> StyleLibrary {
             role_tag: Some("Tragschale".to_string()),
             layer_id: Uuid::new_v4(),
         }],
-    display_profiles: std::collections::HashMap::new(),
+        display_profiles: std::collections::HashMap::new(),
+    };
+
+    let masonry_partition = WallStyle {
+        style: Style {
+            id: "style_masonry_115".to_string(),
+            name: "Nichttragende Trennwand 11.5cm".to_string(),
+            object_kind: "Wall".to_string(),
+            parent_style_id: None,
+        },
+        layers: vec![Layer {
+            material_id: masonry.id.clone(),
+            thickness: LayerValue::Fixed(0.115),
+            function: LayerFunction::Finish,
+            axis_offset: LayerValue::Fixed(-0.0575),
+            bottom_offset: 0.0,
+            top_offset: 0.0,
+            layer_override: None,
+            hatch_override: None,
+            role_tag: Some("Trennwand".to_string()),
+            layer_id: Uuid::new_v4(),
+        }],
+        display_profiles: std::collections::HashMap::new(),
     };
 
     let concrete_wall = WallStyle {
@@ -1248,7 +1294,77 @@ pub fn seed_default_library() -> StyleLibrary {
             role_tag: Some("Tragschale".to_string()),
             layer_id: Uuid::new_v4(),
         }],
-    display_profiles: std::collections::HashMap::new(),
+        display_profiles: std::collections::HashMap::new(),
+    };
+
+    let concrete_wall_25 = WallStyle {
+        style: Style {
+            id: "style_concrete_25".to_string(),
+            name: "Wand Stahlbeton 25cm".to_string(),
+            object_kind: "Wall".to_string(),
+            parent_style_id: None,
+        },
+        layers: vec![Layer {
+            material_id: concrete.id.clone(),
+            thickness: LayerValue::Fixed(0.25),
+            function: LayerFunction::Structural,
+            axis_offset: LayerValue::Fixed(-0.125),
+            bottom_offset: 0.0,
+            top_offset: 0.0,
+            layer_override: None,
+            hatch_override: Some("AR-CONC".to_string()),
+            role_tag: Some("Tragschale".to_string()),
+            layer_id: Uuid::new_v4(),
+        }],
+        display_profiles: std::collections::HashMap::new(),
+    };
+
+    let drywall_10 = WallStyle {
+        style: Style {
+            id: "style_drywall_10".to_string(),
+            name: "Trockenbauwand 10cm".to_string(),
+            object_kind: "Wall".to_string(),
+            parent_style_id: None,
+        },
+        layers: vec![
+            Layer {
+                material_id: drywall.id.clone(),
+                thickness: LayerValue::Fixed(0.0125),
+                function: LayerFunction::Finish,
+                axis_offset: LayerValue::Fixed(-0.05),
+                bottom_offset: 0.0,
+                top_offset: 0.0,
+                layer_override: None,
+                hatch_override: None,
+                role_tag: Some("Beplankung".to_string()),
+                layer_id: Uuid::new_v4(),
+            },
+            Layer {
+                material_id: insulation.id.clone(),
+                thickness: LayerValue::Fixed(0.075),
+                function: LayerFunction::Insulation,
+                axis_offset: LayerValue::Fixed(-0.0375),
+                bottom_offset: 0.0,
+                top_offset: 0.0,
+                layer_override: None,
+                hatch_override: Some("ANSI37".to_string()),
+                role_tag: Some("Daemmung / Staender".to_string()),
+                layer_id: Uuid::new_v4(),
+            },
+            Layer {
+                material_id: drywall.id.clone(),
+                thickness: LayerValue::Fixed(0.0125),
+                function: LayerFunction::Finish,
+                axis_offset: LayerValue::Fixed(0.0375),
+                bottom_offset: 0.0,
+                top_offset: 0.0,
+                layer_override: None,
+                hatch_override: None,
+                role_tag: Some("Beplankung".to_string()),
+                layer_id: Uuid::new_v4(),
+            },
+        ],
+        display_profiles: std::collections::HashMap::new(),
     };
 
     let insulated_wall = WallStyle {
@@ -1308,7 +1424,139 @@ pub fn seed_default_library() -> StyleLibrary {
                 layer_id: Uuid::new_v4(),
             },
         ],
-    display_profiles: std::collections::HashMap::new(),
+        display_profiles: std::collections::HashMap::new(),
+    };
+
+    let cavity_brick_wall = WallStyle {
+        style: Style {
+            id: "style_cavity_brick".to_string(),
+            name: "Zweischalige Verblendwand 42cm".to_string(),
+            object_kind: "Wall".to_string(),
+            parent_style_id: None,
+        },
+        layers: vec![
+            Layer {
+                material_id: plaster.id.clone(),
+                thickness: LayerValue::Fixed(0.015),
+                function: LayerFunction::Finish,
+                axis_offset: LayerValue::Fixed(-0.21),
+                bottom_offset: 0.0,
+                top_offset: 0.0,
+                layer_override: None,
+                hatch_override: None,
+                role_tag: Some("Innenputz".to_string()),
+                layer_id: Uuid::new_v4(),
+            },
+            Layer {
+                material_id: masonry.id.clone(),
+                thickness: LayerValue::Fixed(0.175),
+                function: LayerFunction::Structural,
+                axis_offset: LayerValue::Fixed(-0.195),
+                bottom_offset: 0.0,
+                top_offset: 0.0,
+                layer_override: None,
+                hatch_override: None,
+                role_tag: Some("Hintermauerwerk".to_string()),
+                layer_id: Uuid::new_v4(),
+            },
+            Layer {
+                material_id: insulation.id.clone(),
+                thickness: LayerValue::Fixed(0.12),
+                function: LayerFunction::Insulation,
+                axis_offset: LayerValue::Fixed(-0.02),
+                bottom_offset: 0.0,
+                top_offset: 0.0,
+                layer_override: None,
+                hatch_override: Some("ANSI37".to_string()),
+                role_tag: Some("Kerndaemmung".to_string()),
+                layer_id: Uuid::new_v4(),
+            },
+            Layer {
+                material_id: air.id.clone(),
+                thickness: LayerValue::Fixed(0.02),
+                function: LayerFunction::Insulation,
+                axis_offset: LayerValue::Fixed(0.10),
+                bottom_offset: 0.0,
+                top_offset: 0.0,
+                layer_override: None,
+                hatch_override: None,
+                role_tag: Some("Luftschicht".to_string()),
+                layer_id: Uuid::new_v4(),
+            },
+            Layer {
+                material_id: clinker.id.clone(),
+                thickness: LayerValue::Fixed(0.09),
+                function: LayerFunction::Finish,
+                axis_offset: LayerValue::Fixed(0.12),
+                bottom_offset: 0.0,
+                top_offset: 0.0,
+                layer_override: Some("A-WALL-CLINKER".to_string()),
+                hatch_override: Some("ANSI31".to_string()),
+                role_tag: Some("Verblender".to_string()),
+                layer_id: Uuid::new_v4(),
+            },
+        ],
+        display_profiles: std::collections::HashMap::new(),
+    };
+
+    let timber_wall = WallStyle {
+        style: Style {
+            id: "style_timber_exterior".to_string(),
+            name: "Holzstaenderwand 28cm".to_string(),
+            object_kind: "Wall".to_string(),
+            parent_style_id: None,
+        },
+        layers: vec![
+            Layer {
+                material_id: drywall.id.clone(),
+                thickness: LayerValue::Fixed(0.015),
+                function: LayerFunction::Finish,
+                axis_offset: LayerValue::Fixed(-0.14),
+                bottom_offset: 0.0,
+                top_offset: 0.0,
+                layer_override: None,
+                hatch_override: None,
+                role_tag: Some("Innenbeplankung".to_string()),
+                layer_id: Uuid::new_v4(),
+            },
+            Layer {
+                material_id: air.id.clone(),
+                thickness: LayerValue::Fixed(0.06),
+                function: LayerFunction::Insulation,
+                axis_offset: LayerValue::Fixed(-0.125),
+                bottom_offset: 0.0,
+                top_offset: 0.0,
+                layer_override: None,
+                hatch_override: None,
+                role_tag: Some("Installationsebene".to_string()),
+                layer_id: Uuid::new_v4(),
+            },
+            Layer {
+                material_id: insulation.id.clone(),
+                thickness: LayerValue::Fixed(0.16),
+                function: LayerFunction::Structural,
+                axis_offset: LayerValue::Fixed(-0.065),
+                bottom_offset: 0.0,
+                top_offset: 0.0,
+                layer_override: None,
+                hatch_override: Some("ANSI37".to_string()),
+                role_tag: Some("Holzstaender / Daemmung".to_string()),
+                layer_id: Uuid::new_v4(),
+            },
+            Layer {
+                material_id: wood.id.clone(),
+                thickness: LayerValue::Fixed(0.045),
+                function: LayerFunction::Finish,
+                axis_offset: LayerValue::Fixed(0.095),
+                bottom_offset: 0.0,
+                top_offset: 0.0,
+                layer_override: Some("A-WALL-WOOD".to_string()),
+                hatch_override: Some("ANSI31".to_string()),
+                role_tag: Some("Holzverschalung".to_string()),
+                layer_id: Uuid::new_v4(),
+            },
+        ],
+        display_profiles: std::collections::HashMap::new(),
     };
 
     // Derived style demonstrating style-manager inheritance: shares the
@@ -1323,18 +1571,23 @@ pub fn seed_default_library() -> StyleLibrary {
             parent_style_id: Some(insulated_wall.style.id.clone()),
         },
         layers: vec![],
-    display_profiles: std::collections::HashMap::new(),
+        display_profiles: std::collections::HashMap::new(),
     };
 
     StyleLibrary {
         materials: vec![
-            masonry, concrete, insulation, plaster, wood, drywall, steel, glass,
+            masonry, concrete, insulation, plaster, wood, drywall, steel, glass, clinker, air,
         ],
         wall_styles: vec![
             masonry_wall,
+            masonry_partition,
             concrete_wall,
+            concrete_wall_25,
+            drywall_10,
             insulated_wall,
             insulated_wall_variant,
+            cavity_brick_wall,
+            timber_wall,
         ],
         opening_styles: crate::modules::aec::engine::opening_style::seed_opening_styles(),
     }
@@ -1532,8 +1785,27 @@ impl DisplayConfigLibrary {
         elev.opening_visibility.insert(OpeningComponentSlot::Leaf2D, false);
         elev.opening_visibility.insert(OpeningComponentSlot::Swing2D, false);
 
+        // 5. "3D Modell / Visualisierung": 3D solid representation, 2D plan slots inactive
+        let mut model_3d = DisplayConfig::new(
+            "3D Modell / Visualisierung".to_string(),
+            "Visualisierung".to_string(),
+            PlanningStage::Design,
+            ViewType::FloorPlan,
+        );
+        model_3d.default_representation = RepresentationMode::ThreeD;
+        model_3d.opening_visibility.insert(OpeningComponentSlot::Frame3D, true);
+        model_3d.opening_visibility.insert(OpeningComponentSlot::Leaf3D, true);
+        model_3d.opening_visibility.insert(OpeningComponentSlot::Glazing3D, true);
+        model_3d.opening_visibility.insert(OpeningComponentSlot::Frame2D, false);
+        model_3d.opening_visibility.insert(OpeningComponentSlot::Leaf2D, false);
+        model_3d.opening_visibility.insert(OpeningComponentSlot::Swing2D, false);
+        model_3d.opening_visibility.insert(OpeningComponentSlot::Glazing2D, false);
+        model_3d.opening_visibility.insert(OpeningComponentSlot::Sill2D, false);
+        model_3d.opening_visibility.insert(OpeningComponentSlot::Threshold2D, false);
+        model_3d.opening_visibility.insert(OpeningComponentSlot::OpeningLabel2D, false);
+
         Self {
-            configs: vec![arch_50, stat_50, entw_100, elev],
+            configs: vec![arch_50, stat_50, entw_100, elev, model_3d],
             scale_display_config_mappings: Vec::new(),
         }
     }
@@ -1993,7 +2265,7 @@ mod tests {
         use crate::modules::aec::engine::openings::OpeningKind;
 
         let lib = seed_default_library();
-        assert_eq!(lib.opening_styles.len(), 3);
+        assert_eq!(lib.opening_styles.len(), 10);
         let window = lib.find_opening_style(SEED_WINDOW_STYLE_ID).expect("window seed");
         assert_eq!(window.kind, OpeningKind::Window);
         assert!((window.frame_thickness - 0.06).abs() < 1e-12);
@@ -2057,6 +2329,14 @@ mod tests {
             .expect("Glas material");
         assert_eq!(glass.category.as_deref(), Some("Verglasung"));
         assert_eq!(glass.hatch_color, Some(acadrust::types::Color::Rgb { r: 0xA8, g: 0xD4, b: 0xE8 }));
+
+        let clinker = lib
+            .materials
+            .iter()
+            .find(|m| m.id == "mat_clinker")
+            .expect("Klinker material");
+        assert_eq!(clinker.name, "Klinker / Verblender");
+        assert_eq!(clinker.category.as_deref(), Some("Mauerwerk"));
     }
 
     #[test]
@@ -2069,11 +2349,12 @@ mod tests {
         );
         assert!(masonry_uses.iter().any(|(ws, _)| ws.style.id == "style_masonry"));
 
-        let unused = lib.materials_using("mat_wood");
+        let wood_uses = lib.materials_using("mat_wood");
         assert!(
-            unused.is_empty(),
-            "mat_wood is seeded but not used by any default wall style"
+            !wood_uses.is_empty(),
+            "mat_wood is used by style_timber_exterior"
         );
+        assert!(wood_uses.iter().any(|(ws, _)| ws.style.id == "style_timber_exterior"));
     }
 
     #[test]

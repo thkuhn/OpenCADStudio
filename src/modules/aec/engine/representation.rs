@@ -271,9 +271,20 @@ pub fn build_wall_representation_with_openings(
     let outer_pieces = if centerline_offset.abs() < 1e-15 {
         subtract_openings_from_band(&repr.outer_contour_2d, axis, total_thickness, openings)
     } else {
-        subtract_openings_from_band_with_builder(axis, openings, |sub| {
-            outer_contour_with_bulges(sub, &[], total_thickness, centerline_offset).points
-        })
+        let length = super::openings::axis_length(axis);
+        let spans = super::openings::remaining_axis_spans_for_thickness(length, openings, total_thickness);
+        let mut pieces = Vec::new();
+        for (s0, s1) in spans {
+            let sub = super::openings::sub_axis(axis, s0, s1);
+            if sub.len() < 2 {
+                continue;
+            }
+            let piece = super::openings::outer_contour_with_niches(&sub, s0, s1, total_thickness, centerline_offset, openings);
+            if piece.len() >= 3 && super::geometry::area(&piece) > 1e-12 {
+                pieces.push(piece);
+            }
+        }
+        pieces
     };
     repr.cut_outer_pieces_2d = outer_pieces.clone();
     if let Some(first) = outer_pieces.first() {
@@ -284,12 +295,18 @@ pub fn build_wall_representation_with_openings(
         repr.outer_contour_bulges.clear();
     }
 
+    let through_openings: Vec<Opening> = openings
+        .iter()
+        .filter(|o| !super::openings::is_partial_niche(o, total_thickness))
+        .cloned()
+        .collect();
+
     // Per-layer footprints: rebuild each free span with the same layer stack.
     let mut cut_layers: Vec<Vec<Vec<(f64, f64)>>> = Vec::with_capacity(layers.len());
     let n_layers = layers.len();
     for li in 0..n_layers {
         let layer_spec = layers[li];
-        let pieces = subtract_openings_from_band_with_builder(axis, openings, |sub| {
+        let pieces = subtract_openings_from_band_with_builder(axis, &through_openings, |sub| {
             // Single-layer footprint at this layer's position in the stack:
             // rebuild full stack on the sub-axis and pick layer `li`.
             let pairs = layer_contours_with_bulges(sub, &[], layers);

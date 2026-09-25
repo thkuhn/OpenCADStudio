@@ -62,6 +62,15 @@ pub enum AecOpeningSlotSource {
     Sketch,
 }
 
+/// Preview mode in the Opening Style Manager canvas.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum AecOpeningPreviewMode {
+    #[default]
+    Plan2D,
+    Elevation2D,
+    Model3D,
+}
+
 /// Edit-buffer row for an opening-style display slot.
 #[derive(Clone, Debug)]
 pub struct AecOpeningSlotBuffer {
@@ -295,6 +304,7 @@ pub struct AecState {
     pub aec_opening_style_manager_selected: Option<String>,
     pub aec_opening_style_manager_editing_id: Option<String>,
     pub aec_opening_style_manager_form_open: bool,
+    pub aec_opening_style_manager_preview_mode: AecOpeningPreviewMode,
     pub aec_opening_style_manager_name: String,
     pub aec_opening_style_manager_parent: Option<String>,
     pub aec_opening_style_manager_kind: crate::modules::aec::engine::openings::OpeningKind,
@@ -548,6 +558,7 @@ impl Default for AecState {
             aec_opening_style_manager_selected: None,
             aec_opening_style_manager_editing_id: None,
             aec_opening_style_manager_form_open: false,
+            aec_opening_style_manager_preview_mode: AecOpeningPreviewMode::Plan2D,
             aec_opening_style_manager_name: String::new(),
             aec_opening_style_manager_parent: None,
             aec_opening_style_manager_kind: crate::modules::aec::engine::openings::OpeningKind::Window,

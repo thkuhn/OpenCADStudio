@@ -70,6 +70,7 @@ pub(crate) fn opening_record(opening: &engine::openings::Opening) -> ExtendedDat
     record.add_value(XDataValue::Distance(opening.cross_axis_offset));
     record.add_value(XDataValue::Distance(opening.depth.unwrap_or(-1.0)));
     record.add_value(XDataValue::String(opening.niche_side.as_str().to_string()));
+    record.add_value(XDataValue::String(opening.swing_side.as_str().to_string()));
     encode_opening_planes(&mut record.values, opening);
     record
 }
@@ -239,6 +240,7 @@ pub fn opening_from_values(
     let mut cross_axis_offset = 0.0;
     let mut depth = None;
     let mut niche_side = engine::openings::NicheSide::Exterior;
+    let mut swing_side = engine::openings::SwingSide::Exterior;
 
     let planes_pos = v
         .iter()
@@ -289,6 +291,11 @@ pub fn opening_from_values(
             niche_side = engine::openings::NicheSide::from_str(s);
         }
     }
+    if planes_pos > 15 {
+        if let Some(XDataValue::String(s)) = v.get(15) {
+            swing_side = engine::openings::SwingSide::from_str(s);
+        }
+    }
 
     let (
         sill_plane_id,
@@ -319,6 +326,7 @@ pub fn opening_from_values(
         cross_axis_offset,
         depth,
         niche_side,
+        swing_side,
         sill_plane_id,
         head_plane_id,
         sill_plane_name,
@@ -386,15 +394,23 @@ pub fn place_wall_opening(
         distance,
         kind,
     );
+    // Anchor the POINT at the projected axis location (not the raw click).
+    let (anchor, tangent) = engine::openings::point_and_tangent_at_distance(&axis_2d, distance)
+        .unwrap_or(((pt.x, pt.y), (1.0, 0.0)));
+    let normal = (-tangent.1, tangent.0);
+    let cross_d = (pt.x - anchor.0) * normal.0 + (pt.y - anchor.1) * normal.1;
+    if cross_d < -1e-3 {
+        opening.swing_side = engine::openings::SwingSide::Interior;
+    } else {
+        opening.swing_side = engine::openings::SwingSide::Exterior;
+    }
+
     if let Some(lib) = library_override {
         if let Some(style) = lib.opening_style_for_kind(kind) {
             engine::opening_style::apply_style_defaults(&mut opening, style);
         }
     }
 
-    // Anchor the POINT at the projected axis location (not the raw click).
-    let (anchor, _) = engine::openings::point_and_tangent_at_distance(&axis_2d, distance)
-        .unwrap_or(((pt.x, pt.y), (1.0, 0.0)));
     let point_entity = EntityType::Point(Point::at(Vector3::new(anchor.0, anchor.1, 0.0)));
     let opening_handle = scene.add_entity(point_entity);
 
@@ -447,6 +463,33 @@ pub fn remove_wall_opening(
     opening_handle: Handle,
     library_override: Option<&StyleLibrary>,
 ) -> Result<Vec<Handle>, String> {
+    remove_wall_opening_with_rules(scene, opening_handle, library_override, None)
+}
+
+/// Remove an opening entity with explicit display rules for host wall regeneration.
+pub fn remove_wall_opening_with_rules(
+    scene: &mut Scene,
+    opening_handle: Handle,
+    library_override: Option<&StyleLibrary>,
+    display_rules: Option<&engine::display_component::ComponentRuleSet>,
+) -> Result<Vec<Handle>, String> {
+    remove_wall_opening_with_rules_and_substitutions(
+        scene,
+        opening_handle,
+        library_override,
+        display_rules,
+        None,
+    )
+}
+
+/// Remove an opening entity with explicit display rules and style substitutions for host wall regeneration.
+pub fn remove_wall_opening_with_rules_and_substitutions(
+    scene: &mut Scene,
+    opening_handle: Handle,
+    library_override: Option<&StyleLibrary>,
+    display_rules: Option<&engine::display_component::ComponentRuleSet>,
+    style_substitutions: Option<&HashMap<engine::plan_view::WallStyleRef, engine::plan_view::WallStyleRef>>,
+) -> Result<Vec<Handle>, String> {
     let Some(entity) = scene.document.get_entity(opening_handle).cloned() else {
         return Err("opening entity not found".into());
     };
@@ -458,7 +501,13 @@ pub fn remove_wall_opening(
     erase.push(opening_handle);
     engine::owner_index::remove_child(&mut scene.document, wall_handle, opening_handle);
     scene.erase_entities(&erase);
-    let mut touched = match regenerate_wall_representation(scene, wall_handle, library_override) {
+    let mut touched = match regenerate_wall_representation_with_rules_and_substitutions(
+        scene,
+        wall_handle,
+        display_rules,
+        style_substitutions,
+        library_override,
+    ) {
         Ok(t) => t,
         Err(_) => vec![wall_handle],
     };
@@ -606,7 +655,21 @@ mod tests {
         ];
         let o = opening_from_values(Handle::new(9), &v).expect("extras");
         assert_eq!(o.style_id.as_deref(), Some("style_window_standard"));
+        assert_eq!(o.swing_side, engine::openings::SwingSide::Exterior);
         assert!(o.sill_plane_id.is_none());
         assert!(o.head_plane_id.is_none());
+    }
+
+    #[test]
+    fn swing_side_roundtrips_and_flips() {
+        let mut o = sample_opening();
+        o.swing_side = engine::openings::SwingSide::Interior;
+        let rec = opening_record(&o);
+        let back = opening_from_values(o.handle, &rec.values).expect("parse swing");
+        assert_eq!(back.swing_side, engine::openings::SwingSide::Interior);
+
+        let mut o_flip = back;
+        o_flip.flip_swing();
+        assert_eq!(o_flip.swing_side, engine::openings::SwingSide::Exterior);
     }
 }

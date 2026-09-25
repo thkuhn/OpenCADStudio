@@ -8,7 +8,9 @@ use crate::modules::aec::engine::opening_display;
 use crate::modules::aec::engine::opening_shape::OpeningShape;
 use crate::modules::aec::engine::opening_style::{apply_style_defaults, HingeSide};
 use crate::modules::aec::engine::opening_xdata;
-use crate::modules::aec::engine::openings::{NicheSide, Opening, OpeningKind, OpeningReferenceSide};
+use crate::modules::aec::engine::openings::{
+    NicheSide, Opening, OpeningKind, OpeningReferenceSide, SwingSide,
+};
 use crate::modules::aec::engine::storey_xdata;
 use crate::modules::aec::engine::xdata;
 use crate::modules::aec::engine::wall_package;
@@ -575,6 +577,14 @@ pub fn apply_opening_property(
             opening.hinge = h;
             true
         }
+        "opening_swing_side" => {
+            let ss = SwingSide::from_str(val);
+            if opening.swing_side == ss {
+                return false;
+            }
+            opening.swing_side = ss;
+            true
+        }
         "opening_reference_side" => {
             let r = OpeningReferenceSide::from_str(val);
             if opening.reference_side == r {
@@ -774,6 +784,17 @@ pub fn opening_prop_section(
                 options: vec![
                     HingeSide::Left.as_str().into(),
                     HingeSide::Right.as_str().into(),
+                ],
+            },
+        },
+        crate::scene::model::object::Property {
+            label: crate::tr!("aec", "opening-swing-side"),
+            field: "opening_swing_side",
+            value: crate::scene::model::object::PropValue::Choice {
+                selected: opening.swing_side.as_str().to_string(),
+                options: vec![
+                    SwingSide::Exterior.as_str().into(),
+                    SwingSide::Interior.as_str().into(),
                 ],
             },
         },

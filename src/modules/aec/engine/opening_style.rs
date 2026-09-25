@@ -16,10 +16,24 @@ use std::collections::HashMap;
 
 /// Seed style id for the standard window.
 pub const SEED_WINDOW_STYLE_ID: &str = "style_window_standard";
+/// Seed style id for the double-leaf window.
+pub const SEED_WINDOW_DOUBLE_STYLE_ID: &str = "style_window_double";
+/// Seed style id for the arched window.
+pub const SEED_WINDOW_ARCH_STYLE_ID: &str = "style_window_arch";
+/// Seed style id for the round circular window.
+pub const SEED_WINDOW_CIRCLE_STYLE_ID: &str = "style_window_circle";
+/// Seed style id for the floor-to-ceiling French window.
+pub const SEED_WINDOW_FLOOR_STYLE_ID: &str = "style_window_floor";
 /// Seed style id for the standard door.
 pub const SEED_DOOR_STYLE_ID: &str = "style_door_standard";
+/// Seed style id for the right-hinged door.
+pub const SEED_DOOR_RIGHT_STYLE_ID: &str = "style_door_right";
+/// Seed style id for the double-leaf entrance door.
+pub const SEED_DOOR_DOUBLE_STYLE_ID: &str = "style_door_double";
 /// Seed style id for the standard breakthrough.
 pub const SEED_BREAKTHROUGH_STYLE_ID: &str = "style_breakthrough_standard";
+/// Seed style id for the round pipe/installation breakthrough.
+pub const SEED_BREAKTHROUGH_PIPE_STYLE_ID: &str = "style_breakthrough_pipe";
 
 /// Default frame / profile thickness in drawing units (metres).
 pub const DEFAULT_FRAME_THICKNESS: f64 = 0.06;
@@ -279,6 +293,18 @@ impl OpeningStyle {
             SlotGeometry::Generator(OpeningGenerator::OpeningLabel),
         );
         slots.insert(
+            OpeningComponentSlot::ElevationContour2D,
+            SlotGeometry::Generator(OpeningGenerator::ElevationFrameRect),
+        );
+        slots.insert(
+            OpeningComponentSlot::ElevationSwing2D,
+            SlotGeometry::Generator(OpeningGenerator::ElevationSwingTriangle),
+        );
+        slots.insert(
+            OpeningComponentSlot::ElevationSill2D,
+            SlotGeometry::Generator(OpeningGenerator::ElevationSillLine),
+        );
+        slots.insert(
             OpeningComponentSlot::Frame3D,
             SlotGeometry::Generator(OpeningGenerator::SolidFrame),
         );
@@ -297,6 +323,246 @@ impl OpeningStyle {
             default_width: crate::modules::aec::engine::openings::DEFAULT_WINDOW_WIDTH,
             default_height: crate::modules::aec::engine::openings::DEFAULT_WINDOW_HEIGHT,
             default_sill: crate::modules::aec::engine::openings::DEFAULT_WINDOW_SILL,
+            hinge: HingeSide::Left,
+            frame_thickness: DEFAULT_FRAME_THICKNESS,
+            opening_angle_deg: DEFAULT_OPENING_ANGLE_DEG,
+            shape: OpeningShape::Rectangle,
+            spring_height: 0.0,
+            slots,
+            display_profiles: HashMap::new(),
+        }
+    }
+
+    pub fn window_double() -> Self {
+        let mut slots = HashMap::new();
+        slots.insert(
+            OpeningComponentSlot::Frame2D,
+            SlotGeometry::Generator(OpeningGenerator::FrameRect),
+        );
+        slots.insert(
+            OpeningComponentSlot::Leaf2D,
+            SlotGeometry::Generator(OpeningGenerator::LeafLine),
+        );
+        slots.insert(
+            OpeningComponentSlot::Glazing2D,
+            SlotGeometry::Generator(OpeningGenerator::GlazingLine),
+        );
+        slots.insert(
+            OpeningComponentSlot::Sill2D,
+            SlotGeometry::Generator(OpeningGenerator::SillLines),
+        );
+        slots.insert(
+            OpeningComponentSlot::OpeningLabel2D,
+            SlotGeometry::Generator(OpeningGenerator::OpeningLabel),
+        );
+        slots.insert(
+            OpeningComponentSlot::ElevationContour2D,
+            SlotGeometry::Generator(OpeningGenerator::ElevationFrameRect),
+        );
+        slots.insert(
+            OpeningComponentSlot::ElevationMuntins2D,
+            SlotGeometry::Generator(OpeningGenerator::ElevationMuntinsDouble),
+        );
+        slots.insert(
+            OpeningComponentSlot::ElevationSwing2D,
+            SlotGeometry::Generator(OpeningGenerator::ElevationSwingTriangle),
+        );
+        slots.insert(
+            OpeningComponentSlot::ElevationSill2D,
+            SlotGeometry::Generator(OpeningGenerator::ElevationSillLine),
+        );
+        slots.insert(
+            OpeningComponentSlot::Frame3D,
+            SlotGeometry::Generator(OpeningGenerator::SolidFrame),
+        );
+        slots.insert(
+            OpeningComponentSlot::Glazing3D,
+            SlotGeometry::Generator(OpeningGenerator::SolidGlazing),
+        );
+        Self {
+            style: Style {
+                id: SEED_WINDOW_DOUBLE_STYLE_ID.to_string(),
+                name: "Zweiflügelfenster".to_string(),
+                object_kind: Self::object_kind_for(OpeningKind::Window).to_string(),
+                parent_style_id: None,
+            },
+            kind: OpeningKind::Window,
+            default_width: 1.60,
+            default_height: 1.40,
+            default_sill: 0.90,
+            hinge: HingeSide::Left,
+            frame_thickness: DEFAULT_FRAME_THICKNESS,
+            opening_angle_deg: DEFAULT_OPENING_ANGLE_DEG,
+            shape: OpeningShape::Rectangle,
+            spring_height: 0.0,
+            slots,
+            display_profiles: HashMap::new(),
+        }
+    }
+
+    pub fn window_arch() -> Self {
+        let mut slots = HashMap::new();
+        slots.insert(
+            OpeningComponentSlot::Frame2D,
+            SlotGeometry::Generator(OpeningGenerator::FrameRect),
+        );
+        slots.insert(
+            OpeningComponentSlot::Leaf2D,
+            SlotGeometry::Generator(OpeningGenerator::LeafLine),
+        );
+        slots.insert(
+            OpeningComponentSlot::Glazing2D,
+            SlotGeometry::Generator(OpeningGenerator::GlazingLine),
+        );
+        slots.insert(
+            OpeningComponentSlot::Sill2D,
+            SlotGeometry::Generator(OpeningGenerator::SillLines),
+        );
+        slots.insert(
+            OpeningComponentSlot::OpeningLabel2D,
+            SlotGeometry::Generator(OpeningGenerator::OpeningLabel),
+        );
+        slots.insert(
+            OpeningComponentSlot::ElevationContour2D,
+            SlotGeometry::Generator(OpeningGenerator::ElevationFrameArch),
+        );
+        slots.insert(
+            OpeningComponentSlot::ElevationSwing2D,
+            SlotGeometry::Generator(OpeningGenerator::ElevationSwingTriangle),
+        );
+        slots.insert(
+            OpeningComponentSlot::ElevationSill2D,
+            SlotGeometry::Generator(OpeningGenerator::ElevationSillLine),
+        );
+        slots.insert(
+            OpeningComponentSlot::Frame3D,
+            SlotGeometry::Generator(OpeningGenerator::SolidFrame),
+        );
+        slots.insert(
+            OpeningComponentSlot::Glazing3D,
+            SlotGeometry::Generator(OpeningGenerator::SolidGlazing),
+        );
+        Self {
+            style: Style {
+                id: SEED_WINDOW_ARCH_STYLE_ID.to_string(),
+                name: "Rundbogenfenster".to_string(),
+                object_kind: Self::object_kind_for(OpeningKind::Window).to_string(),
+                parent_style_id: None,
+            },
+            kind: OpeningKind::Window,
+            default_width: 1.00,
+            default_height: 1.80,
+            default_sill: 0.80,
+            hinge: HingeSide::Left,
+            frame_thickness: DEFAULT_FRAME_THICKNESS,
+            opening_angle_deg: DEFAULT_OPENING_ANGLE_DEG,
+            shape: OpeningShape::Arch,
+            spring_height: 1.30,
+            slots,
+            display_profiles: HashMap::new(),
+        }
+    }
+
+    pub fn window_circle() -> Self {
+        let mut slots = HashMap::new();
+        slots.insert(
+            OpeningComponentSlot::Frame2D,
+            SlotGeometry::Generator(OpeningGenerator::FrameRect),
+        );
+        slots.insert(
+            OpeningComponentSlot::Glazing2D,
+            SlotGeometry::Generator(OpeningGenerator::GlazingLine),
+        );
+        slots.insert(
+            OpeningComponentSlot::OpeningLabel2D,
+            SlotGeometry::Generator(OpeningGenerator::OpeningLabel),
+        );
+        slots.insert(
+            OpeningComponentSlot::ElevationContour2D,
+            SlotGeometry::Generator(OpeningGenerator::ElevationFrameArch),
+        );
+        slots.insert(
+            OpeningComponentSlot::Frame3D,
+            SlotGeometry::Generator(OpeningGenerator::SolidFrame),
+        );
+        slots.insert(
+            OpeningComponentSlot::Glazing3D,
+            SlotGeometry::Generator(OpeningGenerator::SolidGlazing),
+        );
+        Self {
+            style: Style {
+                id: SEED_WINDOW_CIRCLE_STYLE_ID.to_string(),
+                name: "Rundfenster".to_string(),
+                object_kind: Self::object_kind_for(OpeningKind::Window).to_string(),
+                parent_style_id: None,
+            },
+            kind: OpeningKind::Window,
+            default_width: 0.90,
+            default_height: 0.90,
+            default_sill: 1.20,
+            hinge: HingeSide::Left,
+            frame_thickness: DEFAULT_FRAME_THICKNESS,
+            opening_angle_deg: 0.0,
+            shape: OpeningShape::Circle,
+            spring_height: 0.0,
+            slots,
+            display_profiles: HashMap::new(),
+        }
+    }
+
+    pub fn window_floor() -> Self {
+        let mut slots = HashMap::new();
+        slots.insert(
+            OpeningComponentSlot::Frame2D,
+            SlotGeometry::Generator(OpeningGenerator::FrameRect),
+        );
+        slots.insert(
+            OpeningComponentSlot::Leaf2D,
+            SlotGeometry::Generator(OpeningGenerator::LeafLine),
+        );
+        slots.insert(
+            OpeningComponentSlot::Glazing2D,
+            SlotGeometry::Generator(OpeningGenerator::GlazingLine),
+        );
+        slots.insert(
+            OpeningComponentSlot::Threshold2D,
+            SlotGeometry::Generator(OpeningGenerator::ThresholdLine),
+        );
+        slots.insert(
+            OpeningComponentSlot::OpeningLabel2D,
+            SlotGeometry::Generator(OpeningGenerator::OpeningLabel),
+        );
+        slots.insert(
+            OpeningComponentSlot::ElevationContour2D,
+            SlotGeometry::Generator(OpeningGenerator::ElevationFrameRect),
+        );
+        slots.insert(
+            OpeningComponentSlot::ElevationSwing2D,
+            SlotGeometry::Generator(OpeningGenerator::ElevationSwingTriangle),
+        );
+        slots.insert(
+            OpeningComponentSlot::ElevationSill2D,
+            SlotGeometry::Generator(OpeningGenerator::ElevationSillLine),
+        );
+        slots.insert(
+            OpeningComponentSlot::Frame3D,
+            SlotGeometry::Generator(OpeningGenerator::SolidFrame),
+        );
+        slots.insert(
+            OpeningComponentSlot::Glazing3D,
+            SlotGeometry::Generator(OpeningGenerator::SolidGlazing),
+        );
+        Self {
+            style: Style {
+                id: SEED_WINDOW_FLOOR_STYLE_ID.to_string(),
+                name: "Bodentiefes Fenster".to_string(),
+                object_kind: Self::object_kind_for(OpeningKind::Window).to_string(),
+                parent_style_id: None,
+            },
+            kind: OpeningKind::Window,
+            default_width: 1.00,
+            default_height: 2.20,
+            default_sill: 0.00,
             hinge: HingeSide::Left,
             frame_thickness: DEFAULT_FRAME_THICKNESS,
             opening_angle_deg: DEFAULT_OPENING_ANGLE_DEG,
@@ -330,6 +596,14 @@ impl OpeningStyle {
             SlotGeometry::Generator(OpeningGenerator::OpeningLabel),
         );
         slots.insert(
+            OpeningComponentSlot::ElevationContour2D,
+            SlotGeometry::Generator(OpeningGenerator::ElevationFrameRect),
+        );
+        slots.insert(
+            OpeningComponentSlot::ElevationSwing2D,
+            SlotGeometry::Generator(OpeningGenerator::ElevationSwingTriangle),
+        );
+        slots.insert(
             OpeningComponentSlot::Frame3D,
             SlotGeometry::Generator(OpeningGenerator::SolidFrame),
         );
@@ -358,6 +632,77 @@ impl OpeningStyle {
         }
     }
 
+    pub fn door_right() -> Self {
+        let mut door = Self::standard_door();
+        door.style.id = SEED_DOOR_RIGHT_STYLE_ID.to_string();
+        door.style.name = "Innentür rechts".to_string();
+        door.hinge = HingeSide::Right;
+        door
+    }
+
+    pub fn door_double() -> Self {
+        let mut slots = HashMap::new();
+        slots.insert(
+            OpeningComponentSlot::Frame2D,
+            SlotGeometry::Generator(OpeningGenerator::FrameRect),
+        );
+        slots.insert(
+            OpeningComponentSlot::Leaf2D,
+            SlotGeometry::Generator(OpeningGenerator::LeafLine),
+        );
+        slots.insert(
+            OpeningComponentSlot::Swing2D,
+            SlotGeometry::Generator(OpeningGenerator::SwingArc),
+        );
+        slots.insert(
+            OpeningComponentSlot::Threshold2D,
+            SlotGeometry::Generator(OpeningGenerator::ThresholdLine),
+        );
+        slots.insert(
+            OpeningComponentSlot::OpeningLabel2D,
+            SlotGeometry::Generator(OpeningGenerator::OpeningLabel),
+        );
+        slots.insert(
+            OpeningComponentSlot::ElevationContour2D,
+            SlotGeometry::Generator(OpeningGenerator::ElevationFrameRect),
+        );
+        slots.insert(
+            OpeningComponentSlot::ElevationMuntins2D,
+            SlotGeometry::Generator(OpeningGenerator::ElevationMuntinsDouble),
+        );
+        slots.insert(
+            OpeningComponentSlot::ElevationSwing2D,
+            SlotGeometry::Generator(OpeningGenerator::ElevationSwingTriangle),
+        );
+        slots.insert(
+            OpeningComponentSlot::Frame3D,
+            SlotGeometry::Generator(OpeningGenerator::SolidFrame),
+        );
+        slots.insert(
+            OpeningComponentSlot::Leaf3D,
+            SlotGeometry::Generator(OpeningGenerator::SolidLeaf),
+        );
+        Self {
+            style: Style {
+                id: SEED_DOOR_DOUBLE_STYLE_ID.to_string(),
+                name: "Zweiflügelige Eingangstür".to_string(),
+                object_kind: Self::object_kind_for(OpeningKind::Door).to_string(),
+                parent_style_id: None,
+            },
+            kind: OpeningKind::Door,
+            default_width: 1.80,
+            default_height: 2.20,
+            default_sill: 0.00,
+            hinge: HingeSide::Left,
+            frame_thickness: DEFAULT_FRAME_THICKNESS,
+            opening_angle_deg: DEFAULT_OPENING_ANGLE_DEG,
+            shape: OpeningShape::Rectangle,
+            spring_height: 0.0,
+            slots,
+            display_profiles: HashMap::new(),
+        }
+    }
+
     pub fn standard_breakthrough() -> Self {
         let mut slots = HashMap::new();
         slots.insert(
@@ -371,6 +716,10 @@ impl OpeningStyle {
         slots.insert(
             OpeningComponentSlot::OpeningLabel2D,
             SlotGeometry::Generator(OpeningGenerator::OpeningLabel),
+        );
+        slots.insert(
+            OpeningComponentSlot::ElevationContour2D,
+            SlotGeometry::Generator(OpeningGenerator::ElevationFrameRect),
         );
         Self {
             style: Style {
@@ -392,14 +741,56 @@ impl OpeningStyle {
             display_profiles: HashMap::new(),
         }
     }
+
+    pub fn breakthrough_pipe() -> Self {
+        let mut slots = HashMap::new();
+        slots.insert(
+            OpeningComponentSlot::BreakthroughSymbol2D,
+            SlotGeometry::Generator(OpeningGenerator::DiagonalFill),
+        );
+        slots.insert(
+            OpeningComponentSlot::OpeningLabel2D,
+            SlotGeometry::Generator(OpeningGenerator::OpeningLabel),
+        );
+        slots.insert(
+            OpeningComponentSlot::ElevationContour2D,
+            SlotGeometry::Generator(OpeningGenerator::ElevationFrameArch),
+        );
+        Self {
+            style: Style {
+                id: SEED_BREAKTHROUGH_PIPE_STYLE_ID.to_string(),
+                name: "Installationsdurchbruch rund".to_string(),
+                object_kind: Self::object_kind_for(OpeningKind::Breakthrough).to_string(),
+                parent_style_id: None,
+            },
+            kind: OpeningKind::Breakthrough,
+            default_width: 0.40,
+            default_height: 0.40,
+            default_sill: 1.80,
+            hinge: HingeSide::Left,
+            frame_thickness: 0.0,
+            opening_angle_deg: 0.0,
+            shape: OpeningShape::Circle,
+            spring_height: 0.0,
+            slots,
+            display_profiles: HashMap::new(),
+        }
+    }
 }
 
 /// Seed opening styles shipped with the default library.
 pub fn seed_opening_styles() -> Vec<OpeningStyle> {
     vec![
         OpeningStyle::standard_window(),
+        OpeningStyle::window_double(),
+        OpeningStyle::window_arch(),
+        OpeningStyle::window_circle(),
+        OpeningStyle::window_floor(),
         OpeningStyle::standard_door(),
+        OpeningStyle::door_right(),
+        OpeningStyle::door_double(),
         OpeningStyle::standard_breakthrough(),
+        OpeningStyle::breakthrough_pipe(),
     ]
 }
 
@@ -535,18 +926,22 @@ mod tests {
     #[test]
     fn seed_styles_cover_three_kinds() {
         let seeds = seed_opening_styles();
-        assert_eq!(seeds.len(), 3);
-        assert_eq!(seeds[0].kind, OpeningKind::Window);
-        assert_eq!(seeds[1].kind, OpeningKind::Door);
-        assert_eq!(seeds[2].kind, OpeningKind::Breakthrough);
+        assert_eq!(seeds.len(), 10);
+        assert!(seeds.iter().any(|s| s.kind == OpeningKind::Window));
+        assert!(seeds.iter().any(|s| s.kind == OpeningKind::Door));
+        assert!(seeds.iter().any(|s| s.kind == OpeningKind::Breakthrough));
         assert!(approx(seeds[0].frame_thickness, DEFAULT_FRAME_THICKNESS));
-        assert!(approx(seeds[2].default_width, DEFAULT_BREAKTHROUGH_WIDTH));
-        assert!(approx(seeds[2].default_height, DEFAULT_BREAKTHROUGH_HEIGHT));
-        assert!(approx(seeds[2].default_sill, DEFAULT_BREAKTHROUGH_SILL));
+        let br = seeds
+            .iter()
+            .find(|s| s.style.id == SEED_BREAKTHROUGH_STYLE_ID)
+            .unwrap();
+        assert!(approx(br.default_width, DEFAULT_BREAKTHROUGH_WIDTH));
+        assert!(approx(br.default_height, DEFAULT_BREAKTHROUGH_HEIGHT));
+        assert!(approx(br.default_sill, DEFAULT_BREAKTHROUGH_SILL));
         assert!(!seeds[0].slots.contains_key(&OpeningComponentSlot::Swing2D));
-        assert!(!seeds[2].slots.contains_key(&OpeningComponentSlot::Frame2D));
+        assert!(!br.slots.contains_key(&OpeningComponentSlot::Frame2D));
         assert_eq!(
-            seeds[2].slots.get(&OpeningComponentSlot::Mark2D),
+            br.slots.get(&OpeningComponentSlot::Mark2D),
             Some(&SlotGeometry::Generator(OpeningGenerator::Cross))
         );
     }

@@ -400,17 +400,16 @@ pub fn expand_with_wall_derived_handles(scene: &Scene, handles: &mut Vec<Handle>
             record.values.first(),
             Some(XDataValue::String(kind)) if kind == "WALL"
         );
-        if !is_wall {
-            continue;
-        }
-        if let Some(v2) = wall_from_entity(entity) {
-            extra.extend(v2.derived_handles.iter().copied());
-        }
-        for child in engine::owner_index::children_of(&scene.document, owner) {
-            extra.push(child);
-            extra.extend(engine::opening_display::collect_opening_display_children(
-                scene, child,
-            ));
+        if is_wall {
+            if let Some(v2) = wall_from_entity(entity) {
+                extra.extend(v2.derived_handles.iter().copied());
+            }
+            for child in engine::owner_index::children_of(&scene.document, owner) {
+                extra.push(child);
+                extra.extend(engine::opening_display::collect_opening_display_children(
+                    scene, child,
+                ));
+            }
         }
         if let Some(opening) = engine::opening_display::opening_owner_if_any(scene, *handle) {
             extra.push(opening);

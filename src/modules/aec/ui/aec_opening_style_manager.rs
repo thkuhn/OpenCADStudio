@@ -14,9 +14,11 @@ use crate::modules::aec::engine::opening_style::{OpeningGenerator, OpeningStyle,
 use crate::modules::aec::engine::openings::OpeningKind;
 use crate::modules::aec::engine::project::ProjectFile;
 use crate::modules::aec::message::AecMessage;
-use crate::modules::aec::state::{AecOpeningSlotBuffer, AecOpeningSlotSource, StylePickerTarget};
+use crate::modules::aec::state::{
+    AecOpeningPreviewMode, AecOpeningSlotBuffer, AecOpeningSlotSource, StylePickerTarget,
+};
 use crate::modules::aec::styles::opening_style_manager::{
-    preview_baked_paths, slots_from_buffers, PREVIEW_WALL_THICKNESS,
+    preview_baked_paths_for_mode, slots_from_buffers, PREVIEW_WALL_THICKNESS,
 };
 use crate::modules::aec::ui::aec_ui_util::{list_style, muted, no_matches, section_title};
 use crate::t;
@@ -25,6 +27,7 @@ use crate::tr;
 pub struct OpeningStyleFormState<'a> {
     pub open: bool,
     pub is_new: bool,
+    pub preview_mode: AecOpeningPreviewMode,
     pub name: &'a str,
     pub parent_id: Option<&'a str>,
     pub parent_name: Option<&'a str>,
@@ -410,29 +413,68 @@ fn form_view<'a>(
     let preview_style = form_preview_style(&form);
     let preview_width = crate::modules::aec::styles::opening_style_manager::parse_dim(form.width)
         .unwrap_or(preview_style.default_width);
+    let preview_height = crate::modules::aec::styles::opening_style_manager::parse_dim(form.height)
+        .unwrap_or(preview_style.default_height);
     let frame = crate::modules::aec::styles::opening_style_manager::parse_dim(form.frame)
         .unwrap_or(0.06);
-    let paths = preview_baked_paths(&preview_style, preview_width);
-    let sketch_edit = form
-        .sketch_slot
-        .and_then(|i| form.slots.get(i))
-        .is_some_and(|b| b.source == AecOpeningSlotSource::Sketch);
-    let draft_inst = draft_in_instance(&form, preview_width, frame);
+    let paths = preview_baked_paths_for_mode(&preview_style, preview_width, form.preview_mode);
+    let sketch_edit = form.preview_mode == AecOpeningPreviewMode::Plan2D
+        && form
+            .sketch_slot
+            .and_then(|i| form.slots.get(i))
+            .is_some_and(|b| b.source == AecOpeningSlotSource::Sketch);
+    let draft_inst = if form.preview_mode == AecOpeningPreviewMode::Plan2D {
+        draft_in_instance(&form, preview_width, frame)
+    } else {
+        Vec::new()
+    };
+
+    let is_plan = form.preview_mode == AecOpeningPreviewMode::Plan2D;
+    let is_elev = form.preview_mode == AecOpeningPreviewMode::Elevation2D;
+    let is_3d = form.preview_mode == AecOpeningPreviewMode::Model3D;
+
+    let preview_header = row![
+        text(tr!("aec", "opening-preview")).size(10).style(muted),
+        Space::new(),
+        button(text(tr!("aec", "opening-preview-plan2d")).size(10))
+            .style(if is_plan { button::primary } else { button::secondary })
+            .padding([2, 8])
+            .on_press(Message::Aec(AecMessage::AecOpeningStyleManagerSetPreviewMode(
+                AecOpeningPreviewMode::Plan2D,
+            ))),
+        button(text(tr!("aec", "opening-preview-elevation2d")).size(10))
+            .style(if is_elev { button::primary } else { button::secondary })
+            .padding([2, 8])
+            .on_press(Message::Aec(AecMessage::AecOpeningStyleManagerSetPreviewMode(
+                AecOpeningPreviewMode::Elevation2D,
+            ))),
+        button(text(tr!("aec", "opening-preview-model3d")).size(10))
+            .style(if is_3d { button::primary } else { button::secondary })
+            .padding([2, 8])
+            .on_press(Message::Aec(AecMessage::AecOpeningStyleManagerSetPreviewMode(
+                AecOpeningPreviewMode::Model3D,
+            ))),
+    ]
+    .spacing(4)
+    .align_y(iced::Center);
+
     detail_col = detail_col
         .push(Space::new().height(8))
-        .push(text(tr!("aec", "opening-preview")).size(10).style(muted))
+        .push(preview_header)
         .push(
             container(
                 canvas(OpeningPreviewCanvas {
                     paths,
+                    mode: form.preview_mode,
                     width: preview_width.max(1e-6),
+                    height: preview_height.max(1e-6),
                     thickness: PREVIEW_WALL_THICKNESS,
                     frame: frame.max(0.0),
                     edit: sketch_edit,
                     draft: draft_inst,
                 })
-                    .width(FillLen)
-                    .height(200),
+                .width(FillLen)
+                .height(200),
             )
             .style(|theme: &Theme| container::Style {
                 background: Some(
@@ -702,17 +744,82 @@ struct PreviewCamera {
 }
 
 impl PreviewCamera {
-    fn fit(bounds: Rectangle, width: f64, thickness: f64) -> Self {
+    fn fit(
+        bounds: Rectangle,
+        paths: &[BakedPath],
+        mode: AecOpeningPreviewMode,
+        width: f64,
+        height: f64,
+        thickness: f64,
+    ) -> Self {
         let pad = 14.0f32;
-        let world_w = width.max(1e-6) as f32 * 1.15;
-        let world_h = thickness.max(1e-6) as f32 * 1.8;
+        let mut min_x = f64::INFINITY;
+        let mut max_x = f64::NEG_INFINITY;
+        let mut min_y = f64::INFINITY;
+        let mut max_y = f64::NEG_INFINITY;
+
+        for path in paths {
+            for &(x, y) in &path.points {
+                if x.is_finite() && y.is_finite() {
+                    min_x = min_x.min(x);
+                    max_x = max_x.max(x);
+                    min_y = min_y.min(y);
+                    max_y = max_y.max(y);
+                }
+            }
+        }
+
+        let hw = width.max(1e-6) * 0.5;
+        match mode {
+            AecOpeningPreviewMode::Plan2D => {
+                let ht = thickness.max(1e-6) * 0.5;
+                min_x = min_x.min(-hw);
+                max_x = max_x.max(hw);
+                min_y = min_y.min(-ht);
+                max_y = max_y.max(ht);
+            }
+            AecOpeningPreviewMode::Elevation2D => {
+                min_x = min_x.min(-hw);
+                max_x = max_x.max(hw);
+                min_y = min_y.min(0.0);
+                max_y = max_y.max(height.max(1e-6));
+            }
+            AecOpeningPreviewMode::Model3D => {}
+        }
+
+        if !min_x.is_finite() || !max_x.is_finite() || (max_x - min_x) < 1e-4 {
+            min_x = -hw;
+            max_x = hw;
+        }
+        if !min_y.is_finite() || !max_y.is_finite() || (max_y - min_y) < 1e-4 {
+            let (ref_y_min, ref_y_max) = match mode {
+                AecOpeningPreviewMode::Plan2D => {
+                    let ht = thickness.max(1e-6) * 0.5;
+                    (-ht, ht)
+                }
+                AecOpeningPreviewMode::Elevation2D | AecOpeningPreviewMode::Model3D => {
+                    (0.0, height.max(1e-6))
+                }
+            };
+            min_y = ref_y_min;
+            max_y = ref_y_max;
+        }
+
+        let span_x = (max_x - min_x).max(1e-4);
+        let span_y = (max_y - min_y).max(1e-4);
+        let center_x = (min_x + max_x) * 0.5;
+        let center_y = (min_y + max_y) * 0.5;
+
+        let world_w = (span_x * 1.15) as f32;
+        let world_h = (span_y * 1.15) as f32;
         let avail_w = (bounds.width - 2.0 * pad).max(1.0);
         let avail_h = (bounds.height - 2.0 * pad).max(1.0);
         let scale = (avail_w / world_w).min(avail_h / world_h);
+
         Self {
             scale,
-            ox: bounds.width * 0.5,
-            oy: bounds.height * 0.5,
+            ox: bounds.width * 0.5 - (center_x as f32 * scale),
+            oy: bounds.height * 0.5 + (center_y as f32 * scale),
         }
     }
 
@@ -733,7 +840,9 @@ impl PreviewCamera {
 
 struct OpeningPreviewCanvas {
     paths: Vec<BakedPath>,
+    mode: AecOpeningPreviewMode,
     width: f64,
+    height: f64,
     thickness: f64,
     frame: f64,
     edit: bool,
@@ -757,7 +866,14 @@ impl Program<Message> for OpeningPreviewCanvas {
             return None;
         };
         let pos = cursor.position_in(bounds)?;
-        let cam = PreviewCamera::fit(bounds, self.width, self.thickness);
+        let cam = PreviewCamera::fit(
+            bounds,
+            &self.paths,
+            self.mode,
+            self.width,
+            self.height,
+            self.thickness,
+        );
         let (x, y) = cam.to_local(pos);
         Some(
             canvas::Action::publish(Message::Aec(AecMessage::AecOpeningStyleManagerSketchClick(
@@ -789,38 +905,48 @@ impl Program<Message> for OpeningPreviewCanvas {
         _cursor: mouse::Cursor,
     ) -> Vec<canvas::Geometry> {
         let mut frame = Frame::new(renderer, bounds.size());
-        let cam = PreviewCamera::fit(bounds, self.width, self.thickness);
-        let hw = self.width * 0.5;
-        let ht = self.thickness * 0.5;
-        let ft = self.frame.max(0.0);
-        let guide = theme.palette().background.neutral.color;
-        let outer = Path::new(|p| {
-            p.move_to(cam.to_screen(-hw, -ht));
-            p.line_to(cam.to_screen(hw, -ht));
-            p.line_to(cam.to_screen(hw, ht));
-            p.line_to(cam.to_screen(-hw, ht));
-            p.close();
-        });
-        frame.stroke(
-            &outer,
-            Stroke::default().with_width(1.0).with_color(guide),
+        let cam = PreviewCamera::fit(
+            bounds,
+            &self.paths,
+            self.mode,
+            self.width,
+            self.height,
+            self.thickness,
         );
-        let iw = (hw - ft).max(0.0);
-        let it = (ht - ft).max(0.0);
-        if iw > 1e-9 && it > 1e-9 {
-            let inner = Path::new(|p| {
-                p.move_to(cam.to_screen(-iw, -it));
-                p.line_to(cam.to_screen(iw, -it));
-                p.line_to(cam.to_screen(iw, it));
-                p.line_to(cam.to_screen(-iw, it));
+
+        if self.mode == AecOpeningPreviewMode::Plan2D {
+            let hw = self.width * 0.5;
+            let ht = self.thickness * 0.5;
+            let ft = self.frame.max(0.0);
+            let guide = theme.palette().background.neutral.color;
+            let outer = Path::new(|p| {
+                p.move_to(cam.to_screen(-hw, -ht));
+                p.line_to(cam.to_screen(hw, -ht));
+                p.line_to(cam.to_screen(hw, ht));
+                p.line_to(cam.to_screen(-hw, ht));
                 p.close();
             });
             frame.stroke(
-                &inner,
-                Stroke::default()
-                    .with_width(1.0)
-                    .with_color(guide.scale_alpha(0.6)),
+                &outer,
+                Stroke::default().with_width(1.0).with_color(guide),
             );
+            let iw = (hw - ft).max(0.0);
+            let it = (ht - ft).max(0.0);
+            if iw > 1e-9 && it > 1e-9 {
+                let inner = Path::new(|p| {
+                    p.move_to(cam.to_screen(-iw, -it));
+                    p.line_to(cam.to_screen(iw, -it));
+                    p.line_to(cam.to_screen(iw, it));
+                    p.line_to(cam.to_screen(-iw, it));
+                    p.close();
+                });
+                frame.stroke(
+                    &inner,
+                    Stroke::default()
+                        .with_width(1.0)
+                        .with_color(guide.scale_alpha(0.6)),
+                );
+            }
         }
 
         let stroke_color = theme.palette().background.base.text;

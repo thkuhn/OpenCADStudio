@@ -19,9 +19,11 @@ use crate::modules::aec::engine::opening_style::{
     OpeningSketch, OpeningStyle, SlotGeometry, HingeSide, DEFAULT_FRAME_THICKNESS,
     DEFAULT_OPENING_ANGLE_DEG,
 };
-use crate::modules::aec::engine::openings::OpeningKind;
+use crate::modules::aec::engine::openings::{OpeningKind, SwingSide};
 use crate::modules::aec::engine::style::Style;
-use crate::modules::aec::state::{AecOpeningSlotBuffer, AecOpeningSlotSource};
+use crate::modules::aec::state::{
+    AecOpeningPreviewMode, AecOpeningSlotBuffer, AecOpeningSlotSource,
+};
 use crate::modules::{IconKind, ModuleEvent, ToolDef};
 
 /// Plan-preview wall thickness used in the manager canvas (drawing units).
@@ -264,6 +266,15 @@ pub fn draft_opening_style(
 /// Bake generator and sketch primitives for the manager canvas.
 /// Empty sketches emit nothing (no generator fallback).
 pub fn preview_baked_paths(style: &OpeningStyle, preview_width: f64) -> Vec<BakedPath> {
+    preview_baked_paths_for_mode(style, preview_width, AecOpeningPreviewMode::Plan2D)
+}
+
+/// Bake geometry for the requested preview mode (Plan2D, Elevation2D, Model3D).
+pub fn preview_baked_paths_for_mode(
+    style: &OpeningStyle,
+    preview_width: f64,
+    mode: AecOpeningPreviewMode,
+) -> Vec<BakedPath> {
     let width = if preview_width > 1e-12 {
         preview_width
     } else {
@@ -280,12 +291,199 @@ pub fn preview_baked_paths(style: &OpeningStyle, preview_width: f64) -> Vec<Bake
         wall_y_min: -PREVIEW_WALL_THICKNESS * 0.5,
         wall_y_max: PREVIEW_WALL_THICKNESS * 0.5,
         hinge: style.hinge,
+        swing_side: SwingSide::Exterior,
         shape: style.shape,
         spring_height: style.spring_height,
         opening_angle_deg: style.opening_angle_deg,
         kind: style.kind,
     };
-    bake_opening_generators(&style.slots, params, None)
+
+    match mode {
+        AecOpeningPreviewMode::Plan2D => {
+            let plan_slots: HashMap<OpeningComponentSlot, SlotGeometry> = style
+                .slots
+                .iter()
+                .filter(|(slot, _)| {
+                    matches!(
+                        slot,
+                        OpeningComponentSlot::Frame2D
+                            | OpeningComponentSlot::Leaf2D
+                            | OpeningComponentSlot::Swing2D
+                            | OpeningComponentSlot::Glazing2D
+                            | OpeningComponentSlot::Sill2D
+                            | OpeningComponentSlot::Threshold2D
+                            | OpeningComponentSlot::BreakthroughSymbol2D
+                            | OpeningComponentSlot::OpeningLabel2D
+                            | OpeningComponentSlot::Mark2D
+                    )
+                })
+                .map(|(k, v)| (*k, v.clone()))
+                .collect();
+            bake_opening_generators(&plan_slots, params, None)
+        }
+        AecOpeningPreviewMode::Elevation2D => {
+            let elev_slots: HashMap<OpeningComponentSlot, SlotGeometry> = style
+                .slots
+                .iter()
+                .filter(|(slot, _)| {
+                    matches!(
+                        slot,
+                        OpeningComponentSlot::ElevationContour2D
+                            | OpeningComponentSlot::ElevationMuntins2D
+                            | OpeningComponentSlot::ElevationSwing2D
+                            | OpeningComponentSlot::ElevationSill2D
+                    )
+                })
+                .map(|(k, v)| (*k, v.clone()))
+                .collect();
+            let mut paths = bake_opening_generators(&elev_slots, params, None);
+            if paths.is_empty() {
+                let (outer, inner) =
+                    crate::modules::aec::engine::opening_display::opening_elevation_loops(
+                        style.shape,
+                        width,
+                        style.default_height,
+                        style.spring_height,
+                        style.frame_thickness,
+                        style.kind == OpeningKind::Door,
+                    );
+                paths.push(crate::modules::aec::engine::opening_display::BakedPath {
+                    slot: OpeningComponentSlot::ElevationContour2D,
+                    points: outer,
+                    closed: true,
+                    filled: false,
+                });
+                if !inner.is_empty() {
+                    paths.push(crate::modules::aec::engine::opening_display::BakedPath {
+                        slot: OpeningComponentSlot::ElevationContour2D,
+                        points: inner,
+                        closed: true,
+                        filled: false,
+                    });
+                }
+            }
+            paths
+        }
+        AecOpeningPreviewMode::Model3D => {
+            let iso_proj = |x: f64, y: f64, z: f64| -> (f64, f64) {
+                ((x - y) * 0.8660254, (x + y) * 0.25 + z)
+            };
+            let mut paths = Vec::new();
+
+            let hw = width * 0.5;
+            let ht = PREVIEW_WALL_THICKNESS * 0.5;
+            let h = style.default_height;
+            let wall_box_edges = vec![
+                ((-hw, -ht, 0.0), (hw, -ht, 0.0)),
+                ((hw, -ht, 0.0), (hw, ht, 0.0)),
+                ((hw, ht, 0.0), (-hw, ht, 0.0)),
+                ((-hw, ht, 0.0), (-hw, -ht, 0.0)),
+                ((-hw, -ht, h), (hw, -ht, h)),
+                ((hw, -ht, h), (hw, ht, h)),
+                ((hw, ht, h), (-hw, ht, h)),
+                ((-hw, ht, h), (-hw, -ht, h)),
+                ((-hw, -ht, 0.0), (-hw, -ht, h)),
+                ((hw, -ht, 0.0), (hw, -ht, h)),
+                ((hw, ht, 0.0), (hw, ht, h)),
+                ((-hw, ht, 0.0), (-hw, ht, h)),
+            ];
+            for (p0, p1) in wall_box_edges {
+                let q0 = iso_proj(p0.0, p0.1, p0.2);
+                let q1 = iso_proj(p1.0, p1.1, p1.2);
+                paths.push(crate::modules::aec::engine::opening_display::BakedPath {
+                    slot: OpeningComponentSlot::HostCut2D,
+                    points: vec![q0, q1],
+                    closed: false,
+                    filled: false,
+                });
+            }
+
+            let ft = style.frame_thickness;
+            let h = style.default_height;
+            let sh = style.spring_height;
+            let shape = style.shape;
+            let is_door = style.kind == OpeningKind::Door;
+            let angle = style.opening_angle_deg;
+            let hinge = style.hinge;
+
+            if let Some(frame_solid) =
+                crate::modules::aec::engine::opening_display::build_opening_frame_3d(
+                    width,
+                    h,
+                    ft,
+                    PREVIEW_WALL_THICKNESS,
+                    shape,
+                    sh,
+                )
+            {
+                for edge_key in frame_solid.edge_keys() {
+                    if let Some(edge) = frame_solid.edges.get(edge_key) {
+                        if let (Some(va), Some(vb)) = (
+                            frame_solid.vertices.get(edge.start),
+                            frame_solid.vertices.get(edge.end),
+                        ) {
+                            let q0 = iso_proj(va.point[0], va.point[1], va.point[2]);
+                            let q1 = iso_proj(vb.point[0], vb.point[1], vb.point[2]);
+                            paths.push(crate::modules::aec::engine::opening_display::BakedPath {
+                                slot: OpeningComponentSlot::Frame3D,
+                                points: vec![q0, q1],
+                                closed: false,
+                                filled: false,
+                            });
+                        }
+                    }
+                }
+            }
+            if let Some(glazing_solid) =
+                crate::modules::aec::engine::opening_display::build_opening_glazing_3d(
+                    width, h, ft, shape, sh,
+                )
+            {
+                for edge_key in glazing_solid.edge_keys() {
+                    if let Some(edge) = glazing_solid.edges.get(edge_key) {
+                        if let (Some(va), Some(vb)) = (
+                            glazing_solid.vertices.get(edge.start),
+                            glazing_solid.vertices.get(edge.end),
+                        ) {
+                            let q0 = iso_proj(va.point[0], va.point[1], va.point[2]);
+                            let q1 = iso_proj(vb.point[0], vb.point[1], vb.point[2]);
+                            paths.push(crate::modules::aec::engine::opening_display::BakedPath {
+                                slot: OpeningComponentSlot::Glazing3D,
+                                points: vec![q0, q1],
+                                closed: false,
+                                filled: false,
+                            });
+                        }
+                    }
+                }
+            }
+            if let Some(leaf_solid) =
+                crate::modules::aec::engine::opening_display::build_opening_leaf_3d(
+                    width, h, ft, angle, hinge, SwingSide::Exterior, is_door, shape, sh,
+                )
+            {
+                for edge_key in leaf_solid.edge_keys() {
+                    if let Some(edge) = leaf_solid.edges.get(edge_key) {
+                        if let (Some(va), Some(vb)) = (
+                            leaf_solid.vertices.get(edge.start),
+                            leaf_solid.vertices.get(edge.end),
+                        ) {
+                            let q0 = iso_proj(va.point[0], va.point[1], va.point[2]);
+                            let q1 = iso_proj(vb.point[0], vb.point[1], vb.point[2]);
+                            paths.push(crate::modules::aec::engine::opening_display::BakedPath {
+                                slot: OpeningComponentSlot::Leaf3D,
+                                points: vec![q0, q1],
+                                closed: false,
+                                filled: false,
+                            });
+                        }
+                    }
+                }
+            }
+
+            paths
+        }
+    }
 }
 
 fn load_buffers_from_style(app: &mut OpenCADStudio, style: &OpeningStyle) {
@@ -507,6 +705,8 @@ impl OpenCADStudio {
         if let Some(slot) = self.aec.aec_opening_style_manager_slots.get_mut(index) {
             slot.source = if value.eq_ignore_ascii_case("Sketch") {
                 AecOpeningSlotSource::Sketch
+            } else if value.eq_ignore_ascii_case("Block") {
+                AecOpeningSlotSource::Block
             } else {
                 AecOpeningSlotSource::Generator
             };
@@ -533,6 +733,34 @@ impl OpenCADStudio {
         if let Some(slot) = self.aec.aec_opening_style_manager_slots.get_mut(index) {
             slot.generator = OpeningGenerator::from_str(&value);
             slot.source = AecOpeningSlotSource::Generator;
+        }
+        Task::none()
+    }
+
+    pub(crate) fn aec_opening_style_manager_slot_block_name_changed(
+        &mut self,
+        index: usize,
+        value: String,
+    ) -> Task<Message> {
+        if let Some(slot) = self.aec.aec_opening_style_manager_slots.get_mut(index) {
+            slot.block_name = value;
+            slot.source = AecOpeningSlotSource::Block;
+        }
+        Task::none()
+    }
+
+    pub(crate) fn aec_opening_style_manager_slot_block_placement_changed(
+        &mut self,
+        index: usize,
+        value: String,
+    ) -> Task<Message> {
+        if let Some(slot) = self.aec.aec_opening_style_manager_slots.get_mut(index) {
+            slot.block_placement = match value.as_str() {
+                "JambPair" => BlockPlacementMode::JambPair,
+                "CenterAnchor" => BlockPlacementMode::CenterAnchor,
+                _ => BlockPlacementMode::StretchToFit,
+            };
+            slot.source = AecOpeningSlotSource::Block;
         }
         Task::none()
     }
@@ -1132,5 +1360,20 @@ mod tests {
             .find(|b| b.slot == OpeningComponentSlot::Sill2D)
             .unwrap();
         assert!(sill_default.visible);
+    }
+
+    #[test]
+    fn preview_baked_paths_for_mode_plan_elevation_and_3d() {
+        let style = OpeningStyle::standard_window();
+        let plan_paths = preview_baked_paths_for_mode(&style, 1.2, AecOpeningPreviewMode::Plan2D);
+        assert!(plan_paths.iter().any(|p| p.slot == OpeningComponentSlot::Frame2D));
+        assert!(plan_paths.iter().any(|p| p.slot == OpeningComponentSlot::Leaf2D || p.slot == OpeningComponentSlot::Glazing2D));
+
+        let elev_paths = preview_baked_paths_for_mode(&style, 1.2, AecOpeningPreviewMode::Elevation2D);
+        assert!(elev_paths.iter().any(|p| p.slot == OpeningComponentSlot::ElevationContour2D || p.slot == OpeningComponentSlot::ElevationSwing2D));
+
+        let model_paths = preview_baked_paths_for_mode(&style, 1.2, AecOpeningPreviewMode::Model3D);
+        assert!(model_paths.iter().any(|p| p.slot == OpeningComponentSlot::HostCut2D));
+        assert!(model_paths.iter().any(|p| p.slot == OpeningComponentSlot::Frame3D || p.slot == OpeningComponentSlot::Glazing3D));
     }
 }

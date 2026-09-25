@@ -137,8 +137,11 @@ pub enum AecMessage {
     AecOpeningStyleManagerAngleChanged(String),
     AecOpeningStyleManagerSpringChanged(String),
     AecOpeningStyleManagerHingeChanged(String),
+    AecOpeningStyleManagerSetPreviewMode(crate::modules::aec::state::AecOpeningPreviewMode),
     AecOpeningStyleManagerSlotSourceChanged(usize, String),
     AecOpeningStyleManagerSlotGeneratorChanged(usize, String),
+    AecOpeningStyleManagerSlotBlockNameChanged(usize, String),
+    AecOpeningStyleManagerSlotBlockPlacementChanged(usize, String),
     /// Empty string = default slots for all plan types.
     AecOpeningStyleManagerProfileSelect(String),
     AecOpeningStyleManagerSlotVisible(usize, bool),

@@ -26,7 +26,7 @@ use acadrust::types::{Vector2, Vector3};
 use acadrust::xdata::{ExtendedDataRecord, XDataValue};
 use acadrust::Handle;
 use glam::DVec3;
-use crate::modules::aec::engine::openings::OpeningKind;
+use crate::modules::aec::engine::openings::{OpeningKind, SwingSide};
 use crate::modules::aec::engine::opening_style::OpeningStyle;
 use crate::modules::aec::engine::plan_view::{PhaseFilter, PlanPhase};
 use crate::modules::aec::engine::project::{Building, ProjectFile, StoreyRef};
@@ -6079,12 +6079,90 @@ fn place_example_opening(
     handle
 }
 
+fn add_wall_with_style(
+    scene: &mut Scene,
+    p1: (f64, f64),
+    p2: (f64, f64),
+    style_id: &str,
+    lib: &StyleLibrary,
+) -> Handle {
+    use crate::modules::aec::engine::xdata::resolve_wall_style_layers;
+    let resolved = resolve_wall_style_layers(lib, style_id, None)
+        .unwrap_or_else(|| vec![wl("Concrete", 0.20, "Structural")]);
+    let mut pl = LwPolyline::new();
+    pl.add_vertex(LwVertex::new(Vector2::new(p1.0, p1.1)));
+    pl.add_vertex(LwVertex::new(Vector2::new(p2.0, p2.1)));
+    let mut entity = EntityType::LwPolyline(pl);
+    let mut record = ExtendedDataRecord::new(AEC_APPID);
+    record.values = wall_record(
+        style_id,
+        2.80,
+        0,
+        &resolved,
+        &[],
+        WallJustification::Center,
+        PlanPhase::New,
+        None,
+    );
+    entity.common_mut().extended_data.add_record(record);
+    let h = scene.add_entity(entity);
+    let _ = regenerate_wall_representation(scene, h, Some(lib));
+    h
+}
+
+fn place_example_opening_styled(
+    scene: &mut Scene,
+    wall: Handle,
+    pt: (f64, f64),
+    style_id: &str,
+    lib: &StyleLibrary,
+) -> Handle {
+    let opening_style = lib
+        .find_opening_style(style_id)
+        .expect("opening style must exist in library");
+    let (handle, _) = place_wall_opening(
+        scene,
+        wall,
+        DVec3::new(pt.0, pt.1, 0.0),
+        opening_style.kind,
+        Some(lib),
+        None,
+        None,
+    )
+    .expect("place example opening");
+    let mut opening = openings_for_host_wall(scene, wall)
+        .into_iter()
+        .find(|o| o.handle == handle)
+        .expect("opening found");
+    crate::modules::aec::engine::opening_style::apply_style_defaults(&mut opening, opening_style);
+    write_opening_instance(scene, &opening);
+    regenerate_wall_representation(scene, wall, Some(lib)).expect("regen wall representation");
+    handle
+}
+
 #[test]
 fn write_aec_wall_join_examples_dxf() {
+    use crate::modules::aec::engine::opening_style::{
+        SEED_BREAKTHROUGH_PIPE_STYLE_ID, SEED_BREAKTHROUGH_STYLE_ID, SEED_DOOR_DOUBLE_STYLE_ID,
+        SEED_DOOR_RIGHT_STYLE_ID, SEED_DOOR_STYLE_ID, SEED_WINDOW_ARCH_STYLE_ID,
+        SEED_WINDOW_CIRCLE_STYLE_ID, SEED_WINDOW_DOUBLE_STYLE_ID, SEED_WINDOW_FLOOR_STYLE_ID,
+        SEED_WINDOW_STYLE_ID,
+    };
+
     let mut scene = Scene::new();
     let lib = crate::modules::aec::engine::library::seed_default_library();
 
-    // L: einschalig
+    // Titel-Kopfzeile
+    add_example_note(
+        &mut scene,
+        0.0,
+        70.0,
+        "OpenCADStudio AEC — Referenz- und Konstruktionsbeispiele\\PWandstile, Wandverbindungen (L/T/N), Oeffnungen, 2D-Grundriss, 2D-Ansichten & 3D-B-Rep-Modelle",
+    );
+
+    // =========================================================================
+    // SEKTION 1: L-Wandverbindungen (y = 0..5)
+    // =========================================================================
     let l_a = add_single_layer_wall(&mut scene, (0.0, 0.0), (5.0, 0.0));
     let l_b = add_single_layer_wall(&mut scene, (5.0, 0.0), (5.0, 5.0));
     join_l_pair(&mut scene, l_a, l_b);
@@ -6092,10 +6170,9 @@ fn write_aec_wall_join_examples_dxf() {
         &mut scene,
         0.0,
         -1.4,
-        "L einschalig\\PStil: style1 (Concrete)\\PVerbindung: L, Standard-Miter\\POverride: keiner",
+        "L einschalig\\PStil: style_concrete_20 (Beton 20cm)\\PVerbindung: L, Standard-Miter\\POverride: keiner",
     );
 
-    // L: Putz + Mauerwerk + Putz
     let l3_a = add_layered_wall(&mut scene, (10.0, 0.0), (16.0, 0.0), plaster_masonry_plaster());
     let l3_b = add_layered_wall(&mut scene, (16.0, 0.0), (16.0, 5.0), plaster_masonry_plaster());
     join_l_pair(&mut scene, l3_a, l3_b);
@@ -6103,80 +6180,74 @@ fn write_aec_wall_join_examples_dxf() {
         &mut scene,
         10.0,
         -1.4,
-        "L dreischalig\\PStil: style1 (Putz+Mauerwerk+Putz)\\PVerbindung: L, Standard-Miter\\POverride: keiner",
+        "L dreischalig\\PStil: Mauerwerk + beids. Putz (27cm)\\PVerbindung: L, Standard-Miter\\POverride: keiner",
     );
 
-    // L: Putz + Mauerwerk + Dämmung + Putz
-    let l4_a = add_layered_wall(
-        &mut scene,
-        (20.0, 0.0),
-        (26.0, 0.0),
-        plaster_masonry_insulation_plaster(),
-    );
-    let l4_b = add_layered_wall(
-        &mut scene,
-        (26.0, 0.0),
-        (26.0, 5.0),
-        plaster_masonry_insulation_plaster(),
-    );
+    let l4_a = add_wall_with_style(&mut scene, (20.0, 0.0), (26.0, 0.0), "style_insulated_ext", &lib);
+    let l4_b = add_wall_with_style(&mut scene, (26.0, 0.0), (26.0, 5.0), "style_insulated_ext", &lib);
     join_l_pair(&mut scene, l4_a, l4_b);
     add_example_note(
         &mut scene,
         20.0,
         -1.4,
-        "L vierschalig\\PStil: style1 (Putz+Mauerwerk+Insulation+Putz)\\PVerbindung: L, Standard-Miter\\POverride: keiner",
+        "L vierschalig\\PStil: style_insulated_ext (WDVS 34.5cm)\\PVerbindung: L, Standard-Miter\\POverride: keiner",
     );
 
-    // T: gleiche 4-Schalen (Stamm trifft Durchgang)
-    let t4_through = add_layered_wall(
+    let l5_a = add_wall_with_style(&mut scene, (30.0, 0.0), (36.0, 0.0), "style_cavity_brick", &lib);
+    let l5_b = add_wall_with_style(&mut scene, (36.0, 0.0), (36.0, 5.0), "style_cavity_brick", &lib);
+    join_l_pair(&mut scene, l5_a, l5_b);
+    add_example_note(
         &mut scene,
-        (0.0, 10.0),
-        (10.0, 10.0),
-        plaster_masonry_insulation_plaster(),
+        30.0,
+        -1.4,
+        "L fuenfschalig\\PStil: style_cavity_brick (Klinkerwand 42cm)\\PVerbindung: L, Mehrschicht-Miter",
     );
-    let t4_stem = add_layered_wall(
-        &mut scene,
-        (5.0, 10.05),
-        (5.0, 16.0),
-        plaster_masonry_insulation_plaster(),
-    );
+
+    // =========================================================================
+    // SEKTION 2: T-Wandverbindungen (y = 12..18)
+    // =========================================================================
+    let t4_through = add_wall_with_style(&mut scene, (0.0, 12.0), (10.0, 12.0), "style_insulated_ext", &lib);
+    let t4_stem = add_wall_with_style(&mut scene, (5.0, 12.05), (5.0, 18.0), "style_insulated_ext", &lib);
     let _ = regenerate_wall_representation(&mut scene, t4_through, Some(&lib));
     let _ = regenerate_wall_representation(&mut scene, t4_stem, Some(&lib));
     let _ = try_auto_join_nearby_walls(&mut scene, t4_stem, Some(&lib), None, None);
     add_example_note(
         &mut scene,
         0.0,
-        8.3,
-        "T vierschalig\\PStil: style1 (Putz+Mauerwerk+Insulation+Putz)\\PVerbindung: T (Auto-Join)\\PStamm → Durchgang, Standard-Miter\\POverride: keiner",
+        10.3,
+        "T vierschalig (WDVS)\\PStil: style_insulated_ext\\PVerbindung: T (Auto-Join)\\PStamm -> Durchgang",
     );
 
-    // T: gleiche 3-Schalen
-    let t3_through = add_layered_wall(
-        &mut scene,
-        (14.0, 10.0),
-        (24.0, 10.0),
-        plaster_masonry_plaster(),
-    );
-    let t3_stem = add_layered_wall(
-        &mut scene,
-        (19.0, 10.05),
-        (19.0, 16.0),
-        plaster_masonry_plaster(),
-    );
+    let t3_through = add_layered_wall(&mut scene, (14.0, 12.0), (24.0, 12.0), plaster_masonry_plaster());
+    let t3_stem = add_layered_wall(&mut scene, (19.0, 12.05), (19.0, 18.0), plaster_masonry_plaster());
     let _ = regenerate_wall_representation(&mut scene, t3_through, Some(&lib));
     let _ = regenerate_wall_representation(&mut scene, t3_stem, Some(&lib));
     let _ = try_auto_join_nearby_walls(&mut scene, t3_stem, Some(&lib), None, None);
     add_example_note(
         &mut scene,
         14.0,
-        8.3,
-        "T dreischalig\\PStil: style1 (Putz+Mauerwerk+Putz)\\PVerbindung: T (Auto-Join)\\PStamm → Durchgang, Standard-Miter\\POverride: keiner",
+        10.3,
+        "T dreischalig\\PStil: Mauerwerk + Putz\\PVerbindung: T (Auto-Join)\\PStamm -> Durchgang",
     );
 
-    // N-Wege einschalig
-    let n1 = add_single_layer_wall(&mut scene, (0.0, 22.0), (8.0, 22.0));
-    let n2 = add_single_layer_wall(&mut scene, (8.0, 22.0), (8.0, 28.0));
-    let n3 = add_single_layer_wall(&mut scene, (8.0, 22.0), (8.0, 16.0));
+    let t_dry_through = add_wall_with_style(&mut scene, (28.0, 12.0), (38.0, 12.0), "style_concrete_25", &lib);
+    let t_dry_stem = add_wall_with_style(&mut scene, (33.0, 12.05), (33.0, 18.0), "style_drywall_10", &lib);
+    let _ = regenerate_wall_representation(&mut scene, t_dry_through, Some(&lib));
+    let _ = regenerate_wall_representation(&mut scene, t_dry_stem, Some(&lib));
+    let _ = try_auto_join_nearby_walls(&mut scene, t_dry_stem, Some(&lib), None, None);
+    add_example_note(
+        &mut scene,
+        28.0,
+        10.3,
+        "T-Stoss Materialwechsel\\PTrockenbauwand 10cm an Betonwand 25cm\\PVerbindung: T (Auto-Join)",
+    );
+
+    // =========================================================================
+    // SEKTION 3: N-Wege & Schicht-Overrides (y = 24..30)
+    // =========================================================================
+    let n1 = add_single_layer_wall(&mut scene, (0.0, 24.0), (8.0, 24.0));
+    let n2 = add_single_layer_wall(&mut scene, (8.0, 24.0), (8.0, 30.0));
+    let n3 = add_single_layer_wall(&mut scene, (8.0, 24.0), (8.0, 18.0));
     for h in [n1, n2, n3] {
         let _ = regenerate_wall_representation(&mut scene, h, Some(&lib));
     }
@@ -6184,22 +6255,20 @@ fn write_aec_wall_join_examples_dxf() {
     add_example_note(
         &mut scene,
         0.0,
-        29.2,
-        "N-Wege einschalig\\PStil: style1 (Concrete)\\PVerbindung: N-Wege (3 Wände)\\PStandard-Miter\\POverride: keiner",
+        31.2,
+        "N-Wege einschalig\\PStil: style_concrete_20\\PVerbindung: N-Wege (3 Waende)\\PStandard-Miter",
     );
 
-    // L 4-schalig mit individuellen Schichtverbindungen:
-    // Putz außen/innen NoExtend, Mauerwerk Miter, Dämmung Butt.
     let ov_a = add_layered_wall(
         &mut scene,
-        (14.0, 22.0),
-        (22.0, 22.0),
+        (14.0, 24.0),
+        (22.0, 24.0),
         plaster_masonry_insulation_plaster(),
     );
     let ov_b = add_layered_wall(
         &mut scene,
-        (22.0, 22.0),
-        (22.0, 28.0),
+        (22.0, 24.0),
+        (22.0, 30.0),
         plaster_masonry_insulation_plaster(),
     );
     join_l_pair(&mut scene, ov_a, ov_b);
@@ -6241,74 +6310,163 @@ fn write_aec_wall_join_examples_dxf() {
     add_example_note(
         &mut scene,
         14.0,
-        29.2,
-        "L vierschalig mit Schicht-Overrides\\PStil: style1 (Putz+Mauerwerk+Insulation+Putz)\\PVerbindung: L\\PDefault: Miter\\PPutz außen/innen: NoExtend\\PMauerwerk: Miter\\PDämmung: Butt",
+        31.2,
+        "L vierschalig mit Schicht-Overrides\\PStil: Putz+Mauerwerk+Insulation+Putz\\PVerbindung: L\\PPutz: NoExtend, Mauerwerk: Miter, Daemmung: Butt",
     );
 
-    // Öffnungen: eigene Zeile unter den N-Wege-Beispielen (Achse y = 34).
-    let win_wall = add_single_layer_wall(&mut scene, (0.0, 34.0), (6.0, 34.0));
-    let win_opening = place_example_opening(
-        &mut scene,
-        win_wall,
-        (3.0, 34.0),
-        engine::openings::OpeningKind::Window,
-        &lib,
-    );
+    // =========================================================================
+    // SEKTION 4: Wandstile-Galerie / Wandaufbauten (y = 36..40)
+    // =========================================================================
+    let _w_masonry = add_wall_with_style(&mut scene, (0.0, 36.0), (6.0, 36.0), "style_masonry", &lib);
     add_example_note(
         &mut scene,
         0.0,
-        32.6,
-        "Fenster\\PStil: style_window_standard\\P1.2 × 1.2, Brüstung 0.9",
+        34.6,
+        "Wandstil: Mauerwerk 24cm\\PID: style_masonry\\P1-schalig tragend\\P24cm Ziegel",
     );
 
-    let door_wall = add_single_layer_wall(&mut scene, (10.0, 34.0), (16.0, 34.0));
-    let door_opening = place_example_opening(
-        &mut scene,
-        door_wall,
-        (13.0, 34.0),
-        engine::openings::OpeningKind::Door,
-        &lib,
-    );
+    let _w_conc = add_wall_with_style(&mut scene, (8.0, 36.0), (14.0, 36.0), "style_concrete_25", &lib);
     add_example_note(
         &mut scene,
-        10.0,
-        32.6,
-        "Tür\\PStil: style_door_standard\\P0.9 × 2.1, Brüstung 0.0, Anschlag links",
+        8.0,
+        34.6,
+        "Wandstil: Stahlbeton 25cm\\PID: style_concrete_25\\P1-schalig tragend\\P25cm Stahlbeton",
     );
 
-    let br_wall = add_single_layer_wall(&mut scene, (20.0, 34.0), (26.0, 34.0));
-    let br_opening = place_example_opening(
-        &mut scene,
-        br_wall,
-        (23.0, 34.0),
-        engine::openings::OpeningKind::Breakthrough,
-        &lib,
-    );
+    let _w_dry = add_wall_with_style(&mut scene, (16.0, 36.0), (22.0, 36.0), "style_drywall_10", &lib);
     add_example_note(
         &mut scene,
-        20.0,
-        32.6,
-        "Durchbruch\\PStil: style_breakthrough_standard\\P1.0 × 2.0, Brüstung 0.1\\PMark2D: Kreuz",
+        16.0,
+        34.6,
+        "Wandstil: Trockenbau 10cm\\PID: style_drywall_10\\P3-schalig nichttragend\\P1.25cm GKB + 7.5cm Daemmung + 1.25cm GKB",
     );
 
-    let placed = [
-        (
-            win_wall,
-            win_opening,
-            engine::openings::OpeningKind::Window,
-        ),
-        (
-            door_wall,
-            door_opening,
-            engine::openings::OpeningKind::Door,
-        ),
-        (
-            br_wall,
-            br_opening,
-            engine::openings::OpeningKind::Breakthrough,
-        ),
+    let _w_timber = add_wall_with_style(&mut scene, (24.0, 36.0), (30.0, 36.0), "style_timber_exterior", &lib);
+    add_example_note(
+        &mut scene,
+        24.0,
+        34.6,
+        "Wandstil: Holzstaender 28cm\\PID: style_timber_exterior\\P4-schalig oekologisch\\P1.5cm GKB + 6cm Inst. + 16cm Holz + 4.5cm Verschalung",
+    );
+
+    let _w_cavity = add_wall_with_style(&mut scene, (32.0, 36.0), (38.0, 36.0), "style_cavity_brick", &lib);
+    add_example_note(
+        &mut scene,
+        32.0,
+        34.6,
+        "Wandstil: Verblendwand 42cm\\PID: style_cavity_brick\\P5-schalig zweischalig\\P1.5cm Putz + 17.5cm MW + 12cm Daemmung + 2cm Luft + 9cm Klinker",
+    );
+
+    // =========================================================================
+    // SEKTION 5: Fenster-Stile & Ansichten (y = 48..52)
+    // =========================================================================
+    let wf1 = add_wall_with_style(&mut scene, (0.0, 48.0), (6.0, 48.0), "style_insulated_ext", &lib);
+    let of1 = place_example_opening_styled(&mut scene, wf1, (3.0, 48.0), SEED_WINDOW_STYLE_ID, &lib);
+    add_example_note(
+        &mut scene,
+        0.0,
+        46.4,
+        "Standardfenster 1.20x1.20m\\PID: style_window_standard\\P1 Fluegel, Bruestung 0.90m\\PAnsicht: Rahmen + Aufschlagdreieck + Sill\\P3D: Profilrahmen + Glas",
+    );
+
+    let wf2 = add_wall_with_style(&mut scene, (8.0, 48.0), (14.0, 48.0), "style_insulated_ext", &lib);
+    let of2 = place_example_opening_styled(&mut scene, wf2, (11.0, 48.0), SEED_WINDOW_DOUBLE_STYLE_ID, &lib);
+    add_example_note(
+        &mut scene,
+        8.0,
+        46.4,
+        "Zweifluegelfenster 1.60x1.40m\\PID: style_window_double\\P2 Fluegel, Mittelpfosten, Bruestung 0.90m\\PAnsicht: 2 Aufschlagdreiecke + Doppelsprosse",
+    );
+
+    let wf3 = add_wall_with_style(&mut scene, (16.0, 48.0), (22.0, 48.0), "style_insulated_ext", &lib);
+    let of3 = place_example_opening_styled(&mut scene, wf3, (19.0, 48.0), SEED_WINDOW_ARCH_STYLE_ID, &lib);
+    add_example_note(
+        &mut scene,
+        16.0,
+        46.4,
+        "Rundbogenfenster 1.00x1.80m\\PID: style_window_arch\\PBogenform (Spring 1.30m), Bruestung 0.80m\\PAnsicht: Bogenrahmen + Aufschlagdreieck\\P3D: Exakter B-Rep-Bogenkoerper",
+    );
+
+    let wf4 = add_wall_with_style(&mut scene, (24.0, 48.0), (30.0, 48.0), "style_insulated_ext", &lib);
+    let of4 = place_example_opening_styled(&mut scene, wf4, (27.0, 48.0), SEED_WINDOW_CIRCLE_STYLE_ID, &lib);
+    add_example_note(
+        &mut scene,
+        24.0,
+        46.4,
+        "Rundfenster / Ochsenauge 0.90x0.90m\\PID: style_window_circle\\PKreisform, Bruestung 1.20m\\PAnsicht: Runder Rahmen\\P3D: Runder B-Rep-Toruskörper",
+    );
+
+    let wf5 = add_wall_with_style(&mut scene, (32.0, 48.0), (38.0, 48.0), "style_insulated_ext", &lib);
+    let of5 = place_example_opening_styled(&mut scene, wf5, (35.0, 48.0), SEED_WINDOW_FLOOR_STYLE_ID, &lib);
+    add_example_note(
+        &mut scene,
+        32.0,
+        46.4,
+        "Bodentiefes Fenster 1.00x2.20m\\PID: style_window_floor\\PBruestung 0.00m, Schwelle / Threshold\\PAnsicht: Rahmen + Aufschlagdreieck",
+    );
+
+    // =========================================================================
+    // SEKTION 6: Tueren, Tore & Durchbrueche (y = 60..64)
+    // =========================================================================
+    let wt1 = add_wall_with_style(&mut scene, (0.0, 60.0), (6.0, 60.0), "style_drywall_10", &lib);
+    let ot1 = place_example_opening_styled(&mut scene, wt1, (3.0, 60.0), SEED_DOOR_STYLE_ID, &lib);
+    add_example_note(
+        &mut scene,
+        0.0,
+        58.4,
+        "Standard-Innentuer links 0.90x2.10m\\PID: style_door_standard\\PAnschlag links, Aufschlagbogen 90 Grad\\PAnsicht: Zarge + Aufschlagdreieck\\P3D: Zarge + Tuerblatt",
+    );
+
+    let wt2 = add_wall_with_style(&mut scene, (8.0, 60.0), (14.0, 60.0), "style_drywall_10", &lib);
+    let ot2 = place_example_opening_styled(&mut scene, wt2, (11.0, 60.0), SEED_DOOR_RIGHT_STYLE_ID, &lib);
+    add_example_note(
+        &mut scene,
+        8.0,
+        58.4,
+        "Innentuer rechts 0.90x2.10m\\PID: style_door_right\\PAnschlag rechts\\PAnsicht: Zarge + Aufschlagdreieck gespiegelt\\P3D: Zarge + Tuerblatt",
+    );
+
+    let wt3 = add_wall_with_style(&mut scene, (16.0, 60.0), (22.0, 60.0), "style_concrete_25", &lib);
+    let ot3 = place_example_opening_styled(&mut scene, wt3, (19.0, 60.0), SEED_DOOR_DOUBLE_STYLE_ID, &lib);
+    add_example_note(
+        &mut scene,
+        16.0,
+        58.4,
+        "Zweifluegelige Eingangstuer 1.80x2.20m\\PID: style_door_double\\PDoppelfluegel mit Mittelstoss\\PAnsicht: 2 Aufschlagdreiecke + Mittelpfosten\\P3D: Zarge + Tuerblaetter",
+    );
+
+    let wt4 = add_wall_with_style(&mut scene, (24.0, 60.0), (30.0, 60.0), "style_concrete_25", &lib);
+    let ot4 = place_example_opening_styled(&mut scene, wt4, (27.0, 60.0), SEED_BREAKTHROUGH_STYLE_ID, &lib);
+    add_example_note(
+        &mut scene,
+        24.0,
+        58.4,
+        "Wanddurchbruch 1.00x2.00m\\PID: style_breakthrough_standard\\PBruestung 0.10m\\P2D: Kreuz-Symbolik (Mark2D)\\PAnsicht: Oeffnungskontur",
+    );
+
+    let wt5 = add_wall_with_style(&mut scene, (32.0, 60.0), (38.0, 60.0), "style_concrete_25", &lib);
+    let ot5 = place_example_opening_styled(&mut scene, wt5, (35.0, 60.0), SEED_BREAKTHROUGH_PIPE_STYLE_ID, &lib);
+    add_example_note(
+        &mut scene,
+        32.0,
+        58.4,
+        "Installationsdurchbruch rund 0.40x0.40m\\PID: style_breakthrough_pipe\\PKreisform, Bruestung 1.80m\\P2D: Schraffur / DiagonalFill\\PAnsicht: Runder Aussparungsring",
+    );
+
+    // Validierung aller erzeugten Oeffnungen
+    let all_placed = [
+        (wf1, of1, engine::openings::OpeningKind::Window),
+        (wf2, of2, engine::openings::OpeningKind::Window),
+        (wf3, of3, engine::openings::OpeningKind::Window),
+        (wf4, of4, engine::openings::OpeningKind::Window),
+        (wf5, of5, engine::openings::OpeningKind::Window),
+        (wt1, ot1, engine::openings::OpeningKind::Door),
+        (wt2, ot2, engine::openings::OpeningKind::Door),
+        (wt3, ot3, engine::openings::OpeningKind::Door),
+        (wt4, ot4, engine::openings::OpeningKind::Breakthrough),
+        (wt5, ot5, engine::openings::OpeningKind::Breakthrough),
     ];
-    for (wall, opening, kind) in placed {
+    for (wall, opening, kind) in all_placed {
         let parsed = opening_from_entity(scene.document.get_entity(opening).unwrap(), opening)
             .expect("opening xdata");
         assert_eq!(parsed.kind, kind);
@@ -6317,9 +6475,9 @@ fn write_aec_wall_join_examples_dxf() {
             engine::owner_index::children_of(&scene.document, wall).contains(&opening),
             "opening {opening:?} must be a child of host wall {wall:?}"
         );
+        let children = engine::opening_display::collect_opening_display_children(&scene, opening);
         assert!(
-            !engine::opening_display::collect_opening_display_children(&scene, opening)
-                .is_empty(),
+            !children.is_empty(),
             "opening {kind:?} must have OPENING_REP children"
         );
     }
@@ -7002,6 +7160,131 @@ fn placing_and_removing_opening_keeps_host_child_handles() {
     remove_wall_opening(&mut scene, o2, None).expect("remove door");
     assert!(engine::owner_index::children_of(&scene.document, wall).is_empty());
     assert!(openings_for_host_wall(&scene, wall).is_empty());
+}
+
+#[test]
+fn removing_opening_with_display_rules_preserves_plan_dependent_representation() {
+    use crate::modules::aec::engine::display_component::{RepresentationMode, WallComponentSlot};
+    use crate::modules::aec::engine::library::build_effective_rule_set;
+    use crate::modules::aec::engine::plan_view::DisplayConfig;
+
+    let mut scene = Scene::new();
+    let wall = add_multi_layer_wall(&mut scene);
+
+    let (op, _) = place_wall_opening(
+        &mut scene,
+        wall,
+        DVec3::new(2.0, 0.0, 0.0),
+        engine::openings::OpeningKind::Window,
+        None,
+        None,
+        None,
+    )
+    .expect("place window");
+
+    // Build 3D-only display rules where 2D layers and contours are hidden
+    let cfg = DisplayConfig::new(
+        "3D Model".to_string(),
+        "Visualisierung".to_string(),
+        crate::modules::aec::engine::plan_view::PlanningStage::Design,
+        crate::modules::aec::engine::plan_view::ViewType::FloorPlan,
+    );
+    let rules_3d = build_effective_rule_set(&cfg, None, Some(RepresentationMode::ThreeD));
+    assert!(!rules_3d.is_visible(WallComponentSlot::Layers2D));
+    assert!(rules_3d.is_visible(WallComponentSlot::Solid3D));
+
+    // Remove opening using the active display rules
+    let touched = remove_wall_opening_with_rules(&mut scene, op, None, Some(&rules_3d))
+        .expect("remove opening with rules");
+    assert!(touched.contains(&wall));
+    assert!(scene.document.get_entity(op).is_none());
+
+    // Verify the regenerated wall only has 3D solid representation, no 2D layer hatch
+    let wall_data = wall_from_entity(scene.document.get_entity(wall).unwrap()).unwrap();
+    let hatches = wall_data
+        .derived_handles
+        .iter()
+        .filter_map(|h| scene.document.get_entity(*h))
+        .filter(|e| matches!(e, EntityType::Hatch(_)))
+        .count();
+    assert_eq!(hatches, 0, "3D display rules must not generate 2D layer hatches after opening removal");
+}
+
+#[test]
+fn expand_with_wall_derived_handles_expands_opening_child_to_opening_package_without_host_wall() {
+    let mut scene = Scene::new();
+    let wall = add_multi_layer_wall(&mut scene);
+    let (op, _) = place_wall_opening(
+        &mut scene,
+        wall,
+        DVec3::new(2.0, 0.0, 0.0),
+        engine::openings::OpeningKind::Window,
+        None,
+        None,
+        None,
+    )
+    .expect("place window");
+
+    let children = engine::opening_display::collect_opening_display_children(&scene, op);
+    assert!(!children.is_empty(), "opening should have display children");
+
+    // Pass only the opening child entity to expand_with_wall_derived_handles
+    let mut handles = vec![children[0]];
+    expand_with_wall_derived_handles(&scene, &mut handles);
+
+    assert!(handles.contains(&op), "should resolve child to opening owner");
+    for child in &children {
+        assert!(handles.contains(child), "should include all opening children");
+    }
+    assert!(!handles.contains(&wall), "should NOT include the host wall");
+}
+
+#[test]
+fn interactive_delete_opening_respects_active_display_config() {
+    use crate::app::{Message, OpenCADStudio};
+
+    let mut app = OpenCADStudio::new_for_test();
+    let tab = app.active_tab;
+    app.aec.aec_plan_library = Some(crate::modules::aec::engine::library::DisplayConfigLibrary::seed_default_configs());
+    let wall = add_multi_layer_wall(&mut app.tabs[tab].scene);
+    let (op, _) = place_wall_opening(
+        &mut app.tabs[tab].scene,
+        wall,
+        DVec3::new(2.0, 0.0, 0.0),
+        engine::openings::OpeningKind::Window,
+        None,
+        None,
+        None,
+    )
+    .expect("place window");
+
+    // Set active plan configuration to "3D Modell / Visualisierung"
+    app.tabs[tab].active_display_config = Some("3D Modell / Visualisierung".to_string());
+    app.apply_active_display_config_to_tab(tab);
+
+    // Select the opening
+    app.tabs[tab].scene.selected.clear();
+    app.tabs[tab].scene.selected.insert(op);
+
+    // Trigger interactive deletion
+    let _ = app.update(Message::DeleteSelected);
+
+    // Verify opening is erased and unlinked from wall
+    assert!(app.tabs[tab].scene.document.get_entity(op).is_none(), "opening should be deleted");
+    assert!(
+        engine::owner_index::children_of(&app.tabs[tab].scene.document, wall).is_empty(),
+        "opening should be unlinked from host wall"
+    );
+
+    // Verify host wall regenerated under 3D display rules (no 2D layer hatch entities)
+    let wall_data = wall_from_entity(app.tabs[tab].scene.document.get_entity(wall).unwrap()).unwrap();
+    let hatches = wall_data
+        .derived_handles
+        .iter()
+        .filter_map(|h| app.tabs[tab].scene.document.get_entity(*h))
+        .filter(|e| matches!(e, EntityType::Hatch(_)))
+        .count();
+    assert_eq!(hatches, 0, "3D display rules must not generate 2D layer hatches after interactive deletion");
 }
 
 #[test]
@@ -8052,10 +8335,10 @@ fn l_corner_same_material_suppresses_3d_deck_miter_fuge_while_different_material
 fn test_opening_realistic_post_profiles() {
     use crate::modules::aec::engine::display_component::OpeningComponentSlot;
     use crate::modules::aec::engine::opening_display::{bake_opening_generators, OpeningBakeParams};
+    use crate::modules::aec::engine::openings::{OpeningKind, SwingSide};
     use crate::modules::aec::engine::opening_style::{
         HingeSide, OpeningGenerator, SlotGeometry, DEFAULT_FRAME_THICKNESS,
     };
-    use crate::modules::aec::engine::openings::OpeningKind;
     use std::collections::HashMap;
 
     let mut slots = HashMap::new();
@@ -8077,6 +8360,7 @@ fn test_opening_realistic_post_profiles() {
         wall_y_min: -thickness * 0.5,
         wall_y_max: thickness * 0.5,
         hinge: HingeSide::Left,
+        swing_side: SwingSide::Exterior,
         shape: crate::modules::aec::engine::opening_shape::OpeningShape::Rectangle,
         spring_height: 0.0,
         opening_angle_deg: 90.0,
@@ -8145,6 +8429,7 @@ fn test_opening_dynamic_sill_lines_with_wall_thickness() {
             wall_y_min: -ht,
             wall_y_max: ht,
             hinge: HingeSide::Left,
+            swing_side: SwingSide::Exterior,
             shape: crate::modules::aec::engine::opening_shape::OpeningShape::Rectangle,
             spring_height: 0.0,
             opening_angle_deg: 90.0,
@@ -8226,6 +8511,7 @@ fn test_opening_component_blocks_resolution_and_placement() {
         wall_y_min: -0.15,
         wall_y_max: 0.15,
         hinge: HingeSide::Left,
+        swing_side: SwingSide::Exterior,
         shape: crate::modules::aec::engine::opening_shape::OpeningShape::Rectangle,
         spring_height: 0.0,
         opening_angle_deg: 90.0,
@@ -8450,11 +8736,12 @@ fn test_opening_grips_definition_and_flip_handle() {
     win.hinge = HingeSide::Left;
 
     let grips = opening_axis_grips(&axis, &win, 0.0);
-    assert_eq!(grips.len(), 4, "Must have 4 grips: Center, Start, End, Flip");
+    assert_eq!(grips.len(), 5, "Must have 5 grips: Center, Start, End, HingeFlip, SwingFlip");
     assert_eq!(grips[0].id, 0);
     assert_eq!(grips[1].id, 1);
     assert_eq!(grips[2].id, 2);
     assert_eq!(grips[3].id, 3);
+    assert_eq!(grips[4].id, 4);
 
     // Center grip is at s = 4.0 + 0.6 = 4.6
     assert!((grips[0].world.x - 4.6).abs() < 1e-6);
@@ -8726,6 +9013,7 @@ fn test_elevation_generators_contour_muntins_and_triangles() {
         wall_y_min: -0.15,
         wall_y_max: 0.15,
         hinge: HingeSide::Left,
+        swing_side: SwingSide::Exterior,
         shape: OpeningShape::Rectangle,
         spring_height: 0.0,
         opening_angle_deg: 90.0,
@@ -8925,15 +9213,15 @@ fn test_parametric_3d_solids_for_openings() {
     assert!(tri_frame.validate().is_empty(), "Triangle Frame B-Rep body must be topologically valid");
 
     // 3. Leaf3D (Window left hinge, Window right hinge, Door left hinge)
-    let leaf_body = build_opening_leaf_3d(width, height, ft, 45.0, HingeSide::Left, false, OpeningShape::Rectangle, 0.0)
+    let leaf_body = build_opening_leaf_3d(width, height, ft, 45.0, HingeSide::Left, SwingSide::Exterior, false, OpeningShape::Rectangle, 0.0)
         .expect("build leaf 3d left");
     assert!(leaf_body.validate().is_empty(), "Leaf B-Rep body must be topologically valid");
 
-    let leaf_right = build_opening_leaf_3d(width, height, ft, 30.0, HingeSide::Right, false, OpeningShape::Rectangle, 0.0)
+    let leaf_right = build_opening_leaf_3d(width, height, ft, 30.0, HingeSide::Right, SwingSide::Exterior, false, OpeningShape::Rectangle, 0.0)
         .expect("build leaf 3d right");
     assert!(leaf_right.validate().is_empty(), "Right leaf B-Rep body must be topologically valid");
 
-    let door_leaf = build_opening_leaf_3d(0.90, 2.10, 0.05, 90.0, HingeSide::Left, true, OpeningShape::Rectangle, 0.0)
+    let door_leaf = build_opening_leaf_3d(0.90, 2.10, 0.05, 90.0, HingeSide::Left, SwingSide::Exterior, true, OpeningShape::Rectangle, 0.0)
         .expect("build door leaf 3d");
     assert!(door_leaf.validate().is_empty(), "Door leaf B-Rep body must be topologically valid");
 
@@ -9274,7 +9562,7 @@ fn test_wall_base_control_plane_elevation_alignment() {
     // 8. Verify Window Grips elevation
     let axis = vec![(0.0, 0.0), (8.0, 0.0)];
     let grips = opening_axis_grips(&axis, &opening, host_base_z(&scene, wall_pkg));
-    assert_eq!(grips.len(), 4);
+    assert_eq!(grips.len(), 5);
     for grip in &grips {
         assert!(
             (grip.world.z - storey_elevation).abs() < 1e-4,

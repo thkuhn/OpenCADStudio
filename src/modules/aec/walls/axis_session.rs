@@ -15,7 +15,7 @@ impl OpenCADStudio {
         grip_id: usize,
         apply: &crate::scene::model::object::GripApply,
     ) -> bool {
-        if grip_id > 3 {
+        if grip_id > 4 {
             return false;
         }
         let scene = &self.tabs[tab].scene;

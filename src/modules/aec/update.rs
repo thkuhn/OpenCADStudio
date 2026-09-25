@@ -112,11 +112,21 @@ impl OpenCADStudio {
                     crate::modules::aec::engine::opening_style::HingeSide::from_str(&value);
                 Task::none()
             }
+            AecMessage::AecOpeningStyleManagerSetPreviewMode(mode) => {
+                self.aec.aec_opening_style_manager_preview_mode = mode;
+                Task::none()
+            }
             AecMessage::AecOpeningStyleManagerSlotSourceChanged(index, value) => {
                 self.aec_opening_style_manager_slot_source_changed(index, value)
             }
             AecMessage::AecOpeningStyleManagerSlotGeneratorChanged(index, value) => {
                 self.aec_opening_style_manager_slot_generator_changed(index, value)
+            }
+            AecMessage::AecOpeningStyleManagerSlotBlockNameChanged(index, value) => {
+                self.aec_opening_style_manager_slot_block_name_changed(index, value)
+            }
+            AecMessage::AecOpeningStyleManagerSlotBlockPlacementChanged(index, value) => {
+                self.aec_opening_style_manager_slot_block_placement_changed(index, value)
             }
             AecMessage::AecOpeningStyleManagerProfileSelect(value) => {
                 self.aec_opening_style_manager_profile_select(value)
