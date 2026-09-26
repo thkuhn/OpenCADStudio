@@ -115,7 +115,20 @@ pub fn cut_elevation(
     z_max: f64,
     holes: &[Vec<(f64, f64)>],
 ) -> Vec<Vec<(f64, f64)>> {
-    if width <= MIN_SPAN || z_max - z_min <= MIN_SPAN {
+    cut_elevation_sloped(width, z_min, z_max, z_min, z_max, holes)
+}
+
+/// Subtract `holes` from a sloped elevation trapezoid defined by
+/// `(z_base_0, z_top_0)` at `s = 0` and `(z_base_1, z_top_1)` at `s = width`.
+pub fn cut_elevation_sloped(
+    width: f64,
+    z_base_0: f64,
+    z_top_0: f64,
+    z_base_1: f64,
+    z_top_1: f64,
+    holes: &[Vec<(f64, f64)>],
+) -> Vec<Vec<(f64, f64)>> {
+    if width <= MIN_SPAN || (z_top_0 - z_base_0).max(z_top_1 - z_base_1) <= MIN_SPAN {
         return Vec::new();
     }
     let cleaned: Vec<Vec<(f64, f64)>> = holes
@@ -124,10 +137,10 @@ pub fn cut_elevation(
         .map(|h| ensure_ccw(h.clone()))
         .collect();
     if cleaned.is_empty() {
-        return vec![rect(width, z_min, z_max)];
+        return vec![trapezoid(width, z_base_0, z_top_0, z_base_1, z_top_1)];
     }
 
-    let quads = remaining_quads(width, z_min, z_max, &cleaned);
+    let quads = remaining_quads_sloped(width, z_base_0, z_top_0, z_base_1, z_top_1, &cleaned);
     let mut loops = Vec::with_capacity(quads.len());
     for q in &quads {
         let ring = dedup_ring(ensure_ccw(q.to_vec()));
@@ -138,12 +151,12 @@ pub fn cut_elevation(
     loops
 }
 
-fn rect(width: f64, z_min: f64, z_max: f64) -> Vec<(f64, f64)> {
+fn trapezoid(width: f64, z_base_0: f64, z_top_0: f64, z_base_1: f64, z_top_1: f64) -> Vec<(f64, f64)> {
     vec![
-        (0.0, z_min),
-        (width, z_min),
-        (width, z_max),
-        (0.0, z_max),
+        (0.0, z_base_0),
+        (width, z_base_1),
+        (width, z_top_1),
+        (0.0, z_top_0),
     ]
 }
 
@@ -187,10 +200,12 @@ pub fn opening_slice_x_positions(width: f64, holes: &[Vec<(f64, f64)>]) -> Vec<f
     unique
 }
 
-fn remaining_quads(
+fn remaining_quads_sloped(
     width: f64,
-    z_min: f64,
-    z_max: f64,
+    z_base_0: f64,
+    z_top_0: f64,
+    z_base_1: f64,
+    z_top_1: f64,
     holes: &[Vec<(f64, f64)>],
 ) -> Vec<[(f64, f64); 4]> {
     let unique = opening_slice_x_positions(width, holes);
@@ -202,19 +217,40 @@ fn remaining_quads(
         if s1 - s0 <= EPS {
             continue;
         }
+        let t0 = if width > EPS { (s0 / width).clamp(0.0, 1.0) } else { 0.0 };
+        let zb0_exact = z_base_0 + t0 * (z_base_1 - z_base_0);
+        let zt0_exact = (z_top_0 + t0 * (z_top_1 - z_top_0)).max(zb0_exact + MIN_SPAN);
+
+        let t1 = if width > EPS { (s1 / width).clamp(0.0, 1.0) } else { 1.0 };
+        let zb1_exact = z_base_0 + t1 * (z_base_1 - z_base_0);
+        let zt1_exact = (z_top_0 + t1 * (z_top_1 - z_top_0)).max(zb1_exact + MIN_SPAN);
+
         let inset = ((s1 - s0) * 1e-6).max(1e-12);
-        let left = remaining_z(s0 + inset, z_min, z_max, holes);
-        let right = remaining_z(s1 - inset, z_min, z_max, holes);
+        let tinset_l = if width > EPS { ((s0 + inset) / width).clamp(0.0, 1.0) } else { 0.0 };
+        let zb_l = z_base_0 + tinset_l * (z_base_1 - z_base_0);
+        let zt_l = (z_top_0 + tinset_l * (z_top_1 - z_top_0)).max(zb_l + MIN_SPAN);
+
+        let tinset_r = if width > EPS { ((s1 - inset) / width).clamp(0.0, 1.0) } else { 1.0 };
+        let zb_r = z_base_0 + tinset_r * (z_base_1 - z_base_0);
+        let zt_r = (z_top_0 + tinset_r * (z_top_1 - z_top_0)).max(zb_r + MIN_SPAN);
+
+        let left = remaining_z(s0 + inset, zb_l, zt_l, holes);
+        let right = remaining_z(s1 - inset, zb_r, zt_r, holes);
         let pairs = match_intervals(&left, &right);
         for ((zl0, zh0), (zl1, zh1)) in pairs {
             if (zh0 - zl0).max(zh1 - zl1) <= EPS {
                 continue;
             }
+            let z_bottom_0 = if (zl0 - zb_l).abs() <= 1e-3 { zb0_exact } else { zl0 };
+            let z_bottom_1 = if (zl1 - zb_r).abs() <= 1e-3 { zb1_exact } else { zl1 };
+            let z_top_slice_0 = if (zh0 - zt_l).abs() <= 1e-3 { zt0_exact } else { zh0 };
+            let z_top_slice_1 = if (zh1 - zt_r).abs() <= 1e-3 { zt1_exact } else { zh1 };
+
             let quad = [
-                (s0, zl0),
-                (s1, zl1),
-                (s1, zh1),
-                (s0, zh0),
+                (s0, z_bottom_0),
+                (s1, z_bottom_1),
+                (s1, z_top_slice_1),
+                (s0, z_top_slice_0),
             ];
             if trapezoid_area(&quad) > EPS {
                 quads.push(quad);
@@ -402,6 +438,23 @@ fn seg_intersect(
     }
 }
 
+fn dist_to_segment_sq(p: (f64, f64), a: (f64, f64), b: (f64, f64)) -> f64 {
+    let dx = b.0 - a.0;
+    let dy = b.1 - a.1;
+    let len_sq = dx * dx + dy * dy;
+    if len_sq <= 1e-14 {
+        let px = p.0 - a.0;
+        let py = p.1 - a.1;
+        return px * px + py * py;
+    }
+    let t = (((p.0 - a.0) * dx + (p.1 - a.1) * dy) / len_sq).clamp(0.0, 1.0);
+    let proj_x = a.0 + t * dx;
+    let proj_y = a.1 + t * dy;
+    let rx = p.0 - proj_x;
+    let ry = p.1 - proj_y;
+    rx * rx + ry * ry
+}
+
 /// True when `p` is inside or on the boundary of `poly` (even-odd).
 pub fn point_in_polygon(poly: &[(f64, f64)], p: (f64, f64)) -> bool {
     let n = poly.len();
@@ -411,19 +464,14 @@ pub fn point_in_polygon(poly: &[(f64, f64)], p: (f64, f64)) -> bool {
     let (x, y) = p;
     let mut inside = false;
     for i in 0..n {
-        let (x0, y0) = poly[i];
-        let (x1, y1) = poly[(i + 1) % n];
-        let on_x = (x - x0).abs() <= EPS && (x - x1).abs() <= EPS;
-        let on_y = (y - y0).abs() <= EPS && (y - y1).abs() <= EPS;
-        if on_x && y >= y0.min(y1) - EPS && y <= y0.max(y1) + EPS {
+        let a = poly[i];
+        let b = poly[(i + 1) % n];
+        if dist_to_segment_sq(p, a, b) <= 1e-10 {
             return true;
         }
-        if on_y && x >= x0.min(x1) - EPS && x <= x0.max(x1) + EPS {
-            return true;
-        }
-        let crosses = (y0 > y) != (y1 > y);
+        let crosses = (a.1 > y) != (b.1 > y);
         if crosses {
-            let at_x = x0 + (y - y0) * (x1 - x0) / (y1 - y0);
+            let at_x = a.0 + (y - a.1) * (b.0 - a.0) / (b.1 - a.1);
             if at_x >= x - EPS {
                 inside = !inside;
             }
@@ -476,26 +524,49 @@ pub fn zone_solid_paths(
     layer_extrusion: &[(f64, f64)],
     openings: &[Opening],
 ) -> Vec<OpeningZoneSolidPath> {
+    zone_solid_paths_with_evaluator(
+        axis,
+        layers,
+        layer_extrusion,
+        openings,
+        |li, _| {
+            let &(h, b) = layer_extrusion.get(li).unwrap_or(&(0.0, 0.0));
+            (b, b + h)
+        },
+    )
+}
+
+/// Per-layer zone solids with custom per-point Z-boundary evaluation for sloped base/top.
+pub fn zone_solid_paths_with_evaluator<F>(
+    axis: &[(f64, f64)],
+    layers: &[(f64, f64)],
+    layer_extrusion: &[(f64, f64)],
+    openings: &[Opening],
+    mut z_bounds_at_s: F,
+) -> Vec<OpeningZoneSolidPath>
+where
+    F: FnMut(usize, f64) -> (f64, f64),
+{
     let zones = opening_zones(openings);
     if zones.is_empty() {
         return Vec::new();
     }
     let n = layers.len().min(layer_extrusion.len());
     let mut out = Vec::new();
-    for (li, (&(thickness, axis_offset), &(height, base_offset))) in
+    for (li, (&(thickness, axis_offset), &(height, _base_offset))) in
         layers.iter().zip(layer_extrusion.iter()).take(n).enumerate()
     {
         if thickness.abs() <= EPS || height.abs() <= EPS {
             continue;
         }
-        let z_min = base_offset;
-        let z_max = base_offset + height;
         for zone in &zones {
             let width = zone.width();
             if width <= MIN_SPAN {
                 continue;
             }
-            let rings = cut_elevation(width, z_min, z_max, &zone.holes);
+            let (zb0, zt0) = z_bounds_at_s(li, zone.s0);
+            let (zb1, zt1) = z_bounds_at_s(li, zone.s1);
+            let rings = cut_elevation_sloped(width, zb0, zt0, zb1, zt1, &zone.holes);
             for ring in rings {
                 if let Some((loop_xyz, direction)) =
                     elevation_loop_to_layer_face(axis, zone.s0, axis_offset, thickness, &ring)
@@ -813,5 +884,38 @@ mod tests {
         let rings = cut_elevation(1.0, 0.0, 2.0, &[]);
         assert_eq!(rings.len(), 1);
         assert!(approx(remaining_area(&rings), 2.0));
+    }
+
+    #[test]
+    fn sloped_elevation_cut_trapezoid_and_window() {
+        let width = 2.0;
+        // Sloped top from 2.0 to 3.0 (slope 0.5)
+        let z_base_0 = 0.0;
+        let z_top_0 = 2.0;
+        let z_base_1 = 0.0;
+        let z_top_1 = 3.0;
+
+        let empty_rings = cut_elevation_sloped(width, z_base_0, z_top_0, z_base_1, z_top_1, &[]);
+        assert_eq!(empty_rings.len(), 1);
+        let expected_area = 0.5 * (z_top_0 + z_top_1) * width; // 0.5 * 5.0 * 2.0 = 5.0
+        assert!(approx(remaining_area(&empty_rings), expected_area));
+
+        // Window from s = 0.5 to 1.5, z = 0.8 to 1.8
+        let hole = vec![
+            (0.5, 0.8),
+            (1.5, 0.8),
+            (1.5, 1.8),
+            (0.5, 1.8),
+        ];
+        let rings = cut_elevation_sloped(width, z_base_0, z_top_0, z_base_1, z_top_1, &[hole]);
+        assert!(!rings.is_empty());
+        let hole_area = 1.0 * 1.0;
+        let expected_cut_area = expected_area - hole_area;
+        assert!(
+            approx(remaining_area(&rings), expected_cut_area),
+            "Expected {}, got {}",
+            expected_cut_area,
+            remaining_area(&rings)
+        );
     }
 }

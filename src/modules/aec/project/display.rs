@@ -278,6 +278,82 @@ impl OpenCADStudio {
         }
     }
 
+    /// When Face3D preview entities for control planes or facets are deleted in the drawing,
+    /// remove the corresponding facet assignments from the control plane in the project manager.
+    pub(crate) fn aec_erase_control_planes_or_facets(
+        &mut self,
+        tab_index: usize,
+        handles: &[acadrust::Handle],
+    ) {
+        let scene = &self.tabs[tab_index].scene;
+        let mut facets_to_remove: Vec<(uuid::Uuid, usize)> = Vec::new();
+        for &h in handles {
+            if let Some(entity) = scene.document.get_entity(h) {
+                if let Some((plane_id, _name, facet_idx)) =
+                    crate::modules::aec::project::preview::control_plane_facet_from_entity(entity)
+                {
+                    if let Some(idx) = facet_idx {
+                        facets_to_remove.push((plane_id, idx));
+                    }
+                }
+            }
+        }
+        if facets_to_remove.is_empty() {
+            return;
+        }
+        facets_to_remove.sort_by(|a, b| b.1.cmp(&a.1));
+        if let Some(project) = self.aec.aec_project_explorer_file.as_mut() {
+            let mut modified = false;
+            for (plane_id, idx) in facets_to_remove {
+                for building in &mut project.buildings {
+                    for storey in &mut building.storeys {
+                        if let Some(plane) = storey.plane_mut(plane_id) {
+                            if idx < plane.facets.len() {
+                                plane.facets.remove(idx);
+                                if let Some(first) = plane.facets.first() {
+                                    plane.origin = first.origin();
+                                    plane.normal = first.unit_normal();
+                                }
+                                modified = true;
+                            }
+                        }
+                    }
+                }
+            }
+            if modified {
+                self.aec_project_explorer_persist_if_pathed();
+            }
+        }
+    }
+
+    /// Resets any temporary orange highlight on control plane or facet preview entities
+    /// across all storeys in the active project back to their default colors (cyan / yellow).
+    pub(crate) fn aec_reset_control_plane_highlights(&mut self) {
+        if self.active_tab >= self.tabs.len() {
+            return;
+        }
+        let tab = self.active_tab;
+        let mut all_touched = Vec::new();
+        if let Some(project) = self.aec.aec_project_explorer_file.as_ref() {
+            for b in &project.buildings {
+                for s in &b.storeys {
+                    let touched = crate::modules::aec::project::preview::reset_control_plane_preview_colors(
+                        &mut self.tabs[tab].scene,
+                        s,
+                    );
+                    all_touched.extend(touched);
+                }
+            }
+        }
+        let changes: Vec<_> = all_touched
+            .into_iter()
+            .map(|h| (h, crate::scene::ChangeKind::Modified))
+            .collect();
+        if !changes.is_empty() {
+            self.tabs[tab].scene.bump_entities(&changes);
+        }
+    }
+
     /// After a join (or a new wall segment that auto-joins), rebuild each
     /// participating wall with *its* plan-type/style profile. Shared join
     /// regenerations often pass `None` or the first wall's rules, which

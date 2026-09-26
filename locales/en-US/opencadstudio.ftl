@@ -533,6 +533,7 @@ common =
     .header-row = Header Row:
     .header-row-suppressed = Header row suppressed
     .height = Height
+    .height-range = Height range
     .height-dimtxt = Height (DIMTXT)
     .helix = Helix
     .hidden = Hidden
@@ -5683,3 +5684,9 @@ aec =
     .plane-relative-hint = Storey vertical location defines the main (floor) control plane. Other planes are relative to it. Replace the main plane only by assigning another plane explicitly.
     .storey-height = Storey height
     .storey-list-meta = loc. { $location }  ·  h { $height }  ·  { $path }
+    .assign-polygons = Assign polygons
+    .assign-polygons-btn = + Polygons
+    .assign-polygons-prompt = AEC_PLANE_ASSIGN: Select faces or polylines in viewport [Enter=Finish]:
+    .assign-polygons-assigned = AEC: Assigned { $count } polygon(s) to control plane '{ $name }'.
+    .show-in-drawing-btn = Show in drawing
+    .plane-highlighted-in-drawing = Control plane "{ $name }" highlighted in drawing.

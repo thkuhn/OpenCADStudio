@@ -535,6 +535,7 @@ common =
     .header-row = Kopfzeile:
     .header-row-suppressed = Header-Reihe unterdrückt
     .height = Höhe
+    .height-range = Höhenbereich
     .height-dimtxt = Höhe (DIMTXT)
     .helix = Helix
     .hidden = Verdeckt
@@ -5680,3 +5681,9 @@ aec =
     .plane-relative-hint = Die vertikale Lage des Geschosses definiert die Haupt-Kontrollebene (Floor). Weitere Ebenen liegen relativ dazu. Die Haupt-Kontrollebene kann nur explizit durch eine andere Ebene ersetzt werden.
     .storey-height = Geschosshöhe
     .storey-list-meta = Lage { $location }  ·  Geschosshöhe { $height }  ·  { $path }
+    .assign-polygons = Polygone zuweisen
+    .assign-polygons-btn = + Polygone
+    .assign-polygons-prompt = AEC_PLANE_ASSIGN: Flächen oder Polylinien im Viewport auswählen [Eingabetaste=Abschließen]:
+    .assign-polygons-assigned = AEC: { $count } Polygon(e) der Kontrollebene '{ $name }' zugewiesen.
+    .show-in-drawing-btn = In Zeichnung anzeigen
+    .plane-highlighted-in-drawing = Kontrollebene „{ $name }“ in Zeichnung hervorgehoben.

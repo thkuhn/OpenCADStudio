@@ -975,12 +975,256 @@ fn filter_opening_surface_edges(
     *wires = new_wires;
 }
 
+fn dist_sq_2d(a: (f64, f64), b: (f64, f64)) -> f64 {
+    (a.0 - b.0) * (a.0 - b.0) + (a.1 - b.1) * (a.1 - b.1)
+}
+
+/// Partition a 2D layer footprint polygon along facet boundary edges of multi-polygon control planes.
+pub fn partition_footprint_by_facets(
+    footprint: &[(f64, f64)],
+    footprint_bulges: &[f64],
+    facets: &[crate::modules::aec::engine::control_plane::ControlPlaneFacet],
+) -> Vec<(Vec<(f64, f64)>, Vec<f64>)> {
+    let n = footprint.len();
+    if n < 3 || facets.is_empty() {
+        return vec![(footprint.to_vec(), footprint_bulges.to_vec())];
+    }
+
+    let mut initial_poly: Vec<(f64, f64)> = Vec::with_capacity(n);
+    for i in 0..n {
+        let start = footprint[i];
+        let end = footprint[(i + 1) % n];
+        let bulge = footprint_bulges.get(i).copied().unwrap_or(0.0);
+        if bulge.abs() > 1e-6 {
+            let pts = tessellate_bulge_segment(start, end, bulge, 12);
+            for pt in pts.into_iter().take_while(|p| (p.0 - end.0).hypot(p.1 - end.1) > 1e-6) {
+                initial_poly.push(pt);
+            }
+        } else {
+            initial_poly.push(start);
+        }
+    }
+
+    if initial_poly.len() < 3 {
+        return vec![(footprint.to_vec(), footprint_bulges.to_vec())];
+    }
+
+    // Collect all cutting line segments from facet edges
+    let mut cut_lines: Vec<((f64, f64), (f64, f64))> = Vec::new();
+    for facet in facets {
+        let fpoly = facet.polygon_2d();
+        let fn_verts = fpoly.len();
+        if fn_verts < 3 {
+            continue;
+        }
+        for i in 0..fn_verts {
+            let a = fpoly[i];
+            let b = fpoly[(i + 1) % fn_verts];
+            if dist_sq_2d(a, b) > 1e-8 {
+                cut_lines.push((a, b));
+            }
+        }
+    }
+
+    let mut current_pieces: Vec<Vec<(f64, f64)>> = vec![initial_poly];
+
+    for (a, b) in cut_lines {
+        let dx = b.0 - a.0;
+        let dy = b.1 - a.1;
+        let len = dx.hypot(dy);
+        if len <= 1e-6 {
+            continue;
+        }
+        let nx = -dy / len;
+        let ny = dx / len;
+        let keep1 = (a.0 + nx * 100.0, a.1 + ny * 100.0);
+        let keep2 = (a.0 - nx * 100.0, a.1 - ny * 100.0);
+
+        let mut next_pieces: Vec<Vec<(f64, f64)>> = Vec::new();
+        for poly in current_pieces {
+            let p1 = super::miter::clip_closed_to_halfplane(&poly, a, b, keep1);
+            let p2 = super::miter::clip_closed_to_halfplane(&poly, a, b, keep2);
+            let p1_valid = p1.len() >= 3 && super::geometry::area(&p1) > 1e-6;
+            let p2_valid = p2.len() >= 3 && super::geometry::area(&p2) > 1e-6;
+            if p1_valid && p2_valid {
+                next_pieces.push(p1);
+                next_pieces.push(p2);
+            } else {
+                next_pieces.push(poly);
+            }
+        }
+        current_pieces = next_pieces;
+    }
+
+    current_pieces
+        .into_iter()
+        .filter(|p| p.len() >= 3 && super::geometry::area(p) > 1e-6)
+        .map(|p| {
+            let bulges = vec![0.0; p.len()];
+            (p, bulges)
+        })
+        .collect()
+}
+
+/// Constructs a 3D solid for a wall layer piece with sloped or horizontal base and top.
+///
+/// Computes per-vertex `(z_base, z_top)` heights across the layer footprint polygon and builds
+/// a closed 2-manifold B-Rep via `cadkernel::brep::make::faceted_solid`.
+pub fn build_sloped_layer_solid_3d(
+    footprint: &[(f64, f64)],
+    footprint_bulges: &[f64],
+    wall: &Wall,
+    layer: Option<&WallLayer>,
+    fallback_base_z: f64,
+    fallback_height: f64,
+) -> Option<cadkernel::brep::Body> {
+    let n = footprint.len();
+    if n < 3 {
+        return None;
+    }
+
+    let mut polygon: Vec<(f64, f64)> = Vec::with_capacity(n);
+    for i in 0..n {
+        let start = footprint[i];
+        let end = footprint[(i + 1) % n];
+        let bulge = footprint_bulges.get(i).copied().unwrap_or(0.0);
+        if bulge.abs() > 1e-6 {
+            let pts = tessellate_bulge_segment(start, end, bulge, 12);
+            for pt in pts.into_iter().take_while(|p| (p.0 - end.0).hypot(p.1 - end.1) > 1e-6) {
+                polygon.push(pt);
+            }
+        } else {
+            polygon.push(start);
+        }
+    }
+
+    let m = polygon.len();
+    if m < 3 {
+        return None;
+    }
+
+    // Ensure counter-clockwise (CCW) winding in the XY plane.
+    let mut signed_area = 0.0;
+    for i in 0..m {
+        let (x0, y0) = polygon[i];
+        let (x1, y1) = polygon[(i + 1) % m];
+        signed_area += x0 * y1 - x1 * y0;
+    }
+    if signed_area < 0.0 {
+        polygon.reverse();
+    }
+
+    let cx: f64 = polygon.iter().map(|p| p.0).sum::<f64>() / m as f64;
+    let cy: f64 = polygon.iter().map(|p| p.1).sum::<f64>() / m as f64;
+
+    let dominant_top_facet = if !wall.top_facets.is_empty() {
+        let dummy = crate::modules::aec::engine::control_plane::ControlPlane {
+            id: uuid::Uuid::nil(),
+            name: String::new(),
+            origin: wall.top_origin,
+            normal: wall.top_normal,
+            facets: wall.top_facets.clone(),
+            face_handle: None,
+            preview_handle: None,
+            visible: true,
+        };
+        dummy.min_facet_at_xy(cx, cy).cloned()
+    } else {
+        None
+    };
+
+    let dominant_base_facet = if !wall.base_facets.is_empty() {
+        let dummy = crate::modules::aec::engine::control_plane::ControlPlane {
+            id: uuid::Uuid::nil(),
+            name: String::new(),
+            origin: wall.base_origin,
+            normal: wall.base_normal,
+            facets: wall.base_facets.clone(),
+            face_handle: None,
+            preview_handle: None,
+            visible: true,
+        };
+        dummy.min_facet_at_xy(cx, cy).cloned()
+    } else {
+        None
+    };
+
+    let mut vertices: Vec<[f64; 3]> = Vec::with_capacity(2 * m);
+    // Base vertices (0..m)
+    for &(x, y) in &polygon {
+        let zb = if let Some(ref f) = dominant_base_facet {
+            let off = layer.map_or(wall.base_offset, |l| wall.base_offset + l.bottom_offset);
+            f.z_offset_at_xy(x, y, off).unwrap_or_else(|| {
+                if let Some(l) = layer {
+                    wall.layer_base_z_at_xy(l, x, y)
+                } else {
+                    wall.base_z_at_xy(x, y) + fallback_base_z
+                }
+            })
+        } else if !wall.base_facets.is_empty() {
+            let bot_off = layer.map_or(0.0, |l| l.bottom_offset);
+            wall.base_origin[2] + wall.base_offset + bot_off
+        } else if let Some(l) = layer {
+            wall.layer_base_z_at_xy(l, x, y)
+        } else {
+            wall.base_z_at_xy(x, y) + fallback_base_z
+        };
+        vertices.push([x, y, zb]);
+    }
+
+    // Top vertices (m..2*m)
+    for (i, &(x, y)) in polygon.iter().enumerate() {
+        let zb = vertices[i][2];
+        let zt = if let Some(ref f) = dominant_top_facet {
+            let off = layer.map_or(wall.top_offset, |l| wall.top_offset + l.top_offset);
+            f.z_offset_at_xy(x, y, off).unwrap_or_else(|| {
+                if let Some(l) = layer {
+                    wall.layer_top_z_at_xy(l, x, y)
+                } else {
+                    wall.top_z_at_xy(x, y) + fallback_base_z + fallback_height
+                }
+            })
+        } else if !wall.top_facets.is_empty() {
+            // Uncovered portion: strictly use the standard wall height above base
+            let top_off = layer.map_or(0.0, |l| l.top_offset);
+            zb + wall.height + top_off
+        } else if let Some(l) = layer {
+            wall.layer_top_z_at_xy(l, x, y)
+        } else {
+            wall.top_z_at_xy(x, y) + fallback_base_z + fallback_height
+        };
+        // Guarantee positive thickness of at least 1e-4
+        let zt = zt.max(zb + 1e-4);
+        vertices.push([x, y, zt]);
+    }
+
+    let mut faces: Vec<Vec<usize>> = Vec::with_capacity(m + 2);
+    // Bottom face: looking from below (-Z), reverse of CCW is outward CCW
+    let bottom_face: Vec<usize> = (0..m).rev().collect();
+    faces.push(bottom_face);
+
+    // Top face: looking from above (+Z), CCW is outward CCW
+    let top_face: Vec<usize> = (m..2 * m).collect();
+    faces.push(top_face);
+
+    // Side faces: for each edge around the polygon
+    for i in 0..m {
+        let next = (i + 1) % m;
+        // Quad: [base_i, base_next, top_next, top_i]
+        faces.push(vec![i, next, next + m, i + m]);
+    }
+
+    cadkernel::brep::make::faceted_solid(&vertices, &faces)
+}
+
 fn filter_miter_deck_edges(
     set: &mut crate::scene::model::mesh_model::MeshLodSet,
     wires: &mut Vec<acadrust::entities::Wire>,
     miter_segments_2d: &[((f64, f64), (f64, f64))],
-    z_base: f64,
-    z_top: f64,
+    wall: &Wall,
+    layer: Option<&WallLayer>,
+    fallback_z_base: f64,
+    _fallback_z_top: f64,
 ) {
     if miter_segments_2d.is_empty() || (set.edge_verts.is_empty() && wires.is_empty()) {
         return;
@@ -1003,8 +1247,19 @@ fn filter_miter_deck_edges(
     let bbox_max_y = max_y + margin;
 
     let is_deck_miter_segment = |p0: [f64; 3], p1: [f64; 3]| -> bool {
-        let is_at_deck = (p0[2] - z_top).abs() <= 2e-3 && (p1[2] - z_top).abs() <= 2e-3;
-        let is_at_base = (p0[2] - z_base).abs() <= 2e-3 && (p1[2] - z_base).abs() <= 2e-3;
+        let (zt0, zb0) = if let Some(l) = layer {
+            (wall.layer_top_z_at_xy(l, p0[0], p0[1]), wall.layer_base_z_at_xy(l, p0[0], p0[1]))
+        } else {
+            (wall.top_z_at_xy(p0[0], p0[1]) + fallback_z_base, wall.base_z_at_xy(p0[0], p0[1]) + fallback_z_base)
+        };
+        let (zt1, zb1) = if let Some(l) = layer {
+            (wall.layer_top_z_at_xy(l, p1[0], p1[1]), wall.layer_base_z_at_xy(l, p1[0], p1[1]))
+        } else {
+            (wall.top_z_at_xy(p1[0], p1[1]) + fallback_z_base, wall.base_z_at_xy(p1[0], p1[1]) + fallback_z_base)
+        };
+
+        let is_at_deck = (p0[2] - zt0).abs() <= 5e-3 && (p1[2] - zt1).abs() <= 5e-3;
+        let is_at_base = (p0[2] - zb0).abs() <= 5e-3 && (p1[2] - zb1).abs() <= 5e-3;
         if !is_at_deck && !is_at_base {
             return false;
         }
@@ -1377,12 +1632,12 @@ pub(crate) fn regenerate_wall_representation_inner(
         return Err(WallRegenError::NotAWall);
     };
     let (layers, height, wall_base_z, _old_derived, wall_style_id, wall_hatch_override) = (
-        wall.layers,
+        wall.layers.clone(),
         wall.height,
         wall.base_origin[2],
-        wall.derived_handles,
-        wall.style_id,
-        wall.hatch_override,
+        wall.derived_handles.clone(),
+        wall.style_id.clone(),
+        wall.hatch_override.clone(),
     );
     let wall_hatch_override = wall_hatch_override.as_ref();
 
@@ -1466,14 +1721,43 @@ pub(crate) fn regenerate_wall_representation_inner(
             )
         })
         .collect();
-    let display = engine::representation::build_wall_display_set(
-        &centerline,
-        &bulges,
-        &layer_data,
-        0.0,
-        &wall_openings,
-        &layer_extrusion,
-    );
+    let display = if wall.is_sloped() {
+        let z_bounds = |li: usize, s: f64| {
+            if let Some((pt, _)) = engine::openings::point_and_tangent_at_distance(&centerline, s) {
+                if let Some(l) = layers.get(li) {
+                    let zb = wall.layer_base_z_at_xy(l, pt.0, pt.1) - wall_base_z;
+                    let zt = wall.layer_top_z_at_xy(l, pt.0, pt.1) - wall_base_z;
+                    (zb, zt)
+                } else {
+                    let zb = wall.base_z_at_xy(pt.0, pt.1) - wall_base_z;
+                    let zt = wall.top_z_at_xy(pt.0, pt.1) - wall_base_z;
+                    (zb, zt)
+                }
+            } else if let Some(&(h, b)) = layer_extrusion.get(li) {
+                (b, b + h)
+            } else {
+                (0.0, height)
+            }
+        };
+        engine::representation::build_wall_display_set_sloped(
+            &centerline,
+            &bulges,
+            &layer_data,
+            0.0,
+            &wall_openings,
+            &layer_extrusion,
+            z_bounds,
+        )
+    } else {
+        engine::representation::build_wall_display_set(
+            &centerline,
+            &bulges,
+            &layer_data,
+            0.0,
+            &wall_openings,
+            &layer_extrusion,
+        )
+    };
 
     // Fallback footprints: axis with a single vertex pushed past the join into
     // the other wall's footprint (legacy corner-overlap path).
@@ -2145,7 +2429,17 @@ pub(crate) fn regenerate_wall_representation_inner(
         } else {
             (height, wall_base_z)
         };
-        let solid_rings: Vec<(Vec<(f64, f64)>, Vec<f64>)> = pieces_2d.clone();
+        let solid_rings: Vec<(Vec<(f64, f64)>, Vec<f64>)> = if !wall.top_facets.is_empty() || !wall.base_facets.is_empty() {
+            let mut all_facets = wall.top_facets.clone();
+            all_facets.extend(wall.base_facets.clone());
+            let mut partitioned = Vec::new();
+            for (fp, bulges) in &pieces_2d {
+                partitioned.extend(partition_footprint_by_facets(fp, bulges, &all_facets));
+            }
+            partitioned
+        } else {
+            pieces_2d.clone()
+        };
         if solid_visible && layer_included_solid && solid_height.abs() > 1e-9 {
             for (footprint, footprint_bulges) in &solid_rings {
                 if footprint.len() < 3 {
@@ -2170,9 +2464,20 @@ pub(crate) fn regenerate_wall_representation_inner(
                 };
                 let entity_to_use = to_extrude.as_ref().unwrap_or(&contour_entity);
 
-                if let Some(body) =
+                let body = if wall.is_sloped() {
+                    build_sloped_layer_solid_3d(
+                        footprint,
+                        footprint_bulges,
+                        &wall,
+                        layers.get(i),
+                        wall_base_z,
+                        solid_height,
+                    )
+                } else {
                     crate::scene::model::sweep_model::extruded(entity_to_use, solid_height)
-                {
+                };
+
+                if let Some(body) = body {
                     let s3d = acadrust::entities::Solid3D::new();
                     let solid_handle = scene.add_entity(EntityType::Solid3D(s3d));
                     if let Some(mut display_geom) = scene.prepare_solid_model_display(solid_handle, &body) {
@@ -2193,6 +2498,8 @@ pub(crate) fn regenerate_wall_representation_inner(
                                 &mut display_geom.0,
                                 &mut display_geom.1,
                                 &miter_seams,
+                                &wall,
+                                layers.get(i),
                                 solid_base,
                                 solid_base + solid_height,
                             );
@@ -2346,4 +2653,160 @@ pub fn change_wall_justification(
 
     let _ = regenerate_wall_representation(scene, wall_handle, library_override);
     true
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::modules::aec::engine::control_plane::ControlPlaneFacet;
+
+    #[test]
+    fn test_partition_footprint_by_facets() {
+        let footprint = vec![
+            (0.0, -0.15),
+            (10.0, -0.15),
+            (10.0, 0.15),
+            (0.0, 0.15),
+        ];
+        let bulges = vec![0.0; 4];
+
+        let f1 = ControlPlaneFacet::new(
+            "F1",
+            vec![
+                [0.0, -5.0, 3.2],
+                [5.0, -5.0, 3.2],
+                [5.0, 5.0, 3.2],
+                [0.0, 5.0, 3.2],
+            ],
+        );
+        let f2 = ControlPlaneFacet::new(
+            "F2",
+            vec![
+                [5.0, -5.0, 2.4],
+                [10.0, -5.0, 2.4],
+                [10.0, 5.0, 2.4],
+                [5.0, 5.0, 2.4],
+            ],
+        );
+
+        let pieces = partition_footprint_by_facets(&footprint, &bulges, &[f1, f2]);
+        assert_eq!(pieces.len(), 2);
+
+        // First piece should span roughly 0..5 in X
+        let (p1, _) = &pieces[0];
+        let min_x1 = p1.iter().map(|p| p.0).fold(f64::INFINITY, f64::min);
+        let max_x1 = p1.iter().map(|p| p.0).fold(f64::NEG_INFINITY, f64::max);
+        assert!((min_x1 - 0.0).abs() < 1e-4);
+        assert!((max_x1 - 5.0).abs() < 1e-4);
+
+        // Second piece should span roughly 5..10 in X
+        let (p2, _) = &pieces[1];
+        let min_x2 = p2.iter().map(|p| p.0).fold(f64::INFINITY, f64::min);
+        let max_x2 = p2.iter().map(|p| p.0).fold(f64::NEG_INFINITY, f64::max);
+        assert!((min_x2 - 5.0).abs() < 1e-4);
+        assert!((max_x2 - 10.0).abs() < 1e-4);
+    }
+
+    #[test]
+    fn test_build_sloped_layer_solid_stepped_facets() {
+        let footprint1 = vec![
+            (0.0, -0.15),
+            (5.0, -0.15),
+            (5.0, 0.15),
+            (0.0, 0.15),
+        ];
+        let footprint2 = vec![
+            (5.0, -0.15),
+            (10.0, -0.15),
+            (10.0, 0.15),
+            (5.0, 0.15),
+        ];
+        let bulges = vec![0.0; 4];
+
+        let f1 = ControlPlaneFacet::new(
+            "Roof1",
+            vec![
+                [0.0, -5.0, 3.2],
+                [5.0, -5.0, 3.2],
+                [5.0, 5.0, 3.2],
+                [0.0, 5.0, 3.2],
+            ],
+        );
+        let f2 = ControlPlaneFacet::new(
+            "Roof2",
+            vec![
+                [5.0, -5.0, 2.4],
+                [10.0, -5.0, 2.4],
+                [10.0, 5.0, 2.4],
+                [5.0, 5.0, 2.4],
+            ],
+        );
+
+        let mut wall = Wall::new("s", 3.0, 0);
+        wall.base_origin = [0.0, 0.0, 0.0];
+        wall.base_normal = [0.0, 0.0, 1.0];
+        wall.top_origin = [0.0, 0.0, 3.2];
+        wall.top_normal = [0.0, 0.0, 1.0];
+        wall.top_facets = vec![f1, f2];
+
+        let solid1 = build_sloped_layer_solid_3d(&footprint1, &bulges, &wall, None, 0.0, 3.0).unwrap();
+        let solid2 = build_sloped_layer_solid_3d(&footprint2, &bulges, &wall, None, 0.0, 3.0).unwrap();
+
+        assert!(solid1.validate().is_empty());
+        assert!(solid2.validate().is_empty());
+
+        let (min1, max1) = crate::scene::model::solid_model::extent(&solid1).expect("solid1 extent");
+        let (min2, max2) = crate::scene::model::solid_model::extent(&solid2).expect("solid2 extent");
+        assert!((max1[2] - min1[2] - 3.2).abs() < 1e-4);
+        assert!((max2[2] - min2[2] - 2.4).abs() < 1e-4);
+    }
+
+    #[test]
+    fn test_build_sloped_layer_solid_partial_facet_fallback() {
+        let footprint1 = vec![
+            (0.0, -0.15),
+            (5.0, -0.15),
+            (5.0, 0.15),
+            (0.0, 0.15),
+        ];
+        let footprint2 = vec![
+            (5.0, -0.15),
+            (10.0, -0.15),
+            (10.0, 0.15),
+            (5.0, 0.15),
+        ];
+        let bulges = vec![0.0; 4];
+
+        // Facet covers 0..5 in X at Z = 4.0
+        let f1 = ControlPlaneFacet::new(
+            "Roof1",
+            vec![
+                [0.0, -5.0, 4.0],
+                [5.0, -5.0, 4.0],
+                [5.0, 5.0, 4.0],
+                [0.0, 5.0, 4.0],
+            ],
+        );
+
+        let mut wall = Wall::new("s", 2.8, 0);
+        wall.base_origin = [0.0, 0.0, 0.0];
+        wall.base_normal = [0.0, 0.0, 1.0];
+        wall.top_origin = [0.0, 0.0, 4.0];
+        wall.top_normal = [0.0, 0.0, 1.0];
+        wall.top_facets = vec![f1];
+
+        let solid1 = build_sloped_layer_solid_3d(&footprint1, &bulges, &wall, None, 0.0, 2.8).unwrap();
+        let solid2 = build_sloped_layer_solid_3d(&footprint2, &bulges, &wall, None, 0.0, 2.8).unwrap();
+
+        assert!(solid1.validate().is_empty());
+        assert!(solid2.validate().is_empty());
+
+        let (min1, max1) = crate::scene::model::solid_model::extent(&solid1).expect("solid1 extent");
+        let (min2, max2) = crate::scene::model::solid_model::extent(&solid2).expect("solid2 extent");
+
+        // Covered portion has top Z = 4.0
+        assert!((max1[2] - min1[2] - 4.0).abs() < 1e-4);
+        // Uncovered portion falls back strictly to standard wall height Z = 2.8 with vertical step at x = 5.0
+        assert!((max2[2] - min2[2] - 2.8).abs() < 1e-4);
+    }
 }

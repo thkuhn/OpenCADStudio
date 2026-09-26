@@ -222,6 +222,30 @@ pub fn wall_prop_section(
                 ),
             );
         }
+        if wall.is_sloped() {
+            let pts = match entity {
+                EntityType::LwPolyline(pl) => pl.vertices.iter().map(|v| (v.location.x, v.location.y)).collect::<Vec<_>>(),
+                EntityType::Line(l) => vec![(l.start.x, l.start.y), (l.end.x, l.end.y)],
+                _ => Vec::new(),
+            };
+            if !pts.is_empty() {
+                let mut min_h = f64::INFINITY;
+                let mut max_h = f64::NEG_INFINITY;
+                for &(x, y) in &pts {
+                    let h = wall.height_at_xy(x, y);
+                    min_h = min_h.min(h);
+                    max_h = max_h.max(h);
+                }
+                props.insert(
+                    1,
+                    crate::entities::common::ro_prop(
+                        t!("Height range").as_ref(),
+                        "wall_height_range",
+                        format!("{:.2} m – {:.2} m", min_h, max_h),
+                    ),
+                );
+            }
+        }
 
         let hatch_enabled = wall.hatch_override.is_some();
         props.push(crate::scene::model::object::Property {
@@ -268,7 +292,7 @@ pub fn wall_prop_section(
         ));
 
         for (i, layer) in wall.layers.iter().enumerate() {
-            let thickness_str = crate::entities::common::format_length(layer.thickness);
+            let thickness_str = format!("{:.3} m", layer.thickness);
             let layer_info = format!("{} — {} ({})", layer.material, thickness_str, layer.function);
             props.push(crate::entities::common::ro_prop(
                 t!("Layer").as_ref(),

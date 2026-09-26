@@ -656,11 +656,20 @@ impl OpenCADStudio {
                             (p.id, format!("{:.3}", rel))
                         })
                         .collect();
+                    let mut facet_z_map = std::collections::HashMap::new();
+                    for p in &s.control_planes {
+                        for (f_idx, _) in p.facets.iter().enumerate() {
+                            let rel = s.facet_z_relative_to_floor(p.id, f_idx).unwrap_or(0.0);
+                            facet_z_map.insert((p.id, f_idx), format!("{:.3}", rel));
+                        }
+                    }
+                    self.aec.aec_storey_settings_facet_z = facet_z_map;
                 }
                 self.active_modal = Some(crate::app::ModalKind::Aec(AecModalKind::StoreySettings));
                 Task::none()
             }
             AecMessage::AecStoreySettingsClose => {
+                self.aec_reset_control_plane_highlights();
                 self.aec.aec_storey_settings_target = None;
                 self.active_modal = Some(crate::app::ModalKind::Aec(AecModalKind::ProjectExplorer));
                 Task::none()
@@ -714,6 +723,14 @@ impl OpenCADStudio {
                             (p.id, format!("{:.3}", rel))
                         })
                         .collect();
+                    let mut facet_z_map = std::collections::HashMap::new();
+                    for p in &s.control_planes {
+                        for (f_idx, _) in p.facets.iter().enumerate() {
+                            let rel = s.facet_z_relative_to_floor(p.id, f_idx).unwrap_or(0.0);
+                            facet_z_map.insert((p.id, f_idx), format!("{:.3}", rel));
+                        }
+                    }
+                    self.aec.aec_storey_settings_facet_z = facet_z_map;
                 }
                 self.aec_project_explorer_persist_if_pathed();
                 Task::none()
@@ -874,6 +891,113 @@ impl OpenCADStudio {
                     });
                     self.aec_project_explorer_persist_if_pathed();
                 }
+                Task::none()
+            }
+            AecMessage::AecStoreySettingsPickPolygons(bid, sid, pid) => {
+                self.commit_storey_settings_buffers(bid, sid);
+                self.aec_project_explorer_persist_if_pathed();
+                self.active_modal = None;
+                let cmd = crate::modules::aec::project::plane_assign::PlaneAssignCommand::with_target(bid, sid, pid);
+                self.command_line.push_info(&cmd.prompt());
+                let tab = self.active_tab;
+                self.tabs[tab].active_cmd = Some(Box::new(cmd));
+                Task::none()
+            }
+            AecMessage::AecStoreySettingsShowPlaneInDrawing(bid, sid, pid) => {
+                self.commit_storey_settings_buffers(bid, sid);
+                self.aec_project_explorer_persist_if_pathed();
+                let tab = self.active_tab;
+                let mut plane_name = String::new();
+                if let Some(storey) = self.with_storey(bid, sid, |s| s.clone()) {
+                    if let Some(p) = storey.plane(pid) {
+                        plane_name = p.name.clone();
+                    }
+                    let touched = crate::modules::aec::project::preview::highlight_control_plane(
+                        &mut self.tabs[tab].scene,
+                        &storey,
+                        pid,
+                    );
+                    let changes: Vec<_> = touched
+                        .into_iter()
+                        .map(|h| (h, crate::scene::ChangeKind::Modified))
+                        .collect();
+                    if !changes.is_empty() {
+                        self.tabs[tab].scene.bump_entities(&changes);
+                    }
+                }
+                self.command_line.push_info(&crate::tr!(
+                    "aec",
+                    "plane-highlighted-in-drawing",
+                    name = plane_name.as_str()
+                ));
+                Task::none()
+            }
+            AecMessage::AecStoreySettingsFacetName(bid, sid, pid, f_idx, name) => {
+                self.with_storey_mut(bid, sid, |s| {
+                    if let Some(p) = s.plane_mut(pid) {
+                        if let Some(f) = p.facets.get_mut(f_idx) {
+                            f.name = name;
+                        }
+                    }
+                });
+                self.aec_project_explorer_persist_if_pathed();
+                Task::none()
+            }
+            AecMessage::AecStoreySettingsFacetZ(bid, sid, pid, f_idx, text) => {
+                self.aec.aec_storey_settings_facet_z.insert((pid, f_idx), text.clone());
+                if let Ok(v) = text.trim().parse::<f64>() {
+                    self.with_storey_mut(bid, sid, |s| {
+                        s.set_facet_z_relative_to_floor(pid, f_idx, v);
+                    });
+                    self.aec_project_explorer_persist_if_pathed();
+                }
+                Task::none()
+            }
+            AecMessage::AecStoreySettingsDeleteFacet(bid, sid, pid, f_idx) => {
+                let tab = self.active_tab;
+                let mut removed_handle = None;
+                self.with_storey_mut(bid, sid, |s| {
+                    if let Some(f) = s.delete_facet(pid, f_idx) {
+                        removed_handle = f.preview_handle;
+                    }
+                });
+                if let Some(h) = removed_handle {
+                    self.tabs[tab].scene.erase_entities(&[acadrust::Handle::new(h)]);
+                }
+                self.aec.aec_storey_settings_facet_z.remove(&(pid, f_idx));
+                self.aec_project_explorer_persist_if_pathed();
+                Task::none()
+            }
+            AecMessage::AecStoreySettingsShowFacetInDrawing(bid, sid, pid, f_idx) => {
+                self.commit_storey_settings_buffers(bid, sid);
+                self.aec_project_explorer_persist_if_pathed();
+                let tab = self.active_tab;
+                let mut facet_name = String::new();
+                if let Some(storey) = self.with_storey(bid, sid, |s| s.clone()) {
+                    if let Some(p) = storey.plane(pid) {
+                        if let Some(f) = p.facets.get(f_idx) {
+                            facet_name = f.name.clone();
+                        }
+                    }
+                    let touched = crate::modules::aec::project::preview::highlight_control_plane_facet(
+                        &mut self.tabs[tab].scene,
+                        &storey,
+                        pid,
+                        f_idx,
+                    );
+                    let changes: Vec<_> = touched
+                        .into_iter()
+                        .map(|h| (h, crate::scene::ChangeKind::Modified))
+                        .collect();
+                    if !changes.is_empty() {
+                        self.tabs[tab].scene.bump_entities(&changes);
+                    }
+                }
+                self.command_line.push_info(&crate::tr!(
+                    "aec",
+                    "plane-highlighted-in-drawing",
+                    name = facet_name.as_str()
+                ));
                 Task::none()
             }
             AecMessage::AecPlanManagerOpen => {

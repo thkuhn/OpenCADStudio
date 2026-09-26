@@ -10378,3 +10378,322 @@ fn test_wall_with_multiple_openings_regeneration_performance() {
 
     println!("Wall with 10 openings regenerated in {:?}", elapsed);
 }
+
+#[test]
+fn test_sloped_wall_solid_3d_generation() {
+    let mut wall = Wall::new("Standard", 2.50, 0);
+    wall.base_origin = [0.0, 0.0, 0.0];
+    wall.base_normal = [0.0, 0.0, 1.0];
+
+    // Slope along X with pitch 15 degrees:
+    let pitch_deg = 15.0;
+    let roof_plane = crate::modules::aec::engine::control_plane::ControlPlane::from_slope(
+        "Roof",
+        [0.0, 0.0, 2.50],
+        pitch_deg,
+        0.0,
+    );
+    wall.top_origin = roof_plane.origin;
+    wall.top_normal = roof_plane.unit_normal();
+    assert!(wall.is_sloped());
+
+    let footprint = vec![
+        (0.0, -0.15),
+        (10.0, -0.15),
+        (10.0, 0.15),
+        (0.0, 0.15),
+    ];
+    let bulges = vec![0.0; 4];
+
+    let mut layer = wl("Concrete", 0.30, "Structural");
+    layer.bottom_offset = 0.0;
+    layer.top_offset = 0.0;
+
+    let body = crate::modules::aec::engine::wall_regen::build_sloped_layer_solid_3d(
+        &footprint,
+        &bulges,
+        &wall,
+        Some(&layer),
+        0.0,
+        2.50,
+    )
+    .expect("sloped solid created");
+
+    assert!(body.validate().is_empty(), "Sloped wall solid must be valid closed B-Rep");
+
+    let z_start = wall.top_z_at_xy(0.0, 0.0);
+    let z_end = wall.top_z_at_xy(10.0, 0.0);
+    assert!((z_start - 2.50).abs() < 1e-6);
+    let expected_z_end = 2.50 + 10.0 * 15.0_f64.to_radians().tan();
+    assert!((z_end - expected_z_end).abs() < 1e-6);
+
+    // Multilayer offsets under sloped roof
+    let mut ins_layer = wl("Insulation", 0.10, "Thermal");
+    ins_layer.bottom_offset = -0.10;
+    ins_layer.top_offset = 0.05;
+
+    let ins_body = crate::modules::aec::engine::wall_regen::build_sloped_layer_solid_3d(
+        &footprint,
+        &bulges,
+        &wall,
+        Some(&ins_layer),
+        0.0,
+        2.50,
+    )
+    .expect("sloped insulation solid created");
+
+    assert!(ins_body.validate().is_empty(), "Insulation layer solid must be valid closed B-Rep");
+}
+
+#[test]
+fn test_sloped_wall_scene_regeneration() {
+    let mut scene = Scene::new();
+    let mut pl = LwPolyline::new();
+    pl.add_vertex(LwVertex::new(Vector2::new(0.0, 0.0)));
+    pl.add_vertex(LwVertex::new(Vector2::new(8.0, 0.0)));
+
+    let mut wall = Wall::new("Standard", 2.50, 0);
+    let pitch_deg = 20.0;
+    let roof_plane = crate::modules::aec::engine::control_plane::ControlPlane::from_slope(
+        "Roof",
+        [0.0, 0.0, 2.50],
+        pitch_deg,
+        0.0,
+    );
+    wall.top_origin = roof_plane.origin;
+    wall.top_normal = roof_plane.unit_normal();
+    wall.layers = vec![
+        wl("Concrete", 0.24, "Structural"),
+        wl("Insulation", 0.12, "Thermal"),
+    ];
+
+    let mut ent = EntityType::LwPolyline(pl);
+    let mut rec = ExtendedDataRecord::new(AEC_APPID);
+    rec.values = crate::modules::aec::engine::xdata::wall_record_for_wall(&wall);
+    ent.common_mut().extended_data.add_record(rec);
+    let wall_h = scene.add_entity(ent);
+
+    let library = crate::modules::aec::engine::library::seed_default_library();
+    let touched = regenerate_wall_representation(&mut scene, wall_h, Some(&library)).expect("regen sloped wall");
+    assert!(!touched.is_empty());
+
+    let mut solids_found = 0;
+    for h in touched {
+        if let Some(EntityType::Solid3D(_)) = scene.document.get_entity(h) {
+            solids_found += 1;
+            if let Some(body) = scene.solid_models.get(&h) {
+                assert!(body.validate().is_empty(), "Sloped wall solid model must be valid 2-manifold B-Rep");
+            }
+        }
+    }
+    assert_eq!(solids_found, 2, "Both layers should produce valid 3D solid bodies");
+}
+
+#[test]
+fn test_sloped_wall_with_opening_regeneration() {
+    let mut scene = Scene::new();
+    let mut pl = LwPolyline::new();
+    pl.add_vertex(LwVertex::new(Vector2::new(0.0, 0.0)));
+    pl.add_vertex(LwVertex::new(Vector2::new(10.0, 0.0)));
+
+    let mut wall = Wall::new("Standard", 2.50, 0);
+    let pitch_deg = 15.0;
+    let roof_plane = crate::modules::aec::engine::control_plane::ControlPlane::from_slope(
+        "Roof",
+        [0.0, 0.0, 2.50],
+        pitch_deg,
+        0.0,
+    );
+    wall.top_origin = roof_plane.origin;
+    wall.top_normal = roof_plane.unit_normal();
+    wall.layers = vec![
+        wl("Concrete", 0.30, "Structural"),
+    ];
+
+    let mut ent = EntityType::LwPolyline(pl);
+    let mut rec = ExtendedDataRecord::new(AEC_APPID);
+    rec.values = crate::modules::aec::engine::xdata::wall_record_for_wall(&wall);
+    ent.common_mut().extended_data.add_record(rec);
+    let wall_h = scene.add_entity(ent);
+
+    let library = crate::modules::aec::engine::library::seed_default_library();
+
+    // Place a window at x = 5.0 (width 1.20, height 1.20, sill 0.90)
+    let (win_h, _) = place_wall_opening(
+        &mut scene,
+        wall_h,
+        DVec3::new(5.0, 0.0, 0.0),
+        OpeningKind::Window,
+        Some(&library),
+        None,
+        None,
+    )
+    .expect("place window in sloped wall");
+    assert!(win_h.is_valid());
+
+    let touched = regenerate_wall_representation(&mut scene, wall_h, Some(&library))
+        .expect("regen sloped wall with window");
+    assert!(!touched.is_empty());
+
+    let mut solid_bodies = Vec::new();
+    for h in touched {
+        if let Some(EntityType::Solid3D(_)) = scene.document.get_entity(h) {
+            if let Some(body) = scene.solid_models.get(&h) {
+                assert!(body.validate().is_empty(), "Rest-wall body must be valid closed B-Rep");
+                solid_bodies.push(body);
+            }
+        }
+    }
+    assert!(!solid_bodies.is_empty(), "Must have generated 3D rest-wall solids around opening");
+}
+
+#[test]
+fn build_and_export_sloped_walls_dxf_example() {
+    let mut scene = Scene::new();
+    let library = crate::modules::aec::engine::library::seed_default_library();
+
+    // 1. Mono-pitch / Pultdach wall (10m along X, slope 15°)
+    let mut pl1 = LwPolyline::new();
+    pl1.add_vertex(LwVertex::new(Vector2::new(0.0, 0.0)));
+    pl1.add_vertex(LwVertex::new(Vector2::new(10.0, 0.0)));
+
+    let mut pult_wall = Wall::new("Standard", 2.50, 0);
+    let pult_plane = crate::modules::aec::engine::control_plane::ControlPlane::from_slope(
+        "Pultdach_OK",
+        [0.0, 0.0, 2.50],
+        15.0,
+        0.0,
+    );
+    pult_wall.top_origin = pult_plane.origin;
+    pult_wall.top_normal = pult_plane.unit_normal();
+    pult_wall.layers = vec![
+        wl("Concrete", 0.24, "Structural"),
+        wl("Insulation", 0.12, "Thermal"),
+    ];
+
+    let mut ent1 = EntityType::LwPolyline(pl1);
+    let mut rec1 = ExtendedDataRecord::new(AEC_APPID);
+    rec1.values = crate::modules::aec::engine::xdata::wall_record_for_wall(&pult_wall);
+    ent1.common_mut().extended_data.add_record(rec1);
+    let wall1_h = scene.add_entity(ent1);
+
+    // Place a window at x = 3.5 and a door at x = 7.5
+    let _ = place_wall_opening(
+        &mut scene,
+        wall1_h,
+        DVec3::new(3.5, 0.0, 0.0),
+        OpeningKind::Window,
+        Some(&library),
+        None,
+        None,
+    );
+    let _ = place_wall_opening(
+        &mut scene,
+        wall1_h,
+        DVec3::new(7.5, 0.0, 0.0),
+        OpeningKind::Door,
+        Some(&library),
+        None,
+        None,
+    );
+
+    // 2. Gable wall (Satteldach): Left wing (0, 5) -> (5, 5), slope +25°
+    let mut pl2 = LwPolyline::new();
+    pl2.add_vertex(LwVertex::new(Vector2::new(0.0, 5.0)));
+    pl2.add_vertex(LwVertex::new(Vector2::new(5.0, 5.0)));
+
+    let mut gable_left = Wall::new("Standard", 2.50, 0);
+    let gable_left_plane = crate::modules::aec::engine::control_plane::ControlPlane::from_slope(
+        "Dach_Links",
+        [0.0, 5.0, 2.50],
+        25.0,
+        0.0,
+    );
+    gable_left.top_origin = gable_left_plane.origin;
+    gable_left.top_normal = gable_left_plane.unit_normal();
+    gable_left.layers = vec![
+        wl("Concrete", 0.30, "Structural"),
+    ];
+
+    let mut ent2 = EntityType::LwPolyline(pl2);
+    let mut rec2 = ExtendedDataRecord::new(AEC_APPID);
+    rec2.values = crate::modules::aec::engine::xdata::wall_record_for_wall(&gable_left);
+    ent2.common_mut().extended_data.add_record(rec2);
+    let wall2_h = scene.add_entity(ent2);
+
+    // Right wing (5, 5) -> (10, 5), slope -25°
+    let mut pl3 = LwPolyline::new();
+    pl3.add_vertex(LwVertex::new(Vector2::new(5.0, 5.0)));
+    pl3.add_vertex(LwVertex::new(Vector2::new(10.0, 5.0)));
+
+    let mut gable_right = Wall::new("Standard", 2.50, 0);
+    let ridge_z = 2.50 + 5.0 * 25.0_f64.to_radians().tan();
+    let gable_right_plane = crate::modules::aec::engine::control_plane::ControlPlane::from_slope(
+        "Dach_Rechts",
+        [5.0, 5.0, ridge_z],
+        -25.0,
+        0.0,
+    );
+    gable_right.top_origin = gable_right_plane.origin;
+    gable_right.top_normal = gable_right_plane.unit_normal();
+    gable_right.layers = vec![
+        wl("Concrete", 0.30, "Structural"),
+    ];
+
+    let mut ent3 = EntityType::LwPolyline(pl3);
+    let mut rec3 = ExtendedDataRecord::new(AEC_APPID);
+    rec3.values = crate::modules::aec::engine::xdata::wall_record_for_wall(&gable_right);
+    ent3.common_mut().extended_data.add_record(rec3);
+    let wall3_h = scene.add_entity(ent3);
+
+    // Window in gable peak
+    let _ = place_wall_opening(
+        &mut scene,
+        wall2_h,
+        DVec3::new(2.5, 5.0, 0.0),
+        OpeningKind::Window,
+        Some(&library),
+        None,
+        None,
+    );
+
+    // Regenerate all walls
+    for w in [wall1_h, wall2_h, wall3_h] {
+        let touched = regenerate_wall_representation(&mut scene, w, Some(&library)).expect("regen wall");
+        for h in touched {
+            if let Some(EntityType::Solid3D(_)) = scene.document.get_entity(h) {
+                if let Some(body) = scene.solid_models.get(&h) {
+                    assert!(body.validate().is_empty(), "Solid B-Rep must be watertight and valid");
+                }
+            }
+        }
+    }
+
+    // Add control plane preview Face3D entities on AEC_CONTROLPLANES
+    let mut storey = StoreyRef::new("Dachgeschoss", 0.0, "dg.dxf");
+    storey.control_planes.push(pult_plane);
+    storey.control_planes.push(gable_left_plane);
+    storey.control_planes.push(gable_right_plane);
+    crate::modules::aec::project::preview::regenerate_control_plane_previews(&mut scene, &mut storey);
+
+    let out = std::path::Path::new("docs/examples/aec-sloped-walls.dxf");
+    if let Some(parent) = out.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    acadrust::DxfWriter::new(&scene.document)
+        .write_to_file(out)
+        .expect("write sloped walls example drawing");
+    assert!(out.exists(), "Example file docs/examples/aec-sloped-walls.dxf must exist");
+
+    // Also verify IFC Export containing these sloped walls
+    let mut ifc_scene = crate::modules::aec::engine::Scene::default();
+    ifc_scene.storeys.push((0, crate::modules::aec::engine::Storey { name: storey.name.clone(), elevation: storey.elevation, height: 2.80 }));
+    ifc_scene.walls.push(pult_wall);
+    ifc_scene.walls.push(gable_left);
+    ifc_scene.walls.push(gable_right);
+
+    let ifc_data = crate::modules::aec::engine::ifc::write_spf(&ifc_scene);
+    assert!(ifc_data.contains("IFCWALL"), "IFC output must contain IFCWALL entities");
+    assert!(ifc_data.contains("IFCBUILDINGSTOREY"), "IFC output must contain storey");
+    assert!(ifc_data.contains("ISO-10303-21"), "Valid SPF header");
+}

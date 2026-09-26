@@ -1,4 +1,7 @@
 pub mod control_planes;
+pub mod plane_3point;
+pub mod plane_facet;
+pub mod plane_assign;
 mod display;
 pub mod drawing_sync;
 pub mod hatch_origin;

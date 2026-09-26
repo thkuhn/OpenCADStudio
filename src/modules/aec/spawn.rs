@@ -4,6 +4,7 @@ use std::path::Path;
 
 use acadrust::Handle;
 use iced::Task;
+use uuid::Uuid;
 
 use crate::app::{Message, OpenCADStudio};
 use crate::command::CadCommand;
@@ -37,6 +38,9 @@ pub fn spawn_command(name: &str) -> Option<Box<dyn CadCommand>> {
         "AEC_WINDOW" => Some(Box::new(WallOpeningCommand::new_window())),
         "AEC_DOOR" => Some(Box::new(WallOpeningCommand::new_door())),
         "AEC_OPENING" => Some(Box::new(WallOpeningCommand::new_opening())),
+        "AEC_PLANE_3POINT" => Some(Box::new(crate::modules::aec::project::plane_3point::Plane3PointCommand::new())),
+        "AEC_PLANE_FACET" => Some(Box::new(crate::modules::aec::project::plane_facet::PlaneFacetCommand::new())),
+        "AEC_PLANE_ASSIGN" => Some(Box::new(crate::modules::aec::project::plane_assign::PlaneAssignCommand::new())),
         _ => None,
     }
 }
@@ -68,6 +72,28 @@ pub(crate) fn try_dispatch(
         "AEC_WINDOW" => Some(install_spawned(app, tab, cmd, "AEC_WINDOW")),
         "AEC_DOOR" => Some(install_spawned(app, tab, cmd, "AEC_DOOR")),
         "AEC_OPENING" => Some(install_spawned(app, tab, cmd, "AEC_OPENING")),
+        "AEC_PLANE_3POINT" => Some(install_spawned(app, tab, cmd, "AEC_PLANE_3POINT")),
+        "AEC_PLANE_FACET" => Some(install_spawned(app, tab, cmd, "AEC_PLANE_FACET")),
+        "AEC_PLANE_ASSIGN" => Some(install_spawned(app, tab, cmd, "AEC_PLANE_ASSIGN")),
+        "AEC_PLANE_SYNC" => {
+            let path = app.tabs[tab].drawing_path().map(Path::to_path_buf);
+            let storey_ids = app
+                .aec
+                .aec_project_explorer_file
+                .as_ref()
+                .and_then(|p| resolve_control_plane_storey_ids(p, path.as_deref()));
+            if let Some((bid, sid)) = storey_ids {
+                app.sync_storey_from_active_drawing(bid, sid);
+                app.command_line.push_info(
+                    crate::t!("AEC: Kontrollebenen aus der Zeichnung synchronisiert.").as_ref(),
+                );
+            } else {
+                app.command_line.push_info(
+                    crate::t!("AEC: Keine Geschossbindung für die aktuelle Zeichnung gefunden.").as_ref(),
+                );
+            }
+            Some(app.finish_dispatch(cmd))
+        }
         "AEC_WALL_REFRESH" => {
             let style_library = crate::modules::aec::engine::project::resolve_style_library(
                 app.aec.aec_project_explorer_file.as_ref(),
@@ -122,6 +148,114 @@ pub(crate) fn try_dispatch(
         cmd if cmd.starts_with("AEC_WALLREVERSE_DO ") => {
             let args = cmd["AEC_WALLREVERSE_DO ".len()..].to_string();
             dispatch_wallreverse_do(app, tab, cmd, &args)
+        }
+        cmd if cmd.starts_with("AEC_PLANE_3POINT_DO ") => {
+            let args = cmd["AEC_PLANE_3POINT_DO ".len()..].to_string();
+            let path = app.tabs[tab].drawing_path().map(Path::to_path_buf);
+            let storey_ids = app
+                .aec
+                .aec_project_explorer_file
+                .as_ref()
+                .and_then(|p| resolve_control_plane_storey_ids(p, path.as_deref()));
+            let mut storey_opt = None;
+            if let Some((bid, sid)) = storey_ids {
+                if let Some(project) = app.aec.aec_project_explorer_file.as_mut() {
+                    storey_opt = project
+                        .buildings
+                        .iter_mut()
+                        .find(|b| b.id == bid)
+                        .and_then(|b| b.storeys.iter_mut().find(|s| s.id == sid));
+                }
+            }
+            crate::modules::aec::project::plane_3point::aec_plane_3point_do(
+                &mut app.tabs[tab].scene,
+                &mut app.command_line,
+                storey_opt,
+                &args,
+            );
+            app.aec_project_explorer_persist_if_pathed();
+            app.tabs[tab].dirty = true;
+            Some(app.finish_dispatch(cmd))
+        }
+        cmd if cmd.starts_with("AEC_PLANE_FACET_DO ") => {
+            let args = cmd["AEC_PLANE_FACET_DO ".len()..].to_string();
+            let path = app.tabs[tab].drawing_path().map(Path::to_path_buf);
+            let storey_ids = app
+                .aec
+                .aec_project_explorer_file
+                .as_ref()
+                .and_then(|p| resolve_control_plane_storey_ids(p, path.as_deref()));
+            let mut storey_opt = None;
+            if let Some((bid, sid)) = storey_ids {
+                if let Some(project) = app.aec.aec_project_explorer_file.as_mut() {
+                    storey_opt = project
+                        .buildings
+                        .iter_mut()
+                        .find(|b| b.id == bid)
+                        .and_then(|b| b.storeys.iter_mut().find(|s| s.id == sid));
+                }
+            }
+            crate::modules::aec::project::plane_facet::aec_plane_facet_do(
+                &mut app.tabs[tab].scene,
+                &mut app.command_line,
+                storey_opt,
+                &args,
+            );
+            app.aec_project_explorer_persist_if_pathed();
+            app.tabs[tab].dirty = true;
+            Some(app.finish_dispatch(cmd))
+        }
+        cmd if cmd.starts_with("AEC_PLANE_ASSIGN_DO ") => {
+            let rest = cmd["AEC_PLANE_ASSIGN_DO ".len()..].to_string();
+            let mut parts = rest.split_whitespace();
+            let target_str = parts.next().unwrap_or("_|_|_");
+            let mut target_plane_id = None;
+            let mut target_bid_sid = None;
+            if target_str != "_|_|_" {
+                let segs: Vec<&str> = target_str.split('|').collect();
+                if segs.len() == 3 {
+                    if let (Ok(bid), Ok(sid), Ok(pid)) = (
+                        segs[0].parse::<Uuid>(),
+                        segs[1].parse::<Uuid>(),
+                        segs[2].parse::<Uuid>(),
+                    ) {
+                        target_bid_sid = Some((bid, sid));
+                        target_plane_id = Some(pid);
+                    }
+                }
+            }
+            let handles: Vec<Handle> = parts
+                .filter_map(|s| s.parse::<u64>().ok())
+                .map(Handle::new)
+                .collect();
+
+            let path = app.tabs[tab].drawing_path().map(Path::to_path_buf);
+            let storey_ids = target_bid_sid.or_else(|| {
+                app.aec
+                    .aec_project_explorer_file
+                    .as_ref()
+                    .and_then(|p| resolve_control_plane_storey_ids(p, path.as_deref()))
+            });
+            let mut storey_opt = None;
+            if let Some((bid, sid)) = storey_ids {
+                if let Some(project) = app.aec.aec_project_explorer_file.as_mut() {
+                    storey_opt = project
+                        .buildings
+                        .iter_mut()
+                        .find(|b| b.id == bid)
+                        .and_then(|b| b.storeys.iter_mut().find(|s| s.id == sid));
+                }
+            }
+            crate::modules::aec::project::plane_assign::aec_plane_assign_do(
+                &mut app.tabs[tab].scene,
+                &mut app.command_line,
+                storey_opt,
+                target_plane_id,
+                &handles,
+            );
+            app.aec_project_explorer_persist_if_pathed();
+            app.tabs[tab].dirty = true;
+            Some(app.finish_dispatch(cmd))
         }
         _ => None,
     }

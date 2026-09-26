@@ -152,6 +152,33 @@ pub fn build_wall_display_set(
     openings: &[Opening],
     layer_extrusion: &[(f64, f64)],
 ) -> WallDisplaySet {
+    build_wall_display_set_sloped(
+        axis,
+        axis_bulges,
+        layers,
+        centerline_offset,
+        openings,
+        layer_extrusion,
+        |li, _| {
+            let &(h, b) = layer_extrusion.get(li).unwrap_or(&(0.0, 0.0));
+            (b, b + h)
+        },
+    )
+}
+
+/// 2D representation plus matching 3D solid paths with custom per-point Z-bounds.
+pub fn build_wall_display_set_sloped<F>(
+    axis: &[(f64, f64)],
+    axis_bulges: &[f64],
+    layers: &[(f64, f64)],
+    centerline_offset: f64,
+    openings: &[Opening],
+    layer_extrusion: &[(f64, f64)],
+    z_bounds_at_s: F,
+) -> WallDisplaySet
+where
+    F: FnMut(usize, f64) -> (f64, f64),
+{
     let rep2d = if openings.is_empty() {
         build_wall_representation_with_bulges(axis, axis_bulges, layers, centerline_offset)
     } else {
@@ -164,7 +191,8 @@ pub fn build_wall_display_set(
         )
     };
     let solids = solid_paths_from_representation(&rep2d, layer_extrusion);
-    let zone_solids = elevation_cut::zone_solid_paths(axis, layers, layer_extrusion, openings);
+    let zone_solids =
+        elevation_cut::zone_solid_paths_with_evaluator(axis, layers, layer_extrusion, openings, z_bounds_at_s);
     WallDisplaySet {
         rep2d,
         solids,

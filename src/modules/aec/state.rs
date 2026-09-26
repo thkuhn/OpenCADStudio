@@ -488,6 +488,7 @@ pub struct AecState {
     pub aec_storey_settings_new_plane_name: String,
     pub aec_storey_settings_new_plane_z: String,
     pub aec_storey_settings_plane_z: std::collections::HashMap<uuid::Uuid, String>,
+    pub aec_storey_settings_facet_z: std::collections::HashMap<(uuid::Uuid, usize), String>,
     pub aec_storey_settings_elevation: String,
     pub aec_storey_settings_height: String,
 }
@@ -668,6 +669,7 @@ impl Default for AecState {
             aec_storey_settings_new_plane_name: String::new(),
             aec_storey_settings_new_plane_z: String::new(),
             aec_storey_settings_plane_z: std::collections::HashMap::new(),
+            aec_storey_settings_facet_z: std::collections::HashMap::new(),
             aec_storey_settings_elevation: String::new(),
             aec_storey_settings_height: String::new(),
 

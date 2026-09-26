@@ -978,6 +978,7 @@ impl OpenCADStudio {
                         .filter_map(|h| self.tabs[i].scene.document.get_entity_arc(*h))
                         .collect();
                     self.aec_erase_openings_respecting_active_display_config(i, &handles);
+                    self.aec_erase_control_planes_or_facets(i, &handles);
                     self.tabs[i].scene.erase_entities(&handles);
                     self.tabs[i].dirty = true;
                     self.refresh_properties();

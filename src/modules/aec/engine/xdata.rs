@@ -628,6 +628,23 @@ pub(crate) fn encode_wall_planes(values: &mut Vec<XDataValue>, wall: Option<&Wal
     for c in tn {
         values.push(XDataValue::Distance(c));
     }
+    let (base_facets_json, top_facets_json) = if let Some(w) = wall {
+        let b = if w.base_facets.is_empty() {
+            String::new()
+        } else {
+            serde_json::to_string(&w.base_facets).unwrap_or_default()
+        };
+        let t = if w.top_facets.is_empty() {
+            String::new()
+        } else {
+            serde_json::to_string(&w.top_facets).unwrap_or_default()
+        };
+        (b, t)
+    } else {
+        (String::new(), String::new())
+    };
+    values.push(XDataValue::String(base_facets_json));
+    values.push(XDataValue::String(top_facets_json));
 }
 
 pub(crate) fn encode_plane_ref(id: Option<uuid::Uuid>, name: Option<&str>) -> String {
@@ -944,8 +961,10 @@ pub fn wall_from_entity(entity: &EntityType) -> Option<Wall> {
     let mut top_offset = 0.0;
     let mut base_origin = [0.0, 0.0, 0.0];
     let mut base_normal = [0.0, 0.0, 1.0];
-    let mut top_origin = [0.0, 0.0, 0.0];
+    let mut top_origin = [0.0, 0.0, height];
     let mut top_normal = [0.0, 0.0, 1.0];
+    let mut base_facets = Vec::new();
+    let mut top_facets = Vec::new();
     if let Some(pos) = v
         .iter()
         .rposition(|x| matches!(x, XDataValue::String(s) if s == "planes"))
@@ -986,7 +1005,26 @@ pub fn wall_from_entity(entity: &EntityType) -> Option<Wall> {
             read3(pos + 8, &mut base_normal);
             read3(pos + 11, &mut top_origin);
             read3(pos + 14, &mut top_normal);
+
+            if let Some(XDataValue::String(s)) = v.get(pos + 17) {
+                if !s.is_empty() {
+                    if let Ok(facets) = serde_json::from_str(s) {
+                        base_facets = facets;
+                    }
+                }
+            }
+            if let Some(XDataValue::String(s)) = v.get(pos + 18) {
+                if !s.is_empty() {
+                    if let Ok(facets) = serde_json::from_str(s) {
+                        top_facets = facets;
+                    }
+                }
+            }
         }
+    }
+
+    if top_plane_id.is_none() && (top_origin[2] - base_origin[2]).abs() <= 1e-6 {
+        top_origin = [base_origin[0], base_origin[1], base_origin[2] + height];
     }
 
     Some(Wall {
@@ -1008,6 +1046,8 @@ pub fn wall_from_entity(entity: &EntityType) -> Option<Wall> {
         base_normal,
         top_origin,
         top_normal,
+        base_facets,
+        top_facets,
     })
 }
 

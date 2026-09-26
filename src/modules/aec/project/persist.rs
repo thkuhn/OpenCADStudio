@@ -67,6 +67,21 @@ impl OpenCADStudio {
         }
     }
 
+    pub(crate) fn with_storey<R>(
+        &self,
+        bid: uuid::Uuid,
+        sid: uuid::Uuid,
+        f: impl FnOnce(&crate::modules::aec::engine::project::StoreyRef) -> R,
+    ) -> Option<R> {
+        let project = self.aec.aec_project_explorer_file.as_ref()?;
+        let building = project
+            .building_index(bid)
+            .and_then(|bi| project.buildings.get(bi))?;
+        let si = building.storey_index(sid)?;
+        let storey = building.storeys.get(si)?;
+        Some(f(storey))
+    }
+
     pub(crate) fn with_storey_mut<R>(
         &mut self,
         bid: uuid::Uuid,

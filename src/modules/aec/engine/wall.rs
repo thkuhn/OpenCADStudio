@@ -45,6 +45,8 @@ pub struct Wall {
     pub base_normal: [f64; 3],
     pub top_origin: [f64; 3],
     pub top_normal: [f64; 3],
+    pub base_facets: Vec<crate::modules::aec::engine::control_plane::ControlPlaneFacet>,
+    pub top_facets: Vec<crate::modules::aec::engine::control_plane::ControlPlaneFacet>,
 }
 
 /// One material layer in a wall's cross-section snapshot.
@@ -129,6 +131,8 @@ impl Wall {
             base_normal: [0.0, 0.0, 1.0],
             top_origin: [0.0, 0.0, 0.0],
             top_normal: [0.0, 0.0, 1.0],
+            base_facets: Vec::new(),
+            top_facets: Vec::new(),
         }
     }
 
@@ -177,6 +181,7 @@ impl Wall {
         if let Some(base) = base.as_ref() {
             self.base_normal = base.unit_normal();
             self.base_plane_name = Some(base.name.clone());
+            self.base_facets = base.facets.clone();
             let offset_base = base.offset(self.base_offset);
             if let Some(pt) = intersect_vertical_at_xy(x, y, &offset_base) {
                 self.base_origin = pt;
@@ -189,6 +194,7 @@ impl Wall {
         if let Some(top) = top.as_ref() {
             self.top_normal = top.unit_normal();
             self.top_plane_name = Some(top.name.clone());
+            self.top_facets = top.facets.clone();
             let offset_top = top.offset(self.top_offset);
             if let Some(pt) = intersect_vertical_at_xy(x, y, &offset_top) {
                 self.top_origin = pt;
@@ -217,10 +223,92 @@ impl Wall {
                     self.base_origin[1],
                     self.base_origin[2] + self.height,
                 ];
-                self.top_normal = [0.0, 0.0, 1.0];
+                self.top_normal = self.base_normal;
             }
             (None, None) => {}
         }
+    }
+
+    /// Evaluates base Z-height at world (x, y).
+    pub fn base_z_at_xy(&self, x: f64, y: f64) -> f64 {
+        if !self.base_facets.is_empty() {
+            let dummy = crate::modules::aec::engine::control_plane::ControlPlane {
+                id: uuid::Uuid::nil(),
+                name: String::new(),
+                origin: self.base_origin,
+                normal: self.base_normal,
+                facets: self.base_facets.clone(),
+                face_handle: None,
+                preview_handle: None,
+                visible: true,
+            };
+            if let Some(z) = dummy.z_offset_at_xy(x, y, self.base_offset) {
+                return z;
+            } else {
+                return self.base_origin[2] + self.base_offset;
+            }
+        }
+        let n = self.base_normal;
+        if n[2].abs() >= 1e-6 {
+            let d = n[0] * (x - self.base_origin[0]) + n[1] * (y - self.base_origin[1]);
+            self.base_origin[2] - d / n[2]
+        } else {
+            self.base_origin[2]
+        }
+    }
+
+    /// Evaluates top Z-height at world (x, y).
+    pub fn top_z_at_xy(&self, x: f64, y: f64) -> f64 {
+        if !self.top_facets.is_empty() {
+            let dummy = crate::modules::aec::engine::control_plane::ControlPlane {
+                id: uuid::Uuid::nil(),
+                name: String::new(),
+                origin: self.top_origin,
+                normal: self.top_normal,
+                facets: self.top_facets.clone(),
+                face_handle: None,
+                preview_handle: None,
+                visible: true,
+            };
+            if let Some(z) = dummy.z_offset_at_xy(x, y, self.top_offset) {
+                return z;
+            } else {
+                return self.base_z_at_xy(x, y) + self.height + self.top_offset;
+            }
+        }
+        if self.top_plane_id.is_none() && (self.top_origin[2] - self.base_origin[2]).abs() <= 1e-6 {
+            return self.base_z_at_xy(x, y) + self.height;
+        }
+        let n = self.top_normal;
+        if n[2].abs() >= 1e-6 {
+            let d = n[0] * (x - self.top_origin[0]) + n[1] * (y - self.top_origin[1]);
+            self.top_origin[2] - d / n[2]
+        } else {
+            self.top_origin[2]
+        }
+    }
+
+    /// Evaluates top Z-height for a specific layer including its top_offset at world (x, y).
+    pub fn layer_top_z_at_xy(&self, layer: &WallLayer, x: f64, y: f64) -> f64 {
+        self.top_z_at_xy(x, y) + layer.top_offset
+    }
+
+    /// Evaluates base Z-height for a specific layer including its bottom_offset at world (x, y).
+    pub fn layer_base_z_at_xy(&self, layer: &WallLayer, x: f64, y: f64) -> f64 {
+        self.base_z_at_xy(x, y) + layer.bottom_offset
+    }
+
+    /// Evaluates wall height at world (x, y), ensuring non-negative result.
+    pub fn height_at_xy(&self, x: f64, y: f64) -> f64 {
+        (self.top_z_at_xy(x, y) - self.base_z_at_xy(x, y)).max(0.0)
+    }
+
+    /// Returns true if either the base or top plane is sloped or has polygonal facets.
+    pub fn is_sloped(&self) -> bool {
+        (self.base_normal[2].abs() - 1.0).abs() > 1e-5
+            || (self.top_normal[2].abs() - 1.0).abs() > 1e-5
+            || !self.base_facets.is_empty()
+            || !self.top_facets.is_empty()
     }
 
     /// Shift the wall base along its normal by Δ(base offset). Height is
@@ -259,6 +347,7 @@ impl Wall {
             name: String::new(),
             origin: self.base_origin,
             normal: self.base_normal,
+            facets: self.base_facets.clone(),
             face_handle: None,
             preview_handle: None,
             visible: true,
@@ -268,6 +357,7 @@ impl Wall {
             name: String::new(),
             origin: self.top_origin,
             normal: self.top_normal,
+            facets: self.top_facets.clone(),
             face_handle: None,
             preview_handle: None,
             visible: true,
@@ -431,5 +521,117 @@ mod tests {
         ];
         // span from -0.15 to 0.15
         assert!((wall.total_thickness() - 0.30).abs() < 1e-9);
+    }
+
+    #[test]
+    fn sloped_wall_height_and_layer_evaluation() {
+        let mut wall = Wall::new("s", 3.0, 0);
+        wall.base_origin = [0.0, 0.0, 0.0];
+        wall.base_normal = [0.0, 0.0, 1.0]; // flat base
+        // top plane slopes at 30 deg along X: normal = [-sin(30), 0, cos(30)] = [-0.5, 0, 0.8660254]
+        let p = crate::modules::aec::engine::control_plane::ControlPlane::from_slope(
+            "Roof",
+            [0.0, 0.0, 2.5],
+            30.0,
+            0.0,
+        );
+        wall.top_origin = p.origin;
+        wall.top_normal = p.unit_normal();
+
+        assert!(wall.is_sloped());
+        let z_base = wall.base_z_at_xy(10.0, 0.0);
+        assert!((z_base - 0.0).abs() < 1e-9);
+
+        let z_top_0 = wall.top_z_at_xy(0.0, 0.0);
+        let z_top_10 = wall.top_z_at_xy(10.0, 0.0);
+        assert!((z_top_0 - 2.5).abs() < 1e-9);
+        let expected_top_10 = 2.5 + 10.0 * 30.0_f64.to_radians().tan();
+        assert!((z_top_10 - expected_top_10).abs() < 1e-6);
+
+        let h_0 = wall.height_at_xy(0.0, 0.0);
+        let h_10 = wall.height_at_xy(10.0, 0.0);
+        assert!((h_0 - 2.5).abs() < 1e-9);
+        assert!((h_10 - expected_top_10).abs() < 1e-6);
+
+        let layer = WallLayer {
+            material: "Insulation".into(),
+            thickness: 0.1,
+            function: "Insulation".into(),
+            axis_offset: 0.0,
+            bottom_offset: -0.1,
+            top_offset: 0.05,
+            layer_override: None,
+            hatch_override: None,
+            layer_id: uuid::Uuid::new_v4(),
+        };
+        assert!((wall.layer_top_z_at_xy(&layer, 0.0, 0.0) - 2.55).abs() < 1e-9);
+        assert!((wall.layer_base_z_at_xy(&layer, 0.0, 0.0) - (-0.1)).abs() < 1e-9);
+    }
+
+    #[test]
+    fn multi_facet_wall_top_evaluation_and_step_heights() {
+        use crate::modules::aec::engine::control_plane::{ControlPlane, ControlPlaneFacet};
+        let f1 = ControlPlaneFacet::new(
+            "Roof1",
+            vec![
+                [0.0, -5.0, 3.2],
+                [5.0, -5.0, 3.2],
+                [5.0, 5.0, 3.2],
+                [0.0, 5.0, 3.2],
+            ],
+        );
+        let f2 = ControlPlaneFacet::new(
+            "Roof2",
+            vec![
+                [5.0, -5.0, 2.4],
+                [10.0, -5.0, 2.4],
+                [10.0, 5.0, 2.4],
+                [5.0, 5.0, 2.4],
+            ],
+        );
+        let cp = ControlPlane::from_facets("SteppedCeiling", vec![f1, f2]);
+        let mut wall = Wall::new("s", 3.0, 0);
+        wall.base_origin = [0.0, 0.0, 0.0];
+        wall.base_normal = [0.0, 0.0, 1.0];
+        wall.top_origin = cp.origin;
+        wall.top_normal = cp.normal;
+        wall.top_facets = cp.facets.clone();
+
+        assert_eq!(wall.top_z_at_xy(2.0, 0.0), 3.2);
+        assert_eq!(wall.top_z_at_xy(8.0, 0.0), 2.4);
+        assert_eq!(wall.height_at_xy(2.0, 0.0), 3.2);
+        assert_eq!(wall.height_at_xy(8.0, 0.0), 2.4);
+
+        // At boundary x=5.0, lowest height applies:
+        assert_eq!(wall.top_z_at_xy(5.0, 0.0), 2.4);
+    }
+
+    #[test]
+    fn partial_facet_wall_falls_back_to_wall_height_outside_facets() {
+        use crate::modules::aec::engine::control_plane::{ControlPlane, ControlPlaneFacet};
+        let f1 = ControlPlaneFacet::new(
+            "PartialRoof",
+            vec![
+                [0.0, -5.0, 4.0],
+                [5.0, -5.0, 4.0],
+                [5.0, 5.0, 4.0],
+                [0.0, 5.0, 4.0],
+            ],
+        );
+        let cp = ControlPlane::from_facets("PartialCeiling", vec![f1]);
+        let mut wall = Wall::new("s", 2.8, 0);
+        wall.base_origin = [0.0, 0.0, 0.0];
+        wall.base_normal = [0.0, 0.0, 1.0];
+        wall.top_origin = cp.origin;
+        wall.top_normal = cp.normal;
+        wall.top_facets = cp.facets.clone();
+
+        // Under facet (x=2.0) -> facet height 4.0m
+        assert_eq!(wall.top_z_at_xy(2.0, 0.0), 4.0);
+        assert_eq!(wall.height_at_xy(2.0, 0.0), 4.0);
+
+        // Outside facet (x=8.0) -> standard wall height 2.8m (0.0 + 2.8)
+        assert_eq!(wall.top_z_at_xy(8.0, 0.0), 2.8);
+        assert_eq!(wall.height_at_xy(8.0, 0.0), 2.8);
     }
 }

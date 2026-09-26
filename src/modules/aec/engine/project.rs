@@ -249,6 +249,35 @@ impl StoreyRef {
         let floor_z = self.derived_elevation();
         self.set_plane_origin_z(id, floor_z + rel)
     }
+
+    /// Vertical offset of facet `facet_idx` in plane `id` relative to the main (floor) control plane.
+    pub fn facet_z_relative_to_floor(&self, id: Uuid, facet_idx: usize) -> Option<f64> {
+        let floor_z = self.derived_elevation();
+        self.plane(id)
+            .and_then(|p| p.facets.get(facet_idx))
+            .map(|f| f.elevation() - floor_z)
+    }
+
+    /// Set a facet's elevation by ΔZ from the main control plane.
+    pub fn set_facet_z_relative_to_floor(&mut self, id: Uuid, facet_idx: usize, rel: f64) -> bool {
+        let floor_z = self.derived_elevation();
+        if let Some(plane) = self.plane_mut(id) {
+            if let Some(facet) = plane.facets.get_mut(facet_idx) {
+                facet.set_elevation(floor_z + rel);
+                if facet_idx == 0 {
+                    plane.origin = facet.origin();
+                    plane.normal = facet.unit_normal();
+                }
+                return true;
+            }
+        }
+        false
+    }
+
+    /// Deletes a specific facet from a control plane.
+    pub fn delete_facet(&mut self, id: Uuid, facet_idx: usize) -> Option<crate::modules::aec::engine::control_plane::ControlPlaneFacet> {
+        self.plane_mut(id).and_then(|p| p.remove_facet(facet_idx))
+    }
 }
 
 impl ProjectFile {
@@ -746,5 +775,33 @@ mod tests {
         let loaded = ProjectFile::load(&path).expect("load");
         assert_eq!(loaded.ffl0_nn_m, Some(112.4));
         let _ = fs::remove_file(&path);
+    }
+
+    #[test]
+    fn facet_z_relative_and_delete_operations() {
+        use crate::modules::aec::engine::control_plane::ControlPlaneFacet;
+        let mut s = StoreyRef::new_with_height("EG", 1.0, 3.0, "eg.dwg");
+        let f1 = ControlPlaneFacet::new("FacetA", vec![[0.0, 0.0, 3.5], [5.0, 0.0, 3.5], [5.0, 5.0, 3.5], [0.0, 5.0, 3.5]]);
+        let f2 = ControlPlaneFacet::new("FacetB", vec![[5.0, 0.0, 2.8], [10.0, 0.0, 2.8], [10.0, 5.0, 2.8], [5.0, 5.0, 2.8]]);
+        let cp = ControlPlane::from_facets("Shed", vec![f1, f2]);
+        let cp_id = cp.id;
+        s.add_control_plane(cp);
+
+        // Floor elevation is 1.0. FacetA is at Z=3.5 (rel = 2.5), FacetB is at Z=2.8 (rel = 1.8).
+        assert!((s.facet_z_relative_to_floor(cp_id, 0).unwrap() - 2.5).abs() < 1e-9);
+        assert!((s.facet_z_relative_to_floor(cp_id, 1).unwrap() - 1.8).abs() < 1e-9);
+
+        // Modify facet 1 relative Z to 2.2 -> absolute Z should become 1.0 + 2.2 = 3.2.
+        assert!(s.set_facet_z_relative_to_floor(cp_id, 1, 2.2));
+        assert!((s.facet_z_relative_to_floor(cp_id, 1).unwrap() - 2.2).abs() < 1e-9);
+        assert_eq!(s.plane(cp_id).unwrap().facets[1].vertices[0][2], 3.2);
+
+        // Delete facet 0 -> facet 1 becomes the new facet 0.
+        let removed = s.delete_facet(cp_id, 0).unwrap();
+        assert_eq!(removed.name, "FacetA");
+        let plane = s.plane(cp_id).unwrap();
+        assert_eq!(plane.facets.len(), 1);
+        assert_eq!(plane.facets[0].name, "FacetB");
+        assert_eq!(plane.origin[2], 3.2);
     }
 }

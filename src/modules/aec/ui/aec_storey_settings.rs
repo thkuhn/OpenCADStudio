@@ -11,12 +11,15 @@ use crate::modules::aec::engine::project::StoreyRef;
 use crate::t;
 use super::aec_ui_util::*;
 
+static SHOW_ICON: &[u8] = include_bytes!("../../../../assets/icons/constrain/show.svg");
+
 pub struct StoreySettingsState<'a> {
     pub building_id: uuid::Uuid,
     pub storey: &'a StoreyRef,
     pub new_plane_name: &'a str,
     pub new_plane_z: &'a str,
     pub plane_z: &'a HashMap<uuid::Uuid, String>,
+    pub facet_z: &'a HashMap<(uuid::Uuid, usize), String>,
     pub elevation: &'a str,
     pub height: &'a str,
 }
@@ -111,7 +114,7 @@ pub fn view_window<'a>(state: StoreySettingsState<'a>) -> Element<'a, Message> {
     ]
     .spacing(6);
     for p in &storey.control_planes {
-        planes = planes.push(plane_row(bid, sid, storey, p, state.plane_z, state.elevation));
+        planes = planes.push(plane_row(bid, sid, storey, p, state.plane_z, state.facet_z, state.elevation));
     }
     planes = planes.push(
         row![
@@ -172,6 +175,7 @@ fn plane_row<'a>(
     storey: &'a StoreyRef,
     plane: &'a ControlPlane,
     plane_z: &'a HashMap<uuid::Uuid, String>,
+    facet_z: &'a HashMap<(uuid::Uuid, usize), String>,
     elevation: &'a str,
 ) -> Element<'a, Message> {
     let pid = plane.id;
@@ -196,6 +200,36 @@ fn plane_row<'a>(
         .spacing(6)
         .align_y(iced::Center)
         .into()
+    } else if !plane.facets.is_empty() {
+        let label = if plane.is_sloped() {
+            format!("{} Polygone ({:.1}°)", plane.facets.len(), plane.slope_degrees())
+        } else {
+            format!("{} Polygone", plane.facets.len())
+        };
+        row![
+            text(label).size(10).style(muted),
+            text_input(t!("aec.plane-z-relative-placeholder").as_ref(), z_buf)
+                .on_input(move |v| Message::Aec(AecMessage::AecStoreySettingsPlaneZ(bid, sid, pid, v)))
+                .size(11)
+                .padding([3, 6])
+                .width(70),
+        ]
+        .spacing(4)
+        .align_y(iced::Center)
+        .into()
+    } else if plane.is_sloped() {
+        row![
+            text(t!("aec.plane-z-relative")).size(10).style(muted),
+            text_input(t!("aec.plane-z-relative-placeholder").as_ref(), z_buf)
+                .on_input(move |v| Message::Aec(AecMessage::AecStoreySettingsPlaneZ(bid, sid, pid, v)))
+                .size(11)
+                .padding([3, 6])
+                .width(70),
+            text(format!("{:.1}°", plane.slope_degrees())).size(10).style(muted),
+        ]
+        .spacing(4)
+        .align_y(iced::Center)
+        .into()
     } else {
         row![
             text(t!("aec.plane-z-relative")).size(10).style(muted),
@@ -209,29 +243,101 @@ fn plane_row<'a>(
         .align_y(iced::Center)
         .into()
     };
-    container(
-        column![
-            row![
-                text_input("", plane.name.as_str())
-                    .on_input(move |v| Message::Aec(AecMessage::AecStoreySettingsPlaneName(bid, sid, pid, v)))
-                    .size(11)
-                    .padding([3, 6])
-                    .width(Fill),
-                z_field,
-                iced::widget::checkbox(plane.visible)
-                    .label(t!("Visible").into_owned())
-                    .on_toggle(move |v| Message::Aec(AecMessage::AecStoreySettingsPlaneVisible(bid, sid, pid, v)))
-                    .size(13)
-                    .text_size(11),
-                del,
-            ]
-            .spacing(6)
-            .align_y(iced::Center),
+    let assign_poly = button(text(t!("aec.assign-polygons-btn")).size(10))
+        .style(button::secondary)
+        .padding([3, 6])
+        .on_press(Message::Aec(AecMessage::AecStoreySettingsPickPolygons(bid, sid, pid)));
+    let show_btn = button(crate::ui::icons::semantic(SHOW_ICON, 13.0))
+        .style(button::secondary)
+        .padding([3, 5])
+        .on_press(Message::Aec(AecMessage::AecStoreySettingsShowPlaneInDrawing(bid, sid, pid)));
+    let show_in_drawing = iced::widget::tooltip(
+        show_btn,
+        container(text(t!("aec.show-in-drawing-btn")).size(10))
+            .padding([3, 6])
+            .style(container::bordered_box),
+        iced::widget::tooltip::Position::Top,
+    );
+
+    let main_row = row![
+        text_input("", plane.name.as_str())
+            .on_input(move |v| Message::Aec(AecMessage::AecStoreySettingsPlaneName(bid, sid, pid, v)))
+            .size(11)
+            .padding([3, 6])
+            .width(Fill),
+        z_field,
+        assign_poly,
+        show_in_drawing,
+        iced::widget::checkbox(plane.visible)
+            .label(t!("Visible").into_owned())
+            .on_toggle(move |v| Message::Aec(AecMessage::AecStoreySettingsPlaneVisible(bid, sid, pid, v)))
+            .size(13)
+            .text_size(11),
+        del,
+    ]
+    .spacing(6)
+    .align_y(iced::Center);
+
+    let mut col = column![main_row].spacing(4);
+
+    for (f_idx, facet) in plane.facets.iter().enumerate() {
+        let f_z_buf = facet_z
+            .get(&(pid, f_idx))
+            .map(|s| s.as_str())
+            .unwrap_or("");
+        let facet_slope = if facet.slope_degrees() > 0.05 {
+            format!("{:.1}°", facet.slope_degrees())
+        } else {
+            "0.0°".to_string()
+        };
+        let facet_pts_label = format!("{} Pkt.", facet.vertices.len());
+        let facet_del = button(text(t!("Delete")).size(9))
+            .style(button::danger)
+            .padding([2, 6])
+            .on_press(Message::Aec(AecMessage::AecStoreySettingsDeleteFacet(bid, sid, pid, f_idx)));
+        let facet_show_btn = button(crate::ui::icons::semantic(SHOW_ICON, 11.0))
+            .style(button::secondary)
+            .padding([2, 4])
+            .on_press(Message::Aec(AecMessage::AecStoreySettingsShowFacetInDrawing(bid, sid, pid, f_idx)));
+        let facet_show = iced::widget::tooltip(
+            facet_show_btn,
+            container(text(t!("aec.show-in-drawing-btn")).size(10))
+                .padding([2, 5])
+                .style(container::bordered_box),
+            iced::widget::tooltip::Position::Top,
+        );
+
+        let facet_name_input = text_input("", facet.name.as_str())
+            .on_input(move |v| Message::Aec(AecMessage::AecStoreySettingsFacetName(bid, sid, pid, f_idx, v)))
+            .size(10)
+            .padding([2, 4])
+            .width(130);
+
+        let facet_z_input = text_input(t!("aec.plane-z-relative-placeholder").as_ref(), f_z_buf)
+            .on_input(move |v| Message::Aec(AecMessage::AecStoreySettingsFacetZ(bid, sid, pid, f_idx, v)))
+            .size(10)
+            .padding([2, 4])
+            .width(60);
+
+        let f_row = row![
+            Space::new().width(16),
+            text("↳").size(11).style(muted),
+            text(format!("#{}", f_idx + 1)).size(10).style(muted).width(20),
+            facet_name_input,
+            text(facet_pts_label).size(10).style(muted).width(45),
+            text(t!("aec.plane-z-relative")).size(10).style(muted),
+            facet_z_input,
+            text(facet_slope).size(10).style(muted).width(35),
+            facet_show,
+            facet_del,
         ]
-        .spacing(4),
-    )
-    .padding(6)
-    .into()
+        .spacing(6)
+        .align_y(iced::Center);
+
+        col = col.push(f_row);
+    }
+
+    container(col).padding(6).into()
 }
 
 

@@ -1663,7 +1663,7 @@ fn miter_one_layer(
     Some(fp)
 }
 
-fn clip_closed_to_halfplane(
+pub(crate) fn clip_closed_to_halfplane(
     poly: &[(f64, f64)],
     a: (f64, f64),
     b: (f64, f64),

@@ -384,6 +384,7 @@ fn aec_storey_settings_view(&self) -> Element<'_, Message> {
             new_plane_name: &self.aec.aec_storey_settings_new_plane_name,
             new_plane_z: &self.aec.aec_storey_settings_new_plane_z,
             plane_z: &self.aec.aec_storey_settings_plane_z,
+            facet_z: &self.aec.aec_storey_settings_facet_z,
             elevation: &self.aec.aec_storey_settings_elevation,
             height: &self.aec.aec_storey_settings_height,
         },

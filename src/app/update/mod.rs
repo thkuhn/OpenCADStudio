@@ -232,8 +232,11 @@ impl OpenCADStudio {
             Some(Recovery) => self.recovery_report = None,
             // Dismissing without picking/creating a project: forget the tool
             // that was about to run so it isn't replayed unexpectedly later.
-            Some(Aec(kind)) if kind.clears_project_resume_on_close() => {
-                self.aec.aec_project_required_resume = None
+            Some(Aec(kind)) => {
+                if kind.clears_project_resume_on_close() {
+                    self.aec.aec_project_required_resume = None;
+                }
+                self.aec_reset_control_plane_highlights();
             }
             _ => {}
         }
@@ -4985,6 +4988,7 @@ impl OpenCADStudio {
                         .filter_map(|h| self.tabs[i].scene.document.get_entity_arc(*h))
                         .collect();
                     self.aec_erase_openings_respecting_active_display_config(i, &handles);
+                    self.aec_erase_control_planes_or_facets(i, &handles);
                     self.tabs[i].scene.erase_entities(&handles);
                     self.tabs[i].dirty = true;
                     self.refresh_properties();

@@ -43,7 +43,7 @@ impl CadModule for AecModule {
 
     fn ribbon_groups(&self) -> &[RibbonGroup] {
         use ifc::export as ifc_export;
-        use project::{control_planes, explorer};
+        use project::{control_planes, explorer, plane_3point, plane_facet, plane_assign};
         use rooms::{room, schedule};
         use styles::{material_manager, opening_style_manager, plan_manager, wall_style_manager};
         use walls::{door, extend, join, opening, refresh, wall, window};
@@ -56,6 +56,9 @@ impl CadModule for AecModule {
                     tools: vec![
                         RibbonItem::LargeTool(explorer::tool()),
                         RibbonItem::LargeTool(control_planes::tool()),
+                        RibbonItem::LargeTool(plane_3point::tool()),
+                        RibbonItem::LargeTool(plane_facet::tool()),
+                        RibbonItem::LargeTool(plane_assign::tool()),
                     ],
                 },
                 RibbonGroup {

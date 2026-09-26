@@ -104,6 +104,14 @@ impl OpenCADStudio {
                 });
             }
         }
+        let facet_z_map = self.aec.aec_storey_settings_facet_z.clone();
+        for ((pid, f_idx), text) in facet_z_map {
+            if let Ok(v) = text.trim().parse::<f64>() {
+                self.with_storey_mut(bid, sid, |s| {
+                    s.set_facet_z_relative_to_floor(pid, f_idx, v);
+                });
+            }
+        }
     }
 
     pub(crate) fn apply_storey_z_to_active_scene(&mut self, bid: uuid::Uuid, sid: uuid::Uuid) {

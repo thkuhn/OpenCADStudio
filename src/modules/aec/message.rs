@@ -307,6 +307,12 @@ pub enum AecMessage {
     AecStoreySettingsPlaneZ(uuid::Uuid, uuid::Uuid, uuid::Uuid, String),
     AecStoreySettingsPlaneOrigin(uuid::Uuid, uuid::Uuid, uuid::Uuid, u8, String),
     AecStoreySettingsPlaneNormal(uuid::Uuid, uuid::Uuid, uuid::Uuid, u8, String),
+    AecStoreySettingsPickPolygons(uuid::Uuid, uuid::Uuid, uuid::Uuid),
+    AecStoreySettingsShowPlaneInDrawing(uuid::Uuid, uuid::Uuid, uuid::Uuid),
+    AecStoreySettingsFacetName(uuid::Uuid, uuid::Uuid, uuid::Uuid, usize, String),
+    AecStoreySettingsFacetZ(uuid::Uuid, uuid::Uuid, uuid::Uuid, usize, String),
+    AecStoreySettingsDeleteFacet(uuid::Uuid, uuid::Uuid, uuid::Uuid, usize),
+    AecStoreySettingsShowFacetInDrawing(uuid::Uuid, uuid::Uuid, uuid::Uuid, usize),
 
     // ── AEC DisplayConfig Manager (`AEC_PLANMANAGER`, Step 5) ─────────────
     /// Open the DisplayConfig Manager modal.
