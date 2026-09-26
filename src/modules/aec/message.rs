@@ -313,6 +313,7 @@ pub enum AecMessage {
     AecStoreySettingsFacetZ(uuid::Uuid, uuid::Uuid, uuid::Uuid, usize, String),
     AecStoreySettingsDeleteFacet(uuid::Uuid, uuid::Uuid, uuid::Uuid, usize),
     AecStoreySettingsShowFacetInDrawing(uuid::Uuid, uuid::Uuid, uuid::Uuid, usize),
+    AecResetControlPlaneHighlights(u64),
 
     // ── AEC DisplayConfig Manager (`AEC_PLANMANAGER`, Step 5) ─────────────
     /// Open the DisplayConfig Manager modal.

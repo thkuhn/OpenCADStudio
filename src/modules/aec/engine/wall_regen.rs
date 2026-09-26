@@ -2809,4 +2809,68 @@ mod tests {
         // Uncovered portion falls back strictly to standard wall height Z = 2.8 with vertical step at x = 5.0
         assert!((max2[2] - min2[2] - 2.8).abs() < 1e-4);
     }
+
+    #[test]
+    fn test_partition_and_build_multi_facets_with_uncovered_section() {
+        let full_footprint = vec![
+            (0.0, -0.15),
+            (15.0, -0.15),
+            (15.0, 0.15),
+            (0.0, 0.15),
+        ];
+        let full_bulges = vec![0.0; 4];
+
+        let f1 = ControlPlaneFacet::new(
+            "Roof1",
+            vec![
+                [0.0, -5.0, 4.0],
+                [5.0, -5.0, 4.0],
+                [5.0, 5.0, 4.0],
+                [0.0, 5.0, 4.0],
+            ],
+        );
+        let f2 = ControlPlaneFacet::new(
+            "Roof2",
+            vec![
+                [5.0, -5.0, 3.5],
+                [10.0, -5.0, 3.5],
+                [10.0, 5.0, 3.5],
+                [5.0, 5.0, 3.5],
+            ],
+        );
+
+        let mut wall = Wall::new("s", 2.8, 0);
+        wall.base_origin = [0.0, 0.0, 0.0];
+        wall.base_normal = [0.0, 0.0, 1.0];
+        wall.top_origin = [0.0, 0.0, 4.0];
+        wall.top_normal = [0.0, 0.0, 1.0];
+        wall.top_facets = vec![f1, f2];
+
+        let partitions = partition_footprint_by_facets(&full_footprint, &full_bulges, &wall.top_facets);
+        assert_eq!(partitions.len(), 3);
+
+        let mut solids = Vec::new();
+        for (fp, bulges) in &partitions {
+            let s = build_sloped_layer_solid_3d(fp, bulges, &wall, None, 0.0, 2.8).expect("solid build");
+            assert!(s.validate().is_empty());
+            solids.push((fp.clone(), s));
+        }
+
+        // Check height for each section by X position
+        for (fp, solid) in solids {
+            let cx = fp.iter().map(|p| p.0).sum::<f64>() / fp.len() as f64;
+            let (min, max) = crate::scene::model::solid_model::extent(&solid).expect("extent");
+            let height = max[2] - min[2];
+            if cx < 5.0 {
+                // Facet 1 section
+                assert!((height - 4.0).abs() < 1e-4, "Facet 1 height was {height}");
+            } else if cx < 10.0 {
+                // Facet 2 section
+                assert!((height - 3.5).abs() < 1e-4, "Facet 2 height was {height}");
+            } else {
+                // Uncovered section: standard wall height 2.8
+                assert!((height - 2.8).abs() < 1e-4, "Uncovered height was {height}");
+            }
+        }
+    }
 }

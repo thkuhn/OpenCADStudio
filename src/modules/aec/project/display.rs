@@ -327,12 +327,17 @@ impl OpenCADStudio {
     }
 
     /// Resets any temporary orange highlight on control plane or facet preview entities
-    /// across all storeys in the active project back to their default colors (cyan / yellow).
+    /// across all storeys in the active project back to their default colors (cyan / yellow)
+    /// and erases any spawned temporary highlight entities.
     pub(crate) fn aec_reset_control_plane_highlights(&mut self) {
         if self.active_tab >= self.tabs.len() {
             return;
         }
         let tab = self.active_tab;
+        if !self.aec.aec_control_plane_highlight_handles.is_empty() {
+            let handles = std::mem::take(&mut self.aec.aec_control_plane_highlight_handles);
+            self.tabs[tab].scene.erase_entities(&handles);
+        }
         let mut all_touched = Vec::new();
         if let Some(project) = self.aec.aec_project_explorer_file.as_ref() {
             for b in &project.buildings {

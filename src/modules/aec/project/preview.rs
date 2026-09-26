@@ -21,85 +21,107 @@ const PREVIEW_COLOR_MAIN: i16 = 2;
 /// Orange color (ACI 30 / RGB 255, 127, 0) for temporarily highlighting a control plane.
 pub const PREVIEW_COLOR_HIGHLIGHT: i16 = 30;
 
-/// Temporarily highlights the preview entities belonging to a specific control plane in orange (ACI 30).
-/// Resets all other control plane preview entities to their default colors (cyan / yellow).
-pub fn highlight_control_plane(scene: &mut Scene, storey: &StoreyRef, plane_id: Uuid) -> Vec<Handle> {
-    let floor_id = storey.floor_plane_id;
-    let mut touched = Vec::new();
-    for plane in &storey.control_planes {
-        let is_target = plane.id == plane_id;
-        let default_color = if plane.id == floor_id {
-            PREVIEW_COLOR_MAIN
-        } else {
-            PREVIEW_COLOR_OTHER
-        };
-        let color = if is_target {
-            PREVIEW_COLOR_HIGHLIGHT
-        } else {
-            default_color
-        };
-
-        if let Some(h) = plane.preview_handle {
-            let handle = Handle::new(h);
-            if let Some(e) = scene.document.get_entity_mut(handle) {
-                e.as_entity_mut().set_color(acadrust::types::Color::from_index(color));
-                touched.push(handle);
-            }
-        }
+/// Spawns temporary transparent Face3D fill entities in orange (ACI 30, 60% transparent)
+/// covering the target control plane or its facets without altering existing line colors.
+pub fn create_control_plane_transparent_highlight(
+    scene: &mut Scene,
+    storey: &StoreyRef,
+    plane_id: Uuid,
+) -> Vec<Handle> {
+    ensure_controlplanes_layer(scene);
+    let mut spawned = Vec::new();
+    let Some(plane) = storey.plane(plane_id) else {
+        return spawned;
+    };
+    let v = |c: [f64; 3]| Vector3::new(c[0], c[1], c[2]);
+    if !plane.facets.is_empty() {
         for facet in &plane.facets {
-            if let Some(h) = facet.preview_handle {
-                let handle = Handle::new(h);
-                if let Some(e) = scene.document.get_entity_mut(handle) {
-                    e.as_entity_mut().set_color(acadrust::types::Color::from_index(color));
-                    touched.push(handle);
-                }
+            if facet.vertices.len() < 3 {
+                continue;
             }
+            let v0 = facet.vertices[0];
+            let v1 = facet.vertices[1];
+            let v2 = facet.vertices[2];
+            let v3 = facet.vertices.get(3).copied().unwrap_or(facet.vertices[0]);
+            let mut face = acadrust::entities::Face3D::new(v(v0), v(v1), v(v2), v(v3));
+            face.invisible_edges = acadrust::entities::face3d::InvisibleEdgeFlags::from_bits(15);
+            let handle = scene.add_entity(EntityType::Face3D(face));
+            if let Some(e) = scene.document.get_entity_mut(handle) {
+                let ent = e.as_entity_mut();
+                ent.set_layer(AEC_CONTROLPLANES_LAYER.to_string());
+                ent.set_color(acadrust::types::Color::from_index(PREVIEW_COLOR_HIGHLIGHT));
+                ent.set_transparency(acadrust::types::Transparency::from_percent(0.6));
+            }
+            spawned.push(handle);
         }
+    } else {
+        let corners = preview_rectangle(plane, DEFAULT_PREVIEW_SIZE);
+        let mut face = acadrust::entities::Face3D::new(
+            v(corners[0]),
+            v(corners[1]),
+            v(corners[2]),
+            v(corners[3]),
+        );
+        face.invisible_edges = acadrust::entities::face3d::InvisibleEdgeFlags::from_bits(15);
+        let handle = scene.add_entity(EntityType::Face3D(face));
+        if let Some(e) = scene.document.get_entity_mut(handle) {
+            let ent = e.as_entity_mut();
+            ent.set_layer(AEC_CONTROLPLANES_LAYER.to_string());
+            ent.set_color(acadrust::types::Color::from_index(PREVIEW_COLOR_HIGHLIGHT));
+            ent.set_transparency(acadrust::types::Transparency::from_percent(0.6));
+        }
+        spawned.push(handle);
     }
-    touched
+    spawned
 }
 
-/// Temporarily highlights a specific facet belonging to a control plane in orange (ACI 30).
-/// Resets all other control plane preview entities to their default colors (cyan / yellow).
+/// Spawns a temporary transparent Face3D fill entity covering a specific facet.
+pub fn create_facet_transparent_highlight(
+    scene: &mut Scene,
+    storey: &StoreyRef,
+    plane_id: Uuid,
+    facet_idx: usize,
+) -> Vec<Handle> {
+    ensure_controlplanes_layer(scene);
+    let mut spawned = Vec::new();
+    let Some(plane) = storey.plane(plane_id) else {
+        return spawned;
+    };
+    let Some(facet) = plane.facets.get(facet_idx) else {
+        return spawned;
+    };
+    if facet.vertices.len() < 3 {
+        return spawned;
+    }
+    let v = |c: [f64; 3]| Vector3::new(c[0], c[1], c[2]);
+    let v0 = facet.vertices[0];
+    let v1 = facet.vertices[1];
+    let v2 = facet.vertices[2];
+    let v3 = facet.vertices.get(3).copied().unwrap_or(facet.vertices[0]);
+    let mut face = acadrust::entities::Face3D::new(v(v0), v(v1), v(v2), v(v3));
+    face.invisible_edges = acadrust::entities::face3d::InvisibleEdgeFlags::from_bits(15);
+    let handle = scene.add_entity(EntityType::Face3D(face));
+    if let Some(e) = scene.document.get_entity_mut(handle) {
+        let ent = e.as_entity_mut();
+        ent.set_layer(AEC_CONTROLPLANES_LAYER.to_string());
+        ent.set_color(acadrust::types::Color::from_index(PREVIEW_COLOR_HIGHLIGHT));
+        ent.set_transparency(acadrust::types::Transparency::from_percent(0.6));
+    }
+    spawned.push(handle);
+    spawned
+}
+
+pub fn highlight_control_plane(scene: &mut Scene, storey: &StoreyRef, plane_id: Uuid) -> Vec<Handle> {
+    create_control_plane_transparent_highlight(scene, storey, plane_id)
+}
+
 pub fn highlight_control_plane_facet(
     scene: &mut Scene,
     storey: &StoreyRef,
     plane_id: Uuid,
     facet_idx: usize,
 ) -> Vec<Handle> {
-    let floor_id = storey.floor_plane_id;
-    let mut touched = Vec::new();
-    for plane in &storey.control_planes {
-        let default_color = if plane.id == floor_id {
-            PREVIEW_COLOR_MAIN
-        } else {
-            PREVIEW_COLOR_OTHER
-        };
-
-        if let Some(h) = plane.preview_handle {
-            let handle = Handle::new(h);
-            if let Some(e) = scene.document.get_entity_mut(handle) {
-                e.as_entity_mut().set_color(acadrust::types::Color::from_index(default_color));
-                touched.push(handle);
-            }
-        }
-        for (idx, facet) in plane.facets.iter().enumerate() {
-            let is_target = plane.id == plane_id && idx == facet_idx;
-            let color = if is_target {
-                PREVIEW_COLOR_HIGHLIGHT
-            } else {
-                default_color
-            };
-            if let Some(h) = facet.preview_handle {
-                let handle = Handle::new(h);
-                if let Some(e) = scene.document.get_entity_mut(handle) {
-                    e.as_entity_mut().set_color(acadrust::types::Color::from_index(color));
-                    touched.push(handle);
-                }
-            }
-        }
-    }
-    touched
+    create_facet_transparent_highlight(scene, storey, plane_id, facet_idx)
 }
 
 /// Resets all control plane and facet preview entities in `scene` for `storey` back to their default colors (yellow for floor, cyan for others).
@@ -315,7 +337,7 @@ mod tests {
     }
 
     #[test]
-    fn highlight_control_plane_changes_color_to_orange() {
+    fn highlight_control_plane_creates_transparent_highlight() {
         let mut scene = Scene::new();
         let mut storey = StoreyRef::new("EG", 0.0, "eg.dwg");
         let ceiling_id = storey.ceiling_plane_id;
@@ -327,14 +349,18 @@ mod tests {
         assert_eq!(scene.document.get_entity(floor_handle).unwrap().as_entity().color().index(), Some(PREVIEW_COLOR_MAIN as u16));
         assert_eq!(scene.document.get_entity(ceiling_handle).unwrap().as_entity().color().index(), Some(PREVIEW_COLOR_OTHER as u16));
 
-        let touched = highlight_control_plane(&mut scene, &storey, ceiling_id);
-        assert!(touched.contains(&ceiling_handle));
-        assert_eq!(scene.document.get_entity(ceiling_handle).unwrap().as_entity().color().index(), Some(PREVIEW_COLOR_HIGHLIGHT as u16));
+        let spawned = highlight_control_plane(&mut scene, &storey, ceiling_id);
+        assert!(!spawned.is_empty());
+        let hl = scene.document.get_entity(spawned[0]).unwrap();
+        assert_eq!(hl.as_entity().color().index(), Some(PREVIEW_COLOR_HIGHLIGHT as u16));
+        assert!(hl.as_entity().transparency().as_percent() > 0.0);
+        // Original line colors are untouched
+        assert_eq!(scene.document.get_entity(ceiling_handle).unwrap().as_entity().color().index(), Some(PREVIEW_COLOR_OTHER as u16));
         assert_eq!(scene.document.get_entity(floor_handle).unwrap().as_entity().color().index(), Some(PREVIEW_COLOR_MAIN as u16));
     }
 
     #[test]
-    fn highlight_control_plane_facet_only_highlights_specific_facet() {
+    fn highlight_control_plane_facet_creates_transparent_facet_highlight() {
         use crate::modules::aec::engine::control_plane::{ControlPlane, ControlPlaneFacet};
         let mut scene = Scene::new();
         let mut storey = StoreyRef::new("EG", 0.0, "eg.dwg");
@@ -349,15 +375,14 @@ mod tests {
         let h1 = Handle::new(p.facets[0].preview_handle.unwrap());
         let h2 = Handle::new(p.facets[1].preview_handle.unwrap());
 
-        let touched = highlight_control_plane_facet(&mut scene, &storey, cp_id, 1);
-        assert!(touched.contains(&h2));
-        assert_eq!(scene.document.get_entity(h2).unwrap().as_entity().color().index(), Some(PREVIEW_COLOR_HIGHLIGHT as u16));
-        assert_eq!(scene.document.get_entity(h1).unwrap().as_entity().color().index(), Some(PREVIEW_COLOR_OTHER as u16));
+        let spawned = highlight_control_plane_facet(&mut scene, &storey, cp_id, 1);
+        assert_eq!(spawned.len(), 1);
+        let hl = scene.document.get_entity(spawned[0]).unwrap();
+        assert_eq!(hl.as_entity().color().index(), Some(PREVIEW_COLOR_HIGHLIGHT as u16));
+        assert!(hl.as_entity().transparency().as_percent() > 0.0);
 
-        // Reset highlights
-        let reset_touched = reset_control_plane_preview_colors(&mut scene, &storey);
-        assert!(reset_touched.contains(&h2));
-        assert_eq!(scene.document.get_entity(h2).unwrap().as_entity().color().index(), Some(PREVIEW_COLOR_OTHER as u16));
+        // Preview entity lines remain untouched
         assert_eq!(scene.document.get_entity(h1).unwrap().as_entity().color().index(), Some(PREVIEW_COLOR_OTHER as u16));
+        assert_eq!(scene.document.get_entity(h2).unwrap().as_entity().color().index(), Some(PREVIEW_COLOR_OTHER as u16));
     }
 }

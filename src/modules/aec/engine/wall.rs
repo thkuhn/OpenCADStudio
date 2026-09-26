@@ -157,6 +157,18 @@ impl Wall {
         y: f64,
     ) {
         self.rebake_lookup(|id| storey.plane(id).cloned(), x, y);
+        let mut all_top_facets = Vec::new();
+        if let Some(top_p) = self.top_plane_id.and_then(|id| storey.plane(id)) {
+            all_top_facets.extend(top_p.facets.clone());
+        }
+        for plane in &storey.control_planes {
+            if plane.id != storey.floor_plane_id && Some(plane.id) != self.top_plane_id {
+                all_top_facets.extend(plane.facets.clone());
+            }
+        }
+        if !all_top_facets.is_empty() {
+            self.top_facets = all_top_facets;
+        }
     }
 
     pub fn rebake_from_project(
@@ -166,6 +178,20 @@ impl Wall {
         y: f64,
     ) {
         self.rebake_lookup(|id| project.control_plane(id).cloned(), x, y);
+        let mut all_top_facets = Vec::new();
+        if let Some(top_p) = self.top_plane_id.and_then(|id| project.control_plane(id)) {
+            all_top_facets.extend(top_p.facets.clone());
+        }
+        if let Some((_b, s)) = self.top_plane_id.and_then(|pid| project.find_plane(pid)) {
+            for plane in &s.control_planes {
+                if plane.id != s.floor_plane_id && Some(plane.id) != self.top_plane_id {
+                    all_top_facets.extend(plane.facets.clone());
+                }
+            }
+        }
+        if !all_top_facets.is_empty() {
+            self.top_facets = all_top_facets;
+        }
     }
 
     fn rebake_lookup(

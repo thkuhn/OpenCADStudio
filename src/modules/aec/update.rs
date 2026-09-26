@@ -906,31 +906,41 @@ impl OpenCADStudio {
             AecMessage::AecStoreySettingsShowPlaneInDrawing(bid, sid, pid) => {
                 self.commit_storey_settings_buffers(bid, sid);
                 self.aec_project_explorer_persist_if_pathed();
+                self.aec_reset_control_plane_highlights();
                 let tab = self.active_tab;
                 let mut plane_name = String::new();
                 if let Some(storey) = self.with_storey(bid, sid, |s| s.clone()) {
                     if let Some(p) = storey.plane(pid) {
                         plane_name = p.name.clone();
                     }
-                    let touched = crate::modules::aec::project::preview::highlight_control_plane(
+                    let spawned = crate::modules::aec::project::preview::highlight_control_plane(
                         &mut self.tabs[tab].scene,
                         &storey,
                         pid,
                     );
-                    let changes: Vec<_> = touched
-                        .into_iter()
-                        .map(|h| (h, crate::scene::ChangeKind::Modified))
+                    let changes: Vec<_> = spawned
+                        .iter()
+                        .map(|&h| (h, crate::scene::ChangeKind::Added))
                         .collect();
                     if !changes.is_empty() {
                         self.tabs[tab].scene.bump_entities(&changes);
                     }
+                    self.aec.aec_control_plane_highlight_handles = spawned;
                 }
                 self.command_line.push_info(&crate::tr!(
                     "aec",
                     "plane-highlighted-in-drawing",
                     name = plane_name.as_str()
                 ));
-                Task::none()
+                self.aec.aec_control_plane_highlight_epoch = self.aec.aec_control_plane_highlight_epoch.wrapping_add(1);
+                let epoch = self.aec.aec_control_plane_highlight_epoch;
+                Task::perform(
+                    async move {
+                        std::thread::sleep(std::time::Duration::from_millis(2000));
+                        epoch
+                    },
+                    |e| Message::Aec(AecMessage::AecResetControlPlaneHighlights(e)),
+                )
             }
             AecMessage::AecStoreySettingsFacetName(bid, sid, pid, f_idx, name) => {
                 self.with_storey_mut(bid, sid, |s| {
@@ -971,6 +981,7 @@ impl OpenCADStudio {
             AecMessage::AecStoreySettingsShowFacetInDrawing(bid, sid, pid, f_idx) => {
                 self.commit_storey_settings_buffers(bid, sid);
                 self.aec_project_explorer_persist_if_pathed();
+                self.aec_reset_control_plane_highlights();
                 let tab = self.active_tab;
                 let mut facet_name = String::new();
                 if let Some(storey) = self.with_storey(bid, sid, |s| s.clone()) {
@@ -979,25 +990,40 @@ impl OpenCADStudio {
                             facet_name = f.name.clone();
                         }
                     }
-                    let touched = crate::modules::aec::project::preview::highlight_control_plane_facet(
+                    let spawned = crate::modules::aec::project::preview::highlight_control_plane_facet(
                         &mut self.tabs[tab].scene,
                         &storey,
                         pid,
                         f_idx,
                     );
-                    let changes: Vec<_> = touched
-                        .into_iter()
-                        .map(|h| (h, crate::scene::ChangeKind::Modified))
+                    let changes: Vec<_> = spawned
+                        .iter()
+                        .map(|&h| (h, crate::scene::ChangeKind::Added))
                         .collect();
                     if !changes.is_empty() {
                         self.tabs[tab].scene.bump_entities(&changes);
                     }
+                    self.aec.aec_control_plane_highlight_handles = spawned;
                 }
                 self.command_line.push_info(&crate::tr!(
                     "aec",
                     "plane-highlighted-in-drawing",
                     name = facet_name.as_str()
                 ));
+                self.aec.aec_control_plane_highlight_epoch = self.aec.aec_control_plane_highlight_epoch.wrapping_add(1);
+                let epoch = self.aec.aec_control_plane_highlight_epoch;
+                Task::perform(
+                    async move {
+                        std::thread::sleep(std::time::Duration::from_millis(2000));
+                        epoch
+                    },
+                    |e| Message::Aec(AecMessage::AecResetControlPlaneHighlights(e)),
+                )
+            }
+            AecMessage::AecResetControlPlaneHighlights(epoch) => {
+                if epoch == self.aec.aec_control_plane_highlight_epoch {
+                    self.aec_reset_control_plane_highlights();
+                }
                 Task::none()
             }
             AecMessage::AecPlanManagerOpen => {

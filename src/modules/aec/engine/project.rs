@@ -294,6 +294,18 @@ impl ProjectFile {
             .find_map(|s| s.plane(id))
     }
 
+    /// Finds the building and storey containing the control plane with `id`.
+    pub fn find_plane(&self, id: Uuid) -> Option<(&Building, &StoreyRef)> {
+        for b in &self.buildings {
+            for s in &b.storeys {
+                if s.plane(id).is_some() {
+                    return Some((b, s));
+                }
+            }
+        }
+        None
+    }
+
     /// Load a project from `path`. A missing file yields `Ok(ProjectFile::default())`
     /// so drawings work without an accompanying project.
     pub fn load(path: &Path) -> io::Result<ProjectFile> {
