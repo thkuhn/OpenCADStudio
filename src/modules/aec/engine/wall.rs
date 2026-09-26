@@ -157,18 +157,6 @@ impl Wall {
         y: f64,
     ) {
         self.rebake_lookup(|id| storey.plane(id).cloned(), x, y);
-        let mut all_top_facets = Vec::new();
-        if let Some(top_p) = self.top_plane_id.and_then(|id| storey.plane(id)) {
-            all_top_facets.extend(top_p.facets.clone());
-        }
-        for plane in &storey.control_planes {
-            if plane.id != storey.floor_plane_id && Some(plane.id) != self.top_plane_id {
-                all_top_facets.extend(plane.facets.clone());
-            }
-        }
-        if !all_top_facets.is_empty() {
-            self.top_facets = all_top_facets;
-        }
     }
 
     pub fn rebake_from_project(
@@ -178,20 +166,6 @@ impl Wall {
         y: f64,
     ) {
         self.rebake_lookup(|id| project.control_plane(id).cloned(), x, y);
-        let mut all_top_facets = Vec::new();
-        if let Some(top_p) = self.top_plane_id.and_then(|id| project.control_plane(id)) {
-            all_top_facets.extend(top_p.facets.clone());
-        }
-        if let Some((_b, s)) = self.top_plane_id.and_then(|pid| project.find_plane(pid)) {
-            for plane in &s.control_planes {
-                if plane.id != s.floor_plane_id && Some(plane.id) != self.top_plane_id {
-                    all_top_facets.extend(plane.facets.clone());
-                }
-            }
-        }
-        if !all_top_facets.is_empty() {
-            self.top_facets = all_top_facets;
-        }
     }
 
     fn rebake_lookup(
@@ -214,6 +188,8 @@ impl Wall {
             } else {
                 self.base_origin = offset_base.origin;
             }
+        } else {
+            self.base_facets = Vec::new();
         }
 
         let top = self.top_plane_id.and_then(&lookup);
@@ -227,6 +203,8 @@ impl Wall {
             } else {
                 self.top_origin = offset_top.origin;
             }
+        } else {
+            self.top_facets = Vec::new();
         }
 
         match (base.as_ref(), top.as_ref()) {
@@ -659,5 +637,50 @@ mod tests {
         // Outside facet (x=8.0) -> standard wall height 2.8m (0.0 + 2.8)
         assert_eq!(wall.top_z_at_xy(8.0, 0.0), 2.8);
         assert_eq!(wall.height_at_xy(8.0, 0.0), 2.8);
+    }
+
+    #[test]
+    fn wall_rebake_only_adopts_assigned_plane_facets() {
+        use crate::modules::aec::engine::control_plane::{ControlPlane, ControlPlaneFacet};
+        use crate::modules::aec::engine::project::StoreyRef;
+
+        let mut storey = StoreyRef::new_with_height("EG", 0.0, 2.8, "eg.dwg");
+        let ceiling_id = storey.ceiling_plane_id;
+
+        // Extra roof plane with facets in the same storey
+        let f1 = ControlPlaneFacet::new(
+            "Roof1",
+            vec![
+                [0.0, -5.0, 5.0],
+                [5.0, -5.0, 5.0],
+                [5.0, 5.0, 5.0],
+                [0.0, 5.0, 5.0],
+            ],
+        );
+        let roof_cp = ControlPlane::from_facets("ShedRoof", vec![f1]);
+        let roof_id = roof_cp.id;
+        storey.control_planes.push(roof_cp);
+
+        // Wall bound to standard ceiling plane (which has NO facets)
+        let mut wall1 = Wall::new("s", 2.8, 0);
+        wall1.base_plane_id = Some(storey.floor_plane_id);
+        wall1.top_plane_id = Some(ceiling_id);
+        wall1.rebake_planes(&storey, 0.0, 0.0);
+
+        // Wall 1 must NOT have any facets adopted from the unassigned roof plane
+        assert!(wall1.top_facets.is_empty());
+        assert!(!wall1.is_sloped());
+        assert_eq!(wall1.top_z_at_xy(2.0, 0.0), 2.8);
+
+        // Wall bound to roof plane (which has facets)
+        let mut wall2 = Wall::new("s", 2.8, 0);
+        wall2.base_plane_id = Some(storey.floor_plane_id);
+        wall2.top_plane_id = Some(roof_id);
+        wall2.rebake_planes(&storey, 0.0, 0.0);
+
+        // Wall 2 MUST have the roof facets
+        assert_eq!(wall2.top_facets.len(), 1);
+        assert!(wall2.is_sloped());
+        assert_eq!(wall2.top_z_at_xy(2.0, 0.0), 5.0);
     }
 }

@@ -913,19 +913,18 @@ impl OpenCADStudio {
                     if let Some(p) = storey.plane(pid) {
                         plane_name = p.name.clone();
                     }
-                    let spawned = crate::modules::aec::project::preview::highlight_control_plane(
+                    let touched = crate::modules::aec::project::preview::highlight_control_plane(
                         &mut self.tabs[tab].scene,
                         &storey,
                         pid,
                     );
-                    let changes: Vec<_> = spawned
-                        .iter()
-                        .map(|&h| (h, crate::scene::ChangeKind::Added))
+                    let changes: Vec<_> = touched
+                        .into_iter()
+                        .map(|h| (h, crate::scene::ChangeKind::Modified))
                         .collect();
                     if !changes.is_empty() {
                         self.tabs[tab].scene.bump_entities(&changes);
                     }
-                    self.aec.aec_control_plane_highlight_handles = spawned;
                 }
                 self.command_line.push_info(&crate::tr!(
                     "aec",
@@ -990,20 +989,19 @@ impl OpenCADStudio {
                             facet_name = f.name.clone();
                         }
                     }
-                    let spawned = crate::modules::aec::project::preview::highlight_control_plane_facet(
+                    let touched = crate::modules::aec::project::preview::highlight_control_plane_facet(
                         &mut self.tabs[tab].scene,
                         &storey,
                         pid,
                         f_idx,
                     );
-                    let changes: Vec<_> = spawned
-                        .iter()
-                        .map(|&h| (h, crate::scene::ChangeKind::Added))
+                    let changes: Vec<_> = touched
+                        .into_iter()
+                        .map(|h| (h, crate::scene::ChangeKind::Modified))
                         .collect();
                     if !changes.is_empty() {
                         self.tabs[tab].scene.bump_entities(&changes);
                     }
-                    self.aec.aec_control_plane_highlight_handles = spawned;
                 }
                 self.command_line.push_info(&crate::tr!(
                     "aec",

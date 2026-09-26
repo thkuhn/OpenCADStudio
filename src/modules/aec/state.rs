@@ -491,7 +491,6 @@ pub struct AecState {
     pub aec_storey_settings_facet_z: std::collections::HashMap<(uuid::Uuid, usize), String>,
     pub aec_storey_settings_elevation: String,
     pub aec_storey_settings_height: String,
-    pub aec_control_plane_highlight_handles: Vec<acadrust::Handle>,
     pub aec_control_plane_highlight_epoch: u64,
 }
 
@@ -674,7 +673,6 @@ impl Default for AecState {
             aec_storey_settings_facet_z: std::collections::HashMap::new(),
             aec_storey_settings_elevation: String::new(),
             aec_storey_settings_height: String::new(),
-            aec_control_plane_highlight_handles: Vec::new(),
             aec_control_plane_highlight_epoch: 0,
         }
     }
