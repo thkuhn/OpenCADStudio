@@ -2229,33 +2229,7 @@ fn changing_wall_properties_style_updates_style_id_and_layer_snapshot() {
         })
         .collect();
 
-    let mut wall = wall_from_entity(scene.document.get_entity(wall_handle).unwrap())
-        .expect("should parse as WALL");
-    wall.style_id = new_style_id.clone();
-    wall.layers = wall_layers.clone();
-
-    let mut record = ExtendedDataRecord::new(AEC_APPID);
-    record.values = wall_record(
-        &wall.style_id,
-        wall.height,
-        wall.storey_id,
-        &wall.layers,
-        &wall.derived_handles,
-        wall.justification, wall.phase, wall.hatch_override.as_ref());
-
-    let entity = scene.document.get_entity_mut(wall_handle).unwrap();
-    let xd = &mut entity.common_mut().extended_data;
-    let kept: Vec<_> = xd
-        .records()
-        .iter()
-        .filter(|r| r.application_name != AEC_APPID)
-        .cloned()
-        .collect();
-    xd.clear();
-    for r in kept {
-        xd.add_record(r);
-    }
-    xd.add_record(record);
+    assert!(write_wall_style(&mut scene, wall_handle, &new_style_id, wall_layers));
 
     regenerate_wall_representation(&mut scene, wall_handle, None)
         .expect("regeneration should succeed after style change");
@@ -2266,6 +2240,83 @@ fn changing_wall_properties_style_updates_style_id_and_layer_snapshot() {
     assert_eq!(updated.layers.len(), 2);
     assert_eq!(updated.layers[0].material, "Brick");
     assert_eq!(updated.layers[1].material, "Insulation");
+}
+
+#[test]
+fn changing_wall_properties_style_preserves_planes_and_other_properties() {
+    let mut scene = Scene::new();
+    let wall_handle = add_multi_layer_wall(&mut scene);
+
+    let base_id = uuid::Uuid::new_v4();
+    let top_id = uuid::Uuid::new_v4();
+
+    // Set initial custom properties on the wall
+    let entity = scene.document.get_entity_mut(wall_handle).unwrap();
+    let mut wall = wall_from_entity(entity).expect("WALL");
+    wall.base_plane_id = Some(base_id);
+    wall.top_plane_id = Some(top_id);
+    wall.base_plane_name = Some("Floor Level 0".to_string());
+    wall.top_plane_name = Some("Ceiling Level 0".to_string());
+    wall.base_offset = 0.15;
+    wall.top_offset = -0.25;
+    wall.base_origin = [1.0, 2.0, 0.5];
+    wall.base_normal = [0.0, 0.0, 1.0];
+    wall.top_origin = [1.0, 2.0, 3.5];
+    wall.top_normal = [0.0, 0.0, 1.0];
+    wall.height = 3.0;
+    wall.justification = WallJustification::Interior;
+    wall.phase = PlanPhase::Existing;
+    wall.storey_id = 42;
+    wall.hatch_override = Some(engine::display_component::ComponentStyleOverride {
+        hatch_angle: Some(45.0),
+        hatch_angle_relative: Some(true),
+        ..Default::default()
+    });
+
+    let mut record = ExtendedDataRecord::new(AEC_APPID);
+    record.values = wall_record_for_wall(&wall);
+    write_aec_record(&mut scene.document, wall_handle, record);
+
+    // Now change the wall style via write_wall_style
+    let new_layers = vec![
+        WallLayer {
+            material: "Timber".to_string(),
+            thickness: 0.14,
+            function: "Structural".to_string(),
+            axis_offset: 0.0,
+            bottom_offset: 0.0,
+            top_offset: 0.0,
+            layer_override: None,
+            hatch_override: None,
+            layer_id: uuid::Uuid::new_v4(),
+        },
+    ];
+
+    assert!(write_wall_style(&mut scene, wall_handle, "TimberWallStyle", new_layers));
+
+    let updated = wall_from_entity(scene.document.get_entity(wall_handle).unwrap())
+        .expect("should still parse as WALL");
+    assert_eq!(updated.style_id, "TimberWallStyle");
+    assert_eq!(updated.layers.len(), 1);
+    assert_eq!(updated.layers[0].material, "Timber");
+
+    // All other properties must be completely preserved!
+    assert_eq!(updated.base_plane_id, Some(base_id));
+    assert_eq!(updated.top_plane_id, Some(top_id));
+    assert_eq!(updated.base_plane_name.as_deref(), Some("Floor Level 0"));
+    assert_eq!(updated.top_plane_name.as_deref(), Some("Ceiling Level 0"));
+    assert!((updated.base_offset - 0.15).abs() < 1e-9);
+    assert!((updated.top_offset - (-0.25)).abs() < 1e-9);
+    assert_eq!(updated.base_origin, [1.0, 2.0, 0.5]);
+    assert_eq!(updated.base_normal, [0.0, 0.0, 1.0]);
+    assert_eq!(updated.top_origin, [1.0, 2.0, 3.5]);
+    assert_eq!(updated.top_normal, [0.0, 0.0, 1.0]);
+    assert!((updated.height - 3.0).abs() < 1e-9);
+    assert_eq!(updated.justification, WallJustification::Interior);
+    assert_eq!(updated.phase, PlanPhase::Existing);
+    assert_eq!(updated.storey_id, 42);
+    assert!(updated.hatch_override.is_some());
+    assert_eq!(updated.hatch_override.unwrap().hatch_angle, Some(45.0));
 }
 
 #[test]

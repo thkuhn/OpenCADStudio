@@ -2402,83 +2402,47 @@ impl OpenCADStudio {
                         }
                         crate::app::StylePickerTarget::WallPropertiesStyle => {
                             self.active_modal = None;
-                            let Some(lib) = &self.aec.aec_style_library else {
+                            let Some(lib) = self.aec.aec_style_library.clone() else {
                                 return Task::none();
                             };
-
-                            let wall_layers = crate::modules::aec::engine::xdata::resolve_wall_style_layers_ids(
-                                lib,
-                                &selection,
-                                None,
-                            )
-                            .unwrap_or_default();
 
                             let i = self.active_tab;
                             self.push_undo_snapshot(i, "CHPROP");
 
                             let handles = self.aec.aec_style_picker_wall_handles.clone();
                             for handle in handles {
-                                let handle = crate::modules::aec::engine::wall_package::resolve_wall_package(
+                                let wall_owner = crate::modules::aec::engine::wall_package::resolve_wall_package(
                                     &self.tabs[i].scene,
                                     handle,
                                 );
-                                let mut record = acadrust::xdata::ExtendedDataRecord::new(
-                                    crate::modules::aec::engine::xdata::AEC_APPID,
-                                );
-
-                                if let Some(entity) = self.tabs[i].scene.document.get_entity(handle) {
-                                    if let Some(mut wall) =
-                                        crate::modules::aec::engine::xdata::wall_from_entity(entity)
-                                    {
-                                        wall.style_id = selection.clone();
-                                        wall.layers = wall_layers.clone();
-
-                                        record.values = crate::modules::aec::engine::xdata::wall_record(
-                                            &wall.style_id,
-                                            wall.height,
-                                            wall.storey_id,
-                                            &wall.layers,
-                                            &wall.derived_handles,
-                                            wall.justification,
-                                            wall.phase,
-                                            wall.hatch_override.as_ref(),
-                                        );
-                                    }
-                                }
-
-                                if !record.values.is_empty() {
-                                    let app_handle = self.tabs[i]
-                                        .scene
-                                        .document
-                                        .app_ids
-                                        .get(crate::modules::aec::engine::xdata::AEC_APPID)
-                                        .map(|a| a.handle.value());
-
-                                    if let Some(entity) =
-                                        self.tabs[i].scene.document.get_entity_mut(handle)
-                                    {
-                                        let xd = &mut entity.common_mut().extended_data;
-                                        let kept: Vec<_> = xd
-                                            .records()
-                                            .iter()
-                                            .filter(|r| {
-                                                r.application_name
-                                                    != crate::modules::aec::engine::xdata::AEC_APPID
-                                            })
-                                            .cloned()
-                                            .collect();
-                                        xd.clear();
-                                        for r in kept {
-                                            xd.add_record(r);
+                                let bb = self.tabs[i]
+                                    .scene
+                                    .document
+                                    .get_entity(wall_owner)
+                                    .and_then(crate::modules::aec::engine::xdata::wall_from_entity)
+                                    .and_then(|w| {
+                                        let t = w.total_thickness();
+                                        if t > 0.0 {
+                                            Some(t)
+                                        } else {
+                                            None
                                         }
-                                        xd.add_record(record);
-                                        if let Some(ah) = app_handle {
-                                            xd.raw_dwg_eed.retain(|(a, _)| *a != ah);
-                                        }
+                                    });
+                                let wall_layers = crate::modules::aec::engine::xdata::resolve_wall_style_layers_ids(
+                                    &lib,
+                                    &selection,
+                                    bb,
+                                )
+                                .unwrap_or_default();
 
-                                        let _ = self.regenerate_wall_respecting_active_display_config(i, handle);
-                                        self.tabs[i].dirty = true;
-                                    }
+                                if crate::modules::aec::engine::xdata::write_wall_style(
+                                    &mut self.tabs[i].scene,
+                                    wall_owner,
+                                    &selection,
+                                    wall_layers,
+                                ) {
+                                    let _ = self.regenerate_wall_respecting_active_display_config(i, wall_owner);
+                                    self.tabs[i].dirty = true;
                                 }
                             }
                             self.refresh_properties();

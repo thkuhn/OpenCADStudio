@@ -344,6 +344,31 @@ pub fn write_wall_layers(scene: &mut Scene, wall_handle: Handle, layers: Vec<Wal
     write_aec_record(&mut scene.document, wall_handle, record)
 }
 
+/// Overwrites only the `style_id` and layer-snapshot portion of a wall's `WALL` XDATA record,
+/// keeping all other fields (`height`, `storey_id`, `derived_handles`, `justification`,
+/// `phase`, `hatch_override`, `base_plane_id`, `top_plane_id`, `base_plane_name`, `top_plane_name`,
+/// `base_offset`, `top_offset`, `base_origin`, `base_normal`, `top_origin`, `top_normal`,
+/// `base_facets`, `top_facets`) intact.
+pub fn write_wall_style(
+    scene: &mut Scene,
+    wall_handle: Handle,
+    style_id: &str,
+    layers: Vec<WallLayer>,
+) -> bool {
+    let wall_handle = resolve_wall_package(scene, wall_handle);
+    let Some(entity) = scene.document.get_entity(wall_handle) else {
+        return false;
+    };
+    let Some(mut wall) = wall_from_entity(entity) else {
+        return false;
+    };
+    wall.style_id = style_id.to_string();
+    wall.layers = layers;
+    let mut record = ExtendedDataRecord::new(AEC_APPID);
+    record.values = wall_record_for_wall(&wall);
+    write_aec_record(&mut scene.document, wall_handle, record)
+}
+
 /// Overwrites only the `phase` field of a wall's `WALL` XDATA record,
 /// keeping every other field intact. Used by the Properties panel's
 /// editable "Phase" dropdown (single or multi-selected walls). Purely a

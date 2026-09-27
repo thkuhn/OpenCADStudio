@@ -182,15 +182,7 @@ pub fn set_wall_storey(scene: &mut Scene, wall_handle: Handle, new_storey_id: u3
     }
     wall.storey_id = new_storey_id;
     let mut record = ExtendedDataRecord::new(AEC_APPID);
-    for v in wall_record(
-        &wall.style_id,
-        wall.height,
-        wall.storey_id,
-        &wall.layers,
-        &wall.derived_handles,
-        wall.justification, wall.phase, wall.hatch_override.as_ref()) {
-        record.add_value(v);
-    }
+    record.values = wall_record_for_wall(&wall);
     if !write_aec_record(&mut scene.document, wall_handle, record) {
         return false;
     }

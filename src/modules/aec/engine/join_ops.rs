@@ -1260,15 +1260,7 @@ pub fn reverse_wall_in_document(
                 WallJustification::Center => WallJustification::Center,
             };
             let mut record = ExtendedDataRecord::new(AEC_APPID);
-            for v in wall_record(
-                &v2.style_id,
-                v2.height,
-                v2.storey_id,
-                &v2.layers,
-                &v2.derived_handles,
-                v2.justification, v2.phase, v2.hatch_override.as_ref()) {
-                record.add_value(v);
-            }
+            record.values = wall_record_for_wall(&v2);
             write_aec_record(&mut scene.document, wall_handle, record);
         }
     }
