@@ -17,7 +17,7 @@ ANSI_1252
   9
 $HANDSEED
   5
-148
+161
   9
 $INSBASE
  10
@@ -5575,9 +5575,9 @@ axis_offset
 1000
 layer_id
 1000
-11c025a4-6f8b-4e07-90f7-98009ce4a744
+60d6fb57-7ff5-4162-b296-b392ac95eaf3
 1000
-fbdd192f-017b-4d56-9e5e-46e7db0dab49
+16c52f67-04f8-49cc-8424-b4d2c45d2844
 1000
 New
 1000
@@ -6405,7 +6405,7 @@ axis_offset
 1000
 layer_id
 1000
-9848ae51-e2de-498d-a20e-86a57f4a4932
+af1cf20d-f0cb-4b05-b46e-90dcc4e63e0e
 1000
 New
 1000
@@ -6533,7 +6533,7 @@ axis_offset
 1000
 layer_id
 1000
-f4618635-dc7f-4250-aa28-0a7a1fc38b2f
+c7752eca-59e4-4dfb-8395-be26df74a06b
 1000
 New
 1000
@@ -12031,7 +12031,7 @@ WALL_REP
 1000
 solid
   0
-3DFACE
+POLYLINE
   5
 108
 330
@@ -12043,41 +12043,133 @@ AEC_CONTROLPLANES
  62
      2
 100
-AcDbFace
+AcDb3dPolyline
+ 66
+     1
+ 10
+0.0
+ 20
+0.0
+ 30
+0.0
+ 70
+     9
+1001
+OPENCAD_AEC
+1000
+CONTROLPLANE
+1000
+09eb33b0-680a-41e5-96c1-130a7af74632
+1000
+Dachgeschoss_ELEVATION
+  0
+VERTEX
+  5
+147
+330
+108
+100
+AcDbEntity
+  8
+0
+ 62
+     2
+100
+AcDbVertex
+100
+AcDb3dPolylineVertex
  10
 -5.0
  20
 -5.0
  30
 0.0
- 11
-45.0
- 21
--5.0
- 31
-0.0
- 12
-45.0
- 22
-45.0
- 32
-0.0
- 13
--5.0
- 23
-45.0
- 33
-0.0
-1001
-OPENCAD_AEC
-1000
-CONTROLPLANE
-1000
-3e25e97e-176e-4afe-b775-98d2eabef277
-1000
-Dachgeschoss_ELEVATION
+ 70
+    32
   0
-3DFACE
+VERTEX
+  5
+148
+330
+108
+100
+AcDbEntity
+  8
+0
+ 62
+     2
+100
+AcDbVertex
+100
+AcDb3dPolylineVertex
+ 10
+45.0
+ 20
+-5.0
+ 30
+0.0
+ 70
+    32
+  0
+VERTEX
+  5
+149
+330
+108
+100
+AcDbEntity
+  8
+0
+ 62
+     2
+100
+AcDbVertex
+100
+AcDb3dPolylineVertex
+ 10
+45.0
+ 20
+45.0
+ 30
+0.0
+ 70
+    32
+  0
+VERTEX
+  5
+14A
+330
+108
+100
+AcDbEntity
+  8
+0
+ 62
+     2
+100
+AcDbVertex
+100
+AcDb3dPolylineVertex
+ 10
+-5.0
+ 20
+45.0
+ 30
+0.0
+ 70
+    32
+  0
+SEQEND
+  5
+14B
+330
+108
+100
+AcDbEntity
+  8
+AEC_CONTROLPLANES
+  0
+POLYLINE
   5
 109
 330
@@ -12089,41 +12181,133 @@ AEC_CONTROLPLANES
  62
      4
 100
-AcDbFace
+AcDb3dPolyline
+ 66
+     1
+ 10
+0.0
+ 20
+0.0
+ 30
+0.0
+ 70
+     9
+1001
+OPENCAD_AEC
+1000
+CONTROLPLANE
+1000
+7bc62d14-5f69-43e0-a910-965aa6aad28c
+1000
+Dachgeschoss_OKGH
+  0
+VERTEX
+  5
+14C
+330
+109
+100
+AcDbEntity
+  8
+0
+ 62
+     4
+100
+AcDbVertex
+100
+AcDb3dPolylineVertex
  10
 -5.0
  20
 -5.0
  30
 3.0
- 11
-45.0
- 21
--5.0
- 31
-3.0
- 12
-45.0
- 22
-45.0
- 32
-3.0
- 13
--5.0
- 23
-45.0
- 33
-3.0
-1001
-OPENCAD_AEC
-1000
-CONTROLPLANE
-1000
-ff92e54c-47ee-45f7-8d07-2e5bf381f8db
-1000
-Dachgeschoss_OKGH
+ 70
+    32
   0
-3DFACE
+VERTEX
+  5
+14D
+330
+109
+100
+AcDbEntity
+  8
+0
+ 62
+     4
+100
+AcDbVertex
+100
+AcDb3dPolylineVertex
+ 10
+45.0
+ 20
+-5.0
+ 30
+3.0
+ 70
+    32
+  0
+VERTEX
+  5
+14E
+330
+109
+100
+AcDbEntity
+  8
+0
+ 62
+     4
+100
+AcDbVertex
+100
+AcDb3dPolylineVertex
+ 10
+45.0
+ 20
+45.0
+ 30
+3.0
+ 70
+    32
+  0
+VERTEX
+  5
+14F
+330
+109
+100
+AcDbEntity
+  8
+0
+ 62
+     4
+100
+AcDbVertex
+100
+AcDb3dPolylineVertex
+ 10
+-5.0
+ 20
+45.0
+ 30
+3.0
+ 70
+    32
+  0
+SEQEND
+  5
+150
+330
+109
+100
+AcDbEntity
+  8
+AEC_CONTROLPLANES
+  0
+POLYLINE
   5
 10A
 330
@@ -12135,41 +12319,133 @@ AEC_CONTROLPLANES
  62
      4
 100
-AcDbFace
+AcDb3dPolyline
+ 66
+     1
+ 10
+0.0
+ 20
+0.0
+ 30
+0.0
+ 70
+     9
+1001
+OPENCAD_AEC
+1000
+CONTROLPLANE
+1000
+d9f8609e-b67c-4762-bcc4-5646b51578e5
+1000
+Pultdach_OK
+  0
+VERTEX
+  5
+151
+330
+10A
+100
+AcDbEntity
+  8
+0
+ 62
+     4
+100
+AcDbVertex
+100
+AcDb3dPolylineVertex
  10
 0.0
  20
 0.0
  30
 2.5
- 11
-0.0
- 21
-50.0
- 31
-2.5
- 12
--48.29629131445341
- 22
-50.0
- 32
--10.440952255126037
- 13
--48.29629131445341
- 23
-0.0
- 33
--10.440952255126037
-1001
-OPENCAD_AEC
-1000
-CONTROLPLANE
-1000
-4c918ae4-d1c5-4685-b9ba-a100e9f36f1a
-1000
-Pultdach_OK
+ 70
+    32
   0
-3DFACE
+VERTEX
+  5
+152
+330
+10A
+100
+AcDbEntity
+  8
+0
+ 62
+     4
+100
+AcDbVertex
+100
+AcDb3dPolylineVertex
+ 10
+0.0
+ 20
+50.0
+ 30
+2.5
+ 70
+    32
+  0
+VERTEX
+  5
+153
+330
+10A
+100
+AcDbEntity
+  8
+0
+ 62
+     4
+100
+AcDbVertex
+100
+AcDb3dPolylineVertex
+ 10
+-48.29629131445341
+ 20
+50.0
+ 30
+-10.440952255126037
+ 70
+    32
+  0
+VERTEX
+  5
+154
+330
+10A
+100
+AcDbEntity
+  8
+0
+ 62
+     4
+100
+AcDbVertex
+100
+AcDb3dPolylineVertex
+ 10
+-48.29629131445341
+ 20
+0.0
+ 30
+-10.440952255126037
+ 70
+    32
+  0
+SEQEND
+  5
+155
+330
+10A
+100
+AcDbEntity
+  8
+AEC_CONTROLPLANES
+  0
+POLYLINE
   5
 10B
 330
@@ -12181,41 +12457,133 @@ AEC_CONTROLPLANES
  62
      4
 100
-AcDbFace
+AcDb3dPolyline
+ 66
+     1
+ 10
+0.0
+ 20
+0.0
+ 30
+0.0
+ 70
+     9
+1001
+OPENCAD_AEC
+1000
+CONTROLPLANE
+1000
+3e15efc2-77a5-458c-90ff-b9b0aafaf547
+1000
+Dach_Links
+  0
+VERTEX
+  5
+156
+330
+10B
+100
+AcDbEntity
+  8
+0
+ 62
+     4
+100
+AcDbVertex
+100
+AcDb3dPolylineVertex
  10
 0.0
  20
 5.0
  30
 2.5
- 11
-0.0
- 21
-55.0
- 31
-2.5
- 12
--45.31538935183249
- 22
-55.0
- 32
--18.630913087034973
- 13
--45.31538935183249
- 23
-5.0
- 33
--18.630913087034973
-1001
-OPENCAD_AEC
-1000
-CONTROLPLANE
-1000
-262c5406-3360-461e-b10b-ddc0b1221c9d
-1000
-Dach_Links
+ 70
+    32
   0
-3DFACE
+VERTEX
+  5
+157
+330
+10B
+100
+AcDbEntity
+  8
+0
+ 62
+     4
+100
+AcDbVertex
+100
+AcDb3dPolylineVertex
+ 10
+0.0
+ 20
+55.0
+ 30
+2.5
+ 70
+    32
+  0
+VERTEX
+  5
+158
+330
+10B
+100
+AcDbEntity
+  8
+0
+ 62
+     4
+100
+AcDbVertex
+100
+AcDb3dPolylineVertex
+ 10
+-45.31538935183249
+ 20
+55.0
+ 30
+-18.630913087034973
+ 70
+    32
+  0
+VERTEX
+  5
+159
+330
+10B
+100
+AcDbEntity
+  8
+0
+ 62
+     4
+100
+AcDbVertex
+100
+AcDb3dPolylineVertex
+ 10
+-45.31538935183249
+ 20
+5.0
+ 30
+-18.630913087034973
+ 70
+    32
+  0
+SEQEND
+  5
+15A
+330
+10B
+100
+AcDbEntity
+  8
+AEC_CONTROLPLANES
+  0
+POLYLINE
   5
 10C
 330
@@ -12227,39 +12595,131 @@ AEC_CONTROLPLANES
  62
      4
 100
-AcDbFace
+AcDb3dPolyline
+ 66
+     1
+ 10
+0.0
+ 20
+0.0
+ 30
+0.0
+ 70
+     9
+1001
+OPENCAD_AEC
+1000
+CONTROLPLANE
+1000
+0ce42dbc-8c04-49c5-9a2d-c81c980f9ffa
+1000
+Dach_Rechts
+  0
+VERTEX
+  5
+15B
+330
+10C
+100
+AcDbEntity
+  8
+0
+ 62
+     4
+100
+AcDbVertex
+100
+AcDb3dPolylineVertex
  10
 5.0
  20
 5.0
  30
 4.8315382907749935
- 11
+ 70
+    32
+  0
+VERTEX
+  5
+15C
+330
+10C
+100
+AcDbEntity
+  8
+0
+ 62
+     4
+100
+AcDbVertex
+100
+AcDb3dPolylineVertex
+ 10
 5.0
- 21
+ 20
 -45.0
- 31
+ 30
 4.8315382907749935
- 12
+ 70
+    32
+  0
+VERTEX
+  5
+15D
+330
+10C
+100
+AcDbEntity
+  8
+0
+ 62
+     4
+100
+AcDbVertex
+100
+AcDb3dPolylineVertex
+ 10
 50.31538935183249
- 22
+ 20
 -45.0
- 32
+ 30
 -16.29937479625998
- 13
+ 70
+    32
+  0
+VERTEX
+  5
+15E
+330
+10C
+100
+AcDbEntity
+  8
+0
+ 62
+     4
+100
+AcDbVertex
+100
+AcDb3dPolylineVertex
+ 10
 50.31538935183249
- 23
+ 20
 5.0
- 33
+ 30
 -16.29937479625998
-1001
-OPENCAD_AEC
-1000
-CONTROLPLANE
-1000
-d92e6202-47d0-4c69-b6e2-33055dace507
-1000
-Dach_Rechts
+ 70
+    32
+  0
+SEQEND
+  5
+15F
+330
+10C
+100
+AcDbEntity
+  8
+AEC_CONTROLPLANES
   0
 ENDSEC
   0

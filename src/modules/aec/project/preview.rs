@@ -1,4 +1,4 @@
-//! Control-plane Face3D previews in the storey drawing.
+//! Control-plane wireframe previews in the storey drawing.
 
 use acadrust::entities::EntityType;
 use acadrust::types::Vector3;
@@ -218,13 +218,14 @@ pub fn regenerate_control_plane_previews(scene: &mut Scene, storey: &mut StoreyR
                 if facet.vertices.len() < 3 {
                     continue;
                 }
-                let v0 = facet.vertices[0];
-                let v1 = facet.vertices[1];
-                let v2 = facet.vertices[2];
-                let v3 = facet.vertices.get(3).copied().unwrap_or(facet.vertices[0]);
-                let v = |c: [f64; 3]| Vector3::new(c[0], c[1], c[2]);
-                let face = acadrust::entities::Face3D::new(v(v0), v(v1), v(v2), v(v3));
-                let handle = scene.add_entity(EntityType::Face3D(face));
+                let pts: Vec<Vector3> = facet
+                    .vertices
+                    .iter()
+                    .map(|c| Vector3::new(c[0], c[1], c[2]))
+                    .collect();
+                let mut poly = acadrust::entities::Polyline3D::from_points(pts);
+                poly.flags.closed = true;
+                let handle = scene.add_entity(EntityType::Polyline3D(poly));
                 if let Some(e) = scene.document.get_entity_mut(handle) {
                     let ent = e.as_entity_mut();
                     ent.set_layer(AEC_CONTROLPLANES_LAYER.to_string());
@@ -239,14 +240,13 @@ pub fn regenerate_control_plane_previews(scene: &mut Scene, storey: &mut StoreyR
                 plane.origin[1] = DEFAULT_PREVIEW_ORIGIN_XY;
             }
             let corners = preview_rectangle(plane, DEFAULT_PREVIEW_SIZE);
-            let v = |c: [f64; 3]| Vector3::new(c[0], c[1], c[2]);
-            let face = acadrust::entities::Face3D::new(
-                v(corners[0]),
-                v(corners[1]),
-                v(corners[2]),
-                v(corners[3]),
-            );
-            let handle = scene.add_entity(EntityType::Face3D(face));
+            let pts: Vec<Vector3> = corners
+                .iter()
+                .map(|c| Vector3::new(c[0], c[1], c[2]))
+                .collect();
+            let mut poly = acadrust::entities::Polyline3D::from_points(pts);
+            poly.flags.closed = true;
+            let handle = scene.add_entity(EntityType::Polyline3D(poly));
             if let Some(e) = scene.document.get_entity_mut(handle) {
                 let ent = e.as_entity_mut();
                 ent.set_layer(AEC_CONTROLPLANES_LAYER.to_string());
@@ -277,13 +277,13 @@ mod tests {
         assert_eq!(id, floor.id);
         assert!(name.ends_with("_ELEVATION"));
         assert_eq!(ent.as_entity().color().index(), Some(PREVIEW_COLOR_MAIN as u16));
-        if let EntityType::Face3D(f) = ent {
-            assert!((f.first_corner.x + 5.0).abs() < 1e-6);
-            assert!((f.first_corner.y + 5.0).abs() < 1e-6);
-            assert!((f.second_corner.x - 45.0).abs() < 1e-6);
-            assert!((f.fourth_corner.y - 45.0).abs() < 1e-6);
+        if let EntityType::Polyline3D(pl) = ent {
+            assert!((pl.vertices[0].position.x + 5.0).abs() < 1e-6);
+            assert!((pl.vertices[0].position.y + 5.0).abs() < 1e-6);
+            assert!((pl.vertices[1].position.x - 45.0).abs() < 1e-6);
+            assert!((pl.vertices[3].position.y - 45.0).abs() < 1e-6);
         } else {
-            panic!("expected Face3D");
+            panic!("expected Polyline3D");
         }
         let ceil = storey.plane(storey.ceiling_plane_id).unwrap();
         let ch = Handle::new(ceil.preview_handle.unwrap());
@@ -307,10 +307,10 @@ mod tests {
         let p = storey.control_planes.iter().find(|p| p.name == "RoofSlope").unwrap();
         let h = Handle::new(p.preview_handle.unwrap());
         let ent = scene.document.get_entity(h).unwrap();
-        if let EntityType::Face3D(f) = ent {
-            assert!((f.first_corner.z - 6.0).abs() > 0.01 || (f.third_corner.z - 6.0).abs() > 0.01);
+        if let EntityType::Polyline3D(pl) = ent {
+            assert!((pl.vertices[0].position.z - 6.0).abs() > 0.01 || (pl.vertices[2].position.z - 6.0).abs() > 0.01);
         } else {
-            panic!("expected Face3D");
+            panic!("expected Polyline3D");
         }
     }
 

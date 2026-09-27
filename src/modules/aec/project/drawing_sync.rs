@@ -65,27 +65,41 @@ pub fn sync_storey_planes_from_drawing(scene: &Scene, storey: &mut StoreyRef) ->
         }
     }
 
-    // 2. Scan remaining Face3D entities and update vertices, origins, normals
+    // 2. Scan remaining entities and update vertices, origins, normals
     for entity in scene.document.entities() {
         let Some((id, _, facet_idx)) = control_plane_facet_from_entity(entity) else {
             continue;
         };
-        let EntityType::Face3D(face) = entity else {
-            continue;
+        let verts: Vec<[f64; 3]> = match entity {
+            EntityType::Polyline3D(p3) => p3
+                .vertices
+                .iter()
+                .map(|v| [v.position.x, v.position.y, v.position.z])
+                .collect(),
+            EntityType::Face3D(face) => {
+                let p1 = [face.first_corner.x, face.first_corner.y, face.first_corner.z];
+                let p2 = [face.second_corner.x, face.second_corner.y, face.second_corner.z];
+                let p3 = [face.third_corner.x, face.third_corner.y, face.third_corner.z];
+                let p4 = [face.fourth_corner.x, face.fourth_corner.y, face.fourth_corner.z];
+                let mut v = vec![p1, p2, p3];
+                if !approx_arr3(p4, p3) && !approx_arr3(p4, p1) {
+                    v.push(p4);
+                }
+                v
+            }
+            _ => continue,
         };
-        let p1 = [face.first_corner.x, face.first_corner.y, face.first_corner.z];
-        let p2 = [face.second_corner.x, face.second_corner.y, face.second_corner.z];
-        let p3 = [face.third_corner.x, face.third_corner.y, face.third_corner.z];
-        let p4 = [face.fourth_corner.x, face.fourth_corner.y, face.fourth_corner.z];
+        if verts.len() < 3 {
+            continue;
+        }
+        let p1 = verts[0];
+        let p2 = verts[1];
+        let p3 = verts[2];
         let n = normal_from_points(p1, p2, p3);
 
         if let Some(plane) = storey.plane_mut(id) {
             if let Some(idx) = facet_idx {
                 if idx < plane.facets.len() {
-                    let mut verts = vec![p1, p2, p3];
-                    if !approx_arr3(p4, p3) && !approx_arr3(p4, p1) {
-                        verts.push(p4);
-                    }
                     if plane.facets[idx].vertices != verts {
                         plane.facets[idx].vertices = verts;
                         changed = true;
@@ -140,11 +154,10 @@ mod tests {
         regenerate_control_plane_previews(&mut scene, &mut storey);
         let pid = storey.floor_plane_id;
         let h = Handle::new(storey.plane(pid).unwrap().preview_handle.unwrap());
-        if let Some(EntityType::Face3D(f)) = scene.document.get_entity_mut(h) {
-            f.first_corner.z = 2.5;
-            f.second_corner.z = 2.5;
-            f.third_corner.z = 2.5;
-            f.fourth_corner.z = 2.5;
+        if let Some(EntityType::Polyline3D(pl)) = scene.document.get_entity_mut(h) {
+            for v in &mut pl.vertices {
+                v.position.z = 2.5;
+            }
         }
         assert!(sync_storey_planes_from_drawing(&scene, &mut storey));
         assert!((storey.derived_elevation() - 2.5).abs() < 1e-9);
@@ -158,12 +171,12 @@ mod tests {
         regenerate_control_plane_previews(&mut scene, &mut storey);
 
         let h = Handle::new(storey.plane(ceiling_id).unwrap().preview_handle.unwrap());
-        // Modify preview face to represent a 15-degree roof slope
-        if let Some(EntityType::Face3D(f)) = scene.document.get_entity_mut(h) {
-            f.first_corner = acadrust::types::Vector3::new(0.0, 0.0, 6.0);
-            f.second_corner = acadrust::types::Vector3::new(10.0, 0.0, 6.0);
-            f.third_corner = acadrust::types::Vector3::new(10.0, 10.0, 8.68);
-            f.fourth_corner = acadrust::types::Vector3::new(0.0, 10.0, 8.68);
+        // Modify preview polyline to represent a 15-degree roof slope
+        if let Some(EntityType::Polyline3D(pl)) = scene.document.get_entity_mut(h) {
+            pl.vertices[0].position = acadrust::types::Vector3::new(0.0, 0.0, 6.0);
+            pl.vertices[1].position = acadrust::types::Vector3::new(10.0, 0.0, 6.0);
+            pl.vertices[2].position = acadrust::types::Vector3::new(10.0, 10.0, 8.68);
+            pl.vertices[3].position = acadrust::types::Vector3::new(0.0, 10.0, 8.68);
         }
 
         assert!(sync_storey_planes_from_drawing(&scene, &mut storey));
@@ -203,11 +216,10 @@ mod tests {
         let p = storey.plane(comp_id).unwrap();
         let h2 = Handle::new(p.facets[1].preview_handle.unwrap());
         // Modify facet 2 in drawing
-        if let Some(EntityType::Face3D(f)) = scene.document.get_entity_mut(h2) {
-            f.first_corner.z = 2.5;
-            f.second_corner.z = 2.5;
-            f.third_corner.z = 2.5;
-            f.fourth_corner.z = 2.5;
+        if let Some(EntityType::Polyline3D(pl)) = scene.document.get_entity_mut(h2) {
+            for v in &mut pl.vertices {
+                v.position.z = 2.5;
+            }
         }
 
         assert!(sync_storey_planes_from_drawing(&scene, &mut storey));
