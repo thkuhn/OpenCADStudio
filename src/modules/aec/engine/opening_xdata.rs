@@ -411,7 +411,16 @@ pub fn place_wall_opening(
         }
     }
 
-    let point_entity = EntityType::Point(Point::at(Vector3::new(anchor.0, anchor.1, 0.0)));
+    let (wall_owner_handle, xref_prefix) = crate::modules::aec::engine::wall_package::wall_owner_and_layer_prefix(scene, wall_handle);
+    let mut point_entity = EntityType::Point(Point::at(Vector3::new(anchor.0, anchor.1, 0.0)));
+    if !wall_owner_handle.is_null() && wall_owner_handle != scene.document.header.model_space_block_handle {
+        point_entity.common_mut().owner_handle = wall_owner_handle;
+    }
+    if let Some(ref p) = xref_prefix {
+        let l = format!("{p}0");
+        scene.ensure_layer(&l);
+        point_entity.as_entity_mut().set_layer(l);
+    }
     let opening_handle = scene.add_entity(point_entity);
 
     opening.handle = opening_handle;

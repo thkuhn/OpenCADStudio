@@ -10691,3 +10691,108 @@ fn build_and_export_sloped_walls_dxf_example() {
     assert!(ifc_data.contains("IFCBUILDINGSTOREY"), "IFC output must contain storey");
     assert!(ifc_data.contains("ISO-10303-21"), "Valid SPF header");
 }
+
+#[test]
+fn xref_wall_and_openings_regenerate_with_active_display_config() {
+    use crate::modules::aec::engine::display_component::RepresentationMode;
+    use crate::modules::aec::engine::plan_view::{DisplayConfig, PlanningStage, ViewType};
+
+    let mut scene = Scene::new();
+    let library = StyleLibrary::default();
+    let config = DisplayConfig::new(
+        "Arch 1:50".to_string(),
+        "Architektur".to_string(),
+        PlanningStage::Design,
+        ViewType::FloorPlan,
+    );
+
+    // 1. Create an XREF block record "EG"
+    let mut br = acadrust::tables::BlockRecord::new("EG");
+    let br_handle = scene.document.allocate_handle();
+    br.handle = br_handle;
+    br.flags.is_xref = true;
+    scene.document.block_records.add(br).expect("add xref block record");
+
+    // 2. Add a wall inside the XREF block
+    let mut pl = LwPolyline::new();
+    pl.add_vertex(LwVertex::new(Vector2::new(0.0, 0.0)));
+    pl.add_vertex(LwVertex::new(Vector2::new(10.0, 0.0)));
+
+    let mut wall = Wall::new("Standard", 2.80, 0);
+    wall.layers = vec![
+        wl("Plaster_Ext", 0.02, "Substrate"),
+        wl("Brick", 0.24, "Structural"),
+        wl("Plaster_Int", 0.015, "Substrate"),
+    ];
+    let mut wall_entity = EntityType::LwPolyline(pl);
+    wall_entity.common_mut().owner_handle = br_handle;
+    wall_entity.as_entity_mut().set_layer("EG|AEC_WALL_AXIS".to_string());
+    let mut rec = ExtendedDataRecord::new(AEC_APPID);
+    rec.values = crate::modules::aec::engine::xdata::wall_record_for_wall(&wall);
+    wall_entity.common_mut().extended_data.add_record(rec);
+    let wall_handle = scene.add_entity(wall_entity);
+
+    // 3. Add an opening in this XREF wall
+    let (open_handle, _) = place_wall_opening(
+        &mut scene,
+        wall_handle,
+        DVec3::new(4.0, 0.0, 0.0),
+        OpeningKind::Window,
+        Some(&library),
+        None,
+        None,
+    ).expect("place opening in xref wall");
+
+    // Check that opening entity also has owner_handle set to br_handle
+    assert_eq!(
+        scene.document.get_entity(open_handle).unwrap().common().owner_handle,
+        br_handle
+    );
+
+    // 4. Regenerate for 2D representation (e.g. Plan 1:50)
+    let touched_2d = apply_display_config_to_scene_with_representation(
+        &mut scene,
+        &config,
+        Some(&library),
+        Some(RepresentationMode::TwoD),
+    );
+
+    assert!(!touched_2d.is_empty());
+    for h in &touched_2d {
+        let ent = scene.document.get_entity(*h).expect("derived entity in document");
+        assert_eq!(
+            ent.common().owner_handle,
+            br_handle,
+            "derived 2d entity must belong to xref block record"
+        );
+        let layer = ent.common().layer.as_str();
+        assert!(
+            layer.starts_with("EG|"),
+            "derived layer must be prefixed with xref name, got: {layer}"
+        );
+    }
+
+    // 5. Apply display config for 3D representation
+    let touched_3d = apply_display_config_to_scene_with_representation(
+        &mut scene,
+        &config,
+        Some(&library),
+        Some(RepresentationMode::ThreeD),
+    );
+
+    assert!(!touched_3d.is_empty());
+    let mut found_solid = false;
+    for h in &touched_3d {
+        let ent = scene.document.get_entity(*h).expect("derived 3d entity in document");
+        assert_eq!(
+            ent.common().owner_handle,
+            br_handle,
+            "derived 3d entity must belong to xref block record"
+        );
+        if let EntityType::Solid3D(_) = ent {
+            found_solid = true;
+            assert!(scene.solid_models.contains_key(h), "Solid3D model must be registered in scene");
+        }
+    }
+    assert!(found_solid, "Model3D mode must generate Solid3D in xref block");
+}

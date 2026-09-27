@@ -1713,6 +1713,17 @@ pub fn regenerate_opening_display(
         cy + normal.1 * opening.cross_axis_offset,
     );
 
+    let (opening_owner_handle, xref_layer_prefix) =
+        crate::modules::aec::engine::wall_package::wall_owner_and_layer_prefix(scene, opening_handle);
+    let default_opening_layer = match xref_layer_prefix.as_deref() {
+        Some(p) => {
+            let l = format!("{p}0");
+            scene.ensure_layer(&l);
+            Some(l)
+        }
+        None => None,
+    };
+
     for baked in local {
         if baked.points.len() < 2 {
             continue;
@@ -1731,7 +1742,14 @@ pub fn regenerate_opening_display(
                 .collect();
             let mut pl = acadrust::entities::Polyline3D::from_points(pts);
             pl.flags.closed = baked.closed;
-            let handle = scene.add_entity(EntityType::Polyline3D(pl));
+            let mut entity = EntityType::Polyline3D(pl);
+            if !opening_owner_handle.is_null() && opening_owner_handle != scene.document.header.model_space_block_handle {
+                entity.common_mut().owner_handle = opening_owner_handle;
+            }
+            if let Some(ref l) = default_opening_layer {
+                entity.as_entity_mut().set_layer(l.clone());
+            }
+            let handle = scene.add_entity(entity);
             write_opening_display_tag(scene, handle, opening_handle, baked.slot);
             engine::owner_index::add_child(&mut scene.document, opening_handle, handle);
             continue;
@@ -1746,6 +1764,16 @@ pub fn regenerate_opening_display(
         if baked.filled {
             if let Some(model) = solid_hatch_from_ring(&world_pts) {
                 let hatch = scene.add_hatch(model, None, None);
+                if !opening_owner_handle.is_null() && opening_owner_handle != scene.document.header.model_space_block_handle {
+                    if let Some(e) = scene.document.get_entity_mut(hatch) {
+                        e.common_mut().owner_handle = opening_owner_handle;
+                    }
+                }
+                if let Some(ref l) = default_opening_layer {
+                    if let Some(e) = scene.document.get_entity_mut(hatch) {
+                        e.as_entity_mut().set_layer(l.clone());
+                    }
+                }
                 if let Some(EntityType::Hatch(h)) = scene.document.get_entity_mut(hatch) {
                     h.elevation = wall_base_z;
                 }
@@ -1760,7 +1788,14 @@ pub fn regenerate_opening_display(
         }
         pl.is_closed = baked.closed;
         pl.elevation = wall_base_z;
-        let handle = scene.add_entity(EntityType::LwPolyline(pl));
+        let mut entity = EntityType::LwPolyline(pl);
+        if !opening_owner_handle.is_null() && opening_owner_handle != scene.document.header.model_space_block_handle {
+            entity.common_mut().owner_handle = opening_owner_handle;
+        }
+        if let Some(ref l) = default_opening_layer {
+            entity.as_entity_mut().set_layer(l.clone());
+        }
+        let handle = scene.add_entity(entity);
         write_opening_display_tag(scene, handle, opening_handle, baked.slot);
         engine::owner_index::add_child(&mut scene.document, opening_handle, handle);
     }
@@ -1792,7 +1827,14 @@ pub fn regenerate_opening_display(
             }
             mtext.rotation = rot;
             mtext.attachment_point = acadrust::entities::mtext::AttachmentPoint::MiddleCenter;
-            let handle = scene.add_entity(EntityType::MText(mtext));
+            let mut entity = EntityType::MText(mtext);
+            if !opening_owner_handle.is_null() && opening_owner_handle != scene.document.header.model_space_block_handle {
+                entity.common_mut().owner_handle = opening_owner_handle;
+            }
+            if let Some(ref l) = default_opening_layer {
+                entity.as_entity_mut().set_layer(l.clone());
+            }
+            let handle = scene.add_entity(entity);
             write_opening_display_tag(
                 scene,
                 handle,
@@ -1827,7 +1869,14 @@ pub fn regenerate_opening_display(
                 [origin.0, origin.1, wall_base_z + opening.sill_height],
             );
             if let Some(body) = world_body {
-                let solid_handle = scene.add_entity(EntityType::Solid3D(acadrust::entities::Solid3D::new()));
+                let mut s3d_entity = EntityType::Solid3D(acadrust::entities::Solid3D::new());
+                if !opening_owner_handle.is_null() && opening_owner_handle != scene.document.header.model_space_block_handle {
+                    s3d_entity.common_mut().owner_handle = opening_owner_handle;
+                }
+                if let Some(ref l) = default_opening_layer {
+                    s3d_entity.as_entity_mut().set_layer(l.clone());
+                }
+                let solid_handle = scene.add_entity(s3d_entity);
                 if let Some(geom) = scene.prepare_solid_model_display(solid_handle, &body) {
                     scene.register_prepared_solid_model(solid_handle, body, geom);
                 }
@@ -1868,7 +1917,14 @@ pub fn regenerate_opening_display(
                 [origin.0, origin.1, wall_base_z + opening.sill_height],
             );
             if let Some(body) = world_body {
-                let solid_handle = scene.add_entity(EntityType::Solid3D(acadrust::entities::Solid3D::new()));
+                let mut s3d_entity = EntityType::Solid3D(acadrust::entities::Solid3D::new());
+                if !opening_owner_handle.is_null() && opening_owner_handle != scene.document.header.model_space_block_handle {
+                    s3d_entity.common_mut().owner_handle = opening_owner_handle;
+                }
+                if let Some(ref l) = default_opening_layer {
+                    s3d_entity.as_entity_mut().set_layer(l.clone());
+                }
+                let solid_handle = scene.add_entity(s3d_entity);
                 if let Some(geom) = scene.prepare_solid_model_display(solid_handle, &body) {
                     scene.register_prepared_solid_model(solid_handle, body, geom);
                 }
@@ -1905,7 +1961,14 @@ pub fn regenerate_opening_display(
                 [origin.0, origin.1, wall_base_z + opening.sill_height],
             );
             if let Some(body) = world_body {
-                let solid_handle = scene.add_entity(EntityType::Solid3D(acadrust::entities::Solid3D::new()));
+                let mut s3d_entity = EntityType::Solid3D(acadrust::entities::Solid3D::new());
+                if !opening_owner_handle.is_null() && opening_owner_handle != scene.document.header.model_space_block_handle {
+                    s3d_entity.common_mut().owner_handle = opening_owner_handle;
+                }
+                if let Some(ref l) = default_opening_layer {
+                    s3d_entity.as_entity_mut().set_layer(l.clone());
+                }
+                let solid_handle = scene.add_entity(s3d_entity);
                 if let Some(geom) = scene.prepare_solid_model_display(solid_handle, &body) {
                     scene.register_prepared_solid_model(solid_handle, body, geom);
                 }

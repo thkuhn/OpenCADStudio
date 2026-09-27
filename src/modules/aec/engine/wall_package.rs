@@ -95,6 +95,7 @@ pub(crate) fn reuse_or_add_wall_contour(
     scene: &mut Scene,
     reusable: &mut Vec<Handle>,
     pl: LwPolyline,
+    owner_handle: Option<Handle>,
 ) -> Handle {
     while let Some(handle) = reusable.pop() {
         if scene.document.get_entity(handle).is_none() {
@@ -111,7 +112,13 @@ pub(crate) fn reuse_or_add_wall_contour(
         scene.bump_entities(&[(handle, crate::scene::ChangeKind::Modified)]);
         return handle;
     }
-    scene.add_entity(EntityType::LwPolyline(pl))
+    let mut entity = EntityType::LwPolyline(pl);
+    if let Some(owner) = owner_handle {
+        if !owner.is_null() && owner != scene.document.header.model_space_block_handle {
+            entity.common_mut().owner_handle = owner;
+        }
+    }
+    scene.add_entity(entity)
 }
 
 pub(crate) fn clicked_sample_xy(scene: &Scene, handle: Handle) -> Vec<(f64, f64)> {
@@ -476,4 +483,38 @@ pub fn wall_package_handles(scene: &Scene, wall_handle: Handle) -> Vec<Handle> {
         }
     }
     handles
+}
+
+/// Helper to determine the owner block record handle and layer prefix for a wall or opening.
+///
+/// If the host entity belongs to an XREF block record, returns its owner handle and the XREF name prefix (e.g. `"XREF|"`).
+pub fn wall_owner_and_layer_prefix(scene: &Scene, host_handle: Handle) -> (Handle, Option<String>) {
+    let Some(entity) = scene.document.get_entity(host_handle) else {
+        return (Handle::NULL, None);
+    };
+    let owner = entity.common().owner_handle;
+    if !owner.is_null() && owner != scene.document.header.model_space_block_handle {
+        if let Some(br) = scene.document.block_records.iter().find(|br| br.handle == owner) {
+            if !br.name.is_empty() {
+                return (owner, Some(format!("{}|", br.name)));
+            }
+        }
+    }
+    if let Some(pos) = entity.common().layer.find('|') {
+        let p = entity.common().layer[..=pos].to_string();
+        return (owner, Some(p));
+    }
+    (owner, None)
+}
+
+/// Prefix a layer name with `prefix` if present and not already prefixed.
+pub fn prefix_layer(layer: &str, prefix: Option<&str>) -> String {
+    let Some(p) = prefix else {
+        return layer.to_string();
+    };
+    if layer.starts_with(p) {
+        layer.to_string()
+    } else {
+        format!("{p}{layer}")
+    }
 }

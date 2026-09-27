@@ -1920,6 +1920,7 @@ pub(crate) fn regenerate_wall_representation_inner(
     let Some(wall) = wall_from_entity(entity) else {
         return Err(WallRegenError::NotAWall);
     };
+    let (wall_owner_handle, xref_layer_prefix) = wall_owner_and_layer_prefix(scene, wall_handle);
     let (layers, height, wall_base_z, _old_derived, wall_style_id, wall_hatch_override) = (
         wall.layers.clone(),
         wall.height,
@@ -1953,8 +1954,10 @@ pub(crate) fn regenerate_wall_representation_inner(
     // The axis is reference geometry on its own layer. Idle visibility follows
     // the AxisLine slot when rules are present; otherwise the layer stays off.
     set_wall_axis_layer_visible(scene, axis_visible_from_rules(rules));
+    let axis_layer = prefix_layer(AEC_WALL_AXIS_LAYER, xref_layer_prefix.as_deref());
+    scene.ensure_layer(&axis_layer);
     if let Some(e) = scene.document.get_entity_mut(wall_handle) {
-        e.as_entity_mut().set_layer(AEC_WALL_AXIS_LAYER.to_string());
+        e.as_entity_mut().set_layer(axis_layer);
         if let EntityType::LwPolyline(pl) = e {
             pl.elevation = wall_base_z;
         }
@@ -2629,12 +2632,16 @@ pub(crate) fn regenerate_wall_representation_inner(
                 for mut pl in polylines_to_emit {
                     pl.elevation = wall_base_z;
                     let contour_handle =
-                        reuse_or_add_wall_contour(scene, &mut reusable_contours, pl);
-                    if let Some(layer_name) = layer.layer_override.as_deref().filter(|s| !s.is_empty()) {
-                        scene.ensure_layer(layer_name);
-                        if let Some(e) = scene.document.get_entity_mut(contour_handle) {
-                            e.as_entity_mut().set_layer(layer_name.to_string());
-                        }
+                        reuse_or_add_wall_contour(scene, &mut reusable_contours, pl, Some(wall_owner_handle));
+                    let layer_name = layer
+                        .layer_override
+                        .as_deref()
+                        .filter(|s| !s.is_empty())
+                        .unwrap_or("0");
+                    let prefixed_layer = prefix_layer(layer_name, xref_layer_prefix.as_deref());
+                    scene.ensure_layer(&prefixed_layer);
+                    if let Some(e) = scene.document.get_entity_mut(contour_handle) {
+                        e.as_entity_mut().set_layer(prefixed_layer);
                     }
                     if let Some(color) = line_color {
                         if let Some(e) = scene.document.get_entity_mut(contour_handle) {
@@ -2687,11 +2694,20 @@ pub(crate) fn regenerate_wall_representation_inner(
                     (c, acadrust::types::Transparency::from_percent(0.0))
                 });
                 let hatch_handle = scene.add_hatch(hatch_model, None, hatch_style);
-                if let Some(layer_name) = layer.layer_override.as_deref().filter(|s| !s.is_empty()) {
-                    scene.ensure_layer(layer_name);
+                if !wall_owner_handle.is_null() && wall_owner_handle != scene.document.header.model_space_block_handle {
                     if let Some(e) = scene.document.get_entity_mut(hatch_handle) {
-                        e.as_entity_mut().set_layer(layer_name.to_string());
+                        e.common_mut().owner_handle = wall_owner_handle;
                     }
+                }
+                let layer_name = layer
+                    .layer_override
+                    .as_deref()
+                    .filter(|s| !s.is_empty())
+                    .unwrap_or("0");
+                let prefixed_layer = prefix_layer(layer_name, xref_layer_prefix.as_deref());
+                scene.ensure_layer(&prefixed_layer);
+                if let Some(e) = scene.document.get_entity_mut(hatch_handle) {
+                    e.as_entity_mut().set_layer(prefixed_layer);
                 }
                 if let Some(c) = hatch_acad_color {
                     if let Some(e) = scene.document.get_entity_mut(hatch_handle) {
@@ -2768,7 +2784,21 @@ pub(crate) fn regenerate_wall_representation_inner(
 
                 if let Some(body) = body {
                     let s3d = acadrust::entities::Solid3D::new();
-                    let solid_handle = scene.add_entity(EntityType::Solid3D(s3d));
+                    let mut s3d_entity = EntityType::Solid3D(s3d);
+                    if !wall_owner_handle.is_null() && wall_owner_handle != scene.document.header.model_space_block_handle {
+                        s3d_entity.common_mut().owner_handle = wall_owner_handle;
+                    }
+                    let solid_handle = scene.add_entity(s3d_entity);
+                    let layer_name = layer
+                        .layer_override
+                        .as_deref()
+                        .filter(|s| !s.is_empty())
+                        .unwrap_or("0");
+                    let prefixed_layer = prefix_layer(layer_name, xref_layer_prefix.as_deref());
+                    scene.ensure_layer(&prefixed_layer);
+                    if let Some(e) = scene.document.get_entity_mut(solid_handle) {
+                        e.as_entity_mut().set_layer(prefixed_layer);
+                    }
                     if let Some(mut display_geom) = scene.prepare_solid_model_display(solid_handle, &body) {
                         let mut miter_seams = Vec::new();
                         let total_thick: f64 = layers.iter().map(|l| l.thickness).sum();
@@ -2848,7 +2878,21 @@ pub(crate) fn regenerate_wall_representation_inner(
                         0.0,
                     ) {
                         let s3d = acadrust::entities::Solid3D::new();
-                        let solid_handle = scene.add_entity(EntityType::Solid3D(s3d));
+                        let mut s3d_entity = EntityType::Solid3D(s3d);
+                        if !wall_owner_handle.is_null() && wall_owner_handle != scene.document.header.model_space_block_handle {
+                            s3d_entity.common_mut().owner_handle = wall_owner_handle;
+                        }
+                        let solid_handle = scene.add_entity(s3d_entity);
+                        let layer_name = layer
+                            .layer_override
+                            .as_deref()
+                            .filter(|s| !s.is_empty())
+                            .unwrap_or("0");
+                        let prefixed_layer = prefix_layer(layer_name, xref_layer_prefix.as_deref());
+                        scene.ensure_layer(&prefixed_layer);
+                        if let Some(e) = scene.document.get_entity_mut(solid_handle) {
+                            e.as_entity_mut().set_layer(prefixed_layer);
+                        }
                         if let Some(mut display_geom) = scene.prepare_solid_model_display(solid_handle, &body) {
                             filter_opening_surface_edges(
                                 &mut display_geom.0,
