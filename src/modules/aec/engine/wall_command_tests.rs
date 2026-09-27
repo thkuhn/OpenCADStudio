@@ -10843,7 +10843,81 @@ fn xref_wall_and_openings_regenerate_with_active_display_config() {
         if let EntityType::Solid3D(_) = ent {
             found_solid = true;
             assert!(scene.solid_models.contains_key(h), "Solid3D model must be registered in scene");
+            assert!(scene.block_meshes.contains_key(h), "Solid3D mesh for block must be in block_meshes");
         }
     }
     assert!(found_solid, "Model3D mode must generate Solid3D in xref block");
+}
+
+#[test]
+fn xref_full_integration_with_file_attachment_and_display_switching() {
+    use std::collections::HashSet;
+    use crate::modules::aec::engine::display_component::RepresentationMode;
+    use crate::modules::aec::engine::plan_view::{DisplayConfig, PlanningStage, ViewType};
+
+    let dir = std::env::temp_dir().join(format!("ocs_aec_xref_test_{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+
+    // 1. Create a child drawing with an AEC wall
+    let mut child_scene = Scene::new();
+    let _child_wall_handle = add_multi_layer_wall(&mut child_scene);
+    let bytes = crate::io::save_to_bytes(&child_scene.document, "dwg", child_scene.document.version).unwrap();
+    let child_path = dir.join("eg.dwg");
+    std::fs::write(&child_path, &bytes).unwrap();
+
+    // 2. Create host scene and attach eg.dwg as XREF
+    let mut host_scene = Scene::new();
+    let library = StyleLibrary::default();
+    let mut br = acadrust::tables::BlockRecord::new("EG");
+    let br_handle = host_scene.document.allocate_handle();
+    br.handle = br_handle;
+    br.flags.is_xref = true;
+    br.xref_path = child_path.to_string_lossy().to_string();
+    host_scene.document.block_records.add(br).unwrap();
+
+    let mut keys = HashSet::default();
+    keys.insert(br_handle);
+    let (infos, _) = crate::io::xref::resolve_xrefs_for_keys(&mut host_scene.document, &dir, &keys);
+    assert!(!infos.is_empty(), "XREF EG must resolve");
+
+    // Add an INSERT in host scene model space
+    let ins = acadrust::entities::Insert::new("EG", acadrust::types::Vector3::ZERO);
+    let ins_h = host_scene.add_entity(EntityType::Insert(ins));
+    assert!(!ins_h.is_null());
+
+    // Initial block epoch
+    let initial_epoch = host_scene.block_epoch;
+
+    // 3. Switch host scene to 3D representation
+    let config = DisplayConfig::new(
+        "Arch 1:50".to_string(),
+        "Architektur".to_string(),
+        PlanningStage::Design,
+        ViewType::FloorPlan,
+    );
+    let touched_3d = apply_display_config_to_scene_with_representation(
+        &mut host_scene,
+        &config,
+        Some(&library),
+        Some(RepresentationMode::ThreeD),
+    );
+    assert!(!touched_3d.is_empty(), "walls in xref must be regenerated in 3d");
+    assert!(host_scene.block_epoch > initial_epoch, "block epoch must increment");
+
+    let solid_handle = touched_3d.iter().find(|&&h| matches!(host_scene.document.get_entity(h), Some(EntityType::Solid3D(_)))).copied().expect("solid in xref");
+    assert!(host_scene.block_meshes.contains_key(&solid_handle), "mesh must be stored in block_meshes");
+
+    // 4. Switch host scene back to 2D representation
+    let epoch_before_2d = host_scene.block_epoch;
+    let touched_2d = apply_display_config_to_scene_with_representation(
+        &mut host_scene,
+        &config,
+        Some(&library),
+        Some(RepresentationMode::TwoD),
+    );
+    assert!(!touched_2d.is_empty(), "walls in xref must be regenerated in 2d");
+    assert!(host_scene.block_epoch > epoch_before_2d, "block epoch must increment for 2d switch");
+    assert!(!host_scene.block_meshes.contains_key(&solid_handle), "solid mesh must be removed from block_meshes in 2D mode");
+
+    std::fs::remove_dir_all(&dir).ok();
 }

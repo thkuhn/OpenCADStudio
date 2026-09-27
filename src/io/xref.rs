@@ -884,6 +884,32 @@ fn merge_source_entities(
             entity_handle_map.insert(old_h, new_h);
         }
     }
+    // Remap handles stored inside extended data (e.g. AEC wall derived_handles, opening host_wall, etc.)
+    for &new_h in entity_handle_map.values() {
+        if let Some(entity) = target.get_entity_mut(new_h) {
+            let xd = &mut entity.common_mut().extended_data;
+            let mut modified_records = Vec::new();
+            let mut any_changed = false;
+            for record in xd.records() {
+                let mut rec = record.clone();
+                for val in &mut rec.values {
+                    if let acadrust::xdata::XDataValue::Handle(ref mut h) = val {
+                        if let Some(&remapped) = entity_handle_map.get(h) {
+                            *h = remapped;
+                            any_changed = true;
+                        }
+                    }
+                }
+                modified_records.push(rec);
+            }
+            if any_changed {
+                xd.clear();
+                for rec in modified_records {
+                    xd.add_record(rec);
+                }
+            }
+        }
+    }
     (dropped, unremapped, entity_handle_map)
 }
 
@@ -2315,7 +2341,7 @@ mod tests {
         let (mut doc, key) = xref_doc_with("PLAN", "D:/Lib/plan.dwg");
         let host = std::path::Path::new("C:/Drawings/host.dwg");
         let err = apply_pathtype(&mut doc, key, Pathtype::Relative, host).unwrap_err();
-        assert_eq!(err, "XREF: cannot make path relative across drives.");
+        assert_eq!(err, crate::t!("XREF: cannot make path relative across drives."));
     }
 
     #[test]
@@ -2339,7 +2365,7 @@ mod tests {
         def.handle = h;
         doc.objects.insert(h, ObjectType::ImageDefinition(def));
         let err = set_ref_type(&mut doc, h.value(), RefType::Overlay).unwrap_err();
-        assert_eq!(err, "XREF: overlays apply to drawing references only.");
+        assert_eq!(err, crate::t!("XREF: overlays apply to drawing references only."));
     }
 
     #[test]
@@ -2828,10 +2854,7 @@ mod tests {
             let err =
                 bind_reference(&mut host, h.value(), std::path::Path::new("."), std::path::Path::new("."))
                     .unwrap_err();
-            assert_eq!(
-                err,
-                "XREF: PDF bind (vector import) is not available in this version."
-            );
+            assert_eq!(err, crate::t!("XREF: PDF bind (vector import) is not available in this version."));
         }
 
         #[test]
@@ -2844,7 +2867,7 @@ mod tests {
                 std::path::Path::new("."),
             )
             .unwrap_err();
-            assert_eq!(err, "XREF: no loaded reference with that key.");
+            assert_eq!(err, crate::t!("XREF: no loaded reference with that key."));
         }
     }
 }

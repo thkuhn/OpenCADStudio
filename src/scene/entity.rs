@@ -422,8 +422,14 @@ impl Scene {
                         &self.document,
                         entity,
                     );
+                    let top_level = self.is_top_level_owner(entity.common().owner_handle);
+                    if top_level {
+                        self.meshes.insert(handle, model);
+                    } else {
+                        model.prepare_instance_source(handle);
+                        self.block_meshes.insert(handle, model);
+                    }
                 }
-                self.meshes.insert(handle, model);
             }
             // Delta-undo: the new handle's before-image is "nothing" (it did not
             // exist). Poison the recording if this add also mutated non-entity
@@ -604,6 +610,7 @@ impl Scene {
         self.hatches.remove(&handle);
         self.images.remove(&handle);
         self.meshes.remove(&handle);
+        self.block_meshes.remove(&handle);
         self.solid_models.remove(&handle);
         if let Some(model) = hatch_seed {
             self.hatches.insert(handle, model);
@@ -631,8 +638,14 @@ impl Scene {
                     &self.document,
                     entity,
                 );
+                let top_level = self.is_top_level_owner(entity.common().owner_handle);
+                if top_level {
+                    self.meshes.insert(handle, model);
+                } else {
+                    model.prepare_instance_source(handle);
+                    self.block_meshes.insert(handle, model);
+                }
             }
-            self.meshes.insert(handle, model);
         }
 
         if affects_blocks {

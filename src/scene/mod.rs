@@ -3347,6 +3347,10 @@ impl Scene {
             }
             self.lighting_cache.borrow_mut().clear();
         }
+        let touches_blocks = !changes.is_empty() && self.changes_touch_block_definition(&changes);
+        if touches_blocks {
+            self.block_epoch = GEOMETRY_EPOCH.fetch_add(1, Ordering::Relaxed);
+        }
         let epoch = GEOMETRY_EPOCH.fetch_add(1, Ordering::Relaxed);
         self.geometry_epoch = epoch;
         self.invalidate_projection_bounds();
@@ -3362,7 +3366,18 @@ impl Scene {
                 }
             }
         }
-        self.push_geometry_delta(epoch, changes, false);
+        self.push_geometry_delta(epoch, changes, touches_blocks);
+    }
+
+    /// Returns true if the owner is Model Space, Paper Space or null.
+    pub(crate) fn is_top_level_owner(&self, owner: Handle) -> bool {
+        if owner.is_null() || owner == self.document.header.model_space_block_handle {
+            return true;
+        }
+        self.document.objects.values().any(|object| match object {
+            acadrust::objects::ObjectType::Layout(layout) => layout.block_record == owner,
+            _ => false,
+        })
     }
 
     /// True when any changed handle belongs to an ordinary block definition
@@ -3713,7 +3728,17 @@ impl Scene {
                 _ => {}
             }
         }
-        self.meshes.insert(handle, set);
+        let top_level = self
+            .document
+            .get_entity(handle)
+            .map(|e| self.is_top_level_owner(e.common().owner_handle))
+            .unwrap_or(true);
+        if top_level {
+            self.meshes.insert(handle, set);
+        } else {
+            set.prepare_instance_source(handle);
+            self.block_meshes.insert(handle, set);
+        }
         self.solid_models.insert(handle, solid);
         self.sync_solid_reference_point(handle);
         self.bump_entities(&[(handle, ChangeKind::Modified)]);
