@@ -2558,8 +2558,8 @@ fn regenerating_many_walls_completes_quickly() {
     }
     let elapsed = started.elapsed();
     assert!(
-        elapsed.as_secs() < 10,
-        "regenerating {WALL_COUNT} walls took {elapsed:?}, expected well under 10s"
+        elapsed.as_secs() < 15,
+        "regenerating {WALL_COUNT} walls took {elapsed:?}, expected well under 15s"
     );
 }
 

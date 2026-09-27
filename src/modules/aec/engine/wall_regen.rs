@@ -979,6 +979,18 @@ fn dist_sq_2d(a: (f64, f64), b: (f64, f64)) -> f64 {
     (a.0 - b.0) * (a.0 - b.0) + (a.1 - b.1) * (a.1 - b.1)
 }
 
+fn dist_to_segment_2d(p: (f64, f64), a: (f64, f64), b: (f64, f64)) -> f64 {
+    let dx = b.0 - a.0;
+    let dy = b.1 - a.1;
+    let len_sq = dx * dx + dy * dy;
+    if len_sq <= 1e-12 {
+        return (p.0 - a.0).hypot(p.1 - a.1);
+    }
+    let t = (((p.0 - a.0) * dx + (p.1 - a.1) * dy) / len_sq).clamp(0.0, 1.0);
+    let proj = (a.0 + t * dx, a.1 + t * dy);
+    (p.0 - proj.0).hypot(p.1 - proj.1)
+}
+
 /// Partition a 2D layer footprint polygon along facet boundary edges of multi-polygon control planes.
 pub fn partition_footprint_by_facets(
     footprint: &[(f64, f64)],
@@ -1066,6 +1078,93 @@ pub fn partition_footprint_by_facets(
         .collect()
 }
 
+/// Calculates (z_base, z_top) for a specific footprint piece of a wall layer at world (x, y).
+pub fn piece_z_base_top_at_xy(
+    piece_footprint: &[(f64, f64)],
+    wall: &Wall,
+    layer: Option<&WallLayer>,
+    _fallback_base_z: f64,
+    _fallback_height: f64,
+    x: f64,
+    y: f64,
+) -> (f64, f64) {
+    let m = piece_footprint.len().max(1);
+    let cx: f64 = piece_footprint.iter().map(|p| p.0).sum::<f64>() / m as f64;
+    let cy: f64 = piece_footprint.iter().map(|p| p.1).sum::<f64>() / m as f64;
+
+    let dominant_top_facet = if !wall.top_facets.is_empty() {
+        let dummy = crate::modules::aec::engine::control_plane::ControlPlane {
+            id: uuid::Uuid::nil(),
+            name: String::new(),
+            origin: wall.top_origin,
+            normal: wall.top_normal,
+            facets: wall.top_facets.clone(),
+            face_handle: None,
+            preview_handle: None,
+            visible: true,
+        };
+        dummy.min_facet_at_xy(cx, cy).cloned()
+    } else {
+        None
+    };
+
+    let dominant_base_facet = if !wall.base_facets.is_empty() {
+        let dummy = crate::modules::aec::engine::control_plane::ControlPlane {
+            id: uuid::Uuid::nil(),
+            name: String::new(),
+            origin: wall.base_origin,
+            normal: wall.base_normal,
+            facets: wall.base_facets.clone(),
+            face_handle: None,
+            preview_handle: None,
+            visible: true,
+        };
+        dummy.min_facet_at_xy(cx, cy).cloned()
+    } else {
+        None
+    };
+
+    let zb = if let Some(ref f) = dominant_base_facet {
+        let off = layer.map_or(wall.base_offset, |l| wall.base_offset + l.bottom_offset);
+        f.z_offset_at_xy(x, y, off).unwrap_or_else(|| {
+            if let Some(l) = layer {
+                wall.layer_base_z_at_xy(l, x, y)
+            } else {
+                wall.base_z_at_xy(x, y)
+            }
+        })
+    } else if !wall.base_facets.is_empty() {
+        let bot_off = layer.map_or(0.0, |l| l.bottom_offset);
+        wall.base_origin[2] + wall.base_offset + bot_off
+    } else if let Some(l) = layer {
+        wall.layer_base_z_at_xy(l, x, y)
+    } else {
+        wall.base_z_at_xy(x, y)
+    };
+
+    let zt = if let Some(ref f) = dominant_top_facet {
+        let off = layer.map_or(wall.top_offset, |l| wall.top_offset + l.top_offset);
+        f.z_offset_at_xy(x, y, off).unwrap_or_else(|| {
+            if let Some(l) = layer {
+                wall.layer_top_z_at_xy(l, x, y)
+            } else {
+                wall.top_z_at_xy(x, y)
+            }
+        })
+    } else if !wall.top_facets.is_empty() {
+        // Uncovered portion: strictly use the standard wall height above base
+        let top_off = layer.map_or(0.0, |l| l.top_offset);
+        zb + wall.height + top_off
+    } else if let Some(l) = layer {
+        wall.layer_top_z_at_xy(l, x, y)
+    } else {
+        wall.top_z_at_xy(x, y)
+    };
+
+    let zt = zt.max(zb + 1e-4);
+    (zb, zt)
+}
+
 /// Constructs a 3D solid for a wall layer piece with sloped or horizontal base and top.
 ///
 /// Computes per-vertex `(z_base, z_top)` heights across the layer footprint polygon and builds
@@ -1075,8 +1174,8 @@ pub fn build_sloped_layer_solid_3d(
     footprint_bulges: &[f64],
     wall: &Wall,
     layer: Option<&WallLayer>,
-    fallback_base_z: f64,
-    fallback_height: f64,
+    _fallback_base_z: f64,
+    _fallback_height: f64,
 ) -> Option<cadkernel::brep::Body> {
     let n = footprint.len();
     if n < 3 {
@@ -1114,87 +1213,16 @@ pub fn build_sloped_layer_solid_3d(
         polygon.reverse();
     }
 
-    let cx: f64 = polygon.iter().map(|p| p.0).sum::<f64>() / m as f64;
-    let cy: f64 = polygon.iter().map(|p| p.1).sum::<f64>() / m as f64;
-
-    let dominant_top_facet = if !wall.top_facets.is_empty() {
-        let dummy = crate::modules::aec::engine::control_plane::ControlPlane {
-            id: uuid::Uuid::nil(),
-            name: String::new(),
-            origin: wall.top_origin,
-            normal: wall.top_normal,
-            facets: wall.top_facets.clone(),
-            face_handle: None,
-            preview_handle: None,
-            visible: true,
-        };
-        dummy.min_facet_at_xy(cx, cy).cloned()
-    } else {
-        None
-    };
-
-    let dominant_base_facet = if !wall.base_facets.is_empty() {
-        let dummy = crate::modules::aec::engine::control_plane::ControlPlane {
-            id: uuid::Uuid::nil(),
-            name: String::new(),
-            origin: wall.base_origin,
-            normal: wall.base_normal,
-            facets: wall.base_facets.clone(),
-            face_handle: None,
-            preview_handle: None,
-            visible: true,
-        };
-        dummy.min_facet_at_xy(cx, cy).cloned()
-    } else {
-        None
-    };
-
     let mut vertices: Vec<[f64; 3]> = Vec::with_capacity(2 * m);
     // Base vertices (0..m)
     for &(x, y) in &polygon {
-        let zb = if let Some(ref f) = dominant_base_facet {
-            let off = layer.map_or(wall.base_offset, |l| wall.base_offset + l.bottom_offset);
-            f.z_offset_at_xy(x, y, off).unwrap_or_else(|| {
-                if let Some(l) = layer {
-                    wall.layer_base_z_at_xy(l, x, y)
-                } else {
-                    wall.base_z_at_xy(x, y) + fallback_base_z
-                }
-            })
-        } else if !wall.base_facets.is_empty() {
-            let bot_off = layer.map_or(0.0, |l| l.bottom_offset);
-            wall.base_origin[2] + wall.base_offset + bot_off
-        } else if let Some(l) = layer {
-            wall.layer_base_z_at_xy(l, x, y)
-        } else {
-            wall.base_z_at_xy(x, y) + fallback_base_z
-        };
+        let (zb, _) = piece_z_base_top_at_xy(&polygon, wall, layer, _fallback_base_z, _fallback_height, x, y);
         vertices.push([x, y, zb]);
     }
 
     // Top vertices (m..2*m)
-    for (i, &(x, y)) in polygon.iter().enumerate() {
-        let zb = vertices[i][2];
-        let zt = if let Some(ref f) = dominant_top_facet {
-            let off = layer.map_or(wall.top_offset, |l| wall.top_offset + l.top_offset);
-            f.z_offset_at_xy(x, y, off).unwrap_or_else(|| {
-                if let Some(l) = layer {
-                    wall.layer_top_z_at_xy(l, x, y)
-                } else {
-                    wall.top_z_at_xy(x, y) + fallback_base_z + fallback_height
-                }
-            })
-        } else if !wall.top_facets.is_empty() {
-            // Uncovered portion: strictly use the standard wall height above base
-            let top_off = layer.map_or(0.0, |l| l.top_offset);
-            zb + wall.height + top_off
-        } else if let Some(l) = layer {
-            wall.layer_top_z_at_xy(l, x, y)
-        } else {
-            wall.top_z_at_xy(x, y) + fallback_base_z + fallback_height
-        };
-        // Guarantee positive thickness of at least 1e-4
-        let zt = zt.max(zb + 1e-4);
+    for &(x, y) in &polygon {
+        let (_, zt) = piece_z_base_top_at_xy(&polygon, wall, layer, _fallback_base_z, _fallback_height, x, y);
         vertices.push([x, y, zt]);
     }
 
@@ -1215,6 +1243,267 @@ pub fn build_sloped_layer_solid_3d(
     }
 
     cadkernel::brep::make::faceted_solid(&vertices, &faces)
+}
+
+pub fn filter_facet_partition_edges(
+    set: &mut crate::scene::model::mesh_model::MeshLodSet,
+    wires: &mut Vec<acadrust::entities::Wire>,
+    current_piece: &[(f64, f64)],
+    all_pieces: &[(Vec<(f64, f64)>, Vec<f64>)],
+    wall: &Wall,
+    layer: Option<&WallLayer>,
+    fallback_base_z: f64,
+    fallback_height: f64,
+) {
+    if all_pieces.len() <= 1 || (set.edge_verts.is_empty() && wires.is_empty()) {
+        return;
+    }
+
+    struct FacetSeam {
+        q0: (f64, f64),
+        q1: (f64, f64),
+        overlap_z0: (f64, f64),
+        overlap_z1: (f64, f64),
+        base_shared: bool,
+        top_shared: bool,
+    }
+
+    let mut seams: Vec<FacetSeam> = Vec::new();
+    let n_curr = current_piece.len();
+    if n_curr < 3 {
+        return;
+    }
+
+    for (other_poly, _) in all_pieces {
+        let n_other = other_poly.len();
+        if n_other < 3 {
+            continue;
+        }
+        if n_other == n_curr
+            && other_poly
+                .iter()
+                .zip(current_piece.iter())
+                .all(|(a, b)| (a.0 - b.0).hypot(a.1 - b.1) <= 1e-4)
+        {
+            continue;
+        }
+
+        for i in 0..n_curr {
+            let a1 = current_piece[i];
+            let a2 = current_piece[(i + 1) % n_curr];
+            let v = (a2.0 - a1.0, a2.1 - a1.1);
+            let len = v.0.hypot(v.1);
+            if len <= 1e-6 {
+                continue;
+            }
+            let u = (v.0 / len, v.1 / len);
+            let n = (-u.1, u.0);
+
+            for j in 0..n_other {
+                let b1 = other_poly[j];
+                let b2 = other_poly[(j + 1) % n_other];
+                let d1 = (b1.0 - a1.0) * n.0 + (b1.1 - a1.1) * n.1;
+                let d2 = (b2.0 - a1.0) * n.0 + (b2.1 - a1.1) * n.1;
+                if d1.abs() > 2e-3 || d2.abs() > 2e-3 {
+                    continue;
+                }
+
+                let tb1 = (b1.0 - a1.0) * u.0 + (b1.1 - a1.1) * u.1;
+                let tb2 = (b2.0 - a1.0) * u.0 + (b2.1 - a1.1) * u.1;
+                let tb_min = tb1.min(tb2);
+                let tb_max = tb1.max(tb2);
+
+                let t_min = 0.0_f64.max(tb_min);
+                let t_max = len.min(tb_max);
+
+                if t_max - t_min > 1e-3 {
+                    let q0 = (a1.0 + t_min * u.0, a1.1 + t_min * u.1);
+                    let q1 = (a1.0 + t_max * u.0, a1.1 + t_max * u.1);
+
+                    let (zb_c0, zt_c0) = piece_z_base_top_at_xy(
+                        current_piece,
+                        wall,
+                        layer,
+                        fallback_base_z,
+                        fallback_height,
+                        q0.0,
+                        q0.1,
+                    );
+                    let (zb_c1, zt_c1) = piece_z_base_top_at_xy(
+                        current_piece,
+                        wall,
+                        layer,
+                        fallback_base_z,
+                        fallback_height,
+                        q1.0,
+                        q1.1,
+                    );
+
+                    let (zb_o0, zt_o0) = piece_z_base_top_at_xy(
+                        other_poly,
+                        wall,
+                        layer,
+                        fallback_base_z,
+                        fallback_height,
+                        q0.0,
+                        q0.1,
+                    );
+                    let (zb_o1, zt_o1) = piece_z_base_top_at_xy(
+                        other_poly,
+                        wall,
+                        layer,
+                        fallback_base_z,
+                        fallback_height,
+                        q1.0,
+                        q1.1,
+                    );
+
+                    let overlap_z0 = (zb_c0.max(zb_o0), zt_c0.min(zt_o0));
+                    let overlap_z1 = (zb_c1.max(zb_o1), zt_c1.min(zt_o1));
+
+                    let base_shared =
+                        (zb_c0 - zb_o0).abs() <= 5e-3 && (zb_c1 - zb_o1).abs() <= 5e-3;
+                    let top_shared =
+                        (zt_c0 - zt_o0).abs() <= 5e-3 && (zt_c1 - zt_o1).abs() <= 5e-3;
+
+                    seams.push(FacetSeam {
+                        q0,
+                        q1,
+                        overlap_z0,
+                        overlap_z1,
+                        base_shared,
+                        top_shared,
+                    });
+                }
+            }
+        }
+    }
+
+    if seams.is_empty() {
+        return;
+    }
+
+    let process_segment_cb = |p0: [f64; 3], p1: [f64; 3], emit: &mut dyn FnMut([f64; 3], [f64; 3])| {
+        let dxy = (p1[0] - p0[0]).hypot(p1[1] - p0[1]);
+        let dz = (p1[2] - p0[2]).abs();
+
+        // 1. Vertical edges on seam endpoints
+        if dxy <= 2e-3 && dz > 2e-3 {
+            let z_min = p0[2].min(p1[2]);
+            let z_max = p0[2].max(p1[2]);
+            let pt = (p0[0], p0[1]);
+
+            for seam in &seams {
+                let d0 = (pt.0 - seam.q0.0).hypot(pt.1 - seam.q0.1);
+                let d1 = (pt.0 - seam.q1.0).hypot(pt.1 - seam.q1.1);
+                let matched_ov = if d0 <= 5e-3 {
+                    Some(seam.overlap_z0)
+                } else if d1 <= 5e-3 {
+                    Some(seam.overlap_z1)
+                } else {
+                    None
+                };
+
+                if let Some((ov_min, ov_max)) = matched_ov {
+                    if ov_max > ov_min + 1e-4 {
+                        let rem_low = z_min.max(ov_min);
+                        let rem_high = z_max.min(ov_max);
+                        if rem_high > rem_low + 1e-4 {
+                            if rem_low > z_min + 1e-4 {
+                                emit([p0[0], p0[1], z_min], [p0[0], p0[1], rem_low]);
+                            }
+                            if z_max > rem_high + 1e-4 {
+                                emit([p0[0], p0[1], rem_high], [p0[0], p0[1], z_max]);
+                            }
+                            return;
+                        }
+                    }
+                }
+            }
+        }
+
+        // 2. Transverse deck edges along seam
+        if dxy > 2e-3 {
+            let p0_2d = (p0[0], p0[1]);
+            let p1_2d = (p1[0], p1[1]);
+            for seam in &seams {
+                let dist0 = dist_to_segment_2d(p0_2d, seam.q0, seam.q1);
+                let dist1 = dist_to_segment_2d(p1_2d, seam.q0, seam.q1);
+                if dist0 <= 5e-3 && dist1 <= 5e-3 {
+                    let (zb0, zt0) = piece_z_base_top_at_xy(
+                        current_piece,
+                        wall,
+                        layer,
+                        fallback_base_z,
+                        fallback_height,
+                        p0[0],
+                        p0[1],
+                    );
+                    let (zb1, zt1) = piece_z_base_top_at_xy(
+                        current_piece,
+                        wall,
+                        layer,
+                        fallback_base_z,
+                        fallback_height,
+                        p1[0],
+                        p1[1],
+                    );
+
+                    if seam.base_shared && (p0[2] - zb0).abs() <= 5e-3 && (p1[2] - zb1).abs() <= 5e-3 {
+                        return;
+                    }
+                    if seam.top_shared && (p0[2] - zt0).abs() <= 5e-3 && (p1[2] - zt1).abs() <= 5e-3 {
+                        return;
+                    }
+                }
+            }
+        }
+
+        emit(p0, p1);
+    };
+
+    let old_verts = std::mem::take(&mut set.edge_verts);
+    let old_low = std::mem::take(&mut set.edge_verts_low);
+    let mut new_verts = Vec::with_capacity(old_verts.len());
+    let mut new_verts_low = Vec::with_capacity(old_low.len());
+
+    for chunk in old_verts.chunks_exact(2) {
+        let p0 = [chunk[0][0] as f64, chunk[0][1] as f64, chunk[0][2] as f64];
+        let p1 = [chunk[1][0] as f64, chunk[1][1] as f64, chunk[1][2] as f64];
+        let mut emit = |v0: [f64; 3], v1: [f64; 3]| {
+            let h0 = [v0[0] as f32, v0[1] as f32, v0[2] as f32];
+            let l0 = [(v0[0] - h0[0] as f64) as f32, (v0[1] - h0[1] as f64) as f32, (v0[2] - h0[2] as f64) as f32];
+            let h1 = [v1[0] as f32, v1[1] as f32, v1[2] as f32];
+            let l1 = [(v1[0] - h1[0] as f64) as f32, (v1[1] - h1[1] as f64) as f32, (v1[2] - h1[2] as f64) as f32];
+            new_verts.push(h0);
+            new_verts_low.push(l0);
+            new_verts.push(h1);
+            new_verts_low.push(l1);
+        };
+        process_segment_cb(p0, p1, &mut emit);
+    }
+    set.edge_verts = new_verts;
+    set.edge_verts_low = new_verts_low;
+
+    let old_wires = std::mem::take(wires);
+    let mut new_wires = Vec::with_capacity(old_wires.len());
+    for wire in old_wires {
+        if wire.points.len() < 2 {
+            continue;
+        }
+        for window in wire.points.windows(2) {
+            let p0 = [window[0].x, window[0].y, window[0].z];
+            let p1 = [window[1].x, window[1].y, window[1].z];
+            let mut emit = |v0: [f64; 3], v1: [f64; 3]| {
+                new_wires.push(acadrust::entities::Wire::from_points(vec![
+                    acadrust::types::Vector3::new(v0[0], v0[1], v0[2]),
+                    acadrust::types::Vector3::new(v1[0], v1[1], v1[2]),
+                ]));
+            };
+            process_segment_cb(p0, p1, &mut emit);
+        }
+    }
+    *wires = new_wires;
 }
 
 fn filter_miter_deck_edges(
@@ -2504,6 +2793,18 @@ pub(crate) fn regenerate_wall_representation_inner(
                                 solid_base + solid_height,
                             );
                         }
+                        if solid_rings.len() > 1 {
+                            filter_facet_partition_edges(
+                                &mut display_geom.0,
+                                &mut display_geom.1,
+                                footprint,
+                                &solid_rings,
+                                &wall,
+                                layers.get(i),
+                                solid_base,
+                                solid_height,
+                            );
+                        }
                         if !wall_openings.is_empty() {
                             filter_opening_surface_edges(
                                 &mut display_geom.0,
@@ -2872,5 +3173,226 @@ mod tests {
                 assert!((height - 2.8).abs() < 1e-4, "Uncovered height was {height}");
             }
         }
+    }
+
+    #[test]
+    fn test_filter_facet_partition_edges_removes_internal_surface_lines() {
+        let footprint1 = vec![
+            (0.0, -0.15),
+            (5.0, -0.15),
+            (5.0, 0.15),
+            (0.0, 0.15),
+        ];
+        let footprint2 = vec![
+            (5.0, -0.15),
+            (10.0, -0.15),
+            (10.0, 0.15),
+            (5.0, 0.15),
+        ];
+        let all_pieces = vec![
+            (footprint1.clone(), vec![0.0; 4]),
+            (footprint2.clone(), vec![0.0; 4]),
+        ];
+
+        // Facet covers 0..5 at Z = 4.0, while 5..10 falls back to Z = 2.8
+        let f1 = ControlPlaneFacet::new(
+            "Roof1",
+            vec![
+                [0.0, -5.0, 4.0],
+                [5.0, -5.0, 4.0],
+                [5.0, 5.0, 4.0],
+                [0.0, 5.0, 4.0],
+            ],
+        );
+
+        let mut wall = Wall::new("s", 2.8, 0);
+        wall.base_origin = [0.0, 0.0, 0.0];
+        wall.base_normal = [0.0, 0.0, 1.0];
+        wall.top_origin = [0.0, 0.0, 4.0];
+        wall.top_normal = [0.0, 0.0, 1.0];
+        wall.top_facets = vec![f1];
+
+        // --- Test Piece 1 (taller piece, 0..5, height 4.0) ---
+        let mut wires1 = vec![
+            // Vertical edge at boundary seam (x = 5.0, y = 0.15) from base Z=0 to top Z=4.0
+            acadrust::entities::Wire::from_points(vec![
+                acadrust::types::Vector3::new(5.0, 0.15, 0.0),
+                acadrust::types::Vector3::new(5.0, 0.15, 4.0),
+            ]),
+            // Transverse base edge across seam at Z=0
+            acadrust::entities::Wire::from_points(vec![
+                acadrust::types::Vector3::new(5.0, -0.15, 0.0),
+                acadrust::types::Vector3::new(5.0, 0.15, 0.0),
+            ]),
+            // Transverse top edge across seam at Z=4.0
+            acadrust::entities::Wire::from_points(vec![
+                acadrust::types::Vector3::new(5.0, 0.15, 4.0),
+                acadrust::types::Vector3::new(5.0, -0.15, 4.0),
+            ]),
+            // Outer wall edge at x = 0.0 from Z=0 to Z=4.0
+            acadrust::entities::Wire::from_points(vec![
+                acadrust::types::Vector3::new(0.0, 0.15, 0.0),
+                acadrust::types::Vector3::new(0.0, 0.15, 4.0),
+            ]),
+        ];
+        let mut mesh_set1 = crate::scene::model::mesh_model::MeshLodSet::from_lods(Vec::new());
+        filter_facet_partition_edges(
+            &mut mesh_set1,
+            &mut wires1,
+            &footprint1,
+            &all_pieces,
+            &wall,
+            None,
+            0.0,
+            2.8,
+        );
+
+        // In Piece 1:
+        // 1. The vertical edge at (5.0, 0.15) should be trimmed to [2.8, 4.0] (the exposed step edge).
+        // 2. The base seam at Z=0 should be removed (shared base).
+        // 3. The top edge at Z=4.0 should be kept (step top roof edge).
+        // 4. The outer edge at x=0 should be unchanged.
+        let vert_seam1: Vec<&acadrust::entities::Wire> = wires1
+            .iter()
+            .filter(|w| {
+                (w.points[0].x - 5.0).abs() < 1e-3
+                    && (w.points[0].y - 0.15).abs() < 1e-3
+                    && (w.points[1].x - 5.0).abs() < 1e-3
+                    && (w.points[1].y - 0.15).abs() < 1e-3
+                    && (w.points[0].z - w.points[1].z).abs() > 1e-3
+            })
+            .collect();
+        assert_eq!(vert_seam1.len(), 1);
+        assert!((vert_seam1[0].points[0].z - 2.8).abs() < 1e-3);
+        assert!((vert_seam1[0].points[1].z - 4.0).abs() < 1e-3);
+
+        let base_seam1 = wires1.iter().find(|w| {
+            (w.points[0].x - 5.0).abs() < 1e-3
+                && (w.points[1].x - 5.0).abs() < 1e-3
+                && (w.points[0].z - 0.0).abs() < 1e-3
+                && (w.points[1].z - 0.0).abs() < 1e-3
+        });
+        assert!(base_seam1.is_none(), "Base seam should be removed");
+
+        let top_seam1 = wires1.iter().find(|w| {
+            (w.points[0].x - 5.0).abs() < 1e-3
+                && (w.points[1].x - 5.0).abs() < 1e-3
+                && (w.points[0].z - 4.0).abs() < 1e-3
+                && (w.points[1].z - 4.0).abs() < 1e-3
+        });
+        assert!(top_seam1.is_some(), "Top roof edge of step should be retained");
+
+        // --- Test Piece 2 (shorter piece, 5..10, height 2.8) ---
+        let mut wires2 = vec![
+            // Vertical edge at boundary seam (x = 5.0, y = 0.15) from base Z=0 to top Z=2.8
+            acadrust::entities::Wire::from_points(vec![
+                acadrust::types::Vector3::new(5.0, 0.15, 0.0),
+                acadrust::types::Vector3::new(5.0, 0.15, 2.8),
+            ]),
+            // Transverse base edge across seam at Z=0
+            acadrust::entities::Wire::from_points(vec![
+                acadrust::types::Vector3::new(5.0, 0.15, 0.0),
+                acadrust::types::Vector3::new(5.0, -0.15, 0.0),
+            ]),
+            // Transverse top edge across seam at Z=2.8 (top of step)
+            acadrust::entities::Wire::from_points(vec![
+                acadrust::types::Vector3::new(5.0, -0.15, 2.8),
+                acadrust::types::Vector3::new(5.0, 0.15, 2.8),
+            ]),
+        ];
+        let mut mesh_set2 = crate::scene::model::mesh_model::MeshLodSet::from_lods(Vec::new());
+        filter_facet_partition_edges(
+            &mut mesh_set2,
+            &mut wires2,
+            &footprint2,
+            &all_pieces,
+            &wall,
+            None,
+            0.0,
+            2.8,
+        );
+
+        // In Piece 2:
+        // 1. The vertical edge at (5.0, 0.15) from 0 to 2.8 is completely inside overlap [0, 2.8] -> fully removed!
+        // 2. The base seam at Z=0 should be removed.
+        // 3. The top edge at Z=2.8 should be KEPT (horizontal step corner).
+        let vert_seam2 = wires2
+            .iter()
+            .find(|w| (w.points[0].x - 5.0).abs() < 1e-3 && (w.points[0].y - 0.15).abs() < 1e-3 && w.points[0].z != w.points[1].z);
+        assert!(vert_seam2.is_none(), "Vertical seam on wall face below step should be completely removed");
+
+        let base_seam2 = wires2.iter().find(|w| {
+            (w.points[0].x - 5.0).abs() < 1e-3
+                && (w.points[1].x - 5.0).abs() < 1e-3
+                && (w.points[0].z - 0.0).abs() < 1e-3
+                && (w.points[1].z - 0.0).abs() < 1e-3
+        });
+        assert!(base_seam2.is_none(), "Base seam should be removed");
+
+        let step_top_seam2 = wires2.iter().find(|w| {
+            (w.points[0].x - 5.0).abs() < 1e-3
+                && (w.points[1].x - 5.0).abs() < 1e-3
+                && (w.points[0].z - 2.8).abs() < 1e-3
+                && (w.points[1].z - 2.8).abs() < 1e-3
+        });
+        assert!(step_top_seam2.is_some(), "Step top corner edge should be retained");
+    }
+
+    #[test]
+    fn test_filter_facet_partition_edges_coplanar_removes_all_seams() {
+        let footprint1 = vec![
+            (0.0, -0.15),
+            (5.0, -0.15),
+            (5.0, 0.15),
+            (0.0, 0.15),
+        ];
+        let footprint2 = vec![
+            (5.0, -0.15),
+            (10.0, -0.15),
+            (10.0, 0.15),
+            (5.0, 0.15),
+        ];
+        let all_pieces = vec![
+            (footprint1.clone(), vec![0.0; 4]),
+            (footprint2.clone(), vec![0.0; 4]),
+        ];
+
+        let mut wall = Wall::new("s", 3.0, 0);
+        wall.base_origin = [0.0, 0.0, 0.0];
+        wall.base_normal = [0.0, 0.0, 1.0];
+        wall.top_origin = [0.0, 0.0, 3.0];
+        wall.top_normal = [0.0, 0.0, 1.0];
+
+        let mut wires = vec![
+            // Vertical edge at seam x=5.0
+            acadrust::entities::Wire::from_points(vec![
+                acadrust::types::Vector3::new(5.0, 0.15, 0.0),
+                acadrust::types::Vector3::new(5.0, 0.15, 3.0),
+            ]),
+            // Base transverse edge at seam x=5.0
+            acadrust::entities::Wire::from_points(vec![
+                acadrust::types::Vector3::new(5.0, -0.15, 0.0),
+                acadrust::types::Vector3::new(5.0, 0.15, 0.0),
+            ]),
+            // Top transverse edge at seam x=5.0
+            acadrust::entities::Wire::from_points(vec![
+                acadrust::types::Vector3::new(5.0, 0.15, 3.0),
+                acadrust::types::Vector3::new(5.0, -0.15, 3.0),
+            ]),
+        ];
+        let mut mesh_set = crate::scene::model::mesh_model::MeshLodSet::from_lods(Vec::new());
+        filter_facet_partition_edges(
+            &mut mesh_set,
+            &mut wires,
+            &footprint1,
+            &all_pieces,
+            &wall,
+            None,
+            0.0,
+            3.0,
+        );
+
+        // When coplanar / equal heights, all internal seam edges at x=5.0 should be removed!
+        assert_eq!(wires.len(), 0);
     }
 }
