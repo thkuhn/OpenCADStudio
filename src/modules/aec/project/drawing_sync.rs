@@ -3,6 +3,7 @@
 use acadrust::entities::EntityType;
 
 use crate::app::OpenCADStudio;
+use crate::modules::aec::engine::control_plane::ControlPlaneFacet;
 use crate::modules::aec::engine::project::StoreyRef;
 use crate::modules::aec::project::preview::control_plane_facet_from_entity;
 use crate::scene::Scene;
@@ -31,43 +32,19 @@ fn approx_arr3(a: [f64; 3], b: [f64; 3]) -> bool {
     (a[0] - b[0]).abs() <= 1e-6 && (a[1] - b[1]).abs() <= 1e-6 && (a[2] - b[2]).abs() <= 1e-6
 }
 
-/// Copy Face3D geometry (origin, normal, polygon facets) onto matching storey planes (drawing → manager).
+/// Copy Polyline3D/Face3D geometry (origin, normal, polygon facets) onto matching storey planes (drawing → manager).
 pub fn sync_storey_planes_from_drawing(scene: &Scene, storey: &mut StoreyRef) -> bool {
     let mut changed = false;
 
-    // 1. Check for erased facet preview entities
-    for plane in &mut storey.control_planes {
-        if !plane.facets.is_empty() {
-            let before_len = plane.facets.len();
-            plane.facets.retain(|facet| {
-                if let Some(h) = facet.preview_handle {
-                    if let Some(entity) = scene.document.get_entity(acadrust::Handle::new(h)) {
-                        if let Some((id, _, _)) = control_plane_facet_from_entity(entity) {
-                            id == plane.id
-                        } else {
-                            false
-                        }
-                    } else {
-                        // The preview entity with this handle was erased / no longer in scene
-                        false
-                    }
-                } else {
-                    true
-                }
-            });
-            if plane.facets.len() != before_len {
-                changed = true;
-                if let Some(first) = plane.facets.first() {
-                    plane.origin = first.origin();
-                    plane.normal = first.unit_normal();
-                }
-            }
-        }
-    }
+    // 1. Group all preview entities in scene by plane_id:
+    // (plane_id) -> Vec<(Option<usize> /* facet_idx */, String /* name */, Handle, Vec<[f64; 3]> /* verts */)>
+    let mut scene_plane_entities: rustc_hash::FxHashMap<
+        uuid::Uuid,
+        Vec<(Option<usize>, String, acadrust::Handle, Vec<[f64; 3]>)>,
+    > = rustc_hash::FxHashMap::default();
 
-    // 2. Scan remaining entities and update vertices, origins, normals
     for entity in scene.document.entities() {
-        let Some((id, _, facet_idx)) = control_plane_facet_from_entity(entity) else {
+        let Some((id, name, facet_idx)) = control_plane_facet_from_entity(entity) else {
             continue;
         };
         let verts: Vec<[f64; 3]> = match entity {
@@ -92,28 +69,91 @@ pub fn sync_storey_planes_from_drawing(scene: &Scene, storey: &mut StoreyRef) ->
         if verts.len() < 3 {
             continue;
         }
-        let p1 = verts[0];
-        let p2 = verts[1];
-        let p3 = verts[2];
-        let n = normal_from_points(p1, p2, p3);
+        scene_plane_entities
+            .entry(id)
+            .or_default()
+            .push((facet_idx, name, entity.as_entity().handle(), verts));
+    }
 
-        if let Some(plane) = storey.plane_mut(id) {
-            if let Some(idx) = facet_idx {
-                if idx < plane.facets.len() {
-                    if plane.facets[idx].vertices != verts {
-                        plane.facets[idx].vertices = verts;
+    // 2. Synchronize each plane with scene entities
+    for plane in &mut storey.control_planes {
+        if let Some(items) = scene_plane_entities.get_mut(&plane.id) {
+            // Sort items by facet index
+            items.sort_by_key(|(idx, _, _, _)| idx.unwrap_or(0));
+
+            // If the scene currently contains some facets for this plane, and some previously registered
+            // preview entities were deleted/erased in the current scene:
+            let scene_handles: rustc_hash::FxHashSet<u64> =
+                items.iter().map(|(_, _, h, _)| h.value()).collect();
+            let had_preview_handles = plane.facets.iter().any(|f| f.preview_handle.is_some());
+            if had_preview_handles && items.len() < plane.facets.len() {
+                let before_len = plane.facets.len();
+                plane.facets.retain(|f| {
+                    if let Some(h) = f.preview_handle {
+                        scene_handles.contains(&h)
+                    } else {
+                        true
+                    }
+                });
+                if plane.facets.len() != before_len {
+                    changed = true;
+                }
+            }
+
+            for (idx_opt, name, handle, verts) in items {
+                let idx = idx_opt.unwrap_or(0);
+                let p1 = verts[0];
+                let p2 = verts[1];
+                let p3 = verts[2];
+                let n = normal_from_points(p1, p2, p3);
+
+                let target_facet = if let Some(pos) = plane
+                    .facets
+                    .iter()
+                    .position(|f| f.preview_handle == Some(handle.value()))
+                {
+                    Some(pos)
+                } else if !name.is_empty() && plane.facets.iter().any(|f| f.name == *name) {
+                    plane.facets.iter().position(|f| f.name == *name)
+                } else if idx < plane.facets.len() && plane.facets[idx].preview_handle.is_none()
+                {
+                    Some(idx)
+                } else {
+                    None
+                };
+
+                if let Some(pos) = target_facet {
+                    plane.facets[pos].preview_handle = Some(handle.value());
+                    if plane.facets[pos].vertices != *verts {
+                        plane.facets[pos].vertices = verts.clone();
                         changed = true;
                     }
-                    if idx == 0 && (!approx_arr3(plane.origin, p1) || !approx_arr3(plane.normal, n)) {
+                    if pos == 0
+                        && (!approx_arr3(plane.origin, p1) || !approx_arr3(plane.normal, n))
+                    {
                         plane.origin = p1;
                         plane.normal = n;
                         changed = true;
                     }
+                } else {
+                    let facet_name = if !name.is_empty() {
+                        name.clone()
+                    } else {
+                        format!("Facet_{}", idx + 1)
+                    };
+                    let mut new_facet = ControlPlaneFacet::new(facet_name, verts.clone());
+                    new_facet.preview_handle = Some(handle.value());
+                    plane.facets.push(new_facet);
+                    if plane.facets.len() == 1 {
+                        plane.origin = p1;
+                        plane.normal = n;
+                    }
+                    changed = true;
                 }
-            } else if !approx_arr3(plane.origin, p1) || !approx_arr3(plane.normal, n) {
-                plane.origin = p1;
-                plane.normal = n;
-                changed = true;
+            }
+            if let Some(first) = plane.facets.first() {
+                plane.origin = first.origin();
+                plane.normal = first.unit_normal();
             }
         }
     }

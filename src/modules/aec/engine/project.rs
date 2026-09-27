@@ -194,7 +194,7 @@ impl StoreyRef {
             return;
         }
         for plane in &mut self.control_planes {
-            plane.origin[2] += dz;
+            plane.shift_z(dz);
         }
         self.sync_derived_elevation_height();
     }
@@ -220,7 +220,7 @@ impl StoreyRef {
             return self.plane(id).is_some();
         }
         if let Some(p) = self.plane_mut(id) {
-            p.origin[2] = z;
+            p.set_elevation(z);
             if id == self.ceiling_plane_id {
                 let floor_z = self.derived_elevation();
                 let h = z - floor_z;

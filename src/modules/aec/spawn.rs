@@ -246,15 +246,22 @@ pub(crate) fn try_dispatch(
                         .and_then(|b| b.storeys.iter_mut().find(|s| s.id == sid));
                 }
             }
-            crate::modules::aec::project::plane_assign::aec_plane_assign_do(
-                &mut app.tabs[tab].scene,
-                &mut app.command_line,
-                storey_opt,
-                target_plane_id,
-                &handles,
-            );
-            app.aec_project_explorer_persist_if_pathed();
-            app.tabs[tab].dirty = true;
+            if !handles.is_empty() {
+                crate::modules::aec::project::plane_assign::aec_plane_assign_do(
+                    &mut app.tabs[tab].scene,
+                    &mut app.command_line,
+                    storey_opt,
+                    target_plane_id,
+                    &handles,
+                );
+                app.aec_project_explorer_persist_if_pathed();
+                app.tabs[tab].dirty = true;
+            }
+            if let Some((bid, sid)) = target_bid_sid {
+                return Some(Task::done(crate::app::Message::Aec(
+                    crate::modules::aec::message::AecMessage::AecStoreySettingsOpen(bid, sid),
+                )));
+            }
             Some(app.finish_dispatch(cmd))
         }
         _ => None,

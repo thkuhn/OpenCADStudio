@@ -131,7 +131,7 @@ impl PlaneAssignCommand {
     }
 
     fn finish_dispatch(&self) -> CmdResult {
-        if self.selected_handles.is_empty() {
+        if self.selected_handles.is_empty() && self.target.is_none() {
             return CmdResult::Cancel;
         }
         let target_str = match self.target {
@@ -183,6 +183,15 @@ impl CadCommand for PlaneAssignCommand {
     fn on_enter(&mut self) -> CmdResult {
         self.finish_dispatch()
     }
+
+    fn on_escape(&mut self) -> CmdResult {
+        if self.target.is_some() {
+            self.selected_handles.clear();
+            self.finish_dispatch()
+        } else {
+            CmdResult::Cancel
+        }
+    }
 }
 
 pub fn aec_plane_assign_do(
@@ -192,6 +201,9 @@ pub fn aec_plane_assign_do(
     target_plane_id: Option<Uuid>,
     handles: &[Handle],
 ) -> usize {
+    if handles.is_empty() {
+        return 0;
+    }
     let mut extracted_facets = Vec::new();
     for (idx, handle) in handles.iter().enumerate() {
         if let Some(entity) = scene.document.get_entity(*handle) {
@@ -212,18 +224,22 @@ pub fn aec_plane_assign_do(
         if let Some(pid) = target_plane_id {
             if let Some(plane) = s.plane_mut(pid) {
                 plane_name = plane.name.clone();
-                for f in extracted_facets {
-                    plane.add_facet(f);
+                // If plane only had a single default facet (name matching plane.name), replace it; otherwise append
+                if plane.facets.len() == 1 && plane.facets[0].name == plane.name {
+                    plane.facets = extracted_facets;
+                    if let Some(first) = plane.facets.first() {
+                        plane.origin = first.origin();
+                        plane.normal = first.unit_normal();
+                    }
+                } else {
+                    for f in extracted_facets {
+                        plane.add_facet(f);
+                    }
                 }
             } else {
                 plane_name = "AssignedPlane".to_string();
                 let comp = ControlPlane::from_facets(plane_name.clone(), extracted_facets);
                 s.control_planes.push(comp);
-            }
-        } else if let Some(existing) = s.control_planes.iter_mut().find(|p| !p.facets.is_empty()) {
-            plane_name = existing.name.clone();
-            for f in extracted_facets {
-                existing.add_facet(f);
             }
         } else {
             plane_name = "CompositePlane".to_string();

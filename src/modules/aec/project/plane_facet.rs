@@ -104,14 +104,9 @@ pub fn aec_plane_facet_do(
     ));
 
     if let Some(s) = storey {
-        // If there is an existing plane with facets, attach to it; otherwise create a new multi-facet plane
-        if let Some(existing) = s.control_planes.iter_mut().find(|p| !p.facets.is_empty()) {
-            existing.add_facet(facet.clone());
-        } else {
-            let plane_name = format!("CompositePlane_{}", (facet.origin()[2] * 100.0).round() as i64);
-            let comp = ControlPlane::from_facets(plane_name, vec![facet.clone()]);
-            s.control_planes.push(comp);
-        }
+        let plane_name = format!("CompositePlane_{}", (facet.origin()[2] * 100.0).round() as i64);
+        let comp = ControlPlane::from_facets(plane_name, vec![facet.clone()]);
+        s.control_planes.push(comp);
         regenerate_control_plane_previews(scene, s);
     }
 

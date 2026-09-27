@@ -307,12 +307,14 @@ impl Wall {
         (self.top_z_at_xy(x, y) - self.base_z_at_xy(x, y)).max(0.0)
     }
 
-    /// Returns true if either the base or top plane is sloped or has polygonal facets.
+    /// Returns true if either the base or top plane is sloped or has multiple/sloped polygonal facets.
     pub fn is_sloped(&self) -> bool {
         (self.base_normal[2].abs() - 1.0).abs() > 1e-5
             || (self.top_normal[2].abs() - 1.0).abs() > 1e-5
-            || !self.base_facets.is_empty()
-            || !self.top_facets.is_empty()
+            || self.base_facets.iter().any(|f| f.slope_degrees() > 1e-4)
+            || self.top_facets.iter().any(|f| f.slope_degrees() > 1e-4)
+            || self.base_facets.len() > 1
+            || self.top_facets.len() > 1
     }
 
     /// Shift the wall base along its normal by Δ(base offset). Height is
@@ -647,13 +649,13 @@ mod tests {
         let mut storey = StoreyRef::new_with_height("EG", 0.0, 2.8, "eg.dwg");
         let ceiling_id = storey.ceiling_plane_id;
 
-        // Extra roof plane with facets in the same storey
+        // Extra roof plane with sloped facet in the same storey
         let f1 = ControlPlaneFacet::new(
             "Roof1",
             vec![
                 [0.0, -5.0, 5.0],
-                [5.0, -5.0, 5.0],
-                [5.0, 5.0, 5.0],
+                [5.0, -5.0, 6.0],
+                [5.0, 5.0, 6.0],
                 [0.0, 5.0, 5.0],
             ],
         );
@@ -661,18 +663,19 @@ mod tests {
         let roof_id = roof_cp.id;
         storey.control_planes.push(roof_cp);
 
-        // Wall bound to standard ceiling plane (which has NO facets)
+        // Wall bound to standard ceiling plane (which has its own standard facet, not the extra roof plane's facet)
         let mut wall1 = Wall::new("s", 2.8, 0);
         wall1.base_plane_id = Some(storey.floor_plane_id);
         wall1.top_plane_id = Some(ceiling_id);
         wall1.rebake_planes(&storey, 0.0, 0.0);
 
         // Wall 1 must NOT have any facets adopted from the unassigned roof plane
-        assert!(wall1.top_facets.is_empty());
+        assert_eq!(wall1.top_facets.len(), 1);
+        assert_eq!(wall1.top_facets[0].name, "EG_OKGH");
         assert!(!wall1.is_sloped());
         assert_eq!(wall1.top_z_at_xy(2.0, 0.0), 2.8);
 
-        // Wall bound to roof plane (which has facets)
+        // Wall bound to roof plane (which has sloped facets)
         let mut wall2 = Wall::new("s", 2.8, 0);
         wall2.base_plane_id = Some(storey.floor_plane_id);
         wall2.top_plane_id = Some(roof_id);
@@ -680,7 +683,8 @@ mod tests {
 
         // Wall 2 MUST have the roof facets
         assert_eq!(wall2.top_facets.len(), 1);
+        assert_eq!(wall2.top_facets[0].name, "Roof1");
         assert!(wall2.is_sloped());
-        assert_eq!(wall2.top_z_at_xy(2.0, 0.0), 5.0);
+        assert!((wall2.top_z_at_xy(2.0, 0.0) - 5.4).abs() < 1e-9);
     }
 }

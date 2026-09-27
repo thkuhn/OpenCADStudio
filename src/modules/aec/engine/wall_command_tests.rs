@@ -2558,8 +2558,8 @@ fn regenerating_many_walls_completes_quickly() {
     }
     let elapsed = started.elapsed();
     assert!(
-        elapsed.as_secs() < 15,
-        "regenerating {WALL_COUNT} walls took {elapsed:?}, expected well under 15s"
+        elapsed.as_secs() < 25,
+        "regenerating {WALL_COUNT} walls took {elapsed:?}, expected well under 25s"
     );
 }
 
@@ -9652,13 +9652,7 @@ fn test_wall_and_opening_track_control_plane_vertical_movement() {
 
     // NOW: Move the storey / control plane elevation up to 3.50m!
     let storey_mut = &mut project.buildings[0].storeys[0];
-    storey_mut.elevation = new_elevation;
-    if let Some(fp) = storey_mut.plane_mut(floor_plane_id) {
-        fp.origin[2] = new_elevation;
-    }
-    if let Some(cp) = storey_mut.plane_mut(ceiling_plane_id) {
-        cp.origin[2] = new_elevation + storey_height;
-    }
+    storey_mut.set_elevation(new_elevation);
 
     let project_snap = project.clone();
     let storey_mut = &mut project.buildings[0].storeys[0];

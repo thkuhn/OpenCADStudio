@@ -22,7 +22,7 @@ pub struct ControlPlaneFacet {
     /// 3D polygon vertices defining this facet (at least 3 vertices).
     pub vertices: Vec<[f64; 3]>,
     /// Optional preview entity handle in the CAD scene.
-    #[serde(default)]
+    #[serde(default, skip_serializing)]
     pub preview_handle: Option<u64>,
 }
 
@@ -130,13 +130,18 @@ impl ControlPlaneFacet {
     pub fn set_elevation(&mut self, new_z: f64) {
         let cur_z = self.origin()[2];
         let delta = new_z - cur_z;
+        self.shift_z(delta);
+    }
+
+    /// Shifts the Z coordinates of all vertices by `dz`.
+    pub fn shift_z(&mut self, dz: f64) {
         for v in &mut self.vertices {
-            v[2] += delta;
+            v[2] += dz;
         }
     }
 }
 
-/// A named plane in world space (either infinite analytical or composed of polygonal facets).
+/// A named plane in world space (composed of 1 or more polygonal facets).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ControlPlane {
     pub id: Uuid,
@@ -144,14 +149,14 @@ pub struct ControlPlane {
     pub origin: [f64; 3],
     /// Unit normal; deserialized values are renormalized on use.
     pub normal: [f64; 3],
-    /// Optional polygonal facets/regions for stepped storeys, shed roofs, or piecewise planes.
+    /// Polygonal facets/regions defining this plane.
     #[serde(default)]
     pub facets: Vec<ControlPlaneFacet>,
     /// Later: bind to a DWG face. Unused in this step.
     #[serde(default)]
     pub face_handle: Option<u64>,
     /// Preview mesh handle in the storey drawing, if generated.
-    #[serde(default)]
+    #[serde(default, skip_serializing)]
     pub preview_handle: Option<u64>,
     #[serde(default = "default_visible")]
     pub visible: bool,
@@ -163,25 +168,34 @@ fn default_visible() -> bool {
 
 impl ControlPlane {
     pub fn new(name: impl Into<String>, origin: [f64; 3], normal: [f64; 3]) -> Self {
-        Self {
+        let name_str = name.into();
+        let u_norm = unit_or_up(normal);
+        let mut plane = Self {
             id: Uuid::new_v4(),
-            name: name.into(),
+            name: name_str.clone(),
             origin,
-            normal: unit_or_up(normal),
+            normal: u_norm,
             facets: Vec::new(),
             face_handle: None,
             preview_handle: None,
             visible: true,
-        }
+        };
+        let corners = preview_rectangle(&plane, DEFAULT_PREVIEW_SIZE);
+        plane.facets.push(ControlPlaneFacet::new(name_str, corners.to_vec()));
+        plane
     }
 
     /// Create a composite control plane with multiple polygonal facets (e.g. for stepped storeys or shed roofs).
     pub fn from_facets(name: impl Into<String>, facets: Vec<ControlPlaneFacet>) -> Self {
-        let origin = facets.first().map(|f| f.origin()).unwrap_or([DEFAULT_PREVIEW_ORIGIN_XY, DEFAULT_PREVIEW_ORIGIN_XY, 0.0]);
-        let normal = facets.first().map(|f| f.unit_normal()).unwrap_or([0.0, 0.0, 1.0]);
+        let name_str = name.into();
+        if facets.is_empty() {
+            return Self::new(name_str, [DEFAULT_PREVIEW_ORIGIN_XY, DEFAULT_PREVIEW_ORIGIN_XY, 0.0], [0.0, 0.0, 1.0]);
+        }
+        let origin = facets[0].origin();
+        let normal = facets[0].unit_normal();
         Self {
             id: Uuid::new_v4(),
-            name: name.into(),
+            name: name_str,
             origin,
             normal,
             facets,
@@ -192,6 +206,10 @@ impl ControlPlane {
     }
 
     pub fn add_facet(&mut self, facet: ControlPlaneFacet) {
+        if self.facets.is_empty() {
+            self.origin = facet.origin();
+            self.normal = facet.unit_normal();
+        }
         self.facets.push(facet);
     }
 
@@ -242,6 +260,25 @@ impl ControlPlane {
         unit_or_up(self.normal)
     }
 
+    /// Primary elevation (Z of the origin vertex).
+    pub fn elevation(&self) -> f64 {
+        self.origin[2]
+    }
+
+    /// Adjusts the elevation of the plane and all its facets.
+    pub fn set_elevation(&mut self, new_z: f64) {
+        let dz = new_z - self.origin[2];
+        self.shift_z(dz);
+    }
+
+    /// Shifts origin and all facets by `dz`.
+    pub fn shift_z(&mut self, dz: f64) {
+        self.origin[2] += dz;
+        for facet in &mut self.facets {
+            facet.shift_z(dz);
+        }
+    }
+
     /// Create a plane from 3 non-collinear 3D points.
     /// The normal is oriented upwards (Z >= 0).
     pub fn from_three_points(
@@ -265,7 +302,19 @@ impl ControlPlane {
         if n[2] < -EPS || (n[2].abs() <= EPS && (n[1] < -EPS || (n[1].abs() <= EPS && n[0] < -EPS))) {
             n = [-n[0], -n[1], -n[2]];
         }
-        Some(Self::new(name, p1, n))
+        let name_str = name.into();
+        let p4 = [p2[0] + p3[0] - p1[0], p2[1] + p3[1] - p1[1], p2[2] + p3[2] - p1[2]];
+        let plane = Self {
+            id: Uuid::new_v4(),
+            name: name_str.clone(),
+            origin: p1,
+            normal: n,
+            facets: vec![ControlPlaneFacet::new(name_str, vec![p1, p2, p4, p3])],
+            face_handle: None,
+            preview_handle: None,
+            visible: true,
+        };
+        Some(plane)
     }
 
     /// Create a plane from origin point, pitch angle (in degrees above horizontal)
@@ -291,8 +340,7 @@ impl ControlPlane {
     /// Slope angle in degrees relative to the horizontal XY plane (0° = flat).
     pub fn slope_degrees(&self) -> f64 {
         if !self.facets.is_empty() {
-            let max_slope = self.facets.iter().map(|f| f.slope_degrees()).fold(0.0, f64::max);
-            max_slope
+            self.facets.iter().map(|f| f.slope_degrees()).fold(0.0, f64::max)
         } else {
             let n = self.unit_normal();
             let nz = n[2].abs().clamp(0.0, 1.0);
@@ -319,10 +367,6 @@ impl ControlPlane {
 
     /// True if the plane's normal deviates from pure vertical (horizontal plane) or has sloped facets.
     pub fn is_sloped(&self) -> bool {
-        let n = self.unit_normal();
-        if (n[2].abs() - 1.0).abs() > 1e-5 {
-            return true;
-        }
         self.facets.iter().any(|f| f.slope_degrees() > 1e-4)
     }
 
@@ -335,47 +379,42 @@ impl ControlPlane {
             self.origin[1] + n[1] * distance,
             self.origin[2] + n[2] * distance,
         ];
+        for facet in &mut clone.facets {
+            let fn_norm = facet.unit_normal();
+            for v in &mut facet.vertices {
+                v[0] += fn_norm[0] * distance;
+                v[1] += fn_norm[1] * distance;
+                v[2] += fn_norm[2] * distance;
+            }
+        }
         clone
     }
 
-    /// Z of the plane at world XY, taking multi-polygon facets into account if present.
+    /// Z of the plane at world XY evaluated across its polygonal facets.
     /// When multiple facets contain (x, y), the minimum Z height among them is evaluated.
     pub fn z_at_xy(&self, x: f64, y: f64) -> Option<f64> {
-        if self.facets.is_empty() {
-            let n = self.unit_normal();
-            if n[2].abs() < EPS {
-                return None;
-            }
-            let d = n[0] * (x - self.origin[0]) + n[1] * (y - self.origin[1]);
-            Some(self.origin[2] - d / n[2])
+        let containing: Vec<&ControlPlaneFacet> = self.facets.iter().filter(|f| f.contains_xy(x, y)).collect();
+        if !containing.is_empty() {
+            containing
+                .into_iter()
+                .filter_map(|f| f.z_at_xy(x, y))
+                .min_by(f64::total_cmp)
         } else {
-            let containing: Vec<&ControlPlaneFacet> = self.facets.iter().filter(|f| f.contains_xy(x, y)).collect();
-            if !containing.is_empty() {
-                containing
-                    .into_iter()
-                    .filter_map(|f| f.z_at_xy(x, y))
-                    .min_by(f64::total_cmp)
-            } else {
-                None
-            }
+            None
         }
     }
 
     /// Evaluates the Z-height of the plane shifted by `offset` along its normal at `(x, y)`.
     /// When multiple facets contain (x, y), the minimum Z height among them is evaluated.
     pub fn z_offset_at_xy(&self, x: f64, y: f64, offset: f64) -> Option<f64> {
-        if self.facets.is_empty() {
-            self.offset(offset).z_at_xy(x, y)
+        let containing: Vec<&ControlPlaneFacet> = self.facets.iter().filter(|f| f.contains_xy(x, y)).collect();
+        if !containing.is_empty() {
+            containing
+                .into_iter()
+                .filter_map(|f| f.z_offset_at_xy(x, y, offset))
+                .min_by(f64::total_cmp)
         } else {
-            let containing: Vec<&ControlPlaneFacet> = self.facets.iter().filter(|f| f.contains_xy(x, y)).collect();
-            if !containing.is_empty() {
-                containing
-                    .into_iter()
-                    .filter_map(|f| f.z_offset_at_xy(x, y, offset))
-                    .min_by(f64::total_cmp)
-            } else {
-                None
-            }
+            None
         }
     }
 }
@@ -433,38 +472,31 @@ pub fn resolve_wall_height(
     Some(top_pt[2] - base_pt[2])
 }
 
-/// Four corners of a preview rectangle of `size` starting at `origin` (SW).
+/// Four corners of a preview rectangle of `size` starting around `origin`.
 pub fn preview_rectangle(plane: &ControlPlane, size: f64) -> [[f64; 3]; 4] {
     let n = plane.unit_normal();
     let is_flat = (n[2].abs() - 1.0).abs() <= 1e-4;
-    // Horizontal: +X then +Y so origin is the SW (lower-left) corner.
-    let (mut u, mut v) = if is_flat {
+    let (u, v) = if is_flat {
         ([1.0, 0.0, 0.0], [0.0, 1.0, 0.0])
     } else {
-        let up = [0.0, 0.0, 1.0];
-        let u = [
-            n[1] * up[2] - n[2] * up[1],
-            n[2] * up[0] - n[0] * up[2],
-            n[0] * up[1] - n[1] * up[0],
-        ];
-        let ulen = (u[0] * u[0] + u[1] * u[1] + u[2] * u[2]).sqrt().max(EPS);
-        let u = [u[0] / ulen, u[1] / ulen, u[2] / ulen];
-        let v = [
-            n[1] * u[2] - n[2] * u[1],
-            n[2] * u[0] - n[0] * u[2],
-            n[0] * u[1] - n[1] * u[0],
-        ];
+        let azimuth = plane.slope_azimuth_rad();
+        let pitch_rad = plane.slope_degrees().to_radians();
+        let cos_p = pitch_rad.cos();
+        let sin_p = pitch_rad.sin();
+        let cos_a = azimuth.cos();
+        let sin_a = azimuth.sin();
+        let v = [cos_a * cos_p, sin_a * cos_p, sin_p];
+        let u = [-sin_a, cos_a, 0.0];
         (u, v)
     };
-    let ulen = (u[0] * u[0] + u[1] * u[1] + u[2] * u[2]).sqrt().max(EPS);
-    u = [u[0] / ulen, u[1] / ulen, u[2] / ulen];
-    let vlen = (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt().max(EPS);
-    v = [v[0] / vlen, v[1] / vlen, v[2] / vlen];
-    // Horizontal previews always use SW origin (-5, -5); Z stays on the plane.
     let o = if is_flat {
         [DEFAULT_PREVIEW_ORIGIN_XY, DEFAULT_PREVIEW_ORIGIN_XY, plane.origin[2]]
     } else {
-        plane.origin
+        [
+            plane.origin[0] - 5.0 * u[0] - 5.0 * v[0],
+            plane.origin[1] - 5.0 * u[1] - 5.0 * v[1],
+            plane.origin[2] - 5.0 * u[2] - 5.0 * v[2],
+        ]
     };
     let corner = |su: f64, sv: f64| {
         [

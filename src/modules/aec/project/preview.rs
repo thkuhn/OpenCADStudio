@@ -8,9 +8,6 @@ use uuid::Uuid;
 
 use crate::modules::aec::engine::wall_regen::{ensure_controlplanes_layer, AEC_CONTROLPLANES_LAYER};
 use crate::modules::aec::engine::xdata::{read_aec_record, write_aec_record, AEC_APPID};
-use crate::modules::aec::engine::control_plane::{
-    preview_rectangle, DEFAULT_PREVIEW_ORIGIN_XY, DEFAULT_PREVIEW_SIZE,
-};
 use crate::modules::aec::engine::project::StoreyRef;
 use crate::scene::Scene;
 
@@ -39,13 +36,6 @@ pub fn highlight_control_plane(scene: &mut Scene, storey: &StoreyRef, plane_id: 
             default_color
         };
 
-        if let Some(h) = plane.preview_handle {
-            let handle = Handle::new(h);
-            if let Some(e) = scene.document.get_entity_mut(handle) {
-                e.as_entity_mut().set_color(acadrust::types::Color::from_index(color));
-                touched.push(handle);
-            }
-        }
         for facet in &plane.facets {
             if let Some(h) = facet.preview_handle {
                 let handle = Handle::new(h);
@@ -76,13 +66,6 @@ pub fn highlight_control_plane_facet(
             PREVIEW_COLOR_OTHER
         };
 
-        if let Some(h) = plane.preview_handle {
-            let handle = Handle::new(h);
-            if let Some(e) = scene.document.get_entity_mut(handle) {
-                e.as_entity_mut().set_color(acadrust::types::Color::from_index(default_color));
-                touched.push(handle);
-            }
-        }
         for (idx, facet) in plane.facets.iter().enumerate() {
             let is_target = plane.id == plane_id && idx == facet_idx;
             let color = if is_target {
@@ -113,13 +96,6 @@ pub fn reset_control_plane_preview_colors(scene: &mut Scene, storey: &StoreyRef)
             PREVIEW_COLOR_OTHER
         };
 
-        if let Some(h) = plane.preview_handle {
-            let handle = Handle::new(h);
-            if let Some(e) = scene.document.get_entity_mut(handle) {
-                e.as_entity_mut().set_color(acadrust::types::Color::from_index(default_color));
-                touched.push(handle);
-            }
-        }
         for facet in &plane.facets {
             if let Some(h) = facet.preview_handle {
                 let handle = Handle::new(h);
@@ -196,6 +172,16 @@ pub fn regenerate_control_plane_previews(scene: &mut Scene, storey: &mut StoreyR
             }
         }
     }
+    for entity in scene.document.entities() {
+        if let Some((pid, _, _)) = control_plane_facet_from_entity(entity) {
+            if storey.plane(pid).is_some() {
+                let h = entity.as_entity().handle();
+                if !stale.contains(&h) {
+                    stale.push(h);
+                }
+            }
+        }
+    }
     if !stale.is_empty() {
         scene.erase_entities(&stale);
     }
@@ -213,34 +199,12 @@ pub fn regenerate_control_plane_previews(scene: &mut Scene, storey: &mut StoreyR
         } else {
             PREVIEW_COLOR_OTHER
         };
-        if !plane.facets.is_empty() {
-            for (idx, facet) in plane.facets.iter_mut().enumerate() {
-                if facet.vertices.len() < 3 {
-                    continue;
-                }
-                let pts: Vec<Vector3> = facet
-                    .vertices
-                    .iter()
-                    .map(|c| Vector3::new(c[0], c[1], c[2]))
-                    .collect();
-                let mut poly = acadrust::entities::Polyline3D::from_points(pts);
-                poly.flags.closed = true;
-                let handle = scene.add_entity(EntityType::Polyline3D(poly));
-                if let Some(e) = scene.document.get_entity_mut(handle) {
-                    let ent = e.as_entity_mut();
-                    ent.set_layer(AEC_CONTROLPLANES_LAYER.to_string());
-                    ent.set_color(acadrust::types::Color::from_index(aci));
-                }
-                write_control_plane_tag_with_facet(scene, handle, plane.id, &facet.name, Some(idx));
-                facet.preview_handle = Some(handle.value());
+        for (idx, facet) in plane.facets.iter_mut().enumerate() {
+            if facet.vertices.len() < 3 {
+                continue;
             }
-        } else {
-            if !plane.is_sloped() {
-                plane.origin[0] = DEFAULT_PREVIEW_ORIGIN_XY;
-                plane.origin[1] = DEFAULT_PREVIEW_ORIGIN_XY;
-            }
-            let corners = preview_rectangle(plane, DEFAULT_PREVIEW_SIZE);
-            let pts: Vec<Vector3> = corners
+            let pts: Vec<Vector3> = facet
+                .vertices
                 .iter()
                 .map(|c| Vector3::new(c[0], c[1], c[2]))
                 .collect();
@@ -252,8 +216,11 @@ pub fn regenerate_control_plane_previews(scene: &mut Scene, storey: &mut StoreyR
                 ent.set_layer(AEC_CONTROLPLANES_LAYER.to_string());
                 ent.set_color(acadrust::types::Color::from_index(aci));
             }
-            write_control_plane_tag_with_facet(scene, handle, plane.id, &plane.name, None);
-            plane.preview_handle = Some(handle.value());
+            write_control_plane_tag_with_facet(scene, handle, plane.id, &facet.name, Some(idx));
+            facet.preview_handle = Some(handle.value());
+            if idx == 0 {
+                plane.preview_handle = Some(handle.value());
+            }
         }
     }
 }
