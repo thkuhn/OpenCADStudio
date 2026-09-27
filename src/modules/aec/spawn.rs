@@ -20,6 +20,8 @@ use crate::modules::aec::walls::extend::aec_wallextend_do;
 use crate::modules::aec::walls::window::aec_wallopening_do;
 use crate::modules::aec::walls::reverse::aec_wallreverse_do;
 use crate::modules::aec::walls::wall::WallCommand;
+use crate::modules::aec::slabs::slab::{aec_slab_autodetect_do, aec_slab_convert_do, SlabCommand};
+use crate::modules::aec::slabs::slab_opening::SlabOpeningCommand;
 use crate::modules::aec::engine::project::{ProjectFile, StoreyRef};
 use crate::modules::aec::message::AecMessage;
 use crate::modules::aec::walls::reverse::WallReverseCommand;
@@ -38,6 +40,8 @@ pub fn spawn_command(name: &str) -> Option<Box<dyn CadCommand>> {
         "AEC_WINDOW" => Some(Box::new(WallOpeningCommand::new_window())),
         "AEC_DOOR" => Some(Box::new(WallOpeningCommand::new_door())),
         "AEC_OPENING" => Some(Box::new(WallOpeningCommand::new_opening())),
+        "AEC_SLAB" => Some(Box::new(SlabCommand::new())),
+        "AEC_SLABOPENING" => Some(Box::new(SlabOpeningCommand::new())),
         "AEC_PLANE_3POINT" => Some(Box::new(crate::modules::aec::project::plane_3point::Plane3PointCommand::new())),
         "AEC_PLANE_FACET" => Some(Box::new(crate::modules::aec::project::plane_facet::PlaneFacetCommand::new())),
         "AEC_PLANE_ASSIGN" => Some(Box::new(crate::modules::aec::project::plane_assign::PlaneAssignCommand::new())),
@@ -63,6 +67,9 @@ pub(crate) fn try_dispatch(
         "AEC_OPENINGSTYLEMANAGER" => Some(Task::done(Message::Aec(
             AecMessage::AecOpeningStyleManagerOpen,
         ))),
+        "AEC_SLABSTYLEMANAGER" => Some(Task::done(Message::Aec(
+            AecMessage::AecSlabStyleManagerOpen,
+        ))),
         "AEC_PLANMANAGER" => Some(Task::done(Message::Aec(AecMessage::AecPlanManagerOpen))),
         "AEC_CONTROLPLANES" => Some(dispatch_control_planes(app, tab)),
         "AEC_WALL" => Some(dispatch_wall(app, tab, cmd)),
@@ -72,6 +79,8 @@ pub(crate) fn try_dispatch(
         "AEC_WINDOW" => Some(install_spawned(app, tab, cmd, "AEC_WINDOW")),
         "AEC_DOOR" => Some(install_spawned(app, tab, cmd, "AEC_DOOR")),
         "AEC_OPENING" => Some(install_spawned(app, tab, cmd, "AEC_OPENING")),
+        "AEC_SLAB" => Some(dispatch_slab(app, tab, cmd)),
+        "AEC_SLABOPENING" => Some(install_spawned(app, tab, cmd, "AEC_SLABOPENING")),
         "AEC_PLANE_3POINT" => Some(install_spawned(app, tab, cmd, "AEC_PLANE_3POINT")),
         "AEC_PLANE_FACET" => Some(install_spawned(app, tab, cmd, "AEC_PLANE_FACET")),
         "AEC_PLANE_ASSIGN" => Some(install_spawned(app, tab, cmd, "AEC_PLANE_ASSIGN")),
@@ -133,6 +142,34 @@ pub(crate) fn try_dispatch(
                 Some(&style_library),
                 display_rules.as_ref(),
                 style_substitutions.as_ref(),
+            );
+            app.tabs[tab].dirty = true;
+            Some(app.finish_dispatch(cmd))
+        }
+        cmd if cmd.starts_with("AEC_SLAB_CONVERT_DO ") => {
+            let args = cmd["AEC_SLAB_CONVERT_DO ".len()..].to_string();
+            let style_library = crate::modules::aec::engine::project::resolve_style_library(
+                app.aec.aec_project_explorer_file.as_ref(),
+            );
+            aec_slab_convert_do(
+                &mut app.tabs[tab].scene,
+                &mut app.command_line,
+                &args,
+                Some(&style_library),
+            );
+            app.tabs[tab].dirty = true;
+            Some(app.finish_dispatch(cmd))
+        }
+        cmd if cmd.starts_with("AEC_SLAB_AUTODETECT_DO ") => {
+            let args = cmd["AEC_SLAB_AUTODETECT_DO ".len()..].to_string();
+            let style_library = crate::modules::aec::engine::project::resolve_style_library(
+                app.aec.aec_project_explorer_file.as_ref(),
+            );
+            aec_slab_autodetect_do(
+                &mut app.tabs[tab].scene,
+                &mut app.command_line,
+                &args,
+                Some(&style_library),
             );
             app.tabs[tab].dirty = true;
             Some(app.finish_dispatch(cmd))
@@ -347,6 +384,17 @@ fn dispatch_wall(app: &mut OpenCADStudio, tab: usize, cmd: &str) -> Task<Message
     app.command_line.push_info(&new_cmd.prompt());
     app.tabs[tab].active_cmd = Some(Box::new(new_cmd));
     app.sync_wall_axis_layer_for_session(tab);
+    app.refresh_properties();
+    app.finish_dispatch(cmd)
+}
+
+fn dispatch_slab(app: &mut OpenCADStudio, tab: usize, cmd: &str) -> Task<Message> {
+    let style_library = crate::modules::aec::engine::project::resolve_style_library(
+        app.aec.aec_project_explorer_file.as_ref(),
+    );
+    let new_cmd = SlabCommand::new().with_library(style_library);
+    app.command_line.push_info(&new_cmd.prompt());
+    app.tabs[tab].active_cmd = Some(Box::new(new_cmd));
     app.refresh_properties();
     app.finish_dispatch(cmd)
 }
@@ -589,6 +637,8 @@ mod tests {
             "AEC_WINDOW",
             "AEC_DOOR",
             "AEC_OPENING",
+            "AEC_SLAB",
+            "AEC_SLABOPENING",
         ] {
             let cmd = spawn_command(name).unwrap_or_else(|| panic!("missing spawn for {name}"));
             assert_eq!(cmd.name(), name);

@@ -1683,6 +1683,8 @@ fn render_picker_row<'a>(
 ) -> Element<'a, Message> {
     let press = if field == "opening_style" {
         Message::Aec(AecMessage::AecStylePickerOpenForOpeningProperties(handles))
+    } else if field == "slab_style" {
+        Message::Aec(AecMessage::AecStylePickerOpenForSlabProperties(handles))
     } else {
         Message::Aec(AecMessage::AecStylePickerOpenForWallProperties(handles))
     };

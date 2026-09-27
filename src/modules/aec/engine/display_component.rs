@@ -278,6 +278,82 @@ impl OpeningComponentSlot {
     }
 }
 
+/// Independently visible/stylable display slots for a Slab.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum SlabComponentSlot {
+    /// 2D outer boundary contour.
+    Contour2D,
+    /// 2D reflected ceiling plan / Deckenspiegel outline.
+    CeilingOutline2D,
+    /// 2D sectional / floor plan layer hatch.
+    LayerHatch2D,
+    /// 2D opening cutout boundary.
+    OpeningContour2D,
+    /// 2D DIN 1356 opening symbol (diagonal cross).
+    OpeningSymbol2D,
+    /// 3D solid body (extruded / faceted B-Rep).
+    Solid3D,
+    /// 3D surface style/material.
+    SurfaceStyle3D,
+}
+
+impl SlabComponentSlot {
+    pub fn key(self) -> &'static str {
+        match self {
+            SlabComponentSlot::Contour2D => "Contour2D",
+            SlabComponentSlot::CeilingOutline2D => "CeilingOutline2D",
+            SlabComponentSlot::LayerHatch2D => "LayerHatch2D",
+            SlabComponentSlot::OpeningContour2D => "OpeningContour2D",
+            SlabComponentSlot::OpeningSymbol2D => "OpeningSymbol2D",
+            SlabComponentSlot::Solid3D => "Solid3D",
+            SlabComponentSlot::SurfaceStyle3D => "SurfaceStyle3D",
+        }
+    }
+
+    pub fn all() -> &'static [SlabComponentSlot] {
+        &[
+            SlabComponentSlot::Contour2D,
+            SlabComponentSlot::CeilingOutline2D,
+            SlabComponentSlot::LayerHatch2D,
+            SlabComponentSlot::OpeningContour2D,
+            SlabComponentSlot::OpeningSymbol2D,
+            SlabComponentSlot::Solid3D,
+            SlabComponentSlot::SurfaceStyle3D,
+        ]
+    }
+
+    pub fn from_key(key: &str) -> Option<Self> {
+        match key {
+            "Contour2D" => Some(SlabComponentSlot::Contour2D),
+            "CeilingOutline2D" => Some(SlabComponentSlot::CeilingOutline2D),
+            "LayerHatch2D" => Some(SlabComponentSlot::LayerHatch2D),
+            "OpeningContour2D" => Some(SlabComponentSlot::OpeningContour2D),
+            "OpeningSymbol2D" => Some(SlabComponentSlot::OpeningSymbol2D),
+            "Solid3D" => Some(SlabComponentSlot::Solid3D),
+            "SurfaceStyle3D" => Some(SlabComponentSlot::SurfaceStyle3D),
+            _ => None,
+        }
+    }
+
+    pub fn is_2d(self) -> bool {
+        matches!(
+            self,
+            SlabComponentSlot::Contour2D
+                | SlabComponentSlot::CeilingOutline2D
+                | SlabComponentSlot::LayerHatch2D
+                | SlabComponentSlot::OpeningContour2D
+                | SlabComponentSlot::OpeningSymbol2D
+        )
+    }
+
+    pub fn is_3d(self) -> bool {
+        matches!(
+            self,
+            SlabComponentSlot::Solid3D | SlabComponentSlot::SurfaceStyle3D
+        )
+    }
+}
+
 /// Viewport / plan-type representation filter: 2D, 3D, or both.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
 pub enum RepresentationMode {
@@ -565,8 +641,18 @@ impl ComponentRuleSet {
         self.is_key_visible(slot.key())
     }
 
+    /// Slab-slot visibility. Unknown / absent slots are visible.
+    pub fn is_slab_visible(&self, slot: SlabComponentSlot) -> bool {
+        self.is_key_visible(slot.key())
+    }
+
     /// Returns the style override for `slot`, if any was configured.
     pub fn style_for(&self, slot: WallComponentSlot) -> Option<&ComponentStyleOverride> {
+        self.style_override.get(slot.key())
+    }
+
+    /// Returns the style override for slab `slot`, if any was configured.
+    pub fn slab_style_for(&self, slot: SlabComponentSlot) -> Option<&ComponentStyleOverride> {
         self.style_override.get(slot.key())
     }
 
@@ -576,6 +662,12 @@ impl ComponentRuleSet {
     /// explicit per-slot filter behave exactly like today (non-regression
     /// guarantee, Key Decision 7).
     pub fn layer_filter_for(&self, slot: WallComponentSlot) -> &LayerSelection {
+        static ALL: LayerSelection = LayerSelection::All;
+        self.layer_filter.get(slot.key()).unwrap_or(&ALL)
+    }
+
+    /// Returns the layer filter configured for slab `slot`.
+    pub fn slab_layer_filter_for(&self, slot: SlabComponentSlot) -> &LayerSelection {
         static ALL: LayerSelection = LayerSelection::All;
         self.layer_filter.get(slot.key()).unwrap_or(&ALL)
     }

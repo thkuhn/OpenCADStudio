@@ -32,6 +32,12 @@ pub mod plan_view;
 pub mod project;
 pub mod representation;
 pub mod room;
+pub mod slab;
+pub mod slab_opening;
+pub mod slab_package;
+pub mod slab_regen;
+pub mod slab_style;
+pub mod slab_xdata;
 pub mod storey;
 pub mod storey_xdata;
 pub mod style;
@@ -50,6 +56,25 @@ pub use ifc::Scene;
 pub use library::StyleLibrary;
 pub use loop_detection::find_closed_loop;
 pub use room::Room;
+pub use slab::{Slab, SlabJustification, SlabLayer};
+pub use slab_opening::{SlabOpening, SlabOpeningDepth, SlabOpeningKind};
+pub use slab_package::{
+    all_slab_carrier_handles, expand_handles_for_slab_packages, expand_with_slab_derived_handles,
+    is_slab_carrier_entity, is_slab_derived, resolve_slab_package, slab_opening_owner_if_any,
+    slab_package_handles,
+};
+pub use slab_regen::{
+    build_faceted_slab_solid, regenerate_all_slabs, regenerate_slab_opening_representation,
+    regenerate_slab_representation,
+};
+pub use slab_style::{SlabStyle, SlabStyleLayer};
+pub use slab_xdata::{
+    add_slab_opening_handle, remove_slab_opening_handle, resolve_slab_style_layers,
+    resolve_slab_style_layers_ids, slab_from_entity, slab_opening_from_entity,
+    slab_opening_record, slab_record_for_slab, write_slab_justification, write_slab_opening_depth,
+    write_slab_opening_kind, write_slab_opening_record, write_slab_phase, write_slab_plane_offsets,
+    write_slab_record, write_slab_style,
+};
 pub use storey::Storey;
 pub use control_plane::ControlPlane;
 pub use wall::{Wall, WallJustification, WallLayer};

@@ -1076,14 +1076,27 @@ pub fn wall_from_entity(entity: &EntityType) -> Option<Wall> {
     })
 }
 
-/// Reconstruct a [`StyleLibrary`] from every wall in `scene`.
+/// Reconstruct a [`StyleLibrary`] from every wall and slab in `scene`.
 pub fn extract_style_library_from_scene(scene: &Scene) -> StyleLibrary {
     let walls: Vec<Wall> = scene
         .document
         .entities()
         .filter_map(wall_from_entity)
         .collect();
-    engine::library::extract_style_library_from_walls(&walls)
+    let mut lib = engine::library::extract_style_library_from_walls(&walls);
+    let slabs: Vec<engine::slab::Slab> = scene
+        .document
+        .entities()
+        .filter_map(engine::slab_xdata::slab_from_entity)
+        .collect();
+    let slab_lib = engine::library::extract_style_library_from_slabs(&slabs);
+    for mat in slab_lib.materials {
+        lib.upsert_material(mat);
+    }
+    for slab_style in slab_lib.slab_styles {
+        lib.upsert_slab_style(slab_style);
+    }
+    lib
 }
 
 /// Rewrite the `derived_handles` tail of `wall_handle`'s `WALL` record,

@@ -209,6 +209,119 @@ impl OpenCADStudio {
         )
     }
 
+    /// Resolves the active DisplayConfig into a slab [`ComponentRuleSet`].
+    pub(crate) fn resolve_active_display_config_slab_rules(
+        &self,
+        tab_index: usize,
+        slab_handle: Option<acadrust::Handle>,
+    ) -> Option<crate::modules::aec::engine::display_component::ComponentRuleSet> {
+        let session = self.tabs[tab_index].representation_override;
+        let config_name = self.tabs[tab_index].active_display_config.clone();
+        let Some(slab_handle) = slab_handle else {
+            return None;
+        };
+        let Some(entity) = self.tabs[tab_index].scene.document.get_entity(slab_handle) else {
+            return None;
+        };
+        let Some(slab) = crate::modules::aec::engine::slab_xdata::slab_from_entity(entity) else {
+            return None;
+        };
+        let style_library = crate::modules::aec::engine::project::resolve_style_library(
+            self.aec.aec_project_explorer_file.as_ref(),
+        );
+        let style = style_library
+            .slab_styles
+            .iter()
+            .find(|ss| ss.style.id == slab.style_id);
+        let config = config_name.as_deref().and_then(|name| {
+            self.aec
+                .aec_plan_library
+                .as_ref()
+                .and_then(|lib| lib.find(name))
+                .cloned()
+                .or_else(|| {
+                    crate::modules::aec::engine::project::resolve_display_config_library(
+                        self.aec.aec_project_explorer_file.as_ref(),
+                    )
+                    .find(name)
+                    .cloned()
+                })
+        });
+        let config = match config {
+            Some(config) => config,
+            None if session.is_some() || config_name.is_none() => {
+                crate::modules::aec::engine::plan_view::DisplayConfig::new(
+                    String::new(),
+                    String::new(),
+                    crate::modules::aec::engine::plan_view::PlanningStage::Design,
+                    crate::modules::aec::engine::plan_view::ViewType::FloorPlan,
+                )
+            }
+            None => return None,
+        };
+
+        let mut rules = crate::modules::aec::engine::library::build_effective_slab_rule_set(
+            &config,
+            style,
+            session,
+        );
+        let filter_result = crate::modules::aec::engine::display_apply::apply_phase_filter(
+            slab.phase,
+            config.phase_filter.as_ref(),
+        );
+        if !filter_result.visible {
+            crate::modules::aec::engine::display_apply::hide_all_slab_display_slots(&mut rules);
+        } else if let Some(ov) = filter_result.extra_style {
+            crate::modules::aec::engine::display_apply::merge_phase_extra_into_slab_rules(
+                &mut rules, ov,
+            );
+        }
+        Some(rules)
+    }
+
+    /// Regenerates a single slab while honoring the tab's active DisplayConfig.
+    pub(crate) fn regenerate_slab_respecting_active_display_config(
+        &mut self,
+        tab_index: usize,
+        slab_handle: acadrust::Handle,
+    ) -> bool {
+        let style_library = crate::modules::aec::engine::project::resolve_style_library(
+            self.aec.aec_project_explorer_file.as_ref(),
+        );
+        let slab_owner = crate::modules::aec::engine::slab_package::resolve_slab_package(
+            &self.tabs[tab_index].scene,
+            slab_handle,
+        );
+        let rules = self.resolve_active_display_config_slab_rules(tab_index, Some(slab_owner));
+        let ok = crate::modules::aec::engine::slab_regen::regenerate_slab_representation(
+            &mut self.tabs[tab_index].scene,
+            slab_owner,
+            Some(&style_library),
+            rules.as_ref(),
+        );
+        if ok {
+            let package = crate::modules::aec::engine::slab_package::slab_package_handles(
+                &self.tabs[tab_index].scene,
+                slab_owner,
+            );
+            let changes: Vec<_> = package
+                .into_iter()
+                .filter(|h| {
+                    self.tabs[tab_index]
+                        .scene
+                        .document
+                        .get_entity(*h)
+                        .is_some()
+                })
+                .map(|handle| (handle, crate::scene::ChangeKind::Modified))
+                .collect();
+            if !changes.is_empty() {
+                self.tabs[tab_index].scene.bump_entities(&changes);
+            }
+        }
+        ok
+    }
+
     /// Removes a wall opening while honoring `tabs[tab_index]`'s active
     /// `DisplayConfig` for the host wall's regeneration.
     pub(crate) fn remove_wall_opening_respecting_active_display_config(

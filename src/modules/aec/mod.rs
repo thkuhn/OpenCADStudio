@@ -11,6 +11,7 @@ pub mod message;
 pub mod project;
 pub mod properties;
 pub mod rooms;
+pub mod slabs;
 pub mod spawn;
 pub mod state;
 pub mod styles;
@@ -45,7 +46,8 @@ impl CadModule for AecModule {
         use ifc::export as ifc_export;
         use project::{control_planes, explorer, plane_3point, plane_facet, plane_assign};
         use rooms::{room, schedule};
-        use styles::{material_manager, opening_style_manager, plan_manager, wall_style_manager};
+        use slabs::{slab_opening_tool, slab_tool};
+        use styles::{material_manager, opening_style_manager, plan_manager, slab_style_manager, wall_style_manager};
         use walls::{door, extend, join, opening, refresh, wall, window};
 
         static GROUPS: std::sync::OnceLock<Vec<RibbonGroup>> = std::sync::OnceLock::new();
@@ -74,11 +76,19 @@ impl CadModule for AecModule {
                     ],
                 },
                 RibbonGroup {
+                    title: "Slabs",
+                    tools: vec![
+                        RibbonItem::LargeTool(slab_tool()),
+                        RibbonItem::LargeTool(slab_opening_tool()),
+                    ],
+                },
+                RibbonGroup {
                     title: "Styles",
                     tools: vec![
                         RibbonItem::LargeTool(material_manager::tool()),
                         RibbonItem::LargeTool(wall_style_manager::tool()),
                         RibbonItem::LargeTool(opening_style_manager::tool()),
+                        RibbonItem::LargeTool(slab_style_manager::tool()),
                         RibbonItem::LargeTool(plan_manager::tool()),
                     ],
                 },

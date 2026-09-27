@@ -10,6 +10,7 @@ pub enum AecMessage {
     AecMaterialManagerOpen,
     AecWallStyleManagerOpen,
     AecOpeningStyleManagerOpen,
+    AecSlabStyleManagerOpen,
     /// Filter text changed in the AEC Style Manager's master lists.
     AecStyleManagerFilter(String),
     /// A material row was selected in the AEC Style Manager.
@@ -121,6 +122,8 @@ pub enum AecMessage {
     AecStylePickerOpenForActiveCommand,
     /// Open the AEC Style Picker for opening instance properties.
     AecStylePickerOpenForOpeningProperties(Vec<acadrust::Handle>),
+    /// Open the AEC Style Picker for slab instance properties.
+    AecStylePickerOpenForSlabProperties(Vec<acadrust::Handle>),
 
     // ── AEC Opening Style Manager (`AEC_OPENINGSTYLEMANAGER`) ─────────────
     AecOpeningStyleManagerFilter(String),
@@ -160,6 +163,39 @@ pub enum AecMessage {
     AecOpeningStyleManagerDelete,
     AecStyleManagerCopyOpeningStyleToProject,
     AecStyleManagerCopyOpeningStyleToGlobal,
+
+    // ── AEC Slab Style Manager (`AEC_SLABSTYLEMANAGER`) ───────────────────
+    AecSlabStyleManagerFilter(String),
+    AecSlabStyleManagerSelect(String),
+    AecSlabStyleManagerNew,
+    AecSlabStyleManagerDuplicate,
+    AecSlabStyleManagerNameChanged(String),
+    AecSlabStyleManagerParentChanged(Option<String>),
+    AecSlabStyleManagerLayerAdd,
+    AecSlabStyleManagerLayerRemove(usize),
+    AecSlabStyleManagerLayerMoveUp(usize),
+    AecSlabStyleManagerLayerMoveDown(usize),
+    AecSlabStyleManagerLayerDragStart(usize),
+    AecSlabStyleManagerLayerDragOver(usize),
+    AecSlabStyleManagerLayerDragEnd,
+    AecSlabStyleManagerLayerMaterialChanged(usize, String),
+    AecSlabStyleManagerLayerThicknessChanged(usize, String),
+    AecSlabStyleManagerLayerFunctionChanged(usize, String),
+    AecSlabStyleManagerLayerVerticalOffsetChanged(usize, String),
+    AecSlabStyleManagerLayerOverrideChanged(usize, String),
+    AecSlabStyleManagerLayerHatchOverrideChanged(usize, String),
+    AecSlabStyleManagerLayerRoleTagChanged(usize, String),
+    AecSlabStyleManagerSetPreviewMode(crate::modules::aec::state::AecSlabPreviewMode),
+    AecSlabStyleManagerProfileSelect(String),
+    AecSlabStyleManagerProfileSlotVisibilityToggle(
+        crate::modules::aec::engine::display_component::SlabComponentSlot,
+        bool,
+    ),
+    AecSlabStyleManagerSave,
+    AecSlabStyleManagerSaveAndApply,
+    AecSlabStyleManagerDelete,
+    AecStyleManagerCopySlabStyleToProject,
+    AecStyleManagerCopySlabStyleToGlobal,
     /// Live search filter change in the AEC Style Picker.
     AecStylePickerFilterChanged(String),
     /// Selection/highlight change in the AEC Style Picker.

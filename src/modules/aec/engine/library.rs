@@ -8,6 +8,8 @@ use crate::modules::aec::engine::join::LayerRef;
 use crate::modules::aec::engine::material::Material;
 use crate::modules::aec::engine::opening_style::OpeningStyle;
 use crate::modules::aec::engine::plan_view::{DisplayConfig, ScaleDisplayConfigMapping};
+use crate::modules::aec::engine::slab::Slab;
+use crate::modules::aec::engine::slab_style::{SlabStyle, SlabStyleLayer};
 use crate::modules::aec::engine::style::Style;
 use crate::modules::aec::engine::wall::{Wall, WallLayer};
 use crate::modules::aec::engine::wall_style::{LayerValue, Layer, LayerFunction, WallStyle};
@@ -15,7 +17,7 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 use std::path::PathBuf;
 
-/// A collection of AEC materials and wall styles.
+/// A collection of AEC materials, wall styles, opening styles, and slab styles.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 pub struct StyleLibrary {
     /// List of available materials.
@@ -25,6 +27,9 @@ pub struct StyleLibrary {
     /// Opening styles (window / door / breakthrough). Absent in legacy files.
     #[serde(default)]
     pub opening_styles: Vec<OpeningStyle>,
+    /// Slab styles (floors / ceilings / roofs). Absent in legacy files.
+    #[serde(default)]
+    pub slab_styles: Vec<SlabStyle>,
 }
 
 /// A node in a hierarchical wall-style tree.
@@ -38,6 +43,12 @@ pub struct TreeNode<'a> {
 /// A node in a hierarchical opening-style tree.
 pub struct OpeningTreeNode<'a> {
     pub style: &'a OpeningStyle,
+    pub depth: usize,
+}
+
+/// A node in a hierarchical slab-style tree.
+pub struct SlabTreeNode<'a> {
+    pub style: &'a SlabStyle,
     pub depth: usize,
 }
 
@@ -81,6 +92,13 @@ pub struct CombinedWallStyleEntry {
 #[derive(Debug, Clone, PartialEq)]
 pub struct CombinedOpeningStyleEntry {
     pub opening_style: OpeningStyle,
+    pub source: LibrarySource,
+}
+
+/// A slab style shown in the combined Standard+Project list, with provenance.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CombinedSlabStyleEntry {
+    pub slab_style: SlabStyle,
     pub source: LibrarySource,
 }
 
@@ -236,6 +254,56 @@ pub fn combined_opening_style_entries_with_session(
     entries
 }
 
+/// Builds a combined slab-style list. Project wins, then session, then Standard.
+pub fn combined_slab_style_entries(
+    project: Option<&crate::modules::aec::engine::project::ProjectFile>,
+) -> Vec<CombinedSlabStyleEntry> {
+    combined_slab_style_entries_with_session(project, None)
+}
+
+/// Like [`combined_slab_style_entries`], with a session overlay after project
+/// and before Standard.
+pub fn combined_slab_style_entries_with_session(
+    project: Option<&crate::modules::aec::engine::project::ProjectFile>,
+    session: Option<&StyleLibrary>,
+) -> Vec<CombinedSlabStyleEntry> {
+    let standard = load_or_seed();
+    let mut entries = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+
+    if let Some(project) = project {
+        for slab_style in &project.material_wall_style_library.slab_styles {
+            seen.insert(slab_style.style.id.clone());
+            entries.push(CombinedSlabStyleEntry {
+                slab_style: slab_style.clone(),
+                source: LibrarySource::Project,
+            });
+        }
+    }
+
+    if let Some(session) = session {
+        for slab_style in &session.slab_styles {
+            if seen.insert(slab_style.style.id.clone()) {
+                entries.push(CombinedSlabStyleEntry {
+                    slab_style: slab_style.clone(),
+                    source: LibrarySource::Session,
+                });
+            }
+        }
+    }
+
+    for slab_style in standard.slab_styles {
+        if seen.insert(slab_style.style.id.clone()) {
+            entries.push(CombinedSlabStyleEntry {
+                slab_style,
+                source: LibrarySource::Standard,
+            });
+        }
+    }
+
+    entries
+}
+
 /// Merged Standard+Project style library for UI lookups (project wins on id).
 pub fn combined_style_library(
     project: Option<&crate::modules::aec::engine::project::ProjectFile>,
@@ -257,6 +325,9 @@ pub fn combined_style_library_with_session(
     }
     for entry in combined_opening_style_entries_with_session(project, session) {
         lib.upsert_opening_style(entry.opening_style);
+    }
+    for entry in combined_slab_style_entries_with_session(project, session) {
+        lib.upsert_slab_style(entry.slab_style);
     }
     lib
 }
@@ -315,6 +386,25 @@ pub fn opening_style_library_source_with_session(
     combined_opening_style_entries_with_session(project, session)
         .into_iter()
         .find(|e| e.opening_style.style.id == id)
+        .map(|e| e.source)
+}
+
+/// Source of a slab-style id in the combined view, if present.
+pub fn slab_style_library_source(
+    project: Option<&crate::modules::aec::engine::project::ProjectFile>,
+    id: &str,
+) -> Option<LibrarySource> {
+    slab_style_library_source_with_session(project, None, id)
+}
+
+pub fn slab_style_library_source_with_session(
+    project: Option<&crate::modules::aec::engine::project::ProjectFile>,
+    session: Option<&StyleLibrary>,
+    id: &str,
+) -> Option<LibrarySource> {
+    combined_slab_style_entries_with_session(project, session)
+        .into_iter()
+        .find(|e| e.slab_style.style.id == id)
         .map(|e| e.source)
 }
 
@@ -401,6 +491,39 @@ pub fn build_effective_rule_set(
         if let Some(overlay) = config.style_overlays.get(&style.style.id) {
             merge_style_overlay_into_rules(&mut rules, overlay);
             apply_overlay_layer_visibility(&mut rules, overlay, style);
+        }
+    }
+    rules.plan_name = Some(config.name.clone());
+    rules
+}
+
+/// Plan-type + representation visibility for slab display slots, starting from
+/// a slab style's `display_profiles` entry when present.
+pub fn build_effective_slab_rule_set(
+    config: &DisplayConfig,
+    style: Option<&SlabStyle>,
+    session: Option<RepresentationMode>,
+) -> ComponentRuleSet {
+    use crate::modules::aec::engine::display_component::SlabComponentSlot;
+
+    let mut rules = style
+        .and_then(|ss| ss.display_profiles.get(&config.name))
+        .cloned()
+        .unwrap_or_default();
+    let mode = effective_representation(config, session);
+    for slot in SlabComponentSlot::all() {
+        let key = slot.key().to_string();
+        let allowed_by_mode = match mode {
+            RepresentationMode::All => true,
+            RepresentationMode::TwoD => slot.is_2d(),
+            RepresentationMode::ThreeD => slot.is_3d(),
+        };
+        if session.is_some() {
+            rules.visibility.insert(key, allowed_by_mode);
+        } else if !allowed_by_mode {
+            rules.visibility.insert(key, false);
+        } else {
+            rules.visibility.entry(key).or_insert(true);
         }
     }
     rules.plan_name = Some(config.name.clone());
@@ -746,13 +869,34 @@ pub fn opening_style_copy_conflict(
     }
 }
 
+/// Checks whether copying `slab_style` into `target` would collide.
+pub fn slab_style_copy_conflict(
+    target: &StyleLibrary,
+    slab_style: &SlabStyle,
+) -> CopyConflict {
+    if let Some(existing) = target
+        .slab_styles
+        .iter()
+        .find(|s| s.style.id == slab_style.style.id)
+    {
+        if existing == slab_style {
+            CopyConflict::IdenticalAlreadyPresent
+        } else {
+            CopyConflict::DifferentContentCollision
+        }
+    } else {
+        CopyConflict::None
+    }
+}
+
 impl StyleLibrary {
-    /// An empty library (no materials, no wall/opening styles).
+    /// An empty library (no materials, no wall/opening/slab styles).
     pub fn empty() -> Self {
         Self {
             materials: Vec::new(),
             wall_styles: Vec::new(),
             opening_styles: Vec::new(),
+            slab_styles: Vec::new(),
         }
     }
 
@@ -791,6 +935,24 @@ impl StyleLibrary {
         }
     }
 
+    /// Inserts or replaces (by `style.id`) a slab style.
+    pub fn upsert_slab_style(&mut self, slab_style: SlabStyle) {
+        if let Some(existing) = self
+            .slab_styles
+            .iter_mut()
+            .find(|s| s.style.id == slab_style.style.id)
+        {
+            *existing = slab_style;
+        } else {
+            self.slab_styles.push(slab_style);
+        }
+    }
+
+    /// Looks up a slab style by id.
+    pub fn find_slab_style(&self, id: &str) -> Option<&SlabStyle> {
+        self.slab_styles.iter().find(|s| s.style.id == id)
+    }
+
     /// Looks up an opening style by id.
     pub fn find_opening_style(&self, id: &str) -> Option<&OpeningStyle> {
         self.opening_styles.iter().find(|s| s.style.id == id)
@@ -825,6 +987,13 @@ impl StyleLibrary {
         let before = self.opening_styles.len();
         self.opening_styles.retain(|s| s.style.id != id);
         self.opening_styles.len() != before
+    }
+
+    /// Removes a slab style by `id`. Returns `true` if one was removed.
+    pub fn remove_slab_style(&mut self, id: &str) -> bool {
+        let before = self.slab_styles.len();
+        self.slab_styles.retain(|s| s.style.id != id);
+        self.slab_styles.len() != before
     }
 
     /// Returns all wall styles in a hierarchical tree order: roots first,
@@ -890,6 +1059,41 @@ impl StyleLibrary {
         while let Some((os, depth)) = stack.pop() {
             ordered.push(OpeningTreeNode { style: os, depth });
             if let Some(kids) = children.get(os.style.id.as_str()) {
+                for kid in kids.iter().rev() {
+                    stack.push((kid, depth + 1));
+                }
+            }
+        }
+        ordered
+    }
+
+    /// Hierarchical slab-style order: roots first, then descendants.
+    pub fn slab_style_tree(&self) -> Vec<SlabTreeNode<'_>> {
+        let mut children: std::collections::HashMap<&str, Vec<&SlabStyle>> =
+            std::collections::HashMap::new();
+        let mut roots: Vec<&SlabStyle> = Vec::new();
+        for ss in &self.slab_styles {
+            match &ss.style.parent_style_id {
+                Some(pid) if self.slab_styles.iter().any(|other| &other.style.id == pid) => {
+                    children.entry(pid.as_str()).or_default().push(ss);
+                }
+                _ => roots.push(ss),
+            }
+        }
+        roots.sort_by(|a, b| a.style.name.to_lowercase().cmp(&b.style.name.to_lowercase()));
+        for siblings in children.values_mut() {
+            siblings.sort_by(|a, b| a.style.name.to_lowercase().cmp(&b.style.name.to_lowercase()));
+        }
+
+        let mut ordered = Vec::with_capacity(self.slab_styles.len());
+        let mut stack: Vec<(&SlabStyle, usize)> = roots
+            .into_iter()
+            .rev()
+            .map(|ss| (ss, 0))
+            .collect();
+        while let Some((ss, depth)) = stack.pop() {
+            ordered.push(SlabTreeNode { style: ss, depth });
+            if let Some(kids) = children.get(ss.style.id.as_str()) {
                 for kid in kids.iter().rev() {
                     stack.push((kid, depth + 1));
                 }
@@ -1065,6 +1269,120 @@ where
     lib
 }
 
+fn slab_layer_signature(layers: &[crate::modules::aec::engine::slab::SlabLayer]) -> Vec<(String, String, i64)> {
+    layers
+        .iter()
+        .map(|l| {
+            (
+                l.material.clone(),
+                crate::modules::aec::engine::slab_xdata::layer_function_to_str(&l.function),
+                (l.thickness * 1_000_000.0).round() as i64,
+            )
+        })
+        .collect()
+}
+
+fn slab_layers_to_style_layers(layers: &[crate::modules::aec::engine::slab::SlabLayer]) -> Vec<SlabStyleLayer> {
+    layers
+        .iter()
+        .map(|l| SlabStyleLayer {
+            material_id: l.material.clone(),
+            thickness: LayerValue::Fixed(l.thickness),
+            function: l.function.clone(),
+            vertical_offset: LayerValue::Fixed(l.vertical_offset),
+            layer_override: l.layer_override.clone(),
+            hatch_override: l.hatch_override.clone(),
+            role_tag: l.role_tag.clone(),
+            layer_id: l.layer_id,
+        })
+        .collect()
+}
+
+/// Reconstruct materials and slab styles from slab XDATA snapshots.
+pub fn extract_style_library_from_slabs<'a, I>(slabs: I) -> StyleLibrary
+where
+    I: IntoIterator<Item = &'a Slab>,
+{
+    let mut lib = StyleLibrary::empty();
+    let standard = load_or_seed();
+    let mut variants: Vec<(String, String, Vec<crate::modules::aec::engine::slab::SlabLayer>)> = Vec::new();
+    let mut style_sigs: std::collections::HashMap<String, Vec<(String, String, i64)>> =
+        std::collections::HashMap::new();
+    let mut style_dupes: std::collections::HashMap<String, usize> =
+        std::collections::HashMap::new();
+    let mut base_variant_count: std::collections::HashMap<String, usize> =
+        std::collections::HashMap::new();
+
+    for slab in slabs {
+        for layer in &slab.layers {
+            if layer.material.is_empty() {
+                continue;
+            }
+            if lib.materials.iter().any(|m| m.id == layer.material) {
+                continue;
+            }
+            if let Some(src) = standard.materials.iter().find(|m| {
+                m.id == layer.material || m.name.eq_ignore_ascii_case(&layer.material)
+            }) {
+                let mut copied = src.clone();
+                copied.id = layer.material.clone();
+                copied.name = layer.material.clone();
+                lib.upsert_material(copied);
+            } else {
+                lib.upsert_material(Material::new(
+                    layer.material.clone(),
+                    layer.material.clone(),
+                    "SOLID".to_string(),
+                    0x808080,
+                    "Continuous".to_string(),
+                ));
+            }
+        }
+
+        if slab.style_id.trim().is_empty() {
+            continue;
+        }
+        let sig = slab_layer_signature(&slab.layers);
+        let (id, base) = if let Some(existing) = style_sigs.get(&slab.style_id) {
+            if existing == &sig {
+                continue;
+            }
+            let n = style_dupes.entry(slab.style_id.clone()).or_insert(1);
+            *n += 1;
+            let synthetic = format!("{}#{}", slab.style_id, *n);
+            if style_sigs.contains_key(&synthetic) {
+                continue;
+            }
+            style_sigs.insert(synthetic.clone(), sig);
+            (synthetic, slab.style_id.clone())
+        } else {
+            style_sigs.insert(slab.style_id.clone(), sig);
+            (slab.style_id.clone(), slab.style_id.clone())
+        };
+        *base_variant_count.entry(base.clone()).or_insert(0) += 1;
+        variants.push((id, base, slab.layers.clone()));
+    }
+
+    for (id, base, layers) in variants {
+        let name = if base_variant_count.get(&base).copied().unwrap_or(0) > 1 {
+            format!("{base} ({} Schichten)", layers.len())
+        } else {
+            base
+        };
+        lib.upsert_slab_style(SlabStyle {
+            style: Style {
+                id,
+                name,
+                object_kind: "Slab".to_string(),
+                parent_style_id: None,
+            },
+            layers: slab_layers_to_style_layers(&layers),
+            display_profiles: std::collections::HashMap::new(),
+        });
+    }
+    lib
+}
+
 /// Keep only extracted ids that are absent from Standard and (when present)
 /// the project library. Identical or colliding ids are not copied.
 pub fn session_library_excluding_existing(
@@ -1106,6 +1424,17 @@ pub fn session_library_excluding_existing(
             }
         }
         session.upsert_opening_style(opening_style.clone());
+    }
+    for slab_style in &extracted.slab_styles {
+        if slab_style_copy_conflict(&standard, slab_style) != CopyConflict::None {
+            continue;
+        }
+        if let Some(plib) = project_lib {
+            if slab_style_copy_conflict(plib, slab_style) != CopyConflict::None {
+                continue;
+            }
+        }
+        session.upsert_slab_style(slab_style.clone());
     }
     session
 }
@@ -1227,6 +1556,42 @@ pub fn seed_default_library() -> StyleLibrary {
             "Luftschicht".to_string(),
             "SOLID".to_string(),
             0xE0E0E0,
+            "Continuous".to_string(),
+        )
+    };
+    let screed = Material {
+        category: Some("Bodenaufbau".to_string()),
+        hatch_scale: 0.0015,
+        hatch_color: Some(acadrust::types::Color::Rgb { r: 160, g: 160, b: 155 }),
+        ..Material::new(
+            "mat_screed".to_string(),
+            "Estrich".to_string(),
+            "DOTS".to_string(),
+            0xB0B0A8,
+            "Continuous".to_string(),
+        )
+    };
+    let tile = Material {
+        category: Some("Bodenbelag".to_string()),
+        hatch_scale: 0.05,
+        hatch_color: Some(acadrust::types::Color::Rgb { r: 210, g: 180, b: 140 }),
+        ..Material::new(
+            "mat_tile".to_string(),
+            "Fliesen / Belag".to_string(),
+            "NET".to_string(),
+            0xD2B48C,
+            "Continuous".to_string(),
+        )
+    };
+    let bitumen = Material {
+        category: Some("Abdichtung".to_string()),
+        hatch_scale: 0.5,
+        hatch_color: Some(acadrust::types::Color::Rgb { r: 50, g: 50, b: 50 }),
+        ..Material::new(
+            "mat_bitumen".to_string(),
+            "Bitumen / Abdichtung".to_string(),
+            "SOLID".to_string(),
+            0x333333,
             "Continuous".to_string(),
         )
     };
@@ -1577,6 +1942,7 @@ pub fn seed_default_library() -> StyleLibrary {
     StyleLibrary {
         materials: vec![
             masonry, concrete, insulation, plaster, wood, drywall, steel, glass, clinker, air,
+            screed, tile, bitumen,
         ],
         wall_styles: vec![
             masonry_wall,
@@ -1590,7 +1956,460 @@ pub fn seed_default_library() -> StyleLibrary {
             timber_wall,
         ],
         opening_styles: crate::modules::aec::engine::opening_style::seed_opening_styles(),
+        slab_styles: seed_slab_styles(),
     }
+}
+
+/// Builds the default standard slab styles library.
+pub fn seed_slab_styles() -> Vec<SlabStyle> {
+    vec![
+        // 1. Reinforced Concrete Slab 20cm
+        SlabStyle {
+            style: Style {
+                id: "style_slab_concrete_20".to_string(),
+                name: "Stahlbetondecke 20cm".to_string(),
+                object_kind: "Slab".to_string(),
+                parent_style_id: None,
+            },
+            layers: vec![SlabStyleLayer {
+                material_id: "mat_concrete".to_string(),
+                thickness: LayerValue::Fixed(0.20),
+                function: LayerFunction::Structural,
+                vertical_offset: LayerValue::Fixed(0.0),
+                layer_override: Some("A-FLOR-STRC".to_string()),
+                hatch_override: Some("AR-CONC".to_string()),
+                role_tag: Some("Stahlbetonplatte".to_string()),
+                layer_id: Uuid::new_v4(),
+            }],
+            display_profiles: std::collections::HashMap::new(),
+        },
+        // 2. Reinforced Concrete Slab 25cm
+        SlabStyle {
+            style: Style {
+                id: "style_slab_concrete_25".to_string(),
+                name: "Stahlbetondecke 25cm".to_string(),
+                object_kind: "Slab".to_string(),
+                parent_style_id: None,
+            },
+            layers: vec![SlabStyleLayer {
+                material_id: "mat_concrete".to_string(),
+                thickness: LayerValue::Fixed(0.25),
+                function: LayerFunction::Structural,
+                vertical_offset: LayerValue::Fixed(0.0),
+                layer_override: Some("A-FLOR-STRC".to_string()),
+                hatch_override: Some("AR-CONC".to_string()),
+                role_tag: Some("Stahlbetonplatte".to_string()),
+                layer_id: Uuid::new_v4(),
+            }],
+            display_profiles: std::collections::HashMap::new(),
+        },
+        // 3. Reinforced Concrete Slab 30cm
+        SlabStyle {
+            style: Style {
+                id: "style_slab_concrete_30".to_string(),
+                name: "Stahlbetondecke 30cm".to_string(),
+                object_kind: "Slab".to_string(),
+                parent_style_id: None,
+            },
+            layers: vec![SlabStyleLayer {
+                material_id: "mat_concrete".to_string(),
+                thickness: LayerValue::Fixed(0.30),
+                function: LayerFunction::Structural,
+                vertical_offset: LayerValue::Fixed(0.0),
+                layer_override: Some("A-FLOR-STRC".to_string()),
+                hatch_override: Some("AR-CONC".to_string()),
+                role_tag: Some("Stahlbetonplatte".to_string()),
+                layer_id: Uuid::new_v4(),
+            }],
+            display_profiles: std::collections::HashMap::new(),
+        },
+        // 4. Geschossdecke EG mit Estrich & Daemmung 34cm
+        SlabStyle {
+            style: Style {
+                id: "style_slab_floor_eg_34".to_string(),
+                name: "Geschossdecke EG 34cm".to_string(),
+                object_kind: "Slab".to_string(),
+                parent_style_id: None,
+            },
+            layers: vec![
+                SlabStyleLayer {
+                    material_id: "mat_tile".to_string(),
+                    thickness: LayerValue::Fixed(0.015),
+                    function: LayerFunction::Finish,
+                    vertical_offset: LayerValue::Fixed(0.0),
+                    layer_override: Some("A-FLOR-FINI".to_string()),
+                    hatch_override: Some("NET".to_string()),
+                    role_tag: Some("Fliesenbelag".to_string()),
+                    layer_id: Uuid::new_v4(),
+                },
+                SlabStyleLayer {
+                    material_id: "mat_screed".to_string(),
+                    thickness: LayerValue::Fixed(0.055),
+                    function: LayerFunction::Other("Screed".to_string()),
+                    vertical_offset: LayerValue::Fixed(0.0),
+                    layer_override: Some("A-FLOR-SCREED".to_string()),
+                    hatch_override: Some("DOTS".to_string()),
+                    role_tag: Some("Zementestrich".to_string()),
+                    layer_id: Uuid::new_v4(),
+                },
+                SlabStyleLayer {
+                    material_id: "mat_insulation".to_string(),
+                    thickness: LayerValue::Fixed(0.070),
+                    function: LayerFunction::Insulation,
+                    vertical_offset: LayerValue::Fixed(0.0),
+                    layer_override: Some("A-FLOR-INSU".to_string()),
+                    hatch_override: Some("ANSI37".to_string()),
+                    role_tag: Some("Waermedaemmung EPS".to_string()),
+                    layer_id: Uuid::new_v4(),
+                },
+                SlabStyleLayer {
+                    material_id: "mat_concrete".to_string(),
+                    thickness: LayerValue::Fixed(0.200),
+                    function: LayerFunction::Structural,
+                    vertical_offset: LayerValue::Fixed(0.0),
+                    layer_override: Some("A-FLOR-STRC".to_string()),
+                    hatch_override: Some("AR-CONC".to_string()),
+                    role_tag: Some("Stahlbetondecke".to_string()),
+                    layer_id: Uuid::new_v4(),
+                },
+            ],
+            display_profiles: std::collections::HashMap::new(),
+        },
+        // 5. Geschossdecke OG 32cm mit Trittschall
+        SlabStyle {
+            style: Style {
+                id: "style_slab_floor_og_32".to_string(),
+                name: "Geschossdecke OG 32cm".to_string(),
+                object_kind: "Slab".to_string(),
+                parent_style_id: None,
+            },
+            layers: vec![
+                SlabStyleLayer {
+                    material_id: "mat_wood".to_string(),
+                    thickness: LayerValue::Fixed(0.015),
+                    function: LayerFunction::Finish,
+                    vertical_offset: LayerValue::Fixed(0.0),
+                    layer_override: Some("A-FLOR-FINI".to_string()),
+                    hatch_override: Some("ANSI31".to_string()),
+                    role_tag: Some("Parkett".to_string()),
+                    layer_id: Uuid::new_v4(),
+                },
+                SlabStyleLayer {
+                    material_id: "mat_screed".to_string(),
+                    thickness: LayerValue::Fixed(0.050),
+                    function: LayerFunction::Other("Screed".to_string()),
+                    vertical_offset: LayerValue::Fixed(0.0),
+                    layer_override: Some("A-FLOR-SCREED".to_string()),
+                    hatch_override: Some("DOTS".to_string()),
+                    role_tag: Some("Heizestrich".to_string()),
+                    layer_id: Uuid::new_v4(),
+                },
+                SlabStyleLayer {
+                    material_id: "mat_insulation".to_string(),
+                    thickness: LayerValue::Fixed(0.040),
+                    function: LayerFunction::Insulation,
+                    vertical_offset: LayerValue::Fixed(0.0),
+                    layer_override: Some("A-FLOR-INSU".to_string()),
+                    hatch_override: Some("ANSI37".to_string()),
+                    role_tag: Some("Trittschalldaemmung".to_string()),
+                    layer_id: Uuid::new_v4(),
+                },
+                SlabStyleLayer {
+                    material_id: "mat_concrete".to_string(),
+                    thickness: LayerValue::Fixed(0.200),
+                    function: LayerFunction::Structural,
+                    vertical_offset: LayerValue::Fixed(0.0),
+                    layer_override: Some("A-FLOR-STRC".to_string()),
+                    hatch_override: Some("AR-CONC".to_string()),
+                    role_tag: Some("Stahlbetondecke".to_string()),
+                    layer_id: Uuid::new_v4(),
+                },
+                SlabStyleLayer {
+                    material_id: "mat_plaster".to_string(),
+                    thickness: LayerValue::Fixed(0.015),
+                    function: LayerFunction::Finish,
+                    vertical_offset: LayerValue::Fixed(0.0),
+                    layer_override: Some("A-CEIL-FINI".to_string()),
+                    hatch_override: Some("DOTS".to_string()),
+                    role_tag: Some("Deckenputz".to_string()),
+                    layer_id: Uuid::new_v4(),
+                },
+            ],
+            display_profiles: std::collections::HashMap::new(),
+        },
+        // 6. Holzbalkendecke 24cm
+        SlabStyle {
+            style: Style {
+                id: "style_slab_timber_24".to_string(),
+                name: "Holzbalkendecke 24cm".to_string(),
+                object_kind: "Slab".to_string(),
+                parent_style_id: None,
+            },
+            layers: vec![
+                SlabStyleLayer {
+                    material_id: "mat_wood".to_string(),
+                    thickness: LayerValue::Fixed(0.025),
+                    function: LayerFunction::Finish,
+                    vertical_offset: LayerValue::Fixed(0.0),
+                    layer_override: Some("A-FLOR-WOOD".to_string()),
+                    hatch_override: Some("ANSI31".to_string()),
+                    role_tag: Some("Dielenboden".to_string()),
+                    layer_id: Uuid::new_v4(),
+                },
+                SlabStyleLayer {
+                    material_id: "mat_wood".to_string(),
+                    thickness: LayerValue::Fixed(0.200),
+                    function: LayerFunction::Structural,
+                    vertical_offset: LayerValue::Fixed(0.0),
+                    layer_override: Some("A-FLOR-STRC".to_string()),
+                    hatch_override: Some("ANSI31".to_string()),
+                    role_tag: Some("Holzbalkenlage / Daemmung".to_string()),
+                    layer_id: Uuid::new_v4(),
+                },
+                SlabStyleLayer {
+                    material_id: "mat_drywall".to_string(),
+                    thickness: LayerValue::Fixed(0.015),
+                    function: LayerFunction::Finish,
+                    vertical_offset: LayerValue::Fixed(0.0),
+                    layer_override: Some("A-CEIL-FINI".to_string()),
+                    hatch_override: Some("ANSI31".to_string()),
+                    role_tag: Some("Gipskartonbeplankung".to_string()),
+                    layer_id: Uuid::new_v4(),
+                },
+            ],
+            display_profiles: std::collections::HashMap::new(),
+        },
+        // 7. Flachdach warm gedaemmt 40cm
+        SlabStyle {
+            style: Style {
+                id: "style_slab_flat_roof_40".to_string(),
+                name: "Flachdach warm gedaemmt 40cm".to_string(),
+                object_kind: "Slab".to_string(),
+                parent_style_id: None,
+            },
+            layers: vec![
+                SlabStyleLayer {
+                    material_id: "mat_bitumen".to_string(),
+                    thickness: LayerValue::Fixed(0.020),
+                    function: LayerFunction::Finish,
+                    vertical_offset: LayerValue::Fixed(0.0),
+                    layer_override: Some("A-ROOF-FINI".to_string()),
+                    hatch_override: Some("SOLID".to_string()),
+                    role_tag: Some("Abdichtung / Kies".to_string()),
+                    layer_id: Uuid::new_v4(),
+                },
+                SlabStyleLayer {
+                    material_id: "mat_insulation".to_string(),
+                    thickness: LayerValue::Fixed(0.180),
+                    function: LayerFunction::Insulation,
+                    vertical_offset: LayerValue::Fixed(0.0),
+                    layer_override: Some("A-ROOF-INSU".to_string()),
+                    hatch_override: Some("ANSI37".to_string()),
+                    role_tag: Some("PIR Gefaelledaemmung".to_string()),
+                    layer_id: Uuid::new_v4(),
+                },
+                SlabStyleLayer {
+                    material_id: "mat_concrete".to_string(),
+                    thickness: LayerValue::Fixed(0.200),
+                    function: LayerFunction::Structural,
+                    vertical_offset: LayerValue::Fixed(0.0),
+                    layer_override: Some("A-ROOF-STRC".to_string()),
+                    hatch_override: Some("AR-CONC".to_string()),
+                    role_tag: Some("Stahlbetondecke".to_string()),
+                    layer_id: Uuid::new_v4(),
+                },
+            ],
+            display_profiles: std::collections::HashMap::new(),
+        },
+        // 8. Steildach Sparrenaufbau 30cm
+        SlabStyle {
+            style: Style {
+                id: "style_slab_pitched_roof_30".to_string(),
+                name: "Steildach Sparrenaufbau 30cm".to_string(),
+                object_kind: "Slab".to_string(),
+                parent_style_id: None,
+            },
+            layers: vec![
+                SlabStyleLayer {
+                    material_id: "mat_tile".to_string(),
+                    thickness: LayerValue::Fixed(0.030),
+                    function: LayerFunction::Finish,
+                    vertical_offset: LayerValue::Fixed(0.0),
+                    layer_override: Some("A-ROOF-FINI".to_string()),
+                    hatch_override: Some("NET".to_string()),
+                    role_tag: Some("Dachziegel / Lattung".to_string()),
+                    layer_id: Uuid::new_v4(),
+                },
+                SlabStyleLayer {
+                    material_id: "mat_wood".to_string(),
+                    thickness: LayerValue::Fixed(0.220),
+                    function: LayerFunction::Structural,
+                    vertical_offset: LayerValue::Fixed(0.0),
+                    layer_override: Some("A-ROOF-STRC".to_string()),
+                    hatch_override: Some("ANSI31".to_string()),
+                    role_tag: Some("Sparrenlage / Zwischensparrendaemmung".to_string()),
+                    layer_id: Uuid::new_v4(),
+                },
+                SlabStyleLayer {
+                    material_id: "mat_insulation".to_string(),
+                    thickness: LayerValue::Fixed(0.030),
+                    function: LayerFunction::Insulation,
+                    vertical_offset: LayerValue::Fixed(0.0),
+                    layer_override: Some("A-ROOF-INSU".to_string()),
+                    hatch_override: Some("ANSI37".to_string()),
+                    role_tag: Some("Untersparrendaemmung".to_string()),
+                    layer_id: Uuid::new_v4(),
+                },
+                SlabStyleLayer {
+                    material_id: "mat_drywall".to_string(),
+                    thickness: LayerValue::Fixed(0.020),
+                    function: LayerFunction::Finish,
+                    vertical_offset: LayerValue::Fixed(0.0),
+                    layer_override: Some("A-CEIL-FINI".to_string()),
+                    hatch_override: Some("ANSI31".to_string()),
+                    role_tag: Some("Dampfbremse / Gipskarton".to_string()),
+                    layer_id: Uuid::new_v4(),
+                },
+            ],
+            display_profiles: std::collections::HashMap::new(),
+        },
+        // 9. Bodenplatte Stahlbeton 30cm
+        SlabStyle {
+            style: Style {
+                id: "style_slab_foundation_30".to_string(),
+                name: "Bodenplatte Stahlbeton 30cm".to_string(),
+                object_kind: "Slab".to_string(),
+                parent_style_id: None,
+            },
+            layers: vec![SlabStyleLayer {
+                material_id: "mat_concrete".to_string(),
+                thickness: LayerValue::Fixed(0.300),
+                function: LayerFunction::Structural,
+                vertical_offset: LayerValue::Fixed(0.0),
+                layer_override: Some("A-FLOR-STRC".to_string()),
+                hatch_override: Some("AR-CONC".to_string()),
+                role_tag: Some("Sohlplatte Stahlbeton".to_string()),
+                layer_id: Uuid::new_v4(),
+            }],
+            display_profiles: std::collections::HashMap::new(),
+        },
+        // 10. Bodenplatte gedaemmt 40cm
+        SlabStyle {
+            style: Style {
+                id: "style_slab_foundation_insulated_40".to_string(),
+                name: "Bodenplatte gedaemmt 40cm".to_string(),
+                object_kind: "Slab".to_string(),
+                parent_style_id: None,
+            },
+            layers: vec![
+                SlabStyleLayer {
+                    material_id: "mat_screed".to_string(),
+                    thickness: LayerValue::Fixed(0.060),
+                    function: LayerFunction::Other("Screed".to_string()),
+                    vertical_offset: LayerValue::Fixed(0.0),
+                    layer_override: Some("A-FLOR-SCREED".to_string()),
+                    hatch_override: Some("DOTS".to_string()),
+                    role_tag: Some("Zementestrich".to_string()),
+                    layer_id: Uuid::new_v4(),
+                },
+                SlabStyleLayer {
+                    material_id: "mat_insulation".to_string(),
+                    thickness: LayerValue::Fixed(0.100),
+                    function: LayerFunction::Insulation,
+                    vertical_offset: LayerValue::Fixed(0.0),
+                    layer_override: Some("A-FLOR-INSU".to_string()),
+                    hatch_override: Some("ANSI37".to_string()),
+                    role_tag: Some("XPS Perimeterdaemmung".to_string()),
+                    layer_id: Uuid::new_v4(),
+                },
+                SlabStyleLayer {
+                    material_id: "mat_concrete".to_string(),
+                    thickness: LayerValue::Fixed(0.240),
+                    function: LayerFunction::Structural,
+                    vertical_offset: LayerValue::Fixed(0.0),
+                    layer_override: Some("A-FLOR-STRC".to_string()),
+                    hatch_override: Some("AR-CONC".to_string()),
+                    role_tag: Some("Stahlbetonplatte".to_string()),
+                    layer_id: Uuid::new_v4(),
+                },
+            ],
+            display_profiles: std::collections::HashMap::new(),
+        },
+        // 11. Abgehaengte Decke Gipskarton 15cm
+        SlabStyle {
+            style: Style {
+                id: "style_slab_suspended_ceiling_15".to_string(),
+                name: "Abgehaengte Decke Gipskarton 15cm".to_string(),
+                object_kind: "Slab".to_string(),
+                parent_style_id: None,
+            },
+            layers: vec![
+                SlabStyleLayer {
+                    material_id: "mat_air".to_string(),
+                    thickness: LayerValue::Fixed(0.125),
+                    function: LayerFunction::Other("Cavity".to_string()),
+                    vertical_offset: LayerValue::Fixed(0.0),
+                    layer_override: Some("A-CEIL-CAVT".to_string()),
+                    hatch_override: Some("SOLID".to_string()),
+                    role_tag: Some("Abhaengeraum / Unterkonstruktion".to_string()),
+                    layer_id: Uuid::new_v4(),
+                },
+                SlabStyleLayer {
+                    material_id: "mat_drywall".to_string(),
+                    thickness: LayerValue::Fixed(0.025),
+                    function: LayerFunction::Finish,
+                    vertical_offset: LayerValue::Fixed(0.0),
+                    layer_override: Some("A-CEIL-FINI".to_string()),
+                    hatch_override: Some("ANSI31".to_string()),
+                    role_tag: Some("Gipskartonplatten 2x12.5mm".to_string()),
+                    layer_id: Uuid::new_v4(),
+                },
+            ],
+            display_profiles: std::collections::HashMap::new(),
+        },
+        // 12. Balkonplatte Stahlbeton mit Gefaelleestrich 22cm
+        SlabStyle {
+            style: Style {
+                id: "style_slab_balcony_22".to_string(),
+                name: "Balkonplatte Stahlbeton 22cm".to_string(),
+                object_kind: "Slab".to_string(),
+                parent_style_id: None,
+            },
+            layers: vec![
+                SlabStyleLayer {
+                    material_id: "mat_tile".to_string(),
+                    thickness: LayerValue::Fixed(0.015),
+                    function: LayerFunction::Finish,
+                    vertical_offset: LayerValue::Fixed(0.0),
+                    layer_override: Some("A-FLOR-FINI".to_string()),
+                    hatch_override: Some("NET".to_string()),
+                    role_tag: Some("Spaltplatten / Fliesen".to_string()),
+                    layer_id: Uuid::new_v4(),
+                },
+                SlabStyleLayer {
+                    material_id: "mat_screed".to_string(),
+                    thickness: LayerValue::Fixed(0.045),
+                    function: LayerFunction::Other("Screed".to_string()),
+                    vertical_offset: LayerValue::Fixed(0.0),
+                    layer_override: Some("A-FLOR-SCREED".to_string()),
+                    hatch_override: Some("DOTS".to_string()),
+                    role_tag: Some("Gefaelleestrich & Abdichtung".to_string()),
+                    layer_id: Uuid::new_v4(),
+                },
+                SlabStyleLayer {
+                    material_id: "mat_concrete".to_string(),
+                    thickness: LayerValue::Fixed(0.160),
+                    function: LayerFunction::Structural,
+                    vertical_offset: LayerValue::Fixed(0.0),
+                    layer_override: Some("A-FLOR-STRC".to_string()),
+                    hatch_override: Some("AR-CONC".to_string()),
+                    role_tag: Some("Stahlbeton-Balkonplatte".to_string()),
+                    layer_id: Uuid::new_v4(),
+                },
+            ],
+            display_profiles: std::collections::HashMap::new(),
+        },
+    ]
 }
 
 /// Serializes the library to a string.
@@ -3089,5 +3908,80 @@ mod tests {
         let other = Uuid::new_v4();
         let resolved = resolve_layer_property_override(&cfg, "style1", other, None, None);
         assert!(resolved.line_type.is_none());
+    }
+
+    #[test]
+    fn seed_default_library_includes_slab_styles() {
+        let lib = seed_default_library();
+        assert_eq!(lib.slab_styles.len(), 12);
+        let concrete_20 = lib.find_slab_style("style_slab_concrete_20").expect("concrete 20 seed");
+        assert_eq!(concrete_20.layers.len(), 1);
+        assert_eq!(concrete_20.layers[0].material_id, "mat_concrete");
+        assert_eq!(concrete_20.nominal_thickness(), 0.20);
+
+        let floor_eg = lib.find_slab_style("style_slab_floor_eg_34").expect("floor eg seed");
+        assert_eq!(floor_eg.layers.len(), 4);
+        assert!((floor_eg.nominal_thickness() - 0.34).abs() < 1e-6);
+    }
+
+    #[test]
+    fn test_remove_slab_style() {
+        let mut lib = StyleLibrary::empty();
+        let ss = SlabStyle::new("slab1", "Slab 1");
+        lib.upsert_slab_style(ss);
+        assert_eq!(lib.slab_styles.len(), 1);
+        assert!(lib.remove_slab_style("slab1"));
+        assert!(lib.slab_styles.is_empty());
+        assert!(!lib.remove_slab_style("slab1"));
+    }
+
+    #[test]
+    fn test_slab_style_tree() {
+        let mut lib = StyleLibrary::empty();
+        let s1 = SlabStyle::new("s1", "Root Slab");
+        let mut s2 = SlabStyle::new("s2", "Child Slab");
+        s2.style.parent_style_id = Some("s1".to_string());
+        lib.upsert_slab_style(s1);
+        lib.upsert_slab_style(s2);
+
+        let tree = lib.slab_style_tree();
+        assert_eq!(tree.len(), 2);
+        assert_eq!(tree[0].style.style.id, "s1");
+        assert_eq!(tree[0].depth, 0);
+        assert_eq!(tree[1].style.style.id, "s2");
+        assert_eq!(tree[1].depth, 1);
+    }
+
+    #[test]
+    fn test_extract_style_library_from_slabs() {
+        let mut slab = Slab::new("style_slab_custom", 1);
+        slab.layers = vec![
+            crate::modules::aec::engine::slab::SlabLayer::new("mat_concrete", 0.22, LayerFunction::Structural),
+            crate::modules::aec::engine::slab::SlabLayer::new("mat_plaster", 0.015, LayerFunction::Finish),
+        ];
+
+        let extracted = extract_style_library_from_slabs(&[slab]);
+        assert_eq!(extracted.slab_styles.len(), 1);
+        assert_eq!(extracted.slab_styles[0].style.id, "style_slab_custom");
+        assert_eq!(extracted.slab_styles[0].layers.len(), 2);
+    }
+
+    #[test]
+    fn build_effective_slab_rule_set_respects_2d_session_mode() {
+        use crate::modules::aec::engine::display_component::{
+            RepresentationMode, SlabComponentSlot,
+        };
+
+        let cfg = DisplayConfig::new(
+            "Plan".into(),
+            "Plan".into(),
+            crate::modules::aec::engine::plan_view::PlanningStage::Design,
+            crate::modules::aec::engine::plan_view::ViewType::FloorPlan,
+        );
+        let rules = build_effective_slab_rule_set(&cfg, None, Some(RepresentationMode::TwoD));
+        assert!(rules.is_slab_visible(SlabComponentSlot::Contour2D));
+        assert!(rules.is_slab_visible(SlabComponentSlot::OpeningSymbol2D));
+        assert!(!rules.is_slab_visible(SlabComponentSlot::Solid3D));
+        assert!(!rules.is_slab_visible(SlabComponentSlot::SurfaceStyle3D));
     }
 }

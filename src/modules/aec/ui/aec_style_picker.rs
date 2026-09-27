@@ -6,6 +6,7 @@ use iced::{Alignment, Background, Border, Element, Fill, Theme};
 use crate::app::{AecMessage, Message};
 use crate::modules::aec::engine::library::{
     combined_material_entries_with_session, combined_opening_style_entries_with_session,
+    combined_slab_style_entries_with_session,
     combined_wall_style_entries_with_session, LibrarySource, StyleLibrary,
 };
 use crate::modules::aec::engine::project::ProjectFile;
@@ -78,6 +79,10 @@ pub fn view_window<'a>(
         crate::app::StylePickerTarget::ActiveCommand => t!("Select Wall Style"),
         crate::app::StylePickerTarget::OpeningStyleParent => t!("Select Parent Style"),
         crate::app::StylePickerTarget::OpeningPropertiesStyle => t!("Select Opening Style"),
+        crate::app::StylePickerTarget::SlabStyleParent => t!("Select Parent Style"),
+        crate::app::StylePickerTarget::SlabLayerMaterial(_) => t!("Select Material"),
+        crate::app::StylePickerTarget::SlabLayerOverride(_) => t!("Select Layer Override"),
+        crate::app::StylePickerTarget::SlabPropertiesStyle => t!("Select Slab Style"),
     };
 
     let query = filter.trim().to_lowercase();
@@ -215,7 +220,66 @@ pub fn view_window<'a>(
             }));
             scrollable(column(rows).spacing(2)).into()
         }
-        crate::app::StylePickerTarget::LayerMaterial(_) => {
+                crate::app::StylePickerTarget::SlabStyleParent
+        | crate::app::StylePickerTarget::SlabPropertiesStyle => {
+            let slab_style_sources: std::collections::HashMap<String, LibrarySource> =
+                combined_slab_style_entries_with_session(project, session)
+                    .into_iter()
+                    .map(|e| (e.slab_style.style.id, e.source))
+                    .collect();
+            let tree = library.slab_style_tree();
+            let mut visible_ids = std::collections::HashSet::new();
+            if !query.is_empty() {
+                let styles_map: std::collections::HashMap<_, _> = library
+                    .slab_styles
+                    .iter()
+                    .map(|ss| (ss.style.id.clone(), ss.style.clone()))
+                    .collect();
+                for node in &tree {
+                    if node.style.style.name.to_lowercase().contains(&query) {
+                        if let Ok(chain) = crate::modules::aec::engine::style::resolve_chain(
+                            &styles_map,
+                            &node.style.style.id,
+                        ) {
+                            for id in chain {
+                                visible_ids.insert(id);
+                            }
+                        }
+                    }
+                }
+            }
+            let rows: Vec<Element<'_, Message>> = tree
+                .into_iter()
+                .filter(|node| query.is_empty() || visible_ids.contains(&node.style.style.id))
+                .map(|node| {
+                    let is_selected = selection == Some(node.style.style.id.as_str());
+                    let source = slab_style_sources
+                        .get(&node.style.style.id)
+                        .copied()
+                        .unwrap_or(LibrarySource::Standard);
+                    button(
+                        row![
+                            Space::new().width(node.depth as f32 * 20.0),
+                            text(node.style.style.name.clone()).size(12),
+                            Space::new().width(6),
+                            source_badge(source),
+                        ]
+                        .align_y(Alignment::Center),
+                    )
+                    .on_press(Message::Aec(AecMessage::AecStylePickerSelect(
+                        node.style.style.id.clone(),
+                    )))
+                    .style(list_style(is_selected))
+                    .padding([4, 8])
+                    .width(Fill)
+                    .into()
+                })
+                .collect();
+            scrollable(column(rows).spacing(2)).into()
+        }
+
+crate::app::StylePickerTarget::LayerMaterial(_)
+        | crate::app::StylePickerTarget::SlabLayerMaterial(_) => {
             let rows: Vec<Element<'_, Message>> = library.materials
                 .iter()
                 .filter(|m| query.is_empty() || m.name.to_lowercase().contains(&query))
@@ -242,7 +306,8 @@ pub fn view_window<'a>(
                 .collect();
             scrollable(column(rows).spacing(2)).into()
         }
-        crate::app::StylePickerTarget::LayerOverride(_) => {
+        crate::app::StylePickerTarget::LayerOverride(_)
+        | crate::app::StylePickerTarget::SlabLayerOverride(_) => {
             let default_label = t!("(Default)").into_owned();
             let rows: Vec<Element<'_, Message>> = std::iter::once(default_label.clone())
                 .chain(all_layer_names.into_iter())

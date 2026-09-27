@@ -342,9 +342,12 @@ impl ProjectFile {
     }
 }
 
-/// Returns `true` if a `StyleLibrary` has no materials and no wall/opening styles.
+/// Returns `true` if a `StyleLibrary` has no materials and no wall/opening/slab styles.
 fn style_library_is_empty(lib: &StyleLibrary) -> bool {
-    lib.materials.is_empty() && lib.wall_styles.is_empty() && lib.opening_styles.is_empty()
+    lib.materials.is_empty()
+        && lib.wall_styles.is_empty()
+        && lib.opening_styles.is_empty()
+        && lib.slab_styles.is_empty()
 }
 
 /// Resolves the effective material/wall-style library: "project overrides

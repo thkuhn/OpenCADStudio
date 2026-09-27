@@ -9,6 +9,7 @@ pub mod explorer;
 mod persist;
 pub mod preview;
 pub mod opening_planes;
+pub mod slab_planes;
 pub mod storey_z;
 pub mod storeys;
 pub mod wall_planes;

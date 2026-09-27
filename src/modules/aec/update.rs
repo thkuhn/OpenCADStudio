@@ -210,6 +210,123 @@ impl OpenCADStudio {
             AecMessage::AecStyleManagerCopyOpeningStyleToGlobal => {
                 self.aec_handle_copy_opening_style(false)
             }
+            AecMessage::AecSlabStyleManagerOpen => self.aec_slab_style_manager_open(),
+            AecMessage::AecSlabStyleManagerFilter(value) => {
+                self.aec.aec_slab_style_manager_filter = value;
+                Task::none()
+            }
+            AecMessage::AecSlabStyleManagerSelect(id) => self.aec_slab_style_manager_select(id),
+            AecMessage::AecSlabStyleManagerNew => self.aec_slab_style_manager_new(),
+            AecMessage::AecSlabStyleManagerDuplicate => self.aec_slab_style_manager_duplicate(),
+            AecMessage::AecSlabStyleManagerNameChanged(value) => {
+                self.aec.aec_slab_style_manager_name = value;
+                Task::none()
+            }
+            AecMessage::AecSlabStyleManagerParentChanged(value) => {
+                self.aec.aec_slab_style_manager_parent = value;
+                Task::none()
+            }
+            AecMessage::AecSlabStyleManagerLayerAdd => {
+                self.aec_slab_style_manager_layer_add();
+                Task::none()
+            }
+            AecMessage::AecSlabStyleManagerLayerRemove(index) => {
+                self.aec_slab_style_manager_layer_remove(index);
+                Task::none()
+            }
+            AecMessage::AecSlabStyleManagerLayerMoveUp(index) => {
+                self.aec_slab_style_manager_layer_move_up(index);
+                Task::none()
+            }
+            AecMessage::AecSlabStyleManagerLayerMoveDown(index) => {
+                self.aec_slab_style_manager_layer_move_down(index);
+                Task::none()
+            }
+            AecMessage::AecSlabStyleManagerLayerDragStart(index) => {
+                self.aec.aec_slab_style_manager_drag_index = Some(index);
+                Task::none()
+            }
+            AecMessage::AecSlabStyleManagerLayerDragOver(index) => {
+                if let Some(from) = self.aec.aec_slab_style_manager_drag_index {
+                    if from != index && index < self.aec.aec_slab_style_manager_layers.len() {
+                        let item = self.aec.aec_slab_style_manager_layers.remove(from);
+                        self.aec.aec_slab_style_manager_layers.insert(index, item);
+                        self.aec.aec_slab_style_manager_drag_index = Some(index);
+                    }
+                }
+                Task::none()
+            }
+            AecMessage::AecSlabStyleManagerLayerDragEnd => {
+                self.aec.aec_slab_style_manager_drag_index = None;
+                Task::none()
+            }
+            AecMessage::AecSlabStyleManagerLayerMaterialChanged(index, value) => {
+                if let Some(layer) = self.aec.aec_slab_style_manager_layers.get_mut(index) {
+                    layer.material_id = value;
+                }
+                Task::none()
+            }
+            AecMessage::AecSlabStyleManagerLayerThicknessChanged(index, value) => {
+                if let Some(layer) = self.aec.aec_slab_style_manager_layers.get_mut(index) {
+                    layer.thickness = value;
+                }
+                Task::none()
+            }
+            AecMessage::AecSlabStyleManagerLayerFunctionChanged(index, value) => {
+                if let Some(layer) = self.aec.aec_slab_style_manager_layers.get_mut(index) {
+                    layer.function = value;
+                }
+                Task::none()
+            }
+            AecMessage::AecSlabStyleManagerLayerVerticalOffsetChanged(index, value) => {
+                if let Some(layer) = self.aec.aec_slab_style_manager_layers.get_mut(index) {
+                    layer.vertical_offset = value;
+                }
+                Task::none()
+            }
+            AecMessage::AecSlabStyleManagerLayerOverrideChanged(index, value) => {
+                if let Some(layer) = self.aec.aec_slab_style_manager_layers.get_mut(index) {
+                    layer.layer_override = value;
+                }
+                Task::none()
+            }
+            AecMessage::AecSlabStyleManagerLayerHatchOverrideChanged(index, value) => {
+                if let Some(layer) = self.aec.aec_slab_style_manager_layers.get_mut(index) {
+                    layer.hatch_override = value;
+                }
+                Task::none()
+            }
+            AecMessage::AecSlabStyleManagerLayerRoleTagChanged(index, value) => {
+                if let Some(layer) = self.aec.aec_slab_style_manager_layers.get_mut(index) {
+                    layer.role_tag = value;
+                }
+                Task::none()
+            }
+            AecMessage::AecSlabStyleManagerSetPreviewMode(mode) => {
+                self.aec.aec_slab_style_manager_preview_mode = mode;
+                Task::none()
+            }
+            AecMessage::AecSlabStyleManagerProfileSelect(name) => {
+                self.aec.aec_slab_style_manager_profile_selected = Some(name);
+                Task::none()
+            }
+            AecMessage::AecSlabStyleManagerProfileSlotVisibilityToggle(slot, visible) => {
+                self.aec
+                    .aec_slab_style_manager_profile_slot_visibility
+                    .insert(slot, visible);
+                Task::none()
+            }
+            AecMessage::AecSlabStyleManagerSave => self.aec_slab_style_manager_save(),
+            AecMessage::AecSlabStyleManagerSaveAndApply => {
+                self.aec_slab_style_manager_save_and_apply()
+            }
+            AecMessage::AecSlabStyleManagerDelete => self.aec_slab_style_manager_delete(),
+            AecMessage::AecStyleManagerCopySlabStyleToProject => {
+                self.aec_handle_copy_slab_style(true)
+            }
+            AecMessage::AecStyleManagerCopySlabStyleToGlobal => {
+                self.aec_handle_copy_slab_style(false)
+            }
             AecMessage::AecProjectExplorerOpen => {
                 self.ribbon.close_dropdown();
                 self.active_modal = Some(crate::app::ModalKind::Aec(AecModalKind::ProjectExplorer));
@@ -1820,10 +1937,24 @@ impl OpenCADStudio {
                         .map(|l| l.layer_override.clone()),
                     crate::app::StylePickerTarget::WallPropertiesStyle
                     | crate::app::StylePickerTarget::ActiveCommand
-                    | crate::app::StylePickerTarget::OpeningPropertiesStyle => None,
+                    | crate::app::StylePickerTarget::OpeningPropertiesStyle
+                    | crate::app::StylePickerTarget::SlabPropertiesStyle => None,
                     crate::app::StylePickerTarget::OpeningStyleParent => {
                         self.aec.aec_opening_style_manager_parent.clone()
                     }
+                    crate::app::StylePickerTarget::SlabStyleParent => {
+                        self.aec.aec_slab_style_manager_parent.clone()
+                    }
+                    crate::app::StylePickerTarget::SlabLayerMaterial(index) => self
+                        .aec
+                        .aec_slab_style_manager_layers
+                        .get(index)
+                        .map(|l| l.material_id.clone()),
+                    crate::app::StylePickerTarget::SlabLayerOverride(index) => self
+                        .aec
+                        .aec_slab_style_manager_layers
+                        .get(index)
+                        .map(|l| l.layer_override.clone()),
                 };
                 self.active_modal = Some(crate::app::ModalKind::Aec(AecModalKind::StylePicker { target }));
                 Task::none()
@@ -1871,6 +2002,27 @@ impl OpenCADStudio {
                 }));
                 Task::none()
             }
+            AecMessage::AecStylePickerOpenForSlabProperties(handles) => {
+                self.aec_refresh_combined_style_library();
+                self.aec.aec_style_picker_filter.clear();
+                self.aec.aec_style_picker_selection = handles.first().and_then(|h| {
+                    let owner = crate::modules::aec::engine::slab_package::resolve_slab_package(
+                        &self.tabs[self.active_tab].scene,
+                        *h,
+                    );
+                    self.tabs[self.active_tab]
+                        .scene
+                        .document
+                        .get_entity(owner)
+                        .and_then(crate::modules::aec::engine::slab_xdata::slab_from_entity)
+                        .map(|s| s.style_id)
+                });
+                self.aec.aec_style_picker_wall_handles = handles;
+                self.active_modal = Some(crate::app::ModalKind::Aec(AecModalKind::StylePicker {
+                    target: crate::app::StylePickerTarget::SlabPropertiesStyle,
+                }));
+                Task::none()
+            }
             AecMessage::AecStylePickerOpenForActiveCommand => {
                 self.aec_refresh_combined_style_library();
                 self.aec.aec_style_picker_filter.clear();
@@ -1914,6 +2066,16 @@ impl OpenCADStudio {
                     ) {
                         self.active_modal =
                             Some(crate::app::ModalKind::Aec(AecModalKind::OpeningStyleManager));
+                        return Task::none();
+                    }
+                    if matches!(
+                        target,
+                        crate::app::StylePickerTarget::SlabStyleParent
+                            | crate::app::StylePickerTarget::SlabLayerMaterial(_)
+                            | crate::app::StylePickerTarget::SlabLayerOverride(_)
+                    ) {
+                        self.active_modal =
+                            Some(crate::app::ModalKind::Aec(AecModalKind::SlabStyleManager));
                         return Task::none();
                     }
                 }
@@ -2463,6 +2625,85 @@ impl OpenCADStudio {
                             self.active_modal = None;
                             return self.aec_apply_picked_opening_style(selection);
                         }
+                        crate::app::StylePickerTarget::SlabStyleParent => {
+                            let id = if selection.is_empty() {
+                                None
+                            } else {
+                                Some(selection)
+                            };
+                            self.active_modal =
+                                Some(crate::app::ModalKind::Aec(AecModalKind::SlabStyleManager));
+                            return self.update(Message::Aec(
+                                AecMessage::AecSlabStyleManagerParentChanged(id),
+                            ));
+                        }
+                        crate::app::StylePickerTarget::SlabLayerMaterial(index) => {
+                            self.active_modal =
+                                Some(crate::app::ModalKind::Aec(AecModalKind::SlabStyleManager));
+                            return self.update(Message::Aec(
+                                AecMessage::AecSlabStyleManagerLayerMaterialChanged(
+                                    index, selection,
+                                ),
+                            ));
+                        }
+                        crate::app::StylePickerTarget::SlabLayerOverride(index) => {
+                            self.active_modal =
+                                Some(crate::app::ModalKind::Aec(AecModalKind::SlabStyleManager));
+                            return self.update(Message::Aec(
+                                AecMessage::AecSlabStyleManagerLayerOverrideChanged(
+                                    index, selection,
+                                ),
+                            ));
+                        }
+                        crate::app::StylePickerTarget::SlabPropertiesStyle => {
+                            self.active_modal = None;
+                            let Some(lib) = self.aec.aec_style_library.clone() else {
+                                return Task::none();
+                            };
+                            let i = self.active_tab;
+                            self.push_undo_snapshot(i, "CHPROP");
+                            let handles = self.aec.aec_style_picker_wall_handles.clone();
+                            if !selection.is_empty() {
+                                self.aec.aec_last_slab_style_id = Some(selection.clone());
+                            }
+                            for handle in handles {
+                                let slab_owner =
+                                    crate::modules::aec::engine::slab_package::resolve_slab_package(
+                                        &self.tabs[i].scene,
+                                        handle,
+                                    );
+                                let thickness = self.tabs[i]
+                                    .scene
+                                    .document
+                                    .get_entity(slab_owner)
+                                    .and_then(crate::modules::aec::engine::slab_xdata::slab_from_entity)
+                                    .and_then(|s| {
+                                        let t = s.total_thickness();
+                                        if t > 0.0 {
+                                            Some(t)
+                                        } else {
+                                            None
+                                        }
+                                    });
+                                let slab_layers = crate::modules::aec::engine::slab_xdata::resolve_slab_style_layers_ids(
+                                    &lib,
+                                    &selection,
+                                    thickness,
+                                )
+                                .unwrap_or_default();
+                                if crate::modules::aec::engine::slab_xdata::write_slab_style(
+                                    &mut self.tabs[i].scene,
+                                    slab_owner,
+                                    &selection,
+                                    slab_layers,
+                                ) {
+                                    let _ = self
+                                        .regenerate_slab_respecting_active_display_config(i, slab_owner);
+                                    self.tabs[i].dirty = true;
+                                }
+                            }
+                            self.refresh_properties();
+                        }
                         crate::app::StylePickerTarget::ActiveCommand => {
                             let i = self.active_tab;
                             if !selection.is_empty() {
@@ -2840,6 +3081,9 @@ impl OpenCADStudio {
                     }
                     Some(AecPendingCopy::OpeningStyle { .. }) => {
                         crate::app::ModalKind::Aec(AecModalKind::OpeningStyleManager)
+                    }
+                    Some(AecPendingCopy::SlabStyle { .. }) => {
+                        crate::app::ModalKind::Aec(AecModalKind::SlabStyleManager)
                     }
                     None => crate::app::ModalKind::Aec(AecModalKind::MaterialManager),
                 };

@@ -11,6 +11,10 @@ use crate::modules::aec::engine::opening_xdata;
 use crate::modules::aec::engine::openings::{
     NicheSide, Opening, OpeningKind, OpeningReferenceSide, SwingSide,
 };
+use crate::modules::aec::engine::slab::{Slab, SlabJustification};
+use crate::modules::aec::engine::slab_opening::{SlabOpening, SlabOpeningDepth, SlabOpeningKind};
+use crate::modules::aec::engine::slab_package;
+use crate::modules::aec::engine::slab_xdata;
 use crate::modules::aec::engine::storey_xdata;
 use crate::modules::aec::engine::xdata;
 use crate::modules::aec::engine::wall_package;
@@ -24,6 +28,32 @@ pub fn aec_entity_title(
 ) -> Option<String> {
     if xdata::wall_from_entity(entity).is_some() {
         return Some(t!("Wall").into_owned());
+    }
+    if slab_xdata::slab_from_entity(entity).is_some() {
+        return Some(t!("aec.slab-title").into_owned());
+    }
+    if let Some(opening) = slab_xdata::slab_opening_from_entity(entity) {
+        let _ = opening;
+        return Some(t!("aec.slabopening-title").into_owned());
+    }
+    if let Some(owner) = slab_package::slab_opening_owner_if_any(scene, handle) {
+        if scene
+            .document
+            .get_entity(owner)
+            .and_then(slab_xdata::slab_opening_from_entity)
+            .is_some()
+        {
+            return Some(t!("aec.slabopening-title").into_owned());
+        }
+    }
+    if slab_package::is_slab_derived(scene, handle)
+        && scene
+            .document
+            .get_entity(slab_package::resolve_slab_package(scene, handle))
+            .and_then(slab_xdata::slab_from_entity)
+            .is_some()
+    {
+        return Some(t!("aec.slab-title").into_owned());
     }
     if let Some(opening) = opening_xdata::opening_from_entity(entity, handle) {
         let name = match opening.kind {
@@ -84,10 +114,37 @@ pub fn collapse_selection_to_wall_package<'a>(
     let Some(entity) = scene.document.get_entity(owner) else {
         return selected;
     };
-    if xdata::wall_from_entity(entity).is_none() {
-        return selected;
+    if xdata::wall_from_entity(entity).is_some() {
+        return vec![(owner, entity)];
     }
-    vec![(owner, entity)]
+
+    // Collapse slab derived children onto the carrier package.
+    let slab_owners: Vec<Handle> = selected
+        .iter()
+        .map(|(handle, _)| {
+            if let Some(op) = slab_package::slab_opening_owner_if_any(scene, *handle) {
+                op
+            } else {
+                slab_package::resolve_slab_package(scene, *handle)
+            }
+        })
+        .collect();
+    let slab_owner = slab_owners[0];
+    if !slab_owner.is_null()
+        && slab_owners.iter().all(|h| *h == slab_owner)
+        && scene
+            .document
+            .get_entity(slab_owner)
+            .is_some_and(|e| {
+                slab_xdata::slab_from_entity(e).is_some()
+                    || slab_xdata::slab_opening_from_entity(e).is_some()
+            })
+    {
+        if let Some(entity) = scene.document.get_entity(slab_owner) {
+            return vec![(slab_owner, entity)];
+        }
+    }
+    selected
 }
 
 /// Builds the "Wall"/"Wall Layers" property section for a single entity, if
@@ -906,12 +963,31 @@ pub fn extend_entity_sections(
                 ));
             }
         }
+    } else if let Some(slab_opening_handle) = slab_package::slab_opening_owner_if_any(scene, handle)
+    {
+        if let Some(opening_entity) = scene.document.get_entity(slab_opening_handle) {
+            if let Some(opening) = slab_xdata::slab_opening_from_entity(opening_entity) {
+                sections.push(slab_opening_prop_section(
+                    &opening,
+                    slab_opening_handle,
+                    opening_entity,
+                ));
+            }
+        }
     } else {
         let wall_handle = wall_package::resolve_wall_package(scene, handle);
         let wall_entity = scene.document.get_entity(wall_handle).unwrap_or(entity);
         if let Some(wall_section) = wall_prop_section(wall_entity, style_library, project) {
             sections.push(wall_section);
             sections.extend(wall_relation_sections(scene, wall_handle));
+        } else {
+            let slab_handle = slab_package::resolve_slab_package(scene, handle);
+            let slab_entity = scene.document.get_entity(slab_handle).unwrap_or(entity);
+            if let Some(slab_section) =
+                slab_prop_section(slab_entity, style_library, project)
+            {
+                sections.push(slab_section);
+            }
         }
     }
     if let Some(storey_section) = storey_prop_section(scene, entity) {
@@ -922,6 +998,275 @@ pub fn extend_entity_sections(
     }
 }
 
+fn entity_boundary_xy(entity: &EntityType) -> Vec<(f64, f64)> {
+    match entity {
+        EntityType::LwPolyline(pl) => pl
+            .vertices
+            .iter()
+            .map(|v| (v.location.x, v.location.y))
+            .collect(),
+        _ => Vec::new(),
+    }
+}
+
+/// Builds the "Slab" property section for a carrier entity with `SLAB` XDATA.
+pub fn slab_prop_section(
+    entity: &EntityType,
+    style_library: Option<&StyleLibrary>,
+    project: Option<&crate::modules::aec::engine::project::ProjectFile>,
+) -> Option<crate::scene::model::object::PropSection> {
+    let slab = slab_xdata::slab_from_entity(entity)?;
+    let style_name = style_library
+        .and_then(|lib| lib.slab_styles.iter().find(|ss| ss.style.id == slab.style_id))
+        .map(|ss| ss.style.name.clone())
+        .unwrap_or_else(|| slab.style_id.clone());
+
+    let none = t!("(none)").into_owned();
+    let mut plane_options = vec![none.clone()];
+    if let Some(project) = project {
+        for b in &project.buildings {
+            for s in &b.storeys {
+                for p in &s.control_planes {
+                    if !plane_options.iter().any(|n| n == &p.name) {
+                        plane_options.push(p.name.clone());
+                    }
+                }
+            }
+        }
+    }
+    let plane_label = |id: Option<uuid::Uuid>, stored_name: Option<&str>| {
+        id.and_then(|id| {
+            project.and_then(|proj| {
+                proj.buildings.iter().find_map(|b| {
+                    b.storeys
+                        .iter()
+                        .find_map(|s| s.plane(id).map(|p| p.name.clone()))
+                })
+            })
+        })
+        .or_else(|| {
+            stored_name
+                .map(str::trim)
+                .filter(|n| !n.is_empty())
+                .map(|n| n.to_string())
+        })
+        .or_else(|| id.map(|id| id.to_string()))
+        .unwrap_or_else(|| none.clone())
+    };
+    let ensure_option = |opts: &mut Vec<String>, label: &str| {
+        if !opts.iter().any(|n| n == label) {
+            opts.push(label.to_string());
+        }
+    };
+    let base_label = plane_label(slab.base_plane_id, slab.base_plane_name.as_deref());
+    let top_label = plane_label(slab.top_plane_id, slab.top_plane_name.as_deref());
+    ensure_option(&mut plane_options, &base_label);
+    ensure_option(&mut plane_options, &top_label);
+
+    let boundary = entity_boundary_xy(entity);
+    let area = if boundary.len() >= 3 {
+        Slab::area(&boundary)
+    } else {
+        0.0
+    };
+    let peri = if boundary.len() >= 2 {
+        Slab::perimeter(&boundary)
+    } else {
+        0.0
+    };
+    let vol = if boundary.len() >= 3 {
+        slab.volume(&boundary)
+    } else {
+        0.0
+    };
+
+    let mut props = vec![
+        crate::scene::model::object::Property {
+            label: t!("aec.slab-style").into_owned(),
+            field: "slab_style",
+            value: crate::scene::model::object::PropValue::Picker {
+                value: style_name,
+                handles: vec![entity.common().handle],
+            },
+        },
+        crate::scene::model::object::Property {
+            label: t!("aec.slab-justification").into_owned(),
+            field: "slab_justification",
+            value: crate::scene::model::object::PropValue::Choice {
+                selected: slab.justification.display_name().to_string(),
+                options: vec![
+                    SlabJustification::Top.display_name().to_string(),
+                    SlabJustification::StructuralTop.display_name().to_string(),
+                    SlabJustification::Bottom.display_name().to_string(),
+                ],
+            },
+        },
+        crate::scene::model::object::Property {
+            label: t!("Phase").into_owned(),
+            field: "slab_phase",
+            value: crate::scene::model::object::PropValue::Choice {
+                selected: slab.phase.display_label().to_string(),
+                options: vec![
+                    crate::modules::aec::engine::plan_view::PlanPhase::New
+                        .display_label()
+                        .to_string(),
+                    crate::modules::aec::engine::plan_view::PlanPhase::Demolition
+                        .display_label()
+                        .to_string(),
+                    crate::modules::aec::engine::plan_view::PlanPhase::Existing
+                        .display_label()
+                        .to_string(),
+                ],
+            },
+        },
+        crate::scene::model::object::Property {
+            label: t!("aec.slab-base-plane").into_owned(),
+            field: "slab_base_plane",
+            value: crate::scene::model::object::PropValue::Choice {
+                selected: base_label,
+                options: plane_options.clone(),
+            },
+        },
+        crate::entities::common::edit_prop(
+            t!("aec.slab-base-offset").as_ref(),
+            "slab_base_offset",
+            slab.base_offset,
+        ),
+        crate::scene::model::object::Property {
+            label: t!("aec.slab-top-plane").into_owned(),
+            field: "slab_top_plane",
+            value: crate::scene::model::object::PropValue::Choice {
+                selected: top_label,
+                options: plane_options,
+            },
+        },
+        crate::entities::common::edit_prop(
+            t!("aec.slab-top-offset").as_ref(),
+            "slab_top_offset",
+            slab.top_offset,
+        ),
+        crate::entities::common::ro_prop(
+            t!("aec.slab-thickness").as_ref(),
+            "slab_thickness",
+            format!("{:.3} m", slab.total_thickness()),
+        ),
+        crate::entities::common::ro_prop(
+            t!("aec.slab-area").as_ref(),
+            "slab_area",
+            format!("{:.3} m²", area),
+        ),
+        crate::entities::common::ro_prop(
+            t!("aec.slab-perimeter").as_ref(),
+            "slab_perimeter",
+            format!("{:.3} m", peri),
+        ),
+        crate::entities::common::ro_prop(
+            t!("aec.slab-volume").as_ref(),
+            "slab_volume",
+            format!("{:.3} m³", vol),
+        ),
+        crate::entities::common::ro_prop(
+            t!("aec.slab-storey").as_ref(),
+            "slab_storey",
+            slab.storey_id.to_string(),
+        ),
+    ];
+
+    for (i, layer) in slab.layers.iter().enumerate() {
+        let layer_info = format!(
+            "{} — {:.3} m ({})",
+            layer.material,
+            layer.thickness,
+            slab_xdata::layer_function_to_str(&layer.function)
+        );
+        props.push(crate::entities::common::ro_prop(
+            t!("aec.slab-layer").as_ref(),
+            "slab_layer",
+            format!("{} — {}", i + 1, layer_info),
+        ));
+    }
+
+    Some(crate::scene::model::object::PropSection {
+        title: t!("aec.slab-section").into_owned(),
+        props,
+    })
+}
+
+/// Builds the "Slab Opening" property section.
+pub fn slab_opening_prop_section(
+    opening: &SlabOpening,
+    opening_handle: Handle,
+    entity: &EntityType,
+) -> crate::scene::model::object::PropSection {
+    let boundary = if opening.boundary.len() >= 3 {
+        opening.boundary.clone()
+    } else {
+        entity_boundary_xy(entity)
+    };
+    let area = if boundary.len() >= 3 {
+        crate::modules::aec::engine::geometry::area(&boundary)
+    } else {
+        opening.area()
+    };
+    let peri = if boundary.len() >= 2 {
+        crate::modules::aec::engine::geometry::perimeter(&boundary)
+    } else {
+        opening.perimeter()
+    };
+
+    let mut props = vec![
+        crate::scene::model::object::Property {
+            label: t!("aec.slabopening-kind").into_owned(),
+            field: "slabopening_kind",
+            value: crate::scene::model::object::PropValue::Choice {
+                selected: opening.kind.as_str().to_string(),
+                options: SlabOpeningKind::all()
+                    .iter()
+                    .map(|k| k.as_str().to_string())
+                    .collect(),
+            },
+        },
+        crate::scene::model::object::Property {
+            label: t!("aec.slabopening-depth-mode").into_owned(),
+            field: "slabopening_depth_mode",
+            value: crate::scene::model::object::PropValue::Choice {
+                selected: opening.depth.as_str().to_string(),
+                options: SlabOpeningDepth::all_modes()
+                    .iter()
+                    .map(|s| (*s).to_string())
+                    .collect(),
+            },
+        },
+    ];
+    if let SlabOpeningDepth::Recess(d) = opening.depth {
+        props.push(crate::entities::common::edit_prop(
+            t!("aec.slabopening-recess-depth").as_ref(),
+            "slabopening_recess_depth",
+            d,
+        ));
+    }
+    props.push(crate::entities::common::ro_prop(
+        t!("aec.slabopening-host").as_ref(),
+        "slabopening_host",
+        format!("{:X}", opening.host_slab.value()),
+    ));
+    props.push(crate::entities::common::ro_prop(
+        t!("aec.slabopening-area").as_ref(),
+        "slabopening_area",
+        format!("{:.3} m²", area),
+    ));
+    props.push(crate::entities::common::ro_prop(
+        t!("aec.slabopening-perimeter").as_ref(),
+        "slabopening_perimeter",
+        format!("{:.3} m", peri),
+    ));
+    let _ = opening_handle;
+    crate::scene::model::object::PropSection {
+        title: t!("aec.slabopening-section").into_owned(),
+        props,
+    }
+}
+
 pub fn session_styles_for_scene(
     scene: &crate::scene::Scene,
     project: Option<&crate::modules::aec::engine::project::ProjectFile>,
@@ -929,7 +1274,11 @@ pub fn session_styles_for_scene(
     let extracted = xdata::extract_style_library_from_scene(scene);
     let session =
         crate::modules::aec::engine::library::session_library_excluding_existing(&extracted, project);
-    if session.materials.is_empty() && session.wall_styles.is_empty() {
+    if session.materials.is_empty()
+        && session.wall_styles.is_empty()
+        && session.opening_styles.is_empty()
+        && session.slab_styles.is_empty()
+    {
         None
     } else {
         Some(session)
@@ -989,6 +1338,8 @@ impl crate::app::OpenCADStudio {
         val: &str,
     ) -> bool {
         let is_aec = field.starts_with("opening_")
+            || field.starts_with("slab_")
+            || field.starts_with("slabopening_")
             || matches!(
                 field,
                 "wall_justification"
@@ -1008,6 +1359,142 @@ impl crate::app::OpenCADStudio {
             return false;
         }
         if self.tabs[tab].scene.is_layer_locked(handle) {
+            return true;
+        }
+        if field.starts_with("slabopening_") {
+            let owner = slab_package::slab_opening_owner_if_any(&self.tabs[tab].scene, handle)
+                .unwrap_or(handle);
+            if self.aec.aec_last_applied_property
+                == Some((owner, field.to_string(), val.to_string()))
+            {
+                return true;
+            }
+            self.aec.aec_last_applied_property =
+                Some((owner, field.to_string(), val.to_string()));
+
+            let Some(entity) = self.tabs[tab].scene.document.get_entity(owner) else {
+                return true;
+            };
+            let Some(mut opening) = slab_xdata::slab_opening_from_entity(entity) else {
+                return true;
+            };
+            let host = opening.host_slab;
+            match field {
+                "slabopening_kind" => {
+                    opening.kind = SlabOpeningKind::from_str(val);
+                    let _ = slab_xdata::write_slab_opening_model(
+                        &mut self.tabs[tab].scene,
+                        owner,
+                        &opening,
+                    );
+                }
+                "slabopening_depth_mode" => {
+                    let depth_val = opening.depth.depth_value().unwrap_or(0.10);
+                    opening.depth = SlabOpeningDepth::from_mode_and_depth(val, depth_val);
+                    let _ = slab_xdata::write_slab_opening_model(
+                        &mut self.tabs[tab].scene,
+                        owner,
+                        &opening,
+                    );
+                }
+                "slabopening_recess_depth" => {
+                    if let Some(v) = crate::entities::common::parse_f64(val) {
+                        if v >= 0.0 {
+                            opening.depth = SlabOpeningDepth::Recess(v);
+                            let _ = slab_xdata::write_slab_opening_model(
+                                &mut self.tabs[tab].scene,
+                                owner,
+                                &opening,
+                            );
+                        }
+                    }
+                }
+                _ => return true,
+            }
+            let _ = self.regenerate_slab_respecting_active_display_config(tab, host);
+            let style_library = crate::modules::aec::engine::project::resolve_style_library(
+                self.aec.aec_project_explorer_file.as_ref(),
+            );
+            let rules = self.resolve_active_display_config_slab_rules(tab, Some(host));
+            let _ = crate::modules::aec::engine::slab_regen::regenerate_slab_opening_representation(
+                &mut self.tabs[tab].scene,
+                owner,
+                Some(&style_library),
+                rules.as_ref(),
+            );
+            return true;
+        }
+        if field.starts_with("slab_") {
+            let slab_owner = slab_package::resolve_slab_package(&self.tabs[tab].scene, handle);
+            if self.aec.aec_last_applied_property
+                == Some((slab_owner, field.to_string(), val.to_string()))
+            {
+                return true;
+            }
+            self.aec.aec_last_applied_property =
+                Some((slab_owner, field.to_string(), val.to_string()));
+
+            match field {
+                "slab_justification" => {
+                    let justification = SlabJustification::from_str(val);
+                    if slab_xdata::write_slab_justification(
+                        &mut self.tabs[tab].scene,
+                        slab_owner,
+                        justification,
+                    ) {
+                        let _ = self.regenerate_slab_respecting_active_display_config(tab, slab_owner);
+                    }
+                }
+                "slab_phase" => {
+                    let new_phase =
+                        crate::modules::aec::engine::plan_view::PlanPhase::from_str(val);
+                    if slab_xdata::write_slab_phase(
+                        &mut self.tabs[tab].scene,
+                        slab_owner,
+                        new_phase,
+                    ) {
+                        let _ = self.regenerate_slab_respecting_active_display_config(tab, slab_owner);
+                    }
+                }
+                "slab_base_offset" | "slab_top_offset" => {
+                    if let Some(v) = crate::entities::common::parse_f64(val) {
+                        let (base, top) = if field == "slab_base_offset" {
+                            (Some(v), None)
+                        } else {
+                            (None, Some(v))
+                        };
+                        if slab_xdata::write_slab_plane_offsets(
+                            &mut self.tabs[tab].scene,
+                            slab_owner,
+                            base,
+                            top,
+                        ) {
+                            let _ = self
+                                .regenerate_slab_respecting_active_display_config(tab, slab_owner);
+                        }
+                    }
+                }
+                "slab_base_plane" | "slab_top_plane" => {
+                    let style_library =
+                        crate::modules::aec::engine::project::resolve_style_library(
+                            self.aec.aec_project_explorer_file.as_ref(),
+                        );
+                    let rules =
+                        self.resolve_active_display_config_slab_rules(tab, Some(slab_owner));
+                    crate::modules::aec::project::slab_planes::apply_slab_plane_choice(
+                        &mut self.tabs[tab].scene,
+                        self.aec.aec_project_explorer_file.as_ref(),
+                        slab_owner,
+                        field == "slab_base_plane",
+                        val,
+                        Some(&style_library),
+                        rules.as_ref(),
+                    );
+                }
+                // Style is applied via the style picker modal.
+                "slab_style" => {}
+                _ => {}
+            }
             return true;
         }
         if field.starts_with("opening_") {
@@ -1374,5 +1861,86 @@ mod tests {
             .position(|f| *f == "opening_head_offset")
             .unwrap();
         assert!(sill < sill_pl && sill_pl < sill_off && sill_off < head_pl && head_pl < head_off);
+    }
+
+    #[test]
+    fn slab_prop_section_exposes_style_justification_and_metrics() {
+        use acadrust::entities::{LwPolyline, LwVertex};
+        use acadrust::types::Vector2;
+        use crate::modules::aec::engine::slab::{Slab, SlabJustification, SlabLayer};
+        use crate::modules::aec::engine::slab_xdata::{slab_record_for_slab, write_slab_record};
+        use crate::modules::aec::engine::wall_style::LayerFunction;
+        use crate::modules::aec::engine::xdata::AEC_APPID;
+
+        let mut pl = LwPolyline::new();
+        pl.add_vertex(LwVertex::new(Vector2::new(0.0, 0.0)));
+        pl.add_vertex(LwVertex::new(Vector2::new(4.0, 0.0)));
+        pl.add_vertex(LwVertex::new(Vector2::new(4.0, 3.0)));
+        pl.add_vertex(LwVertex::new(Vector2::new(0.0, 3.0)));
+        pl.is_closed = true;
+        let mut entity = EntityType::LwPolyline(pl);
+        let mut slab = Slab::new("style_slab_conc", 1);
+        slab.justification = SlabJustification::StructuralTop;
+        slab.layers = vec![
+            SlabLayer::new("Tiles", 0.02, LayerFunction::Finish),
+            SlabLayer::new("Concrete", 0.20, LayerFunction::Structural),
+        ];
+        slab.base_offset = 0.05;
+        let mut record = ExtendedDataRecord::new(AEC_APPID);
+        record.values = slab_record_for_slab(&slab);
+        entity.common_mut().extended_data.add_record(record);
+
+        let section = slab_prop_section(&entity, None, None).expect("slab section");
+        let fields: Vec<&str> = section.props.iter().map(|p| p.field).collect();
+        assert!(fields.contains(&"slab_style"));
+        assert!(fields.contains(&"slab_justification"));
+        assert!(fields.contains(&"slab_phase"));
+        assert!(fields.contains(&"slab_base_plane"));
+        assert!(fields.contains(&"slab_top_plane"));
+        assert!(fields.contains(&"slab_base_offset"));
+        assert!(fields.contains(&"slab_top_offset"));
+        assert!(fields.contains(&"slab_thickness"));
+        assert!(fields.contains(&"slab_area"));
+        assert!(fields.contains(&"slab_perimeter"));
+        assert!(fields.contains(&"slab_volume"));
+        assert!(fields.iter().any(|f| *f == "slab_layer"));
+
+        let just = section
+            .props
+            .iter()
+            .find(|p| p.field == "slab_justification")
+            .expect("justification");
+        match &just.value {
+            crate::scene::model::object::PropValue::Choice { selected, .. } => {
+                assert!(selected.contains("OKRD"));
+            }
+            _ => panic!("expected choice"),
+        }
+
+        // Keep write helper referenced for compile linkage in tests module.
+        let _ = write_slab_record;
+    }
+
+    #[test]
+    fn slab_opening_prop_section_exposes_kind_and_depth() {
+        use crate::modules::aec::engine::slab_opening::{
+            SlabOpening, SlabOpeningDepth, SlabOpeningKind,
+        };
+
+        let opening = SlabOpening::new_recess(
+            Handle::new(10),
+            SlabOpeningKind::Shaft,
+            0.12,
+            vec![(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0)],
+        );
+        let entity = EntityType::LwPolyline(LwPolyline::new());
+        let section = slab_opening_prop_section(&opening, Handle::new(11), &entity);
+        let fields: Vec<&str> = section.props.iter().map(|p| p.field).collect();
+        assert!(fields.contains(&"slabopening_kind"));
+        assert!(fields.contains(&"slabopening_depth_mode"));
+        assert!(fields.contains(&"slabopening_recess_depth"));
+        assert!(fields.contains(&"slabopening_host"));
+        assert!(fields.contains(&"slabopening_area"));
+        assert_eq!(opening.depth, SlabOpeningDepth::Recess(0.12));
     }
 }

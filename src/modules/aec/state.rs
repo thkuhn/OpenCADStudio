@@ -52,6 +52,32 @@ pub enum AecPendingCopy {
         opening_style: crate::modules::aec::engine::opening_style::OpeningStyle,
         to_project: bool,
     },
+    SlabStyle {
+        slab_style: crate::modules::aec::engine::slab_style::SlabStyle,
+        to_project: bool,
+    },
+}
+
+/// Preview mode in the Slab Style Manager canvas.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum AecSlabPreviewMode {
+    #[default]
+    CrossSection,
+    ReflectedCeilingPlan,
+    Model3D,
+}
+
+/// Edit-buffer row for a slab style layer.
+#[derive(Clone, Debug, PartialEq)]
+pub struct AecSlabLayerBuffer {
+    pub material_id: String,
+    pub thickness: String,
+    pub function: String,
+    pub vertical_offset: String,
+    pub layer_override: String,
+    pub hatch_override: String,
+    pub role_tag: String,
+    pub layer_id: Option<uuid::Uuid>,
 }
 
 /// Geometry source for one opening-style slot in the manager form.
@@ -125,6 +151,14 @@ pub enum StylePickerTarget {
     /// Selecting a new style for one or more opening entities in the
     /// properties panel. Handles live in `aec_style_picker_wall_handles`.
     OpeningPropertiesStyle,
+    /// Selecting a parent style for a slab style being edited.
+    SlabStyleParent,
+    /// Selecting a material for a specific slab layer index.
+    SlabLayerMaterial(usize),
+    /// Selecting a layer override for a specific slab layer index.
+    SlabLayerOverride(usize),
+    /// Selecting a new style for one or more slab entities in the properties panel.
+    SlabPropertiesStyle,
 }
 
 /// A pending delete in the AEC Project Explorer, awaiting user confirmation
@@ -330,6 +364,28 @@ pub struct AecState {
     /// In-progress polyline in the selected slot's reference box.
     pub aec_opening_style_manager_sketch_draft: Vec<(f64, f64)>,
     pub aec_opening_style_manager_sketch_draft_bulges: Vec<f64>,
+
+    // ── AEC Slab Style Manager (`AEC_SLABSTYLEMANAGER`) ───────────────────
+    pub aec_slab_style_manager_filter: String,
+    pub aec_slab_style_manager_selected: Option<String>,
+    pub aec_slab_style_manager_editing_id: Option<String>,
+    pub aec_slab_style_manager_form_open: bool,
+    pub aec_slab_style_manager_preview_mode: AecSlabPreviewMode,
+    pub aec_slab_style_manager_name: String,
+    pub aec_slab_style_manager_parent: Option<String>,
+    pub aec_slab_style_manager_layers: Vec<AecSlabLayerBuffer>,
+    pub aec_slab_style_manager_drag_index: Option<usize>,
+    pub aec_slab_style_manager_profile_selected: Option<String>,
+    pub aec_slab_style_manager_profile_slot_visibility:
+        std::collections::HashMap<crate::modules::aec::engine::display_component::SlabComponentSlot, bool>,
+    pub aec_slab_style_manager_profile_slot_overrides:
+        std::collections::HashMap<
+            crate::modules::aec::engine::display_component::SlabComponentSlot,
+            crate::modules::aec::engine::display_component::ComponentStyleOverride,
+        >,
+    pub aec_slab_style_manager_profile_editing_slot:
+        Option<crate::modules::aec::engine::display_component::SlabComponentSlot>,
+    pub aec_last_slab_style_id: Option<String>,
 
     // ── AEC DisplayConfig Manager (Step 5) ─────────────────────────────────
     /// Loaded (or seeded) on `AEC_PLANMANAGER`; holds the `DisplayConfig`
@@ -579,6 +635,20 @@ impl Default for AecState {
             aec_opening_style_manager_sketch_slot: None,
             aec_opening_style_manager_sketch_draft: Vec::new(),
             aec_opening_style_manager_sketch_draft_bulges: Vec::new(),
+            aec_slab_style_manager_filter: String::new(),
+            aec_slab_style_manager_selected: None,
+            aec_slab_style_manager_editing_id: None,
+            aec_slab_style_manager_form_open: false,
+            aec_slab_style_manager_preview_mode: AecSlabPreviewMode::CrossSection,
+            aec_slab_style_manager_name: String::new(),
+            aec_slab_style_manager_parent: None,
+            aec_slab_style_manager_layers: Vec::new(),
+            aec_slab_style_manager_drag_index: None,
+            aec_slab_style_manager_profile_selected: None,
+            aec_slab_style_manager_profile_slot_visibility: std::collections::HashMap::new(),
+            aec_slab_style_manager_profile_slot_overrides: std::collections::HashMap::new(),
+            aec_slab_style_manager_profile_editing_slot: None,
+            aec_last_slab_style_id: None,
             aec_plan_library: None,
             aec_plan_manager_filter: String::new(),
             aec_plan_manager_selected: None,

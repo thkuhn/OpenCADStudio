@@ -350,7 +350,163 @@ pub fn apply_display_config_to_scene_with_representation(
             touched.extend(handles);
         }
     }
+
+    // Regenerates every slab under the active DisplayConfig / representation mode.
+    for slab_handle in super::slab_package::all_slab_carrier_handles(scene) {
+        let Some(entity) = scene.document.get_entity(slab_handle) else {
+            continue;
+        };
+        let Some(slab) = super::slab_xdata::slab_from_entity(entity) else {
+            continue;
+        };
+        let filter_result = apply_phase_filter(slab.phase, config.phase_filter.as_ref());
+        if !filter_result.visible {
+            let mut hidden = engine::display_component::ComponentRuleSet::default();
+            hide_all_slab_display_slots(&mut hidden);
+            if super::slab_regen::regenerate_slab_representation(
+                scene,
+                slab_handle,
+                library_override,
+                Some(&hidden),
+            ) {
+                touched.push(slab_handle);
+                touched.extend(super::slab_package::slab_package_handles(scene, slab_handle));
+            }
+            continue;
+        }
+
+        let style = owned_lib
+            .slab_styles
+            .iter()
+            .find(|ss| ss.style.id == slab.style_id);
+        let mut rules = engine::library::build_effective_slab_rule_set(
+            config,
+            style,
+            representation_override,
+        );
+        if let Some(ov) = filter_result.extra_style {
+            merge_phase_extra_into_slab_rules(&mut rules, ov);
+        }
+        if super::slab_regen::regenerate_slab_representation(
+            scene,
+            slab_handle,
+            library_override,
+            Some(&rules),
+        ) {
+            touched.push(slab_handle);
+            touched.extend(super::slab_package::slab_package_handles(scene, slab_handle));
+        }
+    }
+
     touched.sort_by_key(|h| h.value());
     touched.dedup();
     touched
+}
+
+pub(crate) fn hide_all_slab_display_slots(
+    rules: &mut engine::display_component::ComponentRuleSet,
+) {
+    for slot in engine::display_component::SlabComponentSlot::all() {
+        rules.visibility.insert(slot.key().to_string(), false);
+    }
+}
+
+pub(crate) fn merge_phase_extra_into_slab_rules(
+    rules: &mut engine::display_component::ComponentRuleSet,
+    extra: engine::display_component::ComponentStyleOverride,
+) {
+    let slot = engine::display_component::SlabComponentSlot::Contour2D
+        .key()
+        .to_string();
+    rules
+        .style_override
+        .entry(slot)
+        .or_default()
+        .overlay_from(&extra);
+}
+
+#[cfg(test)]
+mod slab_display_tests {
+    use super::*;
+    use acadrust::entities::{LwPolyline, LwVertex};
+    use acadrust::types::Vector2;
+    use crate::modules::aec::engine::display_component::{
+        RepresentationMode, SlabComponentSlot,
+    };
+    use crate::modules::aec::engine::plan_view::{
+        DisplayConfig, PlanningStage, ViewType,
+    };
+    use crate::modules::aec::engine::slab::{Slab, SlabLayer};
+    use crate::modules::aec::engine::slab_package::all_slab_carrier_handles;
+    use crate::modules::aec::engine::slab_xdata::{slab_from_entity, write_slab_record};
+    use crate::modules::aec::engine::wall_style::LayerFunction;
+    use crate::scene::Scene;
+
+    fn add_test_slab(scene: &mut Scene) -> Handle {
+        let mut pl = LwPolyline::new();
+        pl.add_vertex(LwVertex::new(Vector2::new(0.0, 0.0)));
+        pl.add_vertex(LwVertex::new(Vector2::new(5.0, 0.0)));
+        pl.add_vertex(LwVertex::new(Vector2::new(5.0, 4.0)));
+        pl.add_vertex(LwVertex::new(Vector2::new(0.0, 4.0)));
+        pl.is_closed = true;
+        let handle = scene.add_entity(EntityType::LwPolyline(pl));
+        let mut slab = Slab::new("style_slab_concrete_20", 1);
+        slab.layers = vec![SlabLayer::new(
+            "Concrete",
+            0.20,
+            LayerFunction::Structural,
+        )];
+        assert!(write_slab_record(&mut scene.document, handle, &slab));
+        handle
+    }
+
+    #[test]
+    fn apply_display_config_touches_slab_carriers() {
+        let mut scene = Scene::new();
+        let handle = add_test_slab(&mut scene);
+        assert_eq!(all_slab_carrier_handles(&scene), vec![handle]);
+
+        let cfg = DisplayConfig::new(
+            "Plan".into(),
+            "Plan".into(),
+            PlanningStage::Design,
+            ViewType::FloorPlan,
+        );
+        let lib = load_or_seed();
+        let touched = apply_display_config_to_scene_with_representation(
+            &mut scene,
+            &cfg,
+            Some(&lib),
+            Some(RepresentationMode::TwoD),
+        );
+        assert!(
+            touched.contains(&handle),
+            "display apply should touch the slab carrier"
+        );
+        let entity = scene.document.get_entity(handle).expect("slab entity");
+        let slab = slab_from_entity(entity).expect("slab xdata");
+        // 2D mode should still keep the slab record intact.
+        assert_eq!(slab.style_id, "style_slab_concrete_20");
+        assert!((slab.total_thickness() - 0.20).abs() < 1e-9);
+        let _ = SlabComponentSlot::Contour2D;
+    }
+
+    #[test]
+    fn slab_xdata_handles_are_typed_for_xref_remapping() {
+        use acadrust::xdata::XDataValue;
+        use crate::modules::aec::engine::slab_xdata::slab_record_for_slab;
+
+        let mut slab = Slab::new("s", 1);
+        slab.derived_handles = vec![Handle::from(11u64), Handle::from(12u64)];
+        slab.opening_handles = vec![Handle::from(21u64)];
+        let values = slab_record_for_slab(&slab);
+        let handle_count = values
+            .iter()
+            .filter(|v| matches!(v, XDataValue::Handle(_)))
+            .count();
+        assert_eq!(
+            handle_count, 3,
+            "derived and opening handles must be typed XDataValue::Handle for generic XREF remap"
+        );
+    }
 }
