@@ -359,6 +359,16 @@ impl Slab {
         plane_z + self.top_offset_from_ref() + self.top_offset
     }
 
+    /// Evaluates structural core top elevation (OKRD - Oberkante Rohdecke) at (x, y).
+    pub fn structural_top_z_at_xy(&self, x: f64, y: f64, default_ref_z: f64) -> f64 {
+        self.top_z_at_xy(x, y, default_ref_z) - self.structural_top_offset()
+    }
+
+    /// Thickness of all finish and insulation layers situated above the structural core.
+    pub fn finish_thickness_above_core(&self) -> f64 {
+        self.structural_top_offset()
+    }
+
     /// Evaluates bottom surface elevation Z at (x, y) taking planes and offsets into account.
     pub fn bottom_z_at_xy(&self, x: f64, y: f64, default_ref_z: f64) -> f64 {
         if self.base_plane_id.is_some() || !self.base_facets.is_empty() {

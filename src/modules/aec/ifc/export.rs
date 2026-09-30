@@ -92,6 +92,7 @@ fn collect_aec_ifc_scene(scene: &Scene) -> engine::Scene {
                         perimeter,
                         volume,
                         storey_id,
+                        floor_finish: None,
                     });
                 }
             }

@@ -2638,25 +2638,29 @@ handles={handles_ms:.1} panel={:.1} ribbon={ribbon_ms:.1} tail={:.1} selected={}
         let (new_handle, new_grips, new_grip_handles) = {
             let annotation_scale_handle = self.tabs[i].scene.displayed_annotation_scale_handle();
             let selected = self.tabs[i].scene.selected_entities();
-            let wall_owners: Vec<Handle> = selected
+            let aec_owners: Vec<Handle> = selected
                 .iter()
                 .map(|(handle, _)| {
-                    crate::modules::aec::properties::resolve_wall_package(
+                    crate::modules::aec::properties::resolve_aec_package(
                         &self.tabs[i].scene,
                         *handle,
                     )
                 })
                 .collect();
-            let single_wall = wall_owners.first().copied().filter(|owner| {
+            let single_aec = aec_owners.first().copied().filter(|owner| {
                 !owner.is_null()
-                    && wall_owners.iter().all(|h| h == owner)
+                    && aec_owners.iter().all(|h| h == owner)
                     && self.tabs[i]
                         .scene
                         .document
                         .get_entity(*owner)
-                        .is_some_and(|e| crate::modules::aec::properties::wall_from_entity(e))
+                        .is_some_and(|e| {
+                            crate::modules::aec::properties::wall_from_entity(e)
+                                || crate::modules::aec::properties::slab_from_entity(e)
+                                || crate::modules::aec::properties::slab_opening_from_entity(e)
+                        })
             });
-            let single_handle = if let Some(owner) = single_wall {
+            let single_handle = if let Some(owner) = single_aec {
                 (!self.tabs[i].scene.is_layer_locked(owner)).then_some(owner)
             } else {
                 (selected.len() == 1 && !self.tabs[i].scene.is_layer_locked(selected[0].0))
@@ -2672,7 +2676,7 @@ handles={handles_ms:.1} panel={:.1} ribbon={ribbon_ms:.1} tail={:.1} selected={}
             } else {
                 selected
             };
-            let selected: Vec<(Handle, &acadrust::EntityType)> = if let Some(owner) = single_wall {
+            let selected: Vec<(Handle, &acadrust::EntityType)> = if let Some(owner) = single_aec {
                 self.tabs[i]
                     .scene
                     .document
@@ -2683,7 +2687,7 @@ handles={handles_ms:.1} panel={:.1} ribbon={ribbon_ms:.1} tail={:.1} selected={}
                 selected
             };
             for (handle, entity) in selected {
-                if crate::modules::aec::properties::is_wall_derived_non_axis(
+                if crate::modules::aec::properties::is_aec_derived_non_carrier(
                     &self.tabs[i].scene,
                     handle,
                 ) {

@@ -504,13 +504,26 @@ pub fn build_effective_slab_rule_set(
     style: Option<&SlabStyle>,
     session: Option<RepresentationMode>,
 ) -> ComponentRuleSet {
-    use crate::modules::aec::engine::display_component::SlabComponentSlot;
+    use crate::modules::aec::engine::display_component::{LayerSelection, SlabComponentSlot};
+    use crate::modules::aec::engine::join::LayerRef;
+    use crate::modules::aec::engine::plan_view::PlanningStage;
+    use crate::modules::aec::engine::wall_style::LayerFunction;
 
     let mut rules = style
         .and_then(|ss| ss.display_profiles.get(&config.name))
         .cloned()
         .unwrap_or_default();
     let mode = effective_representation(config, session);
+
+    let is_rcp = config.name.to_lowercase().contains("deckenspiegel")
+        || config.name.to_lowercase().contains("rcp")
+        || config.name.to_lowercase().contains("ceiling");
+
+    let is_preliminary_or_design = matches!(
+        config.planning_stage,
+        PlanningStage::Design | PlanningStage::Permit
+    );
+
     for slot in SlabComponentSlot::all() {
         let key = slot.key().to_string();
         let allowed_by_mode = match mode {
@@ -518,14 +531,58 @@ pub fn build_effective_slab_rule_set(
             RepresentationMode::TwoD => slot.is_2d(),
             RepresentationMode::ThreeD => slot.is_3d(),
         };
+
+        let default_for_slot = match slot {
+            SlabComponentSlot::Contour2D => !is_rcp,
+            SlabComponentSlot::CeilingOutline2D => is_rcp,
+            SlabComponentSlot::LayerHatch2D => !is_rcp && !is_preliminary_or_design,
+            SlabComponentSlot::OpeningContour2D => true,
+            SlabComponentSlot::OpeningSymbol2D => !is_rcp,
+            SlabComponentSlot::Solid3D => true,
+            SlabComponentSlot::SurfaceStyle3D => true,
+        };
+
         if session.is_some() {
-            rules.visibility.insert(key, allowed_by_mode);
+            rules.visibility.insert(key, allowed_by_mode && default_for_slot);
         } else if !allowed_by_mode {
             rules.visibility.insert(key, false);
         } else {
-            rules.visibility.entry(key).or_insert(true);
+            rules.visibility.entry(key).or_insert(default_for_slot);
         }
     }
+
+    // Layer filtering for "Nur Rohbau" / "Nur Rohdecke" / "Structural"
+    let is_structural_only = config.name.to_lowercase().contains("rohbau")
+        || config.name.to_lowercase().contains("rohdecke")
+        || config.name.to_lowercase().contains("structural");
+
+    if is_structural_only {
+        if let Some(style) = style {
+            let structural_refs: Vec<LayerRef> = style
+                .layers
+                .iter()
+                .enumerate()
+                .filter(|(_, l)| l.function == LayerFunction::Structural)
+                .map(|(i, l)| LayerRef {
+                    material_id: l.material_id.clone(),
+                    role_tag: None,
+                    index: i,
+                    layer_id: Some(l.layer_id),
+                })
+                .collect();
+            if !structural_refs.is_empty() {
+                rules.layer_filter.insert(
+                    SlabComponentSlot::Solid3D.key().to_string(),
+                    LayerSelection::Explicit(structural_refs.clone()),
+                );
+                rules.layer_filter.insert(
+                    SlabComponentSlot::LayerHatch2D.key().to_string(),
+                    LayerSelection::Explicit(structural_refs),
+                );
+            }
+        }
+    }
+
     rules.plan_name = Some(config.name.clone());
     rules
 }

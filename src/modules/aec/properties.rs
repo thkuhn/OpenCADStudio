@@ -30,11 +30,11 @@ pub fn aec_entity_title(
         return Some(t!("Wall").into_owned());
     }
     if slab_xdata::slab_from_entity(entity).is_some() {
-        return Some(t!("aec.slab-title").into_owned());
+        return Some(crate::tr!("aec", "slab-title"));
     }
     if let Some(opening) = slab_xdata::slab_opening_from_entity(entity) {
         let _ = opening;
-        return Some(t!("aec.slabopening-title").into_owned());
+        return Some(crate::tr!("aec", "slabopening-title"));
     }
     if let Some(owner) = slab_package::slab_opening_owner_if_any(scene, handle) {
         if scene
@@ -43,7 +43,7 @@ pub fn aec_entity_title(
             .and_then(slab_xdata::slab_opening_from_entity)
             .is_some()
         {
-            return Some(t!("aec.slabopening-title").into_owned());
+            return Some(crate::tr!("aec", "slabopening-title"));
         }
     }
     if slab_package::is_slab_derived(scene, handle)
@@ -53,7 +53,7 @@ pub fn aec_entity_title(
             .and_then(slab_xdata::slab_from_entity)
             .is_some()
     {
-        return Some(t!("aec.slab-title").into_owned());
+        return Some(crate::tr!("aec", "slab-title"));
     }
     if let Some(opening) = opening_xdata::opening_from_entity(entity, handle) {
         let name = match opening.kind {
@@ -85,6 +85,13 @@ pub fn aec_entity_title(
 }
 
 pub fn collapse_selection_to_wall_package<'a>(
+    scene: &'a crate::scene::Scene,
+    selected: Vec<(Handle, &'a EntityType)>,
+) -> Vec<(Handle, &'a EntityType)> {
+    collapse_selection_to_aec_package(scene, selected)
+}
+
+pub fn collapse_selection_to_aec_package<'a>(
     scene: &'a crate::scene::Scene,
     selected: Vec<(Handle, &'a EntityType)>,
 ) -> Vec<(Handle, &'a EntityType)> {
@@ -1301,12 +1308,45 @@ pub fn is_wall_derived_non_axis(scene: &crate::scene::Scene, handle: Handle) -> 
     wall_package::is_wall_derived_non_axis(scene, handle)
 }
 
+pub fn is_aec_derived_non_carrier(scene: &crate::scene::Scene, handle: Handle) -> bool {
+    wall_package::is_wall_derived_non_axis(scene, handle)
+        || slab_package::is_slab_derived(scene, handle)
+        || slab_package::slab_opening_owner_if_any(scene, handle).is_some_and(|owner| owner != handle)
+        || opening_display::opening_owner_if_any(scene, handle).is_some_and(|owner| owner != handle)
+}
+
 pub fn resolve_wall_package(scene: &crate::scene::Scene, handle: Handle) -> Handle {
     wall_package::resolve_wall_package(scene, handle)
 }
 
+pub fn resolve_aec_package(scene: &crate::scene::Scene, handle: Handle) -> Handle {
+    if let Some(opening_owner) = opening_display::opening_owner_if_any(scene, handle) {
+        return opening_owner;
+    }
+    if let Some(slab_opening_owner) = slab_package::slab_opening_owner_if_any(scene, handle) {
+        return slab_opening_owner;
+    }
+    let wall_owner = wall_package::resolve_wall_package(scene, handle);
+    if wall_owner != handle {
+        return wall_owner;
+    }
+    let slab_owner = slab_package::resolve_slab_package(scene, handle);
+    if slab_owner != handle {
+        return slab_owner;
+    }
+    handle
+}
+
 pub fn wall_from_entity(entity: &EntityType) -> bool {
     xdata::wall_from_entity(entity).is_some()
+}
+
+pub fn slab_from_entity(entity: &EntityType) -> bool {
+    slab_xdata::slab_from_entity(entity).is_some()
+}
+
+pub fn slab_opening_from_entity(entity: &EntityType) -> bool {
+    slab_xdata::slab_opening_from_entity(entity).is_some()
 }
 
 pub fn selection_is_all_walls(
@@ -1942,5 +1982,58 @@ mod tests {
         assert!(fields.contains(&"slabopening_host"));
         assert!(fields.contains(&"slabopening_area"));
         assert_eq!(opening.depth, SlabOpeningDepth::Recess(0.12));
+    }
+
+    #[test]
+    fn test_aec_entity_title_and_package_collapse_for_slabs_and_openings() {
+        use crate::modules::aec::engine::library;
+        use crate::modules::aec::engine::slab::Slab;
+        use crate::modules::aec::engine::slab_package::{
+            collect_slab_display_children, is_slab_derived, resolve_slab_package,
+        };
+        use crate::modules::aec::engine::slab_regen::regenerate_slab_representation;
+        use crate::modules::aec::engine::slab_xdata::write_slab_record;
+        use crate::scene::Scene;
+        use acadrust::entities::{LwPolyline, LwVertex};
+        use acadrust::types::Vector2;
+
+        let mut scene = Scene::new();
+        let lib = library::seed_default_library();
+
+        let mut pl = LwPolyline::new();
+        pl.is_closed = true;
+        pl.add_vertex(LwVertex::new(Vector2::new(0.0, 0.0)));
+        pl.add_vertex(LwVertex::new(Vector2::new(6.0, 0.0)));
+        pl.add_vertex(LwVertex::new(Vector2::new(6.0, 4.0)));
+        pl.add_vertex(LwVertex::new(Vector2::new(0.0, 4.0)));
+        let slab_h = scene.add_entity(EntityType::LwPolyline(pl));
+
+        let slab = Slab::new("style_slab_concrete_20", 0);
+        write_slab_record(&mut scene.document, slab_h, &slab);
+        regenerate_slab_representation(&mut scene, slab_h, Some(&lib), None);
+
+        let children = collect_slab_display_children(&scene, slab_h);
+        assert!(!children.is_empty(), "must produce derived children");
+
+        // Carrier entity title
+        let carrier_ent = scene.document.get_entity(slab_h).unwrap();
+        let title = aec_entity_title(&scene, slab_h, carrier_ent).expect("title");
+        assert!(title.contains("Slab") || title.contains("Geschossdecke"));
+
+        // For each derived child, resolve_aec_package and aec_entity_title must resolve to slab
+        for &child_h in &children {
+            assert!(is_slab_derived(&scene, child_h));
+            assert_eq!(resolve_slab_package(&scene, child_h), slab_h);
+            assert_eq!(resolve_aec_package(&scene, child_h), slab_h);
+            let child_ent = scene.document.get_entity(child_h).unwrap();
+            let child_title = aec_entity_title(&scene, child_h, child_ent).expect("child title");
+            assert!(child_title.contains("Slab") || child_title.contains("Geschossdecke"));
+
+            // Package collapse
+            let selected = vec![(child_h, child_ent)];
+            let collapsed = collapse_selection_to_aec_package(&scene, selected);
+            assert_eq!(collapsed.len(), 1);
+            assert_eq!(collapsed[0].0, slab_h);
+        }
     }
 }

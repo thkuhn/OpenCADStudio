@@ -1748,6 +1748,8 @@ impl OpenCADStudio {
             for (handle, grip_id, apply) in actions {
                 if !rebuilt_arcs.contains(&handle)
                     && !self.apply_aec_opening_grip(i, handle, grip_id, &apply)
+                    && !self.apply_aec_slab_grip(i, handle, grip_id, &apply)
+                    && !self.apply_aec_slab_opening_grip(i, handle, grip_id, &apply)
                 {
                     self.tabs[i].scene.apply_grip(handle, grip_id, apply);
                 }
@@ -4795,7 +4797,7 @@ properties={:.1}ms picked={}",
                             let hit =
                                 hit.filter(|&h| self.tabs[i].scene.passes_selection_filter(h));
                             let hit = hit.map(|h| {
-                                crate::modules::aec::engine::wall_package::resolve_wall_package(
+                                crate::modules::aec::properties::resolve_aec_package(
                                     &self.tabs[i].scene,
                                     h,
                                 )
@@ -6441,6 +6443,44 @@ was_selected={}",
                     .is_some()
                 {
                     self.tabs[i].scene.select_entity(owner, false);
+                }
+
+                let slab_owner = crate::modules::aec::engine::slab_package::resolve_slab_package(
+                    &self.tabs[i].scene,
+                    handle,
+                );
+                if self.tabs[i]
+                    .scene
+                    .document
+                    .get_entity(slab_owner)
+                    .and_then(crate::modules::aec::engine::slab_xdata::slab_from_entity)
+                    .is_some()
+                {
+                    let _ = self.regenerate_slab_respecting_active_display_config(i, slab_owner);
+                    self.tabs[i].scene.select_entity(slab_owner, false);
+                }
+                if let Some(op_owner) = crate::modules::aec::engine::slab_package::slab_opening_owner_if_any(
+                    &self.tabs[i].scene,
+                    handle,
+                ) {
+                    if self.tabs[i]
+                        .scene
+                        .document
+                        .get_entity(op_owner)
+                        .and_then(crate::modules::aec::engine::slab_xdata::slab_opening_from_entity)
+                        .is_some()
+                    {
+                        let style_library = crate::modules::aec::engine::project::resolve_style_library(
+                            self.aec.aec_project_explorer_file.as_ref(),
+                        );
+                        crate::modules::aec::engine::slab_regen::regenerate_slab_opening_representation(
+                            &mut self.tabs[i].scene,
+                            op_owner,
+                            Some(&style_library),
+                            None,
+                        );
+                        self.tabs[i].scene.select_entity(op_owner, false);
+                    }
                 }
             }
             self.tabs[i].scene.bump_entities_after_parametric_solve(&changes);

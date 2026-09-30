@@ -370,7 +370,21 @@ pub fn regenerate_slab_representation(
     }
 
     // ── 3. 2D Multi-layer Sectional / Plan Hatches ───────────────────────────
-    if hatch_visible && !slab.layers.is_empty() {
+    let hatch_allowed = if hatch_visible && !slab.layers.is_empty() {
+        match rules.and_then(|r| r.layer_filter.get(SlabComponentSlot::LayerHatch2D.key())) {
+            Some(LayerSelection::Explicit(refs)) => refs.iter().any(|r| {
+                slab.layers.iter().any(|l| {
+                    (r.layer_id.is_some() && r.layer_id == Some(l.layer_id))
+                        || (!r.material_id.is_empty() && r.material_id == l.material)
+                })
+            }),
+            _ => true,
+        }
+    } else {
+        false
+    };
+
+    if hatch_allowed {
         // Collect hole boundaries for hatch outer perimeter
         let hole_polys: Vec<Vec<(f64, f64)>> = opening_data
             .iter()
@@ -513,6 +527,19 @@ pub fn regenerate_slab_representation(
             let layer_top_offset = current_offset_from_top;
             let layer_bot_offset = current_offset_from_top + layer.thickness;
             current_offset_from_top = layer_bot_offset;
+
+            let layer_included_in_solid = match rules
+                .and_then(|r| r.layer_filter.get(SlabComponentSlot::Solid3D.key()))
+            {
+                Some(LayerSelection::Explicit(refs)) => refs.iter().any(|r| {
+                    (r.layer_id.is_some() && r.layer_id == Some(layer.layer_id))
+                        || (!r.material_id.is_empty() && r.material_id == layer.material)
+                }),
+                _ => true,
+            };
+            if !layer_included_in_solid {
+                continue;
+            }
 
             // Collect all split offsets within [layer_top_offset, layer_bot_offset]
             let mut split_offsets = vec![layer_top_offset, layer_bot_offset];
@@ -1237,5 +1264,98 @@ mod tests {
         let package = expand_handles_for_slab_packages(&scene, &[derived_h]);
         assert!(package.contains(&slab_h), "Package expansion should include carrier");
         assert!(package.contains(&derived_h), "Package expansion should include derived child");
+    }
+
+    #[test]
+    fn test_plan_type_and_scale_representation_switching() {
+        use crate::modules::aec::engine::library::build_effective_slab_rule_set;
+        use crate::modules::aec::engine::plan_view::{DisplayConfig, PlanningStage, ViewType};
+        use crate::modules::aec::engine::slab_style::{SlabStyle, SlabStyleLayer};
+        use crate::modules::aec::engine::wall_style::LayerValue;
+
+        let mut scene = Scene::new();
+        let mut pl = LwPolyline::new();
+        pl.add_vertex(LwVertex::new(Vector2::new(0.0, 0.0)));
+        pl.add_vertex(LwVertex::new(Vector2::new(5.0, 0.0)));
+        pl.add_vertex(LwVertex::new(Vector2::new(5.0, 5.0)));
+        pl.add_vertex(LwVertex::new(Vector2::new(0.0, 5.0)));
+        pl.is_closed = true;
+        let slab_h = scene.add_entity(EntityType::LwPolyline(pl));
+
+        let mut slab = Slab::new("style_slab_multi", 1);
+        slab.layers = vec![
+            SlabLayer::new("Parquet", 0.02, LayerFunction::Finish),
+            SlabLayer::new("Screed", 0.06, LayerFunction::Finish),
+            SlabLayer::new("Insulation", 0.06, LayerFunction::Insulation),
+            SlabLayer::new("Concrete", 0.20, LayerFunction::Structural),
+            SlabLayer::new("Plaster", 0.01, LayerFunction::Finish),
+        ];
+        write_slab_record(&mut scene.document, slab_h, &slab);
+
+        // 1. Werkplan 1:50 (Execution): Hatching enabled
+        let werkplan_cfg = DisplayConfig::new(
+            "Werkplan 1:50".to_string(),
+            "Ausführung".to_string(),
+            PlanningStage::Execution,
+            ViewType::FloorPlan,
+        );
+        let rules_50 = build_effective_slab_rule_set(&werkplan_cfg, None, None);
+        regenerate_slab_representation(&mut scene, slab_h, None, Some(&rules_50));
+        assert!(
+            !scene.hatches.is_empty(),
+            "Werkplan 1:50 must generate 2D sectional layer hatch"
+        );
+
+        // 2. Entwurf 1:100 (Design): Simplified outer contour, hatching suppressed
+        let entwurf_cfg = DisplayConfig::new(
+            "Entwurf 1:100".to_string(),
+            "Entwurf".to_string(),
+            PlanningStage::Design,
+            ViewType::FloorPlan,
+        );
+        let rules_100 = build_effective_slab_rule_set(&entwurf_cfg, None, None);
+        regenerate_slab_representation(&mut scene, slab_h, None, Some(&rules_100));
+        assert!(
+            scene.hatches.is_empty(),
+            "Entwurf 1:100 must suppress internal hatching"
+        );
+
+        // 3. Deckenspiegel (RCP): CeilingOutline2D active, Contour2D suppressed
+        let rcp_cfg = DisplayConfig::new(
+            "Deckenspiegel".to_string(),
+            "Ausbau".to_string(),
+            PlanningStage::Execution,
+            ViewType::FloorPlan,
+        );
+        let rules_rcp = build_effective_slab_rule_set(&rcp_cfg, None, None);
+        assert!(!rules_rcp.is_slab_visible(SlabComponentSlot::Contour2D));
+        assert!(rules_rcp.is_slab_visible(SlabComponentSlot::CeilingOutline2D));
+
+        // 4. Structural-only (Rohbau): 3D solids generate only the structural core
+        let rohbau_cfg = DisplayConfig::new(
+            "Rohbau 3D".to_string(),
+            "Rohbau".to_string(),
+            PlanningStage::Execution,
+            ViewType::FloorPlan,
+        );
+        let style = SlabStyle::new("style_slab_multi", "Multi Slab").with_layers(vec![
+            SlabStyleLayer::new(
+                "Parquet",
+                LayerValue::Fixed(0.02),
+                LayerFunction::Finish,
+            ),
+            SlabStyleLayer::new(
+                "Concrete",
+                LayerValue::Fixed(0.20),
+                LayerFunction::Structural,
+            ),
+        ]);
+        let rules_rohbau = build_effective_slab_rule_set(&rohbau_cfg, Some(&style), None);
+        regenerate_slab_representation(&mut scene, slab_h, None, Some(&rules_rohbau));
+        assert_eq!(
+            scene.solid_models.len(),
+            1,
+            "Rohbau display mode should only generate the structural core layer solid"
+        );
     }
 }
