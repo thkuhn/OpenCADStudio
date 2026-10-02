@@ -646,7 +646,7 @@ impl OpenCADStudio {
                     .map(|(h, _)| h)
                     .filter(|handle| !self.tabs[i].scene.is_layer_locked(*handle))
                     .collect();
-                let handles = crate::modules::aec::engine::wall_package::expand_handles_for_wall_packages(
+                let handles = crate::modules::aec::properties::expand_handles_for_aec_packages(
                     &self.tabs[i].scene,
                     &handles,
                 );

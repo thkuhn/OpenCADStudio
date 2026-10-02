@@ -1319,6 +1319,11 @@ pub fn resolve_wall_package(scene: &crate::scene::Scene, handle: Handle) -> Hand
     wall_package::resolve_wall_package(scene, handle)
 }
 
+pub fn expand_handles_for_aec_packages(scene: &crate::scene::Scene, handles: &[Handle]) -> Vec<Handle> {
+    let handles = wall_package::expand_handles_for_wall_packages(scene, handles);
+    slab_package::expand_handles_for_slab_packages(scene, &handles)
+}
+
 pub fn resolve_aec_package(scene: &crate::scene::Scene, handle: Handle) -> Handle {
     if let Some(opening_owner) = opening_display::opening_owner_if_any(scene, handle) {
         return opening_owner;

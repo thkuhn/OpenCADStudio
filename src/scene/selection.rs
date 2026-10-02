@@ -114,7 +114,7 @@ impl Scene {
     pub fn select_entity(&mut self, handle: Handle, exclusive: bool) {
         self.selected_constraint = None;
         let handles = self.handles_expanded_for_leader_annotations(&[handle]);
-        let handles = crate::modules::aec::engine::wall_package::expand_handles_for_wall_packages(self, &handles);
+        let handles = crate::modules::aec::properties::expand_handles_for_aec_packages(self, &handles);
         let mut changed = false;
 
         if exclusive {
@@ -221,7 +221,7 @@ impl Scene {
     pub(crate) fn replace_selection(&mut self, selected: HashSet<Handle>) {
         self.selected_constraint = None;
         let handles: Vec<Handle> = selected.iter().copied().collect();
-        let selected: HashSet<Handle> = crate::modules::aec::engine::wall_package::expand_handles_for_wall_packages(
+        let selected: HashSet<Handle> = crate::modules::aec::properties::expand_handles_for_aec_packages(
             self,
             &self.handles_expanded_for_leader_annotations(&handles),
         )

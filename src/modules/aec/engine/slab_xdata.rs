@@ -466,7 +466,16 @@ pub fn slab_from_entity(entity: &EntityType) -> Option<Slab> {
 pub fn write_slab_record(doc: &mut CadDocument, handle: Handle, slab: &Slab) -> bool {
     let mut record = ExtendedDataRecord::new(AEC_APPID);
     record.values = slab_record_for_slab(slab);
-    write_aec_record(doc, handle, record)
+    let ok = write_aec_record(doc, handle, record);
+    if ok {
+        if let Some(EntityType::LwPolyline(pl)) = doc.get_entity_mut(handle) {
+            let ref_z = slab.base_origin[2];
+            let pt_x = pl.vertices.first().map(|v| v.location.x).unwrap_or(0.0);
+            let pt_y = pl.vertices.first().map(|v| v.location.y).unwrap_or(0.0);
+            pl.elevation = slab.top_z_at_xy(pt_x, pt_y, ref_z);
+        }
+    }
+    ok
 }
 
 /// Overwrites only `style_id` and the layer snapshot of a slab's `SLAB`

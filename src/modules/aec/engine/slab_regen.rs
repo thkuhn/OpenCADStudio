@@ -619,6 +619,14 @@ pub fn regenerate_slab_representation(
         regenerate_slab_opening_representation_inner(scene, *op_handle, rules);
     }
 
+    // Synchronize carrier polyline's elevation to the slab's base/top elevation
+    let carrier_z = slab.top_z_at_xy(boundary_pts[0].0, boundary_pts[0].1, ref_z);
+    if let Some(e) = scene.document.get_entity_mut(slab_handle) {
+        if let EntityType::LwPolyline(pl) = e {
+            pl.elevation = carrier_z;
+        }
+    }
+
     // Update derived handles snapshot on the slab entity
     slab.derived_handles = new_derived;
     write_slab_record(&mut scene.document, slab_handle, &slab);
@@ -698,6 +706,23 @@ fn regenerate_slab_opening_representation_inner(
         owner_index::remove_child(&mut scene.document, opening_handle, *h);
     }
 
+    let host_elevation = if let Some(host_ent) = scene.document.get_entity(opening.host_slab) {
+        if let Some(host_slab) = slab_from_entity(host_ent) {
+            let ref_z = host_slab.base_origin[2];
+            host_slab.top_z_at_xy(boundary_pts[0].0, boundary_pts[0].1, ref_z)
+        } else {
+            0.0
+        }
+    } else {
+        0.0
+    };
+
+    if let Some(e) = scene.document.get_entity_mut(opening_handle) {
+        if let EntityType::LwPolyline(pl) = e {
+            pl.elevation = host_elevation;
+        }
+    }
+
     let mut new_derived: Vec<Handle> = Vec::new();
 
     // 1. Opening cutout outline (closed LwPolyline)
@@ -707,6 +732,7 @@ fn regenerate_slab_opening_representation_inner(
             pl.add_vertex(LwVertex::new(Vector2::new(x, y)));
         }
         pl.is_closed = true;
+        pl.elevation = host_elevation;
 
         let contour_h =
             reuse_or_add_slab_contour(scene, &mut reusable_contours, pl, Some(opening_handle));
@@ -734,6 +760,7 @@ fn regenerate_slab_opening_representation_inner(
             pl.add_vertex(LwVertex::new(Vector2::new(x1, y1)));
             pl.add_vertex(LwVertex::new(Vector2::new(x2, y2)));
             pl.is_closed = false;
+            pl.elevation = host_elevation;
 
             let sym_h =
                 reuse_or_add_slab_contour(scene, &mut reusable_contours, pl, Some(opening_handle));

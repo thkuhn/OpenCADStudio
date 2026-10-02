@@ -5595,7 +5595,7 @@ impl Scene {
                         .handles_expanded_for_selectable_groups(&[handle])
                         .into_iter()
                         .collect();
-                    crate::modules::aec::engine::wall_package::expand_handles_for_wall_packages(
+                    crate::modules::aec::properties::expand_handles_for_aec_packages(
                         scene, &grouped,
                     )
                     .into_iter()
@@ -5624,7 +5624,7 @@ impl Scene {
                     .handles_expanded_for_selectable_groups(&[handle])
                     .into_iter()
                     .collect();
-                crate::modules::aec::engine::wall_package::expand_handles_for_wall_packages(self, &grouped)
+                crate::modules::aec::properties::expand_handles_for_aec_packages(self, &grouped)
                     .into_iter()
                     .collect()
             })

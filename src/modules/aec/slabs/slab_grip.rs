@@ -6,7 +6,7 @@
 //! - Dynamic regeneration of 2D derived entities and 3D B-Rep solids on grip modification
 //! - Synchronization after interactive viewport grip edits.
 
-use acadrust::entities::{LwPolyline, LwVertex};
+use acadrust::entities::LwVertex;
 use acadrust::types::Vector2;
 use acadrust::{EntityType, Handle};
 
@@ -270,7 +270,7 @@ pub fn sync_slab_opening_after_grip_edit(
 }
 
 impl OpenCADStudio {
-    /// Apply an interactive grip edit for Slab entities.
+    /// Apply an interactive grip edit for Slab entities (fast lightweight drag preview).
     pub(crate) fn apply_aec_slab_grip(
         &mut self,
         tab: usize,
@@ -280,49 +280,35 @@ impl OpenCADStudio {
     ) -> bool {
         let scene = &mut self.tabs[tab].scene;
         let owner = resolve_slab_package(scene, handle);
-        let Some(entity) = scene.document.get_entity(owner) else {
+        let Some(entity) = scene.document.get_entity_mut(owner) else {
             return false;
         };
         if !is_slab_carrier_entity(entity) {
             return false;
         }
 
-        let new_pt = match apply {
-            GripApply::Absolute(pt) => (pt.x, pt.y),
-            GripApply::Translate(delta) => {
-                if let EntityType::LwPolyline(pl) = entity {
-                    if grip_id < pl.vertices.len() {
-                        let cur = pl.vertices[grip_id].location;
-                        (cur.x + delta.x, cur.y + delta.y)
-                    } else {
-                        return false;
-                    }
-                } else {
-                    return false;
-                }
-            }
+        let EntityType::LwPolyline(pl) = entity else {
+            return false;
         };
-
-        let style_library = crate::modules::aec::engine::project::resolve_style_library(
-            self.aec.aec_project_explorer_file.as_ref(),
-        );
-
-        let success = move_slab_vertex(
-            &mut self.tabs[tab].scene,
-            owner,
-            grip_id,
-            new_pt,
-            Some(&style_library),
-            None,
-        );
-
-        if success {
-            self.tabs[tab].dirty = true;
+        if grip_id >= pl.vertices.len() {
+            return false;
         }
-        success
+
+        match apply {
+            GripApply::Absolute(pt) => {
+                pl.vertices[grip_id].location = acadrust::types::Vector2::new(pt.x, pt.y);
+            }
+            GripApply::Translate(delta) => {
+                pl.vertices[grip_id].location.x += delta.x;
+                pl.vertices[grip_id].location.y += delta.y;
+            }
+        }
+
+        self.tabs[tab].dirty = true;
+        true
     }
 
-    /// Apply an interactive grip edit for SlabOpening entities.
+    /// Apply an interactive grip edit for SlabOpening entities (fast lightweight drag preview).
     pub(crate) fn apply_aec_slab_opening_grip(
         &mut self,
         tab: usize,
@@ -331,53 +317,39 @@ impl OpenCADStudio {
         apply: &GripApply,
     ) -> bool {
         let scene = &mut self.tabs[tab].scene;
-        let Some(entity) = scene.document.get_entity(handle) else {
+        let Some(entity) = scene.document.get_entity_mut(handle) else {
             return false;
         };
         if !is_slab_opening_carrier_entity(entity) {
             return false;
         }
 
-        let new_pt = match apply {
-            GripApply::Absolute(pt) => (pt.x, pt.y),
-            GripApply::Translate(delta) => {
-                if let EntityType::LwPolyline(pl) = entity {
-                    if grip_id < pl.vertices.len() {
-                        let cur = pl.vertices[grip_id].location;
-                        (cur.x + delta.x, cur.y + delta.y)
-                    } else {
-                        return false;
-                    }
-                } else {
-                    return false;
-                }
-            }
+        let EntityType::LwPolyline(pl) = entity else {
+            return false;
         };
-
-        let style_library = crate::modules::aec::engine::project::resolve_style_library(
-            self.aec.aec_project_explorer_file.as_ref(),
-        );
-
-        let success = move_slab_opening_vertex(
-            &mut self.tabs[tab].scene,
-            handle,
-            grip_id,
-            new_pt,
-            Some(&style_library),
-            None,
-        );
-
-        if success {
-            self.tabs[tab].dirty = true;
+        if grip_id >= pl.vertices.len() {
+            return false;
         }
-        success
+
+        match apply {
+            GripApply::Absolute(pt) => {
+                pl.vertices[grip_id].location = acadrust::types::Vector2::new(pt.x, pt.y);
+            }
+            GripApply::Translate(delta) => {
+                pl.vertices[grip_id].location.x += delta.x;
+                pl.vertices[grip_id].location.y += delta.y;
+            }
+        }
+
+        self.tabs[tab].dirty = true;
+        true
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use acadrust::entities::LwVertex;
+    use acadrust::entities::{LwPolyline, LwVertex};
     use acadrust::types::Vector2;
     use crate::modules::aec::engine::slab::Slab;
     use crate::modules::aec::engine::slab_opening::{SlabOpening, SlabOpeningDepth, SlabOpeningKind};
@@ -468,5 +440,30 @@ mod tests {
         let op_mod = slab_opening_from_entity(entity).expect("parse opening");
         assert_eq!(op_mod.boundary[0], (3.0, 4.0));
         assert_eq!(op_mod.boundary[2], (5.0, 6.0));
+    }
+
+    #[test]
+    fn test_slab_carrier_elevation_follows_base_plane() {
+        let mut scene = Scene::new();
+        let lib = library::seed_default_library();
+
+        let mut pl = LwPolyline::new();
+        pl.is_closed = true;
+        pl.add_vertex(LwVertex::new(Vector2::new(0.0, 0.0)));
+        pl.add_vertex(LwVertex::new(Vector2::new(5.0, 0.0)));
+        pl.add_vertex(LwVertex::new(Vector2::new(5.0, 5.0)));
+        pl.add_vertex(LwVertex::new(Vector2::new(0.0, 5.0)));
+        pl.elevation = 0.0;
+        let slab_h = scene.add_entity(EntityType::LwPolyline(pl));
+
+        let mut slab = Slab::new("style_slab_concrete_20", 0);
+        slab.base_origin = [0.0, 0.0, 2.80];
+        slab.base_offset = 2.80;
+        write_slab_record(&mut scene.document, slab_h, &slab);
+        regenerate_slab_representation(&mut scene, slab_h, Some(&lib), None);
+
+        let entity = scene.document.get_entity(slab_h).expect("get entity");
+        let EntityType::LwPolyline(pl_carrier) = entity else { panic!("not lwpolyline") };
+        assert_eq!(pl_carrier.elevation, 2.80);
     }
 }
