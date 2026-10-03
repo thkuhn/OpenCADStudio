@@ -521,6 +521,88 @@ pub(crate) fn collect_wall_segments(doc: &CadDocument) -> Vec<((f64, f64), (f64,
     segments
 }
 
+/// Collect structural boundary segments (Rohbaukanten) of every `WALL`-tagged `LwPolyline`.
+pub fn collect_wall_structural_segments(doc: &CadDocument) -> Vec<((f64, f64), (f64, f64))> {
+    let mut segments = Vec::new();
+    for entity in doc.entities() {
+        let EntityType::LwPolyline(pl) = entity else {
+            continue;
+        };
+        let is_wall = matches!(
+            read_aec_record(entity).and_then(|r| r.values.first()),
+            Some(XDataValue::String(kind)) if kind == "WALL"
+        );
+        if !is_wall {
+            continue;
+        }
+        let wall = wall_from_entity(entity);
+        let (min_off, max_off) = wall
+            .as_ref()
+            .map(|w| w.structural_layer_offsets())
+            .unwrap_or((-0.12, 0.12));
+
+        let wall_thick = (max_off - min_off).abs().max(0.10);
+        let ext = wall_thick * 2.0;
+
+        let n = pl.vertices.len();
+        if n < 2 {
+            continue;
+        }
+
+        let mut vertex_pairs = Vec::new();
+        for pair in pl.vertices.windows(2) {
+            vertex_pairs.push((
+                (pair[0].location.x, pair[0].location.y),
+                (pair[1].location.x, pair[1].location.y),
+            ));
+        }
+        if pl.is_closed && n >= 3 {
+            if let (Some(first), Some(last)) = (pl.vertices.first(), pl.vertices.last()) {
+                vertex_pairs.push((
+                    (last.location.x, last.location.y),
+                    (first.location.x, first.location.y),
+                ));
+            }
+        }
+
+        for (a, b) in vertex_pairs {
+            let dx = b.0 - a.0;
+            let dy = b.1 - a.1;
+            let len = (dx * dx + dy * dy).sqrt();
+            if len < 1e-6 {
+                continue;
+            }
+            let nx = -dy / len;
+            let ny = dx / len;
+            let ux = dx / len;
+            let uy = dy / len;
+
+            // Left structural face
+            let l0 = (a.0 + nx * max_off - ux * ext, a.1 + ny * max_off - uy * ext);
+            let l1 = (b.0 + nx * max_off + ux * ext, b.1 + ny * max_off + uy * ext);
+            segments.push((l0, l1));
+
+            // Right structural face
+            let r0 = (a.0 + nx * min_off - ux * ext, a.1 + ny * min_off - uy * ext);
+            let r1 = (b.0 + nx * min_off + ux * ext, b.1 + ny * min_off + uy * ext);
+            segments.push((r0, r1));
+
+            // End caps connecting the structural faces
+            let cap_a = (
+                (a.0 + nx * min_off, a.1 + ny * min_off),
+                (a.0 + nx * max_off, a.1 + ny * max_off),
+            );
+            let cap_b = (
+                (b.0 + nx * min_off, b.1 + ny * min_off),
+                (b.0 + nx * max_off, b.1 + ny * max_off),
+            );
+            segments.push(cap_a);
+            segments.push(cap_b);
+        }
+    }
+    segments
+}
+
 /// Build a `WALL` XDATA record's values.
 ///
 /// `derived_handles` is appended as a trailing `count` + `Handle` block so

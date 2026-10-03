@@ -1750,6 +1750,7 @@ impl OpenCADStudio {
                     && !self.apply_aec_opening_grip(i, handle, grip_id, &apply)
                     && !self.apply_aec_slab_grip(i, handle, grip_id, &apply)
                     && !self.apply_aec_slab_opening_grip(i, handle, grip_id, &apply)
+                    && !self.apply_aec_room_grip(i, handle, grip_id, &apply)
                 {
                     self.tabs[i].scene.apply_grip(handle, grip_id, apply);
                 }

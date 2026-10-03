@@ -2007,6 +2007,42 @@ pub fn append_opening_axis_grips(
     entity_grips.extend(grips);
 }
 
+pub const ROOM_STAMP_GRIP_ID: usize = usize::MAX - 10;
+
+pub fn append_room_grips(
+    scene: &crate::scene::Scene,
+    handle: Handle,
+    _entity: &EntityType,
+    entity_grips: &mut Vec<crate::scene::model::object::GripDef>,
+) {
+    let owner = room_package::resolve_room_package_handle(scene, handle);
+    let Some(carrier) = scene.document.get_entity(owner) else {
+        return;
+    };
+    let Some(room) = room_xdata::room_from_entity(carrier) else {
+        return;
+    };
+
+    let (sx, sy) = room.stamp_pos.unwrap_or_else(|| {
+        let pts = room_regen::room_boundary_points(carrier);
+        if pts.len() >= 3 {
+            crate::modules::aec::engine::geometry::centroid(&pts)
+        } else {
+            (0.0, 0.0)
+        }
+    });
+
+    let z = match carrier {
+        EntityType::LwPolyline(pl) => pl.elevation,
+        _ => 0.0,
+    };
+
+    entity_grips.push(crate::entities::common::round_grip(
+        ROOM_STAMP_GRIP_ID,
+        glam::DVec3::new(sx, sy, z),
+    ));
+}
+
 pub fn append_wall_junction_grips(
     scene: &crate::scene::Scene,
     handle: Handle,

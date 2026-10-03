@@ -399,6 +399,43 @@ impl Wall {
     pub fn volume(&self, baseline_length: f64) -> f64 {
         baseline_length * self.total_thickness() * self.height
     }
+
+    /// Returns the `(min_offset, max_offset)` spanning the structural / load-bearing layers (Rohbau).
+    /// If no layer is flagged as structural, falls back to the full wall layers range (or default ±12cm).
+    pub fn structural_layer_offsets(&self) -> (f64, f64) {
+        let structural: Vec<&WallLayer> = self
+            .layers
+            .iter()
+            .filter(|l| {
+                let f = l.function.trim().to_lowercase();
+                f == "structural" || f == "tragend" || f == "structure" || f == "core"
+            })
+            .collect();
+        let layers_to_use: Vec<&WallLayer> = if !structural.is_empty() {
+            structural
+        } else if !self.layers.is_empty() {
+            self.layers.iter().collect()
+        } else {
+            Vec::new()
+        };
+
+        if layers_to_use.is_empty() {
+            let half = 0.12;
+            return (-half, half);
+        }
+
+        let mut min_start = f64::INFINITY;
+        let mut max_end = f64::NEG_INFINITY;
+        for l in layers_to_use {
+            min_start = min_start.min(l.axis_offset);
+            max_end = max_end.max(l.axis_offset + l.thickness);
+        }
+        if min_start > max_end {
+            (-0.12, 0.12)
+        } else {
+            (min_start, max_end)
+        }
+    }
 }
 
 #[cfg(test)]

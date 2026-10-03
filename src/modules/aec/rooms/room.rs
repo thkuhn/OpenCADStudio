@@ -27,7 +27,9 @@ use crate::modules::aec::engine::room::{Room, RoomFinish, RoomFunction};
 use crate::modules::aec::engine::room_package::*;
 use crate::modules::aec::engine::room_regen::regenerate_room_representation;
 use crate::modules::aec::engine::room_xdata::{room_from_entity, write_room_record};
-use crate::modules::aec::engine::xdata::{collect_wall_segments, write_aec_record, AEC_APPID};
+use crate::modules::aec::engine::xdata::{
+    collect_wall_segments, collect_wall_structural_segments, write_aec_record, AEC_APPID,
+};
 use crate::modules::aec::engine::StyleLibrary;
 use crate::modules::{IconKind, ModuleEvent, ToolDef};
 use crate::scene::model::wire_model::WireModel;
@@ -307,8 +309,12 @@ impl RoomCommand {
 
     /// Auto-detects the closed wall loop around `pt` and creates the room.
     pub fn auto_detect_at_point(&mut self, scene: &mut Scene, pt: (f64, f64)) -> Result<Handle, String> {
-        let segments = collect_wall_segments(&scene.document);
-        let Some(loop_pts) = find_closed_loop_at_point(&segments, pt, 1e-3) else {
+        let structural_segments = collect_wall_structural_segments(&scene.document);
+        let loop_pts = find_closed_loop_at_point(&structural_segments, pt, 1e-3).or_else(|| {
+            let baseline_segments = collect_wall_segments(&scene.document);
+            find_closed_loop_at_point(&baseline_segments, pt, 1e-3)
+        });
+        let Some(loop_pts) = loop_pts else {
             return Err("No enclosing closed wall loop found around clicked point.".to_string());
         };
         self.stamp_pos = Some(pt);
@@ -843,5 +849,39 @@ mod tests {
         assert_eq!(cmd_rect.mode, RoomDrawMode::Rectangle);
         let cmd_poly = RoomCommand::new().with_mode(RoomDrawMode::Polygon);
         assert_eq!(cmd_poly.mode, RoomDrawMode::Polygon);
+    }
+
+    #[test]
+    fn test_auto_detect_room_structural_inner_boundary() {
+        let mut scene = Scene::default();
+        let wall_segments = vec![
+            ((0.0, 0.0), (10.0, 0.0)),
+            ((10.0, 0.0), (10.0, 6.0)),
+            ((10.0, 6.0), (0.0, 6.0)),
+            ((0.0, 6.0), (0.0, 0.0)),
+        ];
+        for (a, b) in wall_segments {
+            let mut pl = LwPolyline::new();
+            pl.add_vertex(LwVertex::new(Vector2::new(a.0, a.1)));
+            pl.add_vertex(LwVertex::new(Vector2::new(b.0, b.1)));
+            let wall_h = scene.add_entity(EntityType::LwPolyline(pl));
+            let wall = crate::modules::aec::engine::wall::Wall::new("style_wall_24", 2.5, 0);
+            let mut record = ExtendedDataRecord::new(AEC_APPID);
+            record.values = crate::modules::aec::engine::xdata::wall_record_for_wall(&wall);
+            write_aec_record(&mut scene.document, wall_h, record);
+        }
+
+        let mut cmd = RoomCommand::new()
+            .with_name("Wohnzimmer")
+            .with_number("EG-01");
+
+        let handle = cmd.auto_detect_at_point(&mut scene, (5.0, 3.0)).expect("auto detect room");
+        let ent = scene.document.get_entity(handle).unwrap();
+        let room = room_from_entity(ent).expect("room");
+        assert!(
+            (room.area - 56.2176).abs() < 1e-2,
+            "Expected ~56.22 m² inner structural area, got {}",
+            room.area
+        );
     }
 }

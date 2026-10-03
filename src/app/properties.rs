@@ -2766,6 +2766,12 @@ handles={handles_ms:.1} panel={:.1} ribbon={ribbon_ms:.1} tail={:.1} selected={}
                     handle,
                     &mut entity_grips,
                 );
+                crate::modules::aec::properties::append_room_grips(
+                    &self.tabs[i].scene,
+                    handle,
+                    contextual.as_ref(),
+                    &mut entity_grips,
+                );
                 for mut grip in entity_grips {
                     // Subtract in f64: at UTM magnitudes an f32 cast before
                     // the offset costs ~1 unit and draws the grip off the wire.

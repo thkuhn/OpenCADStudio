@@ -63,11 +63,12 @@ pub use room_package::{
     all_room_carrier_handles, collect_room_display_children, expand_handles_for_room_packages,
     expand_with_room_derived_handles, is_room_carrier, is_room_derived, is_room_schedule,
     remove_room_display_children, resolve_room_package, resolve_room_package_handle,
-    room_package_handles, write_room_schedule_tag, AEC_ROOM_CARRIER_LAYER, AEC_ROOM_HATCH_LAYER,
-    AEC_ROOM_SCHEDULE_LAYER, AEC_ROOM_SOLID_LAYER, AEC_ROOM_STAMP_LAYER,
+    room_package_handles, room_stamp_handle, write_room_schedule_tag, AEC_ROOM_CARRIER_LAYER,
+    AEC_ROOM_HATCH_LAYER, AEC_ROOM_SCHEDULE_LAYER, AEC_ROOM_SOLID_LAYER, AEC_ROOM_STAMP_LAYER,
 };
 pub use room_regen::{regenerate_room_representation, room_boundary_points};
 pub use room_xdata::{room_from_entity, write_room_record};
+pub use xdata::collect_wall_structural_segments;
 pub use slab::{Slab, SlabJustification, SlabLayer};
 pub use slab_opening::{SlabOpening, SlabOpeningDepth, SlabOpeningKind};
 pub use slab_package::{

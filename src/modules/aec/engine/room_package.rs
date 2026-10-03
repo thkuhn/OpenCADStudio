@@ -201,3 +201,19 @@ pub fn write_room_schedule_tag(scene: &mut Scene, handle: Handle) {
 pub fn is_room_derived(entity: &EntityType) -> bool {
     room_rep_owner_from_entity(entity).is_some()
 }
+
+/// Finds the handle of the room stamp MText for a room carrier entity.
+pub fn room_stamp_handle(scene: &Scene, owner: Handle) -> Option<Handle> {
+    for child in collect_room_display_children(scene, owner) {
+        if let Some(entity) = scene.document.get_entity(child) {
+            for record in entity.common().extended_data.records() {
+                if record.application_name == AEC_APPID
+                    && record.values.get(2) == Some(&XDataValue::String(ROOM_REP_ROLE_STAMP.to_string()))
+                {
+                    return Some(child);
+                }
+            }
+        }
+    }
+    None
+}
