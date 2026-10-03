@@ -28,6 +28,8 @@ pub const AEC_ROOM_CARRIER_LAYER: &str = "AEC_ROOMS";
 pub const AEC_ROOM_STAMP_LAYER: &str = "AEC_ROOM_STAMP";
 pub const AEC_ROOM_HATCH_LAYER: &str = "AEC_ROOM_HATCH";
 pub const AEC_ROOM_SOLID_LAYER: &str = "AEC_ROOM_SOLID";
+pub const AEC_ROOM_SCHEDULE_LAYER: &str = "AEC_SCHEDULE";
+pub const ROOM_SCHEDULE_XDATA_TAG: &str = "ROOM_SCHEDULE";
 
 /// Extracts the owner room handle from a `ROOM_REP` or `ROOM_DERIVED` entity.
 pub fn room_rep_owner_from_entity(entity: &EntityType) -> Option<Handle> {
@@ -173,6 +175,26 @@ pub fn is_room_carrier(entity: &EntityType) -> bool {
         }
     }
     false
+}
+
+/// Returns true if the entity is an AEC room schedule table.
+pub fn is_room_schedule(entity: &EntityType) -> bool {
+    for record in entity.common().extended_data.records() {
+        if record.application_name != AEC_APPID {
+            continue;
+        }
+        if matches!(record.values.first(), Some(XDataValue::String(s)) if s == ROOM_SCHEDULE_XDATA_TAG) {
+            return true;
+        }
+    }
+    false
+}
+
+/// Tag `handle` as an AEC room schedule table (`ROOM_SCHEDULE`).
+pub fn write_room_schedule_tag(scene: &mut Scene, handle: Handle) {
+    let mut record = ExtendedDataRecord::new(AEC_APPID);
+    record.add_value(XDataValue::String(ROOM_SCHEDULE_XDATA_TAG.to_string()));
+    write_aec_record(&mut scene.document, handle, record);
 }
 
 /// Returns true if the entity is a derived representation child of a room.

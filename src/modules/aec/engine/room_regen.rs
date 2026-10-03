@@ -62,11 +62,8 @@ pub fn regenerate_room_representation(
     room.perimeter = poly_perimeter;
     room.volume = room.effective_volume();
 
-    // Determine stamp position (use saved coordinate if still inside polygon, or recalculate centroid)
-    let stamp_pos = match room.stamp_pos {
-        Some(pos) if super::geometry::point_in_polygon((pos.0, pos.1), &points) => pos,
-        _ => centroid(&points),
-    };
+    // Determine stamp position (use saved coordinate if set, or calculate centroid)
+    let stamp_pos = room.stamp_pos.unwrap_or_else(|| centroid(&points));
     room.stamp_pos = Some(stamp_pos);
 
     // Update XDATA on carrier entity
@@ -84,7 +81,7 @@ pub fn regenerate_room_representation(
     } else {
         format!("{} {}", room.number, room.name)
     };
-    text_lines.push(format!("{{\\b {}}}", title));
+    text_lines.push(title);
 
     // Area line (DIN 277 / WoFlV)
     if (room.factor - 1.0).abs() < 1e-4 {
@@ -117,7 +114,12 @@ pub fn regenerate_room_representation(
     mtext.value = mtext_value;
     mtext.insertion_point = Vector3::new(stamp_pos.0, stamp_pos.1, room.base_z);
     mtext.height = 0.22;
+    mtext.rectangle_width = 0.0;
     mtext.attachment_point = acadrust::entities::mtext::AttachmentPoint::MiddleCenter;
+    mtext.style = String::new();
+
+    scene.ensure_layer(AEC_ROOM_CARRIER_LAYER);
+    scene.ensure_layer(AEC_ROOM_STAMP_LAYER);
 
     let mut stamp_entity = EntityType::MText(mtext);
     stamp_entity.common_mut().layer = AEC_ROOM_STAMP_LAYER.to_string();
@@ -191,6 +193,9 @@ pub fn regenerate_room_representation(
 
     // Register all child handles in owner index
     owner_index::set_children(&mut scene.document, room_handle, &child_handles);
+
+    // Synchronize any existing room schedule tables in the drawing
+    crate::modules::aec::rooms::schedule::update_all_room_schedules(scene);
 
     Some(())
 }

@@ -13,7 +13,6 @@ use crate::modules::aec::engine::xdata::ensure_wall_app_id;
 use crate::modules::aec::engine::wall_package::{is_wall_pick_target, resolve_wall_package};
 use crate::modules::aec::engine::wall_regen::toggle_controlplanes_layer;
 use crate::modules::aec::ifc::export::aec_ifc_export;
-use crate::modules::aec::rooms::schedule::aec_room_schedule;
 use crate::modules::aec::walls::refresh::aec_wall_refresh;
 use crate::modules::aec::walls::extend::aec_wallextend_do;
 use crate::modules::aec::walls::window::aec_wallopening_do;
@@ -42,7 +41,11 @@ pub fn spawn_command(name: &str) -> Option<Box<dyn CadCommand>> {
         "AEC_OPENING" => Some(Box::new(WallOpeningCommand::new_opening())),
         "AEC_SLAB" => Some(Box::new(SlabCommand::new())),
         "AEC_SLABOPENING" => Some(Box::new(SlabOpeningCommand::new())),
-        "AEC_ROOM" => Some(Box::new(RoomCommand::new())),
+        "AEC_ROOM" | "AEC_ROOM_PICK" => Some(Box::new(RoomCommand::new().with_mode(crate::modules::aec::rooms::room::RoomDrawMode::PickPoint))),
+        "AEC_ROOM_RECT" => Some(Box::new(RoomCommand::new().with_mode(crate::modules::aec::rooms::room::RoomDrawMode::Rectangle))),
+        "AEC_ROOM_POLY" => Some(Box::new(RoomCommand::new().with_mode(crate::modules::aec::rooms::room::RoomDrawMode::Polygon))),
+        "AEC_ROOM_OBJECT" => Some(Box::new(RoomCommand::new().with_mode(crate::modules::aec::rooms::room::RoomDrawMode::SelectPolyline))),
+        "AEC_ROOMSCHEDULE" => Some(Box::new(crate::modules::aec::rooms::schedule::RoomScheduleCommand::new())),
         "AEC_PLANE_3POINT" => Some(Box::new(crate::modules::aec::project::plane_3point::Plane3PointCommand::new())),
         "AEC_PLANE_FACET" => Some(Box::new(crate::modules::aec::project::plane_facet::PlaneFacetCommand::new())),
         "AEC_PLANE_ASSIGN" => Some(Box::new(crate::modules::aec::project::plane_assign::PlaneAssignCommand::new())),
@@ -115,10 +118,32 @@ pub(crate) fn try_dispatch(
             );
             Some(app.finish_dispatch(cmd))
         }
-        "AEC_ROOM" => Some(dispatch_room(app, tab, cmd)),
-        "AEC_ROOMSCHEDULE" => {
-            aec_room_schedule(&mut app.tabs[tab].scene, &mut app.command_line);
-            app.tabs[tab].dirty = true;
+        "AEC_ROOM" | "AEC_ROOM_PICK" => Some(dispatch_room(app, tab, cmd, crate::modules::aec::rooms::room::RoomDrawMode::PickPoint)),
+        "AEC_ROOM_RECT" => Some(dispatch_room(app, tab, cmd, crate::modules::aec::rooms::room::RoomDrawMode::Rectangle)),
+        "AEC_ROOM_POLY" => Some(dispatch_room(app, tab, cmd, crate::modules::aec::rooms::room::RoomDrawMode::Polygon)),
+        "AEC_ROOM_OBJECT" => Some(dispatch_room(app, tab, cmd, crate::modules::aec::rooms::room::RoomDrawMode::SelectPolyline)),
+        "AEC_ROOMSCHEDULE" => Some(install_spawned(app, tab, cmd, "AEC_ROOMSCHEDULE")),
+        cmd if cmd.starts_with("AEC_ROOMSCHEDULE_DO ") => {
+            let args = cmd["AEC_ROOMSCHEDULE_DO ".len()..].to_string();
+            let mut it = args.split('|');
+            let (x, y) = if let (Some(x_str), Some(y_str)) = (it.next(), it.next()) {
+                (x_str.parse::<f64>().unwrap_or(0.0), y_str.parse::<f64>().unwrap_or(0.0))
+            } else {
+                (0.0, 0.0)
+            };
+            let at = acadrust::types::Vector3::new(x, y, 0.0);
+            if let Some(handle) = crate::modules::aec::rooms::schedule::aec_room_schedule_at_point(&mut app.tabs[tab].scene, at) {
+                let count = crate::modules::aec::rooms::schedule::collect_all_rooms(&app.tabs[tab].scene).len();
+                app.command_line.push_info(&crate::tr!(
+                    "aec",
+                    "schedule-created",
+                    count = count,
+                    handle = handle.to_string()
+                ));
+                app.tabs[tab].dirty = true;
+            } else {
+                app.command_line.push_info(&crate::tr!("aec", "no-rooms"));
+            }
             Some(app.finish_dispatch(cmd))
         }
         "AEC_IFCEXPORT" => {
@@ -460,11 +485,16 @@ fn dispatch_slab(app: &mut OpenCADStudio, tab: usize, cmd: &str) -> Task<Message
     app.finish_dispatch(cmd)
 }
 
-fn dispatch_room(app: &mut OpenCADStudio, tab: usize, cmd: &str) -> Task<Message> {
+fn dispatch_room(
+    app: &mut OpenCADStudio,
+    tab: usize,
+    cmd: &str,
+    mode: crate::modules::aec::rooms::room::RoomDrawMode,
+) -> Task<Message> {
     let style_library = crate::modules::aec::engine::project::resolve_style_library(
         app.aec.aec_project_explorer_file.as_ref(),
     );
-    let new_cmd = RoomCommand::new_with_library(Some(style_library));
+    let new_cmd = RoomCommand::new_with_library(Some(style_library)).with_mode(mode);
     app.command_line.push_info(&new_cmd.prompt());
     app.tabs[tab].active_cmd = Some(Box::new(new_cmd));
     app.refresh_properties();
@@ -712,9 +742,19 @@ mod tests {
             "AEC_SLAB",
             "AEC_SLABOPENING",
             "AEC_ROOM",
+            "AEC_ROOMSCHEDULE",
         ] {
             let cmd = spawn_command(name).unwrap_or_else(|| panic!("missing spawn for {name}"));
             assert_eq!(cmd.name(), name);
+        }
+        for sub_name in [
+            "AEC_ROOM_PICK",
+            "AEC_ROOM_RECT",
+            "AEC_ROOM_POLY",
+            "AEC_ROOM_OBJECT",
+        ] {
+            let cmd = spawn_command(sub_name).unwrap_or_else(|| panic!("missing spawn for {sub_name}"));
+            assert_eq!(cmd.name(), "AEC_ROOM");
         }
         assert!(spawn_command("AEC_WALL_REFRESH").is_none());
         assert!(spawn_command("LINE").is_none());

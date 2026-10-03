@@ -45,6 +45,165 @@ fn node_id(
     }
 }
 
+/// Subdivides a set of line segments at all mutual intersection points and T-junction endpoints,
+/// returning the refined set of non-overlapping subsegments.
+pub fn subdivide_segments(segments: &[Segment], epsilon: f64) -> Vec<Segment> {
+    let eps = if epsilon > 0.0 { epsilon } else { 1e-4 };
+    let eps_sq = eps * eps;
+
+    // Filter out zero-length segments
+    let valid_segments: Vec<Segment> = segments
+        .iter()
+        .copied()
+        .filter(|&(a, b)| {
+            let dx = b.0 - a.0;
+            let dy = b.1 - a.1;
+            dx * dx + dy * dy > eps_sq
+        })
+        .collect();
+
+    if valid_segments.is_empty() {
+        return Vec::new();
+    }
+
+    // For each segment, store a list of scalar parameters `t` in [0.0, 1.0].
+    let mut split_params: Vec<Vec<f64>> = vec![vec![0.0, 1.0]; valid_segments.len()];
+
+    let n = valid_segments.len();
+    for i in 0..n {
+        let (a, b) = valid_segments[i];
+        let v = (b.0 - a.0, b.1 - a.1);
+        let len_sq_i = v.0 * v.0 + v.1 * v.1;
+        let len_i = len_sq_i.sqrt();
+
+        for j in (i + 1)..n {
+            let (c, d) = valid_segments[j];
+            let w = (d.0 - c.0, d.1 - c.1);
+            let len_sq_j = w.0 * w.0 + w.1 * w.1;
+            let len_j = len_sq_j.sqrt();
+
+            let det = v.0 * w.1 - v.1 * w.0;
+            let u = (c.0 - a.0, c.1 - a.1);
+
+            if det.abs() > 1e-9 {
+                // Lines are not parallel: compute intersection
+                let t = (u.0 * w.1 - u.1 * w.0) / det;
+                let s = (u.0 * v.1 - u.1 * v.0) / det;
+
+                let t_margin = eps / len_i;
+                let s_margin = eps / len_j;
+
+                if t >= -t_margin && t <= 1.0 + t_margin && s >= -s_margin && s <= 1.0 + s_margin {
+                    let t_clamped = t.clamp(0.0, 1.0);
+                    let s_clamped = s.clamp(0.0, 1.0);
+                    split_params[i].push(t_clamped);
+                    split_params[j].push(s_clamped);
+                }
+            } else {
+                // Lines are parallel/collinear: check if endpoints lie on each other's segment
+                for &pt in &[c, d] {
+                    let d_vec = (pt.0 - a.0, pt.1 - a.1);
+                    let t = (d_vec.0 * v.0 + d_vec.1 * v.1) / len_sq_i;
+                    let t_margin = eps / len_i;
+                    if t >= -t_margin && t <= 1.0 + t_margin {
+                        let t_clamped = t.clamp(0.0, 1.0);
+                        let proj = (a.0 + t_clamped * v.0, a.1 + t_clamped * v.1);
+                        let dist_sq = (pt.0 - proj.0).powi(2) + (pt.1 - proj.1).powi(2);
+                        if dist_sq <= eps_sq {
+                            split_params[i].push(t_clamped);
+                        }
+                    }
+                }
+                for &pt in &[a, b] {
+                    let d_vec = (pt.0 - c.0, pt.1 - c.1);
+                    let s = (d_vec.0 * w.0 + d_vec.1 * w.1) / len_sq_j;
+                    let s_margin = eps / len_j;
+                    if s >= -s_margin && s <= 1.0 + s_margin {
+                        let s_clamped = s.clamp(0.0, 1.0);
+                        let proj = (c.0 + s_clamped * w.0, c.1 + s_clamped * w.1);
+                        let dist_sq = (pt.0 - proj.0).powi(2) + (pt.1 - proj.1).powi(2);
+                        if dist_sq <= eps_sq {
+                            split_params[j].push(s_clamped);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Also check all endpoints against all segments for T-junction proximity
+    for (i, &(a, b)) in valid_segments.iter().enumerate() {
+        let v = (b.0 - a.0, b.1 - a.1);
+        let len_sq = v.0 * v.0 + v.1 * v.1;
+        let len = len_sq.sqrt();
+        let t_margin = eps / len;
+
+        for (j, &(c, d)) in valid_segments.iter().enumerate() {
+            if i == j {
+                continue;
+            }
+            for &pt in &[c, d] {
+                let d_vec = (pt.0 - a.0, pt.1 - a.1);
+                let t = (d_vec.0 * v.0 + d_vec.1 * v.1) / len_sq;
+                if t >= -t_margin && t <= 1.0 + t_margin {
+                    let t_clamped = t.clamp(0.0, 1.0);
+                    let proj = (a.0 + t_clamped * v.0, a.1 + t_clamped * v.1);
+                    let dist_sq = (pt.0 - proj.0).powi(2) + (pt.1 - proj.1).powi(2);
+                    if dist_sq <= eps_sq {
+                        split_params[i].push(t_clamped);
+                    }
+                }
+            }
+        }
+    }
+
+    let mut result = Vec::new();
+    let mut seen_subsegments = std::collections::HashSet::new();
+
+    for (i, &(a, b)) in valid_segments.iter().enumerate() {
+        let v = (b.0 - a.0, b.1 - a.1);
+        let len = (v.0 * v.0 + v.1 * v.1).sqrt();
+
+        let mut params = split_params[i].clone();
+        params.sort_by(|x, y| x.partial_cmp(y).unwrap_or(std::cmp::Ordering::Equal));
+
+        // Deduplicate close t-values
+        let mut unique_params = Vec::new();
+        for t in params {
+            if unique_params.is_empty() {
+                unique_params.push(t);
+            } else {
+                let last = *unique_params.last().unwrap();
+                if (t - last) * len > eps * 0.5 {
+                    unique_params.push(t);
+                }
+            }
+        }
+
+        for window in unique_params.windows(2) {
+            let t0 = window[0];
+            let t1 = window[1];
+            if (t1 - t0) * len <= eps * 0.5 {
+                continue;
+            }
+            let p0 = (a.0 + t0 * v.0, a.1 + t0 * v.1);
+            let p1 = (a.0 + t1 * v.0, a.1 + t1 * v.1);
+
+            let k0 = snap_key(p0, eps);
+            let k1 = snap_key(p1, eps);
+            if k0 == k1 {
+                continue;
+            }
+            let seg_key = if k0 < k1 { (k0, k1) } else { (k1, k0) };
+            if seen_subsegments.insert(seg_key) {
+                result.push((p0, p1));
+            }
+        }
+    }
+
+    result
+}
+
 /// Finds the first closed loop formed by the given wall segments, if any.
 ///
 /// Returns the loop as an ordered list of points (implicitly closed — the
@@ -53,7 +212,8 @@ fn node_id(
 /// when the segments do not contain any closed loop (e.g. a single open wall
 /// run).
 pub fn find_closed_loop(segments: &[Segment], epsilon: f64) -> Option<Vec<Point>> {
-    if segments.len() < 3 {
+    let sub = subdivide_segments(segments, epsilon);
+    if sub.len() < 3 {
         // A closed polygon needs at least 3 edges.
         return None;
     }
@@ -62,7 +222,7 @@ pub fn find_closed_loop(segments: &[Segment], epsilon: f64) -> Option<Vec<Point>
     let mut points: Vec<Point> = Vec::new();
     let mut adj: Vec<Vec<usize>> = Vec::new();
 
-    for &(a, b) in segments {
+    for &(a, b) in &sub {
         let ida = node_id(&mut key_to_id, &mut points, &mut adj, a, epsilon);
         let idb = node_id(&mut key_to_id, &mut points, &mut adj, b, epsilon);
         if ida == idb {
@@ -91,7 +251,8 @@ pub fn find_closed_loop(segments: &[Segment], epsilon: f64) -> Option<Vec<Point>
 
 /// Finds all simple closed loops formed by the given wall segments.
 pub fn find_all_closed_loops(segments: &[Segment], epsilon: f64) -> Vec<Vec<Point>> {
-    if segments.len() < 3 {
+    let sub = subdivide_segments(segments, epsilon);
+    if sub.len() < 3 {
         return Vec::new();
     }
 
@@ -99,7 +260,7 @@ pub fn find_all_closed_loops(segments: &[Segment], epsilon: f64) -> Vec<Vec<Poin
     let mut points: Vec<Point> = Vec::new();
     let mut adj: Vec<Vec<usize>> = Vec::new();
 
-    for &(a, b) in segments {
+    for &(a, b) in &sub {
         let ida = node_id(&mut key_to_id, &mut points, &mut adj, a, epsilon);
         let idb = node_id(&mut key_to_id, &mut points, &mut adj, b, epsilon);
         if ida == idb {
@@ -346,5 +507,35 @@ mod tests {
         assert!((a2 - 12.0).abs() < 1e-6, "room 2 area must be 12.0, got {a2}");
 
         assert!(find_closed_loop_at_point(&segments, (10.0, 1.5), 1e-3).is_none());
+    }
+
+    #[test]
+    fn finds_rooms_with_t_junction_partition_walls() {
+        // Outer rectangle: (0,0) -> (10,0) -> (10,6) -> (0,6) -> (0,0)
+        // Partition 1 (vertical, T-junction at y=0 and y=6): (4,0) -> (4,6)
+        // Partition 2 (horizontal, T-junction at x=4 and x=10): (4,3) -> (10,3)
+        let segments: Vec<Segment> = vec![
+            ((0.0, 0.0), (10.0, 0.0)),
+            ((10.0, 0.0), (10.0, 6.0)),
+            ((10.0, 6.0), (0.0, 6.0)),
+            ((0.0, 6.0), (0.0, 0.0)),
+            ((4.0, 0.0), (4.0, 6.0)),
+            ((4.0, 3.0), (10.0, 3.0)),
+        ];
+
+        let loop_left = find_closed_loop_at_point(&segments, (2.0, 3.0), 1e-3)
+            .expect("left room must be detected at (2, 3)");
+        let a_left = crate::modules::aec::engine::geometry::area(&loop_left);
+        assert!((a_left - 24.0).abs() < 1e-6, "left room area expected 24.0, got {a_left}");
+
+        let loop_bottom_right = find_closed_loop_at_point(&segments, (7.0, 1.5), 1e-3)
+            .expect("bottom right room must be detected at (7, 1.5)");
+        let a_br = crate::modules::aec::engine::geometry::area(&loop_bottom_right);
+        assert!((a_br - 18.0).abs() < 1e-6, "bottom right room area expected 18.0, got {a_br}");
+
+        let loop_top_right = find_closed_loop_at_point(&segments, (7.0, 4.5), 1e-3)
+            .expect("top right room must be detected at (7, 4.5)");
+        let a_tr = crate::modules::aec::engine::geometry::area(&loop_top_right);
+        assert!((a_tr - 18.0).abs() < 1e-6, "top right room area expected 18.0, got {a_tr}");
     }
 }

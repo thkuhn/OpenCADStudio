@@ -34,12 +34,53 @@ use crate::scene::model::wire_model::WireModel;
 use crate::scene::Scene;
 use crate::ui::command_line::CommandLine;
 
+pub const ICON_AUTO: IconKind = IconKind::Svg(include_bytes!("../../../../assets/icons/boundary.svg"));
+pub const ICON_RECT: IconKind = IconKind::Svg(include_bytes!("../../../../assets/icons/array_rect.svg"));
+pub const ICON_POLY: IconKind = IconKind::Svg(include_bytes!("../../../../assets/icons/polyline.svg"));
+pub const ICON_OBJECT: IconKind = IconKind::Svg(include_bytes!("../../../../assets/icons/area.svg"));
+
 pub fn tool() -> ToolDef {
     ToolDef {
         id: "AEC_ROOM",
         label: "Room",
-        icon: IconKind::Svg(include_bytes!("../../../../assets/icons/array_rect.svg")),
+        icon: ICON_AUTO,
         event: ModuleEvent::Command("AEC_ROOM".to_string()),
+    }
+}
+
+pub fn tool_pick() -> ToolDef {
+    ToolDef {
+        id: "AEC_ROOM_PICK",
+        label: "Room (Auto)",
+        icon: ICON_AUTO,
+        event: ModuleEvent::Command("AEC_ROOM_PICK".to_string()),
+    }
+}
+
+pub fn tool_rect() -> ToolDef {
+    ToolDef {
+        id: "AEC_ROOM_RECT",
+        label: "Room (Rectangle)",
+        icon: ICON_RECT,
+        event: ModuleEvent::Command("AEC_ROOM_RECT".to_string()),
+    }
+}
+
+pub fn tool_poly() -> ToolDef {
+    ToolDef {
+        id: "AEC_ROOM_POLY",
+        label: "Room (Polygon)",
+        icon: ICON_POLY,
+        event: ModuleEvent::Command("AEC_ROOM_POLY".to_string()),
+    }
+}
+
+pub fn tool_object() -> ToolDef {
+    ToolDef {
+        id: "AEC_ROOM_OBJECT",
+        label: "Room (Object)",
+        icon: ICON_OBJECT,
+        event: ModuleEvent::Command("AEC_ROOM_OBJECT".to_string()),
     }
 }
 
@@ -304,12 +345,12 @@ impl CadCommand for RoomCommand {
             }
             RoomDrawMode::Rectangle => {
                 if self.rect_corner.is_none() {
-                    crate::tr!("aec", "slab-rect-corner1")
+                    crate::tr!("aec", "room-prompt-rect-first")
                 } else {
-                    crate::tr!("aec", "slab-rect-corner2")
+                    crate::tr!("aec", "room-prompt-rect-second")
                 }
             }
-            RoomDrawMode::SelectPolyline => crate::tr!("aec", "slab-select-polyline"),
+            RoomDrawMode::SelectPolyline => crate::tr!("aec", "room-prompt-select-obj"),
         }
     }
 
@@ -661,7 +702,16 @@ pub fn aec_room(scene: &mut Scene, command_line: &mut CommandLine) {
 }
 
 inventory::submit!(crate::command::CommandRegistration {
-    names: &["AEC_ROOM", "AEC_ROOM_POLYGON_DO", "AEC_ROOM_PICK_DO", "AEC_ROOM_CONVERT_DO"]
+    names: &[
+        "AEC_ROOM",
+        "AEC_ROOM_PICK",
+        "AEC_ROOM_RECT",
+        "AEC_ROOM_POLY",
+        "AEC_ROOM_OBJECT",
+        "AEC_ROOM_POLYGON_DO",
+        "AEC_ROOM_PICK_DO",
+        "AEC_ROOM_CONVERT_DO",
+    ]
 });
 
 #[cfg(test)]
@@ -779,5 +829,19 @@ mod tests {
         };
         assert!(mtext.value.contains("F: 20.00 m²"));
         assert!(mtext.value.contains("U: 18.00 m"));
+    }
+
+    #[test]
+    fn test_room_tools_and_modes() {
+        assert_eq!(tool().id, "AEC_ROOM");
+        assert_eq!(tool_pick().id, "AEC_ROOM_PICK");
+        assert_eq!(tool_rect().id, "AEC_ROOM_RECT");
+        assert_eq!(tool_poly().id, "AEC_ROOM_POLY");
+        assert_eq!(tool_object().id, "AEC_ROOM_OBJECT");
+
+        let cmd_rect = RoomCommand::new().with_mode(RoomDrawMode::Rectangle);
+        assert_eq!(cmd_rect.mode, RoomDrawMode::Rectangle);
+        let cmd_poly = RoomCommand::new().with_mode(RoomDrawMode::Polygon);
+        assert_eq!(cmd_poly.mode, RoomDrawMode::Polygon);
     }
 }

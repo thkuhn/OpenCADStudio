@@ -4974,6 +4974,10 @@ impl OpenCADStudio {
                         &self.tabs[i].scene,
                         &mut handles,
                     );
+                    crate::modules::aec::engine::room_package::expand_with_room_derived_handles(
+                        &self.tabs[i].scene,
+                        &mut handles,
+                    );
                     crate::modules::aec::engine::storey_xdata::unregister_walls_from_storeys(
                         &mut self.tabs[i].scene,
                         &handles,
@@ -4990,6 +4994,7 @@ impl OpenCADStudio {
                     self.aec_erase_openings_respecting_active_display_config(i, &handles);
                     self.aec_erase_control_planes_or_facets(i, &handles);
                     self.tabs[i].scene.erase_entities(&handles);
+                    crate::modules::aec::rooms::schedule::update_all_room_schedules(&mut self.tabs[i].scene);
                     self.tabs[i].dirty = true;
                     self.refresh_properties();
                     if let Some(pd) = pending {

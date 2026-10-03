@@ -13,7 +13,7 @@ use crate::modules::aec::engine::openings::{
 };
 use crate::modules::aec::engine::room::{RoomFinish, RoomFunction};
 use crate::modules::aec::engine::room_package;
-use crate::modules::aec::engine::room_regen;
+use crate::modules::aec::engine::room_regen::{self, room_boundary_points};
 use crate::modules::aec::engine::room_xdata;
 use crate::modules::aec::engine::slab::{Slab, SlabJustification};
 use crate::modules::aec::engine::slab_opening::{SlabOpening, SlabOpeningDepth, SlabOpeningKind};
@@ -1369,6 +1369,24 @@ pub fn room_prop_section(
         field: "room_floor_finish",
         value: crate::scene::model::object::PropValue::EditText(room.floor_finish_summary()),
     });
+    let (sx, sy) = room.stamp_pos.unwrap_or_else(|| {
+        let pts = room_boundary_points(entity);
+        if pts.len() >= 3 {
+            crate::modules::aec::engine::geometry::centroid(&pts)
+        } else {
+            (0.0, 0.0)
+        }
+    });
+    props.push(crate::entities::common::edit_prop(
+        &crate::tr!("aec", "room-stamp-x"),
+        "room_stamp_x",
+        sx,
+    ));
+    props.push(crate::entities::common::edit_prop(
+        &crate::tr!("aec", "room-stamp-y"),
+        "room_stamp_y",
+        sy,
+    ));
     props.push(crate::entities::common::ro_prop(
         &crate::tr!("aec", "room-area-gross"),
         "room_area_gross",
@@ -1597,6 +1615,32 @@ impl crate::app::OpenCADStudio {
                             finish = finish.with_hatch(h);
                         }
                         room.floor_finish = Some(vec![finish]);
+                    }
+                }
+                "room_stamp_x" => {
+                    if let Some(v) = crate::entities::common::parse_f64(val) {
+                        let (_, sy) = room.stamp_pos.unwrap_or_else(|| {
+                            let pts = room_boundary_points(entity);
+                            if pts.len() >= 3 {
+                                crate::modules::aec::engine::geometry::centroid(&pts)
+                            } else {
+                                (0.0, 0.0)
+                            }
+                        });
+                        room.stamp_pos = Some((v, sy));
+                    }
+                }
+                "room_stamp_y" => {
+                    if let Some(v) = crate::entities::common::parse_f64(val) {
+                        let (sx, _) = room.stamp_pos.unwrap_or_else(|| {
+                            let pts = room_boundary_points(entity);
+                            if pts.len() >= 3 {
+                                crate::modules::aec::engine::geometry::centroid(&pts)
+                            } else {
+                                (0.0, 0.0)
+                            }
+                        });
+                        room.stamp_pos = Some((sx, v));
                     }
                 }
                 _ => return true,

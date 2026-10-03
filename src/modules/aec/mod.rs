@@ -85,7 +85,18 @@ impl CadModule for AecModule {
                 RibbonGroup {
                     title: "Rooms",
                     tools: vec![
-                        RibbonItem::LargeTool(room::tool()),
+                        RibbonItem::LargeDropdown {
+                            id: "AEC_ROOM_DROPDOWN",
+                            label: "Room",
+                            icon: room::ICON_AUTO,
+                            items: vec![
+                                ("AEC_ROOM", "Room (Auto)", room::ICON_AUTO),
+                                ("AEC_ROOM_RECT", "Room (Rectangle)", room::ICON_RECT),
+                                ("AEC_ROOM_POLY", "Room (Polygon)", room::ICON_POLY),
+                                ("AEC_ROOM_OBJECT", "Room (Object)", room::ICON_OBJECT),
+                            ],
+                            default: "AEC_ROOM",
+                        },
                         RibbonItem::LargeTool(schedule::tool()),
                     ],
                 },
