@@ -884,4 +884,45 @@ mod tests {
             room.area
         );
     }
+
+    #[test]
+    fn test_auto_detect_multiple_rooms_with_structural_partition_walls() {
+        let mut scene = Scene::default();
+        // 4 outer walls (10x6 m) + 1 partition wall at x=5 m (dividing into two rooms)
+        let wall_segments = vec![
+            ((0.0, 0.0), (10.0, 0.0)),
+            ((10.0, 0.0), (10.0, 6.0)),
+            ((10.0, 6.0), (0.0, 6.0)),
+            ((0.0, 6.0), (0.0, 0.0)),
+            ((5.0, 0.0), (5.0, 6.0)),
+        ];
+        for (a, b) in wall_segments {
+            let mut pl = LwPolyline::new();
+            pl.add_vertex(LwVertex::new(Vector2::new(a.0, a.1)));
+            pl.add_vertex(LwVertex::new(Vector2::new(b.0, b.1)));
+            let wall_h = scene.add_entity(EntityType::LwPolyline(pl));
+            let wall = crate::modules::aec::engine::wall::Wall::new("style_wall_24", 2.5, 0);
+            let mut record = ExtendedDataRecord::new(AEC_APPID);
+            record.values = crate::modules::aec::engine::xdata::wall_record_for_wall(&wall);
+            write_aec_record(&mut scene.document, wall_h, record);
+        }
+
+        let mut cmd1 = RoomCommand::new().with_name("Küche").with_number("EG-01");
+        let h1 = cmd1.auto_detect_at_point(&mut scene, (2.5, 3.0)).expect("room 1 auto detect");
+        let room1 = room_from_entity(scene.document.get_entity(h1).unwrap()).expect("room1");
+        assert!(
+            (room1.area - 27.4176).abs() < 1e-2,
+            "Expected ~27.42 m² inner structural area for room 1, got {}",
+            room1.area
+        );
+
+        let mut cmd2 = RoomCommand::new().with_name("Wohnen").with_number("EG-02");
+        let h2 = cmd2.auto_detect_at_point(&mut scene, (7.5, 3.0)).expect("room 2 auto detect");
+        let room2 = room_from_entity(scene.document.get_entity(h2).unwrap()).expect("room2");
+        assert!(
+            (room2.area - 27.4176).abs() < 1e-2,
+            "Expected ~27.42 m² inner structural area for room 2, got {}",
+            room2.area
+        );
+    }
 }

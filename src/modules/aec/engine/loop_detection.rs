@@ -212,44 +212,49 @@ pub fn subdivide_segments(segments: &[Segment], epsilon: f64) -> Vec<Segment> {
 /// when the segments do not contain any closed loop (e.g. a single open wall
 /// run).
 pub fn find_closed_loop(segments: &[Segment], epsilon: f64) -> Option<Vec<Point>> {
-    let sub = subdivide_segments(segments, epsilon);
-    if sub.len() < 3 {
-        // A closed polygon needs at least 3 edges.
-        return None;
-    }
-
-    let mut key_to_id: HashMap<(i64, i64), usize> = HashMap::new();
-    let mut points: Vec<Point> = Vec::new();
-    let mut adj: Vec<Vec<usize>> = Vec::new();
-
-    for &(a, b) in &sub {
-        let ida = node_id(&mut key_to_id, &mut points, &mut adj, a, epsilon);
-        let idb = node_id(&mut key_to_id, &mut points, &mut adj, b, epsilon);
-        if ida == idb {
-            continue; // zero-length segment, not a useful edge
-        }
-        adj[ida].push(idb);
-        adj[idb].push(ida);
-    }
-
-    let n = points.len();
-    let mut visited = vec![false; n];
-
-    for start in 0..n {
-        if visited[start] {
-            continue;
-        }
-        let mut on_stack = vec![false; n];
-        let mut stack: Vec<usize> = Vec::new();
-        if let Some(cycle) = dfs(start, usize::MAX, &adj, &mut visited, &mut on_stack, &mut stack) {
-            return Some(cycle.into_iter().map(|id| points[id]).collect());
-        }
-    }
-
-    None
+    let loops = find_all_closed_loops(segments, epsilon);
+    loops.into_iter().next()
 }
 
-/// Finds all simple closed loops formed by the given wall segments.
+/// Simplifies a closed polygon by removing redundant intermediate collinear vertices.
+fn simplify_collinear(poly: &[Point], _epsilon: f64) -> Vec<Point> {
+    let n = poly.len();
+    if n < 3 {
+        return poly.to_vec();
+    }
+    let mut result = Vec::new();
+    for i in 0..n {
+        let prev = if i == 0 { poly[n - 1] } else { poly[i - 1] };
+        let curr = poly[i];
+        let next = poly[(i + 1) % n];
+
+        let v0 = (curr.0 - prev.0, curr.1 - prev.1);
+        let v1 = (next.0 - curr.0, next.1 - curr.1);
+        let len0 = (v0.0 * v0.0 + v0.1 * v0.1).sqrt();
+        let len1 = (v1.0 * v1.0 + v1.1 * v1.1).sqrt();
+
+        if len0 < 1e-6 || len1 < 1e-6 {
+            continue;
+        }
+
+        let cross = (v0.0 * v1.1 - v0.1 * v1.0).abs();
+        let dot = v0.0 * v1.0 + v0.1 * v1.1;
+
+        // If collinear and heading in the same direction, skip the intermediate vertex
+        if cross <= 1e-3 * len0 * len1 && dot > 0.0 {
+            continue;
+        }
+        result.push(curr);
+    }
+    if result.len() < 3 {
+        poly.to_vec()
+    } else {
+        result
+    }
+}
+
+/// Finds all simple closed loops (minimal planar faces) formed by the given wall segments
+/// using planar face traversal (angular sorting / left-hand rule).
 pub fn find_all_closed_loops(segments: &[Segment], epsilon: f64) -> Vec<Vec<Point>> {
     let sub = subdivide_segments(segments, epsilon);
     if sub.len() < 3 {
@@ -258,93 +263,156 @@ pub fn find_all_closed_loops(segments: &[Segment], epsilon: f64) -> Vec<Vec<Poin
 
     let mut key_to_id: HashMap<(i64, i64), usize> = HashMap::new();
     let mut points: Vec<Point> = Vec::new();
-    let mut adj: Vec<Vec<usize>> = Vec::new();
+    let mut adj_set: Vec<std::collections::HashSet<usize>> = Vec::new();
 
     for &(a, b) in &sub {
-        let ida = node_id(&mut key_to_id, &mut points, &mut adj, a, epsilon);
-        let idb = node_id(&mut key_to_id, &mut points, &mut adj, b, epsilon);
+        let mut adj_dummy = Vec::new();
+        let ida = node_id(&mut key_to_id, &mut points, &mut adj_dummy, a, epsilon);
+        let idb = node_id(&mut key_to_id, &mut points, &mut adj_dummy, b, epsilon);
         if ida == idb {
             continue;
         }
-        if !adj[ida].contains(&idb) {
-            adj[ida].push(idb);
+        while adj_set.len() < points.len() {
+            adj_set.push(std::collections::HashSet::new());
         }
-        if !adj[idb].contains(&ida) {
-            adj[idb].push(ida);
-        }
+        adj_set[ida].insert(idb);
+        adj_set[idb].insert(ida);
     }
 
     let n = points.len();
-    let mut all_cycles: Vec<Vec<usize>> = Vec::new();
-
-    for start in 0..n {
-        let mut path = vec![start];
-        let mut visited = vec![false; n];
-        visited[start] = true;
-        find_cycles_from(start, start, usize::MAX, &adj, &mut visited, &mut path, &mut all_cycles, 64);
+    if n < 3 {
+        return Vec::new();
     }
 
+    // Iterative pruning of dead-end vertices (degree <= 1)
+    let mut active = vec![true; n];
+    let mut queue: Vec<usize> = (0..n).filter(|&i| adj_set[i].len() <= 1).collect();
+    while let Some(u) = queue.pop() {
+        if !active[u] {
+            continue;
+        }
+        active[u] = false;
+        let neighbors: Vec<usize> = adj_set[u].iter().copied().collect();
+        for v in neighbors {
+            if active[v] {
+                adj_set[v].remove(&u);
+                if adj_set[v].len() <= 1 {
+                    queue.push(v);
+                }
+            }
+        }
+        adj_set[u].clear();
+    }
+
+    // Build radially sorted outgoing half-edges for each active vertex
+    let mut adj: Vec<Vec<(usize, f64)>> = vec![Vec::new(); n];
+    for u in 0..n {
+        if !active[u] {
+            continue;
+        }
+        let (ux, uy) = points[u];
+        let mut edges = Vec::new();
+        for &v in &adj_set[u] {
+            if active[v] {
+                let (vx, vy) = points[v];
+                let angle = (vy - uy).atan2(vx - ux);
+                edges.push((v, angle));
+            }
+        }
+        edges.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
+        adj[u] = edges;
+    }
+
+    // Traverse all planar minimal faces via left-hand rule (half-edge traversal)
+    let mut visited_half_edges = std::collections::HashSet::new();
+    let mut faces: Vec<Vec<Point>> = Vec::new();
+
+    for u in 0..n {
+        if !active[u] {
+            continue;
+        }
+        for &(v, _) in &adj[u] {
+            if visited_half_edges.contains(&(u, v)) {
+                continue;
+            }
+
+            let mut cycle = Vec::new();
+            let mut step_edges = Vec::new();
+            let mut curr_u = u;
+            let mut curr_v = v;
+            let mut trapped = false;
+
+            for _ in 0..(n * 2 + 10) {
+                cycle.push(curr_u);
+                step_edges.push((curr_u, curr_v));
+
+                let edges_v = &adj[curr_v];
+                if edges_v.is_empty() {
+                    trapped = true;
+                    break;
+                }
+
+                let pos = edges_v.iter().position(|&(w, _)| w == curr_u);
+                let Some(idx) = pos else {
+                    trapped = true;
+                    break;
+                };
+
+                // Turn most CCW from incoming direction (preceding edge in CCW radial order)
+                let next_idx = (idx + edges_v.len() - 1) % edges_v.len();
+                let (next_w, _) = edges_v[next_idx];
+
+                if next_w == v && curr_v == u {
+                    break;
+                }
+                if next_w == curr_u {
+                    trapped = true;
+                    break;
+                }
+
+                curr_u = curr_v;
+                curr_v = next_w;
+
+                if (curr_u, curr_v) == (u, v) {
+                    break;
+                }
+            }
+
+            for edge in step_edges {
+                visited_half_edges.insert(edge);
+            }
+
+            if !trapped && cycle.len() >= 3 {
+                let poly: Vec<Point> = cycle.iter().map(|&id| points[id]).collect();
+                let simplified = simplify_collinear(&poly, epsilon);
+                if simplified.len() >= 3 {
+                    let s_area = crate::modules::aec::engine::geometry::signed_area(&simplified);
+                    // Strictly positive signed area corresponds to an interior face (CCW winding)
+                    if s_area > 1e-4 {
+                        faces.push(simplified);
+                    }
+                }
+            }
+        }
+    }
+
+    // Deduplicate faces
     let mut result: Vec<Vec<Point>> = Vec::new();
     let mut seen_keys = std::collections::HashSet::new();
 
-    for cycle in all_cycles {
-        if cycle.len() < 3 {
-            continue;
+    for poly in faces {
+        let keys: Vec<(i64, i64)> = poly.iter().map(|&p| snap_key(p, epsilon)).collect();
+        let min_pos = keys.iter().enumerate().min_by_key(|&(_, k)| k).map(|(i, _)| i).unwrap_or(0);
+        let mut canon = Vec::with_capacity(poly.len());
+        for i in 0..poly.len() {
+            canon.push(keys[(min_pos + i) % poly.len()]);
         }
-        let poly: Vec<Point> = cycle.iter().map(|&id| points[id]).collect();
-        let a = crate::modules::aec::engine::geometry::area(&poly);
-        if a < 1e-4 {
-            continue;
-        }
-        // Canonical sorted representation of vertex IDs for deduplication
-        let mut min_pos = 0;
-        for i in 1..cycle.len() {
-            if cycle[i] < cycle[min_pos] {
-                min_pos = i;
-            }
-        }
-        let fwd: Vec<usize> = (0..cycle.len()).map(|i| cycle[(min_pos + i) % cycle.len()]).collect();
-        let mut rev: Vec<usize> = Vec::with_capacity(cycle.len());
-        rev.push(cycle[min_pos]);
-        for i in 1..cycle.len() {
-            rev.push(cycle[(min_pos + cycle.len() - i) % cycle.len()]);
-        }
-        let canon = if fwd < rev { fwd } else { rev };
         if seen_keys.insert(canon) {
             result.push(poly);
         }
     }
 
     result
-}
-
-fn find_cycles_from(
-    start: usize,
-    curr: usize,
-    parent: usize,
-    adj: &[Vec<usize>],
-    visited: &mut [bool],
-    path: &mut Vec<usize>,
-    cycles: &mut Vec<Vec<usize>>,
-    max_depth: usize,
-) {
-    if path.len() > max_depth {
-        return;
-    }
-    for &next in &adj[curr] {
-        if next == parent {
-            continue;
-        }
-        if next == start && path.len() >= 3 {
-            cycles.push(path.clone());
-        } else if next > start && !visited[next] {
-            visited[next] = true;
-            path.push(next);
-            find_cycles_from(start, next, curr, adj, visited, path, cycles, max_depth);
-            path.pop();
-            visited[next] = false;
-        }
-    }
 }
 
 /// Finds the smallest closed wall loop that encloses the given pick point `pt`.
@@ -366,45 +434,6 @@ pub fn find_closed_loop_at_point(segments: &[Segment], pt: Point, epsilon: f64) 
     });
 
     Some(candidates.remove(0))
-}
-
-/// Depth-first search for a cycle, returning it as a list of node ids in
-/// loop order (first id not repeated at the end) once found.
-fn dfs(
-    u: usize,
-    parent: usize,
-    adj: &[Vec<usize>],
-    visited: &mut [bool],
-    on_stack: &mut [bool],
-    stack: &mut Vec<usize>,
-) -> Option<Vec<usize>> {
-    visited[u] = true;
-    on_stack[u] = true;
-    stack.push(u);
-
-    // Skip at most one edge back to the immediate parent, so a simple
-    // "there and back" pair of nodes never counts as a cycle.
-    let mut skipped_parent = false;
-
-    for &v in &adj[u] {
-        if v == parent && !skipped_parent {
-            skipped_parent = true;
-            continue;
-        }
-        if on_stack[v] {
-            let start = stack.iter().position(|&x| x == v).expect("v is on_stack");
-            return Some(stack[start..].to_vec());
-        }
-        if !visited[v] {
-            if let Some(cycle) = dfs(v, u, adj, visited, on_stack, stack) {
-                return Some(cycle);
-            }
-        }
-    }
-
-    stack.pop();
-    on_stack[u] = false;
-    None
 }
 
 #[cfg(test)]
@@ -537,5 +566,59 @@ mod tests {
             .expect("top right room must be detected at (7, 4.5)");
         let a_tr = crate::modules::aec::engine::geometry::area(&loop_top_right);
         assert!((a_tr - 18.0).abs() < 1e-6, "top right room area expected 18.0, got {a_tr}");
+    }
+
+    #[test]
+    fn finds_rooms_in_structural_boundary_mesh_with_t_junction() {
+        // Simulating the structural segments from 4 outer walls and 1 vertical partition wall:
+        // Outer room dimensions: 10x6 m, partition at x=5 m dividing into two 5x6 m rooms (axis-based).
+        // Wall thickness 0.24m (structural offsets -0.12, +0.12).
+        // Inner dimensions of Room 1: width = (5.0 - 0.12 - 0.12) = 4.76, height = (6.0 - 0.24) = 5.76. Area = 27.4176 m².
+        // Inner dimensions of Room 2: width = (5.0 - 0.12 - 0.12) = 4.76, height = (6.0 - 0.24) = 5.76. Area = 27.4176 m².
+        let mut segments: Vec<Segment> = Vec::new();
+
+        // Helper to add structural faces + caps with extension
+        let add_wall = |segs: &mut Vec<Segment>, a: Point, b: Point| {
+            let dx = b.0 - a.0;
+            let dy = b.1 - a.1;
+            let len = (dx * dx + dy * dy).sqrt();
+            let nx = -dy / len;
+            let ny = dx / len;
+            let ux = dx / len;
+            let uy = dy / len;
+            let ext = 0.48;
+            let max_off = 0.12;
+            let min_off = -0.12;
+
+            let l0 = (a.0 + nx * max_off - ux * ext, a.1 + ny * max_off - uy * ext);
+            let l1 = (b.0 + nx * max_off + ux * ext, b.1 + ny * max_off + uy * ext);
+            segs.push((l0, l1));
+
+            let r0 = (a.0 + nx * min_off - ux * ext, a.1 + ny * min_off - uy * ext);
+            let r1 = (b.0 + nx * min_off + ux * ext, b.1 + ny * min_off + uy * ext);
+            segs.push((r0, r1));
+
+            let cap_a = ((a.0 + nx * min_off, a.1 + ny * min_off), (a.0 + nx * max_off, a.1 + ny * max_off));
+            let cap_b = ((b.0 + nx * min_off, b.1 + ny * min_off), (b.0 + nx * max_off, b.1 + ny * max_off));
+            segs.push(cap_a);
+            segs.push(cap_b);
+        };
+
+        // 4 outer walls + 1 partition wall
+        add_wall(&mut segments, (0.0, 0.0), (10.0, 0.0));
+        add_wall(&mut segments, (10.0, 0.0), (10.0, 6.0));
+        add_wall(&mut segments, (10.0, 6.0), (0.0, 6.0));
+        add_wall(&mut segments, (0.0, 6.0), (0.0, 0.0));
+        add_wall(&mut segments, (5.0, 0.0), (5.0, 6.0));
+
+        let loop1 = find_closed_loop_at_point(&segments, (2.5, 3.0), 1e-3)
+            .expect("room 1 must be detected at (2.5, 3.0)");
+        let a1 = crate::modules::aec::engine::geometry::area(&loop1);
+        assert!((a1 - 27.4176).abs() < 1e-2, "room 1 area expected ~27.42, got {a1}");
+
+        let loop2 = find_closed_loop_at_point(&segments, (7.5, 3.0), 1e-3)
+            .expect("room 2 must be detected at (7.5, 3.0)");
+        let a2 = crate::modules::aec::engine::geometry::area(&loop2);
+        assert!((a2 - 27.4176).abs() < 1e-2, "room 2 area expected ~27.42, got {a2}");
     }
 }
