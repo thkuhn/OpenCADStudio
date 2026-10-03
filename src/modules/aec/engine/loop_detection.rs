@@ -89,6 +89,124 @@ pub fn find_closed_loop(segments: &[Segment], epsilon: f64) -> Option<Vec<Point>
     None
 }
 
+/// Finds all simple closed loops formed by the given wall segments.
+pub fn find_all_closed_loops(segments: &[Segment], epsilon: f64) -> Vec<Vec<Point>> {
+    if segments.len() < 3 {
+        return Vec::new();
+    }
+
+    let mut key_to_id: HashMap<(i64, i64), usize> = HashMap::new();
+    let mut points: Vec<Point> = Vec::new();
+    let mut adj: Vec<Vec<usize>> = Vec::new();
+
+    for &(a, b) in segments {
+        let ida = node_id(&mut key_to_id, &mut points, &mut adj, a, epsilon);
+        let idb = node_id(&mut key_to_id, &mut points, &mut adj, b, epsilon);
+        if ida == idb {
+            continue;
+        }
+        if !adj[ida].contains(&idb) {
+            adj[ida].push(idb);
+        }
+        if !adj[idb].contains(&ida) {
+            adj[idb].push(ida);
+        }
+    }
+
+    let n = points.len();
+    let mut all_cycles: Vec<Vec<usize>> = Vec::new();
+
+    for start in 0..n {
+        let mut path = vec![start];
+        let mut visited = vec![false; n];
+        visited[start] = true;
+        find_cycles_from(start, start, usize::MAX, &adj, &mut visited, &mut path, &mut all_cycles, 64);
+    }
+
+    let mut result: Vec<Vec<Point>> = Vec::new();
+    let mut seen_keys = std::collections::HashSet::new();
+
+    for cycle in all_cycles {
+        if cycle.len() < 3 {
+            continue;
+        }
+        let poly: Vec<Point> = cycle.iter().map(|&id| points[id]).collect();
+        let a = crate::modules::aec::engine::geometry::area(&poly);
+        if a < 1e-4 {
+            continue;
+        }
+        // Canonical sorted representation of vertex IDs for deduplication
+        let mut min_pos = 0;
+        for i in 1..cycle.len() {
+            if cycle[i] < cycle[min_pos] {
+                min_pos = i;
+            }
+        }
+        let fwd: Vec<usize> = (0..cycle.len()).map(|i| cycle[(min_pos + i) % cycle.len()]).collect();
+        let mut rev: Vec<usize> = Vec::with_capacity(cycle.len());
+        rev.push(cycle[min_pos]);
+        for i in 1..cycle.len() {
+            rev.push(cycle[(min_pos + cycle.len() - i) % cycle.len()]);
+        }
+        let canon = if fwd < rev { fwd } else { rev };
+        if seen_keys.insert(canon) {
+            result.push(poly);
+        }
+    }
+
+    result
+}
+
+fn find_cycles_from(
+    start: usize,
+    curr: usize,
+    parent: usize,
+    adj: &[Vec<usize>],
+    visited: &mut [bool],
+    path: &mut Vec<usize>,
+    cycles: &mut Vec<Vec<usize>>,
+    max_depth: usize,
+) {
+    if path.len() > max_depth {
+        return;
+    }
+    for &next in &adj[curr] {
+        if next == parent {
+            continue;
+        }
+        if next == start && path.len() >= 3 {
+            cycles.push(path.clone());
+        } else if next > start && !visited[next] {
+            visited[next] = true;
+            path.push(next);
+            find_cycles_from(start, next, curr, adj, visited, path, cycles, max_depth);
+            path.pop();
+            visited[next] = false;
+        }
+    }
+}
+
+/// Finds the smallest closed wall loop that encloses the given pick point `pt`.
+pub fn find_closed_loop_at_point(segments: &[Segment], pt: Point, epsilon: f64) -> Option<Vec<Point>> {
+    let loops = find_all_closed_loops(segments, epsilon);
+    let mut candidates: Vec<Vec<Point>> = loops
+        .into_iter()
+        .filter(|poly| crate::modules::aec::engine::geometry::point_in_polygon(pt, poly))
+        .collect();
+
+    if candidates.is_empty() {
+        return None;
+    }
+
+    candidates.sort_by(|a, b| {
+        let area_a = crate::modules::aec::engine::geometry::area(a);
+        let area_b = crate::modules::aec::engine::geometry::area(b);
+        area_a.partial_cmp(&area_b).unwrap_or(std::cmp::Ordering::Equal)
+    });
+
+    Some(candidates.remove(0))
+}
+
 /// Depth-first search for a cycle, returning it as a list of node ids in
 /// loop order (first id not repeated at the end) once found.
 fn dfs(
@@ -199,5 +317,34 @@ mod tests {
         assert_eq!(loop_points.len(), 3);
         let area = crate::modules::aec::engine::geometry::area(&loop_points);
         assert!((area - 6.0).abs() < 1e-6, "unexpected area: {area}");
+    }
+
+    #[test]
+    fn finds_adjacent_rooms_and_point_in_room() {
+        // Two adjacent rooms sharing a wall:
+        // Room 1: (0,0)-(4,0)-(4,3)-(0,3)
+        // Room 2: (4,0)-(8,0)-(8,3)-(4,3)
+        let segments: Vec<Segment> = vec![
+            ((0.0, 0.0), (4.0, 0.0)),
+            ((4.0, 0.0), (4.0, 3.0)),
+            ((4.0, 3.0), (0.0, 3.0)),
+            ((0.0, 3.0), (0.0, 0.0)),
+            ((4.0, 0.0), (8.0, 0.0)),
+            ((8.0, 0.0), (8.0, 3.0)),
+            ((8.0, 3.0), (4.0, 3.0)),
+        ];
+
+        let loops = find_all_closed_loops(&segments, 1e-3);
+        assert!(loops.len() >= 2, "must find at least 2 loops, got {}", loops.len());
+
+        let loop1 = find_closed_loop_at_point(&segments, (2.0, 1.5), 1e-3).expect("room 1 loop");
+        let a1 = crate::modules::aec::engine::geometry::area(&loop1);
+        assert!((a1 - 12.0).abs() < 1e-6, "room 1 area must be 12.0, got {a1}");
+
+        let loop2 = find_closed_loop_at_point(&segments, (6.0, 1.5), 1e-3).expect("room 2 loop");
+        let a2 = crate::modules::aec::engine::geometry::area(&loop2);
+        assert!((a2 - 12.0).abs() < 1e-6, "room 2 area must be 12.0, got {a2}");
+
+        assert!(find_closed_loop_at_point(&segments, (10.0, 1.5), 1e-3).is_none());
     }
 }

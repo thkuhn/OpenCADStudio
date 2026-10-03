@@ -140,6 +140,11 @@ pub fn children_of(doc: &CadDocument, owner: Handle) -> Vec<Handle> {
     read_handles(entity, CHILD_HANDLES_TAG)
 }
 
+/// Sets the full list of children of `owner`.
+pub fn set_children(doc: &mut CadDocument, owner: Handle, children: &[Handle]) {
+    let _ = write_handles(doc, owner, CHILD_HANDLES_TAG, children);
+}
+
 /// Ensure `a` and `b` each list the other under `JOINED_PEERS` (symmetric).
 pub fn link_peers(doc: &mut CadDocument, a: Handle, b: Handle) {
     if a == b {

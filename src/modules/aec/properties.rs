@@ -11,6 +11,10 @@ use crate::modules::aec::engine::opening_xdata;
 use crate::modules::aec::engine::openings::{
     NicheSide, Opening, OpeningKind, OpeningReferenceSide, SwingSide,
 };
+use crate::modules::aec::engine::room::{RoomFinish, RoomFunction};
+use crate::modules::aec::engine::room_package;
+use crate::modules::aec::engine::room_regen;
+use crate::modules::aec::engine::room_xdata;
 use crate::modules::aec::engine::slab::{Slab, SlabJustification};
 use crate::modules::aec::engine::slab_opening::{SlabOpening, SlabOpeningDepth, SlabOpeningKind};
 use crate::modules::aec::engine::slab_package;
@@ -31,6 +35,12 @@ pub fn aec_entity_title(
     }
     if slab_xdata::slab_from_entity(entity).is_some() {
         return Some(crate::tr!("aec", "slab-title"));
+    }
+    if room_xdata::room_from_entity(entity).is_some() {
+        return Some(crate::tr!("aec", "room-title"));
+    }
+    if room_package::is_room_derived(entity) {
+        return Some(crate::tr!("aec", "room-title"));
     }
     if let Some(opening) = slab_xdata::slab_opening_from_entity(entity) {
         let _ = opening;
@@ -110,19 +120,21 @@ pub fn collapse_selection_to_aec_package<'a>(
             }
         }
     }
-    let owners: Vec<Handle> = selected
+    let wall_owners: Vec<Handle> = selected
         .iter()
         .map(|(handle, _)| wall_package::resolve_wall_package(scene, *handle))
         .collect();
-    let owner = owners[0];
-    if owner.is_null() || owners.iter().any(|h| *h != owner) {
-        return selected;
-    }
-    let Some(entity) = scene.document.get_entity(owner) else {
-        return selected;
-    };
-    if xdata::wall_from_entity(entity).is_some() {
-        return vec![(owner, entity)];
+    let wall_owner = wall_owners[0];
+    if !wall_owner.is_null()
+        && wall_owners.iter().all(|h| *h == wall_owner)
+        && scene
+            .document
+            .get_entity(wall_owner)
+            .is_some_and(|e| xdata::wall_from_entity(e).is_some())
+    {
+        if let Some(entity) = scene.document.get_entity(wall_owner) {
+            return vec![(wall_owner, entity)];
+        }
     }
 
     // Collapse slab derived children onto the carrier package.
@@ -151,6 +163,31 @@ pub fn collapse_selection_to_aec_package<'a>(
             return vec![(slab_owner, entity)];
         }
     }
+
+    // Collapse room derived children onto the room carrier package.
+    let room_owners: Vec<Handle> = selected
+        .iter()
+        .map(|(handle, ent)| {
+            if room_xdata::room_from_entity(ent).is_some() {
+                *handle
+            } else {
+                room_package::resolve_room_package(ent).unwrap_or(*handle)
+            }
+        })
+        .collect();
+    let room_owner = room_owners[0];
+    if !room_owner.is_null()
+        && room_owners.iter().all(|h| *h == room_owner)
+        && scene
+            .document
+            .get_entity(room_owner)
+            .is_some_and(|e| room_xdata::room_from_entity(e).is_some())
+    {
+        if let Some(entity) = scene.document.get_entity(room_owner) {
+            return vec![(room_owner, entity)];
+        }
+    }
+
     selected
 }
 
@@ -994,6 +1031,16 @@ pub fn extend_entity_sections(
                 slab_prop_section(slab_entity, style_library, project)
             {
                 sections.push(slab_section);
+            } else {
+                let room_handle = scene
+                    .document
+                    .get_entity(handle)
+                    .and_then(room_package::resolve_room_package)
+                    .unwrap_or(handle);
+                let room_entity = scene.document.get_entity(room_handle).unwrap_or(entity);
+                if let Some(room_section) = room_prop_section(room_entity) {
+                    sections.push(room_section);
+                }
             }
         }
     }
@@ -1274,6 +1321,81 @@ pub fn slab_opening_prop_section(
     }
 }
 
+/// Builds the "Room" property section for a carrier entity with `ROOM` XDATA.
+pub fn room_prop_section(
+    entity: &EntityType,
+) -> Option<crate::scene::model::object::PropSection> {
+    let room = room_xdata::room_from_entity(entity)?;
+    let mut props = Vec::new();
+    props.push(crate::scene::model::object::Property {
+        label: crate::tr!("aec", "room-name"),
+        field: "room_name",
+        value: crate::scene::model::object::PropValue::EditText(room.name.clone()),
+    });
+    props.push(crate::scene::model::object::Property {
+        label: crate::tr!("aec", "room-number"),
+        field: "room_number",
+        value: crate::scene::model::object::PropValue::EditText(room.number.clone()),
+    });
+    props.push(crate::scene::model::object::Property {
+        label: crate::tr!("aec", "room-function"),
+        field: "room_function",
+        value: crate::scene::model::object::PropValue::Choice {
+            selected: room.function.display_name().to_string(),
+            options: vec![
+                "Wohnen / Aufenthalt".to_string(),
+                "Büroarbeit".to_string(),
+                "Sanitärraum".to_string(),
+                "Küche".to_string(),
+                "Flur / Verkehrsfläche".to_string(),
+                "Lagern / Abstellen".to_string(),
+                "Technikfläche".to_string(),
+                "Balkon / Terrasse".to_string(),
+            ],
+        },
+    });
+    props.push(crate::entities::common::edit_scalar_prop(
+        &crate::tr!("aec", "room-factor"),
+        "room_factor",
+        room.factor,
+    ));
+    props.push(crate::entities::common::edit_prop(
+        &crate::tr!("aec", "room-height"),
+        "room_clear_height",
+        room.clear_height,
+    ));
+    props.push(crate::scene::model::object::Property {
+        label: crate::tr!("aec", "room-floor-finish"),
+        field: "room_floor_finish",
+        value: crate::scene::model::object::PropValue::EditText(room.floor_finish_summary()),
+    });
+    props.push(crate::entities::common::ro_prop(
+        &crate::tr!("aec", "room-area-gross"),
+        "room_area_gross",
+        format!("{:.2} m²", room.area),
+    ));
+    props.push(crate::entities::common::ro_prop(
+        &crate::tr!("aec", "room-area-calc"),
+        "room_area_calc",
+        format!("{:.2} m²", room.calculated_area()),
+    ));
+    props.push(crate::entities::common::ro_prop(
+        &crate::tr!("aec", "room-perimeter"),
+        "room_perimeter",
+        format!("{:.2} m", room.perimeter),
+    ));
+    props.push(crate::entities::common::ro_prop(
+        &crate::tr!("aec", "room-volume"),
+        "room_volume",
+        format!("{:.2} m³", room.effective_volume()),
+    ));
+
+    Some(crate::scene::model::object::PropSection {
+        title: crate::tr!("aec", "room-section"),
+        props,
+    })
+}
+
 pub fn session_styles_for_scene(
     scene: &crate::scene::Scene,
     project: Option<&crate::modules::aec::engine::project::ProjectFile>,
@@ -1313,6 +1435,7 @@ pub fn is_aec_derived_non_carrier(scene: &crate::scene::Scene, handle: Handle) -
         || slab_package::is_slab_derived(scene, handle)
         || slab_package::slab_opening_owner_if_any(scene, handle).is_some_and(|owner| owner != handle)
         || opening_display::opening_owner_if_any(scene, handle).is_some_and(|owner| owner != handle)
+        || scene.document.get_entity(handle).map(room_package::is_room_derived).unwrap_or(false)
 }
 
 pub fn resolve_wall_package(scene: &crate::scene::Scene, handle: Handle) -> Handle {
@@ -1321,7 +1444,8 @@ pub fn resolve_wall_package(scene: &crate::scene::Scene, handle: Handle) -> Hand
 
 pub fn expand_handles_for_aec_packages(scene: &crate::scene::Scene, handles: &[Handle]) -> Vec<Handle> {
     let handles = wall_package::expand_handles_for_wall_packages(scene, handles);
-    slab_package::expand_handles_for_slab_packages(scene, &handles)
+    let handles = slab_package::expand_handles_for_slab_packages(scene, &handles);
+    room_package::expand_handles_for_room_packages(scene, &handles)
 }
 
 pub fn resolve_aec_package(scene: &crate::scene::Scene, handle: Handle) -> Handle {
@@ -1330,6 +1454,11 @@ pub fn resolve_aec_package(scene: &crate::scene::Scene, handle: Handle) -> Handl
     }
     if let Some(slab_opening_owner) = slab_package::slab_opening_owner_if_any(scene, handle) {
         return slab_opening_owner;
+    }
+    if let Some(ent) = scene.document.get_entity(handle) {
+        if let Some(room_owner) = room_package::resolve_room_package(ent) {
+            return room_owner;
+        }
     }
     let wall_owner = wall_package::resolve_wall_package(scene, handle);
     if wall_owner != handle {
@@ -1352,6 +1481,10 @@ pub fn slab_from_entity(entity: &EntityType) -> bool {
 
 pub fn slab_opening_from_entity(entity: &EntityType) -> bool {
     slab_xdata::slab_opening_from_entity(entity).is_some()
+}
+
+pub fn room_from_entity(entity: &EntityType) -> bool {
+    room_xdata::room_from_entity(entity).is_some()
 }
 
 pub fn selection_is_all_walls(
@@ -1385,6 +1518,7 @@ impl crate::app::OpenCADStudio {
         let is_aec = field.starts_with("opening_")
             || field.starts_with("slab_")
             || field.starts_with("slabopening_")
+            || field.starts_with("room_")
             || matches!(
                 field,
                 "wall_justification"
@@ -1404,6 +1538,78 @@ impl crate::app::OpenCADStudio {
             return false;
         }
         if self.tabs[tab].scene.is_layer_locked(handle) {
+            return true;
+        }
+        if field.starts_with("room_") {
+            let room_owner = self.tabs[tab]
+                .scene
+                .document
+                .get_entity(handle)
+                .and_then(room_package::resolve_room_package)
+                .unwrap_or(handle);
+            if self.aec.aec_last_applied_property
+                == Some((room_owner, field.to_string(), val.to_string()))
+            {
+                return true;
+            }
+            self.aec.aec_last_applied_property =
+                Some((room_owner, field.to_string(), val.to_string()));
+
+            let Some(entity) = self.tabs[tab].scene.document.get_entity(room_owner) else {
+                return true;
+            };
+            let Some(mut room) = room_xdata::room_from_entity(entity) else {
+                return true;
+            };
+
+            match field {
+                "room_name" => room.name = val.to_string(),
+                "room_number" => room.number = val.to_string(),
+                "room_function" => {
+                    room.function = RoomFunction::from_str(val);
+                    room.factor = room.function.default_factor();
+                }
+                "room_factor" => {
+                    if let Some(v) = crate::entities::common::parse_f64(val) {
+                        room.factor = v;
+                    }
+                }
+                "room_clear_height" => {
+                    if let Some(v) = crate::entities::common::parse_f64(val) {
+                        room.clear_height = v;
+                    }
+                }
+                "room_floor_finish" => {
+                    let trimmed = val.trim();
+                    if trimmed.is_empty() || trimmed == "-" {
+                        room.floor_finish = None;
+                    } else {
+                        let lower = trimmed.to_lowercase();
+                        let hatch = if lower.contains("fliese") || lower.contains("tile") {
+                            Some("SQUARE".to_string())
+                        } else if lower.contains("parkett") || lower.contains("wood") {
+                            Some("ANSI31".to_string())
+                        } else {
+                            None
+                        };
+                        let mut finish = RoomFinish::new(trimmed, 0.05);
+                        if let Some(h) = hatch {
+                            finish = finish.with_hatch(h);
+                        }
+                        room.floor_finish = Some(vec![finish]);
+                    }
+                }
+                _ => return true,
+            }
+
+            room_xdata::write_room_record(&mut self.tabs[tab].scene.document, room_owner, &room);
+            let _ = room_regen::regenerate_room_representation(
+                &mut self.tabs[tab].scene,
+                room_owner,
+                None,
+            );
+            self.tabs[tab].dirty = true;
+            self.tabs[tab].scene.bump_geometry();
             return true;
         }
         if field.starts_with("slabopening_") {
@@ -2040,5 +2246,80 @@ mod tests {
             assert_eq!(collapsed.len(), 1);
             assert_eq!(collapsed[0].0, slab_h);
         }
+    }
+
+    #[test]
+    fn test_aec_entity_title_and_package_collapse_for_rooms() {
+        use crate::modules::aec::engine::room::{Room, RoomFinish, RoomFunction};
+        use crate::modules::aec::engine::room_package::{
+            collect_room_display_children, expand_handles_for_room_packages, is_room_derived,
+            resolve_room_package_handle,
+        };
+        use crate::modules::aec::engine::room_regen::regenerate_room_representation;
+        use crate::modules::aec::engine::room_xdata::{room_from_entity, write_room_record};
+        use crate::scene::Scene;
+        use acadrust::entities::{LwPolyline, LwVertex};
+        use acadrust::types::Vector2;
+
+        let mut scene = Scene::new();
+
+        let mut pl = LwPolyline::new();
+        pl.is_closed = true;
+        pl.add_vertex(LwVertex::new(Vector2::new(0.0, 0.0)));
+        pl.add_vertex(LwVertex::new(Vector2::new(5.0, 0.0)));
+        pl.add_vertex(LwVertex::new(Vector2::new(5.0, 4.0)));
+        pl.add_vertex(LwVertex::new(Vector2::new(0.0, 4.0)));
+        let room_h = scene.add_entity(EntityType::LwPolyline(pl));
+
+        let room = Room::from_polygon("Living", &[(0.0, 0.0), (5.0, 0.0), (5.0, 4.0), (0.0, 4.0)], 2.50, 0)
+            .with_number("101")
+            .with_function(RoomFunction::Living)
+            .with_floor_finish(vec![RoomFinish::new("Parkett", 0.05).with_hatch("ANSI31".to_string())]);
+        write_room_record(&mut scene.document, room_h, &room);
+        regenerate_room_representation(&mut scene, room_h, None);
+
+        let children = collect_room_display_children(&scene, room_h);
+        assert!(!children.is_empty(), "must produce derived children (stamp, hatch)");
+
+        // Carrier entity title
+        let carrier_ent = scene.document.get_entity(room_h).unwrap();
+        let title = aec_entity_title(&scene, room_h, carrier_ent).expect("title");
+        assert!(title.contains("Room") || title.contains("Raum"));
+
+        // Carrier area
+        let parsed_room = room_from_entity(carrier_ent).expect("parsed room");
+        assert!((parsed_room.area - 20.0).abs() < 1e-4);
+
+        // Package expansion
+        let expanded = expand_handles_for_room_packages(&scene, &[room_h]);
+        assert!(expanded.contains(&room_h));
+        for &child_h in &children {
+            assert!(expanded.contains(&child_h));
+        }
+
+        // For each derived child, resolve_aec_package and aec_entity_title must resolve to room
+        for &child_h in &children {
+            assert!(is_room_derived(scene.document.get_entity(child_h).unwrap()));
+            assert_eq!(resolve_room_package_handle(&scene, child_h), room_h);
+            assert_eq!(resolve_aec_package(&scene, child_h), room_h);
+            let child_ent = scene.document.get_entity(child_h).unwrap();
+            let child_title = aec_entity_title(&scene, child_h, child_ent).expect("child title");
+            assert!(child_title.contains("Room") || child_title.contains("Raum"));
+
+            // Package collapse for child
+            let selected = vec![(child_h, child_ent)];
+            let collapsed = collapse_selection_to_aec_package(&scene, selected);
+            assert_eq!(collapsed.len(), 1);
+            assert_eq!(collapsed[0].0, room_h);
+        }
+
+        // Multiple children + carrier collapse to single room
+        let mut all_selected = vec![(room_h, carrier_ent)];
+        for &child_h in &children {
+            all_selected.push((child_h, scene.document.get_entity(child_h).unwrap()));
+        }
+        let collapsed_all = collapse_selection_to_aec_package(&scene, all_selected);
+        assert_eq!(collapsed_all.len(), 1);
+        assert_eq!(collapsed_all[0].0, room_h);
     }
 }

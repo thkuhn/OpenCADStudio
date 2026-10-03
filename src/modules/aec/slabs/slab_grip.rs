@@ -457,8 +457,9 @@ mod tests {
         let slab_h = scene.add_entity(EntityType::LwPolyline(pl));
 
         let mut slab = Slab::new("style_slab_concrete_20", 0);
-        slab.base_origin = [0.0, 0.0, 2.80];
-        slab.base_offset = 2.80;
+        slab.top_origin = [0.0, 0.0, 2.80];
+        slab.base_origin = [0.0, 0.0, 2.60];
+        slab.top_offset = 0.0;
         write_slab_record(&mut scene.document, slab_h, &slab);
         regenerate_slab_representation(&mut scene, slab_h, Some(&lib), None);
 

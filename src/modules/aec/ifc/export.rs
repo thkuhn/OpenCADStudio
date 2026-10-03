@@ -1,9 +1,10 @@
 //! `AEC_IFCEXPORT` one-shot command.
 
+use crate::modules::aec::engine::room_xdata::room_from_entity;
 use crate::modules::aec::engine::slab_xdata::{slab_from_entity, slab_opening_from_entity};
 use crate::modules::aec::engine::xdata::{read_aec_record, wall_from_entity};
 use crate::modules::aec::engine::storey_xdata::STOREYS;
-use crate::modules::aec::engine::{self, Room};
+use crate::modules::aec::engine;
 use crate::modules::{IconKind, ModuleEvent, ToolDef};
 use crate::scene::Scene;
 use crate::ui::command_line::CommandLine;
@@ -59,41 +60,8 @@ fn collect_aec_ifc_scene(scene: &Scene) -> engine::Scene {
                 }
             }
             Some(XDataValue::String(kind)) if kind == "ROOM" => {
-                // 0: "ROOM", 1: name, 2: area, 3: perim, 4: vol, 5: storey_id
-                if record.values.len() >= 6 {
-                    let name = if let XDataValue::String(s) = &record.values[1] {
-                        s.clone()
-                    } else {
-                        "Unknown".to_string()
-                    };
-                    let area = if let XDataValue::Real(r) = record.values[2] {
-                        r
-                    } else {
-                        0.0
-                    };
-                    let perimeter = if let XDataValue::Real(r) = record.values[3] {
-                        r
-                    } else {
-                        0.0
-                    };
-                    let volume = if let XDataValue::Real(r) = record.values[4] {
-                        r
-                    } else {
-                        0.0
-                    };
-                    let storey_id = if let XDataValue::Integer32(i) = record.values[5] {
-                        i as u32
-                    } else {
-                        0
-                    };
-                    ifc_scene.rooms.push(Room {
-                        name,
-                        area,
-                        perimeter,
-                        volume,
-                        storey_id,
-                        floor_finish: None,
-                    });
+                if let Some(room) = room_from_entity(entity) {
+                    ifc_scene.rooms.push(room);
                 }
             }
             _ => {}

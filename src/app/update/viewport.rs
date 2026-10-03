@@ -6482,6 +6482,25 @@ was_selected={}",
                         self.tabs[i].scene.select_entity(op_owner, false);
                     }
                 }
+
+                let room_owner = crate::modules::aec::engine::room_package::resolve_room_package_handle(
+                    &self.tabs[i].scene,
+                    handle,
+                );
+                if self.tabs[i]
+                    .scene
+                    .document
+                    .get_entity(room_owner)
+                    .and_then(crate::modules::aec::engine::room_xdata::room_from_entity)
+                    .is_some()
+                {
+                    crate::modules::aec::engine::room_regen::regenerate_room_representation(
+                        &mut self.tabs[i].scene,
+                        room_owner,
+                        None,
+                    );
+                    self.tabs[i].scene.select_entity(room_owner, false);
+                }
             }
             self.tabs[i].scene.bump_entities_after_parametric_solve(&changes);
         }

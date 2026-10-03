@@ -83,6 +83,13 @@ impl CadModule for AecModule {
                     ],
                 },
                 RibbonGroup {
+                    title: "Rooms",
+                    tools: vec![
+                        RibbonItem::LargeTool(room::tool()),
+                        RibbonItem::LargeTool(schedule::tool()),
+                    ],
+                },
+                RibbonGroup {
                     title: "Styles",
                     tools: vec![
                         RibbonItem::LargeTool(material_manager::tool()),
@@ -90,13 +97,6 @@ impl CadModule for AecModule {
                         RibbonItem::LargeTool(opening_style_manager::tool()),
                         RibbonItem::LargeTool(slab_style_manager::tool()),
                         RibbonItem::LargeTool(plan_manager::tool()),
-                    ],
-                },
-                RibbonGroup {
-                    title: "Rooms",
-                    tools: vec![
-                        RibbonItem::LargeTool(room::tool()),
-                        RibbonItem::LargeTool(schedule::tool()),
                     ],
                 },
                 RibbonGroup {

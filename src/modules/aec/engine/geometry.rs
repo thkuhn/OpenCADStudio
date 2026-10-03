@@ -55,6 +55,57 @@ pub fn volume(points: &Polygon2D, height: f64) -> f64 {
     area(points) * height
 }
 
+/// Geometric centroid of a closed polygon.
+///
+/// For degenerate polygons (< 3 points or near-zero area), returns the arithmetic
+/// average of the vertices.
+pub fn centroid(points: &Polygon2D) -> (f64, f64) {
+    let n = points.len();
+    if n == 0 {
+        return (0.0, 0.0);
+    }
+    if n < 3 {
+        let sx: f64 = points.iter().map(|p| p.0).sum();
+        let sy: f64 = points.iter().map(|p| p.1).sum();
+        return (sx / n as f64, sy / n as f64);
+    }
+    let a = signed_area(points);
+    if a.abs() < 1e-9 {
+        let sx: f64 = points.iter().map(|p| p.0).sum();
+        let sy: f64 = points.iter().map(|p| p.1).sum();
+        return (sx / n as f64, sy / n as f64);
+    }
+    let mut cx = 0.0;
+    let mut cy = 0.0;
+    for i in 0..n {
+        let (x0, y0) = points[i];
+        let (x1, y1) = points[(i + 1) % n];
+        let cross = x0 * y1 - x1 * y0;
+        cx += (x0 + x1) * cross;
+        cy += (y0 + y1) * cross;
+    }
+    (cx / (6.0 * a), cy / (6.0 * a))
+}
+
+/// Tests whether the 2D point `pt` is strictly inside the closed polygon `poly`
+/// using the ray casting algorithm (even-odd rule).
+pub fn point_in_polygon(pt: (f64, f64), poly: &Polygon2D) -> bool {
+    let n = poly.len();
+    if n < 3 {
+        return false;
+    }
+    let mut inside = false;
+    let (px, py) = pt;
+    for i in 0..n {
+        let (x0, y0) = poly[i];
+        let (x1, y1) = poly[(i + 1) % n];
+        if ((y0 > py) != (y1 > py)) && (px < (x1 - x0) * (py - y0) / (y1 - y0) + x0) {
+            inside = !inside;
+        }
+    }
+    inside
+}
+
 /// Pre-calculates the offset direction and miter scale for each vertex of an
 /// open polyline.
 pub fn get_offset_directions(points: &[(f64, f64)]) -> Vec<(f64, f64)> {
@@ -187,5 +238,22 @@ mod tests {
         assert_eq!(area(&[]), 0.0);
         assert_eq!(area(&[(0.0, 0.0), (1.0, 0.0)]), 0.0);
         assert_eq!(perimeter(&[]), 0.0);
+    }
+
+    #[test]
+    fn rectangle_centroid_is_center() {
+        let (cx, cy) = centroid(&rect());
+        assert!((cx - 2.0).abs() < 1e-6);
+        assert!((cy - 1.5).abs() < 1e-6);
+    }
+
+    #[test]
+    fn point_in_polygon_test() {
+        let r = rect();
+        assert!(point_in_polygon((2.0, 1.5), &r));
+        assert!(point_in_polygon((0.5, 0.5), &r));
+        assert!(!point_in_polygon((5.0, 1.5), &r));
+        assert!(!point_in_polygon((-1.0, 1.5), &r));
+        assert!(!point_in_polygon((2.0, 4.0), &r));
     }
 }

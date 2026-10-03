@@ -32,6 +32,9 @@ pub mod plan_view;
 pub mod project;
 pub mod representation;
 pub mod room;
+pub mod room_package;
+pub mod room_regen;
+pub mod room_xdata;
 pub mod slab;
 pub mod slab_opening;
 pub mod slab_package;
@@ -55,7 +58,15 @@ pub use geometry::get_offset_directions;
 pub use ifc::Scene;
 pub use library::StyleLibrary;
 pub use loop_detection::find_closed_loop;
-pub use room::Room;
+pub use room::{FloorFinishOverride, Room, RoomFinish, RoomFunction};
+pub use room_package::{
+    all_room_carrier_handles, collect_room_display_children, expand_handles_for_room_packages,
+    expand_with_room_derived_handles, is_room_carrier, is_room_derived,
+    remove_room_display_children, resolve_room_package, resolve_room_package_handle,
+    room_package_handles,
+};
+pub use room_regen::regenerate_room_representation;
+pub use room_xdata::{room_from_entity, write_room_record};
 pub use slab::{Slab, SlabJustification, SlabLayer};
 pub use slab_opening::{SlabOpening, SlabOpeningDepth, SlabOpeningKind};
 pub use slab_package::{

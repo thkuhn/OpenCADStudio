@@ -13,7 +13,6 @@ use crate::modules::aec::engine::xdata::ensure_wall_app_id;
 use crate::modules::aec::engine::wall_package::{is_wall_pick_target, resolve_wall_package};
 use crate::modules::aec::engine::wall_regen::toggle_controlplanes_layer;
 use crate::modules::aec::ifc::export::aec_ifc_export;
-use crate::modules::aec::rooms::room::aec_room;
 use crate::modules::aec::rooms::schedule::aec_room_schedule;
 use crate::modules::aec::walls::refresh::aec_wall_refresh;
 use crate::modules::aec::walls::extend::aec_wallextend_do;
@@ -22,6 +21,7 @@ use crate::modules::aec::walls::reverse::aec_wallreverse_do;
 use crate::modules::aec::walls::wall::WallCommand;
 use crate::modules::aec::slabs::slab::{aec_slab_autodetect_do, aec_slab_convert_do, SlabCommand};
 use crate::modules::aec::slabs::slab_opening::SlabOpeningCommand;
+use crate::modules::aec::rooms::room::RoomCommand;
 use crate::modules::aec::engine::project::{ProjectFile, StoreyRef};
 use crate::modules::aec::message::AecMessage;
 use crate::modules::aec::walls::reverse::WallReverseCommand;
@@ -42,6 +42,7 @@ pub fn spawn_command(name: &str) -> Option<Box<dyn CadCommand>> {
         "AEC_OPENING" => Some(Box::new(WallOpeningCommand::new_opening())),
         "AEC_SLAB" => Some(Box::new(SlabCommand::new())),
         "AEC_SLABOPENING" => Some(Box::new(SlabOpeningCommand::new())),
+        "AEC_ROOM" => Some(Box::new(RoomCommand::new())),
         "AEC_PLANE_3POINT" => Some(Box::new(crate::modules::aec::project::plane_3point::Plane3PointCommand::new())),
         "AEC_PLANE_FACET" => Some(Box::new(crate::modules::aec::project::plane_facet::PlaneFacetCommand::new())),
         "AEC_PLANE_ASSIGN" => Some(Box::new(crate::modules::aec::project::plane_assign::PlaneAssignCommand::new())),
@@ -114,11 +115,7 @@ pub(crate) fn try_dispatch(
             );
             Some(app.finish_dispatch(cmd))
         }
-        "AEC_ROOM" => {
-            aec_room(&mut app.tabs[tab].scene, &mut app.command_line);
-            app.tabs[tab].dirty = true;
-            Some(app.finish_dispatch(cmd))
-        }
+        "AEC_ROOM" => Some(dispatch_room(app, tab, cmd)),
         "AEC_ROOMSCHEDULE" => {
             aec_room_schedule(&mut app.tabs[tab].scene, &mut app.command_line);
             app.tabs[tab].dirty = true;
@@ -126,6 +123,70 @@ pub(crate) fn try_dispatch(
         }
         "AEC_IFCEXPORT" => {
             aec_ifc_export(&mut app.tabs[tab].scene, &mut app.command_line);
+            Some(app.finish_dispatch(cmd))
+        }
+        cmd if cmd.starts_with("AEC_ROOM_POLYGON_DO ") => {
+            let args = cmd["AEC_ROOM_POLYGON_DO ".len()..].to_string();
+            let mut cmd_obj = RoomCommand::new();
+            let pts: Vec<(f64, f64)> = args
+                .split(';')
+                .filter_map(|pair| {
+                    let mut it = pair.split(',');
+                    let x = it.next()?.parse::<f64>().ok()?;
+                    let y = it.next()?.parse::<f64>().ok()?;
+                    Some((x, y))
+                })
+                .collect();
+            if pts.len() >= 3 {
+                match cmd_obj.commit_polygon(&mut app.tabs[tab].scene, &pts) {
+                    Ok(handle) => {
+                        app.command_line.push_info(&format!("AEC: Raum erzeugt ({handle})."));
+                        app.tabs[tab].dirty = true;
+                    }
+                    Err(err) => {
+                        app.command_line.push_error(&format!("AEC_ROOM: {err}"));
+                    }
+                }
+            }
+            Some(app.finish_dispatch(cmd))
+        }
+        cmd if cmd.starts_with("AEC_ROOM_PICK_DO ") => {
+            let args = cmd["AEC_ROOM_PICK_DO ".len()..].to_string();
+            let mut cmd_obj = RoomCommand::new();
+            let mut it = args.split('|');
+            if let (Some(x_str), Some(y_str)) = (it.next(), it.next()) {
+                if let (Ok(x), Ok(y)) = (x_str.parse::<f64>(), y_str.parse::<f64>()) {
+                    match cmd_obj.auto_detect_at_point(&mut app.tabs[tab].scene, (x, y)) {
+                        Ok(handle) => {
+                            app.command_line.push_info(&format!(
+                                "AEC: Raum an ({:.2}, {:.2}) erzeugt ({handle}).",
+                                x, y
+                            ));
+                            app.tabs[tab].dirty = true;
+                        }
+                        Err(err) => {
+                            app.command_line.push_error(&format!("AEC_ROOM: {err}"));
+                        }
+                    }
+                }
+            }
+            Some(app.finish_dispatch(cmd))
+        }
+        cmd if cmd.starts_with("AEC_ROOM_CONVERT_DO ") => {
+            let args = cmd["AEC_ROOM_CONVERT_DO ".len()..].to_string();
+            if let Ok(raw_handle) = args.trim().parse::<u64>() {
+                let handle = Handle::new(raw_handle);
+                let mut cmd_obj = RoomCommand::new();
+                match cmd_obj.convert_selected_polyline(&mut app.tabs[tab].scene, handle) {
+                    Ok(h) => {
+                        app.command_line.push_info(&format!("AEC: Polylinie in Raum konvertiert ({h})."));
+                        app.tabs[tab].dirty = true;
+                    }
+                    Err(err) => {
+                        app.command_line.push_error(&format!("AEC_ROOM: {err}"));
+                    }
+                }
+            }
             Some(app.finish_dispatch(cmd))
         }
         cmd if cmd.starts_with("AEC_WALLOPENING_DO ") => {
@@ -399,6 +460,17 @@ fn dispatch_slab(app: &mut OpenCADStudio, tab: usize, cmd: &str) -> Task<Message
     app.finish_dispatch(cmd)
 }
 
+fn dispatch_room(app: &mut OpenCADStudio, tab: usize, cmd: &str) -> Task<Message> {
+    let style_library = crate::modules::aec::engine::project::resolve_style_library(
+        app.aec.aec_project_explorer_file.as_ref(),
+    );
+    let new_cmd = RoomCommand::new_with_library(Some(style_library));
+    app.command_line.push_info(&new_cmd.prompt());
+    app.tabs[tab].active_cmd = Some(Box::new(new_cmd));
+    app.refresh_properties();
+    app.finish_dispatch(cmd)
+}
+
 fn dispatch_walljoin(app: &mut OpenCADStudio, tab: usize, cmd: &str) -> Task<Message> {
     // Context menu on a multi-wall selection never delivers a second pick.
     let wall_handles = selected_wall_handles(app, tab);
@@ -639,11 +711,12 @@ mod tests {
             "AEC_OPENING",
             "AEC_SLAB",
             "AEC_SLABOPENING",
+            "AEC_ROOM",
         ] {
             let cmd = spawn_command(name).unwrap_or_else(|| panic!("missing spawn for {name}"));
             assert_eq!(cmd.name(), name);
         }
-        assert!(spawn_command("AEC_ROOM").is_none());
+        assert!(spawn_command("AEC_WALL_REFRESH").is_none());
         assert!(spawn_command("LINE").is_none());
     }
 
