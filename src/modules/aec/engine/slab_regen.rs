@@ -1385,4 +1385,47 @@ mod tests {
             "Rohbau display mode should only generate the structural core layer solid"
         );
     }
+
+    #[test]
+    fn test_slab_add_and_remove_vertex() {
+        use crate::entities::traits::EntityTypeOps;
+        use crate::scene::model::object::GripMenuAction;
+
+        let mut scene = Scene::new();
+        let mut pl = LwPolyline::new();
+        pl.add_vertex(LwVertex::new(Vector2::new(0.0, 0.0)));
+        pl.add_vertex(LwVertex::new(Vector2::new(10.0, 0.0)));
+        pl.add_vertex(LwVertex::new(Vector2::new(10.0, 10.0)));
+        pl.add_vertex(LwVertex::new(Vector2::new(0.0, 10.0)));
+        pl.is_closed = true;
+        let slab_h = scene.add_entity(EntityType::LwPolyline(pl));
+
+        let mut slab = Slab::new("style_slab_concrete_20", 1);
+        slab.layers = vec![SlabLayer::new("Concrete", 0.20, LayerFunction::Structural)];
+        write_slab_record(&mut scene.document, slab_h, &slab);
+
+        assert!(regenerate_slab_representation(&mut scene, slab_h, None, None));
+
+        // 1. Add vertex at edge 0 (between (0,0) and (10,0)) -> new vertex at (5, 0)
+        let ent = scene.document.get_entity_mut(slab_h).unwrap();
+        ent.apply_grip_menu(4, GripMenuAction::AddVertex); // edge 0 midpoint is grip 4
+        let pl_after_add = match scene.document.get_entity(slab_h).unwrap() {
+            EntityType::LwPolyline(p) => p.clone(),
+            _ => panic!("expected LwPolyline"),
+        };
+        assert_eq!(pl_after_add.vertices.len(), 5);
+
+        assert!(regenerate_slab_representation(&mut scene, slab_h, None, None));
+
+        // 2. Remove vertex at index 1 (the added vertex)
+        let ent = scene.document.get_entity_mut(slab_h).unwrap();
+        ent.apply_grip_menu(1, GripMenuAction::RemoveVertex);
+        let pl_after_remove = match scene.document.get_entity(slab_h).unwrap() {
+            EntityType::LwPolyline(p) => p.clone(),
+            _ => panic!("expected LwPolyline"),
+        };
+        assert_eq!(pl_after_remove.vertices.len(), 4);
+
+        assert!(regenerate_slab_representation(&mut scene, slab_h, None, None));
+    }
 }

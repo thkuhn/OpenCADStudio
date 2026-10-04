@@ -199,3 +199,65 @@ pub fn regenerate_room_representation(
 
     Some(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::entities::traits::EntityTypeOps;
+    use crate::modules::aec::engine::room::RoomFinish;
+    use crate::scene::model::object::GripMenuAction;
+
+    #[test]
+    fn test_room_add_and_remove_vertex() {
+        let mut scene = Scene::new();
+        let pts = [(0.0, 0.0), (10.0, 0.0), (10.0, 10.0), (0.0, 10.0)];
+        let mut pl = LwPolyline::new();
+        for p in &pts {
+            pl.add_vertex(LwVertex::new(Vector2::new(p.0, p.1)));
+        }
+        pl.is_closed = true;
+        let room_h = scene.add_entity(EntityType::LwPolyline(pl));
+
+        let mut room = Room::from_polygon("Wohnzimmer", &pts, 2.5, 0).with_number("EG-01");
+        room.floor_finish = Some(vec![RoomFinish::new("Parkett", 0.015).with_hatch("ANSI31")]);
+        write_room_record(&mut scene.document, room_h, &room);
+
+        assert!(regenerate_room_representation(&mut scene, room_h, None).is_some());
+
+        let room_before = room_from_entity(scene.document.get_entity(room_h).unwrap()).unwrap();
+        assert!((room_before.area - 100.0).abs() < 1e-4);
+
+        // 1. Add vertex at edge 0 midpoint (between (0,0) and (10,0)) -> new vertex at (5,0)
+        let ent = scene.document.get_entity_mut(room_h).unwrap();
+        ent.apply_grip_menu(4, GripMenuAction::AddVertex);
+        let pl_after_add = match scene.document.get_entity(room_h).unwrap() {
+            EntityType::LwPolyline(p) => p.clone(),
+            _ => panic!("expected LwPolyline"),
+        };
+        assert_eq!(pl_after_add.vertices.len(), 5);
+
+        // Move the added vertex (index 1) to (5, -2) to change the area
+        let ent = scene.document.get_entity_mut(room_h).unwrap();
+        if let EntityType::LwPolyline(pl) = ent {
+            pl.vertices[1].location = Vector2::new(5.0, -2.0);
+        }
+
+        assert!(regenerate_room_representation(&mut scene, room_h, None).is_some());
+        let room_after_move = room_from_entity(scene.document.get_entity(room_h).unwrap()).unwrap();
+        // Area is now 100 + triangle (base 10, height 2 / 2 = 10) = 110.0
+        assert!((room_after_move.area - 110.0).abs() < 1e-4);
+
+        // 2. Remove vertex at index 1
+        let ent = scene.document.get_entity_mut(room_h).unwrap();
+        ent.apply_grip_menu(1, GripMenuAction::RemoveVertex);
+        let pl_after_remove = match scene.document.get_entity(room_h).unwrap() {
+            EntityType::LwPolyline(p) => p.clone(),
+            _ => panic!("expected LwPolyline"),
+        };
+        assert_eq!(pl_after_remove.vertices.len(), 4);
+
+        assert!(regenerate_room_representation(&mut scene, room_h, None).is_some());
+        let room_after_remove_entity = room_from_entity(scene.document.get_entity(room_h).unwrap()).unwrap();
+        assert!((room_after_remove_entity.area - 100.0).abs() < 1e-4);
+    }
+}

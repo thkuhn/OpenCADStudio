@@ -1244,6 +1244,7 @@ impl crate::entities::traits::Grippable for LwPolyline {
             // Vertex grip. Break only where a split is possible: any vertex
             // of a closed polyline, interior vertices of an open one.
             let breakable = n >= 3 && (self.is_closed || (grip_id > 0 && grip_id < n - 1));
+            let can_remove = if self.is_closed { n > 3 } else { n > 2 };
             let mut items = Vec::new();
             if is_rectangle(self) {
                 items.push(GripMenuItem {
@@ -1260,11 +1261,13 @@ impl crate::entities::traits::Grippable for LwPolyline {
                     label: "Add Vertex",
                     action: GripMenuAction::AddVertex,
                 },
-                GripMenuItem {
+            ]);
+            if can_remove {
+                items.push(GripMenuItem {
                     label: "Remove Vertex",
                     action: GripMenuAction::RemoveVertex,
-                },
-            ]);
+                });
+            }
             if breakable {
                 items.push(GripMenuItem {
                     label: "Break",
@@ -1528,7 +1531,11 @@ impl crate::entities::traits::Grippable for LwPolyline {
                 let insert_at = (i0 + 1).min(self.vertices.len());
                 self.vertices.insert(insert_at, new_v);
             }
-            A::RemoveVertex if grip_id < n && self.vertices.len() > 2 => {
+            A::RemoveVertex
+                if grip_id < n
+                    && ((self.is_closed && self.vertices.len() > 3)
+                        || (!self.is_closed && self.vertices.len() > 2)) =>
+            {
                 self.vertices.remove(grip_id);
             }
             A::ConvertToArc if grip_id >= n => {
@@ -2047,5 +2054,44 @@ mod tests {
 
         // Global width must now be VARIES
         assert_eq!(lwpolyline_global_width(&pl), None);
+    }
+
+    #[test]
+    fn test_lwpolyline_vertex_and_midpoint_grip_menu_add_and_remove() {
+        let mut closed_quad = polyline(
+            &[(0.0, 0.0), (10.0, 0.0), (10.0, 10.0), (0.0, 10.0)],
+            true,
+        );
+
+        // Vertex grips on 4-vertex closed polyline offer Add Vertex and Remove Vertex
+        let v_menu = closed_quad.grip_menu(0);
+        assert!(v_menu.iter().any(|item| item.action == GripMenuAction::AddVertex));
+        assert!(v_menu.iter().any(|item| item.action == GripMenuAction::RemoveVertex));
+
+        // Midpoint grips offer Add Vertex
+        let mid_menu = closed_quad.grip_menu(4); // segment 0 midpoint
+        assert!(mid_menu.iter().any(|item| item.action == GripMenuAction::AddVertex));
+
+        // Add vertex at midpoint 4 -> polyline has 5 vertices
+        closed_quad.apply_grip_menu(4, GripMenuAction::AddVertex);
+        assert_eq!(closed_quad.vertices.len(), 5);
+        assert_eq!(closed_quad.vertices[1].location, Vector2::new(5.0, 0.0));
+
+        // Remove vertex 1 -> polyline has 4 vertices
+        closed_quad.apply_grip_menu(1, GripMenuAction::RemoveVertex);
+        assert_eq!(closed_quad.vertices.len(), 4);
+
+        // Remove vertex 0 -> polyline has 3 vertices (triangle)
+        closed_quad.apply_grip_menu(0, GripMenuAction::RemoveVertex);
+        assert_eq!(closed_quad.vertices.len(), 3);
+
+        // On 3-vertex closed polyline (triangle), Remove Vertex is not offered (cannot reduce below 3)
+        let tri_menu = closed_quad.grip_menu(0);
+        assert!(tri_menu.iter().any(|item| item.action == GripMenuAction::AddVertex));
+        assert!(!tri_menu.iter().any(|item| item.action == GripMenuAction::RemoveVertex));
+
+        // Applying RemoveVertex on 3-vertex closed polyline is a no-op
+        closed_quad.apply_grip_menu(0, GripMenuAction::RemoveVertex);
+        assert_eq!(closed_quad.vertices.len(), 3);
     }
 }

@@ -322,6 +322,78 @@ impl OpenCADStudio {
         ok
     }
 
+    /// Regenerates all AEC packages (Slabs, Slab Openings, Rooms, Walls) associated with the given handles.
+    pub(crate) fn aec_regenerate_entity_packages(
+        &mut self,
+        tab_index: usize,
+        handles: &[acadrust::Handle],
+    ) {
+        let mut reselected = Vec::new();
+        for &handle in handles {
+            let slab_owner = crate::modules::aec::engine::slab_package::resolve_slab_package(
+                &self.tabs[tab_index].scene,
+                handle,
+            );
+            if self.tabs[tab_index]
+                .scene
+                .document
+                .get_entity(slab_owner)
+                .and_then(crate::modules::aec::engine::slab_xdata::slab_from_entity)
+                .is_some()
+            {
+                let _ = self.regenerate_slab_respecting_active_display_config(tab_index, slab_owner);
+                reselected.push(slab_owner);
+            }
+
+            if let Some(op_owner) = crate::modules::aec::engine::slab_package::slab_opening_owner_if_any(
+                &self.tabs[tab_index].scene,
+                handle,
+            ) {
+                if self.tabs[tab_index]
+                    .scene
+                    .document
+                    .get_entity(op_owner)
+                    .and_then(crate::modules::aec::engine::slab_xdata::slab_opening_from_entity)
+                    .is_some()
+                {
+                    let style_library = crate::modules::aec::engine::project::resolve_style_library(
+                        self.aec.aec_project_explorer_file.as_ref(),
+                    );
+                    let rules = self.resolve_active_display_config_slab_rules(tab_index, None);
+                    crate::modules::aec::engine::slab_regen::regenerate_slab_opening_representation(
+                        &mut self.tabs[tab_index].scene,
+                        op_owner,
+                        Some(&style_library),
+                        rules.as_ref(),
+                    );
+                    reselected.push(op_owner);
+                }
+            }
+
+            let room_owner = crate::modules::aec::engine::room_package::resolve_room_package_handle(
+                &self.tabs[tab_index].scene,
+                handle,
+            );
+            if self.tabs[tab_index]
+                .scene
+                .document
+                .get_entity(room_owner)
+                .and_then(crate::modules::aec::engine::room_xdata::room_from_entity)
+                .is_some()
+            {
+                crate::modules::aec::engine::room_regen::regenerate_room_representation(
+                    &mut self.tabs[tab_index].scene,
+                    room_owner,
+                    None,
+                );
+                reselected.push(room_owner);
+            }
+        }
+        for h in reselected {
+            self.tabs[tab_index].scene.select_entity(h, false);
+        }
+    }
+
     /// Removes a wall opening while honoring `tabs[tab_index]`'s active
     /// `DisplayConfig` for the host wall's regeneration.
     pub(crate) fn remove_wall_opening_respecting_active_display_config(

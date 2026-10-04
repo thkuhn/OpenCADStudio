@@ -261,10 +261,12 @@ impl OpenCADStudio {
             self.tabs[i].scene.preview_hidden.remove(&handle);
         }
         let changes: Vec<_> = changed_handles
-            .into_iter()
-            .map(|handle| (handle, crate::scene::ChangeKind::Modified))
+            .iter()
+            .map(|&handle| (handle, crate::scene::ChangeKind::Modified))
             .collect();
         self.tabs[i].scene.bump_entities_after_parametric_solve(&changes);
+        let changed_vec: Vec<_> = changed_handles.into_iter().collect();
+        self.aec_regenerate_entity_packages(i, &changed_vec);
         if let Some(dirty_before) = self.grip_dirty_before.take() {
             self.tabs[i].dirty = dirty_before;
         }
@@ -1698,6 +1700,7 @@ impl OpenCADStudio {
                     self.tabs[tab]
                         .scene
                         .bump_entities(&[(handle, crate::scene::ChangeKind::Modified)]);
+                    self.aec_regenerate_entity_packages(tab, &[handle]);
                     self.command_line
                         .push_output(crate::t!("PEDIT: applied.").as_ref());
                     self.refresh_properties();

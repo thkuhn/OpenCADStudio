@@ -1699,6 +1699,7 @@ pub(super) fn on_tab_close(&mut self, idx: usize) -> Task<Message> {
                 self.tabs[i]
                     .scene
                     .bump_entities(&[(popup.handle, crate::scene::ChangeKind::Modified)]);
+                self.aec_regenerate_entity_packages(i, &[popup.handle]);
                 self.tabs[i].dirty = true;
                 self.refresh_selected_grips();
                 self.refresh_properties();

@@ -6445,64 +6445,8 @@ was_selected={}",
                 {
                     self.tabs[i].scene.select_entity(owner, false);
                 }
-
-                let slab_owner = crate::modules::aec::engine::slab_package::resolve_slab_package(
-                    &self.tabs[i].scene,
-                    handle,
-                );
-                if self.tabs[i]
-                    .scene
-                    .document
-                    .get_entity(slab_owner)
-                    .and_then(crate::modules::aec::engine::slab_xdata::slab_from_entity)
-                    .is_some()
-                {
-                    let _ = self.regenerate_slab_respecting_active_display_config(i, slab_owner);
-                    self.tabs[i].scene.select_entity(slab_owner, false);
-                }
-                if let Some(op_owner) = crate::modules::aec::engine::slab_package::slab_opening_owner_if_any(
-                    &self.tabs[i].scene,
-                    handle,
-                ) {
-                    if self.tabs[i]
-                        .scene
-                        .document
-                        .get_entity(op_owner)
-                        .and_then(crate::modules::aec::engine::slab_xdata::slab_opening_from_entity)
-                        .is_some()
-                    {
-                        let style_library = crate::modules::aec::engine::project::resolve_style_library(
-                            self.aec.aec_project_explorer_file.as_ref(),
-                        );
-                        crate::modules::aec::engine::slab_regen::regenerate_slab_opening_representation(
-                            &mut self.tabs[i].scene,
-                            op_owner,
-                            Some(&style_library),
-                            None,
-                        );
-                        self.tabs[i].scene.select_entity(op_owner, false);
-                    }
-                }
-
-                let room_owner = crate::modules::aec::engine::room_package::resolve_room_package_handle(
-                    &self.tabs[i].scene,
-                    handle,
-                );
-                if self.tabs[i]
-                    .scene
-                    .document
-                    .get_entity(room_owner)
-                    .and_then(crate::modules::aec::engine::room_xdata::room_from_entity)
-                    .is_some()
-                {
-                    crate::modules::aec::engine::room_regen::regenerate_room_representation(
-                        &mut self.tabs[i].scene,
-                        room_owner,
-                        None,
-                    );
-                    self.tabs[i].scene.select_entity(room_owner, false);
-                }
             }
+            self.aec_regenerate_entity_packages(i, &handles);
             self.tabs[i].scene.bump_entities_after_parametric_solve(&changes);
         }
         // Placement confirmed — keep the just-added leader.

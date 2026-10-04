@@ -2874,6 +2874,7 @@ handles={handles_ms:.1} panel={:.1} ribbon={ribbon_ms:.1} tail={:.1} selected={}
                 self.constraint_solve_mode && !driven_refs.is_empty(),
                 retained_originals,
             );
+        self.aec_regenerate_entity_packages(i, handles);
     }
 
     /// Apply a single-property edit to every handle in `handles`, recording the
