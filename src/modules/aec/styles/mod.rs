@@ -1,3 +1,4 @@
+pub mod floor_finish_style_manager;
 pub mod material_manager;
 mod plan_buffers;
 pub mod plan_manager;

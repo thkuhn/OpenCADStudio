@@ -47,7 +47,10 @@ impl CadModule for AecModule {
         use project::{control_planes, explorer, plane_3point, plane_facet, plane_assign};
         use rooms::{room, schedule};
         use slabs::{slab_opening_tool, slab_tool};
-        use styles::{material_manager, opening_style_manager, plan_manager, slab_style_manager, wall_style_manager};
+        use styles::{
+            floor_finish_style_manager, material_manager, opening_style_manager, plan_manager,
+            slab_style_manager, wall_style_manager,
+        };
         use walls::{door, extend, join, opening, refresh, wall, window};
 
         static GROUPS: std::sync::OnceLock<Vec<RibbonGroup>> = std::sync::OnceLock::new();
@@ -107,6 +110,7 @@ impl CadModule for AecModule {
                         RibbonItem::LargeTool(wall_style_manager::tool()),
                         RibbonItem::LargeTool(opening_style_manager::tool()),
                         RibbonItem::LargeTool(slab_style_manager::tool()),
+                        RibbonItem::LargeTool(floor_finish_style_manager::tool()),
                         RibbonItem::LargeTool(plan_manager::tool()),
                     ],
                 },

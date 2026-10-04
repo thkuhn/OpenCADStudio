@@ -471,6 +471,8 @@ impl OpenCADStudio {
             self.aec.aec_last_slab_style_id = Some(style.style.id.clone());
             self.aec.aec_slab_style_manager_name = style.style.name.clone();
             self.aec.aec_slab_style_manager_parent = style.style.parent_style_id.clone();
+            self.aec.aec_slab_style_manager_structural_style = style.structural_style_id.clone();
+            self.aec.aec_slab_style_manager_finish_style = style.default_finish_style_id.clone();
             self.aec.aec_slab_style_manager_layers =
                 style.layers.iter().map(layer_to_buffer).collect();
             self.aec.aec_slab_style_manager_form_open = true;
@@ -493,6 +495,8 @@ impl OpenCADStudio {
         self.aec.aec_slab_style_manager_editing_id = None;
         self.aec.aec_slab_style_manager_name = crate::t!("New Slab Style").to_string();
         self.aec.aec_slab_style_manager_parent = None;
+        self.aec.aec_slab_style_manager_structural_style = None;
+        self.aec.aec_slab_style_manager_finish_style = None;
         self.aec.aec_slab_style_manager_layers = vec![AecSlabLayerBuffer {
             material_id: first_mat,
             thickness: "20.0".to_string(),
@@ -514,11 +518,15 @@ impl OpenCADStudio {
         let current_layers = self.aec.aec_slab_style_manager_layers.clone();
         let current_name = self.aec.aec_slab_style_manager_name.clone();
         let current_parent = self.aec.aec_slab_style_manager_parent.clone();
+        let current_structural = self.aec.aec_slab_style_manager_structural_style.clone();
+        let current_finish = self.aec.aec_slab_style_manager_finish_style.clone();
 
         self.aec.aec_slab_style_manager_selected = None;
         self.aec.aec_slab_style_manager_editing_id = None;
         self.aec.aec_slab_style_manager_name = format!("{current_name} (Kopie)");
         self.aec.aec_slab_style_manager_parent = current_parent;
+        self.aec.aec_slab_style_manager_structural_style = current_structural;
+        self.aec.aec_slab_style_manager_finish_style = current_finish;
         self.aec.aec_slab_style_manager_layers = current_layers
             .into_iter()
             .map(|mut l| {
@@ -530,6 +538,42 @@ impl OpenCADStudio {
         self.aec.aec_slab_style_manager_drag_index = None;
 
         Task::none()
+    }
+
+    pub(crate) fn aec_slab_style_manager_structural_style_changed(&mut self, id: Option<String>) {
+        self.aec.aec_slab_style_manager_structural_style = id;
+    }
+
+    pub(crate) fn aec_slab_style_manager_finish_style_changed(&mut self, id: Option<String>) {
+        self.aec.aec_slab_style_manager_finish_style = id;
+    }
+
+    pub(crate) fn aec_slab_style_manager_load_modular_layers(&mut self) {
+        let mut dummy = SlabStyle::new("temp", "temp");
+        dummy.structural_style_id = self.aec.aec_slab_style_manager_structural_style.clone();
+        dummy.default_finish_style_id = self.aec.aec_slab_style_manager_finish_style.clone();
+
+        let s_map: HashMap<String, _> = self
+            .aec
+            .aec_style_library
+            .as_ref()
+            .map(|l| l.slab_structural_styles.iter().map(|s| (s.style.id.clone(), s.clone())).collect())
+            .unwrap_or_default();
+        let f_map: HashMap<String, _> = self
+            .aec
+            .aec_style_library
+            .as_ref()
+            .map(|l| l.floor_finish_styles.iter().map(|f| (f.style.id.clone(), f.clone())).collect())
+            .unwrap_or_default();
+
+        let resolved = crate::modules::aec::engine::slab_style::resolve_slab_style_layers(
+            &dummy,
+            Some(&s_map),
+            Some(&f_map),
+        );
+        if !resolved.is_empty() {
+            self.aec.aec_slab_style_manager_layers = resolved.iter().map(layer_to_buffer).collect();
+        }
     }
 
     pub(crate) fn aec_slab_style_manager_layer_add(&mut self) {
@@ -607,6 +651,8 @@ impl OpenCADStudio {
                 object_kind: "Slab".to_string(),
                 parent_style_id: self.aec.aec_slab_style_manager_parent.clone(),
             },
+            structural_style_id: self.aec.aec_slab_style_manager_structural_style.clone(),
+            default_finish_style_id: self.aec.aec_slab_style_manager_finish_style.clone(),
             layers,
             display_profiles: HashMap::new(),
         };

@@ -229,9 +229,15 @@ pub struct Room {
     /// Interactive 2D placement coordinate for the room stamp.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub stamp_pos: Option<(f64, f64)>,
+    /// Optional reference to a `FloorFinishStyle` in the library (override from default slab finish).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub finish_style_id: Option<String>,
     /// Optional room-specific floor finish layer stack.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub floor_finish: Option<Vec<RoomFinish>>,
+    /// Optional room-specific ceiling finish / suspended ceiling layer stack.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ceiling_finish: Option<Vec<RoomFinish>>,
 }
 
 fn default_room_factor() -> f64 {
@@ -269,7 +275,9 @@ impl Room {
             base_z: 0.0,
             phase: PlanPhase::New,
             stamp_pos: if points.is_empty() { None } else { Some(geometry::centroid(points)) },
+            finish_style_id: None,
             floor_finish: None,
+            ceiling_finish: None,
         }
     }
 
@@ -322,9 +330,21 @@ impl Room {
         self
     }
 
+    /// Sets custom room-specific floor finish style override.
+    pub fn with_finish_style(mut self, style_id: impl Into<String>) -> Self {
+        self.finish_style_id = Some(style_id.into());
+        self
+    }
+
     /// Sets custom room-specific floor finishes.
     pub fn with_floor_finish(mut self, finishes: Vec<RoomFinish>) -> Self {
         self.floor_finish = Some(finishes);
+        self
+    }
+
+    /// Sets custom room-specific ceiling finishes.
+    pub fn with_ceiling_finish(mut self, finishes: Vec<RoomFinish>) -> Self {
+        self.ceiling_finish = Some(finishes);
         self
     }
 
@@ -336,8 +356,21 @@ impl Room {
             .unwrap_or(0.0)
     }
 
-    /// Concise summary string of floor finishes (e.g. "Parkett", "Fliesen").
+    /// Total thickness/drop of ceiling finishes in meters.
+    pub fn ceiling_finish_thickness(&self) -> f64 {
+        self.ceiling_finish
+            .as_ref()
+            .map(|f| f.iter().map(|l| l.thickness).sum())
+            .unwrap_or(0.0)
+    }
+
+    /// Concise summary string of floor finishes (e.g. style name or "Parkett", "Fliesen").
     pub fn floor_finish_summary(&self) -> String {
+        if let Some(style_id) = &self.finish_style_id {
+            if !style_id.trim().is_empty() {
+                return style_id.clone();
+            }
+        }
         match &self.floor_finish {
             Some(finishes) if !finishes.is_empty() => {
                 let mats: Vec<&str> = finishes.iter().map(|f| f.material.as_str()).collect();
@@ -345,6 +378,32 @@ impl Room {
             }
             _ => "-".to_string(),
         }
+    }
+
+    /// Concise summary string of ceiling finishes (e.g. "Akustikraster", "Gipskarton").
+    pub fn ceiling_finish_summary(&self) -> String {
+        match &self.ceiling_finish {
+            Some(finishes) if !finishes.is_empty() => {
+                let mats: Vec<&str> = finishes.iter().map(|f| f.material.as_str()).collect();
+                mats.join(", ")
+            }
+            _ => "-".to_string(),
+        }
+    }
+
+    /// Effective clear height under ceiling finish in meters (e.g. `clear_height - ceiling_drop`).
+    pub fn effective_ceiling_height(&self) -> f64 {
+        (self.clear_height - self.ceiling_finish_thickness()).max(0.1)
+    }
+
+    /// Ceiling surface area (m²).
+    pub fn ceiling_area(&self) -> f64 {
+        self.area
+    }
+
+    /// Gross floor finish area taking additional transition/reveal areas into account.
+    pub fn gross_floor_finish_area(&self, transition_area: f64) -> f64 {
+        self.calculated_area() + transition_area.max(0.0)
     }
 }
 
@@ -398,5 +457,39 @@ mod tests {
         assert!((finish.okrd_at_xy(1.0, 1.0) - 2.80).abs() < 1e-6);
         assert!((finish.okff_at_xy(1.0, 1.0) - 2.92).abs() < 1e-6);
         assert_eq!(finish.finishes[2].hatch_pattern.as_deref(), Some("SQUARE"));
+    }
+
+    #[test]
+    fn test_room_ceiling_finish_and_metrics() {
+        let pts = [(0.0, 0.0), (5.0, 0.0), (5.0, 4.0), (0.0, 4.0)];
+        let room = Room::from_polygon("Meeting Room", &pts, 3.0, 1)
+            .with_floor_finish(vec![RoomFinish::new("Parquet", 0.02)])
+            .with_ceiling_finish(vec![
+                RoomFinish::new("Suspension Grid", 0.20),
+                RoomFinish::new("Acoustic Tiles", 0.02).with_hatch("NET"),
+            ]);
+
+        assert_eq!(room.floor_finish_summary(), "Parquet");
+        assert_eq!(room.ceiling_finish_summary(), "Suspension Grid, Acoustic Tiles");
+        assert!((room.ceiling_finish_thickness() - 0.22).abs() < 1e-6);
+        assert!((room.effective_ceiling_height() - 2.78).abs() < 1e-6);
+        assert!((room.ceiling_area() - 20.0).abs() < 1e-6);
+        assert!((room.gross_floor_finish_area(0.5) - 20.5).abs() < 1e-6);
+    }
+
+    #[test]
+    fn test_room_finish_style_override() {
+        let pts = [(0.0, 0.0), (4.0, 0.0), (4.0, 3.0), (0.0, 3.0)];
+        let room = Room::from_polygon("Living Room", &pts, 2.6, 1)
+            .with_finish_style("finish_floor_parquet_80")
+            .with_floor_finish(vec![
+                RoomFinish::new("mat_wood", 0.015).with_hatch("ANSI31"),
+                RoomFinish::new("mat_screed", 0.045),
+                RoomFinish::new("mat_insulation", 0.020),
+            ]);
+
+        assert_eq!(room.finish_style_id.as_deref(), Some("finish_floor_parquet_80"));
+        assert_eq!(room.floor_finish_summary(), "finish_floor_parquet_80");
+        assert!((room.floor_finish_thickness() - 0.08).abs() < 1e-6);
     }
 }

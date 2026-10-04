@@ -22,7 +22,7 @@ use crate::modules::aec::engine::slab_xdata;
 use crate::modules::aec::engine::storey_xdata;
 use crate::modules::aec::engine::xdata;
 use crate::modules::aec::engine::wall_package;
-use crate::modules::aec::engine::library::StyleLibrary;
+use crate::modules::aec::engine::library::{self, StyleLibrary};
 use crate::t;
 
 pub fn aec_entity_title(
@@ -1038,7 +1038,7 @@ pub fn extend_entity_sections(
                     .and_then(room_package::resolve_room_package)
                     .unwrap_or(handle);
                 let room_entity = scene.document.get_entity(room_handle).unwrap_or(entity);
-                if let Some(room_section) = room_prop_section(room_entity) {
+                if let Some(room_section) = room_prop_section(room_entity, style_library) {
                     sections.push(room_section);
                 }
             }
@@ -1134,6 +1134,78 @@ pub fn slab_prop_section(
         0.0
     };
 
+    let none_label = "- (Standard)".to_string();
+
+    let mut struct_style_options = vec![none_label.clone()];
+    if let Some(lib) = style_library {
+        for ss in &lib.slab_structural_styles {
+            let label = if !ss.style.name.is_empty() {
+                ss.style.name.clone()
+            } else {
+                ss.style.id.clone()
+            };
+            if !struct_style_options.contains(&label) {
+                struct_style_options.push(label);
+            }
+        }
+    }
+    for ss in library::seed_slab_structural_styles() {
+        if !struct_style_options.contains(&ss.style.name) {
+            struct_style_options.push(ss.style.name);
+        }
+    }
+    let selected_struct = slab.structural_style_id.as_deref().and_then(|id| {
+        if let Some(lib) = style_library {
+            if let Some(ss) = lib.find_slab_structural_style(id) {
+                return Some(ss.style.name.clone());
+            }
+        }
+        for ss in library::seed_slab_structural_styles() {
+            if ss.style.id == id || ss.style.name == id {
+                return Some(ss.style.name);
+            }
+        }
+        Some(id.to_string())
+    }).unwrap_or_else(|| none_label.clone());
+    if !struct_style_options.contains(&selected_struct) {
+        struct_style_options.push(selected_struct.clone());
+    }
+
+    let mut finish_style_options = vec![none_label.clone()];
+    if let Some(lib) = style_library {
+        for fs in &lib.floor_finish_styles {
+            let label = if !fs.style.name.is_empty() {
+                fs.style.name.clone()
+            } else {
+                fs.style.id.clone()
+            };
+            if !finish_style_options.contains(&label) {
+                finish_style_options.push(label);
+            }
+        }
+    }
+    for fs in library::seed_floor_finish_styles() {
+        if !finish_style_options.contains(&fs.style.name) {
+            finish_style_options.push(fs.style.name);
+        }
+    }
+    let selected_finish = slab.finish_style_id.as_deref().and_then(|id| {
+        if let Some(lib) = style_library {
+            if let Some(fs) = lib.find_floor_finish_style(id) {
+                return Some(fs.style.name.clone());
+            }
+        }
+        for fs in library::seed_floor_finish_styles() {
+            if fs.style.id == id || fs.style.name == id {
+                return Some(fs.style.name);
+            }
+        }
+        Some(id.to_string())
+    }).unwrap_or_else(|| none_label.clone());
+    if !finish_style_options.contains(&selected_finish) {
+        finish_style_options.push(selected_finish.clone());
+    }
+
     let mut props = vec![
         crate::scene::model::object::Property {
             label: t!("aec.slab-style").into_owned(),
@@ -1141,6 +1213,22 @@ pub fn slab_prop_section(
             value: crate::scene::model::object::PropValue::Picker {
                 value: style_name,
                 handles: vec![entity.common().handle],
+            },
+        },
+        crate::scene::model::object::Property {
+            label: crate::tr!("aec", "slab-structural-style"),
+            field: "slab_structural_style",
+            value: crate::scene::model::object::PropValue::Choice {
+                selected: selected_struct,
+                options: struct_style_options,
+            },
+        },
+        crate::scene::model::object::Property {
+            label: crate::tr!("aec", "slab-finish-style"),
+            field: "slab_finish_style",
+            value: crate::scene::model::object::PropValue::Choice {
+                selected: selected_finish,
+                options: finish_style_options,
             },
         },
         crate::scene::model::object::Property {
@@ -1324,6 +1412,7 @@ pub fn slab_opening_prop_section(
 /// Builds the "Room" property section for a carrier entity with `ROOM` XDATA.
 pub fn room_prop_section(
     entity: &EntityType,
+    style_library: Option<&StyleLibrary>,
 ) -> Option<crate::scene::model::object::PropSection> {
     let room = room_xdata::room_from_entity(entity)?;
     let mut props = Vec::new();
@@ -1364,10 +1453,62 @@ pub fn room_prop_section(
         "room_clear_height",
         room.clear_height,
     ));
+
+    // Modular floor finish style choice
+    let none_label = "- (Standard)".to_string();
+    let mut finish_style_options = vec![none_label.clone()];
+    if let Some(lib) = style_library {
+        for fs in &lib.floor_finish_styles {
+            let label = if !fs.style.name.is_empty() {
+                fs.style.name.clone()
+            } else {
+                fs.style.id.clone()
+            };
+            if !finish_style_options.contains(&label) {
+                finish_style_options.push(label);
+            }
+        }
+    }
+    for fs in library::seed_floor_finish_styles() {
+        if !finish_style_options.contains(&fs.style.name) {
+            finish_style_options.push(fs.style.name);
+        }
+    }
+    let selected_style = room.finish_style_id.as_deref().and_then(|id| {
+        if let Some(lib) = style_library {
+            if let Some(fs) = lib.find_floor_finish_style(id) {
+                return Some(fs.style.name.clone());
+            }
+        }
+        for fs in library::seed_floor_finish_styles() {
+            if fs.style.id == id || fs.style.name == id {
+                return Some(fs.style.name);
+            }
+        }
+        Some(id.to_string())
+    }).unwrap_or_else(|| none_label.clone());
+    if !finish_style_options.contains(&selected_style) {
+        finish_style_options.push(selected_style.clone());
+    }
+
+    props.push(crate::scene::model::object::Property {
+        label: crate::tr!("aec", "room-floor-finish-style"),
+        field: "room_floor_finish_style",
+        value: crate::scene::model::object::PropValue::Choice {
+            selected: selected_style,
+            options: finish_style_options,
+        },
+    });
+
     props.push(crate::scene::model::object::Property {
         label: crate::tr!("aec", "room-floor-finish"),
         field: "room_floor_finish",
         value: crate::scene::model::object::PropValue::EditText(room.floor_finish_summary()),
+    });
+    props.push(crate::scene::model::object::Property {
+        label: crate::tr!("aec", "room-ceiling-finish"),
+        field: "room_ceiling_finish",
+        value: crate::scene::model::object::PropValue::EditText(room.ceiling_finish_summary()),
     });
     let (sx, sy) = room.stamp_pos.unwrap_or_else(|| {
         let pts = room_boundary_points(entity);
@@ -1597,6 +1738,32 @@ impl crate::app::OpenCADStudio {
                         room.clear_height = v;
                     }
                 }
+                "room_floor_finish_style" => {
+                    let trimmed = val.trim();
+                    if trimmed.is_empty() || trimmed == "-" || trimmed == "- (Standard)" {
+                        room.finish_style_id = None;
+                        room.floor_finish = None;
+                    } else {
+                        let style_library = crate::modules::aec::engine::project::resolve_style_library(
+                            self.aec.aec_project_explorer_file.as_ref(),
+                        );
+                        let fallback_lib = library::seed_floor_finish_styles();
+                        let found = style_library
+                            .find_floor_finish_style_by_name_or_id(trimmed)
+                            .cloned()
+                            .or_else(|| {
+                                fallback_lib
+                                    .into_iter()
+                                    .find(|s| s.style.name == trimmed || s.style.id == trimmed)
+                            });
+                        if let Some(style) = found {
+                            room.finish_style_id = Some(style.style.id.clone());
+                            room.floor_finish = Some(style.to_room_finishes());
+                        } else {
+                            room.finish_style_id = Some(trimmed.to_string());
+                        }
+                    }
+                }
                 "room_floor_finish" => {
                     let trimmed = val.trim();
                     if trimmed.is_empty() || trimmed == "-" {
@@ -1615,6 +1782,28 @@ impl crate::app::OpenCADStudio {
                             finish = finish.with_hatch(h);
                         }
                         room.floor_finish = Some(vec![finish]);
+                    }
+                }
+                "room_ceiling_finish" => {
+                    let trimmed = val.trim();
+                    if trimmed.is_empty() || trimmed == "-" {
+                        room.ceiling_finish = None;
+                    } else {
+                        let lower = trimmed.to_lowercase();
+                        let hatch = if lower.contains("raster") || lower.contains("grid") {
+                            Some("NET".to_string())
+                        } else if lower.contains("fliese") || lower.contains("tile") || lower.contains("kassette") {
+                            Some("SQUARE".to_string())
+                        } else if lower.contains("gips") || lower.contains("wood") || lower.contains("holz") {
+                            Some("ANSI31".to_string())
+                        } else {
+                            None
+                        };
+                        let mut finish = RoomFinish::new(trimmed, 0.02);
+                        if let Some(h) = hatch {
+                            finish = finish.with_hatch(h);
+                        }
+                        room.ceiling_finish = Some(vec![finish]);
                     }
                 }
                 "room_stamp_x" => {
@@ -1651,6 +1840,9 @@ impl crate::app::OpenCADStudio {
                 &mut self.tabs[tab].scene,
                 room_owner,
                 None,
+            );
+            let _ = crate::modules::aec::rooms::schedule::update_all_room_schedules(
+                &mut self.tabs[tab].scene,
             );
             self.tabs[tab].dirty = true;
             self.tabs[tab].scene.bump_geometry();
@@ -1785,6 +1977,60 @@ impl crate::app::OpenCADStudio {
                         Some(&style_library),
                         rules.as_ref(),
                     );
+                }
+                "slab_structural_style" => {
+                    let trimmed = val.trim();
+                    let style_library = crate::modules::aec::engine::project::resolve_style_library(
+                        self.aec.aec_project_explorer_file.as_ref(),
+                    );
+                    if let Some(entity) = self.tabs[tab].scene.document.get_entity(slab_owner) {
+                        if let Some(mut slab) = slab_xdata::slab_from_entity(entity) {
+                            if trimmed.is_empty() || trimmed == "-" || trimmed == "- (Standard)" {
+                                slab.structural_style_id = None;
+                            } else {
+                                let fallback = library::seed_slab_structural_styles();
+                                let found = style_library
+                                    .find_slab_structural_style_by_name_or_id(trimmed)
+                                    .or_else(|| {
+                                        fallback
+                                            .iter()
+                                            .find(|s| s.style.name == trimmed || s.style.id == trimmed)
+                                    });
+                                slab.structural_style_id = found
+                                    .map(|s| s.style.id.clone())
+                                    .or_else(|| Some(trimmed.to_string()));
+                            }
+                            let _ = slab_xdata::write_slab_model(&mut self.tabs[tab].scene, slab_owner, &slab);
+                            let _ = self.regenerate_slab_respecting_active_display_config(tab, slab_owner);
+                        }
+                    }
+                }
+                "slab_finish_style" => {
+                    let trimmed = val.trim();
+                    let style_library = crate::modules::aec::engine::project::resolve_style_library(
+                        self.aec.aec_project_explorer_file.as_ref(),
+                    );
+                    if let Some(entity) = self.tabs[tab].scene.document.get_entity(slab_owner) {
+                        if let Some(mut slab) = slab_xdata::slab_from_entity(entity) {
+                            if trimmed.is_empty() || trimmed == "-" || trimmed == "- (Standard)" {
+                                slab.finish_style_id = None;
+                            } else {
+                                let fallback = library::seed_floor_finish_styles();
+                                let found = style_library
+                                    .find_floor_finish_style_by_name_or_id(trimmed)
+                                    .or_else(|| {
+                                        fallback
+                                            .iter()
+                                            .find(|s| s.style.name == trimmed || s.style.id == trimmed)
+                                    });
+                                slab.finish_style_id = found
+                                    .map(|s| s.style.id.clone())
+                                    .or_else(|| Some(trimmed.to_string()));
+                            }
+                            let _ = slab_xdata::write_slab_model(&mut self.tabs[tab].scene, slab_owner, &slab);
+                            let _ = self.regenerate_slab_respecting_active_display_config(tab, slab_owner);
+                        }
+                    }
                 }
                 // Style is applied via the style picker modal.
                 "slab_style" => {}
@@ -2401,5 +2647,50 @@ mod tests {
         let collapsed_all = collapse_selection_to_aec_package(&scene, all_selected);
         assert_eq!(collapsed_all.len(), 1);
         assert_eq!(collapsed_all[0].0, room_h);
+    }
+
+    #[test]
+    fn test_room_prop_section_modular_styles() {
+        use crate::modules::aec::engine::room::{Room, RoomFunction};
+        use crate::modules::aec::engine::room_xdata::write_room_record;
+        use crate::modules::aec::engine::library;
+        use crate::scene::Scene;
+        use acadrust::entities::{LwPolyline, LwVertex};
+        use acadrust::types::Vector2;
+
+        let mut scene = Scene::new();
+        let lib = library::seed_default_library();
+
+        let mut pl = LwPolyline::new();
+        pl.is_closed = true;
+        pl.add_vertex(LwVertex::new(Vector2::new(0.0, 0.0)));
+        pl.add_vertex(LwVertex::new(Vector2::new(5.0, 0.0)));
+        pl.add_vertex(LwVertex::new(Vector2::new(5.0, 4.0)));
+        pl.add_vertex(LwVertex::new(Vector2::new(0.0, 4.0)));
+        let room_h = scene.add_entity(EntityType::LwPolyline(pl));
+
+        let room = Room::from_polygon("Office", &[(0.0, 0.0), (5.0, 0.0), (5.0, 4.0), (0.0, 4.0)], 2.80, 1)
+            .with_number("O-01")
+            .with_function(RoomFunction::Office)
+            .with_finish_style("finish_floor_parquet_80");
+        write_room_record(&mut scene.document, room_h, &room);
+
+        let entity = scene.document.get_entity(room_h).unwrap();
+        let section = room_prop_section(entity, Some(&lib)).expect("room prop section");
+        let fields: Vec<&str> = section.props.iter().map(|p| p.field).collect();
+        assert!(fields.contains(&"room_name"));
+        assert!(fields.contains(&"room_number"));
+        assert!(fields.contains(&"room_function"));
+        assert!(fields.contains(&"room_floor_finish_style"));
+        assert!(fields.contains(&"room_floor_finish"));
+        assert!(fields.contains(&"room_ceiling_finish"));
+
+        let style_prop = section.props.iter().find(|p| p.field == "room_floor_finish_style").unwrap();
+        if let crate::scene::model::object::PropValue::Choice { selected, options } = &style_prop.value {
+            assert!(selected.contains("Parkett") || selected == "finish_floor_parquet_80");
+            assert!(options.len() >= 5);
+        } else {
+            panic!("Expected choice prop");
+        }
     }
 }

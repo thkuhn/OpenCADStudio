@@ -183,6 +183,10 @@ pub struct Slab {
     pub phase: PlanPhase,
     /// Hatch override for section representations.
     pub hatch_override: Option<ComponentStyleOverride>,
+    /// Optional modular structural style ID.
+    pub structural_style_id: Option<String>,
+    /// Optional modular default floor finish style ID.
+    pub finish_style_id: Option<String>,
 
     /// Attached base control plane UUID (if any).
     pub base_plane_id: Option<Uuid>,
@@ -223,6 +227,8 @@ impl Slab {
             justification: SlabJustification::Top,
             phase: PlanPhase::New,
             hatch_override: None,
+            structural_style_id: None,
+            finish_style_id: None,
             base_plane_id: None,
             top_plane_id: None,
             base_plane_name: None,

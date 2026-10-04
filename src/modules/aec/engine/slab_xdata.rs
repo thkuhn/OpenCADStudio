@@ -101,6 +101,13 @@ pub fn slab_record_for_slab(slab: &Slab) -> Vec<XDataValue> {
         }
     }
 
+    // Trailing modular styles
+    if slab.structural_style_id.is_some() || slab.finish_style_id.is_some() {
+        values.push(XDataValue::String("modular_styles".to_string()));
+        values.push(XDataValue::String(slab.structural_style_id.clone().unwrap_or_default()));
+        values.push(XDataValue::String(slab.finish_style_id.clone().unwrap_or_default()));
+    }
+
     values
 }
 
@@ -315,6 +322,24 @@ pub fn slab_from_values(v: &[XDataValue]) -> Option<Slab> {
     // Hatch override trailer
     let hatch_override = parse_slab_hatch_override(&v[cursor..]);
 
+    // Modular styles trailer
+    let (structural_style_id, finish_style_id) = if let Some(pos) = v[cursor..].iter().position(|val| {
+        matches!(val, XDataValue::String(s) if s == "modular_styles")
+    }) {
+        let p = &v[cursor + pos + 1..];
+        let s_id = p.first().and_then(|val| match val {
+            XDataValue::String(s) if !s.trim().is_empty() => Some(s.clone()),
+            _ => None,
+        });
+        let f_id = p.get(1).and_then(|val| match val {
+            XDataValue::String(s) if !s.trim().is_empty() => Some(s.clone()),
+            _ => None,
+        });
+        (s_id, f_id)
+    } else {
+        (None, None)
+    };
+
     Some(Slab {
         style_id,
         storey_id,
@@ -324,6 +349,8 @@ pub fn slab_from_values(v: &[XDataValue]) -> Option<Slab> {
         justification,
         phase,
         hatch_override,
+        structural_style_id,
+        finish_style_id,
         base_plane_id,
         top_plane_id,
         base_plane_name,
@@ -872,6 +899,8 @@ mod tests {
         let mut slab = Slab::new("style_slab_concrete_20", 2);
         slab.justification = SlabJustification::StructuralTop;
         slab.phase = PlanPhase::Existing;
+        slab.structural_style_id = Some("struct_slab_concrete_20".to_string());
+        slab.finish_style_id = Some("finish_floor_parquet_80".to_string());
         slab.layers = vec![
             SlabLayer::new("Tiles", 0.02, LayerFunction::Finish),
             SlabLayer::new("Concrete", 0.20, LayerFunction::Structural),
@@ -888,6 +917,8 @@ mod tests {
 
         assert_eq!(back.style_id, slab.style_id);
         assert_eq!(back.storey_id, slab.storey_id);
+        assert_eq!(back.structural_style_id, slab.structural_style_id);
+        assert_eq!(back.finish_style_id, slab.finish_style_id);
         assert_eq!(back.justification, slab.justification);
         assert_eq!(back.phase, slab.phase);
         assert_eq!(back.layers.len(), slab.layers.len());

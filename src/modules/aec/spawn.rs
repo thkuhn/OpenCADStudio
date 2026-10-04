@@ -74,6 +74,9 @@ pub(crate) fn try_dispatch(
         "AEC_SLABSTYLEMANAGER" => Some(Task::done(Message::Aec(
             AecMessage::AecSlabStyleManagerOpen,
         ))),
+        "AEC_FLOORFINISHSTYLEMANAGER" => Some(Task::done(Message::Aec(
+            AecMessage::AecFloorFinishStyleManagerOpen,
+        ))),
         "AEC_PLANMANAGER" => Some(Task::done(Message::Aec(AecMessage::AecPlanManagerOpen))),
         "AEC_CONTROLPLANES" => Some(dispatch_control_planes(app, tab)),
         "AEC_WALL" => Some(dispatch_wall(app, tab, cmd)),

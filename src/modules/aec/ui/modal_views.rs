@@ -22,6 +22,7 @@ impl OpenCADStudio {
             AecModalKind::WallStyleManager => self.aec_wall_style_manager_view(),
             AecModalKind::OpeningStyleManager => self.aec_opening_style_manager_view(),
             AecModalKind::SlabStyleManager => self.aec_slab_style_manager_view(),
+            AecModalKind::FloorFinishStyleManager => self.aec_floor_finish_style_manager_view(),
             AecModalKind::WallStyleDisplayProfiles => self.aec_wall_style_display_profiles_view(),
             AecModalKind::JunctionEditor => self.aec_junction_editor_view(),
             AecModalKind::ProjectExplorer => self.aec_project_explorer_view(),
@@ -188,6 +189,16 @@ fn aec_slab_style_manager_view(&self) -> Element<'_, Message> {
         .iter()
         .map(|s| (s.style.id.as_str(), s.style.name.as_str()))
         .collect();
+    let all_structural_styles: Vec<(&str, &str)> = library
+        .slab_structural_styles
+        .iter()
+        .map(|s| (s.style.id.as_str(), s.style.name.as_str()))
+        .collect();
+    let all_finish_styles: Vec<(&str, &str)> = library
+        .floor_finish_styles
+        .iter()
+        .map(|f| (f.style.id.as_str(), f.style.name.as_str()))
+        .collect();
     let all_materials: Vec<(&str, &str)> = library
         .materials
         .iter()
@@ -222,9 +233,13 @@ fn aec_slab_style_manager_view(&self) -> Element<'_, Message> {
             name: &self.aec.aec_slab_style_manager_name,
             parent_id: self.aec.aec_slab_style_manager_parent.as_deref(),
             parent_name,
+            structural_style_id: self.aec.aec_slab_style_manager_structural_style.as_deref(),
+            finish_style_id: self.aec.aec_slab_style_manager_finish_style.as_deref(),
             layers: &self.aec.aec_slab_style_manager_layers,
             drag_index: self.aec.aec_slab_style_manager_drag_index,
             all_slab_styles,
+            all_structural_styles,
+            all_finish_styles,
             all_materials,
             all_layer_names,
             effective_layers,
@@ -249,6 +264,83 @@ fn aec_slab_style_manager_view(&self) -> Element<'_, Message> {
         self.aec.aec_session_style_library.as_ref(),
         &self.aec.aec_slab_style_manager_filter,
         self.aec.aec_slab_style_manager_selected.as_deref(),
+        form,
+    )
+}
+
+fn aec_floor_finish_style_manager_view(&self) -> Element<'_, Message> {
+    let Some(library) = self.aec.aec_style_library.as_ref() else {
+        return iced::widget::text(t!("No style library loaded.")).into();
+    };
+
+    let parent_name = self
+        .aec
+        .aec_floor_finish_style_manager_parent
+        .as_ref()
+        .and_then(|id| {
+            library
+                .floor_finish_styles
+                .iter()
+                .find(|s| s.style.id == *id)
+                .map(|s| s.style.name.clone())
+        });
+    let all_floor_finish_styles: Vec<(&str, &str)> = library
+        .floor_finish_styles
+        .iter()
+        .map(|s| (s.style.id.as_str(), s.style.name.as_str()))
+        .collect();
+    let all_materials: Vec<(&str, &str)> = library
+        .materials
+        .iter()
+        .map(|m| (m.id.as_str(), m.name.as_str()))
+        .collect();
+    let all_layer_names: Vec<String> = self.tabs[self.active_tab]
+        .scene
+        .document
+        .layers
+        .iter()
+        .map(|l| l.name.clone())
+        .collect();
+
+    let mut effective_layers = Vec::new();
+    for buf in &self.aec.aec_floor_finish_style_manager_layers {
+        if let Ok(layer) = crate::modules::aec::styles::slab_style_manager::buffer_to_layer(buf) {
+            effective_layers.push(layer);
+        }
+    }
+    if effective_layers.is_empty() {
+        if let Some(id) = self.aec.aec_floor_finish_style_manager_editing_id.as_deref() {
+            if let Some(style) = library.find_floor_finish_style(id) {
+                effective_layers = style.layers.clone();
+            }
+        }
+    }
+
+    let form = if self.aec.aec_floor_finish_style_manager_form_open {
+        Some(crate::modules::aec::ui::aec_floor_finish_style_manager::FloorFinishStyleFormState {
+            open: true,
+            is_new: self.aec.aec_floor_finish_style_manager_editing_id.is_none(),
+            name: &self.aec.aec_floor_finish_style_manager_name,
+            parent_id: self.aec.aec_floor_finish_style_manager_parent.as_deref(),
+            parent_name,
+            layers: &self.aec.aec_floor_finish_style_manager_layers,
+            drag_index: self.aec.aec_floor_finish_style_manager_drag_index,
+            all_floor_finish_styles,
+            all_materials,
+            all_layer_names,
+            effective_layers,
+            preview_mode: self.aec.aec_floor_finish_style_manager_preview_mode,
+        })
+    } else {
+        None
+    };
+
+    crate::modules::aec::ui::aec_floor_finish_style_manager::view_window(
+        library,
+        self.aec.aec_project_explorer_file.as_ref(),
+        self.aec.aec_session_style_library.as_ref(),
+        &self.aec.aec_floor_finish_style_manager_filter,
+        self.aec.aec_floor_finish_style_manager_selected.as_deref(),
         form,
     )
 }

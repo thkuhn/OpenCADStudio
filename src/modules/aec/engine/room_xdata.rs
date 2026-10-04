@@ -68,6 +68,22 @@ pub fn room_record(room: &Room) -> Vec<XDataValue> {
         values.push(XDataValue::String(String::new()));
     }
 
+    if let Some(finishes) = &room.ceiling_finish {
+        if let Ok(json) = serde_json::to_string(finishes) {
+            values.push(XDataValue::String(json));
+        } else {
+            values.push(XDataValue::String(String::new()));
+        }
+    } else {
+        values.push(XDataValue::String(String::new()));
+    }
+
+    if let Some(style_id) = &room.finish_style_id {
+        values.push(XDataValue::String(style_id.clone()));
+    } else {
+        values.push(XDataValue::String(String::new()));
+    }
+
     values
 }
 
@@ -175,6 +191,31 @@ pub fn room_from_entity(entity: &EntityType) -> Option<Room> {
                 }
             });
 
+        let ceiling_finish = record
+            .values
+            .get(16)
+            .and_then(aec_value_as_string)
+            .and_then(|s| {
+                if s.trim().is_empty() {
+                    None
+                } else {
+                    serde_json::from_str::<Vec<RoomFinish>>(&s).ok()
+                }
+            });
+
+        let finish_style_id = record
+            .values
+            .get(17)
+            .and_then(aec_value_as_string)
+            .and_then(|s| {
+                let trimmed = s.trim();
+                if trimmed.is_empty() {
+                    None
+                } else {
+                    Some(trimmed.to_string())
+                }
+            });
+
         let (area, perimeter) = if let EntityType::LwPolyline(pl) = entity {
             let mut points: Vec<(f64, f64)> = pl
                 .vertices
@@ -216,8 +257,51 @@ pub fn room_from_entity(entity: &EntityType) -> Option<Room> {
             base_z,
             phase,
             stamp_pos,
+            finish_style_id,
             floor_finish,
+            ceiling_finish,
         });
     }
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use acadrust::entities::LwPolyline;
+
+    #[test]
+    fn test_room_xdata_roundtrip_with_finishes() {
+        let room = Room {
+            name: "Kitchen".to_string(),
+            number: "K-02".to_string(),
+            function: RoomFunction::Kitchen,
+            area: 15.5,
+            factor: 1.0,
+            perimeter: 16.0,
+            clear_height: 2.6,
+            volume: 40.3,
+            storey_id: 1,
+            base_z: 2.8,
+            phase: PlanPhase::New,
+            stamp_pos: Some((2.5, 3.0)),
+            finish_style_id: Some("finish_floor_tiles_80".to_string()),
+            floor_finish: Some(vec![RoomFinish::new("Tiles", 0.015).with_hatch("SQUARE")]),
+            ceiling_finish: Some(vec![RoomFinish::new("Plaster", 0.015)]),
+        };
+
+        let values = room_record(&room);
+        let mut entity = EntityType::LwPolyline(LwPolyline::new());
+        let mut record = ExtendedDataRecord::new(AEC_APPID);
+        record.values = values;
+        entity.common_mut().extended_data.add_record(record);
+
+        let parsed = room_from_entity(&entity).expect("Should parse room");
+        assert_eq!(parsed.name, "Kitchen");
+        assert_eq!(parsed.number, "K-02");
+        assert_eq!(parsed.finish_style_id.as_deref(), Some("finish_floor_tiles_80"));
+        assert_eq!(parsed.floor_finish_summary(), "finish_floor_tiles_80");
+        assert_eq!(parsed.ceiling_finish_summary(), "Plaster");
+        assert_eq!(parsed.stamp_pos, Some((2.5, 3.0)));
+    }
 }

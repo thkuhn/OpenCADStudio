@@ -226,6 +226,18 @@ impl OpenCADStudio {
                 self.aec.aec_slab_style_manager_parent = value;
                 Task::none()
             }
+            AecMessage::AecSlabStyleManagerStructuralStyleChanged(value) => {
+                self.aec_slab_style_manager_structural_style_changed(value);
+                Task::none()
+            }
+            AecMessage::AecSlabStyleManagerFinishStyleChanged(value) => {
+                self.aec_slab_style_manager_finish_style_changed(value);
+                Task::none()
+            }
+            AecMessage::AecSlabStyleManagerLoadModularLayers => {
+                self.aec_slab_style_manager_load_modular_layers();
+                Task::none()
+            }
             AecMessage::AecSlabStyleManagerLayerAdd => {
                 self.aec_slab_style_manager_layer_add();
                 Task::none()
@@ -326,6 +338,160 @@ impl OpenCADStudio {
             }
             AecMessage::AecStyleManagerCopySlabStyleToGlobal => {
                 self.aec_handle_copy_slab_style(false)
+            }
+            AecMessage::AecFloorFinishStyleManagerOpen => {
+                self.aec_floor_finish_style_manager_open()
+            }
+            AecMessage::AecFloorFinishStyleManagerFilter(value) => {
+                self.aec.aec_floor_finish_style_manager_filter = value;
+                Task::none()
+            }
+            AecMessage::AecFloorFinishStyleManagerSelect(id) => {
+                self.aec_floor_finish_style_manager_select(id)
+            }
+            AecMessage::AecFloorFinishStyleManagerNew => {
+                self.aec_floor_finish_style_manager_new()
+            }
+            AecMessage::AecFloorFinishStyleManagerDuplicate => {
+                self.aec_floor_finish_style_manager_duplicate()
+            }
+            AecMessage::AecFloorFinishStyleManagerNameChanged(value) => {
+                self.aec.aec_floor_finish_style_manager_name = value;
+                Task::none()
+            }
+            AecMessage::AecFloorFinishStyleManagerParentChanged(value) => {
+                self.aec.aec_floor_finish_style_manager_parent = value;
+                Task::none()
+            }
+            AecMessage::AecFloorFinishStyleManagerLayerAdd => {
+                self.aec_floor_finish_style_manager_layer_add();
+                Task::none()
+            }
+            AecMessage::AecFloorFinishStyleManagerLayerRemove(index) => {
+                self.aec_floor_finish_style_manager_layer_remove(index);
+                Task::none()
+            }
+            AecMessage::AecFloorFinishStyleManagerLayerMoveUp(index) => {
+                self.aec_floor_finish_style_manager_layer_move_up(index);
+                Task::none()
+            }
+            AecMessage::AecFloorFinishStyleManagerLayerMoveDown(index) => {
+                self.aec_floor_finish_style_manager_layer_move_down(index);
+                Task::none()
+            }
+            AecMessage::AecFloorFinishStyleManagerLayerDragStart(index) => {
+                self.aec.aec_floor_finish_style_manager_drag_index = Some(index);
+                Task::none()
+            }
+            AecMessage::AecFloorFinishStyleManagerLayerDragOver(index) => {
+                if let Some(from) = self.aec.aec_floor_finish_style_manager_drag_index {
+                    if from != index
+                        && index < self.aec.aec_floor_finish_style_manager_layers.len()
+                    {
+                        let item = self
+                            .aec
+                            .aec_floor_finish_style_manager_layers
+                            .remove(from);
+                        self.aec
+                            .aec_floor_finish_style_manager_layers
+                            .insert(index, item);
+                        self.aec.aec_floor_finish_style_manager_drag_index = Some(index);
+                    }
+                }
+                Task::none()
+            }
+            AecMessage::AecFloorFinishStyleManagerLayerDragEnd => {
+                self.aec.aec_floor_finish_style_manager_drag_index = None;
+                Task::none()
+            }
+            AecMessage::AecFloorFinishStyleManagerLayerMaterialChanged(index, value) => {
+                if let Some(layer) = self
+                    .aec
+                    .aec_floor_finish_style_manager_layers
+                    .get_mut(index)
+                {
+                    layer.material_id = value;
+                }
+                Task::none()
+            }
+            AecMessage::AecFloorFinishStyleManagerLayerThicknessChanged(index, value) => {
+                if let Some(layer) = self
+                    .aec
+                    .aec_floor_finish_style_manager_layers
+                    .get_mut(index)
+                {
+                    layer.thickness = value;
+                }
+                Task::none()
+            }
+            AecMessage::AecFloorFinishStyleManagerLayerFunctionChanged(index, value) => {
+                if let Some(layer) = self
+                    .aec
+                    .aec_floor_finish_style_manager_layers
+                    .get_mut(index)
+                {
+                    layer.function = value;
+                }
+                Task::none()
+            }
+            AecMessage::AecFloorFinishStyleManagerLayerVerticalOffsetChanged(index, value) => {
+                if let Some(layer) = self
+                    .aec
+                    .aec_floor_finish_style_manager_layers
+                    .get_mut(index)
+                {
+                    layer.vertical_offset = value;
+                }
+                Task::none()
+            }
+            AecMessage::AecFloorFinishStyleManagerLayerOverrideChanged(index, value) => {
+                if let Some(layer) = self
+                    .aec
+                    .aec_floor_finish_style_manager_layers
+                    .get_mut(index)
+                {
+                    layer.layer_override = value;
+                }
+                Task::none()
+            }
+            AecMessage::AecFloorFinishStyleManagerLayerHatchOverrideChanged(index, value) => {
+                if let Some(layer) = self
+                    .aec
+                    .aec_floor_finish_style_manager_layers
+                    .get_mut(index)
+                {
+                    layer.hatch_override = value;
+                }
+                Task::none()
+            }
+            AecMessage::AecFloorFinishStyleManagerLayerRoleTagChanged(index, value) => {
+                if let Some(layer) = self
+                    .aec
+                    .aec_floor_finish_style_manager_layers
+                    .get_mut(index)
+                {
+                    layer.role_tag = value;
+                }
+                Task::none()
+            }
+            AecMessage::AecFloorFinishStyleManagerSetPreviewMode(mode) => {
+                self.aec.aec_floor_finish_style_manager_preview_mode = mode;
+                Task::none()
+            }
+            AecMessage::AecFloorFinishStyleManagerSave => {
+                self.aec_floor_finish_style_manager_save()
+            }
+            AecMessage::AecFloorFinishStyleManagerSaveAndApply => {
+                self.aec_floor_finish_style_manager_save_and_apply()
+            }
+            AecMessage::AecFloorFinishStyleManagerDelete => {
+                self.aec_floor_finish_style_manager_delete()
+            }
+            AecMessage::AecStyleManagerCopyFloorFinishStyleToProject => {
+                self.aec_handle_copy_floor_finish_style(true)
+            }
+            AecMessage::AecStyleManagerCopyFloorFinishStyleToGlobal => {
+                self.aec_handle_copy_floor_finish_style(false)
             }
             AecMessage::AecProjectExplorerOpen => {
                 self.ribbon.close_dropdown();
@@ -3084,6 +3250,9 @@ impl OpenCADStudio {
                     }
                     Some(AecPendingCopy::SlabStyle { .. }) => {
                         crate::app::ModalKind::Aec(AecModalKind::SlabStyleManager)
+                    }
+                    Some(AecPendingCopy::FloorFinishStyle { .. }) => {
+                        crate::app::ModalKind::Aec(AecModalKind::FloorFinishStyleManager)
                     }
                     None => crate::app::ModalKind::Aec(AecModalKind::MaterialManager),
                 };

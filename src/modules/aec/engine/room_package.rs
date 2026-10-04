@@ -21,12 +21,16 @@ use super::xdata::{
 pub const ROOM_REP_ROLE_CONTOUR: &str = "contour";
 pub const ROOM_REP_ROLE_STAMP: &str = "stamp";
 pub const ROOM_REP_ROLE_HATCH: &str = "hatch";
+pub const ROOM_REP_ROLE_CEILING_HATCH: &str = "ceiling_hatch";
+pub const ROOM_REP_ROLE_THRESHOLD: &str = "threshold";
 pub const ROOM_REP_ROLE_SOLID: &str = "solid";
 
 /// Default layer names for room carrier and derived representations.
 pub const AEC_ROOM_CARRIER_LAYER: &str = "AEC_ROOMS";
 pub const AEC_ROOM_STAMP_LAYER: &str = "AEC_ROOM_STAMP";
 pub const AEC_ROOM_HATCH_LAYER: &str = "AEC_ROOM_HATCH";
+pub const AEC_ROOM_CEILING_HATCH_LAYER: &str = "AEC_CEILING_HATCH";
+pub const AEC_ROOM_THRESHOLD_LAYER: &str = "AEC_OPENING_THRESHOLD";
 pub const AEC_ROOM_SOLID_LAYER: &str = "AEC_ROOM_SOLID";
 pub const AEC_ROOM_SCHEDULE_LAYER: &str = "AEC_SCHEDULE";
 pub const ROOM_SCHEDULE_XDATA_TAG: &str = "ROOM_SCHEDULE";

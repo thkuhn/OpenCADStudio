@@ -58,6 +58,21 @@ impl SlabStyleLayer {
         }
     }
 
+    pub fn with_hatch(mut self, hatch: Option<String>) -> Self {
+        self.hatch_override = hatch;
+        self
+    }
+
+    pub fn with_role(mut self, role: Option<String>) -> Self {
+        self.role_tag = role;
+        self
+    }
+
+    pub fn with_layer_override(mut self, layer: Option<String>) -> Self {
+        self.layer_override = layer;
+        self
+    }
+
     pub fn is_structural(&self) -> bool {
         self.function == LayerFunction::Structural
     }
@@ -92,11 +107,119 @@ impl ResolvedSlabLayer {
     }
 }
 
+/// Parametric style schema for structural slab cores (e.g. reinforced concrete, timber deck).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SlabStructuralStyle {
+    #[serde(flatten)]
+    pub style: Style,
+    #[serde(default)]
+    pub layers: Vec<SlabStyleLayer>,
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub display_profiles: HashMap<String, ComponentRuleSet>,
+}
+
+impl SlabStructuralStyle {
+    pub fn new(id: impl Into<String>, name: impl Into<String>) -> Self {
+        Self {
+            style: Style {
+                id: id.into(),
+                name: name.into(),
+                object_kind: "SlabStructural".to_string(),
+                parent_style_id: None,
+            },
+            layers: Vec::new(),
+            display_profiles: HashMap::new(),
+        }
+    }
+
+    pub fn with_layers(mut self, layers: Vec<SlabStyleLayer>) -> Self {
+        self.layers = layers;
+        self
+    }
+
+    /// Total nominal thickness of this structural style's fixed layers in meters.
+    pub fn nominal_thickness(&self) -> f64 {
+        base_thickness_from_layers(&self.layers)
+    }
+}
+
+/// Parametric style schema for reusable floor finish build-ups (Fußbodenaufbauten, from OKRD to OKFF).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct FloorFinishStyle {
+    #[serde(flatten)]
+    pub style: Style,
+    #[serde(default)]
+    pub layers: Vec<SlabStyleLayer>,
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub display_profiles: HashMap<String, ComponentRuleSet>,
+}
+
+impl FloorFinishStyle {
+    pub fn new(id: impl Into<String>, name: impl Into<String>) -> Self {
+        Self {
+            style: Style {
+                id: id.into(),
+                name: name.into(),
+                object_kind: "FloorFinish".to_string(),
+                parent_style_id: None,
+            },
+            layers: Vec::new(),
+            display_profiles: HashMap::new(),
+        }
+    }
+
+    pub fn with_layers(mut self, layers: Vec<SlabStyleLayer>) -> Self {
+        self.layers = layers;
+        self
+    }
+
+    /// Total nominal thickness of this finish style's fixed layers in meters.
+    pub fn nominal_thickness(&self) -> f64 {
+        base_thickness_from_layers(&self.layers)
+    }
+
+    /// Converts this finish style's layers into concrete [`RoomFinish`] items for a room.
+    pub fn to_room_finishes(&self) -> Vec<crate::modules::aec::engine::room::RoomFinish> {
+        let mut offset = 0.0;
+        let mut finishes = Vec::new();
+        for l in &self.layers {
+            let thick = l.thickness.as_fixed_or(0.0);
+            let hatch = l.hatch_override.clone();
+            let mut rf = crate::modules::aec::engine::room::RoomFinish::new(&l.material_id, thick)
+                .with_offset(offset);
+            if let Some(h) = hatch {
+                rf = rf.with_hatch(h);
+            }
+            finishes.push(rf);
+            offset += thick;
+        }
+        finishes
+    }
+
+    /// Concise summary string of this finish style (e.g. style name or primary layer).
+    pub fn summary(&self) -> String {
+        if !self.style.name.is_empty() {
+            self.style.name.clone()
+        } else if !self.layers.is_empty() {
+            let names: Vec<&str> = self.layers.iter().map(|l| l.material_id.as_str()).collect();
+            names.join(", ")
+        } else {
+            "-".to_string()
+        }
+    }
+}
+
 /// Parametric style schema for multi-layer slabs.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SlabStyle {
     #[serde(flatten)]
     pub style: Style,
+    /// Optional reference to a structural slab style in the library.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub structural_style_id: Option<String>,
+    /// Optional reference to a default floor finish style in the library.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_finish_style_id: Option<String>,
     #[serde(default)]
     pub layers: Vec<SlabStyleLayer>,
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
@@ -112,6 +235,8 @@ impl SlabStyle {
                 object_kind: "Slab".to_string(),
                 parent_style_id: None,
             },
+            structural_style_id: None,
+            default_finish_style_id: None,
             layers: Vec::new(),
             display_profiles: HashMap::new(),
         }
@@ -119,6 +244,16 @@ impl SlabStyle {
 
     pub fn with_layers(mut self, layers: Vec<SlabStyleLayer>) -> Self {
         self.layers = layers;
+        self
+    }
+
+    pub fn with_structural_style(mut self, id: impl Into<String>) -> Self {
+        self.structural_style_id = Some(id.into());
+        self
+    }
+
+    pub fn with_default_finish_style(mut self, id: impl Into<String>) -> Self {
+        self.default_finish_style_id = Some(id.into());
         self
     }
 
@@ -197,9 +332,73 @@ pub fn effective_layers_for_slab_vars(
     Ok(resolved)
 }
 
+/// Resolves composite layers from modular sub-styles (`FloorFinishStyle` and `SlabStructuralStyle`).
+pub fn resolve_slab_style_layers(
+    slab_style: &SlabStyle,
+    structural_styles: Option<&HashMap<String, SlabStructuralStyle>>,
+    finish_styles: Option<&HashMap<String, FloorFinishStyle>>,
+) -> Vec<SlabStyleLayer> {
+    if !slab_style.layers.is_empty() {
+        return slab_style.layers.clone();
+    }
+    let mut layers = Vec::new();
+    if let (Some(f_id), Some(f_styles)) = (&slab_style.default_finish_style_id, finish_styles) {
+        if let Some(fs) = f_styles.get(f_id) {
+            layers.extend(fs.layers.clone());
+        }
+    }
+    if let (Some(s_id), Some(s_styles)) = (&slab_style.structural_style_id, structural_styles) {
+        if let Some(ss) = s_styles.get(s_id) {
+            layers.extend(ss.layers.clone());
+        }
+    }
+    layers
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_slab_structural_and_floor_finish_styles() {
+        let struct_style = SlabStructuralStyle::new("struct_conc_20", "Stb 20cm").with_layers(vec![
+            SlabStyleLayer::new("mat_concrete", LayerValue::Fixed(0.20), LayerFunction::Structural),
+        ]);
+        assert_eq!(struct_style.style.object_kind, "SlabStructural");
+        assert!((struct_style.nominal_thickness() - 0.20).abs() < 1e-6);
+
+        let finish_style = FloorFinishStyle::new("finish_parquet_80", "Standard Parkett 80mm").with_layers(vec![
+            SlabStyleLayer::new("mat_wood", LayerValue::Fixed(0.015), LayerFunction::Finish)
+                .with_hatch(Some("ANSI31".to_string())),
+            SlabStyleLayer::new("mat_screed", LayerValue::Fixed(0.045), LayerFunction::Other("Screed".to_string())),
+            SlabStyleLayer::new("mat_insulation", LayerValue::Fixed(0.020), LayerFunction::Insulation),
+        ]);
+        assert_eq!(finish_style.style.object_kind, "FloorFinish");
+        assert!((finish_style.nominal_thickness() - 0.08).abs() < 1e-6);
+        assert_eq!(finish_style.summary(), "Standard Parkett 80mm");
+
+        let room_finishes = finish_style.to_room_finishes();
+        assert_eq!(room_finishes.len(), 3);
+        assert_eq!(room_finishes[0].material, "mat_wood");
+        assert_eq!(room_finishes[0].hatch_pattern.as_deref(), Some("ANSI31"));
+        assert!((room_finishes[0].thickness - 0.015).abs() < 1e-6);
+        assert!((room_finishes[1].vertical_offset - 0.015).abs() < 1e-6);
+
+        // Test composite slab style resolution
+        let composite_slab = SlabStyle::new("slab_comp", "Composite Slab")
+            .with_structural_style("struct_conc_20")
+            .with_default_finish_style("finish_parquet_80");
+
+        let mut s_map = HashMap::new();
+        s_map.insert("struct_conc_20".to_string(), struct_style);
+        let mut f_map = HashMap::new();
+        f_map.insert("finish_parquet_80".to_string(), finish_style);
+
+        let resolved = resolve_slab_style_layers(&composite_slab, Some(&s_map), Some(&f_map));
+        assert_eq!(resolved.len(), 4);
+        assert_eq!(resolved[0].material_id, "mat_wood");
+        assert_eq!(resolved[3].material_id, "mat_concrete");
+    }
 
     #[test]
     fn test_slab_style_creation_and_thickness() {

@@ -56,6 +56,10 @@ pub enum AecPendingCopy {
         slab_style: crate::modules::aec::engine::slab_style::SlabStyle,
         to_project: bool,
     },
+    FloorFinishStyle {
+        floor_finish_style: crate::modules::aec::engine::slab_style::FloorFinishStyle,
+        to_project: bool,
+    },
 }
 
 /// Preview mode in the Slab Style Manager canvas.
@@ -373,6 +377,8 @@ pub struct AecState {
     pub aec_slab_style_manager_preview_mode: AecSlabPreviewMode,
     pub aec_slab_style_manager_name: String,
     pub aec_slab_style_manager_parent: Option<String>,
+    pub aec_slab_style_manager_structural_style: Option<String>,
+    pub aec_slab_style_manager_finish_style: Option<String>,
     pub aec_slab_style_manager_layers: Vec<AecSlabLayerBuffer>,
     pub aec_slab_style_manager_drag_index: Option<usize>,
     pub aec_slab_style_manager_profile_selected: Option<String>,
@@ -386,6 +392,18 @@ pub struct AecState {
     pub aec_slab_style_manager_profile_editing_slot:
         Option<crate::modules::aec::engine::display_component::SlabComponentSlot>,
     pub aec_last_slab_style_id: Option<String>,
+
+    // ── AEC Floor Finish Style Manager (`AEC_FLOORFINISHSTYLEMANAGER`) ──
+    pub aec_floor_finish_style_manager_filter: String,
+    pub aec_floor_finish_style_manager_selected: Option<String>,
+    pub aec_floor_finish_style_manager_editing_id: Option<String>,
+    pub aec_floor_finish_style_manager_form_open: bool,
+    pub aec_floor_finish_style_manager_preview_mode: AecSlabPreviewMode,
+    pub aec_floor_finish_style_manager_name: String,
+    pub aec_floor_finish_style_manager_parent: Option<String>,
+    pub aec_floor_finish_style_manager_layers: Vec<AecSlabLayerBuffer>,
+    pub aec_floor_finish_style_manager_drag_index: Option<usize>,
+    pub aec_last_floor_finish_style_id: Option<String>,
 
     // ── AEC DisplayConfig Manager (Step 5) ─────────────────────────────────
     /// Loaded (or seeded) on `AEC_PLANMANAGER`; holds the `DisplayConfig`
@@ -642,6 +660,8 @@ impl Default for AecState {
             aec_slab_style_manager_preview_mode: AecSlabPreviewMode::CrossSection,
             aec_slab_style_manager_name: String::new(),
             aec_slab_style_manager_parent: None,
+            aec_slab_style_manager_structural_style: None,
+            aec_slab_style_manager_finish_style: None,
             aec_slab_style_manager_layers: Vec::new(),
             aec_slab_style_manager_drag_index: None,
             aec_slab_style_manager_profile_selected: None,
@@ -649,6 +669,16 @@ impl Default for AecState {
             aec_slab_style_manager_profile_slot_overrides: std::collections::HashMap::new(),
             aec_slab_style_manager_profile_editing_slot: None,
             aec_last_slab_style_id: None,
+            aec_floor_finish_style_manager_filter: String::new(),
+            aec_floor_finish_style_manager_selected: None,
+            aec_floor_finish_style_manager_editing_id: None,
+            aec_floor_finish_style_manager_form_open: false,
+            aec_floor_finish_style_manager_preview_mode: AecSlabPreviewMode::CrossSection,
+            aec_floor_finish_style_manager_name: String::new(),
+            aec_floor_finish_style_manager_parent: None,
+            aec_floor_finish_style_manager_layers: Vec::new(),
+            aec_floor_finish_style_manager_drag_index: None,
+            aec_last_floor_finish_style_id: None,
             aec_plan_library: None,
             aec_plan_manager_filter: String::new(),
             aec_plan_manager_selected: None,

@@ -1,14 +1,14 @@
 ---
-sessionId: session-260916-073620-1igx
+sessionId: session-261002-194949-trwx
 ---
 
 # Requirements
 
 ### Overview & Goals
-**Stand (2026-09-27):** Gesamtrecap aller Pläne unter `.junie/plans/` und des aktuellen Entwicklungsstands in `src/modules/aec/`.
-Die Pläne dokumentieren die Konzeption und Historie; der Code unter `src/modules/aec/` und die 644 automatisierten Modultests bilden die verifizierte Quelle der Wahrheit.
+**Stand (2026-10-04):** Gesamtrecap aller Pläne unter `.junie/plans/` und des aktuellen Entwicklungsstands in `src/modules/aec/`.
+Die Pläne dokumentieren die Konzeption und Historie; der Code unter `src/modules/aec/` und die **731 automatisierten Modultests** bilden die verifizierte Quelle der Wahrheit.
 
-**Ergebnis:** Alle wesentlichen Kernbereiche (Wände, Schichten, Verschneidungen, Öffnungen, geneigte und mehrteilige Kontrollebenen, Stile, Dialoge, Performance und Core-Entkopplung) sind **vollständig implementiert, getestet und versioniert**.
+**Ergebnis:** Alle wesentlichen Kernbereiche (Wände, Schichten, Verschneidungen, Öffnungen, geneigte/mehrteilige Kontrollebenen, Geschossdecken, Deckenöffnungen, Räume, Raumstempel nach DIN 1356, Deckenbeläge/abgehängte Decken, Fußboden-Übergänge an Türöffnungen und Nischen, DIN 277 / WoFlV Flächenberechnung, Raumbuch-Tabellen, Scheitelpunktbearbeitung und Core-Entkopplung) sind **vollständig implementiert, getestet und versioniert**.
 
 ---
 
@@ -37,38 +37,66 @@ Die Pläne dokumentieren die Konzeption und Historie; der Code unter `src/module
 - **3D-B-Rep-Performance:** Direkte B-Rep-Konstruktion ohne teure CSG-Booleans (> 40-fache Beschleunigung), Sonderformen (Bogen, Kreis, Dreieck), Schrägschnitt unter geneigten Wänden (`cut_elevation_sloped`).
 - **Planabhängiges Löschen:** `ERASE` und `Entf` löschen Öffnungen unter Berücksichtigung der aktiven Planart und regenerieren die Wand sofort.
 
-#### 4. UI-Dialoge, Stil-Manager & Performance
-- **Manager-Dialoge:** Eigene Manager für Wandstile (`AEC_WALLSTYLEMANAGER`), Öffnungsstile (`AEC_OPENINGSTYLEMANAGER`), Materialien (`AEC_MATERIALMANAGER`), Planarten (`AEC_PLANMANAGER`), Geschosse (`AEC_STOREYSETTINGS`) und Projekt-Explorer (`AEC_PROJECTEXPLORER`).
+#### 4. Geschossdecken (Slabs) & Deckenöffnungen
+- **Mehrschichtige Deckenaufbauten & Modulare Stile (`SlabStyle`, `SlabStructuralStyle`, `FloorFinishStyle`):** Tragende Rohbauschichten (`Structural`), Dämmung (`Insulation`) und modulare Ausbaustile (`FloorFinishStyle`) mit Schichtdicken, Schraffuren und Detaillierungsgraden.
+- **Modulare Stil-Komposition & Wiederverwendung:** Deckenstile kombinieren Rohbaustile und Standard-Ausbaustile; Räume können Standard-Ausbauten erben oder über `finish_style_id` mit spezifischen Fußbodenaufbau-Stilen überschreiben ($M + N$ Prinzip).
+- **Deckenstil-Manager (`AEC_SLABSTYLEMANAGER`):** GUI zur Definition mehrschichtiger Deckenaufbauten mit Schicht-Tabelle und grafischer Vorschau.
+- **Deckenöffnungen (`AEC_SLABOPENING`):** Vollständige Aussparungsgeometrie mit DIN-Aussparungskreuzen/-diagonalen, 3D-B-Rep-Ausschnitten und Durchbruchsstilen.
+- **Planarten-Darstellung (1:100, 1:50, RCP, 3D):**
+  - *Entwurf 1:100:* Reduzierte Außenkontur / tragende Rohdecke.
+  - *Werkplan 1:50:* Schichtweise Darstellung mit DIN-Schraffuren.
+  - *Deckenspiegel (RCP):* Untersichtslinien (`UKD`) und sichtbare Kanten.
+  - *3D-Modell:* Facettierte 3D-B-Rep-Volumenkörper pro Schicht.
+- **Höhenbezug & Griffbearbeitung:** Ausrichtung an Bezugsebenen (OKRD/OKFF), flüssige Griffpunkt-Vorschau und Schichtversätze.
+
+#### 5. Räume, Raumstempel, Decken- & Fußboden-Übergänge (DIN 277 / WoFlV)
+- **Automatische Konturerkennung (`loop_detection.rs`):** Planare Flächenextraktion (Left-Hand Rule) zur verzögerungsfreien Erkennung geschlossener Wand-Innenkanten (Rohbau-Tragschichten) und T-Wandkreuzungen.
+- **Raum-Modi (`AEC_ROOM`):** 4 Eingabemodi (Pick-Point im Rauminneren, Polygon, Rechteck, Objektkonvertierung) mit dedizierten Ribbon-Einträgen (`AEC_ROOM_PICK`, `AEC_ROOM_POLY`, `AEC_ROOM_RECT`, `AEC_ROOM_OBJECT`).
+- **DIN 1356 Raumstempel (`MText` auf `AEC_ROOM_STAMP`):** Zeigt Raumnummer, Raumname, DIN 277 Nutzungskategorie (NUF 1–7, VF, TF), Wohn-/Nutzfläche, Berechnungsfaktor (z. B. 50 % bei Balkonen), Umfang, lichte Höhe, Deckenaufbau und Fußbodenaufbau an.
+- **Modulare Fußboden-Ausbaustile:** Auswahl von Ausbaustilen (`FloorFinishStyle`) per Dropdown im Eigenschaften-Panel; automatische Zuweisung der Schichten, Dicken und Schraffurmuster.
+- **Deckenbeläge & Abgehängte Decken:** Unterstützung raumspezifischer Deckenaufbauten (`ceiling_finish`), Berechnung der effektiven lichten Höhe unter abgehängten Decken (`UKD`), Deckenflächenermittlung und Generierung von 2D-Deckenschraffuren (`AEC_CEILING_HATCH`) für den Deckenspiegel (RCP).
+- **Fußboden-Übergänge an Türöffnungen (`floor_transition.rs`):** Automatische Erkennung von Wandöffnungen (Türen, Durchbrüche, Nischen) entlang der Raumgrenze, Berechnung der Laibungsübergangsflächen bis zur Schwellenlinie/Zargenmitte, Erzeugung von 2D-Schwellenlinien (`AEC_OPENING_THRESHOLD`), erweiterte Belagsschraffuren und differenzierte Flächenermittlung.
+- **Interaktiver Stempel-Griffpunkt & Koordinateneingabe:** Frei verschiebbarer Drag-Handle im Viewport und manuelle Positionsänderung im Eigenschaften-Panel.
+- **Raumbuch & Tabellenauszug (`AEC_ROOMSCHEDULE`):** Generiert strukturierte CAD-Tabellen (`Table`) mit 12 Spalten inklusive Deckenbelägen und Gesamtsummenzeilen; interaktive Einfügepunktabfrage mit Tabellenvorschau; **automatische Live-Aktualisierung** aller Tabellen bei Geometrie- oder Eigenschaftsänderungen von Räumen.
+- **Scheitelpunktbearbeitung (Vertices):** Hinzufügen (`Add Vertex`) und Entfernen (`Remove Vertex`) von Scheitelpunkten an Decken, Deckenöffnungen und Räumen via Griffmenü und Properties-Panel mit zentraler automatischer Paketregenerierung (`aec_regenerate_entity_packages`).
+
+#### 6. XREF-Unterstützung & Planarten-Synchronisation
+- **Dynamische In-Memory-Regenerierung:** Externe DWG/DXF-Referenzen (XREFs) passen ihre AEC-Darstellung (Wände, Öffnungen, Schraffuren, 3D-Solids) dynamisch an die im Hauptdokument aktive Planart (`DisplayConfig`) an, ohne die Quellreferenzen zu modifizieren.
+- **Block-Mesh-Synchronisation:** Saubere Aktualisierung der Geometrie-Caches und Layer-Präfixierung (`XREF|Layer`).
+
+#### 7. UI-Dialoge, Stil-Manager & Performance
+- **Manager-Dialoge:** Eigene Manager für Wandstile (`AEC_WALLSTYLEMANAGER`), Öffnungsstile (`AEC_OPENINGSTYLEMANAGER`), Deckenstile (`AEC_SLABSTYLEMANAGER`), Fußbodenaufbau-Stile (`AEC_FLOORFINISHSTYLEMANAGER`), Materialien (`AEC_MATERIALMANAGER`), Planarten (`AEC_PLANMANAGER`), Geschosse (`AEC_STOREYSETTINGS`) und Projekt-Explorer (`AEC_PROJECTEXPLORER`).
+- **Modulare Decken- und Ausbaustile:** Deckenstil-Manager unterstützt die direkte Auswahl von Rohbaustil und Standard-Ausbaustil mit Schichtenübernahme (`Schichten aus Stilen laden`).
 - **Entkoppelte Aktualisierung:** Saubere Trennung von Zwischenstand („Übernehmen“: Speichern & Zeichnung aktualisieren) und reinem Speichern in Bibliotheken.
-- **Multi-Mode-Vorschau:** Umschaltung zwischen 2D-Grundriss, 2D-Fassadenansicht und 3D-Isometrie im Öffnungsstil-Manager.
+- **Multi-Mode-Vorschau:** Umschaltung zwischen 2D-Grundriss, 2D-Fassadenansicht und 3D-Isometrie im Öffnungsstil-, Deckenstil- und Fußbodenaufbaustil-Manager.
 - **Deduplizierung & Caching:** Vermeidung von Mehrfach-Regenerierungen bei Werteingaben im Eigenschaften-Panel.
 
-#### 5. Architektur & Core-Entkopplung (`AEC ≠ Core`)
+#### 8. Architektur & Core-Entkopplung (`AEC ≠ Core`)
 - **Strikte Modultrennung:** AEC-Fachlogik liegt ausschließlich unter `src/modules/aec/**`.
-- **Schlanke Core-Hooks:** `Message::Aec`, `ModalKind::Aec(AecModalKind)`, `ColorPickTarget::Aec(AecColorPickTarget)`, `aec::update`, `properties::extend`, Live-Entity-Finish-Hook.
+- **Schlanke Core-Hooks:** `Message::Aec`, `ModalKind::Aec(AecModalKind)`, `ColorPickTarget::Aec(AecColorPickTarget)`, `aec::update`, `properties::extend`, `aec_regenerate_entity_packages`, Live-Entity-Finish-Hook.
 - **Internationalisierung (i18n):** Alle Benutzeroberflächentexte, Menüs und Meldungen über Fluent-Dateien (`locales/de-DE` und `locales/en-US`).
-- **IFC4-Export:** Facettierte B-Rep-Volumenkörper (`IfcFacetedBrep`), Extrusionskörper und Geschossstrukturen.
+- **IFC4-Export:** Facettierte B-Rep-Volumenkörper (`IfcFacetedBrep`), Extrusionskörper, Decken und Geschossstrukturen.
 
 ---
 
 ### Offene Roadmap & Zukünftige Ausbaustufen (Backlog)
 
-1. **Undo-Treue bei Öffnungslöschung:**
-   - *Status:* Beim Löschen einer Öffnung schließt die Wand sofort. Bei `UNDO` wird die Öffnung aus dem OOPS-Cache wiederhergestellt; die Wand schneidet den Durchbruch erst bei der nächsten Wandbearbeitung/Regenerierung nach.
-2. **Dynamische In-Viewport-Eingabe (`dyn_spec` für `AEC_WALL`):**
-   - *Status:* Bemaßungseingaben erfolgen per Tastatur/Befehlszeile und Eigenschaften-Panel. Eine direkte Cursor-Bemaßung während des Zeichnens ist noch nicht verdrahtet.
-3. **Erweiterte Wandverschneidungen:**
+1. **Ganzheitliche Planarten- und GUI-Konsolidierung:**
+   - *Status:* Übergreifende Benutzeroberfläche zur einheitlichen Konfiguration von Schichtenfiltern, Detaillierungsgraden (1:100, 1:50, Deckenspiegel, Rohbau, 3D) und Darstellungs-Overrides für Wände, Decken und Öffnungen.
+2. **Assoziative DIN 1356 Bemaßungsketten (`AEC_DIMENSION`):**
+   - *Status:* Automatische Bemaßungsketten mit Erkennung von Wandachsen, Pfeilern, Rohbau- und lichten Öffnungsmaßen.
+3. **Erweiterte Wandöffnungs-Interaktion:**
+   - *Status:* Flip-Grip zur direkten Spiegelung von Fenstern/Türen quer zur Wandachse (Anschlagsebene / Aufschlagrichtung).
+4. **Erweiterte N-Wege-Wandverschneidungen:**
    - *Status:* L- und T-Stöße greifen vollautomatisch. Manuelle Schichtaussparungen bei N-Wege-Kreuzungen (4+ Wände an einem Knoten) sind vorgemerkt.
-4. **Geschossdecken / Böden (`Slabs`):**
-   - *Status:* Datenstrukturen und B-Rep-Extrusion vorbereitet; UI-Werkzeuge und Schichtaufbau-Manager für Decken als nächster großer Baustein geplant.
-5. **Automatische AEC-Bemaßung (DIN 1356):**
-   - *Status:* Automatische Maßketten mit Erkennung von Wandöffnungen, Pfeilern und Wandstärken.
-6. **Räume & Flächen (`Rooms`):**
-   - *Status:* Raumstempel für automatische DIN 277 / WoFlV Flächenberechnung.
+5. **Dynamische In-Viewport-Eingabe (`dyn_spec` für `AEC_WALL`):**
+   - *Status:* Bemaßungseingaben erfolgen per Tastatur/Befehlszeile und Eigenschaften-Panel. Eine direkte Cursor-Bemaßung während des Zeichnens ist noch nicht verdrahtet.
+6. **IFC4 Room Boundaries & Space Export:**
+   - *Status:* Export von `IfcSpace` samt räumlichen Begrenzungsflächen (`IfcRelSpaceBoundary2ndLevel`) für thermische Simulationen und BIM-Datenaustausch.
 
 ---
 
 ### Verifikation & Teststatus
-- **Testsuite:** Alle **644 Komponententests** des AEC-Moduls (`cargo test -p OpenCADStudio --lib modules::aec`) laufen fehlerfrei durch.
-- **Git-Status:** Branch `feature/aec-core-module` ist sauber committet (letzter Commit: `7d7a2f07`).
+- **Testsuite:** Alle **731 Komponententests** des AEC-Moduls (`cargo test --lib -- aec`) laufen fehlerfrei durch.
+- **Git-Status:** Branch `feature/aec-core-module` ist sauber committet (letzter Commit: `1ade37bf`).
 - **Referenzzeichnungen:** `docs/examples/aec-wall-joins.dxf` und `docs/examples/aec-sloped-walls.dxf` vorhanden.

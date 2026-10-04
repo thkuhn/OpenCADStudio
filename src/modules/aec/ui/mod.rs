@@ -2,6 +2,7 @@
 
 pub mod aec_junction_editor;
 pub mod context_menu;
+pub mod aec_floor_finish_style_manager;
 pub mod aec_material_manager;
 pub mod aec_plan_manager;
 pub mod aec_project_explorer;

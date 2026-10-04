@@ -27,7 +27,7 @@ pub fn tool() -> ToolDef {
     }
 }
 
-const SCHEDULE_COL_WIDTHS: [f64; 11] = [1.5, 4.0, 3.5, 2.5, 1.5, 2.5, 2.0, 2.0, 2.5, 3.5, 1.8];
+const SCHEDULE_COL_WIDTHS: [f64; 12] = [1.5, 4.0, 3.5, 2.5, 1.5, 2.5, 2.0, 2.0, 2.5, 3.5, 3.5, 1.8];
 const SCHEDULE_ROW_HEIGHT: f64 = 0.6;
 
 /// Collects and sorts all AEC rooms in the document by Storey ID, Number, and Name.
@@ -46,7 +46,7 @@ pub fn collect_all_rooms(scene: &Scene) -> Vec<Room> {
 
 /// Constructs a DIN 277 / WoFlV room schedule CAD table at the given coordinate.
 pub fn build_room_schedule_table(rooms: &[Room], at: Vector3) -> Table {
-    let col_count = 11;
+    let col_count = 12;
     let row_count = rooms.len() + 2;
     let mut table = Table::new(at, row_count, col_count);
 
@@ -71,7 +71,8 @@ pub fn build_room_schedule_table(rooms: &[Room], at: Vector3) -> Table {
     table.set_cell_text(0, 7, "Lichte Höhe [m]");
     table.set_cell_text(0, 8, "Volumen [m³]");
     table.set_cell_text(0, 9, "Bodenbelag");
-    table.set_cell_text(0, 10, "Geschoss");
+    table.set_cell_text(0, 10, "Deckenbelag");
+    table.set_cell_text(0, 11, "Geschoss");
 
     let mut total_gross_area = 0.0;
     let mut total_calc_area = 0.0;
@@ -93,7 +94,8 @@ pub fn build_room_schedule_table(rooms: &[Room], at: Vector3) -> Table {
         table.set_cell_text(row, 7, &format!("{:.2}", r.clear_height));
         table.set_cell_text(row, 8, &format!("{:.2}", r.effective_volume()));
         table.set_cell_text(row, 9, &r.floor_finish_summary());
-        table.set_cell_text(row, 10, &r.storey_id.to_string());
+        table.set_cell_text(row, 10, &r.ceiling_finish_summary());
+        table.set_cell_text(row, 11, &r.storey_id.to_string());
     }
 
     // Total / Summary row
@@ -109,6 +111,7 @@ pub fn build_room_schedule_table(rooms: &[Room], at: Vector3) -> Table {
     table.set_cell_text(sum_row, 8, &format!("{:.2}", total_volume));
     table.set_cell_text(sum_row, 9, "-");
     table.set_cell_text(sum_row, 10, "-");
+    table.set_cell_text(sum_row, 11, "-");
 
     table
 }
@@ -363,7 +366,7 @@ mod tests {
         };
 
         assert_eq!(table.rows.len(), 4); // header + 2 rooms + summary
-        assert_eq!(table.columns.len(), 11);
+        assert_eq!(table.columns.len(), 12);
         assert_eq!(table.cell(0, 0).map(|c| c.text_value()), Some("Nr."));
         assert_eq!(table.cell(1, 0).map(|c| c.text_value()), Some("EG-01"));
         assert_eq!(table.cell(1, 1).map(|c| c.text_value()), Some("Wohnzimmer"));

@@ -111,7 +111,9 @@ pub struct RoomCommand {
     pub(crate) function: RoomFunction,
     pub(crate) clear_height: f64,
     pub(crate) factor: f64,
+    pub(crate) floor_finish_style_id: Option<String>,
     pub(crate) floor_finish_name: String,
+    pub(crate) ceiling_finish_name: String,
     pub(crate) storey_id: u32,
     pub(crate) base_z: f64,
     pub(crate) phase: PlanPhase,
@@ -136,7 +138,9 @@ impl RoomCommand {
             function: RoomFunction::Living,
             clear_height: 2.50,
             factor: 1.0,
+            floor_finish_style_id: None,
             floor_finish_name: "Parkett".to_string(),
+            ceiling_finish_name: "-".to_string(),
             storey_id: 0,
             base_z: 0.0,
             phase: PlanPhase::New,
@@ -178,13 +182,40 @@ impl RoomCommand {
         self
     }
 
+    pub fn with_floor_finish_style(mut self, style_id: impl Into<String>) -> Self {
+        self.floor_finish_style_id = Some(style_id.into());
+        self
+    }
+
+    pub fn with_ceiling_finish_str(mut self, s: impl Into<String>) -> Self {
+        self.ceiling_finish_name = s.into();
+        self
+    }
+
     /// Sets floor finish string and parses standard finishes.
     pub fn set_floor_finish_str(&mut self, s: &str) {
         self.floor_finish_name = s.to_string();
     }
 
+    /// Sets ceiling finish string and parses standard finishes.
+    pub fn set_ceiling_finish_str(&mut self, s: &str) {
+        self.ceiling_finish_name = s.to_string();
+    }
+
     /// Builds a `Vec<RoomFinish>` from the current floor finish configuration.
     pub fn current_finishes(&self) -> Option<Vec<RoomFinish>> {
+        if let Some(style_id) = &self.floor_finish_style_id {
+            if let Some(lib) = &self.library {
+                if let Some(style) = lib.find_floor_finish_style_by_name_or_id(style_id) {
+                    return Some(style.to_room_finishes());
+                }
+            }
+            for style in crate::modules::aec::engine::library::seed_floor_finish_styles() {
+                if style.style.id == *style_id || style.style.name == *style_id {
+                    return Some(style.to_room_finishes());
+                }
+            }
+        }
         let trimmed = self.floor_finish_name.trim();
         if trimmed.is_empty() || trimmed == "-" {
             return None;
@@ -198,6 +229,29 @@ impl RoomCommand {
             None
         };
         let mut finish = RoomFinish::new(trimmed, 0.05);
+        if let Some(h) = hatch {
+            finish = finish.with_hatch(h);
+        }
+        Some(vec![finish])
+    }
+
+    /// Builds a `Vec<RoomFinish>` from the current ceiling finish configuration.
+    pub fn current_ceiling_finishes(&self) -> Option<Vec<RoomFinish>> {
+        let trimmed = self.ceiling_finish_name.trim();
+        if trimmed.is_empty() || trimmed == "-" {
+            return None;
+        }
+        let lower = trimmed.to_lowercase();
+        let hatch = if lower.contains("raster") || lower.contains("grid") {
+            Some("NET".to_string())
+        } else if lower.contains("fliese") || lower.contains("tile") || lower.contains("kassette") {
+            Some("SQUARE".to_string())
+        } else if lower.contains("gips") || lower.contains("wood") || lower.contains("holz") {
+            Some("ANSI31".to_string())
+        } else {
+            None
+        };
+        let mut finish = RoomFinish::new(trimmed, 0.02);
         if let Some(h) = hatch {
             finish = finish.with_hatch(h);
         }
@@ -243,8 +297,16 @@ impl RoomCommand {
             room = room.with_stamp_pos(centroid(points));
         }
 
+        if let Some(style_id) = &self.floor_finish_style_id {
+            room = room.with_finish_style(style_id);
+        }
+
         if let Some(finishes) = self.current_finishes() {
             room = room.with_floor_finish(finishes);
+        }
+
+        if let Some(finishes) = self.current_ceiling_finishes() {
+            room = room.with_ceiling_finish(finishes);
         }
 
         write_room_record(&mut scene.document, handle, &room);
@@ -294,8 +356,16 @@ impl RoomCommand {
             room = room.with_stamp_pos(centroid(&points));
         }
 
+        if let Some(style_id) = &self.floor_finish_style_id {
+            room = room.with_finish_style(style_id);
+        }
+
         if let Some(finishes) = self.current_finishes() {
             room = room.with_floor_finish(finishes);
+        }
+
+        if let Some(finishes) = self.current_ceiling_finishes() {
+            room = room.with_ceiling_finish(finishes);
         }
 
         write_room_record(&mut scene.document, handle, &room);
@@ -636,6 +706,11 @@ impl CadCommand for RoomCommand {
                     label: crate::tr!("aec", "room-floor-finish"),
                     value: LiveFieldValue::Text(self.floor_finish_name.clone()),
                 },
+                LiveCommandField {
+                    field_id: "room_ceiling_finish",
+                    label: crate::tr!("aec", "room-ceiling-finish"),
+                    value: LiveFieldValue::Text(self.ceiling_finish_name.clone()),
+                },
             ],
         })
     }
@@ -665,6 +740,10 @@ impl CadCommand for RoomCommand {
             }
             ("room_floor_finish", LiveFieldValue::Text(s)) => {
                 self.set_floor_finish_str(&s);
+                CmdResult::NeedPoint
+            }
+            ("room_ceiling_finish", LiveFieldValue::Text(s)) => {
+                self.set_ceiling_finish_str(&s);
                 CmdResult::NeedPoint
             }
             _ => CmdResult::NeedPoint,
@@ -924,5 +1003,76 @@ mod tests {
             "Expected ~27.42 m² inner structural area for room 2, got {}",
             room2.area
         );
+    }
+
+    #[test]
+    fn test_room_with_ceiling_and_door_transition() {
+        let mut scene = Scene::default();
+
+        // Wall from (0,0) to (10,0)
+        let mut pl = LwPolyline::new();
+        pl.add_vertex(LwVertex::new(Vector2::new(0.0, 0.0)));
+        pl.add_vertex(LwVertex::new(Vector2::new(10.0, 0.0)));
+        let wall_h = scene.add_entity(EntityType::LwPolyline(pl));
+        let mut wall = crate::modules::aec::engine::wall::Wall::new("style_wall_24", 2.5, 0);
+        wall.layers.push(crate::modules::aec::engine::wall::WallLayer {
+            material: "Brick".to_string(),
+            thickness: 0.24,
+            function: "Structural".to_string(),
+            ..Default::default()
+        });
+        let mut record = ExtendedDataRecord::new(AEC_APPID);
+        record.values = crate::modules::aec::engine::xdata::wall_record_for_wall(&wall);
+        write_aec_record(&mut scene.document, wall_h, record);
+
+        // Door on this wall at distance 5.0, width 1.0
+        let mut door = crate::modules::aec::engine::openings::Opening::from_kind(
+            Handle::new(100),
+            wall_h,
+            5.0,
+            crate::modules::aec::engine::openings::OpeningKind::Door,
+        );
+        door.width = 1.0;
+        let door_point = acadrust::entities::Point::at(Vector3::new(5.0, 0.0, 0.0));
+        let door_h = scene.add_entity(EntityType::Point(door_point));
+        door.handle = door_h;
+        write_aec_record(
+            &mut scene.document,
+            door_h,
+            crate::modules::aec::engine::opening_xdata::opening_record(&door),
+        );
+        crate::modules::aec::engine::owner_index::add_child(&mut scene.document, wall_h, door_h);
+
+        // Room on positive side: (0, 0.12) to (10, 0.12) to (10, 5) to (0, 5)
+        let room_pts = [(0.0, 0.12), (10.0, 0.12), (10.0, 5.0), (0.0, 5.0)];
+        let mut cmd = RoomCommand::new()
+            .with_name("Living Room")
+            .with_number("101")
+            .with_ceiling_finish_str("Akustikraster 62.5x62.5");
+        cmd.set_floor_finish_str("Parkett Eiche");
+
+        let room_h = cmd.commit_polygon(&mut scene, &room_pts).expect("commit room");
+
+        // Verify floor transitions detected
+        let transitions = crate::modules::aec::engine::floor_transition::find_floor_transitions_for_room(
+            &scene,
+            &room_pts,
+        );
+        assert_eq!(transitions.len(), 1);
+        assert_eq!(transitions[0].kind, crate::modules::aec::engine::openings::OpeningKind::Door);
+        assert!((transitions[0].area - 0.12).abs() < 1e-4);
+
+        // Verify child objects (stamp, floor hatch, ceiling hatch, threshold line)
+        let children = collect_room_display_children(&scene, room_h);
+        assert!(children.len() >= 4);
+
+        let threshold_exists = children.iter().any(|h| {
+            if let Some(e) = scene.document.get_entity(*h) {
+                e.common().layer == AEC_ROOM_THRESHOLD_LAYER
+            } else {
+                false
+            }
+        });
+        assert!(threshold_exists, "Threshold line entity must exist");
     }
 }
