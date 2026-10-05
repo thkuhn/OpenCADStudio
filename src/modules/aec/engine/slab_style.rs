@@ -338,21 +338,48 @@ pub fn resolve_slab_style_layers(
     structural_styles: Option<&HashMap<String, SlabStructuralStyle>>,
     finish_styles: Option<&HashMap<String, FloorFinishStyle>>,
 ) -> Vec<SlabStyleLayer> {
-    if !slab_style.layers.is_empty() {
-        return slab_style.layers.clone();
-    }
-    let mut layers = Vec::new();
-    if let (Some(f_id), Some(f_styles)) = (&slab_style.default_finish_style_id, finish_styles) {
-        if let Some(fs) = f_styles.get(f_id) {
-            layers.extend(fs.layers.clone());
+    if slab_style.structural_style_id.is_some() || slab_style.default_finish_style_id.is_some() {
+        let mut layers = Vec::new();
+        if let (Some(f_id), Some(f_styles)) = (&slab_style.default_finish_style_id, finish_styles) {
+            if let Some(fs) = f_styles.get(f_id) {
+                layers.extend(fs.layers.clone());
+            }
+        }
+        if let (Some(s_id), Some(s_styles)) = (&slab_style.structural_style_id, structural_styles) {
+            if let Some(ss) = s_styles.get(s_id) {
+                layers.extend(ss.layers.clone());
+            }
+        }
+        if !layers.is_empty() {
+            return layers;
         }
     }
-    if let (Some(s_id), Some(s_styles)) = (&slab_style.structural_style_id, structural_styles) {
-        if let Some(ss) = s_styles.get(s_id) {
-            layers.extend(ss.layers.clone());
+    slab_style.layers.clone()
+}
+
+/// Resolves effective layer stack through the style inheritance chain,
+/// accounting for modular references (`structural_style_id` and `default_finish_style_id`).
+pub fn effective_layers_with_modular(
+    styles: &HashMap<String, SlabStyle>,
+    start_id: &str,
+    structural_styles: Option<&HashMap<String, SlabStructuralStyle>>,
+    finish_styles: Option<&HashMap<String, FloorFinishStyle>>,
+) -> Result<Vec<SlabStyleLayer>, StyleError> {
+    let generic_styles: HashMap<StyleId, Style> = styles
+        .iter()
+        .map(|(id, ss)| (id.clone(), ss.style.clone()))
+        .collect();
+    let chain = resolve_chain(&generic_styles, &start_id.to_string())?;
+
+    for style_id in &chain {
+        if let Some(ss) = styles.get(style_id) {
+            let layers = resolve_slab_style_layers(ss, structural_styles, finish_styles);
+            if !layers.is_empty() {
+                return Ok(layers);
+            }
         }
     }
-    layers
+    Ok(Vec::new())
 }
 
 #[cfg(test)]
@@ -446,5 +473,43 @@ mod tests {
         assert_eq!(resolved.len(), 2);
         assert!((resolved[0].thickness - 0.06).abs() < 1e-6);
         assert!((resolved[1].thickness - 0.24).abs() < 1e-6);
+    }
+
+    #[test]
+    fn test_slab_style_modular_dynamic_composition() {
+        let struct_style = SlabStructuralStyle::new("struct_timber_24", "Holzbalken 24cm").with_layers(vec![
+            SlabStyleLayer::new("mat_wood", LayerValue::Fixed(0.24), LayerFunction::Structural),
+        ]);
+        let mut finish_style = FloorFinishStyle::new("finish_tiles_80", "Fliesenaufbau 80mm").with_layers(vec![
+            SlabStyleLayer::new("mat_tile", LayerValue::Fixed(0.015), LayerFunction::Finish),
+            SlabStyleLayer::new("mat_screed", LayerValue::Fixed(0.065), LayerFunction::Other("Screed".to_string())),
+        ]);
+
+        let mut styles = HashMap::new();
+        let slab_style = SlabStyle::new("slab_dynamic", "Holzbalkendecke mit Fliesen")
+            .with_structural_style("struct_timber_24")
+            .with_default_finish_style("finish_tiles_80");
+        styles.insert("slab_dynamic".to_string(), slab_style);
+
+        let mut s_map = HashMap::new();
+        s_map.insert("struct_timber_24".to_string(), struct_style.clone());
+        let mut f_map = HashMap::new();
+        f_map.insert("finish_tiles_80".to_string(), finish_style.clone());
+
+        let resolved = effective_layers_with_modular(&styles, "slab_dynamic", Some(&s_map), Some(&f_map))
+            .expect("resolve modular");
+        assert_eq!(resolved.len(), 3);
+        assert_eq!(resolved[0].material_id, "mat_tile");
+        assert_eq!(resolved[2].material_id, "mat_wood");
+
+        // When finish style or structural style layers change in the library,
+        // the slab style dynamically reflects the changes without copying:
+        finish_style.layers.insert(0, SlabStyleLayer::new("mat_mat", LayerValue::Fixed(0.005), LayerFunction::Finish));
+        f_map.insert("finish_tiles_80".to_string(), finish_style);
+
+        let resolved_updated = effective_layers_with_modular(&styles, "slab_dynamic", Some(&s_map), Some(&f_map))
+            .expect("resolve updated modular");
+        assert_eq!(resolved_updated.len(), 4);
+        assert_eq!(resolved_updated[0].material_id, "mat_mat");
     }
 }

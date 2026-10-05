@@ -126,6 +126,23 @@ impl OpenCADStudio {
         );
     }
 
+    pub(crate) fn aec_upsert_slab_structural_style_into_session(
+        &mut self,
+        slab_structural_style: crate::modules::aec::engine::slab_style::SlabStructuralStyle,
+    ) {
+        let lib = self.tabs[self.active_tab]
+            .aec_session_style_library_mut()
+            .get_or_insert_with(crate::modules::aec::engine::library::StyleLibrary::empty);
+        lib.upsert_slab_structural_style(slab_structural_style);
+        self.aec_refresh_combined_style_library();
+        self.command_line.push_info(
+            crate::t!(
+                "AEC Style Manager: saved in this drawing session only (not written to a project or the standard library)."
+            )
+            .as_ref(),
+        );
+    }
+
     pub(crate) fn aec_upsert_floor_finish_style_into_session(
         &mut self,
         floor_finish_style: crate::modules::aec::engine::slab_style::FloorFinishStyle,
@@ -227,6 +244,29 @@ impl OpenCADStudio {
         project
             .material_wall_style_library
             .upsert_slab_style(slab_style);
+        let lib = project.material_wall_style_library.clone();
+        if let Some(path) = path {
+            crate::modules::aec::engine::project::save_style_library_to_project(
+                project, &path, lib,
+            )
+            .map_err(|e| e.to_string())?;
+        }
+        self.aec_refresh_combined_style_library();
+        Ok(())
+    }
+
+    /// Upserts a single structural slab style into the active project's library.
+    pub(crate) fn aec_upsert_slab_structural_style_into_project(
+        &mut self,
+        slab_structural_style: crate::modules::aec::engine::slab_style::SlabStructuralStyle,
+    ) -> Result<(), String> {
+        let path = self.aec.aec_project_explorer_path.clone();
+        let Some(project) = self.aec.aec_project_explorer_file.as_mut() else {
+            return Err("no project loaded".to_string());
+        };
+        project
+            .material_wall_style_library
+            .upsert_slab_structural_style(slab_structural_style);
         let lib = project.material_wall_style_library.clone();
         if let Some(path) = path {
             crate::modules::aec::engine::project::save_style_library_to_project(
@@ -409,6 +449,51 @@ impl OpenCADStudio {
         Task::none()
     }
 
+    pub(crate) fn aec_handle_copy_slab_structural_style(&mut self, to_project: bool) -> Task<Message> {
+        let Some(id) = self.aec.aec_slab_structural_style_manager_selected.clone() else {
+            return Task::none();
+        };
+        let global_lib = crate::modules::aec::engine::library::load_or_seed();
+        let project_lib = crate::modules::aec::engine::project::resolve_style_library(
+            self.aec.aec_project_explorer_file.as_ref(),
+        );
+        let (source_lib, target_lib) = if to_project {
+            (&global_lib, &project_lib)
+        } else {
+            (&project_lib, &global_lib)
+        };
+        let Some(slab_structural_style) = source_lib
+            .slab_structural_styles
+            .iter()
+            .find(|s| s.style.id == id)
+            .cloned()
+        else {
+            return Task::none();
+        };
+        let conflict = crate::modules::aec::engine::library::slab_structural_style_copy_conflict(
+            target_lib,
+            &slab_structural_style,
+        );
+        match conflict {
+            crate::modules::aec::engine::library::CopyConflict::DifferentContentCollision => {
+                self.aec.aec_style_manager_pending_copy = Some(AecPendingCopy::SlabStructuralStyle {
+                    slab_structural_style,
+                    to_project,
+                });
+                self.aec.aec_style_manager_copy_conflict_open = true;
+                self.active_modal =
+                    Some(crate::app::ModalKind::Aec(AecModalKind::StyleCopyConflict));
+            }
+            _ => {
+                self.aec_execute_copy(AecPendingCopy::SlabStructuralStyle {
+                    slab_structural_style,
+                    to_project,
+                });
+            }
+        }
+        Task::none()
+    }
+
     pub(crate) fn aec_handle_copy_floor_finish_style(&mut self, to_project: bool) -> Task<Message> {
         let Some(id) = self.aec.aec_floor_finish_style_manager_selected.clone() else {
             return Task::none();
@@ -492,6 +577,14 @@ impl OpenCADStudio {
                 };
                 (lib, *to_project, crate::t!("slab style"))
             }
+            AecPendingCopy::SlabStructuralStyle { to_project, .. } => {
+                let lib = if *to_project {
+                    project_lib_before
+                } else {
+                    global_lib_before
+                };
+                (lib, *to_project, crate::t!("structural slab style"))
+            }
             AecPendingCopy::FloorFinishStyle { to_project, .. } => {
                 let lib = if *to_project {
                     project_lib_before
@@ -523,6 +616,9 @@ impl OpenCADStudio {
             }
             AecPendingCopy::SlabStyle { slab_style, .. } => {
                 target_lib.upsert_slab_style(slab_style.clone());
+            }
+            AecPendingCopy::SlabStructuralStyle { slab_structural_style, .. } => {
+                target_lib.upsert_slab_structural_style(slab_structural_style.clone());
             }
             AecPendingCopy::FloorFinishStyle { floor_finish_style, .. } => {
                 target_lib.upsert_floor_finish_style(floor_finish_style.clone());

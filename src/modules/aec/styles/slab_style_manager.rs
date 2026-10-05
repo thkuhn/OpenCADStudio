@@ -484,29 +484,24 @@ impl OpenCADStudio {
     }
 
     pub(crate) fn aec_slab_style_manager_new(&mut self) -> Task<Message> {
-        let first_mat = self
+        let first_struct = self
             .aec
             .aec_style_library
             .as_ref()
-            .and_then(|l| l.materials.first().map(|m| m.id.clone()))
-            .unwrap_or_else(|| "Stahlbeton C25/30".to_string());
+            .and_then(|l| l.slab_structural_styles.first().map(|s| s.style.id.clone()));
+        let first_finish = self
+            .aec
+            .aec_style_library
+            .as_ref()
+            .and_then(|l| l.floor_finish_styles.first().map(|f| f.style.id.clone()));
 
         self.aec.aec_slab_style_manager_selected = None;
         self.aec.aec_slab_style_manager_editing_id = None;
         self.aec.aec_slab_style_manager_name = crate::t!("New Slab Style").to_string();
         self.aec.aec_slab_style_manager_parent = None;
-        self.aec.aec_slab_style_manager_structural_style = None;
-        self.aec.aec_slab_style_manager_finish_style = None;
-        self.aec.aec_slab_style_manager_layers = vec![AecSlabLayerBuffer {
-            material_id: first_mat,
-            thickness: "20.0".to_string(),
-            function: layer_function_to_str(&LayerFunction::Structural),
-            vertical_offset: "0.0".to_string(),
-            layer_override: String::new(),
-            hatch_override: String::new(),
-            role_tag: String::new(),
-            layer_id: Some(uuid::Uuid::new_v4()),
-        }];
+        self.aec.aec_slab_style_manager_structural_style = first_struct;
+        self.aec.aec_slab_style_manager_finish_style = first_finish;
+        self.aec.aec_slab_style_manager_layers = Vec::new();
         self.aec.aec_slab_style_manager_form_open = true;
         self.aec.aec_slab_style_manager_drag_index = None;
         self.aec.aec_slab_style_manager_profile_selected = None;
@@ -626,13 +621,6 @@ impl OpenCADStudio {
             return Err("Slab style name cannot be empty".to_string());
         }
 
-        let mut layers = Vec::new();
-        for (i, buf) in self.aec.aec_slab_style_manager_layers.iter().enumerate() {
-            let layer = buffer_to_layer(buf)
-                .map_err(|e| format!("Layer {}: {}", i + 1, e))?;
-            layers.push(layer);
-        }
-
         let id = self
             .aec
             .aec_slab_style_manager_editing_id
@@ -653,7 +641,7 @@ impl OpenCADStudio {
             },
             structural_style_id: self.aec.aec_slab_style_manager_structural_style.clone(),
             default_finish_style_id: self.aec.aec_slab_style_manager_finish_style.clone(),
-            layers,
+            layers: Vec::new(),
             display_profiles: HashMap::new(),
         };
 

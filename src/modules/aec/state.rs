@@ -56,6 +56,10 @@ pub enum AecPendingCopy {
         slab_style: crate::modules::aec::engine::slab_style::SlabStyle,
         to_project: bool,
     },
+    SlabStructuralStyle {
+        slab_structural_style: crate::modules::aec::engine::slab_style::SlabStructuralStyle,
+        to_project: bool,
+    },
     FloorFinishStyle {
         floor_finish_style: crate::modules::aec::engine::slab_style::FloorFinishStyle,
         to_project: bool,
@@ -157,8 +161,12 @@ pub enum StylePickerTarget {
     OpeningPropertiesStyle,
     /// Selecting a parent style for a slab style being edited.
     SlabStyleParent,
+    /// Selecting a parent style for a structural slab style being edited.
+    SlabStructuralStyleParent,
     /// Selecting a material for a specific slab layer index.
     SlabLayerMaterial(usize),
+    /// Selecting a material for a specific structural slab layer index.
+    SlabStructuralLayerMaterial(usize),
     /// Selecting a layer override for a specific slab layer index.
     SlabLayerOverride(usize),
     /// Selecting a new style for one or more slab entities in the properties panel.
@@ -392,6 +400,18 @@ pub struct AecState {
     pub aec_slab_style_manager_profile_editing_slot:
         Option<crate::modules::aec::engine::display_component::SlabComponentSlot>,
     pub aec_last_slab_style_id: Option<String>,
+
+    // ── AEC Slab Structural Style Manager (`AEC_SLABSTRUCTURALSTYLEMANAGER`) ──
+    pub aec_slab_structural_style_manager_filter: String,
+    pub aec_slab_structural_style_manager_selected: Option<String>,
+    pub aec_slab_structural_style_manager_editing_id: Option<String>,
+    pub aec_slab_structural_style_manager_form_open: bool,
+    pub aec_slab_structural_style_manager_preview_mode: AecSlabPreviewMode,
+    pub aec_slab_structural_style_manager_name: String,
+    pub aec_slab_structural_style_manager_parent: Option<String>,
+    pub aec_slab_structural_style_manager_layers: Vec<AecSlabLayerBuffer>,
+    pub aec_slab_structural_style_manager_drag_index: Option<usize>,
+    pub aec_last_slab_structural_style_id: Option<String>,
 
     // ── AEC Floor Finish Style Manager (`AEC_FLOORFINISHSTYLEMANAGER`) ──
     pub aec_floor_finish_style_manager_filter: String,
@@ -669,6 +689,16 @@ impl Default for AecState {
             aec_slab_style_manager_profile_slot_overrides: std::collections::HashMap::new(),
             aec_slab_style_manager_profile_editing_slot: None,
             aec_last_slab_style_id: None,
+            aec_slab_structural_style_manager_filter: String::new(),
+            aec_slab_structural_style_manager_selected: None,
+            aec_slab_structural_style_manager_editing_id: None,
+            aec_slab_structural_style_manager_form_open: false,
+            aec_slab_structural_style_manager_preview_mode: AecSlabPreviewMode::CrossSection,
+            aec_slab_structural_style_manager_name: String::new(),
+            aec_slab_structural_style_manager_parent: None,
+            aec_slab_structural_style_manager_layers: Vec::new(),
+            aec_slab_structural_style_manager_drag_index: None,
+            aec_last_slab_structural_style_id: None,
             aec_floor_finish_style_manager_filter: String::new(),
             aec_floor_finish_style_manager_selected: None,
             aec_floor_finish_style_manager_editing_id: None,

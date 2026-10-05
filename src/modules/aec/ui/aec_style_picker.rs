@@ -80,7 +80,9 @@ pub fn view_window<'a>(
         crate::app::StylePickerTarget::OpeningStyleParent => t!("Select Parent Style"),
         crate::app::StylePickerTarget::OpeningPropertiesStyle => t!("Select Opening Style"),
         crate::app::StylePickerTarget::SlabStyleParent => t!("Select Parent Style"),
+        crate::app::StylePickerTarget::SlabStructuralStyleParent => t!("Select Parent Style"),
         crate::app::StylePickerTarget::SlabLayerMaterial(_) => t!("Select Material"),
+        crate::app::StylePickerTarget::SlabStructuralLayerMaterial(_) => t!("Select Material"),
         crate::app::StylePickerTarget::SlabLayerOverride(_) => t!("Select Layer Override"),
         crate::app::StylePickerTarget::SlabPropertiesStyle => t!("Select Slab Style"),
     };
@@ -220,7 +222,8 @@ pub fn view_window<'a>(
             }));
             scrollable(column(rows).spacing(2)).into()
         }
-                crate::app::StylePickerTarget::SlabStyleParent
+        crate::app::StylePickerTarget::SlabStyleParent
+        | crate::app::StylePickerTarget::SlabStructuralStyleParent
         | crate::app::StylePickerTarget::SlabPropertiesStyle => {
             let slab_style_sources: std::collections::HashMap<String, LibrarySource> =
                 combined_slab_style_entries_with_session(project, session)
@@ -278,8 +281,9 @@ pub fn view_window<'a>(
             scrollable(column(rows).spacing(2)).into()
         }
 
-crate::app::StylePickerTarget::LayerMaterial(_)
-        | crate::app::StylePickerTarget::SlabLayerMaterial(_) => {
+        crate::app::StylePickerTarget::LayerMaterial(_)
+        | crate::app::StylePickerTarget::SlabLayerMaterial(_)
+        | crate::app::StylePickerTarget::SlabStructuralLayerMaterial(_) => {
             let rows: Vec<Element<'_, Message>> = library.materials
                 .iter()
                 .filter(|m| query.is_empty() || m.name.to_lowercase().contains(&query))

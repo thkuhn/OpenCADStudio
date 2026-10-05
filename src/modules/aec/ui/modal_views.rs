@@ -22,6 +22,7 @@ impl OpenCADStudio {
             AecModalKind::WallStyleManager => self.aec_wall_style_manager_view(),
             AecModalKind::OpeningStyleManager => self.aec_opening_style_manager_view(),
             AecModalKind::SlabStyleManager => self.aec_slab_style_manager_view(),
+            AecModalKind::SlabStructuralStyleManager => self.aec_slab_structural_style_manager_view(),
             AecModalKind::FloorFinishStyleManager => self.aec_floor_finish_style_manager_view(),
             AecModalKind::WallStyleDisplayProfiles => self.aec_wall_style_display_profiles_view(),
             AecModalKind::JunctionEditor => self.aec_junction_editor_view(),
@@ -204,27 +205,38 @@ fn aec_slab_style_manager_view(&self) -> Element<'_, Message> {
         .iter()
         .map(|m| (m.id.as_str(), m.name.as_str()))
         .collect();
-    let all_layer_names: Vec<String> = self.tabs[self.active_tab]
-        .scene
-        .document
-        .layers
+
+    let referenced_structural = self
+        .aec
+        .aec_slab_style_manager_structural_style
+        .as_deref()
+        .and_then(|id| library.find_slab_structural_style(id));
+    let referenced_finish = self
+        .aec
+        .aec_slab_style_manager_finish_style
+        .as_deref()
+        .and_then(|id| library.find_floor_finish_style(id));
+
+    let mut dummy_style = crate::modules::aec::engine::slab_style::SlabStyle::new("dummy", "dummy");
+    dummy_style.structural_style_id = self.aec.aec_slab_style_manager_structural_style.clone();
+    dummy_style.default_finish_style_id = self.aec.aec_slab_style_manager_finish_style.clone();
+
+    let s_map: std::collections::HashMap<String, _> = library
+        .slab_structural_styles
         .iter()
-        .map(|l| l.name.clone())
+        .map(|s| (s.style.id.clone(), s.clone()))
+        .collect();
+    let f_map: std::collections::HashMap<String, _> = library
+        .floor_finish_styles
+        .iter()
+        .map(|f| (f.style.id.clone(), f.clone()))
         .collect();
 
-    let mut effective_layers = Vec::new();
-    for buf in &self.aec.aec_slab_style_manager_layers {
-        if let Ok(layer) = crate::modules::aec::styles::slab_style_manager::buffer_to_layer(buf) {
-            effective_layers.push(layer);
-        }
-    }
-    if effective_layers.is_empty() {
-        if let Some(id) = self.aec.aec_slab_style_manager_editing_id.as_deref() {
-            if let Some(style) = library.find_slab_style(id) {
-                effective_layers = style.layers.clone();
-            }
-        }
-    }
+    let effective_layers = crate::modules::aec::engine::slab_style::resolve_slab_style_layers(
+        &dummy_style,
+        Some(&s_map),
+        Some(&f_map),
+    );
 
     let form = if self.aec.aec_slab_style_manager_form_open {
         Some(crate::modules::aec::ui::aec_slab_style_manager::SlabStyleFormState {
@@ -235,13 +247,12 @@ fn aec_slab_style_manager_view(&self) -> Element<'_, Message> {
             parent_name,
             structural_style_id: self.aec.aec_slab_style_manager_structural_style.as_deref(),
             finish_style_id: self.aec.aec_slab_style_manager_finish_style.as_deref(),
-            layers: &self.aec.aec_slab_style_manager_layers,
-            drag_index: self.aec.aec_slab_style_manager_drag_index,
+            referenced_structural,
+            referenced_finish,
             all_slab_styles,
             all_structural_styles,
             all_finish_styles,
             all_materials,
-            all_layer_names,
             effective_layers,
             inheritance_chain: Vec::new(),
             preview_mode: self.aec.aec_slab_style_manager_preview_mode,
@@ -264,6 +275,78 @@ fn aec_slab_style_manager_view(&self) -> Element<'_, Message> {
         self.aec.aec_session_style_library.as_ref(),
         &self.aec.aec_slab_style_manager_filter,
         self.aec.aec_slab_style_manager_selected.as_deref(),
+        form,
+    )
+}
+
+fn aec_slab_structural_style_manager_view(&self) -> Element<'_, Message> {
+    let Some(library) = self.aec.aec_style_library.as_ref() else {
+        return iced::widget::text(t!("No style library loaded.")).into();
+    };
+
+    let parent_name = self
+        .aec
+        .aec_slab_structural_style_manager_parent
+        .as_ref()
+        .and_then(|id| {
+            library
+                .slab_structural_styles
+                .iter()
+                .find(|s| s.style.id == *id)
+                .map(|s| s.style.name.clone())
+        });
+    let all_structural_styles: Vec<(&str, &str)> = library
+        .slab_structural_styles
+        .iter()
+        .map(|s| (s.style.id.as_str(), s.style.name.as_str()))
+        .collect();
+    let all_materials: Vec<(&str, &str)> = library
+        .materials
+        .iter()
+        .map(|m| (m.id.as_str(), m.name.as_str()))
+        .collect();
+    let all_layer_names: Vec<String> = self.tabs[self.active_tab]
+        .scene
+        .document
+        .layers
+        .iter()
+        .map(|l| l.name.clone())
+        .collect();
+
+    let mut effective_layers = Vec::new();
+    for buf in &self.aec.aec_slab_structural_style_manager_layers {
+        if let Ok(layer) = crate::modules::aec::styles::slab_style_manager::buffer_to_layer(buf) {
+            effective_layers.push(layer);
+        }
+    }
+
+    let form = if self.aec.aec_slab_structural_style_manager_form_open {
+        Some(
+            crate::modules::aec::ui::aec_slab_structural_style_manager::SlabStructuralStyleFormState {
+                open: true,
+                is_new: self.aec.aec_slab_structural_style_manager_editing_id.is_none(),
+                name: &self.aec.aec_slab_structural_style_manager_name,
+                parent_id: self.aec.aec_slab_structural_style_manager_parent.as_deref(),
+                parent_name,
+                layers: &self.aec.aec_slab_structural_style_manager_layers,
+                drag_index: self.aec.aec_slab_structural_style_manager_drag_index,
+                all_structural_styles,
+                all_materials,
+                all_layer_names,
+                effective_layers,
+                preview_mode: self.aec.aec_slab_structural_style_manager_preview_mode,
+            },
+        )
+    } else {
+        None
+    };
+
+    crate::modules::aec::ui::aec_slab_structural_style_manager::view_window(
+        library,
+        self.aec.aec_project_explorer_file.as_ref(),
+        self.aec.aec_session_style_library.as_ref(),
+        &self.aec.aec_slab_structural_style_manager_filter,
+        self.aec.aec_slab_structural_style_manager_selected.as_deref(),
         form,
     )
 }

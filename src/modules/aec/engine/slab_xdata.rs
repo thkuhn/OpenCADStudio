@@ -858,18 +858,55 @@ pub(crate) fn resolve_slab_style_layers_ex(
     use_material_names: bool,
 ) -> Option<Vec<SlabLayer>> {
     use std::collections::HashMap;
-    use super::slab_style::{base_thickness_from_layers, effective_layers, effective_layers_for_slab_vars, slab_vars, SlabStyle};
+    use super::slab_style::{
+        base_thickness_from_layers, effective_layers_with_modular, slab_vars, SlabStyle,
+    };
 
     let style_map: HashMap<String, SlabStyle> = lib
         .slab_styles
         .iter()
         .map(|s| (s.style.id.clone(), s.clone()))
         .collect();
+    let struct_map: HashMap<String, _> = lib
+        .slab_structural_styles
+        .iter()
+        .map(|s| (s.style.id.clone(), s.clone()))
+        .collect();
+    let finish_map: HashMap<String, _> = lib
+        .floor_finish_styles
+        .iter()
+        .map(|f| (f.style.id.clone(), f.clone()))
+        .collect();
 
-    let unresolved = effective_layers(&style_map, style_id).ok()?;
+    let unresolved = effective_layers_with_modular(
+        &style_map,
+        style_id,
+        Some(&struct_map),
+        Some(&finish_map),
+    )
+    .ok()?;
     let nom_thick = thickness.unwrap_or_else(|| base_thickness_from_layers(&unresolved));
     let vars = slab_vars(nom_thick);
-    let resolved = effective_layers_for_slab_vars(&style_map, style_id, &vars).ok()?;
+
+    let mut resolved = Vec::with_capacity(unresolved.len());
+    for l in unresolved {
+        let (thick, formula_error) = match l.thickness.resolve(&vars) {
+            Ok(v) => (v, None),
+            Err(e) => (0.0, Some(e)),
+        };
+        let vertical_offset = l.vertical_offset.resolve(&vars).unwrap_or(0.0);
+        resolved.push(super::slab_style::ResolvedSlabLayer {
+            material_id: l.material_id,
+            thickness: thick,
+            function: l.function,
+            vertical_offset,
+            layer_override: l.layer_override,
+            hatch_override: l.hatch_override,
+            role_tag: l.role_tag,
+            layer_id: l.layer_id,
+            formula_error,
+        });
+    }
 
     Some(
         resolved

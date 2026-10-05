@@ -6,9 +6,9 @@ sessionId: session-261002-194949-trwx
 
 ### Overview & Goals
 **Stand (2026-10-04):** Gesamtrecap aller Pläne unter `.junie/plans/` und des aktuellen Entwicklungsstands in `src/modules/aec/`.
-Die Pläne dokumentieren die Konzeption und Historie; der Code unter `src/modules/aec/` und die **731 automatisierten Modultests** bilden die verifizierte Quelle der Wahrheit.
+Die Pläne dokumentieren die Konzeption und Historie; der Code unter `src/modules/aec/` und die **732 automatisierten Modultests** bilden die verifizierte Quelle der Wahrheit.
 
-**Ergebnis:** Alle wesentlichen Kernbereiche (Wände, Schichten, Verschneidungen, Öffnungen, geneigte/mehrteilige Kontrollebenen, Geschossdecken, Deckenöffnungen, Räume, Raumstempel nach DIN 1356, Deckenbeläge/abgehängte Decken, Fußboden-Übergänge an Türöffnungen und Nischen, DIN 277 / WoFlV Flächenberechnung, Raumbuch-Tabellen, Scheitelpunktbearbeitung und Core-Entkopplung) sind **vollständig implementiert, getestet und versioniert**.
+**Ergebnis:** Alle wesentlichen Kernbereiche (Wände, Schichten, Verschneidungen, Öffnungen, geneigte/mehrteilige Kontrollebenen, Geschossdecken mit modularer Referenzierung von Rohbaustilen und Fußbodenaufbau-Stilen, Deckenöffnungen, Räume, Raumstempel nach DIN 1356, Deckenbeläge/abgehängte Decken, Fußboden-Übergänge an Türöffnungen und Nischen, DIN 277 / WoFlV Flächenberechnung, Raumbuch-Tabellen, Scheitelpunktbearbeitung und Core-Entkopplung) sind **vollständig implementiert, getestet und versioniert**.
 
 ---
 
@@ -38,9 +38,9 @@ Die Pläne dokumentieren die Konzeption und Historie; der Code unter `src/module
 - **Planabhängiges Löschen:** `ERASE` und `Entf` löschen Öffnungen unter Berücksichtigung der aktiven Planart und regenerieren die Wand sofort.
 
 #### 4. Geschossdecken (Slabs) & Deckenöffnungen
-- **Mehrschichtige Deckenaufbauten & Modulare Stile (`SlabStyle`, `SlabStructuralStyle`, `FloorFinishStyle`):** Tragende Rohbauschichten (`Structural`), Dämmung (`Insulation`) und modulare Ausbaustile (`FloorFinishStyle`) mit Schichtdicken, Schraffuren und Detaillierungsgraden.
-- **Modulare Stil-Komposition & Wiederverwendung:** Deckenstile kombinieren Rohbaustile und Standard-Ausbaustile; Räume können Standard-Ausbauten erben oder über `finish_style_id` mit spezifischen Fußbodenaufbau-Stilen überschreiben ($M + N$ Prinzip).
-- **Deckenstil-Manager (`AEC_SLABSTYLEMANAGER`):** GUI zur Definition mehrschichtiger Deckenaufbauten mit Schicht-Tabelle und grafischer Vorschau.
+- **Mehrschichtige Deckenaufbauten & Modulare Stile (`SlabStyle`, `SlabStructuralStyle`, `FloorFinishStyle`):** Tragende Rohbauschichten (`SlabStructuralStyle`), Dämmung und modulare Ausbaustile (`FloorFinishStyle`) mit Schichtdicken, Schraffuren und Detaillierungsgraden.
+- **Echte modulare Referenzierung & Entkopplung:** Deckenstile (`SlabStyle`) kopieren keine Schichten mehr redundant, sondern halten direkte Referenzen auf `structural_style_id` und `default_finish_style_id`. Änderungen an Sub-Stilen wirken sich unmittelbar und dynamisch auf alle verknüpften Decken und Räume aus ($M + N$ Prinzip).
+- **Stil-Manager:** Eigene Manager für Deckenstile (`AEC_SLABSTYLEMANAGER`), Rohbaustile (`AEC_SLABSTRUCTURALSTYLEMANAGER`) und Fußbodenaufbau-Stile (`AEC_FLOORFINISHSTYLEMANAGER`) mit 2D-/3D-Vorschau und Referenz-Übersichtskarten.
 - **Deckenöffnungen (`AEC_SLABOPENING`):** Vollständige Aussparungsgeometrie mit DIN-Aussparungskreuzen/-diagonalen, 3D-B-Rep-Ausschnitten und Durchbruchsstilen.
 - **Planarten-Darstellung (1:100, 1:50, RCP, 3D):**
   - *Entwurf 1:100:* Reduzierte Außenkontur / tragende Rohdecke.
@@ -65,8 +65,8 @@ Die Pläne dokumentieren die Konzeption und Historie; der Code unter `src/module
 - **Block-Mesh-Synchronisation:** Saubere Aktualisierung der Geometrie-Caches und Layer-Präfixierung (`XREF|Layer`).
 
 #### 7. UI-Dialoge, Stil-Manager & Performance
-- **Manager-Dialoge:** Eigene Manager für Wandstile (`AEC_WALLSTYLEMANAGER`), Öffnungsstile (`AEC_OPENINGSTYLEMANAGER`), Deckenstile (`AEC_SLABSTYLEMANAGER`), Fußbodenaufbau-Stile (`AEC_FLOORFINISHSTYLEMANAGER`), Materialien (`AEC_MATERIALMANAGER`), Planarten (`AEC_PLANMANAGER`), Geschosse (`AEC_STOREYSETTINGS`) und Projekt-Explorer (`AEC_PROJECTEXPLORER`).
-- **Modulare Decken- und Ausbaustile:** Deckenstil-Manager unterstützt die direkte Auswahl von Rohbaustil und Standard-Ausbaustil mit Schichtenübernahme (`Schichten aus Stilen laden`).
+- **Manager-Dialoge:** Eigene Manager für Wandstile (`AEC_WALLSTYLEMANAGER`), Öffnungsstile (`AEC_OPENINGSTYLEMANAGER`), Deckenstile (`AEC_SLABSTYLEMANAGER`), Rohbaudecken-Stile (`AEC_SLABSTRUCTURALSTYLEMANAGER`), Fußbodenaufbau-Stile (`AEC_FLOORFINISHSTYLEMANAGER`), Materialien (`AEC_MATERIALMANAGER`), Planarten (`AEC_PLANMANAGER`), Geschosse (`AEC_STOREYSETTINGS`) und Projekt-Explorer (`AEC_PROJECTEXPLORER`).
+- **Modulare Decken- und Ausbaustile:** Deckenstil-Manager verknüpft Rohbaustil und Standard-Ausbaustil als Referenzen und zeigt eine übersichtliche Zusammensetzungs- und Schichtenübersicht der referenzierten Stile.
 - **Entkoppelte Aktualisierung:** Saubere Trennung von Zwischenstand („Übernehmen“: Speichern & Zeichnung aktualisieren) und reinem Speichern in Bibliotheken.
 - **Multi-Mode-Vorschau:** Umschaltung zwischen 2D-Grundriss, 2D-Fassadenansicht und 3D-Isometrie im Öffnungsstil-, Deckenstil- und Fußbodenaufbaustil-Manager.
 - **Deduplizierung & Caching:** Vermeidung von Mehrfach-Regenerierungen bei Werteingaben im Eigenschaften-Panel.

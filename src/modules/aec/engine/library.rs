@@ -1316,21 +1316,23 @@ impl StyleLibrary {
     /// referenced structural and floor finish sub-styles if needed.
     pub fn resolve_slab_layers(&self, slab_style_id: &str) -> Vec<SlabStyleLayer> {
         if let Some(ss) = self.find_slab_style(slab_style_id) {
-            if !ss.layers.is_empty() {
-                return ss.layers.clone();
-            }
-            let mut layers = Vec::new();
-            if let Some(f_id) = &ss.default_finish_style_id {
-                if let Some(fs) = self.find_floor_finish_style(f_id) {
-                    layers.extend(fs.layers.clone());
+            if ss.structural_style_id.is_some() || ss.default_finish_style_id.is_some() {
+                let mut layers = Vec::new();
+                if let Some(f_id) = &ss.default_finish_style_id {
+                    if let Some(fs) = self.find_floor_finish_style(f_id) {
+                        layers.extend(fs.layers.clone());
+                    }
+                }
+                if let Some(s_id) = &ss.structural_style_id {
+                    if let Some(st) = self.find_slab_structural_style(s_id) {
+                        layers.extend(st.layers.clone());
+                    }
+                }
+                if !layers.is_empty() {
+                    return layers;
                 }
             }
-            if let Some(s_id) = &ss.structural_style_id {
-                if let Some(st) = self.find_slab_structural_style(s_id) {
-                    layers.extend(st.layers.clone());
-                }
-            }
-            return layers;
+            return ss.layers.clone();
         }
         Vec::new()
     }
@@ -2598,16 +2600,7 @@ pub fn seed_slab_styles() -> Vec<SlabStyle> {
             },
             structural_style_id: Some("struct_slab_concrete_20".to_string()),
             default_finish_style_id: None,
-            layers: vec![SlabStyleLayer {
-                material_id: "mat_concrete".to_string(),
-                thickness: LayerValue::Fixed(0.20),
-                function: LayerFunction::Structural,
-                vertical_offset: LayerValue::Fixed(0.0),
-                layer_override: Some("A-FLOR-STRC".to_string()),
-                hatch_override: Some("AR-CONC".to_string()),
-                role_tag: Some("Stahlbetonplatte".to_string()),
-                layer_id: Uuid::new_v4(),
-            }],
+            layers: Vec::new(),
             display_profiles: std::collections::HashMap::new(),
         },
         // 2. Reinforced Concrete Slab 25cm
@@ -2620,16 +2613,7 @@ pub fn seed_slab_styles() -> Vec<SlabStyle> {
             },
             structural_style_id: Some("struct_slab_concrete_25".to_string()),
             default_finish_style_id: None,
-            layers: vec![SlabStyleLayer {
-                material_id: "mat_concrete".to_string(),
-                thickness: LayerValue::Fixed(0.25),
-                function: LayerFunction::Structural,
-                vertical_offset: LayerValue::Fixed(0.0),
-                layer_override: Some("A-FLOR-STRC".to_string()),
-                hatch_override: Some("AR-CONC".to_string()),
-                role_tag: Some("Stahlbetonplatte".to_string()),
-                layer_id: Uuid::new_v4(),
-            }],
+            layers: Vec::new(),
             display_profiles: std::collections::HashMap::new(),
         },
         // 3. Reinforced Concrete Slab 30cm
@@ -2642,134 +2626,33 @@ pub fn seed_slab_styles() -> Vec<SlabStyle> {
             },
             structural_style_id: Some("struct_slab_concrete_30".to_string()),
             default_finish_style_id: None,
-            layers: vec![SlabStyleLayer {
-                material_id: "mat_concrete".to_string(),
-                thickness: LayerValue::Fixed(0.30),
-                function: LayerFunction::Structural,
-                vertical_offset: LayerValue::Fixed(0.0),
-                layer_override: Some("A-FLOR-STRC".to_string()),
-                hatch_override: Some("AR-CONC".to_string()),
-                role_tag: Some("Stahlbetonplatte".to_string()),
-                layer_id: Uuid::new_v4(),
-            }],
+            layers: Vec::new(),
             display_profiles: std::collections::HashMap::new(),
         },
-        // 4. Geschossdecke EG mit Estrich & Daemmung 34cm
+        // 4. Geschossdecke EG mit Fliesen & Estrich 28cm
         SlabStyle {
             style: Style {
                 id: "style_slab_floor_eg_34".to_string(),
-                name: "Geschossdecke EG 34cm".to_string(),
+                name: "Geschossdecke EG 28cm (Fliesen)".to_string(),
                 object_kind: "Slab".to_string(),
                 parent_style_id: None,
             },
             structural_style_id: Some("struct_slab_concrete_20".to_string()),
             default_finish_style_id: Some("finish_floor_tiles_80".to_string()),
-            layers: vec![
-                SlabStyleLayer {
-                    material_id: "mat_tile".to_string(),
-                    thickness: LayerValue::Fixed(0.015),
-                    function: LayerFunction::Finish,
-                    vertical_offset: LayerValue::Fixed(0.0),
-                    layer_override: Some("A-FLOR-FINI".to_string()),
-                    hatch_override: Some("NET".to_string()),
-                    role_tag: Some("Fliesenbelag".to_string()),
-                    layer_id: Uuid::new_v4(),
-                },
-                SlabStyleLayer {
-                    material_id: "mat_screed".to_string(),
-                    thickness: LayerValue::Fixed(0.055),
-                    function: LayerFunction::Other("Screed".to_string()),
-                    vertical_offset: LayerValue::Fixed(0.0),
-                    layer_override: Some("A-FLOR-SCREED".to_string()),
-                    hatch_override: Some("DOTS".to_string()),
-                    role_tag: Some("Zementestrich".to_string()),
-                    layer_id: Uuid::new_v4(),
-                },
-                SlabStyleLayer {
-                    material_id: "mat_insulation".to_string(),
-                    thickness: LayerValue::Fixed(0.070),
-                    function: LayerFunction::Insulation,
-                    vertical_offset: LayerValue::Fixed(0.0),
-                    layer_override: Some("A-FLOR-INSU".to_string()),
-                    hatch_override: Some("ANSI37".to_string()),
-                    role_tag: Some("Waermedaemmung EPS".to_string()),
-                    layer_id: Uuid::new_v4(),
-                },
-                SlabStyleLayer {
-                    material_id: "mat_concrete".to_string(),
-                    thickness: LayerValue::Fixed(0.200),
-                    function: LayerFunction::Structural,
-                    vertical_offset: LayerValue::Fixed(0.0),
-                    layer_override: Some("A-FLOR-STRC".to_string()),
-                    hatch_override: Some("AR-CONC".to_string()),
-                    role_tag: Some("Stahlbetondecke".to_string()),
-                    layer_id: Uuid::new_v4(),
-                },
-            ],
+            layers: Vec::new(),
             display_profiles: std::collections::HashMap::new(),
         },
-        // 5. Geschossdecke OG 32cm mit Trittschall
+        // 5. Geschossdecke OG 28cm mit Parkett & Trittschall
         SlabStyle {
             style: Style {
                 id: "style_slab_floor_og_32".to_string(),
-                name: "Geschossdecke OG 32cm".to_string(),
+                name: "Geschossdecke OG 28cm (Parkett)".to_string(),
                 object_kind: "Slab".to_string(),
                 parent_style_id: None,
             },
             structural_style_id: Some("struct_slab_concrete_20".to_string()),
             default_finish_style_id: Some("finish_floor_parquet_80".to_string()),
-            layers: vec![
-                SlabStyleLayer {
-                    material_id: "mat_wood".to_string(),
-                    thickness: LayerValue::Fixed(0.015),
-                    function: LayerFunction::Finish,
-                    vertical_offset: LayerValue::Fixed(0.0),
-                    layer_override: Some("A-FLOR-FINI".to_string()),
-                    hatch_override: Some("ANSI31".to_string()),
-                    role_tag: Some("Parkett".to_string()),
-                    layer_id: Uuid::new_v4(),
-                },
-                SlabStyleLayer {
-                    material_id: "mat_screed".to_string(),
-                    thickness: LayerValue::Fixed(0.050),
-                    function: LayerFunction::Other("Screed".to_string()),
-                    vertical_offset: LayerValue::Fixed(0.0),
-                    layer_override: Some("A-FLOR-SCREED".to_string()),
-                    hatch_override: Some("DOTS".to_string()),
-                    role_tag: Some("Heizestrich".to_string()),
-                    layer_id: Uuid::new_v4(),
-                },
-                SlabStyleLayer {
-                    material_id: "mat_insulation".to_string(),
-                    thickness: LayerValue::Fixed(0.040),
-                    function: LayerFunction::Insulation,
-                    vertical_offset: LayerValue::Fixed(0.0),
-                    layer_override: Some("A-FLOR-INSU".to_string()),
-                    hatch_override: Some("ANSI37".to_string()),
-                    role_tag: Some("Trittschalldaemmung".to_string()),
-                    layer_id: Uuid::new_v4(),
-                },
-                SlabStyleLayer {
-                    material_id: "mat_concrete".to_string(),
-                    thickness: LayerValue::Fixed(0.200),
-                    function: LayerFunction::Structural,
-                    vertical_offset: LayerValue::Fixed(0.0),
-                    layer_override: Some("A-FLOR-STRC".to_string()),
-                    hatch_override: Some("AR-CONC".to_string()),
-                    role_tag: Some("Stahlbetondecke".to_string()),
-                    layer_id: Uuid::new_v4(),
-                },
-                SlabStyleLayer {
-                    material_id: "mat_plaster".to_string(),
-                    thickness: LayerValue::Fixed(0.015),
-                    function: LayerFunction::Finish,
-                    vertical_offset: LayerValue::Fixed(0.0),
-                    layer_override: Some("A-CEIL-FINI".to_string()),
-                    hatch_override: Some("DOTS".to_string()),
-                    role_tag: Some("Deckenputz".to_string()),
-                    layer_id: Uuid::new_v4(),
-                },
-            ],
+            layers: Vec::new(),
             display_profiles: std::collections::HashMap::new(),
         },
         // 6. Holzbalkendecke 24cm
@@ -2781,140 +2664,24 @@ pub fn seed_slab_styles() -> Vec<SlabStyle> {
                 parent_style_id: None,
             },
             structural_style_id: Some("struct_slab_timber_24".to_string()),
-            default_finish_style_id: Some("finish_floor_parquet_80".to_string()),
-            layers: vec![
-                SlabStyleLayer {
-                    material_id: "mat_wood".to_string(),
-                    thickness: LayerValue::Fixed(0.025),
-                    function: LayerFunction::Finish,
-                    vertical_offset: LayerValue::Fixed(0.0),
-                    layer_override: Some("A-FLOR-WOOD".to_string()),
-                    hatch_override: Some("ANSI31".to_string()),
-                    role_tag: Some("Dielenboden".to_string()),
-                    layer_id: Uuid::new_v4(),
-                },
-                SlabStyleLayer {
-                    material_id: "mat_wood".to_string(),
-                    thickness: LayerValue::Fixed(0.200),
-                    function: LayerFunction::Structural,
-                    vertical_offset: LayerValue::Fixed(0.0),
-                    layer_override: Some("A-FLOR-STRC".to_string()),
-                    hatch_override: Some("ANSI31".to_string()),
-                    role_tag: Some("Holzbalkenlage / Daemmung".to_string()),
-                    layer_id: Uuid::new_v4(),
-                },
-                SlabStyleLayer {
-                    material_id: "mat_drywall".to_string(),
-                    thickness: LayerValue::Fixed(0.015),
-                    function: LayerFunction::Finish,
-                    vertical_offset: LayerValue::Fixed(0.0),
-                    layer_override: Some("A-CEIL-FINI".to_string()),
-                    hatch_override: Some("ANSI31".to_string()),
-                    role_tag: Some("Gipskartonbeplankung".to_string()),
-                    layer_id: Uuid::new_v4(),
-                },
-            ],
+            default_finish_style_id: None,
+            layers: Vec::new(),
             display_profiles: std::collections::HashMap::new(),
         },
-        // 7. Flachdach warm gedaemmt 40cm
+        // 7. Flachdach warm gedaemmt 32cm
         SlabStyle {
             style: Style {
                 id: "style_slab_flat_roof_40".to_string(),
-                name: "Flachdach warm gedaemmt 40cm".to_string(),
+                name: "Flachdach warm gedaemmt 32cm".to_string(),
                 object_kind: "Slab".to_string(),
                 parent_style_id: None,
             },
             structural_style_id: Some("struct_slab_concrete_20".to_string()),
             default_finish_style_id: Some("finish_floor_balcony_120".to_string()),
-            layers: vec![
-                SlabStyleLayer {
-                    material_id: "mat_bitumen".to_string(),
-                    thickness: LayerValue::Fixed(0.020),
-                    function: LayerFunction::Finish,
-                    vertical_offset: LayerValue::Fixed(0.0),
-                    layer_override: Some("A-ROOF-FINI".to_string()),
-                    hatch_override: Some("SOLID".to_string()),
-                    role_tag: Some("Abdichtung / Kies".to_string()),
-                    layer_id: Uuid::new_v4(),
-                },
-                SlabStyleLayer {
-                    material_id: "mat_insulation".to_string(),
-                    thickness: LayerValue::Fixed(0.180),
-                    function: LayerFunction::Insulation,
-                    vertical_offset: LayerValue::Fixed(0.0),
-                    layer_override: Some("A-ROOF-INSU".to_string()),
-                    hatch_override: Some("ANSI37".to_string()),
-                    role_tag: Some("PIR Gefaelledaemmung".to_string()),
-                    layer_id: Uuid::new_v4(),
-                },
-                SlabStyleLayer {
-                    material_id: "mat_concrete".to_string(),
-                    thickness: LayerValue::Fixed(0.200),
-                    function: LayerFunction::Structural,
-                    vertical_offset: LayerValue::Fixed(0.0),
-                    layer_override: Some("A-ROOF-STRC".to_string()),
-                    hatch_override: Some("AR-CONC".to_string()),
-                    role_tag: Some("Stahlbetondecke".to_string()),
-                    layer_id: Uuid::new_v4(),
-                },
-            ],
+            layers: Vec::new(),
             display_profiles: std::collections::HashMap::new(),
         },
-        // 8. Steildach Sparrenaufbau 30cm
-        SlabStyle {
-            style: Style {
-                id: "style_slab_pitched_roof_30".to_string(),
-                name: "Steildach Sparrenaufbau 30cm".to_string(),
-                object_kind: "Slab".to_string(),
-                parent_style_id: None,
-            },
-            structural_style_id: Some("struct_slab_timber_24".to_string()),
-            default_finish_style_id: None,
-            layers: vec![
-                SlabStyleLayer {
-                    material_id: "mat_tile".to_string(),
-                    thickness: LayerValue::Fixed(0.030),
-                    function: LayerFunction::Finish,
-                    vertical_offset: LayerValue::Fixed(0.0),
-                    layer_override: Some("A-ROOF-FINI".to_string()),
-                    hatch_override: Some("NET".to_string()),
-                    role_tag: Some("Dachziegel / Lattung".to_string()),
-                    layer_id: Uuid::new_v4(),
-                },
-                SlabStyleLayer {
-                    material_id: "mat_wood".to_string(),
-                    thickness: LayerValue::Fixed(0.220),
-                    function: LayerFunction::Structural,
-                    vertical_offset: LayerValue::Fixed(0.0),
-                    layer_override: Some("A-ROOF-STRC".to_string()),
-                    hatch_override: Some("ANSI31".to_string()),
-                    role_tag: Some("Sparrenlage / Zwischensparrendaemmung".to_string()),
-                    layer_id: Uuid::new_v4(),
-                },
-                SlabStyleLayer {
-                    material_id: "mat_insulation".to_string(),
-                    thickness: LayerValue::Fixed(0.030),
-                    function: LayerFunction::Insulation,
-                    vertical_offset: LayerValue::Fixed(0.0),
-                    layer_override: Some("A-ROOF-INSU".to_string()),
-                    hatch_override: Some("ANSI37".to_string()),
-                    role_tag: Some("Untersparrendaemmung".to_string()),
-                    layer_id: Uuid::new_v4(),
-                },
-                SlabStyleLayer {
-                    material_id: "mat_drywall".to_string(),
-                    thickness: LayerValue::Fixed(0.020),
-                    function: LayerFunction::Finish,
-                    vertical_offset: LayerValue::Fixed(0.0),
-                    layer_override: Some("A-CEIL-FINI".to_string()),
-                    hatch_override: Some("ANSI31".to_string()),
-                    role_tag: Some("Dampfbremse / Gipskarton".to_string()),
-                    layer_id: Uuid::new_v4(),
-                },
-            ],
-            display_profiles: std::collections::HashMap::new(),
-        },
-        // 9. Bodenplatte Stahlbeton 30cm
+        // 8. Bodenplatte Stahlbeton 30cm
         SlabStyle {
             style: Style {
                 id: "style_slab_foundation_30".to_string(),
@@ -2924,138 +2691,33 @@ pub fn seed_slab_styles() -> Vec<SlabStyle> {
             },
             structural_style_id: Some("struct_slab_concrete_30".to_string()),
             default_finish_style_id: None,
-            layers: vec![SlabStyleLayer {
-                material_id: "mat_concrete".to_string(),
-                thickness: LayerValue::Fixed(0.300),
-                function: LayerFunction::Structural,
-                vertical_offset: LayerValue::Fixed(0.0),
-                layer_override: Some("A-FLOR-STRC".to_string()),
-                hatch_override: Some("AR-CONC".to_string()),
-                role_tag: Some("Sohlplatte Stahlbeton".to_string()),
-                layer_id: Uuid::new_v4(),
-            }],
+            layers: Vec::new(),
             display_profiles: std::collections::HashMap::new(),
         },
-        // 10. Bodenplatte gedaemmt 40cm
+        // 9. Bodenplatte gedaemmt 30cm
         SlabStyle {
             style: Style {
                 id: "style_slab_foundation_insulated_40".to_string(),
-                name: "Bodenplatte gedaemmt 40cm".to_string(),
+                name: "Bodenplatte gedaemmt mit Estrich 30cm".to_string(),
                 object_kind: "Slab".to_string(),
                 parent_style_id: None,
             },
             structural_style_id: Some("struct_slab_concrete_25".to_string()),
             default_finish_style_id: Some("finish_floor_screed_50".to_string()),
-            layers: vec![
-                SlabStyleLayer {
-                    material_id: "mat_screed".to_string(),
-                    thickness: LayerValue::Fixed(0.060),
-                    function: LayerFunction::Other("Screed".to_string()),
-                    vertical_offset: LayerValue::Fixed(0.0),
-                    layer_override: Some("A-FLOR-SCREED".to_string()),
-                    hatch_override: Some("DOTS".to_string()),
-                    role_tag: Some("Zementestrich".to_string()),
-                    layer_id: Uuid::new_v4(),
-                },
-                SlabStyleLayer {
-                    material_id: "mat_insulation".to_string(),
-                    thickness: LayerValue::Fixed(0.100),
-                    function: LayerFunction::Insulation,
-                    vertical_offset: LayerValue::Fixed(0.0),
-                    layer_override: Some("A-FLOR-INSU".to_string()),
-                    hatch_override: Some("ANSI37".to_string()),
-                    role_tag: Some("XPS Perimeterdaemmung".to_string()),
-                    layer_id: Uuid::new_v4(),
-                },
-                SlabStyleLayer {
-                    material_id: "mat_concrete".to_string(),
-                    thickness: LayerValue::Fixed(0.240),
-                    function: LayerFunction::Structural,
-                    vertical_offset: LayerValue::Fixed(0.0),
-                    layer_override: Some("A-FLOR-STRC".to_string()),
-                    hatch_override: Some("AR-CONC".to_string()),
-                    role_tag: Some("Stahlbetonplatte".to_string()),
-                    layer_id: Uuid::new_v4(),
-                },
-            ],
+            layers: Vec::new(),
             display_profiles: std::collections::HashMap::new(),
         },
-        // 11. Abgehaengte Decke Gipskarton 15cm
-        SlabStyle {
-            style: Style {
-                id: "style_slab_suspended_ceiling_15".to_string(),
-                name: "Abgehaengte Decke Gipskarton 15cm".to_string(),
-                object_kind: "Slab".to_string(),
-                parent_style_id: None,
-            },
-            structural_style_id: None,
-            default_finish_style_id: None,
-            layers: vec![
-                SlabStyleLayer {
-                    material_id: "mat_air".to_string(),
-                    thickness: LayerValue::Fixed(0.125),
-                    function: LayerFunction::Other("Cavity".to_string()),
-                    vertical_offset: LayerValue::Fixed(0.0),
-                    layer_override: Some("A-CEIL-CAVT".to_string()),
-                    hatch_override: Some("SOLID".to_string()),
-                    role_tag: Some("Abhaengeraum / Unterkonstruktion".to_string()),
-                    layer_id: Uuid::new_v4(),
-                },
-                SlabStyleLayer {
-                    material_id: "mat_drywall".to_string(),
-                    thickness: LayerValue::Fixed(0.025),
-                    function: LayerFunction::Finish,
-                    vertical_offset: LayerValue::Fixed(0.0),
-                    layer_override: Some("A-CEIL-FINI".to_string()),
-                    hatch_override: Some("ANSI31".to_string()),
-                    role_tag: Some("Gipskartonplatten 2x12.5mm".to_string()),
-                    layer_id: Uuid::new_v4(),
-                },
-            ],
-            display_profiles: std::collections::HashMap::new(),
-        },
-        // 12. Balkonplatte Stahlbeton mit Gefaelleestrich 22cm
+        // 10. Balkonplatte Stahlbeton 32cm
         SlabStyle {
             style: Style {
                 id: "style_slab_balcony_22".to_string(),
-                name: "Balkonplatte Stahlbeton 22cm".to_string(),
+                name: "Balkonplatte Stahlbeton 32cm".to_string(),
                 object_kind: "Slab".to_string(),
                 parent_style_id: None,
             },
             structural_style_id: Some("struct_slab_concrete_20".to_string()),
             default_finish_style_id: Some("finish_floor_balcony_120".to_string()),
-            layers: vec![
-                SlabStyleLayer {
-                    material_id: "mat_tile".to_string(),
-                    thickness: LayerValue::Fixed(0.015),
-                    function: LayerFunction::Finish,
-                    vertical_offset: LayerValue::Fixed(0.0),
-                    layer_override: Some("A-FLOR-FINI".to_string()),
-                    hatch_override: Some("NET".to_string()),
-                    role_tag: Some("Spaltplatten / Fliesen".to_string()),
-                    layer_id: Uuid::new_v4(),
-                },
-                SlabStyleLayer {
-                    material_id: "mat_screed".to_string(),
-                    thickness: LayerValue::Fixed(0.045),
-                    function: LayerFunction::Other("Screed".to_string()),
-                    vertical_offset: LayerValue::Fixed(0.0),
-                    layer_override: Some("A-FLOR-SCREED".to_string()),
-                    hatch_override: Some("DOTS".to_string()),
-                    role_tag: Some("Gefaelleestrich & Abdichtung".to_string()),
-                    layer_id: Uuid::new_v4(),
-                },
-                SlabStyleLayer {
-                    material_id: "mat_concrete".to_string(),
-                    thickness: LayerValue::Fixed(0.160),
-                    function: LayerFunction::Structural,
-                    vertical_offset: LayerValue::Fixed(0.0),
-                    layer_override: Some("A-FLOR-STRC".to_string()),
-                    hatch_override: Some("AR-CONC".to_string()),
-                    role_tag: Some("Stahlbeton-Balkonplatte".to_string()),
-                    layer_id: Uuid::new_v4(),
-                },
-            ],
+            layers: Vec::new(),
             display_profiles: std::collections::HashMap::new(),
         },
     ]
@@ -4562,15 +4224,17 @@ mod tests {
     #[test]
     fn seed_default_library_includes_slab_styles() {
         let lib = seed_default_library();
-        assert_eq!(lib.slab_styles.len(), 12);
+        assert_eq!(lib.slab_styles.len(), 10);
         let concrete_20 = lib.find_slab_style("style_slab_concrete_20").expect("concrete 20 seed");
-        assert_eq!(concrete_20.layers.len(), 1);
-        assert_eq!(concrete_20.layers[0].material_id, "mat_concrete");
-        assert_eq!(concrete_20.nominal_thickness(), 0.20);
+        assert_eq!(concrete_20.structural_style_id.as_deref(), Some("struct_slab_concrete_20"));
+        let resolved_layers = lib.resolve_slab_layers("style_slab_concrete_20");
+        assert_eq!(resolved_layers.len(), 1);
+        assert_eq!(resolved_layers[0].material_id, "mat_concrete");
 
         let floor_eg = lib.find_slab_style("style_slab_floor_eg_34").expect("floor eg seed");
-        assert_eq!(floor_eg.layers.len(), 4);
-        assert!((floor_eg.nominal_thickness() - 0.34).abs() < 1e-6);
+        assert_eq!(floor_eg.default_finish_style_id.as_deref(), Some("finish_floor_tiles_80"));
+        let resolved_floor_eg = lib.resolve_slab_layers("style_slab_floor_eg_34");
+        assert_eq!(resolved_floor_eg.len(), 4);
     }
 
     #[test]

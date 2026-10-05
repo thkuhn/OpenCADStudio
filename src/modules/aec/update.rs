@@ -339,6 +339,160 @@ impl OpenCADStudio {
             AecMessage::AecStyleManagerCopySlabStyleToGlobal => {
                 self.aec_handle_copy_slab_style(false)
             }
+            AecMessage::AecSlabStructuralStyleManagerOpen => {
+                self.aec_slab_structural_style_manager_open()
+            }
+            AecMessage::AecSlabStructuralStyleManagerFilter(value) => {
+                self.aec.aec_slab_structural_style_manager_filter = value;
+                Task::none()
+            }
+            AecMessage::AecSlabStructuralStyleManagerSelect(id) => {
+                self.aec_slab_structural_style_manager_select(id)
+            }
+            AecMessage::AecSlabStructuralStyleManagerNew => {
+                self.aec_slab_structural_style_manager_new()
+            }
+            AecMessage::AecSlabStructuralStyleManagerDuplicate => {
+                self.aec_slab_structural_style_manager_duplicate()
+            }
+            AecMessage::AecSlabStructuralStyleManagerNameChanged(value) => {
+                self.aec.aec_slab_structural_style_manager_name = value;
+                Task::none()
+            }
+            AecMessage::AecSlabStructuralStyleManagerParentChanged(value) => {
+                self.aec.aec_slab_structural_style_manager_parent = value;
+                Task::none()
+            }
+            AecMessage::AecSlabStructuralStyleManagerLayerAdd => {
+                self.aec_slab_structural_style_manager_layer_add();
+                Task::none()
+            }
+            AecMessage::AecSlabStructuralStyleManagerLayerRemove(index) => {
+                self.aec_slab_structural_style_manager_layer_remove(index);
+                Task::none()
+            }
+            AecMessage::AecSlabStructuralStyleManagerLayerMoveUp(index) => {
+                self.aec_slab_structural_style_manager_layer_move_up(index);
+                Task::none()
+            }
+            AecMessage::AecSlabStructuralStyleManagerLayerMoveDown(index) => {
+                self.aec_slab_structural_style_manager_layer_move_down(index);
+                Task::none()
+            }
+            AecMessage::AecSlabStructuralStyleManagerLayerDragStart(index) => {
+                self.aec.aec_slab_structural_style_manager_drag_index = Some(index);
+                Task::none()
+            }
+            AecMessage::AecSlabStructuralStyleManagerLayerDragOver(index) => {
+                if let Some(from) = self.aec.aec_slab_structural_style_manager_drag_index {
+                    if from != index
+                        && index < self.aec.aec_slab_structural_style_manager_layers.len()
+                    {
+                        let item = self
+                            .aec
+                            .aec_slab_structural_style_manager_layers
+                            .remove(from);
+                        self.aec
+                            .aec_slab_structural_style_manager_layers
+                            .insert(index, item);
+                        self.aec.aec_slab_structural_style_manager_drag_index = Some(index);
+                    }
+                }
+                Task::none()
+            }
+            AecMessage::AecSlabStructuralStyleManagerLayerDragEnd => {
+                self.aec.aec_slab_structural_style_manager_drag_index = None;
+                Task::none()
+            }
+            AecMessage::AecSlabStructuralStyleManagerLayerMaterialChanged(index, value) => {
+                if let Some(layer) = self
+                    .aec
+                    .aec_slab_structural_style_manager_layers
+                    .get_mut(index)
+                {
+                    layer.material_id = value;
+                }
+                Task::none()
+            }
+            AecMessage::AecSlabStructuralStyleManagerLayerThicknessChanged(index, value) => {
+                if let Some(layer) = self
+                    .aec
+                    .aec_slab_structural_style_manager_layers
+                    .get_mut(index)
+                {
+                    layer.thickness = value;
+                }
+                Task::none()
+            }
+            AecMessage::AecSlabStructuralStyleManagerLayerFunctionChanged(index, value) => {
+                if let Some(layer) = self
+                    .aec
+                    .aec_slab_structural_style_manager_layers
+                    .get_mut(index)
+                {
+                    layer.function = value;
+                }
+                Task::none()
+            }
+            AecMessage::AecSlabStructuralStyleManagerLayerVerticalOffsetChanged(index, value) => {
+                if let Some(layer) = self
+                    .aec
+                    .aec_slab_structural_style_manager_layers
+                    .get_mut(index)
+                {
+                    layer.vertical_offset = value;
+                }
+                Task::none()
+            }
+            AecMessage::AecSlabStructuralStyleManagerLayerOverrideChanged(index, value) => {
+                if let Some(layer) = self
+                    .aec
+                    .aec_slab_structural_style_manager_layers
+                    .get_mut(index)
+                {
+                    layer.layer_override = value;
+                }
+                Task::none()
+            }
+            AecMessage::AecSlabStructuralStyleManagerLayerHatchOverrideChanged(index, value) => {
+                if let Some(layer) = self
+                    .aec
+                    .aec_slab_structural_style_manager_layers
+                    .get_mut(index)
+                {
+                    layer.hatch_override = value;
+                }
+                Task::none()
+            }
+            AecMessage::AecSlabStructuralStyleManagerLayerRoleTagChanged(index, value) => {
+                if let Some(layer) = self
+                    .aec
+                    .aec_slab_structural_style_manager_layers
+                    .get_mut(index)
+                {
+                    layer.role_tag = value;
+                }
+                Task::none()
+            }
+            AecMessage::AecSlabStructuralStyleManagerSetPreviewMode(mode) => {
+                self.aec.aec_slab_structural_style_manager_preview_mode = mode;
+                Task::none()
+            }
+            AecMessage::AecSlabStructuralStyleManagerSave => {
+                self.aec_slab_structural_style_manager_save()
+            }
+            AecMessage::AecSlabStructuralStyleManagerSaveAndApply => {
+                self.aec_slab_structural_style_manager_save_and_apply()
+            }
+            AecMessage::AecSlabStructuralStyleManagerDelete => {
+                self.aec_slab_structural_style_manager_delete()
+            }
+            AecMessage::AecStyleManagerCopySlabStructuralStyleToProject => {
+                self.aec_handle_copy_slab_structural_style(true)
+            }
+            AecMessage::AecStyleManagerCopySlabStructuralStyleToGlobal => {
+                self.aec_handle_copy_slab_structural_style(false)
+            }
             AecMessage::AecFloorFinishStyleManagerOpen => {
                 self.aec_floor_finish_style_manager_open()
             }
@@ -2111,9 +2265,17 @@ impl OpenCADStudio {
                     crate::app::StylePickerTarget::SlabStyleParent => {
                         self.aec.aec_slab_style_manager_parent.clone()
                     }
+                    crate::app::StylePickerTarget::SlabStructuralStyleParent => {
+                        self.aec.aec_slab_structural_style_manager_parent.clone()
+                    }
                     crate::app::StylePickerTarget::SlabLayerMaterial(index) => self
                         .aec
                         .aec_slab_style_manager_layers
+                        .get(index)
+                        .map(|l| l.material_id.clone()),
+                    crate::app::StylePickerTarget::SlabStructuralLayerMaterial(index) => self
+                        .aec
+                        .aec_slab_structural_style_manager_layers
                         .get(index)
                         .map(|l| l.material_id.clone()),
                     crate::app::StylePickerTarget::SlabLayerOverride(index) => self
@@ -2242,6 +2404,15 @@ impl OpenCADStudio {
                     ) {
                         self.active_modal =
                             Some(crate::app::ModalKind::Aec(AecModalKind::SlabStyleManager));
+                        return Task::none();
+                    }
+                    if matches!(
+                        target,
+                        crate::app::StylePickerTarget::SlabStructuralStyleParent
+                            | crate::app::StylePickerTarget::SlabStructuralLayerMaterial(_)
+                    ) {
+                        self.active_modal =
+                            Some(crate::app::ModalKind::Aec(AecModalKind::SlabStructuralStyleManager));
                         return Task::none();
                     }
                 }
@@ -2803,11 +2974,32 @@ impl OpenCADStudio {
                                 AecMessage::AecSlabStyleManagerParentChanged(id),
                             ));
                         }
+                        crate::app::StylePickerTarget::SlabStructuralStyleParent => {
+                            let id = if selection.is_empty() {
+                                None
+                            } else {
+                                Some(selection)
+                            };
+                            self.active_modal =
+                                Some(crate::app::ModalKind::Aec(AecModalKind::SlabStructuralStyleManager));
+                            return self.update(Message::Aec(
+                                AecMessage::AecSlabStructuralStyleManagerParentChanged(id),
+                            ));
+                        }
                         crate::app::StylePickerTarget::SlabLayerMaterial(index) => {
                             self.active_modal =
                                 Some(crate::app::ModalKind::Aec(AecModalKind::SlabStyleManager));
                             return self.update(Message::Aec(
                                 AecMessage::AecSlabStyleManagerLayerMaterialChanged(
+                                    index, selection,
+                                ),
+                            ));
+                        }
+                        crate::app::StylePickerTarget::SlabStructuralLayerMaterial(index) => {
+                            self.active_modal =
+                                Some(crate::app::ModalKind::Aec(AecModalKind::SlabStructuralStyleManager));
+                            return self.update(Message::Aec(
+                                AecMessage::AecSlabStructuralStyleManagerLayerMaterialChanged(
                                     index, selection,
                                 ),
                             ));
@@ -3250,6 +3442,9 @@ impl OpenCADStudio {
                     }
                     Some(AecPendingCopy::SlabStyle { .. }) => {
                         crate::app::ModalKind::Aec(AecModalKind::SlabStyleManager)
+                    }
+                    Some(AecPendingCopy::SlabStructuralStyle { .. }) => {
+                        crate::app::ModalKind::Aec(AecModalKind::SlabStructuralStyleManager)
                     }
                     Some(AecPendingCopy::FloorFinishStyle { .. }) => {
                         crate::app::ModalKind::Aec(AecModalKind::FloorFinishStyleManager)

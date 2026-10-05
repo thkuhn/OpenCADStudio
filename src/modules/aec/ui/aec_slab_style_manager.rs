@@ -13,7 +13,7 @@ use crate::modules::aec::engine::display_component::SlabComponentSlot;
 use crate::modules::aec::engine::library::{LibrarySource, StyleLibrary};
 use crate::modules::aec::engine::project::ProjectFile;
 use crate::modules::aec::engine::slab_style::SlabStyleLayer;
-use crate::modules::aec::state::{AecSlabLayerBuffer, AecSlabPreviewMode};
+use crate::modules::aec::state::AecSlabPreviewMode;
 use crate::modules::aec::styles::slab_style_manager::{
     preview_paths_for_mode, SlabPreviewPath, EDITABLE_SLOTS,
 };
@@ -25,8 +25,6 @@ const LAYER_COL_MATERIAL_W: f32 = 170.0;
 const LAYER_COL_THICKNESS_W: f32 = 80.0;
 const LAYER_COL_FUNCTION_W: f32 = 120.0;
 const LAYER_COL_OFFSET_W: f32 = 70.0;
-const LAYER_COL_OVERRIDE_W: f32 = 110.0;
-const LAYER_COL_HATCH_W: f32 = 90.0;
 
 pub struct SlabStyleFormState<'a> {
     pub open: bool,
@@ -36,13 +34,12 @@ pub struct SlabStyleFormState<'a> {
     pub parent_name: Option<String>,
     pub structural_style_id: Option<&'a str>,
     pub finish_style_id: Option<&'a str>,
-    pub layers: &'a [AecSlabLayerBuffer],
-    pub drag_index: Option<usize>,
+    pub referenced_structural: Option<&'a crate::modules::aec::engine::slab_style::SlabStructuralStyle>,
+    pub referenced_finish: Option<&'a crate::modules::aec::engine::slab_style::FloorFinishStyle>,
     pub all_slab_styles: Vec<(&'a str, &'a str)>,
     pub all_structural_styles: Vec<(&'a str, &'a str)>,
     pub all_finish_styles: Vec<(&'a str, &'a str)>,
     pub all_materials: Vec<(&'a str, &'a str)>,
-    pub all_layer_names: Vec<String>,
     pub effective_layers: Vec<SlabStyleLayer>,
     pub inheritance_chain: Vec<String>,
     pub preview_mode: AecSlabPreviewMode,
@@ -268,7 +265,7 @@ fn form_view<'a>(
     .spacing(4);
 
     // Modular sub-styles row (Structural Slab Style + Default Floor Finish Style)
-    let mut struct_options = vec![(String::new(), t!("(Manuell / Keine)").into_owned())];
+    let mut struct_options = vec![(String::new(), t!("(Kein Rohbaustil)").into_owned())];
     for (id, name) in &form.all_structural_styles {
         struct_options.push((id.to_string(), format!("{name} ({id})")));
     }
@@ -298,19 +295,12 @@ fn form_view<'a>(
         .text_size(10)
         .padding([3, 6]);
 
-    let load_modular_btn = button(text(t!("Schichten aus Stilen laden")).size(10))
-        .padding([3, 8])
-        .style(button::secondary)
-        .on_press(Message::Aec(AecMessage::AecSlabStyleManagerLoadModularLayers));
-
     let modular_row = row![
-        text(t!("Rohbaustil:")).size(10).style(muted),
+        text(t!("Rohbaustil (Tragwerk):")).size(10).style(muted),
         struct_pick,
-        Space::new().width(6),
-        text(t!("Ausbaustil:")).size(10).style(muted),
+        Space::new().width(8),
+        text(t!("Ausbaustil (Fußbodenaufbau):")).size(10).style(muted),
         finish_pick,
-        Space::new().width(6),
-        load_modular_btn,
     ]
     .align_y(Alignment::Center)
     .spacing(4);
@@ -363,7 +353,7 @@ fn form_view<'a>(
             mode: form.preview_mode,
         })
         .width(Fill)
-        .height(180),
+        .height(140),
     )
     .style(|theme: &Theme| container::Style {
         background: Some(
@@ -383,138 +373,161 @@ fn form_view<'a>(
         ..Default::default()
     });
 
-    let table_header = row![
-        container(text(t!("Pos")).size(10).style(muted)).width(LAYER_COL_REORDER_W),
-        container(text(t!("Material")).size(10).style(muted)).width(LAYER_COL_MATERIAL_W),
-        container(text(t!("Dicke [cm]")).size(10).style(muted)).width(LAYER_COL_THICKNESS_W),
-        container(text(t!("Funktion")).size(10).style(muted)).width(LAYER_COL_FUNCTION_W),
-        container(text(t!("Offset [cm]")).size(10).style(muted)).width(LAYER_COL_OFFSET_W),
-        container(text(t!("Layer-Override")).size(10).style(muted)).width(LAYER_COL_OVERRIDE_W),
-        container(text(t!("Schraffur-Override")).size(10).style(muted)).width(LAYER_COL_HATCH_W),
-        Space::new(),
-    ]
-    .spacing(4)
-    .align_y(Alignment::Center);
+    // Breakdown cards for Finish style & Structural style
+    let mut finish_layers_col = column![].spacing(2);
+    let mut finish_th_cm = 0.0;
+    if let Some(fs) = &form.referenced_finish {
+        let title = text(format!(
+            "▲ Fußbodenaufbau: {} ({}) — {:.1} cm",
+            fs.style.name,
+            fs.style.id,
+            fs.nominal_thickness() * 100.0
+        ))
+        .size(10)
+        .style(muted);
+        finish_layers_col = finish_layers_col.push(title);
 
-    let mut layers_col = column![table_header].spacing(4);
-    let functions = vec![
-        "Structural".to_string(),
-        "Insulation".to_string(),
-        "Finish".to_string(),
-        "Other".to_string(),
-    ];
-
-    let mut total_th_cm = 0.0;
-    for (i, layer_buf) in form.layers.iter().enumerate() {
-        if let Ok(v) = layer_buf.thickness.trim().parse::<f64>() {
-            total_th_cm += v;
+        for (i, layer) in fs.layers.iter().enumerate() {
+            let th = match layer.thickness {
+                crate::modules::aec::engine::slab_style::LayerValue::Fixed(v) => v * 100.0,
+                _ => 0.0,
+            };
+            finish_th_cm += th;
+            let mat_name = form
+                .all_materials
+                .iter()
+                .find(|(id, _)| *id == layer.material_id.as_str())
+                .map(|(_, n)| *n)
+                .unwrap_or(&layer.material_id);
+            let hatch_str = layer.hatch_override.as_deref().unwrap_or("ANSI31");
+            let layer_row = row![
+                text(format!("{}.", i + 1)).size(9).width(Length::Fixed(20.0)),
+                text(mat_name).size(10).width(Length::Fixed(180.0)),
+                text(format!("{th:.1} cm")).size(10).width(Length::Fixed(80.0)),
+                text(format!("{:?}", layer.function)).size(9).style(muted).width(Length::Fixed(100.0)),
+                text(format!("Schraffur: {hatch_str}")).size(9).style(muted),
+            ]
+            .align_y(Alignment::Center)
+            .spacing(4);
+            finish_layers_col = finish_layers_col.push(layer_row);
         }
-        let is_first = i == 0;
-        let is_last = i + 1 == form.layers.len();
-
-        let up_btn = button(text("▲").size(9))
-            .padding([2, 4])
-            .style(button::secondary)
-            .on_press_maybe((!is_first).then_some(Message::Aec(
-                AecMessage::AecSlabStyleManagerLayerMoveUp(i),
-            )));
-        let down_btn = button(text("▼").size(9))
-            .padding([2, 4])
-            .style(button::secondary)
-            .on_press_maybe((!is_last).then_some(Message::Aec(
-                AecMessage::AecSlabStyleManagerLayerMoveDown(i),
-            )));
-        let reorder_cell = row![up_btn, down_btn]
-            .spacing(2)
-            .align_y(Alignment::Center);
-
-        let mat_btn = button(text(layer_buf.material_id.clone()).size(10))
-            .width(Fill)
-            .padding([3, 6])
-            .style(button::secondary)
-            .on_press(Message::Aec(AecMessage::AecStylePickerOpen(
-                StylePickerTarget::SlabLayerMaterial(i),
-            )));
-
-        let th_input = text_input("cm", &layer_buf.thickness)
-            .size(10)
-            .padding([3, 6])
-            .on_input(move |s| {
-                Message::Aec(AecMessage::AecSlabStyleManagerLayerThicknessChanged(i, s))
-            });
-
-        let fn_pick = pick_list(Some(layer_buf.function.clone()), functions.clone(), |func: &String| {
-            func.clone()
-        })
-        .on_select(move |sel| {
-            Message::Aec(AecMessage::AecSlabStyleManagerLayerFunctionChanged(i, sel))
-        })
-        .text_size(10)
-        .padding([3, 6]);
-
-        let offset_input = text_input("cm", &layer_buf.vertical_offset)
-            .size(10)
-            .padding([3, 6])
-            .on_input(move |s| {
-                Message::Aec(AecMessage::AecSlabStyleManagerLayerVerticalOffsetChanged(i, s))
-            });
-
-        let layer_override_input = text_input(t!("Standard").as_ref(), &layer_buf.layer_override)
-            .size(10)
-            .padding([3, 6])
-            .on_input(move |s| {
-                Message::Aec(AecMessage::AecSlabStyleManagerLayerOverrideChanged(i, s))
-            });
-
-        let hatch_override_input = text_input(t!("Standard").as_ref(), &layer_buf.hatch_override)
-            .size(10)
-            .padding([3, 6])
-            .on_input(move |s| {
-                Message::Aec(AecMessage::AecSlabStyleManagerLayerHatchOverrideChanged(i, s))
-            });
-
-        let del_btn = button(text("✕").size(10))
-            .padding([2, 6])
-            .style(button::danger)
-            .on_press(Message::Aec(AecMessage::AecSlabStyleManagerLayerRemove(i)));
-
-        let row_item = row![
-            container(reorder_cell).width(LAYER_COL_REORDER_W),
-            container(mat_btn).width(LAYER_COL_MATERIAL_W),
-            container(th_input).width(LAYER_COL_THICKNESS_W),
-            container(fn_pick).width(LAYER_COL_FUNCTION_W),
-            container(offset_input).width(LAYER_COL_OFFSET_W),
-            container(layer_override_input).width(LAYER_COL_OVERRIDE_W),
-            container(hatch_override_input).width(LAYER_COL_HATCH_W),
-            del_btn,
-        ]
-        .spacing(4)
-        .align_y(Alignment::Center);
-        layers_col = layers_col.push(row_item);
+    } else {
+        finish_layers_col = finish_layers_col.push(
+            text(t!("(Kein Ausbaustil zugewiesen / reine Rohdecke)"))
+                .size(10)
+                .style(muted),
+        );
     }
 
-    let add_layer_btn = button(text(t!("+ Schicht hinzufügen")).size(10))
-        .padding([4, 8])
-        .style(button::primary)
-        .on_press(Message::Aec(AecMessage::AecSlabStyleManagerLayerAdd));
+    let finish_card = container(finish_layers_col)
+        .width(Fill)
+        .padding(6)
+        .style(|theme: &Theme| container::Style {
+            background: Some(
+                theme
+                    .palette()
+                    .background
+                    .neutral
+                    .color
+                    .scale_alpha(0.08)
+                    .into(),
+            ),
+            border: Border {
+                radius: 3.0.into(),
+                width: 1.0,
+                color: theme.palette().background.neutral.color.scale_alpha(0.2),
+            },
+            ..Default::default()
+        });
 
+    let mut struct_layers_col = column![].spacing(2);
+    let mut struct_th_cm = 0.0;
+    if let Some(ss) = &form.referenced_structural {
+        let title = text(format!(
+            "▼ Rohdecke: {} ({}) — {:.1} cm",
+            ss.style.name,
+            ss.style.id,
+            ss.nominal_thickness() * 100.0
+        ))
+        .size(10)
+        .style(muted);
+        struct_layers_col = struct_layers_col.push(title);
+
+        for (i, layer) in ss.layers.iter().enumerate() {
+            let th = match layer.thickness {
+                crate::modules::aec::engine::slab_style::LayerValue::Fixed(v) => v * 100.0,
+                _ => 0.0,
+            };
+            struct_th_cm += th;
+            let mat_name = form
+                .all_materials
+                .iter()
+                .find(|(id, _)| *id == layer.material_id.as_str())
+                .map(|(_, n)| *n)
+                .unwrap_or(&layer.material_id);
+            let hatch_str = layer.hatch_override.as_deref().unwrap_or("AR-CONC");
+            let layer_row = row![
+                text(format!("{}.", i + 1)).size(9).width(Length::Fixed(20.0)),
+                text(mat_name).size(10).width(Length::Fixed(180.0)),
+                text(format!("{th:.1} cm")).size(10).width(Length::Fixed(80.0)),
+                text(format!("{:?}", layer.function)).size(9).style(muted).width(Length::Fixed(100.0)),
+                text(format!("Schraffur: {hatch_str}")).size(9).style(muted),
+            ]
+            .align_y(Alignment::Center)
+            .spacing(4);
+            struct_layers_col = struct_layers_col.push(layer_row);
+        }
+    } else {
+        struct_layers_col = struct_layers_col.push(
+            text(t!("(Kein Rohbaustil zugewiesen)"))
+                .size(10)
+                .style(muted),
+        );
+    }
+
+    let struct_card = container(struct_layers_col)
+        .width(Fill)
+        .padding(6)
+        .style(|theme: &Theme| container::Style {
+            background: Some(
+                theme
+                    .palette()
+                    .background
+                    .neutral
+                    .color
+                    .scale_alpha(0.08)
+                    .into(),
+            ),
+            border: Border {
+                radius: 3.0.into(),
+                width: 1.0,
+                color: theme.palette().background.neutral.color.scale_alpha(0.2),
+            },
+            ..Default::default()
+        });
+
+    let total_th_cm = finish_th_cm + struct_th_cm;
     let summary_label = text(format!(
-        "Gesamtdicke: {:.1} cm ({} Schichten)",
+        "Gesamtdicke der Decke: {:.1} cm (Ausbau: {:.1} cm + Rohbau: {:.1} cm) | {} Schichten",
         total_th_cm,
-        form.layers.len()
+        finish_th_cm,
+        struct_th_cm,
+        form.effective_layers.len()
     ))
     .size(10)
     .style(muted);
 
-    let layers_footer = row![add_layer_btn, Space::new(), summary_label].align_y(Alignment::Center);
     let layers_section = column![
-        text(t!("Schichtaufbau (von oben nach unten):"))
+        text(t!("Zusammensetzung & Schichtenübersicht (aus Referenzen):"))
             .size(11)
             .style(muted),
-        scrollable(layers_col).height(Length::Fixed(140.0)),
-        layers_footer,
+        finish_card,
+        Space::new().height(2),
+        struct_card,
+        Space::new().height(2),
+        summary_label,
     ]
-    .spacing(6);
+    .spacing(4);
 
     let slots_title = text(t!("Komponenten-Sichtbarkeit:")).size(10).style(muted);
     let mut slots_row = row![slots_title].spacing(8).align_y(Alignment::Center);

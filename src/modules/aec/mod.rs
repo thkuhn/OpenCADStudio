@@ -49,7 +49,7 @@ impl CadModule for AecModule {
         use slabs::{slab_opening_tool, slab_tool};
         use styles::{
             floor_finish_style_manager, material_manager, opening_style_manager, plan_manager,
-            slab_style_manager, wall_style_manager,
+            slab_structural_style_manager, slab_style_manager, wall_style_manager,
         };
         use walls::{door, extend, join, opening, refresh, wall, window};
 
@@ -109,8 +109,9 @@ impl CadModule for AecModule {
                         RibbonItem::LargeTool(material_manager::tool()),
                         RibbonItem::LargeTool(wall_style_manager::tool()),
                         RibbonItem::LargeTool(opening_style_manager::tool()),
-                        RibbonItem::LargeTool(slab_style_manager::tool()),
+                        RibbonItem::LargeTool(slab_structural_style_manager::tool()),
                         RibbonItem::LargeTool(floor_finish_style_manager::tool()),
+                        RibbonItem::LargeTool(slab_style_manager::tool()),
                         RibbonItem::LargeTool(plan_manager::tool()),
                     ],
                 },
