@@ -915,6 +915,10 @@ impl OpenCADStudio {
                         &self.tabs[i].scene,
                         &mut handles,
                     );
+                    crate::modules::aec::engine::slab_package::expand_with_slab_derived_handles(
+                        &self.tabs[i].scene,
+                        &mut handles,
+                    );
                     crate::modules::aec::engine::room_package::expand_with_room_derived_handles(
                         &self.tabs[i].scene,
                         &mut handles,

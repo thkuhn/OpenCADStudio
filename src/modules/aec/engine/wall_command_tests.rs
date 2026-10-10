@@ -9087,7 +9087,7 @@ fn test_elevation_generators_contour_muntins_and_triangles() {
         .collect();
     assert_eq!(muntins.len(), 3, "ElevationMuntinsDouble must emit central mullion and two leaves");
 
-    // 3. ElevationSwing2D: DIN opening triangle pointing to left hinge
+    // 3. ElevationSwing2D: DIN opening triangle pointing to opening side (handle side)
     let swing_left: Vec<_> = baked_left
         .iter()
         .filter(|p| p.slot == OpeningComponentSlot::ElevationSwing2D)
@@ -9095,10 +9095,10 @@ fn test_elevation_generators_contour_muntins_and_triangles() {
     assert_eq!(swing_left.len(), 1);
     let pts_left = &swing_left[0].points;
     assert_eq!(pts_left.len(), 3);
-    // Tip of triangle is the middle vertex (index 1) and must be on the left (negative u):
-    assert!(pts_left[1].0 < 0.0, "Left-hinged triangle tip must point to left jamb");
-    assert!(pts_left[0].0 > 0.0, "Left-hinged triangle base start must be on right side");
-    assert!(pts_left[2].0 > 0.0, "Left-hinged triangle base end must be on right side");
+    // Tip of triangle is the middle vertex (index 1) and must be on the right (opening side, positive u):
+    assert!(pts_left[1].0 > 0.0, "Left-hinged triangle tip must point to right opening jamb");
+    assert!(pts_left[0].0 < 0.0, "Left-hinged triangle base start must be on left hinge side");
+    assert!(pts_left[2].0 < 0.0, "Left-hinged triangle base end must be on left hinge side");
 
     // Right-hinged test:
     let mut p_right = p_left;
@@ -9109,10 +9109,10 @@ fn test_elevation_generators_contour_muntins_and_triangles() {
         .filter(|p| p.slot == OpeningComponentSlot::ElevationSwing2D)
         .collect();
     let pts_right = &swing_right[0].points;
-    // Tip of triangle is the middle vertex (index 1) and must be on the right (positive u):
-    assert!(pts_right[1].0 > 0.0, "Right-hinged triangle tip must point to right jamb");
-    assert!(pts_right[0].0 < 0.0, "Right-hinged triangle base start must be on left side");
-    assert!(pts_right[2].0 < 0.0, "Right-hinged triangle base end must be on left side");
+    // Tip of triangle is the middle vertex (index 1) and must be on the left (opening side, negative u):
+    assert!(pts_right[1].0 < 0.0, "Right-hinged triangle tip must point to left opening jamb");
+    assert!(pts_right[0].0 > 0.0, "Right-hinged triangle base start must be on right hinge side");
+    assert!(pts_right[2].0 > 0.0, "Right-hinged triangle base end must be on right hinge side");
 
     // 4. ElevationSill2D:
     let sill_elev: Vec<_> = baked_left
@@ -9419,7 +9419,7 @@ fn test_opening_property_title_and_multi_layer_sills() {
 
     // Check title in property panel: must report Window / Fenster, NOT Point!
     let title = crate::modules::aec::properties::aec_entity_title(&scene, win_h, win_ent).expect("title");
-    assert_eq!(title, crate::t!("Window").into_owned());
+    assert_eq!(title, crate::tr!("aec", "window-title"));
 
     // Regenerate and check sill positioning against outermost layer (-0.24) and innermost layer (+0.18)
     let children = collect_opening_display_children(&scene, win_h);

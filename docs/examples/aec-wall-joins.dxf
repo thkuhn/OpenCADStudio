@@ -9,7 +9,7 @@ AC1032
   9
 $ACADMAINTVER
  90
-     0
+   377
   9
 $DWGCODEPAGE
   3
@@ -407,9 +407,37 @@ $DIMTFAC
  40
 1.0
   9
+$DIMFXL
+ 40
+1.0
+  9
+$DIMJOGANG
+ 40
+0.7853981633974483
+  9
+$DIMTFILL
+ 70
+     0
+  9
+$DIMTFILLCLR
+ 70
+     0
+  9
 $SPLFRAME
  70
      0
+  9
+$XCLIPFRAME
+280
+2
+  9
+$DWFFRAME
+280
+2
+  9
+$DGNFRAME
+280
+0
   9
 $SOLIDHIST
 280
@@ -418,6 +446,34 @@ $SOLIDHIST
 $SHOWHIST
 280
 1
+  9
+$3DDWFPREC
+ 40
+2.0
+  9
+$PSOLWIDTH
+ 40
+0.25
+  9
+$PSOLHEIGHT
+ 40
+4.0
+  9
+$LIGHTGLYPHDISPLAY
+280
+1
+  9
+$TILEMODELIGHTSYNCH
+280
+1
+  9
+$REALWORLDSCALE
+290
+     1
+  9
+$INTERFERECOLOR
+ 62
+     1
   9
 $SPLINETYPE
  70
@@ -483,7 +539,15 @@ $TDCREATE
  40
 0.0
   9
+$TDUCREATE
+ 40
+0.0
+  9
 $TDUPDATE
+ 40
+0.0
+  9
+$TDUUPDATE
  40
 0.0
   9
@@ -3419,13 +3483,13 @@ AcDbPointCloudObj
   0
 CLASS
   1
-ACDBPOINTCLOUDDEFEX
+ACDBPOINTCLOUDDEF_EX
   2
 AcDbPointCloudDefEx
   3
 AcDbPointCloudObj
  90
-     0
+  1024
  91
      0
 280
@@ -3457,7 +3521,7 @@ AcDbPointCloudDefReactorEx
   3
 AcDbPointCloudObj
  90
-     0
+  1025
  91
      0
 280
@@ -3473,7 +3537,7 @@ AcDbPointCloudColorMap
   3
 AcDbPointCloudObj
  90
-     0
+  1025
  91
      0
 280
@@ -5358,6 +5422,8 @@ AcDbSymbolTableRecord
 AcDbBlockTableRecord
   2
 *Model_Space
+340
+2E
  70
      0
 280
@@ -5376,6 +5442,8 @@ AcDbSymbolTableRecord
 AcDbBlockTableRecord
   2
 *Paper_Space
+340
+2F
  70
      0
 280
@@ -5591,7 +5659,7 @@ axis_offset
 1000
 layer_id
 1000
-7be8a215-7e3f-498a-8116-88cae5c37665
+d776591e-02cf-427a-a2f5-d001dbd13f6c
 1000
 New
 1000
@@ -5725,7 +5793,7 @@ axis_offset
 1000
 layer_id
 1000
-332d03d6-a502-4460-bcd9-b00a13e7c871
+7e278af9-1ce1-450c-904d-d429cfd3e55d
 1000
 New
 1000
@@ -6419,11 +6487,11 @@ DOTS
 1000
 layer_id
 1000
-e52e37bb-b349-4b54-bfb4-30427e79b0ad
+503e0490-9dd6-4216-8cab-caebc2ce993a
 1000
-84dc058e-b340-4283-bf64-db0ecea13443
+3f33c794-cb9a-49b8-bb09-7b65fb604d8f
 1000
-3f07faa0-42b7-40dd-b34f-869f8bbf8922
+16fcd6ea-0f0f-44a1-bf42-02d4ab39e308
 1000
 New
 1000
@@ -6601,11 +6669,11 @@ DOTS
 1000
 layer_id
 1000
-4e67bf4b-35d7-44e9-96a9-930fe19061ae
+ae795029-2604-4f6f-ad5d-aa63295ecd61
 1000
-de9fd85e-9f52-43d3-bd0b-e00f94116e55
+ba51a994-d067-402e-8802-8353ee77ba25
 1000
-0b518437-f6a9-4341-a80a-9fefe299153d
+3ea3dbc5-4bef-4984-9192-e75609c93c16
 1000
 New
 1000
@@ -8055,13 +8123,13 @@ ANSI37
 1000
 layer_id
 1000
-ac2805f9-4d39-4a48-811c-e33e7e9ed0b7
+e989670d-d699-4551-81a0-5af345ac96d5
 1000
-5f401a3f-70c1-426a-9c76-19d43ce00f94
+1122fc62-c97c-4cfb-ab7c-8c4f1c10b106
 1000
-c611813d-7676-41e7-a0ba-21243fff494b
+e6d02c57-2687-4957-8568-d1ff78ef3d93
 1000
-d83da0c7-e03c-4266-bd9a-55d16d9d397d
+445c774c-b41b-480d-871b-9c6b3837044b
 1000
 New
 1000
@@ -8541,13 +8609,13 @@ ANSI37
 1000
 layer_id
 1000
-ac2805f9-4d39-4a48-811c-e33e7e9ed0b7
+e989670d-d699-4551-81a0-5af345ac96d5
 1000
-5f401a3f-70c1-426a-9c76-19d43ce00f94
+1122fc62-c97c-4cfb-ab7c-8c4f1c10b106
 1000
-c611813d-7676-41e7-a0ba-21243fff494b
+e6d02c57-2687-4957-8568-d1ff78ef3d93
 1000
-d83da0c7-e03c-4266-bd9a-55d16d9d397d
+445c774c-b41b-480d-871b-9c6b3837044b
 1000
 New
 1000
@@ -10163,15 +10231,15 @@ ANSI31
 1000
 layer_id
 1000
-b437b1bc-9f97-4688-b796-61eb667815ad
+32abb5f5-b168-48b7-b07e-f23426086f6f
 1000
-a7e9b81e-092f-439d-acb8-4d5c082cc5fc
+e328868a-1828-4532-8239-7f31a6dfd72a
 1000
-6c1a3a8b-f38f-4847-8f7c-6c33b0400fac
+672412f6-d74b-425f-b0aa-5e82876fe116
 1000
-1db825d7-8d0c-4668-9fb4-ee6705fd2bff
+10c45e9b-9261-4e3f-b4ff-99f3886251c2
 1000
-9dfae1d1-ebac-4cfb-856a-1738d2d547e4
+87b17484-cefe-4d18-9c0c-e1cf8315a032
 1000
 New
 1000
@@ -10743,15 +10811,15 @@ ANSI31
 1000
 layer_id
 1000
-b437b1bc-9f97-4688-b796-61eb667815ad
+32abb5f5-b168-48b7-b07e-f23426086f6f
 1000
-a7e9b81e-092f-439d-acb8-4d5c082cc5fc
+e328868a-1828-4532-8239-7f31a6dfd72a
 1000
-6c1a3a8b-f38f-4847-8f7c-6c33b0400fac
+672412f6-d74b-425f-b0aa-5e82876fe116
 1000
-1db825d7-8d0c-4668-9fb4-ee6705fd2bff
+10c45e9b-9261-4e3f-b4ff-99f3886251c2
 1000
-9dfae1d1-ebac-4cfb-856a-1738d2d547e4
+87b17484-cefe-4d18-9c0c-e1cf8315a032
 1000
 New
 1000
@@ -12655,13 +12723,13 @@ ANSI37
 1000
 layer_id
 1000
-ac2805f9-4d39-4a48-811c-e33e7e9ed0b7
+e989670d-d699-4551-81a0-5af345ac96d5
 1000
-5f401a3f-70c1-426a-9c76-19d43ce00f94
+1122fc62-c97c-4cfb-ab7c-8c4f1c10b106
 1000
-c611813d-7676-41e7-a0ba-21243fff494b
+e6d02c57-2687-4957-8568-d1ff78ef3d93
 1000
-d83da0c7-e03c-4266-bd9a-55d16d9d397d
+445c774c-b41b-480d-871b-9c6b3837044b
 1000
 New
 1000
@@ -13141,13 +13209,13 @@ ANSI37
 1000
 layer_id
 1000
-ac2805f9-4d39-4a48-811c-e33e7e9ed0b7
+e989670d-d699-4551-81a0-5af345ac96d5
 1000
-5f401a3f-70c1-426a-9c76-19d43ce00f94
+1122fc62-c97c-4cfb-ab7c-8c4f1c10b106
 1000
-c611813d-7676-41e7-a0ba-21243fff494b
+e6d02c57-2687-4957-8568-d1ff78ef3d93
 1000
-d83da0c7-e03c-4266-bd9a-55d16d9d397d
+445c774c-b41b-480d-871b-9c6b3837044b
 1000
 New
 1000
@@ -15141,11 +15209,11 @@ DOTS
 1000
 layer_id
 1000
-35c0bbf6-af76-4997-b7ae-7ad259233b30
+9465bc9a-513e-482d-bf05-ba386638fb61
 1000
-1aa2d242-d18a-40d5-b70a-e421df317096
+72ed5392-2254-44f4-97ca-aa33b0e2a0c6
 1000
-6a322216-43c4-447b-a540-38122b303be3
+138be337-ae4a-4468-b505-453775849e1d
 1000
 New
 1000
@@ -15323,11 +15391,11 @@ DOTS
 1000
 layer_id
 1000
-eb4f5d14-e298-4ee4-97cb-5d0063efca8d
+f1d7dd88-cafe-41b4-bf56-b265ed222847
 1000
-b20ed6c5-019b-42c6-bb6b-37df2fe42cd9
+929af8e7-11d2-4f5b-afbf-2bfac2ab0dcf
 1000
-b07edbb8-842c-47f4-8886-a62aff99115c
+cc83d47a-7b18-48cd-a5fb-b970a42ac3e5
 1000
 New
 1000
@@ -16915,7 +16983,7 @@ AR-CONC
 1000
 layer_id
 1000
-fa5dc849-5c0c-4cbc-a769-190056fdd0ca
+3c8e10b1-7101-494c-9ad1-026c9e00ed4e
 1000
 New
 1000
@@ -17163,11 +17231,11 @@ ANSI37
 1000
 layer_id
 1000
-bd8b31ae-d95f-4953-bece-a6cfe540997d
+c6fe49fa-0eff-4651-859c-445292c5f772
 1000
-bad55942-317a-4eca-b766-9e49896577ca
+4b01940b-9d09-40c5-985b-4b1184164c2a
 1000
-8200bc4a-efc0-4b21-bcb2-328dd6390baa
+8b0e6070-c573-4fc3-927b-bd88bba186da
 1000
 New
 1000
@@ -18305,7 +18373,7 @@ axis_offset
 1000
 layer_id
 1000
-994eb6eb-deec-43a9-b9c1-558f0539e93b
+235f7823-ffbc-404e-9f58-ecb268537366
 1000
 New
 1000
@@ -18441,7 +18509,7 @@ axis_offset
 1000
 layer_id
 1000
-f1d4278a-6cdd-4860-a3fe-fffcbba2fd86
+fd88cd72-6997-4a81-84b7-1ebe822c4488
 1000
 New
 1000
@@ -18577,7 +18645,7 @@ axis_offset
 1000
 layer_id
 1000
-df3d077c-3186-401d-be47-c3e38d6bb646
+5415b86f-dc5b-4baf-bca4-4014f920819f
 1000
 New
 1000
@@ -19287,7 +19355,7 @@ JOIN_OVERRIDE
 1071
      1
 1000
-{"default_style":"Miter","layer_pairs":[{"layer_a":{"material_id":"Putz","role_tag":null,"index":0,"layer_id":"c9f84093-cd7d-4a01-9bdd-72c718442ee7"},"layer_b":null,"style":"NoExtend"},{"layer_a":{"material_id":"Mauerwerk","role_tag":null,"index":1,"layer_id":"2389f1c6-b833-4176-8ee0-1d5b08b5ebe4"},"layer_b":{"material_id":"Mauerwerk","role_tag":null,"index":1,"layer_id":"2389f1c6-b833-4176-8ee0-1d5b08b5ebe4"},"style":"Miter"},{"layer_a":{"material_id":"Insulation","role_tag":null,"index":2,"layer_id":"6f0a35d8-f4cc-4945-9b77-7afba3365094"},"layer_b":null,"style":"Butt"},{"layer_a":{"material_id":"Putz","role_tag":null,"index":3,"layer_id":"2aece201-3c8c-4d6c-a152-64be6aae0886"},"layer_b":null,"style":"NoExtend"}],"layer_gaps":[]}
+{"default_style":"Miter","layer_pairs":[{"layer_a":{"material_id":"Putz","role_tag":null,"index":0,"layer_id":"e2eb0ac4-1403-422a-863a-8c67ef1dc710"},"layer_b":null,"style":"NoExtend"},{"layer_a":{"material_id":"Mauerwerk","role_tag":null,"index":1,"layer_id":"70172c35-1dc3-4271-973b-62d85d489a9b"},"layer_b":{"material_id":"Mauerwerk","role_tag":null,"index":1,"layer_id":"70172c35-1dc3-4271-973b-62d85d489a9b"},"style":"Miter"},{"layer_a":{"material_id":"Insulation","role_tag":null,"index":2,"layer_id":"c70cbc65-9a21-4401-9af9-e4dca180d0eb"},"layer_b":null,"style":"Butt"},{"layer_a":{"material_id":"Putz","role_tag":null,"index":3,"layer_id":"6bb5aacb-67c2-48f0-8141-89c6ca26ff8a"},"layer_b":null,"style":"NoExtend"}],"layer_gaps":[]}
 1001
 OPENCAD_AEC
 1000
@@ -19397,13 +19465,13 @@ DOTS
 1000
 layer_id
 1000
-c9f84093-cd7d-4a01-9bdd-72c718442ee7
+e2eb0ac4-1403-422a-863a-8c67ef1dc710
 1000
-2389f1c6-b833-4176-8ee0-1d5b08b5ebe4
+70172c35-1dc3-4271-973b-62d85d489a9b
 1000
-6f0a35d8-f4cc-4945-9b77-7afba3365094
+c70cbc65-9a21-4401-9af9-e4dca180d0eb
 1000
-2aece201-3c8c-4d6c-a152-64be6aae0886
+6bb5aacb-67c2-48f0-8141-89c6ca26ff8a
 1000
 New
 1000
@@ -19603,13 +19671,13 @@ DOTS
 1000
 layer_id
 1000
-91dc2779-0edb-49f9-a53e-82318f0881e8
+5e277ff1-d9cc-4365-84a3-ca9d4c24051c
 1000
-14de19a7-df80-4abb-8850-9b9d4a69c1e2
+8cb66470-9cf7-4760-8af6-7698c6608edf
 1000
-8424b1b8-0f6c-4a94-9a52-b4921515f0c9
+32efbc59-09fa-4ce7-b30f-c922a541c01e
 1000
-86e66489-f655-4761-bf27-48e1e6507cda
+e7d867a9-bcf3-4435-ac2a-b2715bd8fa8e
 1000
 New
 1000
@@ -21375,7 +21443,7 @@ axis_offset
 1000
 layer_id
 1000
-72e6ec47-4517-41ea-a8c5-e7871e7de09a
+1bb2c14e-b60f-432f-bf2d-34433ec1c3f6
 1000
 New
 1000
@@ -21737,7 +21805,7 @@ AR-CONC
 1000
 layer_id
 1000
-fa5dc849-5c0c-4cbc-a769-190056fdd0ca
+3c8e10b1-7101-494c-9ad1-026c9e00ed4e
 1000
 New
 1000
@@ -22371,11 +22439,11 @@ ANSI37
 1000
 layer_id
 1000
-bd8b31ae-d95f-4953-bece-a6cfe540997d
+c6fe49fa-0eff-4651-859c-445292c5f772
 1000
-bad55942-317a-4eca-b766-9e49896577ca
+4b01940b-9d09-40c5-985b-4b1184164c2a
 1000
-8200bc4a-efc0-4b21-bcb2-328dd6390baa
+8b0e6070-c573-4fc3-927b-bd88bba186da
 1000
 New
 1000
@@ -23215,13 +23283,13 @@ ANSI31
 1000
 layer_id
 1000
-ed038c2e-fe83-4b24-8226-e86d95c14557
+25461aed-9c2b-4d21-aa8c-5b3cdfd5e2e3
 1000
-a94793df-07d0-47cd-b2a3-63f877d93df2
+36e66189-238b-48b7-9e0a-86215223dc81
 1000
-44fbfb93-2ba8-49f6-8726-f1f9fcf4a967
+0d51f9d6-2e7f-437b-92ac-569e265189fb
 1000
-53f99879-0dfb-4ed3-8198-c6fb550f35d1
+26a0607b-fcb3-4f2d-a825-65dc2f739b1d
 1000
 New
 1000
@@ -24271,15 +24339,15 @@ ANSI31
 1000
 layer_id
 1000
-b437b1bc-9f97-4688-b796-61eb667815ad
+32abb5f5-b168-48b7-b07e-f23426086f6f
 1000
-a7e9b81e-092f-439d-acb8-4d5c082cc5fc
+e328868a-1828-4532-8239-7f31a6dfd72a
 1000
-6c1a3a8b-f38f-4847-8f7c-6c33b0400fac
+672412f6-d74b-425f-b0aa-5e82876fe116
 1000
-1db825d7-8d0c-4668-9fb4-ee6705fd2bff
+10c45e9b-9261-4e3f-b4ff-99f3886251c2
 1000
-9dfae1d1-ebac-4cfb-856a-1738d2d547e4
+87b17484-cefe-4d18-9c0c-e1cf8315a032
 1000
 New
 1000
@@ -25557,13 +25625,13 @@ ANSI37
 1000
 layer_id
 1000
-ac2805f9-4d39-4a48-811c-e33e7e9ed0b7
+e989670d-d699-4551-81a0-5af345ac96d5
 1000
-5f401a3f-70c1-426a-9c76-19d43ce00f94
+1122fc62-c97c-4cfb-ab7c-8c4f1c10b106
 1000
-c611813d-7676-41e7-a0ba-21243fff494b
+e6d02c57-2687-4957-8568-d1ff78ef3d93
 1000
-d83da0c7-e03c-4266-bd9a-55d16d9d397d
+445c774c-b41b-480d-871b-9c6b3837044b
 1000
 New
 1000
@@ -28121,7 +28189,7 @@ AcDbVertex
 100
 AcDb3dPolylineVertex
  10
-3.54
+2.46
  20
 48.0
  30
@@ -28143,7 +28211,7 @@ AcDbVertex
 100
 AcDb3dPolylineVertex
  10
-2.46
+3.54
  20
 48.0
  30
@@ -28165,7 +28233,7 @@ AcDbVertex
 100
 AcDb3dPolylineVertex
  10
-3.54
+2.46
  20
 48.0
  30
@@ -29231,13 +29299,13 @@ ANSI37
 1000
 layer_id
 1000
-ac2805f9-4d39-4a48-811c-e33e7e9ed0b7
+e989670d-d699-4551-81a0-5af345ac96d5
 1000
-5f401a3f-70c1-426a-9c76-19d43ce00f94
+1122fc62-c97c-4cfb-ab7c-8c4f1c10b106
 1000
-c611813d-7676-41e7-a0ba-21243fff494b
+e6d02c57-2687-4957-8568-d1ff78ef3d93
 1000
-d83da0c7-e03c-4266-bd9a-55d16d9d397d
+445c774c-b41b-480d-871b-9c6b3837044b
 1000
 New
 1000
@@ -32185,7 +32253,7 @@ AcDbVertex
 100
 AcDb3dPolylineVertex
  10
-11.74
+10.26
  20
 48.0
  30
@@ -32207,7 +32275,7 @@ AcDbVertex
 100
 AcDb3dPolylineVertex
  10
-10.26
+11.74
  20
 48.0
  30
@@ -32229,7 +32297,7 @@ AcDbVertex
 100
 AcDb3dPolylineVertex
  10
-11.74
+10.26
  20
 48.0
  30
@@ -33535,13 +33603,13 @@ ANSI37
 1000
 layer_id
 1000
-ac2805f9-4d39-4a48-811c-e33e7e9ed0b7
+e989670d-d699-4551-81a0-5af345ac96d5
 1000
-5f401a3f-70c1-426a-9c76-19d43ce00f94
+1122fc62-c97c-4cfb-ab7c-8c4f1c10b106
 1000
-c611813d-7676-41e7-a0ba-21243fff494b
+e6d02c57-2687-4957-8568-d1ff78ef3d93
 1000
-d83da0c7-e03c-4266-bd9a-55d16d9d397d
+445c774c-b41b-480d-871b-9c6b3837044b
 1000
 New
 1000
@@ -40207,7 +40275,7 @@ AcDbVertex
 100
 AcDb3dPolylineVertex
  10
-19.44
+18.56
  20
 48.0
  30
@@ -40229,7 +40297,7 @@ AcDbVertex
 100
 AcDb3dPolylineVertex
  10
-18.56
+19.44
  20
 48.0
  30
@@ -40251,7 +40319,7 @@ AcDbVertex
 100
 AcDb3dPolylineVertex
  10
-19.44
+18.56
  20
 48.0
  30
@@ -41557,13 +41625,13 @@ ANSI37
 1000
 layer_id
 1000
-ac2805f9-4d39-4a48-811c-e33e7e9ed0b7
+e989670d-d699-4551-81a0-5af345ac96d5
 1000
-5f401a3f-70c1-426a-9c76-19d43ce00f94
+1122fc62-c97c-4cfb-ab7c-8c4f1c10b106
 1000
-c611813d-7676-41e7-a0ba-21243fff494b
+e6d02c57-2687-4957-8568-d1ff78ef3d93
 1000
-d83da0c7-e03c-4266-bd9a-55d16d9d397d
+445c774c-b41b-480d-871b-9c6b3837044b
 1000
 New
 1000
@@ -47787,13 +47855,13 @@ ANSI37
 1000
 layer_id
 1000
-ac2805f9-4d39-4a48-811c-e33e7e9ed0b7
+e989670d-d699-4551-81a0-5af345ac96d5
 1000
-5f401a3f-70c1-426a-9c76-19d43ce00f94
+1122fc62-c97c-4cfb-ab7c-8c4f1c10b106
 1000
-c611813d-7676-41e7-a0ba-21243fff494b
+e6d02c57-2687-4957-8568-d1ff78ef3d93
 1000
-d83da0c7-e03c-4266-bd9a-55d16d9d397d
+445c774c-b41b-480d-871b-9c6b3837044b
 1000
 New
 1000
@@ -50225,7 +50293,7 @@ AcDbVertex
 100
 AcDb3dPolylineVertex
  10
-35.44
+34.56
  20
 48.0
  30
@@ -50247,7 +50315,7 @@ AcDbVertex
 100
 AcDb3dPolylineVertex
  10
-34.56
+35.44
  20
 48.0
  30
@@ -50269,7 +50337,7 @@ AcDbVertex
 100
 AcDb3dPolylineVertex
  10
-35.44
+34.56
  20
 48.0
  30
@@ -50955,11 +51023,11 @@ ANSI37
 1000
 layer_id
 1000
-bd8b31ae-d95f-4953-bece-a6cfe540997d
+c6fe49fa-0eff-4651-859c-445292c5f772
 1000
-bad55942-317a-4eca-b766-9e49896577ca
+4b01940b-9d09-40c5-985b-4b1184164c2a
 1000
-8200bc4a-efc0-4b21-bcb2-328dd6390baa
+8b0e6070-c573-4fc3-927b-bd88bba186da
 1000
 New
 1000
@@ -52729,7 +52797,7 @@ AcDbVertex
 100
 AcDb3dPolylineVertex
  10
-3.39
+2.61
  20
 60.0
  30
@@ -52751,7 +52819,7 @@ AcDbVertex
 100
 AcDb3dPolylineVertex
  10
-2.61
+3.39
  20
 60.0
  30
@@ -52773,7 +52841,7 @@ AcDbVertex
 100
 AcDb3dPolylineVertex
  10
-3.39
+2.61
  20
 60.0
  30
@@ -53603,11 +53671,11 @@ ANSI37
 1000
 layer_id
 1000
-bd8b31ae-d95f-4953-bece-a6cfe540997d
+c6fe49fa-0eff-4651-859c-445292c5f772
 1000
-bad55942-317a-4eca-b766-9e49896577ca
+4b01940b-9d09-40c5-985b-4b1184164c2a
 1000
-8200bc4a-efc0-4b21-bcb2-328dd6390baa
+8b0e6070-c573-4fc3-927b-bd88bba186da
 1000
 New
 1000
@@ -55377,7 +55445,7 @@ AcDbVertex
 100
 AcDb3dPolylineVertex
  10
-10.61
+11.39
  20
 60.0
  30
@@ -55399,7 +55467,7 @@ AcDbVertex
 100
 AcDb3dPolylineVertex
  10
-11.39
+10.61
  20
 60.0
  30
@@ -55421,7 +55489,7 @@ AcDbVertex
 100
 AcDb3dPolylineVertex
  10
-10.61
+11.39
  20
 60.0
  30
@@ -56191,7 +56259,7 @@ AR-CONC
 1000
 layer_id
 1000
-fa5dc849-5c0c-4cbc-a769-190056fdd0ca
+3c8e10b1-7101-494c-9ad1-026c9e00ed4e
 1000
 New
 1000
@@ -57927,7 +57995,7 @@ AcDbVertex
 100
 AcDb3dPolylineVertex
  10
-19.84
+18.16
  20
 60.0
  30
@@ -57949,7 +58017,7 @@ AcDbVertex
 100
 AcDb3dPolylineVertex
  10
-18.16
+19.84
  20
 60.0
  30
@@ -57971,7 +58039,7 @@ AcDbVertex
 100
 AcDb3dPolylineVertex
  10
-19.84
+18.16
  20
 60.0
  30
@@ -58743,7 +58811,7 @@ AR-CONC
 1000
 layer_id
 1000
-fa5dc849-5c0c-4cbc-a769-190056fdd0ca
+3c8e10b1-7101-494c-9ad1-026c9e00ed4e
 1000
 New
 1000
@@ -60397,7 +60465,7 @@ AR-CONC
 1000
 layer_id
 1000
-fa5dc849-5c0c-4cbc-a769-190056fdd0ca
+3c8e10b1-7101-494c-9ad1-026c9e00ed4e
 1000
 New
 1000

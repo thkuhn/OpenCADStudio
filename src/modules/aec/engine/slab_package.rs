@@ -236,43 +236,41 @@ pub fn resolve_slab_package(scene: &Scene, clicked: Handle) -> Handle {
     clicked
 }
 
-/// Returns all handles that belong to a slab package (carrier, derived representations, openings and their representations).
+/// Returns all handles that belong to a slab package (carrier and derived representations).
 pub fn slab_package_handles(scene: &Scene, slab_handle: Handle) -> Vec<Handle> {
     let mut handles = vec![slab_handle];
-    let Some(entity) = scene.document.get_entity(slab_handle) else {
-        return handles;
-    };
-    let Some(slab) = slab_from_entity(entity) else {
-        return handles;
-    };
-    for d in &slab.derived_handles {
-        if scene.document.get_entity(*d).is_some() && !handles.contains(d) {
-            handles.push(*d);
-        }
-    }
-    for child in owner_index::children_of(&scene.document, slab_handle) {
-        if scene.document.get_entity(child).is_some() && !handles.contains(&child) {
+    for child in collect_slab_display_children(scene, slab_handle) {
+        if !handles.contains(&child) {
             handles.push(child);
-        }
-    }
-    for op_handle in &slab.opening_handles {
-        if scene.document.get_entity(*op_handle).is_some() && !handles.contains(op_handle) {
-            handles.push(*op_handle);
-            for op_d in collect_slab_opening_display_children(scene, *op_handle) {
-                if !handles.contains(&op_d) {
-                    handles.push(op_d);
-                }
-            }
         }
     }
     handles
 }
 
-/// Expand `handles` so each slab owner is accompanied by its display children and openings.
+/// Returns all handles that belong to a slab opening package (carrier and derived representations).
+pub fn slab_opening_package_handles(scene: &Scene, opening_handle: Handle) -> Vec<Handle> {
+    let mut handles = vec![opening_handle];
+    for child in collect_slab_opening_display_children(scene, opening_handle) {
+        if !handles.contains(&child) {
+            handles.push(child);
+        }
+    }
+    handles
+}
+
+/// Expand `handles` so each slab or slab opening owner is accompanied by its display children.
 pub fn expand_handles_for_slab_packages(scene: &Scene, handles: &[Handle]) -> Vec<Handle> {
     let mut out = Vec::with_capacity(handles.len());
     let mut seen = rustc_hash::FxHashSet::default();
     for &handle in handles {
+        if let Some(opening) = slab_opening_owner_if_any(scene, handle) {
+            for package in slab_opening_package_handles(scene, opening) {
+                if seen.insert(package) {
+                    out.push(package);
+                }
+            }
+            continue;
+        }
         let owner = resolve_slab_package(scene, handle);
         for package in slab_package_handles(scene, owner) {
             if seen.insert(package) {

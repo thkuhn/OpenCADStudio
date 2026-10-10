@@ -31,7 +31,7 @@ pub fn aec_entity_title(
     entity: &EntityType,
 ) -> Option<String> {
     if xdata::wall_from_entity(entity).is_some() {
-        return Some(t!("Wall").into_owned());
+        return Some(crate::tr!("aec", "wall-title"));
     }
     if slab_xdata::slab_from_entity(entity).is_some() {
         return Some(crate::tr!("aec", "slab-title"));
@@ -67,9 +67,9 @@ pub fn aec_entity_title(
     }
     if let Some(opening) = opening_xdata::opening_from_entity(entity, handle) {
         let name = match opening.kind {
-            OpeningKind::Window => t!("Window").into_owned(),
-            OpeningKind::Door => t!("Door").into_owned(),
-            OpeningKind::Breakthrough => t!("Opening").into_owned(),
+            OpeningKind::Window => crate::tr!("aec", "window-title"),
+            OpeningKind::Door => crate::tr!("aec", "door-title"),
+            OpeningKind::Breakthrough => crate::tr!("aec", "opening-title"),
         };
         return Some(name);
     }
@@ -77,19 +77,19 @@ pub fn aec_entity_title(
         if let Some(owner_ent) = scene.document.get_entity(owner) {
             if let Some(opening) = opening_xdata::opening_from_entity(owner_ent, owner) {
                 let name = match opening.kind {
-                    OpeningKind::Window => t!("Window").into_owned(),
-                    OpeningKind::Door => t!("Door").into_owned(),
-                    OpeningKind::Breakthrough => t!("Opening").into_owned(),
+                    OpeningKind::Window => crate::tr!("aec", "window-title"),
+                    OpeningKind::Door => crate::tr!("aec", "door-title"),
+                    OpeningKind::Breakthrough => crate::tr!("aec", "opening-title"),
                 };
                 return Some(name);
             }
         }
     }
     if storey_xdata::storey_from_entity(entity).is_some() {
-        return Some(t!("Storey").into_owned());
+        return Some(crate::tr!("aec", "storey-title"));
     }
     if crate::modules::aec::project::preview::control_plane_from_entity(entity).is_some() {
-        return Some(t!("aec.control-plane").into_owned());
+        return Some(crate::tr!("aec", "control-plane"));
     }
     None
 }
@@ -108,87 +108,21 @@ pub fn collapse_selection_to_aec_package<'a>(
     if selected.is_empty() {
         return selected;
     }
-    let opening_owners: Vec<Option<Handle>> = selected
-        .iter()
-        .map(|(handle, _)| opening_display::opening_owner_if_any(scene, *handle))
-        .collect();
-    if opening_owners.iter().all(|o| o.is_some()) {
-        let owner = opening_owners[0].unwrap();
-        if opening_owners.iter().all(|o| *o == Some(owner)) {
-            if let Some(entity) = scene.document.get_entity(owner) {
-                return vec![(owner, entity)];
-            }
-        }
-    }
-    let wall_owners: Vec<Handle> = selected
-        .iter()
-        .map(|(handle, _)| wall_package::resolve_wall_package(scene, *handle))
-        .collect();
-    let wall_owner = wall_owners[0];
-    if !wall_owner.is_null()
-        && wall_owners.iter().all(|h| *h == wall_owner)
-        && scene
-            .document
-            .get_entity(wall_owner)
-            .is_some_and(|e| xdata::wall_from_entity(e).is_some())
-    {
-        if let Some(entity) = scene.document.get_entity(wall_owner) {
-            return vec![(wall_owner, entity)];
-        }
-    }
+    let mut collapsed = Vec::with_capacity(selected.len());
+    let mut seen = rustc_hash::FxHashSet::default();
 
-    // Collapse slab derived children onto the carrier package.
-    let slab_owners: Vec<Handle> = selected
-        .iter()
-        .map(|(handle, _)| {
-            if let Some(op) = slab_package::slab_opening_owner_if_any(scene, *handle) {
-                op
+    for (handle, entity) in selected {
+        let owner_handle = resolve_aec_package(scene, handle);
+        if seen.insert(owner_handle) {
+            if let Some(owner_entity) = scene.document.get_entity(owner_handle) {
+                collapsed.push((owner_handle, owner_entity));
             } else {
-                slab_package::resolve_slab_package(scene, *handle)
+                collapsed.push((handle, entity));
             }
-        })
-        .collect();
-    let slab_owner = slab_owners[0];
-    if !slab_owner.is_null()
-        && slab_owners.iter().all(|h| *h == slab_owner)
-        && scene
-            .document
-            .get_entity(slab_owner)
-            .is_some_and(|e| {
-                slab_xdata::slab_from_entity(e).is_some()
-                    || slab_xdata::slab_opening_from_entity(e).is_some()
-            })
-    {
-        if let Some(entity) = scene.document.get_entity(slab_owner) {
-            return vec![(slab_owner, entity)];
         }
     }
 
-    // Collapse room derived children onto the room carrier package.
-    let room_owners: Vec<Handle> = selected
-        .iter()
-        .map(|(handle, ent)| {
-            if room_xdata::room_from_entity(ent).is_some() {
-                *handle
-            } else {
-                room_package::resolve_room_package(ent).unwrap_or(*handle)
-            }
-        })
-        .collect();
-    let room_owner = room_owners[0];
-    if !room_owner.is_null()
-        && room_owners.iter().all(|h| *h == room_owner)
-        && scene
-            .document
-            .get_entity(room_owner)
-            .is_some_and(|e| room_xdata::room_from_entity(e).is_some())
-    {
-        if let Some(entity) = scene.document.get_entity(room_owner) {
-            return vec![(room_owner, entity)];
-        }
-    }
-
-    selected
+    collapsed
 }
 
 /// Builds the "Wall"/"Wall Layers" property section for a single entity, if
@@ -2692,5 +2626,178 @@ mod tests {
         } else {
             panic!("Expected choice prop");
         }
+    }
+
+    #[test]
+    fn test_entity_property_sections_title_for_aec_slab_and_openings() {
+        use crate::modules::aec::engine::openings::OpeningKind;
+        use crate::modules::aec::engine::opening_xdata::place_wall_opening;
+        use crate::modules::aec::engine::slab::Slab;
+        use crate::modules::aec::engine::slab_xdata::write_slab_record;
+        use crate::modules::aec::engine::wall::Wall;
+        use crate::modules::aec::engine::wall_regen::regenerate_wall_representation;
+        use crate::modules::aec::engine::xdata::{AEC_APPID, wall_record_for_wall};
+        use crate::scene::Scene;
+        use acadrust::entities::{LwPolyline, LwVertex};
+        use acadrust::types::Vector2;
+        use acadrust::xdata::ExtendedDataRecord;
+
+        let mut scene = Scene::new();
+
+        // 1. Slab carrier
+        let mut pl = LwPolyline::new();
+        pl.is_closed = true;
+        pl.add_vertex(LwVertex::new(Vector2::new(0.0, 0.0)));
+        pl.add_vertex(LwVertex::new(Vector2::new(4.0, 0.0)));
+        pl.add_vertex(LwVertex::new(Vector2::new(4.0, 4.0)));
+        pl.add_vertex(LwVertex::new(Vector2::new(0.0, 4.0)));
+        let slab_h = scene.add_entity(EntityType::LwPolyline(pl));
+        let slab = Slab::new("style_slab_concrete_20", 0);
+        write_slab_record(&mut scene.document, slab_h, &slab);
+
+        let slab_ent = scene.document.get_entity(slab_h).unwrap();
+        let slab_title = aec_entity_title(&scene, slab_h, slab_ent).expect("slab title");
+        assert_eq!(slab_title, crate::tr!("aec", "slab-title"));
+
+        // 2. Wall and Openings
+        let mut wall_pl = LwPolyline::new();
+        wall_pl.add_vertex(LwVertex::new(Vector2::new(0.0, 0.0)));
+        wall_pl.add_vertex(LwVertex::new(Vector2::new(10.0, 0.0)));
+        let mut wall_ent = EntityType::LwPolyline(wall_pl);
+        let mut rec = ExtendedDataRecord::new(AEC_APPID);
+        let mut wall = Wall::new("Standard", 2.80, 0);
+        wall.layers = vec![crate::modules::aec::engine::wall::WallLayer {
+            material: "Brick".to_string(),
+            thickness: 0.24,
+            ..Default::default()
+        }];
+        rec.values = wall_record_for_wall(&wall);
+        wall_ent.common_mut().extended_data.add_record(rec);
+        let wall_h = scene.add_entity(wall_ent);
+        regenerate_wall_representation(&mut scene, wall_h, None).expect("regen wall");
+
+        let (win_h, _) = place_wall_opening(
+            &mut scene,
+            wall_h,
+            glam::DVec3::new(2.5, 0.0, 0.0),
+            OpeningKind::Window,
+            None,
+            None,
+            None,
+        ).expect("place window");
+        let win_ent = scene.document.get_entity(win_h).unwrap();
+        let win_title = aec_entity_title(&scene, win_h, win_ent).expect("win title");
+        assert_eq!(win_title, crate::tr!("aec", "window-title"));
+
+        let (door_h, _) = place_wall_opening(
+            &mut scene,
+            wall_h,
+            glam::DVec3::new(6.0, 0.0, 0.0),
+            OpeningKind::Door,
+            None,
+            None,
+            None,
+        ).expect("place door");
+        let door_ent = scene.document.get_entity(door_h).unwrap();
+        let door_title = aec_entity_title(&scene, door_h, door_ent).expect("door title");
+        assert_eq!(door_title, crate::tr!("aec", "door-title"));
+    }
+
+    #[test]
+    fn test_slab_with_openings_selection_collapse_and_title() {
+        use crate::modules::aec::engine::library;
+        use crate::modules::aec::engine::slab::Slab;
+        use crate::modules::aec::engine::slab_opening::{SlabOpening, SlabOpeningKind};
+        use crate::modules::aec::engine::slab_package::{
+            expand_handles_for_slab_packages, slab_opening_package_handles, slab_package_handles,
+        };
+        use crate::modules::aec::engine::slab_regen::{
+            regenerate_slab_opening_representation, regenerate_slab_representation,
+        };
+        use crate::modules::aec::engine::slab_xdata::{
+            add_slab_opening_handle, write_slab_opening_record, write_slab_record,
+        };
+        use crate::scene::Scene;
+        use acadrust::entities::{LwPolyline, LwVertex};
+        use acadrust::types::Vector2;
+
+        let mut scene = Scene::new();
+        let lib = library::seed_default_library();
+
+        // 1. Create slab carrier (10x10)
+        let mut pl = LwPolyline::new();
+        pl.is_closed = true;
+        pl.add_vertex(LwVertex::new(Vector2::new(0.0, 0.0)));
+        pl.add_vertex(LwVertex::new(Vector2::new(10.0, 0.0)));
+        pl.add_vertex(LwVertex::new(Vector2::new(10.0, 10.0)));
+        pl.add_vertex(LwVertex::new(Vector2::new(0.0, 10.0)));
+        let slab_h = scene.add_entity(EntityType::LwPolyline(pl));
+
+        let slab = Slab::new("style_slab_concrete_20", 0);
+        write_slab_record(&mut scene.document, slab_h, &slab);
+
+        // 2. Create slab opening carrier (2x2 inside slab)
+        let mut op_pl = LwPolyline::new();
+        op_pl.is_closed = true;
+        op_pl.add_vertex(LwVertex::new(Vector2::new(3.0, 3.0)));
+        op_pl.add_vertex(LwVertex::new(Vector2::new(5.0, 3.0)));
+        op_pl.add_vertex(LwVertex::new(Vector2::new(5.0, 5.0)));
+        op_pl.add_vertex(LwVertex::new(Vector2::new(3.0, 5.0)));
+        let op_h = scene.add_entity(EntityType::LwPolyline(op_pl));
+
+        let opening = SlabOpening::new(
+            slab_h,
+            SlabOpeningKind::Shaft,
+            vec![(3.0, 3.0), (5.0, 3.0), (5.0, 5.0), (3.0, 5.0)],
+        );
+        write_slab_opening_record(&mut scene.document, op_h, &opening);
+        add_slab_opening_handle(&mut scene.document, slab_h, op_h);
+
+        // 3. Regenerate representations
+        regenerate_slab_representation(&mut scene, slab_h, Some(&lib), None);
+        regenerate_slab_opening_representation(&mut scene, op_h, Some(&lib), None);
+
+        // 4. Check slab package handles: must NOT include the opening carrier or opening children
+        let slab_pkg = slab_package_handles(&scene, slab_h);
+        assert!(slab_pkg.contains(&slab_h));
+        assert!(!slab_pkg.contains(&op_h), "Slab package must not contain opening carrier");
+
+        let op_pkg = slab_opening_package_handles(&scene, op_h);
+        assert!(op_pkg.contains(&op_h));
+        assert!(!op_pkg.contains(&slab_h), "Opening package must not contain slab carrier");
+
+        for op_child in &op_pkg {
+            assert!(!slab_pkg.contains(op_child), "Slab package must not contain opening display children");
+        }
+
+        // 5. Check selection expansion for slab
+        let expanded_slab = expand_handles_for_slab_packages(&scene, &[slab_h]);
+        assert!(expanded_slab.contains(&slab_h));
+        assert!(!expanded_slab.contains(&op_h));
+
+        // 6. When slab is selected (with all its derived geometry), collapse must yield exactly 1 entity
+        let selected_slab_entities: Vec<(Handle, &EntityType)> = expanded_slab
+            .iter()
+            .map(|h| (*h, scene.document.get_entity(*h).unwrap()))
+            .collect();
+        let collapsed_slab = collapse_selection_to_aec_package(&scene, selected_slab_entities);
+        assert_eq!(collapsed_slab.len(), 1, "Slab with openings must collapse to exactly 1 entity");
+        assert_eq!(collapsed_slab[0].0, slab_h);
+
+        let slab_title = aec_entity_title(&scene, collapsed_slab[0].0, collapsed_slab[0].1).expect("slab title");
+        assert_eq!(slab_title, crate::tr!("aec", "slab-title"));
+
+        // 7. When opening is selected, collapse must yield exactly 1 entity
+        let expanded_op = expand_handles_for_slab_packages(&scene, &[op_h]);
+        let selected_op_entities: Vec<(Handle, &EntityType)> = expanded_op
+            .iter()
+            .map(|h| (*h, scene.document.get_entity(*h).unwrap()))
+            .collect();
+        let collapsed_op = collapse_selection_to_aec_package(&scene, selected_op_entities);
+        assert_eq!(collapsed_op.len(), 1, "Opening must collapse to exactly 1 entity");
+        assert_eq!(collapsed_op[0].0, op_h);
+
+        let op_title = aec_entity_title(&scene, collapsed_op[0].0, collapsed_op[0].1).expect("opening title");
+        assert_eq!(op_title, crate::tr!("aec", "slabopening-title"));
     }
 }

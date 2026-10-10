@@ -9,7 +9,7 @@ AC1032
   9
 $ACADMAINTVER
  90
-     0
+   377
   9
 $DWGCODEPAGE
   3
@@ -407,9 +407,37 @@ $DIMTFAC
  40
 1.0
   9
+$DIMFXL
+ 40
+1.0
+  9
+$DIMJOGANG
+ 40
+0.7853981633974483
+  9
+$DIMTFILL
+ 70
+     0
+  9
+$DIMTFILLCLR
+ 70
+     0
+  9
 $SPLFRAME
  70
      0
+  9
+$XCLIPFRAME
+280
+2
+  9
+$DWFFRAME
+280
+2
+  9
+$DGNFRAME
+280
+0
   9
 $SOLIDHIST
 280
@@ -418,6 +446,34 @@ $SOLIDHIST
 $SHOWHIST
 280
 1
+  9
+$3DDWFPREC
+ 40
+2.0
+  9
+$PSOLWIDTH
+ 40
+0.25
+  9
+$PSOLHEIGHT
+ 40
+4.0
+  9
+$LIGHTGLYPHDISPLAY
+280
+1
+  9
+$TILEMODELIGHTSYNCH
+280
+1
+  9
+$REALWORLDSCALE
+290
+     1
+  9
+$INTERFERECOLOR
+ 62
+     1
   9
 $SPLINETYPE
  70
@@ -483,7 +539,15 @@ $TDCREATE
  40
 0.0
   9
+$TDUCREATE
+ 40
+0.0
+  9
 $TDUPDATE
+ 40
+0.0
+  9
+$TDUUPDATE
  40
 0.0
   9
@@ -3419,13 +3483,13 @@ AcDbPointCloudObj
   0
 CLASS
   1
-ACDBPOINTCLOUDDEFEX
+ACDBPOINTCLOUDDEF_EX
   2
 AcDbPointCloudDefEx
   3
 AcDbPointCloudObj
  90
-     0
+  1024
  91
      0
 280
@@ -3457,7 +3521,7 @@ AcDbPointCloudDefReactorEx
   3
 AcDbPointCloudObj
  90
-     0
+  1025
  91
      0
 280
@@ -3473,7 +3537,7 @@ AcDbPointCloudColorMap
   3
 AcDbPointCloudObj
  90
-     0
+  1025
  91
      0
 280
@@ -5310,6 +5374,8 @@ AcDbSymbolTableRecord
 AcDbBlockTableRecord
   2
 *Model_Space
+340
+2E
  70
      0
 280
@@ -5328,6 +5394,8 @@ AcDbSymbolTableRecord
 AcDbBlockTableRecord
   2
 *Paper_Space
+340
+2F
  70
      0
 280
@@ -5575,9 +5643,9 @@ axis_offset
 1000
 layer_id
 1000
-8d8be357-1bf3-4da1-9204-aaaa7eed32de
+1767fdb4-65ac-4eb0-a573-588c81afb1a0
 1000
-e166efa6-f965-499b-8e20-4f83b098fe60
+242614eb-e380-486d-bc60-ce16eb03a726
 1000
 New
 1000
@@ -6405,7 +6473,7 @@ axis_offset
 1000
 layer_id
 1000
-c24406e2-b0ab-440a-b8f6-31b7969ccc99
+b40ede32-bd0c-4b58-b2da-63d7e38785dd
 1000
 New
 1000
@@ -6533,7 +6601,7 @@ axis_offset
 1000
 layer_id
 1000
-a652f510-16d0-4e40-b8bc-08bdbb625a6f
+bf97f9c0-4acd-4d4e-8552-e2178d17bd8d
 1000
 New
 1000
@@ -8271,7 +8339,7 @@ AcDbVertex
 100
 AcDb3dPolylineVertex
  10
-4.04
+2.96
  20
 0.0
  30
@@ -8293,7 +8361,7 @@ AcDbVertex
 100
 AcDb3dPolylineVertex
  10
-2.96
+4.04
  20
 0.0
  30
@@ -8315,7 +8383,7 @@ AcDbVertex
 100
 AcDb3dPolylineVertex
  10
-4.04
+2.96
  20
 0.0
  30
@@ -9455,7 +9523,7 @@ AcDbVertex
 100
 AcDb3dPolylineVertex
  10
-7.89
+7.11
  20
 0.0
  30
@@ -9477,7 +9545,7 @@ AcDbVertex
 100
 AcDb3dPolylineVertex
  10
-7.11
+7.89
  20
 0.0
  30
@@ -9499,7 +9567,7 @@ AcDbVertex
 100
 AcDb3dPolylineVertex
  10
-7.89
+7.11
  20
 0.0
  30
@@ -10957,7 +11025,7 @@ AcDbVertex
 100
 AcDb3dPolylineVertex
  10
-3.04
+1.96
  20
 5.0
  30
@@ -10979,7 +11047,7 @@ AcDbVertex
 100
 AcDb3dPolylineVertex
  10
-1.96
+3.04
  20
 5.0
  30
@@ -11001,7 +11069,7 @@ AcDbVertex
 100
 AcDb3dPolylineVertex
  10
-3.04
+1.96
  20
 5.0
  30
@@ -12059,7 +12127,7 @@ OPENCAD_AEC
 1000
 CONTROLPLANE
 1000
-79c9856f-8dde-4ead-a764-1cd730226e4d
+6402995d-a9d8-4b2d-9687-14a1c03963f2
 1000
 Dachgeschoss_ELEVATION
 1071
@@ -12199,7 +12267,7 @@ OPENCAD_AEC
 1000
 CONTROLPLANE
 1000
-36d45825-01ed-4a0a-ae13-b3e1b9dcbc5d
+b3216440-cee8-47c3-a711-abfb80aa302e
 1000
 Dachgeschoss_OKGH
 1071
@@ -12339,7 +12407,7 @@ OPENCAD_AEC
 1000
 CONTROLPLANE
 1000
-8eaeac83-9194-4014-991f-2a0baebecd55
+223d6596-a252-4ab0-8210-d4ac67421b7e
 1000
 Pultdach_OK
 1071
@@ -12479,7 +12547,7 @@ OPENCAD_AEC
 1000
 CONTROLPLANE
 1000
-8c353517-08e8-4566-8cb1-f2a0369036bc
+beaa4731-ff15-4fd6-97e2-0c9fdb680e52
 1000
 Dach_Links
 1071
@@ -12619,7 +12687,7 @@ OPENCAD_AEC
 1000
 CONTROLPLANE
 1000
-dccb15a9-408b-4a6d-8c13-09a757e0b61e
+563d4b4e-81c1-4b69-8627-2ec19d990cee
 1000
 Dach_Rechts
 1071

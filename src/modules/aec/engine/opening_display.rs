@@ -851,17 +851,17 @@ fn bake_elevation_swing_triangle(
     match p.hinge {
         HingeSide::Left => {
             let pts = vec![
-                (inset_w, inset_bot),
-                (-inset_w, mid_h),
-                (inset_w, inset_top),
+                (-inset_w, inset_bot),
+                (inset_w, mid_h),
+                (-inset_w, inset_top),
             ];
             vec![path(slot, pts, false, false)]
         }
         HingeSide::Right => {
             let pts = vec![
-                (-inset_w, inset_bot),
-                (inset_w, mid_h),
-                (-inset_w, inset_top),
+                (inset_w, inset_bot),
+                (-inset_w, mid_h),
+                (inset_w, inset_top),
             ];
             vec![path(slot, pts, false, false)]
         }

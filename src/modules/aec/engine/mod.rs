@@ -76,7 +76,7 @@ pub use slab_opening::{SlabOpening, SlabOpeningDepth, SlabOpeningKind};
 pub use slab_package::{
     all_slab_carrier_handles, expand_handles_for_slab_packages, expand_with_slab_derived_handles,
     is_slab_carrier_entity, is_slab_derived, resolve_slab_package, slab_opening_owner_if_any,
-    slab_package_handles,
+    slab_opening_package_handles, slab_package_handles,
 };
 pub use slab_regen::{
     build_faceted_slab_solid, regenerate_all_slabs, regenerate_slab_opening_representation,

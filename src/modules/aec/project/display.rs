@@ -461,6 +461,44 @@ impl OpenCADStudio {
         for opening_handle in openings_to_remove {
             let _ = self.remove_wall_opening_respecting_active_display_config(tab_index, opening_handle);
         }
+
+        let mut slab_openings_to_remove = Vec::new();
+        let scene = &self.tabs[tab_index].scene;
+        for &h in handles {
+            let Some(op_owner) =
+                crate::modules::aec::engine::slab_package::slab_opening_owner_if_any(scene, h)
+            else {
+                continue;
+            };
+            if slab_openings_to_remove.iter().any(|&(_, o)| o == op_owner) {
+                continue;
+            }
+            let Some(entity) = scene.document.get_entity(op_owner) else {
+                continue;
+            };
+            let Some(opening) =
+                crate::modules::aec::engine::slab_xdata::slab_opening_from_entity(entity)
+            else {
+                continue;
+            };
+            let host_slab = opening.host_slab;
+            if !handles.contains(&host_slab) {
+                slab_openings_to_remove.push((host_slab, op_owner));
+            }
+        }
+        for (host_slab, op_h) in slab_openings_to_remove {
+            crate::modules::aec::engine::slab_xdata::remove_slab_opening_handle(
+                &mut self.tabs[tab_index].scene.document,
+                host_slab,
+                op_h,
+            );
+            let _ = crate::modules::aec::engine::slab_regen::regenerate_slab_representation(
+                &mut self.tabs[tab_index].scene,
+                host_slab,
+                None,
+                None,
+            );
+        }
     }
 
     /// When Face3D preview entities for control planes or facets are deleted in the drawing,

@@ -1833,47 +1833,55 @@ impl OpenCADStudio {
         if compact_solid {
             retain_compact_solid_sections(&mut sections);
         }
-        let title = match entity {
-            codec::EntityType::Insert(ins) => {
-                let is_xref = self.tabs[i]
-                    .scene
-                    .document
-                    .block_records
-                    .iter()
-                    .find(|br| br.name == ins.block_name)
-                    .map(|br| br.flags.is_xref || br.flags.is_xref_overlay)
-                    .unwrap_or(false);
-                if is_xref {
-                    t!("External Reference").into_owned()
-                } else {
-                    entity_type_label(entity)
+        let title = if let Some(aec_title) = crate::modules::aec::properties::aec_entity_title(
+            &self.tabs[i].scene,
+            handle,
+            entity,
+        ) {
+            aec_title
+        } else {
+            match entity {
+                codec::EntityType::Insert(ins) => {
+                    let is_xref = self.tabs[i]
+                        .scene
+                        .document
+                        .block_records
+                        .iter()
+                        .find(|br| br.name == ins.block_name)
+                        .map(|br| br.flags.is_xref || br.flags.is_xref_overlay)
+                        .unwrap_or(false);
+                    if is_xref {
+                        t!("External Reference").into_owned()
+                    } else {
+                        entity_type_label(entity)
+                    }
                 }
+                codec::EntityType::Surface(_)
+                    if matches!(
+                        crate::scene::model::solid_history::primitive_property_operation(
+                            &self.tabs[i].scene.document,
+                            handle,
+                        ),
+                        Some(codec::objects::SolidHistoryOperation::Extrusion(_))
+                    ) =>
+                {
+                    format!("{} ({})", t!("Surface"), t!("Extrusion"))
+                }
+                // The reference names an angular dimension by its kind.
+                codec::EntityType::Dimension(
+                    codec::entities::Dimension::Angular2Ln(_),
+                ) => t!("Angular Dimension").into_owned(),
+                codec::EntityType::Dimension(
+                    codec::entities::Dimension::Angular3Pt(_),
+                ) => t!("3 Point Angular Dimension").into_owned(),
+                codec::EntityType::Underlay(underlay) => match underlay.underlay_type {
+                    codec::entities::UnderlayType::Pdf => t!("PDF Underlay"),
+                    codec::entities::UnderlayType::Dwf => t!("DWF Underlay"),
+                    codec::entities::UnderlayType::Dgn => t!("DGN Underlay"),
+                }
+                .into_owned(),
+                _ => entity_type_label(entity),
             }
-            codec::EntityType::Surface(_)
-                if matches!(
-                    crate::scene::model::solid_history::primitive_property_operation(
-                        &self.tabs[i].scene.document,
-                        handle,
-                    ),
-                    Some(codec::objects::SolidHistoryOperation::Extrusion(_))
-                ) =>
-            {
-                format!("{} ({})", t!("Surface"), t!("Extrusion"))
-            }
-            // The reference names an angular dimension by its kind.
-            codec::EntityType::Dimension(
-                codec::entities::Dimension::Angular2Ln(_),
-            ) => t!("Angular Dimension").into_owned(),
-            codec::EntityType::Dimension(
-                codec::entities::Dimension::Angular3Pt(_),
-            ) => t!("3 Point Angular Dimension").into_owned(),
-            codec::EntityType::Underlay(underlay) => match underlay.underlay_type {
-                codec::entities::UnderlayType::Pdf => t!("PDF Underlay"),
-                codec::entities::UnderlayType::Dwf => t!("DWF Underlay"),
-                codec::entities::UnderlayType::Dgn => t!("DGN Underlay"),
-            }
-            .into_owned(),
-            _ => entity_type_label(entity),
         };
         // A dynamic dimension shows only its constraint and text
         // rotation, as the reference does.
