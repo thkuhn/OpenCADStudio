@@ -10,11 +10,13 @@
 
 use std::path::{Path, PathBuf};
 
-use acadrust::CadDocument;
+use codec::CadDocument;
 
 /// The community folder's GitHub contents API (lists name + download URL).
+#[cfg(not(target_arch = "wasm32"))]
 const REPO_API_URL: &str =
     "https://api.github.com/repos/HakanSeven12/OpenCADStudio/contents/fonts";
+#[cfg(not(target_arch = "wasm32"))]
 const MAX_FONT_BYTES: u64 = 16 * 1024 * 1024;
 
 /// Local store for fonts downloaded from the community repository. Text
@@ -38,6 +40,15 @@ pub fn fonts_dir() -> Option<PathBuf> {
 pub enum FontSource {
     Community,
     Custom(String),
+}
+
+/// Stable key for comparing bare font names without path or case differences.
+pub fn font_key(name: &str) -> String {
+    name.rsplit(['/', '\\'])
+        .next()
+        .unwrap_or(name)
+        .trim()
+        .to_ascii_lowercase()
 }
 
 impl FontSource {
@@ -68,18 +79,24 @@ pub fn missing_shx_fonts(doc: &CadDocument) -> Vec<String> {
         .map(Path::new)
         .and_then(|p| p.parent());
     for style in doc.text_styles.iter() {
-        let file = style.font_file.trim();
-        if file.is_empty() || !file.to_ascii_lowercase().ends_with(".shx") {
-            continue;
-        }
-        let resolved = crate::io::resolve_image_file(file, base).is_some()
-            || local_font_file(file).is_some();
-        if resolved {
-            continue;
-        }
-        let name = file.rsplit(['/', '\\']).next().unwrap_or(file).to_string();
-        if !missing.iter().any(|m| m.eq_ignore_ascii_case(&name)) {
-            missing.push(name);
+        // The primary font and the big font (Asian double-byte glyphs) are
+        // both plain .shx files the style depends on.
+        for file in [style.font_file.trim(), style.big_font_file.trim()] {
+            if file.is_empty()
+                || !file.to_ascii_lowercase().ends_with(".shx")
+                || crate::io::linetypes::is_bundled_shape_file(file)
+            {
+                continue;
+            }
+            let resolved = crate::io::resolve_image_file(file, base).is_some()
+                || local_font_file(file).is_some();
+            if resolved {
+                continue;
+            }
+            let name = file.rsplit(['/', '\\']).next().unwrap_or(file).to_string();
+            if !missing.iter().any(|m| m.eq_ignore_ascii_case(&name)) {
+                missing.push(name);
+            }
         }
     }
     missing.sort_by_key(|name| name.to_ascii_lowercase());
@@ -104,6 +121,7 @@ pub fn local_font_file(name: &str) -> Option<PathBuf> {
 }
 
 /// List the community folder through the GitHub contents API.
+#[cfg(not(target_arch = "wasm32"))]
 fn fetch_repo_fonts() -> Result<Vec<RepoFont>, String> {
     let agent = crate::network::agent(std::time::Duration::from_secs(15));
     let mut response = agent
@@ -121,6 +139,7 @@ fn fetch_repo_fonts() -> Result<Vec<RepoFont>, String> {
 
 /// Parse the GitHub contents-API response:
 /// `[{"name":"romans.shx","download_url":"https://…"}, …]`.
+#[cfg(not(target_arch = "wasm32"))]
 fn parse_contents(body: &str) -> Result<Vec<RepoFont>, String> {
     let value: serde_json::Value =
         serde_json::from_str(body).map_err(|e| format!("Unexpected font listing: {e}"))?;
@@ -143,6 +162,7 @@ fn parse_contents(body: &str) -> Result<Vec<RepoFont>, String> {
 /// Download every `missing` font that exists in the community folder into the
 /// local fonts directory. Returns the (requested, saved-path) pairs that were
 /// actually fetched; names absent from the repository are skipped.
+#[cfg(not(target_arch = "wasm32"))]
 pub fn download_fonts(
     missing: &[String],
     source: &FontSource,
@@ -201,8 +221,21 @@ pub fn download_fonts(
     Ok(downloaded)
 }
 
+/// The web build has no network client, and no fonts folder to save into.
+#[cfg(target_arch = "wasm32")]
+pub fn download_fonts(
+    missing: &[String],
+    _source: &FontSource,
+) -> Result<Vec<(String, PathBuf)>, String> {
+    if missing.is_empty() {
+        return Ok(Vec::new());
+    }
+    Err("Downloading fonts is not available in the web app.".to_string())
+}
+
 /// Escape path characters that would break a URL (spaces and non-ASCII file
 /// names are common in font sets).
+#[cfg(not(target_arch = "wasm32"))]
 fn percent_encode_path(file: &str) -> String {
     let mut out = String::with_capacity(file.len());
     for byte in file.bytes() {
@@ -245,6 +278,12 @@ mod tests {
     }
 
     #[test]
+    fn font_keys_are_bare_trimmed_and_case_insensitive() {
+        assert_eq!(font_key(r#" C:\Fonts\ROMANS.SHX "#), "romans.shx");
+        assert_eq!(font_key("folder/simplex.shx"), "simplex.shx");
+    }
+
+    #[test]
     fn rejects_a_non_listing_response() {
         assert!(parse_contents("{\"message\":\"Not Found\"}").is_err());
     }
@@ -258,7 +297,7 @@ mod tests {
         std::fs::write(dir.join("exists.shx"), b"stub").unwrap();
         let mut doc = CadDocument::new();
         let mk = |name: &str, file: &str| {
-            let mut style = acadrust::TextStyle::new(name);
+            let mut style = codec::TextStyle::new(name);
             style.font_file = file.into();
             style
         };

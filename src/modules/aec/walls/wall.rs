@@ -777,7 +777,7 @@ impl CadCommand for WallCommand {
         }
     }
 
-    fn on_entities_committed(&mut self, scene: &mut Scene, handles: &[Handle]) {
+    fn on_entities_committed_in_scene(&mut self, scene: &mut Scene, handles: &[Handle]) {
         let Some(&wall_handle) = handles.first() else {
             return;
         };

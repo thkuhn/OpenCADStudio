@@ -590,7 +590,7 @@ impl CadCommand for SlabOpeningCommand {
         CmdResult::NeedPoint
     }
 
-    fn on_entities_committed(&mut self, scene: &mut Scene, handles: &[Handle]) {
+    fn on_entities_committed_in_scene(&mut self, scene: &mut Scene, handles: &[Handle]) {
         for &h in handles {
             let Some(host) = self.host_slab.map(|picked| resolve_slab_package(scene, picked)) else {
                 continue;

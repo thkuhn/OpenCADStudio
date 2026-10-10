@@ -688,13 +688,13 @@ fn wall_chain_auto_joins_l_corner() {
         _ => panic!("expected first segment"),
     };
     let h1 = scene.add_entity(e1);
-    cmd.on_entities_committed(&mut scene, &[h1]);
+    cmd.on_entities_committed_in_scene(&mut scene, &[h1]);
     let e2 = match cmd.on_point(DVec3::new(5.0, 4.0, 0.0)) {
         CmdResult::CommitEntity(e) => e,
         _ => panic!("expected second segment"),
     };
     let h2 = scene.add_entity(e2);
-    cmd.on_entities_committed(&mut scene, &[h2]);
+    cmd.on_entities_committed_in_scene(&mut scene, &[h2]);
 
     let w1 = wall_from_entity(scene.document.get_entity(h1).unwrap()).unwrap();
     let w2 = wall_from_entity(scene.document.get_entity(h2).unwrap()).unwrap();
@@ -717,7 +717,7 @@ fn two_point_wall_regen_creates_contour_hatch_solid() {
         _ => panic!("expected segment"),
     };
     let handle = scene.add_entity(entity);
-    cmd.on_entities_committed(&mut scene, &[handle]);
+    cmd.on_entities_committed_in_scene(&mut scene, &[handle]);
     let wall = wall_from_entity(scene.document.get_entity(handle).unwrap()).unwrap();
     let mut saw_contour = false;
     let mut saw_hatch = false;
@@ -749,7 +749,7 @@ fn regen_places_2d_components_at_wall_base_z() {
         _ => panic!("expected segment"),
     };
     let handle = scene.add_entity(entity);
-    cmd.on_entities_committed(&mut scene, &[handle]);
+    cmd.on_entities_committed_in_scene(&mut scene, &[handle]);
     let mut wall = wall_from_entity(scene.document.get_entity(handle).unwrap()).unwrap();
     wall.base_origin[2] = 3.0;
     let mut record = ExtendedDataRecord::new(AEC_APPID);
@@ -805,7 +805,7 @@ fn wall_commit_erases_live_preview_axis_and_contour() {
         _ => panic!("expected commit"),
     };
     let handle = scene.add_entity(committed);
-    cmd.on_entities_committed(&mut scene, &[handle]);
+    cmd.on_entities_committed_in_scene(&mut scene, &[handle]);
     for h in live_handles {
         if h != handle {
             assert!(
@@ -906,17 +906,17 @@ fn third_segment_keeps_first_corner_joined() {
         CmdResult::CommitEntity(e) => e,
         _ => panic!("seg 1"),
     });
-    cmd.on_entities_committed(&mut scene, &[h1]);
+    cmd.on_entities_committed_in_scene(&mut scene, &[h1]);
     let h2 = scene.add_entity(match cmd.on_point(DVec3::new(5.0, 4.0, 0.0)) {
         CmdResult::CommitEntity(e) => e,
         _ => panic!("seg 2"),
     });
-    cmd.on_entities_committed(&mut scene, &[h2]);
+    cmd.on_entities_committed_in_scene(&mut scene, &[h2]);
     let h3 = scene.add_entity(match cmd.on_point(DVec3::new(0.0, 4.0, 0.0)) {
         CmdResult::CommitEntity(e) => e,
         _ => panic!("seg 3"),
     });
-    cmd.on_entities_committed(&mut scene, &[h3]);
+    cmd.on_entities_committed_in_scene(&mut scene, &[h3]);
 
     let peers2 = engine::owner_index::peers_of(&scene.document, h2);
     assert!(
@@ -1015,7 +1015,7 @@ fn aec_room_detects_a_closed_loop_from_interactively_drawn_walls() {
             _ => panic!("two points should commit a wall segment"),
         };
         let handle = scene.add_entity(entity);
-        cmd.on_entities_committed(&mut scene, &[handle]);
+        cmd.on_entities_committed_in_scene(&mut scene, &[handle]);
         assert!(matches!(cmd.on_enter(), CmdResult::Cancel));
     }
 

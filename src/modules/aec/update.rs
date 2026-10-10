@@ -3495,7 +3495,7 @@ impl OpenCADStudio {
                     self.reapply_active_display_config_to_wall_packages(i, &touched);
                 }
                 let mut sel = self.tabs[i].scene.selection.borrow_mut();
-                sel.context_menu = None;
+                sel.menu.close();
                 sel.junction_menu = None;
                 drop(sel);
                 self.refresh_properties();
@@ -3524,7 +3524,7 @@ impl OpenCADStudio {
                     self.reapply_active_display_config_to_wall_packages(i, &touched);
                 }
                 let mut sel = self.tabs[i].scene.selection.borrow_mut();
-                sel.context_menu = None;
+                sel.menu.close();
                 sel.junction_menu = None;
                 drop(sel);
                 self.refresh_properties();
@@ -3543,7 +3543,7 @@ impl OpenCADStudio {
                     awaiting_style: false,
                 });
                 let mut sel = self.tabs[i].scene.selection.borrow_mut();
-                sel.context_menu = None;
+                sel.menu.close();
                 sel.junction_menu = Some((axis_handle, end_index));
                 sel.junction_menu_only = false;
                 drop(sel);
@@ -3566,7 +3566,7 @@ impl OpenCADStudio {
                     hover: None,
                 });
                 let mut sel = self.tabs[i].scene.selection.borrow_mut();
-                sel.context_menu = None;
+                sel.menu.close();
                 sel.junction_menu = Some((axis_handle, end_index));
                 sel.junction_menu_only = false;
                 drop(sel);
@@ -3610,7 +3610,7 @@ impl OpenCADStudio {
                 self.aec.aec_junction_editor_pair_style =
                     crate::modules::aec::engine::join::JoinOverrideStyle::Miter;
                 let mut sel = self.tabs[i].scene.selection.borrow_mut();
-                sel.context_menu = None;
+                sel.menu.close();
                 sel.junction_menu = None;
                 drop(sel);
                 self.active_modal = Some(crate::app::ModalKind::Aec(AecModalKind::JunctionEditor));

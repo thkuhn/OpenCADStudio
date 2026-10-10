@@ -136,7 +136,7 @@ pub mod fixed {
     pub fn tool() -> ToolDef {
         ToolDef {
             id: "FXCONSTRAINT",
-            label: "Fixed",
+            label: "Fix",
             icon: IconKind::Svg(include_bytes!("../../../assets/icons/constrain/fixed.svg")),
             event: ModuleEvent::Command("FXCONSTRAINT".to_string()),
         }
@@ -166,11 +166,13 @@ inventory::submit!(crate::command::CommandRegistration {
         "QCONSTRAINT",
         "GCPERPENDICULAR",
         "ECONSTRAINT",
+        "GCEQUAL",
         "TCONSTRAINT",
         "GCCONCENTRIC",
         "NRCONSTRAINT",
         "LCONSTRAINT",
         "FXCONSTRAINT",
+        "GCFIX",
         "SYCONSTRAINT",
     ]
 });

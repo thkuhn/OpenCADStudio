@@ -1,8 +1,9 @@
 use crate::app::settings::IsoPlane;
 use crate::app::Message;
 use crate::snap::{SnapType, ALL_3D_SNAP_MODES, ALL_SNAP_MODES};
+use crate::ui::style::form::{dialog_button, dialog_button_styled_opt};
 use iced::widget::{button, checkbox, column, container, row, scrollable, text, text_input, Space};
-use iced::{Background, Border, Element, Fill, Length, Theme};
+use iced::{Background, Border, Element, Fill, Theme};
 use std::borrow::Cow;
 
 /// Active tab in the Drafting Settings dialog.
@@ -664,28 +665,23 @@ pub fn view_window<'a>(
     };
 
     // ── Bottom Action Buttons ────────────────────────────────────────────
-    let ok_button = button(text(crate::t!("OK")).size(12))
-        .on_press(Message::DraftingSettingsOk)
-        .style(button::primary)
-        .padding([6, 18]);
+    let ok_button = dialog_button(crate::t!("OK"), Message::DraftingSettingsOk, true);
 
-    let apply_button = button(text(crate::t!("Apply")).size(12))
-        .on_press_maybe(if dirty {
+    let apply_button = dialog_button_styled_opt(
+        crate::t!("Apply"),
+        if dirty {
             Some(Message::DraftingSettingsApply)
         } else {
             None
-        })
-        .style(if dirty {
+        },
+        if dirty {
             button::secondary
         } else {
             button::text
-        })
-        .padding([6, 18]);
+        },
+    );
 
-    let close_button = button(text(crate::t!("Close")).size(12))
-        .on_press(Message::DraftingSettingsClose)
-        .style(button::secondary)
-        .padding([6, 18]);
+    let close_button = dialog_button(crate::t!("Close"), Message::DraftingSettingsClose, false);
 
     let action_row = row![
         Space::new().width(Fill),
@@ -717,51 +713,10 @@ pub fn view_window<'a>(
     if !close_confirm {
         return main_content.into();
     }
-
-    let shield = iced::widget::mouse_area(
-        container(Space::new())
-            .width(Length::Fill)
-            .height(Length::Fill)
-            .style(|theme: &Theme| container::Style {
-                background: Some(Background::Color(
-                    theme
-                        .palette()
-                        .background
-                        .strongest
-                        .color
-                        .scale_alpha(0.55),
-                )),
-                ..Default::default()
-            }),
-    )
-    .on_press(Message::DraftingSettingsCloseKeep);
-
-    let warning_panel = container(
-        column![
-            text(crate::t!("Unsaved changes will be discarded.")).size(13.5),
-            Space::new().height(12),
-            row![
-                button(text(crate::t!("Discard && close")).size(12))
-                    .on_press(Message::DraftingSettingsCloseDiscard)
-                    .padding([5, 14])
-                    .style(button::danger),
-                button(text(crate::t!("Keep editing")).size(12))
-                    .on_press(Message::DraftingSettingsCloseKeep)
-                    .padding([5, 14])
-                    .style(button::secondary),
-            ]
-            .spacing(10),
-        ]
-        .spacing(0),
-    )
-    .padding([18, 22])
-    .style(container::rounded_box);
-
-    iced::widget::stack![
+    crate::ui::modal::discard_guard(
         main_content,
-        shield,
-        container(warning_panel).center_x(Fill).center_y(Fill)
-    ]
-    .into()
+        Message::DraftingSettingsCloseDiscard,
+        Message::DraftingSettingsCloseKeep,
+    )
 }
 

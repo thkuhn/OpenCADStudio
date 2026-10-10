@@ -45,3 +45,12 @@ __pycache__/
 test_errs.log
 *.AppImage
 AppDir/
+
+# Worktrees created for isolated runs
+.claude/worktrees/
+
+# Single-instance lock files the app writes next to an open drawing
+*.ocs.lock
+
+# macOS Finder metadata
+.DS_Store

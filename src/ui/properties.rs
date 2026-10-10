@@ -11,8 +11,8 @@ use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
 use std::{fmt, sync::Arc};
 
 use crate::ui::ROW_H;
-use acadrust::types::{Color as AcadColor, LineWeight};
-use acadrust::Handle;
+use codec::types::{Color as AcadColor, LineWeight};
+use codec::Handle;
 use iced::widget::{
     button, canvas, column, combo_box, container, mouse_area, row, scrollable, text, text_input,
     tooltip, Space,
@@ -146,7 +146,7 @@ impl canvas::Program<Message> for HatchPatternPreview {
                     boundary_exterior: None,
                     boundary_sources: None,
                     boundary_paths: None,
-                    style: acadrust::entities::HatchStyleType::Normal,
+                    style: codec::entities::HatchStyleType::Normal,
                     pattern: self.pattern.clone(),
                     name: String::new(),
                     color: [1.0; 4],
@@ -528,65 +528,10 @@ impl PropertiesPanel {
     }
 
     pub fn view(&self, width: f32, auto_collapse: bool) -> Element<'_, Message> {
-        use crate::ui::dock::{DockMsg, PanelId};
+        use crate::ui::dock::PanelId;
         // ── Header ──────────────────────────────────────────────────────────
-        let pin_icon = if auto_collapse {
-            crate::ui::icons::themed_primary_weak_text(crate::ui::icons::PIN, 12.0)
-        } else {
-            crate::ui::icons::themed_secondary(crate::ui::icons::PIN, 12.0)
-        };
-        let pin = button(pin_icon)
-            .on_press(Message::Dock(DockMsg::AutoCollapseToggle(PanelId::Properties)))
-            .style(move |theme: &Theme, status| {
-                let mut style = button::subtle(theme, status);
-                if auto_collapse {
-                    let palette = theme.palette();
-                    style.background = Some(Background::Color(palette.primary.weak.color));
-                    style.text_color = palette.primary.weak.text;
-                    style.border.color = palette.primary.base.color;
-                    style.border.width = 1.0;
-                }
-                style
-            })
-            .padding([3, 5]);
-        let pin = tooltip(pin, text(t!("Auto")).size(10), tooltip::Position::Bottom).gap(4);
-
-        let close = button(crate::ui::icons::themed_secondary(
-            crate::ui::icons::CLOSE,
-            12.0,
-        ))
-        .on_press(Message::Dock(DockMsg::Close(PanelId::Properties)))
-        .style(button::subtle)
-        .padding([3, 5]);
-        let close = tooltip(
-            close,
-            text(t!("Close")).size(10),
-            tooltip::Position::Bottom,
-        )
-        .gap(4);
-
-        let header = mouse_area(
-            container(
-                row![
-                    text(t!("Properties")).size(12),
-                    Space::new().width(Length::Fill),
-                    pin,
-                    close,
-                ]
-                .spacing(3)
-                .align_y(iced::Center),
-            )
-            .style(|theme: &Theme| container::Style {
-                background: Some(Background::Color(
-                    theme.palette().background.weak.color,
-                )),
-                ..Default::default()
-            })
-            .width(Length::Fill)
-            .padding([3, 6]),
-        )
-        .on_press(Message::Dock(DockMsg::DockGrab(PanelId::Properties)))
-        .interaction(iced::mouse::Interaction::Grab);
+        let header =
+            crate::ui::dock::title_bar(PanelId::Properties, t!("Properties").into_owned(), auto_collapse);
 
         // ── Title bar (entity type / "No Selection") ─────────────────────
         let title_content: Element<'_, Message> = if self.selection_groups.is_empty() {
@@ -813,6 +758,7 @@ impl PropertiesPanel {
             PropValue::EditText(val) | PropValue::PlainText(val) => {
                 self.render_edit_row(label, prop.field, val)
             }
+            PropValue::Hyperlink(val) => render_hyperlink_row(label, val),
             PropValue::ReadOnly(val) if prop.field == "annotative_scale" => {
                 render_annotative_scale_row(label, val)
             }
@@ -1998,6 +1944,18 @@ fn render_annotative_scale_row<'a>(
 
     prop_row_widget(label, controls.into())
 }
+fn render_hyperlink_row<'a>(label: &'a str, value: &'a str) -> Element<'a, Message> {
+    let field = crate::ui::read_only::field(value, FONT_SZ, Length::Fill);
+    let manage = button(text("...").size(FONT_SZ))
+        .on_press(Message::PropHyperlinkOpen)
+        .style(button::secondary)
+        .padding([2, 7]);
+    let controls = row![field, manage, iced::widget::space().width(10)]
+        .spacing(2)
+        .align_y(iced::Center)
+        .width(Length::Fill);
+    prop_row_widget(label, controls.into())
+}
 fn render_ro_row<'a>(label: &'a str, value: &'a str) -> Element<'a, Message> {
     // A read-only value is shown as a non-editable but selectable field: no
     // on_input means the caret never appears, but the text can be selected
@@ -2223,7 +2181,7 @@ pub fn acad_color_display(c: AcadColor) -> (Color, &'static str) {
             "ByBlock",
         ),
         AcadColor::Index(i) => {
-            let (r, g, b) = acadrust::types::aci_table::aci_to_rgb(i).unwrap_or((200, 200, 200));
+            let (r, g, b) = codec::types::aci_table::aci_to_rgb(i).unwrap_or((200, 200, 200));
             (
                 Color::from_rgb(r as f32 / 255.0, g as f32 / 255.0, b as f32 / 255.0),
                 aci_label(i),

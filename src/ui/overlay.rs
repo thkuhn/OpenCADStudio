@@ -1,7 +1,6 @@
 //! Viewport overlay widgets.
 
 use std::cell::RefCell;
-use std::collections::HashMap;
 
 use glam::{Mat4, Vec3};
 use iced::mouse;
@@ -22,30 +21,16 @@ pub const CROSSHAIR_ARM: f32 = 60.0;
 const DEFAULT_CURSOR_SIZE: i32 = 5;
 const DEFAULT_PICK_BOX: i32 = 3;
 const DEFAULT_PICK_APERTURE: f32 = 8.0;
-const CONSTRAINT_GLYPH_SIZE: f32 = 14.0;
-const CONSTRAINT_GLYPH_PAD_X: f32 = 7.0;
-const CONSTRAINT_GLYPH_PAD_Y: f32 = 4.0;
-const CONSTRAINT_GLYPH_GAP: f32 = 6.0;
-const CONSTRAINT_GLYPH_ROW_GAP: f32 = 4.0;
 const CONSTRAINT_HOVER_MARKER_RADIUS: f32 = 7.0;
-const COINCIDENT_GLYPH_SIZE: f32 = 9.0;
 
-fn is_compact_coincident_glyph(label: &str) -> bool {
-    matches!(label, "≡" | "∈")
-}
+use crate::scene::parametric_constraints::{
+    glyph_hit_test_entries, glyph_is_compact, glyph_is_fixed, glyph_is_vertical,
+    GlyphEntry, GLYPH_SIZE,
+};
 
-fn constraint_glyph_size(label: &str) -> Size {
-    if is_compact_coincident_glyph(label) {
-        return Size::new(COINCIDENT_GLYPH_SIZE, COINCIDENT_GLYPH_SIZE);
-    }
-    if label == "G²" {
-        let side = CONSTRAINT_GLYPH_SIZE + CONSTRAINT_GLYPH_PAD_Y * 2.0;
-        return Size::new(side, side);
-    }
-    let w = label.chars().count() as f32 * CONSTRAINT_GLYPH_SIZE * 0.62
-        + CONSTRAINT_GLYPH_PAD_X * 2.0;
-    let h = CONSTRAINT_GLYPH_SIZE + CONSTRAINT_GLYPH_PAD_Y * 2.0;
-    Size::new(w, h)
+/// The lock mark a dynamic dimension carries (`DYNAMIC_DIMENSION_GLYPH`).
+fn is_dynamic_dimension_glyph(label: &str) -> bool {
+    label == crate::scene::parametric_constraints::DYNAMIC_DIMENSION_GLYPH
 }
 
 fn draw_smooth_constraint_glyph(frame: &mut canvas::Frame, center: Point, color: Color) {
@@ -94,94 +79,100 @@ fn draw_concentric_constraint_glyph(
     frame.stroke(&canvas::Path::circle(center, 2.15), stroke);
 }
 
-fn constraint_glyph_box(
-    anchor: Point,
-    outward: [f32; 2],
-    label: &str,
-    tangent_offset: f32,
-) -> (Point, Size) {
-    let size = constraint_glyph_size(label);
-    let gap = if is_compact_coincident_glyph(label) {
-        1.0
-    } else {
-        CONSTRAINT_GLYPH_GAP
-    };
-    let distance = outward[0].abs() * size.width * 0.5
-        + outward[1].abs() * size.height * 0.5
-        + gap;
-    let tangent = [-outward[1], outward[0]];
-    (
-        Point::new(
-            anchor.x + outward[0] * distance + tangent[0] * tangent_offset
-                - size.width * 0.5,
-            anchor.y + outward[1] * distance + tangent[1] * tangent_offset
-                - size.height * 0.5,
-        ),
-        size,
-    )
-}
-
-fn constraint_glyph_offsets(glyphs: &[(Point, [f32; 2], String, bool)]) -> Vec<f32> {
-    let mut groups: HashMap<[u32; 4], Vec<usize>> = HashMap::new();
-    for (index, (anchor, outward, _, _)) in glyphs.iter().enumerate() {
-        groups
-            .entry([
-                anchor.x.to_bits(),
-                anchor.y.to_bits(),
-                outward[0].to_bits(),
-                outward[1].to_bits(),
-            ])
-            .or_default()
-            .push(index);
-    }
-
-    let mut offsets = vec![0.0; glyphs.len()];
-    for indices in groups.values().filter(|indices| indices.len() > 1) {
-        let half_extents: Vec<f32> = indices
-            .iter()
-            .map(|index| {
-                let (_, outward, label, _) = &glyphs[*index];
-                let size = constraint_glyph_size(label);
-                let tangent = [-outward[1], outward[0]];
-                tangent[0].abs() * size.width * 0.5
-                    + tangent[1].abs() * size.height * 0.5
-            })
-            .collect();
-        let total = half_extents.iter().sum::<f32>() * 2.0
-            + CONSTRAINT_GLYPH_ROW_GAP * (indices.len() - 1) as f32;
-        let mut cursor = -total * 0.5;
-        for (index, half_extent) in indices.iter().zip(half_extents) {
-            offsets[*index] = cursor + half_extent;
-            cursor += half_extent * 2.0 + CONSTRAINT_GLYPH_ROW_GAP;
+/// The reference bar's padlock: white with a small orange point marker
+/// when one point is held, red when a whole curve or segment is.
+fn draw_fixed_constraint_glyph(
+    frame: &mut canvas::Frame,
+    center: Point,
+    lock: Color,
+    badge: Color,
+    point_marker: bool,
+) {
+    let shackle = canvas::Path::new(|builder| {
+        let shackle_center = Point::new(center.x, center.y - 1.6);
+        for step in 0..=12 {
+            let angle = std::f32::consts::PI * (1.0 - step as f32 / 12.0);
+            let point = Point::new(
+                shackle_center.x + angle.cos() * 3.1,
+                shackle_center.y - angle.sin() * 3.1,
+            );
+            if step == 0 {
+                builder.move_to(Point::new(point.x, center.y - 0.6));
+                builder.line_to(point);
+            } else {
+                builder.line_to(point);
+            }
         }
+        builder.line_to(Point::new(center.x + 3.1, center.y - 0.6));
+    });
+    frame.stroke(
+        &shackle,
+        canvas::Stroke::default().with_color(lock).with_width(1.5),
+    );
+    let body = canvas::Path::rounded_rectangle(
+        Point::new(center.x - 5.0, center.y - 0.8),
+        Size::new(10.0, 7.6),
+        1.4.into(),
+    );
+    frame.fill(&body, lock);
+    frame.stroke(
+        &canvas::Path::line(
+            Point::new(center.x, center.y + 1.4),
+            Point::new(center.x, center.y + 4.6),
+        ),
+        canvas::Stroke::default().with_color(badge).with_width(1.3),
+    );
+    if point_marker {
+        frame.stroke(
+            &canvas::Path::rectangle(Point::new(center.x + 4.0, center.y + 3.6), Size::new(4.6, 4.6)),
+            canvas::Stroke::default()
+                .with_color(Color::from_rgb8(224, 130, 62))
+                .with_width(1.2),
+        );
     }
-    offsets
 }
 
-/// Hit-tests screen point `p` against the same glyph-pill layout `draw`
-/// renders — reusing `constraint_glyph_offsets`/`constraint_glyph_box` so
-/// the clickable area can never drift from what's actually drawn, including
-/// the tangential fan-out applied when several glyphs share one anchor.
-/// Returns the index into `glyphs` of the topmost (last-drawn) match.
-/// `Scene::constraint_glyph_hit` maps the index back to a constraint id.
-pub(crate) fn constraint_glyph_hit_test(
-    glyphs: &[(Point, [f32; 2], String, bool)],
-    p: Point,
-) -> Option<usize> {
-    let offsets = constraint_glyph_offsets(glyphs);
-    glyphs
-        .iter()
-        .zip(offsets)
-        .enumerate()
-        .rev()
-        .find_map(|(index, ((anchor, outward, label, _), tangent_offset))| {
-            let (top_left, size) = constraint_glyph_box(*anchor, *outward, label, tangent_offset);
-            let within = p.x >= top_left.x
-                && p.x <= top_left.x + size.width
-                && p.y >= top_left.y
-                && p.y <= top_left.y + size.height;
-            within.then_some(index)
-        })
+/// The reference bar's Vertical mark: a red datum line hatched on its left,
+/// the constrained direction beside it, plus the orange point marker for a
+/// two-point relation.
+fn draw_vertical_constraint_glyph(
+    frame: &mut canvas::Frame,
+    center: Point,
+    text: Color,
+    point_marker: bool,
+) {
+    let datum = Color::from_rgb8(214, 76, 76);
+    let datum_x = center.x - 2.5;
+    let stroke = canvas::Stroke::default().with_color(datum).with_width(1.5);
+    frame.stroke(
+        &canvas::Path::line(
+            Point::new(datum_x, center.y - 6.5),
+            Point::new(datum_x, center.y + 6.5),
+        ),
+        stroke.clone(),
+    );
+    for step in 0..3 {
+        let y = center.y - 4.5 + step as f32 * 4.0;
+        frame.stroke(
+            &canvas::Path::line(Point::new(datum_x, y), Point::new(datum_x - 4.0, y + 3.5)),
+            stroke.clone(),
+        );
+    }
+    frame.stroke(
+        &canvas::Path::line(
+            Point::new(center.x + 2.5, center.y - 6.0),
+            Point::new(center.x + 2.5, center.y + 6.0),
+        ),
+        canvas::Stroke::default().with_color(text).with_width(1.4),
+    );
+    if point_marker {
+        frame.stroke(
+            &canvas::Path::rectangle(Point::new(center.x + 4.5, center.y - 2.3), Size::new(4.6, 4.6)),
+            canvas::Stroke::default()
+                .with_color(Color::from_rgb8(224, 130, 62))
+                .with_width(1.2),
+        );
+    }
 }
 
 /// Convert CURSORSIZE to a screen-space arm length while keeping the original
@@ -222,6 +213,18 @@ pub(crate) fn pick_box_aperture_px(value: i32) -> f32 {
     aperture.max(1.0)
 }
 
+/// Which interactive navigation tool is armed. Each one owns the whole
+/// viewport and hides the CAD crosshair, but they do not share a cursor: the
+/// hand reads as "drag the sheet", which is wrong for a zoom or an orbit.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum NavCursor {
+    #[default]
+    None,
+    Pan,
+    Orbit,
+    Zoom,
+}
+
 #[derive(Clone, Copy)]
 pub struct CrosshairOptions {
     pub size_percent: i32,
@@ -232,6 +235,16 @@ pub struct CrosshairOptions {
     pub iso_plane: IsoPlane,
     pub snap_angle_deg: f32,
     pub point_mode: bool,
+    /// A client pick (`user_select` / `getpoint`) is waiting for the person:
+    /// the crosshair arms disappear and a blue pickbox remains — the
+    /// screen-level "the client wants YOU to pick" signal.
+    pub pick_pending: bool,
+    /// Draw only the pickbox: the active command previews a line that the
+    /// full-length arms would cover.
+    pub hide_arms: bool,
+    /// Explicit object-snap marker colour; `None` picks one that reads on
+    /// the canvas.
+    pub snap_color: Option<[u8; 3]>,
 }
 
 /// Rendering style for the viewport grid.
@@ -480,7 +493,7 @@ pub fn resolve_selection_base_color(
     // ACI 0 (BYBLOCK) and 256 (BYLAYER) are not explicit overrides;
     // the sysvar uses 0 as the unset sentinel; valid user picks are 1..=255.
     if custom > 0 {
-        if let Some((r, g, b)) = acadrust::types::aci_table::aci_to_rgb(custom) {
+        if let Some((r, g, b)) = codec::types::aci_table::aci_to_rgb(custom) {
             return Color::from_rgb8(r, g, b);
         }
     }
@@ -855,19 +868,23 @@ pub fn selection_overlay<'a>(
     grip_clip: Option<iced::Rectangle>,
     ucs_icons: Vec<UcsIconParams>,
     ost_points: Vec<OstTrackPoint>,
-    otrack_line: Option<(Point, Point)>,
+    otrack_lines: Vec<(Point, Point)>,
     parallel_ref_marker: Option<Point>,
     show_viewcube: bool,
     dividers: Vec<iced::Rectangle>,
     pane_move_rect: Option<iced::Rectangle>,
     pane_drop_rect: Option<iced::Rectangle>,
-    pan_mode: bool,
+    nav: NavCursor,
     suppressed: bool,
     hover_locked: bool,
     crosshair_bg: [f32; 4],
     crosshair: CrosshairOptions,
     selection_visual: SelectionVisualOptions,
-    constraint_glyphs: Vec<(Point, [f32; 2], String, bool, bool, Vec<Point>)>,
+    constraint_glyphs: Arc<[GlyphEntry]>,
+    // Per-glyph selection flags, parallel to `constraint_glyphs`, applied
+    // post-hoc by the view layer — deliberately outside the memoised entries
+    // so selection changes never invalidate the placement cache.
+    constraint_glyph_selected: Arc<[bool]>,
     constraint_glyph_tooltip: Option<String>,
     constraint_cursor_badge: Option<String>,
 ) -> Element<'a, Message> {
@@ -881,19 +898,20 @@ pub fn selection_overlay<'a>(
         grip_clip,
         ucs_icons,
         ost_points,
-        otrack_line,
+        otrack_lines,
         parallel_ref_marker,
         show_viewcube,
         dividers,
         pane_move_rect,
         pane_drop_rect,
-        pan_mode,
+        nav,
         suppressed,
         hover_locked,
         crosshair_bg,
         crosshair,
         selection_visual,
         constraint_glyphs,
+        constraint_glyph_selected,
         constraint_glyph_tooltip,
         constraint_cursor_badge,
     })
@@ -922,11 +940,12 @@ struct SelectionCanvas {
     /// entry carries hover/selected (grips).
     ucs_icons: Vec<UcsIconParams>,
     ost_points: Vec<OstTrackPoint>,
-    /// Active OTRACK alignment: (acquired tracking point, locked cursor), both
-    /// in screen space. Drawn as a dashed guide extended a little past the
-    /// cursor so the extension / tracking line the user snapped to is visible.
-    /// (#219)
-    otrack_line: Option<(Point, Point)>,
+    /// Active OTRACK alignments, each (acquired tracking point, locked cursor)
+    /// in screen space. Drawn as dashed guides extended a little past the
+    /// cursor so the extension / tracking line the user snapped to is visible
+    /// (#219). An intersection lock contributes both of its crossing vectors,
+    /// so the point reads as their meeting rather than a lone guide (#1313).
+    otrack_lines: Vec<(Point, Point)>,
     /// The acquired Parallel-snap reference point (screen), marked with a small
     /// ∥ glyph so the user sees which line is the parallel reference. (#277)
     parallel_ref_marker: Option<Point>,
@@ -939,9 +958,10 @@ struct SelectionCanvas {
     pane_move_rect: Option<iced::Rectangle>,
     /// The pane under the cursor during a pane move (drop target), highlighted.
     pane_drop_rect: Option<iced::Rectangle>,
-    /// Interactive PAN mode: the crosshair is hidden and the cursor becomes a
-    /// hand so the viewport reads as a draggable surface.
-    pan_mode: bool,
+    /// Which interactive navigation tool is armed. Any of them hides the
+    /// crosshair — the viewport is being driven, not drawn on — and each
+    /// picks its own cursor in `mouse_interaction`.
+    nav: NavCursor,
     /// A ribbon dropdown (or similar overlay) is open over the viewport. The
     /// crosshair is not drawn and the OS cursor is shown normally so the panel
     /// is usable instead of the cursor vanishing over it. (#227)
@@ -954,15 +974,93 @@ struct SelectionCanvas {
     crosshair_bg: [f32; 4],
     crosshair: CrosshairOptions,
     selection_visual: SelectionVisualOptions,
-    /// Constraint glyph anchor, outward screen direction, label, conflict
-    /// state, whether the pill itself is the current click-to-select target,
-    /// and the points to mark while the pill is hovered.
-    constraint_glyphs: Vec<(Point, [f32; 2], String, bool, bool, Vec<Point>)>,
+    /// Memoised constraint-glyph entries (precomputed anchor/outward/label +
+    /// layout) shared with the hit-test and tooltip paths — draw reads
+    /// `top_left`/`size` directly and never recomputes offsets or clones
+    /// labels.
+    constraint_glyphs: Arc<[GlyphEntry]>,
+    /// Per-glyph selection flags, parallel to `constraint_glyphs`, applied
+    /// post-hoc by the view layer (outside the cache).
+    constraint_glyph_selected: Arc<[bool]>,
     /// Localized kind name made visible after the app-level hover dwell.
     constraint_glyph_tooltip: Option<String>,
     /// Symbol shown beside the cursor while it targets an entity that already
     /// participates in an enabled geometric constraint.
     constraint_cursor_badge: Option<String>,
+}
+
+/// The move gizmo: an arrow per axis (X red, Y green, Z blue) from the
+/// centre grip and a square per axis pair; the hovered or dragged part is
+/// yellow.
+fn draw_move_gizmo(frame: &mut canvas::Frame, grips: &[GripMarker]) {
+    use crate::scene::pick::grip::{gizmo_plane_axes, GIZMO_AXIS_PX};
+    const COLORS: [Color; 3] = [
+        Color::from_rgb(0.90, 0.22, 0.20),
+        Color::from_rgb(0.27, 0.70, 0.29),
+        Color::from_rgb(0.18, 0.52, 0.93),
+    ];
+    let active = Color::from_rgb(1.0, 0.84, 0.0);
+    // Unit screen direction (y down) and tip of each shown arrow.
+    let mut axes: [Option<(Point, iced::Vector)>; 3] = [None; 3];
+    for grip in grips {
+        if let (GripShape::GizmoAxis(k), Some([dx, dy])) = (grip.shape, grip.dir) {
+            axes[k as usize % 3] = Some((grip.pos, iced::Vector::new(dx, -dy)));
+        }
+    }
+    let Some(center) = axes
+        .iter()
+        .flatten()
+        .next()
+        .map(|(tip, d)| Point::new(tip.x - d.x * GIZMO_AXIS_PX, tip.y - d.y * GIZMO_AXIS_PX))
+    else {
+        return;
+    };
+    for grip in grips {
+        let GripShape::GizmoPlane(k) = grip.shape else {
+            continue;
+        };
+        let (a, b) = gizmo_plane_axes(k);
+        let (Some((_, a)), Some((_, b))) = (axes[a as usize], axes[b as usize]) else {
+            continue;
+        };
+        let corner = |u: f32, v: f32| {
+            Point::new(
+                center.x + (a.x * u + b.x * v) * GIZMO_AXIS_PX,
+                center.y + (a.y * u + b.y * v) * GIZMO_AXIS_PX,
+            )
+        };
+        let quad = canvas::Path::new(|p| {
+            p.move_to(corner(0.18, 0.18));
+            p.line_to(corner(0.42, 0.18));
+            p.line_to(corner(0.42, 0.42));
+            p.line_to(corner(0.18, 0.42));
+            p.close();
+        });
+        let lit = grip.is_hovered || grip.is_hot;
+        let color = if lit { active } else { Color::from_rgb(0.85, 0.85, 0.85) };
+        frame.fill(&quad, color.scale_alpha(if lit { 0.55 } else { 0.25 }));
+        frame.stroke(&quad, canvas::Stroke::default().with_width(1.0).with_color(color));
+    }
+    for grip in grips {
+        let (GripShape::GizmoAxis(k), Some((tip, d))) =
+            (grip.shape, grip.dir.map(|[dx, dy]| (grip.pos, iced::Vector::new(dx, -dy))))
+        else {
+            continue;
+        };
+        let color = if grip.is_hovered || grip.is_hot { active } else { COLORS[k as usize % 3] };
+        let base = Point::new(tip.x - d.x * 13.0, tip.y - d.y * 13.0);
+        frame.stroke(
+            &canvas::Path::line(center, base),
+            canvas::Stroke::default().with_width(2.5).with_color(color),
+        );
+        let head = canvas::Path::new(|p| {
+            p.move_to(tip);
+            p.line_to(Point::new(base.x - d.y * 6.0, base.y + d.x * 6.0));
+            p.line_to(Point::new(base.x + d.y * 6.0, base.y - d.x * 6.0));
+            p.close();
+        });
+        frame.fill(&head, color);
+    }
 }
 
 fn draw_grip_marker(
@@ -1018,6 +1116,7 @@ fn draw_grip_marker(
             b.close();
         }),
         GripShape::Circle => canvas::Path::circle(Point::new(sp.x, sp.y), h),
+        GripShape::GizmoAxis(_) | GripShape::GizmoPlane(_) => return,
         GripShape::Dropdown | GripShape::DropdownAdjacent => canvas::Path::new(|b| {
             b.move_to(Point::new(sp.x - h, sp.y - h * 0.5));
             b.line_to(Point::new(sp.x + h, sp.y - h * 0.5));
@@ -1028,7 +1127,7 @@ fn draw_grip_marker(
 
     if grip.is_hot {
         let hot_color = if visual.grip_hot > 0 {
-            if let Some((r, g, b)) = acadrust::types::aci_table::aci_to_rgb(visual.grip_hot) {
+            if let Some((r, g, b)) = codec::types::aci_table::aci_to_rgb(visual.grip_hot) {
                 Color::from_rgb8(r, g, b)
             } else {
                 theme.palette().danger.base.color
@@ -1040,7 +1139,7 @@ fn draw_grip_marker(
     } else if grip.is_hovered {
         let pair = theme.palette().primary.strong;
         let hover_color = if visual.grip_hover > 0 {
-            if let Some((r, g, b)) = acadrust::types::aci_table::aci_to_rgb(visual.grip_hover) {
+            if let Some((r, g, b)) = codec::types::aci_table::aci_to_rgb(visual.grip_hover) {
                 Color::from_rgb8(r, g, b)
             } else {
                 pair.color
@@ -1074,7 +1173,7 @@ fn draw_grip_marker(
     } else {
         let palette = theme.palette();
         let color = if visual.grip_color > 0 {
-            if let Some((r, g, b)) = acadrust::types::aci_table::aci_to_rgb(visual.grip_color) {
+            if let Some((r, g, b)) = codec::types::aci_table::aci_to_rgb(visual.grip_color) {
                 Color::from_rgb8(r, g, b)
             } else {
                 palette.primary.base.color
@@ -1135,13 +1234,30 @@ impl canvas::Program<Message> for SelectionCanvas {
         if self.suppressed {
             return mouse::Interaction::default();
         }
-        // PAN mode owns the whole viewport: an open hand when hovering, a
-        // closed hand while dragging.
-        if self.pan_mode && cursor.is_over(bounds) {
-            return if self.selection.borrow().middle_down {
-                mouse::Interaction::Grabbing
-            } else {
-                mouse::Interaction::Grab
+        // An armed navigation tool owns the whole viewport, and the cursor
+        // says which one: a hand to drag the sheet, four-way arrows to swing
+        // the model, a magnifier that carries the sign of the zoom actually
+        // under way. Hovering before the drag starts shows the neutral "+"
+        // magnifier rather than guessing a direction.
+        if self.nav != NavCursor::None && cursor.is_over(bounds) {
+            let dragging = self.selection.borrow().input.middle_down;
+            return match self.nav {
+                NavCursor::Pan => {
+                    if dragging {
+                        mouse::Interaction::Grabbing
+                    } else {
+                        mouse::Interaction::Grab
+                    }
+                }
+                NavCursor::Orbit => mouse::Interaction::AllScroll,
+                NavCursor::Zoom => {
+                    if dragging && self.selection.borrow().input.zoom_dir_out {
+                        mouse::Interaction::ZoomOut
+                    } else {
+                        mouse::Interaction::ZoomIn
+                    }
+                }
+                NavCursor::None => unreachable!("guarded above"),
             };
         }
         if self.show_viewcube {
@@ -1159,14 +1275,7 @@ impl canvas::Program<Message> for SelectionCanvas {
             }
         }
         if let Some(pos) = cursor.position_in(bounds) {
-            let glyphs: Vec<_> = self
-                .constraint_glyphs
-                .iter()
-                .map(|(anchor, outward, label, conflict, _, _)| {
-                    (*anchor, *outward, label.clone(), *conflict)
-                })
-                .collect();
-            if constraint_glyph_hit_test(&glyphs, pos).is_some() {
+            if glyph_hit_test_entries(&self.constraint_glyphs, pos).is_some() {
                 return mouse::Interaction::Pointer;
             }
         }
@@ -1247,7 +1356,7 @@ impl canvas::Program<Message> for SelectionCanvas {
             }
             // Ghost card dragged under the cursor — a 0.32× preview of the
             // source pane, centred on the cursor.
-            if let Some(c) = self.selection.borrow().last_move_pos {
+            if let Some(c) = self.selection.borrow().input.last_move_pos {
                 let gw = (src.width * 0.32).clamp(60.0, 280.0);
                 let gh = (src.height * 0.32).clamp(40.0, 200.0);
                 let g = canvas::Path::rectangle(
@@ -1312,26 +1421,32 @@ impl canvas::Program<Message> for SelectionCanvas {
             );
         }
 
-        if let (Some(a), Some(b)) = (self.selection.borrow().box_anchor, self.selection.borrow().box_current) {
-            draw_marquee(&mut frame, a, b, self.selection.borrow().box_crossing, theme, &self.selection_visual, self.crosshair_bg);
+        // ZOOM Dynamic reuses `box_anchor` to remember where the drag began,
+        // so the marquee would otherwise rubber-band across the screen while
+        // the view zooms. Suppress the drawing, not the state — the anchor is
+        // still re-projected as the camera moves.
+        if self.nav != NavCursor::Zoom {
+            if let (Some(a), Some(b)) = (self.selection.borrow().gesture.box_anchor, self.selection.borrow().gesture.box_current) {
+                draw_marquee(&mut frame, a, b, self.selection.borrow().gesture.box_crossing, theme, &self.selection_visual, self.crosshair_bg);
+            }
         }
         // Preview marquee for point-picked windows (STRETCH) — same look, no pick.
-        if let Some((a, b, crossing)) = self.selection.borrow().preview_box {
+        if let Some((a, b, crossing)) = self.selection.borrow().gesture.preview_box {
             draw_marquee(&mut frame, a, b, crossing, theme, &self.selection_visual, self.crosshair_bg);
         }
 
-        if self.selection.borrow().poly_active && self.selection.borrow().poly_points.len() > 1 {
-            let crossing = self.selection.borrow().poly_crossing;
+        if self.selection.borrow().gesture.poly_active && self.selection.borrow().gesture.poly_points.len() > 1 {
+            let crossing = self.selection.borrow().gesture.poly_crossing;
             let base = resolve_selection_base_color(crossing, theme, &self.selection_visual, self.crosshair_bg);
             let canvas_light = crate::ui::style::common::canvas_is_light(self.crosshair_bg);
             if self.selection_visual.area && self.selection_visual.opacity > 0 {
                 let alpha = selection_fill_alpha(self.selection_visual.opacity as f32, canvas_light);
                 let fill = base.scale_alpha(alpha);
-                if let Some(cur) = self.selection.borrow().last_move_pos {
-                    let start = self.selection.borrow().poly_points[0];
+                if let Some(cur) = self.selection.borrow().input.last_move_pos {
+                    let start = self.selection.borrow().gesture.poly_points[0];
                     let fill_path = canvas::Path::new(|p| {
                         p.move_to(start);
-                        for pt in &self.selection.borrow().poly_points[1..] {
+                        for pt in &self.selection.borrow().gesture.poly_points[1..] {
                             p.line_to(*pt);
                         }
                         p.line_to(cur);
@@ -1343,8 +1458,8 @@ impl canvas::Program<Message> for SelectionCanvas {
             let stroke_alpha = if canvas_light { 0.95 } else { 0.90 };
             let stroke = base.scale_alpha(stroke_alpha);
             let path = canvas::Path::new(|p| {
-                p.move_to(self.selection.borrow().poly_points[0]);
-                for pt in &self.selection.borrow().poly_points[1..] {
+                p.move_to(self.selection.borrow().gesture.poly_points[0]);
+                for pt in &self.selection.borrow().gesture.poly_points[1..] {
                     p.line_to(*pt);
                 }
             });
@@ -1362,9 +1477,9 @@ impl canvas::Program<Message> for SelectionCanvas {
                 ..Default::default()
             };
             frame.stroke(&path, stroke_style.clone());
-            if let Some(cur) = self.selection.borrow().last_move_pos {
-                let start = self.selection.borrow().poly_points[0];
-                let last = *self.selection.borrow().poly_points.last().unwrap();
+            if let Some(cur) = self.selection.borrow().input.last_move_pos {
+                let start = self.selection.borrow().gesture.poly_points[0];
+                let last = *self.selection.borrow().gesture.poly_points.last().unwrap();
                 let preview = canvas::Path::new(|p| {
                     p.move_to(last);
                     p.line_to(cur);
@@ -1413,8 +1528,11 @@ impl canvas::Program<Message> for SelectionCanvas {
                         );
                     }
                 }
+                draw_move_gizmo(frame, &self.grips);
                 for grip in &self.grips {
-                    draw_grip_marker(frame, grip, theme, &self.selection_visual);
+                    if !matches!(grip.shape, GripShape::GizmoAxis(_) | GripShape::GizmoPlane(_)) {
+                        draw_grip_marker(frame, grip, theme, &self.selection_visual);
+                    }
                 }
             });
         }
@@ -1423,6 +1541,10 @@ impl canvas::Program<Message> for SelectionCanvas {
         if let Some((sp, snap_type)) = self.snap {
             let (r, g, b) = if snap_type == SnapType::ObjectPick {
                 (0.95_f32, 0.50, 0.08) // orange object-snap marker
+            } else if let Some([r, g, b]) = self.crosshair.snap_color {
+                (r as f32 / 255.0, g as f32 / 255.0, b as f32 / 255.0)
+            } else if crate::ui::style::common::canvas_is_light(self.crosshair_bg) {
+                (0.80, 0.45, 0.0) // dark amber: yellow vanishes on a light canvas
             } else {
                 (1.0, 0.9, 0.1) // classic yellow OSNAP
             };
@@ -1474,6 +1596,25 @@ impl canvas::Program<Message> for SelectionCanvas {
                     let r = 5.5_f32;
                     let path = canvas::Path::circle(sp, r);
                     frame.stroke(&path, stroke);
+                }
+                SnapType::GeometricCenter => {
+                    // Pentagon around a centre dot: the area centroid.
+                    let r = 6.5_f32;
+                    let path = canvas::Path::new(|b| {
+                        for k in 0..5 {
+                            let a = -std::f32::consts::FRAC_PI_2
+                                + k as f32 * std::f32::consts::TAU / 5.0;
+                            let p = Point::new(sp.x + r * a.cos(), sp.y + r * a.sin());
+                            if k == 0 {
+                                b.move_to(p);
+                            } else {
+                                b.line_to(p);
+                            }
+                        }
+                        b.close();
+                    });
+                    frame.stroke(&path, stroke.clone());
+                    frame.fill(&canvas::Path::circle(sp, 1.6), marker);
                 }
                 SnapType::Node => {
                     // Circle with an inscribed X.
@@ -1768,14 +1909,17 @@ impl canvas::Program<Message> for SelectionCanvas {
         // arrow (see `mouse_interaction`); drawing the CAD crosshair on
         // top of it would double up the visual feedback.
         let over_divider = self.divider_under(cursor, bounds);
-        // PAN mode replaces the crosshair with a hand cursor.
+        // An armed navigation tool replaces the crosshair with its own cursor.
         if !over_viewcube
             && !over_divider
-            && !self.pan_mode
+            && self.nav == NavCursor::None
             && !self.suppressed
             && self.crosshair.cursor_type == CursorType::Crosshair
         {
-            if let Some(cp) = self.selection.borrow().last_move_pos {
+            // Over a grip the crosshair locks onto it, so the click lands on
+            // the grip exactly.
+            let hovered_grip = self.grips.iter().find(|grip| grip.is_hovered).map(|grip| grip.pos);
+            if let Some(cp) = hovered_grip.or(self.selection.borrow().input.last_move_pos) {
                 let [r, g, b, a] = self.crosshair.color.map_or_else(
                     || {
                         crate::scene::view::render::adapt_to_bg(
@@ -1793,8 +1937,16 @@ impl canvas::Program<Message> for SelectionCanvas {
                     },
                 );
                 let color = Color { r, g, b, a };
+                // Pending client pick: drop the arms, keep a blue pickbox —
+                // the same blue as the MCP "waiting for you to pick" pill.
+                let pick_pending = self.crosshair.pick_pending;
+                let color = if pick_pending {
+                    Color::from_rgb(0.30, 0.55, 0.98)
+                } else {
+                    color
+                };
                 let stroke = canvas::Stroke {
-                    width: 1.0,
+                    width: if pick_pending { 1.5 } else { 1.0 },
                     style: canvas::Style::Solid(color),
                     ..Default::default()
                 };
@@ -1810,33 +1962,43 @@ impl canvas::Program<Message> for SelectionCanvas {
                 } else {
                     [0.0, 90.0]
                 };
-                for angle in base_angles {
-                    let rad = (angle + self.crosshair.snap_angle_deg as f64).to_radians();
-                    let dir = Point::new(rad.cos() as f32, -rad.sin() as f32);
-                    let gap = if point_mode {
-                        9.0
-                    } else if sq > 0.0 {
-                        sq / dir.x.abs().max(dir.y.abs()).max(1e-6)
-                    } else {
-                        0.0
-                    };
-                    let arms = canvas::Path::new(|path| {
-                        path.move_to(Point::new(cp.x + dir.x * gap, cp.y + dir.y * gap));
-                        path.line_to(Point::new(cp.x + dir.x * arm, cp.y + dir.y * arm));
-                        path.move_to(Point::new(cp.x - dir.x * gap, cp.y - dir.y * gap));
-                        path.line_to(Point::new(cp.x - dir.x * arm, cp.y - dir.y * arm));
-                    });
-                    frame.stroke(&arms, stroke.clone());
+                // The arms stay only for the normal (non-pending) cursor: a
+                // waiting pick shows the box alone, regardless of the UCS
+                // rotation, so the square is unmistakable.
+                if !pick_pending && !self.crosshair.hide_arms {
+                    for angle in base_angles {
+                        let rad = (angle + self.crosshair.snap_angle_deg as f64).to_radians();
+                        let dir = Point::new(rad.cos() as f32, -rad.sin() as f32);
+                        let gap = if point_mode {
+                            9.0
+                        } else if sq > 0.0 {
+                            sq / dir.x.abs().max(dir.y.abs()).max(1e-6)
+                        } else {
+                            0.0
+                        };
+                        let arms = canvas::Path::new(|path| {
+                            path.move_to(Point::new(cp.x + dir.x * gap, cp.y + dir.y * gap));
+                            path.line_to(Point::new(cp.x + dir.x * arm, cp.y + dir.y * arm));
+                            path.move_to(Point::new(cp.x - dir.x * gap, cp.y - dir.y * gap));
+                            path.line_to(Point::new(cp.x - dir.x * arm, cp.y - dir.y * arm));
+                        });
+                        frame.stroke(&arms, stroke.clone());
+                    }
                 }
                 if point_mode {
                     let dot = canvas::Path::circle(cp, 1.75);
                     frame.fill(&dot, color);
-                } else if sq > 0.0 {
-                    let square = canvas::Path::rectangle(
-                        Point::new(cp.x - sq, cp.y - sq),
-                        Size::new(sq * 2.0, sq * 2.0),
-                    );
-                    frame.stroke(&square, stroke);
+                } else {
+                    // A pending pick keeps the square visible even when the
+                    // user's PICKBOX setting would hide it.
+                    let sq = if pick_pending { sq.max(8.0) } else { sq };
+                    if sq > 0.0 {
+                        let square = canvas::Path::rectangle(
+                            Point::new(cp.x - sq, cp.y - sq),
+                            Size::new(sq * 2.0, sq * 2.0),
+                        );
+                        frame.stroke(&square, stroke);
+                    }
                 }
 
                 // Locked-layer badge: a small padlock beside the crosshair when
@@ -1920,7 +2082,7 @@ impl canvas::Program<Message> for SelectionCanvas {
         // real angle from the acquired point through the lock and a little
         // beyond, dashed so it reads as a construction guide. This covers the
         // ortho (0°/90°), polar, and edge-extension cases uniformly (#219).
-        if let Some((base, tip)) = self.otrack_line {
+        for &(base, tip) in &self.otrack_lines {
             let dx = tip.x - base.x;
             let dy = tip.y - base.y;
             let len = (dx * dx + dy * dy).sqrt();
@@ -1968,22 +2130,13 @@ impl canvas::Program<Message> for SelectionCanvas {
             frame.stroke(&b1, stroke.clone());
             frame.stroke(&b2, stroke);
         }
-        // Hit testing shares this layout math with the scene projection.
+        // Draw + hover + tooltip all read the memoised entries' precomputed
+        // `top_left`/`size` (one shared `hovered` lookup below) — no offset
+        // recompute, no label clones on this path.
         if !self.constraint_glyphs.is_empty() {
-            // `constraint_glyph_offsets` only needs the anchor/outward/label/
-            // conflict quadruple it was written against; project away the
-            // trailing display fields rather than widen its signature.
-            let glyphs_for_offsets: Vec<(Point, [f32; 2], String, bool)> = self
-                .constraint_glyphs
-                .iter()
-                .map(|(anchor, outward, label, is_conflicting, _, _)| {
-                    (*anchor, *outward, label.clone(), *is_conflicting)
-                })
-                .collect();
-            let offsets = constraint_glyph_offsets(&glyphs_for_offsets);
             let hovered = cursor
                 .position_in(bounds)
-                .and_then(|point| constraint_glyph_hit_test(&glyphs_for_offsets, point));
+                .and_then(|point| glyph_hit_test_entries(&self.constraint_glyphs, point));
             let normal_bg = Color::from_rgb8(103, 109, 118);
             let normal_fg = Color::WHITE;
             // A redundant or conflicting constraint gets the danger palette
@@ -1994,22 +2147,24 @@ impl canvas::Program<Message> for SelectionCanvas {
             let conflict_fg = theme.palette().danger.base.text;
             let selected_ring = theme.palette().primary.strong.color;
             let coincident_bg = Color::from_rgb8(35, 145, 230);
-            for ((anchor, outward, label, is_conflicting, is_selected, _), tangent_offset) in
-                self.constraint_glyphs.iter().zip(offsets.iter().copied())
+            for (entry, is_selected) in self
+                .constraint_glyphs
+                .iter()
+                .zip(self.constraint_glyph_selected.iter())
             {
-                if !anchor.x.is_finite() || !anchor.y.is_finite() {
+                let label: &str = &entry.label;
+                if !entry.anchor.x.is_finite() || !entry.anchor.y.is_finite() {
                     continue;
                 }
-                let compact_coincident = is_compact_coincident_glyph(label);
-                let (bg, fg) = if *is_conflicting {
+                let compact_coincident = glyph_is_compact(label);
+                let (bg, fg) = if entry.conflicting {
                     (conflict_bg, conflict_fg)
                 } else if compact_coincident {
                     (coincident_bg, normal_fg)
                 } else {
                     (normal_bg, normal_fg)
                 };
-                let (top_left, size) =
-                    constraint_glyph_box(*anchor, *outward, label, tangent_offset);
+                let (top_left, size) = (entry.top_left, entry.size);
                 let pill = canvas::Path::rounded_rectangle(
                     top_left,
                     size,
@@ -2020,7 +2175,10 @@ impl canvas::Program<Message> for SelectionCanvas {
                     })
                     .into(),
                 );
-                frame.fill(&pill, bg);
+                // A dynamic dimension's lock sits bare on the drawing.
+                if !is_dynamic_dimension_glyph(label) {
+                    frame.fill(&pill, bg);
+                }
                 if *is_selected {
                     frame.stroke(
                         &pill,
@@ -2038,12 +2196,37 @@ impl canvas::Program<Message> for SelectionCanvas {
                         draw_smooth_constraint_glyph(&mut frame, glyph_center, fg);
                     } else if label == "◎" {
                         draw_concentric_constraint_glyph(&mut frame, glyph_center, fg);
+                    } else if is_dynamic_dimension_glyph(label) {
+                        draw_fixed_constraint_glyph(&mut frame, glyph_center, fg, bg, false);
+                    } else if glyph_is_fixed(label) {
+                        let point =
+                            label == crate::scene::parametric_constraints::FIXED_POINT_GLYPH;
+                        // The object-mode lock reads red, the point-mode one white.
+                        let lock = if point {
+                            fg
+                        } else {
+                            Color::from_rgb8(214, 76, 76)
+                        };
+                        draw_fixed_constraint_glyph(&mut frame, glyph_center, lock, bg, point);
+                    } else if glyph_is_vertical(label) {
+                        draw_vertical_constraint_glyph(
+                            &mut frame,
+                            glyph_center,
+                            fg,
+                            label == crate::scene::parametric_constraints::VERTICAL_POINTS_GLYPH,
+                        );
                     } else {
+                        // The Equal symbol reads green on its badge, as asked.
+                        let color = if label == "=" {
+                            Color::from_rgb8(72, 199, 116)
+                        } else {
+                            fg
+                        };
                         frame.fill_text(canvas::Text {
-                            content: label.clone(),
+                            content: label.to_string(),
                             position: glyph_center,
-                            color: fg,
-                            size: iced::Pixels(CONSTRAINT_GLYPH_SIZE),
+                            color,
+                            size: iced::Pixels(GLYPH_SIZE),
                             align_x: iced::alignment::Horizontal::Center.into(),
                             align_y: iced::alignment::Vertical::Center,
                             shaping: iced::advanced::text::Shaping::Advanced,
@@ -2055,7 +2238,7 @@ impl canvas::Program<Message> for SelectionCanvas {
             if let Some(index) = hovered {
                 let red = Color::from_rgb(1.0, 0.0, 0.0);
                 let stroke = canvas::Stroke::default().with_color(red).with_width(1.5);
-                for point in &self.constraint_glyphs[index].5 {
+                for point in self.constraint_glyphs[index].hover.iter() {
                     let first = canvas::Path::line(
                         Point::new(
                             point.x - CONSTRAINT_HOVER_MARKER_RADIUS,
@@ -2080,11 +2263,9 @@ impl canvas::Program<Message> for SelectionCanvas {
                     frame.stroke(&second, stroke.clone());
                 }
                 if let Some(label) = &self.constraint_glyph_tooltip {
-                    let (glyph_top_left, glyph_size) = constraint_glyph_box(
-                        self.constraint_glyphs[index].0,
-                        self.constraint_glyphs[index].1,
-                        &self.constraint_glyphs[index].2,
-                        offsets[index],
+                    let (glyph_top_left, glyph_size) = (
+                        self.constraint_glyphs[index].top_left,
+                        self.constraint_glyphs[index].size,
                     );
                     let width = (label.chars().count() as f32 * 7.0 + 14.0).max(54.0);
                     let height = 24.0;
@@ -2103,8 +2284,8 @@ impl canvas::Program<Message> for SelectionCanvas {
                             .with_color(theme.palette().background.strong.text)
                             .with_width(1.0),
                     );
-                    frame.fill_text(canvas::Text {
-                        content: label.clone(),
+                        frame.fill_text(canvas::Text {
+                            content: label.to_string(),
                         position: Point::new(left + width * 0.5, top + height * 0.5),
                         color: theme.palette().background.strong.text,
                         size: iced::Pixels(12.0),
@@ -3232,6 +3413,37 @@ impl DynInputCanvas {
         (Self::box_content(b).len() as f32 * DYN_CHAR_W) + DYN_PAD * 2.0
     }
 
+    /// Slide a box centred at `center` straight away from the crosshair until
+    /// it neither covers the aim point nor a box already placed (#1546).
+    fn clear_of(center: Point, w: f32, cursor: Point, placed: &[iced::Rectangle]) -> Point {
+        const KEEP: f32 = 18.0;
+        let hits = |c: Point| {
+            let r = iced::Rectangle {
+                x: c.x - w * 0.5,
+                y: c.y - DYN_BOX_H * 0.5,
+                width: w,
+                height: DYN_BOX_H,
+            };
+            r.expand(KEEP).contains(cursor) || placed.iter().any(|p| p.intersects(&r))
+        };
+        let (mut dx, mut dy) = (center.x - cursor.x, center.y - cursor.y);
+        let len = (dx * dx + dy * dy).sqrt();
+        if len < 1.0 {
+            (dx, dy) = (0.0, 1.0);
+        } else {
+            (dx, dy) = (dx / len, dy / len);
+        }
+        let mut c = center;
+        for _ in 0..60 {
+            if !hits(c) {
+                break;
+            }
+            c.x += dx * 4.0;
+            c.y += dy * 4.0;
+        }
+        c
+    }
+
     /// Draw a value box centred at `center`, clamped inside `bounds`.
     fn draw_box(
         frame: &mut canvas::Frame,
@@ -3516,6 +3728,7 @@ impl DynInputCanvas {
         }
 
         // ── Box placement by role ──
+        let mut placed: Vec<iced::Rectangle> = Vec::with_capacity(self.boxes.len());
         for b in &self.boxes {
             let center = b.center.unwrap_or_else(|| match b.role {
                 DynRole::Angle => self.label_screen.unwrap_or_else(|| {
@@ -3558,6 +3771,14 @@ impl DynInputCanvas {
                     x: base.x + dx * len * 0.5 + nx * 16.0,
                     y: base.y + dy * len * 0.5 + ny * 16.0,
                 },
+            });
+            let w = Self::box_width(b);
+            let center = Self::clear_of(center, w, cursor, &placed);
+            placed.push(iced::Rectangle {
+                x: center.x - w * 0.5,
+                y: center.y - DYN_BOX_H * 0.5,
+                width: w,
+                height: DYN_BOX_H,
             });
             Self::draw_box(frame, b, center, bounds, theme);
         }
@@ -3786,41 +4007,70 @@ mod clip_tests {
 #[cfg(test)]
 mod constraint_glyph_tests {
     use super::*;
+    use crate::scene::parametric_constraints::{
+        constraint_glyph_box, constraint_glyph_offsets,
+    };
+    use std::sync::Arc;
+
+    /// Build cache-shaped entries the same way
+    /// `Scene::cached_glyph_placements` does: one offsets pass, then size +
+    /// box per glyph. Keeps this test on the single source of truth instead
+    /// of a local layout copy.
+    fn entries_for(glyphs: &[(Point, [f32; 2], &str)]) -> Arc<[GlyphEntry]> {
+        let offsets = constraint_glyph_offsets(glyphs);
+        Arc::from(
+            glyphs
+                .iter()
+                .zip(offsets)
+                .enumerate()
+                .map(|(i, ((anchor, outward, label), tangent_dx))| {
+                    let size =
+                        crate::scene::parametric_constraints::constraint_glyph_size(label);
+                    let (top_left, _) =
+                        constraint_glyph_box(*anchor, *outward, label, tangent_dx);
+                    GlyphEntry {
+                        id: i as u32,
+                        anchor: *anchor,
+                        outward: *outward,
+                        label: Arc::from(*label),
+                        conflicting: false,
+                        hover: Arc::from([]),
+                        size,
+                        tangent_dx,
+                        top_left,
+                    }
+                })
+                .collect::<Vec<_>>(),
+        )
+    }
 
     #[test]
     fn enlarged_glyph_box_stays_clear_of_its_geometry_anchor() {
         let anchor = Point::new(100.0, 80.0);
         let (right, size) = constraint_glyph_box(anchor, [1.0, 0.0], "⊥", 0.0);
         assert_eq!(size.height, 22.0);
-        assert!((right.x - anchor.x - CONSTRAINT_GLYPH_GAP).abs() < 1e-6);
+        assert!((right.x - anchor.x - 6.0).abs() < 1e-6);
 
         let (above, size) = constraint_glyph_box(anchor, [0.0, -1.0], "↔ 25.00", 0.0);
-        assert!((anchor.y - (above.y + size.height) - CONSTRAINT_GLYPH_GAP).abs() < 1e-6);
+        assert!((anchor.y - (above.y + size.height) - 6.0).abs() < 1e-6);
     }
 
     #[test]
     fn coincident_glyphs_are_arranged_side_by_side() {
         let anchor = Point::new(100.0, 80.0);
-        let glyphs = vec![
-            (anchor, [0.0, -1.0], "—".to_string(), false),
-            (anchor, [0.0, -1.0], "∥".to_string(), false),
-        ];
-        let offsets = constraint_glyph_offsets(&glyphs);
-        let (left, left_size) =
-            constraint_glyph_box(anchor, glyphs[0].1, &glyphs[0].2, offsets[0]);
-        let (right, right_size) =
-            constraint_glyph_box(anchor, glyphs[1].1, &glyphs[1].2, offsets[1]);
+        let entries = entries_for(&[
+            (anchor, [0.0, -1.0], "—"),
+            (anchor, [0.0, -1.0], "∥"),
+        ]);
+        let (left, left_size) = (entries[0].top_left, entries[0].size);
+        let (right, right_size) = (entries[1].top_left, entries[1].size);
 
         assert!((left.y - right.y).abs() < 1e-6);
-        assert!(
-            (right.x - (left.x + left_size.width) - CONSTRAINT_GLYPH_ROW_GAP).abs() < 1e-4
-        );
-        assert!(
-            (anchor.y - (left.y + right_size.height) - CONSTRAINT_GLYPH_GAP).abs() < 1e-6
-        );
+        assert!((right.x - (left.x + left_size.width) - 4.0).abs() < 1e-4);
+        assert!((anchor.y - (left.y + right_size.height) - 6.0).abs() < 1e-6);
 
         let click = Point::new(left.x + left_size.width * 0.5, left.y + left_size.height * 0.5);
-        assert_eq!(constraint_glyph_hit_test(&glyphs, click), Some(0));
+        assert_eq!(glyph_hit_test_entries(&entries, click), Some(0));
     }
 }
 

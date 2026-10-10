@@ -143,7 +143,7 @@ pub fn update_all_room_schedules(scene: &mut Scene) {
         let mut new_table = build_room_schedule_table(&rooms, pt);
         if let Some(EntityType::Table(tbl)) = scene.document.get_entity_mut(h) {
             new_table.common = tbl.common.clone();
-            *tbl = new_table;
+            *tbl = Box::new(new_table);
         }
     }
     scene.bump_geometry();
@@ -158,7 +158,7 @@ pub fn aec_room_schedule_at_point(scene: &mut Scene, pos: Vector3) -> Option<Han
 
     scene.ensure_layer(AEC_ROOM_SCHEDULE_LAYER);
     let table = build_room_schedule_table(&rooms, pos);
-    let mut table_entity = EntityType::Table(table);
+    let mut table_entity = EntityType::Table(Box::new(table));
     table_entity.common_mut().layer = AEC_ROOM_SCHEDULE_LAYER.to_string();
 
     let handle = scene.add_entity(table_entity);
@@ -270,6 +270,8 @@ impl RoomScheduleCommand {
             plinegen: true,
             fill_tris: Vec::new(),
             fill_tris_low: Vec::new(),
+            searchable_text: Vec::new(),
+            snap_only: false,
         }
     }
 }

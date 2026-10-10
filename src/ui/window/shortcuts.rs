@@ -2,6 +2,7 @@
 
 use crate::app::Message;
 use crate::t;
+use crate::ui::style::common::muted_style;
 use iced::widget::{button, column, container, row, scrollable, text, text_input, Space};
 use iced::{Background, Element, Length, Theme};
 
@@ -12,12 +13,6 @@ pub enum ShortcutField {
 }
 
 const GUTTER: f32 = 16.0;
-
-fn muted_style(theme: &Theme) -> iced::widget::text::Style {
-    iced::widget::text::Style {
-        color: Some(theme.palette().background.base.text.scale_alpha(0.68)),
-    }
-}
 
 fn danger_text_style(theme: &Theme) -> iced::widget::text::Style {
     iced::widget::text::Style {
@@ -246,7 +241,7 @@ pub fn view_window<'a>(
         .on_press(Message::ShortcutEditorApply)
         .padding([4, 16])
         .style(button::primary);
-    let apply_exit = button(text(t!("Apply && Exit")).size(12))
+    let apply_exit = button(text(t!("Apply & Exit")).size(12))
         .on_press(Message::ShortcutEditorApplyExit)
         .padding([4, 16])
         .style(button::primary);
@@ -335,7 +330,7 @@ pub fn view_window<'a>(
             text(t!("Unsaved changes will be discarded.")).size(14),
             Space::new().height(10),
             row![
-                button(text(t!("Discard && close")).size(12))
+                button(text(t!("Discard & close")).size(12))
                     .on_press(Message::ShortcutEditorCloseDiscard)
                     .padding([4, 12])
                     .style(button::danger),

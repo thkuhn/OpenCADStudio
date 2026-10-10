@@ -8,7 +8,7 @@
 //! 2. The runner presents a pre-shared token via [`crate::ipc::protocol::PLUGIN_TOKEN_ENV`];
 //!    the host rejects the connection on mismatch.
 //! 3. The host requests the manifest, checks `api_version` and (for v4+) the
-//!    acadrust source gate, then keeps the process alive.
+//!    opencadcodec source gate, then keeps the process alive.
 //! 4. Host → plugin calls (`dispatch`, `execute_code`, interactive events) are
 //!    sent over the socket with a configurable per-call timeout.
 //! 5. Stdout/stderr of the child are drained into `PluginIoLine` records for
@@ -128,8 +128,8 @@ impl HostApi for NullHost {
         &mut self,
         _plugin_id: &'static str,
         _init: &mut dyn FnMut() -> Box<dyn std::any::Any + Send + Sync>,
-    ) -> &mut (dyn std::any::Any + Send + Sync) {
-        panic!("NullHost: ensure_plugin_state_any not available")
+    ) -> Option<&mut (dyn std::any::Any + Send + Sync)> {
+        None
     }
 }
 
@@ -193,7 +193,7 @@ fn call_timeout() -> Duration {
 
 /// Per-request-kind timeout floors. The user-configured default is raised to
 /// these minima so that no request kind can be configured into an unsafe value.
-fn request_timeout(kind: &'static str) -> Duration {
+pub(crate) fn request_timeout(kind: &'static str) -> Duration {
     base_max_floor(call_timeout(), kind)
 }
 
@@ -222,13 +222,14 @@ fn base_max_floor(base: Duration, kind: &'static str) -> Duration {
         "GetManifest" | "GetRibbon" => Duration::from_secs(5),
         "Dispatch" => Duration::from_secs(10),
         "InteractiveEvent" | "GetPrompt" | "NeedsEntityPick" => Duration::from_secs(2),
+        "CursorMove" => Duration::from_millis(500),
         "ExecuteCode" => execute_code_timeout(),
         _ => Duration::from_secs(1),
     };
     base.max(floor)
 }
 
-fn request_kind(req: &HostRequest) -> &'static str {
+pub(crate) fn request_kind(req: &HostRequest) -> &'static str {
     match req {
         HostRequest::GetManifest => "GetManifest",
         HostRequest::GetRibbon => "GetRibbon",
@@ -237,6 +238,8 @@ fn request_kind(req: &HostRequest) -> &'static str {
         HostRequest::GetPrompt { .. } => "GetPrompt",
         HostRequest::NeedsEntityPick { .. } => "NeedsEntityPick",
         HostRequest::ExecuteCode { .. } => "ExecuteCode",
+        HostRequest::DropInteractive { .. } => "DropInteractive",
+        HostRequest::CursorMove { .. } => "CursorMove",
         HostRequest::Shutdown => "Shutdown",
     }
 }
@@ -553,6 +556,43 @@ impl PluginProcess {
         }
     }
 
+    /// Legacy (non-V4) round trip for simple interactive calls: send `req`,
+    /// then loop until the matching response arrives, answering any nested
+    /// plugin request with an error. `kind` drives the timeout floor;
+    /// `nested_what` names the operation in that error; `extract` pulls the
+    /// expected payload out of the response.
+    fn call_simple<T>(
+        &self,
+        req: HostRequest,
+        kind: &'static str,
+        nested_what: &'static str,
+        extract: impl Fn(HostResponse) -> Result<T, Box<HostResponse>>,
+    ) -> Result<T, PluginError> {
+        self.send_request(req)?;
+        let timeout = request_timeout(kind);
+        let deadline = Instant::now() + timeout;
+        loop {
+            match recv_with_deadline::<PluginToHost>(
+                &self.stream,
+                &self.child,
+                deadline,
+                timeout,
+                kind,
+            )? {
+                PluginToHost::Response(resp) => match extract(resp) {
+                    Ok(v) => return Ok(v),
+                    Err(other) => return Err(PluginError::UnexpectedResponse(other)),
+                },
+                PluginToHost::Request(req) => {
+                    let resp = crate::ipc::protocol::PluginResponse::Error(format!(
+                        "unexpected nested request during {nested_what}: {req:?}"
+                    ));
+                    self.send_response(resp)?;
+                }
+            }
+        }
+    }
+
     /// Send an interactive event for `command_id` and return the step the
     /// plugin command produces. Interactive events are not expected to trigger
     /// nested host API calls, so this path does not supply a `HostApi`.
@@ -572,30 +612,24 @@ impl PluginProcess {
                 other => Err(PluginError::UnexpectedResponse(Box::new(other))),
             }
         } else {
-            self.send_request(HostRequest::InteractiveEvent { command_id, event })?;
-            let kind = "InteractiveEvent";
-            let timeout = request_timeout(kind);
-            let deadline = Instant::now() + timeout;
-            loop {
-                match recv_with_deadline::<PluginToHost>(
-                    &self.stream,
-                    &self.child,
-                    deadline,
-                    timeout,
-                    kind,
-                )? {
-                    PluginToHost::Response(HostResponse::CommandStep(s)) => return Ok(*s),
-                    PluginToHost::Response(other) => {
-                        return Err(PluginError::UnexpectedResponse(Box::new(other)))
-                    }
-                    PluginToHost::Request(req) => {
-                        let resp = crate::ipc::protocol::PluginResponse::Error(format!(
-                            "unexpected nested request during interactive event: {req:?}"
-                        ));
-                        self.send_response(resp)?;
-                    }
-                }
-            }
+            self.call_simple(
+                HostRequest::InteractiveEvent { command_id, event },
+                "InteractiveEvent",
+                "interactive event",
+                |resp| match resp {
+                    HostResponse::CommandStep(s) => Ok(*s),
+                    other => Err(Box::new(other)),
+                },
+            )
+        }
+    }
+
+    /// Release a completed or abandoned V4 interactive command in the runner.
+    pub fn drop_interactive(&self, command_id: u64) -> Result<(), PluginError> {
+        let Some(v4) = &self.v4 else { return Ok(()); };
+        match v4.call(&mut NullHost, HostRequest::DropInteractive { command_id }, &mut |_| {})? {
+            HostResponse::Bool(true) => Ok(()),
+            other => Err(PluginError::UnexpectedResponse(Box::new(other))),
         }
     }
 
@@ -612,30 +646,15 @@ impl PluginProcess {
                 other => Err(PluginError::UnexpectedResponse(Box::new(other))),
             }
         } else {
-            self.send_request(HostRequest::GetPrompt { command_id })?;
-            let kind = "GetPrompt";
-            let timeout = request_timeout(kind);
-            let deadline = Instant::now() + timeout;
-            loop {
-                match recv_with_deadline::<PluginToHost>(
-                    &self.stream,
-                    &self.child,
-                    deadline,
-                    timeout,
-                    kind,
-                )? {
-                    PluginToHost::Response(HostResponse::Text(s)) => return Ok(s),
-                    PluginToHost::Response(other) => {
-                        return Err(PluginError::UnexpectedResponse(Box::new(other)))
-                    }
-                    PluginToHost::Request(req) => {
-                        let resp = crate::ipc::protocol::PluginResponse::Error(format!(
-                            "unexpected nested request during get_prompt: {req:?}"
-                        ));
-                        self.send_response(resp)?;
-                    }
-                }
-            }
+            self.call_simple(
+                HostRequest::GetPrompt { command_id },
+                "GetPrompt",
+                "get_prompt",
+                |resp| match resp {
+                    HostResponse::Text(s) => Ok(s),
+                    other => Err(Box::new(other)),
+                },
+            )
         }
     }
 
@@ -652,30 +671,44 @@ impl PluginProcess {
                 other => Err(PluginError::UnexpectedResponse(Box::new(other))),
             }
         } else {
-            self.send_request(HostRequest::NeedsEntityPick { command_id })?;
-            let kind = "NeedsEntityPick";
-            let timeout = request_timeout(kind);
-            let deadline = Instant::now() + timeout;
-            loop {
-                match recv_with_deadline::<PluginToHost>(
-                    &self.stream,
-                    &self.child,
-                    deadline,
-                    timeout,
-                    kind,
-                )? {
-                    PluginToHost::Response(HostResponse::Bool(b)) => return Ok(b),
-                    PluginToHost::Response(other) => {
-                        return Err(PluginError::UnexpectedResponse(Box::new(other)))
-                    }
-                    PluginToHost::Request(req) => {
-                        let resp = crate::ipc::protocol::PluginResponse::Error(format!(
-                            "unexpected nested request during needs_entity_pick: {req:?}"
-                        ));
-                        self.send_response(resp)?;
-                    }
-                }
+            self.call_simple(
+                HostRequest::NeedsEntityPick { command_id },
+                "NeedsEntityPick",
+                "needs_entity_pick",
+                |resp| match resp {
+                    HostResponse::Bool(b) => Ok(b),
+                    other => Err(Box::new(other)),
+                },
+            )
+        }
+    }
+
+    /// Ask the plugin process for real-time preview wires for the cursor position.
+    pub fn on_cursor_move(
+        &self,
+        command_id: u64,
+        pt: [f64; 3],
+    ) -> Result<Vec<crate::host::PreviewWire>, PluginError> {
+        if let Some(v4) = &self.v4 {
+            let resp = v4.call(
+                &mut NullHost,
+                HostRequest::CursorMove { command_id, pt },
+                &mut |_| {},
+            )?;
+            match resp {
+                HostResponse::PreviewWires(w) => Ok(w),
+                other => Err(PluginError::UnexpectedResponse(Box::new(other))),
             }
+        } else {
+            self.call_simple(
+                HostRequest::CursorMove { command_id, pt },
+                "CursorMove",
+                "cursor_move",
+                |resp| match resp {
+                    HostResponse::PreviewWires(w) => Ok(w),
+                    other => Err(Box::new(other)),
+                },
+            )
         }
     }
 
@@ -1125,6 +1158,22 @@ mod tests {
         let runner = distinct_runner_path(&host);
         assert_eq!(runner, PathBuf::from("/app/OpenCADStudio-plugin-runner"));
     }
+
+    #[test]
+    fn null_host_ensure_plugin_state_does_not_panic() {
+        let mut null = NullHost;
+        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _ = null.ensure_plugin_state_any("opencad.demo", &mut || Box::new(7u32));
+        }));
+        assert!(
+            outcome.is_ok(),
+            "NullHost ensure_plugin_state must degrade, not panic: {:?}",
+            outcome.err()
+        );
+        assert!(null
+            .ensure_plugin_state_any("opencad.demo", &mut || Box::new(7u32))
+            .is_none());
+    }
 }
 
 #[cfg(all(test, feature = "host"))]
@@ -1138,8 +1187,8 @@ mod timeout_tests {
     use crate::ipc::transport::{recv, send};
     use crate::ribbon::owned::OwnedPluginManifest;
     use crate::test_lock::ENV_LOCK;
-    use acadrust::xdata::ExtendedDataRecord;
-    use acadrust::{CadDocument, EntityType, Handle};
+    use codec::xdata::ExtendedDataRecord;
+    use codec::{CadDocument, EntityType, Handle};
     use interprocess::local_socket::{
         traits::{Listener, Stream as StreamTrait},
         GenericNamespaced, ListenerOptions, Stream, ToNsName,
@@ -1228,8 +1277,8 @@ mod timeout_tests {
             &mut self,
             _plugin_id: &'static str,
             _init: &mut dyn FnMut() -> Box<dyn std::any::Any + Send + Sync>,
-        ) -> &mut (dyn std::any::Any + Send + Sync) {
-            panic!("not used")
+        ) -> Option<&mut (dyn std::any::Any + Send + Sync)> {
+            None
         }
     }
 

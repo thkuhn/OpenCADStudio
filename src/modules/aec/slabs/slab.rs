@@ -592,7 +592,7 @@ impl CadCommand for SlabCommand {
         ))
     }
 
-    fn on_entities_committed(&mut self, scene: &mut Scene, handles: &[Handle]) {
+    fn on_entities_committed_in_scene(&mut self, scene: &mut Scene, handles: &[Handle]) {
         for &h in handles {
             let _ = regenerate_slab_representation(scene, h, self.library.as_ref(), None);
         }

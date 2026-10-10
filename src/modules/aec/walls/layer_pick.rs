@@ -98,7 +98,7 @@ impl OpenCADStudio {
         if self.aec.aec_layer_pair_draw.take().is_some() {
             let i = self.active_tab;
             let mut sel = self.tabs[i].scene.selection.borrow_mut();
-            sel.context_menu = None;
+            sel.menu.close();
             sel.junction_menu_only = false;
             drop(sel);
             self.sync_junction_editor_layer_highlight();
@@ -107,7 +107,7 @@ impl OpenCADStudio {
         if self.aec.aec_layer_gap_draw.take().is_some() {
             let i = self.active_tab;
             let mut sel = self.tabs[i].scene.selection.borrow_mut();
-            sel.context_menu = None;
+            sel.menu.close();
             sel.junction_menu_only = false;
             drop(sel);
             self.sync_junction_editor_layer_highlight();
@@ -213,7 +213,7 @@ impl OpenCADStudio {
             return;
         }
         let mut sel = self.tabs[i].scene.selection.borrow_mut();
-        sel.context_menu = Some(menu_pos);
+        sel.menu.open(menu_pos);
         sel.junction_menu_only = false;
         drop(sel);
         self.sync_junction_editor_layer_highlight();
@@ -429,7 +429,7 @@ impl OpenCADStudio {
         self.reapply_active_display_config_to_wall_packages(i, &touched);
         self.aec.aec_layer_pair_draw = None;
         let mut sel = self.tabs[i].scene.selection.borrow_mut();
-        sel.context_menu = None;
+        sel.menu.close();
         sel.junction_menu = None;
         drop(sel);
         self.sync_junction_editor_layer_highlight();

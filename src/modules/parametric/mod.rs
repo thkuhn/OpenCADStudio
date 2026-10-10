@@ -4,8 +4,14 @@
 
 mod coincident;
 mod concentric;
+mod dim_constraint;
+mod parameters_cli;
 mod constraint_bar;
 mod equal_distance;
+#[path = "equal.rs"]
+mod equal_command;
+#[path = "fixed.rs"]
+mod fixed_command;
 mod geom_constraint;
 #[path = "horizontal.rs"]
 mod horizontal_command;
@@ -13,14 +19,23 @@ mod horizontal_command;
 mod perpendicular_command;
 mod point_on_entity;
 mod smooth;
+#[path = "symmetric.rs"]
+mod symmetric_command;
 #[path = "tangent.rs"]
 mod tangent_command;
 mod tools;
 mod value;
 pub use coincident::{coincident_tool, CoincidentConstraintCommand};
 pub use concentric::ConcentricConstraintCommand;
+pub use dim_constraint::{
+    ConstraintFormCommand, DimConstraintAxis, DimConstraintCommand, DimConstraintMenuCommand,
+    DimensionValueCommand,
+};
+pub use parameters_cli::ParametersCliCommand;
 pub use constraint_bar::ConstraintBarOptionCommand;
+pub use equal_command::EqualConstraintCommand;
 pub use equal_distance::{equal_distance_tool, EqualDistanceConstraintCommand};
+pub use fixed_command::FixConstraintCommand;
 pub use geom_constraint::GeomConstraintCommand;
 pub use horizontal_command::HorizontalConstraintCommand;
 pub use perpendicular_command::{PerpendicularConstraintCommand, PerpendicularPick};
@@ -28,13 +43,14 @@ pub use point_on_entity::{
     center_point_tool, midpoint_tool, point_on_curve_tool, PointOnEntityConstraintCommand,
 };
 pub use smooth::SmoothConstraintCommand;
+pub use symmetric_command::SymmetricConstraintCommand;
 pub use tangent_command::TangentConstraintCommand;
 pub use tools::{
     colinear, concentric as concentric_tool, equal, fixed, horizontal, normal, parallel,
     perpendicular, symmetric, tangent, vertical,
 };
 pub use value::{
-    angle_tool, dimensional_tools, distance_tool, AngleConstraintCommand,
+    angle_tool, dimensional_tools, distance_tool,
     DistanceConstraintCommand, DistanceMode,
 };
 
@@ -107,10 +123,14 @@ impl CadModule for ParametricModule {
                             default: "DCLINEAR",
                         },
                         RibbonItem::LargeTool(dimensional_tools::aligned()),
-                        RibbonItem::LargeTool(dimensional_tools::angular()),
-                        RibbonItem::LargeTool(dimensional_tools::diameter()),
-                        RibbonItem::LargeTool(dimensional_tools::radius()),
-                        RibbonItem::LargeTool(dimensional_tools::convert()),
+                        // Two rows of small icon-only buttons, as in the
+                        // reference: Radius, Diameter / Angular, Convert.
+                        RibbonItem::ToolGrid {
+                            columns: vec![
+                                vec![dimensional_tools::radius(), dimensional_tools::angular()],
+                                vec![dimensional_tools::diameter(), dimensional_tools::convert()],
+                            ],
+                        },
                         RibbonItem::LabeledDropdown {
                             id: "DCVISIBILITY", label: "Show/Hide",
                             icon: IconKind::Svg(include_bytes!("../../../assets/icons/constrain/show.svg")),
@@ -147,7 +167,7 @@ inventory::submit!(crate::command::CommandRegistration {
     names: &[
         "AUTOCONSTRAIN", "CONSTRAINTSETTINGS", "GCSMOOTH", "GCSHOW", "GCHIDE", "GCRESET",
         "GCSHOWALL", "GCHIDEALL", "DCSHOW", "DCHIDE", "DCSHOWALL", "DCHIDEALL",
-        "DCCONVERT", "DELCONSTRAINT",
+        "DCCONVERT", "DELCONSTRAINT", "DIMCONSTRAINT", "DCFORM", "-PARAMETERS",
     ]
 });
 
@@ -184,10 +204,17 @@ mod tests {
         );
         assert_eq!(
             groups[1].tools.iter().map(item_id).collect::<Vec<_>>(),
-            [
-                "DC_LINEAR_MENU", "DCALIGNED", "DCANGULAR", "DCDIAMETER",
-                "DCRADIUS", "DCCONVERT", "DCVISIBILITY", "DCSHOWALL", "DCHIDEALL",
-            ]
+            ["DC_LINEAR_MENU", "DCALIGNED", "GRID", "DCVISIBILITY", "DCSHOWALL", "DCHIDEALL"]
+        );
+        let RibbonItem::ToolGrid { columns } = &groups[1].tools[2] else {
+            panic!("radius, diameter, angular and convert must be a small-button grid");
+        };
+        assert_eq!(
+            columns
+                .iter()
+                .map(|column| column.iter().map(|tool| tool.id).collect::<Vec<_>>())
+                .collect::<Vec<_>>(),
+            [["DCRADIUS", "DCANGULAR"], ["DCDIAMETER", "DCCONVERT"]]
         );
         assert_eq!(groups[2].tools.iter().map(item_id).collect::<Vec<_>>(), ["DELCONSTRAINT", "PARAMETERS"]);
 
@@ -202,8 +229,6 @@ mod tests {
         assert!(groups[0].tools[1..13]
             .iter()
             .all(|item| matches!(item, RibbonItem::LargeTool(_))));
-        assert!(groups[1].tools[2..6]
-            .iter()
-            .all(|item| matches!(item, RibbonItem::LargeTool(_))));
+        assert!(matches!(groups[1].tools[1], RibbonItem::LargeTool(_)));
     }
 }

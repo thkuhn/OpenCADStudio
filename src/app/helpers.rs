@@ -1,4 +1,4 @@
-use acadrust::tables::Ucs;
+use codec::tables::Ucs;
 
 // ── Coordinate parsing ─────────────────────────────────────────────────────
 
@@ -81,11 +81,26 @@ mod coordinate_parsing_tests {
     #[test]
     fn parses_all_coordinate_forms() {
         let close = |a: glam::DVec3, b: glam::DVec3| (a - b).length() < 1e-9;
-        assert!(close(parse_coord("1,2").unwrap().0, glam::dvec3(1.0, 2.0, 0.0)));
-        assert!(close(parse_coord("1,2,3").unwrap().0, glam::dvec3(1.0, 2.0, 3.0)));
-        assert!(close(parse_coord("10<90").unwrap().0, glam::dvec3(0.0, 10.0, 0.0)));
-        assert!(close(parse_coord("10<90,4").unwrap().0, glam::dvec3(0.0, 10.0, 4.0)));
-        assert!(close(parse_coord("10<0<30").unwrap().0, glam::dvec3(5.0 * 3.0_f64.sqrt(), 0.0, 5.0)));
+        assert!(close(
+            parse_coord("1,2").unwrap().0,
+            glam::dvec3(1.0, 2.0, 0.0)
+        ));
+        assert!(close(
+            parse_coord("1,2,3").unwrap().0,
+            glam::dvec3(1.0, 2.0, 3.0)
+        ));
+        assert!(close(
+            parse_coord("10<90").unwrap().0,
+            glam::dvec3(0.0, 10.0, 0.0)
+        ));
+        assert!(close(
+            parse_coord("10<90,4").unwrap().0,
+            glam::dvec3(0.0, 10.0, 4.0)
+        ));
+        assert!(close(
+            parse_coord("10<0<30").unwrap().0,
+            glam::dvec3(5.0 * 3.0_f64.sqrt(), 0.0, 5.0)
+        ));
         assert_eq!(parse_coord("@10<0").unwrap().1, CoordKind::Relative);
         assert_eq!(parse_coord("#1,2").unwrap().1, CoordKind::Absolute);
     }
@@ -102,8 +117,8 @@ mod coordinate_parsing_tests {
 /// the UCS icon, snap/ortho, the ViewCube — goes through this one type instead
 /// of re-deriving the axis math. Axes are orthonormal, so the inverse rotation
 /// is just the transpose (the dot products in `to_ucs`); no matrix inversion.
-#[derive(Clone, Copy)]
-pub(super) struct UcsXform {
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct UcsXform {
     origin: glam::DVec3,
     x: glam::DVec3,
     y: glam::DVec3,
@@ -112,7 +127,7 @@ pub(super) struct UcsXform {
 
 impl UcsXform {
     /// Plain WCS — no active UCS.
-    pub(super) fn identity() -> Self {
+    pub(crate) fn identity() -> Self {
         Self {
             origin: glam::DVec3::ZERO,
             x: glam::DVec3::X,
@@ -122,7 +137,7 @@ impl UcsXform {
     }
 
     pub(super) fn from_ucs(ucs: &Ucs) -> Self {
-        let v = |a: acadrust::types::Vector3| glam::DVec3::new(a.x, a.y, a.z);
+        let v = |a: codec::types::Vector3| glam::DVec3::new(a.x, a.y, a.z);
         let x = v(ucs.x_axis).normalize_or(glam::DVec3::X);
         let raw_y = v(ucs.y_axis).normalize_or(glam::DVec3::Y);
         let fallback_z = if x.dot(glam::DVec3::Z).abs() < 0.999 {
@@ -132,7 +147,12 @@ impl UcsXform {
         };
         let z = x.cross(raw_y).normalize_or(x.cross(fallback_z).normalize());
         let y = z.cross(x).normalize();
-        Self { origin: v(ucs.origin), x, y, z }
+        Self {
+            origin: v(ucs.origin),
+            x,
+            y,
+            z,
+        }
     }
 
     pub(super) fn from_active(ucs: Option<&Ucs>) -> Self {
@@ -191,11 +211,8 @@ impl UcsXform {
 
     /// Full UCS-local → WCS transform, using `origin` as local zero while
     /// retaining this UCS's orthonormal axes.
-    pub(super) fn to_wcs_transform_at(
-        &self,
-        origin: glam::DVec3,
-    ) -> acadrust::types::Transform {
-        use acadrust::types::{Matrix4, Transform};
+    pub(crate) fn to_wcs_transform_at(&self, origin: glam::DVec3) -> codec::types::Transform {
+        use codec::types::{Matrix4, Transform};
         Transform::from_matrix(Matrix4 {
             m: [
                 [self.x.x, self.y.x, self.z.x, origin.x],
@@ -207,11 +224,8 @@ impl UcsXform {
     }
 
     /// Full WCS → UCS-local transform, using `origin` as the local zero.
-    pub(super) fn to_ucs_transform_at(
-        &self,
-        origin: glam::DVec3,
-    ) -> acadrust::types::Transform {
-        use acadrust::types::{Matrix4, Transform};
+    pub(crate) fn to_ucs_transform_at(&self, origin: glam::DVec3) -> codec::types::Transform {
+        use codec::types::{Matrix4, Transform};
         Transform::from_matrix(Matrix4 {
             m: [
                 [self.x.x, self.x.y, self.x.z, -origin.dot(self.x)],
@@ -223,7 +237,7 @@ impl UcsXform {
     }
 
     /// Convert from the represented UCS into its canonical local frame.
-    pub(super) fn to_ucs_transform(&self) -> acadrust::types::Transform {
+    pub(super) fn to_ucs_transform(&self) -> codec::types::Transform {
         self.to_ucs_transform_at(self.origin)
     }
 }
@@ -247,14 +261,33 @@ pub(super) fn ucs_z_axis(ucs: &Ucs) -> glam::DVec3 {
     UcsXform::from_ucs(ucs).axes().3
 }
 
+/// Build a UCS whose Z axis is `normal`, anchored at `origin`.
+///
+/// X and Y come from the arbitrary-axis algorithm in
+/// [`crate::scene::view::transform::ocs_axes`], the same frame entities get
+/// from their extrusion direction, so the same face always yields the same X
+/// axis. Returns `None` when `normal` is degenerate and defines no plane.
+pub(super) fn ucs_from_normal(origin: glam::DVec3, normal: glam::DVec3) -> Option<Ucs> {
+    let z = normal.normalize_or_zero();
+    if z.length_squared() < 1e-12 {
+        return None;
+    }
+    let ((xx, xy, xz), (yx, yy, yz)) = crate::scene::view::transform::ocs_axes((z.x, z.y, z.z));
+    let mut ucs = Ucs::new("*ACTIVE*");
+    ucs.origin = codec::types::Vector3::new(origin.x, origin.y, origin.z);
+    ucs.x_axis = codec::types::Vector3::new(xx, xy, xz);
+    ucs.y_axis = codec::types::Vector3::new(yx, yy, yz);
+    Some(ucs)
+}
+
 /// Build a UCS with `origin` and axes rotated by `angle_z_rad` around the Z axis.
 pub(super) fn ucs_rotated_z(origin: glam::DVec3, angle_z: f32) -> Ucs {
     let cos = angle_z.cos() as f64;
     let sin = angle_z.sin() as f64;
     let mut ucs = Ucs::new("*ACTIVE*");
-    ucs.origin = acadrust::types::Vector3::new(origin.x, origin.y, origin.z);
-    ucs.x_axis = acadrust::types::Vector3::new(cos, sin, 0.0);
-    ucs.y_axis = acadrust::types::Vector3::new(-sin, cos, 0.0);
+    ucs.origin = codec::types::Vector3::new(origin.x, origin.y, origin.z);
+    ucs.x_axis = codec::types::Vector3::new(cos, sin, 0.0);
+    ucs.y_axis = codec::types::Vector3::new(-sin, cos, 0.0);
     ucs
 }
 
@@ -307,7 +340,11 @@ pub(super) fn drafting_constrain(
         let radians = degrees.to_radians();
         glam::DVec2::new(radians.cos(), radians.sin())
     });
-    let direction = if delta.dot(a).abs() >= delta.dot(c).abs() { a } else { c };
+    let direction = if delta.dot(a).abs() >= delta.dot(c).abs() {
+        a
+    } else {
+        c
+    };
     let projected = direction * delta.dot(direction);
     let c = glam::DVec3::new(b.x + projected.x, b.y + projected.y, p.z);
     xf.to_wcs(c)
@@ -374,8 +411,7 @@ pub(super) fn polar_constrain_near(
     tol_px: f32,
     xf: &UcsXform,
 ) -> glam::DVec3 {
-    polar_constrain_if_near(pt, base, step_deg, view_rot, eye, bounds, tol_px, xf)
-        .unwrap_or(pt)
+    polar_constrain_if_near(pt, base, step_deg, view_rot, eye, bounds, tol_px, xf).unwrap_or(pt)
 }
 
 /// Hard axis lock (#312): the locked ray's direction — the nearest polar
@@ -408,8 +444,16 @@ pub(super) fn axis_lock_capture(
             let radians = degrees.to_radians();
             glam::DVec2::new(radians.cos(), radians.sin())
         });
-        let direction = if delta.dot(a).abs() >= delta.dot(b).abs() { a } else { b };
-        let direction = if delta.dot(direction) < 0.0 { -direction } else { direction };
+        let direction = if delta.dot(a).abs() >= delta.dot(b).abs() {
+            a
+        } else {
+            b
+        };
+        let direction = if delta.dot(direction) < 0.0 {
+            -direction
+        } else {
+            direction
+        };
         direction.y.atan2(direction.x)
     };
     let dir_ucs = glam::DVec3::new(ang.cos(), ang.sin(), 0.0);
@@ -420,11 +464,7 @@ pub(super) fn axis_lock_capture(
 /// Project `pt` onto the locked ray through `base` — the hard lock applies to
 /// EVERYTHING, including an osnap hit, so a snap far off-axis contributes only
 /// its along-axis component (#312).
-pub(super) fn axis_lock_apply(
-    pt: glam::DVec3,
-    base: glam::DVec3,
-    dir: glam::DVec3,
-) -> glam::DVec3 {
+pub(super) fn axis_lock_apply(pt: glam::DVec3, base: glam::DVec3, dir: glam::DVec3) -> glam::DVec3 {
     base + dir * (pt - base).dot(dir)
 }
 
@@ -439,8 +479,8 @@ pub(super) fn axis_lock_apply(
 /// whole-drawing copy. The per-entity `min` corners give the exact enclosing
 /// box's lower-left.
 pub(super) fn entities_lower_left_by_bbox(
-    doc: &acadrust::CadDocument,
-    handles: &[acadrust::Handle],
+    doc: &codec::CadDocument,
+    handles: &[codec::Handle],
 ) -> glam::DVec3 {
     let mut min = glam::DVec3::splat(f64::INFINITY);
     let mut any = false;
@@ -462,8 +502,7 @@ pub(super) fn entities_lower_left_by_bbox(
 
 /// Generate the next available auto group name ("*A1", "*A2", …).
 pub(super) fn next_group_auto_name(scene: &crate::scene::Scene) -> String {
-    let existing: rustc_hash::FxHashSet<String> =
-        scene.groups().map(|g| g.name.clone()).collect();
+    let existing: rustc_hash::FxHashSet<String> = scene.groups().map(|g| g.name.clone()).collect();
     for n in 1..=9999 {
         let name = format!("*A{n}");
         if !existing.contains(&name) {
@@ -475,12 +514,12 @@ pub(super) fn next_group_auto_name(scene: &crate::scene::Scene) -> String {
 
 // ── Entity type labels ─────────────────────────────────────────────────────
 
-pub(super) fn entity_type_label(entity: &acadrust::EntityType) -> String {
+pub(super) fn entity_type_label(entity: &codec::EntityType) -> String {
     crate::t!(crate::entities::names::ui_name_or_class(entity)).into_owned()
 }
 
-pub(super) fn entity_type_key(entity: &acadrust::EntityType) -> String {
-    use acadrust::EntityType::*;
+pub(super) fn entity_type_key(entity: &codec::EntityType) -> String {
+    use codec::EntityType::*;
     match entity {
         Point(_) => "point",
         Line(_) => "line",
@@ -576,4 +615,79 @@ pub(super) fn build_window_icon() -> Option<Vec<u8>> {
     .pre_scale(scale, scale);
     resvg::render(&tree, transform, &mut pixmap.as_mut());
     Some(pixmap.take())
+}
+
+#[cfg(test)]
+mod ucs_from_normal_tests {
+    use super::ucs_from_normal;
+    use glam::DVec3;
+
+    fn axes(ucs: &codec::tables::Ucs) -> (DVec3, DVec3, DVec3) {
+        let x = DVec3::new(ucs.x_axis.x, ucs.x_axis.y, ucs.x_axis.z);
+        let y = DVec3::new(ucs.y_axis.x, ucs.y_axis.y, ucs.y_axis.z);
+        (x, y, x.cross(y))
+    }
+
+    /// The contract `UCS FACE` depends on: the plane's Z is the face normal it
+    /// was handed. If this drifts, sketches tilt off the face they were
+    /// started on.
+    #[test]
+    fn z_axis_is_the_supplied_normal() {
+        for normal in [
+            DVec3::Z,
+            DVec3::NEG_Z,
+            DVec3::X,
+            DVec3::Y,
+            DVec3::new(1.0, 2.0, 3.0).normalize(),
+        ] {
+            let ucs = ucs_from_normal(DVec3::ZERO, normal).expect("a normal defines a plane");
+            let (_, _, z) = axes(&ucs);
+            assert!(
+                (z - normal).length() < 1e-9,
+                "expected Z {normal:?}, got {z:?}"
+            );
+        }
+    }
+
+    /// Right-handed and unit length, or every coordinate read off the plane is
+    /// skewed.
+    #[test]
+    fn axes_are_orthonormal() {
+        for normal in [DVec3::Z, DVec3::new(-2.0, 0.5, 1.0).normalize()] {
+            let ucs = ucs_from_normal(DVec3::ZERO, normal).unwrap();
+            let (x, y, z) = axes(&ucs);
+            for (name, axis) in [("X", x), ("Y", y), ("Z", z)] {
+                assert!((axis.length() - 1.0).abs() < 1e-9, "{name} is not unit");
+            }
+            assert!(x.dot(y).abs() < 1e-9, "X and Y are not perpendicular");
+            assert!(x.dot(z).abs() < 1e-9, "X and Z are not perpendicular");
+        }
+    }
+
+    /// The 1/64 branch exists so a normal along world Z does not cross-product
+    /// with itself. Both sides of that branch must still produce a usable
+    /// plane.
+    #[test]
+    fn a_normal_along_world_z_still_yields_a_plane() {
+        let ucs = ucs_from_normal(DVec3::ZERO, DVec3::Z).expect("world Z is a valid normal");
+        let (x, _, _) = axes(&ucs);
+        assert!(x.length() > 0.5, "X degenerated next to the world Z axis");
+    }
+
+    /// The same face must always give the same X axis, or a sketch would spin
+    /// each time the UCS was rebuilt from it.
+    #[test]
+    fn the_same_normal_is_reproducible() {
+        let normal = DVec3::new(0.3, -0.7, 0.2).normalize();
+        let first = axes(&ucs_from_normal(DVec3::ZERO, normal).unwrap());
+        let second = axes(&ucs_from_normal(DVec3::ZERO, normal).unwrap());
+        assert!((first.0 - second.0).length() < 1e-12);
+    }
+
+    /// A zero vector defines no plane; it must be refused rather than
+    /// producing a degenerate UCS that silently misplaces geometry.
+    #[test]
+    fn a_degenerate_normal_is_rejected() {
+        assert!(ucs_from_normal(DVec3::ZERO, DVec3::ZERO).is_none());
+    }
 }

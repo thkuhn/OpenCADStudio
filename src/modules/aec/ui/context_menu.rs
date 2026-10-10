@@ -204,6 +204,7 @@ pub fn extend_idle_rows(
             MenuRow::Submenu {
                 id: SubmenuId::WallJustification,
                 label: t!("Change Justification").into_owned(),
+                icon: None,
                 items: just_items,
                 open: open_submenu == Some(SubmenuId::WallJustification),
             },
@@ -231,6 +232,7 @@ pub fn extend_idle_rows(
         rows.push(MenuRow::Submenu {
             id: SubmenuId::WallJunction,
             label: t!("Wandverbindung").into_owned(),
+            icon: None,
             items,
             open: open_submenu == Some(SubmenuId::WallJunction),
         });
@@ -264,6 +266,7 @@ mod tests {
             MenuRow::Submenu {
                 id: SubmenuId::DrawOrder,
                 label: "Draw Order".into(),
+                icon: None,
                 items: vec![],
                 open: false,
             },
@@ -271,6 +274,7 @@ mod tests {
             MenuRow::Submenu {
                 id: SubmenuId::Isolate,
                 label: "Isolate".into(),
+                icon: None,
                 items: vec![],
                 open: false,
             },

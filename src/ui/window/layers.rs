@@ -2,12 +2,14 @@
 
 use crate::app::Message;
 use crate::ui::properties::{lw_options, LinetypeItem, LwItem};
+use crate::ui::style::common::muted_style;
+use crate::ui::style::row_button::{cell_button_style, header_button_style};
 use crate::ui::ROW_H;
-use acadrust::tables::layer::Layer as DocLayer;
-use acadrust::tables::Table;
-use acadrust::types::aci_table::aci_to_rgb;
-use acadrust::types::{Color as AcadColor, LineWeight};
-use acadrust::Handle;
+use codec::tables::layer::Layer as DocLayer;
+use codec::tables::Table;
+use codec::types::aci_table::aci_to_rgb;
+use codec::types::{Color as AcadColor, LineWeight};
+use codec::Handle;
 use iced::widget::{
     button, column, combo_box, container, mouse_area, row, scrollable, text, text_input, tooltip,
 };
@@ -50,12 +52,6 @@ const LINETYPE_MENU_W: f32 = 220.0;
 /// Widget id for the layer-table scrollable, so a freshly created layer can be
 /// scrolled into view after it is added (#271).
 pub const LAYER_TABLE_SCROLL_ID: &str = "layer-manager-table-scroll";
-
-fn muted_style(theme: &Theme) -> iced::widget::text::Style {
-    iced::widget::text::Style {
-        color: Some(theme.palette().background.base.text.scale_alpha(0.68)),
-    }
-}
 
 fn table_input_style(
     theme: &Theme,
@@ -131,11 +127,15 @@ pub struct LayerPanel {
     /// All selected rows (Ctrl/Shift extend it). Bulk property changes and
     /// deletion act on every row here. Empty ⇔ nothing selected.
     pub selected_multi: Vec<usize>,
-    pub editing: Option<usize>,
+    /// Layer being renamed (row text-input open). Keyed by NAME so a
+    /// rebuild/sort between start and commit cannot retarget it (#44);
+    /// `selected`/`selected_multi` below stay index-based and are re-resolved.
+    pub editing: Option<String>,
     pub edit_buf: String,
     pub current_layer: String,
     pub linetype_items: Vec<LinetypeItem>,
-    pub color_picker_row: Option<usize>,
+    /// Row whose color swatch is open. Name-keyed for the same reason (#44).
+    pub color_picker_row: Option<String>,
     pub color_full_palette: bool,
     pub linetype_combo: combo_box::State<LinetypeItem>,
     pub lw_combo: combo_box::State<LwItem>,
@@ -211,6 +211,8 @@ impl LayerPanel {
 
         self.layers = doc_layers
             .iter()
+            // The reference's hidden system layers (`*ADSK_CONSTRAINTS`) stay out.
+            .filter(|l| !l.name.starts_with('*'))
             .map(|l| {
                 let layer_handle = l.handle;
                 let vp_frozen = vp_info
@@ -461,8 +463,8 @@ impl LayerPanel {
             let is_anchor = self.selected == Some(i);
             let is_sel = is_anchor || self.selected_multi.contains(&i);
             let is_current = layer.name == self.current_layer;
-            let is_editing = self.editing == Some(i);
-            let color_open = self.color_picker_row == Some(i);
+            let is_editing = self.editing.as_deref() == Some(layer.name.as_str());
+            let color_open = self.color_picker_row.as_deref() == Some(layer.name.as_str());
 
             let (ltc, lwc) = if is_anchor {
                 (Some(&self.linetype_combo), Some(&self.lw_combo))
@@ -506,48 +508,6 @@ impl LayerPanel {
 
 // ── Sorting helpers ─────────────────────────────────────────────────────────
 
-fn layer_cell_button_style(
-    theme: &Theme,
-    status: button::Status,
-    is_selected: bool,
-    index: usize,
-) -> button::Style {
-    let palette = theme.palette();
-    let highlighted = matches!(status, button::Status::Hovered);
-    let pair = if highlighted {
-        palette.background.strong
-    } else if is_selected {
-        palette.primary.weak
-    } else if index % 2 == 0 {
-        palette.background.base
-    } else {
-        palette.background.weak
-    };
-    button::Style {
-        background: highlighted.then_some(Background::Color(pair.color)),
-        text_color: pair.text,
-        ..Default::default()
-    }
-}
-
-fn layer_header_button_style(theme: &Theme, status: button::Status) -> button::Style {
-    let palette = theme.palette();
-    let highlighted = matches!(
-        status,
-        button::Status::Hovered | button::Status::Pressed
-    );
-    let pair = if highlighted {
-        palette.background.strong
-    } else {
-        palette.background.weak
-    };
-    button::Style {
-        background: highlighted.then_some(Background::Color(pair.color)),
-        text_color: pair.text,
-        ..Default::default()
-    }
-}
-
 /// Packed RGB key for ordering colours deterministically by hue-ish bytes.
 fn color_sort_key(c: AcadColor) -> u32 {
     let c = iced_color_from_acad(&c);
@@ -576,7 +536,7 @@ fn sortable_header<'a>(
     }
     button(content)
         .on_press(Message::LayerSort(col))
-        .style(layer_header_button_style)
+        .style(header_button_style)
         .padding(Padding {
             top: 0.0,
             bottom: 0.0,
@@ -717,12 +677,13 @@ fn layer_row<'a>(
     vp_cols: &'a [VpCol],
     name_col_w: f32,
 ) -> Element<'a, Message> {
+    // #22: messages carry the layer name (resolved at dispatch time) so a
+    // resort between view() and the handler cannot mistarget the row.
+    let lname = layer.name.clone();
     let svg_btn = |bytes: &'static [u8], on_press: Message| -> Element<'a, Message> {
         button(crate::ui::icons::semantic(bytes, ICON_SZ))
         .on_press(on_press)
-        .style(move |theme: &Theme, status| {
-            layer_cell_button_style(theme, status, is_selected, index)
-        })
+        .style(cell_button_style(is_selected, index))
         .padding(Padding {
             top: COMBO_PAD_V,
             bottom: COMBO_PAD_V,
@@ -749,10 +710,8 @@ fn layer_row<'a>(
     };
 
     let plot_btn: Element<'_, Message> = button(plot_icon)
-        .on_press(Message::LayerTogglePlot(index))
-        .style(move |theme: &Theme, status| {
-            layer_cell_button_style(theme, status, is_selected, index)
-        })
+        .on_press(Message::LayerTogglePlot(lname.clone()))
+        .style(cell_button_style(is_selected, index))
         .padding(Padding {
             top: COMBO_PAD_V,
             bottom: COMBO_PAD_V,
@@ -790,10 +749,8 @@ fn layer_row<'a>(
             text(crate::ui::text_util::elide(&layer.name, name_budget))
                 .size(FONT_SZ),
         )
-        .on_press(Message::LayerRenameStart(index))
-        .style(move |theme: &Theme, status| {
-            layer_cell_button_style(theme, status, is_selected, index)
-        })
+        .on_press(Message::LayerRenameStart(lname.clone()))
+        .style(cell_button_style(is_selected, index))
         .padding(Padding {
             top: COMBO_PAD_V,
             bottom: COMBO_PAD_V,
@@ -824,9 +781,9 @@ fn layer_row<'a>(
             ..Default::default()
         },
         Message::LayerColorSet,
-        Message::LayerColorPickerToggle(index),
+        Message::LayerColorPickerToggle(lname.clone()),
         Message::OpenColorWindow(
-            crate::app::ColorPickTarget::Layer(index),
+            crate::app::ColorPickTarget::Layer(lname.clone()),
             layer.color,
         ),
     ))
@@ -891,8 +848,9 @@ fn layer_row<'a>(
 
     // Transparency cell
     let trans_str = layer.transparency.to_string();
+    let lname_trans = lname.clone();
     let trans_cell = text_input("0", &trans_str)
-        .on_input(move |s| Message::LayerTransparencyEdit(index, s))
+        .on_input(move |s| Message::LayerTransparencyEdit(lname_trans.clone(), s))
         .size(FONT_SZ)
         .padding(Padding {
             top: COMBO_PAD_V,
@@ -914,13 +872,13 @@ fn layer_row<'a>(
             .align_y(iced::Center),
         name_cell,
         iced::widget::Space::new().width(2),
-        container(svg_btn(vis_svg, Message::LayerToggleVisible(index)))
+        container(svg_btn(vis_svg, Message::LayerToggleVisible(lname.clone())))
             .width(Length::Fixed(COL_ICON))
             .align_x(iced::Center),
-        container(svg_btn(frz_svg, Message::LayerToggleFreeze(index)))
+        container(svg_btn(frz_svg, Message::LayerToggleFreeze(lname.clone())))
             .width(Length::Fixed(COL_ICON))
             .align_x(iced::Center),
-        container(svg_btn(lck_svg, Message::LayerToggleLock(index)))
+        container(svg_btn(lck_svg, Message::LayerToggleLock(lname.clone())))
             .width(Length::Fixed(COL_ICON))
             .align_x(iced::Center),
         container(plot_btn)
@@ -942,7 +900,7 @@ fn layer_row<'a>(
         row_content = row_content.push(
             container(svg_btn(
                 vp_frz_svg,
-                Message::LayerToggleVpFreeze(index, vp_idx),
+                Message::LayerToggleVpFreeze(lname.clone(), vp_idx),
             ))
             .width(Length::Fixed(COL_ICON))
             .align_x(iced::Center),
@@ -975,7 +933,7 @@ fn layer_row<'a>(
             .height(Length::Fixed(ROW_H))
             .width(Fill),
     )
-    .on_press(Message::LayerSelect(index))
+    .on_press(Message::LayerSelect(lname))
     .into()
 }
 

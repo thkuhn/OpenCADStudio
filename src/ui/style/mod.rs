@@ -10,7 +10,9 @@ pub mod scale_manager;
 pub mod anno_object_scale;
 pub mod style_manager;
 pub mod common;
+pub mod row_button;
 pub mod form;
+pub mod fusion_theme;
 
 #[cfg(test)]
 mod common_tests {
