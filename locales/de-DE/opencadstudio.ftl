@@ -6385,6 +6385,7 @@ aec =
     .assign-polygons-assigned = AEC: { $count } Polygon(e) der Kontrollebene '{ $name }' zugewiesen.
     .show-in-drawing-btn = In Zeichnung anzeigen
     .plane-highlighted-in-drawing = Kontrollebene „{ $name }“ in Zeichnung hervorgehoben.
+    .project-auto-opened = AEC: Projekt „{ $project }“ automatisch geöffnet.
 
 count-feature =
     .selection = Count Selection

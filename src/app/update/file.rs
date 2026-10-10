@@ -1738,6 +1738,7 @@ impl OpenCADStudio {
         if set_current_path {
             self.tabs[i].current_path = Some(path.clone());
             self.tabs[i].scene.document.version = version;
+            self.aec_auto_open_project_for_tab(i);
         }
         self.refresh_native_edit_guard_after_save(i, &path, path_changed, destination_lease);
         self.tabs[i].dirty = false;
@@ -2044,6 +2045,8 @@ impl OpenCADStudio {
             )
             .as_ref(),
         );
+        // Auto-open the enclosing AEC project if one exists for this drawing.
+        self.aec_auto_open_project_for_tab(i);
         // Eagerly resolve the AEC `DisplayConfig` (plan type) library
         // right after loading, so the status-bar picker already
         // lists every plan even before the user ever opens the Plan
@@ -2958,6 +2961,7 @@ impl OpenCADStudio {
                     }
                     self.tabs[i].current_path = Some(outcome.path.clone());
                     self.tabs[i].scene.document.version = outcome.version;
+                    self.aec_auto_open_project_for_tab(i);
                     if outcome.purpose == crate::app::SavePurpose::SaveAs {
                         self.tabs[i].recovery_save_as_required = false;
                         // Save-As across folders: the save snapshot was rebased

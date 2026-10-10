@@ -306,6 +306,28 @@ impl ProjectFile {
         None
     }
 
+    /// Finds the building and storey matching the given drawing path.
+    pub fn find_storey_by_drawing_path(&self, current: &Path) -> Option<(&Building, &StoreyRef)> {
+        self.find_storey_by_drawing_path_with_base(None, current)
+    }
+
+    /// Finds the building and storey matching the given drawing path, resolving
+    /// relative storey paths against `base_dir` (typically the `.ocsproj` parent directory).
+    pub fn find_storey_by_drawing_path_with_base(
+        &self,
+        base_dir: Option<&Path>,
+        current: &Path,
+    ) -> Option<(&Building, &StoreyRef)> {
+        for building in &self.buildings {
+            for storey in &building.storeys {
+                if storey_matches_drawing_path(&storey.drawing_path, base_dir, current) {
+                    return Some((building, storey));
+                }
+            }
+        }
+        None
+    }
+
     /// Load a project from `path`. A missing file yields `Ok(ProjectFile::default())`
     /// so drawings work without an accompanying project.
     pub fn load(path: &Path) -> io::Result<ProjectFile> {
@@ -425,17 +447,200 @@ pub fn migrate_file_library_to_project(project: &mut ProjectFile) {
     }
 }
 
+/// Normalizes a path by removing redundant `.` and resolving `..` components where possible.
+pub fn normalize_relative_path(path: &Path) -> std::path::PathBuf {
+    use std::path::Component;
+    let mut components = Vec::new();
+    for comp in path.components() {
+        match comp {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                if let Some(Component::Normal(_)) = components.last() {
+                    components.pop();
+                } else {
+                    components.push(comp);
+                }
+            }
+            _ => components.push(comp),
+        }
+    }
+    components.into_iter().collect()
+}
+
+/// Checks whether a storey's `drawing_path` matches `current_drawing`.
+/// `base_dir` is the optional parent directory of the `.ocsproj` file.
+pub fn storey_matches_drawing_path(
+    storey_drawing_path: &str,
+    base_dir: Option<&Path>,
+    current_drawing: &Path,
+) -> bool {
+    let trimmed = storey_drawing_path.trim();
+    if trimmed.is_empty() {
+        return false;
+    }
+    let s_path = Path::new(trimmed);
+    let norm_current = normalize_relative_path(current_drawing);
+
+    // 1. Direct path equality
+    if normalize_relative_path(s_path) == norm_current {
+        return true;
+    }
+
+    // 2. If base_dir is known and s_path is relative, resolve against base_dir
+    if let Some(base) = base_dir {
+        let joined = if s_path.is_relative() {
+            base.join(s_path)
+        } else {
+            s_path.to_path_buf()
+        };
+        let norm_joined = normalize_relative_path(&joined);
+        if norm_joined == norm_current {
+            return true;
+        }
+        // If files exist on disk, compare canonical paths
+        if let (Ok(can_a), Ok(can_b)) = (
+            fs::canonicalize(&joined),
+            fs::canonicalize(current_drawing),
+        ) {
+            if can_a == can_b {
+                return true;
+            }
+        }
+        // Check if current_drawing is relative to base_dir
+        if let Ok(rel_current) = current_drawing.strip_prefix(base) {
+            if normalize_relative_path(rel_current) == normalize_relative_path(s_path) {
+                return true;
+            }
+        }
+    } else {
+        // If no base_dir given, match by suffix or file name if s_path is relative
+        if s_path.is_relative() {
+            let norm_s = normalize_relative_path(s_path);
+            if norm_current.ends_with(&norm_s) {
+                return true;
+            }
+            if let (Some(s_name), Some(c_name)) = (s_path.file_name(), current_drawing.file_name()) {
+                if s_name == c_name
+                    && s_path
+                        .parent()
+                        .map(|p| p.as_os_str().is_empty())
+                        .unwrap_or(true)
+                {
+                    return true;
+                }
+            }
+        }
+    }
+
+    // 3. If both paths are absolute or exist on disk, canonical compare
+    if let (Ok(can_a), Ok(can_b)) = (
+        fs::canonicalize(s_path),
+        fs::canonicalize(current_drawing),
+    ) {
+        if can_a == can_b {
+            return true;
+        }
+    }
+
+    false
+}
+
+/// Maximum directory depth limit when searching upwards for ancestor `.ocsproj` files.
+pub const MAX_PROJECT_DISCOVERY_DEPTH: usize = 6;
+
+/// Searches for an `.ocsproj` project file associated with the given drawing path.
+///
+/// Traverses upwards from the drawing's directory (up to `MAX_PROJECT_DISCOVERY_DEPTH` levels).
+///
+/// Matching priority:
+/// 1. An `.ocsproj` file that explicitly references `drawing_path` in one of its storeys.
+/// 2. If no explicit storey reference matches anywhere within the search depth, the `.ocsproj`
+///    in the nearest ancestor directory is returned as a fallback project root.
+/// 3. Returns `None` if no `.ocsproj` is found or if the drawing path is empty/invalid.
+pub fn discover_project_for_drawing(drawing_path: &Path) -> Option<std::path::PathBuf> {
+    if drawing_path.as_os_str().is_empty() {
+        return None;
+    }
+
+    let start_dir = if drawing_path.is_dir() {
+        drawing_path.to_path_buf()
+    } else {
+        drawing_path.parent()?.to_path_buf()
+    };
+
+    let start_dir = if start_dir.as_os_str().is_empty() {
+        std::path::PathBuf::from(".")
+    } else {
+        start_dir
+    };
+
+    let mut current_dir = fs::canonicalize(&start_dir).unwrap_or(start_dir);
+    let mut nearest_fallback_project: Option<std::path::PathBuf> = None;
+
+    for depth in 0..=MAX_PROJECT_DISCOVERY_DEPTH {
+        if let Ok(entries) = fs::read_dir(&current_dir) {
+            let mut project_candidates = Vec::new();
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.is_file() {
+                    if let Some(ext) = path.extension().and_then(|s| s.to_str()) {
+                        if ext.eq_ignore_ascii_case("ocsproj") {
+                            project_candidates.push(path);
+                        }
+                    }
+                }
+            }
+            project_candidates.sort();
+
+            for candidate in &project_candidates {
+                if let Ok(project) = ProjectFile::load(candidate) {
+                    let base_dir = candidate.parent();
+                    if project
+                        .find_storey_by_drawing_path_with_base(base_dir, drawing_path)
+                        .is_some()
+                    {
+                        return Some(candidate.clone());
+                    }
+                    if nearest_fallback_project.is_none() {
+                        nearest_fallback_project = Some(candidate.clone());
+                    }
+                }
+            }
+        }
+
+        if depth == MAX_PROJECT_DISCOVERY_DEPTH {
+            break;
+        }
+
+        match current_dir.parent() {
+            Some(parent) if parent != current_dir => {
+                current_dir = parent.to_path_buf();
+            }
+            _ => break,
+        }
+    }
+
+    nearest_fallback_project
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::time::{SystemTime, UNIX_EPOCH};
 
-    fn temp_path(name: &str) -> std::path::PathBuf {
+    fn temp_test_dir(name: &str) -> std::path::PathBuf {
         let nanos = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        std::env::temp_dir().join(format!("opencadstudio_ocsproj_{name}_{nanos}.ocsproj"))
+        let dir = std::env::temp_dir().join(format!("opencadstudio_test_{name}_{nanos}"));
+        let _ = fs::create_dir_all(&dir);
+        dir
+    }
+
+    fn temp_path(name: &str) -> std::path::PathBuf {
+        let dir = temp_test_dir(name);
+        dir.join(format!("{name}.ocsproj"))
     }
 
     #[test]
@@ -818,5 +1023,222 @@ mod tests {
         assert_eq!(plane.facets.len(), 1);
         assert_eq!(plane.facets[0].name, "FacetB");
         assert_eq!(plane.origin[2], 3.2);
+    }
+
+    #[test]
+    fn test_discover_project_direct_storey_match_in_same_folder() {
+        let dir = temp_test_dir("direct_same_folder");
+        let proj_path = dir.join("haus.ocsproj");
+        let dwg_path = dir.join("EG.dwg");
+
+        let mut project = ProjectFile::default();
+        let mut building = Building::new("Haus");
+        building.storeys.push(StoreyRef::new("EG", 0.0, "EG.dwg"));
+        project.buildings.push(building);
+        project.save(&proj_path).expect("save project");
+        fs::write(&dwg_path, b"test drawing").expect("write drawing");
+
+        let discovered = discover_project_for_drawing(&dwg_path);
+        assert_eq!(
+            discovered.as_ref().and_then(|p| fs::canonicalize(p).ok()),
+            fs::canonicalize(&proj_path).ok()
+        );
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_discover_project_storey_in_subfolder() {
+        let root = temp_test_dir("storey_subfolder");
+        let storeys_dir = root.join("storeys");
+        fs::create_dir_all(&storeys_dir).expect("create subfolder");
+
+        let proj_path = root.join("projekt.ocsproj");
+        let dwg_path = storeys_dir.join("EG.dwg");
+
+        let mut project = ProjectFile::default();
+        let mut building = Building::new("Hauptgebaeude");
+        building
+            .storeys
+            .push(StoreyRef::new("EG", 0.0, "storeys/EG.dwg"));
+        building
+            .storeys
+            .push(StoreyRef::new("OG", 3.0, "storeys/OG.dwg"));
+        project.buildings.push(building);
+        project.save(&proj_path).expect("save project");
+        fs::write(&dwg_path, b"test drawing").expect("write drawing");
+
+        let discovered = discover_project_for_drawing(&dwg_path);
+        assert_eq!(
+            discovered.as_ref().and_then(|p| fs::canonicalize(p).ok()),
+            fs::canonicalize(&proj_path).ok()
+        );
+
+        // Test finding storey
+        let (found_b, found_s) = project
+            .find_storey_by_drawing_path_with_base(Some(&root), &dwg_path)
+            .expect("storey must match");
+        assert_eq!(found_b.name, "Hauptgebaeude");
+        assert_eq!(found_s.name, "EG");
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn test_discover_project_nearest_ancestor_folder_fallback() {
+        let root = temp_test_dir("ancestor_fallback");
+        let details_dir = root.join("drawings").join("details");
+        fs::create_dir_all(&details_dir).expect("create deep folder");
+
+        let proj_path = root.join("projekt.ocsproj");
+        let dwg_path = details_dir.join("detail.dwg");
+
+        let mut project = ProjectFile::default();
+        let mut building = Building::new("Hauptgebaeude");
+        building
+            .storeys
+            .push(StoreyRef::new("EG", 0.0, "storeys/EG.dwg"));
+        project.buildings.push(building);
+        project.save(&proj_path).expect("save project");
+        fs::write(&dwg_path, b"test drawing").expect("write drawing");
+
+        // detail.dwg is not explicitly in storeys, but projekt.ocsproj is in an ancestor directory
+        let discovered = discover_project_for_drawing(&dwg_path);
+        assert_eq!(
+            discovered.as_ref().and_then(|p| fs::canonicalize(p).ok()),
+            fs::canonicalize(&proj_path).ok()
+        );
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn test_discover_project_exact_storey_wins_over_nearer_folder_match() {
+        let root = temp_test_dir("exact_wins");
+        let sub = root.join("sub");
+        fs::create_dir_all(&sub).expect("create sub folder");
+
+        let root_proj = root.join("main.ocsproj");
+        let sub_proj = sub.join("temporary.ocsproj");
+        let dwg_path = sub.join("EG.dwg");
+
+        // Root project explicitly references sub/EG.dwg
+        let mut main_project = ProjectFile::default();
+        let mut main_b = Building::new("Main");
+        main_b.storeys.push(StoreyRef::new("EG", 0.0, "sub/EG.dwg"));
+        main_project.buildings.push(main_b);
+        main_project.save(&root_proj).expect("save main project");
+
+        // Sub project does NOT reference EG.dwg
+        let sub_project = ProjectFile::default();
+        sub_project.save(&sub_proj).expect("save sub project");
+
+        fs::write(&dwg_path, b"test drawing").expect("write drawing");
+
+        // Exact match in main.ocsproj must take precedence over temporary.ocsproj in immediate folder
+        let discovered = discover_project_for_drawing(&dwg_path);
+        assert_eq!(
+            discovered.as_ref().and_then(|p| fs::canonicalize(p).ok()),
+            fs::canonicalize(&root_proj).ok()
+        );
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn test_discover_project_standalone_drawing_returns_none() {
+        let dir = temp_test_dir("standalone");
+        let dwg_path = dir.join("standalone.dwg");
+        fs::write(&dwg_path, b"test drawing").expect("write drawing");
+
+        let discovered = discover_project_for_drawing(&dwg_path);
+        assert_eq!(discovered, None);
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_discover_project_depth_limit() {
+        let root = temp_test_dir("depth_limit");
+        // Create 8 nested subdirectories (depth 8 > MAX_PROJECT_DISCOVERY_DEPTH = 6)
+        let mut deep_dir = root.clone();
+        for i in 0..8 {
+            deep_dir = deep_dir.join(format!("level_{i}"));
+        }
+        fs::create_dir_all(&deep_dir).expect("create deep hierarchy");
+
+        let proj_path = root.join("root.ocsproj");
+        let project = ProjectFile::default();
+        project.save(&proj_path).expect("save project");
+
+        let dwg_path = deep_dir.join("deep.dwg");
+        fs::write(&dwg_path, b"test drawing").expect("write drawing");
+
+        let discovered = discover_project_for_drawing(&dwg_path);
+        assert_eq!(
+            discovered, None,
+            "Projects beyond max ancestor depth must not be discovered"
+        );
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn test_discover_project_corrupted_file_is_gracefully_ignored() {
+        let dir = temp_test_dir("corrupted");
+        let bad_proj = dir.join("bad.ocsproj");
+        let dwg_path = dir.join("drawing.dwg");
+
+        fs::write(&bad_proj, b"this is { not valid json").expect("write corrupt project");
+        fs::write(&dwg_path, b"test drawing").expect("write drawing");
+
+        let discovered = discover_project_for_drawing(&dwg_path);
+        assert_eq!(
+            discovered, None,
+            "Corrupted project files must be skipped without failing"
+        );
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_storey_matches_drawing_path_variations() {
+        let base = std::path::PathBuf::from("/home/user/my_project");
+
+        // Forward slash relative
+        assert!(storey_matches_drawing_path(
+            "storeys/EG.dwg",
+            Some(&base),
+            &base.join("storeys").join("EG.dwg")
+        ));
+
+        // Dot-slash relative
+        assert!(storey_matches_drawing_path(
+            "./storeys/EG.dwg",
+            Some(&base),
+            &base.join("storeys").join("EG.dwg")
+        ));
+
+        // Absolute path matching
+        let abs_path = base.join("storeys").join("EG.dwg");
+        assert!(storey_matches_drawing_path(
+            &abs_path.to_string_lossy(),
+            Some(&base),
+            &abs_path
+        ));
+
+        // Non-matching storey
+        assert!(!storey_matches_drawing_path(
+            "storeys/OG.dwg",
+            Some(&base),
+            &base.join("storeys").join("EG.dwg")
+        ));
+
+        // Empty string
+        assert!(!storey_matches_drawing_path(
+            "",
+            Some(&base),
+            &base.join("storeys").join("EG.dwg")
+        ));
     }
 }

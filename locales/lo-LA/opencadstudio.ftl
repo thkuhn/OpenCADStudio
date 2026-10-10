@@ -6425,3 +6425,4 @@ aec =
     .assign-polygons-assigned = AEC: Assigned { $count } polygon(s) to control plane '{ $name }'.
     .show-in-drawing-btn = Show in drawing
     .plane-highlighted-in-drawing = Control plane "{ $name }" highlighted in drawing.
+    .project-auto-opened = AEC: Project "{ $project }" opened automatically.

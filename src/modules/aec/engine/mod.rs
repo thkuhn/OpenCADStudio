@@ -92,4 +92,8 @@ pub use slab_xdata::{
 };
 pub use storey::Storey;
 pub use control_plane::ControlPlane;
+pub use project::{
+    discover_project_for_drawing, normalize_relative_path, storey_matches_drawing_path, Building,
+    ProjectFile, StoreyRef, MAX_PROJECT_DISCOVERY_DEPTH,
+};
 pub use wall::{Wall, WallJustification, WallLayer};

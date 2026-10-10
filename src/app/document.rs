@@ -728,6 +728,17 @@ impl DocumentTab {
         self.current_path.as_deref()
     }
 
+    #[cfg(test)]
+    pub(crate) fn set_drawing_path_for_test(&mut self, path: PathBuf) {
+        self.current_path = Some(path);
+        self.is_start = false;
+    }
+
+    #[cfg(test)]
+    pub(crate) fn new_drawing_for_test(n: usize) -> Self {
+        Self::new_drawing(n)
+    }
+
     pub(super) fn tab_display_name(&self) -> String {
         match &self.current_path {
             Some(p) => p
