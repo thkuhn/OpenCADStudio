@@ -100,11 +100,60 @@ fn create_polygon_hatch(
     })
 }
 
+/// What the active plan kind (`DisplayConfig::detail`) shows of a room.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RoomDisplay {
+    /// Room stamp (label).
+    pub stamp: bool,
+    /// Floor / ceiling finish hatches.
+    pub hatches: bool,
+    /// Threshold lines at door openings.
+    pub thresholds: bool,
+    /// Floor hatch (hidden in a reflected ceiling plan).
+    pub floor: bool,
+}
+
+impl Default for RoomDisplay {
+    fn default() -> Self {
+        Self { stamp: true, hatches: true, thresholds: true, floor: true }
+    }
+}
+
+impl RoomDisplay {
+    /// Derives the room visibility from a plan detail profile and an optional
+    /// session 2D/3D/All override. Rooms are 2D-only symbols: a pure 3D view
+    /// hides all of them.
+    pub fn from_detail(
+        detail: &super::plan_view::DetailProfile,
+        session: Option<super::display_component::RepresentationMode>,
+    ) -> Self {
+        use super::display_component::RepresentationMode as R;
+        let rep = session.unwrap_or(detail.representation);
+        let two_d = rep != R::ThreeD;
+        Self {
+            stamp: two_d && detail.annotation,
+            hatches: two_d && detail.hatches,
+            thresholds: two_d && detail.opening_symbols && !detail.ceiling_view,
+            floor: !detail.ceiling_view,
+        }
+    }
+}
+
 /// Regenerates all derived representations (stamp, hatches, 3D solids) for a room carrier.
 pub fn regenerate_room_representation(
     scene: &mut Scene,
     room_handle: Handle,
+    lib: Option<&StyleLibrary>,
+) -> Option<()> {
+    regenerate_room_representation_with_display(scene, room_handle, lib, RoomDisplay::default())
+}
+
+/// Like [`regenerate_room_representation`], honoring the active plan kind.
+pub fn regenerate_room_representation_with_display(
+    scene: &mut Scene,
+    room_handle: Handle,
     _lib: Option<&StyleLibrary>,
+    display: RoomDisplay,
 ) -> Option<()> {
     let entity = scene.document.get_entity(room_handle)?.clone();
     let mut room = room_from_entity(&entity)?;
@@ -166,13 +215,13 @@ pub fn regenerate_room_representation(
     // Floor finish if present
     let finish_str = room.floor_finish_summary();
     if finish_str != "-" {
-        text_lines.push(format!("Boden: {}", finish_str));
+        text_lines.push(crate::tf!("Boden: {}", finish_str).into_owned());
     }
 
     // Ceiling finish if present
     let ceiling_str = room.ceiling_finish_summary();
     if ceiling_str != "-" {
-        text_lines.push(format!("Decke: {}", ceiling_str));
+        text_lines.push(crate::tf!("Decke: {}", ceiling_str).into_owned());
     }
 
     let mtext_value = text_lines.join("\\P");
@@ -191,14 +240,20 @@ pub fn regenerate_room_representation(
     let mut stamp_entity = EntityType::MText(mtext);
     stamp_entity.common_mut().layer = AEC_ROOM_STAMP_LAYER.to_string();
 
-    let stamp_handle = scene.add_entity(stamp_entity);
-    write_room_display_tag(scene, stamp_handle, room_handle, ROOM_REP_ROLE_STAMP);
-    child_handles.push(stamp_handle);
+    if display.stamp {
+        let stamp_handle = scene.add_entity(stamp_entity);
+        write_room_display_tag(scene, stamp_handle, room_handle, ROOM_REP_ROLE_STAMP);
+        child_handles.push(stamp_handle);
+    }
 
     // 2. Build floor transition zones and threshold lines at door openings
-    let transitions = super::floor_transition::find_floor_transitions_for_room(scene, &points);
+    let transitions = if display.thresholds || (display.hatches && display.floor) {
+        super::floor_transition::find_floor_transitions_for_room(scene, &points)
+    } else {
+        Vec::new()
+    };
     scene.ensure_layer(AEC_ROOM_THRESHOLD_LAYER);
-    for tr in &transitions {
+    for tr in transitions.iter().filter(|_| display.thresholds) {
         let mut thresh_pl = LwPolyline::new();
         thresh_pl.add_vertex(LwVertex::new(Vector2::new(
             tr.threshold_line.0 .0,
@@ -217,7 +272,7 @@ pub fn regenerate_room_representation(
     }
 
     // 3. Build optional floor finish pattern hatch (main room + door transition zones)
-    if let Some(finishes) = &room.floor_finish {
+    if let Some(finishes) = room.floor_finish.as_ref().filter(|_| display.hatches && display.floor) {
         if let Some(hatch_finish) = finishes.iter().find(|f| f.hatch_pattern.is_some()) {
             if let Some(pat_name) = &hatch_finish.hatch_pattern {
                 scene.ensure_layer(AEC_ROOM_HATCH_LAYER);
@@ -262,7 +317,7 @@ pub fn regenerate_room_representation(
     }
 
     // 4. Build optional ceiling finish pattern hatch (Reflected Ceiling Plan / Deckenspiegel)
-    if let Some(finishes) = &room.ceiling_finish {
+    if let Some(finishes) = room.ceiling_finish.as_ref().filter(|_| display.hatches) {
         if let Some(hatch_finish) = finishes.iter().find(|f| f.hatch_pattern.is_some()) {
             if let Some(pat_name) = &hatch_finish.hatch_pattern {
                 scene.ensure_layer(AEC_ROOM_CEILING_HATCH_LAYER);
@@ -387,8 +442,8 @@ mod tests {
         if let Some(EntityType::MText(mtext)) = scene.document.get_entity(stamp_h) {
             assert!(mtext.value.contains("Office"));
             assert!(mtext.value.contains("101"));
-            assert!(mtext.value.contains("Boden: Tiles"));
-            assert!(mtext.value.contains("Decke: Acoustic Grid"));
+            assert!(mtext.value.contains(crate::tf!("Boden: {}", "Tiles").as_ref()));
+            assert!(mtext.value.contains(crate::tf!("Decke: {}", "Acoustic Grid").as_ref()));
             assert!(mtext.value.contains("UKD"));
         } else {
             panic!("Expected MText stamp");

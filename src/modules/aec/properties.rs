@@ -251,7 +251,7 @@ pub fn wall_prop_section(
             props.insert(
                 1,
                 crate::entities::common::edit_prop(
-                    t!("aec.wall-base-z").as_ref(),
+                    crate::tr!("aec", "wall-base-z").as_ref(),
                     "wall_base_z",
                     wall.base_origin[2],
                 ),
@@ -390,7 +390,7 @@ pub fn wall_relation_sections(
         ));
     } else {
         for (idx, peer) in peers.iter().enumerate() {
-            let display = format!("Wall #{:X}", peer.value());
+            let display = crate::tf!("Wall #{:X}", peer.value()).into_owned();
             peer_props.push(Property {
                 label: format!("{} {}", t!("Wall"), idx + 1),
                 field: "wall_peer",
@@ -451,9 +451,9 @@ pub fn storey_prop_section(
             .and_then(xdata::wall_from_entity)
             .is_some()
         {
-            format!("Wall #{:X}", member.value())
+            crate::tf!("Wall #{:X}", member.value()).into_owned()
         } else {
-            format!("Entity #{:X}", member.value())
+            crate::tf!("Entity #{:X}", member.value()).into_owned()
         };
         props.push(Property {
             label: format!("{} {}", t!("Member"), idx + 1),
@@ -474,9 +474,9 @@ pub fn storey_prop_section(
 fn control_plane_prop_section(entity: &EntityType) -> Option<crate::scene::model::object::PropSection> {
     let (_id, name) = crate::modules::aec::project::preview::control_plane_from_entity(entity)?;
     Some(crate::scene::model::object::PropSection {
-        title: t!("aec.control-plane").into_owned(),
+        title: crate::tr!("aec", "control-plane"),
         props: vec![crate::scene::model::object::Property {
-            label: t!("aec.control-plane-name").into_owned(),
+            label: crate::tr!("aec", "control-plane-name"),
             field: "control_plane_name",
             value: crate::scene::model::object::PropValue::PlainText(name),
         }],
@@ -1142,7 +1142,7 @@ pub fn slab_prop_section(
 
     let mut props = vec![
         crate::scene::model::object::Property {
-            label: t!("aec.slab-style").into_owned(),
+            label: crate::tr!("aec", "slab-style"),
             field: "slab_style",
             value: crate::scene::model::object::PropValue::Picker {
                 value: style_name,
@@ -1166,14 +1166,14 @@ pub fn slab_prop_section(
             },
         },
         crate::scene::model::object::Property {
-            label: t!("aec.slab-justification").into_owned(),
+            label: crate::tr!("aec", "slab-justification"),
             field: "slab_justification",
             value: crate::scene::model::object::PropValue::Choice {
-                selected: slab.justification.display_name().to_string(),
+                selected: slab.justification.localized_name(),
                 options: vec![
-                    SlabJustification::Top.display_name().to_string(),
-                    SlabJustification::StructuralTop.display_name().to_string(),
-                    SlabJustification::Bottom.display_name().to_string(),
+                    SlabJustification::Top.localized_name(),
+                    SlabJustification::StructuralTop.localized_name(),
+                    SlabJustification::Bottom.localized_name(),
                 ],
             },
         },
@@ -1196,7 +1196,7 @@ pub fn slab_prop_section(
             },
         },
         crate::scene::model::object::Property {
-            label: t!("aec.slab-base-plane").into_owned(),
+            label: crate::tr!("aec", "slab-base-plane"),
             field: "slab_base_plane",
             value: crate::scene::model::object::PropValue::Choice {
                 selected: base_label,
@@ -1204,12 +1204,12 @@ pub fn slab_prop_section(
             },
         },
         crate::entities::common::edit_prop(
-            t!("aec.slab-base-offset").as_ref(),
+            crate::tr!("aec", "slab-base-offset").as_ref(),
             "slab_base_offset",
             slab.base_offset,
         ),
         crate::scene::model::object::Property {
-            label: t!("aec.slab-top-plane").into_owned(),
+            label: crate::tr!("aec", "slab-top-plane"),
             field: "slab_top_plane",
             value: crate::scene::model::object::PropValue::Choice {
                 selected: top_label,
@@ -1217,32 +1217,32 @@ pub fn slab_prop_section(
             },
         },
         crate::entities::common::edit_prop(
-            t!("aec.slab-top-offset").as_ref(),
+            crate::tr!("aec", "slab-top-offset").as_ref(),
             "slab_top_offset",
             slab.top_offset,
         ),
         crate::entities::common::ro_prop(
-            t!("aec.slab-thickness").as_ref(),
+            crate::tr!("aec", "slab-thickness").as_ref(),
             "slab_thickness",
             format!("{:.3} m", slab.total_thickness()),
         ),
         crate::entities::common::ro_prop(
-            t!("aec.slab-area").as_ref(),
+            crate::tr!("aec", "slab-area").as_ref(),
             "slab_area",
             format!("{:.3} m²", area),
         ),
         crate::entities::common::ro_prop(
-            t!("aec.slab-perimeter").as_ref(),
+            crate::tr!("aec", "slab-perimeter").as_ref(),
             "slab_perimeter",
             format!("{:.3} m", peri),
         ),
         crate::entities::common::ro_prop(
-            t!("aec.slab-volume").as_ref(),
+            crate::tr!("aec", "slab-volume").as_ref(),
             "slab_volume",
             format!("{:.3} m³", vol),
         ),
         crate::entities::common::ro_prop(
-            t!("aec.slab-storey").as_ref(),
+            crate::tr!("aec", "slab-storey").as_ref(),
             "slab_storey",
             slab.storey_id.to_string(),
         ),
@@ -1256,14 +1256,14 @@ pub fn slab_prop_section(
             slab_xdata::layer_function_to_str(&layer.function)
         );
         props.push(crate::entities::common::ro_prop(
-            t!("aec.slab-layer").as_ref(),
+            crate::tr!("aec", "slab-layer").as_ref(),
             "slab_layer",
             format!("{} — {}", i + 1, layer_info),
         ));
     }
 
     Some(crate::scene::model::object::PropSection {
-        title: t!("aec.slab-section").into_owned(),
+        title: crate::tr!("aec", "slab-section"),
         props,
     })
 }
@@ -1292,7 +1292,7 @@ pub fn slab_opening_prop_section(
 
     let mut props = vec![
         crate::scene::model::object::Property {
-            label: t!("aec.slabopening-kind").into_owned(),
+            label: crate::tr!("aec", "slabopening-kind"),
             field: "slabopening_kind",
             value: crate::scene::model::object::PropValue::Choice {
                 selected: opening.kind.as_str().to_string(),
@@ -1303,7 +1303,7 @@ pub fn slab_opening_prop_section(
             },
         },
         crate::scene::model::object::Property {
-            label: t!("aec.slabopening-depth-mode").into_owned(),
+            label: crate::tr!("aec", "slabopening-depth-mode"),
             field: "slabopening_depth_mode",
             value: crate::scene::model::object::PropValue::Choice {
                 selected: opening.depth.as_str().to_string(),
@@ -1316,29 +1316,29 @@ pub fn slab_opening_prop_section(
     ];
     if let SlabOpeningDepth::Recess(d) = opening.depth {
         props.push(crate::entities::common::edit_prop(
-            t!("aec.slabopening-recess-depth").as_ref(),
+            crate::tr!("aec", "slabopening-recess-depth").as_ref(),
             "slabopening_recess_depth",
             d,
         ));
     }
     props.push(crate::entities::common::ro_prop(
-        t!("aec.slabopening-host").as_ref(),
+        crate::tr!("aec", "slabopening-host").as_ref(),
         "slabopening_host",
         format!("{:X}", opening.host_slab.value()),
     ));
     props.push(crate::entities::common::ro_prop(
-        t!("aec.slabopening-area").as_ref(),
+        crate::tr!("aec", "slabopening-area").as_ref(),
         "slabopening_area",
         format!("{:.3} m²", area),
     ));
     props.push(crate::entities::common::ro_prop(
-        t!("aec.slabopening-perimeter").as_ref(),
+        crate::tr!("aec", "slabopening-perimeter").as_ref(),
         "slabopening_perimeter",
         format!("{:.3} m", peri),
     ));
     let _ = opening_handle;
     crate::scene::model::object::PropSection {
-        title: t!("aec.slabopening-section").into_owned(),
+        title: crate::tr!("aec", "slabopening-section"),
         props,
     }
 }
@@ -1364,17 +1364,11 @@ pub fn room_prop_section(
         label: crate::tr!("aec", "room-function"),
         field: "room_function",
         value: crate::scene::model::object::PropValue::Choice {
-            selected: room.function.display_name().to_string(),
-            options: vec![
-                "Wohnen / Aufenthalt".to_string(),
-                "Büroarbeit".to_string(),
-                "Sanitärraum".to_string(),
-                "Küche".to_string(),
-                "Flur / Verkehrsfläche".to_string(),
-                "Lagern / Abstellen".to_string(),
-                "Technikfläche".to_string(),
-                "Balkon / Terrasse".to_string(),
-            ],
+            selected: room.function.localized_name(),
+            options: crate::modules::aec::engine::room::RoomFunction::BUILT_IN
+                .iter()
+                .map(|f| f.localized_name())
+                .collect(),
         },
     });
     props.push(crate::entities::common::edit_scalar_prop(
@@ -1770,11 +1764,7 @@ impl crate::app::OpenCADStudio {
             }
 
             room_xdata::write_room_record(&mut self.tabs[tab].scene.document, room_owner, &room);
-            let _ = room_regen::regenerate_room_representation(
-                &mut self.tabs[tab].scene,
-                room_owner,
-                None,
-            );
+            let _ = self.regenerate_room_respecting_active_display_config(tab, room_owner);
             let _ = crate::modules::aec::rooms::schedule::update_all_room_schedules(
                 &mut self.tabs[tab].scene,
             );

@@ -18,17 +18,11 @@ impl OpenCADStudio {
     ) -> Element<'a, Message> {
         match kind {
             AecModalKind::DropWarning => self.aec_drop_warning_view(sizing),
-            AecModalKind::MaterialManager => self.aec_material_manager_view(),
-            AecModalKind::WallStyleManager => self.aec_wall_style_manager_view(),
-            AecModalKind::OpeningStyleManager => self.aec_opening_style_manager_view(),
-            AecModalKind::SlabStyleManager => self.aec_slab_style_manager_view(),
-            AecModalKind::SlabStructuralStyleManager => self.aec_slab_structural_style_manager_view(),
-            AecModalKind::FloorFinishStyleManager => self.aec_floor_finish_style_manager_view(),
+            AecModalKind::Styles => self.aec_styles_view(),
             AecModalKind::WallStyleDisplayProfiles => self.aec_wall_style_display_profiles_view(),
             AecModalKind::JunctionEditor => self.aec_junction_editor_view(),
             AecModalKind::ProjectExplorer => self.aec_project_explorer_view(),
             AecModalKind::StoreySettings => self.aec_storey_settings_view(),
-            AecModalKind::PlanManager => self.aec_plan_manager_view(),
             AecModalKind::StylePicker { target } => self.aec_style_picker_view(target, sizing),
             AecModalKind::StyleCopyConflict => aec_style_copy_conflict_window(sizing),
             AecModalKind::ProjectRequired => aec_project_required_window(sizing),
@@ -89,94 +83,103 @@ impl OpenCADStudio {
         )
     }
 
-fn aec_material_manager_view(&self) -> Element<'_, Message> {
-    let Some(library) = self.aec.aec_style_library.as_ref() else {
-        return iced::widget::text(t!("No style library loaded.")).into();
+pub(in crate::modules::aec::ui) fn aec_styles_view(&self) -> Element<'_, Message> {
+    use crate::modules::aec::ui::style_manager::{self, StylesNode};
+    let node = self.aec.styles.node;
+    let parts = match node {
+        StylesNode::Materials => self.aec_material_parts(),
+        StylesNode::FloorFinish => self.aec_floor_finish_parts(),
+        StylesNode::Wall => self.aec_wall_parts(),
+        StylesNode::Opening => self.aec_opening_parts(),
+        StylesNode::Slab => self.aec_slab_parts(),
+        StylesNode::SlabStructural => self.aec_slab_structural_parts(),
+        StylesNode::PlanKinds => self.aec_plan_parts(),
     };
-    crate::modules::aec::ui::aec_material_manager::view_window(
+    style_manager::view(node, parts)
+}
+
+fn aec_material_parts(&self) -> Option<crate::modules::aec::ui::style_manager::StyleParts<'_>> {
+    let library = self.aec.aec_style_library.as_ref()?;
+    Some(crate::modules::aec::ui::style_manager::forms::material::parts(
         library,
         self.aec.aec_project_explorer_file.as_ref(),
         self.aec.aec_session_style_library.as_ref(),
-        self.aec.aec_style_manager_selected_material.as_deref(),
-        &self.aec.aec_style_manager_filter,
-        crate::modules::aec::ui::aec_material_manager::MaterialFormState {
-            open: self.aec.aec_style_manager_material_form_open,
-            is_new: self.aec.aec_style_manager_material_editing_id.is_none(),
-            editing_id: self.aec.aec_style_manager_material_editing_id.as_deref(),
-            name: &self.aec.aec_style_manager_material_name,
-            hatch: &self.aec.aec_style_manager_material_hatch,
-            color: &self.aec.aec_style_manager_material_color,
-            line_type: &self.aec.aec_style_manager_material_line_type,
-            category: &self.aec.aec_style_manager_material_category,
-            hatch_color: self.aec.aec_style_manager_material_hatch_color,
-            hatch_scale: &self.aec.aec_style_manager_material_hatch_scale,
-            render_material_ref: &self.aec.aec_style_manager_material_render_ref,
-            hatch_angle: &self.aec.aec_style_manager_material_hatch_angle,
-            hatch_angle_relative: self.aec.aec_style_manager_material_hatch_angle_relative,
-            hatch_picker_open: self.aec.aec_style_manager_material_hatch_picker_open,
-            color_picker_open: self.aec.aec_style_manager_material_color_picker_open,
-            hatch_color_picker_open: self.aec.aec_style_manager_material_hatch_color_picker_open,
-            linetype_items: &self.aec.aec_style_manager_material_linetype_items,
-            linetype_combo: &self.aec.aec_style_manager_material_linetype_combo,
+        self.aec.styles.selected_material.as_deref(),
+        &self.aec.styles.filter,
+        crate::modules::aec::ui::style_manager::forms::material::MaterialFormState {
+            open: self.aec.styles.material_form_open,
+            is_new: self.aec.styles.material_editing_id.is_none(),
+            editing_id: self.aec.styles.material_editing_id.as_deref(),
+            name: &self.aec.styles.material_name,
+            hatch: &self.aec.styles.material_hatch,
+            color: &self.aec.styles.material_color,
+            line_type: &self.aec.styles.material_line_type,
+            category: &self.aec.styles.material_category,
+            hatch_color: self.aec.styles.material_hatch_color,
+            hatch_scale: &self.aec.styles.material_hatch_scale,
+            render_material_ref: &self.aec.styles.material_render_ref,
+            hatch_angle: &self.aec.styles.material_hatch_angle,
+            hatch_angle_relative: self.aec.styles.material_hatch_angle_relative,
+            hatch_picker_open: self.aec.styles.material_hatch_picker_open,
+            color_picker_open: self.aec.styles.material_color_picker_open,
+            hatch_color_picker_open: self.aec.styles.material_hatch_color_picker_open,
+            linetype_items: &self.aec.styles.material_linetype_items,
+            linetype_combo: &self.aec.styles.material_linetype_combo,
         },
-    )
+    ))
 }
 
-fn aec_opening_style_manager_view(&self) -> Element<'_, Message> {
-    let Some(library) = self.aec.aec_style_library.as_ref() else {
-        return iced::widget::text(t!("No style library loaded.")).into();
-    };
-    let parent_name = self.aec.aec_opening_style_manager_parent.as_deref().and_then(|id| {
+fn aec_opening_parts(&self) -> Option<crate::modules::aec::ui::style_manager::StyleParts<'_>> {
+    let library = self.aec.aec_style_library.as_ref()?;
+    let parent_name = self.aec.styles.opening_parent.as_deref().and_then(|id| {
         library
             .opening_styles
             .iter()
             .find(|s| s.style.id == id)
             .map(|s| s.style.name.as_str())
     });
-    crate::modules::aec::ui::aec_opening_style_manager::view_window(
+    Some(crate::modules::aec::ui::style_manager::forms::opening::parts(
         library,
         self.aec.aec_project_explorer_file.as_ref(),
         self.aec.aec_session_style_library.as_ref(),
-        self.aec.aec_opening_style_manager_selected.as_deref(),
-        &self.aec.aec_opening_style_manager_filter,
-        crate::modules::aec::ui::aec_opening_style_manager::OpeningStyleFormState {
-            open: self.aec.aec_opening_style_manager_form_open,
-            is_new: self.aec.aec_opening_style_manager_editing_id.is_none(),
-            preview_mode: self.aec.aec_opening_style_manager_preview_mode,
-            name: &self.aec.aec_opening_style_manager_name,
-            parent_id: self.aec.aec_opening_style_manager_parent.as_deref(),
+        self.aec.styles.opening_selected.as_deref(),
+        &self.aec.styles.opening_filter,
+        crate::modules::aec::ui::style_manager::forms::opening::OpeningStyleFormState {
+            open: self.aec.styles.opening_form_open,
+            is_new: self.aec.styles.opening_editing_id.is_none(),
+            preview_mode: self.aec.styles.opening_preview_mode,
+            name: &self.aec.styles.opening_name,
+            parent_id: self.aec.styles.opening_parent.as_deref(),
             parent_name,
-            kind: self.aec.aec_opening_style_manager_kind,
-            shape: self.aec.aec_opening_style_manager_shape,
-            width: &self.aec.aec_opening_style_manager_width,
-            height: &self.aec.aec_opening_style_manager_height,
-            sill: &self.aec.aec_opening_style_manager_sill,
-            frame: &self.aec.aec_opening_style_manager_frame,
-            angle: &self.aec.aec_opening_style_manager_angle,
-            spring: &self.aec.aec_opening_style_manager_spring,
-            hinge: self.aec.aec_opening_style_manager_hinge,
-            slots: &self.aec.aec_opening_style_manager_slots,
-            profile_selected: self.aec.aec_opening_style_manager_profile_selected.as_deref(),
+            kind: self.aec.styles.opening_kind,
+            shape: self.aec.styles.opening_shape,
+            width: &self.aec.styles.opening_width,
+            height: &self.aec.styles.opening_height,
+            sill: &self.aec.styles.opening_sill,
+            frame: &self.aec.styles.opening_frame,
+            angle: &self.aec.styles.opening_angle,
+            spring: &self.aec.styles.opening_spring,
+            hinge: self.aec.styles.opening_hinge,
+            slots: &self.aec.styles.opening_slots,
+            profile_selected: self.aec.styles.opening_profile_selected.as_deref(),
             plan_names: self
                 .aec
                 .aec_plan_library
                 .as_ref()
                 .map(|lib| lib.configs.iter().map(|c| c.name.clone()).collect())
                 .unwrap_or_default(),
-            sketch_slot: self.aec.aec_opening_style_manager_sketch_slot,
-            sketch_draft: &self.aec.aec_opening_style_manager_sketch_draft,
-            sketch_draft_bulges: &self.aec.aec_opening_style_manager_sketch_draft_bulges,
+            sketch_slot: self.aec.styles.opening_sketch_slot,
+            sketch_draft: &self.aec.styles.opening_sketch_draft,
+            sketch_draft_bulges: &self.aec.styles.opening_sketch_draft_bulges,
         },
-    )
+    ))
 }
 
-fn aec_slab_style_manager_view(&self) -> Element<'_, Message> {
-    let Some(library) = self.aec.aec_style_library.as_ref() else {
-        return iced::widget::text(t!("No style library loaded.")).into();
-    };
+fn aec_slab_parts(&self) -> Option<crate::modules::aec::ui::style_manager::StyleParts<'_>> {
+    let library = self.aec.aec_style_library.as_ref()?;
     let parent_name = self
         .aec
-        .aec_slab_style_manager_parent
+        .styles.slab_parent
         .as_deref()
         .and_then(|id| {
             library
@@ -208,18 +211,18 @@ fn aec_slab_style_manager_view(&self) -> Element<'_, Message> {
 
     let referenced_structural = self
         .aec
-        .aec_slab_style_manager_structural_style
+        .styles.slab_structural_style
         .as_deref()
         .and_then(|id| library.find_slab_structural_style(id));
     let referenced_finish = self
         .aec
-        .aec_slab_style_manager_finish_style
+        .styles.slab_finish_style
         .as_deref()
         .and_then(|id| library.find_floor_finish_style(id));
 
     let mut dummy_style = crate::modules::aec::engine::slab_style::SlabStyle::new("dummy", "dummy");
-    dummy_style.structural_style_id = self.aec.aec_slab_style_manager_structural_style.clone();
-    dummy_style.default_finish_style_id = self.aec.aec_slab_style_manager_finish_style.clone();
+    dummy_style.structural_style_id = self.aec.styles.slab_structural_style.clone();
+    dummy_style.default_finish_style_id = self.aec.styles.slab_finish_style.clone();
 
     let s_map: std::collections::HashMap<String, _> = library
         .slab_structural_styles
@@ -238,15 +241,15 @@ fn aec_slab_style_manager_view(&self) -> Element<'_, Message> {
         Some(&f_map),
     );
 
-    let form = if self.aec.aec_slab_style_manager_form_open {
-        Some(crate::modules::aec::ui::aec_slab_style_manager::SlabStyleFormState {
+    let form = if self.aec.styles.slab_form_open {
+        Some(crate::modules::aec::ui::style_manager::forms::slab::SlabStyleFormState {
             open: true,
-            is_new: self.aec.aec_slab_style_manager_editing_id.is_none(),
-            name: &self.aec.aec_slab_style_manager_name,
-            parent_id: self.aec.aec_slab_style_manager_parent.as_deref(),
+            is_new: self.aec.styles.slab_editing_id.is_none(),
+            name: &self.aec.styles.slab_name,
+            parent_id: self.aec.styles.slab_parent.as_deref(),
             parent_name,
-            structural_style_id: self.aec.aec_slab_style_manager_structural_style.as_deref(),
-            finish_style_id: self.aec.aec_slab_style_manager_finish_style.as_deref(),
+            structural_style_id: self.aec.styles.slab_structural_style.as_deref(),
+            finish_style_id: self.aec.styles.slab_finish_style.as_deref(),
             referenced_structural,
             referenced_finish,
             all_slab_styles,
@@ -255,38 +258,36 @@ fn aec_slab_style_manager_view(&self) -> Element<'_, Message> {
             all_materials,
             effective_layers,
             inheritance_chain: Vec::new(),
-            preview_mode: self.aec.aec_slab_style_manager_preview_mode,
+            preview_mode: self.aec.styles.slab_preview_mode,
             display_config_names: self
                 .aec
                 .aec_plan_library
                 .as_ref()
                 .map(|lib| lib.configs.iter().map(|c| c.name.clone()).collect())
                 .unwrap_or_default(),
-            profile_selected: self.aec.aec_slab_style_manager_profile_selected.as_deref(),
-            slot_visibility: self.aec.aec_slab_style_manager_profile_slot_visibility.clone(),
+            profile_selected: self.aec.styles.slab_profile_selected.as_deref(),
+            slot_visibility: self.aec.styles.slab_profile_slot_visibility.clone(),
         })
     } else {
         None
     };
 
-    crate::modules::aec::ui::aec_slab_style_manager::view_window(
+    Some(crate::modules::aec::ui::style_manager::forms::slab::parts(
         library,
         self.aec.aec_project_explorer_file.as_ref(),
         self.aec.aec_session_style_library.as_ref(),
-        &self.aec.aec_slab_style_manager_filter,
-        self.aec.aec_slab_style_manager_selected.as_deref(),
+        &self.aec.styles.slab_filter,
+        self.aec.styles.slab_selected.as_deref(),
         form,
-    )
+    ))
 }
 
-fn aec_slab_structural_style_manager_view(&self) -> Element<'_, Message> {
-    let Some(library) = self.aec.aec_style_library.as_ref() else {
-        return iced::widget::text(t!("No style library loaded.")).into();
-    };
+fn aec_slab_structural_parts(&self) -> Option<crate::modules::aec::ui::style_manager::StyleParts<'_>> {
+    let library = self.aec.aec_style_library.as_ref()?;
 
     let parent_name = self
         .aec
-        .aec_slab_structural_style_manager_parent
+        .styles.slab_structural_parent
         .as_ref()
         .and_then(|id| {
             library
@@ -314,51 +315,49 @@ fn aec_slab_structural_style_manager_view(&self) -> Element<'_, Message> {
         .collect();
 
     let mut effective_layers = Vec::new();
-    for buf in &self.aec.aec_slab_structural_style_manager_layers {
+    for buf in &self.aec.styles.slab_structural_layers {
         if let Ok(layer) = crate::modules::aec::styles::slab_style_manager::buffer_to_layer(buf) {
             effective_layers.push(layer);
         }
     }
 
-    let form = if self.aec.aec_slab_structural_style_manager_form_open {
+    let form = if self.aec.styles.slab_structural_form_open {
         Some(
-            crate::modules::aec::ui::aec_slab_structural_style_manager::SlabStructuralStyleFormState {
+            crate::modules::aec::ui::style_manager::forms::slab_structural::SlabStructuralStyleFormState {
                 open: true,
-                is_new: self.aec.aec_slab_structural_style_manager_editing_id.is_none(),
-                name: &self.aec.aec_slab_structural_style_manager_name,
-                parent_id: self.aec.aec_slab_structural_style_manager_parent.as_deref(),
+                is_new: self.aec.styles.slab_structural_editing_id.is_none(),
+                name: &self.aec.styles.slab_structural_name,
+                parent_id: self.aec.styles.slab_structural_parent.as_deref(),
                 parent_name,
-                layers: &self.aec.aec_slab_structural_style_manager_layers,
-                drag_index: self.aec.aec_slab_structural_style_manager_drag_index,
+                layers: &self.aec.styles.slab_structural_layers,
+                drag_index: self.aec.styles.slab_structural_drag_index,
                 all_structural_styles,
                 all_materials,
                 all_layer_names,
                 effective_layers,
-                preview_mode: self.aec.aec_slab_structural_style_manager_preview_mode,
+                preview_mode: self.aec.styles.slab_structural_preview_mode,
             },
         )
     } else {
         None
     };
 
-    crate::modules::aec::ui::aec_slab_structural_style_manager::view_window(
+    Some(crate::modules::aec::ui::style_manager::forms::slab_structural::parts(
         library,
         self.aec.aec_project_explorer_file.as_ref(),
         self.aec.aec_session_style_library.as_ref(),
-        &self.aec.aec_slab_structural_style_manager_filter,
-        self.aec.aec_slab_structural_style_manager_selected.as_deref(),
+        &self.aec.styles.slab_structural_filter,
+        self.aec.styles.slab_structural_selected.as_deref(),
         form,
-    )
+    ))
 }
 
-fn aec_floor_finish_style_manager_view(&self) -> Element<'_, Message> {
-    let Some(library) = self.aec.aec_style_library.as_ref() else {
-        return iced::widget::text(t!("No style library loaded.")).into();
-    };
+fn aec_floor_finish_parts(&self) -> Option<crate::modules::aec::ui::style_manager::StyleParts<'_>> {
+    let library = self.aec.aec_style_library.as_ref()?;
 
     let parent_name = self
         .aec
-        .aec_floor_finish_style_manager_parent
+        .styles.floor_finish_parent
         .as_ref()
         .and_then(|id| {
             library
@@ -386,61 +385,59 @@ fn aec_floor_finish_style_manager_view(&self) -> Element<'_, Message> {
         .collect();
 
     let mut effective_layers = Vec::new();
-    for buf in &self.aec.aec_floor_finish_style_manager_layers {
+    for buf in &self.aec.styles.floor_finish_layers {
         if let Ok(layer) = crate::modules::aec::styles::slab_style_manager::buffer_to_layer(buf) {
             effective_layers.push(layer);
         }
     }
     if effective_layers.is_empty() {
-        if let Some(id) = self.aec.aec_floor_finish_style_manager_editing_id.as_deref() {
+        if let Some(id) = self.aec.styles.floor_finish_editing_id.as_deref() {
             if let Some(style) = library.find_floor_finish_style(id) {
                 effective_layers = style.layers.clone();
             }
         }
     }
 
-    let form = if self.aec.aec_floor_finish_style_manager_form_open {
-        Some(crate::modules::aec::ui::aec_floor_finish_style_manager::FloorFinishStyleFormState {
+    let form = if self.aec.styles.floor_finish_form_open {
+        Some(crate::modules::aec::ui::style_manager::forms::floor_finish::FloorFinishStyleFormState {
             open: true,
-            is_new: self.aec.aec_floor_finish_style_manager_editing_id.is_none(),
-            name: &self.aec.aec_floor_finish_style_manager_name,
-            parent_id: self.aec.aec_floor_finish_style_manager_parent.as_deref(),
+            is_new: self.aec.styles.floor_finish_editing_id.is_none(),
+            name: &self.aec.styles.floor_finish_name,
+            parent_id: self.aec.styles.floor_finish_parent.as_deref(),
             parent_name,
-            layers: &self.aec.aec_floor_finish_style_manager_layers,
-            drag_index: self.aec.aec_floor_finish_style_manager_drag_index,
+            layers: &self.aec.styles.floor_finish_layers,
+            drag_index: self.aec.styles.floor_finish_drag_index,
             all_floor_finish_styles,
             all_materials,
             all_layer_names,
             effective_layers,
-            preview_mode: self.aec.aec_floor_finish_style_manager_preview_mode,
+            preview_mode: self.aec.styles.floor_finish_preview_mode,
         })
     } else {
         None
     };
 
-    crate::modules::aec::ui::aec_floor_finish_style_manager::view_window(
+    Some(crate::modules::aec::ui::style_manager::forms::floor_finish::parts(
         library,
         self.aec.aec_project_explorer_file.as_ref(),
         self.aec.aec_session_style_library.as_ref(),
-        &self.aec.aec_floor_finish_style_manager_filter,
-        self.aec.aec_floor_finish_style_manager_selected.as_deref(),
+        &self.aec.styles.floor_finish_filter,
+        self.aec.styles.floor_finish_selected.as_deref(),
         form,
-    )
+    ))
 }
 
-fn aec_wall_style_manager_view(&self) -> Element<'_, Message> {
-    let Some(library) = self.aec.aec_style_library.as_ref() else {
-        return iced::widget::text(t!("No style library loaded.")).into();
-    };
+fn aec_wall_parts(&self) -> Option<crate::modules::aec::ui::style_manager::StyleParts<'_>> {
+    let library = self.aec.aec_style_library.as_ref()?;
     let form = self.aec_wall_style_form_state(library);
-    crate::modules::aec::ui::aec_wall_style_manager::view_window(
+    Some(crate::modules::aec::ui::style_manager::forms::wall::parts(
         library,
         self.aec.aec_project_explorer_file.as_ref(),
         self.aec.aec_session_style_library.as_ref(),
-        self.aec.aec_style_manager_selected_wall_style.as_deref(),
-        &self.aec.aec_style_manager_filter,
+        self.aec.styles.selected_wall_style.as_deref(),
+        &self.aec.styles.filter,
         form,
-    )
+    ))
 }
 
 fn aec_wall_style_display_profiles_view(&self) -> Element<'_, Message> {
@@ -450,7 +447,7 @@ fn aec_wall_style_display_profiles_view(&self) -> Element<'_, Message> {
     let form = self.aec_wall_style_form_state(library);
     match form.display_profiles {
         Some(profiles) => {
-            crate::modules::aec::ui::aec_wall_style_manager::view_display_profiles_window(
+            crate::modules::aec::ui::style_manager::forms::wall::view_display_profiles_window(
                 profiles,
                 form.layers,
             )
@@ -462,9 +459,9 @@ fn aec_wall_style_display_profiles_view(&self) -> Element<'_, Message> {
 fn aec_wall_style_form_state<'a>(
     &'a self,
     library: &'a crate::modules::aec::engine::library::StyleLibrary,
-) -> crate::modules::aec::ui::aec_wall_style_manager::WallStyleFormState<'a> {
+) -> crate::modules::aec::ui::style_manager::forms::wall::WallStyleFormState<'a> {
     use crate::modules::aec::ui::aec_ui_util::StyleEditorFormState;
-    use crate::modules::aec::ui::aec_wall_style_manager::{
+    use crate::modules::aec::ui::style_manager::forms::wall::{
         DisplayProfileFormState, WallStyleFormState,
     };
 
@@ -486,57 +483,61 @@ fn aec_wall_style_form_state<'a>(
         .map(|l| l.name.clone())
         .collect();
     let mut inheritance_chain = Vec::new();
-    let mut parent = self.aec.aec_style_manager_wall_style_parent.as_deref();
+    let mut parent = self.aec.styles.wall_style_parent.as_deref();
     while let Some(id) = parent {
         let Some(ws) = library.wall_styles.iter().find(|s| s.style.id == id) else {
             break;
         };
         inheritance_chain.push(ws.style.name.clone());
-        parent = ws.style.parent_style_id.as_deref();
+        parent = ws.style.parent.as_deref();
     }
     inheritance_chain.reverse();
 
-    let display_config_names: Vec<String> = self
-        .aec.aec_plan_library
-        .as_ref()
-        .map(|lib| lib.configs.iter().map(|c| c.name.clone()).collect())
-        .unwrap_or_default();
+    let mut display_config_names: Vec<String> = vec![
+        crate::modules::aec::engine::library::STYLE_DEFAULT_PROFILE_KEY.to_string(),
+    ];
+    display_config_names.extend(
+        self.aec
+            .aec_plan_library
+            .as_ref()
+            .map(|lib| lib.configs.iter().map(|c| c.name.clone()).collect::<Vec<_>>())
+            .unwrap_or_default(),
+    );
     let existing_overrides = self
-        .aec.aec_style_manager_wall_style_editing_id
+        .aec.styles.wall_style_editing_id
         .as_deref()
-        .and_then(|id| library.wall_styles.iter().find(|ws| ws.style.id == id))
-        .map(|ws| ws.display_profiles.keys().cloned().collect())
+        .map(|id| self.aec_wall_profile_keys(id).into_iter().collect())
         .unwrap_or_default();
 
     let slot_style_editor = StyleEditorFormState {
-        line_type: &self.aec.aec_style_manager_profile_slot_style_line_type,
-        linetype_items: &self.aec.aec_style_manager_material_linetype_items,
-        linetype_combo: &self.aec.aec_style_manager_material_linetype_combo,
-        line_color: &self.aec.aec_style_manager_profile_slot_style_line_color,
-        line_color_picker_open: self.aec.aec_style_manager_profile_slot_style_line_color_picker_open,
-        hatch_pattern: &self.aec.aec_style_manager_profile_slot_style_hatch_pattern,
-        hatch_picker_open: self.aec.aec_style_manager_profile_slot_style_hatch_picker_open,
-        hatch_color: &self.aec.aec_style_manager_profile_slot_style_hatch_color,
+        line_type: &self.aec.styles.profile_slot_style_line_type,
+        linetype_items: &self.aec.styles.material_linetype_items,
+        linetype_combo: &self.aec.styles.material_linetype_combo,
+        line_color: &self.aec.styles.profile_slot_style_line_color,
+        line_color_picker_open: self.aec.styles.profile_slot_style_line_color_picker_open,
+        hatch_pattern: &self.aec.styles.profile_slot_style_hatch_pattern,
+        hatch_picker_open: self.aec.styles.profile_slot_style_hatch_picker_open,
+        hatch_color: &self.aec.styles.profile_slot_style_hatch_color,
         hatch_color_picker_open: self
-            .aec.aec_style_manager_profile_slot_style_hatch_color_picker_open,
-        fill_color: &self.aec.aec_style_manager_profile_slot_style_fill_color,
-        fill_color_picker_open: self.aec.aec_style_manager_profile_slot_style_fill_color_picker_open,
+            .aec.styles.profile_slot_style_hatch_color_picker_open,
+        fill_color: &self.aec.styles.profile_slot_style_fill_color,
+        fill_color_picker_open: self.aec.styles.profile_slot_style_fill_color_picker_open,
     };
 
-    let display_profiles = if self.aec.aec_style_manager_wall_style_editing_id.is_some() {
+    let display_profiles = if self.aec.styles.wall_style_editing_id.is_some() {
         Some(DisplayProfileFormState {
             display_config_names,
             existing_overrides,
-            selected: self.aec.aec_style_manager_profile_selected.as_deref(),
-            contour_explicit: self.aec.aec_style_manager_profile_contour_explicit,
-            contour_selected: &self.aec.aec_style_manager_profile_contour_selection,
-            solid_explicit: self.aec.aec_style_manager_profile_solid_explicit,
-            solid_selected: &self.aec.aec_style_manager_profile_solid_selection,
-            hatch_angle: &self.aec.aec_style_manager_profile_hatch_angle,
-            hatch_relative: self.aec.aec_style_manager_profile_hatch_relative,
-            slot_visibility: self.aec.aec_style_manager_profile_slot_visibility.clone(),
-            editing_slot: self.aec.aec_style_manager_profile_editing_slot,
-            slot_overrides: &self.aec.aec_style_manager_profile_slot_overrides,
+            selected: self.aec.styles.profile_selected.as_deref(),
+            contour_explicit: self.aec.styles.profile_contour_explicit,
+            contour_selected: &self.aec.styles.profile_contour_selection,
+            solid_explicit: self.aec.styles.profile_solid_explicit,
+            solid_selected: &self.aec.styles.profile_solid_selection,
+            hatch_angle: &self.aec.styles.profile_hatch_angle,
+            hatch_relative: self.aec.styles.profile_hatch_relative,
+            slot_visibility: self.aec.styles.profile_slot_visibility.clone(),
+            editing_slot: self.aec.styles.profile_editing_slot,
+            slot_overrides: &self.aec.styles.profile_slot_overrides,
             slot_style_editor,
         })
     } else {
@@ -544,12 +545,12 @@ fn aec_wall_style_form_state<'a>(
     };
 
     WallStyleFormState {
-        open: self.aec.aec_style_manager_wall_style_form_open,
-        is_new: self.aec.aec_style_manager_wall_style_editing_id.is_none(),
-        name: &self.aec.aec_style_manager_wall_style_name,
-        parent_id: self.aec.aec_style_manager_wall_style_parent.as_deref(),
-        layers: &self.aec.aec_style_manager_wall_style_layers,
-        drag_index: self.aec.aec_style_manager_wall_style_drag_index,
+        open: self.aec.styles.wall_style_form_open,
+        is_new: self.aec.styles.wall_style_editing_id.is_none(),
+        name: &self.aec.styles.wall_style_name,
+        parent_id: self.aec.styles.wall_style_parent.as_deref(),
+        layers: &self.aec.styles.wall_style_layers,
+        drag_index: self.aec.styles.wall_style_drag_index,
         all_wall_styles,
         all_materials,
         all_layer_names,
@@ -652,85 +653,92 @@ fn aec_storey_settings_view(&self) -> Element<'_, Message> {
     )
 }
 
-fn aec_plan_manager_view(&self) -> Element<'_, Message> {
+fn aec_plan_parts(&self) -> Option<crate::modules::aec::ui::style_manager::StyleParts<'_>> {
     use crate::modules::aec::ui::aec_plan_manager::PlanConfigFormState;
     use crate::modules::aec::ui::aec_ui_util::StyleEditorFormState;
     let Some(library) = self.aec.aec_plan_library.as_ref() else {
-        return iced::widget::text(t!("No plan library loaded.")).into();
+        return None;
     };
     let demolition_style = StyleEditorFormState {
-        line_type: &self.aec.aec_plan_manager_demolition_style_line_type,
-        linetype_items: &self.aec.aec_style_manager_material_linetype_items,
-        linetype_combo: &self.aec.aec_style_manager_material_linetype_combo,
-        line_color: &self.aec.aec_plan_manager_demolition_style_line_color,
-        line_color_picker_open: self.aec.aec_plan_manager_demolition_style_line_color_picker_open,
-        hatch_pattern: &self.aec.aec_plan_manager_demolition_style_hatch_pattern,
-        hatch_picker_open: self.aec.aec_plan_manager_demolition_style_hatch_picker_open,
-        hatch_color: &self.aec.aec_plan_manager_demolition_style_hatch_color,
-        hatch_color_picker_open: self.aec.aec_plan_manager_demolition_style_hatch_color_picker_open,
-        fill_color: &self.aec.aec_plan_manager_demolition_style_fill_color,
-        fill_color_picker_open: self.aec.aec_plan_manager_demolition_style_fill_color_picker_open,
+        line_type: &self.aec.styles.plan_demolition_style_line_type,
+        linetype_items: &self.aec.styles.material_linetype_items,
+        linetype_combo: &self.aec.styles.material_linetype_combo,
+        line_color: &self.aec.styles.plan_demolition_style_line_color,
+        line_color_picker_open: self.aec.styles.plan_demolition_style_line_color_picker_open,
+        hatch_pattern: &self.aec.styles.plan_demolition_style_hatch_pattern,
+        hatch_picker_open: self.aec.styles.plan_demolition_style_hatch_picker_open,
+        hatch_color: &self.aec.styles.plan_demolition_style_hatch_color,
+        hatch_color_picker_open: self.aec.styles.plan_demolition_style_hatch_color_picker_open,
+        fill_color: &self.aec.styles.plan_demolition_style_fill_color,
+        fill_color_picker_open: self.aec.styles.plan_demolition_style_fill_color_picker_open,
     };
     let existing_style = StyleEditorFormState {
-        line_type: &self.aec.aec_plan_manager_existing_style_line_type,
-        linetype_items: &self.aec.aec_style_manager_material_linetype_items,
-        linetype_combo: &self.aec.aec_style_manager_material_linetype_combo,
-        line_color: &self.aec.aec_plan_manager_existing_style_line_color,
-        line_color_picker_open: self.aec.aec_plan_manager_existing_style_line_color_picker_open,
-        hatch_pattern: &self.aec.aec_plan_manager_existing_style_hatch_pattern,
-        hatch_picker_open: self.aec.aec_plan_manager_existing_style_hatch_picker_open,
-        hatch_color: &self.aec.aec_plan_manager_existing_style_hatch_color,
-        hatch_color_picker_open: self.aec.aec_plan_manager_existing_style_hatch_color_picker_open,
-        fill_color: &self.aec.aec_plan_manager_existing_style_fill_color,
-        fill_color_picker_open: self.aec.aec_plan_manager_existing_style_fill_color_picker_open,
+        line_type: &self.aec.styles.plan_existing_style_line_type,
+        linetype_items: &self.aec.styles.material_linetype_items,
+        linetype_combo: &self.aec.styles.material_linetype_combo,
+        line_color: &self.aec.styles.plan_existing_style_line_color,
+        line_color_picker_open: self.aec.styles.plan_existing_style_line_color_picker_open,
+        hatch_pattern: &self.aec.styles.plan_existing_style_hatch_pattern,
+        hatch_picker_open: self.aec.styles.plan_existing_style_hatch_picker_open,
+        hatch_color: &self.aec.styles.plan_existing_style_hatch_color,
+        hatch_color_picker_open: self.aec.styles.plan_existing_style_hatch_color_picker_open,
+        fill_color: &self.aec.styles.plan_existing_style_fill_color,
+        fill_color_picker_open: self.aec.styles.plan_existing_style_fill_color_picker_open,
     };
-    crate::modules::aec::ui::aec_plan_manager::view_window(
+    let from_project = self
+        .aec
+        .aec_project_explorer_file
+        .as_ref()
+        .is_some_and(|p| !p.display_config_library.configs.is_empty());
+    Some(crate::modules::aec::ui::aec_plan_manager::parts(
         library,
-        self.aec.aec_plan_manager_selected.as_deref(),
-        &self.aec.aec_plan_manager_filter,
+        from_project,
+        self.aec.styles.plan_selected.as_deref(),
+        &self.aec.styles.plan_filter,
         PlanConfigFormState {
-            open: self.aec.aec_plan_manager_form_open,
-            is_new: self.aec.aec_plan_manager_editing_name.is_none(),
-            editing_name: self.aec.aec_plan_manager_editing_name.as_deref(),
-            name: &self.aec.aec_plan_manager_name,
-            discipline: &self.aec.aec_plan_manager_discipline,
-            scale: &self.aec.aec_plan_manager_scale,
-            planning_stage: self.aec.aec_plan_manager_planning_stage,
-            view_type: self.aec.aec_plan_manager_view_type,
-            phase_filter_visible_existing: self.aec.aec_plan_manager_phase_filter_visible_existing,
-            phase_filter_visible_demolition: self.aec.aec_plan_manager_phase_filter_visible_demolition,
-            phase_filter_visible_new: self.aec.aec_plan_manager_phase_filter_visible_new,
+            open: self.aec.styles.plan_form_open,
+            is_new: self.aec.styles.plan_editing_name.is_none(),
+            editing_name: self.aec.styles.plan_editing_name.as_deref(),
+            name: &self.aec.styles.plan_name,
+            discipline: &self.aec.styles.plan_discipline,
+            scale: &self.aec.styles.plan_scale,
+            planning_stage: self.aec.styles.plan_planning_stage,
+            view_type: self.aec.styles.plan_view_type,
+            phase_filter_visible_existing: self.aec.styles.plan_phase_filter_visible_existing,
+            phase_filter_visible_demolition: self.aec.styles.plan_phase_filter_visible_demolition,
+            phase_filter_visible_new: self.aec.styles.plan_phase_filter_visible_new,
             demolition_style,
             existing_style,
-            default_representation: self.aec.aec_plan_manager_default_representation,
-            component_visibility: &self.aec.aec_plan_manager_component_visibility,
-            wall_styles: &self.aec.aec_plan_manager_wall_styles,
-            style_overlays: &self.aec.aec_plan_manager_style_overlays,
-            overlay_style_id: self.aec.aec_plan_manager_overlay_style_id.as_deref(),
-            overlay_layer_id: self.aec.aec_plan_manager_overlay_layer_id,
-            overlay_line_type: &self.aec.aec_plan_manager_overlay_line_type,
-            overlay_line_color: &self.aec.aec_plan_manager_overlay_line_color,
-            overlay_hatch_pattern: &self.aec.aec_plan_manager_overlay_hatch_pattern,
-            overlay_hatch_color: &self.aec.aec_plan_manager_overlay_hatch_color,
-            overlay_hatch_scale: &self.aec.aec_plan_manager_overlay_hatch_scale,
-            overlay_hatch_angle: &self.aec.aec_plan_manager_overlay_hatch_angle,
-            overlay_hatch_angle_relative: self.aec.aec_plan_manager_overlay_hatch_angle_relative,
-            overlay_fill_color: &self.aec.aec_plan_manager_overlay_fill_color,
-            overlay_linetype_items: &self.aec.aec_style_manager_material_linetype_items,
-            overlay_linetype_combo: &self.aec.aec_style_manager_material_linetype_combo,
-            overlay_line_color_picker_open: self.aec.aec_plan_manager_overlay_line_color_picker_open,
-            overlay_hatch_picker_open: self.aec.aec_plan_manager_overlay_hatch_picker_open,
-            overlay_hatch_color_picker_open: self.aec.aec_plan_manager_overlay_hatch_color_picker_open,
-            overlay_fill_color_picker_open: self.aec.aec_plan_manager_overlay_fill_color_picker_open,
-            contour_hatch_pattern: &self.aec.aec_plan_manager_contour_hatch_pattern,
-            contour_hatch_color: &self.aec.aec_plan_manager_contour_hatch_color,
-            contour_hatch_scale: &self.aec.aec_plan_manager_contour_hatch_scale,
-            contour_hatch_angle: &self.aec.aec_plan_manager_contour_hatch_angle,
-            contour_hatch_angle_relative: self.aec.aec_plan_manager_contour_hatch_angle_relative,
-            contour_hatch_picker_open: self.aec.aec_plan_manager_contour_hatch_picker_open,
-            contour_hatch_color_picker_open: self.aec.aec_plan_manager_contour_hatch_color_picker_open,
+            detail: self.aec.styles.plan_detail,
+            default_representation: self.aec.styles.plan_default_representation,
+            component_visibility: &self.aec.styles.plan_component_visibility,
+            wall_styles: &self.aec.styles.plan_wall_styles,
+            style_overrides: &self.aec.styles.plan_style_overlays,
+            overlay_style_id: self.aec.styles.plan_overlay_style_id.as_deref(),
+            overlay_layer_id: self.aec.styles.plan_overlay_layer_id,
+            overlay_line_type: &self.aec.styles.plan_overlay_line_type,
+            overlay_line_color: &self.aec.styles.plan_overlay_line_color,
+            overlay_hatch_pattern: &self.aec.styles.plan_overlay_hatch_pattern,
+            overlay_hatch_color: &self.aec.styles.plan_overlay_hatch_color,
+            overlay_hatch_scale: &self.aec.styles.plan_overlay_hatch_scale,
+            overlay_hatch_angle: &self.aec.styles.plan_overlay_hatch_angle,
+            overlay_hatch_angle_relative: self.aec.styles.plan_overlay_hatch_angle_relative,
+            overlay_fill_color: &self.aec.styles.plan_overlay_fill_color,
+            overlay_linetype_items: &self.aec.styles.material_linetype_items,
+            overlay_linetype_combo: &self.aec.styles.material_linetype_combo,
+            overlay_line_color_picker_open: self.aec.styles.plan_overlay_line_color_picker_open,
+            overlay_hatch_picker_open: self.aec.styles.plan_overlay_hatch_picker_open,
+            overlay_hatch_color_picker_open: self.aec.styles.plan_overlay_hatch_color_picker_open,
+            overlay_fill_color_picker_open: self.aec.styles.plan_overlay_fill_color_picker_open,
+            contour_hatch_pattern: &self.aec.styles.plan_contour_hatch_pattern,
+            contour_hatch_color: &self.aec.styles.plan_contour_hatch_color,
+            contour_hatch_scale: &self.aec.styles.plan_contour_hatch_scale,
+            contour_hatch_angle: &self.aec.styles.plan_contour_hatch_angle,
+            contour_hatch_angle_relative: self.aec.styles.plan_contour_hatch_angle_relative,
+            contour_hatch_picker_open: self.aec.styles.plan_contour_hatch_picker_open,
+            contour_hatch_color_picker_open: self.aec.styles.plan_contour_hatch_color_picker_open,
         },
-    )
+    ))
 }
 }
 

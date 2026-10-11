@@ -12,8 +12,8 @@ use crate::ui::command_line::CommandLine;
 pub fn tool() -> ToolDef {
     ToolDef {
         id: "AEC_MATERIALMANAGER",
-        label: "Material Manager",
-        icon: IconKind::Svg(include_bytes!("../../../../assets/icons/aec/material_manager.svg")),
+        label: "Materials",
+        icon: IconKind::Svg(include_bytes!("../../../../assets/icons/aec/style_material.svg")),
         event: ModuleEvent::Command("AEC_MATERIALMANAGER".to_string()),
     }
 }

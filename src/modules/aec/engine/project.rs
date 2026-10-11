@@ -335,15 +335,14 @@ impl ProjectFile {
             Ok(text) => {
                 let mut project: ProjectFile = serde_json::from_str(&text)
                     .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
-                crate::modules::aec::engine::library::migrate_display_profiles_into_planarts(
-                    &mut project.display_config_library.configs,
-                    &mut project.material_wall_style_library.wall_styles,
-                );
                 for building in &mut project.buildings {
                     for storey in &mut building.storeys {
                         storey.ensure_control_planes();
                     }
                 }
+                project
+                    .material_wall_style_library
+                    .stamp_origin(crate::modules::aec::engine::style_common::StyleOrigin::Project);
                 Ok(project)
             }
             Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(ProjectFile::default()),
@@ -381,10 +380,14 @@ fn style_library_is_empty(lib: &StyleLibrary) -> bool {
 pub fn resolve_style_library(project: Option<&ProjectFile>) -> StyleLibrary {
     if let Some(project) = project {
         if !style_library_is_empty(&project.material_wall_style_library) {
-            return project.material_wall_style_library.clone();
+            let mut lib = project.material_wall_style_library.clone();
+            lib.stamp_origin(crate::modules::aec::engine::style_common::StyleOrigin::Project);
+            return lib;
         }
     }
-    crate::modules::aec::engine::library::load_or_seed()
+    let mut lib = crate::modules::aec::engine::library::load_or_seed();
+    lib.stamp_origin(crate::modules::aec::engine::style_common::StyleOrigin::Default);
+    lib
 }
 
 /// Resolves the effective `DisplayConfig` library: "project overrides

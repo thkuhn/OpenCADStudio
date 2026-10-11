@@ -7,7 +7,9 @@ use crate::app::OpenCADStudio;
 use crate::modules::aec::engine::room_package::{
     is_room_carrier, resolve_room_package_handle, room_stamp_handle,
 };
-use crate::modules::aec::engine::room_regen::regenerate_room_representation;
+use crate::modules::aec::engine::room_regen::{
+    regenerate_room_representation_with_display, RoomDisplay,
+};
 use crate::modules::aec::engine::room_xdata::{room_from_entity, write_room_record};
 use crate::modules::aec::properties::ROOM_STAMP_GRIP_ID;
 use crate::scene::model::object::GripApply;
@@ -15,6 +17,16 @@ use crate::scene::Scene;
 
 /// Moves the room stamp of a Room carrier entity to `new_pos` (local 2D coords).
 pub fn move_room_stamp(scene: &mut Scene, room_handle: Handle, new_pos: (f64, f64)) -> bool {
+    move_room_stamp_with_display(scene, room_handle, new_pos, RoomDisplay::default())
+}
+
+/// Like [`move_room_stamp`], honoring the active plan kind's room display.
+pub fn move_room_stamp_with_display(
+    scene: &mut Scene,
+    room_handle: Handle,
+    new_pos: (f64, f64),
+    display: RoomDisplay,
+) -> bool {
     let owner = resolve_room_package_handle(scene, room_handle);
     let Some(entity) = scene.document.get_entity_mut(owner) else {
         return false;
@@ -25,7 +37,7 @@ pub fn move_room_stamp(scene: &mut Scene, room_handle: Handle, new_pos: (f64, f6
     room.stamp_pos = Some(new_pos);
     write_room_record(&mut scene.document, owner, &room);
 
-    regenerate_room_representation(scene, owner, None);
+    regenerate_room_representation_with_display(scene, owner, None, display);
     scene.bump_geometry();
     true
 }
@@ -104,7 +116,7 @@ mod tests {
 
         let room = Room::from_polygon("Testraum", &pts, 2.5, 0);
         write_room_record(&mut scene.document, room_h, &room);
-        regenerate_room_representation(&mut scene, room_h, None);
+        regenerate_room_representation_with_display(&mut scene, room_h, None, RoomDisplay::default());
 
         let ok = move_room_stamp(&mut scene, room_h, (7.0, 8.0));
         assert!(ok);

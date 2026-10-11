@@ -195,13 +195,12 @@ pub struct WallStyle {
     /// are migrated to absolute `axis_offset` values at the list level.
     #[serde(deserialize_with = "deserialize_layers")]
     pub layers: Vec<Layer>,
-    /// Style-centered display overrides, keyed by `DisplayConfig::name`: one
-    /// `ComponentRuleSet` per plan type/scale this style has been tuned for.
-    /// Absent entries mean "use the default rule set" (every slot visible,
-    /// standard style, `All` layers for `Contour2D`/`Solid3D`) — see
-    /// [`crate::modules::aec::engine::library::resolve_effective_rule_set`].
-    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
-    pub display_profiles: HashMap<String, crate::modules::aec::engine::display_component::ComponentRuleSet>,
+    /// Name-independent default display profile of this style. `None` means
+    /// the default rule set (every slot visible, standard style, `All` layers
+    /// for `Contour2D`/`Solid3D`). A plan kind overrides it through
+    /// `DisplayConfig::style_overrides`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_profile: Option<crate::modules::aec::engine::display_component::ComponentRuleSet>,
 }
 
 /// Intermediate layer shape used only during library/XDATA-adjacent serde.
@@ -453,11 +452,12 @@ mod tests {
             style: Style {
                 id: id.to_string(),
                 name: format!("Wall Style {id}"),
-                object_kind: "Wall".to_string(),
-                parent_style_id: parent.map(|s| s.to_string()),
+                category: crate::modules::aec::engine::style_common::CATEGORY_WALL.to_string(),
+                origin: Default::default(),
+                parent: parent.map(|s| s.to_string()),
             },
             layers,
-            display_profiles: HashMap::new(),
+            default_profile: None,
         }
     }
 
@@ -553,36 +553,21 @@ mod tests {
     }
 
     #[test]
-    fn wall_style_display_profiles_default_to_empty_and_roundtrip() {
+    fn wall_style_default_profile_defaults_to_none_and_roundtrips() {
         use crate::modules::aec::engine::display_component::ComponentRuleSet;
 
         let style = create_wall_style("s", None, vec![create_layer("a", 0.24)]);
-        assert!(style.display_profiles.is_empty());
+        assert!(style.default_profile.is_none());
 
         let mut with_profile = style.clone();
         let mut rules = ComponentRuleSet::default();
         rules.visibility.insert("AxisLine".to_string(), false);
-        with_profile
-            .display_profiles
-            .insert("Statik 1:50".to_string(), rules);
+        with_profile.default_profile = Some(rules);
 
         let serialized = serde_json::to_string(&with_profile).unwrap();
         let deserialized: WallStyle = serde_json::from_str(&serialized).unwrap();
         assert_eq!(with_profile, deserialized);
-    }
-
-    #[test]
-    fn wall_style_without_display_profiles_field_deserializes_to_empty_map() {
-        // Older/minimal records that predate this field must still parse.
-        let json = r#"{
-            "id": "legacy",
-            "name": "Legacy",
-            "object_kind": "Wall",
-            "parent_style_id": null,
-            "layers": []
-        }"#;
-        let style: WallStyle = serde_json::from_str(json).unwrap();
-        assert!(style.display_profiles.is_empty());
+        assert!(!serde_json::to_string(&style).unwrap().contains("default_profile"));
     }
 
     #[test]
@@ -857,8 +842,8 @@ mod tests {
         let json = r#"{
             "id": "s",
             "name": "S",
-            "object_kind": "Wall",
-            "parent_style_id": null,
+            "category": "Wall",
+            "parent": null,
             "layers": [
                 {
                     "material_id": "a",

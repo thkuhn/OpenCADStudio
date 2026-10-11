@@ -246,9 +246,10 @@ pub struct OpeningStyle {
     pub spring_height: f64,
     #[serde(default)]
     pub slots: HashMap<OpeningComponentSlot, SlotGeometry>,
-    /// Per plan-type (`DisplayConfig` name) slot geometry and visibility.
-    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
-    pub display_profiles: HashMap<String, OpeningDisplayProfile>,
+    /// Name-independent default display profile of this style; a plan kind
+    /// overrides it through `DisplayConfig::style_overrides`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_profile: Option<OpeningDisplayProfile>,
 }
 
 /// Opening-slot geometry/visibility override for one plan type or scale.
@@ -262,14 +263,6 @@ pub struct OpeningDisplayProfile {
 }
 
 impl OpeningStyle {
-    pub fn object_kind_for(kind: OpeningKind) -> &'static str {
-        match kind {
-            OpeningKind::Window => "Window",
-            OpeningKind::Door => "Door",
-            OpeningKind::Breakthrough => "Opening",
-        }
-    }
-
     pub fn standard_window() -> Self {
         let mut slots = HashMap::new();
         slots.insert(
@@ -316,8 +309,9 @@ impl OpeningStyle {
             style: Style {
                 id: SEED_WINDOW_STYLE_ID.to_string(),
                 name: "Standardfenster".to_string(),
-                object_kind: Self::object_kind_for(OpeningKind::Window).to_string(),
-                parent_style_id: None,
+                category: crate::modules::aec::engine::style_common::CATEGORY_OPENING.to_string(),
+                origin: Default::default(),
+                parent: None,
             },
             kind: OpeningKind::Window,
             default_width: crate::modules::aec::engine::openings::DEFAULT_WINDOW_WIDTH,
@@ -329,7 +323,7 @@ impl OpeningStyle {
             shape: OpeningShape::Rectangle,
             spring_height: 0.0,
             slots,
-            display_profiles: HashMap::new(),
+            default_profile: None,
         }
     }
 
@@ -383,8 +377,9 @@ impl OpeningStyle {
             style: Style {
                 id: SEED_WINDOW_DOUBLE_STYLE_ID.to_string(),
                 name: "Zweiflügelfenster".to_string(),
-                object_kind: Self::object_kind_for(OpeningKind::Window).to_string(),
-                parent_style_id: None,
+                category: crate::modules::aec::engine::style_common::CATEGORY_OPENING.to_string(),
+                origin: Default::default(),
+                parent: None,
             },
             kind: OpeningKind::Window,
             default_width: 1.60,
@@ -396,7 +391,7 @@ impl OpeningStyle {
             shape: OpeningShape::Rectangle,
             spring_height: 0.0,
             slots,
-            display_profiles: HashMap::new(),
+            default_profile: None,
         }
     }
 
@@ -446,8 +441,9 @@ impl OpeningStyle {
             style: Style {
                 id: SEED_WINDOW_ARCH_STYLE_ID.to_string(),
                 name: "Rundbogenfenster".to_string(),
-                object_kind: Self::object_kind_for(OpeningKind::Window).to_string(),
-                parent_style_id: None,
+                category: crate::modules::aec::engine::style_common::CATEGORY_OPENING.to_string(),
+                origin: Default::default(),
+                parent: None,
             },
             kind: OpeningKind::Window,
             default_width: 1.00,
@@ -459,7 +455,7 @@ impl OpeningStyle {
             shape: OpeningShape::Arch,
             spring_height: 1.30,
             slots,
-            display_profiles: HashMap::new(),
+            default_profile: None,
         }
     }
 
@@ -493,8 +489,9 @@ impl OpeningStyle {
             style: Style {
                 id: SEED_WINDOW_CIRCLE_STYLE_ID.to_string(),
                 name: "Rundfenster".to_string(),
-                object_kind: Self::object_kind_for(OpeningKind::Window).to_string(),
-                parent_style_id: None,
+                category: crate::modules::aec::engine::style_common::CATEGORY_OPENING.to_string(),
+                origin: Default::default(),
+                parent: None,
             },
             kind: OpeningKind::Window,
             default_width: 0.90,
@@ -506,7 +503,7 @@ impl OpeningStyle {
             shape: OpeningShape::Circle,
             spring_height: 0.0,
             slots,
-            display_profiles: HashMap::new(),
+            default_profile: None,
         }
     }
 
@@ -556,8 +553,9 @@ impl OpeningStyle {
             style: Style {
                 id: SEED_WINDOW_FLOOR_STYLE_ID.to_string(),
                 name: "Bodentiefes Fenster".to_string(),
-                object_kind: Self::object_kind_for(OpeningKind::Window).to_string(),
-                parent_style_id: None,
+                category: crate::modules::aec::engine::style_common::CATEGORY_OPENING.to_string(),
+                origin: Default::default(),
+                parent: None,
             },
             kind: OpeningKind::Window,
             default_width: 1.00,
@@ -569,7 +567,7 @@ impl OpeningStyle {
             shape: OpeningShape::Rectangle,
             spring_height: 0.0,
             slots,
-            display_profiles: HashMap::new(),
+            default_profile: None,
         }
     }
 
@@ -615,8 +613,9 @@ impl OpeningStyle {
             style: Style {
                 id: SEED_DOOR_STYLE_ID.to_string(),
                 name: "Standardtür".to_string(),
-                object_kind: Self::object_kind_for(OpeningKind::Door).to_string(),
-                parent_style_id: None,
+                category: crate::modules::aec::engine::style_common::CATEGORY_OPENING.to_string(),
+                origin: Default::default(),
+                parent: None,
             },
             kind: OpeningKind::Door,
             default_width: crate::modules::aec::engine::openings::DEFAULT_DOOR_WIDTH,
@@ -628,7 +627,7 @@ impl OpeningStyle {
             shape: OpeningShape::Rectangle,
             spring_height: 0.0,
             slots,
-            display_profiles: HashMap::new(),
+            default_profile: None,
         }
     }
 
@@ -686,8 +685,9 @@ impl OpeningStyle {
             style: Style {
                 id: SEED_DOOR_DOUBLE_STYLE_ID.to_string(),
                 name: "Zweiflügelige Eingangstür".to_string(),
-                object_kind: Self::object_kind_for(OpeningKind::Door).to_string(),
-                parent_style_id: None,
+                category: crate::modules::aec::engine::style_common::CATEGORY_OPENING.to_string(),
+                origin: Default::default(),
+                parent: None,
             },
             kind: OpeningKind::Door,
             default_width: 1.80,
@@ -699,7 +699,7 @@ impl OpeningStyle {
             shape: OpeningShape::Rectangle,
             spring_height: 0.0,
             slots,
-            display_profiles: HashMap::new(),
+            default_profile: None,
         }
     }
 
@@ -725,8 +725,9 @@ impl OpeningStyle {
             style: Style {
                 id: SEED_BREAKTHROUGH_STYLE_ID.to_string(),
                 name: "Standarddurchbruch".to_string(),
-                object_kind: Self::object_kind_for(OpeningKind::Breakthrough).to_string(),
-                parent_style_id: None,
+                category: crate::modules::aec::engine::style_common::CATEGORY_OPENING.to_string(),
+                origin: Default::default(),
+                parent: None,
             },
             kind: OpeningKind::Breakthrough,
             default_width: crate::modules::aec::engine::openings::DEFAULT_BREAKTHROUGH_WIDTH,
@@ -738,7 +739,7 @@ impl OpeningStyle {
             shape: OpeningShape::Rectangle,
             spring_height: 0.0,
             slots,
-            display_profiles: HashMap::new(),
+            default_profile: None,
         }
     }
 
@@ -760,8 +761,9 @@ impl OpeningStyle {
             style: Style {
                 id: SEED_BREAKTHROUGH_PIPE_STYLE_ID.to_string(),
                 name: "Installationsdurchbruch rund".to_string(),
-                object_kind: Self::object_kind_for(OpeningKind::Breakthrough).to_string(),
-                parent_style_id: None,
+                category: crate::modules::aec::engine::style_common::CATEGORY_OPENING.to_string(),
+                origin: Default::default(),
+                parent: None,
             },
             kind: OpeningKind::Breakthrough,
             default_width: 0.40,
@@ -773,7 +775,7 @@ impl OpeningStyle {
             shape: OpeningShape::Circle,
             spring_height: 0.0,
             slots,
-            display_profiles: HashMap::new(),
+            default_profile: None,
         }
     }
 }
@@ -853,43 +855,45 @@ pub fn effective_slots(
     Ok(slots)
 }
 
-/// Default inherited slots, then plan-type overlays from root to leaf.
+/// Plan-level opening overrides, keyed by opening `Style.id`.
+pub type OpeningPlanProfiles = HashMap<StyleId, OpeningDisplayProfile>;
+
+/// Default inherited slots, then each style's default profile and the plan's
+/// override for that style, from root to leaf (plan override > style default).
 pub fn effective_slots_for_plan(
     opening_styles: &HashMap<StyleId, OpeningStyle>,
     id: &StyleId,
-    plan_name: Option<&str>,
+    plan_profiles: Option<&OpeningPlanProfiles>,
 ) -> Result<HashMap<OpeningComponentSlot, SlotGeometry>, StyleError> {
     let mut slots = effective_slots(opening_styles, id)?;
-    let Some(plan) = plan_name.filter(|n| !n.is_empty()) else {
-        return Ok(slots);
-    };
     let styles: HashMap<StyleId, Style> = opening_styles
         .iter()
         .map(|(k, v)| (k.clone(), v.style.clone()))
         .collect();
     let chain = resolve_chain(&styles, id)?;
     for style_id in chain {
-        if let Some(os) = opening_styles.get(&style_id) {
-            if let Some(profile) = os.display_profiles.get(plan) {
-                for (slot, geom) in &profile.slots {
-                    slots.insert(*slot, geom.clone());
-                }
+        let default = opening_styles
+            .get(&style_id)
+            .and_then(|os| os.default_profile.as_ref());
+        let over = plan_profiles.and_then(|p| p.get(&style_id));
+        for profile in default.into_iter().chain(over) {
+            for (slot, geom) in &profile.slots {
+                slots.insert(*slot, geom.clone());
             }
         }
     }
     Ok(slots)
 }
 
-/// Overlay plan-type slot visibility (hidden keys only) onto a rule set.
+/// Overlays slot visibility (style default profile, then plan override, root
+/// to leaf) onto a rule set. A slot already hidden in `visibility` (e.g. by
+/// the session 2D/3D/All representation) stays hidden.
 pub fn apply_plan_visibility(
     opening_styles: &HashMap<StyleId, OpeningStyle>,
     id: &StyleId,
-    plan_name: Option<&str>,
+    plan_profiles: Option<&OpeningPlanProfiles>,
     visibility: &mut HashMap<String, bool>,
 ) {
-    let Some(plan) = plan_name.filter(|n| !n.is_empty()) else {
-        return;
-    };
     let styles: HashMap<StyleId, Style> = opening_styles
         .iter()
         .map(|(k, v)| (k.clone(), v.style.clone()))
@@ -897,14 +901,23 @@ pub fn apply_plan_visibility(
     let Ok(chain) = resolve_chain(&styles, id) else {
         return;
     };
+    let mut resolved: HashMap<String, bool> = HashMap::new();
     for style_id in chain {
-        if let Some(os) = opening_styles.get(&style_id) {
-            if let Some(profile) = os.display_profiles.get(plan) {
-                for (key, vis) in &profile.visibility {
-                    visibility.insert(key.clone(), *vis);
-                }
+        let default = opening_styles
+            .get(&style_id)
+            .and_then(|os| os.default_profile.as_ref());
+        let over = plan_profiles.and_then(|p| p.get(&style_id));
+        for profile in default.into_iter().chain(over) {
+            for (key, vis) in &profile.visibility {
+                resolved.insert(key.clone(), *vis);
             }
         }
+    }
+    for (key, vis) in resolved {
+        visibility
+            .entry(key)
+            .and_modify(|v| *v = *v && vis)
+            .or_insert(vis);
     }
 }
 
@@ -962,7 +975,7 @@ mod tests {
         parent.style.id = "parent".into();
         let mut child = OpeningStyle::standard_window();
         child.style.id = "child".into();
-        child.style.parent_style_id = Some("parent".into());
+        child.style.parent = Some("parent".into());
         child.slots.clear();
         child.slots.insert(
             OpeningComponentSlot::Mark2D,
@@ -996,30 +1009,57 @@ mod tests {
     }
 
     #[test]
-    fn plan_profile_overrides_slots_and_visibility() {
+    fn plan_override_beats_style_default_for_slots_and_visibility() {
         let mut style = OpeningStyle::standard_window();
-        let mut profile = OpeningDisplayProfile::default();
-        profile.slots.insert(
+        let mut default = OpeningDisplayProfile::default();
+        default.slots.insert(
+            OpeningComponentSlot::Swing2D,
+            SlotGeometry::Generator(OpeningGenerator::Cross),
+        );
+        default
+            .visibility
+            .insert(OpeningComponentSlot::Sill2D.key().to_string(), false);
+        default
+            .visibility
+            .insert(OpeningComponentSlot::Leaf2D.key().to_string(), false);
+        style.default_profile = Some(default);
+        let map = map_of(vec![style]);
+        let id = SEED_WINDOW_STYLE_ID.to_string();
+
+        // Style default alone (no plan override).
+        let slots = effective_slots_for_plan(&map, &id, None).unwrap();
+        assert_eq!(
+            slots.get(&OpeningComponentSlot::Swing2D),
+            Some(&SlotGeometry::Generator(OpeningGenerator::Cross))
+        );
+        let mut vis = HashMap::new();
+        apply_plan_visibility(&map, &id, None, &mut vis);
+        assert_eq!(vis.get("Sill2D"), Some(&false));
+
+        // Plan override wins over the style default.
+        let mut over = OpeningDisplayProfile::default();
+        over.slots.insert(
             OpeningComponentSlot::Swing2D,
             SlotGeometry::Generator(OpeningGenerator::SwingArc),
         );
-        profile
-            .visibility
-            .insert(OpeningComponentSlot::Sill2D.key().to_string(), false);
-        style
-            .display_profiles
-            .insert("Ausführungsplan".to_string(), profile);
-        let map = map_of(vec![style]);
-        let id = SEED_WINDOW_STYLE_ID.to_string();
-        let default_slots = effective_slots_for_plan(&map, &id, None).unwrap();
-        assert!(!default_slots.contains_key(&OpeningComponentSlot::Swing2D));
-        let plan_slots = effective_slots_for_plan(&map, &id, Some("Ausführungsplan")).unwrap();
+        over.visibility
+            .insert(OpeningComponentSlot::Sill2D.key().to_string(), true);
+        let mut plan = OpeningPlanProfiles::new();
+        plan.insert(id.clone(), over);
+        let plan_slots = effective_slots_for_plan(&map, &id, Some(&plan)).unwrap();
         assert_eq!(
             plan_slots.get(&OpeningComponentSlot::Swing2D),
             Some(&SlotGeometry::Generator(OpeningGenerator::SwingArc))
         );
         let mut vis = HashMap::new();
-        apply_plan_visibility(&map, &id, Some("Ausführungsplan"), &mut vis);
+        apply_plan_visibility(&map, &id, Some(&plan), &mut vis);
+        assert_eq!(vis.get("Sill2D"), Some(&true));
+        assert_eq!(vis.get("Leaf2D"), Some(&false));
+
+        // A slot hidden by the session representation stays hidden.
+        let mut vis = HashMap::new();
+        vis.insert("Sill2D".to_string(), false);
+        apply_plan_visibility(&map, &id, Some(&plan), &mut vis);
         assert_eq!(vis.get("Sill2D"), Some(&false));
     }
 

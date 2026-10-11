@@ -1340,6 +1340,8 @@ mod tests {
             PlanningStage::Design,
             ViewType::FloorPlan,
         );
+        let mut entwurf_cfg = entwurf_cfg;
+        entwurf_cfg.detail.hatches = false;
         let rules_100 = build_effective_slab_rule_set(&entwurf_cfg, None, None);
         regenerate_slab_representation(&mut scene, slab_h, None, Some(&rules_100));
         assert!(
@@ -1354,6 +1356,8 @@ mod tests {
             PlanningStage::Execution,
             ViewType::FloorPlan,
         );
+        let mut rcp_cfg = rcp_cfg;
+        rcp_cfg.detail.ceiling_view = true;
         let rules_rcp = build_effective_slab_rule_set(&rcp_cfg, None, None);
         assert!(!rules_rcp.is_slab_visible(SlabComponentSlot::Contour2D));
         assert!(rules_rcp.is_slab_visible(SlabComponentSlot::CeilingOutline2D));
@@ -1365,6 +1369,8 @@ mod tests {
             PlanningStage::Execution,
             ViewType::FloorPlan,
         );
+        let mut rohbau_cfg = rohbau_cfg;
+        rohbau_cfg.detail.layers = crate::modules::aec::engine::plan_view::LayerDetail::StructuralOnly;
         let style = SlabStyle::new("style_slab_multi", "Multi Slab").with_layers(vec![
             SlabStyleLayer::new(
                 "Parquet",

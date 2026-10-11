@@ -21,7 +21,7 @@ use std::collections::HashMap;
 pub fn eval_formula(formula: &str, vars: &HashMap<String, f64>) -> Result<f64, String> {
     let trimmed = formula.trim();
     if trimmed.is_empty() {
-        return Err("empty formula".to_string());
+        return Err(crate::t!("empty formula").into_owned());
     }
 
     let mut context = HashMapContext::<DefaultNumericTypes>::new();
@@ -43,7 +43,7 @@ pub fn eval_formula(formula: &str, vars: &HashMap<String, f64>) -> Result<f64, S
     if f.is_finite() {
         Ok(f)
     } else {
-        Err(format!("non-finite result: {f}"))
+        Err(crate::tf!("non-finite result: {f}").into_owned())
     }
 }
 

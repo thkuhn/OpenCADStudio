@@ -398,6 +398,25 @@ pub fn apply_display_config_to_scene_with_representation(
         }
     }
 
+    // Rooms follow the plan kind's detail profile (stamp, hatches, thresholds).
+    let room_display = super::room_regen::RoomDisplay::from_detail(
+        &config.detail,
+        representation_override,
+    );
+    for room_handle in super::room_package::all_room_carrier_handles(scene) {
+        if super::room_regen::regenerate_room_representation_with_display(
+            scene,
+            room_handle,
+            library_override,
+            room_display,
+        )
+        .is_some()
+        {
+            touched.push(room_handle);
+            touched.extend(super::room_package::collect_room_display_children(scene, room_handle));
+        }
+    }
+
     touched.sort_by_key(|h| h.value());
     touched.dedup();
     touched

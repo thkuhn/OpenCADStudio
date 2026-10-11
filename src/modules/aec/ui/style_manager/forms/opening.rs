@@ -20,7 +20,11 @@ use crate::modules::aec::state::{
 use crate::modules::aec::styles::opening_style_manager::{
     preview_baked_paths_for_mode, slots_from_buffers, PREVIEW_WALL_THICKNESS,
 };
-use crate::modules::aec::ui::aec_ui_util::{list_style, muted, no_matches, section_title};
+use crate::modules::aec::engine::style_common::StyleOrigin;
+use crate::modules::aec::ui::aec_ui_util::{list_style, muted};
+use crate::modules::aec::ui::style_manager::actions::{self, ActionMessages};
+use crate::modules::aec::ui::style_manager::list::{self, filter_entries, ListEntry, ListSpec};
+use crate::modules::aec::ui::style_manager::StyleParts;
 use crate::t;
 use crate::tr;
 
@@ -48,14 +52,14 @@ pub struct OpeningStyleFormState<'a> {
     pub sketch_draft_bulges: &'a [f64],
 }
 
-pub fn view_window<'a>(
+pub fn parts<'a>(
     library: &'a StyleLibrary,
     project: Option<&'a ProjectFile>,
     session: Option<&'a StyleLibrary>,
-    selected_id: Option<&str>,
-    filter: &str,
+    selected_id: Option<&'a str>,
+    filter: &'a str,
     form: OpeningStyleFormState<'a>,
-) -> Element<'a, Message> {
+) -> StyleParts<'a> {
     let entries = crate::modules::aec::engine::library::combined_opening_style_entries_with_session(
         project, session,
     );
@@ -74,80 +78,47 @@ pub fn view_window<'a>(
     for e in &entries {
         merged.upsert_opening_style(e.opening_style.clone());
     }
-    for m in &library.materials {
-        merged.upsert_material(m.clone());
-    }
 
-    let filter_lower = filter.to_lowercase();
-    let owned_rows: Vec<(OpeningStyle, usize, LibrarySource)> = merged
+    let all: Vec<ListEntry> = merged
         .opening_style_tree()
         .into_iter()
-        .filter(|node| {
-            filter.is_empty()
-                || node.style.style.name.to_lowercase().contains(&filter_lower)
-                || node.style.style.id.to_lowercase().contains(&filter_lower)
-        })
-        .map(|node| {
-            let source = source_by_id
-                .get(&node.style.style.id)
-                .copied()
-                .unwrap_or(LibrarySource::Standard);
-            (node.style.clone(), node.depth, source)
-        })
-        .collect();
-
-    let style_rows: Vec<Element<'_, Message>> = owned_rows
-        .into_iter()
-        .map(|(style, depth, source)| {
-            let selected = selected_id == Some(style.style.id.as_str());
-            tree_row(
-                style.style.id,
-                style.style.name,
-                style.kind,
-                depth,
-                source,
-                selected,
-            )
+        .map(|node| ListEntry {
+            id: node.style.style.id.clone(),
+            label: format!("{}{}", "  ".repeat(node.depth), node.style.style.name),
+            detail: Some(node.style.kind.as_str().to_string()),
+            origin: StyleOrigin::from(
+                source_by_id
+                    .get(&node.style.style.id)
+                    .copied()
+                    .unwrap_or(LibrarySource::Standard),
+            ),
+            group: None,
+            swatch: None,
         })
         .collect();
+    let rows = filter_entries(all, filter);
 
-    let mut master_list = column![section_title(t!("Opening Styles"))].spacing(2);
-    if style_rows.is_empty() {
-        master_list = master_list.push(no_matches());
-    } else {
-        for row_el in style_rows {
-            master_list = master_list.push(row_el);
-        }
-    }
-
-    let sidebar = column![
-        row![
-            text_input(t!("Search opening styles…").as_ref(), filter)
-                .on_input(|v| Message::Aec(AecMessage::AecOpeningStyleManagerFilter(v)))
-                .size(11)
-                .padding([4, 6]),
-            button(text("+").size(11))
-                .on_press(Message::Aec(AecMessage::AecOpeningStyleManagerNew))
-                .padding([4, 8]),
-        ]
-        .spacing(4),
-        scrollable(master_list),
-    ]
-    .spacing(8)
-    .width(270);
+    let list = list::view(
+        ListSpec {
+            title: t!("Opening Styles").into_owned(),
+            search_hint: t!("Search opening styles…").into_owned(),
+            new_label: t!("+ Neuer Öffnungsstil").into_owned(),
+            filter,
+            selected: selected_id,
+            on_filter: |s| Message::Aec(AecMessage::AecOpeningStyleManagerFilter(s)),
+            on_select: |id| Message::Aec(AecMessage::AecOpeningStyleManagerSelect(id)),
+            on_new: Message::Aec(AecMessage::AecOpeningStyleManagerNew),
+        },
+        &rows,
+    );
 
     let selected_source = selected_id.and_then(|id| source_by_id.get(id).copied());
-    let selected_has_standard_counterpart = selected_id
-        .map(|id| standard_ids.contains(id))
-        .unwrap_or(false);
+    let has_standard = selected_id.is_some_and(|id| standard_ids.contains(id));
+    let open = form.open;
+    let is_new = form.is_new;
 
-    let detail = if form.open {
-        form_view(
-            library,
-            form,
-            selected_source,
-            selected_has_standard_counterpart,
-        )
+    let detail: Element<'a, Message> = if form.open {
+        form_view(library, form)
     } else {
         container(text(t!("Select an opening style to edit or create a new one.")).style(muted))
             .width(FillLen)
@@ -156,42 +127,25 @@ pub fn view_window<'a>(
             .center_y(FillLen)
             .into()
     };
-
-    row![sidebar, detail]
-        .spacing(16)
-        .padding(12)
-        .into()
+    let actions = open.then(|| {
+        actions::view(
+            ActionMessages {
+                save_apply: Message::Aec(AecMessage::AecOpeningStyleManagerSaveAndApply),
+                save: Message::Aec(AecMessage::AecOpeningStyleManagerSave),
+                duplicate: Message::Aec(AecMessage::AecOpeningStyleManagerDuplicate),
+                delete: Message::Aec(AecMessage::AecOpeningStyleManagerDelete),
+                to_standard: Message::Aec(AecMessage::AecStyleManagerCopyOpeningStyleToGlobal),
+                to_project: Message::Aec(AecMessage::AecStyleManagerCopyOpeningStyleToProject),
+            },
+            is_new,
+            selected_source.map(StyleOrigin::from),
+            has_standard,
+        )
+    });
+    StyleParts { list, form: detail, actions }
 }
 
-fn tree_row<'a>(
-    id: String,
-    name: String,
-    kind: OpeningKind,
-    depth: usize,
-    source: LibrarySource,
-    selected: bool,
-) -> Element<'a, Message> {
-    let indent = "    ".repeat(depth);
-    let badge = match source {
-        LibrarySource::Standard => t!("Std"),
-        LibrarySource::Project => t!("Prj"),
-        LibrarySource::Session => t!("Ses"),
-    };
-    let label = format!("{indent}{name}  [{}]  {badge}", kind.as_str());
-    button(text(label).size(11))
-        .style(list_style(selected))
-        .padding([4, 6])
-        .width(FillLen)
-        .on_press(Message::Aec(AecMessage::AecOpeningStyleManagerSelect(id)))
-        .into()
-}
-
-fn form_view<'a>(
-    library: &'a StyleLibrary,
-    form: OpeningStyleFormState<'a>,
-    selected_source: Option<LibrarySource>,
-    has_standard_counterpart: bool,
-) -> Element<'a, Message> {
+fn form_view<'a>(library: &'a StyleLibrary, form: OpeningStyleFormState<'a>) -> Element<'a, Message> {
     let parent_label = form.parent_name.unwrap_or("(None)");
     let kinds: Vec<String> = vec![
         OpeningKind::Window.as_str().to_string(),
@@ -332,7 +286,7 @@ fn form_view<'a>(
                 break;
             };
             names.push(os.style.name.clone());
-            cursor = os.style.parent_style_id.as_deref();
+            cursor = os.style.parent.as_deref();
         }
         names.reverse();
         if !names.is_empty() {
@@ -391,12 +345,12 @@ fn form_view<'a>(
             .align_y(iced::Center),
         )
         .push(text(tr!("aec", "opening-slots")).size(10).style(muted))
-        .push(slot_header(form.profile_selected.is_some()))
+        .push(slot_header(true))
         .push(
             container(scrollable(column(slot_rows(
                 form.slots,
                 form.sketch_slot,
-                form.profile_selected.is_some(),
+                true,
             )).spacing(4)).height(150))
                 .style(|theme: &Theme| container::Style {
                     border: Border {
@@ -495,43 +449,7 @@ fn form_view<'a>(
             }),
         );
 
-    let mut actions = row![
-        Space::new(),
-        button(text(t!("Übernehmen")).size(11))
-            .style(button::primary)
-            .padding([5, 12])
-            .on_press(Message::Aec(AecMessage::AecOpeningStyleManagerSaveAndApply)),
-        button(text(t!("Speichern")).size(11))
-            .style(button::subtle)
-            .padding([5, 12])
-            .on_press(Message::Aec(AecMessage::AecOpeningStyleManagerSave)),
-    ]
-    .spacing(8);
-
-    if !form.is_new {
-        actions = actions.push(
-            button(text(t!("Delete")).size(11))
-                .style(button::danger)
-                .padding([5, 12])
-                .on_press(Message::Aec(AecMessage::AecOpeningStyleManagerDelete)),
-        );
-        if selected_source == Some(LibrarySource::Project) && !has_standard_counterpart {
-            actions = actions.push(
-                button(text(t!("→ Standard")).size(11))
-                    .padding([5, 12])
-                    .on_press(Message::Aec(AecMessage::AecStyleManagerCopyOpeningStyleToGlobal)),
-            );
-        }
-        if selected_source == Some(LibrarySource::Standard) {
-            actions = actions.push(
-                button(text(t!("→ Projekt")).size(11))
-                    .padding([5, 12])
-                    .on_press(Message::Aec(AecMessage::AecStyleManagerCopyOpeningStyleToProject)),
-            );
-        }
-    }
-
-    column![detail_col, Space::new(), actions]
+    column![detail_col]
         .spacing(10)
         .height(FillLen)
         .into()
@@ -564,11 +482,9 @@ fn form_preview_style(form: &OpeningStyleFormState<'_>) -> OpeningStyle {
         spring,
         {
             let mut slots = slots_from_buffers(form.slots);
-            if form.profile_selected.is_some() {
-                for buf in form.slots {
-                    if !buf.visible {
-                        slots.remove(&buf.slot);
-                    }
+            for buf in form.slots {
+                if !buf.visible {
+                    slots.remove(&buf.slot);
                 }
             }
             slots

@@ -91,7 +91,7 @@ pub fn aec_plane_3point_do(
         }
     };
 
-    command_line.push_info(&format!(
+    command_line.push_info(&crate::tf!(
         "AEC_PLANE_3POINT: Ebene '{}' erstellt (Neigung: {:.1}°, Normale: [{:.2}, {:.2}, {:.2}]).",
         plane.name,
         plane.slope_degrees(),

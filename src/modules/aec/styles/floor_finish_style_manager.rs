@@ -23,9 +23,9 @@ use crate::modules::{IconKind, ModuleEvent, ToolDef};
 pub fn tool() -> ToolDef {
     ToolDef {
         id: "AEC_FLOORFINISHSTYLEMANAGER",
-        label: "Floor Finish Style Manager",
+        label: "Slab Finish",
         icon: IconKind::Svg(include_bytes!(
-            "../../../../assets/icons/aec/material_manager.svg"
+            "../../../../assets/icons/aec/style_slab_structural.svg"
         )),
         event: ModuleEvent::Command("AEC_FLOORFINISHSTYLEMANAGER".to_string()),
     }
@@ -52,9 +52,9 @@ impl OpenCADStudio {
             .or_else(|| entries.first().map(|e| e.finish_style.style.id.clone()))
             .or_else(|| lib.floor_finish_styles.first().map(|s| s.style.id.clone()));
 
-        self.aec.aec_floor_finish_style_manager_filter.clear();
-        self.aec.aec_floor_finish_style_manager_editing_id = None;
-        self.aec.aec_floor_finish_style_manager_form_open = false;
+        self.aec.styles.floor_finish_filter.clear();
+        self.aec.styles.floor_finish_editing_id = None;
+        self.aec.styles.floor_finish_form_open = false;
 
         if let Some(id) = select_id {
             let _ = self.aec_floor_finish_style_manager_select(id);
@@ -63,7 +63,7 @@ impl OpenCADStudio {
         }
 
         self.active_modal = Some(crate::app::ModalKind::Aec(
-            AecModalKind::FloorFinishStyleManager,
+            AecModalKind::Styles,
         ));
         Task::none()
     }
@@ -85,15 +85,15 @@ impl OpenCADStudio {
             });
 
         if let Some(style) = style {
-            self.aec.aec_floor_finish_style_manager_selected = Some(style.style.id.clone());
-            self.aec.aec_floor_finish_style_manager_editing_id = Some(style.style.id.clone());
+            self.aec.styles.floor_finish_selected = Some(style.style.id.clone());
+            self.aec.styles.floor_finish_editing_id = Some(style.style.id.clone());
             self.aec.aec_last_floor_finish_style_id = Some(style.style.id.clone());
-            self.aec.aec_floor_finish_style_manager_name = style.style.name.clone();
-            self.aec.aec_floor_finish_style_manager_parent = style.style.parent_style_id.clone();
-            self.aec.aec_floor_finish_style_manager_layers =
+            self.aec.styles.floor_finish_name = style.style.name.clone();
+            self.aec.styles.floor_finish_parent = style.style.parent.clone();
+            self.aec.styles.floor_finish_layers =
                 style.layers.iter().map(layer_to_buffer).collect();
-            self.aec.aec_floor_finish_style_manager_form_open = true;
-            self.aec.aec_floor_finish_style_manager_drag_index = None;
+            self.aec.styles.floor_finish_form_open = true;
+            self.aec.styles.floor_finish_drag_index = None;
         }
 
         Task::none()
@@ -107,12 +107,12 @@ impl OpenCADStudio {
             .and_then(|l| l.materials.first().map(|m| m.id.clone()))
             .unwrap_or_else(|| "Parkett Eiche".to_string());
 
-        self.aec.aec_floor_finish_style_manager_selected = None;
-        self.aec.aec_floor_finish_style_manager_editing_id = None;
-        self.aec.aec_floor_finish_style_manager_name =
+        self.aec.styles.floor_finish_selected = None;
+        self.aec.styles.floor_finish_editing_id = None;
+        self.aec.styles.floor_finish_name =
             crate::t!("New Floor Finish Style").to_string();
-        self.aec.aec_floor_finish_style_manager_parent = None;
-        self.aec.aec_floor_finish_style_manager_layers = vec![
+        self.aec.styles.floor_finish_parent = None;
+        self.aec.styles.floor_finish_layers = vec![
             AecSlabLayerBuffer {
                 material_id: first_mat,
                 thickness: "1.5".to_string(),
@@ -144,30 +144,30 @@ impl OpenCADStudio {
                 layer_id: Some(uuid::Uuid::new_v4()),
             },
         ];
-        self.aec.aec_floor_finish_style_manager_form_open = true;
-        self.aec.aec_floor_finish_style_manager_drag_index = None;
+        self.aec.styles.floor_finish_form_open = true;
+        self.aec.styles.floor_finish_drag_index = None;
 
         Task::none()
     }
 
     pub(crate) fn aec_floor_finish_style_manager_duplicate(&mut self) -> Task<Message> {
-        let current_layers = self.aec.aec_floor_finish_style_manager_layers.clone();
-        let current_name = self.aec.aec_floor_finish_style_manager_name.clone();
-        let current_parent = self.aec.aec_floor_finish_style_manager_parent.clone();
+        let current_layers = self.aec.styles.floor_finish_layers.clone();
+        let current_name = self.aec.styles.floor_finish_name.clone();
+        let current_parent = self.aec.styles.floor_finish_parent.clone();
 
-        self.aec.aec_floor_finish_style_manager_selected = None;
-        self.aec.aec_floor_finish_style_manager_editing_id = None;
-        self.aec.aec_floor_finish_style_manager_name = format!("{current_name} (Kopie)");
-        self.aec.aec_floor_finish_style_manager_parent = current_parent;
-        self.aec.aec_floor_finish_style_manager_layers = current_layers
+        self.aec.styles.floor_finish_selected = None;
+        self.aec.styles.floor_finish_editing_id = None;
+        self.aec.styles.floor_finish_name = format!("{current_name} (Kopie)");
+        self.aec.styles.floor_finish_parent = current_parent;
+        self.aec.styles.floor_finish_layers = current_layers
             .into_iter()
             .map(|mut l| {
                 l.layer_id = Some(uuid::Uuid::new_v4());
                 l
             })
             .collect();
-        self.aec.aec_floor_finish_style_manager_form_open = true;
-        self.aec.aec_floor_finish_style_manager_drag_index = None;
+        self.aec.styles.floor_finish_form_open = true;
+        self.aec.styles.floor_finish_drag_index = None;
 
         Task::none()
     }
@@ -181,7 +181,7 @@ impl OpenCADStudio {
             .unwrap_or_else(|| "Fliesen Feinsteinzeug".to_string());
 
         self.aec
-            .aec_floor_finish_style_manager_layers
+            .styles.floor_finish_layers
             .push(AecSlabLayerBuffer {
                 material_id: first_mat,
                 thickness: "1.5".to_string(),
@@ -195,23 +195,23 @@ impl OpenCADStudio {
     }
 
     pub(crate) fn aec_floor_finish_style_manager_layer_remove(&mut self, index: usize) {
-        if index < self.aec.aec_floor_finish_style_manager_layers.len() {
-            self.aec.aec_floor_finish_style_manager_layers.remove(index);
+        if index < self.aec.styles.floor_finish_layers.len() {
+            self.aec.styles.floor_finish_layers.remove(index);
         }
     }
 
     pub(crate) fn aec_floor_finish_style_manager_layer_move_up(&mut self, index: usize) {
-        if index > 0 && index < self.aec.aec_floor_finish_style_manager_layers.len() {
+        if index > 0 && index < self.aec.styles.floor_finish_layers.len() {
             self.aec
-                .aec_floor_finish_style_manager_layers
+                .styles.floor_finish_layers
                 .swap(index, index - 1);
         }
     }
 
     pub(crate) fn aec_floor_finish_style_manager_layer_move_down(&mut self, index: usize) {
-        if index + 1 < self.aec.aec_floor_finish_style_manager_layers.len() {
+        if index + 1 < self.aec.styles.floor_finish_layers.len() {
             self.aec
-                .aec_floor_finish_style_manager_layers
+                .styles.floor_finish_layers
                 .swap(index, index + 1);
         }
     }
@@ -219,20 +219,20 @@ impl OpenCADStudio {
     pub(crate) fn aec_floor_finish_style_manager_save_internal(
         &mut self,
     ) -> Result<FloorFinishStyle, String> {
-        let name = self.aec.aec_floor_finish_style_manager_name.trim().to_string();
+        let name = self.aec.styles.floor_finish_name.trim().to_string();
         if name.is_empty() {
-            return Err("Floor finish style name cannot be empty".to_string());
+            return Err(crate::t!("Floor finish style name cannot be empty").into_owned());
         }
 
         let mut layers = Vec::new();
-        for (i, buf) in self.aec.aec_floor_finish_style_manager_layers.iter().enumerate() {
-            let layer = buffer_to_layer(buf).map_err(|e| format!("Layer {}: {}", i + 1, e))?;
+        for (i, buf) in self.aec.styles.floor_finish_layers.iter().enumerate() {
+            let layer = buffer_to_layer(buf).map_err(|e| crate::tf!("Layer {}: {}", i + 1, e).into_owned())?;
             layers.push(layer);
         }
 
         let id = self
             .aec
-            .aec_floor_finish_style_manager_editing_id
+            .styles.floor_finish_editing_id
             .clone()
             .unwrap_or_else(|| {
                 name.to_lowercase()
@@ -245,29 +245,30 @@ impl OpenCADStudio {
             style: Style {
                 id: id.clone(),
                 name: name.clone(),
-                object_kind: "FloorFinish".to_string(),
-                parent_style_id: self.aec.aec_floor_finish_style_manager_parent.clone(),
+                category: "FloorFinish".to_string(),
+                origin: Default::default(),
+                parent: self.aec.styles.floor_finish_parent.clone(),
             },
             layers,
-            display_profiles: std::collections::HashMap::new(),
+            default_profile: None,
         };
 
         // Self-parent validation
-        if finish_style.style.parent_style_id.as_deref() == Some(id.as_str()) {
-            return Err("Style cannot be its own parent".to_string());
+        if finish_style.style.parent.as_deref() == Some(id.as_str()) {
+            return Err(crate::t!("Style cannot be its own parent").into_owned());
         }
 
         // Validate cycle in hierarchy
-        if let Some(parent_id) = &finish_style.style.parent_style_id {
+        if let Some(parent_id) = &finish_style.style.parent {
             if let Some(lib) = &self.aec.aec_style_library {
                 let mut visited = vec![id.clone()];
                 let mut curr = Some(parent_id.clone());
                 while let Some(c) = curr {
                     if visited.contains(&c) {
-                        return Err(format!("Inheritance cycle detected involving '{c}'"));
+                        return Err(crate::tf!("Inheritance cycle detected involving '{c}'").into_owned());
                     }
                     visited.push(c.clone());
-                    curr = lib.find_floor_finish_style(&c).and_then(|s| s.style.parent_style_id.clone());
+                    curr = lib.find_floor_finish_style(&c).and_then(|s| s.style.parent.clone());
                 }
             }
         }
@@ -280,8 +281,8 @@ impl OpenCADStudio {
             self.aec_upsert_floor_finish_style_into_session(finish_style.clone());
         }
 
-        self.aec.aec_floor_finish_style_manager_selected = Some(id.clone());
-        self.aec.aec_floor_finish_style_manager_editing_id = Some(id.clone());
+        self.aec.styles.floor_finish_selected = Some(id.clone());
+        self.aec.styles.floor_finish_editing_id = Some(id.clone());
         self.aec.aec_last_floor_finish_style_id = Some(id);
 
         Ok(finish_style)
@@ -335,7 +336,7 @@ impl OpenCADStudio {
 
                 let mut count = 0;
                 let finishes = style.to_room_finishes();
-                for handle in room_handles {
+                for handle in room_handles.iter().copied() {
                     if let Some(tab_data) = self.tabs.get_mut(tab) {
                         let doc = &mut tab_data.scene.document;
                         if let Some(entity) = doc.get_entity_mut(handle) {
@@ -348,13 +349,13 @@ impl OpenCADStudio {
                                 );
                             }
                         }
-                        crate::modules::aec::engine::room_regen::regenerate_room_representation(
-                            &mut tab_data.scene, handle, None,
-                        );
                         count += 1;
                     }
                 }
 
+                for handle in room_handles.iter().copied() {
+                    self.regenerate_room_respecting_active_display_config(tab, handle);
+                }
                 if count > 0 {
                     if let Some(tab_data) = self.tabs.get_mut(tab) {
                         tab_data.dirty = true;
@@ -388,7 +389,7 @@ impl OpenCADStudio {
     }
 
     pub(crate) fn aec_floor_finish_style_manager_delete(&mut self) -> Task<Message> {
-        let Some(selected) = self.aec.aec_floor_finish_style_manager_selected.clone() else {
+        let Some(selected) = self.aec.styles.floor_finish_selected.clone() else {
             return Task::none();
         };
 
@@ -429,9 +430,9 @@ impl OpenCADStudio {
                 )
                 .as_ref(),
             );
-            self.aec.aec_floor_finish_style_manager_selected = None;
-            self.aec.aec_floor_finish_style_manager_editing_id = None;
-            self.aec.aec_floor_finish_style_manager_form_open = false;
+            self.aec.styles.floor_finish_selected = None;
+            self.aec.styles.floor_finish_editing_id = None;
+            self.aec.styles.floor_finish_form_open = false;
         } else {
             self.command_line.push_error(
                 crate::tf!(

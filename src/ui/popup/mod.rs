@@ -2,7 +2,6 @@ pub mod context_menu;
 pub mod cycle_popup;
 pub mod isolate_popup;
 pub mod plan_popup;
-pub mod representation_popup;
 pub mod polar_popup;
 pub mod scale_popup;
 pub mod selection_filter_popup;

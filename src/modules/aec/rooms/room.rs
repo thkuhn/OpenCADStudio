@@ -25,7 +25,9 @@ use crate::modules::aec::engine::loop_detection::{find_all_closed_loops, find_cl
 use crate::modules::aec::engine::plan_view::PlanPhase;
 use crate::modules::aec::engine::room::{Room, RoomFinish, RoomFunction};
 use crate::modules::aec::engine::room_package::*;
-use crate::modules::aec::engine::room_regen::regenerate_room_representation;
+use crate::modules::aec::engine::room_regen::{
+    regenerate_room_representation, regenerate_room_representation_with_display, RoomDisplay,
+};
 use crate::modules::aec::engine::room_xdata::{room_from_entity, write_room_record};
 use crate::modules::aec::engine::xdata::{
     collect_wall_segments, collect_wall_structural_segments, write_aec_record, AEC_APPID,
@@ -106,6 +108,7 @@ pub struct RoomCommand {
     pub(crate) mode: RoomDrawMode,
     pub(crate) rect_corner: Option<DVec3>,
     library: Option<StyleLibrary>,
+    display: RoomDisplay,
     pub(crate) name: String,
     pub(crate) number: String,
     pub(crate) function: RoomFunction,
@@ -122,6 +125,12 @@ pub struct RoomCommand {
 }
 
 impl RoomCommand {
+    /// Room visibility of the active plan kind used when committing.
+    pub fn with_display(mut self, display: RoomDisplay) -> Self {
+        self.display = display;
+        self
+    }
+
     pub fn new() -> Self {
         Self::new_with_library(Some(crate::modules::aec::engine::library::load_or_seed()))
     }
@@ -133,6 +142,7 @@ impl RoomCommand {
             mode: RoomDrawMode::PickPoint,
             rect_corner: None,
             library,
+            display: RoomDisplay::default(),
             name: "Wohnen".to_string(),
             number: "01".to_string(),
             function: RoomFunction::Living,
@@ -265,10 +275,10 @@ impl RoomCommand {
         points: &[(f64, f64)],
     ) -> Result<Handle, String> {
         if points.len() < 3 {
-            return Err("A closed room requires at least 3 vertices.".to_string());
+            return Err(crate::t!("A closed room requires at least 3 vertices.").into_owned());
         }
         if area(points) < 1e-4 {
-            return Err("Room polygon area is too small or degenerate.".to_string());
+            return Err(crate::t!("Room polygon area is too small or degenerate.").into_owned());
         }
 
         let mut pl = LwPolyline::new();
@@ -310,7 +320,12 @@ impl RoomCommand {
         }
 
         write_room_record(&mut scene.document, handle, &room);
-        let _ = regenerate_room_representation(scene, handle, self.library.as_ref());
+        let _ = regenerate_room_representation_with_display(
+            scene,
+            handle,
+            self.library.as_ref(),
+            self.display,
+        );
 
         self.last_committed = Some(handle);
         scene.bump_geometry();
@@ -325,13 +340,13 @@ impl RoomCommand {
         handle: Handle,
     ) -> Result<Handle, String> {
         let Some(entity) = scene.document.get_entity_mut(handle) else {
-            return Err(format!("Entity {handle} not found."));
+            return Err(crate::tf!("Entity {handle} not found.").into_owned());
         };
         let EntityType::LwPolyline(pl) = entity else {
-            return Err("Selected entity is not a 2D polyline (LwPolyline).".to_string());
+            return Err(crate::t!("Selected entity is not a 2D polyline (LwPolyline).").into_owned());
         };
         if pl.vertices.len() < 3 {
-            return Err("Polyline must have at least 3 vertices.".to_string());
+            return Err(crate::t!("Polyline must have at least 3 vertices.").into_owned());
         }
         pl.is_closed = true;
         pl.common.layer = AEC_ROOM_CARRIER_LAYER.to_string();
@@ -369,7 +384,12 @@ impl RoomCommand {
         }
 
         write_room_record(&mut scene.document, handle, &room);
-        let _ = regenerate_room_representation(scene, handle, self.library.as_ref());
+        let _ = regenerate_room_representation_with_display(
+            scene,
+            handle,
+            self.library.as_ref(),
+            self.display,
+        );
 
         self.last_committed = Some(handle);
         scene.bump_geometry();
@@ -385,7 +405,7 @@ impl RoomCommand {
             find_closed_loop_at_point(&baseline_segments, pt, 1e-3)
         });
         let Some(loop_pts) = loop_pts else {
-            return Err("No enclosing closed wall loop found around clicked point.".to_string());
+            return Err(crate::t!("No enclosing closed wall loop found around clicked point.").into_owned());
         };
         self.stamp_pos = Some(pt);
         self.commit_polygon(scene, &loop_pts)
@@ -689,7 +709,7 @@ impl CadCommand for RoomCommand {
                 LiveCommandField {
                     field_id: "room_function",
                     label: crate::tr!("aec", "room-function"),
-                    value: LiveFieldValue::Picker(self.function.display_name().to_string()),
+                    value: LiveFieldValue::Picker(self.function.localized_name()),
                 },
                 LiveCommandField {
                     field_id: "room_clear_height",

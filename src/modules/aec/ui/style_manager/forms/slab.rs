@@ -4,9 +4,9 @@
 use iced::mouse;
 use iced::widget::canvas::{Frame, Geometry, LineDash, Path, Program, Stroke, Style as CanvasStyle, Text};
 use iced::widget::{
-    button, canvas, column, container, pick_list, row, scrollable, text, text_input, Space,
+    button, canvas, column, container, pick_list, row, text, text_input, Space,
 };
-use iced::{Alignment, Background, Border, Color, Element, Fill, Length, Point, Rectangle, Theme};
+use iced::{Alignment, Border, Color, Element, Fill, Length, Point, Rectangle, Theme};
 
 use crate::app::{AecMessage, Message, StylePickerTarget};
 use crate::modules::aec::engine::display_component::SlabComponentSlot;
@@ -17,14 +17,13 @@ use crate::modules::aec::state::AecSlabPreviewMode;
 use crate::modules::aec::styles::slab_style_manager::{
     preview_paths_for_mode, SlabPreviewPath, EDITABLE_SLOTS,
 };
-use crate::modules::aec::ui::aec_ui_util::{muted, section_title};
-use crate::t;
+use crate::modules::aec::engine::style_common::StyleOrigin;
+use crate::modules::aec::ui::aec_ui_util::muted;
+use crate::modules::aec::ui::style_manager::actions::{self, ActionMessages};
+use crate::modules::aec::ui::style_manager::list::{self, filter_entries, ListEntry, ListSpec};
+use crate::modules::aec::ui::style_manager::StyleParts;
+use crate::{t, tr};
 
-const LAYER_COL_REORDER_W: f32 = 60.0;
-const LAYER_COL_MATERIAL_W: f32 = 170.0;
-const LAYER_COL_THICKNESS_W: f32 = 80.0;
-const LAYER_COL_FUNCTION_W: f32 = 120.0;
-const LAYER_COL_OFFSET_W: f32 = 70.0;
 
 pub struct SlabStyleFormState<'a> {
     pub open: bool,
@@ -48,14 +47,14 @@ pub struct SlabStyleFormState<'a> {
     pub slot_visibility: std::collections::HashMap<SlabComponentSlot, bool>,
 }
 
-pub fn view_window<'a>(
+pub fn parts<'a>(
     library: &'a StyleLibrary,
     project: Option<&'a ProjectFile>,
     session_library: Option<&'a StyleLibrary>,
     filter: &'a str,
     selected_id: Option<&'a str>,
     form: Option<SlabStyleFormState<'a>>,
-) -> Element<'a, Message> {
+) -> StyleParts<'a> {
     let entries = crate::modules::aec::engine::library::combined_slab_style_entries_with_session(
         project,
         session_library,
@@ -69,100 +68,53 @@ pub fn view_window<'a>(
     for e in &entries {
         merged.upsert_slab_style(e.slab_style.clone());
     }
-    for m in &library.materials {
-        merged.upsert_material(m.clone());
-    }
+    let _ = library;
 
-    let filter_lower = filter.to_lowercase();
-    let owned_rows: Vec<(crate::modules::aec::engine::slab_style::SlabStyle, usize, LibrarySource)> =
-        merged
-            .slab_style_tree()
-            .into_iter()
-            .filter(|node| {
-                filter.is_empty()
-                    || node.style.style.name.to_lowercase().contains(&filter_lower)
-                    || node.style.style.id.to_lowercase().contains(&filter_lower)
-            })
-            .map(|node| {
-                let source = source_by_id
+    let all: Vec<ListEntry> = merged
+        .slab_style_tree()
+        .into_iter()
+        .map(|node| ListEntry {
+            id: node.style.style.id.clone(),
+            label: format!("{}{}", "  ".repeat(node.depth), node.style.style.name),
+            detail: None,
+            origin: StyleOrigin::from(
+                source_by_id
                     .get(&node.style.style.id)
                     .copied()
-                    .unwrap_or(LibrarySource::Standard);
-                (node.style.clone(), node.depth, source)
-            })
-            .collect();
-
-    let search_box = text_input(t!("Search styles...").as_ref(), filter)
-        .size(11)
-        .padding([4, 8])
-        .on_input(|s| Message::Aec(AecMessage::AecSlabStyleManagerFilter(s)));
-
-    let mut list_col = column![search_box].spacing(4);
-    let mut tree_scroll = column![].spacing(2);
-    for (slab_style, depth, source) in owned_rows {
-        let is_selected = selected_id == Some(slab_style.style.id.as_str());
-        let badge = source_badge_element(Some(source));
-        let id_for_click = slab_style.style.id.clone();
-        let indent = depth as f32 * 12.0;
-        let name_label = text(slab_style.style.name.clone()).size(11);
-        let row_content = row![
-            Space::new().width(indent),
-            badge,
-            Space::new().width(4),
-            name_label,
-            Space::new(),
-        ]
-        .align_y(Alignment::Center)
-        .spacing(2);
-
-        let item_btn = button(row_content)
-            .width(Fill)
-            .padding([3, 6])
-            .style(if is_selected {
-                button::primary
-            } else {
-                button::secondary
-            })
-            .on_press(Message::Aec(AecMessage::AecSlabStyleManagerSelect(
-                id_for_click,
-            )));
-        tree_scroll = tree_scroll.push(item_btn);
-    }
-
-    let tree_scroll_view = scrollable(tree_scroll).height(Fill);
-    let new_btn = button(text(t!("+ Neuer Deckenstil")).size(11))
-        .width(Fill)
-        .padding([4, 8])
-        .style(button::primary)
-        .on_press(Message::Aec(AecMessage::AecSlabStyleManagerNew));
-    list_col = list_col.push(tree_scroll_view).push(new_btn);
-
-    let left_panel = container(list_col)
-        .width(260)
-        .height(Fill)
-        .padding(8)
-        .style(|theme: &Theme| container::Style {
-            background: Some(
-                theme
-                    .palette()
-                    .background
-                    .neutral
-                    .color
-                    .scale_alpha(0.08)
-                    .into(),
+                    .unwrap_or(LibrarySource::Standard),
             ),
-            border: Border {
-                color: theme.palette().background.neutral.color.scale_alpha(0.3),
-                width: 1.0,
-                radius: 4.0.into(),
-            },
-            ..Default::default()
-        });
+            group: None,
+            swatch: None,
+        })
+        .collect();
+    let rows = filter_entries(all, filter);
 
-    let right_panel: Element<'a, Message> = if let Some(form_state) = form {
-        form_view(form_state, selected_id, project, session_library)
-    } else {
-        container(
+    let list = list::view(
+        ListSpec {
+            title: t!("Deckenstile").into_owned(),
+            search_hint: t!("Search styles...").into_owned(),
+            new_label: t!("+ Neuer Deckenstil").into_owned(),
+            filter,
+            selected: selected_id,
+            on_filter: |s| Message::Aec(AecMessage::AecSlabStyleManagerFilter(s)),
+            on_select: |id| Message::Aec(AecMessage::AecSlabStyleManagerSelect(id)),
+            on_new: Message::Aec(AecMessage::AecSlabStyleManagerNew),
+        },
+        &rows,
+    );
+
+    let open = form.is_some();
+    let is_new = form.as_ref().map(|f| f.is_new).unwrap_or(true);
+    let selected_source = selected_id.and_then(|id| source_by_id.get(id).copied());
+    let has_standard = selected_id.is_some_and(|id| {
+        crate::modules::aec::engine::library::load_or_seed()
+            .slab_styles
+            .iter()
+            .any(|s| s.style.id == id)
+    });
+    let form_el: Element<'a, Message> = match form {
+        Some(f) => form_view(f),
+        None => container(
             text(t!("Select or create a slab style to edit."))
                 .size(12)
                 .style(muted),
@@ -171,65 +123,27 @@ pub fn view_window<'a>(
         .height(Fill)
         .center_x(Fill)
         .center_y(Fill)
-        .into()
+        .into(),
     };
-
-    column![
-        section_title(t!("AEC Slab Style Manager")),
-        row![left_panel, Space::new().width(8), right_panel]
-            .width(Fill)
-            .height(Fill),
-    ]
-    .spacing(8)
-    .padding(8)
-    .width(Fill)
-    .height(Fill)
-    .into()
-}
-
-fn source_badge_element<'a>(source: Option<LibrarySource>) -> Element<'a, Message> {
-    let (label, col) = match source {
-        Some(LibrarySource::Standard) => ("Std", Color::from_rgb(0.35, 0.55, 0.85)),
-        Some(LibrarySource::Project) => ("Proj", Color::from_rgb(0.30, 0.70, 0.40)),
-        Some(LibrarySource::Session) => ("Ses", Color::from_rgb(0.80, 0.55, 0.20)),
-        None => ("?", Color::from_rgb(0.5, 0.5, 0.5)),
-    };
-    container(text(label).size(9).style(move |_t: &Theme| text::Style {
-        color: Some(Color::WHITE),
-    }))
-    .padding([1, 5])
-    .style(move |_theme: &Theme| container::Style {
-        background: Some(Background::Color(col)),
-        border: Border {
-            color: col,
-            width: 1.0,
-            radius: 2.0.into(),
-        },
-        ..Default::default()
-    })
-    .into()
-}
-
-fn form_view<'a>(
-    form: SlabStyleFormState<'a>,
-    selected_id: Option<&'a str>,
-    project: Option<&'a ProjectFile>,
-    session_library: Option<&'a StyleLibrary>,
-) -> Element<'a, Message> {
-    let selected_source = selected_id.and_then(|id| {
-        crate::modules::aec::engine::library::slab_style_library_source_with_session(
-            project,
-            session_library,
-            id,
+    let actions = open.then(|| {
+        actions::view(
+            ActionMessages {
+                save_apply: Message::Aec(AecMessage::AecSlabStyleManagerSaveAndApply),
+                save: Message::Aec(AecMessage::AecSlabStyleManagerSave),
+                duplicate: Message::Aec(AecMessage::AecSlabStyleManagerDuplicate),
+                delete: Message::Aec(AecMessage::AecSlabStyleManagerDelete),
+                to_standard: Message::Aec(AecMessage::AecStyleManagerCopySlabStyleToGlobal),
+                to_project: Message::Aec(AecMessage::AecStyleManagerCopySlabStyleToProject),
+            },
+            is_new,
+            selected_source.map(StyleOrigin::from),
+            has_standard,
         )
     });
-    let has_standard_counterpart = selected_id.is_some_and(|id| {
-        crate::modules::aec::engine::library::load_or_seed()
-            .slab_styles
-            .iter()
-            .any(|s| s.style.id == id)
-    });
+    StyleParts { list, form: form_el, actions }
+}
 
+fn form_view<'a>(form: SlabStyleFormState<'a>) -> Element<'a, Message> {
     let name_input = text_input(t!("Style name").as_ref(), form.name)
         .size(11)
         .padding([4, 8])
@@ -248,18 +162,11 @@ fn form_view<'a>(
             StylePickerTarget::SlabStyleParent,
         )));
 
-    let duplicate_btn = button(text(t!("Duplizieren")).size(11))
-        .padding([4, 8])
-        .style(button::secondary)
-        .on_press(Message::Aec(AecMessage::AecSlabStyleManagerDuplicate));
-
     let header_row = row![
         text(t!("Name:")).size(11).style(muted),
         name_input,
         Space::new().width(8),
         parent_btn,
-        Space::new().width(4),
-        duplicate_btn,
     ]
     .align_y(Alignment::Center)
     .spacing(4);
@@ -377,7 +284,7 @@ fn form_view<'a>(
     let mut finish_layers_col = column![].spacing(2);
     let mut finish_th_cm = 0.0;
     if let Some(fs) = &form.referenced_finish {
-        let title = text(format!(
+        let title = text(crate::tf!(
             "▲ Fußbodenaufbau: {} ({}) — {:.1} cm",
             fs.style.name,
             fs.style.id,
@@ -507,7 +414,7 @@ fn form_view<'a>(
         });
 
     let total_th_cm = finish_th_cm + struct_th_cm;
-    let summary_label = text(format!(
+    let summary_label = text(crate::tf!(
         "Gesamtdicke der Decke: {:.1} cm (Ausbau: {:.1} cm + Rohbau: {:.1} cm) | {} Schichten",
         total_th_cm,
         finish_th_cm,
@@ -530,17 +437,26 @@ fn form_view<'a>(
     .spacing(4);
 
     let slots_title = text(t!("Komponenten-Sichtbarkeit:")).size(10).style(muted);
+    let default_label = tr!("aec", "opening-plan-default").to_string();
+    let options: Vec<String> = std::iter::once(default_label.clone())
+        .chain(form.display_config_names.iter().cloned()).collect();
+    let selected = form.profile_selected.unwrap_or(&default_label).to_string();
+    let profile_picker = pick_list(Some(selected), options, |value| value.clone()).on_select(move |value| {
+        Message::Aec(AecMessage::AecSlabStyleManagerProfileSelect(
+            if value == default_label { String::new() } else { value },
+        ))
+    });
     let mut slots_row = row![slots_title].spacing(8).align_y(Alignment::Center);
     for slot in EDITABLE_SLOTS {
         let is_vis = form.slot_visibility.get(slot).copied().unwrap_or(true);
         let slot_name = match slot {
-            SlabComponentSlot::Contour2D => "Kontur 2D",
-            SlabComponentSlot::CeilingOutline2D => "Deckenspiegel 2D",
-            SlabComponentSlot::LayerHatch2D => "Schraffur 2D",
-            SlabComponentSlot::OpeningContour2D => "Öffnungskontur",
-            SlabComponentSlot::OpeningSymbol2D => "DIN 1356 Symbol",
-            SlabComponentSlot::Solid3D => "Körper 3D",
-            SlabComponentSlot::SurfaceStyle3D => "Oberfläche 3D",
+            SlabComponentSlot::Contour2D => crate::t!("Kontur 2D"),
+            SlabComponentSlot::CeilingOutline2D => crate::t!("Deckenspiegel 2D"),
+            SlabComponentSlot::LayerHatch2D => crate::t!("Schraffur 2D"),
+            SlabComponentSlot::OpeningContour2D => crate::t!("Öffnungskontur"),
+            SlabComponentSlot::OpeningSymbol2D => crate::t!("DIN 1356 Symbol"),
+            SlabComponentSlot::Solid3D => crate::t!("Körper 3D"),
+            SlabComponentSlot::SurfaceStyle3D => crate::t!("Oberfläche 3D"),
         };
         let slot_copy = *slot;
         let btn = button(text(slot_name).size(9))
@@ -556,42 +472,6 @@ fn form_view<'a>(
         slots_row = slots_row.push(btn);
     }
 
-    let mut actions = row![
-        Space::new(),
-        button(text(t!("Übernehmen")).size(11))
-            .style(button::primary)
-            .padding([5, 12])
-            .on_press(Message::Aec(AecMessage::AecSlabStyleManagerSaveAndApply)),
-        button(text(t!("Speichern")).size(11))
-            .style(button::secondary)
-            .padding([5, 12])
-            .on_press(Message::Aec(AecMessage::AecSlabStyleManagerSave)),
-    ]
-    .spacing(8);
-
-    if !form.is_new {
-        actions = actions.push(
-            button(text(t!("Delete")).size(11))
-                .style(button::danger)
-                .padding([5, 12])
-                .on_press(Message::Aec(AecMessage::AecSlabStyleManagerDelete)),
-        );
-        if selected_source == Some(LibrarySource::Project) && !has_standard_counterpart {
-            actions = actions.push(
-                button(text(t!("→ Standard")).size(11)).padding([5, 12]).on_press(Message::Aec(
-                    AecMessage::AecStyleManagerCopySlabStyleToGlobal,
-                )),
-            );
-        }
-        if selected_source == Some(LibrarySource::Standard) {
-            actions = actions.push(
-                button(text(t!("→ Projekt")).size(11)).padding([5, 12]).on_press(Message::Aec(
-                    AecMessage::AecStyleManagerCopySlabStyleToProject,
-                )),
-            );
-        }
-    }
-
     column![
         header_row,
         modular_row,
@@ -601,9 +481,9 @@ fn form_view<'a>(
         Space::new().height(4),
         layers_section,
         Space::new().height(4),
+        row![text(tr!("aec", "opening-plan-type")).size(10), profile_picker]
+            .align_y(Alignment::Center).spacing(8),
         slots_row,
-        Space::new(),
-        actions,
     ]
     .spacing(6)
     .height(Fill)

@@ -28,7 +28,7 @@ use uuid::Uuid;
 pub type WallStyleRef = String;
 
 /// The element-type identifier used for walls, matching the plain string
-/// `"Wall"` already used elsewhere (e.g. `Style::object_kind`).
+/// `"Wall"` already used elsewhere (e.g. `Style::category`).
 pub const WALL_ELEMENT_TYPE_ID: &str = "Wall";
 
 /// Construction/planning phase of an element within a `DisplayConfig`.
@@ -100,6 +100,69 @@ pub enum ViewType {
     Elevation,
 }
 
+/// How much of the layer build-up a plan kind shows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum LayerDetail {
+    /// Every layer.
+    #[default]
+    All,
+    /// Only layers with `LayerFunction::Structural` (shell / "Rohbau").
+    StructuralOnly,
+    /// No layer build-up, contour only.
+    Off,
+}
+
+/// Detail level of a plan kind: an explicit set of switches, never derived
+/// from `scale` or from the plan's name.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DetailProfile {
+    pub layers: LayerDetail,
+    /// Hatches of contour and layers.
+    pub hatches: bool,
+    /// Labels / tags.
+    pub annotation: bool,
+    /// Opening symbols (swing, breakthrough, ...).
+    pub opening_symbols: bool,
+    /// Reflected ceiling plan: slabs show the ceiling outline instead of the
+    /// floor contour.
+    pub ceiling_view: bool,
+    /// 2D / 3D / All.
+    pub representation: RepresentationMode,
+}
+
+/// A boolean switch of [`DetailProfile`], addressed by the plan editor.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DetailSwitch {
+    Hatches,
+    Annotation,
+    OpeningSymbols,
+    CeilingView,
+}
+
+impl DetailProfile {
+    pub fn set_switch(&mut self, switch: DetailSwitch, value: bool) {
+        match switch {
+            DetailSwitch::Hatches => self.hatches = value,
+            DetailSwitch::Annotation => self.annotation = value,
+            DetailSwitch::OpeningSymbols => self.opening_symbols = value,
+            DetailSwitch::CeilingView => self.ceiling_view = value,
+        }
+    }
+}
+
+impl Default for DetailProfile {
+    fn default() -> Self {
+        Self {
+            layers: LayerDetail::All,
+            hatches: true,
+            annotation: true,
+            opening_symbols: true,
+            ceiling_view: false,
+            representation: RepresentationMode::All,
+        }
+    }
+}
+
 /// A named, reusable display configuration ("Plan"), e.g. "Architekt 1:50"
 /// or "Statik 1:50".
 ///
@@ -138,18 +201,23 @@ pub struct DisplayConfig {
     /// field existed.
     #[serde(default)]
     pub phase_filter: Option<PhaseFilter>,
-    /// Default 2D/3D/All filter for this plan type; session override wins.
+    /// Detail level (layers, hatches, annotation, opening symbols,
+    /// ceiling view, default 2D/3D/All; a session override wins).
     #[serde(default)]
-    pub default_representation: RepresentationMode,
+    pub detail: DetailProfile,
+    /// Id of the standard preset this config was created from, if any.
+    #[serde(default)]
+    pub preset: Option<String>,
     /// Global component visibility (absent key = visible).
     #[serde(default)]
     pub component_visibility: HashMap<WallComponentKind, bool>,
     /// Opening slot visibility overrides per plan type (absent = default/visible).
     #[serde(default)]
     pub opening_visibility: HashMap<crate::modules::aec::engine::display_component::OpeningComponentSlot, bool>,
-    /// Sparse per-wall-style exceptions, keyed by `Style.id`.
+    /// Sparse per-style overrides of this plan kind, keyed by `Style.id`.
+    /// Precedence: session representation > these > style default profile.
     #[serde(default)]
-    pub style_overlays: HashMap<String, StyleDisplayOverlay>,
+    pub style_overrides: HashMap<String, StyleDisplayOverlay>,
     /// Global look for the 2D overall-contour hatch (`ContourHatch2D`).
     #[serde(default)]
     pub contour_hatch: Option<ComponentStyleOverride>,
@@ -209,10 +277,11 @@ impl DisplayConfig {
             planning_stage,
             view_type,
             phase_filter: None,
-            default_representation: RepresentationMode::All,
+            detail: DetailProfile::default(),
+            preset: None,
             component_visibility: HashMap::new(),
             opening_visibility: HashMap::new(),
-            style_overlays: HashMap::new(),
+            style_overrides: HashMap::new(),
             contour_hatch: None,
         }
     }
@@ -265,7 +334,8 @@ mod tests {
         assert_eq!(cfg.scale, None);
         assert_eq!(cfg.phase_filter, None);
         assert!(!cfg.id.is_nil());
-        assert!(cfg.style_overlays.is_empty());
+        assert!(cfg.style_overrides.is_empty());
+        assert_eq!(cfg.detail, DetailProfile::default());
     }
 
     #[test]

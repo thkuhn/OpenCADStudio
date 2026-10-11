@@ -45,6 +45,7 @@ pub mod slab_xdata;
 pub mod storey;
 pub mod storey_xdata;
 pub mod style;
+pub mod style_common;
 pub mod wall;
 pub mod wall_package;
 pub mod wall_regen;
@@ -68,7 +69,10 @@ pub use room_package::{
     room_package_handles, room_stamp_handle, write_room_schedule_tag, AEC_ROOM_CARRIER_LAYER,
     AEC_ROOM_HATCH_LAYER, AEC_ROOM_SCHEDULE_LAYER, AEC_ROOM_SOLID_LAYER, AEC_ROOM_STAMP_LAYER,
 };
-pub use room_regen::{regenerate_room_representation, room_boundary_points};
+pub use room_regen::{
+    regenerate_room_representation, regenerate_room_representation_with_display, room_boundary_points,
+    RoomDisplay,
+};
 pub use room_xdata::{room_from_entity, write_room_record};
 pub use xdata::collect_wall_structural_segments;
 pub use slab::{Slab, SlabJustification, SlabLayer};

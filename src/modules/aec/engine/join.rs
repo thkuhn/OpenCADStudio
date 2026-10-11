@@ -203,10 +203,10 @@ pub enum JoinError {
 impl fmt::Display for JoinError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            JoinError::Parallel => write!(f, "Parallel axes"),
-            JoinError::NoIntersection => write!(f, "No intersection found"),
-            JoinError::Degenerate => write!(f, "Degenerate axis"),
-            JoinError::Ambiguous => write!(f, "Ambiguous junction set"),
+            JoinError::Parallel => write!(f, "{}", crate::t!("Parallel axes")),
+            JoinError::NoIntersection => write!(f, "{}", crate::t!("No intersection found")),
+            JoinError::Degenerate => write!(f, "{}", crate::t!("Degenerate axis")),
+            JoinError::Ambiguous => write!(f, "{}", crate::t!("Ambiguous junction set")),
         }
     }
 }

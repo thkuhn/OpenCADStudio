@@ -12,10 +12,13 @@ use crate::modules::aec::engine::display_component::WallComponentSlot;
 use crate::modules::aec::engine::join::LayerRef;
 use crate::modules::aec::engine::library::{LibrarySource, StyleLibrary};
 use crate::modules::aec::engine::project::ProjectFile;
-use crate::modules::aec::engine::wall_style::WallStyle;
 use crate::t;
 use crate::tr;
-use super::aec_ui_util::*;
+use crate::modules::aec::ui::aec_ui_util::*;
+use crate::modules::aec::engine::style_common::StyleOrigin;
+use crate::modules::aec::ui::style_manager::actions::{self, ActionMessages};
+use crate::modules::aec::ui::style_manager::list::{self, filter_entries, ListEntry, ListSpec};
+use crate::modules::aec::ui::style_manager::StyleParts;
 
 const LAYER_COL_REORDER_W: f32 = 74.0;
 const LAYER_COL_MATERIAL_W: f32 = 180.0;
@@ -87,7 +90,7 @@ pub struct DisplayProfileFormState<'a> {
         crate::modules::aec::engine::display_component::ComponentStyleOverride,
     >,
     /// Shared style-editor buffer state for the open slot (if any).
-    pub slot_style_editor: super::aec_ui_util::StyleEditorFormState<'a>,
+    pub slot_style_editor: crate::modules::aec::ui::aec_ui_util::StyleEditorFormState<'a>,
 }
 
 
@@ -112,14 +115,14 @@ pub fn view_display_profiles_window<'a>(
     .into()
 }
 
-pub fn view_window<'a>(
+pub fn parts<'a>(
     library: &'a StyleLibrary,
     project: Option<&'a ProjectFile>,
     session: Option<&'a StyleLibrary>,
-    selected_id: Option<&str>,
-    filter: &str,
+    selected_id: Option<&'a str>,
+    filter: &'a str,
     wall_style_form: WallStyleFormState<'a>,
-) -> Element<'a, Message> {
+) -> StyleParts<'a> {
     let entries = crate::modules::aec::engine::library::combined_wall_style_entries_with_session(
         project, session,
     );
@@ -134,84 +137,53 @@ pub fn view_window<'a>(
         .map(|e| (e.wall_style.style.id.clone(), e.source))
         .collect();
 
-    // Build a merged library for the inheritance tree (project wins on id).
+    // Merged library for the inheritance tree (project wins on id).
     let mut merged = StyleLibrary::empty();
     for e in &entries {
         merged.upsert_wall_style(e.wall_style.clone());
     }
-    // Keep materials from the caller's library for form lookups.
-    for m in &library.materials {
-        merged.upsert_material(m.clone());
-    }
+    let _ = library;
 
-    let filter_lower = filter.to_lowercase();
-    // Materialize owned (style, depth, source) rows so the Element does not
-    // borrow the temporary merged library.
-    let owned_rows: Vec<(WallStyle, usize, LibrarySource)> = merged
+    let all: Vec<ListEntry> = merged
         .wall_style_tree()
         .into_iter()
-        .filter(|node| {
-            filter.is_empty()
-                || node.style.style.name.to_lowercase().contains(&filter_lower)
-                || node.style.style.id.to_lowercase().contains(&filter_lower)
-        })
-        .map(|node| {
-            let source = source_by_id
-                .get(&node.style.style.id)
-                .copied()
-                .unwrap_or(LibrarySource::Standard);
-            (node.style.clone(), node.depth, source)
-        })
-        .collect();
-
-    let wall_style_rows: Vec<Element<'_, Message>> = owned_rows
-        .iter()
-        .map(|(style, depth, source)| {
-            wall_style_tree_row(
-                style,
-                *depth,
-                *source,
-                selected_id == Some(style.style.id.as_str()),
-            )
+        .map(|node| ListEntry {
+            id: node.style.style.id.clone(),
+            label: format!("{}{}", "  ".repeat(node.depth), node.style.style.name),
+            detail: Some(tr!("aec", "layer-count", count = node.style.layers.len())),
+            origin: StyleOrigin::from(
+                source_by_id
+                    .get(&node.style.style.id)
+                    .copied()
+                    .unwrap_or(LibrarySource::Standard),
+            ),
+            group: None,
+            swatch: None,
         })
         .collect();
+    let rows = filter_entries(all, filter);
 
-    let mut master_list = column![section_title(t!("Wall Styles"))].spacing(2);
-    if wall_style_rows.is_empty() {
-        master_list = master_list.push(no_matches());
-    } else {
-        for row_el in wall_style_rows {
-            master_list = master_list.push(row_el);
-        }
-    }
-
-    let sidebar = column![
-        row![
-            text_input(t!("Search wall styles…").as_ref(), filter)
-                .on_input(|v| Message::Aec(AecMessage::AecStyleManagerFilter(v)))
-                .size(11)
-                .padding([4, 6]),
-            button(text("+").size(11))
-                .on_press(Message::Aec(AecMessage::AecStyleManagerWallStyleNew))
-                .padding([4, 8]),
-        ]
-        .spacing(4),
-        scrollable(master_list),
-    ]
-    .spacing(8)
-    .width(270);
+    let list = list::view(
+        ListSpec {
+            title: t!("Wall Styles").into_owned(),
+            search_hint: t!("Search wall styles…").into_owned(),
+            new_label: t!("+ Neuer Wandstil").into_owned(),
+            filter,
+            selected: selected_id,
+            on_filter: |s| Message::Aec(AecMessage::AecStyleManagerFilter(s)),
+            on_select: |id| Message::Aec(AecMessage::AecStyleManagerSelectWallStyle(id)),
+            on_new: Message::Aec(AecMessage::AecStyleManagerWallStyleNew),
+        },
+        &rows,
+    );
 
     let selected_source = selected_id.and_then(|id| source_by_id.get(id).copied());
-    let selected_has_standard_counterpart = selected_id
-        .map(|id| standard_ids.contains(id))
-        .unwrap_or(false);
+    let has_standard = selected_id.is_some_and(|id| standard_ids.contains(id));
+    let open = wall_style_form.open;
+    let is_new = wall_style_form.is_new;
 
-    let detail = if wall_style_form.open {
-        wall_style_form_view(
-            wall_style_form,
-            selected_source,
-            selected_has_standard_counterpart,
-        )
+    let detail: Element<'a, Message> = if wall_style_form.open {
+        wall_style_form_view(wall_style_form)
     } else {
         container(text(t!("Select a wall style to edit or create a new one.")).style(muted))
             .width(Fill)
@@ -220,77 +192,25 @@ pub fn view_window<'a>(
             .center_y(Fill)
             .into()
     };
-
-    row![sidebar, container(detail).padding(10).width(Fill)]
-        .spacing(10)
-        .padding(10)
-        .into()
-}
-
-fn source_badge<'a>(source: LibrarySource) -> Element<'a, Message> {
-    let label = match source {
-        LibrarySource::Standard => t!("Standard"),
-        LibrarySource::Project => t!("Projekt"),
-        LibrarySource::Session => t!("Sitzung"),
-    };
-    container(text(label).size(9))
-        .padding([1, 5])
-        .style(|theme: &Theme| container::Style {
-            background: Some(Background::Color(
-                theme.palette().background.strong.color.scale_alpha(0.55),
-            )),
-            text_color: Some(theme.palette().background.base.text.scale_alpha(0.85)),
-            border: Border {
-                radius: 3.0.into(),
-                ..Default::default()
+    let actions = open.then(|| {
+        actions::view(
+            ActionMessages {
+                save_apply: Message::Aec(AecMessage::AecStyleManagerWallStyleSaveAndApply),
+                save: Message::Aec(AecMessage::AecStyleManagerWallStyleSave),
+                duplicate: Message::Aec(AecMessage::AecStyleManagerWallStyleDuplicate),
+                delete: Message::Aec(AecMessage::AecStyleManagerWallStyleDelete),
+                to_standard: Message::Aec(AecMessage::AecStyleManagerCopyWallStyleToGlobal),
+                to_project: Message::Aec(AecMessage::AecStyleManagerCopyWallStyleToProject),
             },
-            ..Default::default()
-        })
-        .into()
+            is_new,
+            selected_source.map(StyleOrigin::from),
+            has_standard,
+        )
+    });
+    StyleParts { list, form: detail, actions }
 }
 
-fn wall_style_tree_row<'a>(
-    wall_style: &WallStyle,
-    depth: usize,
-    source: LibrarySource,
-    selected: bool,
-) -> Element<'a, Message> {
-    let subtitle = tr!("aec", "layer-count", count = wall_style.layers.len());
-    let mut row_content = row![].spacing(4).align_y(iced::Center);
-    if depth > 0 {
-        row_content = row_content.push(Space::new().width(12.0 * depth as f32));
-        row_content = row_content.push(text("└").size(10).style(muted));
-    }
-
-    button(
-        row_content.push(
-            column![
-                row![
-                    text(wall_style.style.name.clone()).size(12),
-                    Space::new().width(6),
-                    source_badge(source),
-                ]
-                .spacing(4)
-                .align_y(iced::Center),
-                text(subtitle).size(10).style(muted),
-            ]
-            .spacing(2),
-        ),
-    )
-    .on_press(Message::Aec(AecMessage::AecStyleManagerSelectWallStyle(
-        wall_style.style.id.clone(),
-    )))
-    .style(list_style(selected))
-    .padding([6, 9])
-    .width(Fill)
-    .into()
-}
-
-fn wall_style_form_view<'a>(
-    wall_style_form: WallStyleFormState<'a>,
-    selected_source: Option<LibrarySource>,
-    has_standard_counterpart: bool,
-) -> Element<'a, Message> {
+fn wall_style_form_view<'a>(wall_style_form: WallStyleFormState<'a>) -> Element<'a, Message> {
     let form_title = if wall_style_form.is_new {
         t!("New Wall Style")
     } else {
@@ -475,45 +395,7 @@ fn wall_style_form_view<'a>(
                 .on_press(Message::Aec(AecMessage::AecPlanManagerOpen)),
         );
 
-    let mut actions = row![
-        Space::new(),
-        button(text(t!("Save")).size(11))
-            .style(button::subtle)
-            .padding([5, 12])
-            .on_press(Message::Aec(AecMessage::AecStyleManagerWallStyleSave)),
-        button(text(t!("Save & Update Drawing")).size(11))
-            .style(button::primary)
-            .padding([5, 12])
-            .on_press(Message::Aec(AecMessage::AecStyleManagerWallStyleSaveAndApply)),
-    ]
-    .spacing(8);
-
-    if !wall_style_form.is_new {
-        actions = actions.push(
-            button(text(t!("Delete")).size(11))
-                .style(button::danger)
-                .padding([5, 12])
-                .on_press(Message::Aec(AecMessage::AecStyleManagerWallStyleDelete)),
-        );
-        // → Standard: only pure project entries without a global counterpart.
-        if selected_source == Some(LibrarySource::Project) && !has_standard_counterpart {
-            actions = actions.push(
-                button(text(t!("→ Standard")).size(11))
-                    .padding([5, 12])
-                    .on_press(Message::Aec(AecMessage::AecStyleManagerCopyWallStyleToGlobal)),
-            );
-        }
-        // → Projekt: only Standard entries (copy into the project library).
-        if selected_source == Some(LibrarySource::Standard) {
-            actions = actions.push(
-                button(text(t!("→ Projekt")).size(11))
-                    .padding([5, 12])
-                    .on_press(Message::Aec(AecMessage::AecStyleManagerCopyWallStyleToProject)),
-            );
-        }
-    }
-
-    column![detail_col, Space::new(), actions]
+    column![detail_col]
         .spacing(10)
         .height(Fill)
         .into()
@@ -794,17 +676,16 @@ pub fn display_profiles_section<'a>(
     layers: &'a [crate::app::AecLayerBuffer],
 ) -> Element<'a, Message> {
     let mut section = column![
-        text(t!("Darstellungs-Profile (je Planart)")).size(12),
+        text(t!("Darstellungs-Profile (Stil-Standard und je Planart)")).size(12),
     ]
     .spacing(6);
 
-    if profiles.display_config_names.is_empty() {
+    if profiles.display_config_names.len() <= 1 {
         section = section.push(
             text(t!("Keine Planarten in der Bibliothek — im Plan-Manager anlegen."))
                 .size(10)
                 .style(muted),
         );
-        return section.into();
     }
 
     let mut table = column![].spacing(2);
@@ -813,10 +694,15 @@ pub fn display_profiles_section<'a>(
         let is_selected = profiles.selected == Some(name.as_str());
         let status_label = if is_override { t!("Override") } else { t!("Standard") };
         let name_owned = name.clone();
+        let display_name = if name == crate::modules::aec::engine::library::STYLE_DEFAULT_PROFILE_KEY {
+            t!("Stil-Standard (alle Planarten)").to_string()
+        } else {
+            name.clone()
+        };
         table = table.push(
             button(
                 row![
-                    text(name.clone()).size(11),
+                    text(display_name).size(11),
                     Space::new(),
                     container(text(status_label).size(9))
                         .padding([1, 5])
@@ -848,7 +734,7 @@ pub fn display_profiles_section<'a>(
         ));
         if let Some(slot) = profiles.editing_slot {
             section = section.push(Space::new().height(6));
-            section = section.push(super::aec_ui_util::style_editor_form(
+            section = section.push(crate::modules::aec::ui::aec_ui_util::style_editor_form(
                 format!("{} — {}", t!("Stil-Override"), slot_label(slot)),
                 profiles.slot_style_editor,
                 |v| Message::Aec(AecMessage::AecStyleManagerProfileSlotStyleLineTypeChanged(v)),

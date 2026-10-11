@@ -161,21 +161,21 @@ impl SlabOpeningCommand {
         boundary: &[(f64, f64)],
     ) -> Result<Handle, String> {
         let Some(host_h) = self.host_slab else {
-            return Err("No host slab selected for opening.".to_string());
+            return Err(crate::t!("No host slab selected for opening.").into_owned());
         };
         let Some(host_entity) = scene.document.get_entity(host_h) else {
-            return Err(format!("Host slab {host_h} does not exist."));
+            return Err(crate::tf!("Host slab {host_h} does not exist.").into_owned());
         };
         if slab_from_entity(host_entity).is_none() {
-            return Err(format!("Entity {host_h} is not a valid slab."));
+            return Err(crate::tf!("Entity {host_h} is not a valid slab.").into_owned());
         }
 
         if boundary.len() < 3 {
-            return Err("An opening requires at least 3 boundary points.".to_string());
+            return Err(crate::t!("An opening requires at least 3 boundary points.").into_owned());
         }
         let poly_area = signed_area(boundary).abs();
         if poly_area < 1e-4 {
-            return Err("Degenerate opening boundary (area is zero).".to_string());
+            return Err(crate::t!("Degenerate opening boundary (area is zero).").into_owned());
         }
 
         // Create opening carrier entity

@@ -174,14 +174,14 @@ impl OpenCADStudio {
                 ui::properties::LinetypeItem { name, art }
             })
             .collect();
-        if !self.aec.aec_style_manager_material_line_type.trim().is_empty()
+        if !self.aec.styles.material_line_type.trim().is_empty()
             && !items.iter().any(|item| {
                 item.name
-                    .eq_ignore_ascii_case(&self.aec.aec_style_manager_material_line_type)
+                    .eq_ignore_ascii_case(&self.aec.styles.material_line_type)
             })
         {
             items.push(ui::properties::LinetypeItem {
-                name: self.aec.aec_style_manager_material_line_type.clone(),
+                name: self.aec.styles.material_line_type.clone(),
                 art: String::new(),
             });
         }
@@ -191,9 +191,9 @@ impl OpenCADStudio {
                 art: String::new(),
             });
         }
-        self.aec.aec_style_manager_material_linetype_combo =
+        self.aec.styles.material_linetype_combo =
             iced::widget::combo_box::State::new(items.clone());
-        self.aec.aec_style_manager_material_linetype_items = items;
+        self.aec.styles.material_linetype_items = items;
     }
 
     pub(super) fn sync_ribbon_styles(&mut self) {

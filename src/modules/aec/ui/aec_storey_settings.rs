@@ -63,13 +63,13 @@ pub fn view_window<'a>(state: StoreySettingsState<'a>) -> Element<'a, Message> {
     .align_y(iced::Center);
 
     let derived = row![
-        text(t!("aec.storey-location")).size(11).style(muted).width(80),
+        text(crate::tr!("aec", "storey-location")).size(11).style(muted).width(80),
         text_input("", state.elevation)
             .on_input(move |v| Message::Aec(AecMessage::AecStoreySettingsElevation(bid, sid, v)))
             .size(11)
             .padding([4, 6])
             .width(90),
-        text(t!("aec.storey-height")).size(11).style(muted).width(80),
+        text(crate::tr!("aec", "storey-height")).size(11).style(muted).width(80),
         text_input("", state.height)
             .on_input(move |v| Message::Aec(AecMessage::AecStoreySettingsHeight(bid, sid, v)))
             .size(11)
@@ -80,7 +80,7 @@ pub fn view_window<'a>(state: StoreySettingsState<'a>) -> Element<'a, Message> {
     .align_y(iced::Center);
 
     let mut floor_opts =
-        row![text(t!("aec.main-control-plane")).size(11).style(muted).width(160)].spacing(6);
+        row![text(crate::tr!("aec", "main-control-plane")).size(11).style(muted).width(160)].spacing(6);
     let mut ceil_opts = row![text(t!("Ceiling")).size(11).style(muted).width(80)].spacing(6);
     for p in &storey.control_planes {
         let pid = p.id;
@@ -110,7 +110,7 @@ pub fn view_window<'a>(state: StoreySettingsState<'a>) -> Element<'a, Message> {
 
     let mut planes = column![
         section_title(t!("Control planes")),
-        text(t!("aec.plane-relative-hint")).size(10).style(muted),
+        text(crate::tr!("aec", "plane-relative-hint")).size(10).style(muted),
     ]
     .spacing(6);
     for p in &storey.control_planes {
@@ -122,8 +122,8 @@ pub fn view_window<'a>(state: StoreySettingsState<'a>) -> Element<'a, Message> {
                 .on_input(|v| Message::Aec(AecMessage::AecStoreySettingsNewPlaneNameChanged(v)))
                 .size(11)
                 .padding([4, 6]),
-            text(t!("aec.plane-z-relative")).size(10).style(muted),
-            text_input(t!("aec.plane-z-relative-placeholder").as_ref(), state.new_plane_z)
+            text(crate::tr!("aec", "plane-z-relative")).size(10).style(muted),
+            text_input(crate::tr!("aec", "plane-z-relative-placeholder").as_ref(), state.new_plane_z)
                 .on_input(|v| Message::Aec(AecMessage::AecStoreySettingsNewPlaneZChanged(v)))
                 .size(11)
                 .padding([4, 6])
@@ -193,8 +193,8 @@ fn plane_row<'a>(
     }
     let z_field: Element<'a, Message> = if is_floor {
         row![
-            text(t!("aec.main-control-plane")).size(10).style(muted),
-            text(t!("aec.plane-follows-storey-location")).size(10).style(muted),
+            text(crate::tr!("aec", "main-control-plane")).size(10).style(muted),
+            text(crate::tr!("aec", "plane-follows-storey-location")).size(10).style(muted),
             text(elevation).size(11),
         ]
         .spacing(6)
@@ -208,7 +208,7 @@ fn plane_row<'a>(
         };
         row![
             text(label).size(10).style(muted),
-            text_input(t!("aec.plane-z-relative-placeholder").as_ref(), z_buf)
+            text_input(crate::tr!("aec", "plane-z-relative-placeholder").as_ref(), z_buf)
                 .on_input(move |v| Message::Aec(AecMessage::AecStoreySettingsPlaneZ(bid, sid, pid, v)))
                 .size(11)
                 .padding([3, 6])
@@ -219,8 +219,8 @@ fn plane_row<'a>(
         .into()
     } else if plane.is_sloped() {
         row![
-            text(t!("aec.plane-z-relative")).size(10).style(muted),
-            text_input(t!("aec.plane-z-relative-placeholder").as_ref(), z_buf)
+            text(crate::tr!("aec", "plane-z-relative")).size(10).style(muted),
+            text_input(crate::tr!("aec", "plane-z-relative-placeholder").as_ref(), z_buf)
                 .on_input(move |v| Message::Aec(AecMessage::AecStoreySettingsPlaneZ(bid, sid, pid, v)))
                 .size(11)
                 .padding([3, 6])
@@ -232,8 +232,8 @@ fn plane_row<'a>(
         .into()
     } else {
         row![
-            text(t!("aec.plane-z-relative")).size(10).style(muted),
-            text_input(t!("aec.plane-z-relative-placeholder").as_ref(), z_buf)
+            text(crate::tr!("aec", "plane-z-relative")).size(10).style(muted),
+            text_input(crate::tr!("aec", "plane-z-relative-placeholder").as_ref(), z_buf)
                 .on_input(move |v| Message::Aec(AecMessage::AecStoreySettingsPlaneZ(bid, sid, pid, v)))
                 .size(11)
                 .padding([3, 6])
@@ -243,7 +243,7 @@ fn plane_row<'a>(
         .align_y(iced::Center)
         .into()
     };
-    let assign_poly = button(text(t!("aec.assign-polygons-btn")).size(10))
+    let assign_poly = button(text(crate::tr!("aec", "assign-polygons-btn")).size(10))
         .style(button::secondary)
         .padding([3, 6])
         .on_press(Message::Aec(AecMessage::AecStoreySettingsPickPolygons(bid, sid, pid)));
@@ -253,7 +253,7 @@ fn plane_row<'a>(
         .on_press(Message::Aec(AecMessage::AecStoreySettingsShowPlaneInDrawing(bid, sid, pid)));
     let show_in_drawing = iced::widget::tooltip(
         show_btn,
-        container(text(t!("aec.show-in-drawing-btn")).size(10))
+        container(text(crate::tr!("aec", "show-in-drawing-btn")).size(10))
             .padding([3, 6])
             .style(container::bordered_box),
         iced::widget::tooltip::Position::Top,
@@ -301,7 +301,7 @@ fn plane_row<'a>(
             .on_press(Message::Aec(AecMessage::AecStoreySettingsShowFacetInDrawing(bid, sid, pid, f_idx)));
         let facet_show = iced::widget::tooltip(
             facet_show_btn,
-            container(text(t!("aec.show-in-drawing-btn")).size(10))
+            container(text(crate::tr!("aec", "show-in-drawing-btn")).size(10))
                 .padding([2, 5])
                 .style(container::bordered_box),
             iced::widget::tooltip::Position::Top,
@@ -313,7 +313,7 @@ fn plane_row<'a>(
             .padding([2, 4])
             .width(130);
 
-        let facet_z_input = text_input(t!("aec.plane-z-relative-placeholder").as_ref(), f_z_buf)
+        let facet_z_input = text_input(crate::tr!("aec", "plane-z-relative-placeholder").as_ref(), f_z_buf)
             .on_input(move |v| Message::Aec(AecMessage::AecStoreySettingsFacetZ(bid, sid, pid, f_idx, v)))
             .size(10)
             .padding([2, 4])
@@ -325,7 +325,7 @@ fn plane_row<'a>(
             text(format!("#{}", f_idx + 1)).size(10).style(muted).width(20),
             facet_name_input,
             text(facet_pts_label).size(10).style(muted).width(45),
-            text(t!("aec.plane-z-relative")).size(10).style(muted),
+            text(crate::tr!("aec", "plane-z-relative")).size(10).style(muted),
             facet_z_input,
             text(facet_slope).size(10).style(muted).width(35),
             facet_show,

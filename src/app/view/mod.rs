@@ -2423,7 +2423,7 @@ bg={bg_ms:.1}ms n={view_count}"
         } else if let Some(super::ModalKind::Aec(kind)) = self.active_modal {
             if let Some(parent) = kind.parent_on_close() {
                 if let Some((parent_offset, parent_resize)) =
-                    self.aec.aec_wall_style_manager_parent_geometry.as_ref()
+                    self.aec.styles.wall_parent_geometry.as_ref()
                 {
                     let parent_content = self.aec_modal_flow(parent, *parent_resize);
                     crate::ui::modal::modal(

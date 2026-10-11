@@ -23,9 +23,9 @@ use crate::modules::{IconKind, ModuleEvent, ToolDef};
 pub fn tool() -> ToolDef {
     ToolDef {
         id: "AEC_SLABSTRUCTURALSTYLEMANAGER",
-        label: "Structural Slab Style Manager",
+        label: "Slab Shell",
         icon: IconKind::Svg(include_bytes!(
-            "../../../../assets/icons/aec/material_manager.svg"
+            "../../../../assets/icons/aec/style_floor_finish.svg"
         )),
         event: ModuleEvent::Command("AEC_SLABSTRUCTURALSTYLEMANAGER".to_string()),
     }
@@ -52,9 +52,9 @@ impl OpenCADStudio {
             .or_else(|| entries.first().map(|e| e.structural_style.style.id.clone()))
             .or_else(|| lib.slab_structural_styles.first().map(|s| s.style.id.clone()));
 
-        self.aec.aec_slab_structural_style_manager_filter.clear();
-        self.aec.aec_slab_structural_style_manager_editing_id = None;
-        self.aec.aec_slab_structural_style_manager_form_open = false;
+        self.aec.styles.slab_structural_filter.clear();
+        self.aec.styles.slab_structural_editing_id = None;
+        self.aec.styles.slab_structural_form_open = false;
 
         if let Some(id) = select_id {
             let _ = self.aec_slab_structural_style_manager_select(id);
@@ -63,7 +63,7 @@ impl OpenCADStudio {
         }
 
         self.active_modal = Some(crate::app::ModalKind::Aec(
-            AecModalKind::SlabStructuralStyleManager,
+            AecModalKind::Styles,
         ));
         Task::none()
     }
@@ -85,15 +85,15 @@ impl OpenCADStudio {
             });
 
         if let Some(style) = style {
-            self.aec.aec_slab_structural_style_manager_selected = Some(style.style.id.clone());
-            self.aec.aec_slab_structural_style_manager_editing_id = Some(style.style.id.clone());
+            self.aec.styles.slab_structural_selected = Some(style.style.id.clone());
+            self.aec.styles.slab_structural_editing_id = Some(style.style.id.clone());
             self.aec.aec_last_slab_structural_style_id = Some(style.style.id.clone());
-            self.aec.aec_slab_structural_style_manager_name = style.style.name.clone();
-            self.aec.aec_slab_structural_style_manager_parent = style.style.parent_style_id.clone();
-            self.aec.aec_slab_structural_style_manager_layers =
+            self.aec.styles.slab_structural_name = style.style.name.clone();
+            self.aec.styles.slab_structural_parent = style.style.parent.clone();
+            self.aec.styles.slab_structural_layers =
                 style.layers.iter().map(layer_to_buffer).collect();
-            self.aec.aec_slab_structural_style_manager_form_open = true;
-            self.aec.aec_slab_structural_style_manager_drag_index = None;
+            self.aec.styles.slab_structural_form_open = true;
+            self.aec.styles.slab_structural_drag_index = None;
         }
 
         Task::none()
@@ -107,11 +107,11 @@ impl OpenCADStudio {
             .and_then(|l| l.materials.first().map(|m| m.id.clone()))
             .unwrap_or_else(|| "Stahlbeton C25/30".to_string());
 
-        self.aec.aec_slab_structural_style_manager_selected = None;
-        self.aec.aec_slab_structural_style_manager_editing_id = None;
-        self.aec.aec_slab_structural_style_manager_name = crate::t!("New Structural Slab Style").to_string();
-        self.aec.aec_slab_structural_style_manager_parent = None;
-        self.aec.aec_slab_structural_style_manager_layers = vec![AecSlabLayerBuffer {
+        self.aec.styles.slab_structural_selected = None;
+        self.aec.styles.slab_structural_editing_id = None;
+        self.aec.styles.slab_structural_name = crate::t!("New Structural Slab Style").to_string();
+        self.aec.styles.slab_structural_parent = None;
+        self.aec.styles.slab_structural_layers = vec![AecSlabLayerBuffer {
             material_id: first_mat,
             thickness: "20.0".to_string(),
             function: layer_function_to_str(&LayerFunction::Structural),
@@ -121,30 +121,30 @@ impl OpenCADStudio {
             role_tag: String::new(),
             layer_id: Some(uuid::Uuid::new_v4()),
         }];
-        self.aec.aec_slab_structural_style_manager_form_open = true;
-        self.aec.aec_slab_structural_style_manager_drag_index = None;
+        self.aec.styles.slab_structural_form_open = true;
+        self.aec.styles.slab_structural_drag_index = None;
 
         Task::none()
     }
 
     pub(crate) fn aec_slab_structural_style_manager_duplicate(&mut self) -> Task<Message> {
-        let current_layers = self.aec.aec_slab_structural_style_manager_layers.clone();
-        let current_name = self.aec.aec_slab_structural_style_manager_name.clone();
-        let current_parent = self.aec.aec_slab_structural_style_manager_parent.clone();
+        let current_layers = self.aec.styles.slab_structural_layers.clone();
+        let current_name = self.aec.styles.slab_structural_name.clone();
+        let current_parent = self.aec.styles.slab_structural_parent.clone();
 
-        self.aec.aec_slab_structural_style_manager_selected = None;
-        self.aec.aec_slab_structural_style_manager_editing_id = None;
-        self.aec.aec_slab_structural_style_manager_name = format!("{current_name} (Kopie)");
-        self.aec.aec_slab_structural_style_manager_parent = current_parent;
-        self.aec.aec_slab_structural_style_manager_layers = current_layers
+        self.aec.styles.slab_structural_selected = None;
+        self.aec.styles.slab_structural_editing_id = None;
+        self.aec.styles.slab_structural_name = format!("{current_name} (Kopie)");
+        self.aec.styles.slab_structural_parent = current_parent;
+        self.aec.styles.slab_structural_layers = current_layers
             .into_iter()
             .map(|mut l| {
                 l.layer_id = Some(uuid::Uuid::new_v4());
                 l
             })
             .collect();
-        self.aec.aec_slab_structural_style_manager_form_open = true;
-        self.aec.aec_slab_structural_style_manager_drag_index = None;
+        self.aec.styles.slab_structural_form_open = true;
+        self.aec.styles.slab_structural_drag_index = None;
 
         Task::none()
     }
@@ -158,7 +158,7 @@ impl OpenCADStudio {
             .unwrap_or_else(|| "Stahlbeton C25/30".to_string());
 
         self.aec
-            .aec_slab_structural_style_manager_layers
+            .styles.slab_structural_layers
             .push(AecSlabLayerBuffer {
                 material_id: first_mat,
                 thickness: "20.0".to_string(),
@@ -172,23 +172,23 @@ impl OpenCADStudio {
     }
 
     pub(crate) fn aec_slab_structural_style_manager_layer_remove(&mut self, index: usize) {
-        if index < self.aec.aec_slab_structural_style_manager_layers.len() {
-            self.aec.aec_slab_structural_style_manager_layers.remove(index);
+        if index < self.aec.styles.slab_structural_layers.len() {
+            self.aec.styles.slab_structural_layers.remove(index);
         }
     }
 
     pub(crate) fn aec_slab_structural_style_manager_layer_move_up(&mut self, index: usize) {
-        if index > 0 && index < self.aec.aec_slab_structural_style_manager_layers.len() {
+        if index > 0 && index < self.aec.styles.slab_structural_layers.len() {
             self.aec
-                .aec_slab_structural_style_manager_layers
+                .styles.slab_structural_layers
                 .swap(index, index - 1);
         }
     }
 
     pub(crate) fn aec_slab_structural_style_manager_layer_move_down(&mut self, index: usize) {
-        if index + 1 < self.aec.aec_slab_structural_style_manager_layers.len() {
+        if index + 1 < self.aec.styles.slab_structural_layers.len() {
             self.aec
-                .aec_slab_structural_style_manager_layers
+                .styles.slab_structural_layers
                 .swap(index, index + 1);
         }
     }
@@ -196,12 +196,12 @@ impl OpenCADStudio {
     pub(crate) fn aec_slab_structural_style_manager_save_internal(
         &mut self,
     ) -> Result<SlabStructuralStyle, String> {
-        let name = self.aec.aec_slab_structural_style_manager_name.trim().to_string();
+        let name = self.aec.styles.slab_structural_name.trim().to_string();
         if name.is_empty() {
             return Err(crate::t!("Style name cannot be empty").to_string());
         }
 
-        let id = if let Some(edit_id) = &self.aec.aec_slab_structural_style_manager_editing_id {
+        let id = if let Some(edit_id) = &self.aec.styles.slab_structural_editing_id {
             edit_id.clone()
         } else {
             let base_slug = name
@@ -213,7 +213,7 @@ impl OpenCADStudio {
         };
 
         let mut layers = Vec::new();
-        for b in &self.aec.aec_slab_structural_style_manager_layers {
+        for b in &self.aec.styles.slab_structural_layers {
             layers.push(buffer_to_layer(b)?);
         }
 
@@ -221,11 +221,12 @@ impl OpenCADStudio {
             style: Style {
                 id: id.clone(),
                 name,
-                object_kind: "SlabStructural".to_string(),
-                parent_style_id: self.aec.aec_slab_structural_style_manager_parent.clone(),
+                category: "SlabStructural".to_string(),
+                origin: Default::default(),
+                parent: self.aec.styles.slab_structural_parent.clone(),
             },
             layers,
-            display_profiles: std::collections::HashMap::new(),
+            default_profile: None,
         };
 
         if self.aec.aec_project_explorer_file.is_some() {
@@ -234,8 +235,8 @@ impl OpenCADStudio {
             self.aec_upsert_slab_structural_style_into_session(structural_style.clone());
         }
 
-        self.aec.aec_slab_structural_style_manager_selected = Some(id.clone());
-        self.aec.aec_slab_structural_style_manager_editing_id = Some(id.clone());
+        self.aec.styles.slab_structural_selected = Some(id.clone());
+        self.aec.styles.slab_structural_editing_id = Some(id.clone());
         self.aec.aec_last_slab_structural_style_id = Some(id);
 
         Ok(structural_style)
@@ -316,7 +317,7 @@ impl OpenCADStudio {
     }
 
     pub(crate) fn aec_slab_structural_style_manager_delete(&mut self) -> Task<Message> {
-        let Some(selected) = self.aec.aec_slab_structural_style_manager_selected.clone() else {
+        let Some(selected) = self.aec.styles.slab_structural_selected.clone() else {
             return Task::none();
         };
 
@@ -357,9 +358,9 @@ impl OpenCADStudio {
                 )
                 .as_ref(),
             );
-            self.aec.aec_slab_structural_style_manager_selected = None;
-            self.aec.aec_slab_structural_style_manager_editing_id = None;
-            self.aec.aec_slab_structural_style_manager_form_open = false;
+            self.aec.styles.slab_structural_selected = None;
+            self.aec.styles.slab_structural_editing_id = None;
+            self.aec.styles.slab_structural_form_open = false;
         } else {
             self.command_line.push_error(
                 crate::tf!(

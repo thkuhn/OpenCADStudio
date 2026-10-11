@@ -18,6 +18,7 @@ use crate::modules::aec::engine::opening_shape::OpeningShape;
 use crate::modules::aec::engine::opening_sketch::bake_sketch;
 use crate::modules::aec::engine::opening_style::{
     apply_plan_visibility, default_slots_for_kind, effective_slots_for_plan, BlockPlacementMode,
+    OpeningPlanProfiles,
     OpeningGenerator, OpeningStyle, SlotGeometry, HingeSide, DEFAULT_FRAME_THICKNESS,
     DEFAULT_OPENING_ANGLE_DEG,
 };
@@ -118,7 +119,7 @@ pub fn resolved_slots(
 pub fn resolved_slots_for_plan(
     opening: &Opening,
     library: Option<&StyleLibrary>,
-    plan_name: Option<&str>,
+    plan_profiles: Option<&OpeningPlanProfiles>,
 ) -> (HashMap<OpeningComponentSlot, SlotGeometry>, Option<OpeningStyle>) {
     if let Some(id) = opening.style_id.as_deref() {
         if let Some(lib) = library {
@@ -128,7 +129,7 @@ pub fn resolved_slots_for_plan(
                     .iter()
                     .map(|s| (s.style.id.clone(), s.clone()))
                     .collect();
-                let slots = effective_slots_for_plan(&map, &id.to_string(), plan_name)
+                let slots = effective_slots_for_plan(&map, &id.to_string(), plan_profiles)
                     .unwrap_or_else(|_| style.slots.clone());
                 return (slots, Some(style.clone()));
             }
@@ -143,14 +144,14 @@ fn rules_with_plan_visibility(
     rules: Option<&ComponentRuleSet>,
 ) -> Option<ComponentRuleSet> {
     let mut merged = rules.cloned().unwrap_or_default();
-    let plan = merged.plan_name.clone();
+    let plan = merged.opening_profiles.clone();
     if let (Some(lib), Some(id)) = (library, opening.style_id.as_ref()) {
         let map: HashMap<_, _> = lib
             .opening_styles
             .iter()
             .map(|s| (s.style.id.clone(), s.clone()))
             .collect();
-        apply_plan_visibility(&map, id, plan.as_deref(), &mut merged.visibility);
+        apply_plan_visibility(&map, id, Some(&plan), &mut merged.visibility);
     }
     if rules.is_none() && merged.visibility.is_empty() {
         None
@@ -1251,7 +1252,7 @@ pub fn bake_opening_world_with_doc(
             (y_min, y_max)
         })
         .unwrap_or((-thickness * 0.5, thickness * 0.5));
-    let plan = rules.and_then(|r| r.plan_name.as_deref());
+    let plan = rules.map(|r| &r.opening_profiles);
     let (slots, style) = resolved_slots_for_plan(opening, library, plan);
     let params = OpeningBakeParams::from_opening(opening, thickness, style.as_ref())
         .with_wall_bounds(wall_y_min, wall_y_max);
@@ -1691,7 +1692,7 @@ pub fn regenerate_opening_display(
             (y_min, y_max)
         })
         .unwrap_or((-thickness * 0.5, thickness * 0.5));
-    let plan = rules.and_then(|r| r.plan_name.as_deref());
+    let plan = rules.map(|r| &r.opening_profiles);
     let (slots, style) = resolved_slots_for_plan(&opening, library, plan);
     let params = OpeningBakeParams::from_opening(&opening, thickness, style.as_ref())
         .with_wall_bounds(wall_y_min, wall_y_max);
@@ -1800,7 +1801,7 @@ pub fn regenerate_opening_display(
         engine::owner_index::add_child(&mut scene.document, opening_handle, handle);
     }
 
-    let plan = rules.and_then(|r| r.plan_name.as_deref());
+    let plan = rules.map(|r| &r.opening_profiles);
     let (slots, _) = resolved_slots_for_plan(&opening, library, plan);
     let merged_rules = rules_with_plan_visibility(&opening, library, rules);
     if merged_rules

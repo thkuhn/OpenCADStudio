@@ -9,6 +9,7 @@ use iced::Task;
 
 use crate::app::{AecModalKind, Message, OpenCADStudio};
 use crate::modules::aec::engine::display_component::SlabComponentSlot;
+use crate::modules::aec::engine::display_component::ComponentRuleSet;
 use crate::modules::aec::engine::library::{combined_slab_style_entries_with_session, load_or_seed};
 use crate::modules::aec::engine::slab_style::{LayerFunction, LayerValue, SlabStyle, SlabStyleLayer};
 use crate::modules::aec::engine::slab_xdata::{layer_function_from_str, layer_function_to_str};
@@ -29,9 +30,9 @@ pub const EDITABLE_SLOTS: &[SlabComponentSlot] = &[
 pub fn tool() -> ToolDef {
     ToolDef {
         id: "AEC_SLABSTYLEMANAGER",
-        label: "Slab Style Manager",
+        label: "Slab",
         icon: IconKind::Svg(include_bytes!(
-            "../../../../assets/icons/aec/wall_style_manager.svg"
+            "../../../../assets/icons/aec/style_slab.svg"
         )),
         event: ModuleEvent::Command("AEC_SLABSTYLEMANAGER".to_string()),
     }
@@ -62,7 +63,7 @@ pub fn layer_to_buffer(layer: &SlabStyleLayer) -> AecSlabLayerBuffer {
 
 pub fn buffer_to_layer(buf: &AecSlabLayerBuffer) -> Result<SlabStyleLayer, String> {
     if buf.material_id.trim().is_empty() {
-        return Err("material is required".to_string());
+        return Err(crate::t!("material is required").into_owned());
     }
     let thickness = LayerValue::parse_cm_str(&buf.thickness);
     let vertical_offset = if buf.vertical_offset.trim().is_empty() {
@@ -431,13 +432,13 @@ impl OpenCADStudio {
             .or_else(|| entries.first().map(|e| e.slab_style.style.id.clone()))
             .or_else(|| lib.slab_styles.first().map(|s| s.style.id.clone()));
 
-        self.aec.aec_slab_style_manager_filter.clear();
-        self.aec.aec_slab_style_manager_editing_id = None;
-        self.aec.aec_slab_style_manager_form_open = false;
-        self.aec.aec_slab_style_manager_profile_selected = None;
-        self.aec.aec_slab_style_manager_profile_slot_visibility.clear();
-        self.aec.aec_slab_style_manager_profile_slot_overrides.clear();
-        self.aec.aec_slab_style_manager_profile_editing_slot = None;
+        self.aec.styles.slab_filter.clear();
+        self.aec.styles.slab_editing_id = None;
+        self.aec.styles.slab_form_open = false;
+        self.aec.styles.slab_profile_selected = None;
+        self.aec.styles.slab_default_profile = None;
+        self.aec.styles.slab_plan_profile_edits.clear();
+        self.aec.styles.slab_profile_slot_visibility.clear();
 
         if let Some(id) = select_id {
             let _ = self.aec_slab_style_manager_select(id);
@@ -445,7 +446,7 @@ impl OpenCADStudio {
             let _ = self.aec_slab_style_manager_new();
         }
 
-        self.active_modal = Some(crate::app::ModalKind::Aec(AecModalKind::SlabStyleManager));
+        self.active_modal = Some(crate::app::ModalKind::Aec(AecModalKind::Styles));
         Task::none()
     }
 
@@ -466,18 +467,21 @@ impl OpenCADStudio {
             });
 
         if let Some(style) = style {
-            self.aec.aec_slab_style_manager_selected = Some(style.style.id.clone());
-            self.aec.aec_slab_style_manager_editing_id = Some(style.style.id.clone());
+            self.aec.styles.slab_selected = Some(style.style.id.clone());
+            self.aec.styles.slab_editing_id = Some(style.style.id.clone());
             self.aec.aec_last_slab_style_id = Some(style.style.id.clone());
-            self.aec.aec_slab_style_manager_name = style.style.name.clone();
-            self.aec.aec_slab_style_manager_parent = style.style.parent_style_id.clone();
-            self.aec.aec_slab_style_manager_structural_style = style.structural_style_id.clone();
-            self.aec.aec_slab_style_manager_finish_style = style.default_finish_style_id.clone();
-            self.aec.aec_slab_style_manager_layers =
+            self.aec.styles.slab_name = style.style.name.clone();
+            self.aec.styles.slab_parent = style.style.parent.clone();
+            self.aec.styles.slab_structural_style = style.structural_style_id.clone();
+            self.aec.styles.slab_finish_style = style.default_finish_style_id.clone();
+            self.aec.styles.slab_layers =
                 style.layers.iter().map(layer_to_buffer).collect();
-            self.aec.aec_slab_style_manager_form_open = true;
-            self.aec.aec_slab_style_manager_drag_index = None;
-            self.aec.aec_slab_style_manager_profile_selected = None;
+            self.aec.styles.slab_form_open = true;
+            self.aec.styles.slab_drag_index = None;
+            self.aec.styles.slab_profile_selected = None;
+            self.aec.styles.slab_default_profile = style.default_profile.clone();
+            self.aec.styles.slab_plan_profile_edits.clear();
+            self.aec_slab_style_manager_profile_select(String::new());
         }
 
         Task::none()
@@ -495,58 +499,95 @@ impl OpenCADStudio {
             .as_ref()
             .and_then(|l| l.floor_finish_styles.first().map(|f| f.style.id.clone()));
 
-        self.aec.aec_slab_style_manager_selected = None;
-        self.aec.aec_slab_style_manager_editing_id = None;
-        self.aec.aec_slab_style_manager_name = crate::t!("New Slab Style").to_string();
-        self.aec.aec_slab_style_manager_parent = None;
-        self.aec.aec_slab_style_manager_structural_style = first_struct;
-        self.aec.aec_slab_style_manager_finish_style = first_finish;
-        self.aec.aec_slab_style_manager_layers = Vec::new();
-        self.aec.aec_slab_style_manager_form_open = true;
-        self.aec.aec_slab_style_manager_drag_index = None;
-        self.aec.aec_slab_style_manager_profile_selected = None;
+        self.aec.styles.slab_selected = None;
+        self.aec.styles.slab_editing_id = None;
+        self.aec.styles.slab_name = crate::t!("New Slab Style").to_string();
+        self.aec.styles.slab_parent = None;
+        self.aec.styles.slab_structural_style = first_struct;
+        self.aec.styles.slab_finish_style = first_finish;
+        self.aec.styles.slab_layers = Vec::new();
+        self.aec.styles.slab_form_open = true;
+        self.aec.styles.slab_drag_index = None;
+        self.aec.styles.slab_profile_selected = None;
+        self.aec.styles.slab_default_profile = None;
+        self.aec.styles.slab_plan_profile_edits.clear();
+        self.aec.styles.slab_profile_slot_visibility.clear();
 
         Task::none()
     }
 
     pub(crate) fn aec_slab_style_manager_duplicate(&mut self) -> Task<Message> {
-        let current_layers = self.aec.aec_slab_style_manager_layers.clone();
-        let current_name = self.aec.aec_slab_style_manager_name.clone();
-        let current_parent = self.aec.aec_slab_style_manager_parent.clone();
-        let current_structural = self.aec.aec_slab_style_manager_structural_style.clone();
-        let current_finish = self.aec.aec_slab_style_manager_finish_style.clone();
+        let current_layers = self.aec.styles.slab_layers.clone();
+        let current_name = self.aec.styles.slab_name.clone();
+        let current_parent = self.aec.styles.slab_parent.clone();
+        let current_structural = self.aec.styles.slab_structural_style.clone();
+        let current_finish = self.aec.styles.slab_finish_style.clone();
 
-        self.aec.aec_slab_style_manager_selected = None;
-        self.aec.aec_slab_style_manager_editing_id = None;
-        self.aec.aec_slab_style_manager_name = format!("{current_name} (Kopie)");
-        self.aec.aec_slab_style_manager_parent = current_parent;
-        self.aec.aec_slab_style_manager_structural_style = current_structural;
-        self.aec.aec_slab_style_manager_finish_style = current_finish;
-        self.aec.aec_slab_style_manager_layers = current_layers
+        self.aec.styles.slab_selected = None;
+        self.aec.styles.slab_editing_id = None;
+        self.aec.styles.slab_name = format!("{current_name} (Kopie)");
+        self.aec.styles.slab_parent = current_parent;
+        self.aec.styles.slab_structural_style = current_structural;
+        self.aec.styles.slab_finish_style = current_finish;
+        self.aec.styles.slab_layers = current_layers
             .into_iter()
             .map(|mut l| {
                 l.layer_id = Some(uuid::Uuid::new_v4());
                 l
             })
             .collect();
-        self.aec.aec_slab_style_manager_form_open = true;
-        self.aec.aec_slab_style_manager_drag_index = None;
+        self.aec.styles.slab_form_open = true;
+        self.aec.styles.slab_drag_index = None;
+        self.aec.styles.slab_profile_selected = None;
+        self.aec.styles.slab_plan_profile_edits.clear();
+        self.aec_slab_style_manager_profile_select(String::new());
 
         Task::none()
     }
 
+    pub(crate) fn aec_slab_style_manager_profile_select(&mut self, name: String) {
+        self.aec.styles.slab_profile_selected = if name.is_empty() { None } else { Some(name) };
+        let default = self.aec.styles.slab_default_profile.as_ref();
+        let plan = self.aec.styles.slab_profile_selected.as_deref().and_then(|name| {
+            self.aec.styles.slab_plan_profile_edits.get(name).or_else(|| {
+                self.aec.aec_plan_library.as_ref()?.configs.iter().find(|c| c.name == name)?
+                    .style_overrides.get(self.aec.styles.slab_editing_id.as_ref()?)?.rules.as_ref()
+            })
+        });
+        self.aec.styles.slab_profile_slot_visibility = EDITABLE_SLOTS.iter().filter_map(|slot| {
+            plan.and_then(|p| p.visibility.get(slot.key()))
+                .or_else(|| default.and_then(|p| p.visibility.get(slot.key())))
+                .map(|visible| (*slot, *visible))
+        }).collect();
+    }
+
+    pub(crate) fn aec_slab_style_manager_profile_slot_visibility(&mut self, slot: SlabComponentSlot, visible: bool) {
+        self.aec.styles.slab_profile_slot_visibility.insert(slot, visible);
+        if let Some(name) = self.aec.styles.slab_profile_selected.clone() {
+            let existing = self.aec.aec_plan_library.as_ref().and_then(|lib| {
+                lib.configs.iter().find(|c| c.name == name)?
+                    .style_overrides.get(self.aec.styles.slab_editing_id.as_ref()?)?.rules.clone()
+            }).unwrap_or_default();
+            self.aec.styles.slab_plan_profile_edits.entry(name).or_insert(existing)
+                .visibility.insert(slot.key().into(), visible);
+        } else {
+            self.aec.styles.slab_default_profile.get_or_insert_with(ComponentRuleSet::default)
+                .visibility.insert(slot.key().into(), visible);
+        }
+    }
+
     pub(crate) fn aec_slab_style_manager_structural_style_changed(&mut self, id: Option<String>) {
-        self.aec.aec_slab_style_manager_structural_style = id;
+        self.aec.styles.slab_structural_style = id;
     }
 
     pub(crate) fn aec_slab_style_manager_finish_style_changed(&mut self, id: Option<String>) {
-        self.aec.aec_slab_style_manager_finish_style = id;
+        self.aec.styles.slab_finish_style = id;
     }
 
     pub(crate) fn aec_slab_style_manager_load_modular_layers(&mut self) {
         let mut dummy = SlabStyle::new("temp", "temp");
-        dummy.structural_style_id = self.aec.aec_slab_style_manager_structural_style.clone();
-        dummy.default_finish_style_id = self.aec.aec_slab_style_manager_finish_style.clone();
+        dummy.structural_style_id = self.aec.styles.slab_structural_style.clone();
+        dummy.default_finish_style_id = self.aec.styles.slab_finish_style.clone();
 
         let s_map: HashMap<String, _> = self
             .aec
@@ -567,7 +608,7 @@ impl OpenCADStudio {
             Some(&f_map),
         );
         if !resolved.is_empty() {
-            self.aec.aec_slab_style_manager_layers = resolved.iter().map(layer_to_buffer).collect();
+            self.aec.styles.slab_layers = resolved.iter().map(layer_to_buffer).collect();
         }
     }
 
@@ -580,7 +621,7 @@ impl OpenCADStudio {
             .unwrap_or_else(|| "Stahlbeton C25/30".to_string());
 
         self.aec
-            .aec_slab_style_manager_layers
+            .styles.slab_layers
             .push(AecSlabLayerBuffer {
                 material_id: first_mat,
                 thickness: "5.0".to_string(),
@@ -594,36 +635,36 @@ impl OpenCADStudio {
     }
 
     pub(crate) fn aec_slab_style_manager_layer_remove(&mut self, index: usize) {
-        if index < self.aec.aec_slab_style_manager_layers.len() {
-            self.aec.aec_slab_style_manager_layers.remove(index);
+        if index < self.aec.styles.slab_layers.len() {
+            self.aec.styles.slab_layers.remove(index);
         }
     }
 
     pub(crate) fn aec_slab_style_manager_layer_move_up(&mut self, index: usize) {
-        if index > 0 && index < self.aec.aec_slab_style_manager_layers.len() {
+        if index > 0 && index < self.aec.styles.slab_layers.len() {
             self.aec
-                .aec_slab_style_manager_layers
+                .styles.slab_layers
                 .swap(index, index - 1);
         }
     }
 
     pub(crate) fn aec_slab_style_manager_layer_move_down(&mut self, index: usize) {
-        if index + 1 < self.aec.aec_slab_style_manager_layers.len() {
+        if index + 1 < self.aec.styles.slab_layers.len() {
             self.aec
-                .aec_slab_style_manager_layers
+                .styles.slab_layers
                 .swap(index, index + 1);
         }
     }
 
     pub(crate) fn aec_slab_style_manager_save_internal(&mut self) -> Result<SlabStyle, String> {
-        let name = self.aec.aec_slab_style_manager_name.trim().to_string();
+        let name = self.aec.styles.slab_name.trim().to_string();
         if name.is_empty() {
-            return Err("Slab style name cannot be empty".to_string());
+            return Err(crate::t!("Slab style name cannot be empty").into_owned());
         }
 
         let id = self
             .aec
-            .aec_slab_style_manager_editing_id
+            .styles.slab_editing_id
             .clone()
             .unwrap_or_else(|| {
                 name.to_lowercase()
@@ -632,35 +673,37 @@ impl OpenCADStudio {
                     .replace('\\', "_")
             });
 
+        let layers = self.aec.styles.slab_layers.iter().map(buffer_to_layer).collect::<Result<Vec<_>, _>>()?;
         let slab_style = SlabStyle {
             style: Style {
                 id: id.clone(),
                 name: name.clone(),
-                object_kind: "Slab".to_string(),
-                parent_style_id: self.aec.aec_slab_style_manager_parent.clone(),
+                category: "Slab".to_string(),
+                origin: Default::default(),
+                parent: self.aec.styles.slab_parent.clone(),
             },
-            structural_style_id: self.aec.aec_slab_style_manager_structural_style.clone(),
-            default_finish_style_id: self.aec.aec_slab_style_manager_finish_style.clone(),
-            layers: Vec::new(),
-            display_profiles: HashMap::new(),
+            structural_style_id: self.aec.styles.slab_structural_style.clone(),
+            default_finish_style_id: self.aec.styles.slab_finish_style.clone(),
+            layers,
+            default_profile: self.aec.styles.slab_default_profile.clone(),
         };
 
         // Self-parent validation
-        if slab_style.style.parent_style_id.as_deref() == Some(id.as_str()) {
-            return Err("Style cannot be its own parent".to_string());
+        if slab_style.style.parent.as_deref() == Some(id.as_str()) {
+            return Err(crate::t!("Style cannot be its own parent").into_owned());
         }
 
         // Validate cycle in hierarchy
-        if let Some(parent_id) = &slab_style.style.parent_style_id {
+        if let Some(parent_id) = &slab_style.style.parent {
             if let Some(lib) = &self.aec.aec_style_library {
                 let mut visited = vec![id.clone()];
                 let mut curr = Some(parent_id.clone());
                 while let Some(c) = curr {
                     if visited.contains(&c) {
-                        return Err(format!("Inheritance cycle detected involving '{c}'"));
+                        return Err(crate::tf!("Inheritance cycle detected involving '{c}'").into_owned());
                     }
                     visited.push(c.clone());
-                    curr = lib.find_slab_style(&c).and_then(|s| s.style.parent_style_id.clone());
+                    curr = lib.find_slab_style(&c).and_then(|s| s.style.parent.clone());
                 }
             }
         }
@@ -673,8 +716,20 @@ impl OpenCADStudio {
             self.aec_upsert_slab_style_into_session(slab_style.clone());
         }
 
-        self.aec.aec_slab_style_manager_selected = Some(id.clone());
-        self.aec.aec_slab_style_manager_editing_id = Some(id.clone());
+        if !self.aec.styles.slab_plan_profile_edits.is_empty() {
+            if let Some(lib) = self.aec.aec_plan_library.as_mut() {
+                for (name, rules) in &self.aec.styles.slab_plan_profile_edits {
+                    if let Some(config) = lib.configs.iter_mut().find(|c| c.name == *name) {
+                        config.style_overrides.entry(id.clone()).or_default().rules = Some(rules.clone());
+                    }
+                }
+                let snapshot = lib.clone();
+                self.aec_save_display_config_library_preferring_project(&snapshot)?;
+            }
+        }
+
+        self.aec.styles.slab_selected = Some(id.clone());
+        self.aec.styles.slab_editing_id = Some(id.clone());
         self.aec.aec_last_slab_style_id = Some(id);
 
         Ok(slab_style)
@@ -757,7 +812,7 @@ impl OpenCADStudio {
     }
 
     pub(crate) fn aec_slab_style_manager_delete(&mut self) -> Task<Message> {
-        let Some(selected_id) = self.aec.aec_slab_style_manager_selected.clone() else {
+        let Some(selected_id) = self.aec.styles.slab_selected.clone() else {
             return Task::none();
         };
 
@@ -781,9 +836,9 @@ impl OpenCADStudio {
             crate::tf!("AEC Slab Style Manager: Deleted style '{selected_id}'.").as_ref(),
         );
 
-        self.aec.aec_slab_style_manager_selected = None;
-        self.aec.aec_slab_style_manager_editing_id = None;
-        self.aec.aec_slab_style_manager_form_open = false;
+        self.aec.styles.slab_selected = None;
+        self.aec.styles.slab_editing_id = None;
+        self.aec.styles.slab_form_open = false;
 
         let entries = combined_slab_style_entries_with_session(
             self.aec.aec_project_explorer_file.as_ref(),
@@ -800,6 +855,52 @@ impl OpenCADStudio {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn style_default_layers_and_plan_visibility_survive_save_and_reopen() {
+        use crate::app::{AecMessage, OpenCADStudio};
+        use crate::modules::aec::engine::display_component::ComponentRuleSet;
+        use crate::modules::aec::engine::library::{build_effective_slab_rule_set, DisplayConfigLibrary};
+        use crate::modules::aec::engine::plan_view::{DisplayConfig, PlanningStage, ViewType};
+
+        let mut app = OpenCADStudio::new_for_test();
+        app.automation_op(r#"{"op":"new"}"#);
+        let mut style = SlabStyle::new("t_slab_profile", "Profile slab");
+        style.layers.push(SlabStyleLayer::new("Concrete", LayerValue::Fixed(0.25), LayerFunction::Structural));
+        let slot = SlabComponentSlot::Solid3D;
+        let mut default = ComponentRuleSet::default();
+        default.visibility.insert(slot.key().to_string(), false);
+        style.default_profile = Some(default.clone());
+        app.aec_upsert_slab_style_into_session(style.clone());
+        let mut plans = DisplayConfigLibrary::empty();
+        let mut plan = DisplayConfig::new("Test plan".into(), "A".into(), PlanningStage::Execution, ViewType::FloorPlan);
+        let mut plan_rules = ComponentRuleSet::default();
+        plan_rules.visibility.insert(slot.key().to_string(), true);
+        plan.style_overrides.entry(style.style.id.clone()).or_default().rules = Some(plan_rules);
+        plans.configs.push(plan);
+        app.aec.aec_plan_library = Some(plans);
+
+        let _ = app.aec_slab_style_manager_select(style.style.id.clone());
+        assert_eq!(app.aec.styles.slab_profile_slot_visibility.get(&slot), Some(&false));
+        let _ = app.update_aec(AecMessage::AecSlabStyleManagerProfileSlotVisibilityToggle(SlabComponentSlot::Contour2D, false));
+        let _ = app.update_aec(AecMessage::AecSlabStyleManagerProfileSelect("Test plan".into()));
+        assert_eq!(app.aec.styles.slab_profile_slot_visibility.get(&slot), Some(&true));
+        assert_eq!(app.aec.styles.slab_profile_slot_visibility.get(&SlabComponentSlot::Contour2D), Some(&false));
+        let _ = app.update_aec(AecMessage::AecSlabStyleManagerProfileSlotVisibilityToggle(slot, false));
+        let _ = app.update_aec(AecMessage::AecSlabStyleManagerSave);
+
+        let stored = app.aec.aec_style_library.as_ref().unwrap().find_slab_style(&style.style.id).unwrap();
+        assert_eq!(stored.layers, style.layers);
+        assert_eq!(stored.default_profile.as_ref().unwrap().visibility[slot.key()], default.visibility[slot.key()]);
+        assert_eq!(stored.default_profile.as_ref().unwrap().visibility[SlabComponentSlot::Contour2D.key()], false);
+        let plan = app.aec.aec_plan_library.as_ref().unwrap().find("Test plan").unwrap();
+        assert_eq!(plan.style_overrides[&style.style.id].rules.as_ref().unwrap().visibility[slot.key()], false);
+        let resolved = build_effective_slab_rule_set(plan, Some(stored), None);
+        assert_eq!(resolved.visibility[slot.key()], false);
+        let _ = app.aec_slab_style_manager_select(style.style.id.clone());
+        let _ = app.update_aec(AecMessage::AecSlabStyleManagerProfileSelect("Test plan".into()));
+        assert_eq!(app.aec.styles.slab_profile_slot_visibility.get(&slot), Some(&false));
+    }
 
     #[test]
     fn test_layer_buffer_roundtrip() {

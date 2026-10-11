@@ -169,7 +169,7 @@ impl OpenCADStudio {
     ) -> Result<(), String> {
         let path = self.aec.aec_project_explorer_path.clone();
         let Some(project) = self.aec.aec_project_explorer_file.as_mut() else {
-            return Err("no project loaded".to_string());
+            return Err(crate::t!("no project loaded").into_owned());
         };
         project
             .material_wall_style_library
@@ -193,7 +193,7 @@ impl OpenCADStudio {
     ) -> Result<(), String> {
         let path = self.aec.aec_project_explorer_path.clone();
         let Some(project) = self.aec.aec_project_explorer_file.as_mut() else {
-            return Err("no project loaded".to_string());
+            return Err(crate::t!("no project loaded").into_owned());
         };
         project
             .material_wall_style_library
@@ -216,7 +216,7 @@ impl OpenCADStudio {
     ) -> Result<(), String> {
         let path = self.aec.aec_project_explorer_path.clone();
         let Some(project) = self.aec.aec_project_explorer_file.as_mut() else {
-            return Err("no project loaded".to_string());
+            return Err(crate::t!("no project loaded").into_owned());
         };
         project
             .material_wall_style_library
@@ -239,7 +239,7 @@ impl OpenCADStudio {
     ) -> Result<(), String> {
         let path = self.aec.aec_project_explorer_path.clone();
         let Some(project) = self.aec.aec_project_explorer_file.as_mut() else {
-            return Err("no project loaded".to_string());
+            return Err(crate::t!("no project loaded").into_owned());
         };
         project
             .material_wall_style_library
@@ -262,7 +262,7 @@ impl OpenCADStudio {
     ) -> Result<(), String> {
         let path = self.aec.aec_project_explorer_path.clone();
         let Some(project) = self.aec.aec_project_explorer_file.as_mut() else {
-            return Err("no project loaded".to_string());
+            return Err(crate::t!("no project loaded").into_owned());
         };
         project
             .material_wall_style_library
@@ -285,7 +285,7 @@ impl OpenCADStudio {
     ) -> Result<(), String> {
         let path = self.aec.aec_project_explorer_path.clone();
         let Some(project) = self.aec.aec_project_explorer_file.as_mut() else {
-            return Err("no project loaded".to_string());
+            return Err(crate::t!("no project loaded").into_owned());
         };
         project
             .material_wall_style_library
@@ -310,7 +310,7 @@ impl OpenCADStudio {
         if to_project && self.aec.aec_project_explorer_file.is_none() {
             return Task::none();
         }
-        let Some(id) = self.aec.aec_style_manager_selected_material.clone() else {
+        let Some(id) = self.aec.styles.selected_material.clone() else {
             return Task::none();
         };
         let global_lib = crate::modules::aec::engine::library::load_or_seed();
@@ -329,11 +329,11 @@ impl OpenCADStudio {
             crate::modules::aec::engine::library::material_copy_conflict(target_lib, &material);
         match conflict {
             crate::modules::aec::engine::library::CopyConflict::DifferentContentCollision => {
-                self.aec.aec_style_manager_pending_copy = Some(AecPendingCopy::Material {
+                self.aec.styles.pending_copy = Some(AecPendingCopy::Material {
                     material,
                     to_project,
                 });
-                self.aec.aec_style_manager_copy_conflict_open = true;
+                self.aec.styles.copy_conflict_open = true;
                 self.active_modal = Some(crate::app::ModalKind::Aec(AecModalKind::StyleCopyConflict));
             }
             _ => {
@@ -353,7 +353,7 @@ impl OpenCADStudio {
         if to_project && self.aec.aec_project_explorer_file.is_none() {
             return Task::none();
         }
-        let Some(id) = self.aec.aec_style_manager_selected_wall_style.clone() else {
+        let Some(id) = self.aec.styles.selected_wall_style.clone() else {
             return Task::none();
         };
         let global_lib = crate::modules::aec::engine::library::load_or_seed();
@@ -379,11 +379,11 @@ impl OpenCADStudio {
         );
         match conflict {
             crate::modules::aec::engine::library::CopyConflict::DifferentContentCollision => {
-                self.aec.aec_style_manager_pending_copy = Some(AecPendingCopy::WallStyle {
+                self.aec.styles.pending_copy = Some(AecPendingCopy::WallStyle {
                     wall_style,
                     to_project,
                 });
-                self.aec.aec_style_manager_copy_conflict_open = true;
+                self.aec.styles.copy_conflict_open = true;
                 self.active_modal = Some(crate::app::ModalKind::Aec(AecModalKind::StyleCopyConflict));
             }
             _ => {
@@ -405,7 +405,7 @@ impl OpenCADStudio {
         if to_project && self.aec.aec_project_explorer_file.is_none() {
             return Task::none();
         }
-        let Some(id) = self.aec.aec_slab_style_manager_selected.clone() else {
+        let Some(id) = self.aec.styles.slab_selected.clone() else {
             return Task::none();
         };
         let global_lib = crate::modules::aec::engine::library::load_or_seed();
@@ -431,11 +431,11 @@ impl OpenCADStudio {
         );
         match conflict {
             crate::modules::aec::engine::library::CopyConflict::DifferentContentCollision => {
-                self.aec.aec_style_manager_pending_copy = Some(AecPendingCopy::SlabStyle {
+                self.aec.styles.pending_copy = Some(AecPendingCopy::SlabStyle {
                     slab_style,
                     to_project,
                 });
-                self.aec.aec_style_manager_copy_conflict_open = true;
+                self.aec.styles.copy_conflict_open = true;
                 self.active_modal =
                     Some(crate::app::ModalKind::Aec(AecModalKind::StyleCopyConflict));
             }
@@ -450,7 +450,7 @@ impl OpenCADStudio {
     }
 
     pub(crate) fn aec_handle_copy_slab_structural_style(&mut self, to_project: bool) -> Task<Message> {
-        let Some(id) = self.aec.aec_slab_structural_style_manager_selected.clone() else {
+        let Some(id) = self.aec.styles.slab_structural_selected.clone() else {
             return Task::none();
         };
         let global_lib = crate::modules::aec::engine::library::load_or_seed();
@@ -476,11 +476,11 @@ impl OpenCADStudio {
         );
         match conflict {
             crate::modules::aec::engine::library::CopyConflict::DifferentContentCollision => {
-                self.aec.aec_style_manager_pending_copy = Some(AecPendingCopy::SlabStructuralStyle {
+                self.aec.styles.pending_copy = Some(AecPendingCopy::SlabStructuralStyle {
                     slab_structural_style,
                     to_project,
                 });
-                self.aec.aec_style_manager_copy_conflict_open = true;
+                self.aec.styles.copy_conflict_open = true;
                 self.active_modal =
                     Some(crate::app::ModalKind::Aec(AecModalKind::StyleCopyConflict));
             }
@@ -495,7 +495,7 @@ impl OpenCADStudio {
     }
 
     pub(crate) fn aec_handle_copy_floor_finish_style(&mut self, to_project: bool) -> Task<Message> {
-        let Some(id) = self.aec.aec_floor_finish_style_manager_selected.clone() else {
+        let Some(id) = self.aec.styles.floor_finish_selected.clone() else {
             return Task::none();
         };
         let global_lib = crate::modules::aec::engine::library::load_or_seed();
@@ -521,11 +521,11 @@ impl OpenCADStudio {
         );
         match conflict {
             crate::modules::aec::engine::library::CopyConflict::DifferentContentCollision => {
-                self.aec.aec_style_manager_pending_copy = Some(AecPendingCopy::FloorFinishStyle {
+                self.aec.styles.pending_copy = Some(AecPendingCopy::FloorFinishStyle {
                     floor_finish_style,
                     to_project,
                 });
-                self.aec.aec_style_manager_copy_conflict_open = true;
+                self.aec.styles.copy_conflict_open = true;
                 self.active_modal =
                     Some(crate::app::ModalKind::Aec(AecModalKind::StyleCopyConflict));
             }
@@ -598,18 +598,8 @@ impl OpenCADStudio {
             AecPendingCopy::Material { material, .. } => {
                 target_lib.upsert_material(material.clone());
             }
-            AecPendingCopy::WallStyle {
-                wall_style,
-                to_project,
-                ..
-            } => {
-                let mut ws = wall_style.clone();
-                if !*to_project {
-                    ws = crate::modules::aec::engine::library::wall_style_without_display_profiles(
-                        ws,
-                    );
-                }
-                target_lib.upsert_wall_style(ws);
+            AecPendingCopy::WallStyle { wall_style, .. } => {
+                target_lib.upsert_wall_style(wall_style.clone());
             }
             AecPendingCopy::OpeningStyle { opening_style, .. } => {
                 target_lib.upsert_opening_style(opening_style.clone());
@@ -636,7 +626,7 @@ impl OpenCADStudio {
                 )
                 .map_err(|e| e.to_string())
             } else {
-                Err("no project loaded".to_string())
+                Err(crate::t!("no project loaded").into_owned())
             }
         } else {
             crate::modules::aec::engine::library::save_to_default_path(&target_lib)
@@ -661,30 +651,30 @@ impl OpenCADStudio {
     pub(crate) fn aec_style_manager_material_save_internal(
         &mut self,
     ) -> Option<(String, crate::modules::aec::engine::library::StyleLibrary)> {
-        let name = self.aec.aec_style_manager_material_name.trim().to_string();
+        let name = self.aec.styles.material_name.trim().to_string();
         if name.is_empty() {
             self.command_line.push_error(
                 crate::t!("AEC Style Manager: material name cannot be empty.").as_ref(),
             );
             return None;
         }
-        let hatch = if self.aec.aec_style_manager_material_hatch.trim().is_empty() {
+        let hatch = if self.aec.styles.material_hatch.trim().is_empty() {
             "SOLID".to_string()
         } else {
-            self.aec.aec_style_manager_material_hatch.trim().to_string()
+            self.aec.styles.material_hatch.trim().to_string()
         };
         let color_hex = self
-            .aec.aec_style_manager_material_color
+            .aec.styles.material_color
             .trim()
             .trim_start_matches('#');
         let color = u32::from_str_radix(color_hex, 16).unwrap_or(0);
-        let line_type = if self.aec.aec_style_manager_material_line_type.trim().is_empty() {
+        let line_type = if self.aec.styles.material_line_type.trim().is_empty() {
             "Continuous".to_string()
         } else {
-            self.aec.aec_style_manager_material_line_type.trim().to_string()
+            self.aec.styles.material_line_type.trim().to_string()
         };
         let category = {
-            let c = self.aec.aec_style_manager_material_category.trim();
+            let c = self.aec.styles.material_category.trim();
             if c.is_empty() {
                 None
             } else {
@@ -692,7 +682,7 @@ impl OpenCADStudio {
             }
         };
         let mut hatch_scale = self
-            .aec.aec_style_manager_material_hatch_scale
+            .aec.styles.material_hatch_scale
             .trim()
             .parse::<f64>()
             .unwrap_or(1.0);
@@ -700,7 +690,7 @@ impl OpenCADStudio {
             hatch_scale = 0.01;
         }
         let render_material_ref = {
-            let r = self.aec.aec_style_manager_material_render_ref.trim();
+            let r = self.aec.styles.material_render_ref.trim();
             if r.is_empty() {
                 None
             } else {
@@ -708,28 +698,33 @@ impl OpenCADStudio {
             }
         };
         let hatch_angle = self
-            .aec.aec_style_manager_material_hatch_angle
+            .aec.styles.material_hatch_angle
             .trim()
             .parse::<f64>()
             .unwrap_or(0.0);
-        let hatch_angle_relative = self.aec.aec_style_manager_material_hatch_angle_relative;
+        let hatch_angle_relative = self.aec.styles.material_hatch_angle_relative;
         let id = self
-            .aec.aec_style_manager_material_editing_id
+            .aec.styles.material_editing_id
             .clone()
             .unwrap_or_else(|| crate::modules::aec::engine::xdata::unique_id("mat", &name));
 
         let material = crate::modules::aec::engine::material::Material {
-            id: id.clone(),
-            name,
+            style: crate::modules::aec::engine::style_common::StyleCommon::new(
+                id.clone(),
+                name,
+                None,
+                crate::modules::aec::engine::style_common::CATEGORY_MATERIAL,
+                Default::default(),
+            ),
             hatch_pattern: hatch,
             line_color: color,
             line_type,
             render_material_ref,
-            category,
+            group: category,
             hatch_color: Some(acadrust::types::Color::Rgb {
-                r: ((self.aec.aec_style_manager_material_hatch_color >> 16) & 0xFF) as u8,
-                g: ((self.aec.aec_style_manager_material_hatch_color >> 8) & 0xFF) as u8,
-                b: (self.aec.aec_style_manager_material_hatch_color & 0xFF) as u8,
+                r: ((self.aec.styles.material_hatch_color >> 16) & 0xFF) as u8,
+                g: ((self.aec.styles.material_hatch_color >> 8) & 0xFF) as u8,
+                b: (self.aec.styles.material_hatch_color & 0xFF) as u8,
             }),
             hatch_scale,
             hatch_angle,
@@ -759,8 +754,8 @@ impl OpenCADStudio {
                             crate::t!("AEC Style Manager: material saved.").as_ref(),
                         );
                     }
-                    self.aec.aec_style_manager_selected_material = Some(id.clone());
-                    self.aec.aec_style_manager_material_editing_id = Some(id.clone());
+                    self.aec.styles.selected_material = Some(id.clone());
+                    self.aec.styles.material_editing_id = Some(id.clone());
                     let lib_snapshot = self
                         .aec
                         .aec_style_library
@@ -777,8 +772,8 @@ impl OpenCADStudio {
             }
         } else {
             self.aec_upsert_material_into_session(material);
-            self.aec.aec_style_manager_selected_material = Some(id.clone());
-            self.aec.aec_style_manager_material_editing_id = Some(id.clone());
+            self.aec.styles.selected_material = Some(id.clone());
+            self.aec.styles.material_editing_id = Some(id.clone());
             let lib_snapshot = self
                 .aec
                 .aec_style_library
@@ -800,7 +795,7 @@ impl OpenCADStudio {
         fn cm_to_m(s: &str) -> f64 {
             s.trim().parse::<f64>().unwrap_or(0.0) / 100.0
         }
-        let name = self.aec.aec_style_manager_wall_style_name.trim().to_string();
+        let name = self.aec.styles.wall_style_name.trim().to_string();
         if name.is_empty() {
             self.command_line.push_error(
                 crate::t!("AEC Style Manager: wall style name cannot be empty.").as_ref(),
@@ -814,12 +809,12 @@ impl OpenCADStudio {
         // happen to share a name never collide on the same id later. Ids
         // of styles already being edited are left untouched.
         let id = self
-            .aec.aec_style_manager_wall_style_editing_id
+            .aec.styles.wall_style_editing_id
             .clone()
             .unwrap_or_else(|| crate::modules::aec::engine::xdata::unique_id("style", &name));
 
         // Cycle detection before saving
-        if let Some(parent_id) = &self.aec.aec_style_manager_wall_style_parent {
+        if let Some(parent_id) = &self.aec.styles.wall_style_parent {
             if parent_id == &id {
                 self.command_line.push_error(
                     crate::t!("AEC Style Manager: a wall style cannot be its own parent.")
@@ -842,8 +837,9 @@ impl OpenCADStudio {
                     crate::modules::aec::engine::style::Style {
                         id: id.clone(),
                         name: name.clone(),
-                        object_kind: "Wall".to_string(),
-                        parent_style_id: Some(parent_id.clone()),
+                        category: "Wall".to_string(),
+                        origin: Default::default(),
+                        parent: Some(parent_id.clone()),
                     },
                 );
 
@@ -861,7 +857,7 @@ impl OpenCADStudio {
 
         let mut layers = Vec::new();
         let mut formula_warnings = Vec::new();
-        for (idx, lb) in self.aec.aec_style_manager_wall_style_layers.iter().enumerate() {
+        for (idx, lb) in self.aec.styles.wall_style_layers.iter().enumerate() {
             let thickness = LayerValue::parse_cm_str(&lb.thickness);
             if let crate::modules::aec::engine::wall_style::LayerValue::Formula(ref formula) =
                 thickness
@@ -914,25 +910,25 @@ impl OpenCADStudio {
             );
         }
 
-        // Preserve any `display_profiles` already saved on this style (Step
-        // 4's editor writes those separately) — this save path only edits
-        // layers/parenting, so it must not silently wipe existing overrides.
-        let existing_display_profiles = self
+        // Preserve the style's default display profile (the profile editor
+        // writes it separately) — this save path only edits layers/parenting.
+        let existing_default_profile = self
             .aec.aec_style_library
             .as_ref()
             .and_then(|lib| lib.wall_styles.iter().find(|ws| ws.style.id == id))
-            .map(|ws| ws.display_profiles.clone())
-            .unwrap_or_default();
+            .and_then(|ws| ws.default_profile.clone())
+            .or_else(|| self.aec.styles.wall_duplicate_default_profile.clone());
 
         let wall_style = crate::modules::aec::engine::wall_style::WallStyle {
             style: crate::modules::aec::engine::style::Style {
                 id: id.clone(),
                 name,
-                object_kind: "Wall".to_string(),
-                parent_style_id: self.aec.aec_style_manager_wall_style_parent.clone(),
+                category: crate::modules::aec::engine::style_common::CATEGORY_WALL.to_string(),
+                origin: Default::default(),
+                parent: self.aec.styles.wall_style_parent.clone(),
             },
             layers,
-            display_profiles: existing_display_profiles,
+            default_profile: existing_default_profile,
         };
 
         // Copy-on-write: editing a Standard wall style lands in the project.
@@ -959,8 +955,9 @@ impl OpenCADStudio {
                             crate::t!("AEC Style Manager: wall style saved.").as_ref(),
                         );
                     }
-                    self.aec.aec_style_manager_selected_wall_style = Some(id.clone());
-                    self.aec.aec_style_manager_wall_style_editing_id = Some(id.clone());
+                    self.aec.styles.wall_duplicate_default_profile = None;
+                    self.aec.styles.selected_wall_style = Some(id.clone());
+                    self.aec.styles.wall_style_editing_id = Some(id.clone());
                     let lib_snapshot = self
                         .aec.aec_style_library
                         .clone()
@@ -976,8 +973,9 @@ impl OpenCADStudio {
             }
         } else {
             self.aec_upsert_wall_style_into_session(wall_style);
-            self.aec.aec_style_manager_selected_wall_style = Some(id.clone());
-            self.aec.aec_style_manager_wall_style_editing_id = Some(id.clone());
+            self.aec.styles.wall_duplicate_default_profile = None;
+            self.aec.styles.selected_wall_style = Some(id.clone());
+            self.aec.styles.wall_style_editing_id = Some(id.clone());
             let lib_snapshot = self
                 .aec.aec_style_library
                 .clone()
@@ -987,13 +985,13 @@ impl OpenCADStudio {
     }
 
     pub(crate) fn clear_aec_profile_slot_style_editor_buffers(&mut self) {
-        self.aec.aec_style_manager_profile_slot_style_line_type.clear();
-        self.aec.aec_style_manager_profile_slot_style_line_color.clear();
-        self.aec.aec_style_manager_profile_slot_style_hatch_pattern.clear();
-        self.aec.aec_style_manager_profile_slot_style_hatch_color.clear();
-        self.aec.aec_style_manager_profile_slot_style_fill_color.clear();
-        self.aec.aec_style_manager_profile_slot_style_line_color_picker_open = false;
-        self.aec.aec_style_manager_profile_slot_style_hatch_color_picker_open = false;
-        self.aec.aec_style_manager_profile_slot_style_fill_color_picker_open = false;
+        self.aec.styles.profile_slot_style_line_type.clear();
+        self.aec.styles.profile_slot_style_line_color.clear();
+        self.aec.styles.profile_slot_style_hatch_pattern.clear();
+        self.aec.styles.profile_slot_style_hatch_color.clear();
+        self.aec.styles.profile_slot_style_fill_color.clear();
+        self.aec.styles.profile_slot_style_line_color_picker_open = false;
+        self.aec.styles.profile_slot_style_hatch_color_picker_open = false;
+        self.aec.styles.profile_slot_style_fill_color_picker_open = false;
     }
 }

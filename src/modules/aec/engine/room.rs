@@ -54,7 +54,43 @@ impl RoomFunction {
         }
     }
 
+    /// All built-in functions (without `Custom`).
+    pub const BUILT_IN: [RoomFunction; 8] = [
+        Self::Living,
+        Self::Office,
+        Self::Sanitary,
+        Self::Kitchen,
+        Self::Corridor,
+        Self::Storage,
+        Self::Technical,
+        Self::Balcony,
+    ];
+
+    /// UI label in the active language (the `display_name` strings are the
+    /// stable catalog keys).
+    pub fn localized_name(&self) -> String {
+        match self {
+            Self::Living => crate::t!("Wohnen / Aufenthalt"),
+            Self::Office => crate::t!("Büroarbeit"),
+            Self::Sanitary => crate::t!("Sanitärraum"),
+            Self::Kitchen => crate::t!("Küche"),
+            Self::Corridor => crate::t!("Flur / Verkehrsfläche"),
+            Self::Storage => crate::t!("Lagern / Abstellen"),
+            Self::Technical => crate::t!("Technikfläche"),
+            Self::Balcony => crate::t!("Balkon / Terrasse"),
+            Self::Custom(_) => crate::t!("Sonstige Nutzung"),
+        }
+        .into_owned()
+    }
+
     pub fn from_str(s: &str) -> Self {
+        let trimmed = s.trim();
+        if let Some(f) = Self::BUILT_IN
+            .iter()
+            .find(|f| trimmed == f.localized_name() || trimmed == f.display_name())
+        {
+            return f.clone();
+        }
         match s.trim().to_lowercase().as_str() {
             "living" | "wohnen" | "aufenthalt" | "schlafen" | "kind" | "zimmer" => Self::Living,
             "office" | "büro" | "arbeitszimmer" | "arbeiten" => Self::Office,

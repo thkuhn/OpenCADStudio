@@ -1,8 +1,8 @@
-//! AEC Structural Slab Style Manager — browse and edit structural slab styles held in the AEC
-//! style library (`AEC_SLABSTRUCTURALSTYLEMANAGER`).
+//! AEC Floor Finish Style Manager — browse and edit floor finish build-ups held in the AEC
+//! style library (`AEC_FLOORFINISHSTYLEMANAGER`).
 
 use iced::mouse;
-use iced::widget::canvas::{Frame, Geometry, Path, Program};
+use iced::widget::canvas::{Frame, Geometry, Path, Program, Style as CanvasStyle};
 use iced::widget::{
     button, canvas, column, container, pick_list, row, scrollable, text, text_input, Space,
 };
@@ -17,6 +17,10 @@ use crate::modules::aec::styles::slab_style_manager::{
     preview_paths_for_mode, SlabPreviewPath,
 };
 use crate::modules::aec::ui::aec_ui_util::muted;
+use crate::modules::aec::engine::style_common::StyleOrigin;
+use crate::modules::aec::ui::style_manager::actions::{self, ActionMessages};
+use crate::modules::aec::ui::style_manager::list::{self, filter_entries, ListEntry, ListSpec};
+use crate::modules::aec::ui::style_manager::StyleParts;
 use crate::t;
 
 const LAYER_COL_REORDER_W: f32 = 60.0;
@@ -27,7 +31,7 @@ const LAYER_COL_OFFSET_W: f32 = 70.0;
 const LAYER_COL_OVERRIDE_W: f32 = 110.0;
 const LAYER_COL_HATCH_W: f32 = 90.0;
 
-pub struct SlabStructuralStyleFormState<'a> {
+pub struct FloorFinishStyleFormState<'a> {
     pub open: bool,
     pub is_new: bool,
     pub name: &'a str,
@@ -35,177 +39,113 @@ pub struct SlabStructuralStyleFormState<'a> {
     pub parent_name: Option<String>,
     pub layers: &'a [AecSlabLayerBuffer],
     pub drag_index: Option<usize>,
-    pub all_structural_styles: Vec<(&'a str, &'a str)>,
+    pub all_floor_finish_styles: Vec<(&'a str, &'a str)>,
     pub all_materials: Vec<(&'a str, &'a str)>,
     pub all_layer_names: Vec<String>,
     pub effective_layers: Vec<SlabStyleLayer>,
     pub preview_mode: AecSlabPreviewMode,
 }
 
-pub fn view_window<'a>(
+pub fn parts<'a>(
     library: &'a StyleLibrary,
     project: Option<&'a ProjectFile>,
     session_library: Option<&'a StyleLibrary>,
     filter: &'a str,
     selected_id: Option<&'a str>,
-    form: Option<SlabStructuralStyleFormState<'a>>,
-) -> Element<'a, Message> {
-    let entries = crate::modules::aec::engine::library::combined_slab_structural_style_entries_with_session(
+    form: Option<FloorFinishStyleFormState<'a>>,
+) -> StyleParts<'a> {
+    let entries = crate::modules::aec::engine::library::combined_floor_finish_style_entries_with_session(
         project,
         session_library,
     );
     let source_by_id: std::collections::HashMap<String, LibrarySource> = entries
         .iter()
-        .map(|e| (e.structural_style.style.id.clone(), e.source))
+        .map(|e| (e.finish_style.style.id.clone(), e.source))
         .collect();
 
     let mut merged = StyleLibrary::empty();
     for e in &entries {
-        merged.upsert_slab_structural_style(e.structural_style.clone());
+        merged.upsert_floor_finish_style(e.finish_style.clone());
     }
     for m in &library.materials {
         merged.upsert_material(m.clone());
     }
 
-    let filter_lower = filter.to_lowercase();
-    let owned_rows: Vec<(crate::modules::aec::engine::slab_style::SlabStructuralStyle, usize, LibrarySource)> =
-        merged
-            .slab_structural_styles
-            .iter()
-            .filter(|s| {
-                filter.is_empty()
-                    || s.style.name.to_lowercase().contains(&filter_lower)
-                    || s.style.id.to_lowercase().contains(&filter_lower)
-            })
-            .map(|s| {
-                let source = source_by_id
-                    .get(&s.style.id)
-                    .copied()
-                    .unwrap_or(LibrarySource::Standard);
-                (s.clone(), 0, source)
-            })
-            .collect();
-
-    let search_box = text_input(t!("Search styles...").as_ref(), filter)
-        .size(11)
-        .padding([4, 8])
-        .on_input(|s| Message::Aec(AecMessage::AecSlabStructuralStyleManagerFilter(s)));
-
-    let mut list_col = column![search_box].spacing(4);
-    let mut tree_scroll = column![].spacing(2);
-    for (structural_style, depth, source) in owned_rows {
-        let is_selected = selected_id == Some(structural_style.style.id.as_str());
-        let badge = source_badge_element(Some(source));
-        let id_for_click = structural_style.style.id.clone();
-        let indent = depth as f32 * 12.0;
-        let name_label = text(structural_style.style.name.clone()).size(11);
-        let row_content = row![
-            Space::new().width(indent),
-            badge,
-            Space::new().width(4),
-            name_label,
-            Space::new(),
-        ]
-        .align_y(Alignment::Center)
-        .spacing(2);
-
-        let item_btn = button(row_content)
-            .width(Fill)
-            .padding([3, 6])
-            .style(if is_selected {
-                button::primary
-            } else {
-                button::secondary
-            })
-            .on_press(Message::Aec(AecMessage::AecSlabStructuralStyleManagerSelect(
-                id_for_click,
-            )));
-        tree_scroll = tree_scroll.push(item_btn);
-    }
-
-    let tree_scroll_view = scrollable(tree_scroll).height(Fill);
-    let new_btn = button(text(t!("+ Neuer Rohbaustil")).size(11))
-        .width(Fill)
-        .padding([4, 8])
-        .style(button::primary)
-        .on_press(Message::Aec(AecMessage::AecSlabStructuralStyleManagerNew));
-
-    list_col = list_col.push(tree_scroll_view).push(new_btn);
-    let left_pane = container(list_col).width(Length::Fixed(220.0)).height(Fill);
-
-    let right_pane: Element<'a, Message> = if let Some(form) = form {
-        if form.open {
-            let active_source = selected_id.and_then(|id| source_by_id.get(id).copied());
-            view_form(form, active_source)
-        } else {
-            empty_form_view()
-        }
-    } else {
-        empty_form_view()
-    };
-
-    row![left_pane, Space::new().width(8), right_pane]
-        .width(Fill)
-        .height(Fill)
-        .into()
-}
-
-fn empty_form_view<'a>() -> Element<'a, Message> {
-    container(text(t!("No style selected")).size(11).style(muted))
-        .width(Fill)
-        .height(Fill)
-        .align_x(Alignment::Center)
-        .align_y(Alignment::Center)
-        .into()
-}
-
-fn source_badge_element<'a>(source: Option<LibrarySource>) -> Element<'a, Message> {
-    let (label, color) = match source {
-        Some(LibrarySource::Standard) => ("Standard", Color::from_rgb(0.5, 0.5, 0.5)),
-        Some(LibrarySource::Project) => ("Projekt", Color::from_rgb(0.2, 0.6, 1.0)),
-        Some(LibrarySource::Session) => ("Zeichnung", Color::from_rgb(0.9, 0.6, 0.2)),
-        None => ("", Color::TRANSPARENT),
-    };
-    if label.is_empty() {
-        return Space::new().width(0).into();
-    }
-    container(text(label).size(9).color(color))
-        .padding([1, 4])
-        .style(move |theme: &Theme| container::Style {
-            border: Border {
-                color,
-                width: 1.0,
-                radius: 2.0.into(),
-            },
-            background: Some(
-                theme
-                    .palette()
-                    .background
-                    .neutral
-                    .color
-                    .scale_alpha(0.08)
-                    .into(),
+    let all: Vec<ListEntry> = merged
+        .floor_finish_styles
+        .iter()
+        .map(|s| ListEntry {
+            id: s.style.id.clone(),
+            label: s.style.name.clone(),
+            detail: None,
+            origin: StyleOrigin::from(
+                source_by_id.get(&s.style.id).copied().unwrap_or(LibrarySource::Standard),
             ),
-            ..Default::default()
+            group: None,
+            swatch: None,
         })
-        .into()
-}
+        .collect();
+    let rows = filter_entries(all, filter);
 
-fn view_form<'a>(
-    form: SlabStructuralStyleFormState<'a>,
-    selected_source: Option<LibrarySource>,
-) -> Element<'a, Message> {
-    let has_standard_counterpart = form.parent_id.is_some_and(|id| {
+    let list = list::view(
+        ListSpec {
+            title: t!("Ausbaustile").into_owned(),
+            search_hint: t!("Search styles...").into_owned(),
+            new_label: t!("+ Neuer Ausbaustil").into_owned(),
+            filter,
+            selected: selected_id,
+            on_filter: |s| Message::Aec(AecMessage::AecFloorFinishStyleManagerFilter(s)),
+            on_select: |id| Message::Aec(AecMessage::AecFloorFinishStyleManagerSelect(id)),
+            on_new: Message::Aec(AecMessage::AecFloorFinishStyleManagerNew),
+        },
+        &rows,
+    );
+
+    let open = form.is_some();
+    let is_new = form.as_ref().map(|f| f.is_new).unwrap_or(true);
+    let selected_source = selected_id.and_then(|id| {
+        source_by_id.get(id).copied()
+    });
+    let has_standard = selected_id.is_some_and(|id| {
         crate::modules::aec::engine::library::load_or_seed()
-            .slab_structural_styles
+            .floor_finish_styles
             .iter()
             .any(|s| s.style.id == id)
     });
+    let form_el: Element<'a, Message> = match form {
+        Some(f) => form_view(f),
+        None => container(
+            text(t!("Wählen Sie einen Ausbaustil aus oder erstellen Sie einen neuen."))
+                .size(12)
+                .style(muted),
+        )
+        .center_x(Fill)
+        .center_y(Fill)
+        .into(),
+    };
+    let actions = open.then(|| {
+        actions::view(
+            ActionMessages {
+                save_apply: Message::Aec(AecMessage::AecFloorFinishStyleManagerSaveAndApply),
+                save: Message::Aec(AecMessage::AecFloorFinishStyleManagerSave),
+                duplicate: Message::Aec(AecMessage::AecFloorFinishStyleManagerDuplicate),
+                delete: Message::Aec(AecMessage::AecFloorFinishStyleManagerDelete),
+                to_standard: Message::Aec(AecMessage::AecStyleManagerCopyFloorFinishStyleToGlobal),
+                to_project: Message::Aec(AecMessage::AecStyleManagerCopyFloorFinishStyleToProject),
+            },
+            is_new,
+            selected_source.map(StyleOrigin::from),
+            has_standard,
+        )
+    });
+    StyleParts { list, form: form_el, actions }
+}
 
+fn form_view<'a>(form: FloorFinishStyleFormState<'a>) -> Element<'a, Message> {
     let name_input = text_input(t!("Style name").as_ref(), form.name)
         .size(11)
         .padding([4, 8])
-        .on_input(|s| Message::Aec(AecMessage::AecSlabStructuralStyleManagerNameChanged(s)));
+        .on_input(|s| Message::Aec(AecMessage::AecFloorFinishStyleManagerNameChanged(s)));
 
     let parent_label = form
         .parent_name
@@ -217,21 +157,14 @@ fn view_form<'a>(
         .padding([4, 8])
         .style(button::secondary)
         .on_press(Message::Aec(AecMessage::AecStylePickerOpen(
-            StylePickerTarget::SlabStructuralStyleParent,
+            StylePickerTarget::FloorFinishStyleParent,
         )));
-
-    let duplicate_btn = button(text(t!("Duplizieren")).size(11))
-        .padding([4, 8])
-        .style(button::secondary)
-        .on_press(Message::Aec(AecMessage::AecSlabStructuralStyleManagerDuplicate));
 
     let header_row = row![
         text(t!("Name:")).size(11).style(muted),
         name_input,
         Space::new().width(8),
         parent_btn,
-        Space::new().width(4),
-        duplicate_btn,
     ]
     .align_y(Alignment::Center)
     .spacing(4);
@@ -250,7 +183,7 @@ fn view_form<'a>(
                 button::secondary
             })
             .padding([2, 8])
-            .on_press(Message::Aec(AecMessage::AecSlabStructuralStyleManagerSetPreviewMode(
+            .on_press(Message::Aec(AecMessage::AecFloorFinishStyleManagerSetPreviewMode(
                 AecSlabPreviewMode::CrossSection,
             ))),
         button(text(t!("Deckenspiegel (2D)")).size(10))
@@ -260,7 +193,7 @@ fn view_form<'a>(
                 button::secondary
             })
             .padding([2, 8])
-            .on_press(Message::Aec(AecMessage::AecSlabStructuralStyleManagerSetPreviewMode(
+            .on_press(Message::Aec(AecMessage::AecFloorFinishStyleManagerSetPreviewMode(
                 AecSlabPreviewMode::ReflectedCeilingPlan,
             ))),
         button(text(t!("Isometrie (3D)")).size(10))
@@ -270,7 +203,7 @@ fn view_form<'a>(
                 button::secondary
             })
             .padding([2, 8])
-            .on_press(Message::Aec(AecMessage::AecSlabStructuralStyleManagerSetPreviewMode(
+            .on_press(Message::Aec(AecMessage::AecFloorFinishStyleManagerSetPreviewMode(
                 AecSlabPreviewMode::Model3D,
             ))),
     ]
@@ -279,7 +212,7 @@ fn view_form<'a>(
 
     let preview_paths = preview_paths_for_mode(&form.effective_layers, form.preview_mode);
     let preview_box = container(
-        canvas(SlabStructuralPreviewCanvas {
+        canvas(FloorFinishPreviewCanvas {
             paths: preview_paths,
             mode: form.preview_mode,
         })
@@ -319,9 +252,9 @@ fn view_form<'a>(
 
     let mut layers_col = column![table_header].spacing(4);
     let functions = vec![
-        "Structural".to_string(),
-        "Insulation".to_string(),
         "Finish".to_string(),
+        "Insulation".to_string(),
+        "Structural".to_string(),
         "Other".to_string(),
     ];
 
@@ -334,11 +267,11 @@ fn view_form<'a>(
         let drag_up_btn = button(text("▲").size(9))
             .padding([1, 4])
             .style(button::secondary)
-            .on_press(Message::Aec(AecMessage::AecSlabStructuralStyleManagerLayerMoveUp(i)));
+            .on_press(Message::Aec(AecMessage::AecFloorFinishStyleManagerLayerMoveUp(i)));
         let drag_down_btn = button(text("▼").size(9))
             .padding([1, 4])
             .style(button::secondary)
-            .on_press(Message::Aec(AecMessage::AecSlabStructuralStyleManagerLayerMoveDown(i)));
+            .on_press(Message::Aec(AecMessage::AecFloorFinishStyleManagerLayerMoveDown(i)));
 
         let reorder_cell = row![
             text(format!("{}", i + 1)).size(10).style(muted),
@@ -353,23 +286,21 @@ fn view_form<'a>(
             .padding([3, 6])
             .style(button::secondary)
             .on_press(Message::Aec(AecMessage::AecStylePickerOpen(
-                StylePickerTarget::SlabStructuralLayerMaterial(i),
+                StylePickerTarget::FloorFinishLayerMaterial(i),
             )));
 
         let th_input = text_input("cm", &layer_buf.thickness)
             .size(10)
             .padding([3, 6])
             .on_input(move |s| {
-                Message::Aec(AecMessage::AecSlabStructuralStyleManagerLayerThicknessChanged(i, s))
+                Message::Aec(AecMessage::AecFloorFinishStyleManagerLayerThicknessChanged(i, s))
             });
 
-        let fn_pick = pick_list(
-            Some(layer_buf.function.clone()),
-            functions.clone(),
-            |func: &String| func.clone(),
-        )
+        let fn_pick = pick_list(Some(layer_buf.function.clone()), functions.clone(), |func: &String| {
+            func.clone()
+        })
         .on_select(move |sel| {
-            Message::Aec(AecMessage::AecSlabStructuralStyleManagerLayerFunctionChanged(i, sel))
+            Message::Aec(AecMessage::AecFloorFinishStyleManagerLayerFunctionChanged(i, sel))
         })
         .text_size(10)
         .padding([3, 6]);
@@ -378,27 +309,27 @@ fn view_form<'a>(
             .size(10)
             .padding([3, 6])
             .on_input(move |s| {
-                Message::Aec(AecMessage::AecSlabStructuralStyleManagerLayerVerticalOffsetChanged(i, s))
+                Message::Aec(AecMessage::AecFloorFinishStyleManagerLayerVerticalOffsetChanged(i, s))
             });
 
         let layer_override_input = text_input(t!("Standard").as_ref(), &layer_buf.layer_override)
             .size(10)
             .padding([3, 6])
             .on_input(move |s| {
-                Message::Aec(AecMessage::AecSlabStructuralStyleManagerLayerOverrideChanged(i, s))
+                Message::Aec(AecMessage::AecFloorFinishStyleManagerLayerOverrideChanged(i, s))
             });
 
         let hatch_override_input = text_input(t!("Standard").as_ref(), &layer_buf.hatch_override)
             .size(10)
             .padding([3, 6])
             .on_input(move |s| {
-                Message::Aec(AecMessage::AecSlabStructuralStyleManagerLayerHatchOverrideChanged(i, s))
+                Message::Aec(AecMessage::AecFloorFinishStyleManagerLayerHatchOverrideChanged(i, s))
             });
 
         let del_btn = button(text("✕").size(10))
             .padding([2, 6])
             .style(button::danger)
-            .on_press(Message::Aec(AecMessage::AecSlabStructuralStyleManagerLayerRemove(i)));
+            .on_press(Message::Aec(AecMessage::AecFloorFinishStyleManagerLayerRemove(i)));
 
         let row_item = row![
             container(reorder_cell).width(LAYER_COL_REORDER_W),
@@ -418,9 +349,9 @@ fn view_form<'a>(
     let add_layer_btn = button(text(t!("+ Schicht hinzufügen")).size(10))
         .padding([4, 8])
         .style(button::primary)
-        .on_press(Message::Aec(AecMessage::AecSlabStructuralStyleManagerLayerAdd));
+        .on_press(Message::Aec(AecMessage::AecFloorFinishStyleManagerLayerAdd));
 
-    let summary_label = text(format!(
+    let summary_label = text(crate::tf!(
         "Gesamtdicke: {:.1} cm ({} Schichten)",
         total_th_cm,
         form.layers.len()
@@ -430,49 +361,13 @@ fn view_form<'a>(
 
     let layers_footer = row![add_layer_btn, Space::new(), summary_label].align_y(Alignment::Center);
     let layers_section = column![
-        text(t!("Schichtaufbau (von oben nach unten):"))
+        text(t!("Ausbauschichten (von oben nach unten von OKFF bis OKRD):"))
             .size(11)
             .style(muted),
-        scrollable(layers_col).height(Length::Fixed(140.0)),
+        scrollable(layers_col).height(Length::Fixed(160.0)),
         layers_footer,
     ]
     .spacing(6);
-
-    let mut actions = row![
-        Space::new(),
-        button(text(t!("Übernehmen")).size(11))
-            .style(button::primary)
-            .padding([5, 12])
-            .on_press(Message::Aec(AecMessage::AecSlabStructuralStyleManagerSaveAndApply)),
-        button(text(t!("Speichern")).size(11))
-            .style(button::secondary)
-            .padding([5, 12])
-            .on_press(Message::Aec(AecMessage::AecSlabStructuralStyleManagerSave)),
-    ]
-    .spacing(8);
-
-    if !form.is_new {
-        actions = actions.push(
-            button(text(t!("Delete")).size(11))
-                .style(button::danger)
-                .padding([5, 12])
-                .on_press(Message::Aec(AecMessage::AecSlabStructuralStyleManagerDelete)),
-        );
-        if selected_source == Some(LibrarySource::Project) && !has_standard_counterpart {
-            actions = actions.push(
-                button(text(t!("→ Standard")).size(11)).padding([5, 12]).on_press(Message::Aec(
-                    AecMessage::AecStyleManagerCopySlabStructuralStyleToGlobal,
-                )),
-            );
-        }
-        if selected_source == Some(LibrarySource::Standard) {
-            actions = actions.push(
-                button(text(t!("→ Projekt")).size(11)).padding([5, 12]).on_press(Message::Aec(
-                    AecMessage::AecStyleManagerCopySlabStructuralStyleToProject,
-                )),
-            );
-        }
-    }
 
     column![
         header_row,
@@ -481,21 +376,19 @@ fn view_form<'a>(
         preview_box,
         Space::new().height(4),
         layers_section,
-        Space::new(),
-        actions,
     ]
     .spacing(6)
     .height(Fill)
     .into()
 }
 
-struct SlabStructuralPreviewCanvas {
+struct FloorFinishPreviewCanvas {
     paths: Vec<SlabPreviewPath>,
     #[allow(dead_code)]
     mode: AecSlabPreviewMode,
 }
 
-impl<Message> Program<Message> for SlabStructuralPreviewCanvas {
+impl<Message> Program<Message> for FloorFinishPreviewCanvas {
     type State = ();
 
     fn draw(
@@ -576,9 +469,11 @@ impl<Message> Program<Message> for SlabStructuralPreviewCanvas {
             );
             frame.stroke(
                 &built,
-                iced::widget::canvas::Stroke::default()
-                    .with_color(stroke_col)
-                    .with_width(path.line_width),
+                iced::widget::canvas::Stroke {
+                    style: CanvasStyle::Solid(stroke_col),
+                    width: path.line_width,
+                    ..Default::default()
+                },
             );
         }
 

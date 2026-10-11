@@ -4,24 +4,15 @@
 //! that supports single-parent inheritance, allowing styles to override
 //! or inherit properties from their ancestors.
 
-use serde::{Deserialize, Serialize};
+pub use crate::modules::aec::engine::style_common::StyleCommon;
 use std::collections::HashMap;
 
 /// Unique identifier for a style.
 pub type StyleId = String;
 
-/// A generic style that can inherit from a parent style.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct Style {
-    /// Unique identifier for the style.
-    pub id: StyleId,
-    /// Human-readable name of the style.
-    pub name: String,
-    /// The kind of object this style applies to (e.g., "Wall", "Window").
-    pub object_kind: String,
-    /// Optional parent style identifier for inheritance.
-    pub parent_style_id: Option<StyleId>,
-}
+/// A generic style: the persisted common scaffold ([`StyleCommon`]) embedded in
+/// every style kind.
+pub type Style = StyleCommon;
 
 /// Errors that can occur during style inheritance resolution.
 #[derive(Debug, Clone, PartialEq)]
@@ -40,7 +31,7 @@ pub enum StyleError {
 /// # Errors
 ///
 /// * `StyleError::CycleDetected`: If an inheritance cycle is detected (e.g., A -> B -> A).
-/// * `StyleError::UnknownParent`: If a `parent_style_id` refers to a style not present in `styles`.
+/// * `StyleError::UnknownParent`: If a `parent` refers to a style not present in `styles`.
 pub fn resolve_chain(
     styles: &HashMap<StyleId, Style>,
     id: &StyleId,
@@ -58,7 +49,7 @@ pub fn resolve_chain(
 
         chain.push(current_id.clone());
 
-        if let Some(ref parent_id) = style.parent_style_id {
+        if let Some(ref parent_id) = style.parent {
             current_id = parent_id;
         } else {
             // Reached the root
@@ -78,8 +69,9 @@ mod tests {
         Style {
             id: id.to_string(),
             name: format!("Style {}", id),
-            object_kind: "Test".to_string(),
-            parent_style_id: parent.map(|s| s.to_string()),
+            category: "Test".to_string(),
+            origin: Default::default(),
+            parent: parent.map(|s| s.to_string()),
         }
     }
 

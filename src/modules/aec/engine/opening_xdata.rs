@@ -378,15 +378,15 @@ pub fn place_wall_opening(
 ) -> Result<(Handle, Vec<Handle>), String> {
     let wall_handle = resolve_wall_package(scene, wall_handle);
     if !is_wall_pick_target(scene, wall_handle) {
-        return Err("select a wall entity".into());
+        return Err(crate::t!("select a wall entity").into_owned());
     }
     let axis = get_wall_vertices(scene, wall_handle);
     if axis.len() < 2 {
-        return Err("wall axis is degenerate".into());
+        return Err(crate::t!("wall axis is degenerate").into_owned());
     }
     let axis_2d: Vec<(f64, f64)> = axis.iter().map(|v| (v.x, v.y)).collect();
     let distance = engine::openings::distance_along_axis_from_point(&axis_2d, (pt.x, pt.y))
-        .ok_or_else(|| "could not project point onto wall axis".to_string())?;
+        .ok_or_else(|| crate::t!("could not project point onto wall axis").into_owned())?;
 
     let mut opening = engine::openings::Opening::from_kind(
         Handle::NULL,
@@ -500,10 +500,10 @@ pub fn remove_wall_opening_with_rules_and_substitutions(
     style_substitutions: Option<&HashMap<engine::plan_view::WallStyleRef, engine::plan_view::WallStyleRef>>,
 ) -> Result<Vec<Handle>, String> {
     let Some(entity) = scene.document.get_entity(opening_handle).cloned() else {
-        return Err("opening entity not found".into());
+        return Err(crate::t!("opening entity not found").into_owned());
     };
     let Some(opening) = opening_from_entity(&entity, opening_handle) else {
-        return Err("entity is not an opening".into());
+        return Err(crate::t!("entity is not an opening").into_owned());
     };
     let wall_handle = resolve_wall_package(scene, opening.host_wall);
     let mut erase = engine::opening_display::collect_opening_display_children(scene, opening_handle);

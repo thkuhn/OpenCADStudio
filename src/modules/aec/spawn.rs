@@ -23,6 +23,7 @@ use crate::modules::aec::slabs::slab_opening::SlabOpeningCommand;
 use crate::modules::aec::rooms::room::RoomCommand;
 use crate::modules::aec::engine::project::{ProjectFile, StoreyRef};
 use crate::modules::aec::message::AecMessage;
+use crate::modules::aec::ui::style_manager::StylesNode;
 use crate::modules::aec::walls::reverse::WallReverseCommand;
 use crate::modules::aec::walls::{WallExtendCommand, WallJoinCommand, WallOpeningCommand};
 
@@ -63,22 +64,27 @@ pub(crate) fn try_dispatch(
         return None;
     }
     match cmd {
-        "AEC_MATERIALMANAGER" => Some(Task::done(Message::Aec(AecMessage::AecMaterialManagerOpen))),
+        "AEC_STYLES" => Some(Task::done(Message::Aec(AecMessage::AecStylesOpen(
+            Default::default(),
+        )))),
+        "AEC_MATERIALMANAGER" => Some(Task::done(Message::Aec(AecMessage::AecStylesOpen(
+            StylesNode::Materials,
+        )))),
         "AEC_PROJECTEXPLORER" => Some(Task::done(Message::Aec(AecMessage::AecProjectExplorerOpen))),
-        "AEC_STYLEMANAGER" => Some(Task::done(Message::Aec(
-            AecMessage::AecWallStyleManagerOpen,
-        ))),
-        "AEC_OPENINGSTYLEMANAGER" => Some(Task::done(Message::Aec(
-            AecMessage::AecOpeningStyleManagerOpen,
-        ))),
-        "AEC_SLABSTYLEMANAGER" => Some(Task::done(Message::Aec(
-            AecMessage::AecSlabStyleManagerOpen,
-        ))),
+        "AEC_STYLEMANAGER" => Some(Task::done(Message::Aec(AecMessage::AecStylesOpen(
+            StylesNode::Wall,
+        )))),
+        "AEC_OPENINGSTYLEMANAGER" => Some(Task::done(Message::Aec(AecMessage::AecStylesOpen(
+            StylesNode::Opening,
+        )))),
+        "AEC_SLABSTYLEMANAGER" => Some(Task::done(Message::Aec(AecMessage::AecStylesOpen(
+            StylesNode::Slab,
+        )))),
         "AEC_SLABSTRUCTURALSTYLEMANAGER" => Some(Task::done(Message::Aec(
-            AecMessage::AecSlabStructuralStyleManagerOpen,
+            AecMessage::AecStylesOpen(StylesNode::SlabStructural),
         ))),
         "AEC_FLOORFINISHSTYLEMANAGER" => Some(Task::done(Message::Aec(
-            AecMessage::AecFloorFinishStyleManagerOpen,
+            AecMessage::AecStylesOpen(StylesNode::FloorFinish),
         ))),
         "AEC_PLANMANAGER" => Some(Task::done(Message::Aec(AecMessage::AecPlanManagerOpen))),
         "AEC_CONTROLPLANES" => Some(dispatch_control_planes(app, tab)),
@@ -158,7 +164,7 @@ pub(crate) fn try_dispatch(
         }
         cmd if cmd.starts_with("AEC_ROOM_POLYGON_DO ") => {
             let args = cmd["AEC_ROOM_POLYGON_DO ".len()..].to_string();
-            let mut cmd_obj = RoomCommand::new();
+            let mut cmd_obj = RoomCommand::new().with_display(app.resolve_active_display_config_room_display(tab));
             let pts: Vec<(f64, f64)> = args
                 .split(';')
                 .filter_map(|pair| {
@@ -171,7 +177,7 @@ pub(crate) fn try_dispatch(
             if pts.len() >= 3 {
                 match cmd_obj.commit_polygon(&mut app.tabs[tab].scene, &pts) {
                     Ok(handle) => {
-                        app.command_line.push_info(&format!("AEC: Raum erzeugt ({handle})."));
+                        app.command_line.push_info(crate::tf!("AEC: Raum erzeugt ({handle}).").as_ref());
                         app.tabs[tab].dirty = true;
                     }
                     Err(err) => {
@@ -183,16 +189,19 @@ pub(crate) fn try_dispatch(
         }
         cmd if cmd.starts_with("AEC_ROOM_PICK_DO ") => {
             let args = cmd["AEC_ROOM_PICK_DO ".len()..].to_string();
-            let mut cmd_obj = RoomCommand::new();
+            let mut cmd_obj = RoomCommand::new().with_display(app.resolve_active_display_config_room_display(tab));
             let mut it = args.split('|');
             if let (Some(x_str), Some(y_str)) = (it.next(), it.next()) {
                 if let (Ok(x), Ok(y)) = (x_str.parse::<f64>(), y_str.parse::<f64>()) {
                     match cmd_obj.auto_detect_at_point(&mut app.tabs[tab].scene, (x, y)) {
                         Ok(handle) => {
-                            app.command_line.push_info(&format!(
-                                "AEC: Raum an ({:.2}, {:.2}) erzeugt ({handle}).",
-                                x, y
-                            ));
+                            app.command_line.push_info(
+                                crate::tf!(
+                                    "AEC: Raum an ({:.2}, {:.2}) erzeugt ({handle}).",
+                                    x, y
+                                )
+                                .as_ref(),
+                            );
                             app.tabs[tab].dirty = true;
                         }
                         Err(err) => {
@@ -207,10 +216,10 @@ pub(crate) fn try_dispatch(
             let args = cmd["AEC_ROOM_CONVERT_DO ".len()..].to_string();
             if let Ok(raw_handle) = args.trim().parse::<u64>() {
                 let handle = Handle::new(raw_handle);
-                let mut cmd_obj = RoomCommand::new();
+                let mut cmd_obj = RoomCommand::new().with_display(app.resolve_active_display_config_room_display(tab));
                 match cmd_obj.convert_selected_polyline(&mut app.tabs[tab].scene, handle) {
                     Ok(h) => {
-                        app.command_line.push_info(&format!("AEC: Polylinie in Raum konvertiert ({h})."));
+                        app.command_line.push_info(crate::tf!("AEC: Polylinie in Raum konvertiert ({h}).").as_ref());
                         app.tabs[tab].dirty = true;
                     }
                     Err(err) => {
@@ -500,7 +509,9 @@ fn dispatch_room(
     let style_library = crate::modules::aec::engine::project::resolve_style_library(
         app.aec.aec_project_explorer_file.as_ref(),
     );
-    let new_cmd = RoomCommand::new_with_library(Some(style_library)).with_mode(mode);
+    let new_cmd = RoomCommand::new_with_library(Some(style_library))
+        .with_display(app.resolve_active_display_config_room_display(tab))
+        .with_mode(mode);
     app.command_line.push_info(&new_cmd.prompt());
     app.tabs[tab].active_cmd = Some(Box::new(new_cmd));
     app.refresh_properties();

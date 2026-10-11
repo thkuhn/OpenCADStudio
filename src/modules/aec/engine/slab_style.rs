@@ -114,8 +114,8 @@ pub struct SlabStructuralStyle {
     pub style: Style,
     #[serde(default)]
     pub layers: Vec<SlabStyleLayer>,
-    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
-    pub display_profiles: HashMap<String, ComponentRuleSet>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_profile: Option<ComponentRuleSet>,
 }
 
 impl SlabStructuralStyle {
@@ -124,11 +124,12 @@ impl SlabStructuralStyle {
             style: Style {
                 id: id.into(),
                 name: name.into(),
-                object_kind: "SlabStructural".to_string(),
-                parent_style_id: None,
+                category: crate::modules::aec::engine::style_common::CATEGORY_STRUCTURAL_SLAB.to_string(),
+                origin: Default::default(),
+                parent: None,
             },
             layers: Vec::new(),
-            display_profiles: HashMap::new(),
+            default_profile: None,
         }
     }
 
@@ -150,8 +151,8 @@ pub struct FloorFinishStyle {
     pub style: Style,
     #[serde(default)]
     pub layers: Vec<SlabStyleLayer>,
-    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
-    pub display_profiles: HashMap<String, ComponentRuleSet>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_profile: Option<ComponentRuleSet>,
 }
 
 impl FloorFinishStyle {
@@ -160,11 +161,12 @@ impl FloorFinishStyle {
             style: Style {
                 id: id.into(),
                 name: name.into(),
-                object_kind: "FloorFinish".to_string(),
-                parent_style_id: None,
+                category: crate::modules::aec::engine::style_common::CATEGORY_FLOOR_FINISH.to_string(),
+                origin: Default::default(),
+                parent: None,
             },
             layers: Vec::new(),
-            display_profiles: HashMap::new(),
+            default_profile: None,
         }
     }
 
@@ -222,8 +224,8 @@ pub struct SlabStyle {
     pub default_finish_style_id: Option<String>,
     #[serde(default)]
     pub layers: Vec<SlabStyleLayer>,
-    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
-    pub display_profiles: HashMap<String, ComponentRuleSet>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_profile: Option<ComponentRuleSet>,
 }
 
 impl SlabStyle {
@@ -232,13 +234,14 @@ impl SlabStyle {
             style: Style {
                 id: id.into(),
                 name: name.into(),
-                object_kind: "Slab".to_string(),
-                parent_style_id: None,
+                category: crate::modules::aec::engine::style_common::CATEGORY_SLAB.to_string(),
+                origin: Default::default(),
+                parent: None,
             },
             structural_style_id: None,
             default_finish_style_id: None,
             layers: Vec::new(),
-            display_profiles: HashMap::new(),
+            default_profile: None,
         }
     }
 
@@ -391,7 +394,7 @@ mod tests {
         let struct_style = SlabStructuralStyle::new("struct_conc_20", "Stb 20cm").with_layers(vec![
             SlabStyleLayer::new("mat_concrete", LayerValue::Fixed(0.20), LayerFunction::Structural),
         ]);
-        assert_eq!(struct_style.style.object_kind, "SlabStructural");
+        assert_eq!(struct_style.style.category, "SlabStructural");
         assert!((struct_style.nominal_thickness() - 0.20).abs() < 1e-6);
 
         let finish_style = FloorFinishStyle::new("finish_parquet_80", "Standard Parkett 80mm").with_layers(vec![
@@ -400,7 +403,7 @@ mod tests {
             SlabStyleLayer::new("mat_screed", LayerValue::Fixed(0.045), LayerFunction::Other("Screed".to_string())),
             SlabStyleLayer::new("mat_insulation", LayerValue::Fixed(0.020), LayerFunction::Insulation),
         ]);
-        assert_eq!(finish_style.style.object_kind, "FloorFinish");
+        assert_eq!(finish_style.style.category, "FloorFinish");
         assert!((finish_style.nominal_thickness() - 0.08).abs() < 1e-6);
         assert_eq!(finish_style.summary(), "Standard Parkett 80mm");
 
@@ -435,7 +438,7 @@ mod tests {
 
         assert_eq!(style.style.id, "slab_conc_20");
         assert_eq!(style.style.name, "Stahlbetondecke 20cm");
-        assert_eq!(style.style.object_kind, "Slab");
+        assert_eq!(style.style.category, "Slab");
         assert!((style.nominal_thickness() - 0.20).abs() < 1e-6);
     }
 
@@ -450,7 +453,7 @@ mod tests {
         styles.insert(parent.style.id.clone(), parent);
 
         let mut child = SlabStyle::new("child_slab", "Child Slab");
-        child.style.parent_style_id = Some("parent_slab".to_string());
+        child.style.parent = Some("parent_slab".to_string());
         styles.insert(child.style.id.clone(), child);
 
         let layers = effective_layers(&styles, "child_slab").expect("resolve");

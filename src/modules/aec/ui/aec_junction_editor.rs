@@ -5,7 +5,7 @@
 //! (`crate::modules::aec::engine::join::JunctionOverride`).
 //!
 //! Mirrors the master-list + detail-form architecture of
-//! `aec_material_manager.rs`: here the "master list" is the set of
+//! `style_manager/forms/material.rs`: here the "master list" is the set of
 //! participating walls/layers (read-only) and the "detail form" is the
 //! junction override being edited.
 
@@ -265,7 +265,7 @@ pub fn view_window<'a>(state: JunctionEditorState<'a>) -> Element<'a, Message> {
         }
         let selected = pair_wall_b == Some(p.axis_handle);
         wall_b_row = wall_b_row.push(
-            button(text(format!("Wand #{}", p.axis_handle.value())).size(10))
+            button(text(crate::tf!("Wand #{}", p.axis_handle.value()).into_owned()).size(10))
                 .style(if selected { button::primary } else { button::secondary })
                 .padding([3, 6])
                 .on_press(Message::Aec(AecMessage::AecJunctionEditorPairWallBChanged(Some(p.axis_handle)))),
@@ -341,7 +341,7 @@ pub fn view_window<'a>(state: JunctionEditorState<'a>) -> Element<'a, Message> {
     for p in &other_walls {
         let selected = gap_from_wall == Some(p.axis_handle);
         gap_from_wall_row = gap_from_wall_row.push(
-            button(text(format!("Wand #{}", p.axis_handle.value())).size(10))
+            button(text(crate::tf!("Wand #{}", p.axis_handle.value()).into_owned()).size(10))
                 .style(if selected { button::primary } else { button::secondary })
                 .padding([3, 6])
                 .on_press(Message::Aec(AecMessage::AecJunctionEditorGapFromWallChanged(Some(p.axis_handle)))),
@@ -366,7 +366,7 @@ pub fn view_window<'a>(state: JunctionEditorState<'a>) -> Element<'a, Message> {
     for p in &other_walls {
         let selected = gap_to_wall == Some(p.axis_handle);
         gap_to_wall_row = gap_to_wall_row.push(
-            button(text(format!("Wand #{}", p.axis_handle.value())).size(10))
+            button(text(crate::tf!("Wand #{}", p.axis_handle.value()).into_owned()).size(10))
                 .style(if selected { button::primary } else { button::secondary })
                 .padding([3, 6])
                 .on_press(Message::Aec(AecMessage::AecJunctionEditorGapToWallChanged(Some(p.axis_handle)))),

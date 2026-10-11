@@ -79,8 +79,8 @@ pub fn view_window<'a>(
     };
 
     let nn_row = row![
-        text(t!("aec.ffl0-nn")).size(11).style(muted),
-        text_input(t!("aec.ffl0-nn-placeholder").as_ref(), state.ffl0_nn)
+        text(crate::tr!("aec", "ffl0-nn")).size(11).style(muted),
+        text_input(crate::tr!("aec", "ffl0-nn-placeholder").as_ref(), state.ffl0_nn)
             .on_input(|v| Message::Aec(AecMessage::AecProjectExplorerFfl0NnChanged(v)))
             .size(11)
             .padding([4, 6])
@@ -334,7 +334,7 @@ fn add_storey_form<'a>(project: &'a ProjectFile, state: &ProjectExplorerState<'a
         .spacing(8)
         .align_y(iced::Center),
         row![
-            text(t!("aec.storey-location")).size(10).style(muted).width(70),
+            text(crate::tr!("aec", "storey-location")).size(10).style(muted).width(70),
             text_input("0.0", state.new_storey_elevation)
                 .on_input(|v| Message::Aec(AecMessage::AecProjectExplorerNewStoreyElevationChanged(v)))
                 .size(11)

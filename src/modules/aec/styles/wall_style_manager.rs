@@ -15,8 +15,8 @@ use crate::ui::command_line::CommandLine;
 pub fn tool() -> ToolDef {
     ToolDef {
         id: "AEC_STYLEMANAGER",
-        label: "Wall Style Manager",
-        icon: IconKind::Svg(include_bytes!("../../../../assets/icons/aec/wall_style_manager.svg")),
+        label: "Wall",
+        icon: IconKind::Svg(include_bytes!("../../../../assets/icons/aec/style_wall.svg")),
         event: ModuleEvent::Command("AEC_STYLEMANAGER".to_string()),
     }
 }
@@ -206,7 +206,7 @@ pub fn aec_style_add(command_line: &mut CommandLine, args: &str) {
 
     let mut lib = load_or_seed();
 
-    let parent_style_id = if parent_raw.is_empty() {
+    let parent = if parent_raw.is_empty() {
         None
     } else {
         match lib
@@ -274,11 +274,12 @@ pub fn aec_style_add(command_line: &mut CommandLine, args: &str) {
         style: Style {
             id,
             name: name.to_string(),
-            object_kind: "Wall".to_string(),
-            parent_style_id,
+            category: "Wall".to_string(),
+            origin: Default::default(),
+            parent,
         },
         layers,
-    display_profiles: std::collections::HashMap::new(),
+    default_profile: None,
     });
 
     match engine::library::save_to_default_path(&lib) {

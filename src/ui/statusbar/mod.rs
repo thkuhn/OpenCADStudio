@@ -265,53 +265,49 @@ impl StatusBar {
             Some(name) => t!("Projekt: %{name}", name = name.as_str()).into_owned(),
             None => t!("Kein Projekt").into_owned(),
         };
-        let project_element: Element<'_, Message> = mouse_area(tip(
-            status_pill(project_label),
-            t!("Active AEC project\nRight-click opens the Project Explorer"),
+        let project_element: Element<'_, Message> = mouse_area(status_menu::menu_bar(
+            menu_tip(
+                popup_pill(&project_label),
+                t!("Active AEC project\nClick to change · Right-click opens the Project Explorer"),
+                tooltip_hidden,
+            ),
+            crate::ui::popup::plan_popup::project_menu_entries(active_project_name.as_deref()),
+            150.0,
         ))
         .on_right_press(Message::Aec(AecMessage::AecProjectExplorerOpen))
         .into();
         // Plan (AEC DisplayConfig) pill: opens the DisplayConfig picker popup,
         // right-click opens the full Plan Manager. Mirrors the scale pill above.
-        let plan_label = match &active_plan_name {
-            Some(name) => t!("Planart: %{name}", name = name.as_str()).into_owned(),
-            None => t!("Planart: Kein Plan").into_owned(),
-        };
-        let plan_element: Element<'_, Message> = mouse_area(
-            status_menu::menu_bar(
-                menu_tip(
-                    popup_pill(&plan_label),
-                    t!("AEC DisplayConfig (Planart)\nClick to change · Right-click opens the Plan Manager"),
-                    tooltip_hidden,
-                ),
-                crate::ui::popup::plan_popup::menu_entries(
-                    active_plan_name.as_deref(),
-                    plan_names,
-                ),
-                150.0,
-            ),
-        )
-        .on_right_press(Message::Aec(AecMessage::AecPlanManagerOpen))
-        .into();
         let mode_short = match representation_mode {
             crate::modules::aec::engine::display_component::RepresentationMode::TwoD => "2D",
             crate::modules::aec::engine::display_component::RepresentationMode::ThreeD => "3D",
             crate::modules::aec::engine::display_component::RepresentationMode::All => "Alle",
         };
-        let representation_label = if representation_override.is_none() {
-            format!("Planart · {mode_short}")
+        let plan_name_label = active_plan_name
+            .clone()
+            .unwrap_or_else(|| t!("Kein Plan").into_owned());
+        let plan_label = if representation_override.is_some() {
+            format!("Planart: {plan_name_label} · {mode_short}*")
         } else {
-            mode_short.to_string()
+            format!("Planart: {plan_name_label} · {mode_short}")
         };
-        let representation_element: Element<'_, Message> = status_menu::menu_bar(
-            menu_tip(
-                popup_pill(representation_label),
-                t!("Wanddarstellung 2D / 3D / Alle\nÜberschreibt den Planart-Default für diese Sitzung"),
-                tooltip_hidden,
+        let plan_element: Element<'_, Message> = mouse_area(
+            status_menu::menu_bar(
+                menu_tip(
+                    popup_pill(&plan_label),
+                    t!("Planart und Darstellung 2D / 3D / Alle\nClick to change · Right-click opens the Styles manager"),
+                    tooltip_hidden,
+                ),
+                crate::ui::popup::plan_popup::menu_entries(
+                    active_plan_name.as_deref(),
+                    plan_names,
+                    representation_override,
+                ),
+                150.0,
             ),
-            crate::ui::popup::representation_popup::menu_entries(representation_override),
-            140.0,
-        );
+        )
+        .on_right_press(crate::ui::popup::plan_popup::styles_open_message())
+        .into();
         // Build the right-side pills, honouring the user's per-pill visibility.
         // They live in a flex-wrap flow (WrapFlow) so they spill onto extra rows
         // when the width can't hold them all on one line.
@@ -470,7 +466,6 @@ impl StatusBar {
         // is active, same as the other pills that read from the active tab.
         if !is_start {
             pills.push(plan_element);
-            pills.push(representation_element);
         }
         if vis(StatusPill::AnnoVisibility) {
             pills.push(

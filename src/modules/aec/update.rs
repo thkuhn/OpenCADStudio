@@ -5,7 +5,7 @@
 
 use iced::Task;
 
-use crate::app::{AecModalKind, AecPendingCopy, AecProjectExplorerDeleteTarget, Message, OpenCADStudio};
+use crate::app::{AecModalKind, AecProjectExplorerDeleteTarget, Message, OpenCADStudio};
 use crate::modules::aec::engine::join_ops;
 use crate::modules::aec::engine::xdata;
 use crate::modules::aec::message::AecMessage;
@@ -16,41 +16,67 @@ pub(crate) fn update(app: &mut OpenCADStudio, msg: AecMessage) -> Task<Message> 
 }
 
 impl OpenCADStudio {
+    /// Open or re-target `AEC_STYLES`. Embedded nodes re-run their manager
+    /// seeding and then keep the `Styles` modal; others only switch the node.
+    pub(crate) fn aec_styles_open(&mut self, node: crate::modules::aec::ui::style_manager::StylesNode) -> Task<Message> {
+        self.aec_refresh_combined_style_library();
+        let task = self.update_aec(node.open_message());
+        self.aec.styles.node = node;
+        self.active_modal = Some(crate::app::ModalKind::Aec(AecModalKind::Styles));
+        task
+    }
+
     pub(crate) fn update_aec(&mut self, msg: AecMessage) -> Task<Message> {
         match msg {
+            AecMessage::AecStylesOpen(node) => self.aec_styles_open(node),
+            AecMessage::AecStylesSelectNode(node) => {
+                // Re-clicking the active node must not re-seed the form
+                // (would discard unsaved edits).
+                let in_styles = matches!(
+                    self.active_modal,
+                    Some(crate::app::ModalKind::Aec(AecModalKind::Styles))
+                );
+                if in_styles && self.aec.styles.node == node {
+                    Task::none()
+                } else {
+                    self.aec_styles_open(node)
+                }
+            }
             AecMessage::AecMaterialManagerOpen => {
                 self.ribbon.close_dropdown();
                 self.aec_refresh_combined_style_library();
-                self.aec.aec_style_manager_filter.clear();
-                self.aec.aec_style_manager_selected_material = None;
-                self.aec.aec_style_manager_selected_wall_style = None;
-                self.aec.aec_style_manager_material_editing_id = None;
-                self.aec.aec_style_manager_material_form_open = false;
-                self.aec.aec_style_manager_wall_style_editing_id = None;
-                self.aec.aec_style_manager_wall_style_form_open = false;
-                self.aec.aec_style_manager_wall_style_layers.clear();
+                self.aec.styles.filter.clear();
+                self.aec.styles.selected_material = None;
+                self.aec.styles.selected_wall_style = None;
+                self.aec.styles.material_editing_id = None;
+                self.aec.styles.material_form_open = false;
+                self.aec.styles.wall_style_editing_id = None;
+                self.aec.styles.wall_duplicate_default_profile = None;
+                self.aec.styles.wall_style_form_open = false;
+                self.aec.styles.wall_style_layers.clear();
                 self.refresh_aec_material_linetype_combo();
-                self.active_modal = Some(crate::app::ModalKind::Aec(AecModalKind::MaterialManager));
+                self.active_modal = Some(crate::app::ModalKind::Aec(AecModalKind::Styles));
                 Task::none()
             }
             AecMessage::AecWallStyleManagerOpen => {
                 self.ribbon.close_dropdown();
                 self.aec_refresh_combined_style_library();
-                self.aec.aec_style_manager_filter.clear();
-                self.aec.aec_style_manager_selected_material = None;
-                self.aec.aec_style_manager_selected_wall_style = None;
-                self.aec.aec_style_manager_material_editing_id = None;
-                self.aec.aec_style_manager_material_form_open = false;
-                self.aec.aec_style_manager_wall_style_editing_id = None;
-                self.aec.aec_style_manager_wall_style_form_open = false;
-                self.aec.aec_style_manager_wall_style_layers.clear();
-                self.aec.aec_style_manager_profile_selected = None;
-                self.aec.aec_style_manager_profile_contour_explicit = false;
-                self.aec.aec_style_manager_profile_contour_selection.clear();
-                self.aec.aec_style_manager_profile_solid_explicit = false;
-                self.aec.aec_style_manager_profile_solid_selection.clear();
-                self.aec.aec_style_manager_profile_hatch_angle.clear();
-                self.aec.aec_style_manager_profile_hatch_relative = false;
+                self.aec.styles.filter.clear();
+                self.aec.styles.selected_material = None;
+                self.aec.styles.selected_wall_style = None;
+                self.aec.styles.material_editing_id = None;
+                self.aec.styles.material_form_open = false;
+                self.aec.styles.wall_style_editing_id = None;
+                self.aec.styles.wall_duplicate_default_profile = None;
+                self.aec.styles.wall_style_form_open = false;
+                self.aec.styles.wall_style_layers.clear();
+                self.aec.styles.profile_selected = None;
+                self.aec.styles.profile_contour_explicit = false;
+                self.aec.styles.profile_contour_selection.clear();
+                self.aec.styles.profile_solid_explicit = false;
+                self.aec.styles.profile_solid_selection.clear();
+                self.aec.styles.profile_hatch_angle.clear();
+                self.aec.styles.profile_hatch_relative = false;
                 // Load (or refresh) the DisplayConfig library so the
                 // "Darstellungs-Profile" table has data even if the Plan
                 // Manager was never opened this session.
@@ -59,12 +85,12 @@ impl OpenCADStudio {
                         self.aec.aec_project_explorer_file.as_ref(),
                     ),
                 );
-                self.active_modal = Some(crate::app::ModalKind::Aec(AecModalKind::WallStyleManager));
+                self.active_modal = Some(crate::app::ModalKind::Aec(AecModalKind::Styles));
                 Task::none()
             }
             AecMessage::AecOpeningStyleManagerOpen => self.aec_opening_style_manager_open(),
             AecMessage::AecOpeningStyleManagerFilter(value) => {
-                self.aec.aec_opening_style_manager_filter = value;
+                self.aec.styles.opening_filter = value;
                 Task::none()
             }
             AecMessage::AecOpeningStyleManagerSelect(id) => {
@@ -72,11 +98,11 @@ impl OpenCADStudio {
             }
             AecMessage::AecOpeningStyleManagerNew => self.aec_opening_style_manager_new(),
             AecMessage::AecOpeningStyleManagerNameChanged(value) => {
-                self.aec.aec_opening_style_manager_name = value;
+                self.aec.styles.opening_name = value;
                 Task::none()
             }
             AecMessage::AecOpeningStyleManagerParentChanged(value) => {
-                self.aec.aec_opening_style_manager_parent = value;
+                self.aec.styles.opening_parent = value;
                 Task::none()
             }
             AecMessage::AecOpeningStyleManagerKindChanged(value) => {
@@ -92,28 +118,28 @@ impl OpenCADStudio {
                 self.aec_opening_style_manager_height_changed(value)
             }
             AecMessage::AecOpeningStyleManagerSillChanged(value) => {
-                self.aec.aec_opening_style_manager_sill = value;
+                self.aec.styles.opening_sill = value;
                 Task::none()
             }
             AecMessage::AecOpeningStyleManagerFrameChanged(value) => {
-                self.aec.aec_opening_style_manager_frame = value;
+                self.aec.styles.opening_frame = value;
                 Task::none()
             }
             AecMessage::AecOpeningStyleManagerAngleChanged(value) => {
-                self.aec.aec_opening_style_manager_angle = value;
+                self.aec.styles.opening_angle = value;
                 Task::none()
             }
             AecMessage::AecOpeningStyleManagerSpringChanged(value) => {
-                self.aec.aec_opening_style_manager_spring = value;
+                self.aec.styles.opening_spring = value;
                 Task::none()
             }
             AecMessage::AecOpeningStyleManagerHingeChanged(value) => {
-                self.aec.aec_opening_style_manager_hinge =
+                self.aec.styles.opening_hinge =
                     crate::modules::aec::engine::opening_style::HingeSide::from_str(&value);
                 Task::none()
             }
             AecMessage::AecOpeningStyleManagerSetPreviewMode(mode) => {
-                self.aec.aec_opening_style_manager_preview_mode = mode;
+                self.aec.styles.opening_preview_mode = mode;
                 Task::none()
             }
             AecMessage::AecOpeningStyleManagerSlotSourceChanged(index, value) => {
@@ -204,6 +230,8 @@ impl OpenCADStudio {
                 Task::none()
             }
             AecMessage::AecOpeningStyleManagerDelete => self.aec_opening_style_manager_delete(),
+            AecMessage::AecOpeningStyleManagerDuplicate => self.aec_opening_style_manager_duplicate(),
+            AecMessage::AecStyleManagerWallStyleDuplicate => self.aec_wall_style_manager_duplicate(),
             AecMessage::AecStyleManagerCopyOpeningStyleToProject => {
                 self.aec_handle_copy_opening_style(true)
             }
@@ -212,18 +240,18 @@ impl OpenCADStudio {
             }
             AecMessage::AecSlabStyleManagerOpen => self.aec_slab_style_manager_open(),
             AecMessage::AecSlabStyleManagerFilter(value) => {
-                self.aec.aec_slab_style_manager_filter = value;
+                self.aec.styles.slab_filter = value;
                 Task::none()
             }
             AecMessage::AecSlabStyleManagerSelect(id) => self.aec_slab_style_manager_select(id),
             AecMessage::AecSlabStyleManagerNew => self.aec_slab_style_manager_new(),
             AecMessage::AecSlabStyleManagerDuplicate => self.aec_slab_style_manager_duplicate(),
             AecMessage::AecSlabStyleManagerNameChanged(value) => {
-                self.aec.aec_slab_style_manager_name = value;
+                self.aec.styles.slab_name = value;
                 Task::none()
             }
             AecMessage::AecSlabStyleManagerParentChanged(value) => {
-                self.aec.aec_slab_style_manager_parent = value;
+                self.aec.styles.slab_parent = value;
                 Task::none()
             }
             AecMessage::AecSlabStyleManagerStructuralStyleChanged(value) => {
@@ -255,77 +283,75 @@ impl OpenCADStudio {
                 Task::none()
             }
             AecMessage::AecSlabStyleManagerLayerDragStart(index) => {
-                self.aec.aec_slab_style_manager_drag_index = Some(index);
+                self.aec.styles.slab_drag_index = Some(index);
                 Task::none()
             }
             AecMessage::AecSlabStyleManagerLayerDragOver(index) => {
-                if let Some(from) = self.aec.aec_slab_style_manager_drag_index {
-                    if from != index && index < self.aec.aec_slab_style_manager_layers.len() {
-                        let item = self.aec.aec_slab_style_manager_layers.remove(from);
-                        self.aec.aec_slab_style_manager_layers.insert(index, item);
-                        self.aec.aec_slab_style_manager_drag_index = Some(index);
+                if let Some(from) = self.aec.styles.slab_drag_index {
+                    if from != index && index < self.aec.styles.slab_layers.len() {
+                        let item = self.aec.styles.slab_layers.remove(from);
+                        self.aec.styles.slab_layers.insert(index, item);
+                        self.aec.styles.slab_drag_index = Some(index);
                     }
                 }
                 Task::none()
             }
             AecMessage::AecSlabStyleManagerLayerDragEnd => {
-                self.aec.aec_slab_style_manager_drag_index = None;
+                self.aec.styles.slab_drag_index = None;
                 Task::none()
             }
             AecMessage::AecSlabStyleManagerLayerMaterialChanged(index, value) => {
-                if let Some(layer) = self.aec.aec_slab_style_manager_layers.get_mut(index) {
+                if let Some(layer) = self.aec.styles.slab_layers.get_mut(index) {
                     layer.material_id = value;
                 }
                 Task::none()
             }
             AecMessage::AecSlabStyleManagerLayerThicknessChanged(index, value) => {
-                if let Some(layer) = self.aec.aec_slab_style_manager_layers.get_mut(index) {
+                if let Some(layer) = self.aec.styles.slab_layers.get_mut(index) {
                     layer.thickness = value;
                 }
                 Task::none()
             }
             AecMessage::AecSlabStyleManagerLayerFunctionChanged(index, value) => {
-                if let Some(layer) = self.aec.aec_slab_style_manager_layers.get_mut(index) {
+                if let Some(layer) = self.aec.styles.slab_layers.get_mut(index) {
                     layer.function = value;
                 }
                 Task::none()
             }
             AecMessage::AecSlabStyleManagerLayerVerticalOffsetChanged(index, value) => {
-                if let Some(layer) = self.aec.aec_slab_style_manager_layers.get_mut(index) {
+                if let Some(layer) = self.aec.styles.slab_layers.get_mut(index) {
                     layer.vertical_offset = value;
                 }
                 Task::none()
             }
             AecMessage::AecSlabStyleManagerLayerOverrideChanged(index, value) => {
-                if let Some(layer) = self.aec.aec_slab_style_manager_layers.get_mut(index) {
+                if let Some(layer) = self.aec.styles.slab_layers.get_mut(index) {
                     layer.layer_override = value;
                 }
                 Task::none()
             }
             AecMessage::AecSlabStyleManagerLayerHatchOverrideChanged(index, value) => {
-                if let Some(layer) = self.aec.aec_slab_style_manager_layers.get_mut(index) {
+                if let Some(layer) = self.aec.styles.slab_layers.get_mut(index) {
                     layer.hatch_override = value;
                 }
                 Task::none()
             }
             AecMessage::AecSlabStyleManagerLayerRoleTagChanged(index, value) => {
-                if let Some(layer) = self.aec.aec_slab_style_manager_layers.get_mut(index) {
+                if let Some(layer) = self.aec.styles.slab_layers.get_mut(index) {
                     layer.role_tag = value;
                 }
                 Task::none()
             }
             AecMessage::AecSlabStyleManagerSetPreviewMode(mode) => {
-                self.aec.aec_slab_style_manager_preview_mode = mode;
+                self.aec.styles.slab_preview_mode = mode;
                 Task::none()
             }
             AecMessage::AecSlabStyleManagerProfileSelect(name) => {
-                self.aec.aec_slab_style_manager_profile_selected = Some(name);
+                self.aec_slab_style_manager_profile_select(name);
                 Task::none()
             }
             AecMessage::AecSlabStyleManagerProfileSlotVisibilityToggle(slot, visible) => {
-                self.aec
-                    .aec_slab_style_manager_profile_slot_visibility
-                    .insert(slot, visible);
+                self.aec_slab_style_manager_profile_slot_visibility(slot, visible);
                 Task::none()
             }
             AecMessage::AecSlabStyleManagerSave => self.aec_slab_style_manager_save(),
@@ -343,7 +369,7 @@ impl OpenCADStudio {
                 self.aec_slab_structural_style_manager_open()
             }
             AecMessage::AecSlabStructuralStyleManagerFilter(value) => {
-                self.aec.aec_slab_structural_style_manager_filter = value;
+                self.aec.styles.slab_structural_filter = value;
                 Task::none()
             }
             AecMessage::AecSlabStructuralStyleManagerSelect(id) => {
@@ -356,11 +382,11 @@ impl OpenCADStudio {
                 self.aec_slab_structural_style_manager_duplicate()
             }
             AecMessage::AecSlabStructuralStyleManagerNameChanged(value) => {
-                self.aec.aec_slab_structural_style_manager_name = value;
+                self.aec.styles.slab_structural_name = value;
                 Task::none()
             }
             AecMessage::AecSlabStructuralStyleManagerParentChanged(value) => {
-                self.aec.aec_slab_structural_style_manager_parent = value;
+                self.aec.styles.slab_structural_parent = value;
                 Task::none()
             }
             AecMessage::AecSlabStructuralStyleManagerLayerAdd => {
@@ -380,34 +406,34 @@ impl OpenCADStudio {
                 Task::none()
             }
             AecMessage::AecSlabStructuralStyleManagerLayerDragStart(index) => {
-                self.aec.aec_slab_structural_style_manager_drag_index = Some(index);
+                self.aec.styles.slab_structural_drag_index = Some(index);
                 Task::none()
             }
             AecMessage::AecSlabStructuralStyleManagerLayerDragOver(index) => {
-                if let Some(from) = self.aec.aec_slab_structural_style_manager_drag_index {
+                if let Some(from) = self.aec.styles.slab_structural_drag_index {
                     if from != index
-                        && index < self.aec.aec_slab_structural_style_manager_layers.len()
+                        && index < self.aec.styles.slab_structural_layers.len()
                     {
                         let item = self
                             .aec
-                            .aec_slab_structural_style_manager_layers
+                            .styles.slab_structural_layers
                             .remove(from);
                         self.aec
-                            .aec_slab_structural_style_manager_layers
+                            .styles.slab_structural_layers
                             .insert(index, item);
-                        self.aec.aec_slab_structural_style_manager_drag_index = Some(index);
+                        self.aec.styles.slab_structural_drag_index = Some(index);
                     }
                 }
                 Task::none()
             }
             AecMessage::AecSlabStructuralStyleManagerLayerDragEnd => {
-                self.aec.aec_slab_structural_style_manager_drag_index = None;
+                self.aec.styles.slab_structural_drag_index = None;
                 Task::none()
             }
             AecMessage::AecSlabStructuralStyleManagerLayerMaterialChanged(index, value) => {
                 if let Some(layer) = self
                     .aec
-                    .aec_slab_structural_style_manager_layers
+                    .styles.slab_structural_layers
                     .get_mut(index)
                 {
                     layer.material_id = value;
@@ -417,7 +443,7 @@ impl OpenCADStudio {
             AecMessage::AecSlabStructuralStyleManagerLayerThicknessChanged(index, value) => {
                 if let Some(layer) = self
                     .aec
-                    .aec_slab_structural_style_manager_layers
+                    .styles.slab_structural_layers
                     .get_mut(index)
                 {
                     layer.thickness = value;
@@ -427,7 +453,7 @@ impl OpenCADStudio {
             AecMessage::AecSlabStructuralStyleManagerLayerFunctionChanged(index, value) => {
                 if let Some(layer) = self
                     .aec
-                    .aec_slab_structural_style_manager_layers
+                    .styles.slab_structural_layers
                     .get_mut(index)
                 {
                     layer.function = value;
@@ -437,7 +463,7 @@ impl OpenCADStudio {
             AecMessage::AecSlabStructuralStyleManagerLayerVerticalOffsetChanged(index, value) => {
                 if let Some(layer) = self
                     .aec
-                    .aec_slab_structural_style_manager_layers
+                    .styles.slab_structural_layers
                     .get_mut(index)
                 {
                     layer.vertical_offset = value;
@@ -447,7 +473,7 @@ impl OpenCADStudio {
             AecMessage::AecSlabStructuralStyleManagerLayerOverrideChanged(index, value) => {
                 if let Some(layer) = self
                     .aec
-                    .aec_slab_structural_style_manager_layers
+                    .styles.slab_structural_layers
                     .get_mut(index)
                 {
                     layer.layer_override = value;
@@ -457,7 +483,7 @@ impl OpenCADStudio {
             AecMessage::AecSlabStructuralStyleManagerLayerHatchOverrideChanged(index, value) => {
                 if let Some(layer) = self
                     .aec
-                    .aec_slab_structural_style_manager_layers
+                    .styles.slab_structural_layers
                     .get_mut(index)
                 {
                     layer.hatch_override = value;
@@ -467,7 +493,7 @@ impl OpenCADStudio {
             AecMessage::AecSlabStructuralStyleManagerLayerRoleTagChanged(index, value) => {
                 if let Some(layer) = self
                     .aec
-                    .aec_slab_structural_style_manager_layers
+                    .styles.slab_structural_layers
                     .get_mut(index)
                 {
                     layer.role_tag = value;
@@ -475,7 +501,7 @@ impl OpenCADStudio {
                 Task::none()
             }
             AecMessage::AecSlabStructuralStyleManagerSetPreviewMode(mode) => {
-                self.aec.aec_slab_structural_style_manager_preview_mode = mode;
+                self.aec.styles.slab_structural_preview_mode = mode;
                 Task::none()
             }
             AecMessage::AecSlabStructuralStyleManagerSave => {
@@ -497,7 +523,7 @@ impl OpenCADStudio {
                 self.aec_floor_finish_style_manager_open()
             }
             AecMessage::AecFloorFinishStyleManagerFilter(value) => {
-                self.aec.aec_floor_finish_style_manager_filter = value;
+                self.aec.styles.floor_finish_filter = value;
                 Task::none()
             }
             AecMessage::AecFloorFinishStyleManagerSelect(id) => {
@@ -510,11 +536,11 @@ impl OpenCADStudio {
                 self.aec_floor_finish_style_manager_duplicate()
             }
             AecMessage::AecFloorFinishStyleManagerNameChanged(value) => {
-                self.aec.aec_floor_finish_style_manager_name = value;
+                self.aec.styles.floor_finish_name = value;
                 Task::none()
             }
             AecMessage::AecFloorFinishStyleManagerParentChanged(value) => {
-                self.aec.aec_floor_finish_style_manager_parent = value;
+                self.aec.styles.floor_finish_parent = value;
                 Task::none()
             }
             AecMessage::AecFloorFinishStyleManagerLayerAdd => {
@@ -534,34 +560,34 @@ impl OpenCADStudio {
                 Task::none()
             }
             AecMessage::AecFloorFinishStyleManagerLayerDragStart(index) => {
-                self.aec.aec_floor_finish_style_manager_drag_index = Some(index);
+                self.aec.styles.floor_finish_drag_index = Some(index);
                 Task::none()
             }
             AecMessage::AecFloorFinishStyleManagerLayerDragOver(index) => {
-                if let Some(from) = self.aec.aec_floor_finish_style_manager_drag_index {
+                if let Some(from) = self.aec.styles.floor_finish_drag_index {
                     if from != index
-                        && index < self.aec.aec_floor_finish_style_manager_layers.len()
+                        && index < self.aec.styles.floor_finish_layers.len()
                     {
                         let item = self
                             .aec
-                            .aec_floor_finish_style_manager_layers
+                            .styles.floor_finish_layers
                             .remove(from);
                         self.aec
-                            .aec_floor_finish_style_manager_layers
+                            .styles.floor_finish_layers
                             .insert(index, item);
-                        self.aec.aec_floor_finish_style_manager_drag_index = Some(index);
+                        self.aec.styles.floor_finish_drag_index = Some(index);
                     }
                 }
                 Task::none()
             }
             AecMessage::AecFloorFinishStyleManagerLayerDragEnd => {
-                self.aec.aec_floor_finish_style_manager_drag_index = None;
+                self.aec.styles.floor_finish_drag_index = None;
                 Task::none()
             }
             AecMessage::AecFloorFinishStyleManagerLayerMaterialChanged(index, value) => {
                 if let Some(layer) = self
                     .aec
-                    .aec_floor_finish_style_manager_layers
+                    .styles.floor_finish_layers
                     .get_mut(index)
                 {
                     layer.material_id = value;
@@ -571,7 +597,7 @@ impl OpenCADStudio {
             AecMessage::AecFloorFinishStyleManagerLayerThicknessChanged(index, value) => {
                 if let Some(layer) = self
                     .aec
-                    .aec_floor_finish_style_manager_layers
+                    .styles.floor_finish_layers
                     .get_mut(index)
                 {
                     layer.thickness = value;
@@ -581,7 +607,7 @@ impl OpenCADStudio {
             AecMessage::AecFloorFinishStyleManagerLayerFunctionChanged(index, value) => {
                 if let Some(layer) = self
                     .aec
-                    .aec_floor_finish_style_manager_layers
+                    .styles.floor_finish_layers
                     .get_mut(index)
                 {
                     layer.function = value;
@@ -591,7 +617,7 @@ impl OpenCADStudio {
             AecMessage::AecFloorFinishStyleManagerLayerVerticalOffsetChanged(index, value) => {
                 if let Some(layer) = self
                     .aec
-                    .aec_floor_finish_style_manager_layers
+                    .styles.floor_finish_layers
                     .get_mut(index)
                 {
                     layer.vertical_offset = value;
@@ -601,7 +627,7 @@ impl OpenCADStudio {
             AecMessage::AecFloorFinishStyleManagerLayerOverrideChanged(index, value) => {
                 if let Some(layer) = self
                     .aec
-                    .aec_floor_finish_style_manager_layers
+                    .styles.floor_finish_layers
                     .get_mut(index)
                 {
                     layer.layer_override = value;
@@ -611,7 +637,7 @@ impl OpenCADStudio {
             AecMessage::AecFloorFinishStyleManagerLayerHatchOverrideChanged(index, value) => {
                 if let Some(layer) = self
                     .aec
-                    .aec_floor_finish_style_manager_layers
+                    .styles.floor_finish_layers
                     .get_mut(index)
                 {
                     layer.hatch_override = value;
@@ -621,7 +647,7 @@ impl OpenCADStudio {
             AecMessage::AecFloorFinishStyleManagerLayerRoleTagChanged(index, value) => {
                 if let Some(layer) = self
                     .aec
-                    .aec_floor_finish_style_manager_layers
+                    .styles.floor_finish_layers
                     .get_mut(index)
                 {
                     layer.role_tag = value;
@@ -629,7 +655,7 @@ impl OpenCADStudio {
                 Task::none()
             }
             AecMessage::AecFloorFinishStyleManagerSetPreviewMode(mode) => {
-                self.aec.aec_floor_finish_style_manager_preview_mode = mode;
+                self.aec.styles.floor_finish_preview_mode = mode;
                 Task::none()
             }
             AecMessage::AecFloorFinishStyleManagerSave => {
@@ -691,9 +717,9 @@ impl OpenCADStudio {
             AecMessage::AecProjectExplorerLoad => Task::perform(
                 async {
                     crate::sys::file_dialog()
-                        .set_title("Open Project")
-                        .add_filter("OpenCADStudio Project", &["ocsproj", "OCSPROJ"])
-                        .add_filter("All Files", &["*"])
+                        .set_title(crate::t!("Open Project").as_ref())
+                        .add_filter(crate::t!("OpenCADStudio Project").as_ref(), &["ocsproj", "OCSPROJ"])
+                        .add_filter(crate::t!("All Files").as_ref(), &["*"])
                         .pick_file()
                         .await
                         .map(|h| crate::sys::handle_path(&h))
@@ -753,10 +779,10 @@ impl OpenCADStudio {
             AecMessage::AecProjectExplorerSaveAs => Task::perform(
                 async {
                     crate::sys::file_dialog()
-                        .set_title("Save Project As")
+                        .set_title(crate::t!("Save Project As").as_ref())
                         .set_file_name("project.ocsproj")
-                        .add_filter("OpenCADStudio Project", &["ocsproj", "OCSPROJ"])
-                        .add_filter("All Files", &["*"])
+                        .add_filter(crate::t!("OpenCADStudio Project").as_ref(), &["ocsproj", "OCSPROJ"])
+                        .add_filter(crate::t!("All Files").as_ref(), &["*"])
                         .save_file()
                         .await
                         .map(|h| crate::sys::handle_path(&h))
@@ -989,9 +1015,9 @@ impl OpenCADStudio {
             AecMessage::AecProjectExplorerPickStoreyDrawing => Task::perform(
                 async {
                     crate::sys::file_dialog()
-                        .set_title("Select Storey Drawing")
-                        .add_filter("CAD Files", &["dwg", "dxf", "DWG", "DXF"])
-                        .add_filter("All Files", &["*"])
+                        .set_title(crate::t!("Select Storey Drawing").as_ref())
+                        .add_filter(crate::t!("CAD Files").as_ref(), &["dwg", "dxf", "DWG", "DXF"])
+                        .add_filter(crate::t!("All Files").as_ref(), &["*"])
                         .pick_file()
                         .await
                         .map(|h| crate::sys::handle_path(&h))
@@ -1023,9 +1049,9 @@ impl OpenCADStudio {
             AecMessage::AecProjectExplorerPickEditStoreyDrawing(_bid, _sid) => Task::perform(
                 async {
                     crate::sys::file_dialog()
-                        .set_title("Select Storey Drawing")
-                        .add_filter("CAD Files", &["dwg", "dxf", "DWG", "DXF"])
-                        .add_filter("All Files", &["*"])
+                        .set_title(crate::t!("Select Storey Drawing").as_ref())
+                        .add_filter(crate::t!("CAD Files").as_ref(), &["dwg", "dxf", "DWG", "DXF"])
+                        .add_filter(crate::t!("All Files").as_ref(), &["*"])
                         .pick_file()
                         .await
                         .map(|h| crate::sys::handle_path(&h))
@@ -1461,144 +1487,24 @@ impl OpenCADStudio {
                 }
                 Task::none()
             }
-            AecMessage::AecPlanManagerOpen => {
-                self.ribbon.close_dropdown();
-                self.aec.aec_plan_library = Some(
-                    crate::modules::aec::engine::project::resolve_display_config_library(
-                        self.aec.aec_project_explorer_file.as_ref(),
-                    ),
-                );
-                // Layer-Filter-UI: the multi-select checklist needs the
-                // full set of wall styles/layers currently in effect, the
-                // same "project overrides global" resolution the
-                // Material/WallStyle managers already use.
-                self.aec.aec_style_library = Some(
-                    crate::modules::aec::engine::project::resolve_style_library(
-                        self.aec.aec_project_explorer_file.as_ref(),
-                    ),
-                );
-                self.aec.aec_plan_manager_filter.clear();
-                self.aec.aec_plan_manager_selected = None;
-                self.aec.aec_plan_manager_editing_name = None;
-                self.aec.aec_plan_manager_form_open = false;
-                self.refresh_aec_material_linetype_combo();
-                self.aec.aec_plan_manager_wall_styles = self
-                    .aec.aec_style_library
-                    .as_ref()
-                    .map(|lib| {
-                        lib.wall_styles
-                            .iter()
-                            .map(|ws| {
-                                let layers = ws
-                                    .layers
-                                    .iter()
-                                    .enumerate()
-                                    .map(|(i, l)| {
-                                        let mat_name = lib
-                                            .materials
-                                            .iter()
-                                            .find(|m| m.id == l.material_id)
-                                            .map(|m| m.name.as_str())
-                                            .unwrap_or(l.material_id.as_str());
-                                        let label = format!("{} — {}", i + 1, mat_name);
-                                        (l.layer_id, label)
-                                    })
-                                    .collect();
-                                (ws.style.id.clone(), ws.style.name.clone(), layers)
-                            })
-                            .collect()
-                    })
-                    .unwrap_or_default();
-                self.active_modal = Some(crate::app::ModalKind::Aec(AecModalKind::PlanManager));
+            AecMessage::AecPlanManagerOpen => self.aec_plan_kinds_open(),
+            AecMessage::AecPlanManagerDetailLayersChanged(layers) => {
+                self.aec.styles.plan_detail.layers = layers;
                 Task::none()
             }
-            AecMessage::AecPlanManagerClose => {
-                self.active_modal = None;
+            AecMessage::AecPlanManagerDetailToggle(switch, value) => {
+                self.aec.styles.plan_detail.set_switch(switch, value);
                 Task::none()
             }
             AecMessage::AecPlanManagerFilter(value) => {
-                self.aec.aec_plan_manager_filter = value;
+                self.aec.styles.plan_filter = value;
                 Task::none()
             }
-            AecMessage::AecPlanManagerSelect(name) => {
-                if let Some(cfg) = self
-                    .aec.aec_plan_library
-                    .as_ref()
-                    .and_then(|lib| lib.find(&name))
-                    .cloned()
-                {
-                    self.aec.aec_plan_manager_editing_name = Some(cfg.name.clone());
-                    self.aec.aec_plan_manager_name = cfg.name.clone();
-                    self.aec.aec_plan_manager_discipline = cfg.discipline.clone();
-                    self.aec.aec_plan_manager_scale =
-                        cfg.scale.map(|s| s.to_string()).unwrap_or_default();
-                    self.aec.aec_plan_manager_planning_stage = cfg.planning_stage;
-                    self.aec.aec_plan_manager_view_type = cfg.view_type.clone();
-                    self.aec_plan_manager_load_phase_filter_buffers(cfg.phase_filter.as_ref());
-                    self.aec_plan_manager_load_display_buffers(&cfg);
-                    self.aec.aec_plan_manager_form_open = true;
-                }
-                self.aec.aec_plan_manager_selected = Some(name);
-                Task::none()
-            }
-            AecMessage::AecPlanManagerNew => {
-                self.aec.aec_plan_manager_selected = None;
-                self.aec.aec_plan_manager_editing_name = None;
-                self.aec.aec_plan_manager_name.clear();
-                self.aec.aec_plan_manager_discipline.clear();
-                self.aec.aec_plan_manager_scale.clear();
-                self.aec.aec_plan_manager_planning_stage =
-                    crate::modules::aec::engine::plan_view::PlanningStage::Design;
-                self.aec.aec_plan_manager_view_type =
-                    crate::modules::aec::engine::plan_view::ViewType::FloorPlan;
-                self.aec_plan_manager_load_phase_filter_buffers(None);
-                self.aec_plan_manager_reset_display_buffers();
-                self.aec.aec_plan_manager_form_open = true;
-                Task::none()
-            }
-            AecMessage::AecPlanManagerDuplicate => {
-                let source_name = self
-                    .aec.aec_plan_manager_editing_name
-                    .clone()
-                    .or_else(|| self.aec.aec_plan_manager_selected.clone());
-                let Some(source_name) = source_name else {
-                    return Task::none();
-                };
-                let Some(cfg) = self
-                    .aec.aec_plan_library
-                    .as_ref()
-                    .and_then(|lib| lib.find(&source_name))
-                    .cloned()
-                else {
-                    return Task::none();
-                };
-                let existing_names: Vec<String> = self
-                    .aec.aec_plan_library
-                    .as_ref()
-                    .map(|lib| lib.configs.iter().map(|c| c.name.clone()).collect())
-                    .unwrap_or_default();
-                let base_name = format!("{} (Kopie)", cfg.name);
-                let mut name = base_name.clone();
-                let mut counter = 2;
-                while existing_names.iter().any(|n| n == &name) {
-                    name = format!("{base_name} {counter}");
-                    counter += 1;
-                }
-                self.aec.aec_plan_manager_selected = None;
-                self.aec.aec_plan_manager_editing_name = None;
-                self.aec.aec_plan_manager_name = name;
-                self.aec.aec_plan_manager_discipline = cfg.discipline.clone();
-                self.aec.aec_plan_manager_scale = cfg.scale.map(|s| s.to_string()).unwrap_or_default();
-                self.aec_plan_manager_load_phase_filter_buffers(cfg.phase_filter.as_ref());
-                self.aec.aec_plan_manager_planning_stage = cfg.planning_stage;
-                self.aec.aec_plan_manager_view_type = cfg.view_type.clone();
-                self.aec_plan_manager_load_display_buffers(&cfg);
-                self.aec.aec_plan_manager_editing_id = None;
-                self.aec.aec_plan_manager_form_open = true;
-                Task::none()
-            }
+            AecMessage::AecPlanManagerSelect(name) => self.aec_plan_kind_select(name),
+            AecMessage::AecPlanManagerNew => self.aec_plan_kind_new(),
+            AecMessage::AecPlanManagerDuplicate => self.aec_plan_kind_duplicate(),
             AecMessage::AecPlanManagerDelete => {
-                if let Some(name) = self.aec.aec_plan_manager_selected.clone() {
+                if let Some(name) = self.aec.styles.plan_selected.clone() {
                     let lib_snapshot = if let Some(lib) = self.aec.aec_plan_library.as_mut() {
                         lib.remove(&name);
                         Some(lib.clone())
@@ -1617,148 +1523,148 @@ impl OpenCADStudio {
                         }
                     }
                 }
-                self.aec.aec_plan_manager_selected = None;
-                self.aec.aec_plan_manager_editing_name = None;
-                self.aec.aec_plan_manager_form_open = false;
+                self.aec.styles.plan_selected = None;
+                self.aec.styles.plan_editing_name = None;
+                self.aec.styles.plan_form_open = false;
                 Task::none()
             }
             AecMessage::AecPlanManagerNameChanged(value) => {
-                self.aec.aec_plan_manager_name = value;
+                self.aec.styles.plan_name = value;
                 Task::none()
             }
             AecMessage::AecPlanManagerDisciplineChanged(value) => {
-                self.aec.aec_plan_manager_discipline = value;
+                self.aec.styles.plan_discipline = value;
                 Task::none()
             }
             AecMessage::AecPlanManagerScaleChanged(value) => {
-                self.aec.aec_plan_manager_scale = value;
+                self.aec.styles.plan_scale = value;
                 Task::none()
             }
             AecMessage::AecPlanManagerPlanningStageChanged(stage) => {
-                self.aec.aec_plan_manager_planning_stage = stage;
+                self.aec.styles.plan_planning_stage = stage;
                 Task::none()
             }
             AecMessage::AecPlanManagerViewTypeChanged(view_type) => {
-                self.aec.aec_plan_manager_view_type = view_type;
+                self.aec.styles.plan_view_type = view_type;
                 Task::none()
             }
             AecMessage::AecPlanManagerPhaseVisibleToggle(phase, visible) => {
                 match phase {
                     crate::modules::aec::engine::plan_view::PlanPhase::Existing => {
-                        self.aec.aec_plan_manager_phase_filter_visible_existing = visible;
+                        self.aec.styles.plan_phase_filter_visible_existing = visible;
                     }
                     crate::modules::aec::engine::plan_view::PlanPhase::Demolition => {
-                        self.aec.aec_plan_manager_phase_filter_visible_demolition = visible;
+                        self.aec.styles.plan_phase_filter_visible_demolition = visible;
                     }
                     crate::modules::aec::engine::plan_view::PlanPhase::New => {
-                        self.aec.aec_plan_manager_phase_filter_visible_new = visible;
+                        self.aec.styles.plan_phase_filter_visible_new = visible;
                     }
                 }
                 Task::none()
             }
             AecMessage::AecPlanManagerDemolitionStyleLineTypeChanged(value) => {
-                self.aec.aec_plan_manager_demolition_style_line_type = value;
+                self.aec.styles.plan_demolition_style_line_type = value;
                 Task::none()
             }
             AecMessage::AecPlanManagerDemolitionStyleLineColorChanged(value) => {
-                self.aec.aec_plan_manager_demolition_style_line_color = value;
+                self.aec.styles.plan_demolition_style_line_color = value;
                 Task::none()
             }
             AecMessage::AecPlanManagerDemolitionStyleHatchPatternChanged(value) => {
-                self.aec.aec_plan_manager_demolition_style_hatch_pattern = value;
-                self.aec.aec_plan_manager_demolition_style_hatch_picker_open = false;
+                self.aec.styles.plan_demolition_style_hatch_pattern = value;
+                self.aec.styles.plan_demolition_style_hatch_picker_open = false;
                 Task::none()
             }
             AecMessage::AecPlanManagerDemolitionStyleHatchPickerToggle => {
-                self.aec.aec_plan_manager_demolition_style_hatch_picker_open =
-                    !self.aec.aec_plan_manager_demolition_style_hatch_picker_open;
+                self.aec.styles.plan_demolition_style_hatch_picker_open =
+                    !self.aec.styles.plan_demolition_style_hatch_picker_open;
                 Task::none()
             }
             AecMessage::AecPlanManagerDemolitionStyleHatchColorChanged(value) => {
-                self.aec.aec_plan_manager_demolition_style_hatch_color = value;
+                self.aec.styles.plan_demolition_style_hatch_color = value;
                 Task::none()
             }
             AecMessage::AecPlanManagerDemolitionStyleFillColorChanged(value) => {
-                self.aec.aec_plan_manager_demolition_style_fill_color = value;
+                self.aec.styles.plan_demolition_style_fill_color = value;
                 Task::none()
             }
             AecMessage::AecPlanManagerDemolitionStyleLineColorPickerToggle => {
-                self.aec.aec_plan_manager_demolition_style_line_color_picker_open =
-                    !self.aec.aec_plan_manager_demolition_style_line_color_picker_open;
+                self.aec.styles.plan_demolition_style_line_color_picker_open =
+                    !self.aec.styles.plan_demolition_style_line_color_picker_open;
                 Task::none()
             }
             AecMessage::AecPlanManagerDemolitionStyleHatchColorPickerToggle => {
-                self.aec.aec_plan_manager_demolition_style_hatch_color_picker_open =
-                    !self.aec.aec_plan_manager_demolition_style_hatch_color_picker_open;
+                self.aec.styles.plan_demolition_style_hatch_color_picker_open =
+                    !self.aec.styles.plan_demolition_style_hatch_color_picker_open;
                 Task::none()
             }
             AecMessage::AecPlanManagerDemolitionStyleFillColorPickerToggle => {
-                self.aec.aec_plan_manager_demolition_style_fill_color_picker_open =
-                    !self.aec.aec_plan_manager_demolition_style_fill_color_picker_open;
+                self.aec.styles.plan_demolition_style_fill_color_picker_open =
+                    !self.aec.styles.plan_demolition_style_fill_color_picker_open;
                 Task::none()
             }
             AecMessage::AecPlanManagerExistingStyleLineTypeChanged(value) => {
-                self.aec.aec_plan_manager_existing_style_line_type = value;
+                self.aec.styles.plan_existing_style_line_type = value;
                 Task::none()
             }
             AecMessage::AecPlanManagerExistingStyleLineColorChanged(value) => {
-                self.aec.aec_plan_manager_existing_style_line_color = value;
+                self.aec.styles.plan_existing_style_line_color = value;
                 Task::none()
             }
             AecMessage::AecPlanManagerExistingStyleHatchPatternChanged(value) => {
-                self.aec.aec_plan_manager_existing_style_hatch_pattern = value;
-                self.aec.aec_plan_manager_existing_style_hatch_picker_open = false;
+                self.aec.styles.plan_existing_style_hatch_pattern = value;
+                self.aec.styles.plan_existing_style_hatch_picker_open = false;
                 Task::none()
             }
             AecMessage::AecPlanManagerExistingStyleHatchPickerToggle => {
-                self.aec.aec_plan_manager_existing_style_hatch_picker_open =
-                    !self.aec.aec_plan_manager_existing_style_hatch_picker_open;
+                self.aec.styles.plan_existing_style_hatch_picker_open =
+                    !self.aec.styles.plan_existing_style_hatch_picker_open;
                 Task::none()
             }
             AecMessage::AecPlanManagerExistingStyleHatchColorChanged(value) => {
-                self.aec.aec_plan_manager_existing_style_hatch_color = value;
+                self.aec.styles.plan_existing_style_hatch_color = value;
                 Task::none()
             }
             AecMessage::AecPlanManagerExistingStyleFillColorChanged(value) => {
-                self.aec.aec_plan_manager_existing_style_fill_color = value;
+                self.aec.styles.plan_existing_style_fill_color = value;
                 Task::none()
             }
             AecMessage::AecPlanManagerExistingStyleLineColorPickerToggle => {
-                self.aec.aec_plan_manager_existing_style_line_color_picker_open =
-                    !self.aec.aec_plan_manager_existing_style_line_color_picker_open;
+                self.aec.styles.plan_existing_style_line_color_picker_open =
+                    !self.aec.styles.plan_existing_style_line_color_picker_open;
                 Task::none()
             }
             AecMessage::AecPlanManagerExistingStyleHatchColorPickerToggle => {
-                self.aec.aec_plan_manager_existing_style_hatch_color_picker_open =
-                    !self.aec.aec_plan_manager_existing_style_hatch_color_picker_open;
+                self.aec.styles.plan_existing_style_hatch_color_picker_open =
+                    !self.aec.styles.plan_existing_style_hatch_color_picker_open;
                 Task::none()
             }
             AecMessage::AecPlanManagerExistingStyleFillColorPickerToggle => {
-                self.aec.aec_plan_manager_existing_style_fill_color_picker_open =
-                    !self.aec.aec_plan_manager_existing_style_fill_color_picker_open;
+                self.aec.styles.plan_existing_style_fill_color_picker_open =
+                    !self.aec.styles.plan_existing_style_fill_color_picker_open;
                 Task::none()
             }
             AecMessage::AecPlanManagerRepresentationChanged(mode) => {
-                self.aec.aec_plan_manager_default_representation = mode;
+                self.aec.styles.plan_default_representation = mode;
                 Task::none()
             }
             AecMessage::AecPlanManagerComponentVisibleToggle(kind, visible) => {
                 if visible {
-                    self.aec.aec_plan_manager_component_visibility.remove(&kind);
+                    self.aec.styles.plan_component_visibility.remove(&kind);
                 } else {
-                    self.aec.aec_plan_manager_component_visibility.insert(kind, false);
+                    self.aec.styles.plan_component_visibility.insert(kind, false);
                 }
                 Task::none()
             }
             AecMessage::AecPlanManagerOverlayStyleSelect(style_id) => {
                 self.aec_plan_manager_write_overlay_buffers();
                 self.aec_plan_manager_write_overlay_contour_hatch();
-                self.aec.aec_plan_manager_overlay_style_id = Some(style_id);
-                self.aec.aec_plan_manager_overlay_layer_id = self
-                    .aec.aec_plan_manager_overlay_style_id
+                self.aec.styles.plan_overlay_style_id = Some(style_id);
+                self.aec.styles.plan_overlay_layer_id = self
+                    .aec.styles.plan_overlay_style_id
                     .as_ref()
                     .and_then(|sid| {
-                        self.aec.aec_plan_manager_style_overlays
+                        self.aec.styles.plan_style_overlays
                             .get(sid)
                             .and_then(|o| o.layer_props.keys().next().copied())
                     });
@@ -1768,137 +1674,137 @@ impl OpenCADStudio {
             }
             AecMessage::AecPlanManagerOverlayLayerSelect(layer_id) => {
                 self.aec_plan_manager_write_overlay_buffers();
-                self.aec.aec_plan_manager_overlay_layer_id = Some(layer_id);
+                self.aec.styles.plan_overlay_layer_id = Some(layer_id);
                 self.aec_plan_manager_load_overlay_layer_buffers();
                 Task::none()
             }
             AecMessage::AecPlanManagerOverlayAddStyle(style_id) => {
                 self.aec_plan_manager_write_overlay_buffers();
                 self.aec_plan_manager_write_overlay_contour_hatch();
-                self.aec.aec_plan_manager_style_overlays
+                self.aec.styles.plan_style_overlays
                     .entry(style_id.clone())
                     .or_default();
-                self.aec.aec_plan_manager_overlay_style_id = Some(style_id);
-                self.aec.aec_plan_manager_overlay_layer_id = None;
+                self.aec.styles.plan_overlay_style_id = Some(style_id);
+                self.aec.styles.plan_overlay_layer_id = None;
                 self.aec_plan_manager_clear_overlay_field_buffers();
                 self.aec_plan_manager_load_overlay_contour_hatch_buffers();
                 Task::none()
             }
             AecMessage::AecPlanManagerOverlayRemoveStyle => {
-                if let Some(style_id) = self.aec.aec_plan_manager_overlay_style_id.take() {
-                    self.aec.aec_plan_manager_style_overlays.remove(&style_id);
+                if let Some(style_id) = self.aec.styles.plan_overlay_style_id.take() {
+                    self.aec.styles.plan_style_overlays.remove(&style_id);
                 }
-                self.aec.aec_plan_manager_overlay_layer_id = None;
-                self.aec.aec_plan_manager_overlay_style_id =
-                    self.aec.aec_plan_manager_style_overlays.keys().next().cloned();
+                self.aec.styles.plan_overlay_layer_id = None;
+                self.aec.styles.plan_overlay_style_id =
+                    self.aec.styles.plan_style_overlays.keys().next().cloned();
                 self.aec_plan_manager_load_overlay_layer_buffers();
                 self.aec_plan_manager_load_overlay_contour_hatch_buffers();
                 Task::none()
             }
             AecMessage::AecPlanManagerOverlayLineTypeChanged(value) => {
-                self.aec.aec_plan_manager_overlay_line_type = value;
+                self.aec.styles.plan_overlay_line_type = value;
                 self.aec_plan_manager_write_overlay_buffers();
                 Task::none()
             }
             AecMessage::AecPlanManagerOverlayLineColorChanged(value) => {
-                self.aec.aec_plan_manager_overlay_line_color = value;
+                self.aec.styles.plan_overlay_line_color = value;
                 self.aec_plan_manager_write_overlay_buffers();
                 Task::none()
             }
             AecMessage::AecPlanManagerOverlayHatchPatternChanged(value) => {
-                self.aec.aec_plan_manager_overlay_hatch_pattern = value;
-                self.aec.aec_plan_manager_overlay_hatch_picker_open = false;
+                self.aec.styles.plan_overlay_hatch_pattern = value;
+                self.aec.styles.plan_overlay_hatch_picker_open = false;
                 self.aec_plan_manager_write_overlay_buffers();
                 Task::none()
             }
             AecMessage::AecPlanManagerOverlayHatchColorChanged(value) => {
-                self.aec.aec_plan_manager_overlay_hatch_color = value;
+                self.aec.styles.plan_overlay_hatch_color = value;
                 self.aec_plan_manager_write_overlay_buffers();
                 Task::none()
             }
             AecMessage::AecPlanManagerOverlayHatchScaleChanged(value) => {
-                self.aec.aec_plan_manager_overlay_hatch_scale = value;
+                self.aec.styles.plan_overlay_hatch_scale = value;
                 self.aec_plan_manager_write_overlay_buffers();
                 Task::none()
             }
             AecMessage::AecPlanManagerOverlayHatchAngleChanged(value) => {
-                self.aec.aec_plan_manager_overlay_hatch_angle = value;
+                self.aec.styles.plan_overlay_hatch_angle = value;
                 self.aec_plan_manager_write_overlay_buffers();
                 Task::none()
             }
             AecMessage::AecPlanManagerOverlayHatchAngleRelativeChanged(value) => {
-                self.aec.aec_plan_manager_overlay_hatch_angle_relative = value;
+                self.aec.styles.plan_overlay_hatch_angle_relative = value;
                 self.aec_plan_manager_write_overlay_buffers();
                 Task::none()
             }
             AecMessage::AecPlanManagerOverlayFillColorChanged(value) => {
-                self.aec.aec_plan_manager_overlay_fill_color = value;
+                self.aec.styles.plan_overlay_fill_color = value;
                 self.aec_plan_manager_write_overlay_buffers();
                 Task::none()
             }
             AecMessage::AecPlanManagerOverlayLineColorPickerToggle => {
-                self.aec.aec_plan_manager_overlay_line_color_picker_open =
-                    !self.aec.aec_plan_manager_overlay_line_color_picker_open;
+                self.aec.styles.plan_overlay_line_color_picker_open =
+                    !self.aec.styles.plan_overlay_line_color_picker_open;
                 Task::none()
             }
             AecMessage::AecPlanManagerOverlayHatchPickerToggle => {
-                self.aec.aec_plan_manager_overlay_hatch_picker_open =
-                    !self.aec.aec_plan_manager_overlay_hatch_picker_open;
+                self.aec.styles.plan_overlay_hatch_picker_open =
+                    !self.aec.styles.plan_overlay_hatch_picker_open;
                 Task::none()
             }
             AecMessage::AecPlanManagerOverlayHatchColorPickerToggle => {
-                self.aec.aec_plan_manager_overlay_hatch_color_picker_open =
-                    !self.aec.aec_plan_manager_overlay_hatch_color_picker_open;
+                self.aec.styles.plan_overlay_hatch_color_picker_open =
+                    !self.aec.styles.plan_overlay_hatch_color_picker_open;
                 Task::none()
             }
             AecMessage::AecPlanManagerOverlayFillColorPickerToggle => {
-                self.aec.aec_plan_manager_overlay_fill_color_picker_open =
-                    !self.aec.aec_plan_manager_overlay_fill_color_picker_open;
+                self.aec.styles.plan_overlay_fill_color_picker_open =
+                    !self.aec.styles.plan_overlay_fill_color_picker_open;
                 Task::none()
             }
             AecMessage::AecPlanManagerContourHatchPatternChanged(value) => {
-                self.aec.aec_plan_manager_contour_hatch_pattern = value;
-                self.aec.aec_plan_manager_contour_hatch_picker_open = false;
+                self.aec.styles.plan_contour_hatch_pattern = value;
+                self.aec.styles.plan_contour_hatch_picker_open = false;
                 self.aec_plan_manager_write_overlay_contour_hatch();
                 Task::none()
             }
             AecMessage::AecPlanManagerContourHatchColorChanged(value) => {
-                self.aec.aec_plan_manager_contour_hatch_color = value;
+                self.aec.styles.plan_contour_hatch_color = value;
                 self.aec_plan_manager_write_overlay_contour_hatch();
                 Task::none()
             }
             AecMessage::AecPlanManagerContourHatchScaleChanged(value) => {
-                self.aec.aec_plan_manager_contour_hatch_scale = value;
+                self.aec.styles.plan_contour_hatch_scale = value;
                 self.aec_plan_manager_write_overlay_contour_hatch();
                 Task::none()
             }
             AecMessage::AecPlanManagerContourHatchAngleChanged(value) => {
-                self.aec.aec_plan_manager_contour_hatch_angle = value;
+                self.aec.styles.plan_contour_hatch_angle = value;
                 self.aec_plan_manager_write_overlay_contour_hatch();
                 Task::none()
             }
             AecMessage::AecPlanManagerContourHatchAngleRelativeChanged(value) => {
-                self.aec.aec_plan_manager_contour_hatch_angle_relative = value;
+                self.aec.styles.plan_contour_hatch_angle_relative = value;
                 self.aec_plan_manager_write_overlay_contour_hatch();
                 Task::none()
             }
             AecMessage::AecPlanManagerContourHatchPickerToggle => {
-                self.aec.aec_plan_manager_contour_hatch_picker_open =
-                    !self.aec.aec_plan_manager_contour_hatch_picker_open;
+                self.aec.styles.plan_contour_hatch_picker_open =
+                    !self.aec.styles.plan_contour_hatch_picker_open;
                 Task::none()
             }
             AecMessage::AecPlanManagerContourHatchColorPickerToggle => {
-                self.aec.aec_plan_manager_contour_hatch_color_picker_open =
-                    !self.aec.aec_plan_manager_contour_hatch_color_picker_open;
+                self.aec.styles.plan_contour_hatch_color_picker_open =
+                    !self.aec.styles.plan_contour_hatch_color_picker_open;
                 Task::none()
             }
             AecMessage::AecPlanManagerOverlayLayerVis2d(visible) => {
                 if let (Some(style_id), Some(layer_id)) = (
-                    self.aec.aec_plan_manager_overlay_style_id.clone(),
-                    self.aec.aec_plan_manager_overlay_layer_id,
+                    self.aec.styles.plan_overlay_style_id.clone(),
+                    self.aec.styles.plan_overlay_layer_id,
                 ) {
                     let overlay = self
-                        .aec.aec_plan_manager_style_overlays
+                        .aec.styles.plan_style_overlays
                         .entry(style_id)
                         .or_default();
                     let mut vis = overlay
@@ -1917,11 +1823,11 @@ impl OpenCADStudio {
             }
             AecMessage::AecPlanManagerOverlayLayerVis3d(visible) => {
                 if let (Some(style_id), Some(layer_id)) = (
-                    self.aec.aec_plan_manager_overlay_style_id.clone(),
-                    self.aec.aec_plan_manager_overlay_layer_id,
+                    self.aec.styles.plan_overlay_style_id.clone(),
+                    self.aec.styles.plan_overlay_layer_id,
                 ) {
                     let overlay = self
-                        .aec.aec_plan_manager_style_overlays
+                        .aec.styles.plan_style_overlays
                         .entry(style_id)
                         .or_default();
                     let mut vis = overlay
@@ -1972,7 +1878,7 @@ impl OpenCADStudio {
                 Task::none()
             }
             AecMessage::AecStyleManagerFilter(value) => {
-                self.aec.aec_style_manager_filter = value;
+                self.aec.styles.filter = value;
                 Task::none()
             }
             AecMessage::AecStyleManagerSelectMaterial(id) => {
@@ -1988,32 +1894,32 @@ impl OpenCADStudio {
                         .and_then(|lib| lib.materials.iter().find(|m| m.id == id).cloned())
                 });
                 if let Some(material) = material {
-                    self.aec.aec_style_manager_material_editing_id = Some(material.id.clone());
-                    self.aec.aec_style_manager_material_name = material.name.clone();
-                    self.aec.aec_style_manager_material_hatch = material.hatch_pattern.clone();
-                    self.aec.aec_style_manager_material_color =
+                    self.aec.styles.material_editing_id = Some(material.id.clone());
+                    self.aec.styles.material_name = material.name.clone();
+                    self.aec.styles.material_hatch = material.hatch_pattern.clone();
+                    self.aec.styles.material_color =
                         format!("#{:06X}", material.line_color);
-                    self.aec.aec_style_manager_material_line_type = material.line_type.clone();
-                    self.aec.aec_style_manager_material_category =
-                        material.category.clone().unwrap_or_default();
-                                        self.aec.aec_style_manager_material_hatch_color = material
+                    self.aec.styles.material_line_type = material.line_type.clone();
+                    self.aec.styles.material_category =
+                        material.group.clone().unwrap_or_default();
+                                        self.aec.styles.material_hatch_color = material
                         .hatch_color
                         .and_then(|c| c.rgb())
                         .map(|(r, g, b)| ((r as u32) << 16) | ((g as u32) << 8) | (b as u32))
                         .unwrap_or(material.line_color);
-                    self.aec.aec_style_manager_material_hatch_scale =
+                    self.aec.styles.material_hatch_scale =
                         format!("{}", material.hatch_scale);
-                    self.aec.aec_style_manager_material_render_ref =
+                    self.aec.styles.material_render_ref =
                         material.render_material_ref.clone().unwrap_or_default();
-                    self.aec.aec_style_manager_material_hatch_angle =
+                    self.aec.styles.material_hatch_angle =
                         format!("{}", material.hatch_angle);
-                    self.aec.aec_style_manager_material_hatch_angle_relative =
+                    self.aec.styles.material_hatch_angle_relative =
                         material.hatch_angle_relative;
-                    self.aec.aec_style_manager_material_hatch_color_picker_open = false;
-                    self.aec.aec_style_manager_material_form_open = true;
+                    self.aec.styles.material_hatch_color_picker_open = false;
+                    self.aec.styles.material_form_open = true;
                 }
-                self.aec.aec_style_manager_selected_material = Some(id);
-                self.aec.aec_style_manager_selected_wall_style = None;
+                self.aec.styles.selected_material = Some(id);
+                self.aec.styles.selected_wall_style = None;
                 self.refresh_aec_material_linetype_combo();
                 Task::none()
             }
@@ -2033,11 +1939,12 @@ impl OpenCADStudio {
                     })
                 });
                 if let Some(wall_style) = wall_style {
-                    self.aec.aec_style_manager_wall_style_editing_id = Some(wall_style.style.id.clone());
-                    self.aec.aec_style_manager_wall_style_name = wall_style.style.name.clone();
-                    self.aec.aec_style_manager_wall_style_parent =
-                        wall_style.style.parent_style_id.clone();
-                    self.aec.aec_style_manager_wall_style_layers = wall_style
+                    self.aec.styles.wall_style_editing_id = Some(wall_style.style.id.clone());
+                    self.aec.styles.wall_duplicate_default_profile = None;
+                    self.aec.styles.wall_style_name = wall_style.style.name.clone();
+                    self.aec.styles.wall_style_parent =
+                        wall_style.style.parent.clone();
+                    self.aec.styles.wall_style_layers = wall_style
                         .layers
                         .iter()
                         .map(|l| crate::app::AecLayerBuffer {
@@ -2070,46 +1977,47 @@ impl OpenCADStudio {
                             layer_id: Some(l.layer_id),
                         })
                         .collect();
-                    self.aec.aec_style_manager_wall_style_form_open = true;
+                    self.aec.styles.wall_style_form_open = true;
                 }
-                self.aec.aec_style_manager_selected_wall_style = Some(id);
-                self.aec.aec_style_manager_selected_material = None;
-                self.aec.aec_style_manager_material_form_open = false;
-                self.aec.aec_style_manager_material_editing_id = None;
-                self.aec.aec_style_manager_profile_selected = None;
-                self.aec.aec_style_manager_profile_contour_explicit = false;
-                self.aec.aec_style_manager_profile_contour_selection.clear();
-                self.aec.aec_style_manager_profile_solid_explicit = false;
-                self.aec.aec_style_manager_profile_solid_selection.clear();
-                self.aec.aec_style_manager_profile_hatch_angle.clear();
-                self.aec.aec_style_manager_profile_hatch_relative = false;
+                self.aec.styles.selected_wall_style = Some(id);
+                self.aec.styles.selected_material = None;
+                self.aec.styles.material_form_open = false;
+                self.aec.styles.material_editing_id = None;
+                self.aec.styles.profile_selected = None;
+                self.aec.styles.profile_contour_explicit = false;
+                self.aec.styles.profile_contour_selection.clear();
+                self.aec.styles.profile_solid_explicit = false;
+                self.aec.styles.profile_solid_selection.clear();
+                self.aec.styles.profile_hatch_angle.clear();
+                self.aec.styles.profile_hatch_relative = false;
                 Task::none()
             }
             AecMessage::AecStyleManagerWallStyleNew => {
-                self.aec.aec_style_manager_selected_material = None;
-                self.aec.aec_style_manager_selected_wall_style = None;
-                self.aec.aec_style_manager_wall_style_editing_id = None;
-                self.aec.aec_style_manager_wall_style_name.clear();
-                self.aec.aec_style_manager_wall_style_parent = None;
-                self.aec.aec_style_manager_wall_style_layers.clear();
-                self.aec.aec_style_manager_wall_style_form_open = true;
-                self.aec.aec_style_manager_material_form_open = false;
-                self.aec.aec_style_manager_material_editing_id = None;
-                self.aec.aec_style_manager_profile_selected = None;
-                self.aec.aec_style_manager_profile_contour_explicit = false;
-                self.aec.aec_style_manager_profile_contour_selection.clear();
-                self.aec.aec_style_manager_profile_solid_explicit = false;
-                self.aec.aec_style_manager_profile_solid_selection.clear();
-                self.aec.aec_style_manager_profile_hatch_angle.clear();
-                self.aec.aec_style_manager_profile_hatch_relative = false;
+                self.aec.styles.selected_material = None;
+                self.aec.styles.selected_wall_style = None;
+                self.aec.styles.wall_style_editing_id = None;
+                self.aec.styles.wall_duplicate_default_profile = None;
+                self.aec.styles.wall_style_name.clear();
+                self.aec.styles.wall_style_parent = None;
+                self.aec.styles.wall_style_layers.clear();
+                self.aec.styles.wall_style_form_open = true;
+                self.aec.styles.material_form_open = false;
+                self.aec.styles.material_editing_id = None;
+                self.aec.styles.profile_selected = None;
+                self.aec.styles.profile_contour_explicit = false;
+                self.aec.styles.profile_contour_selection.clear();
+                self.aec.styles.profile_solid_explicit = false;
+                self.aec.styles.profile_solid_selection.clear();
+                self.aec.styles.profile_hatch_angle.clear();
+                self.aec.styles.profile_hatch_relative = false;
                 Task::none()
             }
             AecMessage::AecStyleManagerWallStyleNameChanged(value) => {
-                self.aec.aec_style_manager_wall_style_name = value;
+                self.aec.styles.wall_style_name = value;
                 Task::none()
             }
             AecMessage::AecStyleManagerWallStyleParentChanged(value) => {
-                self.aec.aec_style_manager_wall_style_parent = value;
+                self.aec.styles.wall_style_parent = value;
                 Task::none()
             }
             AecMessage::AecStyleManagerWallStyleLayerAdd => {
@@ -2119,7 +2027,7 @@ impl OpenCADStudio {
                     .and_then(|lib| lib.materials.first())
                     .map(|m| m.id.clone())
                     .unwrap_or_default();
-                self.aec.aec_style_manager_wall_style_layers
+                self.aec.styles.wall_style_layers
                     .push(crate::app::AecLayerBuffer {
                         material_id,
                         thickness: "10".to_string(),
@@ -2135,74 +2043,74 @@ impl OpenCADStudio {
                 Task::none()
             }
             AecMessage::AecStyleManagerWallStyleLayerRemove(index) => {
-                if index < self.aec.aec_style_manager_wall_style_layers.len() {
-                    self.aec.aec_style_manager_wall_style_layers.remove(index);
+                if index < self.aec.styles.wall_style_layers.len() {
+                    self.aec.styles.wall_style_layers.remove(index);
                 }
                 Task::none()
             }
             AecMessage::AecStyleManagerWallStyleLayerMaterialChanged(index, material_id) => {
-                if let Some(layer) = self.aec.aec_style_manager_wall_style_layers.get_mut(index) {
+                if let Some(layer) = self.aec.styles.wall_style_layers.get_mut(index) {
                     layer.material_id = material_id;
                 }
                 Task::none()
             }
             AecMessage::AecStyleManagerWallStyleLayerThicknessChanged(index, thickness) => {
-                if let Some(layer) = self.aec.aec_style_manager_wall_style_layers.get_mut(index) {
+                if let Some(layer) = self.aec.styles.wall_style_layers.get_mut(index) {
                     layer.thickness = thickness;
                 }
                 Task::none()
             }
             AecMessage::AecStyleManagerWallStyleLayerFunctionChanged(index, function) => {
-                if let Some(layer) = self.aec.aec_style_manager_wall_style_layers.get_mut(index) {
+                if let Some(layer) = self.aec.styles.wall_style_layers.get_mut(index) {
                     layer.function = function;
                 }
                 Task::none()
             }
             AecMessage::AecStyleManagerWallStyleLayerAxisOffsetChanged(index, offset) => {
-                if let Some(layer) = self.aec.aec_style_manager_wall_style_layers.get_mut(index) {
+                if let Some(layer) = self.aec.styles.wall_style_layers.get_mut(index) {
                     layer.axis_offset = offset;
                 }
                 Task::none()
             }
             AecMessage::AecStyleManagerWallStyleLayerBottomOffsetChanged(index, offset) => {
-                if let Some(layer) = self.aec.aec_style_manager_wall_style_layers.get_mut(index) {
+                if let Some(layer) = self.aec.styles.wall_style_layers.get_mut(index) {
                     layer.bottom_offset = offset;
                 }
                 Task::none()
             }
             AecMessage::AecStyleManagerWallStyleLayerTopOffsetChanged(index, offset) => {
-                if let Some(layer) = self.aec.aec_style_manager_wall_style_layers.get_mut(index) {
+                if let Some(layer) = self.aec.styles.wall_style_layers.get_mut(index) {
                     layer.top_offset = offset;
                 }
                 Task::none()
             }
             AecMessage::AecStyleManagerWallStyleLayerOverrideChanged(index, layer_name) => {
-                if let Some(layer) = self.aec.aec_style_manager_wall_style_layers.get_mut(index) {
+                if let Some(layer) = self.aec.styles.wall_style_layers.get_mut(index) {
                     layer.layer_override = layer_name;
                 }
                 Task::none()
             }
             AecMessage::AecStyleManagerWallStyleLayerHatchOverrideChanged(index, hatch) => {
-                if let Some(layer) = self.aec.aec_style_manager_wall_style_layers.get_mut(index) {
+                if let Some(layer) = self.aec.styles.wall_style_layers.get_mut(index) {
                     layer.hatch_override = hatch;
                 }
                 Task::none()
             }
             AecMessage::AecStyleManagerWallStyleLayerRoleTagChanged(index, role_tag) => {
-                if let Some(layer) = self.aec.aec_style_manager_wall_style_layers.get_mut(index) {
+                if let Some(layer) = self.aec.styles.wall_style_layers.get_mut(index) {
                     layer.role_tag = role_tag;
                 }
                 Task::none()
             }
             AecMessage::AecStyleManagerWallStyleLayerMoveUp(index) => {
-                if index > 0 && index < self.aec.aec_style_manager_wall_style_layers.len() {
-                    self.aec.aec_style_manager_wall_style_layers.swap(index - 1, index);
+                if index > 0 && index < self.aec.styles.wall_style_layers.len() {
+                    self.aec.styles.wall_style_layers.swap(index - 1, index);
                 }
                 Task::none()
             }
             AecMessage::AecStyleManagerWallStyleLayerMoveDown(index) => {
-                if index + 1 < self.aec.aec_style_manager_wall_style_layers.len() {
-                    self.aec.aec_style_manager_wall_style_layers.swap(index, index + 1);
+                if index + 1 < self.aec.styles.wall_style_layers.len() {
+                    self.aec.styles.wall_style_layers.swap(index, index + 1);
                 }
                 Task::none()
             }
@@ -2211,30 +2119,30 @@ impl OpenCADStudio {
                 // dragged row so a later drag-over on another row swaps it
                 // into place. Clicking the already-armed row's handle again
                 // cancels the drag (matches the toggle feel of `PaneMoveStart`).
-                if self.aec.aec_style_manager_wall_style_drag_index == Some(index) {
-                    self.aec.aec_style_manager_wall_style_drag_index = None;
-                } else if index < self.aec.aec_style_manager_wall_style_layers.len() {
-                    self.aec.aec_style_manager_wall_style_drag_index = Some(index);
+                if self.aec.styles.wall_style_drag_index == Some(index) {
+                    self.aec.styles.wall_style_drag_index = None;
+                } else if index < self.aec.styles.wall_style_layers.len() {
+                    self.aec.styles.wall_style_drag_index = Some(index);
                 }
                 Task::none()
             }
             AecMessage::AecStyleManagerWallStyleLayerDragOver(target) => {
-                if let Some(from) = self.aec.aec_style_manager_wall_style_drag_index.take() {
-                    let len = self.aec.aec_style_manager_wall_style_layers.len();
+                if let Some(from) = self.aec.styles.wall_style_drag_index.take() {
+                    let len = self.aec.styles.wall_style_layers.len();
                     if from != target && from < len && target < len {
-                        let layer = self.aec.aec_style_manager_wall_style_layers.remove(from);
-                        self.aec.aec_style_manager_wall_style_layers.insert(target, layer);
+                        let layer = self.aec.styles.wall_style_layers.remove(from);
+                        self.aec.styles.wall_style_layers.insert(target, layer);
                     }
                 }
                 Task::none()
             }
             AecMessage::AecStyleManagerWallStyleLayerDragEnd => {
-                self.aec.aec_style_manager_wall_style_drag_index = None;
+                self.aec.styles.wall_style_drag_index = None;
                 Task::none()
             }
             AecMessage::AecStyleManagerWallStyleSortToggle => {
-                self.aec.aec_style_manager_wall_style_sort =
-                    self.aec.aec_style_manager_wall_style_sort.toggled();
+                self.aec.styles.wall_style_sort =
+                    self.aec.styles.wall_style_sort.toggled();
                 Task::none()
             }
             AecMessage::AecStylePickerOpen(target) => {
@@ -2245,14 +2153,14 @@ impl OpenCADStudio {
                 // highlighted even though a value is already in use.
                 self.aec.aec_style_picker_selection = match target {
                     crate::app::StylePickerTarget::WallStyleParent => {
-                        self.aec.aec_style_manager_wall_style_parent.clone()
+                        self.aec.styles.wall_style_parent.clone()
                     }
                     crate::app::StylePickerTarget::LayerMaterial(index) => self
-                        .aec.aec_style_manager_wall_style_layers
+                        .aec.styles.wall_style_layers
                         .get(index)
                         .map(|l| l.material_id.clone()),
                     crate::app::StylePickerTarget::LayerOverride(index) => self
-                        .aec.aec_style_manager_wall_style_layers
+                        .aec.styles.wall_style_layers
                         .get(index)
                         .map(|l| l.layer_override.clone()),
                     crate::app::StylePickerTarget::WallPropertiesStyle
@@ -2260,29 +2168,37 @@ impl OpenCADStudio {
                     | crate::app::StylePickerTarget::OpeningPropertiesStyle
                     | crate::app::StylePickerTarget::SlabPropertiesStyle => None,
                     crate::app::StylePickerTarget::OpeningStyleParent => {
-                        self.aec.aec_opening_style_manager_parent.clone()
+                        self.aec.styles.opening_parent.clone()
                     }
                     crate::app::StylePickerTarget::SlabStyleParent => {
-                        self.aec.aec_slab_style_manager_parent.clone()
+                        self.aec.styles.slab_parent.clone()
                     }
                     crate::app::StylePickerTarget::SlabStructuralStyleParent => {
-                        self.aec.aec_slab_structural_style_manager_parent.clone()
+                        self.aec.styles.slab_structural_parent.clone()
                     }
                     crate::app::StylePickerTarget::SlabLayerMaterial(index) => self
                         .aec
-                        .aec_slab_style_manager_layers
+                        .styles.slab_layers
                         .get(index)
                         .map(|l| l.material_id.clone()),
                     crate::app::StylePickerTarget::SlabStructuralLayerMaterial(index) => self
                         .aec
-                        .aec_slab_structural_style_manager_layers
+                        .styles.slab_structural_layers
                         .get(index)
                         .map(|l| l.material_id.clone()),
                     crate::app::StylePickerTarget::SlabLayerOverride(index) => self
                         .aec
-                        .aec_slab_style_manager_layers
+                        .styles.slab_layers
                         .get(index)
                         .map(|l| l.layer_override.clone()),
+                    crate::app::StylePickerTarget::FloorFinishStyleParent => {
+                        self.aec.styles.floor_finish_parent.clone()
+                    }
+                    crate::app::StylePickerTarget::FloorFinishLayerMaterial(index) => self
+                        .aec
+                        .styles.floor_finish_layers
+                        .get(index)
+                        .map(|l| l.material_id.clone()),
                 };
                 self.active_modal = Some(crate::app::ModalKind::Aec(AecModalKind::StylePicker { target }));
                 Task::none()
@@ -2385,7 +2301,7 @@ impl OpenCADStudio {
                             | crate::app::StylePickerTarget::LayerMaterial(_)
                             | crate::app::StylePickerTarget::LayerOverride(_)
                     ) {
-                        self.active_modal = Some(crate::app::ModalKind::Aec(AecModalKind::WallStyleManager));
+                        self.active_modal = Some(crate::app::ModalKind::Aec(AecModalKind::Styles));
                         return Task::none();
                     }
                     if matches!(
@@ -2393,7 +2309,7 @@ impl OpenCADStudio {
                         crate::app::StylePickerTarget::OpeningStyleParent
                     ) {
                         self.active_modal =
-                            Some(crate::app::ModalKind::Aec(AecModalKind::OpeningStyleManager));
+                            Some(crate::app::ModalKind::Aec(AecModalKind::Styles));
                         return Task::none();
                     }
                     if matches!(
@@ -2403,7 +2319,15 @@ impl OpenCADStudio {
                             | crate::app::StylePickerTarget::SlabLayerOverride(_)
                     ) {
                         self.active_modal =
-                            Some(crate::app::ModalKind::Aec(AecModalKind::SlabStyleManager));
+                            Some(crate::app::ModalKind::Aec(AecModalKind::Styles));
+                        return Task::none();
+                    }
+                    if matches!(
+                        target,
+                        crate::app::StylePickerTarget::FloorFinishStyleParent
+                            | crate::app::StylePickerTarget::FloorFinishLayerMaterial(_)
+                    ) {
+                        self.active_modal = Some(crate::app::ModalKind::Aec(AecModalKind::Styles));
                         return Task::none();
                     }
                     if matches!(
@@ -2412,260 +2336,148 @@ impl OpenCADStudio {
                             | crate::app::StylePickerTarget::SlabStructuralLayerMaterial(_)
                     ) {
                         self.active_modal =
-                            Some(crate::app::ModalKind::Aec(AecModalKind::SlabStructuralStyleManager));
+                            Some(crate::app::ModalKind::Aec(AecModalKind::Styles));
                         return Task::none();
                     }
                 }
                 self.close_active_modal();
                 Task::none()
             }
-            AecMessage::AecStyleManagerProfileSelect(name) => {
-                use crate::modules::aec::engine::display_component::layer_filter_to_ui_state;
-                use crate::modules::aec::engine::display_component::WallComponentSlot;
-                let rules = self
-                    .aec.aec_style_manager_wall_style_editing_id
-                    .as_ref()
-                    .and_then(|id| {
-                        self.aec.aec_style_library
-                            .as_ref()
-                            .and_then(|lib| lib.wall_styles.iter().find(|w| w.style.id == *id))
-                    })
-                    .and_then(|ws| ws.display_profiles.get(&name))
-                    .cloned();
-                match rules {
-                    Some(rules) => {
-                        let (c_explicit, c_sel) =
-                            layer_filter_to_ui_state(rules.layer_filter_for(WallComponentSlot::Contour2D));
-                        let (s_explicit, s_sel) =
-                            layer_filter_to_ui_state(rules.layer_filter_for(WallComponentSlot::Solid3D));
-                        self.aec.aec_style_manager_profile_contour_explicit = c_explicit;
-                        self.aec.aec_style_manager_profile_contour_selection = c_sel;
-                        self.aec.aec_style_manager_profile_solid_explicit = s_explicit;
-                        self.aec.aec_style_manager_profile_solid_selection = s_sel;
-                        let hatch = rules.style_override.get(WallComponentSlot::ContourHatch2D.key());
-                        self.aec.aec_style_manager_profile_hatch_angle = hatch
-                            .and_then(|h| h.hatch_angle)
-                            .map(|a| format!("{a}"))
-                            .unwrap_or_default();
-                        self.aec.aec_style_manager_profile_hatch_relative = hatch
-                            .and_then(|h| h.hatch_angle_relative)
-                            .unwrap_or(false);
-                        let mut visibility = std::collections::HashMap::new();
-                        for slot in [
-                            WallComponentSlot::AxisLine,
-                            WallComponentSlot::Contour2D,
-                            WallComponentSlot::ContourHatch2D,
-                            WallComponentSlot::Layers2D,
-                            WallComponentSlot::LayerHatch2D,
-                            WallComponentSlot::Solid3D,
-                            WallComponentSlot::SurfaceStyle3D,
-                            WallComponentSlot::SectionRepresentation,
-                            WallComponentSlot::ElevationRepresentation,
-                        ] {
-                            visibility.insert(slot, rules.is_visible(slot));
-                        }
-                        self.aec.aec_style_manager_profile_slot_visibility = visibility;
-                        let mut overrides = std::collections::HashMap::new();
-                        for slot in [
-                            WallComponentSlot::AxisLine,
-                            WallComponentSlot::Contour2D,
-                            WallComponentSlot::ContourHatch2D,
-                            WallComponentSlot::Layers2D,
-                            WallComponentSlot::LayerHatch2D,
-                            WallComponentSlot::Solid3D,
-                            WallComponentSlot::SurfaceStyle3D,
-                            WallComponentSlot::SectionRepresentation,
-                            WallComponentSlot::ElevationRepresentation,
-                        ] {
-                            if let Some(style) = rules.style_for(slot).cloned() {
-                                let has_visual = style.line_type.is_some()
-                                    || style.line_color.is_some()
-                                    || style.hatch_pattern.is_some()
-                                    || style.hatch_color.is_some()
-                                    || style.fill_color.is_some();
-                                // ContourHatch2D may only store the shared hatch-angle
-                                // fields; keep those out of the per-slot override map so
-                                // the badge stays "Standard" unless a real style exists.
-                                if has_visual {
-                                    overrides.insert(slot, style);
-                                }
-                            }
-                        }
-                        self.aec.aec_style_manager_profile_slot_overrides = overrides;
-                        self.aec.aec_style_manager_profile_editing_slot = None;
-                        self.clear_aec_profile_slot_style_editor_buffers();
-                    }
-                    None => {
-                        self.aec.aec_style_manager_profile_contour_explicit = false;
-                        self.aec.aec_style_manager_profile_contour_selection = Vec::new();
-                        self.aec.aec_style_manager_profile_solid_explicit = false;
-                        self.aec.aec_style_manager_profile_solid_selection = Vec::new();
-                        self.aec.aec_style_manager_profile_hatch_angle = String::new();
-                        self.aec.aec_style_manager_profile_hatch_relative = false;
-                        self.aec.aec_style_manager_profile_slot_visibility =
-                            std::collections::HashMap::new();
-                        self.aec.aec_style_manager_profile_slot_overrides =
-                            std::collections::HashMap::new();
-                        self.aec.aec_style_manager_profile_editing_slot = None;
-                        self.clear_aec_profile_slot_style_editor_buffers();
-                    }
-                }
-                self.aec.aec_style_manager_profile_selected = Some(name);
-                Task::none()
-            }
+            AecMessage::AecStyleManagerProfileSelect(name) => self.aec_wall_profile_select(name),
             AecMessage::AecStyleManagerProfileContourModeToggle(is_explicit) => {
-                self.aec.aec_style_manager_profile_contour_explicit = is_explicit;
+                self.aec.styles.profile_contour_explicit = is_explicit;
                 Task::none()
             }
             AecMessage::AecStyleManagerProfileSolidModeToggle(is_explicit) => {
-                self.aec.aec_style_manager_profile_solid_explicit = is_explicit;
+                self.aec.styles.profile_solid_explicit = is_explicit;
                 Task::none()
             }
             AecMessage::AecStyleManagerProfileContourLayerToggle(layer) => {
                 if let Some(pos) = self
-                    .aec.aec_style_manager_profile_contour_selection
+                    .aec.styles.profile_contour_selection
                     .iter()
                     .position(|l| *l == layer)
                 {
-                    self.aec.aec_style_manager_profile_contour_selection.remove(pos);
+                    self.aec.styles.profile_contour_selection.remove(pos);
                 } else {
-                    self.aec.aec_style_manager_profile_contour_selection.push(layer);
+                    self.aec.styles.profile_contour_selection.push(layer);
                 }
                 Task::none()
             }
             AecMessage::AecStyleManagerProfileSolidLayerToggle(layer) => {
                 if let Some(pos) = self
-                    .aec.aec_style_manager_profile_solid_selection
+                    .aec.styles.profile_solid_selection
                     .iter()
                     .position(|l| *l == layer)
                 {
-                    self.aec.aec_style_manager_profile_solid_selection.remove(pos);
+                    self.aec.styles.profile_solid_selection.remove(pos);
                 } else {
-                    self.aec.aec_style_manager_profile_solid_selection.push(layer);
+                    self.aec.styles.profile_solid_selection.push(layer);
                 }
                 Task::none()
             }
             AecMessage::AecStyleManagerProfileHatchRelativeToggle(value) => {
-                self.aec.aec_style_manager_profile_hatch_relative = value;
+                self.aec.styles.profile_hatch_relative = value;
                 Task::none()
             }
             AecMessage::AecStyleManagerProfileHatchAngleChanged(value) => {
-                self.aec.aec_style_manager_profile_hatch_angle = value;
+                self.aec.styles.profile_hatch_angle = value;
                 Task::none()
             }
             AecMessage::AecStyleManagerProfileSlotVisibilityToggle(slot, visible) => {
-                self.aec.aec_style_manager_profile_slot_visibility
+                self.aec.styles.profile_slot_visibility
                     .insert(slot, visible);
                 Task::none()
             }
             AecMessage::AecStyleManagerProfileSlotStyleOpen(slot) => {
                 use crate::modules::aec::ui::aec_ui_util::acad_color_to_editor_string;
                 let style = self
-                    .aec.aec_style_manager_profile_slot_overrides
+                    .aec.styles.profile_slot_overrides
                     .get(&slot)
                     .cloned()
                     .unwrap_or_default();
-                self.aec.aec_style_manager_profile_editing_slot = Some(slot);
-                self.aec.aec_style_manager_profile_slot_style_line_type =
+                self.aec.styles.profile_editing_slot = Some(slot);
+                self.aec.styles.profile_slot_style_line_type =
                     style.line_type.clone().unwrap_or_default();
-                self.aec.aec_style_manager_profile_slot_style_line_color = style
+                self.aec.styles.profile_slot_style_line_color = style
                     .line_color
                     .map(acad_color_to_editor_string)
                     .unwrap_or_default();
-                self.aec.aec_style_manager_profile_slot_style_hatch_pattern =
+                self.aec.styles.profile_slot_style_hatch_pattern =
                     style.hatch_pattern.clone().unwrap_or_default();
-                self.aec.aec_style_manager_profile_slot_style_hatch_color = style
+                self.aec.styles.profile_slot_style_hatch_color = style
                     .hatch_color
                     .map(acad_color_to_editor_string)
                     .unwrap_or_default();
-                self.aec.aec_style_manager_profile_slot_style_fill_color = style
+                self.aec.styles.profile_slot_style_fill_color = style
                     .fill_color
                     .map(acad_color_to_editor_string)
                     .unwrap_or_default();
-                self.aec.aec_style_manager_profile_slot_style_line_color_picker_open = false;
-                self.aec.aec_style_manager_profile_slot_style_hatch_color_picker_open = false;
-                self.aec.aec_style_manager_profile_slot_style_fill_color_picker_open = false;
+                self.aec.styles.profile_slot_style_line_color_picker_open = false;
+                self.aec.styles.profile_slot_style_hatch_color_picker_open = false;
+                self.aec.styles.profile_slot_style_fill_color_picker_open = false;
                 Task::none()
             }
             AecMessage::AecStyleManagerProfileSlotStyleLineTypeChanged(v) => {
-                self.aec.aec_style_manager_profile_slot_style_line_type = v;
+                self.aec.styles.profile_slot_style_line_type = v;
                 Task::none()
             }
             AecMessage::AecStyleManagerProfileSlotStyleLineColorChanged(v) => {
-                self.aec.aec_style_manager_profile_slot_style_line_color = v;
+                self.aec.styles.profile_slot_style_line_color = v;
                 Task::none()
             }
             AecMessage::AecStyleManagerProfileSlotStyleLineColorPickerToggle => {
-                self.aec.aec_style_manager_profile_slot_style_line_color_picker_open =
-                    !self.aec.aec_style_manager_profile_slot_style_line_color_picker_open;
+                self.aec.styles.profile_slot_style_line_color_picker_open =
+                    !self.aec.styles.profile_slot_style_line_color_picker_open;
                 Task::none()
             }
             AecMessage::AecStyleManagerProfileSlotStyleHatchPatternChanged(v) => {
-                self.aec.aec_style_manager_profile_slot_style_hatch_pattern = v;
-                self.aec.aec_style_manager_profile_slot_style_hatch_picker_open = false;
+                self.aec.styles.profile_slot_style_hatch_pattern = v;
+                self.aec.styles.profile_slot_style_hatch_picker_open = false;
                 Task::none()
             }
             AecMessage::AecStyleManagerProfileSlotStyleHatchPickerToggle => {
-                self.aec.aec_style_manager_profile_slot_style_hatch_picker_open =
-                    !self.aec.aec_style_manager_profile_slot_style_hatch_picker_open;
+                self.aec.styles.profile_slot_style_hatch_picker_open =
+                    !self.aec.styles.profile_slot_style_hatch_picker_open;
                 Task::none()
             }
             AecMessage::AecStyleManagerProfileSlotStyleHatchColorChanged(v) => {
-                self.aec.aec_style_manager_profile_slot_style_hatch_color = v;
+                self.aec.styles.profile_slot_style_hatch_color = v;
                 Task::none()
             }
             AecMessage::AecStyleManagerProfileSlotStyleHatchColorPickerToggle => {
-                self.aec.aec_style_manager_profile_slot_style_hatch_color_picker_open =
-                    !self.aec.aec_style_manager_profile_slot_style_hatch_color_picker_open;
+                self.aec.styles.profile_slot_style_hatch_color_picker_open =
+                    !self.aec.styles.profile_slot_style_hatch_color_picker_open;
                 Task::none()
             }
             AecMessage::AecStyleManagerProfileSlotStyleFillColorChanged(v) => {
-                self.aec.aec_style_manager_profile_slot_style_fill_color = v;
+                self.aec.styles.profile_slot_style_fill_color = v;
                 Task::none()
             }
             AecMessage::AecStyleManagerProfileSlotStyleFillColorPickerToggle => {
-                self.aec.aec_style_manager_profile_slot_style_fill_color_picker_open =
-                    !self.aec.aec_style_manager_profile_slot_style_fill_color_picker_open;
+                self.aec.styles.profile_slot_style_fill_color_picker_open =
+                    !self.aec.styles.profile_slot_style_fill_color_picker_open;
                 Task::none()
             }
             AecMessage::AecStyleManagerProfileSlotStyleApply => {
-                use crate::modules::aec::engine::display_component::component_style_override_from_editor_fields;
-                let Some(slot) = self.aec.aec_style_manager_profile_editing_slot else {
-                    return Task::none();
-                };
-                let style = component_style_override_from_editor_fields(
-                    &self.aec.aec_style_manager_profile_slot_style_line_type,
-                    &self.aec.aec_style_manager_profile_slot_style_line_color,
-                    &self.aec.aec_style_manager_profile_slot_style_hatch_pattern,
-                    &self.aec.aec_style_manager_profile_slot_style_hatch_color,
-                    &self.aec.aec_style_manager_profile_slot_style_fill_color,
-                );
-                if style == Default::default() {
-                    self.aec.aec_style_manager_profile_slot_overrides.remove(&slot);
-                } else {
-                    self.aec.aec_style_manager_profile_slot_overrides
-                        .insert(slot, style);
-                }
-                self.aec.aec_style_manager_profile_editing_slot = None;
-                self.clear_aec_profile_slot_style_editor_buffers();
-                Task::none()
+                self.aec_wall_profile_slot_style_apply()
             }
             AecMessage::AecStyleManagerProfileSlotStyleClear => {
-                if let Some(slot) = self.aec.aec_style_manager_profile_editing_slot.take() {
-                    self.aec.aec_style_manager_profile_slot_overrides.remove(&slot);
+                if let Some(slot) = self.aec.styles.profile_editing_slot.take() {
+                    self.aec.styles.profile_slot_overrides.remove(&slot);
                 }
                 self.clear_aec_profile_slot_style_editor_buffers();
                 Task::none()
             }
             AecMessage::AecStyleManagerProfileSlotStyleClose => {
-                self.aec.aec_style_manager_profile_editing_slot = None;
+                self.aec.styles.profile_editing_slot = None;
                 self.clear_aec_profile_slot_style_editor_buffers();
                 Task::none()
             }
             AecMessage::AecWallStyleManagerDisplayProfilesOpen => {
                 // Keep the wall style manager geometry so closing the child
                 // modal can restore it (Plot → Plotstyle pattern).
-                self.aec.aec_wall_style_manager_parent_geometry =
+                self.aec.styles.wall_parent_geometry =
                     Some((self.modal_offset, self.modal_resize));
                 self.active_modal = Some(crate::app::ModalKind::Aec(AecModalKind::WallStyleDisplayProfiles));
                 self.reset_modal_geometry();
@@ -2676,202 +2488,10 @@ impl OpenCADStudio {
                 Task::none()
             }
             AecMessage::AecStyleManagerProfileSave => {
-                use crate::modules::aec::engine::display_component::{
-                    layer_filter_from_selection, ComponentStyleOverride, WallComponentSlot,
-                };
-                let Some(config_name) = self.aec.aec_style_manager_profile_selected.clone() else {
-                    return Task::none();
-                };
-                let Some(id) = self.aec.aec_style_manager_wall_style_editing_id.clone() else {
-                    return Task::none();
-                };
-                let Some(mut wall_style) = self.aec.aec_style_library.as_ref().and_then(|lib| {
-                    lib.wall_styles.iter().find(|w| w.style.id == id).cloned()
-                }) else {
-                    return Task::none();
-                };
-
-                let mut rules = wall_style
-                    .display_profiles
-                    .get(&config_name)
-                    .cloned()
-                    .unwrap_or_default();
-                rules.layer_filter.insert(
-                    WallComponentSlot::Contour2D.key().to_string(),
-                    layer_filter_from_selection(
-                        self.aec.aec_style_manager_profile_contour_explicit,
-                        &self.aec.aec_style_manager_profile_contour_selection,
-                    ),
-                );
-                rules.layer_filter.insert(
-                    WallComponentSlot::Solid3D.key().to_string(),
-                    layer_filter_from_selection(
-                        self.aec.aec_style_manager_profile_solid_explicit,
-                        &self.aec.aec_style_manager_profile_solid_selection,
-                    ),
-                );
-                let hatch_angle = self
-                    .aec.aec_style_manager_profile_hatch_angle
-                    .trim()
-                    .parse::<f64>()
-                    .ok();
-                if hatch_angle.is_some() {
-                    rules.style_override.insert(
-                        WallComponentSlot::ContourHatch2D.key().to_string(),
-                        ComponentStyleOverride {
-                            hatch_angle,
-                            hatch_angle_relative: Some(self.aec.aec_style_manager_profile_hatch_relative),
-                            ..Default::default()
-                        },
-                    );
-                } else {
-                    rules.style_override.remove(WallComponentSlot::ContourHatch2D.key());
-                }
-                for (slot, visible) in &self.aec.aec_style_manager_profile_slot_visibility {
-                    if *visible {
-                        rules.visibility.remove(slot.key());
-                    } else {
-                        rules.visibility.insert(slot.key().to_string(), false);
-                    }
-                }
-                // Preserve ContourHatch2D hatch-angle entry written above, then
-                // merge/replace per-slot visual overrides from the pending map.
-                let hatch_angle_entry = rules
-                    .style_override
-                    .get(WallComponentSlot::ContourHatch2D.key())
-                    .cloned();
-                // Drop previous visual overrides for known slots, then rewrite.
-                for slot in [
-                    WallComponentSlot::AxisLine,
-                    WallComponentSlot::Contour2D,
-                    WallComponentSlot::ContourHatch2D,
-                    WallComponentSlot::Layers2D,
-                    WallComponentSlot::LayerHatch2D,
-                    WallComponentSlot::Solid3D,
-                    WallComponentSlot::SurfaceStyle3D,
-                    WallComponentSlot::SectionRepresentation,
-                    WallComponentSlot::ElevationRepresentation,
-                ] {
-                    rules.style_override.remove(slot.key());
-                }
-                if let Some(entry) = hatch_angle_entry {
-                    // Re-insert hatch-angle-only base; visual fields may be merged below.
-                    if entry.hatch_angle.is_some() || entry.hatch_angle_relative.is_some() {
-                        rules.style_override.insert(
-                            WallComponentSlot::ContourHatch2D.key().to_string(),
-                            ComponentStyleOverride {
-                                hatch_angle: entry.hatch_angle,
-                                hatch_angle_relative: entry.hatch_angle_relative,
-                                ..Default::default()
-                            },
-                        );
-                    }
-                }
-                for (slot, style) in &self.aec.aec_style_manager_profile_slot_overrides {
-                    if *slot == WallComponentSlot::ContourHatch2D {
-                        let mut merged = rules
-                            .style_override
-                            .remove(slot.key())
-                            .unwrap_or_default();
-                        if style.line_type.is_some() {
-                            merged.line_type = style.line_type.clone();
-                        }
-                        if style.line_color.is_some() {
-                            merged.line_color = style.line_color;
-                        }
-                        if style.hatch_pattern.is_some() {
-                            merged.hatch_pattern = style.hatch_pattern.clone();
-                        }
-                        if style.hatch_color.is_some() {
-                            merged.hatch_color = style.hatch_color;
-                        }
-                        if style.fill_color.is_some() {
-                            merged.fill_color = style.fill_color;
-                        }
-                        rules
-                            .style_override
-                            .insert(slot.key().to_string(), merged);
-                    } else {
-                        rules
-                            .style_override
-                            .insert(slot.key().to_string(), style.clone());
-                    }
-                }
-                wall_style.display_profiles.insert(config_name.clone(), rules);
-
-                let source = crate::modules::aec::engine::library::wall_style_library_source_with_session(
-                    self.aec.aec_project_explorer_file.as_ref(),
-                    self.aec.aec_session_style_library.as_ref(),
-                    &id,
-                );
-                let cow_from_standard =
-                    source == Some(crate::modules::aec::engine::library::LibrarySource::Standard);
-
-                if self.aec.aec_project_explorer_file.is_some() {
-                    match self.aec_upsert_wall_style_into_project(wall_style) {
-                        Ok(()) => {
-                            if cow_from_standard {
-                                self.command_line.push_info(
-                                    crate::t!(
-                                        "AEC Style Manager: Standard wall style was copied into the project and saved."
-                                    )
-                                    .as_ref(),
-                                );
-                            } else {
-                                self.command_line.push_info(
-                                    crate::t!("AEC Style Manager: display profile saved.").as_ref(),
-                                );
-                            }
-                        }
-                        Err(e) => {
-                            self.command_line.push_error(
-                                crate::tf!("AEC Style Manager: failed to save library: {e}").as_ref(),
-                            );
-                        }
-                    }
-                } else {
-                    self.aec_upsert_wall_style_into_session(wall_style);
-                }
-                Task::none()
+                self.aec_wall_profile_save()
             }
             AecMessage::AecStyleManagerProfileRemove => {
-                let Some(config_name) = self.aec.aec_style_manager_profile_selected.clone() else {
-                    return Task::none();
-                };
-                let Some(id) = self.aec.aec_style_manager_wall_style_editing_id.clone() else {
-                    return Task::none();
-                };
-                let Some(mut wall_style) = self.aec.aec_style_library.as_ref().and_then(|lib| {
-                    lib.wall_styles.iter().find(|w| w.style.id == id).cloned()
-                }) else {
-                    return Task::none();
-                };
-                wall_style.display_profiles.remove(&config_name);
-
-                self.aec.aec_style_manager_profile_contour_explicit = false;
-                self.aec.aec_style_manager_profile_contour_selection = Vec::new();
-                self.aec.aec_style_manager_profile_solid_explicit = false;
-                self.aec.aec_style_manager_profile_solid_selection = Vec::new();
-                self.aec.aec_style_manager_profile_hatch_angle = String::new();
-                self.aec.aec_style_manager_profile_hatch_relative = false;
-                self.aec.aec_style_manager_profile_slot_visibility = std::collections::HashMap::new();
-                self.aec.aec_style_manager_profile_slot_overrides = std::collections::HashMap::new();
-                self.aec.aec_style_manager_profile_editing_slot = None;
-                self.clear_aec_profile_slot_style_editor_buffers();
-
-                if self.aec.aec_project_explorer_file.is_some() {
-                    if let Err(e) = self.aec_upsert_wall_style_into_project(wall_style) {
-                        self.command_line.push_error(
-                            crate::tf!("AEC Style Manager: failed to save library: {e}").as_ref(),
-                        );
-                    } else {
-                        self.command_line
-                            .push_info(crate::t!("AEC Style Manager: display profile removed.").as_ref());
-                    }
-                } else {
-                    self.aec_upsert_wall_style_into_session(wall_style);
-                }
-                Task::none()
+                self.aec_wall_profile_remove()
             }
             AecMessage::AecStylePickerConfirm => {
                 if let (Some(crate::app::ModalKind::Aec(AecModalKind::StylePicker { target })), Some(selection)) =
@@ -2884,17 +2504,17 @@ impl OpenCADStudio {
                             } else {
                                 Some(selection)
                             };
-                            self.active_modal = Some(crate::app::ModalKind::Aec(AecModalKind::WallStyleManager));
+                            self.active_modal = Some(crate::app::ModalKind::Aec(AecModalKind::Styles));
                             return self.update(Message::Aec(AecMessage::AecStyleManagerWallStyleParentChanged(id)));
                         }
                         crate::app::StylePickerTarget::LayerMaterial(index) => {
-                            self.active_modal = Some(crate::app::ModalKind::Aec(AecModalKind::WallStyleManager));
+                            self.active_modal = Some(crate::app::ModalKind::Aec(AecModalKind::Styles));
                             return self.update(Message::Aec(AecMessage::AecStyleManagerWallStyleLayerMaterialChanged(
                                 index, selection,
                             )));
                         }
                         crate::app::StylePickerTarget::LayerOverride(index) => {
-                            self.active_modal = Some(crate::app::ModalKind::Aec(AecModalKind::WallStyleManager));
+                            self.active_modal = Some(crate::app::ModalKind::Aec(AecModalKind::Styles));
                             return self.update(Message::Aec(AecMessage::AecStyleManagerWallStyleLayerOverrideChanged(
                                 index, selection,
                             )));
@@ -2953,7 +2573,7 @@ impl OpenCADStudio {
                                 Some(selection)
                             };
                             self.active_modal =
-                                Some(crate::app::ModalKind::Aec(AecModalKind::OpeningStyleManager));
+                                Some(crate::app::ModalKind::Aec(AecModalKind::Styles));
                             return self.update(Message::Aec(
                                 AecMessage::AecOpeningStyleManagerParentChanged(id),
                             ));
@@ -2969,9 +2589,28 @@ impl OpenCADStudio {
                                 Some(selection)
                             };
                             self.active_modal =
-                                Some(crate::app::ModalKind::Aec(AecModalKind::SlabStyleManager));
+                                Some(crate::app::ModalKind::Aec(AecModalKind::Styles));
                             return self.update(Message::Aec(
                                 AecMessage::AecSlabStyleManagerParentChanged(id),
+                            ));
+                        }
+                        crate::app::StylePickerTarget::FloorFinishStyleParent => {
+                            let id = if selection.is_empty() {
+                                None
+                            } else {
+                                Some(selection)
+                            };
+                            self.active_modal = Some(crate::app::ModalKind::Aec(AecModalKind::Styles));
+                            return self.update(Message::Aec(
+                                AecMessage::AecFloorFinishStyleManagerParentChanged(id),
+                            ));
+                        }
+                        crate::app::StylePickerTarget::FloorFinishLayerMaterial(index) => {
+                            self.active_modal = Some(crate::app::ModalKind::Aec(AecModalKind::Styles));
+                            return self.update(Message::Aec(
+                                AecMessage::AecFloorFinishStyleManagerLayerMaterialChanged(
+                                    index, selection,
+                                ),
                             ));
                         }
                         crate::app::StylePickerTarget::SlabStructuralStyleParent => {
@@ -2981,14 +2620,14 @@ impl OpenCADStudio {
                                 Some(selection)
                             };
                             self.active_modal =
-                                Some(crate::app::ModalKind::Aec(AecModalKind::SlabStructuralStyleManager));
+                                Some(crate::app::ModalKind::Aec(AecModalKind::Styles));
                             return self.update(Message::Aec(
                                 AecMessage::AecSlabStructuralStyleManagerParentChanged(id),
                             ));
                         }
                         crate::app::StylePickerTarget::SlabLayerMaterial(index) => {
                             self.active_modal =
-                                Some(crate::app::ModalKind::Aec(AecModalKind::SlabStyleManager));
+                                Some(crate::app::ModalKind::Aec(AecModalKind::Styles));
                             return self.update(Message::Aec(
                                 AecMessage::AecSlabStyleManagerLayerMaterialChanged(
                                     index, selection,
@@ -2997,7 +2636,7 @@ impl OpenCADStudio {
                         }
                         crate::app::StylePickerTarget::SlabStructuralLayerMaterial(index) => {
                             self.active_modal =
-                                Some(crate::app::ModalKind::Aec(AecModalKind::SlabStructuralStyleManager));
+                                Some(crate::app::ModalKind::Aec(AecModalKind::Styles));
                             return self.update(Message::Aec(
                                 AecMessage::AecSlabStructuralStyleManagerLayerMaterialChanged(
                                     index, selection,
@@ -3006,7 +2645,7 @@ impl OpenCADStudio {
                         }
                         crate::app::StylePickerTarget::SlabLayerOverride(index) => {
                             self.active_modal =
-                                Some(crate::app::ModalKind::Aec(AecModalKind::SlabStyleManager));
+                                Some(crate::app::ModalKind::Aec(AecModalKind::Styles));
                             return self.update(Message::Aec(
                                 AecMessage::AecSlabStyleManagerLayerOverrideChanged(
                                     index, selection,
@@ -3186,7 +2825,7 @@ impl OpenCADStudio {
                 Task::none()
             }
             AecMessage::AecStyleManagerWallStyleDelete => {
-                if let Some(id) = self.aec.aec_style_manager_selected_wall_style.clone() {
+                if let Some(id) = self.aec.styles.selected_wall_style.clone() {
                     let lib_snapshot = if let Some(lib) = self.aec.aec_style_library.as_mut() {
                         lib.remove_wall_style(&id);
                         Some(lib.clone())
@@ -3205,62 +2844,63 @@ impl OpenCADStudio {
                         }
                     }
                 }
-                self.aec.aec_style_manager_selected_wall_style = None;
-                self.aec.aec_style_manager_wall_style_editing_id = None;
-                self.aec.aec_style_manager_wall_style_form_open = false;
+                self.aec.styles.selected_wall_style = None;
+                self.aec.styles.wall_style_editing_id = None;
+                self.aec.styles.wall_duplicate_default_profile = None;
+                self.aec.styles.wall_style_form_open = false;
                 Task::none()
             }
             AecMessage::AecStyleManagerMaterialNew => {
-                self.aec.aec_style_manager_selected_material = None;
-                self.aec.aec_style_manager_selected_wall_style = None;
-                self.aec.aec_style_manager_material_editing_id = None;
-                self.aec.aec_style_manager_material_name.clear();
-                self.aec.aec_style_manager_material_hatch.clear();
-                self.aec.aec_style_manager_material_color = "#FFFFFF".to_string();
-                self.aec.aec_style_manager_material_line_type = "Continuous".to_string();
-                self.aec.aec_style_manager_material_category.clear();
-                self.aec.aec_style_manager_material_hatch_color = 0xFFFFFF;
-                self.aec.aec_style_manager_material_hatch_scale = "1.0".to_string();
-                self.aec.aec_style_manager_material_render_ref.clear();
-                self.aec.aec_style_manager_material_hatch_angle = "0.0".to_string();
-                self.aec.aec_style_manager_material_hatch_angle_relative = true;
-                self.aec.aec_style_manager_material_hatch_color_picker_open = false;
-                self.aec.aec_style_manager_material_form_open = true;
+                self.aec.styles.selected_material = None;
+                self.aec.styles.selected_wall_style = None;
+                self.aec.styles.material_editing_id = None;
+                self.aec.styles.material_name.clear();
+                self.aec.styles.material_hatch.clear();
+                self.aec.styles.material_color = "#FFFFFF".to_string();
+                self.aec.styles.material_line_type = "Continuous".to_string();
+                self.aec.styles.material_category.clear();
+                self.aec.styles.material_hatch_color = 0xFFFFFF;
+                self.aec.styles.material_hatch_scale = "1.0".to_string();
+                self.aec.styles.material_render_ref.clear();
+                self.aec.styles.material_hatch_angle = "0.0".to_string();
+                self.aec.styles.material_hatch_angle_relative = true;
+                self.aec.styles.material_hatch_color_picker_open = false;
+                self.aec.styles.material_form_open = true;
                 Task::none()
             }
             AecMessage::AecStyleManagerMaterialNameChanged(value) => {
-                self.aec.aec_style_manager_material_name = value;
+                self.aec.styles.material_name = value;
                 Task::none()
             }
             AecMessage::AecStyleManagerMaterialHatchChanged(value) => {
-                self.aec.aec_style_manager_material_hatch = value;
+                self.aec.styles.material_hatch = value;
                 Task::none()
             }
             AecMessage::AecStyleManagerMaterialHatchPickerToggle => {
-                self.aec.aec_style_manager_material_hatch_picker_open =
-                    !self.aec.aec_style_manager_material_hatch_picker_open;
+                self.aec.styles.material_hatch_picker_open =
+                    !self.aec.styles.material_hatch_picker_open;
                 Task::none()
             }
             AecMessage::AecStyleManagerMaterialHatchSelected(name) => {
-                self.aec.aec_style_manager_material_hatch = name;
-                self.aec.aec_style_manager_material_hatch_picker_open = false;
+                self.aec.styles.material_hatch = name;
+                self.aec.styles.material_hatch_picker_open = false;
                 Task::none()
             }
             AecMessage::AecStyleManagerMaterialColorChanged(value) => {
-                self.aec.aec_style_manager_material_color = value;
+                self.aec.styles.material_color = value;
                 Task::none()
             }
             AecMessage::AecStyleManagerMaterialLineTypeChanged(value) => {
-                self.aec.aec_style_manager_material_line_type = value;
+                self.aec.styles.material_line_type = value;
                 Task::none()
             }
             AecMessage::AecStyleManagerMaterialColorPickerToggle => {
-                self.aec.aec_style_manager_material_color_picker_open =
-                    !self.aec.aec_style_manager_material_color_picker_open;
+                self.aec.styles.material_color_picker_open =
+                    !self.aec.styles.material_color_picker_open;
                 Task::none()
             }
             AecMessage::AecStyleManagerMaterialColorPicked(color) => {
-                self.aec.aec_style_manager_material_color_picker_open = false;
+                self.aec.styles.material_color_picker_open = false;
                 let [r, g, b, _] = match color {
                     acadrust::types::Color::Rgb { r, g, b } => [r, g, b, 255u8],
                     acadrust::types::Color::Index(i) => {
@@ -3270,45 +2910,45 @@ impl OpenCADStudio {
                     }
                     _ => [255, 255, 255, 255],
                 };
-                self.aec.aec_style_manager_material_color = format!("#{r:02X}{g:02X}{b:02X}");
+                self.aec.styles.material_color = format!("#{r:02X}{g:02X}{b:02X}");
                 Task::none()
             }
             AecMessage::AecStyleManagerMaterialCategoryChanged(value) => {
-                self.aec.aec_style_manager_material_category = value;
+                self.aec.styles.material_category = value;
                 Task::none()
             }
             AecMessage::AecStyleManagerMaterialHatchColorChanged(value) => {
-                self.aec.aec_style_manager_material_hatch_color = value;
-                self.aec.aec_style_manager_material_hatch_color_picker_open = false;
+                self.aec.styles.material_hatch_color = value;
+                self.aec.styles.material_hatch_color_picker_open = false;
                 Task::none()
             }
             AecMessage::AecStyleManagerMaterialHatchColorPickerToggle => {
-                self.aec.aec_style_manager_material_hatch_color_picker_open =
-                    !self.aec.aec_style_manager_material_hatch_color_picker_open;
+                self.aec.styles.material_hatch_color_picker_open =
+                    !self.aec.styles.material_hatch_color_picker_open;
                 Task::none()
             }
             AecMessage::AecStyleManagerMaterialHatchScaleChanged(value) => {
-                self.aec.aec_style_manager_material_hatch_scale = value;
+                self.aec.styles.material_hatch_scale = value;
                 Task::none()
             }
             AecMessage::AecStyleManagerMaterialRenderRefChanged(value) => {
-                self.aec.aec_style_manager_material_render_ref = value;
+                self.aec.styles.material_render_ref = value;
                 Task::none()
             }
             AecMessage::AecStyleManagerMaterialHatchAngleChanged(value) => {
-                self.aec.aec_style_manager_material_hatch_angle = value;
+                self.aec.styles.material_hatch_angle = value;
                 Task::none()
             }
             AecMessage::AecStyleManagerMaterialHatchAngleRelativeToggle => {
-                self.aec.aec_style_manager_material_hatch_angle_relative =
-                    !self.aec.aec_style_manager_material_hatch_angle_relative;
+                self.aec.styles.material_hatch_angle_relative =
+                    !self.aec.styles.material_hatch_angle_relative;
                 Task::none()
             }
             AecMessage::AecStyleManagerMaterialDuplicate => {
                 let source_id = self
-                    .aec.aec_style_manager_material_editing_id
+                    .aec.styles.material_editing_id
                     .clone()
-                    .or_else(|| self.aec.aec_style_manager_selected_material.clone());
+                    .or_else(|| self.aec.styles.selected_material.clone());
                 let Some(source_id) = source_id else {
                     return Task::none();
                 };
@@ -3332,33 +2972,33 @@ impl OpenCADStudio {
                     name = format!("{base_name} {counter}");
                     counter += 1;
                 }
-                self.aec.aec_style_manager_selected_material = None;
-                self.aec.aec_style_manager_selected_wall_style = None;
-                self.aec.aec_style_manager_material_editing_id = None;
-                self.aec.aec_style_manager_material_name = name;
-                self.aec.aec_style_manager_material_hatch = material.hatch_pattern;
-                self.aec.aec_style_manager_material_color =
+                self.aec.styles.selected_material = None;
+                self.aec.styles.selected_wall_style = None;
+                self.aec.styles.material_editing_id = None;
+                self.aec.styles.material_name = name;
+                self.aec.styles.material_hatch = material.hatch_pattern;
+                self.aec.styles.material_color =
                     format!("#{:06X}", material.line_color);
-                self.aec.aec_style_manager_material_line_type = material.line_type;
-                self.aec.aec_style_manager_material_category =
-                    material.category.unwrap_or_default();
-                                self.aec.aec_style_manager_material_hatch_color = material
+                self.aec.styles.material_line_type = material.line_type;
+                self.aec.styles.material_category =
+                    material.group.unwrap_or_default();
+                                self.aec.styles.material_hatch_color = material
                     .hatch_color
                     .and_then(|c| c.rgb())
                     .map(|(r, g, b)| ((r as u32) << 16) | ((g as u32) << 8) | (b as u32))
                     .unwrap_or(material.line_color);
-                self.aec.aec_style_manager_material_hatch_scale =
+                self.aec.styles.material_hatch_scale =
                     format!("{}", material.hatch_scale);
-                self.aec.aec_style_manager_material_render_ref =
+                self.aec.styles.material_render_ref =
                     material.render_material_ref.unwrap_or_default();
-                self.aec.aec_style_manager_material_hatch_angle =
+                self.aec.styles.material_hatch_angle =
                     format!("{}", material.hatch_angle);
-                self.aec.aec_style_manager_material_hatch_angle_relative =
+                self.aec.styles.material_hatch_angle_relative =
                     material.hatch_angle_relative;
-                self.aec.aec_style_manager_material_color_picker_open = false;
-                self.aec.aec_style_manager_material_hatch_color_picker_open = false;
-                self.aec.aec_style_manager_material_hatch_picker_open = false;
-                self.aec.aec_style_manager_material_form_open = true;
+                self.aec.styles.material_color_picker_open = false;
+                self.aec.styles.material_hatch_color_picker_open = false;
+                self.aec.styles.material_hatch_picker_open = false;
+                self.aec.styles.material_form_open = true;
                 Task::none()
             }
             AecMessage::AecStyleManagerMaterialSave => {
@@ -3400,7 +3040,7 @@ impl OpenCADStudio {
                 Task::none()
             }
             AecMessage::AecStyleManagerMaterialDelete => {
-                if let Some(id) = self.aec.aec_style_manager_selected_material.clone() {
+                if let Some(id) = self.aec.styles.selected_material.clone() {
                     let lib_snapshot = if let Some(lib) = self.aec.aec_style_library.as_mut() {
                         lib.remove_material(&id);
                         Some(lib.clone())
@@ -3419,9 +3059,9 @@ impl OpenCADStudio {
                         }
                     }
                 }
-                self.aec.aec_style_manager_selected_material = None;
-                self.aec.aec_style_manager_material_editing_id = None;
-                self.aec.aec_style_manager_material_form_open = false;
+                self.aec.styles.selected_material = None;
+                self.aec.styles.material_editing_id = None;
+                self.aec.styles.material_form_open = false;
                 Task::none()
             }
             AecMessage::AecStyleManagerCopyMaterialToProject => self.aec_handle_copy_material(true),
@@ -3429,34 +3069,14 @@ impl OpenCADStudio {
             AecMessage::AecStyleManagerCopyWallStyleToProject => self.aec_handle_copy_wall_style(true),
             AecMessage::AecStyleManagerCopyWallStyleToGlobal => self.aec_handle_copy_wall_style(false),
             AecMessage::AecStyleManagerCopyConflictConfirm(confirmed) => {
-                self.aec.aec_style_manager_copy_conflict_open = false;
-                let return_modal = match &self.aec.aec_style_manager_pending_copy {
-                    Some(AecPendingCopy::Material { .. }) => {
-                        crate::app::ModalKind::Aec(AecModalKind::MaterialManager)
-                    }
-                    Some(AecPendingCopy::WallStyle { .. }) => {
-                        crate::app::ModalKind::Aec(AecModalKind::WallStyleManager)
-                    }
-                    Some(AecPendingCopy::OpeningStyle { .. }) => {
-                        crate::app::ModalKind::Aec(AecModalKind::OpeningStyleManager)
-                    }
-                    Some(AecPendingCopy::SlabStyle { .. }) => {
-                        crate::app::ModalKind::Aec(AecModalKind::SlabStyleManager)
-                    }
-                    Some(AecPendingCopy::SlabStructuralStyle { .. }) => {
-                        crate::app::ModalKind::Aec(AecModalKind::SlabStructuralStyleManager)
-                    }
-                    Some(AecPendingCopy::FloorFinishStyle { .. }) => {
-                        crate::app::ModalKind::Aec(AecModalKind::FloorFinishStyleManager)
-                    }
-                    None => crate::app::ModalKind::Aec(AecModalKind::MaterialManager),
-                };
+                self.aec.styles.copy_conflict_open = false;
+                let return_modal = crate::app::ModalKind::Aec(AecModalKind::Styles);
                 if confirmed {
-                    if let Some(pending) = self.aec.aec_style_manager_pending_copy.take() {
+                    if let Some(pending) = self.aec.styles.pending_copy.take() {
                         self.aec_execute_copy(pending);
                     }
                 } else {
-                    self.aec.aec_style_manager_pending_copy = None;
+                    self.aec.styles.pending_copy = None;
                 }
                 self.active_modal = Some(return_modal);
                 Task::none()

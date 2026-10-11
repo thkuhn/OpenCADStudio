@@ -163,7 +163,7 @@ impl OpenCADStudio {
         if let Some(Aec(kind)) = self.active_modal {
             if let Some(parent) = kind.parent_on_close() {
                 if let Some((parent_offset, parent_resize)) =
-                    self.aec.aec_wall_style_manager_parent_geometry.take()
+                    self.aec.styles.wall_parent_geometry.take()
                 {
                     self.active_modal = Some(Aec(parent));
                     self.reset_modal_geometry();

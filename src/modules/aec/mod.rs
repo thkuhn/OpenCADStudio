@@ -49,7 +49,7 @@ impl CadModule for AecModule {
         use slabs::{slab_opening_tool, slab_tool};
         use styles::{
             floor_finish_style_manager, material_manager, opening_style_manager, plan_manager,
-            slab_structural_style_manager, slab_style_manager, wall_style_manager,
+            slab_structural_style_manager, slab_style_manager, styles_manager, wall_style_manager,
         };
         use walls::{door, extend, join, opening, refresh, wall, window};
 
@@ -106,13 +106,25 @@ impl CadModule for AecModule {
                 RibbonGroup {
                     title: "Styles",
                     tools: vec![
-                        RibbonItem::LargeTool(material_manager::tool()),
-                        RibbonItem::LargeTool(wall_style_manager::tool()),
-                        RibbonItem::LargeTool(opening_style_manager::tool()),
-                        RibbonItem::LargeTool(slab_structural_style_manager::tool()),
-                        RibbonItem::LargeTool(floor_finish_style_manager::tool()),
-                        RibbonItem::LargeTool(slab_style_manager::tool()),
-                        RibbonItem::LargeTool(plan_manager::tool()),
+                        RibbonItem::LargeDropdown {
+                            id: "AEC_STYLES_DROPDOWN",
+                            label: styles_manager::tool().label,
+                            icon: styles_manager::tool().icon,
+                            items: [
+                                styles_manager::tool(),
+                                material_manager::tool(),
+                                wall_style_manager::tool(),
+                                opening_style_manager::tool(),
+                                slab_style_manager::tool(),
+                                slab_structural_style_manager::tool(),
+                                floor_finish_style_manager::tool(),
+                                plan_manager::tool(),
+                            ]
+                            .into_iter()
+                            .map(|t| (t.id, t.label, t.icon))
+                            .collect(),
+                            default: "AEC_STYLES",
+                        },
                     ],
                 },
                 RibbonGroup {

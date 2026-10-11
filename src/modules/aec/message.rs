@@ -8,6 +8,11 @@ pub enum AecMessage {
     /// Load (or seed) the AEC style library into app state and open the
     /// manager modal shell.
     AecMaterialManagerOpen,
+    /// Open `AEC_STYLES` at a tree node (aliases of the old commands).
+    AecStylesOpen(crate::modules::aec::ui::style_manager::StylesNode),
+    /// Tree selection inside `AEC_STYLES`.
+    AecStylesSelectNode(crate::modules::aec::ui::style_manager::StylesNode),
+    /// Open the still-separate editor of a not yet embedded style kind.
     AecWallStyleManagerOpen,
     AecOpeningStyleManagerOpen,
     AecSlabStyleManagerOpen,
@@ -104,6 +109,7 @@ pub enum AecMessage {
     AecStyleManagerWallStyleSave,
     AecStyleManagerWallStyleSaveAndApply,
     AecStyleManagerWallStyleDelete,
+    AecStyleManagerWallStyleDuplicate,
     /// Copy the currently selected wall style from global library to project library.
     AecStyleManagerCopyWallStyleToProject,
     /// Copy the currently selected wall style from project library to global library.
@@ -160,6 +166,7 @@ pub enum AecMessage {
     AecOpeningStyleManagerSketchArc,
     AecOpeningStyleManagerSave,
     AecOpeningStyleManagerSaveAndApply,
+    AecOpeningStyleManagerDuplicate,
     AecOpeningStyleManagerDelete,
     AecStyleManagerCopyOpeningStyleToProject,
     AecStyleManagerCopyOpeningStyleToGlobal,
@@ -415,8 +422,10 @@ pub enum AecMessage {
     // ── AEC DisplayConfig Manager (`AEC_PLANMANAGER`, Step 5) ─────────────
     /// Open the DisplayConfig Manager modal.
     AecPlanManagerOpen,
-    /// Close the DisplayConfig Manager modal.
-    AecPlanManagerClose,
+    /// Detail level: how much of the layer build-up the plan kind shows.
+    AecPlanManagerDetailLayersChanged(crate::modules::aec::engine::plan_view::LayerDetail),
+    /// Detail level: toggle one boolean switch of the plan kind.
+    AecPlanManagerDetailToggle(crate::modules::aec::engine::plan_view::DetailSwitch, bool),
     /// Filter text changed in the DisplayConfig master list.
     AecPlanManagerFilter(String),
     /// A config row was selected in the DisplayConfig Manager.

@@ -181,11 +181,11 @@ impl SlabCommand {
         points: &[(f64, f64)],
     ) -> Result<Handle, String> {
         if points.len() < 3 {
-            return Err("A slab polygon requires at least 3 points.".to_string());
+            return Err(crate::t!("A slab polygon requires at least 3 points.").into_owned());
         }
         let poly_area = signed_area(points).abs();
         if poly_area < 1e-4 {
-            return Err("Degenerate slab polygon (area is zero or self-intersecting).".to_string());
+            return Err(crate::t!("Degenerate slab polygon (area is zero or self-intersecting).").into_owned());
         }
 
         // Build carrier LwPolyline
@@ -229,10 +229,10 @@ impl SlabCommand {
     pub fn auto_detect_from_wall_loop(&mut self, scene: &mut Scene) -> Result<Handle, String> {
         let wall_segments = collect_wall_segments(&scene.document);
         if wall_segments.len() < 3 {
-            return Err("At least 3 connected wall segments are required for auto-detection.".to_string());
+            return Err(crate::t!("At least 3 connected wall segments are required for auto-detection.").into_owned());
         }
         let Some(loop_pts) = find_closed_loop(&wall_segments, 1e-3) else {
-            return Err("No closed wall loop detected.".to_string());
+            return Err(crate::t!("No closed wall loop detected.").into_owned());
         };
         self.commit_polygon(scene, &loop_pts)
     }
@@ -244,13 +244,13 @@ impl SlabCommand {
         handle: Handle,
     ) -> Result<Handle, String> {
         let Some(entity) = scene.document.get_entity_mut(handle) else {
-            return Err(format!("Entity {handle} not found."));
+            return Err(crate::tf!("Entity {handle} not found.").into_owned());
         };
         let EntityType::LwPolyline(pl) = entity else {
-            return Err("Selected entity is not a 2D polyline (LwPolyline).".to_string());
+            return Err(crate::t!("Selected entity is not a 2D polyline (LwPolyline).").into_owned());
         };
         if pl.vertices.len() < 3 {
-            return Err("Polyline must have at least 3 vertices.".to_string());
+            return Err(crate::t!("Polyline must have at least 3 vertices.").into_owned());
         }
         pl.is_closed = true;
         pl.common.layer = AEC_SLAB_CARRIER_LAYER.to_string();
@@ -743,11 +743,11 @@ pub fn aec_slab_convert_do(
 ) {
     let parts: Vec<_> = args.split('|').collect();
     if parts.len() != 4 {
-        command_line.push_error("AEC_SLAB: malformed polyline conversion arguments.");
+        command_line.push_error(crate::t!("AEC_SLAB: malformed polyline conversion arguments.").as_ref());
         return;
     }
     let Ok(raw_handle) = parts[0].parse::<u64>() else {
-        command_line.push_error("AEC_SLAB: invalid polyline handle.");
+        command_line.push_error(crate::t!("AEC_SLAB: invalid polyline handle.").as_ref());
         return;
     };
     let handle = Handle::new(raw_handle);
@@ -755,7 +755,7 @@ pub fn aec_slab_convert_do(
         matches!(entity, EntityType::LwPolyline(poly) if poly.is_closed && poly.vertices.len() >= 3)
     });
     if !valid {
-        command_line.push_error("AEC_SLAB: select a closed lightweight polyline.");
+        command_line.push_error(crate::t!("AEC_SLAB: select a closed lightweight polyline.").as_ref());
         return;
     }
     if let Some(EntityType::LwPolyline(poly)) = scene.document.get_entity_mut(handle) {
@@ -765,7 +765,7 @@ pub fn aec_slab_convert_do(
     write_slab_record(&mut scene.document, handle, &slab);
     let _ = regenerate_slab_representation(scene, handle, library, None);
     scene.bump_geometry();
-    command_line.push_info("AEC_SLAB: closed polyline converted to slab.");
+    command_line.push_info(crate::t!("AEC_SLAB: closed polyline converted to slab.").as_ref());
 }
 
 /// Detects the first valid closed wall loop and creates its slab carrier.
@@ -777,16 +777,16 @@ pub fn aec_slab_autodetect_do(
 ) {
     let parts: Vec<_> = args.split('|').collect();
     if parts.len() != 3 {
-        command_line.push_error("AEC_SLAB: malformed auto-detect arguments.");
+        command_line.push_error(crate::t!("AEC_SLAB: malformed auto-detect arguments.").as_ref());
         return;
     }
     let segments = collect_wall_segments(&scene.document);
     let Some(boundary) = find_closed_loop(&segments, 1e-3) else {
-        command_line.push_error("AEC_SLAB: no closed wall loop found.");
+        command_line.push_error(crate::t!("AEC_SLAB: no closed wall loop found.").as_ref());
         return;
     };
     if boundary.len() < 3 || signed_area(&boundary).abs() < 1e-4 {
-        command_line.push_error("AEC_SLAB: detected wall loop is degenerate.");
+        command_line.push_error(crate::t!("AEC_SLAB: detected wall loop is degenerate.").as_ref());
         return;
     }
     let mut polyline = LwPolyline::new();
@@ -801,7 +801,7 @@ pub fn aec_slab_autodetect_do(
     write_slab_record(&mut scene.document, handle, &slab);
     let _ = regenerate_slab_representation(scene, handle, library, None);
     scene.bump_geometry();
-    command_line.push_info("AEC_SLAB: slab created from closed wall loop.");
+    command_line.push_info(crate::t!("AEC_SLAB: slab created from closed wall loop.").as_ref());
 }
 
 fn slab_from_dispatch_args(parts: &[&str], library: Option<&StyleLibrary>) -> Slab {

@@ -7,12 +7,15 @@ use crate::modules::aec::engine::display_component::{
 use crate::modules::aec::engine::join::LayerRef;
 use crate::modules::aec::engine::material::Material;
 use crate::modules::aec::engine::opening_style::OpeningStyle;
-use crate::modules::aec::engine::plan_view::{DisplayConfig, ScaleDisplayConfigMapping};
+use crate::modules::aec::engine::plan_view::{
+    DetailProfile, DisplayConfig, LayerDetail, ScaleDisplayConfigMapping,
+};
 use crate::modules::aec::engine::slab::Slab;
 use crate::modules::aec::engine::slab_style::{
     FloorFinishStyle, SlabStructuralStyle, SlabStyle, SlabStyleLayer,
 };
 use crate::modules::aec::engine::style::Style;
+use crate::modules::aec::engine::style_common::{StyleKindOps, StyleOrigin};
 use crate::modules::aec::engine::wall::{Wall, WallLayer};
 use crate::modules::aec::engine::wall_style::{LayerValue, Layer, LayerFunction, WallStyle};
 use serde::{Deserialize, Serialize};
@@ -38,6 +41,32 @@ pub struct StyleLibrary {
     /// Floor finish styles (Fußbodenaufbauten). Absent in legacy files.
     #[serde(default)]
     pub floor_finish_styles: Vec<FloorFinishStyle>,
+}
+
+impl StyleLibrary {
+    /// Stamps `origin` on every style / material of this library (the origin
+    /// is derived from where a library lives, never stored).
+    pub fn stamp_origin(&mut self, origin: StyleOrigin) {
+        use crate::modules::aec::engine::style_common::StyleKindOps;
+        for m in &mut self.materials {
+            m.style.origin = origin;
+        }
+        for s in &mut self.wall_styles {
+            s.common_mut().origin = origin;
+        }
+        for s in &mut self.opening_styles {
+            s.common_mut().origin = origin;
+        }
+        for s in &mut self.slab_styles {
+            s.common_mut().origin = origin;
+        }
+        for s in &mut self.slab_structural_styles {
+            s.common_mut().origin = origin;
+        }
+        for s in &mut self.floor_finish_styles {
+            s.common_mut().origin = origin;
+        }
+    }
 }
 
 /// A node in a hierarchical wall-style tree.
@@ -172,6 +201,9 @@ pub fn combined_material_entries_with_session(
         }
     }
 
+    for e in &mut entries {
+        e.material.style.origin = e.source.into();
+    }
     entries
 }
 
@@ -223,6 +255,9 @@ pub fn combined_wall_style_entries_with_session(
         }
     }
 
+    for e in &mut entries {
+        e.wall_style.common_mut().origin = e.source.into();
+    }
     entries
 }
 
@@ -273,6 +308,9 @@ pub fn combined_opening_style_entries_with_session(
         }
     }
 
+    for e in &mut entries {
+        e.opening_style.common_mut().origin = e.source.into();
+    }
     entries
 }
 
@@ -323,6 +361,9 @@ pub fn combined_slab_style_entries_with_session(
         }
     }
 
+    for e in &mut entries {
+        e.slab_style.common_mut().origin = e.source.into();
+    }
     entries
 }
 
@@ -373,6 +414,9 @@ pub fn combined_slab_structural_style_entries_with_session(
         }
     }
 
+    for e in &mut entries {
+        e.structural_style.common_mut().origin = e.source.into();
+    }
     entries
 }
 
@@ -423,6 +467,9 @@ pub fn combined_floor_finish_style_entries_with_session(
         }
     }
 
+    for e in &mut entries {
+        e.finish_style.common_mut().origin = e.source.into();
+    }
     entries
 }
 
@@ -568,20 +615,62 @@ pub fn material_copy_conflict(target: &StyleLibrary, material: &Material) -> Cop
     }
 }
 
-/// Resolves the [`ComponentRuleSet`] `style` wants applied for the
-/// `DisplayConfig` named `display_config_name` (Step 2's style-centered
-/// override model, Key Decision 1/3): looks up
-/// `style.display_profiles.get(display_config_name)`. Returns `None` when
-/// `style` has no profile for that plan type, in which case callers should
-/// fall back to the default rule set (every slot visible, standard style,
-/// `All` layers for `Contour2D`/`Solid3D` — see `ComponentRuleSet::default()`
-/// and `ComponentRuleSet::layer_filter_for`), exactly as an absent
-/// `DisplayConfig::component_rules` entry used to behave before this step.
-pub fn resolve_effective_rule_set<'a>(
-    style: &'a WallStyle,
-    display_config_name: &str,
-) -> Option<&'a ComponentRuleSet> {
-    style.display_profiles.get(display_config_name)
+/// Marker used by the style editors for "the style's own default profile"
+/// (as opposed to the override of a named plan kind).
+pub const STYLE_DEFAULT_PROFILE_KEY: &str = "*";
+
+/// Merges `over` on top of `base` (entries of `over` win).
+pub fn merge_rule_sets(base: &mut ComponentRuleSet, over: &ComponentRuleSet) {
+    for (k, v) in &over.visibility {
+        base.visibility.insert(k.clone(), *v);
+    }
+    for (k, v) in &over.style_override {
+        base.style_override.insert(k.clone(), v.clone());
+    }
+    for (k, v) in &over.layer_filter {
+        base.layer_filter.insert(k.clone(), v.clone());
+    }
+    for lso in &over.layer_style_override {
+        match base
+            .layer_style_override
+            .iter_mut()
+            .find(|e| e.layer.layer_id == lso.layer.layer_id)
+        {
+            Some(existing) => *existing = lso.clone(),
+            None => base.layer_style_override.push(lso.clone()),
+        }
+    }
+    for (k, v) in &over.opening_profiles {
+        base.opening_profiles.insert(k.clone(), v.clone());
+    }
+}
+
+/// Style display rules independent of any plan name: the style's own default
+/// profile, overridden by the active plan kind's `style_overrides[style_id]`
+/// (plan override > style default).
+pub fn resolve_effective_rule_set(
+    default_profile: Option<&ComponentRuleSet>,
+    config: &DisplayConfig,
+    style_id: Option<&str>,
+) -> ComponentRuleSet {
+    let mut rules = default_profile.cloned().unwrap_or_default();
+    if let Some(over) = style_id
+        .and_then(|id| config.style_overrides.get(id))
+        .and_then(|o| o.rules.as_ref())
+    {
+        merge_rule_sets(&mut rules, over);
+    }
+    rules
+}
+
+/// Copies the plan's opening-style overrides into the rule set so opening
+/// regen can resolve them without access to the `DisplayConfig`.
+fn attach_opening_profiles(rules: &mut ComponentRuleSet, config: &DisplayConfig) {
+    for (id, overlay) in &config.style_overrides {
+        if let Some(profile) = &overlay.opening {
+            rules.opening_profiles.insert(id.clone(), profile.clone());
+        }
+    }
 }
 
 /// Session override wins over the plan-type default.
@@ -589,26 +678,28 @@ pub fn effective_representation(
     config: &DisplayConfig,
     session: Option<RepresentationMode>,
 ) -> RepresentationMode {
-    session.unwrap_or(config.default_representation)
+    session.unwrap_or(config.detail.representation)
 }
 
 /// Plan-type global visibility + representation + sparse style overlay,
-/// starting from a wall style's leftover `display_profiles` (legacy) if any.
+/// starting from the wall style's default profile. Precedence (high to low):
+/// session representation > plan `style_overrides` > style default profile.
 pub fn build_effective_rule_set(
     config: &DisplayConfig,
     style: Option<&WallStyle>,
     session: Option<RepresentationMode>,
 ) -> ComponentRuleSet {
-    let mut rules = style
-        .and_then(|ws| resolve_effective_rule_set(ws, &config.name))
-        .cloned()
-        .unwrap_or_default();
+    let mut rules = resolve_effective_rule_set(
+        style.and_then(|ws| ws.default_profile.as_ref()),
+        config,
+        style.map(|ws| ws.style.id.as_str()),
+    );
     let mode = effective_representation(config, session);
     for kind in WallComponentKind::all() {
         let key = kind.to_slot().key().to_string();
         if session.is_some() {
-            // Status-bar 2D/3D/All replaces plan type (and leftover
-            // display_profiles) visibility for that representation.
+            // Status-bar 2D/3D/All replaces plan type, plan override and
+            // style default visibility for that representation.
             rules.visibility.insert(key, mode.allows(*kind));
         } else {
             let vis = component_is_visible(config, *kind, mode);
@@ -634,18 +725,20 @@ pub fn build_effective_rule_set(
             rules.visibility.insert(key, false);
         }
     }
+    apply_wall_detail(&mut rules, &config.detail, style);
     if let Some(style) = style {
-        if let Some(overlay) = config.style_overlays.get(&style.style.id) {
+        if let Some(overlay) = config.style_overrides.get(&style.style.id) {
             merge_style_overlay_into_rules(&mut rules, overlay);
             apply_overlay_layer_visibility(&mut rules, overlay, style);
         }
     }
-    rules.plan_name = Some(config.name.clone());
+    attach_opening_profiles(&mut rules, config);
     rules
 }
 
 /// Plan-type + representation visibility for slab display slots, starting from
-/// a slab style's `display_profiles` entry when present.
+/// the slab style's default profile; precedence as for walls (session
+/// representation > plan `style_overrides` > style default).
 pub fn build_effective_slab_rule_set(
     config: &DisplayConfig,
     style: Option<&SlabStyle>,
@@ -653,23 +746,17 @@ pub fn build_effective_slab_rule_set(
 ) -> ComponentRuleSet {
     use crate::modules::aec::engine::display_component::{LayerSelection, SlabComponentSlot};
     use crate::modules::aec::engine::join::LayerRef;
-    use crate::modules::aec::engine::plan_view::PlanningStage;
     use crate::modules::aec::engine::wall_style::LayerFunction;
 
-    let mut rules = style
-        .and_then(|ss| ss.display_profiles.get(&config.name))
-        .cloned()
-        .unwrap_or_default();
+    let mut rules = resolve_effective_rule_set(
+        style.and_then(|ss| ss.default_profile.as_ref()),
+        config,
+        style.map(|ss| ss.style.id.as_str()),
+    );
     let mode = effective_representation(config, session);
 
-    let is_rcp = config.name.to_lowercase().contains("deckenspiegel")
-        || config.name.to_lowercase().contains("rcp")
-        || config.name.to_lowercase().contains("ceiling");
-
-    let is_preliminary_or_design = matches!(
-        config.planning_stage,
-        PlanningStage::Design | PlanningStage::Permit
-    );
+    let detail = config.detail;
+    let is_rcp = detail.ceiling_view;
 
     for slot in SlabComponentSlot::all() {
         let key = slot.key().to_string();
@@ -682,9 +769,11 @@ pub fn build_effective_slab_rule_set(
         let default_for_slot = match slot {
             SlabComponentSlot::Contour2D => !is_rcp,
             SlabComponentSlot::CeilingOutline2D => is_rcp,
-            SlabComponentSlot::LayerHatch2D => !is_rcp && !is_preliminary_or_design,
+            SlabComponentSlot::LayerHatch2D => {
+                !is_rcp && detail.hatches && detail.layers != LayerDetail::Off
+            }
             SlabComponentSlot::OpeningContour2D => true,
-            SlabComponentSlot::OpeningSymbol2D => !is_rcp,
+            SlabComponentSlot::OpeningSymbol2D => !is_rcp && detail.opening_symbols,
             SlabComponentSlot::Solid3D => true,
             SlabComponentSlot::SurfaceStyle3D => true,
         };
@@ -694,14 +783,15 @@ pub fn build_effective_slab_rule_set(
         } else if !allowed_by_mode {
             rules.visibility.insert(key, false);
         } else {
-            rules.visibility.entry(key).or_insert(default_for_slot);
+            rules
+                .visibility
+                .entry(key)
+                .and_modify(|v| *v = *v && default_for_slot)
+                .or_insert(default_for_slot);
         }
     }
 
-    // Layer filtering for "Nur Rohbau" / "Nur Rohdecke" / "Structural"
-    let is_structural_only = config.name.to_lowercase().contains("rohbau")
-        || config.name.to_lowercase().contains("rohdecke")
-        || config.name.to_lowercase().contains("structural");
+    let is_structural_only = detail.layers == LayerDetail::StructuralOnly;
 
     if is_structural_only {
         if let Some(style) = style {
@@ -730,8 +820,60 @@ pub fn build_effective_slab_rule_set(
         }
     }
 
-    rules.plan_name = Some(config.name.clone());
+    attach_opening_profiles(&mut rules, config);
     rules
+}
+
+/// Applies the plan kind's [`DetailProfile`] switches to a wall rule set.
+/// Switches only ever *hide* (a `true` switch leaves visibility to the style
+/// default and the plan's `style_overrides`, which are merged afterwards).
+fn apply_wall_detail(rules: &mut ComponentRuleSet, detail: &DetailProfile, style: Option<&WallStyle>) {
+    use crate::modules::aec::engine::display_component::OpeningComponentSlot;
+    let mut hide = |key: &str| {
+        rules.visibility.insert(key.to_string(), false);
+    };
+    if !detail.hatches {
+        hide(WallComponentSlot::ContourHatch2D.key());
+        hide(WallComponentSlot::LayerHatch2D.key());
+    }
+    if detail.layers == LayerDetail::Off {
+        hide(WallComponentSlot::Layers2D.key());
+        hide(WallComponentSlot::LayerHatch2D.key());
+    }
+    if !detail.annotation {
+        hide(OpeningComponentSlot::OpeningLabel2D.key());
+    }
+    if !detail.opening_symbols {
+        hide(OpeningComponentSlot::Swing2D.key());
+        hide(OpeningComponentSlot::BreakthroughSymbol2D.key());
+    }
+    if detail.layers == LayerDetail::StructuralOnly {
+        if let Some(style) = style {
+            let refs: Vec<LayerRef> = style
+                .layers
+                .iter()
+                .enumerate()
+                .filter(|(_, l)| l.function == LayerFunction::Structural)
+                .map(|(i, l)| LayerRef {
+                    material_id: l.material_id.clone(),
+                    role_tag: l.role_tag.clone(),
+                    index: i,
+                    layer_id: Some(l.layer_id),
+                })
+                .collect();
+            if !refs.is_empty() {
+                for slot in [
+                    WallComponentSlot::Layers2D,
+                    WallComponentSlot::LayerHatch2D,
+                    WallComponentSlot::Solid3D,
+                ] {
+                    rules
+                        .layer_filter
+                        .insert(slot.key().to_string(), LayerSelection::Explicit(refs.clone()));
+                }
+            }
+        }
+    }
 }
 
 fn apply_overlay_layer_visibility(
@@ -825,7 +967,7 @@ pub fn resolve_layer_property_override(
     material: Option<&Material>,
 ) -> ComponentStyleOverride {
     let overlay = config
-        .style_overlays
+        .style_overrides
         .get(style_id)
         .and_then(|o| o.layer_props.get(&layer_id));
     let mut out = ComponentStyleOverride::default();
@@ -891,12 +1033,6 @@ pub fn phase_style_for_slot(
     } else {
         None
     }
-}
-
-/// Copy-on-Write into the standard library must not take plan-type overlays.
-pub fn wall_style_without_display_profiles(mut style: WallStyle) -> WallStyle {
-    style.display_profiles.clear();
-    style
 }
 
 /// Fold a plan-type style overlay into a `ComponentRuleSet` used by regen.
@@ -966,73 +1102,6 @@ fn merge_override_fields(
         hatch_angle: overlay.hatch_angle.or(base.hatch_angle),
         hatch_angle_relative: overlay.hatch_angle_relative.or(base.hatch_angle_relative),
         cad_layer: overlay.cad_layer.clone().or_else(|| base.cad_layer.clone()),
-    }
-}
-
-fn overlay_from_legacy_rules(rules: &ComponentRuleSet) -> StyleDisplayOverlay {
-    let mut overlay = StyleDisplayOverlay::default();
-    for lso in &rules.layer_style_override {
-        if let Some(id) = lso.layer.layer_id {
-            overlay.layer_props.insert(id, lso.style.clone());
-        }
-    }
-    if let Some(LayerSelection::Explicit(refs)) = rules.layer_filter.get(WallComponentSlot::Contour2D.key())
-    {
-        let ids: Vec<Uuid> = refs.iter().filter_map(|r| r.layer_id).collect();
-        if !ids.is_empty() {
-            overlay.contour_layers = Some(ids);
-        }
-    }
-    overlay
-}
-
-fn visibility_from_legacy_rules(rules: &ComponentRuleSet) -> std::collections::HashMap<WallComponentKind, bool> {
-    let mut map = std::collections::HashMap::new();
-    for slot in [
-        WallComponentSlot::AxisLine,
-        WallComponentSlot::Layers2D,
-        WallComponentSlot::LayerHatch2D,
-        WallComponentSlot::Contour2D,
-        WallComponentSlot::ContourHatch2D,
-        WallComponentSlot::Solid3D,
-        WallComponentSlot::SurfaceStyle3D,
-    ] {
-        if let Some(kind) = WallComponentKind::from_slot(slot) {
-            if let Some(&vis) = rules.visibility.get(slot.key()) {
-                map.insert(kind, vis);
-            }
-        }
-    }
-    map
-}
-
-/// Move name-keyed `WallStyle.display_profiles` onto plan-type UUID overlays.
-pub fn migrate_display_profiles_into_planarts(
-    configs: &mut [DisplayConfig],
-    styles: &mut [WallStyle],
-) {
-    for style in styles.iter_mut() {
-        if style.display_profiles.is_empty() {
-            continue;
-        }
-        let profiles = std::mem::take(&mut style.display_profiles);
-        for (name, rules) in profiles {
-            let Some(cfg) = configs.iter_mut().find(|c| c.name == name) else {
-                continue;
-            };
-            if cfg.component_visibility.is_empty() {
-                cfg.component_visibility = visibility_from_legacy_rules(&rules);
-            }
-            let overlay = overlay_from_legacy_rules(&rules);
-            if overlay.layer_props.is_empty()
-                && overlay.contour_layers.is_none()
-                && overlay.layer_visibility.is_empty()
-            {
-                continue;
-            }
-            cfg.style_overlays
-                .insert(style.style.id.clone(), overlay);
-        }
     }
 }
 
@@ -1344,7 +1413,7 @@ impl StyleLibrary {
             std::collections::HashMap::new();
         let mut roots: Vec<&WallStyle> = Vec::new();
         for ws in &self.wall_styles {
-            match &ws.style.parent_style_id {
+            match &ws.style.parent {
                 Some(pid) if self.wall_styles.iter().any(|other| &other.style.id == pid) => {
                     children.entry(pid.as_str()).or_default().push(ws);
                 }
@@ -1379,7 +1448,7 @@ impl StyleLibrary {
             std::collections::HashMap::new();
         let mut roots: Vec<&OpeningStyle> = Vec::new();
         for os in &self.opening_styles {
-            match &os.style.parent_style_id {
+            match &os.style.parent {
                 Some(pid) if self.opening_styles.iter().any(|other| &other.style.id == pid) => {
                     children.entry(pid.as_str()).or_default().push(os);
                 }
@@ -1414,7 +1483,7 @@ impl StyleLibrary {
             std::collections::HashMap::new();
         let mut roots: Vec<&SlabStyle> = Vec::new();
         for ss in &self.slab_styles {
-            match &ss.style.parent_style_id {
+            match &ss.style.parent {
                 Some(pid) if self.slab_styles.iter().any(|other| &other.style.id == pid) => {
                     children.entry(pid.as_str()).or_default().push(ss);
                 }
@@ -1600,11 +1669,12 @@ where
             style: Style {
                 id,
                 name,
-                object_kind: "Wall".to_string(),
-                parent_style_id: None,
+                category: "Wall".to_string(),
+                origin: Default::default(),
+                parent: None,
             },
             layers: wall_layers_to_style_layers(&layers),
-            display_profiles: std::collections::HashMap::new(),
+            default_profile: None,
         });
     }
     lib
@@ -1714,13 +1784,14 @@ where
             style: Style {
                 id,
                 name,
-                object_kind: "Slab".to_string(),
-                parent_style_id: None,
+                category: "Slab".to_string(),
+                origin: Default::default(),
+                parent: None,
             },
             structural_style_id: None,
             default_finish_style_id: None,
             layers: slab_layers_to_style_layers(&layers),
-            display_profiles: std::collections::HashMap::new(),
+            default_profile: None,
         });
     }
     lib
@@ -1779,6 +1850,7 @@ pub fn session_library_excluding_existing(
         }
         session.upsert_slab_style(slab_style.clone());
     }
+    session.stamp_origin(StyleOrigin::Session);
     session
 }
 
@@ -1787,7 +1859,7 @@ pub fn session_library_excluding_existing(
 /// user to define materials/styles first via `AEC_MATERIAL`/`AEC_STYLE`.
 pub fn seed_default_library() -> StyleLibrary {
     let masonry = Material {
-        category: Some("Mauerwerk".to_string()),
+        group: Some("Mauerwerk".to_string()),
         hatch_scale: 0.0025,
         ..Material::new(
             "mat_masonry".to_string(),
@@ -1798,7 +1870,7 @@ pub fn seed_default_library() -> StyleLibrary {
         )
     };
     let concrete = Material {
-        category: Some("Beton".to_string()),
+        group: Some("Beton".to_string()),
         ..Material::new(
             "mat_concrete".to_string(),
             "Stahlbeton".to_string(),
@@ -1808,7 +1880,7 @@ pub fn seed_default_library() -> StyleLibrary {
         )
     };
     let insulation = Material {
-        category: Some("Daemmung".to_string()),
+        group: Some("Daemmung".to_string()),
         hatch_scale: 0.75,
         ..Material::new(
             "mat_insulation".to_string(),
@@ -1819,7 +1891,7 @@ pub fn seed_default_library() -> StyleLibrary {
         )
     };
     let plaster = Material {
-        category: Some("Putz".to_string()),
+        group: Some("Putz".to_string()),
         hatch_scale: 0.0012,
         hatch_color: Some(acadrust::types::Color::Rgb { r: 180, g: 180, b: 176 }),
         ..Material::new(
@@ -1831,7 +1903,7 @@ pub fn seed_default_library() -> StyleLibrary {
         )
     };
     let wood = Material {
-        category: Some("Holz".to_string()),
+        group: Some("Holz".to_string()),
         hatch_color: Some(acadrust::types::Color::Rgb { r: 166, g: 124, b: 82 }),
         hatch_scale: 0.5,
         ..Material::new(
@@ -1843,7 +1915,7 @@ pub fn seed_default_library() -> StyleLibrary {
         )
     };
     let drywall = Material {
-        category: Some("Trockenbau".to_string()),
+        group: Some("Trockenbau".to_string()),
         hatch_color: Some(acadrust::types::Color::Rgb { r: 232, g: 232, b: 224 }),
         hatch_scale: 1.0,
         ..Material::new(
@@ -1855,7 +1927,7 @@ pub fn seed_default_library() -> StyleLibrary {
         )
     };
     let steel = Material {
-        category: Some("Metall".to_string()),
+        group: Some("Metall".to_string()),
         hatch_color: Some(acadrust::types::Color::Rgb { r: 74, g: 85, b: 104 }),
         hatch_scale: 1.5,
         ..Material::new(
@@ -1867,7 +1939,7 @@ pub fn seed_default_library() -> StyleLibrary {
         )
     };
     let glass = Material {
-        category: Some("Verglasung".to_string()),
+        group: Some("Verglasung".to_string()),
         hatch_color: Some(acadrust::types::Color::Rgb { r: 168, g: 212, b: 232 }),
         hatch_scale: 2.0,
         ..Material::new(
@@ -1879,7 +1951,7 @@ pub fn seed_default_library() -> StyleLibrary {
         )
     };
     let clinker = Material {
-        category: Some("Mauerwerk".to_string()),
+        group: Some("Mauerwerk".to_string()),
         hatch_color: Some(acadrust::types::Color::Rgb { r: 178, g: 34, b: 34 }),
         hatch_scale: 0.002,
         ..Material::new(
@@ -1891,7 +1963,7 @@ pub fn seed_default_library() -> StyleLibrary {
         )
     };
     let air = Material {
-        category: Some("Daemmung".to_string()),
+        group: Some("Daemmung".to_string()),
         hatch_color: None,
         hatch_scale: 1.0,
         ..Material::new(
@@ -1903,7 +1975,7 @@ pub fn seed_default_library() -> StyleLibrary {
         )
     };
     let screed = Material {
-        category: Some("Bodenaufbau".to_string()),
+        group: Some("Bodenaufbau".to_string()),
         hatch_scale: 0.0015,
         hatch_color: Some(acadrust::types::Color::Rgb { r: 160, g: 160, b: 155 }),
         ..Material::new(
@@ -1915,7 +1987,7 @@ pub fn seed_default_library() -> StyleLibrary {
         )
     };
     let tile = Material {
-        category: Some("Bodenbelag".to_string()),
+        group: Some("Bodenbelag".to_string()),
         hatch_scale: 0.05,
         hatch_color: Some(acadrust::types::Color::Rgb { r: 210, g: 180, b: 140 }),
         ..Material::new(
@@ -1927,7 +1999,7 @@ pub fn seed_default_library() -> StyleLibrary {
         )
     };
     let bitumen = Material {
-        category: Some("Abdichtung".to_string()),
+        group: Some("Abdichtung".to_string()),
         hatch_scale: 0.5,
         hatch_color: Some(acadrust::types::Color::Rgb { r: 50, g: 50, b: 50 }),
         ..Material::new(
@@ -1943,8 +2015,9 @@ pub fn seed_default_library() -> StyleLibrary {
         style: Style {
             id: "style_masonry".to_string(),
             name: "Wand Mauerwerk 24cm".to_string(),
-            object_kind: "Wall".to_string(),
-            parent_style_id: None,
+            category: "Wall".to_string(),
+            origin: Default::default(),
+            parent: None,
         },
         layers: vec![Layer {
             material_id: masonry.id.clone(),
@@ -1958,15 +2031,16 @@ pub fn seed_default_library() -> StyleLibrary {
             role_tag: Some("Tragschale".to_string()),
             layer_id: Uuid::new_v4(),
         }],
-        display_profiles: std::collections::HashMap::new(),
+        default_profile: None,
     };
 
     let masonry_partition = WallStyle {
         style: Style {
             id: "style_masonry_115".to_string(),
             name: "Nichttragende Trennwand 11.5cm".to_string(),
-            object_kind: "Wall".to_string(),
-            parent_style_id: None,
+            category: "Wall".to_string(),
+            origin: Default::default(),
+            parent: None,
         },
         layers: vec![Layer {
             material_id: masonry.id.clone(),
@@ -1980,15 +2054,16 @@ pub fn seed_default_library() -> StyleLibrary {
             role_tag: Some("Trennwand".to_string()),
             layer_id: Uuid::new_v4(),
         }],
-        display_profiles: std::collections::HashMap::new(),
+        default_profile: None,
     };
 
     let concrete_wall = WallStyle {
         style: Style {
             id: "style_concrete_20".to_string(),
             name: "Wand Stahlbeton 20cm".to_string(),
-            object_kind: "Wall".to_string(),
-            parent_style_id: None,
+            category: "Wall".to_string(),
+            origin: Default::default(),
+            parent: None,
         },
         layers: vec![Layer {
             material_id: concrete.id.clone(),
@@ -2002,15 +2077,16 @@ pub fn seed_default_library() -> StyleLibrary {
             role_tag: Some("Tragschale".to_string()),
             layer_id: Uuid::new_v4(),
         }],
-        display_profiles: std::collections::HashMap::new(),
+        default_profile: None,
     };
 
     let concrete_wall_25 = WallStyle {
         style: Style {
             id: "style_concrete_25".to_string(),
             name: "Wand Stahlbeton 25cm".to_string(),
-            object_kind: "Wall".to_string(),
-            parent_style_id: None,
+            category: "Wall".to_string(),
+            origin: Default::default(),
+            parent: None,
         },
         layers: vec![Layer {
             material_id: concrete.id.clone(),
@@ -2024,15 +2100,16 @@ pub fn seed_default_library() -> StyleLibrary {
             role_tag: Some("Tragschale".to_string()),
             layer_id: Uuid::new_v4(),
         }],
-        display_profiles: std::collections::HashMap::new(),
+        default_profile: None,
     };
 
     let drywall_10 = WallStyle {
         style: Style {
             id: "style_drywall_10".to_string(),
             name: "Trockenbauwand 10cm".to_string(),
-            object_kind: "Wall".to_string(),
-            parent_style_id: None,
+            category: "Wall".to_string(),
+            origin: Default::default(),
+            parent: None,
         },
         layers: vec![
             Layer {
@@ -2072,15 +2149,16 @@ pub fn seed_default_library() -> StyleLibrary {
                 layer_id: Uuid::new_v4(),
             },
         ],
-        display_profiles: std::collections::HashMap::new(),
+        default_profile: None,
     };
 
     let insulated_wall = WallStyle {
         style: Style {
             id: "style_insulated_ext".to_string(),
             name: "Aussenwand gedaemmt".to_string(),
-            object_kind: "Wall".to_string(),
-            parent_style_id: None,
+            category: "Wall".to_string(),
+            origin: Default::default(),
+            parent: None,
         },
         layers: vec![
             Layer {
@@ -2132,15 +2210,16 @@ pub fn seed_default_library() -> StyleLibrary {
                 layer_id: Uuid::new_v4(),
             },
         ],
-        display_profiles: std::collections::HashMap::new(),
+        default_profile: None,
     };
 
     let cavity_brick_wall = WallStyle {
         style: Style {
             id: "style_cavity_brick".to_string(),
             name: "Zweischalige Verblendwand 42cm".to_string(),
-            object_kind: "Wall".to_string(),
-            parent_style_id: None,
+            category: "Wall".to_string(),
+            origin: Default::default(),
+            parent: None,
         },
         layers: vec![
             Layer {
@@ -2204,15 +2283,16 @@ pub fn seed_default_library() -> StyleLibrary {
                 layer_id: Uuid::new_v4(),
             },
         ],
-        display_profiles: std::collections::HashMap::new(),
+        default_profile: None,
     };
 
     let timber_wall = WallStyle {
         style: Style {
             id: "style_timber_exterior".to_string(),
             name: "Holzstaenderwand 28cm".to_string(),
-            object_kind: "Wall".to_string(),
-            parent_style_id: None,
+            category: "Wall".to_string(),
+            origin: Default::default(),
+            parent: None,
         },
         layers: vec![
             Layer {
@@ -2264,7 +2344,7 @@ pub fn seed_default_library() -> StyleLibrary {
                 layer_id: Uuid::new_v4(),
             },
         ],
-        display_profiles: std::collections::HashMap::new(),
+        default_profile: None,
     };
 
     // Derived style demonstrating style-manager inheritance: shares the
@@ -2275,11 +2355,12 @@ pub fn seed_default_library() -> StyleLibrary {
         style: Style {
             id: "style_insulated_ext_garden".to_string(),
             name: "Aussenwand gedaemmt (Gartenseite)".to_string(),
-            object_kind: "Wall".to_string(),
-            parent_style_id: Some(insulated_wall.style.id.clone()),
+            category: "Wall".to_string(),
+            origin: Default::default(),
+            parent: Some(insulated_wall.style.id.clone()),
         },
         layers: vec![],
-        display_profiles: std::collections::HashMap::new(),
+        default_profile: None,
     };
 
     StyleLibrary {
@@ -2313,8 +2394,9 @@ pub fn seed_slab_structural_styles() -> Vec<SlabStructuralStyle> {
             style: Style {
                 id: "struct_slab_concrete_20".to_string(),
                 name: "Stahlbetondecke 20cm".to_string(),
-                object_kind: "SlabStructural".to_string(),
-                parent_style_id: None,
+                category: "SlabStructural".to_string(),
+                origin: Default::default(),
+                parent: None,
             },
             layers: vec![SlabStyleLayer {
                 material_id: "mat_concrete".to_string(),
@@ -2326,15 +2408,16 @@ pub fn seed_slab_structural_styles() -> Vec<SlabStructuralStyle> {
                 role_tag: Some("Stahlbetonplatte".to_string()),
                 layer_id: Uuid::new_v4(),
             }],
-            display_profiles: std::collections::HashMap::new(),
+            default_profile: None,
         },
         // 2. Reinforced Concrete Slab 25cm
         SlabStructuralStyle {
             style: Style {
                 id: "struct_slab_concrete_25".to_string(),
                 name: "Stahlbetondecke 25cm".to_string(),
-                object_kind: "SlabStructural".to_string(),
-                parent_style_id: None,
+                category: "SlabStructural".to_string(),
+                origin: Default::default(),
+                parent: None,
             },
             layers: vec![SlabStyleLayer {
                 material_id: "mat_concrete".to_string(),
@@ -2346,15 +2429,16 @@ pub fn seed_slab_structural_styles() -> Vec<SlabStructuralStyle> {
                 role_tag: Some("Stahlbetonplatte".to_string()),
                 layer_id: Uuid::new_v4(),
             }],
-            display_profiles: std::collections::HashMap::new(),
+            default_profile: None,
         },
         // 3. Reinforced Concrete Slab 30cm
         SlabStructuralStyle {
             style: Style {
                 id: "struct_slab_concrete_30".to_string(),
                 name: "Stahlbetondecke 30cm".to_string(),
-                object_kind: "SlabStructural".to_string(),
-                parent_style_id: None,
+                category: "SlabStructural".to_string(),
+                origin: Default::default(),
+                parent: None,
             },
             layers: vec![SlabStyleLayer {
                 material_id: "mat_concrete".to_string(),
@@ -2366,15 +2450,16 @@ pub fn seed_slab_structural_styles() -> Vec<SlabStructuralStyle> {
                 role_tag: Some("Stahlbetonplatte".to_string()),
                 layer_id: Uuid::new_v4(),
             }],
-            display_profiles: std::collections::HashMap::new(),
+            default_profile: None,
         },
         // 4. Timber Beam Deck 24cm
         SlabStructuralStyle {
             style: Style {
                 id: "struct_slab_timber_24".to_string(),
                 name: "Holzbalkendecke 24cm".to_string(),
-                object_kind: "SlabStructural".to_string(),
-                parent_style_id: None,
+                category: "SlabStructural".to_string(),
+                origin: Default::default(),
+                parent: None,
             },
             layers: vec![SlabStyleLayer {
                 material_id: "mat_wood".to_string(),
@@ -2386,7 +2471,7 @@ pub fn seed_slab_structural_styles() -> Vec<SlabStructuralStyle> {
                 role_tag: Some("Holzbalkenlage".to_string()),
                 layer_id: Uuid::new_v4(),
             }],
-            display_profiles: std::collections::HashMap::new(),
+            default_profile: None,
         },
     ]
 }
@@ -2399,8 +2484,9 @@ pub fn seed_floor_finish_styles() -> Vec<FloorFinishStyle> {
             style: Style {
                 id: "finish_floor_parquet_80".to_string(),
                 name: "Standard Parkett (80mm)".to_string(),
-                object_kind: "FloorFinish".to_string(),
-                parent_style_id: None,
+                category: "FloorFinish".to_string(),
+                origin: Default::default(),
+                parent: None,
             },
             layers: vec![
                 SlabStyleLayer {
@@ -2434,15 +2520,16 @@ pub fn seed_floor_finish_styles() -> Vec<FloorFinishStyle> {
                     layer_id: Uuid::new_v4(),
                 },
             ],
-            display_profiles: std::collections::HashMap::new(),
+            default_profile: None,
         },
         // 2. Fliesenaufbau Nass 80mm
         FloorFinishStyle {
             style: Style {
                 id: "finish_floor_tiles_80".to_string(),
                 name: "Fliesenaufbau Nass (80mm)".to_string(),
-                object_kind: "FloorFinish".to_string(),
-                parent_style_id: None,
+                category: "FloorFinish".to_string(),
+                origin: Default::default(),
+                parent: None,
             },
             layers: vec![
                 SlabStyleLayer {
@@ -2476,15 +2563,16 @@ pub fn seed_floor_finish_styles() -> Vec<FloorFinishStyle> {
                     layer_id: Uuid::new_v4(),
                 },
             ],
-            display_profiles: std::collections::HashMap::new(),
+            default_profile: None,
         },
         // 3. Verbundestrich 50mm
         FloorFinishStyle {
             style: Style {
                 id: "finish_floor_screed_50".to_string(),
                 name: "Verbundestrich (50mm)".to_string(),
-                object_kind: "FloorFinish".to_string(),
-                parent_style_id: None,
+                category: "FloorFinish".to_string(),
+                origin: Default::default(),
+                parent: None,
             },
             layers: vec![
                 SlabStyleLayer {
@@ -2498,15 +2586,16 @@ pub fn seed_floor_finish_styles() -> Vec<FloorFinishStyle> {
                     layer_id: Uuid::new_v4(),
                 },
             ],
-            display_profiles: std::collections::HashMap::new(),
+            default_profile: None,
         },
         // 4. Teppichboden 70mm
         FloorFinishStyle {
             style: Style {
                 id: "finish_floor_carpet_70".to_string(),
                 name: "Teppichboden (70mm)".to_string(),
-                object_kind: "FloorFinish".to_string(),
-                parent_style_id: None,
+                category: "FloorFinish".to_string(),
+                origin: Default::default(),
+                parent: None,
             },
             layers: vec![
                 SlabStyleLayer {
@@ -2540,15 +2629,16 @@ pub fn seed_floor_finish_styles() -> Vec<FloorFinishStyle> {
                     layer_id: Uuid::new_v4(),
                 },
             ],
-            display_profiles: std::collections::HashMap::new(),
+            default_profile: None,
         },
         // 5. Balkonbelag Gefälle 120mm
         FloorFinishStyle {
             style: Style {
                 id: "finish_floor_balcony_120".to_string(),
                 name: "Balkonbelag Gefälle (120mm)".to_string(),
-                object_kind: "FloorFinish".to_string(),
-                parent_style_id: None,
+                category: "FloorFinish".to_string(),
+                origin: Default::default(),
+                parent: None,
             },
             layers: vec![
                 SlabStyleLayer {
@@ -2582,7 +2672,7 @@ pub fn seed_floor_finish_styles() -> Vec<FloorFinishStyle> {
                     layer_id: Uuid::new_v4(),
                 },
             ],
-            display_profiles: std::collections::HashMap::new(),
+            default_profile: None,
         },
     ]
 }
@@ -2595,130 +2685,140 @@ pub fn seed_slab_styles() -> Vec<SlabStyle> {
             style: Style {
                 id: "style_slab_concrete_20".to_string(),
                 name: "Stahlbetondecke 20cm".to_string(),
-                object_kind: "Slab".to_string(),
-                parent_style_id: None,
+                category: "Slab".to_string(),
+                origin: Default::default(),
+                parent: None,
             },
             structural_style_id: Some("struct_slab_concrete_20".to_string()),
             default_finish_style_id: None,
             layers: Vec::new(),
-            display_profiles: std::collections::HashMap::new(),
+            default_profile: None,
         },
         // 2. Reinforced Concrete Slab 25cm
         SlabStyle {
             style: Style {
                 id: "style_slab_concrete_25".to_string(),
                 name: "Stahlbetondecke 25cm".to_string(),
-                object_kind: "Slab".to_string(),
-                parent_style_id: None,
+                category: "Slab".to_string(),
+                origin: Default::default(),
+                parent: None,
             },
             structural_style_id: Some("struct_slab_concrete_25".to_string()),
             default_finish_style_id: None,
             layers: Vec::new(),
-            display_profiles: std::collections::HashMap::new(),
+            default_profile: None,
         },
         // 3. Reinforced Concrete Slab 30cm
         SlabStyle {
             style: Style {
                 id: "style_slab_concrete_30".to_string(),
                 name: "Stahlbetondecke 30cm".to_string(),
-                object_kind: "Slab".to_string(),
-                parent_style_id: None,
+                category: "Slab".to_string(),
+                origin: Default::default(),
+                parent: None,
             },
             structural_style_id: Some("struct_slab_concrete_30".to_string()),
             default_finish_style_id: None,
             layers: Vec::new(),
-            display_profiles: std::collections::HashMap::new(),
+            default_profile: None,
         },
         // 4. Geschossdecke EG mit Fliesen & Estrich 28cm
         SlabStyle {
             style: Style {
                 id: "style_slab_floor_eg_34".to_string(),
                 name: "Geschossdecke EG 28cm (Fliesen)".to_string(),
-                object_kind: "Slab".to_string(),
-                parent_style_id: None,
+                category: "Slab".to_string(),
+                origin: Default::default(),
+                parent: None,
             },
             structural_style_id: Some("struct_slab_concrete_20".to_string()),
             default_finish_style_id: Some("finish_floor_tiles_80".to_string()),
             layers: Vec::new(),
-            display_profiles: std::collections::HashMap::new(),
+            default_profile: None,
         },
         // 5. Geschossdecke OG 28cm mit Parkett & Trittschall
         SlabStyle {
             style: Style {
                 id: "style_slab_floor_og_32".to_string(),
                 name: "Geschossdecke OG 28cm (Parkett)".to_string(),
-                object_kind: "Slab".to_string(),
-                parent_style_id: None,
+                category: "Slab".to_string(),
+                origin: Default::default(),
+                parent: None,
             },
             structural_style_id: Some("struct_slab_concrete_20".to_string()),
             default_finish_style_id: Some("finish_floor_parquet_80".to_string()),
             layers: Vec::new(),
-            display_profiles: std::collections::HashMap::new(),
+            default_profile: None,
         },
         // 6. Holzbalkendecke 24cm
         SlabStyle {
             style: Style {
                 id: "style_slab_timber_24".to_string(),
                 name: "Holzbalkendecke 24cm".to_string(),
-                object_kind: "Slab".to_string(),
-                parent_style_id: None,
+                category: "Slab".to_string(),
+                origin: Default::default(),
+                parent: None,
             },
             structural_style_id: Some("struct_slab_timber_24".to_string()),
             default_finish_style_id: None,
             layers: Vec::new(),
-            display_profiles: std::collections::HashMap::new(),
+            default_profile: None,
         },
         // 7. Flachdach warm gedaemmt 32cm
         SlabStyle {
             style: Style {
                 id: "style_slab_flat_roof_40".to_string(),
                 name: "Flachdach warm gedaemmt 32cm".to_string(),
-                object_kind: "Slab".to_string(),
-                parent_style_id: None,
+                category: "Slab".to_string(),
+                origin: Default::default(),
+                parent: None,
             },
             structural_style_id: Some("struct_slab_concrete_20".to_string()),
             default_finish_style_id: Some("finish_floor_balcony_120".to_string()),
             layers: Vec::new(),
-            display_profiles: std::collections::HashMap::new(),
+            default_profile: None,
         },
         // 8. Bodenplatte Stahlbeton 30cm
         SlabStyle {
             style: Style {
                 id: "style_slab_foundation_30".to_string(),
                 name: "Bodenplatte Stahlbeton 30cm".to_string(),
-                object_kind: "Slab".to_string(),
-                parent_style_id: None,
+                category: "Slab".to_string(),
+                origin: Default::default(),
+                parent: None,
             },
             structural_style_id: Some("struct_slab_concrete_30".to_string()),
             default_finish_style_id: None,
             layers: Vec::new(),
-            display_profiles: std::collections::HashMap::new(),
+            default_profile: None,
         },
         // 9. Bodenplatte gedaemmt 30cm
         SlabStyle {
             style: Style {
                 id: "style_slab_foundation_insulated_40".to_string(),
                 name: "Bodenplatte gedaemmt mit Estrich 30cm".to_string(),
-                object_kind: "Slab".to_string(),
-                parent_style_id: None,
+                category: "Slab".to_string(),
+                origin: Default::default(),
+                parent: None,
             },
             structural_style_id: Some("struct_slab_concrete_25".to_string()),
             default_finish_style_id: Some("finish_floor_screed_50".to_string()),
             layers: Vec::new(),
-            display_profiles: std::collections::HashMap::new(),
+            default_profile: None,
         },
         // 10. Balkonplatte Stahlbeton 32cm
         SlabStyle {
             style: Style {
                 id: "style_slab_balcony_22".to_string(),
                 name: "Balkonplatte Stahlbeton 32cm".to_string(),
-                object_kind: "Slab".to_string(),
-                parent_style_id: None,
+                category: "Slab".to_string(),
+                origin: Default::default(),
+                parent: None,
             },
             structural_style_id: Some("struct_slab_concrete_20".to_string()),
             default_finish_style_id: Some("finish_floor_balcony_120".to_string()),
             layers: Vec::new(),
-            display_profiles: std::collections::HashMap::new(),
+            default_profile: None,
         },
     ]
 }
@@ -2739,29 +2839,60 @@ pub fn from_toml(s: &str) -> Result<StyleLibrary, String> {
     serde_json::from_str(s).map_err(|e| e.to_string())
 }
 
+/// Per-thread scratch dir for the on-disk style / display-config libraries
+/// under `cfg(test)`. Cargo reuses worker threads, so this is one folder per
+/// test thread — enough to stop parallel tests from clobbering a shared
+/// `aec_styles.toml`. Sequential tests on the same thread still share the file.
+#[cfg(all(test, not(target_arch = "wasm32")))]
+fn test_library_dir() -> PathBuf {
+    thread_local! {
+        static DIR: PathBuf = {
+            use std::sync::atomic::{AtomicU64, Ordering};
+            static NEXT: AtomicU64 = AtomicU64::new(1);
+            let n = NEXT.fetch_add(1, Ordering::Relaxed);
+            let p = std::env::temp_dir().join(format!(
+                "ocs-test-aec-lib-{}-{n}",
+                std::process::id()
+            ));
+            let _ = std::fs::create_dir_all(&p);
+            p
+        };
+    }
+    DIR.with(PathBuf::clone)
+}
+
 /// Returns the default path for the AEC styles library file.
 ///
-/// Reuses the application's standard configuration directory.
+/// Reuses the application's standard configuration directory. Tests get a
+/// thread-local file so parallel `load_or_seed` / `save_to_default_path`
+/// calls cannot overwrite each other.
 pub fn default_library_path() -> PathBuf {
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(all(test, not(target_arch = "wasm32")))]
     {
-        if let Some(p) = crate::config::config_dir() {
-            return p.join("aec_styles.toml");
-        }
+        test_library_dir().join("aec_styles.toml")
     }
+    #[cfg(not(all(test, not(target_arch = "wasm32"))))]
+    {
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            if let Some(p) = crate::config::config_dir() {
+                return p.join("aec_styles.toml");
+            }
+        }
 
-    // Fallback if config_dir fails or on web
-    let mut p = PathBuf::new();
-    #[cfg(all(not(target_arch = "wasm32"), target_os = "linux"))]
-    {
-        if let Ok(home) = std::env::var("HOME") {
-            p.push(home);
-            p.push(".config");
+        // Fallback if config_dir fails or on web
+        let mut p = PathBuf::new();
+        #[cfg(all(not(target_arch = "wasm32"), target_os = "linux"))]
+        {
+            if let Ok(home) = std::env::var("HOME") {
+                p.push(home);
+                p.push(".config");
+            }
         }
+        p.push("OpenCADStudio");
+        p.push("aec_styles.toml");
+        p
     }
-    p.push("OpenCADStudio");
-    p.push("aec_styles.toml");
-    p
 }
 
 /// Persists `lib` to [`default_library_path`], creating parent directories
@@ -2798,10 +2929,12 @@ pub fn load_or_seed() -> StyleLibrary {
                 if let Ok(lib) = from_toml(&content) {
                     // Legacy files written before `Layer::layer_id` existed
                     // get a freshly-migrated set of stable IDs assigned
-                    // in-memory (see `layers_from_serde`). Persist them back
-                    // immediately so subsequent loads return the *same*
-                    // IDs instead of re-randomizing them on every read.
-                    let _ = save_to_default_path(&lib);
+                    // in-memory (see `layers_from_serde`). Persist only then
+                    // so subsequent loads keep those IDs — a plain read must
+                    // not rewrite the file (parallel tests share no lock).
+                    if library_source_missing_layer_ids(&content) {
+                        let _ = save_to_default_path(&lib);
+                    }
                     return lib;
                 }
             }
@@ -2811,6 +2944,33 @@ pub fn load_or_seed() -> StyleLibrary {
     let _ = save_to_default_path(&seed);
     seed
 }
+
+/// True when any persisted layer is missing `layer_id` (the deserializer
+/// fills those with a fresh UUID). Used to skip the write-on-every-read
+/// that used to race parallel tests on the library file.
+fn library_source_missing_layer_ids(content: &str) -> bool {
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(content) else {
+        return false;
+    };
+    let missing = |layers: &serde_json::Value| {
+        layers
+            .as_array()
+            .is_some_and(|arr| arr.iter().any(|layer| layer.get("layer_id").is_none()))
+    };
+    ["wall_styles", "slab_styles", "slab_structural_styles", "floor_finish_styles"]
+        .iter()
+        .any(|key| {
+            value
+                .get(*key)
+                .and_then(|v| v.as_array())
+                .is_some_and(|arr| arr.iter().any(|style| missing(&style["layers"])))
+        })
+}
+
+/// Standard preset ids stored in `DisplayConfig::preset`.
+pub const PRESET_ENTWURF_100: &str = "entwurf-100";
+pub const PRESET_WERKPLAN_50: &str = "werkplan-50";
+pub const PRESET_DECKENSPIEGEL: &str = "deckenspiegel";
 
 /// A collection of [`DisplayConfig`]s ("Plans"), persisted analogously to
 /// [`StyleLibrary`] — see Step 5 of
@@ -2852,7 +3012,8 @@ impl DisplayConfigLibrary {
             ViewType::FloorPlan,
         );
         arch_50.scale = Some(50.0);
-        arch_50.default_representation = RepresentationMode::TwoD;
+        arch_50.preset = Some(PRESET_WERKPLAN_50.to_string());
+        arch_50.detail.representation = RepresentationMode::TwoD;
         arch_50.opening_visibility.insert(OpeningComponentSlot::HostCut2D, true);
         arch_50.opening_visibility.insert(OpeningComponentSlot::Frame2D, true);
         arch_50.opening_visibility.insert(OpeningComponentSlot::Leaf2D, true);
@@ -2870,7 +3031,7 @@ impl DisplayConfigLibrary {
             ViewType::FloorPlan,
         );
         stat_50.scale = Some(50.0);
-        stat_50.default_representation = RepresentationMode::TwoD;
+        stat_50.detail.representation = RepresentationMode::TwoD;
         stat_50.opening_visibility.insert(OpeningComponentSlot::HostCut2D, true);
         stat_50.opening_visibility.insert(OpeningComponentSlot::Frame2D, false);
         stat_50.opening_visibility.insert(OpeningComponentSlot::Leaf2D, false);
@@ -2889,7 +3050,9 @@ impl DisplayConfigLibrary {
             ViewType::FloorPlan,
         );
         entw_100.scale = Some(100.0);
-        entw_100.default_representation = RepresentationMode::TwoD;
+        entw_100.preset = Some(PRESET_ENTWURF_100.to_string());
+        entw_100.detail.hatches = false;
+        entw_100.detail.representation = RepresentationMode::TwoD;
         entw_100.opening_visibility.insert(OpeningComponentSlot::HostCut2D, true);
         entw_100.opening_visibility.insert(OpeningComponentSlot::Frame2D, true);
         entw_100.opening_visibility.insert(OpeningComponentSlot::Leaf2D, true);
@@ -2906,7 +3069,7 @@ impl DisplayConfigLibrary {
             PlanningStage::Design,
             ViewType::Elevation,
         );
-        elev.default_representation = RepresentationMode::TwoD;
+        elev.detail.representation = RepresentationMode::TwoD;
         elev.opening_visibility.insert(OpeningComponentSlot::ElevationContour2D, true);
         elev.opening_visibility.insert(OpeningComponentSlot::ElevationMuntins2D, true);
         elev.opening_visibility.insert(OpeningComponentSlot::ElevationSwing2D, true);
@@ -2922,7 +3085,7 @@ impl DisplayConfigLibrary {
             PlanningStage::Design,
             ViewType::FloorPlan,
         );
-        model_3d.default_representation = RepresentationMode::ThreeD;
+        model_3d.detail.representation = RepresentationMode::ThreeD;
         model_3d.opening_visibility.insert(OpeningComponentSlot::Frame3D, true);
         model_3d.opening_visibility.insert(OpeningComponentSlot::Leaf3D, true);
         model_3d.opening_visibility.insert(OpeningComponentSlot::Glazing3D, true);
@@ -2934,8 +3097,26 @@ impl DisplayConfigLibrary {
         model_3d.opening_visibility.insert(OpeningComponentSlot::Threshold2D, false);
         model_3d.opening_visibility.insert(OpeningComponentSlot::OpeningLabel2D, false);
 
+        // 6. "Deckenspiegel": reflected ceiling plan (ceiling outline, no floor hatches/symbols)
+        let mut rcp = DisplayConfig::new(
+            "Deckenspiegel".to_string(),
+            "Architektur".to_string(),
+            PlanningStage::Design,
+            ViewType::FloorPlan,
+        );
+        rcp.scale = Some(50.0);
+        rcp.preset = Some(PRESET_DECKENSPIEGEL.to_string());
+        rcp.detail = DetailProfile {
+            layers: LayerDetail::Off,
+            hatches: false,
+            opening_symbols: false,
+            ceiling_view: true,
+            representation: RepresentationMode::TwoD,
+            ..DetailProfile::default()
+        };
+
         Self {
-            configs: vec![arch_50, stat_50, entw_100, elev, model_3d],
+            configs: vec![arch_50, stat_50, entw_100, elev, model_3d, rcp],
             scale_display_config_mappings: Vec::new(),
         }
     }
@@ -2976,24 +3157,31 @@ pub fn display_config_library_from_toml(s: &str) -> Result<DisplayConfigLibrary,
 /// Returns the default path for the AEC display-config ("Plan") library
 /// file. Reuses the application's standard configuration directory.
 pub fn default_display_config_library_path() -> PathBuf {
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(all(test, not(target_arch = "wasm32")))]
     {
-        if let Some(p) = crate::config::config_dir() {
-            return p.join("aec_display_configs.toml");
-        }
+        test_library_dir().join("aec_display_configs.toml")
     }
+    #[cfg(not(all(test, not(target_arch = "wasm32"))))]
+    {
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            if let Some(p) = crate::config::config_dir() {
+                return p.join("aec_display_configs.toml");
+            }
+        }
 
-    let mut p = PathBuf::new();
-    #[cfg(all(not(target_arch = "wasm32"), target_os = "linux"))]
-    {
-        if let Ok(home) = std::env::var("HOME") {
-            p.push(home);
-            p.push(".config");
+        let mut p = PathBuf::new();
+        #[cfg(all(not(target_arch = "wasm32"), target_os = "linux"))]
+        {
+            if let Ok(home) = std::env::var("HOME") {
+                p.push(home);
+                p.push(".config");
+            }
         }
+        p.push("OpenCADStudio");
+        p.push("aec_display_configs.toml");
+        p
     }
-    p.push("OpenCADStudio");
-    p.push("aec_display_configs.toml");
-    p
 }
 
 /// Persists `lib` to [`default_display_config_library_path`], creating
@@ -3047,56 +3235,188 @@ mod tests {
     use crate::modules::aec::engine::style::Style;
     use crate::modules::aec::engine::wall_style::{Layer, LayerFunction, LayerValue, WallStyle};
 
-    #[test]
-    fn resolve_effective_rule_set_returns_none_without_a_matching_profile() {
-        let style = WallStyle {
+    fn wall_with_default(default_profile: Option<ComponentRuleSet>) -> WallStyle {
+        WallStyle {
             style: Style {
                 id: "style1".to_string(),
                 name: "Style 1".to_string(),
-                object_kind: "Wall".to_string(),
-                parent_style_id: None,
+                category: crate::modules::aec::engine::style_common::CATEGORY_WALL.to_string(),
+                origin: Default::default(),
+                parent: None,
             },
             layers: vec![],
-            display_profiles: std::collections::HashMap::new(),
-        };
-        assert!(resolve_effective_rule_set(&style, "Architekt 1:50").is_none());
+            default_profile,
+        }
+    }
+
+    fn named_cfg(name: &str) -> DisplayConfig {
+        DisplayConfig::new(name.to_string(), "A".to_string(), crate::modules::aec::engine::plan_view::PlanningStage::Execution, crate::modules::aec::engine::plan_view::ViewType::FloorPlan)
     }
 
     #[test]
-    fn resolve_effective_rule_set_returns_the_profile_for_the_matching_display_config_name() {
-        use crate::modules::aec::engine::display_component::ComponentRuleSet;
+    fn resolve_effective_rule_set_is_name_independent() {
+        let mut default = ComponentRuleSet::default();
+        default.visibility.insert("AxisLine".to_string(), false);
+        let style = wall_with_default(Some(default.clone()));
+        // Any plan kind name yields the style default; renaming a plan loses nothing.
+        for name in ["Architekt 1:50", "Meine Planart", ""] {
+            let rules = resolve_effective_rule_set(
+                style.default_profile.as_ref(),
+                &named_cfg(name),
+                Some(&style.style.id),
+            );
+            assert_eq!(rules, default);
+        }
+        let none = resolve_effective_rule_set(None, &named_cfg("X"), Some("style1"));
+        assert_eq!(none, ComponentRuleSet::default());
+    }
 
-        let mut rules_50 = ComponentRuleSet::default();
-        rules_50.visibility.insert("AxisLine".to_string(), false);
-        let rules_200 = ComponentRuleSet::default();
+    #[test]
+    fn plan_override_beats_style_default_in_resolution() {
+        let mut default = ComponentRuleSet::default();
+        default.visibility.insert("AxisLine".to_string(), false);
+        default.visibility.insert("Contour2D".to_string(), false);
+        let mut over = ComponentRuleSet::default();
+        over.visibility.insert("AxisLine".to_string(), true);
+        let mut cfg = named_cfg("P");
+        cfg.style_overrides.insert(
+            "style1".to_string(),
+            StyleDisplayOverlay { rules: Some(over), ..Default::default() },
+        );
+        let rules = resolve_effective_rule_set(Some(&default), &cfg, Some("style1"));
+        assert_eq!(rules.visibility.get("AxisLine"), Some(&true));
+        assert_eq!(rules.visibility.get("Contour2D"), Some(&false));
+        // Override of another style is ignored.
+        let other = resolve_effective_rule_set(Some(&default), &cfg, Some("other"));
+        assert_eq!(other.visibility.get("AxisLine"), Some(&false));
+    }
 
-        let mut display_profiles = std::collections::HashMap::new();
-        display_profiles.insert("Ausf\u{fc}hrungsplan 1:50".to_string(), rules_50.clone());
-        display_profiles.insert("\u{dc}bersichtsplan 1:200".to_string(), rules_200.clone());
+    #[test]
+    fn wall_precedence_plan_override_beats_style_default_session_beats_both() {
+        let mut default = ComponentRuleSet::default();
+        default.visibility.insert("AxisLine".to_string(), false);
+        let style = wall_with_default(Some(default));
+        let mut cfg = named_cfg("P");
 
-        let style = WallStyle {
-            style: Style {
-                id: "style1".to_string(),
-                name: "Style 1".to_string(),
-                object_kind: "Wall".to_string(),
-                parent_style_id: None,
-            },
-            layers: vec![],
-            display_profiles,
+        let base = build_effective_rule_set(&cfg, Some(&style), None);
+        assert_eq!(base.visibility.get("AxisLine"), Some(&false)); // style default
+
+        let mut over = ComponentRuleSet::default();
+        over.visibility.insert("AxisLine".to_string(), true);
+        cfg.style_overrides.insert(
+            style.style.id.clone(),
+            StyleDisplayOverlay { rules: Some(over), ..Default::default() },
+        );
+        let plan = build_effective_rule_set(&cfg, Some(&style), None);
+        assert_eq!(plan.visibility.get("AxisLine"), Some(&true)); // plan override > default
+
+        let session = build_effective_rule_set(&cfg, Some(&style), Some(RepresentationMode::ThreeD));
+        assert_eq!(session.visibility.get("AxisLine"), Some(&false)); // session representation wins
+    }
+
+    #[test]
+    fn slab_precedence_plan_override_beats_style_default_session_beats_both() {
+        let mut default = ComponentRuleSet::default();
+        default.visibility.insert("LayerHatch2D".to_string(), false);
+        let mut style = SlabStyle::new("s1", "S1");
+        style.default_profile = Some(default);
+        let mut cfg = named_cfg("P");
+
+        let base = build_effective_slab_rule_set(&cfg, Some(&style), None);
+        assert_eq!(base.visibility.get("LayerHatch2D"), Some(&false)); // style default
+
+        let mut over = ComponentRuleSet::default();
+        over.visibility.insert("LayerHatch2D".to_string(), true);
+        cfg.style_overrides.insert(
+            "s1".to_string(),
+            StyleDisplayOverlay { rules: Some(over), ..Default::default() },
+        );
+        let plan = build_effective_slab_rule_set(&cfg, Some(&style), None);
+        assert_eq!(plan.visibility.get("LayerHatch2D"), Some(&true)); // plan override > default
+
+        // Session ThreeD hides every 2D slot regardless of default / override.
+        let session = build_effective_slab_rule_set(&cfg, Some(&style), Some(RepresentationMode::ThreeD));
+        assert_eq!(session.visibility.get("LayerHatch2D"), Some(&false));
+
+        // The plan's detail switches beat a style default that would show the slot.
+        let mut shown = SlabStyle::new("s2", "S2");
+        let mut vis = ComponentRuleSet::default();
+        vis.visibility.insert("Contour2D".to_string(), true);
+        shown.default_profile = Some(vis);
+        let mut rcp = named_cfg("Q");
+        rcp.detail.ceiling_view = true;
+        let r = build_effective_slab_rule_set(&rcp, Some(&shown), None);
+        assert_eq!(r.visibility.get("Contour2D"), Some(&false));
+    }
+
+    #[test]
+    fn opening_profiles_travel_with_rules_and_override_default() {
+        use crate::modules::aec::engine::opening_style::OpeningDisplayProfile;
+        let mut profile = OpeningDisplayProfile::default();
+        profile.visibility.insert("Sill2D".to_string(), true);
+        let mut cfg = named_cfg("P");
+        cfg.style_overrides.insert(
+            "ostyle".to_string(),
+            StyleDisplayOverlay { opening: Some(profile.clone()), ..Default::default() },
+        );
+        let wall = build_effective_rule_set(&cfg, None, None);
+        assert_eq!(wall.opening_profiles.get("ostyle"), Some(&profile));
+        let slab = build_effective_slab_rule_set(&cfg, None, None);
+        assert_eq!(slab.opening_profiles.get("ostyle"), Some(&profile));
+        // Renaming the plan changes nothing.
+        cfg.name = "Anders".to_string();
+        let renamed = build_effective_rule_set(&cfg, None, None);
+        assert_eq!(renamed.opening_profiles, wall.opening_profiles);
+    }
+
+    #[test]
+    fn stamp_origin_and_combined_entries_carry_provenance() {
+        let mut lib = StyleLibrary::empty();
+        lib.upsert_wall_style(wall_with_default(None));
+        lib.upsert_material(Material::new("m".into(), "M".into(), "ANSI31".into(), 0, "Continuous".into()));
+        lib.stamp_origin(StyleOrigin::Project);
+        assert_eq!(lib.wall_styles[0].common().origin, StyleOrigin::Project);
+        assert_eq!(lib.materials[0].style.origin, StyleOrigin::Project);
+        // Content equality ignores origin: no false copy conflict.
+        let mut other = StyleLibrary::empty();
+        other.upsert_wall_style(wall_with_default(None));
+        assert_eq!(
+            wall_style_copy_conflict(&other, &lib.wall_styles[0]),
+            CopyConflict::IdenticalAlreadyPresent
+        );
+        assert_eq!(
+            material_copy_conflict(&other, &lib.materials[0]),
+            CopyConflict::None
+        );
+        other.upsert_material(lib.materials[0].clone());
+        other.stamp_origin(StyleOrigin::Default);
+        assert_eq!(
+            material_copy_conflict(&other, &lib.materials[0]),
+            CopyConflict::IdenticalAlreadyPresent
+        );
+
+        // Project / session / standard provenance through the combined view.
+        let mut project = crate::modules::aec::engine::project::ProjectFile::default();
+        let mut pws = wall_with_default(None);
+        pws.style.id = "proj_wall".into();
+        project.material_wall_style_library.upsert_wall_style(pws);
+        let mut session = StyleLibrary::empty();
+        let mut sws = wall_with_default(None);
+        sws.style.id = "sess_wall".into();
+        session.upsert_wall_style(sws);
+        let entries = combined_wall_style_entries_with_session(Some(&project), Some(&session));
+        let origin_of = |id: &str| {
+            entries
+                .iter()
+                .find(|e| e.wall_style.style.id == id)
+                .map(|e| e.wall_style.style.origin)
         };
-
-        assert_eq!(
-            resolve_effective_rule_set(&style, "Ausf\u{fc}hrungsplan 1:50"),
-            Some(&rules_50)
-        );
-        assert_eq!(
-            resolve_effective_rule_set(&style, "\u{dc}bersichtsplan 1:200"),
-            Some(&rules_200)
-        );
-        // A plan type this style has no profile for still falls back to `None`
-        // (default rule set), instead of erroring or picking an arbitrary
-        // profile.
-        assert!(resolve_effective_rule_set(&style, "Schalplan 1:50").is_none());
+        assert_eq!(origin_of("proj_wall"), Some(StyleOrigin::Project));
+        assert_eq!(origin_of("sess_wall"), Some(StyleOrigin::Session));
+        assert!(entries
+            .iter()
+            .filter(|e| e.source == LibrarySource::Standard)
+            .all(|e| e.wall_style.style.origin == StyleOrigin::Default));
     }
 
     #[test]
@@ -3113,8 +3433,9 @@ mod tests {
             style: Style {
                 id: "style1".to_string(),
                 name: "Style 1".to_string(),
-                object_kind: "Wall".to_string(),
-                parent_style_id: None,
+                category: "Wall".to_string(),
+                origin: Default::default(),
+                parent: None,
             },
             layers: vec![
                 Layer {
@@ -3142,7 +3463,7 @@ mod tests {
                     layer_id: Uuid::new_v4(),
                 },
             ],
-        display_profiles: std::collections::HashMap::new(),
+        default_profile: None,
         };
 
         let lib = StyleLibrary {
@@ -3165,8 +3486,8 @@ mod tests {
             "wall_styles": [{
                 "id": "legacy",
                 "name": "Legacy",
-                "object_kind": "Wall",
-                "parent_style_id": null,
+                "category": "Wall",
+                "parent": null,
                 "layers": [
                     {
                         "material_id": "a",
@@ -3215,11 +3536,12 @@ mod tests {
             style: Style {
                 id: "style1".to_string(),
                 name: "Style 1".to_string(),
-                object_kind: "Wall".to_string(),
-                parent_style_id: None,
+                category: "Wall".to_string(),
+                origin: Default::default(),
+                parent: None,
             },
             layers: Vec::new(),
-        display_profiles: std::collections::HashMap::new(),
+        default_profile: None,
         };
         let mut lib = StyleLibrary {
             materials: Vec::new(),
@@ -3239,41 +3561,45 @@ mod tests {
             style: Style {
                 id: "s1".to_string(),
                 name: "Style A".to_string(),
-                object_kind: "Wall".to_string(),
-                parent_style_id: None,
+                category: "Wall".to_string(),
+                origin: Default::default(),
+                parent: None,
             },
             layers: vec![],
-        display_profiles: std::collections::HashMap::new(),
+        default_profile: None,
         };
         let s2 = WallStyle {
             style: Style {
                 id: "s2".to_string(),
                 name: "Style B".to_string(),
-                object_kind: "Wall".to_string(),
-                parent_style_id: Some("s1".to_string()),
+                category: "Wall".to_string(),
+                origin: Default::default(),
+                parent: Some("s1".to_string()),
             },
             layers: vec![],
-        display_profiles: std::collections::HashMap::new(),
+        default_profile: None,
         };
         let s3 = WallStyle {
             style: Style {
                 id: "s3".to_string(),
                 name: "Style C".to_string(),
-                object_kind: "Wall".to_string(),
-                parent_style_id: Some("s1".to_string()),
+                category: "Wall".to_string(),
+                origin: Default::default(),
+                parent: Some("s1".to_string()),
             },
             layers: vec![],
-        display_profiles: std::collections::HashMap::new(),
+        default_profile: None,
         };
         let s4 = WallStyle {
             style: Style {
                 id: "s4".to_string(),
                 name: "Style D".to_string(),
-                object_kind: "Wall".to_string(),
-                parent_style_id: Some("orphan".to_string()),
+                category: "Wall".to_string(),
+                origin: Default::default(),
+                parent: Some("orphan".to_string()),
             },
             layers: vec![],
-        display_profiles: std::collections::HashMap::new(),
+        default_profile: None,
         };
 
         lib.wall_styles = vec![s1, s2, s3, s4];
@@ -3335,7 +3661,7 @@ mod tests {
         let inherited = lib
             .wall_styles
             .iter()
-            .find(|ws| ws.style.parent_style_id.is_some())
+            .find(|ws| ws.style.parent.is_some())
             .expect("expected at least one demo style with a parent");
         assert!(
             inherited.layers.is_empty(),
@@ -3365,8 +3691,8 @@ mod tests {
                 {
                     "id": "style1",
                     "name": "Style 1",
-                    "object_kind": "Wall",
-                    "parent_style_id": null,
+                    "category": "Wall",
+                    "parent": null,
                     "layers": [
                         {
                             "material_id": "mat1",
@@ -3433,7 +3759,7 @@ mod tests {
             .find(|m| m.id == "mat_wood")
             .expect("Holz material");
         assert_eq!(wood.name, "Holz");
-        assert_eq!(wood.category.as_deref(), Some("Holz"));
+        assert_eq!(wood.group.as_deref(), Some("Holz"));
         assert_eq!(wood.hatch_color, Some(acadrust::types::Color::Rgb { r: 0xA6, g: 0x7C, b: 0x52 }));
         assert!((wood.hatch_scale - 0.5).abs() < 1e-12);
 
@@ -3442,14 +3768,14 @@ mod tests {
             .iter()
             .find(|m| m.id == "mat_drywall")
             .expect("Gipskarton material");
-        assert_eq!(drywall.category.as_deref(), Some("Trockenbau"));
+        assert_eq!(drywall.group.as_deref(), Some("Trockenbau"));
 
         let steel = lib
             .materials
             .iter()
             .find(|m| m.id == "mat_steel")
             .expect("Stahl material");
-        assert_eq!(steel.category.as_deref(), Some("Metall"));
+        assert_eq!(steel.group.as_deref(), Some("Metall"));
         assert!((steel.hatch_scale - 1.5).abs() < 1e-12);
 
         let glass = lib
@@ -3457,7 +3783,7 @@ mod tests {
             .iter()
             .find(|m| m.id == "mat_glass")
             .expect("Glas material");
-        assert_eq!(glass.category.as_deref(), Some("Verglasung"));
+        assert_eq!(glass.group.as_deref(), Some("Verglasung"));
         assert_eq!(glass.hatch_color, Some(acadrust::types::Color::Rgb { r: 0xA8, g: 0xD4, b: 0xE8 }));
 
         let clinker = lib
@@ -3466,7 +3792,7 @@ mod tests {
             .find(|m| m.id == "mat_clinker")
             .expect("Klinker material");
         assert_eq!(clinker.name, "Klinker / Verblender");
-        assert_eq!(clinker.category.as_deref(), Some("Mauerwerk"));
+        assert_eq!(clinker.group.as_deref(), Some("Mauerwerk"));
     }
 
     #[test]
@@ -3778,11 +4104,12 @@ mod tests {
             style: Style {
                 id: "style1".to_string(),
                 name: "Style 1".to_string(),
-                object_kind: "Wall".to_string(),
-                parent_style_id: None,
+                category: "Wall".to_string(),
+                origin: Default::default(),
+                parent: None,
             },
             layers: vec![],
-        display_profiles: std::collections::HashMap::new(),
+        default_profile: None,
         };
         let mut style_b = style_a.clone();
         style_b.style.name = "Style 1 Updated".to_string();
@@ -3809,7 +4136,7 @@ mod tests {
             crate::modules::aec::engine::plan_view::PlanningStage::Design,
             crate::modules::aec::engine::plan_view::ViewType::FloorPlan,
         );
-        cfg.default_representation = RepresentationMode::All;
+        cfg.detail.representation = RepresentationMode::All;
         let rules = build_effective_rule_set(&cfg, None, Some(RepresentationMode::ThreeD));
         assert!(!rules.is_visible(WallComponentSlot::Layers2D));
         assert!(!rules.is_visible(WallComponentSlot::Contour2D));
@@ -3824,7 +4151,7 @@ mod tests {
             crate::modules::aec::engine::plan_view::PlanningStage::Design,
             crate::modules::aec::engine::plan_view::ViewType::FloorPlan,
         );
-        cfg.default_representation = RepresentationMode::TwoD;
+        cfg.detail.representation = RepresentationMode::TwoD;
         let mode = effective_representation(&cfg, Some(RepresentationMode::ThreeD));
         assert!(!component_is_visible(&cfg, WallComponentKind::Layers2D, mode));
         assert!(!component_is_visible(&cfg, WallComponentKind::LayerHatch2D, mode));
@@ -3839,7 +4166,7 @@ mod tests {
             crate::modules::aec::engine::plan_view::PlanningStage::Design,
             crate::modules::aec::engine::plan_view::ViewType::FloorPlan,
         );
-        cfg.default_representation = RepresentationMode::TwoD;
+        cfg.detail.representation = RepresentationMode::TwoD;
         cfg.component_visibility
             .insert(WallComponentKind::Layers3D, false);
         cfg.component_visibility
@@ -3863,24 +4190,23 @@ mod tests {
             crate::modules::aec::engine::plan_view::PlanningStage::Design,
             crate::modules::aec::engine::plan_view::ViewType::FloorPlan,
         );
-        cfg.default_representation = RepresentationMode::TwoD;
+        cfg.detail.representation = RepresentationMode::TwoD;
         let mut style = WallStyle {
             style: Style {
                 id: "s".to_string(),
                 name: "S".to_string(),
-                object_kind: "Wall".to_string(),
-                parent_style_id: None,
+                category: "Wall".to_string(),
+                origin: Default::default(),
+                parent: None,
             },
             layers: vec![],
-            display_profiles: std::collections::HashMap::new(),
+            default_profile: None,
         };
         let mut profile = ComponentRuleSet::default();
         profile
             .visibility
             .insert(WallComponentSlot::Solid3D.key().to_string(), false);
-        style
-            .display_profiles
-            .insert("Entwurf".into(), profile);
+        style.default_profile = Some(profile);
         let rules = build_effective_rule_set(&cfg, Some(&style), Some(RepresentationMode::ThreeD));
         assert!(rules.is_visible(WallComponentSlot::Solid3D));
         assert!(!rules.is_visible(WallComponentSlot::Layers2D));
@@ -3927,7 +4253,7 @@ mod tests {
                 ..Default::default()
             },
         );
-        cfg.style_overlays.insert("style1".into(), overlay);
+        cfg.style_overrides.insert("style1".into(), overlay);
         let mat = Material::new(
             "m".into(),
             "M".into(),
@@ -3960,7 +4286,7 @@ mod tests {
                 ..Default::default()
             },
         );
-        cfg.style_overlays.insert("style1".into(), overlay);
+        cfg.style_overrides.insert("style1".into(), overlay);
         let mut mat = Material::new(
             "m".into(),
             "M".into(),
@@ -3994,16 +4320,17 @@ mod tests {
             hatch_scale: Some(2.0),
             ..Default::default()
         });
-        cfg.style_overlays.insert("s".into(), overlay);
+        cfg.style_overrides.insert("s".into(), overlay);
         let style = WallStyle {
             style: Style {
                 id: "s".to_string(),
                 name: "S".to_string(),
-                object_kind: "Wall".to_string(),
-                parent_style_id: None,
+                category: "Wall".to_string(),
+                origin: Default::default(),
+                parent: None,
             },
             layers: vec![],
-            display_profiles: std::collections::HashMap::new(),
+            default_profile: None,
         };
         let rules = build_effective_rule_set(&cfg, Some(&style), None);
         let ov = rules
@@ -4033,13 +4360,14 @@ mod tests {
             crate::modules::aec::engine::plan_view::PlanningStage::Design,
             crate::modules::aec::engine::plan_view::ViewType::FloorPlan,
         );
-        cfg.style_overlays.insert("s".into(), overlay);
+        cfg.style_overrides.insert("s".into(), overlay);
         let style = WallStyle {
             style: Style {
                 id: "s".to_string(),
                 name: "S".to_string(),
-                object_kind: "Wall".to_string(),
-                parent_style_id: None,
+                category: "Wall".to_string(),
+                origin: Default::default(),
+                parent: None,
             },
             layers: vec![
                 Layer {
@@ -4067,7 +4395,7 @@ mod tests {
                     layer_id: id_b,
                 },
             ],
-            display_profiles: std::collections::HashMap::new(),
+            default_profile: None,
         };
         let rules = build_effective_rule_set(&cfg, Some(&style), None);
         match rules.layer_filter_for(WallComponentSlot::Layers2D) {
@@ -4118,88 +4446,6 @@ mod tests {
     }
 
     #[test]
-    fn copy_to_standard_strips_display_profiles() {
-        let mut style = WallStyle {
-            style: Style {
-                id: "style1".into(),
-                name: "S".into(),
-                object_kind: "Wall".into(),
-                parent_style_id: None,
-            },
-            layers: vec![],
-            display_profiles: std::collections::HashMap::new(),
-        };
-        style
-            .display_profiles
-            .insert("Architekt".into(), ComponentRuleSet::default());
-        let stripped = wall_style_without_display_profiles(style);
-        assert!(stripped.display_profiles.is_empty());
-    }
-
-    #[test]
-    fn migrate_name_keyed_profiles_onto_planart_overlays() {
-        let layer_id = Uuid::new_v4();
-        let cfg = DisplayConfig::new(
-            "Architekt 1:50".into(),
-            "Arch".into(),
-            crate::modules::aec::engine::plan_view::PlanningStage::Design,
-            crate::modules::aec::engine::plan_view::ViewType::FloorPlan,
-        );
-        let id_before = cfg.id;
-        let mut rules = ComponentRuleSet::default();
-        rules.visibility.insert("LayerHatch2D".into(), false);
-        rules.layer_style_override.push(
-            crate::modules::aec::engine::display_component::LayerStyleOverride {
-                layer: crate::modules::aec::engine::join::LayerRef {
-                    material_id: "m".into(),
-                    role_tag: None,
-                    index: 0,
-                    layer_id: Some(layer_id),
-                },
-                style: ComponentStyleOverride {
-                    line_color: Some(acadrust::types::Color::Rgb { r: 1, g: 2, b: 3 }),
-                    ..Default::default()
-                },
-            },
-        );
-        let mut style = WallStyle {
-            style: Style {
-                id: "style1".into(),
-                name: "S".into(),
-                object_kind: "Wall".into(),
-                parent_style_id: None,
-            },
-            layers: vec![],
-            display_profiles: std::collections::HashMap::new(),
-        };
-        style
-            .display_profiles
-            .insert("Architekt 1:50".into(), rules);
-        let mut configs = vec![cfg];
-        let mut styles = vec![style];
-        migrate_display_profiles_into_planarts(&mut configs, &mut styles);
-        assert_eq!(configs[0].id, id_before);
-        assert!(styles[0].display_profiles.is_empty());
-        assert_eq!(
-            configs[0]
-                .component_visibility
-                .get(&WallComponentKind::LayerHatch2D)
-                .copied(),
-            Some(false)
-        );
-        assert_eq!(
-            configs[0]
-                .style_overlays
-                .get("style1")
-                .and_then(|o| o.layer_props.get(&layer_id))
-                .and_then(|p| p.line_color),
-            Some(acadrust::types::Color::Rgb { r: 1, g: 2, b: 3 })
-        );
-        configs[0].name = "Renamed".into();
-        assert!(configs[0].style_overlays.contains_key("style1"));
-    }
-
-    #[test]
     fn overlay_unknown_layer_id_is_ignored_by_resolver() {
         let mut cfg = DisplayConfig::new(
             "A".into(),
@@ -4215,7 +4461,7 @@ mod tests {
                 ..Default::default()
             },
         );
-        cfg.style_overlays.insert("style1".into(), overlay);
+        cfg.style_overrides.insert("style1".into(), overlay);
         let other = Uuid::new_v4();
         let resolved = resolve_layer_property_override(&cfg, "style1", other, None, None);
         assert!(resolved.line_type.is_none());
@@ -4253,7 +4499,7 @@ mod tests {
         let mut lib = StyleLibrary::empty();
         let s1 = SlabStyle::new("s1", "Root Slab");
         let mut s2 = SlabStyle::new("s2", "Child Slab");
-        s2.style.parent_style_id = Some("s1".to_string());
+        s2.style.parent = Some("s1".to_string());
         lib.upsert_slab_style(s1);
         lib.upsert_slab_style(s2);
 
@@ -4296,5 +4542,162 @@ mod tests {
         assert!(rules.is_slab_visible(SlabComponentSlot::OpeningSymbol2D));
         assert!(!rules.is_slab_visible(SlabComponentSlot::Solid3D));
         assert!(!rules.is_slab_visible(SlabComponentSlot::SurfaceStyle3D));
+    }
+
+    fn plain_cfg(name: &str) -> DisplayConfig {
+        DisplayConfig::new(
+            name.into(),
+            "Plan".into(),
+            crate::modules::aec::engine::plan_view::PlanningStage::Design,
+            crate::modules::aec::engine::plan_view::ViewType::FloorPlan,
+        )
+    }
+
+    #[test]
+    fn slab_ceiling_view_comes_from_detail_not_name() {
+        use crate::modules::aec::engine::display_component::SlabComponentSlot;
+        // A name containing "Deckenspiegel" must not change anything.
+        let named = build_effective_slab_rule_set(&plain_cfg("Deckenspiegel"), None, None);
+        assert!(named.is_slab_visible(SlabComponentSlot::Contour2D));
+        assert!(!named.is_slab_visible(SlabComponentSlot::CeilingOutline2D));
+
+        let mut cfg = plain_cfg("Meine Decke");
+        cfg.detail.ceiling_view = true;
+        let rules = build_effective_slab_rule_set(&cfg, None, None);
+        assert!(!rules.is_slab_visible(SlabComponentSlot::Contour2D));
+        assert!(rules.is_slab_visible(SlabComponentSlot::CeilingOutline2D));
+        assert!(!rules.is_slab_visible(SlabComponentSlot::OpeningSymbol2D));
+    }
+
+    #[test]
+    fn slab_structural_only_comes_from_detail_not_name() {
+        use crate::modules::aec::engine::display_component::SlabComponentSlot;
+        let mut style = SlabStyle::new("s", "S");
+        style.layers = vec![
+            crate::modules::aec::engine::slab_style::SlabStyleLayer::new("c", LayerValue::Fixed(0.2), LayerFunction::Structural),
+            crate::modules::aec::engine::slab_style::SlabStyleLayer::new("f", LayerValue::Fixed(0.05), LayerFunction::Finish),
+        ];
+        let named = build_effective_slab_rule_set(&plain_cfg("Rohbau"), Some(&style), None);
+        assert!(named.layer_filter.is_empty());
+        let mut cfg = plain_cfg("Tragwerk");
+        cfg.detail.layers = LayerDetail::StructuralOnly;
+        let rules = build_effective_slab_rule_set(&cfg, Some(&style), None);
+        assert!(rules.layer_filter.contains_key(SlabComponentSlot::Solid3D.key()));
+    }
+
+    #[test]
+    fn wall_detail_switches_hide_slots() {
+        let key = WallComponentSlot::LayerHatch2D.key();
+        let rules = build_effective_rule_set(&plain_cfg("P"), None, None);
+        assert_eq!(rules.visibility.get(key), Some(&true));
+        let mut cfg = plain_cfg("P");
+        cfg.detail.hatches = false;
+        let rules = build_effective_rule_set(&cfg, None, None);
+        assert_eq!(rules.visibility.get(key), Some(&false));
+    }
+
+    #[test]
+    fn wall_precedence_session_over_plan_over_style_default() {
+        let key = WallComponentSlot::Contour2D.key();
+        let mut style = WallStyle {
+            style: Style {
+                id: "s".into(),
+                name: "S".into(),
+                category: "Wall".into(),
+                origin: Default::default(),
+                parent: None,
+            },
+            layers: vec![],
+            default_profile: None,
+        };
+        let mut cfg = plain_cfg("P");
+        cfg.detail.representation = RepresentationMode::TwoD;
+        // Style default profile hides the contour for this plan kind.
+        let mut profile = ComponentRuleSet::default();
+        profile.visibility.insert(key.to_string(), false);
+        style.default_profile = Some(profile);
+        let rules = build_effective_rule_set(&cfg, Some(&style), None);
+        assert_eq!(rules.visibility.get(key), Some(&false));
+        // Session representation wins over the style default.
+        let rules = build_effective_rule_set(&cfg, Some(&style), Some(RepresentationMode::TwoD));
+        assert_eq!(rules.visibility.get(key), Some(&true));
+        // Plan kind (representation 3D) hides 2D slots regardless of style default.
+        cfg.detail.representation = RepresentationMode::ThreeD;
+        let rules = build_effective_rule_set(&cfg, None, None);
+        assert_eq!(rules.visibility.get(key), Some(&false));
+    }
+
+    #[test]
+    fn seed_presets_carry_detail_and_roundtrip() {
+        let lib = DisplayConfigLibrary::seed_default_configs();
+        let rcp = lib.configs.iter().find(|c| c.preset.as_deref() == Some(PRESET_DECKENSPIEGEL)).unwrap();
+        assert!(rcp.detail.ceiling_view);
+        let entwurf = lib.configs.iter().find(|c| c.preset.as_deref() == Some(PRESET_ENTWURF_100)).unwrap();
+        assert!(!entwurf.detail.hatches);
+        let json = display_config_library_to_toml(&lib).unwrap();
+        assert_eq!(display_config_library_from_toml(&json).unwrap(), lib);
+    }
+
+    #[test]
+    fn default_library_path_is_isolated_per_thread() {
+        let main = default_library_path();
+        let other = std::thread::spawn(default_library_path).join().unwrap();
+        assert_ne!(main, other);
+        assert!(main.to_string_lossy().contains("ocs-test-aec-lib-"));
+        assert_eq!(main.file_name().and_then(|n| n.to_str()), Some("aec_styles.toml"));
+        assert_eq!(
+            default_display_config_library_path().parent(),
+            main.parent()
+        );
+    }
+
+    #[test]
+    fn load_or_seed_does_not_rewrite_when_layer_ids_present() {
+        let path = default_library_path();
+        let _ = std::fs::remove_file(&path);
+        let _ = load_or_seed();
+        let before = std::fs::read(&path).expect("seeded library");
+        assert!(!library_source_missing_layer_ids(
+            std::str::from_utf8(&before).unwrap()
+        ));
+        let mtime = std::fs::metadata(&path).unwrap().modified().unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        let _ = load_or_seed();
+        let after = std::fs::read(&path).expect("library after second load");
+        assert_eq!(before, after);
+        assert_eq!(
+            std::fs::metadata(&path).unwrap().modified().unwrap(),
+            mtime
+        );
+    }
+
+    #[test]
+    fn load_or_seed_persists_missing_layer_ids_once() {
+        let mut lib = seed_default_library();
+        lib.wall_styles.truncate(1);
+        let mut json = serde_json::to_value(&lib).unwrap();
+        if let Some(layers) = json
+            .pointer_mut("/wall_styles/0/layers")
+            .and_then(|v| v.as_array_mut())
+        {
+            for layer in layers {
+                if let Some(obj) = layer.as_object_mut() {
+                    obj.remove("layer_id");
+                }
+            }
+        }
+        let content = serde_json::to_string_pretty(&json).unwrap();
+        assert!(library_source_missing_layer_ids(&content));
+        let path = default_library_path();
+        if let Some(parent) = path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        std::fs::write(&path, &content).unwrap();
+        let loaded = load_or_seed();
+        let persisted = std::fs::read_to_string(&path).unwrap();
+        assert!(!library_source_missing_layer_ids(&persisted));
+        assert!(!loaded.wall_styles[0].layers.is_empty());
+        assert!(loaded.wall_styles[0].layers.iter().all(|l| l.layer_id != uuid::Uuid::nil()));
+        let _ = save_to_default_path(&seed_default_library());
     }
 }

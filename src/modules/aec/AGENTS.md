@@ -39,19 +39,3 @@ Draw model: `src/modules/draw/line.rs` — `tool()` + command in the same file,
   carry `ModalKind::Aec(AecModalKind)` and `ColorPickTarget::Aec(AecColorPickTarget)`.
   New AEC windows and colour fields live under `ui/` (`modal_kind.rs`,
   `color_pick.rs`, `modal_views.rs`).
-
-## Planarten
-
-- Use an explicit `PlanKind` enum for `DisplayConfig`.
-- Infer kind from legacy names (e.g. "rcp", "rohbau") only while migrating
-  existing configs; do not use name heuristics at runtime.
-- The active config is `tabs[i].active_display_config`, with
-  `tabs[i].representation_override` alongside it. `AecState` stores the config
-  library (`aec_plan_library`), not the active selection; do not add parallel
-  plan-type state.
-- Apply configs through `apply_active_display_config_to_tab` in
-  `project/display.rs` so walls, openings, slabs, slab openings, and rooms stay
-  consistent. RCP, Shell, and 3D behavior branches on `config.kind`.
-- Keep UI integration to thin hooks using existing AEC messages.
-- Localize `PlanKind` labels via `locales/` keys; cover migration of configs
-  without `kind` with feature-local unit tests.

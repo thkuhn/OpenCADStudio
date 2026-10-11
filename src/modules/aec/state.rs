@@ -169,6 +169,10 @@ pub enum StylePickerTarget {
     SlabStructuralLayerMaterial(usize),
     /// Selecting a layer override for a specific slab layer index.
     SlabLayerOverride(usize),
+    /// Selecting a parent style for a floor finish style being edited.
+    FloorFinishStyleParent,
+    /// Selecting a material for a specific floor finish layer index.
+    FloorFinishLayerMaterial(usize),
     /// Selecting a new style for one or more slab entities in the properties panel.
     SlabPropertiesStyle,
 }
@@ -228,12 +232,8 @@ pub struct AecState {
     /// Height of the last wall finished via `AEC_WALL` this session, used to
     /// pre-fill the live Properties-panel height field on the next call.
     pub aec_last_wall_height: Option<f64>,
-    /// Filter text applied to both the material and wall-style master lists.
-    pub aec_style_manager_filter: String,
-    /// Currently selected material id (if any), by `Material::id`.
-    pub aec_style_manager_selected_material: Option<String>,
-    /// Currently selected wall style id (if any), by `Style::id`.
-    pub aec_style_manager_selected_wall_style: Option<String>,
+    /// All `AEC_STYLES` window state (selection, filters, form buffers).
+    pub styles: crate::modules::aec::ui::style_manager::AecStylesUiState,
     /// Filter text for the AEC Style Picker modal.
     pub aec_style_picker_filter: String,
     /// Currently highlighted ID in the AEC Style Picker (material ID, style ID, or layer name).
@@ -244,271 +244,14 @@ pub struct AecState {
     /// Cache of last applied AEC property target (handle, field, val) to dedup
     /// batch-invocations on package child entities in the properties panel.
     pub aec_last_applied_property: Option<(acadrust::Handle, String, String)>,
-    /// Id of the material currently being edited, if the edit buffer holds
-    /// an existing material (`None` while composing a new/unsaved one).
-    pub aec_style_manager_material_editing_id: Option<String>,
-    /// Whether the material edit form is visible (set by selecting a
-    /// material or pressing "New"; cleared on Save/Delete/deselect).
-    pub aec_style_manager_material_form_open: bool,
-    /// Edit-buffer fields for the material form (name/hatch/color/line type).
-    pub aec_style_manager_material_name: String,
-    pub aec_style_manager_material_hatch: String,
-    pub aec_style_manager_material_color: String,
-    pub aec_style_manager_material_line_type: String,
-    pub aec_style_manager_material_category: String,
-    pub aec_style_manager_material_hatch_color: u32,
-    pub aec_style_manager_material_hatch_scale: String,
-    pub aec_style_manager_material_render_ref: String,
-    pub aec_style_manager_material_hatch_angle: String,
-    /// `true` when `hatch_angle` is relative to the wall's own direction,
-    /// `false` when it is an absolute/global angle.
-    pub aec_style_manager_material_hatch_angle_relative: bool,
-    /// Whether the material form's colour-picker popup is expanded.
-    pub aec_style_manager_material_color_picker_open: bool,
-    /// Whether the material form's hatch-colour-picker popup is expanded.
-    pub aec_style_manager_material_hatch_color_picker_open: bool,
-    /// Whether the material form's visual hatch-pattern picker is expanded.
-    pub aec_style_manager_material_hatch_picker_open: bool,
-    /// Line types available for the material form's line-type combo box
-    /// (name + ASCII-art preview), refreshed when the manager is opened.
-    pub aec_style_manager_material_linetype_items: Vec<crate::ui::properties::LinetypeItem>,
-    /// combo_box state built from `aec_style_manager_material_linetype_items`.
-    pub aec_style_manager_material_linetype_combo:
-        iced::widget::combo_box::State<crate::ui::properties::LinetypeItem>,
-
-    /// Id of the wall style currently being edited, if the edit buffer holds
-    /// an existing wall style (`None` while composing a new/unsaved one).
-    pub aec_style_manager_wall_style_editing_id: Option<String>,
-    /// Whether the wall style edit form is visible.
-    pub aec_style_manager_wall_style_form_open: bool,
-    /// Edit-buffer fields for the wall style form (name/parent/layers).
-    pub aec_style_manager_wall_style_name: String,
-    pub aec_style_manager_wall_style_parent: Option<String>,
-    pub aec_style_manager_wall_style_layers: Vec<AecLayerBuffer>,
-    /// Index of the layer row currently "picked up" for a click-based
-    /// drag-and-drop reorder (armed by its drag handle, dropped by clicking
-    /// another row's drag handle); `None` when no drag is in progress.
-    pub aec_style_manager_wall_style_drag_index: Option<usize>,
-    /// How the "Wall Styles" master list is ordered: alphabetically by name,
-    /// or hierarchically (parents before children, siblings grouped).
-    pub aec_style_manager_wall_style_sort: AecWallStyleSort,
-    /// Whether a copy-conflict confirmation dialog is currently open in the
-    /// AEC Style Manager.
-    pub aec_style_manager_copy_conflict_open: bool,
-    /// The material or wall style currently awaiting an overwrite confirmation.
-    pub aec_style_manager_pending_copy: Option<AecPendingCopy>,
-
-    // ── AEC Wall Style Manager: Darstellungs-Profile (Step 4) ──────────────
-    /// Name of the `DisplayConfig` currently selected in the "Darstellungs-
-    /// Profile" table of the wall style form (`None` = none selected).
-    pub aec_style_manager_profile_selected: Option<String>,
-    /// Layer-Filter-UI: `false` = "Alle" (`LayerSelection::All`), `true` =
-    /// "Auswahl", for the currently edited profile's `Contour2D` slot.
-    pub aec_style_manager_profile_contour_explicit: bool,
-    /// Layer-Filter-UI: edit-buffer of explicitly selected layers for
-    /// `Contour2D`, only relevant while the above is `true`.
-    pub aec_style_manager_profile_contour_selection:
-        Vec<crate::modules::aec::engine::join::LayerRef>,
-    /// Same as `..._contour_explicit`, but for the `Solid3D` slot.
-    pub aec_style_manager_profile_solid_explicit: bool,
-    /// Same as `..._contour_selection`, but for the `Solid3D` slot.
-    pub aec_style_manager_profile_solid_selection:
-        Vec<crate::modules::aec::engine::join::LayerRef>,
-    /// Hatch-angle override text field ("Relativ zur Wand" + Winkel) for
-    /// the currently edited profile (empty = no override).
-    pub aec_style_manager_profile_hatch_angle: String,
-    /// Whether `aec_style_manager_profile_hatch_angle` is relative to the
-    /// wall's own run direction (mirrors `ComponentStyleOverride::hatch_angle_relative`).
-    pub aec_style_manager_profile_hatch_relative: bool,
-    /// Visibility checkboxes for each `WallComponentSlot` in the currently
-    /// edited profile (Step 4). Absent keys mean visible (default).
-    pub aec_style_manager_profile_slot_visibility:
-        std::collections::HashMap<crate::modules::aec::engine::display_component::WallComponentSlot, bool>,
-    /// Slot currently open in the per-slot style override editor.
-    pub aec_style_manager_profile_editing_slot:
-        Option<crate::modules::aec::engine::display_component::WallComponentSlot>,
-    /// Pending per-slot style overrides for the selected display profile.
-    pub aec_style_manager_profile_slot_overrides: std::collections::HashMap<
-        crate::modules::aec::engine::display_component::WallComponentSlot,
-        crate::modules::aec::engine::display_component::ComponentStyleOverride,
-    >,
-    pub aec_style_manager_profile_slot_style_line_type: String,
-    pub aec_style_manager_profile_slot_style_line_color: String,
-    pub aec_style_manager_profile_slot_style_hatch_pattern: String,
-    pub aec_style_manager_profile_slot_style_hatch_color: String,
-    pub aec_style_manager_profile_slot_style_fill_color: String,
-    pub aec_style_manager_profile_slot_style_line_color_picker_open: bool,
-    pub aec_style_manager_profile_slot_style_hatch_color_picker_open: bool,
-    pub aec_style_manager_profile_slot_style_fill_color_picker_open: bool,
-    pub aec_style_manager_profile_slot_style_hatch_picker_open: bool,
-    /// Geometry of the wall-style manager while the display-profiles child
-    /// modal is open (Plot → Plotstyle pattern).
-    pub aec_wall_style_manager_parent_geometry: Option<(iced::Vector, iced::Vector)>,
-
-    // ── AEC Opening Style Manager ─────────────────────────────────────────
-    pub aec_opening_style_manager_filter: String,
-    pub aec_opening_style_manager_selected: Option<String>,
-    pub aec_opening_style_manager_editing_id: Option<String>,
-    pub aec_opening_style_manager_form_open: bool,
-    pub aec_opening_style_manager_preview_mode: AecOpeningPreviewMode,
-    pub aec_opening_style_manager_name: String,
-    pub aec_opening_style_manager_parent: Option<String>,
-    pub aec_opening_style_manager_kind: crate::modules::aec::engine::openings::OpeningKind,
-    pub aec_opening_style_manager_width: String,
-    pub aec_opening_style_manager_height: String,
-    pub aec_opening_style_manager_sill: String,
-    pub aec_opening_style_manager_frame: String,
-    pub aec_opening_style_manager_angle: String,
-    pub aec_opening_style_manager_spring: String,
-    pub aec_opening_style_manager_hinge: crate::modules::aec::engine::opening_style::HingeSide,
-    pub aec_opening_style_manager_shape: crate::modules::aec::engine::opening_shape::OpeningShape,
-    pub aec_opening_style_manager_slots: Vec<AecOpeningSlotBuffer>,
-    /// Active plan-type name while editing slot overrides (`None` = default).
-    pub aec_opening_style_manager_profile_selected: Option<String>,
-    /// Default slot map (not plan-specific) while the form is open.
-    pub aec_opening_style_manager_default_slots:
-        std::collections::HashMap<crate::modules::aec::engine::display_component::OpeningComponentSlot, crate::modules::aec::engine::opening_style::SlotGeometry>,
-    /// Plan-type slot overlays while the form is open.
-    pub aec_opening_style_manager_display_profiles:
-        std::collections::HashMap<String, crate::modules::aec::engine::opening_style::OpeningDisplayProfile>,
-    /// Slot-table row currently targeted by the manager sketch canvas.
-    pub aec_opening_style_manager_sketch_slot: Option<usize>,
-    /// In-progress polyline in the selected slot's reference box.
-    pub aec_opening_style_manager_sketch_draft: Vec<(f64, f64)>,
-    pub aec_opening_style_manager_sketch_draft_bulges: Vec<f64>,
-
-    // ── AEC Slab Style Manager (`AEC_SLABSTYLEMANAGER`) ───────────────────
-    pub aec_slab_style_manager_filter: String,
-    pub aec_slab_style_manager_selected: Option<String>,
-    pub aec_slab_style_manager_editing_id: Option<String>,
-    pub aec_slab_style_manager_form_open: bool,
-    pub aec_slab_style_manager_preview_mode: AecSlabPreviewMode,
-    pub aec_slab_style_manager_name: String,
-    pub aec_slab_style_manager_parent: Option<String>,
-    pub aec_slab_style_manager_structural_style: Option<String>,
-    pub aec_slab_style_manager_finish_style: Option<String>,
-    pub aec_slab_style_manager_layers: Vec<AecSlabLayerBuffer>,
-    pub aec_slab_style_manager_drag_index: Option<usize>,
-    pub aec_slab_style_manager_profile_selected: Option<String>,
-    pub aec_slab_style_manager_profile_slot_visibility:
-        std::collections::HashMap<crate::modules::aec::engine::display_component::SlabComponentSlot, bool>,
-    pub aec_slab_style_manager_profile_slot_overrides:
-        std::collections::HashMap<
-            crate::modules::aec::engine::display_component::SlabComponentSlot,
-            crate::modules::aec::engine::display_component::ComponentStyleOverride,
-        >,
-    pub aec_slab_style_manager_profile_editing_slot:
-        Option<crate::modules::aec::engine::display_component::SlabComponentSlot>,
     pub aec_last_slab_style_id: Option<String>,
-
-    // ── AEC Slab Structural Style Manager (`AEC_SLABSTRUCTURALSTYLEMANAGER`) ──
-    pub aec_slab_structural_style_manager_filter: String,
-    pub aec_slab_structural_style_manager_selected: Option<String>,
-    pub aec_slab_structural_style_manager_editing_id: Option<String>,
-    pub aec_slab_structural_style_manager_form_open: bool,
-    pub aec_slab_structural_style_manager_preview_mode: AecSlabPreviewMode,
-    pub aec_slab_structural_style_manager_name: String,
-    pub aec_slab_structural_style_manager_parent: Option<String>,
-    pub aec_slab_structural_style_manager_layers: Vec<AecSlabLayerBuffer>,
-    pub aec_slab_structural_style_manager_drag_index: Option<usize>,
     pub aec_last_slab_structural_style_id: Option<String>,
-
-    // ── AEC Floor Finish Style Manager (`AEC_FLOORFINISHSTYLEMANAGER`) ──
-    pub aec_floor_finish_style_manager_filter: String,
-    pub aec_floor_finish_style_manager_selected: Option<String>,
-    pub aec_floor_finish_style_manager_editing_id: Option<String>,
-    pub aec_floor_finish_style_manager_form_open: bool,
-    pub aec_floor_finish_style_manager_preview_mode: AecSlabPreviewMode,
-    pub aec_floor_finish_style_manager_name: String,
-    pub aec_floor_finish_style_manager_parent: Option<String>,
-    pub aec_floor_finish_style_manager_layers: Vec<AecSlabLayerBuffer>,
-    pub aec_floor_finish_style_manager_drag_index: Option<usize>,
     pub aec_last_floor_finish_style_id: Option<String>,
 
     // ── AEC DisplayConfig Manager (Step 5) ─────────────────────────────────
     /// Loaded (or seeded) on `AEC_PLANMANAGER`; holds the `DisplayConfig`
     /// entries the manager browses/edits.
     pub aec_plan_library: Option<crate::modules::aec::engine::library::DisplayConfigLibrary>,
-    /// Filter text applied to the DisplayConfig master list.
-    pub aec_plan_manager_filter: String,
-    /// Currently selected config name (if any), by `DisplayConfig::name`.
-    pub aec_plan_manager_selected: Option<String>,
-    /// Name of the config currently being edited, if the edit buffer holds
-    /// an existing config (`None` while composing a new/unsaved one).
-    pub aec_plan_manager_editing_name: Option<String>,
-    /// Whether the DisplayConfig edit form is visible.
-    pub aec_plan_manager_form_open: bool,
-    /// Edit-buffer fields for the DisplayConfig form.
-    pub aec_plan_manager_name: String,
-    pub aec_plan_manager_discipline: String,
-    pub aec_plan_manager_scale: String,
-    pub aec_plan_manager_planning_stage: crate::modules::aec::engine::plan_view::PlanningStage,
-    pub aec_plan_manager_view_type: crate::modules::aec::engine::plan_view::ViewType,
-    /// Two-stage phase-filter editor (Step 5), Stage 1: which
-    /// [`crate::modules::aec::engine::plan_view::PlanPhase`]s are visible
-    /// for the currently edited config, one bool per phase.
-    pub aec_plan_manager_phase_filter_visible_existing: bool,
-    pub aec_plan_manager_phase_filter_visible_demolition: bool,
-    pub aec_plan_manager_phase_filter_visible_new: bool,
-    /// Stage 2: edit-buffer for `PhaseFilter::demolition_style` (hex colors
-    /// as `"RRGGBB"` text, mirrors the old Step 8 style-editor fields).
-    pub aec_plan_manager_demolition_style_line_type: String,
-    pub aec_plan_manager_demolition_style_line_color: String,
-    pub aec_plan_manager_demolition_style_hatch_pattern: String,
-    pub aec_plan_manager_demolition_style_hatch_color: String,
-    pub aec_plan_manager_demolition_style_fill_color: String,
-    /// Stage 2: whether each `demolition_style` colour-picker dropdown is open
-    /// (mirrors the Layer Manager's `color_selector` widget pattern).
-    pub aec_plan_manager_demolition_style_line_color_picker_open: bool,
-    pub aec_plan_manager_demolition_style_hatch_color_picker_open: bool,
-    pub aec_plan_manager_demolition_style_fill_color_picker_open: bool,
-    pub aec_plan_manager_demolition_style_hatch_picker_open: bool,
-    /// Stage 2: edit-buffer for `PhaseFilter::existing_style`.
-    pub aec_plan_manager_existing_style_line_type: String,
-    pub aec_plan_manager_existing_style_line_color: String,
-    pub aec_plan_manager_existing_style_hatch_pattern: String,
-    pub aec_plan_manager_existing_style_hatch_color: String,
-    pub aec_plan_manager_existing_style_fill_color: String,
-    /// Stage 2: whether each `existing_style` colour-picker dropdown is open.
-    pub aec_plan_manager_existing_style_line_color_picker_open: bool,
-    pub aec_plan_manager_existing_style_hatch_color_picker_open: bool,
-    pub aec_plan_manager_existing_style_fill_color_picker_open: bool,
-    pub aec_plan_manager_existing_style_hatch_picker_open: bool,
-    /// Stable `DisplayConfig.id` while editing an existing plan type.
-    pub aec_plan_manager_editing_id: Option<uuid::Uuid>,
-    pub aec_plan_manager_default_representation:
-        crate::modules::aec::engine::display_component::RepresentationMode,
-    pub aec_plan_manager_component_visibility: std::collections::HashMap<
-        crate::modules::aec::engine::display_component::WallComponentKind,
-        bool,
-    >,
-    pub aec_plan_manager_style_overlays: std::collections::HashMap<
-        String,
-        crate::modules::aec::engine::display_component::StyleDisplayOverlay,
-    >,
-    pub aec_plan_manager_overlay_style_id: Option<String>,
-    pub aec_plan_manager_overlay_layer_id: Option<uuid::Uuid>,
-    pub aec_plan_manager_overlay_line_type: String,
-    pub aec_plan_manager_overlay_line_color: String,
-    pub aec_plan_manager_overlay_hatch_pattern: String,
-    pub aec_plan_manager_overlay_hatch_color: String,
-    pub aec_plan_manager_overlay_hatch_scale: String,
-    pub aec_plan_manager_overlay_hatch_angle: String,
-    /// `None` inherits; `Some(true)` hatch relative to wall run.
-    pub aec_plan_manager_overlay_hatch_angle_relative: Option<bool>,
-    pub aec_plan_manager_overlay_fill_color: String,
-    pub aec_plan_manager_overlay_line_color_picker_open: bool,
-    pub aec_plan_manager_overlay_hatch_picker_open: bool,
-    pub aec_plan_manager_overlay_hatch_color_picker_open: bool,
-    pub aec_plan_manager_overlay_fill_color_picker_open: bool,
-    pub aec_plan_manager_contour_hatch_pattern: String,
-    pub aec_plan_manager_contour_hatch_color: String,
-    pub aec_plan_manager_contour_hatch_scale: String,
-    pub aec_plan_manager_contour_hatch_angle: String,
-    pub aec_plan_manager_contour_hatch_angle_relative: Option<bool>,
-    pub aec_plan_manager_contour_hatch_picker_open: bool,
-    pub aec_plan_manager_contour_hatch_color_picker_open: bool,
-    pub aec_plan_manager_wall_styles: Vec<(String, String, Vec<(uuid::Uuid, String)>)>,
 
     // ── AEC Junction Editor Panel (Step 5) ──────────────────────────────────
     /// `(axis_handle, end_index)` of the junction currently open in the
@@ -597,175 +340,15 @@ impl Default for AecState {
             aec_session_style_library: None,
             aec_last_wall_style_id: None,
             aec_last_wall_height: None,
-            aec_style_manager_filter: String::new(),
-            aec_style_manager_selected_material: None,
-            aec_style_manager_selected_wall_style: None,
+            styles: Default::default(),
             aec_style_picker_filter: String::new(),
             aec_style_picker_selection: None,
             aec_style_picker_wall_handles: Vec::new(),
             aec_last_applied_property: None,
-            aec_style_manager_material_editing_id: None,
-            aec_style_manager_material_form_open: false,
-            aec_style_manager_material_name: String::new(),
-            aec_style_manager_material_hatch: String::new(),
-            aec_style_manager_material_color: String::new(),
-            aec_style_manager_material_line_type: String::new(),
-            aec_style_manager_material_category: String::new(),
-            aec_style_manager_material_hatch_color: 0xFFFFFF,
-            aec_style_manager_material_hatch_scale: "1.0".to_string(),
-            aec_style_manager_material_render_ref: String::new(),
-            aec_style_manager_material_hatch_angle: "0.0".to_string(),
-            aec_style_manager_material_hatch_angle_relative: true,
-            aec_style_manager_material_color_picker_open: false,
-            aec_style_manager_material_hatch_color_picker_open: false,
-            aec_style_manager_material_hatch_picker_open: false,
-            aec_style_manager_material_linetype_items: Vec::new(),
-            aec_style_manager_material_linetype_combo: iced::widget::combo_box::State::new(Vec::new()),
-            aec_style_manager_wall_style_editing_id: None,
-            aec_style_manager_wall_style_form_open: false,
-            aec_style_manager_wall_style_name: String::new(),
-            aec_style_manager_wall_style_parent: None,
-            aec_style_manager_wall_style_layers: Vec::new(),
-            aec_style_manager_wall_style_drag_index: None,
-            aec_style_manager_wall_style_sort: AecWallStyleSort::default(),
-            aec_style_manager_copy_conflict_open: false,
-            aec_style_manager_pending_copy: None,
-            aec_style_manager_profile_selected: None,
-            aec_style_manager_profile_contour_explicit: false,
-            aec_style_manager_profile_contour_selection: Vec::new(),
-            aec_style_manager_profile_solid_explicit: false,
-            aec_style_manager_profile_solid_selection: Vec::new(),
-            aec_style_manager_profile_hatch_angle: String::new(),
-            aec_style_manager_profile_hatch_relative: false,
-            aec_style_manager_profile_slot_visibility: std::collections::HashMap::new(),
-            aec_style_manager_profile_editing_slot: None,
-            aec_style_manager_profile_slot_overrides: std::collections::HashMap::new(),
-            aec_style_manager_profile_slot_style_line_type: String::new(),
-            aec_style_manager_profile_slot_style_line_color: String::new(),
-            aec_style_manager_profile_slot_style_hatch_pattern: String::new(),
-            aec_style_manager_profile_slot_style_hatch_color: String::new(),
-            aec_style_manager_profile_slot_style_fill_color: String::new(),
-            aec_style_manager_profile_slot_style_line_color_picker_open: false,
-            aec_style_manager_profile_slot_style_hatch_color_picker_open: false,
-            aec_style_manager_profile_slot_style_fill_color_picker_open: false,
-            aec_style_manager_profile_slot_style_hatch_picker_open: false,
-            aec_wall_style_manager_parent_geometry: None,
-            aec_opening_style_manager_filter: String::new(),
-            aec_opening_style_manager_selected: None,
-            aec_opening_style_manager_editing_id: None,
-            aec_opening_style_manager_form_open: false,
-            aec_opening_style_manager_preview_mode: AecOpeningPreviewMode::Plan2D,
-            aec_opening_style_manager_name: String::new(),
-            aec_opening_style_manager_parent: None,
-            aec_opening_style_manager_kind: crate::modules::aec::engine::openings::OpeningKind::Window,
-            aec_opening_style_manager_width: "1.2".to_string(),
-            aec_opening_style_manager_height: "1.2".to_string(),
-            aec_opening_style_manager_sill: "0.9".to_string(),
-            aec_opening_style_manager_frame: "0.06".to_string(),
-            aec_opening_style_manager_angle: "90".to_string(),
-            aec_opening_style_manager_spring: String::new(),
-            aec_opening_style_manager_hinge: crate::modules::aec::engine::opening_style::HingeSide::Left,
-            aec_opening_style_manager_shape: crate::modules::aec::engine::opening_shape::OpeningShape::Rectangle,
-            aec_opening_style_manager_slots: Vec::new(),
-            aec_opening_style_manager_profile_selected: None,
-            aec_opening_style_manager_default_slots: std::collections::HashMap::new(),
-            aec_opening_style_manager_display_profiles: std::collections::HashMap::new(),
-            aec_opening_style_manager_sketch_slot: None,
-            aec_opening_style_manager_sketch_draft: Vec::new(),
-            aec_opening_style_manager_sketch_draft_bulges: Vec::new(),
-            aec_slab_style_manager_filter: String::new(),
-            aec_slab_style_manager_selected: None,
-            aec_slab_style_manager_editing_id: None,
-            aec_slab_style_manager_form_open: false,
-            aec_slab_style_manager_preview_mode: AecSlabPreviewMode::CrossSection,
-            aec_slab_style_manager_name: String::new(),
-            aec_slab_style_manager_parent: None,
-            aec_slab_style_manager_structural_style: None,
-            aec_slab_style_manager_finish_style: None,
-            aec_slab_style_manager_layers: Vec::new(),
-            aec_slab_style_manager_drag_index: None,
-            aec_slab_style_manager_profile_selected: None,
-            aec_slab_style_manager_profile_slot_visibility: std::collections::HashMap::new(),
-            aec_slab_style_manager_profile_slot_overrides: std::collections::HashMap::new(),
-            aec_slab_style_manager_profile_editing_slot: None,
             aec_last_slab_style_id: None,
-            aec_slab_structural_style_manager_filter: String::new(),
-            aec_slab_structural_style_manager_selected: None,
-            aec_slab_structural_style_manager_editing_id: None,
-            aec_slab_structural_style_manager_form_open: false,
-            aec_slab_structural_style_manager_preview_mode: AecSlabPreviewMode::CrossSection,
-            aec_slab_structural_style_manager_name: String::new(),
-            aec_slab_structural_style_manager_parent: None,
-            aec_slab_structural_style_manager_layers: Vec::new(),
-            aec_slab_structural_style_manager_drag_index: None,
             aec_last_slab_structural_style_id: None,
-            aec_floor_finish_style_manager_filter: String::new(),
-            aec_floor_finish_style_manager_selected: None,
-            aec_floor_finish_style_manager_editing_id: None,
-            aec_floor_finish_style_manager_form_open: false,
-            aec_floor_finish_style_manager_preview_mode: AecSlabPreviewMode::CrossSection,
-            aec_floor_finish_style_manager_name: String::new(),
-            aec_floor_finish_style_manager_parent: None,
-            aec_floor_finish_style_manager_layers: Vec::new(),
-            aec_floor_finish_style_manager_drag_index: None,
             aec_last_floor_finish_style_id: None,
             aec_plan_library: None,
-            aec_plan_manager_filter: String::new(),
-            aec_plan_manager_selected: None,
-            aec_plan_manager_editing_name: None,
-            aec_plan_manager_form_open: false,
-            aec_plan_manager_name: String::new(),
-            aec_plan_manager_discipline: String::new(),
-            aec_plan_manager_scale: String::new(),
-            aec_plan_manager_planning_stage: crate::modules::aec::engine::plan_view::PlanningStage::Design,
-            aec_plan_manager_view_type: crate::modules::aec::engine::plan_view::ViewType::FloorPlan,
-            aec_plan_manager_phase_filter_visible_existing: true,
-            aec_plan_manager_phase_filter_visible_demolition: true,
-            aec_plan_manager_phase_filter_visible_new: true,
-            aec_plan_manager_demolition_style_line_type: String::new(),
-            aec_plan_manager_demolition_style_line_color: String::new(),
-            aec_plan_manager_demolition_style_hatch_pattern: String::new(),
-            aec_plan_manager_demolition_style_hatch_color: String::new(),
-            aec_plan_manager_demolition_style_fill_color: String::new(),
-            aec_plan_manager_demolition_style_line_color_picker_open: false,
-            aec_plan_manager_demolition_style_hatch_color_picker_open: false,
-            aec_plan_manager_demolition_style_fill_color_picker_open: false,
-            aec_plan_manager_demolition_style_hatch_picker_open: false,
-            aec_plan_manager_existing_style_line_type: String::new(),
-            aec_plan_manager_existing_style_line_color: String::new(),
-            aec_plan_manager_existing_style_hatch_pattern: String::new(),
-            aec_plan_manager_existing_style_hatch_color: String::new(),
-            aec_plan_manager_existing_style_fill_color: String::new(),
-            aec_plan_manager_existing_style_line_color_picker_open: false,
-            aec_plan_manager_existing_style_hatch_color_picker_open: false,
-            aec_plan_manager_existing_style_fill_color_picker_open: false,
-            aec_plan_manager_existing_style_hatch_picker_open: false,
-            aec_plan_manager_editing_id: None,
-            aec_plan_manager_default_representation: crate::modules::aec::engine::display_component::RepresentationMode::All,
-            aec_plan_manager_component_visibility: std::collections::HashMap::new(),
-            aec_plan_manager_style_overlays: std::collections::HashMap::new(),
-            aec_plan_manager_overlay_style_id: None,
-            aec_plan_manager_overlay_layer_id: None,
-            aec_plan_manager_overlay_line_type: String::new(),
-            aec_plan_manager_overlay_line_color: String::new(),
-            aec_plan_manager_overlay_hatch_pattern: String::new(),
-            aec_plan_manager_overlay_hatch_color: String::new(),
-            aec_plan_manager_overlay_hatch_scale: String::new(),
-            aec_plan_manager_overlay_hatch_angle: String::new(),
-            aec_plan_manager_overlay_hatch_angle_relative: None,
-            aec_plan_manager_overlay_fill_color: String::new(),
-            aec_plan_manager_overlay_line_color_picker_open: false,
-            aec_plan_manager_overlay_hatch_picker_open: false,
-            aec_plan_manager_overlay_hatch_color_picker_open: false,
-            aec_plan_manager_overlay_fill_color_picker_open: false,
-            aec_plan_manager_contour_hatch_pattern: String::new(),
-            aec_plan_manager_contour_hatch_color: String::new(),
-            aec_plan_manager_contour_hatch_scale: String::new(),
-            aec_plan_manager_contour_hatch_angle: String::new(),
-            aec_plan_manager_contour_hatch_angle_relative: None,
-            aec_plan_manager_contour_hatch_picker_open: false,
-            aec_plan_manager_contour_hatch_color_picker_open: false,
-            aec_plan_manager_wall_styles: Vec::new(),
             aec_junction_editor_target: None,
             aec_junction_editor_default_style: None,
             aec_junction_editor_pairs: Vec::new(),

@@ -2,19 +2,22 @@
 //! style library (`AEC_MATERIALMANAGER`).
 
 use iced::widget::{
-    button, column, combo_box, container, row, scrollable, text, text_input, Space,
+    column, combo_box, container, row, text, text_input,
 };
-use iced::{Background, Border, Color, Element, Fill, Theme};
+use iced::{Element, Fill};
 
 use crate::app::{AecColorPickTarget, AecMessage, Message};
 use crate::modules::aec::engine::library::{
     combined_material_entries_with_session, LibrarySource, StyleLibrary,
 };
-use crate::modules::aec::engine::material::Material;
 use crate::modules::aec::engine::project::ProjectFile;
+use crate::modules::aec::engine::style_common::StyleOrigin;
 use crate::t;
 use crate::tr;
-use super::aec_ui_util::*;
+use crate::modules::aec::ui::aec_ui_util::*;
+use crate::modules::aec::ui::style_manager::actions::{self, ActionMessages};
+use crate::modules::aec::ui::style_manager::list::{self, filter_entries, ListEntry, ListSpec};
+use crate::modules::aec::ui::style_manager::StyleParts;
 
 /// Edit-buffer fields for the material form, owned by `App` and borrowed
 /// here for rendering.
@@ -58,131 +61,60 @@ pub struct MaterialFormState<'a> {
     pub linetype_combo: &'a combo_box::State<crate::ui::properties::LinetypeItem>,
 }
 
-pub fn view_window<'a>(
+pub fn parts<'a>(
     library: &'a StyleLibrary,
     project: Option<&'a ProjectFile>,
     session: Option<&'a StyleLibrary>,
-    selected_id: Option<&str>,
-    filter: &str,
+    selected_id: Option<&'a str>,
+    filter: &'a str,
     material_form: MaterialFormState<'a>,
-) -> Element<'a, Message> {
+) -> StyleParts<'a> {
     let entries = combined_material_entries_with_session(project, session);
     let standard_ids: std::collections::HashSet<String> =
         crate::modules::aec::engine::library::load_or_seed()
             .materials
             .into_iter()
-            .map(|m| m.id)
+            .map(|m| m.style.id)
             .collect();
 
-    let filter_lower = filter.to_lowercase();
-    let filtered: Vec<_> = entries
-        .into_iter()
-        .filter(|e| {
-            let m = &e.material;
-            filter.is_empty()
-                || m.name.to_lowercase().contains(&filter_lower)
-                || m.id.to_lowercase().contains(&filter_lower)
-                || m.category
-                    .as_deref()
-                    .unwrap_or("")
-                    .to_lowercase()
-                    .contains(&filter_lower)
-        })
-        .collect();
-
-    let selected_source = selected_id.and_then(|id| {
-        filtered
-            .iter()
-            .find(|e| e.material.id == id)
-            .map(|e| e.source)
-    });
-    let selected_has_standard_counterpart = selected_id
-        .map(|id| standard_ids.contains(id))
-        .unwrap_or(false);
-
-    // Group by category: named categories sorted alphabetically, then
-    // uncategorized materials under "Ohne Kategorie".
-    let mut categories: Vec<String> = filtered
+    let all: Vec<(ListEntry, LibrarySource)> = entries
         .iter()
-        .filter_map(|e| {
-            e.material
-                .category
-                .as_ref()
-                .map(|c| c.trim())
-                .filter(|c| !c.is_empty())
-                .map(|c| c.to_string())
+        .map(|e| {
+            (
+                ListEntry {
+                    id: e.material.id.clone(),
+                    label: e.material.name.clone(),
+                    detail: Some(e.material.hatch_pattern.clone()),
+                    origin: StyleOrigin::from(e.source),
+                    group: e.material.group.clone(),
+                    swatch: Some(e.material.line_color),
+                },
+                e.source,
+            )
         })
         .collect();
-    categories.sort_by(|a, b| a.to_lowercase().cmp(&b.to_lowercase()));
-    categories.dedup();
+    let rows = filter_entries(all.iter().map(|(e, _)| e.clone()).collect(), filter);
+    let selected_source = selected_id.and_then(|id| all.iter().find(|(e, _)| e.id == id).map(|(_, s)| *s));
+    let has_standard = selected_id.map(|id| standard_ids.contains(id)).unwrap_or(false);
 
-    let mut master_list = column![section_title(t!("Materials"))].spacing(2);
+    let list = list::view(
+        ListSpec {
+            title: t!("Materials").into_owned(),
+            search_hint: t!("Search materials…").into_owned(),
+            new_label: t!("New Material").into_owned(),
+            filter,
+            selected: selected_id,
+            on_filter: |v| Message::Aec(AecMessage::AecStyleManagerFilter(v)),
+            on_select: |id| Message::Aec(AecMessage::AecStyleManagerSelectMaterial(id)),
+            on_new: Message::Aec(AecMessage::AecStyleManagerMaterialNew),
+        },
+        &rows,
+    );
 
-    if filtered.is_empty() {
-        master_list = master_list.push(no_matches());
-    } else {
-        for cat in &categories {
-            master_list = master_list.push(section_title(std::borrow::Cow::Owned(cat.clone())));
-            for e in filtered.iter().filter(|e| {
-                e.material
-                    .category
-                    .as_ref()
-                    .map(|c| c.trim() == cat.as_str())
-                    .unwrap_or(false)
-            }) {
-                master_list = master_list.push(material_row(
-                    &e.material,
-                    e.source,
-                    selected_id == Some(e.material.id.as_str()),
-                ));
-            }
-        }
-
-        let uncategorized: Vec<_> = filtered
-            .iter()
-            .filter(|e| {
-                e.material
-                    .category
-                    .as_ref()
-                    .map(|c| c.trim().is_empty())
-                    .unwrap_or(true)
-            })
-            .collect();
-        if !uncategorized.is_empty() {
-            master_list = master_list.push(section_title(t!("Ohne Kategorie")));
-            for e in uncategorized {
-                master_list = master_list.push(material_row(
-                    &e.material,
-                    e.source,
-                    selected_id == Some(e.material.id.as_str()),
-                ));
-            }
-        }
-    }
-
-    let sidebar = column![
-        row![
-            text_input(t!("Search materials…").as_ref(), filter)
-                .on_input(|v| Message::Aec(AecMessage::AecStyleManagerFilter(v)))
-                .size(11)
-                .padding([4, 6]),
-            button(text("+").size(11))
-                .on_press(Message::Aec(AecMessage::AecStyleManagerMaterialNew))
-                .padding([4, 8]),
-        ]
-        .spacing(4),
-        scrollable(master_list),
-    ]
-    .spacing(8)
-    .width(220);
-
-    let detail = if material_form.open {
-        material_form_view(
-            library,
-            material_form,
-            selected_source,
-            selected_has_standard_counterpart,
-        )
+    let open = material_form.open;
+    let is_new = material_form.is_new;
+    let form = if open {
+        material_form_view(library, material_form)
     } else {
         container(text(t!("Select a material to edit or create a new one.")).style(muted))
             .width(Fill)
@@ -191,81 +123,24 @@ pub fn view_window<'a>(
             .center_y(Fill)
             .into()
     };
-
-    row![sidebar, container(detail).padding(10).width(Fill)]
-        .spacing(10)
-        .padding(10)
-        .into()
-}
-
-fn source_badge<'a>(source: LibrarySource) -> Element<'a, Message> {
-    let label = match source {
-        LibrarySource::Standard => t!("Standard"),
-        LibrarySource::Project => t!("Projekt"),
-        LibrarySource::Session => t!("Sitzung"),
-    };
-    container(text(label).size(9))
-        .padding([1, 5])
-        .style(|theme: &Theme| container::Style {
-            background: Some(Background::Color(
-                theme.palette().background.strong.color.scale_alpha(0.55),
-            )),
-            text_color: Some(theme.palette().background.base.text.scale_alpha(0.85)),
-            border: Border {
-                radius: 3.0.into(),
-                ..Default::default()
+    let actions = open.then(|| {
+        actions::view(
+            ActionMessages {
+                save_apply: Message::Aec(AecMessage::AecStyleManagerMaterialSaveAndApply),
+                save: Message::Aec(AecMessage::AecStyleManagerMaterialSave),
+                duplicate: Message::Aec(AecMessage::AecStyleManagerMaterialDuplicate),
+                delete: Message::Aec(AecMessage::AecStyleManagerMaterialDelete),
+                to_standard: Message::Aec(AecMessage::AecStyleManagerCopyMaterialToGlobal),
+                to_project: Message::Aec(AecMessage::AecStyleManagerCopyMaterialToProject),
             },
-            ..Default::default()
-        })
-        .into()
+            is_new,
+            selected_source.map(StyleOrigin::from),
+            has_standard,
+        )
+    });
+    StyleParts { list, form, actions }
 }
 
-fn material_row<'a>(
-    material: &Material,
-    source: LibrarySource,
-    selected: bool,
-) -> Element<'a, Message> {
-    let rgb = material.line_color;
-    let r = ((rgb >> 16) & 0xFF) as u8;
-    let g = ((rgb >> 8) & 0xFF) as u8;
-    let b = (rgb & 0xFF) as u8;
-    let swatch = container(Space::new())
-        .width(10)
-        .height(10)
-        .style(move |theme: &Theme| container::Style {
-            background: Some(Background::Color(Color::from_rgb8(r, g, b))),
-            border: Border {
-                color: theme.palette().background.strong.color,
-                width: 1.0,
-                radius: 2.0.into(),
-            },
-            ..Default::default()
-        });
-
-    button(
-        row![
-            swatch,
-            column![
-                row![
-                    text(material.name.clone()).size(12),
-                    Space::new().width(6),
-                    source_badge(source),
-                ]
-                .spacing(4)
-                .align_y(iced::Center),
-                text(material.hatch_pattern.clone()).size(10).style(muted),
-            ]
-            .spacing(2),
-        ]
-        .spacing(6)
-        .align_y(iced::Center),
-    )
-    .on_press(Message::Aec(AecMessage::AecStyleManagerSelectMaterial(material.id.clone())))
-    .style(list_style(selected))
-    .padding([6, 9])
-    .width(Fill)
-    .into()
-}
 
 fn rgb_u32_to_acad(rgb: u32) -> acadrust::types::Color {
     acadrust::types::Color::Rgb {
@@ -278,56 +153,12 @@ fn rgb_u32_to_acad(rgb: u32) -> acadrust::types::Color {
 fn material_form_view<'a>(
     library: &'a StyleLibrary,
     material_form: MaterialFormState<'a>,
-    selected_source: Option<LibrarySource>,
-    has_standard_counterpart: bool,
 ) -> Element<'a, Message> {
     let form_title = if material_form.is_new {
         t!("New Material")
     } else {
         t!("Material")
     };
-
-    let mut actions = row![
-        button(text(t!("Übernehmen")).size(11))
-            .style(button::primary)
-            .padding([5, 12])
-            .on_press(Message::Aec(AecMessage::AecStyleManagerMaterialSaveAndApply)),
-        button(text(t!("Speichern")).size(11))
-            .style(button::subtle)
-            .padding([5, 12])
-            .on_press(Message::Aec(AecMessage::AecStyleManagerMaterialSave)),
-    ]
-    .spacing(8);
-
-    if !material_form.is_new {
-        actions = actions.push(
-            button(text(t!("Duplizieren")).size(11))
-                .padding([5, 12])
-                .on_press(Message::Aec(AecMessage::AecStyleManagerMaterialDuplicate)),
-        );
-        actions = actions.push(
-            button(text(t!("Delete")).size(11))
-                .style(button::danger)
-                .padding([5, 12])
-                .on_press(Message::Aec(AecMessage::AecStyleManagerMaterialDelete)),
-        );
-        // → Standard: only pure project entries without a global counterpart.
-        if selected_source == Some(LibrarySource::Project) && !has_standard_counterpart {
-            actions = actions.push(
-                button(text(t!("→ Standard")).size(11))
-                    .padding([5, 12])
-                    .on_press(Message::Aec(AecMessage::AecStyleManagerCopyMaterialToGlobal)),
-            );
-        }
-        // → Projekt: only Standard entries (copy into the project library).
-        if selected_source == Some(LibrarySource::Standard) {
-            actions = actions.push(
-                button(text(t!("→ Projekt")).size(11))
-                    .padding([5, 12])
-                    .on_press(Message::Aec(AecMessage::AecStyleManagerCopyMaterialToProject)),
-            );
-        }
-    }
 
     let hatch_acad = rgb_u32_to_acad(material_form.hatch_color);
 
@@ -351,7 +182,7 @@ fn material_form_view<'a>(
         .spacing(8),
         row![
             text(t!("Hatch pattern")).size(10).style(muted).width(100),
-            super::aec_ui_util::hatch_pattern_field(
+            crate::modules::aec::ui::aec_ui_util::hatch_pattern_field(
                 material_form.hatch,
                 material_form.hatch_picker_open,
                 None,
@@ -438,7 +269,7 @@ fn material_form_view<'a>(
         .align_y(iced::Center),
         row![
             text(t!("Line type")).size(10).style(muted).width(100),
-            super::aec_ui_util::linetype_field(
+            crate::modules::aec::ui::aec_ui_util::linetype_field(
                 material_form.line_type,
                 material_form.linetype_items,
                 material_form.linetype_combo,
@@ -454,7 +285,6 @@ fn material_form_view<'a>(
                 .padding([4, 6]),
         ]
         .spacing(8),
-        actions,
     ]
     .spacing(7);
 

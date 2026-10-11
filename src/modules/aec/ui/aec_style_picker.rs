@@ -6,7 +6,7 @@ use iced::{Alignment, Background, Border, Element, Fill, Theme};
 use crate::app::{AecMessage, Message};
 use crate::modules::aec::engine::library::{
     combined_material_entries_with_session, combined_opening_style_entries_with_session,
-    combined_slab_style_entries_with_session,
+    combined_floor_finish_style_entries_with_session, combined_slab_style_entries_with_session,
     combined_wall_style_entries_with_session, LibrarySource, StyleLibrary,
 };
 use crate::modules::aec::engine::project::ProjectFile;
@@ -63,7 +63,7 @@ pub fn view_window<'a>(
     let material_sources: std::collections::HashMap<String, LibrarySource> =
         combined_material_entries_with_session(project, session)
             .into_iter()
-            .map(|e| (e.material.id, e.source))
+            .map(|e| (e.material.style.id, e.source))
             .collect();
     let wall_style_sources: std::collections::HashMap<String, LibrarySource> =
         combined_wall_style_entries_with_session(project, session)
@@ -85,6 +85,8 @@ pub fn view_window<'a>(
         crate::app::StylePickerTarget::SlabStructuralLayerMaterial(_) => t!("Select Material"),
         crate::app::StylePickerTarget::SlabLayerOverride(_) => t!("Select Layer Override"),
         crate::app::StylePickerTarget::SlabPropertiesStyle => t!("Select Slab Style"),
+        crate::app::StylePickerTarget::FloorFinishStyleParent => t!("Select Parent Style"),
+        crate::app::StylePickerTarget::FloorFinishLayerMaterial(_) => t!("Select Material"),
     };
 
     let query = filter.trim().to_lowercase();
@@ -281,7 +283,57 @@ pub fn view_window<'a>(
             scrollable(column(rows).spacing(2)).into()
         }
 
+        crate::app::StylePickerTarget::FloorFinishStyleParent => {
+            let sources: std::collections::HashMap<String, LibrarySource> =
+                combined_floor_finish_style_entries_with_session(project, session)
+                    .into_iter()
+                    .map(|e| (e.finish_style.style.id, e.source))
+                    .collect();
+            let mut rows: Vec<Element<'_, Message>> = Vec::new();
+            let none_label = t!("(None)").into_owned();
+            let none_selected = selection.is_none() || selection == Some("");
+            rows.push(
+                button(text(none_label).size(12))
+                    .on_press(Message::Aec(AecMessage::AecStylePickerSelect(
+                        String::new(),
+                    )))
+                    .style(list_style(none_selected))
+                    .padding([4, 8])
+                    .width(Fill)
+                    .into(),
+            );
+            rows.extend(
+                library
+                    .floor_finish_styles
+                    .iter()
+                    .filter(|s| query.is_empty() || s.style.name.to_lowercase().contains(&query))
+                    .map(|s| {
+                        let is_selected = selection == Some(s.style.id.as_str());
+                        let source = sources
+                            .get(&s.style.id)
+                            .copied()
+                            .unwrap_or(LibrarySource::Standard);
+                        button(
+                            row![
+                                text(s.style.name.clone()).size(12),
+                                Space::new().width(6),
+                                source_badge(source),
+                            ]
+                            .align_y(Alignment::Center),
+                        )
+                        .on_press(Message::Aec(AecMessage::AecStylePickerSelect(
+                            s.style.id.clone(),
+                        )))
+                        .style(list_style(is_selected))
+                        .padding([4, 8])
+                        .width(Fill)
+                        .into()
+                    }),
+            );
+            scrollable(column(rows).spacing(2)).into()
+        }
         crate::app::StylePickerTarget::LayerMaterial(_)
+        | crate::app::StylePickerTarget::FloorFinishLayerMaterial(_)
         | crate::app::StylePickerTarget::SlabLayerMaterial(_)
         | crate::app::StylePickerTarget::SlabStructuralLayerMaterial(_) => {
             let rows: Vec<Element<'_, Message>> = library.materials

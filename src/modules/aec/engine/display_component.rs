@@ -479,6 +479,13 @@ pub struct StyleDisplayOverlay {
     /// Optional look for the overall 2D contour hatch (`ContourHatch2D`).
     #[serde(default)]
     pub contour_hatch: Option<ComponentStyleOverride>,
+    /// Plan-level rule set for a wall / slab style; replaces the style's
+    /// default profile where it has entries (visibility, style, layer filter).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rules: Option<ComponentRuleSet>,
+    /// Plan-level slot geometry / visibility for an opening style.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub opening: Option<crate::modules::aec::engine::opening_style::OpeningDisplayProfile>,
 }
 
 /// A full, self-contained style override for a single slot or layer —
@@ -619,9 +626,11 @@ pub struct ComponentRuleSet {
     /// means `All` — see [`Self::layer_filter_for`].
     #[serde(default)]
     pub layer_filter: HashMap<String, LayerSelection>,
-    /// Active `DisplayConfig` name, used to pick opening-style display profiles.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub plan_name: Option<String>,
+    /// Plan-level opening display overrides keyed by opening `Style.id`
+    /// (copied from `DisplayConfig::style_overrides`); applied on top of the
+    /// opening style's default profile.
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub opening_profiles: HashMap<String, crate::modules::aec::engine::opening_style::OpeningDisplayProfile>,
 }
 
 impl ComponentRuleSet {
@@ -969,8 +978,9 @@ mod tests {
             style: Style {
                 id: id.to_string(),
                 name: id.to_string(),
-                object_kind: "Wall".to_string(),
-                parent_style_id: None,
+                category: "Wall".to_string(),
+                origin: Default::default(),
+                parent: None,
             },
             layers: layers
                 .into_iter()
@@ -987,7 +997,7 @@ mod tests {
                     layer_id: Uuid::new_v4(),
                 })
                 .collect(),
-            display_profiles: std::collections::HashMap::new(),
+            default_profile: None,
         }
     }
 

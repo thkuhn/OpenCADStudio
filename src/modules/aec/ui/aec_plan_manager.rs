@@ -10,7 +10,7 @@
 //! The old per-slot visibility/style-override table, the Layer-Filter-UI,
 //! and the Style-Substitutions-UI are gone: those overrides now live
 //! style-centered on `WallStyle::display_profiles`, edited in the wall style
-//! manager instead (see `aec_wall_style_manager.rs`).
+//! manager instead (see `style_manager/forms/wall.rs`).
 
 use std::collections::HashMap;
 
@@ -23,7 +23,13 @@ use crate::modules::aec::engine::display_component::{
     ComponentStyleOverride, RepresentationMode, StyleDisplayOverlay, WallComponentKind,
 };
 use crate::modules::aec::engine::library::DisplayConfigLibrary;
-use crate::modules::aec::engine::plan_view::{DisplayConfig, PlanPhase, PlanningStage, ViewType};
+use crate::modules::aec::engine::plan_view::{
+    DetailProfile, DetailSwitch, LayerDetail, PlanPhase, PlanningStage, ViewType,
+};
+use crate::modules::aec::engine::style_common::StyleOrigin;
+use super::style_manager::actions::{self, ActionMessages};
+use super::style_manager::list::{self, filter_entries, ListEntry, ListSpec};
+use super::style_manager::StyleParts;
 use crate::t;
 use crate::tr;
 use super::aec_ui_util::*;
@@ -54,20 +60,24 @@ const VIEW_TYPES: [ViewType; 3] = [ViewType::FloorPlan, ViewType::Section, ViewT
 /// Parses a planning stage label (as produced by [`planning_stage_label`]) back
 /// into a [`PlanningStage`], defaulting to `Design` for anything unrecognized.
 pub fn planning_stage_from_label(label: &str) -> PlanningStage {
-    match label {
-        "Genehmigungsplanung" => PlanningStage::Permit,
-        "Ausführungsplanung" => PlanningStage::Execution,
-        _ => PlanningStage::Design,
+    if label == planning_stage_label(PlanningStage::Permit) {
+        PlanningStage::Permit
+    } else if label == planning_stage_label(PlanningStage::Execution) {
+        PlanningStage::Execution
+    } else {
+        PlanningStage::Design
     }
 }
 
 /// Parses a view-type label (as produced by [`view_type_label`]) back into
 /// a [`ViewType`], defaulting to `FloorPlan` for anything unrecognized.
 pub fn view_type_from_label(label: &str) -> ViewType {
-    match label {
-        "Schnitt" => ViewType::Section,
-        "Ansicht" => ViewType::Elevation,
-        _ => ViewType::FloorPlan,
+    if label == view_type_label(ViewType::Section) {
+        ViewType::Section
+    } else if label == view_type_label(ViewType::Elevation) {
+        ViewType::Elevation
+    } else {
+        ViewType::FloorPlan
     }
 }
 
@@ -97,11 +107,12 @@ pub struct PlanConfigFormState<'a> {
     pub demolition_style: StyleEditorFormState<'a>,
     /// Stage 2: the inline style-override form for `PhaseFilter::existing_style`.
     pub existing_style: StyleEditorFormState<'a>,
+    pub detail: DetailProfile,
     pub default_representation: RepresentationMode,
     pub component_visibility: &'a HashMap<WallComponentKind, bool>,
     /// `(style.id, style.name, layers as (layer_id, label))`.
     pub wall_styles: &'a [(String, String, Vec<(Uuid, String)>)],
-    pub style_overlays: &'a HashMap<String, StyleDisplayOverlay>,
+    pub style_overrides: &'a HashMap<String, StyleDisplayOverlay>,
     pub overlay_style_id: Option<&'a str>,
     pub overlay_layer_id: Option<Uuid>,
     pub overlay_line_type: &'a str,
@@ -129,50 +140,49 @@ pub struct PlanConfigFormState<'a> {
 
 pub use super::aec_ui_util::{StyleEditorFormState, style_editor_form};
 
-pub fn view_window<'a>(
+/// `AEC_STYLES` node *Planarten*: list of plan kinds, form, action bar.
+pub fn parts<'a>(
     library: &'a DisplayConfigLibrary,
-    selected_name: Option<&str>,
-    filter: &str,
+    from_project: bool,
+    selected_name: Option<&'a str>,
+    filter: &'a str,
     form: PlanConfigFormState<'a>,
-) -> Element<'a, Message> {
-    let filter_lower = filter.to_lowercase();
-    let filtered: Vec<&'a DisplayConfig> = library
+) -> StyleParts<'a> {
+    let origin = if from_project { StyleOrigin::Project } else { StyleOrigin::Default };
+    let all: Vec<ListEntry> = library
         .configs
         .iter()
-        .filter(|c| {
-            filter.is_empty()
-                || c.name.to_lowercase().contains(&filter_lower)
-                || c.discipline.to_lowercase().contains(&filter_lower)
+        .map(|c| ListEntry {
+            id: c.name.clone(),
+            label: c.name.clone(),
+            detail: Some(format!(
+                "{} · {}",
+                c.discipline,
+                c.scale.map(|s| format!("1:{s}")).unwrap_or_else(|| "–".into())
+            )),
+            origin,
+            group: None,
+            swatch: None,
         })
         .collect();
-
-    let mut master_list = column![section_title(t!("DisplayConfigs"))].spacing(2);
-    if filtered.is_empty() {
-        master_list = master_list.push(no_matches());
-    } else {
-        for cfg in &filtered {
-            master_list = master_list.push(config_row(cfg, selected_name == Some(cfg.name.as_str())));
-        }
-    }
-
-    let sidebar = column![
-        row![
-            text_input(t!("Search configs…").as_ref(), filter)
-                .on_input(|v| Message::Aec(AecMessage::AecPlanManagerFilter(v)))
-                .size(11)
-                .padding([4, 6]),
-            button(text("+").size(11))
-                .on_press(Message::Aec(AecMessage::AecPlanManagerNew))
-                .padding([4, 8]),
-        ]
-        .spacing(4),
-        scrollable(master_list),
-    ]
-    .spacing(8)
-    .width(220);
-
-    let detail_content = if form.open {
-        config_form_view(form)
+    let rows = filter_entries(all, filter);
+    let list = list::view(
+        ListSpec {
+            title: t!("Planarten").into_owned(),
+            search_hint: t!("Search configs…").into_owned(),
+            new_label: t!("+ Neue Planart").into_owned(),
+            filter,
+            selected: selected_name,
+            on_filter: |s| Message::Aec(AecMessage::AecPlanManagerFilter(s)),
+            on_select: |n| Message::Aec(AecMessage::AecPlanManagerSelect(n)),
+            on_new: Message::Aec(AecMessage::AecPlanManagerNew),
+        },
+        &rows,
+    );
+    let open = form.open;
+    let is_new = form.is_new;
+    let form_el: Element<'a, Message> = if open {
+        scrollable(config_form_view(form)).width(Fill).height(Fill).into()
     } else {
         container(text(t!("Select a DisplayConfig to edit or create a new one.")).style(muted))
             .width(Fill)
@@ -181,35 +191,67 @@ pub fn view_window<'a>(
             .center_y(Fill)
             .into()
     };
-
-    let detail = scrollable(column![detail_content].spacing(10))
-        .width(Fill)
-        .height(Fill);
-
-    row![sidebar, container(detail).width(Fill)]
-        .spacing(10)
-        .padding(10)
-        .into()
+    let actions = open.then(|| {
+        actions::view(
+            ActionMessages {
+                save_apply: Message::Aec(AecMessage::AecPlanManagerApply),
+                save: Message::Aec(AecMessage::AecPlanManagerSave),
+                duplicate: Message::Aec(AecMessage::AecPlanManagerDuplicate),
+                delete: Message::Aec(AecMessage::AecPlanManagerDelete),
+                to_standard: Message::Aec(AecMessage::AecPlanManagerSave),
+                to_project: Message::Aec(AecMessage::AecPlanManagerSave),
+            },
+            is_new,
+            None,
+            false,
+        )
+    });
+    StyleParts { list, form: form_el, actions }
 }
 
-fn config_row<'a>(config: &'a DisplayConfig, selected: bool) -> Element<'a, Message> {
-    let subtitle = format!(
-        "{} · {} · {}",
-        config.discipline,
-        planning_stage_label(config.planning_stage),
-        view_type_label(config.view_type)
-    );
-    button(
+fn layer_detail_label(d: LayerDetail) -> String {
+    match d {
+        LayerDetail::All => t!("Alle Schichten").into_owned(),
+        LayerDetail::StructuralOnly => t!("Nur Tragschicht").into_owned(),
+        LayerDetail::Off => t!("Aus").into_owned(),
+    }
+}
+
+const LAYER_DETAILS: [LayerDetail; 3] = [LayerDetail::All, LayerDetail::StructuralOnly, LayerDetail::Off];
+
+/// Detail level of the plan kind (`DetailProfile` switches).
+fn detail_section<'a>(detail: DetailProfile) -> Element<'a, Message> {
+    let toggle = |label: String, value: bool, switch: DetailSwitch| {
+        iced::widget::checkbox(value)
+            .label(label)
+            .on_toggle(move |v| Message::Aec(AecMessage::AecPlanManagerDetailToggle(switch, v)))
+            .size(13)
+            .text_size(11)
+    };
+    container(
         column![
-            text(config.name.as_str()).size(12),
-            text(subtitle).size(10).style(muted),
+            text(t!("Detailstufe")).size(11),
+            row![
+                text(t!("Schichten")).size(10).style(muted).width(100),
+                pick_list(
+                    Some(detail.layers),
+                    &LAYER_DETAILS[..],
+                    |d: &LayerDetail| layer_detail_label(*d),
+                )
+                .on_select(|v| Message::Aec(AecMessage::AecPlanManagerDetailLayersChanged(v)))
+                .text_size(11)
+                .width(160),
+            ]
+            .spacing(8),
+            toggle(t!("Schraffuren").into_owned(), detail.hatches, DetailSwitch::Hatches),
+            toggle(t!("Beschriftung").into_owned(), detail.annotation, DetailSwitch::Annotation),
+            toggle(t!("Öffnungssymbole").into_owned(), detail.opening_symbols, DetailSwitch::OpeningSymbols),
+            toggle(t!("Deckenspiegel").into_owned(), detail.ceiling_view, DetailSwitch::CeilingView),
         ]
-        .spacing(2),
+        .spacing(6),
     )
-    .on_press(Message::Aec(AecMessage::AecPlanManagerSelect(config.name.clone())))
-    .style(list_style(selected))
-    .padding([6, 9])
-    .width(Fill)
+    .padding(8)
+    .style(container::bordered_box)
     .into()
 }
 
@@ -219,37 +261,6 @@ fn config_form_view<'a>(form: PlanConfigFormState<'a>) -> Element<'a, Message> {
     } else {
         t!("DisplayConfig")
     };
-
-    let mut actions = row![
-        button(text(t!("Übernehmen")).size(11))
-            .style(button::primary)
-            .padding([5, 12])
-            .on_press(Message::Aec(AecMessage::AecPlanManagerApply)),
-        button(text(t!("Speichern")).size(11))
-            .style(button::subtle)
-            .padding([5, 12])
-            .on_press(Message::Aec(AecMessage::AecPlanManagerSave)),
-    ]
-    .spacing(8);
-
-    if !form.is_new {
-        actions = actions.push(
-            button(text(t!("Duplizieren")).size(11))
-                .padding([5, 12])
-                .on_press(Message::Aec(AecMessage::AecPlanManagerDuplicate)),
-        );
-        actions = actions.push(
-            button(text(t!("Löschen")).size(11))
-                .style(button::danger)
-                .padding([5, 12])
-                .on_press(Message::Aec(AecMessage::AecPlanManagerDelete)),
-        );
-    }
-    actions = actions.push(
-        button(text(t!("Schließen")).size(11))
-            .padding([5, 12])
-            .on_press(Message::Aec(AecMessage::AecPlanManagerClose)),
-    );
 
     let phase_filter_section = phase_filter_section_view(
         form.phase_filter_visible_existing,
@@ -278,7 +289,7 @@ fn config_form_view<'a>(form: PlanConfigFormState<'a>) -> Element<'a, Message> {
         ]
         .spacing(8),
         row![
-            text(t!("Maßstab (info)")).size(10).style(muted).width(100),
+            text(t!("Maßstab")).size(10).style(muted).width(100),
             text_input(tr!("aec", "scale-placeholder").as_str(), form.scale)
                 .on_input(|v| Message::Aec(AecMessage::AecPlanManagerScaleChanged(v)))
                 .size(11)
@@ -311,13 +322,13 @@ fn config_form_view<'a>(form: PlanConfigFormState<'a>) -> Element<'a, Message> {
         ]
         .spacing(8),
         Space::new().height(6),
+        detail_section(form.detail),
+        Space::new().height(6),
         global_display_section(form.default_representation, form.component_visibility),
         Space::new().height(6),
         overlay_section_view(&form),
         Space::new().height(6),
         phase_filter_section,
-        Space::new(),
-        actions,
     ]
     .spacing(7)
     .into()
@@ -574,7 +585,7 @@ fn contour_hatch_section_view<'a>(form: &PlanConfigFormState<'a>) -> Element<'a,
 }
 
 fn overlay_section_view<'a>(form: &PlanConfigFormState<'a>) -> Element<'a, Message> {
-    let overlay_style_ids: Vec<String> = form.style_overlays.keys().cloned().collect();
+    let overlay_style_ids: Vec<String> = form.style_overrides.keys().cloned().collect();
     let mut exception_rows = column![].spacing(2);
     if overlay_style_ids.is_empty() {
         exception_rows = exception_rows.push(
@@ -604,7 +615,7 @@ fn overlay_section_view<'a>(form: &PlanConfigFormState<'a>) -> Element<'a, Messa
     let mut add_row = row![text(t!("Ausnahme hinzufügen")).size(10).style(muted)].spacing(6);
     let mut added_any = false;
     for (id, name, _) in form.wall_styles.iter() {
-        if form.style_overlays.contains_key(id) {
+        if form.style_overrides.contains_key(id) {
             continue;
         }
         added_any = true;
@@ -657,7 +668,7 @@ fn overlay_section_view<'a>(form: &PlanConfigFormState<'a>) -> Element<'a, Messa
 
     let vis = form
         .overlay_style_id
-        .and_then(|sid| form.style_overlays.get(sid))
+        .and_then(|sid| form.style_overrides.get(sid))
         .and_then(|o| form.overlay_layer_id.and_then(|lid| o.layer_visibility.get(&lid).copied()))
         .unwrap_or_default();
 
@@ -940,21 +951,12 @@ mod tests {
 
     #[test]
     fn planning_stage_and_view_type_label_roundtrip() {
-        assert_eq!(
-            planning_stage_from_label("Genehmigungsplanung"),
-            PlanningStage::Permit
-        );
-        assert_eq!(
-            planning_stage_from_label("Entwurfsplanung"),
-            PlanningStage::Design
-        );
-        assert_eq!(
-            planning_stage_from_label("Ausführungsplanung"),
-            PlanningStage::Execution
-        );
-        assert_eq!(view_type_from_label("Grundriss"), ViewType::FloorPlan);
-        assert_eq!(view_type_from_label("Schnitt"), ViewType::Section);
-        assert_eq!(view_type_from_label("Ansicht"), ViewType::Elevation);
+        for stage in PLANNING_STAGES {
+            assert_eq!(planning_stage_from_label(&planning_stage_label(stage)), stage);
+        }
+        for view_type in VIEW_TYPES {
+            assert_eq!(view_type_from_label(&view_type_label(view_type)), view_type);
+        }
     }
 
     #[test]

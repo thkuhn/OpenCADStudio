@@ -97,7 +97,7 @@ pub fn aec_plane_facet_do(
     let facet_name = format!("Facet_{}", (verts[0][2] * 100.0).round() as i64);
     let facet = ControlPlaneFacet::new(facet_name, verts);
 
-    command_line.push_info(&format!(
+    command_line.push_info(&crate::tf!(
         "AEC_PLANE_FACET: Polygon-Ebene '{}' erstellt (Neigung: {:.1}°).",
         facet.name,
         facet.slope_degrees(),

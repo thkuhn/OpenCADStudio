@@ -53,9 +53,9 @@ pub const EDITABLE_SLOTS: &[OpeningComponentSlot] = &[
 pub fn tool() -> ToolDef {
     ToolDef {
         id: "AEC_OPENINGSTYLEMANAGER",
-        label: "Opening Style Manager",
+        label: "Opening",
         icon: IconKind::Svg(include_bytes!(
-            "../../../../assets/icons/aec/wall_style_manager.svg"
+            "../../../../assets/icons/aec/style_opening.svg"
         )),
         event: ModuleEvent::Command("AEC_OPENINGSTYLEMANAGER".to_string()),
     }
@@ -162,48 +162,89 @@ fn profile_from_buffers(buffers: &[AecOpeningSlotBuffer]) -> OpeningDisplayProfi
             AecOpeningSlotSource::Sketch => SlotGeometry::Sketch(buf.sketch.clone()),
         };
         profile.slots.insert(buf.slot, geom);
-        if !buf.visible {
-            profile.visibility.insert(buf.slot.key().to_string(), false);
-        }
+        profile.visibility.insert(buf.slot.key().to_string(), buf.visible);
     }
     profile
 }
 
 fn buffers_for_profile(
     default_slots: &HashMap<OpeningComponentSlot, SlotGeometry>,
+    style_profile: Option<&OpeningDisplayProfile>,
     profiles: &HashMap<String, OpeningDisplayProfile>,
     plan: Option<&str>,
 ) -> Vec<AecOpeningSlotBuffer> {
-    if let Some(name) = plan {
-        let profile = profiles.get(name).cloned().unwrap_or_default();
-        let mut merged = default_slots.clone();
+    let mut merged = default_slots.clone();
+    for profile in [style_profile, plan.and_then(|name| profiles.get(name))].into_iter().flatten() {
         for (slot, geom) in &profile.slots {
             merged.insert(*slot, geom.clone());
         }
-        let mut bufs = slot_buffers_from_map(&merged);
-        for buf in &mut bufs {
-            buf.visible = profile
-                .visibility
-                .get(buf.slot.key())
-                .copied()
-                .unwrap_or(true);
-        }
-        bufs
-    } else {
-        slot_buffers_from_map(default_slots)
     }
+    let mut bufs = slot_buffers_from_map(&merged);
+    for buf in &mut bufs {
+        buf.visible = plan.and_then(|name| profiles.get(name))
+            .and_then(|p| p.visibility.get(buf.slot.key()))
+            .or_else(|| style_profile.and_then(|p| p.visibility.get(buf.slot.key())))
+            .copied().unwrap_or(true);
+    }
+    bufs
 }
 
 fn apply_current_buffers_to_store(app: &mut OpenCADStudio) {
     commit_sketch_draft(app, false);
-    if let Some(name) = app.aec.aec_opening_style_manager_profile_selected.clone() {
-        app.aec
-            .aec_opening_style_manager_display_profiles
-            .insert(name, profile_from_buffers(&app.aec.aec_opening_style_manager_slots));
+    if let Some(name) = app.aec.styles.opening_profile_selected.clone() {
+        let previous = buffers_for_profile(
+            &app.aec.styles.opening_default_slots,
+            app.aec.styles.opening_default_profile.as_ref(),
+            &app.aec.styles.opening_display_profiles,
+            Some(&name),
+        );
+        let current = &app.aec.styles.opening_slots;
+        if slots_from_buffers(current) != slots_from_buffers(&previous)
+            || current.iter().any(|b| previous.iter().find(|p| p.slot == b.slot).is_some_and(|p| p.visible != b.visible))
+        {
+            app.aec.styles.opening_display_profiles.insert(name, profile_from_buffers(current));
+        }
     } else {
-        app.aec.aec_opening_style_manager_default_slots =
-            slots_from_buffers(&app.aec.aec_opening_style_manager_slots);
+        let previous = buffers_for_profile(
+            &app.aec.styles.opening_default_slots,
+            app.aec.styles.opening_default_profile.as_ref(),
+            &app.aec.styles.opening_display_profiles,
+            None,
+        );
+        let current = &app.aec.styles.opening_slots;
+        if slots_from_buffers(current) != slots_from_buffers(&previous)
+            || current.iter().any(|b| previous.iter().find(|p| p.slot == b.slot).is_some_and(|p| p.visible != b.visible))
+        {
+            app.aec.styles.opening_default_profile = Some(profile_from_buffers(current));
+        }
     }
+}
+
+/// Detaches the form from plan overrides (used by New / Duplicate): the
+/// buffers show the style default again and no plan profile is carried over.
+pub(super) fn detach_plan_profiles(app: &mut OpenCADStudio, keep_default_profile: bool) {
+    if !keep_default_profile {
+        app.aec.styles.opening_default_profile = None;
+    }
+    app.aec.styles.opening_display_profiles.clear();
+    app.aec.styles.opening_profile_selected = None;
+    app.aec.styles.opening_slots = buffers_for_profile(
+        &app.aec.styles.opening_default_slots,
+        app.aec.styles.opening_default_profile.as_ref(),
+        &app.aec.styles.opening_display_profiles,
+        None,
+    );
+    app.aec.styles.opening_sketch_slot = app
+        .aec
+        .styles
+        .opening_slots
+        .iter()
+        .position(|b| b.source == AecOpeningSlotSource::Sketch);
+}
+
+/// Flushes the visible buffers into the profile store (default or plan).
+pub(super) fn flush_buffers(app: &mut OpenCADStudio) {
+    apply_current_buffers_to_store(app);
 }
 
 pub fn draft_opening_style(
@@ -223,7 +264,7 @@ pub fn draft_opening_style(
 ) -> Result<OpeningStyle, String> {
     let name = name.trim();
     if name.is_empty() {
-        return Err("name empty".to_string());
+        return Err(crate::t!("name empty").into_owned());
     }
     if width <= 0.0 || height <= 0.0 {
         return Err("size".to_string());
@@ -246,8 +287,9 @@ pub fn draft_opening_style(
         style: Style {
             id,
             name: name.to_string(),
-            object_kind: OpeningStyle::object_kind_for(kind).to_string(),
-            parent_style_id: parent_id,
+            category: crate::modules::aec::engine::style_common::CATEGORY_OPENING.to_string(),
+            origin: Default::default(),
+            parent: parent_id,
         },
         kind,
         default_width: width,
@@ -259,7 +301,7 @@ pub fn draft_opening_style(
         shape,
         spring_height,
         slots,
-        display_profiles: HashMap::new(),
+        default_profile: None,
     })
 }
 
@@ -487,58 +529,76 @@ pub fn preview_baked_paths_for_mode(
 }
 
 fn load_buffers_from_style(app: &mut OpenCADStudio, style: &OpeningStyle) {
-    app.aec.aec_opening_style_manager_editing_id = Some(style.style.id.clone());
-    app.aec.aec_opening_style_manager_name = style.style.name.clone();
-    app.aec.aec_opening_style_manager_parent = style.style.parent_style_id.clone();
-    app.aec.aec_opening_style_manager_kind = style.kind;
-    app.aec.aec_opening_style_manager_width = format_dim(style.default_width);
-    app.aec.aec_opening_style_manager_height = format_dim(style.default_height);
-    app.aec.aec_opening_style_manager_sill = format_dim(style.default_sill);
-    app.aec.aec_opening_style_manager_frame = format_dim(style.frame_thickness);
-    app.aec.aec_opening_style_manager_angle = format_dim(style.opening_angle_deg);
-    app.aec.aec_opening_style_manager_spring = if style.shape == OpeningShape::Arch {
+    app.aec.styles.opening_editing_id = Some(style.style.id.clone());
+    app.aec.styles.opening_name = style.style.name.clone();
+    app.aec.styles.opening_parent = style.style.parent.clone();
+    app.aec.styles.opening_kind = style.kind;
+    app.aec.styles.opening_width = format_dim(style.default_width);
+    app.aec.styles.opening_height = format_dim(style.default_height);
+    app.aec.styles.opening_sill = format_dim(style.default_sill);
+    app.aec.styles.opening_frame = format_dim(style.frame_thickness);
+    app.aec.styles.opening_angle = format_dim(style.opening_angle_deg);
+    app.aec.styles.opening_spring = if style.shape == OpeningShape::Arch {
         format_dim(style.spring_height)
     } else {
         String::new()
     };
-    app.aec.aec_opening_style_manager_hinge = style.hinge;
-    app.aec.aec_opening_style_manager_shape = style.shape;
-    app.aec.aec_opening_style_manager_default_slots = style.slots.clone();
-    app.aec.aec_opening_style_manager_display_profiles = style.display_profiles.clone();
-    app.aec.aec_opening_style_manager_profile_selected = None;
-    app.aec.aec_opening_style_manager_slots = slot_buffers_from_map(&style.slots);
-    reset_sketch_draft(app);
-    app.aec.aec_opening_style_manager_sketch_slot = app
+    app.aec.styles.opening_hinge = style.hinge;
+    app.aec.styles.opening_shape = style.shape;
+    app.aec.styles.opening_default_slots = style.slots.clone();
+    app.aec.styles.opening_default_profile = style.default_profile.clone();
+    app.aec.styles.opening_display_profiles = app
         .aec
-        .aec_opening_style_manager_slots
+        .aec_plan_library
+        .as_ref()
+        .map(|lib| {
+            lib.configs
+                .iter()
+                .filter_map(|c| {
+                    c.style_overrides
+                        .get(&style.style.id)
+                        .and_then(|o| o.opening.clone())
+                        .map(|p| (c.name.clone(), p))
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    app.aec.styles.opening_profile_selected = None;
+    app.aec.styles.opening_slots = buffers_for_profile(
+        &style.slots, style.default_profile.as_ref(), &app.aec.styles.opening_display_profiles, None,
+    );
+    reset_sketch_draft(app);
+    app.aec.styles.opening_sketch_slot = app
+        .aec
+        .styles.opening_slots
         .iter()
         .position(|b| b.source == AecOpeningSlotSource::Sketch);
-    app.aec.aec_opening_style_manager_form_open = true;
+    app.aec.styles.opening_form_open = true;
 }
 
 fn reset_sketch_draft(app: &mut OpenCADStudio) {
-    app.aec.aec_opening_style_manager_sketch_draft.clear();
-    app.aec.aec_opening_style_manager_sketch_draft_bulges.clear();
+    app.aec.styles.opening_sketch_draft.clear();
+    app.aec.styles.opening_sketch_draft_bulges.clear();
 }
 
 fn commit_sketch_draft(app: &mut OpenCADStudio, closed: bool) {
-    let Some(index) = app.aec.aec_opening_style_manager_sketch_slot else {
+    let Some(index) = app.aec.styles.opening_sketch_slot else {
         reset_sketch_draft(app);
         return;
     };
-    if index >= app.aec.aec_opening_style_manager_slots.len() {
+    if index >= app.aec.styles.opening_slots.len() {
         reset_sketch_draft(app);
         return;
     }
-    let buf = &mut app.aec.aec_opening_style_manager_slots[index];
+    let buf = &mut app.aec.styles.opening_slots[index];
     if buf.source != AecOpeningSlotSource::Sketch {
         reset_sketch_draft(app);
         return;
     }
     commit_draft(
         &mut buf.sketch,
-        &mut app.aec.aec_opening_style_manager_sketch_draft,
-        &mut app.aec.aec_opening_style_manager_sketch_draft_bulges,
+        &mut app.aec.styles.opening_sketch_draft,
+        &mut app.aec.styles.opening_sketch_draft_bulges,
         closed,
     );
 }
@@ -557,32 +617,32 @@ fn ensure_sketch_ref_box(buf: &mut AecOpeningSlotBuffer, width: f64) {
 }
 
 fn apply_size_lock(app: &mut OpenCADStudio, prefer_width: bool) {
-    let width = parse_dim(&app.aec.aec_opening_style_manager_width);
-    let height = parse_dim(&app.aec.aec_opening_style_manager_height);
-    match app.aec.aec_opening_style_manager_shape {
+    let width = parse_dim(&app.aec.styles.opening_width);
+    let height = parse_dim(&app.aec.styles.opening_height);
+    match app.aec.styles.opening_shape {
         OpeningShape::Circle => {
             if prefer_width {
                 if let Some(w) = width.filter(|v| *v > 0.0) {
-                    app.aec.aec_opening_style_manager_height = format_dim(w);
+                    app.aec.styles.opening_height = format_dim(w);
                 }
             } else if let Some(h) = height.filter(|v| *v > 0.0) {
-                app.aec.aec_opening_style_manager_width = format_dim(h);
+                app.aec.styles.opening_width = format_dim(h);
             }
         }
         OpeningShape::Triangle(
             crate::modules::aec::engine::opening_shape::TriangleVariant::Equilateral,
         ) => {
             if let Some(w) = width.filter(|v| *v > 0.0) {
-                app.aec.aec_opening_style_manager_height =
+                app.aec.styles.opening_height =
                     format_dim(OpeningShape::equilateral_height(w));
             }
         }
         OpeningShape::Arch => {
-            let spring = parse_dim(&app.aec.aec_opening_style_manager_spring).unwrap_or(0.0);
+            let spring = parse_dim(&app.aec.styles.opening_spring).unwrap_or(0.0);
             if spring <= 1e-12 {
                 if let (Some(w), Some(h)) = (width, height) {
                     if h > 0.0 {
-                        app.aec.aec_opening_style_manager_spring =
+                        app.aec.styles.opening_spring =
                             format_dim(OpeningShape::default_spring_height(w, h));
                     }
                 }
@@ -596,20 +656,21 @@ impl OpenCADStudio {
     pub(crate) fn aec_opening_style_manager_open(&mut self) -> Task<Message> {
         self.ribbon.close_dropdown();
         self.aec_refresh_combined_style_library();
-        self.aec.aec_opening_style_manager_filter.clear();
-        self.aec.aec_opening_style_manager_selected = None;
-        self.aec.aec_opening_style_manager_editing_id = None;
-        self.aec.aec_opening_style_manager_form_open = false;
-        self.aec.aec_opening_style_manager_slots.clear();
-        self.aec.aec_opening_style_manager_default_slots.clear();
-        self.aec.aec_opening_style_manager_display_profiles.clear();
-        self.aec.aec_opening_style_manager_profile_selected = None;
+        self.aec.styles.opening_filter.clear();
+        self.aec.styles.opening_selected = None;
+        self.aec.styles.opening_editing_id = None;
+        self.aec.styles.opening_form_open = false;
+        self.aec.styles.opening_slots.clear();
+        self.aec.styles.opening_default_slots.clear();
+        self.aec.styles.opening_display_profiles.clear();
+        self.aec.styles.opening_default_profile = None;
+        self.aec.styles.opening_profile_selected = None;
         self.aec.aec_plan_library = Some(
             crate::modules::aec::engine::project::resolve_display_config_library(
                 self.aec.aec_project_explorer_file.as_ref(),
             ),
         );
-        self.active_modal = Some(crate::app::ModalKind::Aec(AecModalKind::OpeningStyleManager));
+        self.active_modal = Some(crate::app::ModalKind::Aec(AecModalKind::Styles));
         Task::none()
     }
 
@@ -630,67 +691,69 @@ impl OpenCADStudio {
         if let Some(style) = style {
             load_buffers_from_style(self, &style);
         }
-        self.aec.aec_opening_style_manager_selected = Some(id);
+        self.aec.styles.opening_selected = Some(id);
         Task::none()
     }
 
     pub(crate) fn aec_opening_style_manager_new(&mut self) -> Task<Message> {
-        self.aec.aec_opening_style_manager_selected = None;
-        self.aec.aec_opening_style_manager_editing_id = None;
-        self.aec.aec_opening_style_manager_name.clear();
-        self.aec.aec_opening_style_manager_parent = None;
-        self.aec.aec_opening_style_manager_kind = OpeningKind::Window;
+        self.aec.styles.opening_selected = None;
+        self.aec.styles.opening_editing_id = None;
+        self.aec.styles.opening_name.clear();
+        self.aec.styles.opening_parent = None;
+        self.aec.styles.opening_kind = OpeningKind::Window;
         let seed = OpeningStyle::standard_window();
         load_buffers_from_style(self, &seed);
-        self.aec.aec_opening_style_manager_editing_id = None;
-        self.aec.aec_opening_style_manager_name.clear();
-        self.aec.aec_opening_style_manager_form_open = true;
+        detach_plan_profiles(self, false);
+        self.aec.styles.opening_editing_id = None;
+        self.aec.styles.opening_name.clear();
+        self.aec.styles.opening_form_open = true;
         Task::none()
     }
 
     pub(crate) fn aec_opening_style_manager_kind_changed(&mut self, value: String) -> Task<Message> {
         let kind = OpeningKind::from_str(&value);
-        let was_new = self.aec.aec_opening_style_manager_editing_id.is_none();
-        self.aec.aec_opening_style_manager_kind = kind;
+        let was_new = self.aec.styles.opening_editing_id.is_none();
+        self.aec.styles.opening_kind = kind;
         if was_new {
             let (w, h, sill) = kind.default_dimensions();
-            self.aec.aec_opening_style_manager_width = format_dim(w);
-            self.aec.aec_opening_style_manager_height = format_dim(h);
-            self.aec.aec_opening_style_manager_sill = format_dim(sill);
-            self.aec.aec_opening_style_manager_frame = match kind {
+            self.aec.styles.opening_width = format_dim(w);
+            self.aec.styles.opening_height = format_dim(h);
+            self.aec.styles.opening_sill = format_dim(sill);
+            self.aec.styles.opening_frame = match kind {
                 OpeningKind::Breakthrough => "0".to_string(),
                 _ => format_dim(DEFAULT_FRAME_THICKNESS),
             };
-            self.aec.aec_opening_style_manager_angle = match kind {
+            self.aec.styles.opening_angle = match kind {
                 OpeningKind::Breakthrough => "0".to_string(),
                 _ => format_dim(DEFAULT_OPENING_ANGLE_DEG),
             };
-            self.aec.aec_opening_style_manager_slots = slot_buffers_for_kind(kind);
-            self.aec.aec_opening_style_manager_default_slots =
-                slots_from_buffers(&self.aec.aec_opening_style_manager_slots);
-            self.aec.aec_opening_style_manager_display_profiles.clear();
-            self.aec.aec_opening_style_manager_profile_selected = None;
+            self.aec.styles.opening_slots = slot_buffers_for_kind(kind);
+            self.aec.styles.opening_default_slots =
+                slots_from_buffers(&self.aec.styles.opening_slots);
+            self.aec.styles.opening_display_profiles.clear();
+            self.aec.styles.opening_default_profile = None;
+            self.aec.styles.opening_profile_selected = None;
             reset_sketch_draft(self);
-            self.aec.aec_opening_style_manager_sketch_slot = None;
+            self.aec.styles.opening_sketch_slot = None;
             apply_size_lock(self, true);
         }
         Task::none()
     }
 
     pub(crate) fn aec_opening_style_manager_shape_changed(&mut self, value: String) -> Task<Message> {
-        self.aec.aec_opening_style_manager_shape = OpeningShape::from_str(&value);
+        self.aec.styles.opening_shape = OpeningShape::from_str(&value);
         apply_size_lock(self, true);
         Task::none()
     }
 
     pub(crate) fn aec_opening_style_manager_width_changed(&mut self, value: String) -> Task<Message> {
-        self.aec.aec_opening_style_manager_width = value;
+        self.aec.styles.opening_width = value;
         apply_size_lock(self, true);
         Task::none()
     }
 
     pub(crate) fn aec_opening_style_manager_height_changed(&mut self, value: String) -> Task<Message> {
-        self.aec.aec_opening_style_manager_height = value;
+        self.aec.styles.opening_height = value;
         apply_size_lock(self, false);
         Task::none()
     }
@@ -701,8 +764,8 @@ impl OpenCADStudio {
         value: String,
     ) -> Task<Message> {
         commit_sketch_draft(self, false);
-        let width = parse_dim(&self.aec.aec_opening_style_manager_width).unwrap_or(1.0);
-        if let Some(slot) = self.aec.aec_opening_style_manager_slots.get_mut(index) {
+        let width = parse_dim(&self.aec.styles.opening_width).unwrap_or(1.0);
+        if let Some(slot) = self.aec.styles.opening_slots.get_mut(index) {
             slot.source = if value.eq_ignore_ascii_case("Sketch") {
                 AecOpeningSlotSource::Sketch
             } else if value.eq_ignore_ascii_case("Block") {
@@ -716,11 +779,11 @@ impl OpenCADStudio {
         }
         if self
             .aec
-            .aec_opening_style_manager_slots
+            .styles.opening_slots
             .get(index)
             .is_some_and(|s| s.source == AecOpeningSlotSource::Sketch)
         {
-            self.aec.aec_opening_style_manager_sketch_slot = Some(index);
+            self.aec.styles.opening_sketch_slot = Some(index);
         }
         Task::none()
     }
@@ -730,7 +793,7 @@ impl OpenCADStudio {
         index: usize,
         value: String,
     ) -> Task<Message> {
-        if let Some(slot) = self.aec.aec_opening_style_manager_slots.get_mut(index) {
+        if let Some(slot) = self.aec.styles.opening_slots.get_mut(index) {
             slot.generator = OpeningGenerator::from_str(&value);
             slot.source = AecOpeningSlotSource::Generator;
         }
@@ -742,7 +805,7 @@ impl OpenCADStudio {
         index: usize,
         value: String,
     ) -> Task<Message> {
-        if let Some(slot) = self.aec.aec_opening_style_manager_slots.get_mut(index) {
+        if let Some(slot) = self.aec.styles.opening_slots.get_mut(index) {
             slot.block_name = value;
             slot.source = AecOpeningSlotSource::Block;
         }
@@ -754,7 +817,7 @@ impl OpenCADStudio {
         index: usize,
         value: String,
     ) -> Task<Message> {
-        if let Some(slot) = self.aec.aec_opening_style_manager_slots.get_mut(index) {
+        if let Some(slot) = self.aec.styles.opening_slots.get_mut(index) {
             slot.block_placement = match value.as_str() {
                 "JambPair" => BlockPlacementMode::JambPair,
                 "CenterAnchor" => BlockPlacementMode::CenterAnchor,
@@ -766,38 +829,28 @@ impl OpenCADStudio {
     }
 
     pub(crate) fn aec_opening_style_from_form(&self) -> Result<OpeningStyle, String> {
-        let width = parse_dim(&self.aec.aec_opening_style_manager_width).ok_or("width")?;
-        let height = parse_dim(&self.aec.aec_opening_style_manager_height).ok_or("height")?;
-        let sill = parse_dim(&self.aec.aec_opening_style_manager_sill).unwrap_or(0.0);
-        let frame = parse_dim(&self.aec.aec_opening_style_manager_frame).unwrap_or(0.0);
-        let angle = parse_dim(&self.aec.aec_opening_style_manager_angle).unwrap_or(0.0);
-        let spring = parse_dim(&self.aec.aec_opening_style_manager_spring).unwrap_or(0.0);
-        let mut slots = self.aec.aec_opening_style_manager_default_slots.clone();
-        let mut profiles = self.aec.aec_opening_style_manager_display_profiles.clone();
-        if let Some(name) = &self.aec.aec_opening_style_manager_profile_selected {
-            profiles.insert(
-                name.clone(),
-                profile_from_buffers(&self.aec.aec_opening_style_manager_slots),
-            );
-        } else {
-            slots = slots_from_buffers(&self.aec.aec_opening_style_manager_slots);
-        }
+        let width = parse_dim(&self.aec.styles.opening_width).ok_or("width")?;
+        let height = parse_dim(&self.aec.styles.opening_height).ok_or("height")?;
+        let sill = parse_dim(&self.aec.styles.opening_sill).unwrap_or(0.0);
+        let frame = parse_dim(&self.aec.styles.opening_frame).unwrap_or(0.0);
+        let angle = parse_dim(&self.aec.styles.opening_angle).unwrap_or(0.0);
+        let spring = parse_dim(&self.aec.styles.opening_spring).unwrap_or(0.0);
         let mut style = draft_opening_style(
-            self.aec.aec_opening_style_manager_editing_id.clone(),
-            &self.aec.aec_opening_style_manager_name,
-            self.aec.aec_opening_style_manager_parent.clone(),
-            self.aec.aec_opening_style_manager_kind,
+            self.aec.styles.opening_editing_id.clone(),
+            &self.aec.styles.opening_name,
+            self.aec.styles.opening_parent.clone(),
+            self.aec.styles.opening_kind,
             width,
             height,
             sill,
-            self.aec.aec_opening_style_manager_hinge,
+            self.aec.styles.opening_hinge,
             frame,
             angle,
-            self.aec.aec_opening_style_manager_shape,
+            self.aec.styles.opening_shape,
             spring,
-            slots,
+            self.aec.styles.opening_default_slots.clone(),
         )?;
-        style.display_profiles = profiles;
+        style.default_profile = self.aec.styles.opening_default_profile.clone();
         Ok(style)
     }
 
@@ -806,20 +859,21 @@ impl OpenCADStudio {
         value: String,
     ) -> Task<Message> {
         apply_current_buffers_to_store(self);
-        self.aec.aec_opening_style_manager_profile_selected = if value.is_empty() {
+        self.aec.styles.opening_profile_selected = if value.is_empty() {
             None
         } else {
             Some(value)
         };
-        self.aec.aec_opening_style_manager_slots = buffers_for_profile(
-            &self.aec.aec_opening_style_manager_default_slots,
-            &self.aec.aec_opening_style_manager_display_profiles,
-            self.aec.aec_opening_style_manager_profile_selected.as_deref(),
+        self.aec.styles.opening_slots = buffers_for_profile(
+            &self.aec.styles.opening_default_slots,
+            self.aec.styles.opening_default_profile.as_ref(),
+            &self.aec.styles.opening_display_profiles,
+            self.aec.styles.opening_profile_selected.as_deref(),
         );
         reset_sketch_draft(self);
-        self.aec.aec_opening_style_manager_sketch_slot = self
+        self.aec.styles.opening_sketch_slot = self
             .aec
-            .aec_opening_style_manager_slots
+            .styles.opening_slots
             .iter()
             .position(|b| b.source == AecOpeningSlotSource::Sketch);
         Task::none()
@@ -830,7 +884,7 @@ impl OpenCADStudio {
         index: usize,
         visible: bool,
     ) -> Task<Message> {
-        if let Some(slot) = self.aec.aec_opening_style_manager_slots.get_mut(index) {
+        if let Some(slot) = self.aec.styles.opening_slots.get_mut(index) {
             slot.visible = visible;
         }
         Task::none()
@@ -841,12 +895,12 @@ impl OpenCADStudio {
         index: usize,
     ) -> Task<Message> {
         commit_sketch_draft(self, false);
-        let width = parse_dim(&self.aec.aec_opening_style_manager_width).unwrap_or(1.0);
-        if let Some(slot) = self.aec.aec_opening_style_manager_slots.get_mut(index) {
+        let width = parse_dim(&self.aec.styles.opening_width).unwrap_or(1.0);
+        if let Some(slot) = self.aec.styles.opening_slots.get_mut(index) {
             if slot.source == AecOpeningSlotSource::Sketch {
                 ensure_sketch_ref_box(slot, width);
             }
-            self.aec.aec_opening_style_manager_sketch_slot = Some(index);
+            self.aec.styles.opening_sketch_slot = Some(index);
         }
         Task::none()
     }
@@ -856,13 +910,13 @@ impl OpenCADStudio {
         inst_x: f64,
         inst_y: f64,
     ) -> Task<Message> {
-        let Some(index) = self.aec.aec_opening_style_manager_sketch_slot else {
+        let Some(index) = self.aec.styles.opening_sketch_slot else {
             return Task::none();
         };
-        let width = parse_dim(&self.aec.aec_opening_style_manager_width).unwrap_or(1.0);
-        let frame = parse_dim(&self.aec.aec_opening_style_manager_frame).unwrap_or(0.0);
+        let width = parse_dim(&self.aec.styles.opening_width).unwrap_or(1.0);
+        let frame = parse_dim(&self.aec.styles.opening_frame).unwrap_or(0.0);
         let snapped = {
-            let Some(slot) = self.aec.aec_opening_style_manager_slots.get_mut(index) else {
+            let Some(slot) = self.aec.styles.opening_slots.get_mut(index) else {
                 return Task::none();
             };
             if slot.source != AecOpeningSlotSource::Sketch {
@@ -885,8 +939,8 @@ impl OpenCADStudio {
             )
         };
         draft_append(
-            &mut self.aec.aec_opening_style_manager_sketch_draft,
-            &mut self.aec.aec_opening_style_manager_sketch_draft_bulges,
+            &mut self.aec.styles.opening_sketch_draft,
+            &mut self.aec.styles.opening_sketch_draft_bulges,
             snapped,
         );
         Task::none()
@@ -903,17 +957,17 @@ impl OpenCADStudio {
     }
 
     pub(crate) fn aec_opening_style_manager_sketch_undo(&mut self) -> Task<Message> {
-        self.aec.aec_opening_style_manager_sketch_draft.pop();
-        self.aec.aec_opening_style_manager_sketch_draft_bulges.pop();
+        self.aec.styles.opening_sketch_draft.pop();
+        self.aec.styles.opening_sketch_draft_bulges.pop();
         Task::none()
     }
 
     pub(crate) fn aec_opening_style_manager_sketch_delete_path(&mut self) -> Task<Message> {
         reset_sketch_draft(self);
-        let Some(index) = self.aec.aec_opening_style_manager_sketch_slot else {
+        let Some(index) = self.aec.styles.opening_sketch_slot else {
             return Task::none();
         };
-        if let Some(slot) = self.aec.aec_opening_style_manager_slots.get_mut(index) {
+        if let Some(slot) = self.aec.styles.opening_slots.get_mut(index) {
             slot.sketch.paths.pop();
         }
         Task::none()
@@ -921,10 +975,10 @@ impl OpenCADStudio {
 
     pub(crate) fn aec_opening_style_manager_sketch_clear(&mut self) -> Task<Message> {
         reset_sketch_draft(self);
-        let Some(index) = self.aec.aec_opening_style_manager_sketch_slot else {
+        let Some(index) = self.aec.styles.opening_sketch_slot else {
             return Task::none();
         };
-        if let Some(slot) = self.aec.aec_opening_style_manager_slots.get_mut(index) {
+        if let Some(slot) = self.aec.styles.opening_slots.get_mut(index) {
             slot.sketch.paths.clear();
         }
         Task::none()
@@ -932,12 +986,12 @@ impl OpenCADStudio {
 
     pub(crate) fn aec_opening_style_manager_sketch_add_frame(&mut self) -> Task<Message> {
         reset_sketch_draft(self);
-        let Some(index) = self.aec.aec_opening_style_manager_sketch_slot else {
+        let Some(index) = self.aec.styles.opening_sketch_slot else {
             return Task::none();
         };
-        let width = parse_dim(&self.aec.aec_opening_style_manager_width).unwrap_or(1.0);
-        let frame = parse_dim(&self.aec.aec_opening_style_manager_frame).unwrap_or(DEFAULT_FRAME_THICKNESS);
-        if let Some(slot) = self.aec.aec_opening_style_manager_slots.get_mut(index) {
+        let width = parse_dim(&self.aec.styles.opening_width).unwrap_or(1.0);
+        let frame = parse_dim(&self.aec.styles.opening_frame).unwrap_or(DEFAULT_FRAME_THICKNESS);
+        if let Some(slot) = self.aec.styles.opening_slots.get_mut(index) {
             ensure_sketch_ref_box(slot, width);
             slot.source = AecOpeningSlotSource::Sketch;
             slot.sketch = OpeningSketch::frame_ring(
@@ -951,7 +1005,7 @@ impl OpenCADStudio {
 
     pub(crate) fn aec_opening_style_manager_sketch_arc(&mut self) -> Task<Message> {
         draft_set_last_arc(
-            &mut self.aec.aec_opening_style_manager_sketch_draft_bulges,
+            &mut self.aec.styles.opening_sketch_draft_bulges,
             true,
         );
         Task::none()
@@ -962,10 +1016,44 @@ impl OpenCADStudio {
         Task::none()
     }
 
+    /// Writes the buffered plan-kind overrides of the edited opening style
+    /// into the plan library (`DisplayConfig::style_overrides[style_id].opening`).
+    fn aec_opening_style_manager_write_plan_overrides(&mut self, style_id: &str) {
+        let profiles = self.aec.styles.opening_display_profiles.clone();
+        let Some(lib) = self.aec.aec_plan_library.as_mut() else {
+            return;
+        };
+        let mut changed = false;
+        for cfg in &mut lib.configs {
+            let new = profiles
+                .get(&cfg.name)
+                .filter(|p| !p.slots.is_empty() || !p.visibility.is_empty())
+                .cloned();
+            let current = cfg.style_overrides.get(style_id).and_then(|o| o.opening.clone());
+            if new != current {
+                cfg.style_overrides
+                    .entry(style_id.to_string())
+                    .or_default()
+                    .opening = new;
+                changed = true;
+            }
+        }
+        if !changed {
+            return;
+        }
+        let snapshot = lib.clone();
+        if let Err(e) = self.aec_save_display_config_library_preferring_project(&snapshot) {
+            self.command_line.push_error(
+                crate::tf!("AEC Style Manager: failed to save library: {e}").as_ref(),
+            );
+        }
+    }
+
     pub(crate) fn aec_opening_style_manager_save_internal(
         &mut self,
     ) -> Option<(String, crate::modules::aec::engine::library::StyleLibrary)> {
         commit_sketch_draft(self, false);
+        apply_current_buffers_to_store(self);
         let style = match self.aec_opening_style_from_form() {
             Ok(style) => style,
             Err(_) => {
@@ -978,7 +1066,7 @@ impl OpenCADStudio {
         };
 
         if let (Some(parent_id), Some(lib)) = (
-            style.style.parent_style_id.as_ref(),
+            style.style.parent.as_ref(),
             self.aec.aec_style_library.as_ref(),
         ) {
             if parent_id == &style.style.id {
@@ -1031,8 +1119,9 @@ impl OpenCADStudio {
                             crate::t!("AEC Style Manager: opening style saved.").as_ref(),
                         );
                     }
-                    self.aec.aec_opening_style_manager_selected = Some(id.clone());
-                    self.aec.aec_opening_style_manager_editing_id = Some(id.clone());
+                    self.aec.styles.opening_selected = Some(id.clone());
+                    self.aec.styles.opening_editing_id = Some(id.clone());
+                    self.aec_opening_style_manager_write_plan_overrides(&id);
                     let lib_snapshot = self
                         .aec
                         .aec_style_library
@@ -1049,8 +1138,9 @@ impl OpenCADStudio {
             }
         } else {
             self.aec_upsert_opening_style_into_session(style);
-            self.aec.aec_opening_style_manager_selected = Some(id.clone());
-            self.aec.aec_opening_style_manager_editing_id = Some(id.clone());
+            self.aec.styles.opening_selected = Some(id.clone());
+            self.aec.styles.opening_editing_id = Some(id.clone());
+            self.aec_opening_style_manager_write_plan_overrides(&id);
             let lib_snapshot = self
                 .aec
                 .aec_style_library
@@ -1061,7 +1151,7 @@ impl OpenCADStudio {
     }
 
     pub(crate) fn aec_opening_style_manager_delete(&mut self) -> Task<Message> {
-        if let Some(id) = self.aec.aec_opening_style_manager_selected.clone() {
+        if let Some(id) = self.aec.styles.opening_selected.clone() {
             let lib_snapshot = if let Some(lib) = self.aec.aec_style_library.as_mut() {
                 lib.remove_opening_style(&id);
                 Some(lib.clone())
@@ -1079,9 +1169,9 @@ impl OpenCADStudio {
                 }
             }
         }
-        self.aec.aec_opening_style_manager_selected = None;
-        self.aec.aec_opening_style_manager_editing_id = None;
-        self.aec.aec_opening_style_manager_form_open = false;
+        self.aec.styles.opening_selected = None;
+        self.aec.styles.opening_editing_id = None;
+        self.aec.styles.opening_form_open = false;
         Task::none()
     }
 
@@ -1089,7 +1179,7 @@ impl OpenCADStudio {
         if to_project && self.aec.aec_project_explorer_file.is_none() {
             return Task::none();
         }
-        let Some(id) = self.aec.aec_opening_style_manager_selected.clone() else {
+        let Some(id) = self.aec.styles.opening_selected.clone() else {
             return Task::none();
         };
         let global_lib = crate::modules::aec::engine::library::load_or_seed();
@@ -1115,11 +1205,11 @@ impl OpenCADStudio {
         );
         match conflict {
             crate::modules::aec::engine::library::CopyConflict::DifferentContentCollision => {
-                self.aec.aec_style_manager_pending_copy = Some(AecPendingCopy::OpeningStyle {
+                self.aec.styles.pending_copy = Some(AecPendingCopy::OpeningStyle {
                     opening_style,
                     to_project,
                 });
-                self.aec.aec_style_manager_copy_conflict_open = true;
+                self.aec.styles.copy_conflict_open = true;
                 self.active_modal =
                     Some(crate::app::ModalKind::Aec(AecModalKind::StyleCopyConflict));
             }
@@ -1177,6 +1267,113 @@ impl OpenCADStudio {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn default_and_plan_slot_profiles_persist_independently() {
+        use crate::app::{AecMessage, OpenCADStudio};
+        use crate::modules::aec::engine::library::DisplayConfigLibrary;
+        use crate::modules::aec::engine::plan_view::{DisplayConfig, PlanningStage, ViewType};
+
+        let mut app = OpenCADStudio::new_for_test();
+        app.automation_op(r#"{"op":"new"}"#);
+        let mut style = OpeningStyle::standard_window();
+        style.style.id = "t_opening_profile".into();
+        let slot = OpeningComponentSlot::Frame2D;
+        let original = style.slots[&slot].clone();
+        let mut default = OpeningDisplayProfile::default();
+        default.slots.insert(slot, SlotGeometry::Generator(OpeningGenerator::DoorFrame));
+        default.visibility.insert(slot.key().into(), false);
+        style.default_profile = Some(default);
+        app.aec_upsert_opening_style_into_session(style.clone());
+        let mut plans = DisplayConfigLibrary::empty();
+        let mut plan = DisplayConfig::new("Opening plan".into(), "A".into(), PlanningStage::Execution, ViewType::FloorPlan);
+        let mut over = OpeningDisplayProfile::default();
+        over.visibility.insert(slot.key().into(), true);
+        plan.style_overrides.entry(style.style.id.clone()).or_default().opening = Some(over);
+        plans.configs.push(plan);
+        app.aec.aec_plan_library = Some(plans);
+
+        let _ = app.aec_opening_style_manager_select(style.style.id.clone());
+        let index = app.aec.styles.opening_slots.iter().position(|s| s.slot == slot).unwrap();
+        assert_eq!(app.aec.styles.opening_slots[index].generator, OpeningGenerator::DoorFrame);
+        assert!(!app.aec.styles.opening_slots[index].visible);
+        let _ = app.update_aec(AecMessage::AecOpeningStyleManagerSlotGeneratorChanged(index, "LeafLine".into()));
+        let _ = app.update_aec(AecMessage::AecOpeningStyleManagerProfileSelect("Opening plan".into()));
+        assert!(app.aec.styles.opening_slots[index].visible);
+        let _ = app.update_aec(AecMessage::AecOpeningStyleManagerSlotGeneratorChanged(index, "FrameRect".into()));
+        let _ = app.update_aec(AecMessage::AecOpeningStyleManagerSave);
+
+        let stored = app.aec.aec_style_library.as_ref().unwrap().find_opening_style(&style.style.id).unwrap();
+        assert_eq!(stored.slots[&slot], original);
+        assert_eq!(stored.default_profile.as_ref().unwrap().slots[&slot], SlotGeometry::Generator(OpeningGenerator::LeafLine));
+        assert_eq!(stored.default_profile.as_ref().unwrap().visibility[slot.key()], false);
+        let cfg = app.aec.aec_plan_library.as_ref().unwrap().find("Opening plan").unwrap();
+        let over = cfg.style_overrides[&style.style.id].opening.as_ref().unwrap();
+        assert_eq!(over.slots[&slot], SlotGeometry::Generator(OpeningGenerator::FrameRect));
+        assert_eq!(over.visibility[slot.key()], true);
+        let _ = app.aec_opening_style_manager_select(style.style.id.clone());
+        assert_eq!(app.aec.styles.opening_slots[index].generator, OpeningGenerator::LeafLine);
+        let _ = app.update_aec(AecMessage::AecOpeningStyleManagerProfileSelect("Opening plan".into()));
+        assert!(app.aec.styles.opening_slots[index].visible);
+        assert_eq!(app.aec.styles.opening_slots[index].generator, OpeningGenerator::FrameRect);
+    }
+
+    #[test]
+    fn duplicate_and_new_do_not_inherit_plan_overrides() {
+        use crate::app::{AecMessage, OpenCADStudio};
+        use crate::modules::aec::engine::library::DisplayConfigLibrary;
+        use crate::modules::aec::engine::plan_view::{DisplayConfig, PlanningStage, ViewType};
+
+        let mut app = OpenCADStudio::new_for_test();
+        app.automation_op(r#"{"op":"new"}"#);
+        let mut style = OpeningStyle::standard_window();
+        style.style.id = "t_opening_dup".into();
+        style.style.name = "T Dup".into();
+        let slot = OpeningComponentSlot::Frame2D;
+        app.aec_upsert_opening_style_into_session(style.clone());
+        let mut plans = DisplayConfigLibrary::empty();
+        let mut plan = DisplayConfig::new("Dup plan".into(), "A".into(), PlanningStage::Execution, ViewType::FloorPlan);
+        let mut over = OpeningDisplayProfile::default();
+        over.slots.insert(slot, SlotGeometry::Generator(OpeningGenerator::DoorFrame));
+        over.visibility.insert(slot.key().into(), false);
+        plan.style_overrides.entry(style.style.id.clone()).or_default().opening = Some(over);
+        plans.configs.push(plan);
+        app.aec.aec_plan_library = Some(plans);
+
+        let _ = app.aec_opening_style_manager_select(style.style.id.clone());
+        let _ = app.update_aec(AecMessage::AecOpeningStyleManagerProfileSelect("Dup plan".into()));
+        let index = app.aec.styles.opening_slots.iter().position(|s| s.slot == slot).unwrap();
+        assert!(!app.aec.styles.opening_slots[index].visible);
+        let _ = app.update_aec(AecMessage::AecOpeningStyleManagerDuplicate);
+        assert!(app.aec.styles.opening_slots[index].visible);
+        assert_ne!(app.aec.styles.opening_slots[index].generator, OpeningGenerator::DoorFrame);
+        let _ = app.update_aec(AecMessage::AecOpeningStyleManagerSave);
+        let lib = app.aec.aec_style_library.as_ref().unwrap();
+        let copy = lib.opening_styles.iter().find(|s| s.style.name == "T Dup (Kopie)").unwrap();
+        assert!(copy.default_profile.is_none());
+        assert_eq!(copy.slots, style.slots);
+        let copy_id = copy.style.id.clone();
+        let cfg = app.aec.aec_plan_library.as_ref().unwrap().find("Dup plan").unwrap();
+        assert!(cfg.style_overrides.get(&copy_id).and_then(|o| o.opening.as_ref()).is_none());
+        assert!(cfg.style_overrides[&style.style.id].opening.is_some());
+
+        // New does not inherit the standard window's plan overrides.
+        let std_id = OpeningStyle::standard_window().style.id;
+        let cfg = app.aec.aec_plan_library.as_mut().unwrap().configs.first_mut().unwrap();
+        let mut over = OpeningDisplayProfile::default();
+        over.visibility.insert(slot.key().into(), false);
+        cfg.style_overrides.entry(std_id).or_default().opening = Some(over);
+        let _ = app.update_aec(AecMessage::AecOpeningStyleManagerNew);
+        assert!(app.aec.styles.opening_display_profiles.is_empty());
+        assert!(app.aec.styles.opening_default_profile.is_none());
+        assert!(app.aec.styles.opening_slots.iter().all(|b| b.visible));
+        app.aec.styles.opening_name = "T New".into();
+        let _ = app.update_aec(AecMessage::AecOpeningStyleManagerSave);
+        let new_id = app.aec.aec_style_library.as_ref().unwrap().opening_styles.iter()
+            .find(|s| s.style.name == "T New").unwrap().style.id.clone();
+        let cfg = app.aec.aec_plan_library.as_ref().unwrap().find("Dup plan").unwrap();
+        assert!(cfg.style_overrides.get(&new_id).and_then(|o| o.opening.as_ref()).is_none());
+    }
     use crate::modules::aec::engine::opening_style::DEFAULT_FRAME_THICKNESS;
 
     #[test]
@@ -1348,13 +1545,13 @@ mod tests {
         }
         let mut profiles = HashMap::new();
         profiles.insert("Ausführung".to_string(), profile_from_buffers(&bufs));
-        let loaded = buffers_for_profile(&defaults, &profiles, Some("Ausführung"));
+        let loaded = buffers_for_profile(&defaults, None, &profiles, Some("Ausführung"));
         let sill = loaded
             .iter()
             .find(|b| b.slot == OpeningComponentSlot::Sill2D)
             .unwrap();
         assert!(!sill.visible);
-        let default_loaded = buffers_for_profile(&defaults, &profiles, None);
+        let default_loaded = buffers_for_profile(&defaults, None, &profiles, None);
         let sill_default = default_loaded
             .iter()
             .find(|b| b.slot == OpeningComponentSlot::Sill2D)

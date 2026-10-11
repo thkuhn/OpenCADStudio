@@ -1,5 +1,6 @@
 //! AEC Material definitions.
 
+use crate::modules::aec::engine::style_common::{StyleCommon, CATEGORY_MATERIAL};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 /// Unique identifier for a material.
@@ -88,10 +89,11 @@ where
 /// A material definition for AEC objects.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Material {
-    /// Unique identifier for the material.
-    pub id: MaterialId,
-    /// Human-readable name of the material.
-    pub name: String,
+    /// Shared style scaffold (`id`, `name`, `parent`, `category` =
+    /// `CATEGORY_MATERIAL`, `origin`); flattened into the stored record.
+    /// `Material` derefs to it, so `material.id` / `material.name` work.
+    #[serde(flatten)]
+    pub style: StyleCommon,
     /// Pattern name for cross-section hatching.
     pub hatch_pattern: String,
     /// Color of lines in 2D representation (0xRRGGBB).
@@ -100,9 +102,9 @@ pub struct Material {
     pub line_type: String,
     /// Optional reference to a 3D render material.
     pub render_material_ref: Option<String>,
-    /// Optional grouping category (e.g. "Holz", "Metall").
+    /// Optional grouping (e.g. "Holz", "Metall").
     #[serde(default)]
-    pub category: Option<String>,
+    pub group: Option<String>,
     /// Optional hatch fill color (`AcadColor`). Falls back to `line_color`
     /// when `None`. Legacy bare `u32` 0xRRGGBB values still load as
     /// `AcadColor::Rgb`.
@@ -126,6 +128,19 @@ pub struct Material {
     pub hatch_angle_relative: bool,
 }
 
+impl std::ops::Deref for Material {
+    type Target = StyleCommon;
+    fn deref(&self) -> &StyleCommon {
+        &self.style
+    }
+}
+
+impl std::ops::DerefMut for Material {
+    fn deref_mut(&mut self) -> &mut StyleCommon {
+        &mut self.style
+    }
+}
+
 impl Material {
     /// Creates a new material with default render material reference.
     pub fn new(
@@ -136,13 +151,12 @@ impl Material {
         line_type: String,
     ) -> Self {
         Self {
-            id,
-            name,
+            style: StyleCommon::new(id, name, None, CATEGORY_MATERIAL, Default::default()),
             hatch_pattern,
             line_color,
             line_type,
             render_material_ref: None,
-            category: None,
+            group: None,
             hatch_color: None,
             hatch_scale: 1.0,
             hatch_angle: 0.0,
@@ -171,7 +185,7 @@ mod tests {
         assert_eq!(mat.line_color, 0xFF0000);
         assert_eq!(mat.line_type, "Continuous");
         assert_eq!(mat.render_material_ref, None);
-        assert_eq!(mat.category, None);
+        assert_eq!(mat.group, None);
         assert_eq!(mat.hatch_color, None);
         assert_eq!(mat.hatch_scale, 1.0);
         assert_eq!(mat.hatch_angle, 0.0);
@@ -186,13 +200,14 @@ mod tests {
         let material_json = r#"{
             "id": "brick",
             "name": "Red Brick",
+            "category": "Material",
             "hatch_pattern": "ANSI31",
             "line_color": 16711680,
             "line_type": "Continuous",
             "render_material_ref": null
         }"#;
         let mat: Material = serde_json::from_str(material_json).unwrap();
-        assert_eq!(mat.category, None);
+        assert_eq!(mat.group, None);
         assert_eq!(mat.hatch_color, None);
         assert_eq!(mat.hatch_scale, 1.0);
         assert_eq!(mat.hatch_angle, 0.0);
@@ -208,7 +223,7 @@ mod tests {
             0xC4A35A,
             "Continuous".to_string(),
         );
-        mat.category = Some("Holz".to_string());
+        mat.group = Some("Holz".to_string());
         mat.hatch_color = Some(acadrust::types::Color::Rgb {
             r: 0xA6,
             g: 0x7C,
@@ -222,7 +237,7 @@ mod tests {
         let serialized = serde_json::to_string(&mat).unwrap();
         let deserialized: Material = serde_json::from_str(&serialized).unwrap();
         assert_eq!(mat, deserialized);
-        assert_eq!(deserialized.category.as_deref(), Some("Holz"));
+        assert_eq!(deserialized.group.as_deref(), Some("Holz"));
         assert_eq!(
             deserialized.hatch_color,
             Some(acadrust::types::Color::Rgb {
@@ -243,6 +258,7 @@ mod tests {
         let material_json = r#"{
             "id": "brick",
             "name": "Red Brick",
+            "category": "Material",
             "hatch_pattern": "ANSI31",
             "line_color": 16711680,
             "line_type": "Continuous",
@@ -267,11 +283,12 @@ mod tests {
         let material_json = r#"{
             "id": "brick",
             "name": "Red Brick",
+            "category": "Material",
             "hatch_pattern": "ANSI31",
             "line_color": 16711680,
             "line_type": "Continuous",
             "render_material_ref": null,
-            "category": null,
+            "group": null,
             "hatch_color": null,
             "hatch_scale": 1.0
         }"#;

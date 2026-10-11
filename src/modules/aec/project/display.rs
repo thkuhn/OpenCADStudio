@@ -141,6 +141,48 @@ impl OpenCADStudio {
         (Some(rules), None)
     }
 
+    /// Room visibility under the tab's active plan kind and session
+    /// override; same semantics as [`Self::apply_active_display_config_to_tab`]
+    /// (no plan / unknown plan: default detail, session override still wins).
+    pub(crate) fn resolve_active_display_config_room_display(
+        &mut self,
+        tab_index: usize,
+    ) -> crate::modules::aec::engine::room_regen::RoomDisplay {
+        use crate::modules::aec::engine::room_regen::RoomDisplay;
+        let session = self.tabs[tab_index].representation_override;
+        let detail = self.tabs[tab_index]
+            .active_display_config
+            .clone()
+            .and_then(|name| {
+                self.aec
+                    .aec_plan_library
+                    .get_or_insert_with(|| {
+                        crate::modules::aec::engine::project::resolve_display_config_library(
+                            self.aec.aec_project_explorer_file.as_ref(),
+                        )
+                    })
+                    .find(&name)
+                    .map(|c| c.detail)
+            })
+            .unwrap_or_default();
+        RoomDisplay::from_detail(&detail, session)
+    }
+
+    /// Regenerates one room carrier honoring the active plan kind.
+    pub(crate) fn regenerate_room_respecting_active_display_config(
+        &mut self,
+        tab_index: usize,
+        room_handle: acadrust::Handle,
+    ) -> Option<()> {
+        let display = self.resolve_active_display_config_room_display(tab_index);
+        crate::modules::aec::engine::room_regen::regenerate_room_representation_with_display(
+            &mut self.tabs[tab_index].scene,
+            room_handle,
+            None,
+            display,
+        )
+    }
+
     pub(crate) fn apply_active_display_config_to_tab(&mut self, tab_index: usize) {
         if self.tabs[tab_index].is_start {
             return;
@@ -381,11 +423,7 @@ impl OpenCADStudio {
                 .and_then(crate::modules::aec::engine::room_xdata::room_from_entity)
                 .is_some()
             {
-                crate::modules::aec::engine::room_regen::regenerate_room_representation(
-                    &mut self.tabs[tab_index].scene,
-                    room_owner,
-                    None,
-                );
+                self.regenerate_room_respecting_active_display_config(tab_index, room_owner);
                 reselected.push(room_owner);
             }
         }

@@ -46,6 +46,7 @@ impl SlabJustification {
         if trimmed.eq_ignore_ascii_case("Top")
             || upper.starts_with("OKFF")
             || trimmed == Self::Top.display_name()
+            || trimmed == Self::Top.localized_name()
         {
             return SlabJustification::Top;
         }
@@ -53,16 +54,28 @@ impl SlabJustification {
             || trimmed.eq_ignore_ascii_case("structural_top")
             || upper.starts_with("OKRD")
             || trimmed == Self::StructuralTop.display_name()
+            || trimmed == Self::StructuralTop.localized_name()
         {
             return SlabJustification::StructuralTop;
         }
         if trimmed.eq_ignore_ascii_case("Bottom")
             || upper.starts_with("UKD")
             || trimmed == Self::Bottom.display_name()
+            || trimmed == Self::Bottom.localized_name()
         {
             return SlabJustification::Bottom;
         }
         SlabJustification::Top
+    }
+
+    /// UI label in the active language.
+    pub fn localized_name(self) -> String {
+        match self {
+            SlabJustification::Top => crate::t!("OKFF (Oberkante Fertigfußboden)"),
+            SlabJustification::StructuralTop => crate::t!("OKRD (Oberkante Rohdecke)"),
+            SlabJustification::Bottom => crate::t!("UKD (Unterkante Decke)"),
+        }
+        .into_owned()
     }
 
     pub fn display_name(self) -> &'static str {

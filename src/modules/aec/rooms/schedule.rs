@@ -61,18 +61,18 @@ pub fn build_room_schedule_table(rooms: &[Room], at: Vector3) -> Table {
     }
 
     // Headers
-    table.set_cell_text(0, 0, "Nr.");
-    table.set_cell_text(0, 1, "Raumbezeichnung");
-    table.set_cell_text(0, 2, "Kategorie (DIN 277)");
-    table.set_cell_text(0, 3, "Rohfläche [m²]");
-    table.set_cell_text(0, 4, "Faktor");
-    table.set_cell_text(0, 5, "Fläche [m²]");
-    table.set_cell_text(0, 6, "Umfang [m]");
-    table.set_cell_text(0, 7, "Lichte Höhe [m]");
-    table.set_cell_text(0, 8, "Volumen [m³]");
-    table.set_cell_text(0, 9, "Bodenbelag");
-    table.set_cell_text(0, 10, "Deckenbelag");
-    table.set_cell_text(0, 11, "Geschoss");
+    table.set_cell_text(0, 0, crate::t!("Nr.").as_ref());
+    table.set_cell_text(0, 1, crate::t!("Raumbezeichnung").as_ref());
+    table.set_cell_text(0, 2, crate::t!("Kategorie (DIN 277)").as_ref());
+    table.set_cell_text(0, 3, crate::t!("Rohfläche [m²]").as_ref());
+    table.set_cell_text(0, 4, crate::t!("Faktor").as_ref());
+    table.set_cell_text(0, 5, crate::t!("Fläche [m²]").as_ref());
+    table.set_cell_text(0, 6, crate::t!("Umfang [m]").as_ref());
+    table.set_cell_text(0, 7, crate::t!("Lichte Höhe [m]").as_ref());
+    table.set_cell_text(0, 8, crate::t!("Volumen [m³]").as_ref());
+    table.set_cell_text(0, 9, crate::t!("Bodenbelag").as_ref());
+    table.set_cell_text(0, 10, crate::t!("Deckenbelag").as_ref());
+    table.set_cell_text(0, 11, crate::t!("Geschoss").as_ref());
 
     let mut total_gross_area = 0.0;
     let mut total_calc_area = 0.0;
@@ -100,7 +100,7 @@ pub fn build_room_schedule_table(rooms: &[Room], at: Vector3) -> Table {
 
     // Total / Summary row
     let sum_row = rooms.len() + 1;
-    table.set_cell_text(sum_row, 0, "GESAMT");
+    table.set_cell_text(sum_row, 0, crate::t!("GESAMT").as_ref());
     table.set_cell_text(sum_row, 1, "");
     table.set_cell_text(sum_row, 2, "");
     table.set_cell_text(sum_row, 3, &format!("{:.2}", total_gross_area));
@@ -369,14 +369,14 @@ mod tests {
 
         assert_eq!(table.rows.len(), 4); // header + 2 rooms + summary
         assert_eq!(table.columns.len(), 12);
-        assert_eq!(table.cell(0, 0).map(|c| c.text_value()), Some("Nr."));
+        assert_eq!(table.cell(0, 0).map(|c| c.text_value()), Some(crate::t!("Nr.").as_ref()));
         assert_eq!(table.cell(1, 0).map(|c| c.text_value()), Some("EG-01"));
         assert_eq!(table.cell(1, 1).map(|c| c.text_value()), Some("Wohnzimmer"));
         assert_eq!(table.cell(1, 2).map(|c| c.text_value()), Some("NUF 1"));
         assert_eq!(table.cell(2, 0).map(|c| c.text_value()), Some("EG-02"));
         assert_eq!(table.cell(2, 1).map(|c| c.text_value()), Some("Terrasse"));
         assert_eq!(table.cell(2, 2).map(|c| c.text_value()), Some("NUF 1 (50%)"));
-        assert_eq!(table.cell(3, 0).map(|c| c.text_value()), Some("GESAMT"));
+        assert_eq!(table.cell(3, 0).map(|c| c.text_value()), Some(crate::t!("GESAMT").as_ref()));
         // Total gross area: 20.0 + 12.0 = 32.00
         assert_eq!(table.cell(3, 3).map(|c| c.text_value()), Some("32.00"));
         // Total calc area: 20.0 + 6.0 = 26.00
