@@ -1,12 +1,10 @@
 //! AEC Structural Slab Style Manager — browse and edit structural slab styles held in the AEC
 //! style library (`AEC_SLABSTRUCTURALSTYLEMANAGER`).
 
-use iced::mouse;
-use iced::widget::canvas::{Frame, Geometry, Path, Program};
 use iced::widget::{
     button, canvas, column, container, pick_list, row, scrollable, text, text_input, Space,
 };
-use iced::{Alignment, Border, Color, Element, Fill, Length, Point, Rectangle, Theme};
+use iced::{Alignment, Border, Element, Fill, Length, Theme};
 
 use crate::app::{AecMessage, Message, StylePickerTarget};
 use crate::modules::aec::engine::library::{LibrarySource, StyleLibrary};
@@ -14,7 +12,7 @@ use crate::modules::aec::engine::project::ProjectFile;
 use crate::modules::aec::engine::slab_style::SlabStyleLayer;
 use crate::modules::aec::state::{AecSlabLayerBuffer, AecSlabPreviewMode};
 use crate::modules::aec::styles::slab_style_manager::{
-    preview_paths_for_mode, SlabPreviewPath,
+    preview_paths_for_mode,
 };
 use crate::modules::aec::engine::style_common::StyleOrigin;
 use crate::modules::aec::ui::aec_ui_util::muted;
@@ -44,6 +42,7 @@ pub struct SlabStructuralStyleFormState<'a> {
     pub all_layer_names: Vec<String>,
     pub effective_layers: Vec<SlabStyleLayer>,
     pub preview_mode: AecSlabPreviewMode,
+    pub selected_layer: Option<usize>,
 }
 
 pub fn parts<'a>(
@@ -204,9 +203,12 @@ fn view_form<'a>(form: SlabStructuralStyleFormState<'a>) -> Element<'a, Message>
 
     let preview_paths = preview_paths_for_mode(&form.effective_layers, form.preview_mode);
     let preview_box = container(
-        canvas(SlabStructuralPreviewCanvas {
+        canvas(super::slab::SlabPreviewCanvas {
             paths: preview_paths,
             mode: form.preview_mode,
+            layers: form.effective_layers.clone(),
+            selected: form.selected_layer,
+            on_select: |i| Message::Aec(AecMessage::AecSlabStructuralStyleManagerPreviewLayerSelect(i)),
         })
         .width(Fill)
         .height(180),
@@ -302,12 +304,20 @@ fn view_form<'a>(form: SlabStructuralStyleFormState<'a>) -> Element<'a, Message>
                 Message::Aec(AecMessage::AecSlabStructuralStyleManagerLayerVerticalOffsetChanged(i, s))
             });
 
-        let layer_override_input = text_input(t!("Standard").as_ref(), &layer_buf.layer_override)
-            .size(11)
-            .padding([3, 6])
-            .on_input(move |s| {
-                Message::Aec(AecMessage::AecSlabStructuralStyleManagerLayerOverrideChanged(i, s))
-            });
+        let layer_override_input = button(
+            text(if layer_buf.layer_override.is_empty() {
+                t!("Standard").into_owned()
+            } else {
+                layer_buf.layer_override.clone()
+            })
+            .size(11),
+        )
+        .width(Fill)
+        .padding([3, 6])
+        .style(button::secondary)
+        .on_press(Message::Aec(AecMessage::AecStylePickerOpen(
+            StylePickerTarget::SlabStructuralLayerOverride(i),
+        )));
 
         let hatch_override_input = text_input(t!("Standard").as_ref(), &layer_buf.hatch_override)
             .size(11)
@@ -333,7 +343,7 @@ fn view_form<'a>(form: SlabStructuralStyleFormState<'a>) -> Element<'a, Message>
         ]
         .spacing(8)
         .align_y(Alignment::Center);
-        layers_col = layers_col.push(row_item);
+        layers_col = layers_col.push(super::slab::highlight_row(row_item, form.selected_layer == Some(i)));
     }
 
     let add_layer_btn = button(text(t!("Add Layer")).size(10))
@@ -382,101 +392,4 @@ fn view_form<'a>(form: SlabStructuralStyleFormState<'a>) -> Element<'a, Message>
     .spacing(6)
     .height(Fill)
     .into()
-}
-
-struct SlabStructuralPreviewCanvas {
-    paths: Vec<SlabPreviewPath>,
-    #[allow(dead_code)]
-    mode: AecSlabPreviewMode,
-}
-
-impl<Message> Program<Message> for SlabStructuralPreviewCanvas {
-    type State = ();
-
-    fn draw(
-        &self,
-        _state: &Self::State,
-        renderer: &iced::Renderer,
-        _theme: &Theme,
-        bounds: Rectangle,
-        _cursor: mouse::Cursor,
-    ) -> Vec<Geometry> {
-        let mut frame = Frame::new(renderer, bounds.size());
-
-        let mut min_x = f64::INFINITY;
-        let mut max_x = f64::NEG_INFINITY;
-        let mut min_y = f64::INFINITY;
-        let mut max_y = f64::NEG_INFINITY;
-        for p in &self.paths {
-            for &(x, y) in &p.points {
-                if x.is_finite() && y.is_finite() {
-                    min_x = min_x.min(x);
-                    max_x = max_x.max(x);
-                    min_y = min_y.min(y);
-                    max_y = max_y.max(y);
-                }
-            }
-        }
-        if !min_x.is_finite() || !max_x.is_finite() || (max_x - min_x) < 1e-4 {
-            min_x = -1.5;
-            max_x = 1.5;
-        }
-        if !min_y.is_finite() || !max_y.is_finite() || (max_y - min_y) < 1e-4 {
-            min_y = -0.5;
-            max_y = 0.5;
-        }
-
-        let pad = 28.0f32;
-        let avail_w = (bounds.width - pad * 2.0).max(10.0);
-        let avail_h = (bounds.height - pad * 2.0).max(10.0);
-        let span_x = ((max_x - min_x) as f32).max(0.1);
-        let span_y = ((max_y - min_y) as f32).max(0.1);
-        let scale = (avail_w / span_x).min(avail_h / span_y);
-        let cx = ((min_x + max_x) * 0.5) as f32;
-        let cy = ((min_y + max_y) * 0.5) as f32;
-        let map_pt = |x: f64, y: f64| -> Point {
-            Point::new(
-                bounds.width * 0.5 + (x as f32 - cx) * scale,
-                bounds.height * 0.5 - (y as f32 - cy) * scale,
-            )
-        };
-
-        for path in &self.paths {
-            if path.points.is_empty() {
-                continue;
-            }
-            let first = map_pt(path.points[0].0, path.points[0].1);
-            let built = Path::new(|p| {
-                p.move_to(first);
-                for pt in &path.points[1..] {
-                    p.line_to(map_pt(pt.0, pt.1));
-                }
-                if path.closed {
-                    p.close();
-                }
-            });
-
-            if let Some(fill) = path.fill_color {
-                frame.fill(
-                    &built,
-                    Color::from_rgba(fill[0], fill[1], fill[2], fill[3]),
-                );
-            }
-
-            let stroke_col = Color::from_rgba(
-                path.color[0],
-                path.color[1],
-                path.color[2],
-                path.color[3],
-            );
-            frame.stroke(
-                &built,
-                iced::widget::canvas::Stroke::default()
-                    .with_color(stroke_col)
-                    .with_width(path.line_width),
-            );
-        }
-
-        vec![frame.into_geometry()]
-    }
 }

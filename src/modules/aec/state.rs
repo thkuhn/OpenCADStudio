@@ -176,12 +176,16 @@ pub enum StylePickerTarget {
     SlabLayerMaterial(usize),
     /// Selecting a material for a specific structural slab layer index.
     SlabStructuralLayerMaterial(usize),
+    /// Selecting a layer override for a specific structural slab layer index.
+    SlabStructuralLayerOverride(usize),
     /// Selecting a layer override for a specific slab layer index.
     SlabLayerOverride(usize),
     /// Selecting a parent style for a floor finish style being edited.
     FloorFinishStyleParent,
     /// Selecting a material for a specific floor finish layer index.
     FloorFinishLayerMaterial(usize),
+    /// Selecting a layer override for a specific floor finish layer index.
+    FloorFinishLayerOverride(usize),
     /// Selecting a new style for one or more slab entities in the properties panel.
     SlabPropertiesStyle,
 }

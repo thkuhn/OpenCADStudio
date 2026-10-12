@@ -163,6 +163,8 @@ pub struct AecStylesUiState {
     pub wall_layer_hatch_picker: Option<usize>,
     /// Slab layer (index into the effective layers) selected in the preview.
     pub slab_selected_layer: Option<usize>,
+    pub slab_structural_selected_layer: Option<usize>,
+    pub floor_finish_selected_layer: Option<usize>,
     pub slab_name: String,
     pub slab_parent: Option<String>,
     pub slab_structural_style: Option<String>,
@@ -369,6 +371,8 @@ impl Default for AecStylesUiState {
             wall_selected_layer: None,
             wall_layer_hatch_picker: None,
             slab_selected_layer: None,
+            slab_structural_selected_layer: None,
+            floor_finish_selected_layer: None,
             slab_name: String::new(),
             slab_parent: None,
             slab_structural_style: None,

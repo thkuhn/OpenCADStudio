@@ -344,6 +344,7 @@ fn aec_slab_structural_parts(&self) -> Option<crate::modules::aec::ui::style_man
                 all_layer_names,
                 effective_layers,
                 preview_mode: self.aec.styles.slab_structural_preview_mode,
+                selected_layer: self.aec.styles.slab_structural_selected_layer,
             },
         )
     } else {
@@ -420,6 +421,7 @@ fn aec_floor_finish_parts(&self) -> Option<crate::modules::aec::ui::style_manage
             all_layer_names,
             effective_layers,
             preview_mode: self.aec.styles.floor_finish_preview_mode,
+            selected_layer: self.aec.styles.floor_finish_selected_layer,
         })
     } else {
         None

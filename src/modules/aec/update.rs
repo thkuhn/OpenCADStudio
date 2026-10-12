@@ -365,6 +365,14 @@ impl OpenCADStudio {
                 self.aec.styles.slab_selected_layer = Some(index);
                 Task::none()
             }
+            AecMessage::AecSlabStructuralStyleManagerPreviewLayerSelect(index) => {
+                self.aec.styles.slab_structural_selected_layer = Some(index);
+                Task::none()
+            }
+            AecMessage::AecFloorFinishStyleManagerPreviewLayerSelect(index) => {
+                self.aec.styles.floor_finish_selected_layer = Some(index);
+                Task::none()
+            }
             AecMessage::AecSlabStyleManagerSetPreviewMode(mode) => {
                 self.aec.styles.slab_preview_mode = mode;
                 Task::none()
@@ -1954,6 +1962,7 @@ impl OpenCADStudio {
                 Task::none()
             }
             AecMessage::AecStyleManagerSelectWallStyle(id) => {
+                self.refresh_aec_material_linetype_combo();
                 let wall_style = crate::modules::aec::engine::library::combined_wall_style_entries(
                     self.aec.aec_project_explorer_file.as_ref(),
                 )
@@ -2233,6 +2242,16 @@ impl OpenCADStudio {
                         .styles.slab_layers
                         .get(index)
                         .map(|l| l.layer_override.clone()),
+                    crate::app::StylePickerTarget::SlabStructuralLayerOverride(index) => self
+                        .aec
+                        .styles.slab_structural_layers
+                        .get(index)
+                        .map(|l| l.layer_override.clone()),
+                    crate::app::StylePickerTarget::FloorFinishLayerOverride(index) => self
+                        .aec
+                        .styles.floor_finish_layers
+                        .get(index)
+                        .map(|l| l.layer_override.clone()),
                     crate::app::StylePickerTarget::FloorFinishStyleParent => {
                         self.aec.styles.floor_finish_parent.clone()
                     }
@@ -2368,6 +2387,7 @@ impl OpenCADStudio {
                         target,
                         crate::app::StylePickerTarget::FloorFinishStyleParent
                             | crate::app::StylePickerTarget::FloorFinishLayerMaterial(_)
+                            | crate::app::StylePickerTarget::FloorFinishLayerOverride(_)
                     ) {
                         self.active_modal = Some(crate::app::ModalKind::Aec(AecModalKind::Styles));
                         return Task::none();
@@ -2376,6 +2396,7 @@ impl OpenCADStudio {
                         target,
                         crate::app::StylePickerTarget::SlabStructuralStyleParent
                             | crate::app::StylePickerTarget::SlabStructuralLayerMaterial(_)
+                            | crate::app::StylePickerTarget::SlabStructuralLayerOverride(_)
                     ) {
                         self.active_modal =
                             Some(crate::app::ModalKind::Aec(AecModalKind::Styles));
@@ -2685,6 +2706,24 @@ impl OpenCADStudio {
                                 Some(crate::app::ModalKind::Aec(AecModalKind::Styles));
                             return self.update(Message::Aec(
                                 AecMessage::AecSlabStructuralStyleManagerLayerMaterialChanged(
+                                    index, selection,
+                                ),
+                            ));
+                        }
+                        crate::app::StylePickerTarget::SlabStructuralLayerOverride(index) => {
+                            self.active_modal =
+                                Some(crate::app::ModalKind::Aec(AecModalKind::Styles));
+                            return self.update(Message::Aec(
+                                AecMessage::AecSlabStructuralStyleManagerLayerOverrideChanged(
+                                    index, selection,
+                                ),
+                            ));
+                        }
+                        crate::app::StylePickerTarget::FloorFinishLayerOverride(index) => {
+                            self.active_modal =
+                                Some(crate::app::ModalKind::Aec(AecModalKind::Styles));
+                            return self.update(Message::Aec(
+                                AecMessage::AecFloorFinishStyleManagerLayerOverrideChanged(
                                     index, selection,
                                 ),
                             ));

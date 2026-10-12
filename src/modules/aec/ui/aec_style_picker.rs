@@ -83,7 +83,9 @@ pub fn view_window<'a>(
         crate::app::StylePickerTarget::SlabStructuralStyleParent => t!("Select Parent Style"),
         crate::app::StylePickerTarget::SlabLayerMaterial(_) => t!("Select Material"),
         crate::app::StylePickerTarget::SlabStructuralLayerMaterial(_) => t!("Select Material"),
-        crate::app::StylePickerTarget::SlabLayerOverride(_) => t!("Select Layer Override"),
+        crate::app::StylePickerTarget::SlabLayerOverride(_)
+        | crate::app::StylePickerTarget::SlabStructuralLayerOverride(_)
+        | crate::app::StylePickerTarget::FloorFinishLayerOverride(_) => t!("Select Layer Override"),
         crate::app::StylePickerTarget::SlabPropertiesStyle => t!("Select Slab Style"),
         crate::app::StylePickerTarget::FloorFinishStyleParent => t!("Select Parent Style"),
         crate::app::StylePickerTarget::FloorFinishLayerMaterial(_) => t!("Select Material"),
@@ -363,7 +365,9 @@ pub fn view_window<'a>(
             scrollable(column(rows).spacing(2)).into()
         }
         crate::app::StylePickerTarget::LayerOverride(_)
-        | crate::app::StylePickerTarget::SlabLayerOverride(_) => {
+        | crate::app::StylePickerTarget::SlabLayerOverride(_)
+        | crate::app::StylePickerTarget::SlabStructuralLayerOverride(_)
+        | crate::app::StylePickerTarget::FloorFinishLayerOverride(_) => {
             let default_label = t!("(Default)").into_owned();
             let rows: Vec<Element<'_, Message>> = std::iter::once(default_label.clone())
                 .chain(all_layer_names.into_iter())

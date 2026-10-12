@@ -263,6 +263,7 @@ fn form_view<'a>(form: SlabStyleFormState<'a>) -> Element<'a, Message> {
             mode: form.preview_mode,
             layers: form.effective_layers.clone(),
             selected: form.selected_layer,
+            on_select: |i| Message::Aec(AecMessage::AecSlabStyleManagerPreviewLayerSelect(i)),
         })
         .width(Fill)
         .height(140),
@@ -500,7 +501,7 @@ fn form_view<'a>(form: SlabStyleFormState<'a>) -> Element<'a, Message> {
     .into()
 }
 
-fn highlight_row<'a>(
+pub(crate) fn highlight_row<'a>(
     row: impl Into<Element<'a, Message>>,
     selected: bool,
 ) -> Element<'a, Message> {
@@ -521,13 +522,15 @@ fn highlight_row<'a>(
         .into()
 }
 
-struct SlabPreviewCanvas {
-    paths: Vec<SlabPreviewPath>,
+pub(crate) struct SlabPreviewCanvas {
+    pub(crate) paths: Vec<SlabPreviewPath>,
     #[allow(dead_code)]
-    mode: AecSlabPreviewMode,
+    pub(crate) mode: AecSlabPreviewMode,
     /// Effective layers, for cross-section hit testing.
-    layers: Vec<SlabStyleLayer>,
-    selected: Option<usize>,
+    pub(crate) layers: Vec<SlabStyleLayer>,
+    pub(crate) selected: Option<usize>,
+    /// Message built when a cross-section layer is clicked.
+    pub(crate) on_select: fn(usize) -> Message,
 }
 
 /// Scale and model-space centre that fit `paths` into a canvas of `size`.
@@ -602,10 +605,7 @@ impl Program<Message> for SlabPreviewCanvas {
         let y = ((bounds.height * 0.5 - pos.y) / scale + cy) as f64;
         let index = cross_section_hit(&self.layers, x, y)?;
         Some(
-            canvas::Action::publish(Message::Aec(AecMessage::AecSlabStyleManagerPreviewLayerSelect(
-                index,
-            )))
-            .and_capture(),
+            canvas::Action::publish((self.on_select)(index)).and_capture(),
         )
     }
 
