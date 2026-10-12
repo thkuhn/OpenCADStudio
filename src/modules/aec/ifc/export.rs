@@ -71,17 +71,56 @@ fn collect_aec_ifc_scene(scene: &Scene) -> engine::Scene {
     ifc_scene
 }
 
-/// `AEC_IFCEXPORT` — collect walls/rooms/slabs/openings/storeys and emit
-/// IFC4 SPF (in-memory).
-pub fn aec_ifc_export(scene: &mut Scene, command_line: &mut CommandLine) {
+/// Builds the IFC4 SPF text of `scene` and writes it to `path`.
+/// Returns the number of bytes written.
+pub fn write_ifc_file(scene: &Scene, path: &std::path::Path) -> std::io::Result<usize> {
     let ifc_scene = collect_aec_ifc_scene(scene);
     let ifc_data = engine::ifc::write_spf(&ifc_scene);
-    command_line.push_info(&crate::tr!(
-        "aec",
-        "ifc-exported",
-        bytes = ifc_data.len()
-    ));
-    command_line.push_info(&crate::tr!("aec", "ifc-note"));
+    std::fs::write(path, ifc_data.as_bytes())?;
+    Ok(ifc_data.len())
+}
+
+/// `AEC_IFCEXPORT` — collect walls/rooms/slabs/openings/storeys, ask for a
+/// target file and write the IFC4 SPF there.
+pub fn aec_ifc_export(scene: &mut Scene, command_line: &mut CommandLine) {
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let picked = crate::sys::blocking_file_dialog()
+            .add_filter("IFC", &["ifc"])
+            .set_file_name("aec-export.ifc")
+            .save_file();
+        let Some(mut path) = picked else {
+            command_line.push_info(&crate::tr!("aec", "ifc-cancelled"));
+            return;
+        };
+        if path.extension().is_none() {
+            path.set_extension("ifc");
+        }
+        match write_ifc_file(scene, &path) {
+            Ok(bytes) => {
+                crate::config::remember_dialog_dir(&path);
+                command_line.push_info(&crate::tr!(
+                    "aec",
+                    "ifc-exported",
+                    bytes = bytes
+                ));
+                command_line.push_info(&crate::tr!(
+                    "aec",
+                    "ifc-saved",
+                    path = path.display().to_string()
+                ));
+            }
+            Err(e) => command_line.push_error(&crate::tr!(
+                "aec",
+                "ifc-write-failed",
+                error = e.to_string()
+            )),
+        }
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        let _ = (scene, command_line);
+    }
 }
 
 
@@ -159,6 +198,18 @@ mod tests {
         assert!(spf.contains(".ROOF."));
         assert!(spf.contains("IFCOPENINGELEMENT("));
         assert!(spf.contains("IFCRELVOIDSELEMENT("));
+    }
+
+    #[test]
+    fn write_ifc_file_creates_spf_file() {
+        let mut scene = Scene::new();
+        add_slab_carrier(&mut scene, "style_slab_conc_20", 0);
+        let path = std::env::temp_dir().join(format!("ocs_ifc_test_{}.ifc", std::process::id()));
+        let bytes = write_ifc_file(&scene, &path).expect("write");
+        let text = std::fs::read_to_string(&path).expect("read");
+        let _ = std::fs::remove_file(&path);
+        assert_eq!(bytes, text.len());
+        assert!(text.contains("IFCSLAB("));
     }
 
     #[test]
