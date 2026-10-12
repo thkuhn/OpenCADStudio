@@ -23,13 +23,13 @@ use crate::modules::aec::ui::style_manager::list::{self, filter_entries, ListEnt
 use crate::modules::aec::ui::style_manager::StyleParts;
 use crate::t;
 
-const LAYER_COL_REORDER_W: f32 = 60.0;
-const LAYER_COL_MATERIAL_W: f32 = 170.0;
-const LAYER_COL_THICKNESS_W: f32 = 80.0;
+const LAYER_COL_REORDER_W: f32 = 74.0;
+const LAYER_COL_MATERIAL_W: f32 = 180.0;
+const LAYER_COL_THICKNESS_W: f32 = 60.0;
 const LAYER_COL_FUNCTION_W: f32 = 120.0;
-const LAYER_COL_OFFSET_W: f32 = 70.0;
-const LAYER_COL_OVERRIDE_W: f32 = 110.0;
-const LAYER_COL_HATCH_W: f32 = 90.0;
+const LAYER_COL_OFFSET_W: f32 = 50.0;
+const LAYER_COL_OVERRIDE_W: f32 = 130.0;
+const LAYER_COL_HATCH_W: f32 = 180.0;
 
 pub struct FloorFinishStyleFormState<'a> {
     pub open: bool,
@@ -238,19 +238,18 @@ fn form_view<'a>(form: FloorFinishStyleFormState<'a>) -> Element<'a, Message> {
     });
 
     let table_header = row![
-        container(text(t!("Pos")).size(10).style(muted)).width(LAYER_COL_REORDER_W),
-        container(text(t!("Material")).size(10).style(muted)).width(LAYER_COL_MATERIAL_W),
-        container(text(t!("Dicke [cm]")).size(10).style(muted)).width(LAYER_COL_THICKNESS_W),
-        container(text(t!("Funktion")).size(10).style(muted)).width(LAYER_COL_FUNCTION_W),
-        container(text(t!("Offset [cm]")).size(10).style(muted)).width(LAYER_COL_OFFSET_W),
-        container(text(t!("Layer-Override")).size(10).style(muted)).width(LAYER_COL_OVERRIDE_W),
-        container(text(t!("Schraffur-Override")).size(10).style(muted)).width(LAYER_COL_HATCH_W),
-        Space::new(),
+        Space::new().width(LAYER_COL_REORDER_W),
+        text(t!("Material")).size(10).style(muted).width(LAYER_COL_MATERIAL_W),
+        text(t!("Thick (cm)")).size(10).style(muted).width(LAYER_COL_THICKNESS_W),
+        text(t!("Function")).size(10).style(muted).width(LAYER_COL_FUNCTION_W),
+        text(t!("Offset [cm]")).size(10).style(muted).width(LAYER_COL_OFFSET_W),
+        text(t!("Lyr. Over.")).size(10).style(muted).width(LAYER_COL_OVERRIDE_W),
+        text(t!("Hatch")).size(10).style(muted).width(LAYER_COL_HATCH_W),
+        Space::new().width(24),
     ]
-    .spacing(4)
-    .align_y(Alignment::Center);
+    .spacing(8);
 
-    let mut layers_col = column![table_header].spacing(4);
+    let mut layers_col = column![].spacing(4);
     let functions = vec![
         "Finish".to_string(),
         "Insulation".to_string(),
@@ -264,24 +263,21 @@ fn form_view<'a>(form: FloorFinishStyleFormState<'a>) -> Element<'a, Message> {
             total_th_cm += val;
         }
 
-        let drag_up_btn = button(text("▲").size(9))
-            .padding([1, 4])
-            .style(button::secondary)
+        let drag_up_btn = button(text("▲").size(10))
+            .padding([2, 5])
             .on_press(Message::Aec(AecMessage::AecFloorFinishStyleManagerLayerMoveUp(i)));
-        let drag_down_btn = button(text("▼").size(9))
-            .padding([1, 4])
-            .style(button::secondary)
+        let drag_down_btn = button(text("▼").size(10))
+            .padding([2, 5])
             .on_press(Message::Aec(AecMessage::AecFloorFinishStyleManagerLayerMoveDown(i)));
 
         let reorder_cell = row![
-            text(format!("{}", i + 1)).size(10).style(muted),
             drag_up_btn,
             drag_down_btn,
         ]
         .spacing(2)
         .align_y(Alignment::Center);
 
-        let mat_btn = button(text(layer_buf.material_id.as_str()).size(10))
+        let mat_btn = button(text(layer_buf.material_id.as_str()).size(11))
             .width(Fill)
             .padding([3, 6])
             .style(button::secondary)
@@ -290,7 +286,7 @@ fn form_view<'a>(form: FloorFinishStyleFormState<'a>) -> Element<'a, Message> {
             )));
 
         let th_input = text_input("cm", &layer_buf.thickness)
-            .size(10)
+            .size(11)
             .padding([3, 6])
             .on_input(move |s| {
                 Message::Aec(AecMessage::AecFloorFinishStyleManagerLayerThicknessChanged(i, s))
@@ -302,25 +298,25 @@ fn form_view<'a>(form: FloorFinishStyleFormState<'a>) -> Element<'a, Message> {
         .on_select(move |sel| {
             Message::Aec(AecMessage::AecFloorFinishStyleManagerLayerFunctionChanged(i, sel))
         })
-        .text_size(10)
+        .text_size(11)
         .padding([3, 6]);
 
         let offset_input = text_input("cm", &layer_buf.vertical_offset)
-            .size(10)
+            .size(11)
             .padding([3, 6])
             .on_input(move |s| {
                 Message::Aec(AecMessage::AecFloorFinishStyleManagerLayerVerticalOffsetChanged(i, s))
             });
 
         let layer_override_input = text_input(t!("Standard").as_ref(), &layer_buf.layer_override)
-            .size(10)
+            .size(11)
             .padding([3, 6])
             .on_input(move |s| {
                 Message::Aec(AecMessage::AecFloorFinishStyleManagerLayerOverrideChanged(i, s))
             });
 
         let hatch_override_input = text_input(t!("Standard").as_ref(), &layer_buf.hatch_override)
-            .size(10)
+            .size(11)
             .padding([3, 6])
             .on_input(move |s| {
                 Message::Aec(AecMessage::AecFloorFinishStyleManagerLayerHatchOverrideChanged(i, s))
@@ -341,14 +337,13 @@ fn form_view<'a>(form: FloorFinishStyleFormState<'a>) -> Element<'a, Message> {
             container(hatch_override_input).width(LAYER_COL_HATCH_W),
             del_btn,
         ]
-        .spacing(4)
+        .spacing(8)
         .align_y(Alignment::Center);
         layers_col = layers_col.push(row_item);
     }
 
-    let add_layer_btn = button(text(t!("+ Schicht hinzufügen")).size(10))
-        .padding([4, 8])
-        .style(button::primary)
+    let add_layer_btn = button(text(t!("Add Layer")).size(10))
+        .padding([2, 8])
         .on_press(Message::Aec(AecMessage::AecFloorFinishStyleManagerLayerAdd));
 
     let summary_label = text(crate::tf!(
@@ -359,13 +354,26 @@ fn form_view<'a>(form: FloorFinishStyleFormState<'a>) -> Element<'a, Message> {
     .size(10)
     .style(muted);
 
-    let layers_footer = row![add_layer_btn, Space::new(), summary_label].align_y(Alignment::Center);
-    let layers_section = column![
-        text(t!("Ausbauschichten (von oben nach unten von OKFF bis OKRD):"))
-            .size(11)
-            .style(muted),
-        scrollable(layers_col).height(Length::Fixed(160.0)),
-        layers_footer,
+        let layers_section = column![
+        row![
+            text(t!("Ausbauschichten (von oben nach unten von OKFF bis OKRD):")).size(10).style(muted),
+            Space::new().width(Fill),
+            add_layer_btn,
+        ]
+        .spacing(8)
+        .align_y(Alignment::Center),
+        table_header,
+        container(scrollable(layers_col).height(Length::Fixed(180.0)))
+            .style(|theme: &Theme| container::Style {
+                border: Border {
+                    color: theme.palette().background.neutral.color,
+                    width: 1.0,
+                    radius: 3.0.into(),
+                },
+                ..Default::default()
+            })
+            .padding(iced::Padding { top: 4.0, right: 14.0, bottom: 4.0, left: 4.0 }),
+        summary_label,
     ]
     .spacing(6);
 

@@ -2,6 +2,8 @@
 
 Project-wide rules: repo-root `AGENTS.md`. This file is layout and do/don’t only.
 
+Wir entwickeln OpenCADStudio in Rust. Nutze strikte Data-Driven-Ansätze, vermeide unnötige Heap-Allokationen, achte auf glam-Typen (DVec2/DVec3) und behandle Geometrie-Bulges sauber
+
 ## Layout
 
 ```

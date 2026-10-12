@@ -22,7 +22,7 @@ use crate::modules::aec::ui::aec_ui_util::muted;
 use crate::modules::aec::ui::style_manager::actions::{self, ActionMessages};
 use crate::modules::aec::ui::style_manager::list::{self, filter_entries, ListEntry, ListSpec};
 use crate::modules::aec::ui::style_manager::StyleParts;
-use crate::{t, tr};
+use crate::t;
 
 
 pub struct SlabStyleFormState<'a> {
@@ -43,6 +43,9 @@ pub struct SlabStyleFormState<'a> {
     pub inheritance_chain: Vec<String>,
     pub preview_mode: AecSlabPreviewMode,
     pub display_config_names: Vec<String>,
+    pub existing_overrides: Vec<String>,
+    /// Effective layer selected by a preview click.
+    pub selected_layer: Option<usize>,
     pub profile_selected: Option<&'a str>,
     pub slot_visibility: std::collections::HashMap<SlabComponentSlot, bool>,
 }
@@ -258,6 +261,8 @@ fn form_view<'a>(form: SlabStyleFormState<'a>) -> Element<'a, Message> {
         canvas(SlabPreviewCanvas {
             paths: preview_paths,
             mode: form.preview_mode,
+            layers: form.effective_layers.clone(),
+            selected: form.selected_layer,
         })
         .width(Fill)
         .height(140),
@@ -316,7 +321,8 @@ fn form_view<'a>(form: SlabStyleFormState<'a>) -> Element<'a, Message> {
             ]
             .align_y(Alignment::Center)
             .spacing(4);
-            finish_layers_col = finish_layers_col.push(layer_row);
+            finish_layers_col =
+                finish_layers_col.push(highlight_row(layer_row, form.selected_layer == Some(i)));
         }
     } else {
         finish_layers_col = finish_layers_col.push(
@@ -382,7 +388,10 @@ fn form_view<'a>(form: SlabStyleFormState<'a>) -> Element<'a, Message> {
             ]
             .align_y(Alignment::Center)
             .spacing(4);
-            struct_layers_col = struct_layers_col.push(layer_row);
+            let effective_index =
+                i + form.referenced_finish.as_ref().map_or(0, |f| f.layers.len());
+            struct_layers_col = struct_layers_col
+                .push(highlight_row(layer_row, form.selected_layer == Some(effective_index)));
         }
     } else {
         struct_layers_col = struct_layers_col.push(
@@ -437,15 +446,17 @@ fn form_view<'a>(form: SlabStyleFormState<'a>) -> Element<'a, Message> {
     .spacing(4);
 
     let slots_title = text(t!("Komponenten-Sichtbarkeit:")).size(10).style(muted);
-    let default_label = tr!("aec", "opening-plan-default").to_string();
-    let options: Vec<String> = std::iter::once(default_label.clone())
-        .chain(form.display_config_names.iter().cloned()).collect();
-    let selected = form.profile_selected.unwrap_or(&default_label).to_string();
-    let profile_picker = pick_list(Some(selected), options, |value| value.clone()).on_select(move |value| {
-        Message::Aec(AecMessage::AecSlabStyleManagerProfileSelect(
-            if value == default_label { String::new() } else { value },
-        ))
-    });
+    let profile_picker = crate::modules::aec::ui::style_manager::forms::plan_overrides::plan_override_section(
+        crate::modules::aec::ui::style_manager::forms::plan_overrides::PlanOverrideProps {
+            all_names: &form.display_config_names,
+            existing: &form.existing_overrides,
+            selected: form.profile_selected,
+            default_key: "",
+        },
+        |n| Message::Aec(AecMessage::AecSlabStyleManagerProfileSelect(n)),
+        |n| Message::Aec(AecMessage::AecSlabStyleManagerProfileSelect(n)),
+        |n| Message::Aec(AecMessage::AecSlabStyleManagerProfileRemove(n)),
+    );
     let mut slots_row = row![slots_title].spacing(8).align_y(Alignment::Center);
     for slot in EDITABLE_SLOTS {
         let is_vis = form.slot_visibility.get(slot).copied().unwrap_or(true);
@@ -481,8 +492,7 @@ fn form_view<'a>(form: SlabStyleFormState<'a>) -> Element<'a, Message> {
         Space::new().height(4),
         layers_section,
         Space::new().height(4),
-        row![text(tr!("aec", "opening-plan-type")).size(10), profile_picker]
-            .align_y(Alignment::Center).spacing(8),
+        profile_picker,
         slots_row,
     ]
     .spacing(6)
@@ -490,14 +500,114 @@ fn form_view<'a>(form: SlabStyleFormState<'a>) -> Element<'a, Message> {
     .into()
 }
 
+fn highlight_row<'a>(
+    row: impl Into<Element<'a, Message>>,
+    selected: bool,
+) -> Element<'a, Message> {
+    container(row)
+        .width(Fill)
+        .padding([1, 3])
+        .style(move |theme: &Theme| container::Style {
+            background: selected.then(|| {
+                theme.palette().primary.base.color.scale_alpha(0.18).into()
+            }),
+            border: Border {
+                radius: 3.0.into(),
+                width: if selected { 1.0 } else { 0.0 },
+                color: theme.palette().primary.base.color,
+            },
+            ..Default::default()
+        })
+        .into()
+}
+
 struct SlabPreviewCanvas {
     paths: Vec<SlabPreviewPath>,
     #[allow(dead_code)]
     mode: AecSlabPreviewMode,
+    /// Effective layers, for cross-section hit testing.
+    layers: Vec<SlabStyleLayer>,
+    selected: Option<usize>,
 }
 
-impl<Message> Program<Message> for SlabPreviewCanvas {
+/// Scale and model-space centre that fit `paths` into a canvas of `size`.
+fn fit_paths(paths: &[SlabPreviewPath], size: iced::Size) -> (f32, f32, f32) {
+    let mut min_x = f64::INFINITY;
+    let mut max_x = f64::NEG_INFINITY;
+    let mut min_y = f64::INFINITY;
+    let mut max_y = f64::NEG_INFINITY;
+    for p in paths {
+        for &(x, y) in &p.points {
+            if x.is_finite() && y.is_finite() {
+                min_x = min_x.min(x);
+                max_x = max_x.max(x);
+                min_y = min_y.min(y);
+                max_y = max_y.max(y);
+            }
+        }
+    }
+    if !min_x.is_finite() || !max_x.is_finite() || (max_x - min_x) < 1e-4 {
+        min_x = -1.5;
+        max_x = 1.5;
+    }
+    if !min_y.is_finite() || !max_y.is_finite() || (max_y - min_y) < 1e-4 {
+        min_y = -0.5;
+        max_y = 0.5;
+    }
+    let pad = 28.0f32;
+    let avail_w = (size.width - pad * 2.0).max(10.0);
+    let avail_h = (size.height - pad * 2.0).max(10.0);
+    let span_x = ((max_x - min_x) as f32).max(0.1);
+    let span_y = ((max_y - min_y) as f32).max(0.1);
+    let scale = (avail_w / span_x).min(avail_h / span_y);
+    (scale, ((min_x + max_x) * 0.5) as f32, ((min_y + max_y) * 0.5) as f32)
+}
+
+/// Layer whose box in the cross-section preview contains the model point
+/// `(x, y)` (boxes span `|x| <= 1.2`, stacked downwards from y = 0).
+pub(crate) fn cross_section_hit(layers: &[SlabStyleLayer], x: f64, y: f64) -> Option<usize> {
+    if x.abs() > 1.2 {
+        return None;
+    }
+    let mut top = 0.0;
+    for (i, layer) in layers.iter().enumerate() {
+        let th = layer.thickness.as_fixed_or(0.10).max(0.005);
+        if y <= top && y >= top - th {
+            return Some(i);
+        }
+        top -= th;
+    }
+    None
+}
+
+impl Program<Message> for SlabPreviewCanvas {
     type State = ();
+
+    fn update(
+        &self,
+        _state: &mut Self::State,
+        event: &canvas::Event,
+        bounds: Rectangle,
+        cursor: mouse::Cursor,
+    ) -> Option<canvas::Action<Message>> {
+        if self.mode != AecSlabPreviewMode::CrossSection {
+            return None;
+        }
+        let canvas::Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)) = event else {
+            return None;
+        };
+        let pos = cursor.position_in(bounds)?;
+        let (scale, cx, cy) = fit_paths(&self.paths, bounds.size());
+        let x = ((pos.x - bounds.width * 0.5) / scale + cx) as f64;
+        let y = ((bounds.height * 0.5 - pos.y) / scale + cy) as f64;
+        let index = cross_section_hit(&self.layers, x, y)?;
+        Some(
+            canvas::Action::publish(Message::Aec(AecMessage::AecSlabStyleManagerPreviewLayerSelect(
+                index,
+            )))
+            .and_capture(),
+        )
+    }
 
     fn draw(
         &self,
@@ -509,43 +619,33 @@ impl<Message> Program<Message> for SlabPreviewCanvas {
     ) -> Vec<Geometry> {
         let mut frame = Frame::new(renderer, bounds.size());
 
-        let mut min_x = f64::INFINITY;
-        let mut max_x = f64::NEG_INFINITY;
-        let mut min_y = f64::INFINITY;
-        let mut max_y = f64::NEG_INFINITY;
-        for p in &self.paths {
-            for &(x, y) in &p.points {
-                if x.is_finite() && y.is_finite() {
-                    min_x = min_x.min(x);
-                    max_x = max_x.max(x);
-                    min_y = min_y.min(y);
-                    max_y = max_y.max(y);
-                }
-            }
-        }
-        if !min_x.is_finite() || !max_x.is_finite() || (max_x - min_x) < 1e-4 {
-            min_x = -1.5;
-            max_x = 1.5;
-        }
-        if !min_y.is_finite() || !max_y.is_finite() || (max_y - min_y) < 1e-4 {
-            min_y = -0.5;
-            max_y = 0.5;
-        }
-
-        let pad = 28.0f32;
-        let avail_w = (bounds.width - pad * 2.0).max(10.0);
-        let avail_h = (bounds.height - pad * 2.0).max(10.0);
-        let span_x = ((max_x - min_x) as f32).max(0.1);
-        let span_y = ((max_y - min_y) as f32).max(0.1);
-        let scale = (avail_w / span_x).min(avail_h / span_y);
-        let cx = ((min_x + max_x) * 0.5) as f32;
-        let cy = ((min_y + max_y) * 0.5) as f32;
+        let (scale, cx, cy) = fit_paths(&self.paths, bounds.size());
         let map_pt = |x: f64, y: f64| -> Point {
             Point::new(
                 bounds.width * 0.5 + (x as f32 - cx) * scale,
                 bounds.height * 0.5 - (y as f32 - cy) * scale,
             )
         };
+
+        if self.mode == AecSlabPreviewMode::CrossSection {
+            if let Some(i) = self.selected {
+                let top: f64 = self
+                    .layers
+                    .iter()
+                    .take(i)
+                    .map(|l| l.thickness.as_fixed_or(0.10).max(0.005))
+                    .sum();
+                if let Some(layer) = self.layers.get(i) {
+                    let th = layer.thickness.as_fixed_or(0.10).max(0.005);
+                    let a = map_pt(-1.2, -top);
+                    let b = map_pt(1.2, -top - th);
+                    frame.stroke(
+                        &Path::rectangle(a, iced::Size::new(b.x - a.x, b.y - a.y)),
+                        Stroke::default().with_width(3.0).with_color(Color::from_rgb(0.1, 0.6, 0.9)),
+                    );
+                }
+            }
+        }
 
         for path in &self.paths {
             if path.points.is_empty() {
@@ -605,5 +705,29 @@ impl<Message> Program<Message> for SlabPreviewCanvas {
         }
 
         vec![frame.into_geometry()]
+    }
+}
+
+#[cfg(test)]
+mod hit_tests {
+    use super::*;
+    use crate::modules::aec::engine::slab_style::{LayerValue, SlabStyleLayer};
+
+    fn layer(th_m: f64) -> SlabStyleLayer {
+        SlabStyleLayer::new(
+            "mat",
+            LayerValue::Fixed(th_m),
+            crate::modules::aec::engine::wall_style::LayerFunction::Structural,
+        )
+    }
+
+    #[test]
+    fn cross_section_hit_picks_stacked_layer() {
+        let layers = vec![layer(0.1), layer(0.2)];
+        assert_eq!(cross_section_hit(&layers, 0.0, -0.05), Some(0));
+        assert_eq!(cross_section_hit(&layers, 0.5, -0.2), Some(1));
+        assert_eq!(cross_section_hit(&layers, 0.0, -0.5), None);
+        assert_eq!(cross_section_hit(&layers, 5.0, -0.05), None);
+        assert_eq!(cross_section_hit(&layers, 0.0, 0.1), None);
     }
 }

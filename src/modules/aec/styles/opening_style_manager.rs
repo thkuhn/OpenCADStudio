@@ -879,6 +879,30 @@ impl OpenCADStudio {
         Task::none()
     }
 
+    /// Drops the named plan type's exception from the form (written on save).
+    pub(crate) fn aec_opening_style_manager_profile_remove(
+        &mut self,
+        name: String,
+    ) -> Task<Message> {
+        self.aec.styles.opening_display_profiles.remove(&name);
+        if self.aec.styles.opening_profile_selected.as_deref() == Some(name.as_str()) {
+            self.aec.styles.opening_profile_selected = None;
+            self.aec.styles.opening_slots = buffers_for_profile(
+                &self.aec.styles.opening_default_slots,
+                self.aec.styles.opening_default_profile.as_ref(),
+                &self.aec.styles.opening_display_profiles,
+                None,
+            );
+            reset_sketch_draft(self);
+            self.aec.styles.opening_sketch_slot = self
+                .aec
+                .styles.opening_slots
+                .iter()
+                .position(|b| b.source == AecOpeningSlotSource::Sketch);
+        }
+        Task::none()
+    }
+
     pub(crate) fn aec_opening_style_manager_slot_visible(
         &mut self,
         index: usize,

@@ -66,6 +66,15 @@ pub enum AecPendingCopy {
     },
 }
 
+/// Preview mode in the Wall Style Manager canvas.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum AecWallPreviewMode {
+    /// 2D layer buildup (cross-section).
+    #[default]
+    CrossSection2D,
+    Model3D,
+}
+
 /// Preview mode in the Slab Style Manager canvas.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub enum AecSlabPreviewMode {

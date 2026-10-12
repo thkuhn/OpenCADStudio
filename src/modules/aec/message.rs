@@ -89,6 +89,10 @@ pub enum AecMessage {
     /// Optional hatch pattern override changed for the layer at `index`
     /// (empty string = use the material's own hatch pattern).
     AecStyleManagerWallStyleLayerHatchOverrideChanged(usize, String),
+    /// Opens/closes the visual hatch picker of the wall layer at `index`.
+    AecStyleManagerWallStyleLayerHatchPickerToggle(usize),
+    /// Hatch chosen in the picker of the wall layer at `index` (empty = inherit).
+    AecStyleManagerWallStyleLayerHatchSelected(usize, String),
     /// Optional free-text role tag changed for the layer at `index`.
     AecStyleManagerWallStyleLayerRoleTagChanged(usize, String),
     /// Moves the layer at `index` one position up (towards the outside).
@@ -153,6 +157,10 @@ pub enum AecMessage {
     AecOpeningStyleManagerSlotBlockPlacementChanged(usize, String),
     /// Empty string = default slots for all plan types.
     AecOpeningStyleManagerProfileSelect(String),
+    /// Removes the named plan type's exception from the opening style form.
+    AecOpeningStyleManagerProfileRemove(String),
+    /// Preview click: selects the opening slot row under the cursor.
+    AecOpeningStyleManagerPreviewSlotSelect(crate::modules::aec::engine::display_component::OpeningComponentSlot),
     AecOpeningStyleManagerSlotVisible(usize, bool),
     AecOpeningStyleManagerSketchSlotSelect(usize),
     /// Canvas click in instance-local coordinates (manager preview).
@@ -195,8 +203,15 @@ pub enum AecMessage {
     AecSlabStyleManagerLayerOverrideChanged(usize, String),
     AecSlabStyleManagerLayerHatchOverrideChanged(usize, String),
     AecSlabStyleManagerLayerRoleTagChanged(usize, String),
+    AecWallStyleManagerSetPreviewMode(crate::modules::aec::state::AecWallPreviewMode),
+    /// Preview click: selects (and focuses) the wall layer row.
+    AecWallStyleManagerPreviewLayerSelect(usize),
+    /// Preview click: selects a slab layer in the breakdown cards.
+    AecSlabStyleManagerPreviewLayerSelect(usize),
     AecSlabStyleManagerSetPreviewMode(crate::modules::aec::state::AecSlabPreviewMode),
     AecSlabStyleManagerProfileSelect(String),
+    /// Removes the named plan type's exception from the slab style form.
+    AecSlabStyleManagerProfileRemove(String),
     AecSlabStyleManagerProfileSlotVisibilityToggle(
         crate::modules::aec::engine::display_component::SlabComponentSlot,
         bool,
@@ -328,6 +343,8 @@ pub enum AecMessage {
     /// Removes the currently selected `DisplayConfig`'s override entirely,
     /// reverting that plan type back to the style's default representation.
     AecStyleManagerProfileRemove,
+    /// Selects the named plan type and removes its override.
+    AecStyleManagerProfileRemoveNamed(String),
 
     // ── AEC Project Explorer (`AEC_PROJECTEXPLORER`) ──────────────────────
     /// Open the Project Explorer modal.
@@ -493,7 +510,7 @@ pub enum AecMessage {
     AecPlanManagerOverlayStyleSelect(String),
     AecPlanManagerOverlayLayerSelect(uuid::Uuid),
     AecPlanManagerOverlayAddStyle(String),
-    AecPlanManagerOverlayRemoveStyle,
+    AecPlanManagerOverlayRemoveStyle(String),
     AecPlanManagerOverlayLineTypeChanged(String),
     AecPlanManagerOverlayLineColorChanged(String),
     AecPlanManagerOverlayHatchPatternChanged(String),

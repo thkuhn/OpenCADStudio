@@ -1097,3 +1097,16 @@ impl<'a> From<Zoomed<'a>> for Element<'a, Message> {
         Element::new(zoomed)
     }
 }
+
+#[cfg(test)]
+mod example_tests {
+    use super::Graph;
+
+    #[test]
+    fn sine_circles_example_loads_with_all_links() {
+        let bytes = include_bytes!("../../docs/examples/node-graph-sine-circles.ocg");
+        let (graph, _) = Graph::from_file(bytes).expect("example loads");
+        assert_eq!(graph.engine.nodes.len(), 9);
+        assert_eq!(graph.engine.links.len(), 9);
+    }
+}

@@ -157,6 +157,15 @@ impl OpenCADStudio {
             AecMessage::AecOpeningStyleManagerProfileSelect(value) => {
                 self.aec_opening_style_manager_profile_select(value)
             }
+            AecMessage::AecOpeningStyleManagerPreviewSlotSelect(slot) => {
+                match self.aec.styles.opening_slots.iter().position(|b| b.slot == slot) {
+                    Some(index) => self.aec_opening_style_manager_sketch_slot_select(index),
+                    None => Task::none(),
+                }
+            }
+            AecMessage::AecOpeningStyleManagerProfileRemove(name) => {
+                self.aec_opening_style_manager_profile_remove(name)
+            }
             AecMessage::AecOpeningStyleManagerSlotVisible(index, visible) => {
                 self.aec_opening_style_manager_slot_visible(index, visible)
             }
@@ -342,12 +351,30 @@ impl OpenCADStudio {
                 }
                 Task::none()
             }
+            AecMessage::AecWallStyleManagerSetPreviewMode(mode) => {
+                self.aec.styles.wall_preview_mode = mode;
+                Task::none()
+            }
+            AecMessage::AecWallStyleManagerPreviewLayerSelect(index) => {
+                self.aec.styles.wall_selected_layer = Some(index);
+                iced::widget::operation::focus(iced::widget::Id::from(
+                    crate::modules::aec::ui::style_manager::forms::wall::layer_thickness_input_id(index),
+                ))
+            }
+            AecMessage::AecSlabStyleManagerPreviewLayerSelect(index) => {
+                self.aec.styles.slab_selected_layer = Some(index);
+                Task::none()
+            }
             AecMessage::AecSlabStyleManagerSetPreviewMode(mode) => {
                 self.aec.styles.slab_preview_mode = mode;
                 Task::none()
             }
             AecMessage::AecSlabStyleManagerProfileSelect(name) => {
                 self.aec_slab_style_manager_profile_select(name);
+                Task::none()
+            }
+            AecMessage::AecSlabStyleManagerProfileRemove(name) => {
+                self.aec_slab_style_manager_profile_remove(name);
                 Task::none()
             }
             AecMessage::AecSlabStyleManagerProfileSlotVisibilityToggle(slot, visible) => {
@@ -1690,13 +1717,16 @@ impl OpenCADStudio {
                 self.aec_plan_manager_load_overlay_contour_hatch_buffers();
                 Task::none()
             }
-            AecMessage::AecPlanManagerOverlayRemoveStyle => {
-                if let Some(style_id) = self.aec.styles.plan_overlay_style_id.take() {
-                    self.aec.styles.plan_style_overlays.remove(&style_id);
+            AecMessage::AecPlanManagerOverlayRemoveStyle(style_id) => {
+                self.aec.styles.plan_style_overlays.remove(&style_id);
+                if self.aec.styles.plan_overlay_style_id.as_deref() == Some(style_id.as_str()) {
+                    self.aec.styles.plan_overlay_style_id = None;
                 }
                 self.aec.styles.plan_overlay_layer_id = None;
-                self.aec.styles.plan_overlay_style_id =
-                    self.aec.styles.plan_style_overlays.keys().next().cloned();
+                if self.aec.styles.plan_overlay_style_id.is_none() {
+                    self.aec.styles.plan_overlay_style_id =
+                        self.aec.styles.plan_style_overlays.keys().next().cloned();
+                }
                 self.aec_plan_manager_load_overlay_layer_buffers();
                 self.aec_plan_manager_load_overlay_contour_hatch_buffers();
                 Task::none()
@@ -2096,6 +2126,18 @@ impl OpenCADStudio {
                 }
                 Task::none()
             }
+            AecMessage::AecStyleManagerWallStyleLayerHatchPickerToggle(index) => {
+                let open = &mut self.aec.styles.wall_layer_hatch_picker;
+                *open = if *open == Some(index) { None } else { Some(index) };
+                Task::none()
+            }
+            AecMessage::AecStyleManagerWallStyleLayerHatchSelected(index, hatch) => {
+                if let Some(layer) = self.aec.styles.wall_style_layers.get_mut(index) {
+                    layer.hatch_override = hatch;
+                }
+                self.aec.styles.wall_layer_hatch_picker = None;
+                Task::none()
+            }
             AecMessage::AecStyleManagerWallStyleLayerRoleTagChanged(index, role_tag) => {
                 if let Some(layer) = self.aec.styles.wall_style_layers.get_mut(index) {
                     layer.role_tag = role_tag;
@@ -2491,6 +2533,10 @@ impl OpenCADStudio {
                 self.aec_wall_profile_save()
             }
             AecMessage::AecStyleManagerProfileRemove => {
+                self.aec_wall_profile_remove()
+            }
+            AecMessage::AecStyleManagerProfileRemoveNamed(name) => {
+                let _ = self.aec_wall_profile_select(name);
                 self.aec_wall_profile_remove()
             }
             AecMessage::AecStylePickerConfirm => {

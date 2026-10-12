@@ -168,6 +168,12 @@ fn aec_opening_parts(&self) -> Option<crate::modules::aec::ui::style_manager::St
                 .as_ref()
                 .map(|lib| lib.configs.iter().map(|c| c.name.clone()).collect())
                 .unwrap_or_default(),
+            existing_overrides: {
+                let mut v: Vec<String> =
+                    self.aec.styles.opening_display_profiles.keys().cloned().collect();
+                v.sort();
+                v
+            },
             sketch_slot: self.aec.styles.opening_sketch_slot,
             sketch_draft: &self.aec.styles.opening_sketch_draft,
             sketch_draft_bulges: &self.aec.styles.opening_sketch_draft_bulges,
@@ -265,6 +271,8 @@ fn aec_slab_parts(&self) -> Option<crate::modules::aec::ui::style_manager::Style
                 .as_ref()
                 .map(|lib| lib.configs.iter().map(|c| c.name.clone()).collect())
                 .unwrap_or_default(),
+            existing_overrides: self.aec_slab_profile_keys(),
+            selected_layer: self.aec.styles.slab_selected_layer,
             profile_selected: self.aec.styles.slab_profile_selected.as_deref(),
             slot_visibility: self.aec.styles.slab_profile_slot_visibility.clone(),
         })
@@ -557,6 +565,19 @@ fn aec_wall_style_form_state<'a>(
         effective_layers: Vec::new(),
         inheritance_chain,
         display_profiles,
+        preview_layers: crate::modules::aec::ui::style_manager::forms::wall_preview::preview_layers(
+            &self.aec.styles.wall_style_layers,
+            &|id| {
+                library
+                    .materials
+                    .iter()
+                    .find(|m| m.id == id)
+                    .map(|m| (m.line_color, m.hatch_pattern.clone()))
+            },
+        ),
+        preview_mode: self.aec.styles.wall_preview_mode,
+        selected_layer: self.aec.styles.wall_selected_layer,
+        hatch_picker: self.aec.styles.wall_layer_hatch_picker,
     }
 }
 

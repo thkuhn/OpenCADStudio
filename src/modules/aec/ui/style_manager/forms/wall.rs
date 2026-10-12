@@ -2,10 +2,10 @@
 //! style library (`AEC_STYLEMANAGER`).
 
 use iced::widget::{
-    button, column, container, mouse_area, pick_list, row, scrollable, text, text_input,
+    button, column, container, pick_list, row, scrollable, text, text_input,
     Space,
 };
-use iced::{Background, Border, Element, Fill, Theme};
+use iced::{Border, Element, Fill, Theme};
 
 use crate::app::{AecColorPickTarget, AecMessage, Message};
 use crate::modules::aec::engine::display_component::WallComponentSlot;
@@ -28,7 +28,7 @@ const LAYER_COL_OFFSET_W: f32 = 50.0;
 const LAYER_COL_FUNCTION_W: f32 = 120.0;
 const LAYER_COL_OVERRIDE_W: f32 = 130.0;
 const LAYER_COL_ROLE_W: f32 = 110.0;
-const LAYER_COL_HATCH_W: f32 = 90.0;
+const LAYER_COL_HATCH_W: f32 = 180.0;
 
 pub struct WallStyleFormState<'a> {
     pub open: bool,
@@ -50,6 +50,13 @@ pub struct WallStyleFormState<'a> {
     /// `WallStyle::display_profiles` only makes sense for a style that
     /// already has a stable id.
     pub display_profiles: Option<DisplayProfileFormState<'a>>,
+    /// Layers of the preview canvas (thickness + material colour).
+    pub preview_layers: Vec<crate::modules::aec::ui::style_manager::forms::wall_preview::WallPreviewLayer>,
+    pub preview_mode: crate::modules::aec::state::AecWallPreviewMode,
+    /// Layer whose hatch picker is open.
+    pub hatch_picker: Option<usize>,
+    /// Layer selected by a preview click (row highlight + focused field).
+    pub selected_layer: Option<usize>,
 }
 
 /// Edit-buffer state for the "Darstellungs-Profile" section of the wall
@@ -232,13 +239,21 @@ fn wall_style_form_view<'a>(wall_style_form: WallStyleFormState<'a>) -> Element<
     let all_materials_ref = &wall_style_form.all_materials;
     let all_layer_names_ref = &wall_style_form.all_layer_names;
     let layer_count = wall_style_form.layers.len();
-    let drag_index = wall_style_form.drag_index;
+    let selected_layer = wall_style_form.selected_layer;
     let layer_rows: Vec<Element<'_, Message>> = wall_style_form
         .layers
         .iter()
         .enumerate()
         .map(|(i, lb)| {
-            layer_row(i, layer_count, lb, all_materials_ref, all_layer_names_ref, drag_index)
+            layer_row(
+                i,
+                layer_count,
+                lb,
+                all_materials_ref,
+                all_layer_names_ref,
+                wall_style_form.hatch_picker == Some(i),
+                selected_layer == Some(i),
+            )
         })
         .collect();
 
@@ -296,6 +311,14 @@ fn wall_style_form_view<'a>(wall_style_form: WallStyleFormState<'a>) -> Element<
         );
         detail_col = detail_col.push(chain_row);
     }
+
+    detail_col = detail_col.push(
+        crate::modules::aec::ui::style_manager::forms::wall_preview::view(
+            wall_style_form.preview_layers.clone(),
+            wall_style_form.preview_mode,
+            wall_style_form.selected_layer,
+        ),
+    );
 
     detail_col = detail_col.extend([
         row![
@@ -425,7 +448,8 @@ fn layer_row<'a>(
     buffer: &'a crate::app::AecLayerBuffer,
     all_materials: &[(&'a str, &'a str)],
     _all_layer_names: &[String],
-    drag_index: Option<usize>,
+    hatch_picker_open: bool,
+    selected: bool,
 ) -> Element<'a, Message> {
     let functions: Vec<String> = vec![
         "Structural".to_string(),
@@ -443,23 +467,8 @@ fn layer_row<'a>(
         down_button = down_button.on_press(Message::Aec(AecMessage::AecStyleManagerWallStyleLayerMoveDown(index)));
     }
 
-    let armed = drag_index == Some(index);
-    let handle = mouse_area(
-        button(text("⠿").size(12))
-            .style(if armed { button::primary } else { button::subtle })
-            .padding([2, 6])
-            .on_press(if armed {
-                Message::Aec(AecMessage::AecStyleManagerWallStyleLayerDragEnd)
-            } else if drag_index.is_some() {
-                Message::Aec(AecMessage::AecStyleManagerWallStyleLayerDragOver(index))
-            } else {
-                Message::Aec(AecMessage::AecStyleManagerWallStyleLayerDragStart(index))
-            }),
-    )
-    .interaction(iced::mouse::Interaction::Grab);
-
-    row![
-        row![handle, up_button, down_button].spacing(2).width(LAYER_COL_REORDER_W),
+    let row_widget = row![
+        row![up_button, down_button].spacing(2).width(LAYER_COL_REORDER_W),
         {
             let none_label = t!("(None)").into_owned();
             let selected_label = if buffer.material_id.is_empty() {
@@ -509,6 +518,7 @@ fn layer_row<'a>(
                 }
             };
             let input = text_input("", &buffer.thickness)
+                .id(iced::widget::Id::from(layer_thickness_input_id(index)))
                 .on_input(move |v| {
                     Message::Aec(AecMessage::AecStyleManagerWallStyleLayerThicknessChanged(index, v))
                 })
@@ -563,18 +573,40 @@ fn layer_row<'a>(
             .on_input(move |v| Message::Aec(AecMessage::AecStyleManagerWallStyleLayerRoleTagChanged(index, v)))
             .size(11)
             .width(LAYER_COL_ROLE_W),
-        text_input(tr!("aec", "placeholder-hatch").as_str(), &buffer.hatch_override)
-            .on_input(move |v| Message::Aec(AecMessage::AecStyleManagerWallStyleLayerHatchOverrideChanged(index, v)))
-            .size(11)
-            .width(LAYER_COL_HATCH_W),
+        crate::modules::aec::ui::aec_ui_util::hatch_pattern_field(
+            &buffer.hatch_override,
+            hatch_picker_open,
+            Some(tr!("aec", "inherit")),
+            Message::Aec(AecMessage::AecStyleManagerWallStyleLayerHatchPickerToggle(index)),
+            move |v| Message::Aec(AecMessage::AecStyleManagerWallStyleLayerHatchSelected(index, v)),
+        ),
         button(text("✕").size(10))
             .style(button::danger)
             .on_press(Message::Aec(AecMessage::AecStyleManagerWallStyleLayerRemove(index)))
             .padding([4, 8]),
     ]
     .spacing(8)
-    .align_y(iced::Center)
-    .into()
+    .align_y(iced::Center);
+    container(row_widget)
+        .padding([2, 4])
+        .style(move |theme: &Theme| container::Style {
+            background: selected.then(|| {
+                iced::Background::Color(theme.palette().primary.base.color.scale_alpha(0.18))
+            }),
+            border: Border {
+                radius: 3.0.into(),
+                width: if selected { 1.0 } else { 0.0 },
+                color: theme.palette().primary.base.color,
+            },
+            ..Default::default()
+        })
+        .into()
+}
+
+/// Widget id of the thickness field of wall layer row `index` (focus target
+/// of preview clicks).
+pub fn layer_thickness_input_id(index: usize) -> String {
+    format!("aec-wall-layer-thickness-{index}")
 }
 
 /// Danger border for thickness fields whose formula fails validation.
@@ -688,43 +720,21 @@ pub fn display_profiles_section<'a>(
         );
     }
 
-    let mut table = column![].spacing(2);
-    for name in &profiles.display_config_names {
-        let is_override = profiles.existing_overrides.contains(name);
-        let is_selected = profiles.selected == Some(name.as_str());
-        let status_label = if is_override { t!("Override") } else { t!("Standard") };
-        let name_owned = name.clone();
-        let display_name = if name == crate::modules::aec::engine::library::STYLE_DEFAULT_PROFILE_KEY {
-            t!("Stil-Standard (alle Planarten)").to_string()
-        } else {
-            name.clone()
-        };
-        table = table.push(
-            button(
-                row![
-                    text(display_name).size(11),
-                    Space::new(),
-                    container(text(status_label).size(9))
-                        .padding([1, 5])
-                        .style(move |theme: &Theme| container::Style {
-                            background: Some(Background::Color(
-                                theme.palette().background.strong.color.scale_alpha(0.55),
-                            )),
-                            text_color: Some(theme.palette().background.base.text.scale_alpha(0.85)),
-                            border: Border { radius: 3.0.into(), ..Default::default() },
-                            ..Default::default()
-                        }),
-                ]
-                .spacing(4)
-                .align_y(iced::Center),
-            )
-            .on_press(Message::Aec(AecMessage::AecStyleManagerProfileSelect(name_owned)))
-            .style(list_style(is_selected))
-            .padding([5, 8])
-            .width(Fill),
-        );
-    }
-    section = section.push(container(scrollable(table).height(120)).padding(4));
+    let default_key = crate::modules::aec::engine::library::STYLE_DEFAULT_PROFILE_KEY;
+    let existing: Vec<String> = profiles.existing_overrides.iter().cloned().collect();
+    section = section.push(
+        crate::modules::aec::ui::style_manager::forms::plan_overrides::plan_override_section(
+            crate::modules::aec::ui::style_manager::forms::plan_overrides::PlanOverrideProps {
+                all_names: &profiles.display_config_names,
+                existing: &existing,
+                selected: profiles.selected,
+                default_key,
+            },
+            |n| Message::Aec(AecMessage::AecStyleManagerProfileSelect(n)),
+            |n| Message::Aec(AecMessage::AecStyleManagerProfileSelect(n)),
+            |n| Message::Aec(AecMessage::AecStyleManagerProfileRemoveNamed(n)),
+        ),
+    );
 
     if profiles.selected.is_some() {
         section = section.push(Space::new().height(4));

@@ -155,6 +155,14 @@ pub struct AecStylesUiState {
     pub slab_editing_id: Option<String>,
     pub slab_form_open: bool,
     pub slab_preview_mode: AecSlabPreviewMode,
+    /// Wall style form preview: 2D layer buildup or 3D block.
+    pub wall_preview_mode: crate::modules::aec::state::AecWallPreviewMode,
+    /// Wall layer selected by a click in the preview.
+    pub wall_selected_layer: Option<usize>,
+    /// Wall layer whose hatch picker is open.
+    pub wall_layer_hatch_picker: Option<usize>,
+    /// Slab layer (index into the effective layers) selected in the preview.
+    pub slab_selected_layer: Option<usize>,
     pub slab_name: String,
     pub slab_parent: Option<String>,
     pub slab_structural_style: Option<String>,
@@ -164,6 +172,8 @@ pub struct AecStylesUiState {
     pub slab_profile_selected: Option<String>,
     pub slab_default_profile: Option<crate::modules::aec::engine::display_component::ComponentRuleSet>,
     pub slab_plan_profile_edits: std::collections::HashMap<String, crate::modules::aec::engine::display_component::ComponentRuleSet>,
+    /// Plan types whose slab exception was removed in the form (applied on save).
+    pub slab_plan_profile_removed: std::collections::HashSet<String>,
     pub slab_profile_slot_visibility:
         std::collections::HashMap<crate::modules::aec::engine::display_component::SlabComponentSlot, bool>,
     // ── AEC Slab Structural Style Manager (`AEC_SLABSTRUCTURALSTYLEMANAGER`) ──
@@ -355,6 +365,10 @@ impl Default for AecStylesUiState {
             slab_editing_id: None,
             slab_form_open: false,
             slab_preview_mode: AecSlabPreviewMode::CrossSection,
+            wall_preview_mode: Default::default(),
+            wall_selected_layer: None,
+            wall_layer_hatch_picker: None,
+            slab_selected_layer: None,
             slab_name: String::new(),
             slab_parent: None,
             slab_structural_style: None,
@@ -364,6 +378,7 @@ impl Default for AecStylesUiState {
             slab_profile_selected: None,
             slab_default_profile: None,
             slab_plan_profile_edits: std::collections::HashMap::new(),
+            slab_plan_profile_removed: std::collections::HashSet::new(),
             slab_profile_slot_visibility: std::collections::HashMap::new(),
             slab_structural_filter: String::new(),
             slab_structural_selected: None,

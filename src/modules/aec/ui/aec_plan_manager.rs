@@ -585,49 +585,36 @@ fn contour_hatch_section_view<'a>(form: &PlanConfigFormState<'a>) -> Element<'a,
 }
 
 fn overlay_section_view<'a>(form: &PlanConfigFormState<'a>) -> Element<'a, Message> {
-    let overlay_style_ids: Vec<String> = form.style_overrides.keys().cloned().collect();
-    let mut exception_rows = column![].spacing(2);
-    if overlay_style_ids.is_empty() {
-        exception_rows = exception_rows.push(
-            text(t!("Keine Stil-Ausnahmen. Globalregeln gelten für alle Wände."))
-                .size(10)
-                .style(muted),
-        );
-    } else {
-        for sid in overlay_style_ids {
-            let label = form
-                .wall_styles
-                .iter()
-                .find(|(id, _, _)| id == &sid)
-                .map(|(_, name, _)| name.clone())
-                .unwrap_or_else(|| sid.clone());
-            let selected = form.overlay_style_id == Some(sid.as_str());
-            exception_rows = exception_rows.push(
-                button(text(label).size(11))
-                    .on_press(Message::Aec(AecMessage::AecPlanManagerOverlayStyleSelect(sid)))
-                    .style(list_style(selected))
-                    .padding([4, 8])
-                    .width(Fill),
-            );
-        }
-    }
-
-    let mut add_row = row![text(t!("Ausnahme hinzufügen")).size(10).style(muted)].spacing(6);
-    let mut added_any = false;
-    for (id, name, _) in form.wall_styles.iter() {
-        if form.style_overrides.contains_key(id) {
-            continue;
-        }
-        added_any = true;
-        add_row = add_row.push(
-            button(text(name.clone()).size(10))
-                .padding([3, 8])
-                .on_press(Message::Aec(AecMessage::AecPlanManagerOverlayAddStyle(id.clone()))),
-        );
-    }
-    if !added_any {
-        add_row = row![text(t!("Alle Stile haben bereits eine Ausnahme.")).size(10).style(muted)];
-    }
+    use crate::modules::aec::ui::style_manager::forms::plan_overrides::{override_list, OverrideChoice};
+    let style_label = |sid: &str| -> String {
+        form.wall_styles
+            .iter()
+            .find(|(id, _, _)| id == sid)
+            .map(|(_, name, _)| name.clone())
+            .unwrap_or_else(|| sid.to_string())
+    };
+    let mut entries: Vec<(String, String)> = form
+        .style_overrides
+        .keys()
+        .map(|sid| (sid.clone(), style_label(sid)))
+        .collect();
+    entries.sort_by(|a, b| a.1.cmp(&b.1));
+    let choices: Vec<OverrideChoice> = form
+        .wall_styles
+        .iter()
+        .filter(|(id, _, _)| !form.style_overrides.contains_key(id))
+        .map(|(id, name, _)| OverrideChoice { id: id.clone(), label: name.clone() })
+        .collect();
+    let override_section = override_list(
+        t!("Stil-Ausnahmen").to_string(),
+        choices,
+        None,
+        entries,
+        form.overlay_style_id.map(str::to_string),
+        |id| Message::Aec(AecMessage::AecPlanManagerOverlayAddStyle(id)),
+        |id| Message::Aec(AecMessage::AecPlanManagerOverlayStyleSelect(id)),
+        |id| Message::Aec(AecMessage::AecPlanManagerOverlayRemoveStyle(id)),
+    );
 
     let layers: Vec<(Uuid, String)> = form
         .overlay_style_id
@@ -773,20 +760,7 @@ fn overlay_section_view<'a>(form: &PlanConfigFormState<'a>) -> Element<'a, Messa
         props = column![text(t!("Schicht wählen, um Overrides zu setzen.")).size(10).style(muted)];
     }
 
-    let mut body = column![
-        text(t!("Stil-Ausnahmen")).size(11),
-        add_row,
-        exception_rows,
-    ]
-    .spacing(6);
-    if form.overlay_style_id.is_some() {
-        body = body.push(
-            button(text(t!("Ausnahme entfernen")).size(11))
-                .style(button::danger)
-                .padding([4, 10])
-                .on_press(Message::Aec(AecMessage::AecPlanManagerOverlayRemoveStyle)),
-        );
-    }
+    let mut body = column![override_section].spacing(6);
     if form.overlay_style_id.is_some() {
         body = body
             .push(Space::new().height(4))

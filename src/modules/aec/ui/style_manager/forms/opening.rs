@@ -47,6 +47,7 @@ pub struct OpeningStyleFormState<'a> {
     pub slots: &'a [AecOpeningSlotBuffer],
     pub profile_selected: Option<&'a str>,
     pub plan_names: Vec<String>,
+    pub existing_overrides: Vec<String>,
     pub sketch_slot: Option<usize>,
     pub sketch_draft: &'a [(f64, f64)],
     pub sketch_draft_bulges: &'a [f64],
@@ -312,38 +313,19 @@ fn form_view<'a>(library: &'a StyleLibrary, form: OpeningStyleFormState<'a>) -> 
         }
     }
 
-    let default_plan = tr!("aec", "opening-plan-default").to_string();
-    let mut plan_options = vec![default_plan.clone()];
-    plan_options.extend(form.plan_names.iter().cloned());
-    let selected_plan = form
-        .profile_selected
-        .map(str::to_string)
-        .unwrap_or_else(|| default_plan.clone());
-    let default_plan_select = default_plan.clone();
     detail_col = detail_col
         .push(Space::new().height(6))
-        .push(
-            row![
-                text(tr!("aec", "opening-plan-type")).size(10).style(muted).width(100),
-                pick_list(
-                    Some(selected_plan),
-                    plan_options,
-                    |v: &String| v.clone(),
-                )
-                .on_select(move |v| {
-                    let value = if v == default_plan_select {
-                        String::new()
-                    } else {
-                        v
-                    };
-                    Message::Aec(AecMessage::AecOpeningStyleManagerProfileSelect(value))
-                })
-                .text_size(11)
-                .width(220),
-            ]
-            .spacing(8)
-            .align_y(iced::Center),
-        )
+        .push(crate::modules::aec::ui::style_manager::forms::plan_overrides::plan_override_section(
+            crate::modules::aec::ui::style_manager::forms::plan_overrides::PlanOverrideProps {
+                all_names: &form.plan_names,
+                existing: &form.existing_overrides,
+                selected: form.profile_selected,
+                default_key: "",
+            },
+            |n| Message::Aec(AecMessage::AecOpeningStyleManagerProfileSelect(n)),
+            |n| Message::Aec(AecMessage::AecOpeningStyleManagerProfileSelect(n)),
+            |n| Message::Aec(AecMessage::AecOpeningStyleManagerProfileRemove(n)),
+        ))
         .push(text(tr!("aec", "opening-slots")).size(10).style(muted))
         .push(slot_header(true))
         .push(
@@ -754,6 +736,54 @@ impl PreviewCamera {
     }
 }
 
+/// Slot of the preview path under the model-space point `(x, y)`: an edge
+/// within `tol` wins (nearest first), otherwise the smallest closed path
+/// containing the point.
+pub(crate) fn hit_slot(
+    paths: &[BakedPath],
+    x: f64,
+    y: f64,
+    tol: f64,
+) -> Option<crate::modules::aec::engine::display_component::OpeningComponentSlot> {
+    fn seg_dist(px: f64, py: f64, a: (f64, f64), b: (f64, f64)) -> f64 {
+        let (dx, dy) = (b.0 - a.0, b.1 - a.1);
+        let len2 = dx * dx + dy * dy;
+        let t = if len2 < 1e-18 { 0.0 } else { (((px - a.0) * dx + (py - a.1) * dy) / len2).clamp(0.0, 1.0) };
+        ((px - (a.0 + t * dx)).powi(2) + (py - (a.1 + t * dy)).powi(2)).sqrt()
+    }
+    let mut best_edge: Option<(f64, _)> = None;
+    let mut best_area: Option<(f64, _)> = None;
+    for path in paths {
+        let pts = &path.points;
+        if pts.len() < 2 {
+            continue;
+        }
+        let n = if path.closed { pts.len() } else { pts.len() - 1 };
+        for i in 0..n {
+            let d = seg_dist(x, y, pts[i], pts[(i + 1) % pts.len()]);
+            if d <= tol && best_edge.map_or(true, |(bd, _)| d < bd) {
+                best_edge = Some((d, path.slot));
+            }
+        }
+        if path.closed && pts.len() >= 3 {
+            let mut inside = false;
+            let mut area = 0.0;
+            for i in 0..pts.len() {
+                let (a, b) = (pts[i], pts[(i + 1) % pts.len()]);
+                area += a.0 * b.1 - b.0 * a.1;
+                if (a.1 > y) != (b.1 > y) && x < (b.0 - a.0) * (y - a.1) / (b.1 - a.1) + a.0 {
+                    inside = !inside;
+                }
+            }
+            let area = (area * 0.5).abs();
+            if inside && best_area.map_or(true, |(ba, _)| area < ba) {
+                best_area = Some((area, path.slot));
+            }
+        }
+    }
+    best_edge.map(|(_, s)| s).or(best_area.map(|(_, s)| s))
+}
+
 struct OpeningPreviewCanvas {
     paths: Vec<BakedPath>,
     mode: AecOpeningPreviewMode,
@@ -775,9 +805,6 @@ impl Program<Message> for OpeningPreviewCanvas {
         bounds: Rectangle,
         cursor: mouse::Cursor,
     ) -> Option<canvas::Action<Message>> {
-        if !self.edit {
-            return None;
-        }
         let canvas::Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)) = event else {
             return None;
         };
@@ -791,6 +818,16 @@ impl Program<Message> for OpeningPreviewCanvas {
             self.thickness,
         );
         let (x, y) = cam.to_local(pos);
+        if !self.edit {
+            let tol = 8.0 / cam.scale.max(1e-6) as f64;
+            let slot = hit_slot(&self.paths, x, y, tol)?;
+            return Some(
+                canvas::Action::publish(Message::Aec(
+                    AecMessage::AecOpeningStyleManagerPreviewSlotSelect(slot),
+                ))
+                .and_capture(),
+            );
+        }
         Some(
             canvas::Action::publish(Message::Aec(AecMessage::AecOpeningStyleManagerSketchClick(
                 x, y,
@@ -915,5 +952,31 @@ impl Program<Message> for OpeningPreviewCanvas {
             }
         }
         vec![frame.into_geometry()]
+    }
+}
+
+#[cfg(test)]
+mod hit_tests {
+    use super::*;
+    use crate::modules::aec::engine::display_component::OpeningComponentSlot;
+
+    fn rect(slot: OpeningComponentSlot, x0: f64, y0: f64, x1: f64, y1: f64) -> BakedPath {
+        BakedPath {
+            slot,
+            points: vec![(x0, y0), (x1, y0), (x1, y1), (x0, y1)],
+            closed: true,
+            filled: false,
+        }
+    }
+
+    #[test]
+    fn inner_rect_wins_inside_and_edge_wins_near_border() {
+        let outer = OpeningComponentSlot::HostCut2D;
+        let inner = OpeningComponentSlot::Frame2D;
+        let paths = vec![rect(outer, 0.0, 0.0, 10.0, 10.0), rect(inner, 4.0, 4.0, 6.0, 6.0)];
+        assert_eq!(hit_slot(&paths, 5.0, 5.0, 0.1), Some(inner));
+        assert_eq!(hit_slot(&paths, 1.0, 1.0, 0.1), Some(outer));
+        assert_eq!(hit_slot(&paths, 0.05, 5.0, 0.1), Some(outer));
+        assert_eq!(hit_slot(&paths, 20.0, 20.0, 0.1), None);
     }
 }

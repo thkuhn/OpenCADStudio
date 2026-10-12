@@ -438,6 +438,7 @@ impl OpenCADStudio {
         self.aec.styles.slab_profile_selected = None;
         self.aec.styles.slab_default_profile = None;
         self.aec.styles.slab_plan_profile_edits.clear();
+        self.aec.styles.slab_plan_profile_removed.clear();
         self.aec.styles.slab_profile_slot_visibility.clear();
 
         if let Some(id) = select_id {
@@ -481,6 +482,7 @@ impl OpenCADStudio {
             self.aec.styles.slab_profile_selected = None;
             self.aec.styles.slab_default_profile = style.default_profile.clone();
             self.aec.styles.slab_plan_profile_edits.clear();
+        self.aec.styles.slab_plan_profile_removed.clear();
             self.aec_slab_style_manager_profile_select(String::new());
         }
 
@@ -511,6 +513,7 @@ impl OpenCADStudio {
         self.aec.styles.slab_profile_selected = None;
         self.aec.styles.slab_default_profile = None;
         self.aec.styles.slab_plan_profile_edits.clear();
+        self.aec.styles.slab_plan_profile_removed.clear();
         self.aec.styles.slab_profile_slot_visibility.clear();
 
         Task::none()
@@ -540,6 +543,7 @@ impl OpenCADStudio {
         self.aec.styles.slab_drag_index = None;
         self.aec.styles.slab_profile_selected = None;
         self.aec.styles.slab_plan_profile_edits.clear();
+        self.aec.styles.slab_plan_profile_removed.clear();
         self.aec_slab_style_manager_profile_select(String::new());
 
         Task::none()
@@ -550,6 +554,9 @@ impl OpenCADStudio {
         let default = self.aec.styles.slab_default_profile.as_ref();
         let plan = self.aec.styles.slab_profile_selected.as_deref().and_then(|name| {
             self.aec.styles.slab_plan_profile_edits.get(name).or_else(|| {
+                if self.aec.styles.slab_plan_profile_removed.contains(name) {
+                    return None;
+                }
                 self.aec.aec_plan_library.as_ref()?.configs.iter().find(|c| c.name == name)?
                     .style_overrides.get(self.aec.styles.slab_editing_id.as_ref()?)?.rules.as_ref()
             })
@@ -561,10 +568,43 @@ impl OpenCADStudio {
         }).collect();
     }
 
+    /// Drops the named plan type's exception from the form (applied on save).
+    pub(crate) fn aec_slab_style_manager_profile_remove(&mut self, name: String) {
+        self.aec.styles.slab_plan_profile_edits.remove(&name);
+        self.aec.styles.slab_plan_profile_removed.insert(name.clone());
+        if self.aec.styles.slab_profile_selected.as_deref() == Some(name.as_str()) {
+            self.aec_slab_style_manager_profile_select(String::new());
+        }
+    }
+
+    /// Plan types that carry a slab exception for the edited style.
+    pub(crate) fn aec_slab_profile_keys(&self) -> Vec<String> {
+        let mut keys: Vec<String> = Vec::new();
+        if let (Some(lib), Some(id)) = (
+            self.aec.aec_plan_library.as_ref(),
+            self.aec.styles.slab_editing_id.as_ref(),
+        ) {
+            for cfg in &lib.configs {
+                if cfg.style_overrides.get(id).is_some_and(|o| o.rules.is_some())
+                    && !self.aec.styles.slab_plan_profile_removed.contains(&cfg.name)
+                {
+                    keys.push(cfg.name.clone());
+                }
+            }
+        }
+        for name in self.aec.styles.slab_plan_profile_edits.keys() {
+            if !keys.contains(name) {
+                keys.push(name.clone());
+            }
+        }
+        keys
+    }
+
     pub(crate) fn aec_slab_style_manager_profile_slot_visibility(&mut self, slot: SlabComponentSlot, visible: bool) {
         self.aec.styles.slab_profile_slot_visibility.insert(slot, visible);
         if let Some(name) = self.aec.styles.slab_profile_selected.clone() {
-            let existing = self.aec.aec_plan_library.as_ref().and_then(|lib| {
+            let was_removed = self.aec.styles.slab_plan_profile_removed.remove(&name);
+            let existing = self.aec.aec_plan_library.as_ref().filter(|_| !was_removed).and_then(|lib| {
                 lib.configs.iter().find(|c| c.name == name)?
                     .style_overrides.get(self.aec.styles.slab_editing_id.as_ref()?)?.rules.clone()
             }).unwrap_or_default();
@@ -716,13 +756,23 @@ impl OpenCADStudio {
             self.aec_upsert_slab_style_into_session(slab_style.clone());
         }
 
-        if !self.aec.styles.slab_plan_profile_edits.is_empty() {
+        if !self.aec.styles.slab_plan_profile_edits.is_empty()
+            || !self.aec.styles.slab_plan_profile_removed.is_empty()
+        {
             if let Some(lib) = self.aec.aec_plan_library.as_mut() {
                 for (name, rules) in &self.aec.styles.slab_plan_profile_edits {
                     if let Some(config) = lib.configs.iter_mut().find(|c| c.name == *name) {
                         config.style_overrides.entry(id.clone()).or_default().rules = Some(rules.clone());
                     }
                 }
+                for name in &self.aec.styles.slab_plan_profile_removed {
+                    if let Some(config) = lib.configs.iter_mut().find(|c| c.name == *name) {
+                        if let Some(o) = config.style_overrides.get_mut(&id) {
+                            o.rules = None;
+                        }
+                    }
+                }
+                self.aec.styles.slab_plan_profile_removed.clear();
                 let snapshot = lib.clone();
                 self.aec_save_display_config_library_preferring_project(&snapshot)?;
             }

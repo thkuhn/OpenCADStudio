@@ -288,7 +288,7 @@ pub fn hatch_pattern_field<'a>(
         ]
         .align_y(iced::Center),
     )
-    .on_press(on_toggle)
+    .on_press(on_toggle.clone())
     .style(button::subtle)
     .padding([4, 6])
     .width(if selected_gpu.is_some() { 126 } else { 180 });
@@ -308,7 +308,7 @@ pub fn hatch_pattern_field<'a>(
     };
 
     if !open {
-        return head.into();
+        return head;
     }
 
     let mut grid = column![].spacing(4);
@@ -370,5 +370,28 @@ pub fn hatch_pattern_field<'a>(
         grid = grid.push(cards);
     }
 
-    column![head, scrollable(grid).height(180)].spacing(4).into()
+    let popup = container(scrollable(grid).height(iced::Length::Fill))
+        .padding(4)
+        .width(iced::Length::Fill)
+        .height(iced::Length::Fill)
+        .style(|theme: &Theme| {
+            let palette = theme.palette();
+            container::Style {
+                background: Some(iced::Background::Color(palette.background.base.color)),
+                border: iced::Border {
+                    color: palette.background.neutral.color,
+                    width: 1.0,
+                    radius: 3.0.into(),
+                },
+                ..Default::default()
+            }
+        });
+
+    crate::ui::color_select::drop_down_below(
+        head,
+        popup.into(),
+        Some(iced::Length::Fixed(190.0)),
+        iced::Length::Fixed(260.0),
+        on_toggle,
+    )
 }
