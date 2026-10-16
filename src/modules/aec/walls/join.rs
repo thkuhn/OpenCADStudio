@@ -5,7 +5,7 @@ use glam::DVec3;
 
 use crate::command::{CadCommand, CmdResult};
 use crate::modules::aec::engine::wall_package::{all_wall_axis_handles, is_wall_pick_target, resolve_wall_package};
-use crate::modules::aec::engine::xdata::get_wall_vertices;
+use crate::modules::aec::engine::xdata::{get_wall_bulges, get_wall_vertices};
 use crate::modules::aec::engine::join_ops::WALL_JOIN_SNAP_RADIUS;
 use crate::modules::aec::engine::join;
 use crate::modules::{IconKind, ModuleEvent, ToolDef};
@@ -102,8 +102,13 @@ impl CadCommand for WallJoinCommand {
             .iter()
             .map(|h| get_wall_vertices(scene, *h))
             .collect();
+        let bulges: Vec<Vec<f64>> = handles
+            .iter()
+            .map(|h| get_wall_bulges(scene, *h))
+            .collect();
         let axis_refs: Vec<&[DVec3]> = axes.iter().map(|a| a.as_slice()).collect();
-        let junctions = join::detect_junctions(&axis_refs, WALL_JOIN_SNAP_RADIUS);
+        let bulge_refs: Vec<&[f64]> = bulges.iter().map(|b| b.as_slice()).collect();
+        let junctions = join::detect_junctions_with_bulges(&axis_refs, &bulge_refs, WALL_JOIN_SNAP_RADIUS);
 
         for junc in junctions.into_iter().filter(|j| j.is_multi_wall()) {
             let has_a = junc.participants.iter().any(|p| p.wall_index == idx_a);

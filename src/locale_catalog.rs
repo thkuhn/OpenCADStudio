@@ -6178,6 +6178,7 @@ pub(super) fn message_attribute(source: &str) -> Option<(&'static str, &'static 
         "No intersection found" => Some(("aec-ui", "no-intersection-found")),
         "Degenerate axis" => Some(("aec-ui", "degenerate-axis")),
         "Ambiguous junction set" => Some(("aec-ui", "ambiguous-junction-set")),
+        "X crossing with a curved wall is not supported yet" => Some(("aec-ui", "x-crossing-with-a-curved-wall-is-not-supported-yet")),
         "Nr." => Some(("aec-ui", "nr")),
         "Raumbezeichnung" => Some(("aec-ui", "raumbezeichnung")),
         "Kategorie (DIN 277)" => Some(("aec-ui", "kategorie-din-277")),

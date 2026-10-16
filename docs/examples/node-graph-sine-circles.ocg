@@ -1,0 +1,284 @@
+{
+  "format": "ocg",
+  "version": 1,
+  "drawing": "",
+  "graph": {
+    "nodes": [
+      {
+        "id": 1,
+        "kind": {
+          "op": "Number Slider"
+        },
+        "params": {
+          "value": 5,
+          "min": 1,
+          "max": 20,
+          "step": 0.5
+        }
+      },
+      {
+        "id": 2,
+        "kind": {
+          "op": "Number Slider"
+        },
+        "params": {
+          "value": 10,
+          "min": 0,
+          "max": 30,
+          "step": 0.5
+        }
+      },
+      {
+        "id": 3,
+        "kind": {
+          "op": "Number Slider"
+        },
+        "params": {
+          "value": 1.5,
+          "min": 0.5,
+          "max": 5,
+          "step": 0.1
+        }
+      },
+      {
+        "id": 4,
+        "kind": {
+          "op": "Range"
+        },
+        "params": {
+          "start": 0,
+          "end": 20,
+          "step": 1
+        }
+      },
+      {
+        "id": 5,
+        "kind": {
+          "op": "Multiply"
+        },
+        "params": {}
+      },
+      {
+        "id": 6,
+        "kind": {
+          "op": "Multiply"
+        },
+        "params": {
+          "b": 30
+        }
+      },
+      {
+        "id": 7,
+        "kind": {
+          "op": "Sine"
+        },
+        "params": {}
+      },
+      {
+        "id": 8,
+        "kind": {
+          "op": "Multiply"
+        },
+        "params": {}
+      },
+      {
+        "id": 9,
+        "kind": {
+          "object": "Circle"
+        },
+        "params": {}
+      }
+    ],
+    "links": [
+      {
+        "from": {
+          "node": 4,
+          "field": "list"
+        },
+        "to": {
+          "node": 5,
+          "field": "a"
+        }
+      },
+      {
+        "from": {
+          "node": 1,
+          "field": "value"
+        },
+        "to": {
+          "node": 5,
+          "field": "b"
+        }
+      },
+      {
+        "from": {
+          "node": 4,
+          "field": "list"
+        },
+        "to": {
+          "node": 6,
+          "field": "a"
+        }
+      },
+      {
+        "from": {
+          "node": 6,
+          "field": "result"
+        },
+        "to": {
+          "node": 7,
+          "field": "x"
+        }
+      },
+      {
+        "from": {
+          "node": 7,
+          "field": "result"
+        },
+        "to": {
+          "node": 8,
+          "field": "a"
+        }
+      },
+      {
+        "from": {
+          "node": 2,
+          "field": "value"
+        },
+        "to": {
+          "node": 8,
+          "field": "b"
+        }
+      },
+      {
+        "from": {
+          "node": 5,
+          "field": "result"
+        },
+        "to": {
+          "node": 9,
+          "field": "center_x"
+        }
+      },
+      {
+        "from": {
+          "node": 8,
+          "field": "result"
+        },
+        "to": {
+          "node": 9,
+          "field": "center_y"
+        }
+      },
+      {
+        "from": {
+          "node": 3,
+          "field": "value"
+        },
+        "to": {
+          "node": 9,
+          "field": "radius"
+        }
+      }
+    ]
+  },
+  "canvas": {
+    "pan": [
+      0,
+      0
+    ],
+    "zoom": 0,
+    "nodes": {
+      "1": {
+        "pos": [
+          40,
+          40
+        ],
+        "open": [
+          "Geometry"
+        ],
+        "handles": []
+      },
+      "2": {
+        "pos": [
+          40,
+          200
+        ],
+        "open": [
+          "Geometry"
+        ],
+        "handles": []
+      },
+      "3": {
+        "pos": [
+          40,
+          360
+        ],
+        "open": [
+          "Geometry"
+        ],
+        "handles": []
+      },
+      "4": {
+        "pos": [
+          40,
+          520
+        ],
+        "open": [
+          "Geometry"
+        ],
+        "handles": []
+      },
+      "5": {
+        "pos": [
+          300,
+          40
+        ],
+        "open": [
+          "Geometry"
+        ],
+        "handles": []
+      },
+      "6": {
+        "pos": [
+          300,
+          220
+        ],
+        "open": [
+          "Geometry"
+        ],
+        "handles": []
+      },
+      "7": {
+        "pos": [
+          540,
+          220
+        ],
+        "open": [
+          "Geometry"
+        ],
+        "handles": []
+      },
+      "8": {
+        "pos": [
+          760,
+          220
+        ],
+        "open": [
+          "Geometry"
+        ],
+        "handles": []
+      },
+      "9": {
+        "pos": [
+          1000,
+          200
+        ],
+        "open": [
+          "Geometry"
+        ],
+        "handles": []
+      }
+    }
+  }
+}

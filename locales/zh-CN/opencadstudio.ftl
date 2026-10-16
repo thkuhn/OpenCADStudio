@@ -6845,6 +6845,7 @@ aec-ui =
     .no-intersection-found = No intersection found
     .degenerate-axis = Degenerate axis
     .ambiguous-junction-set = Ambiguous junction set
+    .x-crossing-with-a-curved-wall-is-not-supported-yet = X crossing with a curved wall is not supported yet
     .nr = No.
     .raumbezeichnung = Room name
     .kategorie-din-277 = Category (DIN 277)

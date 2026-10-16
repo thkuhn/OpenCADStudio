@@ -453,6 +453,44 @@ mod tests {
     }
 
     #[test]
+    fn curved_x_crossing_unsupported_message_is_localized_in_every_catalog() {
+        const SOURCE: &str = "X crossing with a curved wall is not supported yet";
+        const ATTRIBUTE: &str = "x-crossing-with-a-curved-wall-is-not-supported-yet";
+
+        assert_eq!(
+            locale_catalog::message_attribute(SOURCE),
+            Some(("aec-ui", ATTRIBUTE))
+        );
+
+        for language in Language::ALL
+            .into_iter()
+            .filter(|language| *language != Language::System)
+        {
+            let loader = FluentLanguageLoader::new("opencadstudio", "en-US".parse().unwrap());
+            load_language(&loader, language).expect("Fluent resources must parse");
+            assert!(
+                !loader.get_attr("aec-ui", ATTRIBUTE).is_empty(),
+                "missing curved-X warning in {language:?}"
+            );
+        }
+
+        let english = FluentLanguageLoader::new("opencadstudio", "en-US".parse().unwrap());
+        load_language(&english, Language::EnUs).expect("English Fluent resources must parse");
+        assert_eq!(
+            english.get_attr("aec-ui", ATTRIBUTE),
+            SOURCE,
+            "English catalog should match the source wording"
+        );
+
+        let german = FluentLanguageLoader::new("opencadstudio", "en-US".parse().unwrap());
+        load_language(&german, Language::DeDe).expect("German Fluent resources must parse");
+        assert_eq!(
+            german.get_attr("aec-ui", ATTRIBUTE),
+            "X-Kreuzungen mit gekrümmten Wandachsen werden noch nicht unterstützt."
+        );
+    }
+
+    #[test]
     fn every_catalog_covers_and_formats_the_source_catalog() {
         let loader = FluentLanguageLoader::new("opencadstudio", "en-US".parse().unwrap());
         load_language(&loader, Language::EnUs).expect("English Fluent resources must parse");

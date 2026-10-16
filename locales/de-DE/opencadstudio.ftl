@@ -6861,6 +6861,7 @@ aec-ui =
     .no-intersection-found = Kein Schnittpunkt gefunden
     .degenerate-axis = Entartete Achse
     .ambiguous-junction-set = Mehrdeutige Knotenmenge
+    .x-crossing-with-a-curved-wall-is-not-supported-yet = X-Kreuzungen mit gekrümmten Wandachsen werden noch nicht unterstützt.
     .nr = Nr.
     .raumbezeichnung = Raumbezeichnung
     .kategorie-din-277 = Kategorie (DIN 277)

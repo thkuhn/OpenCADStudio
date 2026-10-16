@@ -146,9 +146,9 @@ pub(crate) fn write_wall_derived_tag(scene: &mut Scene, handle: Handle, axis_han
 
 /// XDATA kind tag for a manual join-constraint override on a wall axis end
 /// (a "junction"). A junction is identified by the wall axis's own handle
-/// plus which end of its axis it sits at (`0` for the start vertex, `1` for
-/// the last vertex) — mirroring the `end_a`/`end_b` vertex-index convention
-/// already used by [`join::join_wall_axes`]. Multiple walls sharing a
+/// plus which vertex index of its axis it sits at (`0` for the start vertex,
+/// `axis.len() - 1` for the last vertex) — mirroring the `end_a`/`end_b` vertex-index
+/// convention already used by [`join::join_wall_axes`]. Multiple walls sharing a
 /// junction point each store their own override on their own axis/end, since
 /// XDATA lives on a single entity.
 pub(crate) const JOIN_OVERRIDE_TAG: &str = "JOIN_OVERRIDE";
@@ -166,7 +166,7 @@ pub(crate) fn join_override_end_key(end_index: usize) -> i32 {
 }
 
 /// Write (or replace) a [`join::JunctionOverride`] as XDATA on `axis_handle`,
-/// tied to `end_index` (`0` = axis start, `1` = axis end). The payload is
+/// tied to `end_index` (`0` = axis start, `axis.len() - 1` = axis end). The payload is
 /// serialized as JSON, matching the pattern used for other AEC XDATA blobs.
 /// Only the record for the same `end_index` is replaced — an override on the
 /// other end of the same axis is left untouched.
@@ -221,7 +221,7 @@ pub fn write_junction_override(
 }
 
 /// Read the [`join::JunctionOverride`] stored on `axis_handle` for
-/// `end_index` (`0` = axis start, `1` = axis end). Returns `None` when no
+/// `end_index` (`0` = axis start, `axis.len() - 1` = axis end). Returns `None` when no
 /// such XDATA exists — including on entities from drawings created before
 /// this feature existed — and never panics on missing/malformed data.
 pub fn read_junction_override(

@@ -186,10 +186,15 @@ pub fn merge_partner_junction_override(
     }
 }
 
+/// Endpoint snap radius (m) shared by junction detection (L vs. X/T
+/// classification) and the document-level auto-join logic.
+pub(crate) const WALL_JOIN_SNAP_RADIUS: f64 = 0.3;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum JoinKind {
     L,
     T,
+    X,
 }
 
 #[derive(Debug, PartialEq)]
@@ -198,6 +203,9 @@ pub enum JoinError {
     NoIntersection,
     Degenerate,
     Ambiguous,
+    /// Geometry the solver cannot resolve without distorting walls (e.g. an X
+    /// crossing with a curved wall). Nothing is modified.
+    Unsupported,
 }
 
 impl fmt::Display for JoinError {
@@ -207,6 +215,13 @@ impl fmt::Display for JoinError {
             JoinError::NoIntersection => write!(f, "{}", crate::t!("No intersection found")),
             JoinError::Degenerate => write!(f, "{}", crate::t!("Degenerate axis")),
             JoinError::Ambiguous => write!(f, "{}", crate::t!("Ambiguous junction set")),
+            JoinError::Unsupported => {
+                write!(
+                    f,
+                    "{}",
+                    crate::t!("X crossing with a curved wall is not supported yet")
+                )
+            }
         }
     }
 }
@@ -327,6 +342,10 @@ pub fn join_wall_axes_with_bulges(
     };
 
     if let Some((isect, idx_a, idx_b)) = best_l {
+        let dist_a = (axis_a[idx_a].x - isect.x).hypot(axis_a[idx_a].y - isect.y);
+        let dist_b = (axis_b[idx_b].x - isect.x).hypot(axis_b[idx_b].y - isect.y);
+        let both_near_ends = dist_a <= WALL_JOIN_SNAP_RADIUS && dist_b <= WALL_JOIN_SNAP_RADIUS;
+
         let role_a = classify(axis_a, isect);
         let role_b = classify(axis_b, isect);
         let both_end = matches!(role_a, Some(JunctionRole::Endpoint(_)))
@@ -338,7 +357,7 @@ pub fn join_wall_axes_with_bulges(
         let a_head = axis_overhangs_both_sides(axis_a, isect, END_MID_TOLERANCE);
         let b_head = axis_overhangs_both_sides(axis_b, isect, END_MID_TOLERANCE);
         // Head wall of a T continues past the stem on both sides — never L.
-        let use_l = (both_end || (!a_mid && !b_mid)) && !(a_head ^ b_head);
+        let use_l = (both_near_ends || both_end || (!a_mid && !b_mid)) && !(a_head ^ b_head);
         if use_l {
             let mut new_a = axis_a.to_vec();
             new_a[idx_a] = DVec3::new(isect.x, isect.y, axis_a[idx_a].z);
@@ -550,22 +569,27 @@ fn intersect_lines_2d(p1: DVec3, p2: DVec3, p3: DVec3, p4: DVec3) -> Option<DVec
     ))
 }
 
-fn is_on_segment_2d(p: DVec3, a: DVec3, b: DVec3, tol: f64) -> bool {
-    let dist_ap = (p.x - a.x).hypot(p.y - a.y);
-    let dist_pb = (p.x - b.x).hypot(p.y - b.y);
-    let dist_ab = (b.x - a.x).hypot(b.y - a.y);
-    (dist_ap + dist_pb - dist_ab).abs() < tol
-}
-
-/// Like [`is_on_segment_2d`], but rejects hits that land on either endpoint
+/// Like `is_on_segment_2d`, but rejects hits that land on either endpoint
 /// (within `tol`). Used for T-junction detection so end-to-end meetings stay L.
 fn is_on_segment_interior_2d(p: DVec3, a: DVec3, b: DVec3, tol: f64) -> bool {
-    if !is_on_segment_2d(p, a, b, tol) {
-        return false;
-    }
     let d_a = (p.x - a.x).hypot(p.y - a.y);
     let d_b = (p.x - b.x).hypot(p.y - b.y);
-    d_a > tol && d_b > tol
+    if d_a <= tol || d_b <= tol {
+        return false;
+    }
+    let abx = b.x - a.x;
+    let aby = b.y - a.y;
+    let len2 = abx * abx + aby * aby;
+    if len2 < 1e-24 {
+        return false;
+    }
+    let t = ((p.x - a.x) * abx + (p.y - a.y) * aby) / len2;
+    if t <= 0.0 || t >= 1.0 {
+        return false;
+    }
+    let proj_x = a.x + abx * t;
+    let proj_y = a.y + aby * t;
+    (p.x - proj_x).hypot(p.y - proj_y) <= tol
 }
 
 /// Default clustering tolerance for multi-wall junction detection.
@@ -625,6 +649,16 @@ impl Junction {
 /// Only clusters with at least two participants (endpoint or through) are
 /// returned. Degenerate axes (`len < 2`) are skipped.
 pub fn detect_junctions(walls: &[&[DVec3]], tol: f64) -> Vec<Junction> {
+    detect_junctions_with_bulges(walls, &[], tol)
+}
+
+/// Group wall-axis endpoints (and through-segment hits) into junctions, taking
+/// axis arc bulges into account so curved walls are evaluated on their true arcs.
+pub fn detect_junctions_with_bulges(
+    walls: &[&[DVec3]],
+    bulges: &[&[f64]],
+    tol: f64,
+) -> Vec<Junction> {
     // Collect (wall_index, end_vertex_index, point).
     let mut endpoints: Vec<(usize, usize, DVec3)> = Vec::new();
     for (wi, axis) in walls.iter().enumerate() {
@@ -714,10 +748,22 @@ pub fn detect_junctions(walls: &[&[DVec3]], tol: f64) -> Vec<Junction> {
             }
             // Cluster `tol` is too loose for the interior-vs-end test
             // (`is_on_segment_interior` would reject a 0.2 overhang).
-            if let Some(seg) = find_through_segment(point, axis, END_MID_TOLERANCE) {
+            let b = bulges.get(p.wall_index).copied().unwrap_or(&[]);
+            if let Some(seg) = find_through_segment_with_bulges(point, axis, b, END_MID_TOLERANCE) {
                 p.role = JunctionRole::Through(seg);
             } else if let Some(seg) = closest_segment_index(point, axis) {
                 p.role = JunctionRole::Through(seg);
+            }
+        }
+
+        if participants.len() == 2
+            && participants.iter().all(|p| matches!(p.role, JunctionRole::Through(_)))
+        {
+            // Both participants were clustered by endpoint; an endpoint-to-endpoint
+            // cluster is an L-junction, not an X-crossing.
+            for (p, &i) in participants.iter_mut().zip(&members) {
+                let (_, end_idx, _) = endpoints[i];
+                p.role = JunctionRole::Endpoint(end_idx);
             }
         }
 
@@ -726,7 +772,8 @@ pub fn detect_junctions(walls: &[&[DVec3]], tol: f64) -> Vec<Junction> {
             if seen_walls[wi] || axis.len() < 2 {
                 continue;
             }
-            if let Some(seg) = find_through_segment(point, axis, tol) {
+            let b = bulges.get(wi).copied().unwrap_or(&[]);
+            if let Some(seg) = find_through_segment_with_bulges(point, axis, b, tol) {
                 seen_walls[wi] = true;
                 participants.push(JunctionParticipant {
                     wall_index: wi,
@@ -745,11 +792,125 @@ pub fn detect_junctions(walls: &[&[DVec3]], tol: f64) -> Vec<Junction> {
         }
     }
 
-    // Also detect pure T-style junctions where a single endpoint sits on
-    // another wall's interior (no second endpoint in the cluster). The
-    // clustering above only emits when ≥2 endpoints share a point OR when
-    // through-hits bring the count to ≥2 — a lone endpoint on a through wall
-    // is exactly that second case and is already handled. Done.
+    // Also detect interior-interior crossings (X-crossings) between wall segments
+    // where no endpoints meet at the crossing point.
+    let seg_tol = tol.max(JUNCTION_TOLERANCE);
+    for i in 0..walls.len() {
+        let axis_a = walls[i];
+        if axis_a.len() < 2 {
+            continue;
+        }
+        let b_a = bulges.get(i).copied().unwrap_or(&[]);
+        for j in (i + 1)..walls.len() {
+            let axis_b = walls[j];
+            if axis_b.len() < 2 {
+                continue;
+            }
+            let b_b = bulges.get(j).copied().unwrap_or(&[]);
+            for sa in 0..axis_a.len() - 1 {
+                let p1 = axis_a[sa];
+                let p2 = axis_a[sa + 1];
+                let bulge_a = b_a.get(sa).copied().unwrap_or(0.0);
+                for sb in 0..axis_b.len() - 1 {
+                    let p3 = axis_b[sb];
+                    let p4 = axis_b[sb + 1];
+                    let bulge_b = b_b.get(sb).copied().unwrap_or(0.0);
+
+                    let isects: Vec<DVec3> = match (bulge_a.abs() > 1e-12, bulge_b.abs() > 1e-12) {
+                        (false, false) => {
+                            if let Some(p) = intersect_lines_2d(p1, p2, p3, p4) {
+                                if is_on_segment_interior_2d(p, p1, p2, seg_tol)
+                                    && is_on_segment_interior_2d(p, p3, p4, seg_tol)
+                                {
+                                    vec![p]
+                                } else {
+                                    Vec::new()
+                                }
+                            } else {
+                                Vec::new()
+                            }
+                        }
+                        (true, false) => {
+                            if let Some(arc_a) = super::arc::bulge_to_arc((p1.x, p1.y), (p2.x, p2.y), bulge_a) {
+                                let pts = super::arc::arc_line_intersection(&arc_a, (p3.x, p3.y), (p4.x, p4.y));
+                                pts.into_iter()
+                                    .map(|(x, y)| DVec3::new(x, y, p1.z))
+                                    .filter(|&p| {
+                                        super::arc::point_on_segment_interior((p.x, p.y), (p1.x, p1.y), (p2.x, p2.y), bulge_a, seg_tol)
+                                            && is_on_segment_interior_2d(p, p3, p4, seg_tol)
+                                    })
+                                    .collect()
+                            } else {
+                                Vec::new()
+                            }
+                        }
+                        (false, true) => {
+                            if let Some(arc_b) = super::arc::bulge_to_arc((p3.x, p3.y), (p4.x, p4.y), bulge_b) {
+                                let pts = super::arc::arc_line_intersection(&arc_b, (p1.x, p1.y), (p2.x, p2.y));
+                                pts.into_iter()
+                                    .map(|(x, y)| DVec3::new(x, y, p1.z))
+                                    .filter(|&p| {
+                                        is_on_segment_interior_2d(p, p1, p2, seg_tol)
+                                            && super::arc::point_on_segment_interior((p.x, p.y), (p3.x, p3.y), (p4.x, p4.y), bulge_b, seg_tol)
+                                    })
+                                    .collect()
+                            } else {
+                                Vec::new()
+                            }
+                        }
+                        (true, true) => {
+                            if let (Some(arc_a), Some(arc_b)) = (
+                                super::arc::bulge_to_arc((p1.x, p1.y), (p2.x, p2.y), bulge_a),
+                                super::arc::bulge_to_arc((p3.x, p3.y), (p4.x, p4.y), bulge_b),
+                            ) {
+                                let pts = super::arc::arc_arc_intersection(&arc_a, &arc_b);
+                                pts.into_iter()
+                                    .map(|(x, y)| DVec3::new(x, y, p1.z))
+                                    .filter(|&p| {
+                                        super::arc::point_on_segment_interior((p.x, p.y), (p1.x, p1.y), (p2.x, p2.y), bulge_a, seg_tol)
+                                            && super::arc::point_on_segment_interior((p.x, p.y), (p3.x, p3.y), (p4.x, p4.y), bulge_b, seg_tol)
+                                    })
+                                    .collect()
+                            } else {
+                                Vec::new()
+                            }
+                        }
+                    };
+
+                    for isect in isects {
+                        // Check if this intersection is already represented in an existing junction
+                        let already_exists = junctions.iter().any(|junc| {
+                            (junc.point.x - isect.x).hypot(junc.point.y - isect.y) <= seg_tol
+                        });
+                        if already_exists {
+                            continue;
+                        }
+                        // Form a new interior-interior junction at `isect`
+                        let mut participants: Vec<JunctionParticipant> = Vec::new();
+                        for (wi, axis) in walls.iter().enumerate() {
+                            if axis.len() < 2 {
+                                continue;
+                            }
+                            let b = bulges.get(wi).copied().unwrap_or(&[]);
+                            if let Some(seg) = find_through_segment_with_bulges(isect, axis, b, seg_tol) {
+                                participants.push(JunctionParticipant {
+                                    wall_index: wi,
+                                    role: JunctionRole::Through(seg),
+                                });
+                            }
+                        }
+                        if participants.len() >= 2 {
+                            participants.sort_by_key(|p| p.wall_index);
+                            junctions.push(Junction {
+                                point: isect,
+                                participants,
+                            });
+                        }
+                    }
+                }
+            }
+        }
+    }
 
     junctions
 }
@@ -772,8 +933,17 @@ pub fn apply_junction_to_axes(walls: &[&[DVec3]], junction: &Junction) -> Vec<Ve
 
 /// Locate the segment index on `axis` whose interior contains `point` (XY).
 fn find_through_segment(point: DVec3, axis: &[DVec3], tol: f64) -> Option<usize> {
+    find_through_segment_with_bulges(point, axis, &[], tol)
+}
+
+fn find_through_segment_with_bulges(point: DVec3, axis: &[DVec3], bulges: &[f64], tol: f64) -> Option<usize> {
     for i in 0..axis.len().saturating_sub(1) {
-        if is_on_segment_interior_2d(point, axis[i], axis[i + 1], tol) {
+        let b = bulges.get(i).copied().unwrap_or(0.0);
+        if b.abs() <= 1e-12 {
+            if is_on_segment_interior_2d(point, axis[i], axis[i + 1], tol) {
+                return Some(i);
+            }
+        } else if super::arc::point_on_segment_interior((point.x, point.y), (axis[i].x, axis[i].y), (axis[i + 1].x, axis[i + 1].y), b, tol) {
             return Some(i);
         }
     }
@@ -1030,6 +1200,138 @@ mod tests {
         for p in &j.participants {
             assert!(matches!(p.role, JunctionRole::Endpoint(0)));
         }
+    }
+
+    #[test]
+    fn detect_junctions_x_crossing_interior_interior() {
+        let h = vec![DVec3::new(-10.0, 0.0, 0.0), DVec3::new(10.0, 0.0, 0.0)];
+        let v = vec![DVec3::new(0.0, -10.0, 0.0), DVec3::new(0.0, 10.0, 0.0)];
+        let walls: Vec<&[DVec3]> = vec![&h, &v];
+
+        let junctions = detect_junctions(&walls, JUNCTION_TOLERANCE);
+        assert_eq!(junctions.len(), 1, "expected one X-crossing junction, got {junctions:?}");
+        let j = &junctions[0];
+        assert!(j.point.distance(DVec3::ZERO) < 1e-9);
+        assert_eq!(j.participants.len(), 2);
+        assert_eq!(j.endpoint_count(), 0);
+        for p in &j.participants {
+            assert!(matches!(p.role, JunctionRole::Through(0)));
+        }
+    }
+
+    #[test]
+    fn detect_junctions_x_crossing_diagonal() {
+        let d1 = vec![DVec3::new(-10.0, -10.0, 0.0), DVec3::new(10.0, 10.0, 0.0)];
+        let d2 = vec![DVec3::new(-10.0, 10.0, 0.0), DVec3::new(10.0, -10.0, 0.0)];
+        let walls: Vec<&[DVec3]> = vec![&d1, &d2];
+
+        let junctions = detect_junctions(&walls, JUNCTION_TOLERANCE);
+        assert_eq!(junctions.len(), 1, "expected one diagonal X-crossing junction, got {junctions:?}");
+        let j = &junctions[0];
+        assert!(j.point.distance(DVec3::ZERO) < 1e-9);
+        assert_eq!(j.participants.len(), 2);
+        assert_eq!(j.endpoint_count(), 0);
+        for p in &j.participants {
+            assert!(matches!(p.role, JunctionRole::Through(0)));
+        }
+    }
+
+    #[test]
+    fn detect_junctions_x_crossing_one_through_two_stems() {
+        let h = vec![DVec3::new(-10.0, 0.0, 0.0), DVec3::new(10.0, 0.0, 0.0)];
+        let s_north = vec![DVec3::new(0.0, 0.0, 0.0), DVec3::new(0.0, 10.0, 0.0)];
+        let s_south = vec![DVec3::new(0.0, 0.0, 0.0), DVec3::new(0.0, -10.0, 0.0)];
+        let walls: Vec<&[DVec3]> = vec![&h, &s_north, &s_south];
+
+        let junctions = detect_junctions(&walls, JUNCTION_TOLERANCE);
+        assert_eq!(junctions.len(), 1, "expected one 3-wall junction, got {junctions:?}");
+        let j = &junctions[0];
+        assert!(j.point.distance(DVec3::ZERO) < 1e-9);
+        assert_eq!(j.participants.len(), 3);
+        assert_eq!(j.endpoint_count(), 2);
+        assert!(matches!(j.participants[0].role, JunctionRole::Through(0)));
+        assert!(matches!(j.participants[1].role, JunctionRole::Endpoint(0)));
+        assert!(matches!(j.participants[2].role, JunctionRole::Endpoint(0)));
+    }
+
+    #[test]
+    fn detect_junctions_x_crossing_alongside_l_corner() {
+        let wall_a = vec![DVec3::new(0.0, 0.0, 0.0), DVec3::new(10.0, 0.0, 0.0)];
+        let wall_b = vec![DVec3::new(10.0, 0.0, 0.0), DVec3::new(10.0, 10.0, 0.0)];
+        let wall_c = vec![DVec3::new(5.0, -5.0, 0.0), DVec3::new(5.0, 5.0, 0.0)];
+        let walls: Vec<&[DVec3]> = vec![&wall_a, &wall_b, &wall_c];
+
+        let junctions = detect_junctions(&walls, JUNCTION_TOLERANCE);
+        assert_eq!(junctions.len(), 2, "expected L corner at (10,0) and X crossing at (5,0)");
+
+        let j_l = junctions.iter().find(|j| j.point.distance(DVec3::new(10.0, 0.0, 0.0)) < 1e-6).expect("L junction at (10,0)");
+        assert_eq!(j_l.endpoint_count(), 2);
+
+        let j_x = junctions.iter().find(|j| j.point.distance(DVec3::new(5.0, 0.0, 0.0)) < 1e-6).expect("X crossing at (5,0)");
+        assert_eq!(j_x.endpoint_count(), 0);
+        assert_eq!(j_x.participants.len(), 2);
+    }
+
+    #[test]
+    fn detect_junctions_multiple_x_crossings_on_polyline() {
+        let long_wall = vec![DVec3::new(0.0, 0.0, 0.0), DVec3::new(20.0, 0.0, 0.0)];
+        let cross1 = vec![DVec3::new(5.0, -5.0, 0.0), DVec3::new(5.0, 5.0, 0.0)];
+        let cross2 = vec![DVec3::new(15.0, -5.0, 0.0), DVec3::new(15.0, 5.0, 0.0)];
+        let walls: Vec<&[DVec3]> = vec![&long_wall, &cross1, &cross2];
+
+        let junctions = detect_junctions(&walls, JUNCTION_TOLERANCE);
+        assert_eq!(junctions.len(), 2, "expected 2 X crossings at x=5 and x=15");
+    }
+
+    #[test]
+    fn detect_junctions_near_parallel_crossing() {
+        let w1 = vec![DVec3::new(-10.0, 0.0, 0.0), DVec3::new(10.0, 0.0, 0.0)];
+        let w2 = vec![DVec3::new(-10.0, -0.5, 0.0), DVec3::new(10.0, 0.5, 0.0)];
+        let walls: Vec<&[DVec3]> = vec![&w1, &w2];
+
+        let junctions = detect_junctions(&walls, JUNCTION_TOLERANCE);
+        assert_eq!(junctions.len(), 1, "expected 1 crossing for near-parallel walls");
+        assert!(junctions[0].point.distance(DVec3::ZERO) < 1e-6);
+    }
+
+    #[test]
+    fn detect_junctions_curved_arc_finds_true_arc_crossing_not_chord() {
+        // Straight wall along Y: (0, -10) to (0, 10).
+        let straight = vec![DVec3::new(0.0, -10.0, 0.0), DVec3::new(0.0, 10.0, 0.0)];
+        // Arc wall: (-2, -2) to (-2, 2) with bulge 1.0 (semicircle extending rightwards to apex at (0, 0)).
+        // Its chord is strictly at x = -2 (does not intersect x = 0).
+        let arc_wall = vec![DVec3::new(-2.0, -2.0, 0.0), DVec3::new(-2.0, 2.0, 0.0)];
+        let walls: Vec<&[DVec3]> = vec![&straight, &arc_wall];
+        let bulges: Vec<&[f64]> = vec![&[0.0], &[1.0]];
+
+        let junctions = detect_junctions_with_bulges(&walls, &bulges, JUNCTION_TOLERANCE);
+        assert_eq!(junctions.len(), 1, "expected 1 junction at the true arc crossing");
+        let j = &junctions[0];
+        assert!(
+            j.point.distance(DVec3::new(0.0, 0.0, 0.0)) < 1e-6,
+            "junction point must be at true arc apex (0, 0), got {:?}",
+            j.point
+        );
+        assert_eq!(j.participants.len(), 2);
+    }
+
+    #[test]
+    fn detect_junctions_false_chord_intersection_skipped() {
+        // Arc wall from (0, -4) to (0, 0) with bulge -1.0 (semicircle curving right/CW to apex at (-2, -2)).
+        // Straight segment (-1, -2) to (5, -2) crosses the chord x=0 at (0, -2).
+        // BUT the true arc crosses line y=-2 at (-2, -2), which is outside [-1, 5].
+        // Therefore, straight chords intersect at (0, -2), but the true arc sweep and segment do NOT intersect.
+        let straight_miss = vec![DVec3::new(-1.0, -2.0, 0.0), DVec3::new(5.0, -2.0, 0.0)];
+        let arc_wall = vec![DVec3::new(0.0, -4.0, 0.0), DVec3::new(0.0, 0.0, 0.0)];
+        let walls: Vec<&[DVec3]> = vec![&straight_miss, &arc_wall];
+        let bulges: Vec<&[f64]> = vec![&[0.0], &[-1.0]];
+
+        let junctions = detect_junctions_with_bulges(&walls, &bulges, JUNCTION_TOLERANCE);
+        assert_eq!(
+            junctions.len(),
+            0,
+            "false chord crossing must NOT produce a junction when true arcs do not intersect"
+        );
     }
 
     #[test]

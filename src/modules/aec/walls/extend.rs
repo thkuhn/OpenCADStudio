@@ -4,12 +4,11 @@ use acadrust::Handle;
 use glam::DVec3;
 
 use crate::command::{CadCommand, CmdOption, CmdResult};
-use crate::modules::aec::engine::xdata::{get_wall_bulges, get_wall_vertices, update_wall_vertices};
+use crate::modules::aec::engine::xdata::{get_wall_vertices, update_wall_vertices};
 use crate::modules::aec::engine::wall_package::{is_wall_pick_target, resolve_wall_package};
-use crate::modules::aec::engine::wall_regen::{regenerate_wall_representation_with_corner_rules_and_substitutions, regenerate_wall_representation_with_rules_and_substitutions};
-use crate::modules::aec::engine::join_ops::wall_layer_data;
+use crate::modules::aec::engine::wall_regen::regenerate_wall_representation_with_rules_and_substitutions;
+use crate::modules::aec::engine::join_ops::cascade_solve_and_rebuild_wall_network;
 use crate::modules::aec::engine::{self, join, StyleLibrary};
-use crate::modules::aec::engine::join::JoinKind;
 use crate::modules::{IconKind, ModuleEvent, ToolDef};
 use crate::scene::Scene;
 use crate::ui::command_line::CommandLine;
@@ -250,16 +249,59 @@ pub fn aec_wallextend_do(
             }
         }
         update_wall_vertices(scene, wall_handle, &axis);
-        let touched = match regenerate_wall_representation_with_rules_and_substitutions(
+        let mut touched = Vec::new();
+        // Symmetric peer unlinking for walls that are no longer coincident after point extend.
+        let old_peers = engine::owner_index::peers_of(&scene.document, wall_handle);
+        let bulges = crate::modules::aec::engine::xdata::get_wall_bulges(scene, wall_handle);
+        for peer in old_peers {
+            let peer_axis = get_wall_vertices(scene, peer);
+            let peer_bulges = crate::modules::aec::engine::xdata::get_wall_bulges(scene, peer);
+            let is_joined = !join::detect_junctions_with_bulges(
+                &[&axis, &peer_axis],
+                &[&bulges, &peer_bulges],
+                crate::modules::aec::engine::join::JUNCTION_TOLERANCE.max(1e-4),
+            ).is_empty();
+            if !is_joined {
+                engine::owner_index::unlink_peers(&mut scene.document, wall_handle, peer);
+                crate::modules::aec::engine::join_ops::drop_orphaned_junction_overrides(scene, wall_handle);
+                crate::modules::aec::engine::join_ops::drop_orphaned_junction_overrides(scene, peer);
+                if let Ok(t) = regenerate_wall_representation_with_rules_and_substitutions(
+                    scene,
+                    peer,
+                    display_rules,
+                    style_substitutions,
+                    library_override,
+                ) {
+                    touched.extend(t);
+                }
+            }
+        }
+
+        let cascade_touched = match cascade_solve_and_rebuild_wall_network(
             scene,
-            wall_handle,
+            &[wall_handle],
+            &[],
+            false,
+            library_override,
             display_rules,
             style_substitutions,
-            library_override,
         ) {
             Ok(t) => t,
-            Err(_) => vec![wall_handle],
+            Err(_) => match regenerate_wall_representation_with_rules_and_substitutions(
+                scene,
+                wall_handle,
+                display_rules,
+                style_substitutions,
+                library_override,
+            ) {
+                Ok(t) => t,
+                Err(_) => vec![wall_handle],
+            },
         };
+        touched.extend(cascade_touched);
+        let mut touched = touched;
+        touched.sort_by_key(|h| h.value());
+        touched.dedup();
         // Do not auto-join to a corner after a length-only extend.
         let changes: Vec<_> = touched
             .into_iter()
@@ -284,49 +326,21 @@ pub fn aec_wallextend_do(
         match join::extend_axis_to_other(&axis, &target_axis) {
             Ok((new_axis, end_idx, _isect)) => {
                 update_wall_vertices(scene, wall_handle, &new_axis);
-                let layers_target = wall_layer_data(scene, target_handle);
-                let axis_target_2d: Vec<(f64, f64)> =
-                    target_axis.iter().map(|p| (p.x, p.y)).collect();
-                let miter = engine::miter::JoinMiterContext {
-                    self_end: end_idx,
-                    other_axis: axis_target_2d,
-                    other_layers: layers_target,
-                    other_end: None,
-                    kind: JoinKind::T,
-                    self_bulges: get_wall_bulges(scene, wall_handle),
-                    other_bulges: get_wall_bulges(scene, target_handle),
-                    as_through: false,
-                };
-                let mut touched = match regenerate_wall_representation_with_corner_rules_and_substitutions(
+                engine::owner_index::link_peers(&mut scene.document, wall_handle, target_handle);
+                let frozen = [(wall_handle, end_idx)];
+                let touched = match cascade_solve_and_rebuild_wall_network(
                     scene,
-                    wall_handle,
-                    None,
-                    Some(&miter),
+                    &[wall_handle, target_handle],
+                    &frozen,
+                    true,
+                    library_override,
                     display_rules,
                     style_substitutions,
-                    library_override,
                 ) {
                     Ok(t) => t,
-                    Err(_) => vec![wall_handle],
+                    Err(_) => vec![wall_handle, target_handle],
                 };
-                // Target length stays unchanged; refresh its display so
-                // overlapping layer edges stay in sync visually.
-                match regenerate_wall_representation_with_rules_and_substitutions(
-                    scene,
-                    target_handle,
-                    display_rules,
-                    style_substitutions,
-                    library_override,
-                ) {
-                    Ok(t) => touched.extend(t),
-                    Err(_) => touched.push(target_handle),
-                }
-                // Register the two walls as joined peers — same bookkeeping
-                // `AEC_WALLJOIN`/auto-join perform after a successful join —
-                // so later moves/regenerations recognize and preserve this
-                // connection instead of silently treating it as unjoined.
-                engine::owner_index::link_peers(&mut scene.document, wall_handle, target_handle);
-
+                let mut touched = touched;
                 touched.sort_by_key(|h| h.value());
                 touched.dedup();
                 let changes: Vec<_> = touched
