@@ -79,6 +79,31 @@ impl ViewAxes {
         }
     }
 
+    /// Elevation view axes looking perpendicular to baseline.
+    pub fn elevation(baseline_dir: Vector2) -> Result<Self, ValidationError> {
+        Self::elevation_with_side(baseline_dir, false)
+    }
+
+    /// Elevation view axes looking perpendicular to baseline, with optional side flip.
+    pub fn elevation_with_side(baseline_dir: Vector2, flipped: bool) -> Result<Self, ValidationError> {
+        let norm_dir = baseline_dir.normalized()?;
+        let (right, forward) = if !flipped {
+            (
+                Vector3::new(norm_dir.x, norm_dir.y, 0.0),
+                Vector3::new(-norm_dir.y, norm_dir.x, 0.0),
+            )
+        } else {
+            (
+                Vector3::new(-norm_dir.x, -norm_dir.y, 0.0),
+                Vector3::new(norm_dir.y, -norm_dir.x, 0.0),
+            )
+        };
+        let up = Vector3::new(0.0, 0.0, 1.0);
+        let axes = Self { right, up, forward };
+        axes.validate()?;
+        Ok(axes)
+    }
+
     /// Standard floor plan view axes (looking down towards -Z).
     pub fn floor_plan() -> Self {
         Self {
@@ -99,13 +124,24 @@ impl ViewAxes {
 
     /// Section view axes looking along cut normal.
     pub fn section(cut_direction_xy: Vector2) -> Result<Self, ValidationError> {
+        Self::section_with_side(cut_direction_xy, false)
+    }
+
+    /// Section view axes looking along cut normal, with optional side flip.
+    pub fn section_with_side(cut_direction_xy: Vector2, flipped: bool) -> Result<Self, ValidationError> {
         let norm_dir = cut_direction_xy.normalized()?;
-        // Right is along the cut line (norm_dir)
-        let right = Vector3::new(norm_dir.x, norm_dir.y, 0.0);
-        // Up is vertical (+Z)
+        let (right, forward) = if !flipped {
+            (
+                Vector3::new(norm_dir.x, norm_dir.y, 0.0),
+                Vector3::new(-norm_dir.y, norm_dir.x, 0.0),
+            )
+        } else {
+            (
+                Vector3::new(-norm_dir.x, -norm_dir.y, 0.0),
+                Vector3::new(norm_dir.y, -norm_dir.x, 0.0),
+            )
+        };
         let up = Vector3::new(0.0, 0.0, 1.0);
-        // Forward is perpendicular to cut line (looking to the left of the cut vector)
-        let forward = Vector3::new(-norm_dir.y, norm_dir.x, 0.0);
         let axes = Self { right, up, forward };
         axes.validate()?;
         Ok(axes)

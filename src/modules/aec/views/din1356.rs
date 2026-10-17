@@ -18,6 +18,7 @@ pub struct Din1356SectionSymbol {
     pub arrow_size: f64,
     pub text_height: f64,
     pub end_extension: f64,
+    pub flip_direction: bool,
 }
 
 impl Din1356SectionSymbol {
@@ -28,7 +29,13 @@ impl Din1356SectionSymbol {
             arrow_size: 0.40,
             text_height: 0.35,
             end_extension: 0.50,
+            flip_direction: false,
         }
+    }
+
+    pub fn with_flip(mut self, flip: bool) -> Self {
+        self.flip_direction = flip;
+        self
     }
 
     /// Generates wire preview segments for real-time viewport drawing.
@@ -53,8 +60,12 @@ impl Din1356SectionSymbol {
                 );
                 wires.push((start_ext, first.start));
 
-                // Direction arrow pointing left (normal = (-dir.y, dir.x))
-                let normal = Vector2::new(-dir.y, dir.x);
+                // Direction arrow pointing in viewing direction
+                let normal = if !self.flip_direction {
+                    Vector2::new(-dir.y, dir.x)
+                } else {
+                    Vector2::new(dir.y, -dir.x)
+                };
                 let arrow_tip = Point2::new(
                     start_ext.x_m + normal.x * self.arrow_size,
                     start_ext.y_m + normal.y * self.arrow_size,
@@ -81,7 +92,11 @@ impl Din1356SectionSymbol {
                 );
                 wires.push((last.end, end_ext));
 
-                let normal = Vector2::new(-dir.y, dir.x);
+                let normal = if !self.flip_direction {
+                    Vector2::new(-dir.y, dir.x)
+                } else {
+                    Vector2::new(dir.y, -dir.x)
+                };
                 let arrow_tip = Point2::new(
                     end_ext.x_m + normal.x * self.arrow_size,
                     end_ext.y_m + normal.y * self.arrow_size,
@@ -148,7 +163,11 @@ impl Din1356SectionSymbol {
                 ext_line.end = CadVec3::new(first.start.x_m, first.start.y_m, 0.0);
                 entities.push(EntityType::Line(ext_line));
 
-                let normal = Vector2::new(-dir.y, dir.x);
+                let normal = if !self.flip_direction {
+                    Vector2::new(-dir.y, dir.x)
+                } else {
+                    Vector2::new(dir.y, -dir.x)
+                };
                 let arrow_tip = Point2::new(
                     start_ext.x_m + normal.x * self.arrow_size,
                     start_ext.y_m + normal.y * self.arrow_size,
@@ -187,7 +206,11 @@ impl Din1356SectionSymbol {
                 ext_line.end = CadVec3::new(end_ext.x_m, end_ext.y_m, 0.0);
                 entities.push(EntityType::Line(ext_line));
 
-                let normal = Vector2::new(-dir.y, dir.x);
+                let normal = if !self.flip_direction {
+                    Vector2::new(-dir.y, dir.x)
+                } else {
+                    Vector2::new(dir.y, -dir.x)
+                };
                 let arrow_tip = Point2::new(
                     end_ext.x_m + normal.x * self.arrow_size,
                     end_ext.y_m + normal.y * self.arrow_size,

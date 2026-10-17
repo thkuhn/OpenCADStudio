@@ -17,6 +17,7 @@ use crate::modules::aec::engine::views::*;
 use crate::modules::{IconKind, ModuleEvent, ToolDef};
 use crate::scene::model::wire_model::WireModel;
 use crate::scene::Scene;
+use crate::ui::command_line::CommandLine;
 
 pub fn floorplan_tool() -> ToolDef {
     ToolDef {
@@ -242,7 +243,20 @@ impl CadCommand for FloorPlanCommand {
 
     fn on_point(&mut self, pt: DVec3) -> CmdResult {
         self.placement_point = Some(pt);
-        CmdResult::NeedPoint
+        let kind_code = match self.kind {
+            PlanViewKind::FloorPlan => 0,
+            PlanViewKind::ReflectedCeilingPlan => 1,
+        };
+        CmdResult::Dispatch(format!(
+            "AEC_FLOORPLAN_DO {}|{}|{}|{}|{}|{},{}",
+            kind_code,
+            self.name,
+            self.cut_height,
+            self.z_min,
+            self.z_max,
+            pt.x,
+            pt.y
+        ))
     }
 
     fn on_enter(&mut self) -> CmdResult {
@@ -264,6 +278,44 @@ impl CadCommand for FloorPlanCommand {
             WireModel::solid_f64("plan_cross_v".into(), pts2, WireModel::CYAN, false),
         ]
     }
+}
+
+/// Dispatched non-interactive floor plan / ceiling plan creation handler.
+pub fn aec_floorplan_do(scene: &mut Scene, command_line: &mut CommandLine, args: &str) -> Option<Handle> {
+    // Format: kind_code|name|cut_height|z_min|z_max|ins_x,ins_y
+    let mut parts = args.split('|');
+    let kind_code = parts.next()?.parse::<u8>().ok()?;
+    let name = parts.next()?.trim().to_string();
+    let cut_height = parts.next()?.parse::<f64>().ok()?;
+    let z_min = parts.next()?.parse::<f64>().ok()?;
+    let z_max = parts.next()?.parse::<f64>().ok()?;
+
+    let ins_str = parts.next()?;
+    let mut ins_parts = ins_str.split(',');
+    let ins_x = ins_parts.next()?.parse::<f64>().ok()?;
+    let ins_y = ins_parts.next()?.parse::<f64>().ok()?;
+
+    let kind = match kind_code {
+        1 => PlanViewKind::ReflectedCeilingPlan,
+        _ => PlanViewKind::FloorPlan,
+    };
+
+    let mut cmd = match kind {
+        PlanViewKind::FloorPlan => FloorPlanCommand::new_floorplan(),
+        PlanViewKind::ReflectedCeilingPlan => FloorPlanCommand::new_rcp(),
+    };
+    cmd.name = name.clone();
+    cmd.cut_height = cut_height;
+    cmd.z_min = z_min;
+    cmd.z_max = z_max;
+
+    let handle = cmd.commit_plan_view(scene, Point2::new(ins_x, ins_y))?;
+    let kind_label = match kind {
+        PlanViewKind::FloorPlan => "Grundriss",
+        PlanViewKind::ReflectedCeilingPlan => "Deckenspiegel",
+    };
+    command_line.push_info(&format!("AEC: {} '{}' an ({:.2}, {:.2}) erzeugt (Träger {}).", kind_label, name, ins_x, ins_y, handle));
+    Some(handle)
 }
 
 #[cfg(test)]

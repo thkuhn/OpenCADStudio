@@ -22,6 +22,7 @@ use crate::modules::aec::views::din1356::Din1356SectionSymbol;
 use crate::modules::{IconKind, ModuleEvent, ToolDef};
 use crate::scene::model::wire_model::WireModel;
 use crate::scene::Scene;
+use crate::ui::command_line::CommandLine;
 
 pub fn tool() -> ToolDef {
     ToolDef {
@@ -48,6 +49,7 @@ pub struct SectionCommand {
     pub far_depth: Option<f64>,
     pub z_min: f64,
     pub z_max: f64,
+    pub flip_direction: bool,
     pub view_dir: Option<DVec2>,
     pub placement_point: Option<DVec3>,
     pub is_jog_mode: bool,
@@ -79,6 +81,7 @@ impl SectionCommand {
             far_depth: Some(5.0),
             z_min,
             z_max,
+            flip_direction: false,
             view_dir: None,
             placement_point: None,
             is_jog_mode: false,
@@ -130,17 +133,39 @@ impl SectionCommand {
 
         // 3. DIN 1356 symbols & Depth frustum polygon in ViewingDirection or PlacementPoint phase
         if let Some(path) = self.build_section_path() {
-            let sym = Din1356SectionSymbol::new(&self.label, path.clone());
+            // Determine dynamic depth and flip in ViewingDirection phase
+            let (depth, flip) = if self.phase == SectionPhase::ViewingDirection {
+                if let (Some(cur), Some(first), Some(second)) =
+                    (cursor, self.points.first(), self.points.get(1))
+                {
+                    let dir = (Vector2::new(second.x - first.x, second.y - first.y))
+                        .normalized()
+                        .unwrap_or(Vector2::new(1.0, 0.0));
+                    let n0 = Vector2::new(-dir.y, dir.x);
+                    let w = Vector2::new(cur.x - first.x, cur.y - first.y);
+                    let d_signed = w.dot(n0);
+                    (d_signed.abs().max(0.5), d_signed < 0.0)
+                } else {
+                    (self.far_depth.unwrap_or(5.0), self.flip_direction)
+                }
+            } else {
+                (self.far_depth.unwrap_or(5.0), self.flip_direction)
+            };
+
+            let sym = Din1356SectionSymbol::new(&self.label, path.clone()).with_flip(flip);
             wires.extend(sym.generate_preview_wires());
 
             // Build frustum polygon
-            let depth = self.far_depth.unwrap_or(5.0);
             match &path {
                 SectionPath::Straight { start, end } => {
                     let dir = (Vector2::new(end.x_m - start.x_m, end.y_m - start.y_m))
                         .normalized()
                         .unwrap_or(Vector2::new(1.0, 0.0));
-                    let norm = Vector2::new(-dir.y, dir.x);
+                    let norm = if !flip {
+                        Vector2::new(-dir.y, dir.x)
+                    } else {
+                        Vector2::new(dir.y, -dir.x)
+                    };
                     let p3 = Point2::new(end.x_m + norm.x * depth, end.y_m + norm.y * depth);
                     let p4 = Point2::new(start.x_m + norm.x * depth, start.y_m + norm.y * depth);
                     wires.push((*end, p3));
@@ -150,7 +175,11 @@ impl SectionCommand {
                 SectionPath::Jogged { segments } => {
                     for seg in segments {
                         if let Ok(dir) = seg.direction() {
-                            let norm = Vector2::new(-dir.y, dir.x);
+                            let norm = if !flip {
+                                Vector2::new(-dir.y, dir.x)
+                            } else {
+                                Vector2::new(dir.y, -dir.x)
+                            };
                             let p3 = Point2::new(
                                 seg.end.x_m + norm.x * depth,
                                 seg.end.y_m + norm.y * depth,
@@ -168,6 +197,21 @@ impl SectionCommand {
             }
         }
 
+        // 4. Viewport placement preview box & crosshair in PlacementPoint phase
+        if self.phase == SectionPhase::PlacementPoint {
+            if let Some(cur) = cursor {
+                let cp = Point2::new(cur.x, cur.y);
+                let sz_x = 10.0;
+                let sz_y = (self.z_max - self.z_min).max(3.0);
+                wires.push((Point2::new(cp.x_m - 2.0, cp.y_m), Point2::new(cp.x_m + 2.0, cp.y_m)));
+                wires.push((Point2::new(cp.x_m, cp.y_m - 2.0), Point2::new(cp.x_m, cp.y_m + 2.0)));
+                wires.push((cp, Point2::new(cp.x_m + sz_x, cp.y_m)));
+                wires.push((Point2::new(cp.x_m + sz_x, cp.y_m), Point2::new(cp.x_m + sz_x, cp.y_m + sz_y)));
+                wires.push((Point2::new(cp.x_m + sz_x, cp.y_m + sz_y), Point2::new(cp.x_m, cp.y_m + sz_y)));
+                wires.push((Point2::new(cp.x_m, cp.y_m + sz_y), cp));
+            }
+        }
+
         wires
     }
 
@@ -176,7 +220,7 @@ impl SectionCommand {
         let path = self.build_section_path()?;
 
         // 1. Insert DIN 1356 floor plan section line and arrows
-        let sym = Din1356SectionSymbol::new(&self.label, path.clone());
+        let sym = Din1356SectionSymbol::new(&self.label, path.clone()).with_flip(self.flip_direction);
         let din_entities = sym.generate_cad_entities("AEC_SECTION_MARK");
         for ent in din_entities {
             let _ = scene.document.add_entity(ent);
@@ -185,7 +229,7 @@ impl SectionCommand {
         // 2. Build Viewpoint
         let first_seg = path.segments().first()?.clone();
         let cut_dir = first_seg.direction().ok()?;
-        let axes = ViewAxes::section(cut_dir).ok()?;
+        let axes = ViewAxes::section_with_side(cut_dir, self.flip_direction).ok()?;
 
         let z_min = Metres::new(self.z_min).ok()?;
         let z_max = Metres::new(self.z_max).ok()?;
@@ -248,6 +292,7 @@ impl SectionCommand {
         .ok()?;
 
         let _ = sync_carrier_primitives(&mut scene.document, &mut carrier, &primitives);
+        scene.bump_geometry();
 
         self.last_committed = Some(carrier.handle);
         Some(carrier.handle)
@@ -358,16 +403,47 @@ impl CadCommand for SectionCommand {
                 CmdResult::NeedPoint
             }
             SectionPhase::ViewingDirection => {
-                if let Some(first) = self.points.first() {
-                    let d = (pt - *first).length().max(0.5);
-                    self.far_depth = Some(d);
+                if let (Some(first), Some(second)) = (self.points.first(), self.points.get(1)) {
+                    let dir = (Vector2::new(second.x - first.x, second.y - first.y))
+                        .normalized()
+                        .unwrap_or(Vector2::new(1.0, 0.0));
+                    let n0 = Vector2::new(-dir.y, dir.x);
+                    let w = Vector2::new(pt.x - first.x, pt.y - first.y);
+                    let d_signed = w.dot(n0);
+                    self.flip_direction = d_signed < 0.0;
+                    self.far_depth = Some(d_signed.abs().max(0.5));
                 }
                 self.phase = SectionPhase::PlacementPoint;
                 CmdResult::NeedPoint
             }
             SectionPhase::PlacementPoint => {
                 self.placement_point = Some(pt);
-                CmdResult::NeedPoint
+                let depth = self.far_depth.unwrap_or(5.0);
+                let flip_flag = if self.flip_direction { 1 } else { 0 };
+                let pts_str = self
+                    .points
+                    .iter()
+                    .map(|p| format!("{},{}", p.x, p.y))
+                    .collect::<Vec<_>>()
+                    .join(";");
+                let jog_str = self
+                    .is_jog_step
+                    .iter()
+                    .map(|b| if *b { "1" } else { "0" })
+                    .collect::<Vec<_>>()
+                    .join(",");
+                CmdResult::Dispatch(format!(
+                    "AEC_SECTION_DO {}|{}|{}|{}|{}|{},{}|{}|{}",
+                    self.label,
+                    self.z_min,
+                    self.z_max,
+                    depth,
+                    flip_flag,
+                    pt.x,
+                    pt.y,
+                    pts_str,
+                    jog_str
+                ))
             }
         }
     }
@@ -426,6 +502,56 @@ impl CadCommand for SectionCommand {
         }
         models
     }
+}
+
+/// Dispatched non-interactive section creation handler.
+pub fn aec_section_do(scene: &mut Scene, command_line: &mut CommandLine, args: &str) -> Option<Handle> {
+    // Format: label|z_min|z_max|far_depth|flip_dir|ins_x,ins_y|pt0_x,pt0_y;pt1_x,pt1_y...|jog0,jog1...
+    let mut parts = args.split('|');
+    let label = parts.next()?.trim().to_string();
+    let z_min = parts.next()?.parse::<f64>().ok()?;
+    let z_max = parts.next()?.parse::<f64>().ok()?;
+    let far_depth = parts.next()?.parse::<f64>().ok()?;
+    let flip_dir = parts.next()?.parse::<u8>().unwrap_or(0) != 0;
+
+    let ins_str = parts.next()?;
+    let mut ins_parts = ins_str.split(',');
+    let ins_x = ins_parts.next()?.parse::<f64>().ok()?;
+    let ins_y = ins_parts.next()?.parse::<f64>().ok()?;
+
+    let pts_str = parts.next()?;
+    let points: Vec<DVec3> = pts_str
+        .split(';')
+        .filter_map(|pair| {
+            let mut it = pair.split(',');
+            let x = it.next()?.parse::<f64>().ok()?;
+            let y = it.next()?.parse::<f64>().ok()?;
+            Some(DVec3::new(x, y, 0.0))
+        })
+        .collect();
+    if points.len() < 2 {
+        return None;
+    }
+
+    let is_jog_step: Vec<bool> = parts
+        .next()
+        .map(|jogs| {
+            jogs.split(',')
+                .map(|s| s.trim() == "1")
+                .collect()
+        })
+        .unwrap_or_default();
+
+    let mut cmd = SectionCommand::new_with_heights(z_min, z_max);
+    cmd.label = label.clone();
+    cmd.far_depth = Some(far_depth);
+    cmd.flip_direction = flip_dir;
+    cmd.points = points;
+    cmd.is_jog_step = is_jog_step;
+
+    let handle = cmd.commit_section(scene, Point2::new(ins_x, ins_y))?;
+    command_line.push_info(&format!("AEC: Schnitt '{}' an ({:.2}, {:.2}) erzeugt (Träger {}).", label, ins_x, ins_y, handle));
+    Some(handle)
 }
 
 #[cfg(test)]

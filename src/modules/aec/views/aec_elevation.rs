@@ -22,6 +22,7 @@ use crate::modules::aec::engine::views::*;
 use crate::modules::{IconKind, ModuleEvent, ToolDef};
 use crate::scene::model::wire_model::WireModel;
 use crate::scene::Scene;
+use crate::ui::command_line::CommandLine;
 
 pub fn tool() -> ToolDef {
     ToolDef {
@@ -48,6 +49,7 @@ pub struct ElevationCommand {
     pub depth: Option<f64>,
     pub z_min: f64,
     pub z_max: f64,
+    pub flip_direction: bool,
     pub placement_point: Option<DVec3>,
     plane: WorkingPlane,
     last_committed: Option<Handle>,
@@ -77,6 +79,7 @@ impl ElevationCommand {
             depth: Some(15.0),
             z_min,
             z_max,
+            flip_direction: false,
             placement_point: None,
             plane: WorkingPlane::default(),
             last_committed: None,
@@ -94,8 +97,24 @@ impl ElevationCommand {
 
             if let Ok(dir) = (Vector2::new(end.x_m - start.x_m, end.y_m - start.y_m)).normalized()
             {
-                let norm = Vector2::new(-dir.y, dir.x);
-                let depth = self.depth.unwrap_or(15.0);
+                let (depth, flip) = if self.phase == ElevationPhase::Depth {
+                    if let Some(cur) = cursor {
+                        let n0 = Vector2::new(-dir.y, dir.x);
+                        let w = Vector2::new(cur.x - start.x_m, cur.y - start.y_m);
+                        let d_signed = w.dot(n0);
+                        (d_signed.abs().max(0.5), d_signed < 0.0)
+                    } else {
+                        (self.depth.unwrap_or(15.0), self.flip_direction)
+                    }
+                } else {
+                    (self.depth.unwrap_or(15.0), self.flip_direction)
+                };
+
+                let norm = if !flip {
+                    Vector2::new(-dir.y, dir.x)
+                } else {
+                    Vector2::new(dir.y, -dir.x)
+                };
 
                 let p3 = Point2::new(end.x_m + norm.x * depth, end.y_m + norm.y * depth);
                 let p4 = Point2::new(start.x_m + norm.x * depth, start.y_m + norm.y * depth);
@@ -111,6 +130,21 @@ impl ElevationCommand {
             }
         }
 
+        // Viewport placement preview box & crosshair in PlacementPoint phase
+        if self.phase == ElevationPhase::PlacementPoint {
+            if let Some(cur) = cursor {
+                let cp = Point2::new(cur.x, cur.y);
+                let sz_x = 10.0;
+                let sz_y = (self.z_max - self.z_min).max(3.0);
+                wires.push((Point2::new(cp.x_m - 2.0, cp.y_m), Point2::new(cp.x_m + 2.0, cp.y_m)));
+                wires.push((Point2::new(cp.x_m, cp.y_m - 2.0), Point2::new(cp.x_m, cp.y_m + 2.0)));
+                wires.push((cp, Point2::new(cp.x_m + sz_x, cp.y_m)));
+                wires.push((Point2::new(cp.x_m + sz_x, cp.y_m), Point2::new(cp.x_m + sz_x, cp.y_m + sz_y)));
+                wires.push((Point2::new(cp.x_m + sz_x, cp.y_m + sz_y), Point2::new(cp.x_m, cp.y_m + sz_y)));
+                wires.push((Point2::new(cp.x_m, cp.y_m + sz_y), cp));
+            }
+        }
+
         wires
     }
 
@@ -120,10 +154,7 @@ impl ElevationCommand {
         let p2 = self.end_pt?;
 
         let baseline_dir = (Vector2::new(p2.x - p1.x, p2.y - p1.y)).normalized().ok()?;
-        let right = Vector3::new(baseline_dir.x, baseline_dir.y, 0.0);
-        let up = Vector3::new(0.0, 0.0, 1.0);
-        let forward = Vector3::new(-baseline_dir.y, baseline_dir.x, 0.0);
-        let axes = ViewAxes::new(right, up, forward);
+        let axes = ViewAxes::elevation_with_side(baseline_dir, self.flip_direction).ok()?;
 
         let z_min = Metres::new(self.z_min).ok()?;
         let z_max = Metres::new(self.z_max).ok()?;
@@ -187,6 +218,7 @@ impl ElevationCommand {
         .ok()?;
 
         let _ = sync_carrier_primitives(&mut scene.document, &mut carrier, &primitives);
+        scene.bump_geometry();
 
         self.last_committed = Some(carrier.handle);
         Some(carrier.handle)
@@ -282,16 +314,39 @@ impl CadCommand for ElevationCommand {
                 CmdResult::NeedPoint
             }
             ElevationPhase::Depth => {
-                if let Some(start) = self.start_pt {
-                    let d = (pt - start).length().max(0.5);
-                    self.depth = Some(d);
+                if let (Some(start), Some(end)) = (self.start_pt, self.end_pt) {
+                    let dir = (Vector2::new(end.x - start.x, end.y - start.y))
+                        .normalized()
+                        .unwrap_or(Vector2::new(1.0, 0.0));
+                    let n0 = Vector2::new(-dir.y, dir.x);
+                    let w = Vector2::new(pt.x - start.x, pt.y - start.y);
+                    let d_signed = w.dot(n0);
+                    self.flip_direction = d_signed < 0.0;
+                    self.depth = Some(d_signed.abs().max(0.5));
                 }
                 self.phase = ElevationPhase::PlacementPoint;
                 CmdResult::NeedPoint
             }
             ElevationPhase::PlacementPoint => {
                 self.placement_point = Some(pt);
-                CmdResult::NeedPoint
+                let start = self.start_pt.unwrap_or(DVec3::ZERO);
+                let end = self.end_pt.unwrap_or(DVec3::new(10.0, 0.0, 0.0));
+                let depth = self.depth.unwrap_or(15.0);
+                let flip_flag = if self.flip_direction { 1 } else { 0 };
+                CmdResult::Dispatch(format!(
+                    "AEC_ELEVATION_DO {}|{}|{}|{}|{}|{},{}|{},{}|{},{}",
+                    self.name,
+                    self.z_min,
+                    self.z_max,
+                    depth,
+                    flip_flag,
+                    pt.x,
+                    pt.y,
+                    start.x,
+                    start.y,
+                    end.x,
+                    end.y
+                ))
             }
         }
     }
@@ -324,6 +379,43 @@ impl CadCommand for ElevationCommand {
         }
         models
     }
+}
+
+/// Dispatched non-interactive elevation creation handler.
+pub fn aec_elevation_do(scene: &mut Scene, command_line: &mut CommandLine, args: &str) -> Option<Handle> {
+    // Format: name|z_min|z_max|depth|flip_dir|ins_x,ins_y|start_x,start_y|end_x,end_y
+    let mut parts = args.split('|');
+    let name = parts.next()?.trim().to_string();
+    let z_min = parts.next()?.parse::<f64>().ok()?;
+    let z_max = parts.next()?.parse::<f64>().ok()?;
+    let depth = parts.next()?.parse::<f64>().ok()?;
+    let flip_dir = parts.next()?.parse::<u8>().unwrap_or(0) != 0;
+
+    let ins_str = parts.next()?;
+    let mut ins_parts = ins_str.split(',');
+    let ins_x = ins_parts.next()?.parse::<f64>().ok()?;
+    let ins_y = ins_parts.next()?.parse::<f64>().ok()?;
+
+    let start_str = parts.next()?;
+    let mut start_parts = start_str.split(',');
+    let start_x = start_parts.next()?.parse::<f64>().ok()?;
+    let start_y = start_parts.next()?.parse::<f64>().ok()?;
+
+    let end_str = parts.next()?;
+    let mut end_parts = end_str.split(',');
+    let end_x = end_parts.next()?.parse::<f64>().ok()?;
+    let end_y = end_parts.next()?.parse::<f64>().ok()?;
+
+    let mut cmd = ElevationCommand::new_with_heights(z_min, z_max);
+    cmd.name = name.clone();
+    cmd.depth = Some(depth);
+    cmd.flip_direction = flip_dir;
+    cmd.start_pt = Some(DVec3::new(start_x, start_y, 0.0));
+    cmd.end_pt = Some(DVec3::new(end_x, end_y, 0.0));
+
+    let handle = cmd.commit_elevation(scene, Point2::new(ins_x, ins_y))?;
+    command_line.push_info(&format!("AEC: Ansicht '{}' an ({:.2}, {:.2}) erzeugt (Träger {}).", name, ins_x, ins_y, handle));
+    Some(handle)
 }
 
 #[cfg(test)]

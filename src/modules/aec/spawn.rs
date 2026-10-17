@@ -327,6 +327,36 @@ pub(crate) fn try_dispatch(
             app.tabs[tab].dirty = true;
             Some(app.finish_dispatch(cmd))
         }
+        cmd if cmd.starts_with("AEC_SECTION_DO ") => {
+            let args = cmd["AEC_SECTION_DO ".len()..].to_string();
+            crate::modules::aec::views::aec_section_do(
+                &mut app.tabs[tab].scene,
+                &mut app.command_line,
+                &args,
+            );
+            app.tabs[tab].dirty = true;
+            Some(app.finish_dispatch(cmd))
+        }
+        cmd if cmd.starts_with("AEC_ELEVATION_DO ") => {
+            let args = cmd["AEC_ELEVATION_DO ".len()..].to_string();
+            crate::modules::aec::views::aec_elevation_do(
+                &mut app.tabs[tab].scene,
+                &mut app.command_line,
+                &args,
+            );
+            app.tabs[tab].dirty = true;
+            Some(app.finish_dispatch(cmd))
+        }
+        cmd if cmd.starts_with("AEC_FLOORPLAN_DO ") => {
+            let args = cmd["AEC_FLOORPLAN_DO ".len()..].to_string();
+            crate::modules::aec::views::aec_floorplan_do(
+                &mut app.tabs[tab].scene,
+                &mut app.command_line,
+                &args,
+            );
+            app.tabs[tab].dirty = true;
+            Some(app.finish_dispatch(cmd))
+        }
         cmd if cmd.starts_with("AEC_PLANE_FACET_DO ") => {
             let args = cmd["AEC_PLANE_FACET_DO ".len()..].to_string();
             let path = app.tabs[tab].drawing_path().map(Path::to_path_buf);
