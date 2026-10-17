@@ -1,0 +1,435 @@
+{
+  "buildings": [
+    {
+      "id": "c9b8912c-dc72-4dc1-a366-b2a00ef95604",
+      "name": "Einfamilienhaus",
+      "storeys": [
+        {
+          "id": "7af74196-8da7-4dd1-b1b5-a9bb215245dc",
+          "name": "EG",
+          "elevation": 0.0,
+          "height": 3.0,
+          "drawing_path": "EG.dwg",
+          "control_planes": [
+            {
+              "id": "9189acde-8641-481a-b225-fad20156f7fc",
+              "name": "EG_ELEVATION",
+              "origin": [
+                -5.0,
+                -5.0,
+                0.0
+              ],
+              "normal": [
+                0.0,
+                0.0,
+                1.0
+              ],
+              "facets": [
+                {
+                  "name": "EG_ELEVATION",
+                  "vertices": [
+                    [
+                      -5.0,
+                      -5.0,
+                      0.0
+                    ],
+                    [
+                      45.0,
+                      -5.0,
+                      0.0
+                    ],
+                    [
+                      45.0,
+                      45.0,
+                      0.0
+                    ],
+                    [
+                      -5.0,
+                      45.0,
+                      0.0
+                    ]
+                  ]
+                }
+              ],
+              "face_handle": null,
+              "visible": true
+            },
+            {
+              "id": "f95d0149-3c0b-4c8b-a27a-18332bc2938b",
+              "name": "EG_OKGH",
+              "origin": [
+                -5.0,
+                -5.0,
+                3.0
+              ],
+              "normal": [
+                0.0,
+                0.0,
+                1.0
+              ],
+              "facets": [
+                {
+                  "name": "EG_OKGH",
+                  "vertices": [
+                    [
+                      -5.0,
+                      -5.0,
+                      3.0
+                    ],
+                    [
+                      45.0,
+                      -5.0,
+                      3.0
+                    ],
+                    [
+                      45.0,
+                      45.0,
+                      3.0
+                    ],
+                    [
+                      -5.0,
+                      45.0,
+                      3.0
+                    ]
+                  ]
+                }
+              ],
+              "face_handle": null,
+              "visible": true
+            }
+          ],
+          "floor_plane_id": "9189acde-8641-481a-b225-fad20156f7fc",
+          "ceiling_plane_id": "f95d0149-3c0b-4c8b-a27a-18332bc2938b"
+        },
+        {
+          "id": "ab97127d-5845-4894-a94a-64498b42e09d",
+          "name": "OG",
+          "elevation": 2.8,
+          "height": 3.0,
+          "drawing_path": "OG.dwg",
+          "control_planes": [
+            {
+              "id": "98177251-dad5-4f31-ae5c-925bb5e96024",
+              "name": "OG_ELEVATION",
+              "origin": [
+                -5.0,
+                -5.0,
+                2.8
+              ],
+              "normal": [
+                0.0,
+                0.0,
+                1.0
+              ],
+              "facets": [
+                {
+                  "name": "OG_ELEVATION",
+                  "vertices": [
+                    [
+                      -5.0,
+                      -5.0,
+                      2.8
+                    ],
+                    [
+                      45.0,
+                      -5.0,
+                      2.8
+                    ],
+                    [
+                      45.0,
+                      45.0,
+                      2.8
+                    ],
+                    [
+                      -5.0,
+                      45.0,
+                      2.8
+                    ]
+                  ]
+                }
+              ],
+              "face_handle": null,
+              "visible": true
+            },
+            {
+              "id": "f02a76e2-474c-4553-bad5-9219eeedd35c",
+              "name": "OG_OKGH",
+              "origin": [
+                -5.0,
+                -5.0,
+                5.8
+              ],
+              "normal": [
+                0.0,
+                0.0,
+                1.0
+              ],
+              "facets": [
+                {
+                  "name": "OG_OKGH",
+                  "vertices": [
+                    [
+                      -5.0,
+                      -5.0,
+                      5.8
+                    ],
+                    [
+                      45.0,
+                      -5.0,
+                      5.8
+                    ],
+                    [
+                      45.0,
+                      45.0,
+                      5.8
+                    ],
+                    [
+                      -5.0,
+                      45.0,
+                      5.8
+                    ]
+                  ]
+                }
+              ],
+              "face_handle": null,
+              "visible": true
+            }
+          ],
+          "floor_plane_id": "98177251-dad5-4f31-ae5c-925bb5e96024",
+          "ceiling_plane_id": "f02a76e2-474c-4553-bad5-9219eeedd35c"
+        },
+        {
+          "id": "14915888-4c82-4dc4-8c07-9c2974d21c12",
+          "name": "DG",
+          "elevation": 5.6,
+          "height": 3.0,
+          "drawing_path": "DG.dwg",
+          "control_planes": [
+            {
+              "id": "560dbd65-656f-40ed-865e-61d7f7f5116f",
+              "name": "DG_ELEVATION",
+              "origin": [
+                -5.0,
+                -5.0,
+                5.6
+              ],
+              "normal": [
+                0.0,
+                0.0,
+                1.0
+              ],
+              "facets": [
+                {
+                  "name": "DG_ELEVATION",
+                  "vertices": [
+                    [
+                      -5.0,
+                      -5.0,
+                      5.6
+                    ],
+                    [
+                      45.0,
+                      -5.0,
+                      5.6
+                    ],
+                    [
+                      45.0,
+                      45.0,
+                      5.6
+                    ],
+                    [
+                      -5.0,
+                      45.0,
+                      5.6
+                    ]
+                  ]
+                }
+              ],
+              "face_handle": null,
+              "visible": true
+            },
+            {
+              "id": "92e9d960-45e2-4898-9e91-72279bae9ead",
+              "name": "DG_OKGH",
+              "origin": [
+                -5.0,
+                -5.0,
+                8.6
+              ],
+              "normal": [
+                0.0,
+                0.0,
+                1.0
+              ],
+              "facets": [
+                {
+                  "name": "DG_OKGH",
+                  "vertices": [
+                    [
+                      -5.0,
+                      -5.0,
+                      8.6
+                    ],
+                    [
+                      45.0,
+                      -5.0,
+                      8.6
+                    ],
+                    [
+                      45.0,
+                      45.0,
+                      8.6
+                    ],
+                    [
+                      -5.0,
+                      45.0,
+                      8.6
+                    ]
+                  ]
+                }
+              ],
+              "face_handle": null,
+              "visible": true
+            }
+          ],
+          "floor_plane_id": "560dbd65-656f-40ed-865e-61d7f7f5116f",
+          "ceiling_plane_id": "92e9d960-45e2-4898-9e91-72279bae9ead"
+        }
+      ]
+    }
+  ],
+  "material_wall_style_library": {
+    "materials": [],
+    "wall_styles": [],
+    "opening_styles": [
+      {
+        "style": {
+          "id": "style_window_standard",
+          "name": "Standardfenster",
+          "parent": null,
+          "category": "Opening"
+        },
+        "kind": "Window",
+        "default_width": 1.2,
+        "default_height": 1.2,
+        "default_sill": 0.9,
+        "hinge": "Left",
+        "frame_thickness": 0.06,
+        "opening_angle_deg": 90.0,
+        "shape": "Rectangle",
+        "spring_height": 0.0,
+        "slots": {
+          "ElevationSill2D": {
+            "kind": "Generator",
+            "value": "ElevationSillLine"
+          },
+          "Glazing2D": {
+            "kind": "Generator",
+            "value": "GlazingLine"
+          },
+          "ElevationContour2D": {
+            "kind": "Generator",
+            "value": "ElevationFrameRect"
+          },
+          "ElevationSwing2D": {
+            "kind": "Generator",
+            "value": "ElevationSwingTriangle"
+          },
+          "Frame2D": {
+            "kind": "Generator",
+            "value": "FrameRect"
+          },
+          "Sill2D": {
+            "kind": "Generator",
+            "value": "SillLines"
+          },
+          "OpeningLabel2D": {
+            "kind": "Generator",
+            "value": "OpeningLabel"
+          },
+          "Leaf2D": {
+            "kind": "Generator",
+            "value": "LeafLine"
+          },
+          "Glazing3D": {
+            "kind": "Generator",
+            "value": "SolidGlazing"
+          },
+          "Frame3D": {
+            "kind": "Generator",
+            "value": "SolidFrame"
+          }
+        }
+      },
+      {
+        "style": {
+          "id": "style_door_standard",
+          "name": "Standardtür",
+          "parent": null,
+          "category": "Opening"
+        },
+        "kind": "Door",
+        "default_width": 0.9,
+        "default_height": 2.1,
+        "default_sill": 0.0,
+        "hinge": "Left",
+        "frame_thickness": 0.06,
+        "opening_angle_deg": 90.0,
+        "shape": "Rectangle",
+        "spring_height": 0.0,
+        "slots": {
+          "ElevationContour2D": {
+            "kind": "Generator",
+            "value": "ElevationFrameRect"
+          },
+          "Frame3D": {
+            "kind": "Generator",
+            "value": "SolidFrame"
+          },
+          "OpeningLabel2D": {
+            "kind": "Generator",
+            "value": "OpeningLabel"
+          },
+          "Swing2D": {
+            "kind": "Generator",
+            "value": "SwingArc"
+          },
+          "Leaf2D": {
+            "kind": "Generator",
+            "value": "LeafLine"
+          },
+          "Leaf3D": {
+            "kind": "Generator",
+            "value": "SolidLeaf"
+          },
+          "Frame2D": {
+            "kind": "Generator",
+            "value": "FrameRect"
+          },
+          "ElevationSwing2D": {
+            "kind": "Generator",
+            "value": "ElevationSwingTriangle"
+          },
+          "Threshold2D": {
+            "kind": "Generator",
+            "value": "ThresholdLine"
+          }
+        }
+      }
+    ],
+    "slab_styles": [],
+    "slab_structural_styles": [],
+    "floor_finish_styles": []
+  },
+  "display_config_library": {
+    "configs": [],
+    "scale_display_config_mappings": []
+  },
+  "ffl0_nn_m": null,
+  "view_document": {
+    "schema_version": 1,
+    "viewpoints": [],
+    "views": [],
+    "placements": []
+  }
+}

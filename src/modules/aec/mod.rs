@@ -17,6 +17,7 @@ pub mod state;
 pub mod styles;
 pub mod ui;
 pub mod update;
+pub mod views;
 pub mod walls;
 
 pub use message::AecMessage;
@@ -51,6 +52,10 @@ impl CadModule for AecModule {
             floor_finish_style_manager, material_manager, opening_style_manager, plan_manager,
             slab_structural_style_manager, slab_style_manager, styles_manager, wall_style_manager,
         };
+        use views::{
+            elevation_tool, floorplan_tool, place_view_tool, rcp_tool, section_tool,
+            viewupdate_tool,
+        };
         use walls::{door, extend, join, opening, refresh, wall, window};
 
         static GROUPS: std::sync::OnceLock<Vec<RibbonGroup>> = std::sync::OnceLock::new();
@@ -64,6 +69,17 @@ impl CadModule for AecModule {
                         RibbonItem::LargeTool(plane_3point::tool()),
                         RibbonItem::LargeTool(plane_facet::tool()),
                         RibbonItem::LargeTool(plane_assign::tool()),
+                    ],
+                },
+                RibbonGroup {
+                    title: "Views",
+                    tools: vec![
+                        RibbonItem::LargeTool(section_tool()),
+                        RibbonItem::LargeTool(elevation_tool()),
+                        RibbonItem::LargeTool(floorplan_tool()),
+                        RibbonItem::LargeTool(rcp_tool()),
+                        RibbonItem::LargeTool(viewupdate_tool()),
+                        RibbonItem::LargeTool(place_view_tool()),
                     ],
                 },
                 RibbonGroup {

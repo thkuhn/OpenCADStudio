@@ -1,0 +1,1119 @@
+//! AEC views module: persistent Viewpoints, ModelViews, and Provenance.
+
+pub mod carrier;
+pub mod cut_engine;
+pub mod edit_ops;
+pub mod elevation_engine;
+pub mod model_view;
+pub mod provenance;
+pub mod scene_collector;
+pub mod silhouette;
+pub mod update_ops;
+pub mod viewpoint;
+
+use serde::{Deserialize, Serialize};
+use std::collections::BTreeSet;
+use std::fmt;
+use uuid::Uuid;
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ValidationError(pub String);
+
+impl fmt::Display for ValidationError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+impl std::error::Error for ValidationError {}
+
+pub fn check(condition: bool, message: &str) -> Result<(), ValidationError> {
+    if condition {
+        Ok(())
+    } else {
+        Err(ValidationError(message.into()))
+    }
+}
+
+macro_rules! typed_id {
+    ($($name:ident),+ $(,)?) => {$(
+        #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash,
+                 Serialize, Deserialize)]
+        #[serde(try_from = "Uuid", into = "Uuid")]
+        pub struct $name(Uuid);
+
+        impl $name {
+            pub fn new() -> Self { Self(Uuid::new_v4()) }
+            pub fn from_uuid(uuid: Uuid) -> Self { Self(uuid) }
+            pub fn as_uuid(self) -> Uuid { self.0 }
+        }
+        impl Default for $name {
+            fn default() -> Self { Self::new() }
+        }
+        impl TryFrom<Uuid> for $name {
+            type Error = ValidationError;
+            fn try_from(value: Uuid) -> Result<Self, Self::Error> {
+                check(!value.is_nil(), concat!(stringify!($name), " must not be nil"))?;
+                Ok(Self(value))
+            }
+        }
+        impl From<$name> for Uuid {
+            fn from(value: $name) -> Self { value.0 }
+        }
+    )+};
+}
+
+typed_id!(
+    ModelId,
+    ElementId,
+    ComponentId,
+    StoryId,
+    ViewpointId,
+    ModelViewId,
+    ViewProfileId,
+    DisplayComponentId,
+    SemanticFeatureId,
+    AnnotationId,
+    OverrideId,
+    SheetPlacementId,
+    HatchDefinitionId,
+);
+
+macro_rules! finite_scalar {
+    ($name:ident, $rule:expr, $message:literal) => {
+        #[derive(Clone, Copy, Debug, PartialEq, PartialOrd, Serialize, Deserialize)]
+        #[serde(try_from = "f64", into = "f64")]
+        pub struct $name(f64);
+        impl $name {
+            pub fn new(value: f64) -> Result<Self, ValidationError> {
+                Self::try_from(value)
+            }
+            pub fn get(self) -> f64 {
+                self.0
+            }
+        }
+        impl TryFrom<f64> for $name {
+            type Error = ValidationError;
+            fn try_from(value: f64) -> Result<Self, Self::Error> {
+                check(value.is_finite() && ($rule)(value), $message)?;
+                Ok(Self(value))
+            }
+        }
+        impl From<$name> for f64 {
+            fn from(value: $name) -> Self {
+                value.0
+            }
+        }
+    };
+}
+
+finite_scalar!(Metres, |_: f64| true, "metres must be finite");
+impl Metres {
+    pub const ZERO: Self = Self(0.0);
+}
+
+finite_scalar!(
+    NonNegativeMetres,
+    |v: f64| v >= 0.0,
+    "distance must be finite and >= 0"
+);
+impl NonNegativeMetres {
+    pub const ZERO: Self = Self(0.0);
+}
+finite_scalar!(
+    PositiveMetres,
+    |v: f64| v > 0.0,
+    "distance must be finite and > 0"
+);
+finite_scalar!(
+    PaperMm,
+    |v: f64| v >= 0.0,
+    "paper width must be finite and >= 0"
+);
+finite_scalar!(
+    ScaleDenominator,
+    |v: f64| v > 0.0,
+    "scale denominator must be > 0"
+);
+
+impl ScaleDenominator {
+    /// 1:50 maps one model metre to 20 paper millimetres.
+    pub fn model_metres_to_paper_mm(self, distance: Metres) -> f64 {
+        distance.get() * 1000.0 / self.get()
+    }
+}
+
+/// Monotonic revision counter; never reset while caches may exist.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+pub struct Revision(pub u64);
+
+impl Revision {
+    pub fn next(self) -> Result<Self, ValidationError> {
+        self.0
+            .checked_add(1)
+            .map(Self)
+            .ok_or_else(|| ValidationError("revision overflow".into()))
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Point2 {
+    pub x_m: f64,
+    pub y_m: f64,
+}
+
+impl Point2 {
+    pub fn new(x_m: f64, y_m: f64) -> Self {
+        Self { x_m, y_m }
+    }
+
+    pub fn validate(self) -> Result<(), ValidationError> {
+        check(
+            self.x_m.is_finite() && self.y_m.is_finite(),
+            "non-finite 2D point",
+        )
+    }
+
+    pub fn distance_to(self, other: Self) -> f64 {
+        let dx = self.x_m - other.x_m;
+        let dy = self.y_m - other.y_m;
+        (dx * dx + dy * dy).sqrt()
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Vector2 {
+    pub x: f64,
+    pub y: f64,
+}
+
+impl Vector2 {
+    pub fn new(x: f64, y: f64) -> Self {
+        Self { x, y }
+    }
+
+    pub fn length(self) -> f64 {
+        (self.x * self.x + self.y * self.y).sqrt()
+    }
+
+    pub fn dot(self, other: Self) -> f64 {
+        self.x * other.x + self.y * other.y
+    }
+
+    pub fn normalized(self) -> Result<Self, ValidationError> {
+        let len = self.length();
+        check(len > 1e-9 && len.is_finite(), "vector must be non-zero and finite")?;
+        Ok(Self {
+            x: self.x / len,
+            y: self.y / len,
+        })
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Point3 {
+    pub x_m: f64,
+    pub y_m: f64,
+    pub z_m: f64,
+}
+
+impl Point3 {
+    pub fn new(x_m: f64, y_m: f64, z_m: f64) -> Self {
+        Self { x_m, y_m, z_m }
+    }
+
+    pub fn validate(self) -> Result<(), ValidationError> {
+        check(
+            self.x_m.is_finite() && self.y_m.is_finite() && self.z_m.is_finite(),
+            "non-finite 3D point",
+        )
+    }
+}
+
+/// A displacement, intentionally distinct from an absolute world point.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub struct ModelDelta3 {
+    pub x_m: f64,
+    pub y_m: f64,
+    pub z_m: f64,
+}
+
+/// Dimensionless direction/basis vector.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Vector3 {
+    pub x: f64,
+    pub y: f64,
+    pub z: f64,
+}
+
+impl Vector3 {
+    pub fn new(x: f64, y: f64, z: f64) -> Self {
+        Self { x, y, z }
+    }
+
+    pub fn dot(self, other: Self) -> f64 {
+        self.x * other.x + self.y * other.y + self.z * other.z
+    }
+
+    pub fn length(self) -> f64 {
+        (self.x * self.x + self.y * self.y + self.z * self.z).sqrt()
+    }
+
+    pub fn normalized(self) -> Result<Self, ValidationError> {
+        let len = self.length();
+        check(len > 1e-9 && len.is_finite(), "vector must be non-zero and finite")?;
+        Ok(Self {
+            x: self.x / len,
+            y: self.y / len,
+            z: self.z / len,
+        })
+    }
+
+    pub fn validate_unit(self) -> Result<(), ValidationError> {
+        check(
+            (self.dot(self) - 1.0).abs() <= 1e-9,
+            "axis must be a finite unit vector",
+        )
+    }
+}
+
+/// Axis-aligned 2D bounding rectangle in view space.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Rect2 {
+    pub min: Point2,
+    pub max: Point2,
+}
+
+impl Rect2 {
+    pub fn new(min: Point2, max: Point2) -> Self {
+        Self { min, max }
+    }
+
+    pub fn width(self) -> f64 {
+        self.max.x_m - self.min.x_m
+    }
+
+    pub fn height(self) -> f64 {
+        self.max.y_m - self.min.y_m
+    }
+
+    pub fn validate(self) -> Result<(), ValidationError> {
+        self.min.validate()?;
+        self.max.validate()?;
+        check(
+            self.min.x_m < self.max.x_m && self.min.y_m < self.max.y_m,
+            "crop rectangle must have positive width and height",
+        )
+    }
+
+    pub fn contains(self, point: Point2) -> bool {
+        point.x_m >= self.min.x_m
+            && point.x_m <= self.max.x_m
+            && point.y_m >= self.min.y_m
+            && point.y_m <= self.max.y_m
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct PaperPoint {
+    pub x_mm: f64,
+    pub y_mm: f64,
+}
+
+/// Paper placement on a layout sheet; moving it never modifies the 3D model.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct SheetPlacement {
+    pub id: SheetPlacementId,
+    pub view_id: ModelViewId,
+    pub origin: PaperPoint,
+    pub rotation_rad: f64,
+    pub title: String,
+}
+
+impl SheetPlacement {
+    pub fn validate(&self) -> Result<(), ValidationError> {
+        check(
+            self.origin.x_mm.is_finite()
+                && self.origin.y_mm.is_finite()
+                && self.rotation_rad.is_finite(),
+            "non-finite sheet placement",
+        )
+    }
+}
+
+pub const VIEW_DOCUMENT_SCHEMA_VERSION: u32 = 1;
+
+/// Serializable container for all viewpoints, model views, and sheet placements.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct ViewDocument {
+    pub schema_version: u32,
+    #[serde(default)]
+    pub viewpoints: Vec<viewpoint::Viewpoint>,
+    #[serde(default)]
+    pub views: Vec<model_view::ModelView>,
+    #[serde(default)]
+    pub placements: Vec<SheetPlacement>,
+}
+
+impl Default for ViewDocument {
+    fn default() -> Self {
+        Self {
+            schema_version: VIEW_DOCUMENT_SCHEMA_VERSION,
+            viewpoints: vec![],
+            views: vec![],
+            placements: vec![],
+        }
+    }
+}
+
+impl ViewDocument {
+    pub fn validate(
+        &self,
+        profile_exists: impl Fn(ViewProfileId) -> bool,
+        element_exists: impl Fn(provenance::ElementRef) -> bool,
+        story_exists: impl Fn(viewpoint::StoryRef) -> bool,
+    ) -> Result<(), ValidationError> {
+        check(
+            self.schema_version == VIEW_DOCUMENT_SCHEMA_VERSION,
+            "unsupported view document schema; migrate before loading",
+        )?;
+        let mut viewpoints = BTreeSet::new();
+        for viewpoint in &self.viewpoints {
+            viewpoint.validate()?;
+            check(viewpoints.insert(viewpoint.id), "duplicate viewpoint ID")?;
+            if let viewpoint::ViewOrigin::StoryRelative { story, .. } = viewpoint.origin {
+                check(story_exists(story), "unresolved story reference")?;
+            }
+        }
+        let mut views = BTreeSet::new();
+        for view in &self.views {
+            view.validate()?;
+            check(views.insert(view.id), "duplicate model view ID")?;
+            check(
+                viewpoints.contains(&view.viewpoint_id),
+                "unresolved viewpoint",
+            )?;
+            check(profile_exists(view.profile_id), "unresolved view profile")?;
+            for element in &view.excluded_elements {
+                check(element_exists(*element), "unresolved excluded element")?;
+            }
+        }
+        for placement in &self.placements {
+            placement.validate()?;
+            check(
+                views.contains(&placement.view_id),
+                "unresolved view in sheet placement",
+            )?;
+        }
+        Ok(())
+    }
+}
+
+pub use cut_engine::{derive_section_view, CutEngineOptions};
+pub use edit_ops::{
+    apply_semantic_mutation, commit_view_drag_and_update, resolve_handle_drag, EditOpError,
+    SemanticMutation,
+};
+pub use elevation_engine::{derive_elevation_view, ElevationEngineOptions};
+pub use model_view::{
+    DetailLevel, DetailPolicy, GraphicOverride, GraphicPatch, ModelView, OverrideSelector,
+    StyleOverride, UpdatePolicy, ViewRevisions,
+};
+pub use provenance::{
+    ComponentFace, DepthInterval, DerivedPrimitive, EditHandle, ElementRef, FeatureKey,
+    Geometry2d, ModelEditAction, ModelParameter, PrimitiveId, PrimitiveRole, ResolvedStyle, Rgba8,
+    SourceReference, SourceSet, XrefSourceRef,
+};
+pub use scene_collector::{
+    CollectedOpening, CollectedSlab, CollectedSlabLayer, CollectedWall, CollectedWallLayer,
+    SceneGeometryCollector,
+};
+pub use silhouette::{process_silhouette_and_depth, SilhouetteOptions};
+pub use viewpoint::{
+    CeilingRange, DepthRange, PlanRange, ProjectionMapping, SectionPath, SectionSegment,
+    StoryRef, VerticalRange, ViewAxes, ViewKind, ViewOrigin, Viewpoint,
+};
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::BTreeSet;
+    use crate::modules::aec::engine::openings::OpeningKind;
+    use crate::modules::aec::engine::opening_style::HingeSide;
+
+    #[test]
+    fn test_view_document_validation_and_serde() {
+        let vp_id = ViewpointId::new();
+        let profile_id = ViewProfileId::new();
+        let elem = ElementRef::new(ModelId::new(), ElementId::new());
+        let story = StoryRef::new(ModelId::new(), StoryId::new());
+
+        let vp = Viewpoint {
+            id: vp_id,
+            name: "Schnitt 1".into(),
+            revision: Revision(1),
+            origin: ViewOrigin::StoryRelative {
+                story,
+                xy_world: Point2::new(0.0, 0.0),
+                offset: Metres::new(1.0).unwrap(),
+            },
+            axes: ViewAxes::front_elevation(),
+            kind: ViewKind::Section {
+                path: SectionPath::straight(Point2::new(0.0, 0.0), Point2::new(10.0, 0.0)),
+                far_depth: None,
+            },
+            z_range: VerticalRange::new(Metres::new(0.0).unwrap(), Metres::new(3.0).unwrap()).unwrap(),
+            mapping: ProjectionMapping::default(),
+            crop: None,
+        };
+
+        let mut excluded = BTreeSet::new();
+        excluded.insert(elem);
+
+        let mv = ModelView {
+            id: ModelViewId::new(),
+            name: "Ausfuehrungsplan 1:50".into(),
+            viewpoint_id: vp_id,
+            profile_id,
+            scale: ScaleDenominator::new(50.0).unwrap(),
+            detail: DetailPolicy::FromProfileAndScale,
+            excluded_elements: excluded,
+            graphic_overrides: vec![],
+            annotation_ids: vec![],
+            update_policy: UpdatePolicy::Automatic,
+            revisions: ViewRevisions::default(),
+        };
+
+        let doc = ViewDocument {
+            schema_version: VIEW_DOCUMENT_SCHEMA_VERSION,
+            viewpoints: vec![vp],
+            views: vec![mv],
+            placements: vec![],
+        };
+
+        // Validation with matching predicates
+        assert!(doc
+            .validate(
+                |p| p == profile_id,
+                |e| e == elem,
+                |s| s == story,
+            )
+            .is_ok());
+
+        // Serde roundtrip JSON
+        let json = serde_json::to_string(&doc).unwrap();
+        let deserialized: ViewDocument = serde_json::from_str(&json).unwrap();
+        assert_eq!(doc, deserialized);
+    }
+
+    #[test]
+    fn test_multi_storey_xref_scene_aggregation() {
+        let model_id = ModelId::new();
+        let mut collector = SceneGeometryCollector::new();
+
+        // 1. Native Ground Floor Wall (EG, Z = 0.0m)
+        let eg_wall = CollectedWall {
+            handle: acadrust::Handle::new(10),
+            element_ref: ElementRef::new(model_id, ElementId::new()),
+            xref_source: None,
+            style_id: "Wall_24cm".into(),
+            height: 2.8,
+            base_z: 0.0,
+            top_z: 2.8,
+            axis_points: vec![Point2::new(0.0, 0.0), Point2::new(10.0, 0.0)],
+            layers: vec![CollectedWallLayer {
+                material: "Concrete".into(),
+                thickness: 0.24,
+                function: "Structural".into(),
+                axis_offset: 0.0,
+                bottom_offset: 0.0,
+                top_offset: 0.0,
+                hatch_override: None,
+                layer_id: Uuid::new_v4(),
+                component_id: ComponentId::new(),
+                is_structural: true,
+            }],
+            total_thickness: 0.24,
+            justification: crate::modules::aec::engine::wall::WallJustification::Center,
+            openings: vec![],
+            phase: crate::modules::aec::engine::plan_view::PlanPhase::New,
+        };
+
+        // 2. Referenced Upper Floor Wall from XREF (OG, Z_offset = 2.8m)
+        let xref_og = XrefSourceRef::with_translation("Drawing_OG", Some("OG.dwg".into()), 0.0, 0.0, 2.8);
+        let og_wall = CollectedWall {
+            handle: acadrust::Handle::new(20),
+            element_ref: ElementRef::new(model_id, ElementId::new()),
+            xref_source: Some(xref_og),
+            style_id: "Wall_24cm".into(),
+            height: 2.8,
+            base_z: 2.8,
+            top_z: 5.6,
+            axis_points: vec![Point2::new(0.0, 0.0), Point2::new(10.0, 0.0)],
+            layers: vec![CollectedWallLayer {
+                material: "Brick".into(),
+                thickness: 0.24,
+                function: "Structural".into(),
+                axis_offset: 0.0,
+                bottom_offset: 0.0,
+                top_offset: 0.0,
+                hatch_override: None,
+                layer_id: Uuid::new_v4(),
+                component_id: ComponentId::new(),
+                is_structural: true,
+            }],
+            total_thickness: 0.24,
+            justification: crate::modules::aec::engine::wall::WallJustification::Center,
+            openings: vec![],
+            phase: crate::modules::aec::engine::plan_view::PlanPhase::New,
+        };
+
+        collector.walls.push(eg_wall);
+        collector.walls.push(og_wall);
+
+        assert_eq!(collector.walls.len(), 2);
+        assert_eq!(collector.walls[0].base_z, 0.0);
+        assert_eq!(collector.walls[1].base_z, 2.8);
+        assert!(collector.walls[1].xref_source.is_some());
+    }
+
+    #[test]
+    fn test_straight_section_cut_multi_layer_wall() {
+        let model_id = ModelId::new();
+        let wall_id = ElementId::new();
+        let elem_ref = ElementRef::new(model_id, wall_id);
+
+        let mut collector = SceneGeometryCollector::new();
+        let wall = CollectedWall {
+            handle: acadrust::Handle::new(100),
+            element_ref: elem_ref,
+            xref_source: None,
+            style_id: "Exterior_36cm".into(),
+            height: 3.0,
+            base_z: 0.0,
+            top_z: 3.0,
+            axis_points: vec![Point2::new(5.0, -5.0), Point2::new(5.0, 5.0)], // Wall runs along Y at X=5.0
+            layers: vec![
+                CollectedWallLayer {
+                    material: "Plaster".into(),
+                    thickness: 0.02,
+                    function: "Finish".into(),
+                    axis_offset: 0.0,
+                    bottom_offset: 0.0,
+                    top_offset: 0.0,
+                    hatch_override: None,
+                    layer_id: Uuid::new_v4(),
+                    component_id: ComponentId::new(),
+                    is_structural: false,
+                },
+                CollectedWallLayer {
+                    material: "Insulation".into(),
+                    thickness: 0.14,
+                    function: "Thermal".into(),
+                    axis_offset: 0.0,
+                    bottom_offset: 0.0,
+                    top_offset: 0.0,
+                    hatch_override: None,
+                    layer_id: Uuid::new_v4(),
+                    component_id: ComponentId::new(),
+                    is_structural: false,
+                },
+                CollectedWallLayer {
+                    material: "Concrete".into(),
+                    thickness: 0.20,
+                    function: "Structural".into(),
+                    axis_offset: 0.0,
+                    bottom_offset: 0.0,
+                    top_offset: 0.0,
+                    hatch_override: None,
+                    layer_id: Uuid::new_v4(),
+                    component_id: ComponentId::new(),
+                    is_structural: true,
+                },
+            ],
+            total_thickness: 0.36,
+            justification: crate::modules::aec::engine::wall::WallJustification::Center,
+            openings: vec![],
+            phase: crate::modules::aec::engine::plan_view::PlanPhase::New,
+        };
+        collector.walls.push(wall);
+
+        // Section cuts across wall at Y = 0 from X = 0 to X = 10
+        let vp = Viewpoint {
+            id: ViewpointId::new(),
+            name: "Schnitt A-A".into(),
+            revision: Revision(1),
+            origin: ViewOrigin::World(Point3::new(0.0, 0.0, 0.0)),
+            axes: ViewAxes::section(Vector2::new(1.0, 0.0)).unwrap(),
+            kind: ViewKind::Section {
+                path: SectionPath::straight(Point2::new(0.0, 0.0), Point2::new(10.0, 0.0)),
+                far_depth: None,
+            },
+            z_range: VerticalRange::new(Metres::new(-1.0).unwrap(), Metres::new(5.0).unwrap()).unwrap(),
+            mapping: ProjectionMapping::default(),
+            crop: None,
+        };
+
+        let mv = ModelView {
+            id: ModelViewId::new(),
+            name: "Schnitt 1:50".into(),
+            viewpoint_id: vp.id,
+            profile_id: ViewProfileId::new(),
+            scale: ScaleDenominator::new(50.0).unwrap(),
+            detail: DetailPolicy::FromProfileAndScale,
+            excluded_elements: BTreeSet::new(),
+            graphic_overrides: vec![],
+            annotation_ids: vec![],
+            update_policy: UpdatePolicy::Automatic,
+            revisions: ViewRevisions::default(),
+        };
+
+        let opts = CutEngineOptions::default();
+        let primitives = derive_section_view(&vp, &mv, &collector, &opts).expect("cut derivation failed");
+
+        // Verify generated primitives
+        assert!(!primitives.is_empty(), "should generate cut primitives");
+        let cut_fills: Vec<_> = primitives.iter().filter(|p| p.role == PrimitiveRole::CutFill).collect();
+        assert_eq!(cut_fills.len(), 3, "should produce 3 cut layer fills for 3 layers");
+
+        let cut_boundaries: Vec<_> = primitives.iter().filter(|p| p.role == PrimitiveRole::CutBoundary).collect();
+        assert!(!cut_boundaries.is_empty(), "should produce cut boundary lines");
+
+        // Top line should have wall top feature and edit handle
+        let top_prims: Vec<_> = cut_boundaries
+            .iter()
+            .filter(|p| p.sources.as_slice().iter().any(|s| s.feature == Some(FeatureKey::WallTop)))
+            .collect();
+        assert!(!top_prims.is_empty());
+        assert!(!top_prims[0].edit_handles.is_empty(), "wall top cut line should provide an edit handle");
+    }
+
+    #[test]
+    fn test_jogged_section_cut() {
+        let model_id = ModelId::new();
+        let mut collector = SceneGeometryCollector::new();
+
+        // Wall 1 at X = 2.0 (Y from -5 to 5)
+        collector.walls.push(CollectedWall {
+            handle: acadrust::Handle::new(1),
+            element_ref: ElementRef::new(model_id, ElementId::new()),
+            xref_source: None,
+            style_id: "Wall1".into(),
+            height: 3.0,
+            base_z: 0.0,
+            top_z: 3.0,
+            axis_points: vec![Point2::new(2.0, -5.0), Point2::new(2.0, 5.0)],
+            layers: vec![CollectedWallLayer {
+                material: "Concrete".into(),
+                thickness: 0.24,
+                function: "Structural".into(),
+                axis_offset: 0.0,
+                bottom_offset: 0.0,
+                top_offset: 0.0,
+                hatch_override: None,
+                layer_id: Uuid::new_v4(),
+                component_id: ComponentId::new(),
+                is_structural: true,
+            }],
+            total_thickness: 0.24,
+            justification: crate::modules::aec::engine::wall::WallJustification::Center,
+            openings: vec![],
+            phase: crate::modules::aec::engine::plan_view::PlanPhase::New,
+        });
+
+        // Wall 2 at X = 8.0 (Y from -5 to 5)
+        collector.walls.push(CollectedWall {
+            handle: acadrust::Handle::new(2),
+            element_ref: ElementRef::new(model_id, ElementId::new()),
+            xref_source: None,
+            style_id: "Wall2".into(),
+            height: 3.0,
+            base_z: 0.0,
+            top_z: 3.0,
+            axis_points: vec![Point2::new(8.0, -5.0), Point2::new(8.0, 5.0)],
+            layers: vec![CollectedWallLayer {
+                material: "Concrete".into(),
+                thickness: 0.24,
+                function: "Structural".into(),
+                axis_offset: 0.0,
+                bottom_offset: 0.0,
+                top_offset: 0.0,
+                hatch_override: None,
+                layer_id: Uuid::new_v4(),
+                component_id: ComponentId::new(),
+                is_structural: true,
+            }],
+            total_thickness: 0.24,
+            justification: crate::modules::aec::engine::wall::WallJustification::Center,
+            openings: vec![],
+            phase: crate::modules::aec::engine::plan_view::PlanPhase::New,
+        });
+
+        // Jogged Section: Segment 1 (0..5 at Y=0), Step (X=5, Y=0..2), Segment 2 (5..10 at Y=2)
+        let s1 = SectionSegment::new(Point2::new(0.0, 0.0), Point2::new(5.0, 0.0), false);
+        let s2 = SectionSegment::new(Point2::new(5.0, 0.0), Point2::new(5.0, 2.0), true);
+        let s3 = SectionSegment::new(Point2::new(5.0, 2.0), Point2::new(10.0, 2.0), false);
+        let jogged_path = SectionPath::jogged(vec![s1, s2, s3]);
+
+        let vp = Viewpoint {
+            id: ViewpointId::new(),
+            name: "Jogged Section".into(),
+            revision: Revision(1),
+            origin: ViewOrigin::World(Point3::new(0.0, 0.0, 0.0)),
+            axes: ViewAxes::section(Vector2::new(1.0, 0.0)).unwrap(),
+            kind: ViewKind::Section {
+                path: jogged_path,
+                far_depth: None,
+            },
+            z_range: VerticalRange::new(Metres::new(0.0).unwrap(), Metres::new(4.0).unwrap()).unwrap(),
+            mapping: ProjectionMapping::default(),
+            crop: None,
+        };
+
+        let mv = ModelView {
+            id: ModelViewId::new(),
+            name: "Jogged 1:50".into(),
+            viewpoint_id: vp.id,
+            profile_id: ViewProfileId::new(),
+            scale: ScaleDenominator::new(50.0).unwrap(),
+            detail: DetailPolicy::FromProfileAndScale,
+            excluded_elements: BTreeSet::new(),
+            graphic_overrides: vec![],
+            annotation_ids: vec![],
+            update_policy: UpdatePolicy::Automatic,
+            revisions: ViewRevisions::default(),
+        };
+
+        let primitives = derive_section_view(&vp, &mv, &collector, &CutEngineOptions::default()).unwrap();
+        let fills: Vec<_> = primitives.iter().filter(|p| p.role == PrimitiveRole::CutFill).collect();
+        assert_eq!(fills.len(), 2, "both walls along jogged segments should be cut");
+    }
+
+    #[test]
+    fn test_section_cut_with_opening_and_handles() {
+        let model_id = ModelId::new();
+        let mut collector = SceneGeometryCollector::new();
+
+        let opening = CollectedOpening {
+            handle: acadrust::Handle::new(50),
+            element_ref: ElementRef::new(model_id, ElementId::new()),
+            xref_source: None,
+            host_wall_handle: acadrust::Handle::new(10),
+            kind: OpeningKind::Window,
+            style_id: Some("Window_100x120".into()),
+            distance_along_axis: 5.0,
+            width: 1.2,
+            height: 1.4,
+            sill_height: 0.9,
+            spring_height: 0.0,
+            shape: crate::modules::aec::engine::opening_shape::OpeningShape::Rectangle,
+            hinge: HingeSide::Left,
+            reference_side: crate::modules::aec::engine::openings::OpeningReferenceSide::Center,
+            cross_axis_offset: 0.0,
+            depth: None,
+            world_center: Point3::new(5.0, 0.0, 1.6),
+            axis_span_local: (4.4, 5.6),
+        };
+
+        // Wall from (0,0) to (10,0) with window centered at (5,0)
+        let wall = CollectedWall {
+            handle: acadrust::Handle::new(10),
+            element_ref: ElementRef::new(model_id, ElementId::new()),
+            xref_source: None,
+            style_id: "Wall".into(),
+            height: 3.0,
+            base_z: 0.0,
+            top_z: 3.0,
+            axis_points: vec![Point2::new(0.0, 0.0), Point2::new(10.0, 0.0)],
+            layers: vec![CollectedWallLayer {
+                material: "Concrete".into(),
+                thickness: 0.24,
+                function: "Structural".into(),
+                axis_offset: 0.0,
+                bottom_offset: 0.0,
+                top_offset: 0.0,
+                hatch_override: None,
+                layer_id: Uuid::new_v4(),
+                component_id: ComponentId::new(),
+                is_structural: true,
+            }],
+            total_thickness: 0.24,
+            justification: crate::modules::aec::engine::wall::WallJustification::Center,
+            openings: vec![opening],
+            phase: crate::modules::aec::engine::plan_view::PlanPhase::New,
+        };
+        collector.walls.push(wall);
+
+        // Section cuts directly across the window at X = 5.0 (Y from -3 to 3)
+        let vp = Viewpoint {
+            id: ViewpointId::new(),
+            name: "Schnitt Window".into(),
+            revision: Revision(1),
+            origin: ViewOrigin::World(Point3::new(5.0, -3.0, 0.0)),
+            axes: ViewAxes::section(Vector2::new(0.0, 1.0)).unwrap(),
+            kind: ViewKind::Section {
+                path: SectionPath::straight(Point2::new(5.0, -3.0), Point2::new(5.0, 3.0)),
+                far_depth: None,
+            },
+            z_range: VerticalRange::new(Metres::new(0.0).unwrap(), Metres::new(4.0).unwrap()).unwrap(),
+            mapping: ProjectionMapping::default(),
+            crop: None,
+        };
+
+        let mv = ModelView {
+            id: ModelViewId::new(),
+            name: "Cut View".into(),
+            viewpoint_id: vp.id,
+            profile_id: ViewProfileId::new(),
+            scale: ScaleDenominator::new(50.0).unwrap(),
+            detail: DetailPolicy::FromProfileAndScale,
+            excluded_elements: BTreeSet::new(),
+            graphic_overrides: vec![],
+            annotation_ids: vec![],
+            update_policy: UpdatePolicy::Automatic,
+            revisions: ViewRevisions::default(),
+        };
+
+        let primitives = derive_section_view(&vp, &mv, &collector, &CutEngineOptions::default()).unwrap();
+
+        // Check sill remnant and head remnant fills
+        let fills: Vec<_> = primitives.iter().filter(|p| p.role == PrimitiveRole::CutFill).collect();
+        assert_eq!(fills.len(), 2, "should produce sill remnant and head remnant fills");
+
+        // Check opening cut sill and head lines with edit handles
+        let opening_prims: Vec<_> = primitives
+            .iter()
+            .filter(|p| p.sources.as_slice().iter().any(|s| s.feature == Some(FeatureKey::OpeningSill) || s.feature == Some(FeatureKey::OpeningHead)))
+            .collect();
+        assert!(!opening_prims.is_empty(), "should emit opening cut lines");
+        assert!(opening_prims.iter().any(|p| !p.edit_handles.is_empty()), "opening cut lines should provide edit handles");
+    }
+
+    #[test]
+    fn test_structural_only_filter_in_section() {
+        let model_id = ModelId::new();
+        let mut collector = SceneGeometryCollector::new();
+
+        let wall = CollectedWall {
+            handle: acadrust::Handle::new(10),
+            element_ref: ElementRef::new(model_id, ElementId::new()),
+            xref_source: None,
+            style_id: "Wall".into(),
+            height: 3.0,
+            base_z: 0.0,
+            top_z: 3.0,
+            axis_points: vec![Point2::new(5.0, -5.0), Point2::new(5.0, 5.0)],
+            layers: vec![
+                CollectedWallLayer {
+                    material: "Insulation".into(),
+                    thickness: 0.10,
+                    function: "Thermal".into(),
+                    axis_offset: 0.0,
+                    bottom_offset: 0.0,
+                    top_offset: 0.0,
+                    hatch_override: None,
+                    layer_id: Uuid::new_v4(),
+                    component_id: ComponentId::new(),
+                    is_structural: false,
+                },
+                CollectedWallLayer {
+                    material: "Concrete".into(),
+                    thickness: 0.20,
+                    function: "Structural".into(),
+                    axis_offset: 0.0,
+                    bottom_offset: 0.0,
+                    top_offset: 0.0,
+                    hatch_override: None,
+                    layer_id: Uuid::new_v4(),
+                    component_id: ComponentId::new(),
+                    is_structural: true,
+                },
+            ],
+            total_thickness: 0.30,
+            justification: crate::modules::aec::engine::wall::WallJustification::Center,
+            openings: vec![],
+            phase: crate::modules::aec::engine::plan_view::PlanPhase::New,
+        };
+        collector.walls.push(wall);
+
+        let vp = Viewpoint {
+            id: ViewpointId::new(),
+            name: "Schnitt".into(),
+            revision: Revision(1),
+            origin: ViewOrigin::World(Point3::new(0.0, 0.0, 0.0)),
+            axes: ViewAxes::section(Vector2::new(1.0, 0.0)).unwrap(),
+            kind: ViewKind::Section {
+                path: SectionPath::straight(Point2::new(0.0, 0.0), Point2::new(10.0, 0.0)),
+                far_depth: None,
+            },
+            z_range: VerticalRange::new(Metres::new(0.0).unwrap(), Metres::new(4.0).unwrap()).unwrap(),
+            mapping: ProjectionMapping::default(),
+            crop: None,
+        };
+
+        let mv = ModelView {
+            id: ModelViewId::new(),
+            name: "Schalplan".into(),
+            viewpoint_id: vp.id,
+            profile_id: ViewProfileId::new(),
+            scale: ScaleDenominator::new(50.0).unwrap(),
+            detail: DetailPolicy::FromProfileAndScale,
+            excluded_elements: BTreeSet::new(),
+            graphic_overrides: vec![],
+            annotation_ids: vec![],
+            update_policy: UpdatePolicy::Automatic,
+            revisions: ViewRevisions::default(),
+        };
+
+        let mut opts = CutEngineOptions::default();
+        opts.structural_only = true;
+
+        let primitives = derive_section_view(&vp, &mv, &collector, &opts).unwrap();
+        let fills: Vec<_> = primitives.iter().filter(|p| p.role == PrimitiveRole::CutFill).collect();
+        assert_eq!(fills.len(), 1, "structural-only mode should filter non-structural insulation layer");
+    }
+
+    #[test]
+    fn test_elevation_view_derivation_with_opening_slots() {
+        let model_id = ModelId::new();
+        let mut collector = SceneGeometryCollector::new();
+
+        let opening = CollectedOpening {
+            handle: acadrust::Handle::new(50),
+            element_ref: ElementRef::new(model_id, ElementId::new()),
+            xref_source: None,
+            host_wall_handle: acadrust::Handle::new(10),
+            kind: OpeningKind::Window,
+            style_id: Some("Window".into()),
+            distance_along_axis: 5.0,
+            width: 1.2,
+            height: 1.4,
+            sill_height: 0.9,
+            spring_height: 0.0,
+            shape: crate::modules::aec::engine::opening_shape::OpeningShape::Rectangle,
+            hinge: HingeSide::Left,
+            reference_side: crate::modules::aec::engine::openings::OpeningReferenceSide::Center,
+            cross_axis_offset: 0.0,
+            depth: None,
+            world_center: Point3::new(5.0, 0.0, 1.6),
+            axis_span_local: (4.4, 5.6),
+        };
+
+        let wall = CollectedWall {
+            handle: acadrust::Handle::new(10),
+            element_ref: ElementRef::new(model_id, ElementId::new()),
+            xref_source: None,
+            style_id: "Wall".into(),
+            height: 3.0,
+            base_z: 0.0,
+            top_z: 3.0,
+            axis_points: vec![Point2::new(0.0, 0.0), Point2::new(10.0, 0.0)],
+            layers: vec![CollectedWallLayer {
+                material: "Concrete".into(),
+                thickness: 0.24,
+                function: "Structural".into(),
+                axis_offset: 0.0,
+                bottom_offset: 0.0,
+                top_offset: 0.0,
+                hatch_override: None,
+                layer_id: Uuid::new_v4(),
+                component_id: ComponentId::new(),
+                is_structural: true,
+            }],
+            total_thickness: 0.24,
+            justification: crate::modules::aec::engine::wall::WallJustification::Center,
+            openings: vec![opening],
+            phase: crate::modules::aec::engine::plan_view::PlanPhase::New,
+        };
+        collector.walls.push(wall);
+
+        let vp = Viewpoint {
+            id: ViewpointId::new(),
+            name: "Ansicht Sued".into(),
+            revision: Revision(1),
+            origin: ViewOrigin::World(Point3::new(0.0, -5.0, 0.0)),
+            axes: ViewAxes::front_elevation(),
+            kind: ViewKind::Elevation {
+                depth: DepthRange {
+                    near: NonNegativeMetres::new(0.0).unwrap(),
+                    far: Some(PositiveMetres::new(20.0).unwrap()),
+                },
+            },
+            z_range: VerticalRange::new(Metres::new(0.0).unwrap(), Metres::new(5.0).unwrap()).unwrap(),
+            mapping: ProjectionMapping::default(),
+            crop: None,
+        };
+
+        let mv = ModelView {
+            id: ModelViewId::new(),
+            name: "Ansicht 1:100".into(),
+            viewpoint_id: vp.id,
+            profile_id: ViewProfileId::new(),
+            scale: ScaleDenominator::new(100.0).unwrap(),
+            detail: DetailPolicy::FromProfileAndScale,
+            excluded_elements: BTreeSet::new(),
+            graphic_overrides: vec![],
+            annotation_ids: vec![],
+            update_policy: UpdatePolicy::Automatic,
+            revisions: ViewRevisions::default(),
+        };
+
+        let opts = ElevationEngineOptions::default();
+        let primitives = derive_elevation_view(&vp, &mv, &collector, &opts).unwrap();
+
+        assert!(!primitives.is_empty(), "should derive elevation primitives");
+
+        // Verify ElevationContour2D (frame rectangle)
+        let frame_prims: Vec<_> = primitives
+            .iter()
+            .filter(|p| matches!(p.geometry, Geometry2d::Region { .. }))
+            .collect();
+        assert!(!frame_prims.is_empty(), "should emit window elevation frame contour");
+
+        // Verify ElevationSwing2D (DIN swing triangle)
+        let swing_prims: Vec<_> = primitives.iter().filter(|p| p.role == PrimitiveRole::Symbol).collect();
+        assert!(!swing_prims.is_empty(), "should emit DIN opening swing symbol");
+
+        // Verify ElevationSill2D (sill line)
+        let sill_prims: Vec<_> = primitives
+            .iter()
+            .filter(|p| p.sources.as_slice().iter().any(|s| s.feature == Some(FeatureKey::OpeningSill)))
+            .collect();
+        assert!(!sill_prims.is_empty(), "should emit sill projection line");
+    }
+
+    #[test]
+    fn test_silhouette_depth_processing() {
+        let view_id = ModelViewId::new();
+        let source = SourceReference::new(ElementRef::new(ModelId::new(), ElementId::new()));
+
+        let p1 = DerivedPrimitive {
+            id: PrimitiveId::new(view_id, 1, 1),
+            role: PrimitiveRole::ProjectedEdge,
+            geometry: Geometry2d::Line { start: Point2::new(0.0, 0.0), end: Point2::new(1.0, 0.0) },
+            sources: SourceSet::new(vec![source.clone()]).unwrap(),
+            depth: DepthInterval::new(5.0, 5.0).unwrap(),
+            style: ResolvedStyle::solid_stroke(PaperMm::new(0.35).unwrap()),
+            edit_handles: vec![],
+        };
+
+        let p2 = DerivedPrimitive {
+            id: PrimitiveId::new(view_id, 1, 2),
+            role: PrimitiveRole::ProjectedEdge,
+            geometry: Geometry2d::Line { start: Point2::new(0.0, 0.0), end: Point2::new(1.0, 0.0) },
+            sources: SourceSet::new(vec![source]).unwrap(),
+            depth: DepthInterval::new(0.0, 0.0).unwrap(),
+            style: ResolvedStyle::solid_stroke(PaperMm::new(0.35).unwrap()),
+            edit_handles: vec![],
+        };
+
+        let mut list = vec![p1, p2];
+        process_silhouette_and_depth(&mut list, &SilhouetteOptions::default()).unwrap();
+
+        // Closer primitive should be sorted first
+        assert_eq!(list[0].depth.min_m, 0.0);
+        assert_eq!(list[1].depth.min_m, 5.0);
+
+        // Background primitive (depth > 0) has line weight adjusted to 0.18 mm
+        assert_eq!(list[1].style.line_weight_mm.get(), 0.18);
+    }
+}

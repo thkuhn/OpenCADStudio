@@ -50,6 +50,12 @@ pub fn spawn_command(name: &str) -> Option<Box<dyn CadCommand>> {
         "AEC_PLANE_3POINT" => Some(Box::new(crate::modules::aec::project::plane_3point::Plane3PointCommand::new())),
         "AEC_PLANE_FACET" => Some(Box::new(crate::modules::aec::project::plane_facet::PlaneFacetCommand::new())),
         "AEC_PLANE_ASSIGN" => Some(Box::new(crate::modules::aec::project::plane_assign::PlaneAssignCommand::new())),
+        "AEC_SECTION" => Some(Box::new(crate::modules::aec::views::SectionCommand::new())),
+        "AEC_ELEVATION" => Some(Box::new(crate::modules::aec::views::ElevationCommand::new())),
+        "AEC_FLOORPLAN" => Some(Box::new(crate::modules::aec::views::FloorPlanCommand::new_floorplan())),
+        "AEC_RCP" => Some(Box::new(crate::modules::aec::views::FloorPlanCommand::new_rcp())),
+        "AEC_VIEWUPDATE" => Some(Box::new(crate::modules::aec::views::ViewUpdateCommand::new())),
+        "AEC_PLACE_VIEW" => Some(Box::new(crate::modules::aec::views::PlaceViewCommand::new())),
         _ => None,
     }
 }
@@ -100,6 +106,12 @@ pub(crate) fn try_dispatch(
         "AEC_PLANE_3POINT" => Some(install_spawned(app, tab, cmd, "AEC_PLANE_3POINT")),
         "AEC_PLANE_FACET" => Some(install_spawned(app, tab, cmd, "AEC_PLANE_FACET")),
         "AEC_PLANE_ASSIGN" => Some(install_spawned(app, tab, cmd, "AEC_PLANE_ASSIGN")),
+        "AEC_SECTION" => Some(dispatch_section(app, tab, cmd)),
+        "AEC_ELEVATION" => Some(dispatch_elevation(app, tab, cmd)),
+        "AEC_FLOORPLAN" => Some(install_spawned(app, tab, cmd, "AEC_FLOORPLAN")),
+        "AEC_RCP" => Some(install_spawned(app, tab, cmd, "AEC_RCP")),
+        "AEC_VIEWUPDATE" => Some(install_spawned(app, tab, cmd, "AEC_VIEWUPDATE")),
+        "AEC_PLACE_VIEW" => Some(install_spawned(app, tab, cmd, "AEC_PLACE_VIEW")),
         "AEC_PLANE_SYNC" => {
             let path = app.tabs[tab].drawing_path().map(Path::to_path_buf);
             let storey_ids = app
@@ -494,6 +506,26 @@ fn dispatch_slab(app: &mut OpenCADStudio, tab: usize, cmd: &str) -> Task<Message
         app.aec.aec_project_explorer_file.as_ref(),
     );
     let new_cmd = SlabCommand::new().with_library(style_library);
+    app.command_line.push_info(&new_cmd.prompt());
+    app.tabs[tab].active_cmd = Some(Box::new(new_cmd));
+    app.refresh_properties();
+    app.finish_dispatch(cmd)
+}
+
+fn dispatch_section(app: &mut OpenCADStudio, tab: usize, cmd: &str) -> Task<Message> {
+    let new_cmd = crate::modules::aec::views::SectionCommand::new_with_project(
+        app.aec.aec_project_explorer_file.as_ref(),
+    );
+    app.command_line.push_info(&new_cmd.prompt());
+    app.tabs[tab].active_cmd = Some(Box::new(new_cmd));
+    app.refresh_properties();
+    app.finish_dispatch(cmd)
+}
+
+fn dispatch_elevation(app: &mut OpenCADStudio, tab: usize, cmd: &str) -> Task<Message> {
+    let new_cmd = crate::modules::aec::views::ElevationCommand::new_with_project(
+        app.aec.aec_project_explorer_file.as_ref(),
+    );
     app.command_line.push_info(&new_cmd.prompt());
     app.tabs[tab].active_cmd = Some(Box::new(new_cmd));
     app.refresh_properties();

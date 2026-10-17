@@ -53,6 +53,47 @@ pub struct ProjectFile {
     /// Absolute height of finished floor level 0 / EG above NN (metres). Optional.
     #[serde(default)]
     pub ffl0_nn_m: Option<f64>,
+    /// Persistent 2D derived views, viewpoints, and layout placements.
+    #[serde(default)]
+    pub view_document: crate::modules::aec::engine::views::ViewDocument,
+}
+
+impl ProjectFile {
+    /// Derives the overall vertical Z-range across all storeys in the project (min floor elevation to max ceiling elevation).
+    /// Used as the default Z-bounds for sections and elevations.
+    pub fn default_vertical_range(&self) -> crate::modules::aec::engine::views::VerticalRange {
+        let mut min_z = f64::INFINITY;
+        let mut max_z = f64::NEG_INFINITY;
+
+        for building in &self.buildings {
+            for storey in &building.storeys {
+                let elev = storey.derived_elevation();
+                let top = elev + storey.derived_height();
+                if elev < min_z {
+                    min_z = elev;
+                }
+                if top > max_z {
+                    max_z = top;
+                }
+            }
+        }
+
+        if !min_z.is_finite() || !max_z.is_finite() || min_z >= max_z {
+            min_z = 0.0;
+            max_z = 3.0;
+        }
+
+        let z_min = crate::modules::aec::engine::views::Metres::new(min_z)
+            .unwrap_or_else(|_| crate::modules::aec::engine::views::Metres::new(0.0).unwrap());
+        let z_max = crate::modules::aec::engine::views::Metres::new(max_z)
+            .unwrap_or_else(|_| crate::modules::aec::engine::views::Metres::new(3.0).unwrap());
+        crate::modules::aec::engine::views::VerticalRange::new(z_min, z_max).unwrap_or_else(|_| {
+            crate::modules::aec::engine::views::VerticalRange {
+                z_min: crate::modules::aec::engine::views::Metres::new(0.0).unwrap(),
+                z_max: crate::modules::aec::engine::views::Metres::new(3.0).unwrap(),
+            }
+        })
+    }
 }
 
 /// One building containing ordered storey references.
