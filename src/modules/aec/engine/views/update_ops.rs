@@ -11,6 +11,7 @@ use super::carrier::{
 };
 use super::cut_engine::{derive_section_view, CutEngineOptions};
 use super::elevation_engine::{derive_elevation_view, ElevationEngineOptions};
+use super::floorplan_engine::{derive_floorplan_view, FloorPlanEngineOptions};
 use super::model_view::{ModelView, UpdatePolicy};
 use super::provenance::ElementRef;
 use super::scene_collector::SceneGeometryCollector;
@@ -124,29 +125,37 @@ pub fn regenerate_carrier(
         ValidationError(format!("carrier handle {:?} not found", carrier_handle))
     })?;
 
-    let vp = viewpoints
+    let embedded_defs = crate::modules::aec::engine::views::carrier::read_view_carrier_definitions(doc, carrier_handle);
+
+    let vp_found = viewpoints
         .iter()
         .find(|v| v.id == carrier.viewpoint_id)
-        .ok_or_else(|| {
-            ValidationError(format!("viewpoint {:?} not found for carrier", carrier.viewpoint_id))
-        })?;
+        .cloned()
+        .or_else(|| embedded_defs.as_ref().map(|(vp, _)| vp.clone()));
 
-    let mv = model_views
+    let vp = vp_found.ok_or_else(|| {
+        ValidationError(format!("viewpoint {:?} not found for carrier", carrier.viewpoint_id))
+    })?;
+
+    let mv_found = model_views
         .iter()
         .find(|m| m.id == carrier.model_view_id)
-        .ok_or_else(|| {
-            ValidationError(format!("model view {:?} not found for carrier", carrier.model_view_id))
-        })?;
+        .cloned()
+        .or_else(|| embedded_defs.as_ref().map(|(_, mv)| mv.clone()));
+
+    let mv = mv_found.ok_or_else(|| {
+        ValidationError(format!("model view {:?} not found for carrier", carrier.model_view_id))
+    })?;
 
     let mut primitives = match &vp.kind {
         ViewKind::Section { .. } => {
-            derive_section_view(vp, mv, scene, &CutEngineOptions::default())?
+            derive_section_view(&vp, &mv, scene, &CutEngineOptions::default())?
         }
         ViewKind::Elevation { .. } => {
-            derive_elevation_view(vp, mv, scene, &ElevationEngineOptions::default())?
+            derive_elevation_view(&vp, &mv, scene, &ElevationEngineOptions::default())?
         }
         ViewKind::FloorPlan { .. } | ViewKind::ReflectedCeilingPlan { .. } => {
-            derive_section_view(vp, mv, scene, &CutEngineOptions::default())?
+            derive_floorplan_view(&vp, &mv, scene, &FloorPlanEngineOptions::default())?
         }
     };
 

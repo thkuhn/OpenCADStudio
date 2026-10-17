@@ -591,7 +591,7 @@ pub fn regenerate_slab_representation(
                 if let Some(body) =
                     build_faceted_slab_solid(&tessellated_boundary, &layer_holes, z_eval)
                 {
-                    let s3d = Solid3D::new();
+                    let s3d = crate::modules::aec::engine::geometry::create_solid3d_from_body(&body);
                     let mut s3d_entity = EntityType::Solid3D(s3d);
                     s3d_entity.common_mut().owner_handle = slab_handle;
 

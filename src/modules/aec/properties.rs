@@ -1,6 +1,6 @@
 //! Property-panel contributions for AEC entities.
 
-use acadrust::{EntityType, Handle};
+use acadrust::{CadDocument, EntityType, Handle};
 
 use crate::modules::aec::engine::join_ops;
 use crate::modules::aec::engine::junction_pick;
@@ -90,6 +90,15 @@ pub fn aec_entity_title(
     }
     if crate::modules::aec::project::preview::control_plane_from_entity(entity).is_some() {
         return Some(crate::tr!("aec", "control-plane"));
+    }
+    if crate::modules::aec::engine::views::carrier::read_view_carrier(&scene.document, entity).is_some() {
+        return Some("AEC Planansicht / Schnitt".to_string());
+    }
+    if entity.common().extended_data.records().iter().any(|r| {
+        r.application_name == crate::modules::aec::engine::xdata::AEC_APPID
+            && matches!(r.values.first(), Some(acadrust::xdata::XDataValue::String(s)) if s == crate::modules::aec::engine::views::carrier::DERIVED_PRIMITIVE_TAG)
+    }) {
+        return Some("AEC Assoziiertes Bauteil".to_string());
     }
     None
 }
@@ -984,6 +993,104 @@ pub fn extend_entity_sections(
     if let Some(plane_section) = control_plane_prop_section(entity) {
         sections.push(plane_section);
     }
+    if let Some(carrier_section) = carrier_prop_section(entity, &scene.document) {
+        sections.push(carrier_section);
+    }
+    if let Some(prim_section) = derived_primitive_prop_section(entity) {
+        sections.push(prim_section);
+    }
+}
+
+pub fn carrier_prop_section(
+    entity: &EntityType,
+    doc: &CadDocument,
+) -> Option<crate::scene::model::object::PropSection> {
+    use crate::modules::aec::engine::views::carrier::read_view_carrier;
+    let carrier = read_view_carrier(doc, entity)?;
+    let mut props = Vec::new();
+
+    props.push(crate::entities::common::ro_prop(
+        "Typ",
+        "carrier_type",
+        "AEC View Carrier / Planansicht",
+    ));
+    props.push(crate::entities::common::ro_prop(
+        "Viewpoint ID",
+        "carrier_vp_id",
+        carrier.viewpoint_id.as_uuid().to_string(),
+    ));
+    props.push(crate::entities::common::ro_prop(
+        "ModelView ID",
+        "carrier_mv_id",
+        carrier.model_view_id.as_uuid().to_string(),
+    ));
+    props.push(crate::entities::common::edit_prop(
+        "Maßstab (1:X)",
+        "carrier_scale",
+        carrier.scale,
+    ));
+    props.push(crate::entities::common::ro_prop(
+        "Status",
+        "carrier_status",
+        if carrier.is_outdated {
+            "Veraltet (Update erforderlich)"
+        } else {
+            "Aktuell"
+        },
+    ));
+    props.push(crate::entities::common::ro_prop(
+        "Update-Modus",
+        "carrier_update_policy",
+        match carrier.update_policy {
+            crate::modules::aec::engine::views::model_view::UpdatePolicy::Automatic => "Automatisch",
+            crate::modules::aec::engine::views::model_view::UpdatePolicy::Manual => "Manuell (AEC_VIEWUPDATE)",
+        },
+    ));
+
+    Some(crate::scene::model::object::PropSection {
+        title: "AEC Planansicht / Schnitt".to_string(),
+        props,
+    })
+}
+
+pub fn derived_primitive_prop_section(
+    entity: &EntityType,
+) -> Option<crate::scene::model::object::PropSection> {
+    use crate::modules::aec::engine::views::carrier::DERIVED_PRIMITIVE_TAG;
+    use crate::modules::aec::engine::xdata::AEC_APPID;
+    use acadrust::xdata::XDataValue;
+
+    let rec = entity.common().extended_data.records().iter().find(|r| {
+        r.application_name == AEC_APPID
+            && matches!(r.values.first(), Some(XDataValue::String(s)) if s == DERIVED_PRIMITIVE_TAG)
+    })?;
+
+    let mut props = Vec::new();
+    let values = &rec.values;
+    if let Some(XDataValue::String(role)) = values.get(3) {
+        props.push(crate::entities::common::ro_prop("Rolle", "prim_role", role.clone()));
+    }
+    if let Some(XDataValue::String(model_id)) = values.get(4) {
+        props.push(crate::entities::common::ro_prop("Modell ID", "prim_model_id", model_id.clone()));
+    }
+    if let Some(XDataValue::String(elem_id)) = values.get(5) {
+        props.push(crate::entities::common::ro_prop("Element ID", "prim_elem_id", elem_id.clone()));
+    }
+    if let Some(XDataValue::String(feat)) = values.get(6) {
+        props.push(crate::entities::common::ro_prop("Feature", "prim_feature", feat.clone()));
+    }
+    if let Some(XDataValue::String(xref)) = values.get(7) {
+        props.push(crate::entities::common::ro_prop("XREF Quelle", "prim_xref", xref.clone()));
+    }
+
+    if props.is_empty() {
+        return None;
+    }
+
+    Some(crate::scene::model::object::PropSection {
+        title: "AEC Assoziiertes Bauteil".to_string(),
+        props,
+    })
 }
 
 fn entity_boundary_xy(entity: &EntityType) -> Vec<(f64, f64)> {

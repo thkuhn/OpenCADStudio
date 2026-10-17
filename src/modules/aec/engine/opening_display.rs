@@ -1870,7 +1870,8 @@ pub fn regenerate_opening_display(
                 [origin.0, origin.1, wall_base_z + opening.sill_height],
             );
             if let Some(body) = world_body {
-                let mut s3d_entity = EntityType::Solid3D(acadrust::entities::Solid3D::new());
+                let s3d = crate::modules::aec::engine::geometry::create_solid3d_from_body(&body);
+                let mut s3d_entity = EntityType::Solid3D(s3d);
                 if !opening_owner_handle.is_null() && opening_owner_handle != scene.document.header.model_space_block_handle {
                     s3d_entity.common_mut().owner_handle = opening_owner_handle;
                 }
@@ -1918,7 +1919,8 @@ pub fn regenerate_opening_display(
                 [origin.0, origin.1, wall_base_z + opening.sill_height],
             );
             if let Some(body) = world_body {
-                let mut s3d_entity = EntityType::Solid3D(acadrust::entities::Solid3D::new());
+                let s3d = crate::modules::aec::engine::geometry::create_solid3d_from_body(&body);
+                let mut s3d_entity = EntityType::Solid3D(s3d);
                 if !opening_owner_handle.is_null() && opening_owner_handle != scene.document.header.model_space_block_handle {
                     s3d_entity.common_mut().owner_handle = opening_owner_handle;
                 }
@@ -1962,7 +1964,8 @@ pub fn regenerate_opening_display(
                 [origin.0, origin.1, wall_base_z + opening.sill_height],
             );
             if let Some(body) = world_body {
-                let mut s3d_entity = EntityType::Solid3D(acadrust::entities::Solid3D::new());
+                let s3d = crate::modules::aec::engine::geometry::create_solid3d_from_body(&body);
+                let mut s3d_entity = EntityType::Solid3D(s3d);
                 if !opening_owner_handle.is_null() && opening_owner_handle != scene.document.header.model_space_block_handle {
                     s3d_entity.common_mut().owner_handle = opening_owner_handle;
                 }

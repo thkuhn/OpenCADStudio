@@ -14,7 +14,9 @@ use crate::command::{
     WorkingPlane,
 };
 use crate::modules::aec::engine::project::ProjectFile;
-use crate::modules::aec::engine::views::carrier::{create_view_carrier, sync_carrier_primitives};
+use crate::modules::aec::engine::views::carrier::{
+    create_view_carrier, sync_carrier_primitives, write_view_carrier_definitions,
+};
 use crate::modules::aec::engine::views::elevation_engine::{
     derive_elevation_view, ElevationEngineOptions,
 };
@@ -198,13 +200,15 @@ impl ElevationCommand {
         };
 
         let collector = SceneGeometryCollector::collect_from_document(&scene.document, ModelId::new());
-        let primitives = derive_elevation_view(
+        let mut primitives = derive_elevation_view(
             &viewpoint,
             &model_view,
             &collector,
             &ElevationEngineOptions::default(),
         )
         .unwrap_or_default();
+
+        let _ = process_silhouette_and_depth(&mut primitives, &SilhouetteOptions::default());
 
         let mut carrier = create_view_carrier(
             &mut scene.document,
@@ -218,6 +222,7 @@ impl ElevationCommand {
         .ok()?;
 
         let _ = sync_carrier_primitives(&mut scene.document, &mut carrier, &primitives);
+        write_view_carrier_definitions(&mut scene.document, carrier.handle, &viewpoint, &model_view);
         scene.bump_geometry();
 
         self.last_committed = Some(carrier.handle);

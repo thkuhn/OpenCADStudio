@@ -15,7 +15,9 @@ use crate::command::{
     WorkingPlane,
 };
 use crate::modules::aec::engine::project::ProjectFile;
-use crate::modules::aec::engine::views::carrier::{create_view_carrier, sync_carrier_primitives};
+use crate::modules::aec::engine::views::carrier::{
+    create_view_carrier, sync_carrier_primitives, write_view_carrier_definitions,
+};
 use crate::modules::aec::engine::views::cut_engine::{derive_section_view, CutEngineOptions};
 use crate::modules::aec::engine::views::*;
 use crate::modules::aec::views::din1356::Din1356SectionSymbol;
@@ -271,13 +273,15 @@ impl SectionCommand {
 
         // 4. Collect scene & derive 2D primitives
         let collector = SceneGeometryCollector::collect_from_document(&scene.document, ModelId::new());
-        let primitives = derive_section_view(
+        let mut primitives = derive_section_view(
             &viewpoint,
             &model_view,
             &collector,
             &CutEngineOptions::default(),
         )
         .unwrap_or_default();
+
+        let _ = process_silhouette_and_depth(&mut primitives, &SilhouetteOptions::default());
 
         // 5. Create and sync DerivedViewCarrier in model space
         let mut carrier = create_view_carrier(
@@ -292,6 +296,7 @@ impl SectionCommand {
         .ok()?;
 
         let _ = sync_carrier_primitives(&mut scene.document, &mut carrier, &primitives);
+        write_view_carrier_definitions(&mut scene.document, carrier.handle, &viewpoint, &model_view);
         scene.bump_geometry();
 
         self.last_committed = Some(carrier.handle);
@@ -394,10 +399,16 @@ impl CadCommand for SectionCommand {
                 CmdResult::NeedPoint
             }
             SectionPhase::NextPoint => {
+                let is_jog = self.is_jog_mode;
                 self.points.push(pt);
-                self.is_jog_step.push(self.is_jog_mode);
+                let is_transition = if self.points.len() <= 2 {
+                    false
+                } else {
+                    is_jog
+                };
+                self.is_jog_step.push(is_transition);
                 self.is_jog_mode = false;
-                if self.points.len() == 2 {
+                if self.points.len() == 2 && !is_jog {
                     self.phase = SectionPhase::ViewingDirection;
                 }
                 CmdResult::NeedPoint
@@ -584,8 +595,10 @@ mod tests {
         cmd.on_point(DVec3::new(0.0, 0.0, 0.0));
         cmd.on_text_input("J");
         cmd.on_point(DVec3::new(5.0, 0.0, 0.0));
+        cmd.on_text_input("J");
         cmd.on_point(DVec3::new(5.0, 2.0, 0.0));
         cmd.on_point(DVec3::new(10.0, 2.0, 0.0));
+        cmd.on_text_input("D");
 
         let path = cmd.build_section_path().unwrap();
         assert_eq!(path.cut_length(), 10.0);

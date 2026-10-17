@@ -42,53 +42,19 @@ impl ViewUpdateCommand {
 
         for carrier in carriers {
             if self.force_all || carrier.is_outdated {
-                let viewpoint = Viewpoint {
-                    id: carrier.viewpoint_id,
-                    name: "View".to_string(),
-                    revision: Revision(1),
-                    origin: ViewOrigin::World(Point3::new(0.0, 0.0, 0.0)),
-                    axes: ViewAxes::front_elevation(),
-                    kind: ViewKind::Section {
-                        path: SectionPath::straight(
-                            Point2::new(-50.0, 0.0),
-                            Point2::new(50.0, 0.0),
-                        ),
-                        far_depth: None,
-                    },
-                    z_range: VerticalRange::new(
-                        Metres::new(0.0).unwrap(),
-                        Metres::new(3.0).unwrap(),
-                    )
-                    .unwrap(),
-                    mapping: Default::default(),
-                    crop: None,
-                };
-
-                let model_view = ModelView {
-                    id: carrier.model_view_id,
-                    name: "View".to_string(),
-                    viewpoint_id: viewpoint.id,
-                    profile_id: ViewProfileId::new(),
-                    scale: ScaleDenominator::new(50.0).unwrap(),
-                    detail: DetailPolicy::FromProfileAndScale,
-                    excluded_elements: Default::default(),
-                    graphic_overrides: Vec::new(),
-                    annotation_ids: Vec::new(),
-                    update_policy: UpdatePolicy::Automatic,
-                    revisions: Default::default(),
-                };
-
-                let _ = regenerate_carrier(
+                if let Ok(c) = regenerate_carrier(
                     &mut scene.document,
                     carrier.handle,
-                    &[viewpoint],
-                    &[model_view],
+                    &[],
+                    &[],
                     &collector,
-                );
-                count += 1;
+                ) {
+                    count += c;
+                }
             }
         }
 
+        scene.bump_geometry();
         self.updated_count = count;
         count
     }
@@ -112,7 +78,7 @@ impl CadCommand for ViewUpdateCommand {
     }
 
     fn on_enter(&mut self) -> CmdResult {
-        CmdResult::NeedPoint
+        CmdResult::Dispatch("AEC_VIEWUPDATE_DO".to_string())
     }
 
     fn on_text_input(&mut self, text: &str) -> Option<CmdResult> {

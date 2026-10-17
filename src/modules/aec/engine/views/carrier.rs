@@ -6,20 +6,24 @@
 
 use uuid::Uuid;
 
-use acadrust::entities::{Line, LwPolyline, LwVertex, Point};
+use acadrust::entities::hatch::{BoundaryEdge, BoundaryPath, PolylineEdge};
+use acadrust::entities::{Hatch, HatchPattern, Line, LwPolyline, LwVertex, Point};
 use acadrust::types::{Vector2, Vector3};
 use acadrust::xdata::{ExtendedDataRecord, XDataValue};
 use acadrust::{CadDocument, EntityType, Handle};
 
-use super::model_view::{UpdatePolicy, ViewRevisions};
+use super::model_view::{ModelView, UpdatePolicy, ViewRevisions};
 use super::provenance::{
     DerivedPrimitive, FeatureKey, Geometry2d, PrimitiveRole,
 };
+use super::viewpoint::Viewpoint;
 use super::{ModelViewId, Point2, Revision, ValidationError, ViewpointId};
 use crate::modules::aec::engine::owner_index;
 use crate::modules::aec::engine::xdata::{ensure_app_id, AEC_APPID};
 
 pub const VIEW_CARRIER_TAG: &str = "VIEW_CARRIER";
+pub const VIEW_CARRIER_VP_TAG: &str = "VIEW_CARRIER_VP";
+pub const VIEW_CARRIER_MV_TAG: &str = "VIEW_CARRIER_MV";
 pub const DERIVED_PRIMITIVE_TAG: &str = "DERIVED_PRIMITIVE";
 
 /// An associative carrier entity in model space hosting derived 2D drawing primitives.
@@ -266,6 +270,90 @@ pub fn find_view_carriers_for_model_view(
         .collect()
 }
 
+/// Stores the full `Viewpoint` and `ModelView` definitions on the carrier entity.
+pub fn write_view_carrier_definitions(
+    doc: &mut CadDocument,
+    carrier_handle: Handle,
+    viewpoint: &Viewpoint,
+    model_view: &ModelView,
+) -> bool {
+    ensure_app_id(doc);
+    let app_handle = doc.app_ids.get(AEC_APPID).map(|a| a.handle.value());
+    let Ok(vp_json) = serde_json::to_string(viewpoint) else { return false; };
+    let Ok(mv_json) = serde_json::to_string(model_view) else { return false; };
+
+    let mut vp_rec = ExtendedDataRecord::new(AEC_APPID);
+    vp_rec.add_value(XDataValue::String(VIEW_CARRIER_VP_TAG.to_string()));
+    vp_rec.add_value(XDataValue::String(vp_json));
+
+    let mut mv_rec = ExtendedDataRecord::new(AEC_APPID);
+    mv_rec.add_value(XDataValue::String(VIEW_CARRIER_MV_TAG.to_string()));
+    mv_rec.add_value(XDataValue::String(mv_json));
+
+    let Some(entity) = doc.get_entity_mut(carrier_handle) else {
+        return false;
+    };
+
+    let xd = &mut entity.common_mut().extended_data;
+    let kept: Vec<_> = xd
+        .records()
+        .iter()
+        .filter(|r| {
+            if r.application_name != AEC_APPID {
+                return true;
+            }
+            !matches!(r.values.first(), Some(XDataValue::String(s)) if s == VIEW_CARRIER_VP_TAG || s == VIEW_CARRIER_MV_TAG)
+        })
+        .cloned()
+        .collect();
+    xd.clear();
+    for r in kept {
+        xd.add_record(r);
+    }
+    xd.add_record(vp_rec);
+    xd.add_record(mv_rec);
+
+    if let Some(ah) = app_handle {
+        xd.raw_dwg_eed.retain(|(a, _)| *a != ah);
+    }
+    true
+}
+
+/// Reads the embedded `Viewpoint` and `ModelView` definitions from the carrier entity.
+pub fn read_view_carrier_definitions(
+    doc: &CadDocument,
+    carrier_handle: Handle,
+) -> Option<(Viewpoint, ModelView)> {
+    let entity = doc.get_entity(carrier_handle)?;
+    let mut vp_opt = None;
+    let mut mv_opt = None;
+
+    for r in entity.common().extended_data.records() {
+        if r.application_name != AEC_APPID {
+            continue;
+        }
+        if matches!(r.values.first(), Some(XDataValue::String(s)) if s == VIEW_CARRIER_VP_TAG) {
+            if let Some(XDataValue::String(json_str)) = r.values.get(1) {
+                if let Ok(vp) = serde_json::from_str::<Viewpoint>(json_str) {
+                    vp_opt = Some(vp);
+                }
+            }
+        }
+        if matches!(r.values.first(), Some(XDataValue::String(s)) if s == VIEW_CARRIER_MV_TAG) {
+            if let Some(XDataValue::String(json_str)) = r.values.get(1) {
+                if let Ok(mv) = serde_json::from_str::<ModelView>(json_str) {
+                    mv_opt = Some(mv);
+                }
+            }
+        }
+    }
+
+    match (vp_opt, mv_opt) {
+        (Some(vp), Some(mv)) => Some((vp, mv)),
+        _ => None,
+    }
+}
+
 /// Synchronizes a carrier's derived primitives with native CAD entities in `doc`.
 /// Erases old child entities without modifying unrelated user geometry or annotations.
 pub fn sync_carrier_primitives(
@@ -344,36 +432,95 @@ pub fn sync_carrier_primitives(
                 new_handles.push(h);
             }
             Geometry2d::Region { outer, holes } => {
-                // Outer boundary polyline
-                let mut pl = LwPolyline::new();
-                for v in outer {
-                    let tv = transform_pt(*v);
-                    pl.add_vertex(LwVertex::new(Vector2::new(tv.x_m, tv.y_m)));
-                }
-                pl.is_closed = true;
-                let h = doc.allocate_handle();
-                let mut ent = EntityType::LwPolyline(pl);
-                ent.common_mut().handle = h;
-                ent.common_mut().layer = layer_name.to_string();
-                attach_primitive_xdata(doc, &mut ent, prim);
-                let _ = doc.add_entity(ent);
-                new_handles.push(h);
+                let is_cut_fill = prim.role == PrimitiveRole::CutFill;
+                let is_surface_fill_with_pattern = prim.role == PrimitiveRole::SurfaceFill
+                    && (prim.style.hatch_pattern.is_some() || prim.style.fill_color.is_some());
 
-                // Hole boundaries
-                for hole in holes {
-                    let mut hole_pl = LwPolyline::new();
-                    for v in hole {
-                        let tv = transform_pt(*v);
-                        hole_pl.add_vertex(LwVertex::new(Vector2::new(tv.x_m, tv.y_m)));
+                if (is_cut_fill || is_surface_fill_with_pattern) && outer.len() >= 3 {
+                    let mut hatch = Hatch::new();
+                    let pat_name = prim
+                        .style
+                        .hatch_pattern
+                        .clone()
+                        .unwrap_or_else(|| "ANSI31".to_string());
+                    if pat_name.eq_ignore_ascii_case("SOLID") {
+                        hatch.is_solid = true;
+                    } else {
+                        hatch.is_solid = false;
+                        hatch.pattern = HatchPattern::new(&pat_name);
+                        hatch.pattern_scale = prim.style.hatch_scale.unwrap_or(1.0).max(1e-4);
+                        hatch.pattern_angle = prim
+                            .style
+                            .hatch_angle_rad
+                            .map(|rad| rad.to_degrees())
+                            .unwrap_or(0.0);
                     }
-                    hole_pl.is_closed = true;
+
+                    let outer_pts: Vec<Vector2> = outer
+                        .iter()
+                        .map(|v| {
+                            let tv = transform_pt(*v);
+                            Vector2::new(tv.x_m, tv.y_m)
+                        })
+                        .collect();
+                    let mut outer_path = BoundaryPath::external();
+                    outer_path.add_edge(BoundaryEdge::Polyline(PolylineEdge::new(outer_pts, true)));
+                    hatch.paths.push(outer_path);
+
+                    for hole in holes {
+                        let hole_pts: Vec<Vector2> = hole
+                            .iter()
+                            .map(|v| {
+                                let tv = transform_pt(*v);
+                                Vector2::new(tv.x_m, tv.y_m)
+                            })
+                            .collect();
+                        if hole_pts.len() >= 3 {
+                            let mut hole_path = BoundaryPath::new();
+                            hole_path.add_edge(BoundaryEdge::Polyline(PolylineEdge::new(hole_pts, true)));
+                            hatch.paths.push(hole_path);
+                        }
+                    }
+
                     let hh = doc.allocate_handle();
-                    let mut hent = EntityType::LwPolyline(hole_pl);
+                    let mut hent = EntityType::Hatch(hatch);
                     hent.common_mut().handle = hh;
                     hent.common_mut().layer = layer_name.to_string();
                     attach_primitive_xdata(doc, &mut hent, prim);
                     let _ = doc.add_entity(hent);
                     new_handles.push(hh);
+                } else if prim.role != PrimitiveRole::SurfaceFill {
+                    // Outer boundary polyline
+                    let mut pl = LwPolyline::new();
+                    for v in outer {
+                        let tv = transform_pt(*v);
+                        pl.add_vertex(LwVertex::new(Vector2::new(tv.x_m, tv.y_m)));
+                    }
+                    pl.is_closed = true;
+                    let h = doc.allocate_handle();
+                    let mut ent = EntityType::LwPolyline(pl);
+                    ent.common_mut().handle = h;
+                    ent.common_mut().layer = layer_name.to_string();
+                    attach_primitive_xdata(doc, &mut ent, prim);
+                    let _ = doc.add_entity(ent);
+                    new_handles.push(h);
+
+                    // Hole boundaries
+                    for hole in holes {
+                        let mut hole_pl = LwPolyline::new();
+                        for v in hole {
+                            let tv = transform_pt(*v);
+                            hole_pl.add_vertex(LwVertex::new(Vector2::new(tv.x_m, tv.y_m)));
+                        }
+                        hole_pl.is_closed = true;
+                        let hh = doc.allocate_handle();
+                        let mut hent = EntityType::LwPolyline(hole_pl);
+                        hent.common_mut().handle = hh;
+                        hent.common_mut().layer = layer_name.to_string();
+                        attach_primitive_xdata(doc, &mut hent, prim);
+                        let _ = doc.add_entity(hent);
+                        new_handles.push(hh);
+                    }
                 }
             }
             Geometry2d::CircularArc { center, radius, start_rad, sweep_rad } => {

@@ -172,6 +172,17 @@ pub fn normal(x0: f64, y0: f64, x1: f64, y1: f64) -> (f64, f64) {
     }
 }
 
+/// Constructs a `Solid3D` entity and encodes the B-Rep body into ACIS SAT data,
+/// ensuring that 3D meshes persist across file saves, XREF loads, and tessellation passes.
+pub fn create_solid3d_from_body(body: &kernel::brep::Body) -> acadrust::entities::Solid3D {
+    let mut s3d = acadrust::entities::Solid3D::new();
+    let mut sat_doc = acadrust::entities::acis::SatDocument::new();
+    if kernel::acis::append(body, &mut sat_doc).is_ok() {
+        s3d.acis_data = acadrust::entities::AcisData::from_sat(&sat_doc.to_sat_string());
+    }
+    s3d
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

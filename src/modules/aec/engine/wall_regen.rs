@@ -3144,7 +3144,7 @@ pub(crate) fn regenerate_wall_representation_inner(
                 };
 
                 if let Some(body) = body {
-                    let s3d = acadrust::entities::Solid3D::new();
+                    let s3d = crate::modules::aec::engine::geometry::create_solid3d_from_body(&body);
                     let mut s3d_entity = EntityType::Solid3D(s3d);
                     if !wall_owner_handle.is_null() && wall_owner_handle != scene.document.header.model_space_block_handle {
                         s3d_entity.common_mut().owner_handle = wall_owner_handle;
@@ -3238,7 +3238,7 @@ pub(crate) fn regenerate_wall_representation_inner(
                         zone.direction,
                         0.0,
                     ) {
-                        let s3d = acadrust::entities::Solid3D::new();
+                        let s3d = crate::modules::aec::engine::geometry::create_solid3d_from_body(&body);
                         let mut s3d_entity = EntityType::Solid3D(s3d);
                         if !wall_owner_handle.is_null() && wall_owner_handle != scene.document.header.model_space_block_handle {
                             s3d_entity.common_mut().owner_handle = wall_owner_handle;

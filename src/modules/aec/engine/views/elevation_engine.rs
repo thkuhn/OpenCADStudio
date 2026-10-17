@@ -106,10 +106,19 @@ pub fn derive_elevation_view(
         )?;
     }
 
+    // 3. Silhouette & Occlusion processing
+    super::silhouette::process_silhouette_and_depth(
+        &mut primitives,
+        &super::silhouette::SilhouetteOptions {
+            emit_hidden_lines: options.show_hidden_edges,
+            max_depth_distance: Some(far_depth),
+        },
+    )?;
+
     Ok(primitives)
 }
 
-fn project_wall_elevation(
+pub fn project_wall_elevation(
     wall: &CollectedWall,
     viewpoint: &Viewpoint,
     near_depth: f64,
@@ -216,9 +225,34 @@ fn project_wall_elevation(
                 start: uv1_base,
                 end: uv1_top,
             },
-            sources: SourceSet::new(vec![wall_source])?,
+            sources: SourceSet::new(vec![wall_source.clone()])?,
             depth: DepthInterval::new(avg_depth, avg_depth)?,
             style,
+            edit_handles: vec![],
+        });
+
+        // Wall Opaque Surface Mask (used for 3D occlusion clipping)
+        *counter += 1;
+        let surface_poly = vec![uv0_base, uv1_base, uv1_top, uv0_top];
+        primitives.push(DerivedPrimitive {
+            id: PrimitiveId::new(model_view.id, 1, *counter),
+            role: PrimitiveRole::SurfaceFill,
+            geometry: Geometry2d::Region {
+                outer: surface_poly,
+                holes: vec![],
+            },
+            sources: SourceSet::new(vec![wall_source])?,
+            depth: DepthInterval::new(avg_depth, avg_depth)?,
+            style: ResolvedStyle {
+                line_weight_mm: PaperMm::new(0.18)?,
+                line_color: None,
+                line_type: None,
+                fill_color: None,
+                hatch_pattern: None,
+                hatch_scale: None,
+                hatch_angle_rad: None,
+                layer_name: Some("AEC_SECTION_SURFACE".to_string()),
+            },
             edit_handles: vec![],
         });
 
@@ -417,7 +451,7 @@ fn project_opening_elevation(
     Ok(())
 }
 
-fn project_slab_elevation(
+pub fn project_slab_elevation(
     slab: &CollectedSlab,
     viewpoint: &Viewpoint,
     near_depth: f64,

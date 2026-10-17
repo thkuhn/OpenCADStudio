@@ -22,7 +22,9 @@ use crate::modules::aec::engine::project::{Building, ProjectFile, StoreyRef};
 use crate::modules::aec::engine::slab::{Slab, SlabJustification, SlabLayer};
 use crate::modules::aec::engine::slab_regen::regenerate_slab_representation;
 use crate::modules::aec::engine::slab_xdata::slab_record_for_slab;
-use crate::modules::aec::engine::views::carrier::{create_view_carrier, sync_carrier_primitives};
+use crate::modules::aec::engine::views::carrier::{
+    create_view_carrier, sync_carrier_primitives, write_view_carrier_definitions,
+};
 use crate::modules::aec::engine::views::cut_engine::{derive_section_view, CutEngineOptions};
 use crate::modules::aec::engine::views::elevation_engine::{
     derive_elevation_view, ElevationEngineOptions,
@@ -383,7 +385,7 @@ fn build_dg_geometry(scene: &mut Scene, _library: &StyleLibrary) {
 
 fn build_master_geometry(
     scene: &mut Scene,
-    _project_dir: &Path,
+    project_dir: &Path,
 ) -> Result<(), Box<dyn std::error::Error>> {
     // Add XREF Block records and INSERT entities for EG, OG, DG
     let storeys = [
@@ -404,6 +406,9 @@ fn build_master_geometry(
         ent.common_mut().layer = format!("XREF_{}", name);
         scene.add_entity(ent);
     }
+
+    // Resolve XREFs from the project directory so all entities of EG, OG, DG are in the block records
+    let _ = crate::io::xref::resolve_xrefs(&mut scene.document, project_dir);
 
     // Add also native ground / terrain slab
     add_slab(
@@ -476,6 +481,7 @@ fn build_master_geometry(
         UpdatePolicy::Automatic,
     ) {
         let _ = sync_carrier_primitives(&mut scene.document, &mut carrier, &section_prims);
+        write_view_carrier_definitions(&mut scene.document, carrier.handle, &section_vp, &section_mv);
     }
 
     // 2. Südansicht (Elevation)
@@ -532,6 +538,7 @@ fn build_master_geometry(
         UpdatePolicy::Automatic,
     ) {
         let _ = sync_carrier_primitives(&mut scene.document, &mut carrier, &elev_prims);
+        write_view_carrier_definitions(&mut scene.document, carrier.handle, &elev_vp, &elev_mv);
     }
 
     Ok(())

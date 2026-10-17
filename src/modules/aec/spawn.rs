@@ -110,7 +110,8 @@ pub(crate) fn try_dispatch(
         "AEC_ELEVATION" => Some(dispatch_elevation(app, tab, cmd)),
         "AEC_FLOORPLAN" => Some(install_spawned(app, tab, cmd, "AEC_FLOORPLAN")),
         "AEC_RCP" => Some(install_spawned(app, tab, cmd, "AEC_RCP")),
-        "AEC_VIEWUPDATE" => Some(install_spawned(app, tab, cmd, "AEC_VIEWUPDATE")),
+        "AEC_VIEWUPDATE" | "AEC_VIEWUPDATE_DO" => Some(dispatch_viewupdate(app, tab, cmd)),
+        cmd if cmd.starts_with("AEC_VIEWUPDATE_DO") => Some(dispatch_viewupdate(app, tab, cmd)),
         "AEC_PLACE_VIEW" => Some(install_spawned(app, tab, cmd, "AEC_PLACE_VIEW")),
         "AEC_PLANE_SYNC" => {
             let path = app.tabs[tab].drawing_path().map(Path::to_path_buf);
@@ -627,6 +628,20 @@ fn dispatch_wallreverse(app: &mut OpenCADStudio, tab: usize, cmd: &str) -> Task<
         return app.finish_dispatch(cmd);
     }
     install_spawned(app, tab, cmd, "AEC_WALLREVERSE")
+}
+
+fn dispatch_viewupdate(app: &mut OpenCADStudio, tab: usize, cmd: &str) -> Task<Message> {
+    let mut cmd_obj = crate::modules::aec::views::ViewUpdateCommand::new();
+    cmd_obj.force_all = true;
+    let count = cmd_obj.update_all(&mut app.tabs[tab].scene);
+    app.command_line.push_info(&format!(
+        "AEC: {} Ansicht(en) / Schnitte erfolgreich aktualisiert.",
+        count
+    ));
+    app.tabs[tab].dirty = true;
+    app.tabs[tab].scene.bump_geometry();
+    app.post_ref_op(tab);
+    app.finish_dispatch(cmd)
 }
 
 fn dispatch_walljoin_do(

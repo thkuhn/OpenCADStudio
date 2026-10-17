@@ -4,6 +4,7 @@ pub mod carrier;
 pub mod cut_engine;
 pub mod edit_ops;
 pub mod elevation_engine;
+pub mod floorplan_engine;
 pub mod model_view;
 pub mod provenance;
 pub mod scene_collector;
@@ -1115,5 +1116,112 @@ mod tests {
 
         // Background primitive (depth > 0) has line weight adjusted to 0.18 mm
         assert_eq!(list[1].style.line_weight_mm.get(), 0.18);
+    }
+
+    #[test]
+    fn test_section_full_cut_boundaries_and_background_projection() {
+        let model_id = ModelId::new();
+        let mut collector = SceneGeometryCollector::new();
+
+        // 1. Cut Wall (intersected by section at y = 0)
+        let cut_wall = CollectedWall {
+            handle: acadrust::Handle::new(10),
+            element_ref: ElementRef::new(model_id, ElementId::new()),
+            xref_source: None,
+            style_id: "Wall_24cm".into(),
+            height: 3.0,
+            base_z: 0.0,
+            top_z: 3.0,
+            axis_points: vec![Point2::new(0.0, -2.0), Point2::new(0.0, 2.0)],
+            layers: vec![CollectedWallLayer {
+                material: "Masonry".into(),
+                thickness: 0.24,
+                function: "Structural".into(),
+                axis_offset: 0.0,
+                bottom_offset: 0.0,
+                top_offset: 0.0,
+                hatch_override: None,
+                layer_id: Uuid::new_v4(),
+                component_id: ComponentId::new(),
+                is_structural: true,
+            }],
+            total_thickness: 0.24,
+            justification: crate::modules::aec::engine::wall::WallJustification::Center,
+            openings: vec![],
+            phase: crate::modules::aec::engine::plan_view::PlanPhase::New,
+        };
+        collector.walls.push(cut_wall);
+
+        // 2. Background Wall (behind the section at y = 4.0m)
+        let bg_wall = CollectedWall {
+            handle: acadrust::Handle::new(20),
+            element_ref: ElementRef::new(model_id, ElementId::new()),
+            xref_source: None,
+            style_id: "Wall_24cm".into(),
+            height: 3.0,
+            base_z: 0.0,
+            top_z: 3.0,
+            axis_points: vec![Point2::new(-5.0, 4.0), Point2::new(5.0, 4.0)],
+            layers: vec![CollectedWallLayer {
+                material: "Masonry".into(),
+                thickness: 0.24,
+                function: "Structural".into(),
+                axis_offset: 0.0,
+                bottom_offset: 0.0,
+                top_offset: 0.0,
+                hatch_override: None,
+                layer_id: Uuid::new_v4(),
+                component_id: ComponentId::new(),
+                is_structural: true,
+            }],
+            total_thickness: 0.24,
+            justification: crate::modules::aec::engine::wall::WallJustification::Center,
+            openings: vec![],
+            phase: crate::modules::aec::engine::plan_view::PlanPhase::New,
+        };
+        collector.walls.push(bg_wall);
+
+        let vp = Viewpoint {
+            id: ViewpointId::new(),
+            name: "Schnitt A-A".into(),
+            revision: Revision(1),
+            origin: ViewOrigin::World(Point3::new(-5.0, 0.0, 0.0)),
+            axes: ViewAxes::section_with_side(Vector2::new(1.0, 0.0), false).unwrap(),
+            kind: ViewKind::Section {
+                path: SectionPath::straight(Point2::new(-5.0, 0.0), Point2::new(5.0, 0.0)),
+                far_depth: Some(PositiveMetres::new(10.0).unwrap()),
+            },
+            z_range: VerticalRange::new(Metres::new(0.0).unwrap(), Metres::new(5.0).unwrap()).unwrap(),
+            mapping: ProjectionMapping::default(),
+            crop: None,
+        };
+
+        let mv = ModelView {
+            id: ModelViewId::new(),
+            name: "Ausfuehrung 1:50".into(),
+            viewpoint_id: vp.id,
+            profile_id: ViewProfileId::new(),
+            scale: ScaleDenominator::new(50.0).unwrap(),
+            detail: DetailPolicy::FromProfileAndScale,
+            excluded_elements: BTreeSet::new(),
+            graphic_overrides: vec![],
+            annotation_ids: vec![],
+            update_policy: UpdatePolicy::Automatic,
+            revisions: ViewRevisions::default(),
+        };
+
+        let primitives = derive_section_view(&vp, &mv, &collector, &CutEngineOptions::default()).unwrap();
+
+        // 1. Verify cut boundary contains full closed lines (top, bottom, left jamb, right jamb)
+        let cut_boundaries: Vec<_> = primitives.iter().filter(|p| p.role == PrimitiveRole::CutBoundary).collect();
+        assert!(cut_boundaries.len() >= 4, "should have at least 4 boundary edges for the cut wall (top, bot, left, right), found {}", cut_boundaries.len());
+
+        // 2. Verify cut fill hatch exists
+        let cut_fills: Vec<_> = primitives.iter().filter(|p| p.role == PrimitiveRole::CutFill).collect();
+        assert!(!cut_fills.is_empty(), "should have cut fill hatch");
+
+        // 3. Verify background wall projected edges exist
+        let bg_edges: Vec<_> = primitives.iter().filter(|p| p.role == PrimitiveRole::ProjectedEdge).collect();
+        assert!(!bg_edges.is_empty(), "should have background projected edges from the wall at y = 4.0m");
     }
 }

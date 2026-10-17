@@ -11,8 +11,10 @@ use crate::command::{
     CadCommand, CmdOption, CmdResult, LiveCommandField, LiveCommandProperties, LiveFieldValue,
     WorkingPlane,
 };
-use crate::modules::aec::engine::views::carrier::{create_view_carrier, sync_carrier_primitives};
-use crate::modules::aec::engine::views::cut_engine::{derive_section_view, CutEngineOptions};
+use crate::modules::aec::engine::views::carrier::{
+    create_view_carrier, sync_carrier_primitives, write_view_carrier_definitions,
+};
+use crate::modules::aec::engine::views::floorplan_engine::{derive_floorplan_view, FloorPlanEngineOptions};
 use crate::modules::aec::engine::views::*;
 use crate::modules::{IconKind, ModuleEvent, ToolDef};
 use crate::scene::model::wire_model::WireModel;
@@ -134,26 +136,8 @@ impl FloorPlanCommand {
             revisions: Default::default(),
         };
 
-        // For horizontal plan views, we can derive horizontal section cuts at cut_height
         let collector = SceneGeometryCollector::collect_from_document(&scene.document, ModelId::new());
-        let p1 = Point2::new(-50.0, 0.0);
-        let p2 = Point2::new(50.0, 0.0);
-        let dummy_section_vp = Viewpoint {
-            id: viewpoint.id,
-            name: viewpoint.name.clone(),
-            revision: viewpoint.revision,
-            origin: viewpoint.origin.clone(),
-            axes: ViewAxes::section(Vector2::new(1.0, 0.0)).unwrap(),
-            kind: ViewKind::Section {
-                path: SectionPath::straight(p1, p2),
-                far_depth: None,
-            },
-            z_range,
-            mapping: Default::default(),
-            crop: None,
-        };
-
-        let primitives = derive_section_view(&dummy_section_vp, &model_view, &collector, &CutEngineOptions::default()).unwrap_or_default();
+        let primitives = derive_floorplan_view(&viewpoint, &model_view, &collector, &FloorPlanEngineOptions::default()).unwrap_or_default();
 
         let mut carrier = create_view_carrier(
             &mut scene.document,
@@ -166,6 +150,8 @@ impl FloorPlanCommand {
         ).ok()?;
 
         let _ = sync_carrier_primitives(&mut scene.document, &mut carrier, &primitives);
+        write_view_carrier_definitions(&mut scene.document, carrier.handle, &viewpoint, &model_view);
+        scene.bump_geometry();
 
         self.last_committed = Some(carrier.handle);
         Some(carrier.handle)

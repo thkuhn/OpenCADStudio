@@ -220,6 +220,8 @@ impl OpenCADStudio {
             Some(&style_library),
             session,
         );
+        self.tabs[tab_index].scene.bump_geometry();
+        self.post_ref_op(tab_index);
     }
 
     /// Regenerates a single wall's representation the same way

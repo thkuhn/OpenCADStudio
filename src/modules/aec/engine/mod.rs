@@ -58,7 +58,7 @@ pub mod xdata;
 mod wall_command_tests;
 
 
-pub use geometry::get_offset_directions;
+pub use geometry::{create_solid3d_from_body, get_offset_directions};
 pub use floor_transition::{find_floor_transitions_for_room, total_transition_area, FloorTransitionZone};
 pub use ifc::Scene;
 pub use library::StyleLibrary;

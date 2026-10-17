@@ -118,6 +118,66 @@ pub fn derive_section_view(
         accum_s += seg_len;
     }
 
+    // 3. Project visible background elements (walls, slabs, openings) behind the section line
+    let forward_depth_max = match &viewpoint.kind {
+        ViewKind::Section { far_depth, .. } => far_depth.map(|d| d.get()).unwrap_or(100.0),
+        _ => 100.0,
+    };
+
+    let elev_opts = crate::modules::aec::engine::views::elevation_engine::ElevationEngineOptions {
+        show_hidden_edges: false,
+        include_opening_symbols: options.include_openings,
+        detail_level: options.detail_level,
+    };
+
+    for wall in &scene.walls {
+        if model_view.excluded_elements.contains(&wall.element_ref) {
+            continue;
+        }
+        if wall.top_z < z_min || wall.base_z > z_max {
+            continue;
+        }
+        let _ = crate::modules::aec::engine::views::elevation_engine::project_wall_elevation(
+            wall,
+            viewpoint,
+            0.05,
+            forward_depth_max,
+            model_view,
+            &elev_opts,
+            &mut primitives,
+            &mut primitive_counter,
+        );
+    }
+
+    for slab in &scene.slabs {
+        if model_view.excluded_elements.contains(&slab.element_ref) {
+            continue;
+        }
+        let (slab_z_min, slab_z_max) = slab.z_range();
+        if slab_z_max < z_min || slab_z_min > z_max {
+            continue;
+        }
+        let _ = crate::modules::aec::engine::views::elevation_engine::project_slab_elevation(
+            slab,
+            viewpoint,
+            0.05,
+            forward_depth_max,
+            model_view,
+            &elev_opts,
+            &mut primitives,
+            &mut primitive_counter,
+        );
+    }
+
+    // 4. Perform Silhouette & Occlusion processing
+    super::silhouette::process_silhouette_and_depth(
+        &mut primitives,
+        &super::silhouette::SilhouetteOptions {
+            emit_hidden_lines: false,
+            max_depth_distance: Some(forward_depth_max),
+        },
+    )?;
+
     Ok(primitives)
 }
 
@@ -338,6 +398,40 @@ fn cut_wall_with_segment(
                     style: boundary_style.clone(),
                     edit_handles: vec![],
                 });
+
+                // Wall left boundary edge (jamb)
+                let mut left_source = source_ref.clone();
+                left_source.feature = Some(FeatureKey::LayerFace);
+                *counter += 1;
+                primitives.push(DerivedPrimitive {
+                    id: PrimitiveId::new(model_view.id, 1, *counter),
+                    role: PrimitiveRole::CutBoundary,
+                    geometry: Geometry2d::Line {
+                        start: Point2::new(u_min, zb),
+                        end: Point2::new(u_min, zt),
+                    },
+                    sources: SourceSet::new(vec![left_source])?,
+                    depth: super::DepthInterval::cut_plane(),
+                    style: boundary_style.clone(),
+                    edit_handles: vec![],
+                });
+
+                // Wall right boundary edge (jamb)
+                let mut right_source = source_ref.clone();
+                right_source.feature = Some(FeatureKey::LayerFace);
+                *counter += 1;
+                primitives.push(DerivedPrimitive {
+                    id: PrimitiveId::new(model_view.id, 1, *counter),
+                    role: PrimitiveRole::CutBoundary,
+                    geometry: Geometry2d::Line {
+                        start: Point2::new(u_max, zb),
+                        end: Point2::new(u_max, zt),
+                    },
+                    sources: SourceSet::new(vec![right_source])?,
+                    depth: super::DepthInterval::cut_plane(),
+                    style: boundary_style.clone(),
+                    edit_handles: vec![],
+                });
             }
         }
     }
@@ -524,7 +618,7 @@ fn cut_slab_with_segment(
                 edit_handles: vec![],
             });
 
-            let mut bot_source = source_ref;
+            let mut bot_source = source_ref.clone();
             bot_source.feature = Some(FeatureKey::SlabBottom);
             *counter += 1;
             primitives.push(DerivedPrimitive {
@@ -535,6 +629,40 @@ fn cut_slab_with_segment(
                     end: Point2::new(u_max, z_bottom),
                 },
                 sources: SourceSet::new(vec![bot_source])?,
+                depth: super::DepthInterval::cut_plane(),
+                style: boundary_style.clone(),
+                edit_handles: vec![],
+            });
+
+            // Slab left boundary edge
+            let mut left_source = source_ref.clone();
+            left_source.feature = Some(FeatureKey::LayerFace);
+            *counter += 1;
+            primitives.push(DerivedPrimitive {
+                id: PrimitiveId::new(model_view.id, 1, *counter),
+                role: PrimitiveRole::CutBoundary,
+                geometry: Geometry2d::Line {
+                    start: Point2::new(u_min, z_bottom),
+                    end: Point2::new(u_min, z_top),
+                },
+                sources: SourceSet::new(vec![left_source])?,
+                depth: super::DepthInterval::cut_plane(),
+                style: boundary_style.clone(),
+                edit_handles: vec![],
+            });
+
+            // Slab right boundary edge
+            let mut right_source = source_ref;
+            right_source.feature = Some(FeatureKey::LayerFace);
+            *counter += 1;
+            primitives.push(DerivedPrimitive {
+                id: PrimitiveId::new(model_view.id, 1, *counter),
+                role: PrimitiveRole::CutBoundary,
+                geometry: Geometry2d::Line {
+                    start: Point2::new(u_max, z_bottom),
+                    end: Point2::new(u_max, z_top),
+                },
+                sources: SourceSet::new(vec![right_source])?,
                 depth: super::DepthInterval::cut_plane(),
                 style: boundary_style,
                 edit_handles: vec![],
