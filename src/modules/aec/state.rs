@@ -260,6 +260,12 @@ pub struct AecState {
     pub aec_last_slab_style_id: Option<String>,
     pub aec_last_slab_structural_style_id: Option<String>,
     pub aec_last_floor_finish_style_id: Option<String>,
+    /// Pending semantic mutation from an active derived view grip drag (handle, mutation).
+    pub aec_pending_derived_view_grip: Option<(acadrust::Handle, crate::modules::aec::engine::views::SemanticMutation)>,
+    /// Pending cut height mutation from an active carrier grip drag (handle, new_cut_h).
+    pub aec_pending_carrier_cut_height: Option<(acadrust::Handle, f64)>,
+    /// Pending carrier insertion mutation from an active carrier grip drag (handle, new_insertion_pt).
+    pub aec_pending_carrier_insertion: Option<(acadrust::Handle, crate::modules::aec::engine::views::Point2)>,
 
     // ── AEC DisplayConfig Manager (Step 5) ─────────────────────────────────
     /// Loaded (or seeded) on `AEC_PLANMANAGER`; holds the `DisplayConfig`
@@ -361,6 +367,9 @@ impl Default for AecState {
             aec_last_slab_style_id: None,
             aec_last_slab_structural_style_id: None,
             aec_last_floor_finish_style_id: None,
+            aec_pending_derived_view_grip: None,
+            aec_pending_carrier_cut_height: None,
+            aec_pending_carrier_insertion: None,
             aec_plan_library: None,
             aec_junction_editor_target: None,
             aec_junction_editor_default_style: None,

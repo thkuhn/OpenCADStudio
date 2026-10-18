@@ -2018,11 +2018,19 @@ impl OpenCADStudio {
                 })
                 .collect();
             for (handle, grip_id, apply) in actions {
+                let orig_ent = self
+                    .grip_originals
+                    .iter()
+                    .find(|(h, _)| *h == handle)
+                    .map(|(_, e)| e.clone());
                 if !rebuilt_arcs.contains(&handle)
                     && !self.apply_aec_opening_grip(i, handle, grip_id, &apply)
                     && !self.apply_aec_slab_grip(i, handle, grip_id, &apply)
                     && !self.apply_aec_slab_opening_grip(i, handle, grip_id, &apply)
                     && !self.apply_aec_room_grip(i, handle, grip_id, &apply)
+                    && !self.apply_aec_section_marker_grip(i, handle, grip_id, &apply, orig_ent.as_ref())
+                    && !self.apply_aec_derived_view_grip(i, handle, grip_id, &apply, orig_ent.as_ref())
+                    && !self.apply_aec_carrier_grip(i, handle, grip_id, &apply)
                 {
                     self.tabs[i].scene.apply_grip(handle, grip_id, apply);
                 }
@@ -5357,12 +5365,8 @@ was_selected={}",
                     }
 
                     let crossing = box_crossing;
-                    let (mut handles, timing) =
+                    let (mut handles, _timing) =
                         self.box_selection_handles(i, &edit_cam, bounds, a, p, crossing);
-                    let (cand_ms, hit_ms) = (timing.candidates, timing.hit);
-                    let (m_handles, m_wires, m_hatch) =
-                        (Some(timing.handles), Some(timing.wires), Some(timing.hatch));
-                    let t_filter = crate::perf::enabled().then(Instant::now);
                     // Selection filter: keep only allowed types.
                     handles.retain(|&h| self.tabs[i].scene.passes_selection_filter(h));
                     // Accumulate (issue #83): a plain box adds to the
@@ -6805,6 +6809,7 @@ was_selected={}",
         let history_originals = std::mem::take(&mut self.grip_history_originals);
         let dirty_before = self.grip_dirty_before.take().unwrap_or(self.tabs[i].dirty);
         if !handles.is_empty() {
+            let undo_stack_len_before = self.tabs[i].history.undo_stack.len();
             if !originals.is_empty() {
                 self.push_entity_group_history(
                     i,
@@ -6821,6 +6826,7 @@ was_selected={}",
                 );
                 self.tabs[i].dirty = true;
             }
+            let grip_delta_pushed = self.tabs[i].history.undo_stack.len() > undo_stack_len_before;
             self.grip_reference_wires.clear();
             self.grip_text_verts = Vec::new();
             self.grip_text_slide = false;
@@ -6880,7 +6886,13 @@ was_selected={}",
                     self.tabs[i].scene.select_entity(owner, false);
                 }
             }
+            let recorder = self.tabs[i].scene.document.begin_entity_change_recording();
             self.aec_regenerate_entity_packages(i, &handles);
+            self.tabs[i].scene.document.end_entity_change_recording();
+            let regen_before_images = recorder.take_before_images();
+            if grip_delta_pushed {
+                self.capture_package_regen_history(i, regen_before_images);
+            }
             self.tabs[i].scene.bump_entities_after_parametric_solve(&changes);
         }
         // Placement confirmed — keep the just-added leader.

@@ -182,9 +182,52 @@ pub struct SceneGeometryCollector {
     pub slabs: Vec<CollectedSlab>,
 }
 
+fn handle_to_element_id(handle: Handle) -> ElementId {
+    let mut bytes = [0u8; 16];
+    bytes[8..16].copy_from_slice(&handle.value().to_be_bytes());
+    ElementId::from_uuid(uuid::Uuid::from_bytes(bytes))
+}
+
 impl SceneGeometryCollector {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Computes the 2D bounding box across all walls and slabs in the scene.
+    pub fn bounding_box_2d(&self) -> Option<(Point2, Point2)> {
+        let mut min_x = f64::INFINITY;
+        let mut min_y = f64::INFINITY;
+        let mut max_x = f64::NEG_INFINITY;
+        let mut max_y = f64::NEG_INFINITY;
+        let mut has_geom = false;
+
+        for wall in &self.walls {
+            let (w_min, w_max) = wall.bounding_box_2d();
+            if w_min.x_m <= w_max.x_m && w_min.y_m <= w_max.y_m {
+                min_x = min_x.min(w_min.x_m);
+                min_y = min_y.min(w_min.y_m);
+                max_x = max_x.max(w_max.x_m);
+                max_y = max_y.max(w_max.y_m);
+                has_geom = true;
+            }
+        }
+
+        for slab in &self.slabs {
+            let (s_min, s_max) = slab.bounding_box_2d();
+            if s_min.x_m <= s_max.x_m && s_min.y_m <= s_max.y_m {
+                min_x = min_x.min(s_min.x_m);
+                min_y = min_y.min(s_min.y_m);
+                max_x = max_x.max(s_max.x_m);
+                max_y = max_y.max(s_max.y_m);
+                has_geom = true;
+            }
+        }
+
+        if has_geom {
+            Some((Point2::new(min_x, min_y), Point2::new(max_x, max_y)))
+        } else {
+            None
+        }
     }
 
     /// Aggregates all AEC elements from `doc` across native entities and all XREF block inserts.
@@ -257,7 +300,7 @@ impl SceneGeometryCollector {
             }
 
             let handle = entity.common().handle;
-            let elem_ref = ElementRef::new(model_id, ElementId::new());
+            let elem_ref = ElementRef::new(model_id, handle_to_element_id(handle));
 
             if let Some(wall) = wall_from_entity(entity) {
                 if let EntityType::LwPolyline(pl) = entity {
@@ -313,7 +356,7 @@ impl SceneGeometryCollector {
                                 continue;
                             };
 
-                            let op_elem_ref = ElementRef::new(model_id, ElementId::new());
+                            let op_elem_ref = ElementRef::new(model_id, handle_to_element_id(child));
                             let (s_lo, s_hi) = op.axis_span();
 
                             // Compute world center of opening

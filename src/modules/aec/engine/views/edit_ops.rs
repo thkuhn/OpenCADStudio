@@ -804,4 +804,162 @@ mod tests {
         let updated_slab = crate::modules::aec::engine::slab_xdata::slab_from_entity(updated_entity).unwrap();
         assert_eq!(updated_slab.base_origin[2], 3.1);
     }
+
+    #[test]
+    fn test_derived_view_grip_drag_and_undo_cycle() {
+        use crate::app::OpenCADStudio;
+        use crate::modules::aec::engine::views::carrier::{
+            create_view_carrier, find_view_carrier_by_handle,
+            sync_carrier_primitives, write_view_carrier_definitions,
+        };
+        use crate::modules::aec::engine::views::cut_engine::{derive_section_view, CutEngineOptions};
+        use crate::modules::aec::engine::views::model_view::{
+            DetailPolicy, ModelView, UpdatePolicy, ViewRevisions,
+        };
+        use crate::modules::aec::engine::views::scene_collector::SceneGeometryCollector;
+        use crate::modules::aec::engine::views::viewpoint::{SectionPath, VerticalRange, ViewAxes, ViewKind, ViewOrigin, Viewpoint};
+        use crate::modules::aec::engine::views::{Metres, ModelId, ModelViewId, Point2, Point3, Revision, ScaleDenominator, Vector2, ViewProfileId, ViewpointId};
+        use crate::modules::aec::properties::{append_derived_view_grips, DERIVED_VIEW_GRIP_BASE};
+
+        let mut app = OpenCADStudio::new_for_test();
+        app.automation_op(r#"{"op":"new"}"#);
+        let tab = app.active_tab;
+
+        // 1. Create a 3D wall at y = 0
+        let mut wall = Wall::new("W1", 2.8, 0);
+        wall.layers.push(crate::modules::aec::engine::wall::WallLayer {
+            material: "Concrete".into(),
+            thickness: 0.24,
+            function: "Structural".into(),
+            axis_offset: 0.0,
+            bottom_offset: 0.0,
+            top_offset: 0.0,
+            layer_override: None,
+            hatch_override: None,
+            layer_id: uuid::Uuid::new_v4(),
+        });
+        let mut pl = acadrust::entities::LwPolyline::new();
+        pl.add_vertex(acadrust::entities::LwVertex::new(acadrust::types::Vector2::new(0.0, 0.0)));
+        pl.add_vertex(acadrust::entities::LwVertex::new(acadrust::types::Vector2::new(10.0, 0.0)));
+        let mut wall_entity = EntityType::LwPolyline(pl);
+        wall_entity.common_mut().layer = "AEC_WALL".into();
+
+        let mut rec = ExtendedDataRecord::new(AEC_APPID);
+        rec.values = crate::modules::aec::engine::xdata::wall_record_for_wall(&wall);
+        wall_entity.common_mut().extended_data.add_record(rec);
+        let wall_handle = app.tabs[tab].scene.document.add_entity(wall_entity).unwrap();
+
+        // 2. Create Section Viewpoint and Carrier
+        let vp_id = ViewpointId::new();
+        let mv_id = ModelViewId::new();
+
+        let carrier = create_view_carrier(
+            &mut app.tabs[tab].scene.document,
+            vp_id,
+            mv_id,
+            Point2::new(50.0, 0.0),
+            1.0,
+            0.0,
+            UpdatePolicy::Automatic,
+        )
+        .unwrap();
+
+        let vp = Viewpoint {
+            id: vp_id,
+            name: "Section A".into(),
+            revision: Revision(1),
+            origin: ViewOrigin::World(Point3::new(5.0, -5.0, 0.0)),
+            axes: ViewAxes::section(Vector2::new(0.0, 1.0)).unwrap(),
+            kind: ViewKind::Section {
+                path: SectionPath::straight(Point2::new(5.0, -5.0), Point2::new(5.0, 5.0)),
+                far_depth: None,
+            },
+            z_range: VerticalRange::new(Metres::new(0.0).unwrap(), Metres::new(4.0).unwrap()).unwrap(),
+            mapping: Default::default(),
+            crop: None,
+        };
+        let mv = ModelView {
+            id: mv_id,
+            name: "Section A MV".into(),
+            viewpoint_id: vp_id,
+            profile_id: ViewProfileId::new(),
+            scale: ScaleDenominator::new(50.0).unwrap(),
+            detail: DetailPolicy::FromProfileAndScale,
+            excluded_elements: Default::default(),
+            graphic_overrides: Vec::new(),
+            annotation_ids: Vec::new(),
+            update_policy: UpdatePolicy::Automatic,
+            revisions: ViewRevisions::default(),
+        };
+        write_view_carrier_definitions(&mut app.tabs[tab].scene.document, carrier.handle, &vp, &mv);
+
+        // 3. Derive section primitives and sync carrier
+        let collector = SceneGeometryCollector::collect_from_document(&app.tabs[tab].scene.document, ModelId::new());
+        let prims = derive_section_view(&vp, &mv, &collector, &CutEngineOptions::default()).unwrap();
+        let mut carrier_mut = find_view_carrier_by_handle(&app.tabs[tab].scene.document, carrier.handle).unwrap();
+        sync_carrier_primitives(&mut app.tabs[tab].scene.document, &mut carrier_mut, &prims).unwrap();
+
+        // 4. Find the derived wall top boundary entity
+        let mut wall_top_handle = None;
+        for &h in &carrier_mut.derived_handles {
+            if let Some(ent) = app.tabs[tab].scene.document.get_entity(h) {
+                if let Some(meta) = crate::modules::aec::engine::views::carrier::read_derived_primitive_metadata(ent) {
+                    if meta.feature == Some(FeatureKey::WallTop) {
+                        wall_top_handle = Some(h);
+                        break;
+                    }
+                }
+            }
+        }
+        let edge_handle = wall_top_handle.expect("found derived wall top line");
+
+        // 5. Verify grip generation
+        let mut grips = Vec::new();
+        append_derived_view_grips(&app.tabs[tab].scene, edge_handle, &mut grips);
+        assert_eq!(grips.len(), 1);
+        assert_eq!(grips[0].id, DERIVED_VIEW_GRIP_BASE);
+
+        // Prepare viewport for camera projection and hit testing
+        {
+            let tab_ref = &mut app.tabs[tab];
+            tab_ref.scene.selection.borrow_mut().view.vp_size = (1920.0, 1080.0);
+            tab_ref.scene.sync_tiles_from_panes(1920.0, 1080.0);
+            tab_ref.scene.fit_all();
+        }
+
+        let state = app.automation_op(r#"{"protocol":1,"op":"state"}"#);
+        let doc_id = state["document_id"].as_u64().unwrap();
+
+        // 6. Move wall top grip up by 0.5m via automation grip_drag
+        let drag_req = serde_json::json!({
+            "protocol": 1,
+            "request_id": "req-grip-1",
+            "document_id": doc_id,
+            "op": "grip_drag",
+            "handle": format!("0x{:X}", edge_handle.value()),
+            "grip_id": DERIVED_VIEW_GRIP_BASE,
+            "point": [grips[0].world.x, grips[0].world.y + 0.5, grips[0].world.z]
+        });
+        let drag_res = app.automation_op(&drag_req.to_string());
+        assert_eq!(drag_res["ok"], true, "grip_drag failed: {drag_res}");
+
+        // 7. Verify the 3D wall height has changed to 3.30m
+        let updated_wall_ent = app.tabs[tab].scene.document.get_entity(wall_handle).unwrap();
+        let updated_wall = crate::modules::aec::engine::xdata::wall_from_entity(updated_wall_ent).unwrap();
+        assert!((updated_wall.height - 3.3).abs() < 1e-3, "wall height updated to 3.3m: got {}", updated_wall.height);
+
+        // 8. Verify single undo step restores wall height to 2.80m
+        let undo_req = serde_json::json!({
+            "protocol": 1,
+            "request_id": "req-undo-1",
+            "document_id": doc_id,
+            "op": "undo"
+        });
+        let undo_res = app.automation_op(&undo_req.to_string());
+        assert_eq!(undo_res["ok"], true, "undo failed: {undo_res}");
+
+        let restored_wall_ent = app.tabs[tab].scene.document.get_entity(wall_handle).unwrap();
+        let restored_wall = crate::modules::aec::engine::xdata::wall_from_entity(restored_wall_ent).unwrap();
+        assert!((restored_wall.height - 2.8).abs() < 1e-3, "wall height reverted to 2.8m: got {}", restored_wall.height);
+    }
 }

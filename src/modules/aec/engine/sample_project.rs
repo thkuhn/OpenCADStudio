@@ -482,6 +482,20 @@ fn build_master_geometry(
     ) {
         let _ = sync_carrier_primitives(&mut scene.document, &mut carrier, &section_prims);
         write_view_carrier_definitions(&mut scene.document, carrier.handle, &section_vp, &section_mv);
+
+        // DIN 1356 Schnittmarkierung im Grundrissbereich anlegen
+        use crate::modules::aec::views::din1356::{create_section_marker, Din1356SectionMarker};
+        let section_marker = Din1356SectionMarker::new_section(
+            "A - A",
+            SectionPath::Straight {
+                start: Point2::new(-1.0, 4.0),
+                end: Point2::new(11.0, 4.0),
+            },
+            section_vp.id,
+            Some(carrier.handle),
+        )
+        .with_depth(Some(12.0));
+        let _ = create_section_marker(&mut scene.document, &section_marker);
     }
 
     // 2. Südansicht (Elevation)
@@ -539,6 +553,73 @@ fn build_master_geometry(
     ) {
         let _ = sync_carrier_primitives(&mut scene.document, &mut carrier, &elev_prims);
         write_view_carrier_definitions(&mut scene.document, carrier.handle, &elev_vp, &elev_mv);
+
+        // DIN 1356 Ansichtsmarkierung anlegen
+        use crate::modules::aec::views::din1356::{create_section_marker, Din1356SectionMarker};
+        let elev_marker = Din1356SectionMarker::new_elevation(
+            "Südfassade",
+            Point2::new(0.0, -2.0),
+            Point2::new(10.0, -2.0),
+            elev_vp.id,
+            Some(carrier.handle),
+        )
+        .with_depth(Some(15.0));
+        let _ = create_section_marker(&mut scene.document, &elev_marker);
+    }
+
+    // 3. EG Grundriss (Floor Plan 1:50) mit lokalisierter Projektion
+    let fp_vp = Viewpoint {
+        id: ViewpointId::new(),
+        name: "EG Grundriss".to_string(),
+        revision: Revision(1),
+        origin: ViewOrigin::World(Point3::new(-1.0, -1.0, 1.0)),
+        axes: ViewAxes::floor_plan(),
+        kind: ViewKind::FloorPlan {
+            range: PlanRange {
+                above_cut: NonNegativeMetres::new(1.8).unwrap(),
+                below_cut: NonNegativeMetres::new(1.0).unwrap(),
+                beyond_below: NonNegativeMetres::ZERO,
+            },
+        },
+        z_range: VerticalRange::new(Metres::new(0.0)?, Metres::new(2.8)?).unwrap(),
+        mapping: Default::default(),
+        crop: None,
+    };
+
+    let fp_mv = ModelView {
+        id: ModelViewId::new(),
+        name: "EG Grundriss (1:50)".to_string(),
+        viewpoint_id: fp_vp.id,
+        profile_id: ViewProfileId::new(),
+        scale: ScaleDenominator::new(50.0)?,
+        detail: DetailPolicy::FromProfileAndScale,
+        excluded_elements: Default::default(),
+        graphic_overrides: Vec::new(),
+        annotation_ids: Vec::new(),
+        update_policy: UpdatePolicy::Automatic,
+        revisions: Default::default(),
+    };
+
+    use crate::modules::aec::engine::views::floorplan_engine::{derive_floorplan_view, FloorPlanEngineOptions};
+    let fp_prims = derive_floorplan_view(
+        &fp_vp,
+        &fp_mv,
+        &collector,
+        &FloorPlanEngineOptions::default(),
+    )
+    .unwrap_or_default();
+
+    if let Ok(mut carrier) = create_view_carrier(
+        &mut scene.document,
+        fp_vp.id,
+        fp_mv.id,
+        Point2::new(18.0, 24.0),
+        1.0,
+        0.0,
+        UpdatePolicy::Automatic,
+    ) {
+        let _ = sync_carrier_primitives(&mut scene.document, &mut carrier, &fp_prims);
+        write_view_carrier_definitions(&mut scene.document, carrier.handle, &fp_vp, &fp_mv);
     }
 
     Ok(())
@@ -563,7 +644,7 @@ fn build_project_file(library: &StyleLibrary) -> ProjectFile {
 fn generate_readme_text() -> String {
     r#"# OpenCADStudio AEC — Beispielprojekt: Einfamilienhaus
 
-Dieses Beispielprojekt demonstriert das Zusammenspiel von **Multi-Geschoss-Modellen über XREFs**, **AEC-Bauteilen (Wände, Decken, Öffnungen)** und den neuen **modellassoziierten 2D-Schnitt- und Ansichtsfunktionen**.
+Dieses Beispielprojekt demonstriert das Zusammenspiel von **Multi-Geschoss-Modellen über XREFs**, **AEC-Bauteilen (Wände, Decken, Öffnungen)** und den neuen **modellassoziierten 2D-Schnitt-, Ansichts- und Grundriss-Funktionen nach DIN 1356**.
 
 ---
 
@@ -579,27 +660,34 @@ Dieses Beispielprojekt demonstriert das Zusammenspiel von **Multi-Geschoss-Model
   Dachgeschoss mit Kniestock-/Drempelwänden und Giebelwänden.
 * `Haus_Gesamt.dwg` / `Haus_Gesamt.dxf`:
   Das aggregierte Master-Modell. Es bindet die Einzelgeschosse `EG`, `OG` und `DG` als externe Referenzen (XREFs) mit ihren jeweiligen Höhenversätzen ($Z = 0{,}00\,\text{m}$, $Z = 2{,}80\,\text{m}$, $Z = 5{,}60\,\text{m}$) ein.
-  Enthält bereits vordefinierte abgeleitete Zeichnungsträger:
-  * **Schnitt A–A:** Mehrgeschossiger Gebäudeschnitt mit Materialschraffuren und Deckenauflagern.
-  * **Südfassade:** Fassadenansicht mit Öffnungsprofilen und DIN-Flügelaufschlägen.
+  Enthält bereits vordefinierte abgeleitete Zeichnungsträger (`DerivedViewCarrier`) und DIN 1356 Markierungen:
+  * **Schnitt A–A:** Mehrgeschossiger Gebäudeschnitt mit Materialschraffuren, Deckenauflagern und assoziativer DIN 1356 Schnittmarkierung.
+  * **Südfassade:** Fassadenansicht mit Öffnungsprofilen, DIN-Flügelaufschlägen und Ansichtsmarkierung.
+  * **EG Grundriss:** Assoziativer Horizontalschnitt mit lokalisierter Verortung und Türöffnungssymbolen.
 
 ---
 
-## Befehle & Arbeitsablauf
+## Interaktive Griffe & Assoziative Modellbearbeitung
 
-1. **Projekt öffnen:**
-   * Öffnen Sie `Projekt_Einfamilienhaus.ocsproj` im Projekt-Explorer oder öffnen Sie `Haus_Gesamt.dwg` direkt.
-2. **Neuen Schnitt erzeugen (`AEC_SECTION`):**
-   * Befehl `AEC_SECTION` in der Befehlszeile eingeben oder in der Ribbon-Gruppe **"Views"** auf **"Section"** klicken.
-   * Start- und Endpunkt der Schnittlinie durch das Gebäude wählen (z. B. quer oder gestuft).
-   * Blicktiefe und Einfügepunkt für den 2D-Zeichnungsträger im Modellbereich anklicken.
-3. **Ansicht erstellen (`AEC_ELEVATION`):**
-   * Befehl `AEC_ELEVATION` aufrufen.
-   * Fassadenlinie und Blicktiefe angeben.
-4. **Ansichten aktualisieren (`AEC_VIEWUPDATE`):**
-   * Nach Änderungen an Wänden oder Fenstern in den Geschossen aktualisiert `AEC_VIEWUPDATE` alle veralteten Schnitte synchron.
-5. **Layout-Platzierung (`AEC_PLACE_VIEW`):**
-   * Im Papierbereich platzieren mit automatischer Ansichtsfenstererstellung (`MVIEW`) und Maßstabsbindung (1:50 / 1:100).
+1. **DIN 1356 Schnittmarkierungen im Grundriss:**
+   * **Start- und Endgriff (Quadrat):** Verschieben oder Drehen der Schnittlinie. Der assoziierte Schnittträger wird bei Fertigstellung automatisch synchron regeneriert.
+   * **Tiefengriff (Rechteck):** Blicktiefe interaktiv per Maus vergrößern oder verkleinern.
+   * **Flip-Griff (Dreieck):** Ein Klick kehrt die Blickrichtung der Schnittpfeile und des Schnittträgers normgerecht um.
+   * **Jog-Punkte:** Bei abgetreppten Schnittführungen können Zwischensegmente individuell verschoben werden.
+
+2. **Semantische Modellgriffe im Schnitt (`resolve_handle_drag`):**
+   * Beim Anklicken abgeleiteter Kanten im Schnitt (z. B. Wandoberkanten, Deckenoberkanten, Fensterbrüstungen oder Stürzen) erscheinen interaktive Modellgriffe.
+   * Das Ziehen an einem Wandoberkantengriff hebt oder senkt die 3D-Wandhöhe im BIM-Modell.
+   * Beim Loslassen des Griffs wird eine atomare BIM-Transaktion ausgeführt: Die Wandhöhe wird im Modell aktualisiert und alle abhängigen Ansichten werden synchron neu berechnet.
+
+3. **Lokalisierte Grundriss-Engine (`AEC_FLOORPLAN` / `AEC_RCP`):**
+   * Grundrisse werden relativ zum Modellursprung projiziert und erscheinen exakt am gewählten Klickpunkt.
+   * **Einfügegriff:** Verschieben der gesamten platzierten 2D-Zeichnung im Modellbereich.
+   * **Schnitthöhen-Griff:** Interaktive Justierung der horizontalen Schnittebene (`z_cut`) direkt am Plan oder über das Eigenschaften-Panel (`carrier_cut_height`).
+
+4. **Eigenschaften-Panel & Synchronisation:**
+   * Alle Parameter (Kennung, Blicktiefe, Z-Bereich, Schnitthöhe, Maßstab 1:50/1:100 und Aktualisierungsmodus) können im Eigenschaften-Panel angepasst werden.
+   * Mit dem Befehl `AEC_VIEWUPDATE` können alle manuell verwalteten Ansichten auf Tastendruck auf den neuesten Modellstand gebracht werden.
 "#
     .to_string()
 }

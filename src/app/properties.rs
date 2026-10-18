@@ -3010,6 +3010,21 @@ handles={handles_ms:.1} panel={:.1} ribbon={ribbon_ms:.1} tail={:.1} selected={}
                     contextual.as_ref(),
                     &mut entity_grips,
                 );
+                crate::modules::aec::properties::append_section_marker_grips(
+                    &self.tabs[i].scene,
+                    handle,
+                    &mut entity_grips,
+                );
+                crate::modules::aec::properties::append_derived_view_grips(
+                    &self.tabs[i].scene,
+                    handle,
+                    &mut entity_grips,
+                );
+                crate::modules::aec::properties::append_view_carrier_grips(
+                    &self.tabs[i].scene,
+                    handle,
+                    &mut entity_grips,
+                );
                 for mut grip in entity_grips {
                     // Subtract in f64: at UTM magnitudes an f32 cast before
                     // the offset costs ~1 unit and draws the grip off the wire.
@@ -4955,6 +4970,70 @@ use crate::modules::aec::engine::{WallJustification, WallLayer};
             "package selection must expose wall_style, got {:?}",
             section.props.iter().map(|p| p.field).collect::<Vec<_>>()
         );
+    }
+
+    #[test]
+    fn selecting_wall_with_opening_collapses_to_wall() {
+        use crate::modules::aec::engine::openings::OpeningKind;
+        use crate::modules::aec::engine::opening_xdata::place_wall_opening;
+        use glam::DVec3;
+
+        let mut scene = Scene::new();
+        let wall = add_simple_wall(&mut scene);
+        regenerate_wall_representation(&mut scene, wall, None).expect("regen");
+
+        let (op, _touched) = place_wall_opening(
+            &mut scene,
+            wall,
+            DVec3::new(2.5, 0.0, 0.0),
+            OpeningKind::Window,
+            None,
+            None,
+            None,
+        )
+        .expect("place opening");
+
+        // 1. Selecting the wall carrier directly
+        scene.select_entity(wall, true);
+        let selected_raw = scene.selected_entities();
+        let collapsed = collapse_selection_to_wall_package(&scene, selected_raw);
+        assert_eq!(collapsed.len(), 1, "Selecting wall with opening must collapse to 1 entity");
+        assert_eq!(collapsed[0].0, wall);
+        let title = crate::modules::aec::properties::aec_entity_title(&scene, collapsed[0].0, collapsed[0].1)
+            .expect("title");
+        assert_eq!(title, crate::tr!("aec", "wall-title"));
+
+        // 2. Selecting any of the wall's derived representation handles (contours/hatches)
+        let wall_data = wall_from_entity(scene.document.get_entity(wall).unwrap()).unwrap();
+        for &dh in &wall_data.derived_handles {
+            scene.select_entity(dh, true);
+            let raw = scene.selected_entities();
+            let c = collapse_selection_to_wall_package(&scene, raw);
+            assert_eq!(c.len(), 1, "Selecting derived handle must collapse to 1 entity");
+            assert_eq!(c[0].0, wall);
+        }
+
+        // 3. Selecting only the opening
+        scene.select_entity(op, true);
+        let raw_op = scene.selected_entities();
+        let collapsed_op = collapse_selection_to_wall_package(&scene, raw_op);
+        assert_eq!(collapsed_op.len(), 1, "Selecting opening must collapse to 1 entity");
+        assert_eq!(collapsed_op[0].0, op);
+        let op_title = crate::modules::aec::properties::aec_entity_title(&scene, collapsed_op[0].0, collapsed_op[0].1)
+            .expect("title");
+        assert_eq!(op_title, crate::tr!("aec", "window-title"));
+
+        // 4. Multi-selection containing both wall and opening
+        scene.select_entity(wall, true);
+        scene.select_entity(op, false); // Add opening to selection
+        let raw_both = scene.selected_entities();
+        let collapsed_both = collapse_selection_to_wall_package(&scene, raw_both);
+        assert_eq!(
+            collapsed_both.len(),
+            1,
+            "Selection of wall + opening must collapse opening into host wall"
+        );
+        assert_eq!(collapsed_both[0].0, wall);
     }
 }
 

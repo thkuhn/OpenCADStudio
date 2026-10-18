@@ -272,10 +272,14 @@ pub fn expand_handles_for_slab_packages(scene: &Scene, handles: &[Handle]) -> Ve
             continue;
         }
         let owner = resolve_slab_package(scene, handle);
-        for package in slab_package_handles(scene, owner) {
-            if seen.insert(package) {
-                out.push(package);
+        if scene.document.get_entity(owner).is_some_and(is_slab_carrier_entity) {
+            for package in slab_package_handles(scene, owner) {
+                if seen.insert(package) {
+                    out.push(package);
+                }
             }
+        } else if seen.insert(handle) {
+            out.push(handle);
         }
     }
     out
@@ -284,6 +288,27 @@ pub fn expand_handles_for_slab_packages(scene: &Scene, handles: &[Handle]) -> Ve
 /// True when `handle` is a slab-derived representation entity.
 pub fn is_slab_derived(scene: &Scene, handle: Handle) -> bool {
     resolve_slab_package(scene, handle) != handle
+}
+
+/// Returns the block owner handle and layer prefix for a slab carrier entity.
+/// If the slab is contained within an XREF block, returns that block's handle and the prefix (e.g. "EG|").
+pub fn slab_owner_and_layer_prefix(scene: &Scene, host_handle: Handle) -> (Handle, Option<String>) {
+    let Some(entity) = scene.document.get_entity(host_handle) else {
+        return (Handle::NULL, None);
+    };
+    let owner = entity.common().owner_handle;
+    if !owner.is_null() && owner != scene.document.header.model_space_block_handle {
+        if let Some(br) = scene.document.block_records.iter().find(|br| br.handle == owner) {
+            if !br.name.is_empty() {
+                return (owner, Some(format!("{}|", br.name)));
+            }
+        }
+    }
+    if let Some(pos) = entity.common().layer.find('|') {
+        let p = entity.common().layer[..=pos].to_string();
+        return (owner, Some(p));
+    }
+    (owner, None)
 }
 
 /// True when `entity` carries a `SLAB` XDATA record.

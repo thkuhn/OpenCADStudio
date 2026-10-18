@@ -234,12 +234,31 @@ pub fn project_wall_elevation(
         // Wall Opaque Surface Mask (used for 3D occlusion clipping)
         *counter += 1;
         let surface_poly = vec![uv0_base, uv1_base, uv1_top, uv0_top];
+        let seg_len = (p1.x_m - p0.x_m).hypot(p1.y_m - p0.y_m);
+        let mut opening_holes = Vec::new();
+        if options.include_opening_symbols && seg_len > EPS {
+            let dir = Vector2::new((p1.x_m - p0.x_m) / seg_len, (p1.y_m - p0.y_m) / seg_len);
+            for op in &wall.openings {
+                let (s_lo, s_hi) = op.axis_span_local;
+                let z_sill = wall.base_z + op.sill_height;
+                let z_head = z_sill + op.height;
+                let pt_bl = Point3::new(p0.x_m + dir.x * s_lo, p0.y_m + dir.y * s_lo, z_sill);
+                let pt_br = Point3::new(p0.x_m + dir.x * s_hi, p0.y_m + dir.y * s_hi, z_sill);
+                let pt_tl = Point3::new(p0.x_m + dir.x * s_lo, p0.y_m + dir.y * s_lo, z_head);
+                let pt_tr = Point3::new(p0.x_m + dir.x * s_hi, p0.y_m + dir.y * s_hi, z_head);
+                let (uv_bl, _) = viewpoint.world_to_view(pt_bl);
+                let (uv_br, _) = viewpoint.world_to_view(pt_br);
+                let (uv_tr, _) = viewpoint.world_to_view(pt_tr);
+                let (uv_tl, _) = viewpoint.world_to_view(pt_tl);
+                opening_holes.push(vec![uv_bl, uv_br, uv_tr, uv_tl]);
+            }
+        }
         primitives.push(DerivedPrimitive {
             id: PrimitiveId::new(model_view.id, 1, *counter),
             role: PrimitiveRole::SurfaceFill,
             geometry: Geometry2d::Region {
                 outer: surface_poly,
-                holes: vec![],
+                holes: opening_holes,
             },
             sources: SourceSet::new(vec![wall_source])?,
             depth: DepthInterval::new(avg_depth, avg_depth)?,
@@ -512,7 +531,7 @@ pub fn project_slab_elevation(
             edit_handles: vec![],
         });
 
-        let mut bot_source = slab_source;
+        let mut bot_source = slab_source.clone();
         bot_source.feature = Some(FeatureKey::SlabBottom);
         *counter += 1;
         primitives.push(DerivedPrimitive {
@@ -527,6 +546,33 @@ pub fn project_slab_elevation(
             style,
             edit_handles: vec![],
         });
+
+        // Slab vertical face opaque surface mask
+        if (uv1_bot.x_m - uv0_bot.x_m).abs() > EPS || (uv1_bot.y_m - uv0_bot.y_m).abs() > EPS {
+            *counter += 1;
+            let slab_poly = vec![uv0_bot, uv1_bot, uv1_top, uv0_top];
+            primitives.push(DerivedPrimitive {
+                id: PrimitiveId::new(model_view.id, 1, *counter),
+                role: PrimitiveRole::SurfaceFill,
+                geometry: Geometry2d::Region {
+                    outer: slab_poly,
+                    holes: vec![],
+                },
+                sources: SourceSet::new(vec![slab_source])?,
+                depth: DepthInterval::new(avg_depth, avg_depth)?,
+                style: ResolvedStyle {
+                    line_weight_mm: PaperMm::new(0.18)?,
+                    line_color: None,
+                    line_type: None,
+                    fill_color: None,
+                    hatch_pattern: None,
+                    hatch_scale: None,
+                    hatch_angle_rad: None,
+                    layer_name: Some("AEC_SECTION_SURFACE".to_string()),
+                },
+                edit_handles: vec![],
+            });
+        }
     }
 
     Ok(())

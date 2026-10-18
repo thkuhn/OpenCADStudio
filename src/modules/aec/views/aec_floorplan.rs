@@ -110,11 +110,18 @@ impl FloorPlanCommand {
         let z_max = Metres::new(self.z_max).ok()?;
         let z_range = VerticalRange::new(z_min, z_max).ok()?;
 
+        let collector = SceneGeometryCollector::collect_from_document(&scene.document, ModelId::new());
+        let (origin_x, origin_y) = if let Some((b_min, _)) = collector.bounding_box_2d() {
+            (b_min.x_m, b_min.y_m)
+        } else {
+            (0.0, 0.0)
+        };
+
         let viewpoint = Viewpoint {
             id: ViewpointId::new(),
             name: self.name.clone(),
             revision: Revision(1),
-            origin: ViewOrigin::World(Point3::new(0.0, 0.0, self.cut_height)),
+            origin: ViewOrigin::World(Point3::new(origin_x, origin_y, self.cut_height)),
             axes,
             kind: view_kind,
             z_range,
@@ -136,7 +143,6 @@ impl FloorPlanCommand {
             revisions: Default::default(),
         };
 
-        let collector = SceneGeometryCollector::collect_from_document(&scene.document, ModelId::new());
         let primitives = derive_floorplan_view(&viewpoint, &model_view, &collector, &FloorPlanEngineOptions::default()).unwrap_or_default();
 
         let mut carrier = create_view_carrier(

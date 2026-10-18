@@ -17,7 +17,7 @@ use super::provenance::ElementRef;
 use super::scene_collector::SceneGeometryCollector;
 use super::silhouette::{process_silhouette_and_depth, SilhouetteOptions};
 use super::viewpoint::{ViewKind, Viewpoint};
-use super::{ModelViewId, ValidationError};
+use super::{ModelId, ModelViewId, ValidationError};
 
 /// Marks all carriers in the document as outdated (dirty).
 /// Returns the number of carriers updated.
@@ -163,6 +163,29 @@ pub fn regenerate_carrier(
     sync_carrier_primitives(doc, &mut carrier, &primitives)?;
 
     Ok(1)
+}
+
+/// Regenerates a carrier using document geometry. If regeneration succeeds,
+/// the carrier geometry is refreshed and `is_outdated` is false.
+/// If regeneration fails, the carrier is marked as outdated (`is_outdated = true`)
+/// so the user is never shown a stale view that claims to be current.
+pub fn regenerate_or_mark_outdated(
+    doc: &mut CadDocument,
+    carrier_handle: Handle,
+    vp: &Viewpoint,
+    mv: &ModelView,
+) -> bool {
+    let collector = SceneGeometryCollector::collect_from_document(doc, ModelId::new());
+    match regenerate_carrier(doc, carrier_handle, &[vp.clone()], &[mv.clone()], &collector) {
+        Ok(_) => true,
+        Err(_) => {
+            if let Some(mut carrier) = find_view_carrier_by_handle(doc, carrier_handle) {
+                carrier.is_outdated = true;
+                write_view_carrier(doc, &carrier);
+            }
+            false
+        }
+    }
 }
 
 /// Regenerates all carriers associated with a specific `ModelViewId`.

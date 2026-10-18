@@ -134,10 +134,14 @@ pub fn expand_handles_for_room_packages(scene: &Scene, handles: &[Handle]) -> Ve
     let mut seen = rustc_hash::FxHashSet::default();
     for &handle in handles {
         let owner = resolve_room_package_handle(scene, handle);
-        for package in room_package_handles(scene, owner) {
-            if seen.insert(package) {
-                out.push(package);
+        if scene.document.get_entity(owner).is_some_and(is_room_carrier) {
+            for package in room_package_handles(scene, owner) {
+                if seen.insert(package) {
+                    out.push(package);
+                }
             }
+        } else if seen.insert(handle) {
+            out.push(handle);
         }
     }
     out

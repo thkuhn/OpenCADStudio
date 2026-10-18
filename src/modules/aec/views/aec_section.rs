@@ -20,7 +20,9 @@ use crate::modules::aec::engine::views::carrier::{
 };
 use crate::modules::aec::engine::views::cut_engine::{derive_section_view, CutEngineOptions};
 use crate::modules::aec::engine::views::*;
-use crate::modules::aec::views::din1356::Din1356SectionSymbol;
+use crate::modules::aec::views::din1356::{
+    create_section_marker, Din1356SectionMarker, Din1356SectionSymbol,
+};
 use crate::modules::{IconKind, ModuleEvent, ToolDef};
 use crate::scene::model::wire_model::WireModel;
 use crate::scene::Scene;
@@ -221,14 +223,7 @@ impl SectionCommand {
     pub fn commit_section(&mut self, scene: &mut Scene, insertion_pt: Point2) -> Option<Handle> {
         let path = self.build_section_path()?;
 
-        // 1. Insert DIN 1356 floor plan section line and arrows
-        let sym = Din1356SectionSymbol::new(&self.label, path.clone()).with_flip(self.flip_direction);
-        let din_entities = sym.generate_cad_entities("AEC_SECTION_MARK");
-        for ent in din_entities {
-            let _ = scene.document.add_entity(ent);
-        }
-
-        // 2. Build Viewpoint
+        // 1. Build Viewpoint
         let first_seg = path.segments().first()?.clone();
         let cut_dir = first_seg.direction().ok()?;
         let axes = ViewAxes::section_with_side(cut_dir, self.flip_direction).ok()?;
@@ -248,7 +243,7 @@ impl SectionCommand {
             )),
             axes,
             kind: ViewKind::Section {
-                path,
+                path: path.clone(),
                 far_depth: self.far_depth.and_then(|d| PositiveMetres::new(d).ok()),
             },
             z_range,
@@ -256,7 +251,7 @@ impl SectionCommand {
             crop: None,
         };
 
-        // 3. Build ModelView
+        // 2. Build ModelView
         let model_view = ModelView {
             id: ModelViewId::new(),
             name: format!("Section {}", self.label),
@@ -271,7 +266,7 @@ impl SectionCommand {
             revisions: Default::default(),
         };
 
-        // 4. Collect scene & derive 2D primitives
+        // 3. Collect scene & derive 2D primitives
         let collector = SceneGeometryCollector::collect_from_document(&scene.document, ModelId::new());
         let mut primitives = derive_section_view(
             &viewpoint,
@@ -283,7 +278,7 @@ impl SectionCommand {
 
         let _ = process_silhouette_and_depth(&mut primitives, &SilhouetteOptions::default());
 
-        // 5. Create and sync DerivedViewCarrier in model space
+        // 4. Create and sync DerivedViewCarrier in model space
         let mut carrier = create_view_carrier(
             &mut scene.document,
             viewpoint.id,
@@ -297,6 +292,19 @@ impl SectionCommand {
 
         let _ = sync_carrier_primitives(&mut scene.document, &mut carrier, &primitives);
         write_view_carrier_definitions(&mut scene.document, carrier.handle, &viewpoint, &model_view);
+
+        // 5. Create associative DIN 1356 Section Marker coupled to viewpoint & carrier
+        let marker = Din1356SectionMarker::new_section(
+            &self.label,
+            path,
+            viewpoint.id,
+            Some(carrier.handle),
+        )
+        .with_depth(self.far_depth)
+        .with_z_range(self.z_min, self.z_max)
+        .with_flip(self.flip_direction);
+        let _ = create_section_marker(&mut scene.document, &marker);
+
         scene.bump_geometry();
 
         self.last_committed = Some(carrier.handle);
@@ -586,6 +594,24 @@ mod tests {
 
         let handle = cmd.commit_section(&mut scene, Point2::new(20.0, 0.0));
         assert!(handle.is_some());
+        let carrier_handle = handle.unwrap();
+
+        let (marker_handle, marker) =
+            crate::modules::aec::views::din1356::find_section_marker_by_carrier(
+                &scene.document,
+                carrier_handle,
+            )
+            .expect("marker must be found by carrier handle");
+        assert_ne!(marker_handle, Handle::new(0));
+        assert_eq!(marker.carrier_handle, Some(carrier_handle));
+        assert_eq!(marker.label, "A - A");
+
+        let carrier = crate::modules::aec::engine::views::carrier::read_view_carrier(
+            &scene.document,
+            scene.document.get_entity(carrier_handle).unwrap(),
+        )
+        .expect("carrier exists");
+        assert_eq!(marker.viewpoint_id, carrier.viewpoint_id);
     }
 
     #[test]

@@ -373,6 +373,7 @@ impl OpenCADStudio {
         handles: &[acadrust::Handle],
     ) {
         let mut reselected = Vec::new();
+        let mut marker_regenerated = false;
         for &handle in handles {
             let slab_owner = crate::modules::aec::engine::slab_package::resolve_slab_package(
                 &self.tabs[tab_index].scene,
@@ -428,9 +429,157 @@ impl OpenCADStudio {
                 self.regenerate_room_respecting_active_display_config(tab_index, room_owner);
                 reselected.push(room_owner);
             }
+
+            let marker_owner = crate::modules::aec::properties::resolve_section_marker_package(
+                &self.tabs[tab_index].scene,
+                handle,
+            );
+            if let Some(marker_h) = marker_owner {
+                if !reselected.contains(&marker_h) {
+                    if let Some(entity) = self.tabs[tab_index].scene.document.get_entity(marker_h) {
+                        if let Some(marker) = crate::modules::aec::views::din1356::read_section_marker(
+                            &self.tabs[tab_index].scene.document,
+                            entity,
+                        ) {
+                            crate::modules::aec::views::din1356::sync_section_marker_cad_entities(
+                                &mut self.tabs[tab_index].scene.document,
+                                marker_h,
+                                &marker,
+                            );
+                            crate::modules::aec::views::din1356::sync_marker_to_carrier(
+                                &mut self.tabs[tab_index].scene.document,
+                                &marker,
+                            );
+                            self.tabs[tab_index].scene.clear_preview_wire();
+                            reselected.push(marker_h);
+                            marker_regenerated = true;
+                        }
+                    }
+                }
+            }
         }
         for h in reselected {
             self.tabs[tab_index].scene.select_entity(h, false);
+        }
+
+        if let Some((carrier_handle, mutation)) = self.aec.aec_pending_derived_view_grip.take() {
+            if let Ok(_) = crate::modules::aec::engine::views::apply_semantic_mutation(
+                &mut self.tabs[tab_index].scene.document,
+                &mutation,
+            ) {
+                if let Some((vp, mv)) = crate::modules::aec::engine::views::carrier::read_view_carrier_definitions(
+                    &self.tabs[tab_index].scene.document,
+                    carrier_handle,
+                ) {
+                    crate::modules::aec::engine::views::update_ops::regenerate_or_mark_outdated(
+                        &mut self.tabs[tab_index].scene.document,
+                        carrier_handle,
+                        &vp,
+                        &mv,
+                    );
+                }
+                let mutated_handle = mutation.handle();
+                let is_wall = self.tabs[tab_index]
+                    .scene
+                    .document
+                    .get_entity(mutated_handle)
+                    .and_then(crate::modules::aec::engine::xdata::wall_from_entity)
+                    .is_some();
+                if is_wall {
+                    let _ = self.regenerate_wall_respecting_active_display_config(tab_index, mutated_handle);
+                }
+                let is_slab = self.tabs[tab_index]
+                    .scene
+                    .document
+                    .get_entity(mutated_handle)
+                    .and_then(crate::modules::aec::engine::slab_xdata::slab_from_entity)
+                    .is_some();
+                if is_slab {
+                    let _ = self.regenerate_slab_respecting_active_display_config(tab_index, mutated_handle);
+                }
+                self.tabs[tab_index].scene.clear_preview_wire();
+                marker_regenerated = true;
+            }
+        }
+
+        if let Some((carrier_handle, new_cut_h)) = self.aec.aec_pending_carrier_cut_height.take() {
+            if let Some((mut vp, mv)) = crate::modules::aec::engine::views::carrier::read_view_carrier_definitions(
+                &self.tabs[tab_index].scene.document,
+                carrier_handle,
+            ) {
+                let z_min = vp.z_range.z_min.get();
+                let z_max = vp.z_range.z_max.get();
+                let clamped_h = new_cut_h.clamp(z_min, z_max);
+                match &mut vp.kind {
+                    crate::modules::aec::engine::views::viewpoint::ViewKind::FloorPlan { range } => {
+                        let offset = (clamped_h - z_min).max(0.0);
+                        if let Ok(m) = crate::modules::aec::engine::views::NonNegativeMetres::new(offset) {
+                            range.below_cut = m;
+                        }
+                        if let crate::modules::aec::engine::views::viewpoint::ViewOrigin::World(ref mut p) = vp.origin {
+                            p.z_m = clamped_h;
+                        }
+                    }
+                    crate::modules::aec::engine::views::viewpoint::ViewKind::ReflectedCeilingPlan { range } => {
+                        let offset = (z_max - clamped_h).max(0.0);
+                        if let Ok(m) = crate::modules::aec::engine::views::NonNegativeMetres::new(offset) {
+                            range.above_cut = m;
+                        }
+                        if let crate::modules::aec::engine::views::viewpoint::ViewOrigin::World(ref mut p) = vp.origin {
+                            p.z_m = clamped_h;
+                        }
+                    }
+                    _ => {}
+                }
+                crate::modules::aec::engine::views::carrier::write_view_carrier_definitions(
+                    &mut self.tabs[tab_index].scene.document,
+                    carrier_handle,
+                    &vp,
+                    &mv,
+                );
+                crate::modules::aec::engine::views::update_ops::regenerate_or_mark_outdated(
+                    &mut self.tabs[tab_index].scene.document,
+                    carrier_handle,
+                    &vp,
+                    &mv,
+                );
+                self.tabs[tab_index].scene.clear_preview_wire();
+                marker_regenerated = true;
+            }
+        }
+
+        if let Some((carrier_handle, new_ins_pt)) = self.aec.aec_pending_carrier_insertion.take() {
+            if let Some(mut carrier) = crate::modules::aec::engine::views::carrier::find_view_carrier_by_handle(
+                &self.tabs[tab_index].scene.document,
+                carrier_handle,
+            ) {
+                carrier.insertion_point = new_ins_pt;
+                crate::modules::aec::engine::views::carrier::write_view_carrier(
+                    &mut self.tabs[tab_index].scene.document,
+                    &carrier,
+                );
+                if let Some(acadrust::EntityType::Point(ref mut pt)) = self.tabs[tab_index].scene.document.get_entity_mut(carrier_handle) {
+                    pt.location.x = new_ins_pt.x_m;
+                    pt.location.y = new_ins_pt.y_m;
+                }
+                if let Some((vp, mv)) = crate::modules::aec::engine::views::carrier::read_view_carrier_definitions(
+                    &self.tabs[tab_index].scene.document,
+                    carrier_handle,
+                ) {
+                    crate::modules::aec::engine::views::update_ops::regenerate_or_mark_outdated(
+                        &mut self.tabs[tab_index].scene.document,
+                        carrier_handle,
+                        &vp,
+                        &mv,
+                    );
+                }
+                self.tabs[tab_index].scene.clear_preview_wire();
+                marker_regenerated = true;
+            }
+        }
+
+        if marker_regenerated {
+            self.tabs[tab_index].scene.bump_geometry();
         }
     }
 

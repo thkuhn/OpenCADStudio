@@ -21,6 +21,7 @@ use crate::modules::aec::engine::views::elevation_engine::{
     derive_elevation_view, ElevationEngineOptions,
 };
 use crate::modules::aec::engine::views::*;
+use crate::modules::aec::views::din1356::{create_section_marker, Din1356SectionMarker};
 use crate::modules::{IconKind, ModuleEvent, ToolDef};
 use crate::scene::model::wire_model::WireModel;
 use crate::scene::Scene;
@@ -223,6 +224,19 @@ impl ElevationCommand {
 
         let _ = sync_carrier_primitives(&mut scene.document, &mut carrier, &primitives);
         write_view_carrier_definitions(&mut scene.document, carrier.handle, &viewpoint, &model_view);
+
+        let marker = Din1356SectionMarker::new_elevation(
+            &self.name,
+            Point2::new(p1.x, p1.y),
+            Point2::new(p2.x, p2.y),
+            viewpoint.id,
+            Some(carrier.handle),
+        )
+        .with_depth(self.depth)
+        .with_z_range(self.z_min, self.z_max)
+        .with_flip(self.flip_direction);
+        let _ = create_section_marker(&mut scene.document, &marker);
+
         scene.bump_geometry();
 
         self.last_committed = Some(carrier.handle);
@@ -444,5 +458,24 @@ mod tests {
 
         let handle = cmd.commit_elevation(&mut scene, Point2::new(0.0, 20.0));
         assert!(handle.is_some());
+        let carrier_handle = handle.unwrap();
+
+        let (marker_handle, marker) =
+            crate::modules::aec::views::din1356::find_section_marker_by_carrier(
+                &scene.document,
+                carrier_handle,
+            )
+            .expect("marker must be found by carrier handle");
+        assert_ne!(marker_handle, Handle::new(0));
+        assert!(marker.is_elevation);
+        assert_eq!(marker.carrier_handle, Some(carrier_handle));
+        assert_eq!(marker.label, "Elevation");
+
+        let carrier = crate::modules::aec::engine::views::carrier::read_view_carrier(
+            &scene.document,
+            scene.document.get_entity(carrier_handle).unwrap(),
+        )
+        .expect("carrier exists");
+        assert_eq!(marker.viewpoint_id, carrier.viewpoint_id);
     }
 }

@@ -210,6 +210,36 @@ impl Vector2 {
     }
 }
 
+impl std::ops::Neg for Vector2 {
+    type Output = Self;
+    fn neg(self) -> Self::Output {
+        Self {
+            x: -self.x,
+            y: -self.y,
+        }
+    }
+}
+
+impl std::ops::Mul<f64> for Vector2 {
+    type Output = Self;
+    fn mul(self, rhs: f64) -> Self::Output {
+        Self {
+            x: self.x * rhs,
+            y: self.y * rhs,
+        }
+    }
+}
+
+impl std::ops::Mul<Vector2> for f64 {
+    type Output = Vector2;
+    fn mul(self, rhs: Vector2) -> Self::Output {
+        Vector2 {
+            x: self * rhs.x,
+            y: self * rhs.y,
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Point3 {
     pub x_m: f64,
@@ -1223,5 +1253,176 @@ mod tests {
         // 3. Verify background wall projected edges exist
         let bg_edges: Vec<_> = primitives.iter().filter(|p| p.role == PrimitiveRole::ProjectedEdge).collect();
         assert!(!bg_edges.is_empty(), "should have background projected edges from the wall at y = 4.0m");
+    }
+
+    #[test]
+    fn test_section_occlusion_behind_opaque_cut_wall() {
+        let model_id = ModelId::new();
+        let mut collector = SceneGeometryCollector::new();
+
+        // 1. Cut Wall at x = 0, y from -2 to 2 (thickness 0.24, base 0, top 3)
+        let cut_wall = CollectedWall {
+            handle: acadrust::Handle::new(10),
+            element_ref: ElementRef::new(model_id, ElementId::new()),
+            xref_source: None,
+            style_id: "Wall_24cm".into(),
+            height: 3.0,
+            base_z: 0.0,
+            top_z: 3.0,
+            axis_points: vec![Point2::new(0.0, -2.0), Point2::new(0.0, 2.0)],
+            layers: vec![CollectedWallLayer {
+                material: "Masonry".into(),
+                thickness: 0.24,
+                function: "Structural".into(),
+                axis_offset: 0.0,
+                bottom_offset: 0.0,
+                top_offset: 0.0,
+                hatch_override: None,
+                layer_id: Uuid::new_v4(),
+                component_id: ComponentId::new(),
+                is_structural: true,
+            }],
+            total_thickness: 0.24,
+            justification: crate::modules::aec::engine::wall::WallJustification::Center,
+            openings: vec![],
+            phase: crate::modules::aec::engine::plan_view::PlanPhase::New,
+        };
+        collector.walls.push(cut_wall);
+
+        // 2. Background Wall at y = 4.0m, x from -5 to 5 (top_z = 3.0)
+        let bg_wall = CollectedWall {
+            handle: acadrust::Handle::new(20),
+            element_ref: ElementRef::new(model_id, ElementId::new()),
+            xref_source: None,
+            style_id: "Wall_24cm".into(),
+            height: 3.0,
+            base_z: 0.0,
+            top_z: 3.0,
+            axis_points: vec![Point2::new(-5.0, 4.0), Point2::new(5.0, 4.0)],
+            layers: vec![CollectedWallLayer {
+                material: "Masonry".into(),
+                thickness: 0.24,
+                function: "Structural".into(),
+                axis_offset: 0.0,
+                bottom_offset: 0.0,
+                top_offset: 0.0,
+                hatch_override: None,
+                layer_id: Uuid::new_v4(),
+                component_id: ComponentId::new(),
+                is_structural: true,
+            }],
+            total_thickness: 0.24,
+            justification: crate::modules::aec::engine::wall::WallJustification::Center,
+            openings: vec![],
+            phase: crate::modules::aec::engine::plan_view::PlanPhase::New,
+        };
+        collector.walls.push(bg_wall);
+
+        let vp = Viewpoint {
+            id: ViewpointId::new(),
+            name: "Schnitt Occlusion".into(),
+            revision: Revision(1),
+            origin: ViewOrigin::World(Point3::new(-5.0, 0.0, 0.0)),
+            axes: ViewAxes::section_with_side(Vector2::new(1.0, 0.0), false).unwrap(),
+            kind: ViewKind::Section {
+                path: SectionPath::straight(Point2::new(-5.0, 0.0), Point2::new(5.0, 0.0)),
+                far_depth: Some(PositiveMetres::new(10.0).unwrap()),
+            },
+            z_range: VerticalRange::new(Metres::new(0.0).unwrap(), Metres::new(5.0).unwrap()).unwrap(),
+            mapping: ProjectionMapping::default(),
+            crop: None,
+        };
+
+        let mv = ModelView {
+            id: ModelViewId::new(),
+            name: "Ausfuehrung 1:50".into(),
+            viewpoint_id: vp.id,
+            profile_id: ViewProfileId::new(),
+            scale: ScaleDenominator::new(50.0).unwrap(),
+            detail: DetailPolicy::FromProfileAndScale,
+            excluded_elements: BTreeSet::new(),
+            graphic_overrides: vec![],
+            annotation_ids: vec![],
+            update_policy: UpdatePolicy::Automatic,
+            revisions: ViewRevisions::default(),
+        };
+
+        let primitives = derive_section_view(&vp, &mv, &collector, &CutEngineOptions::default()).unwrap();
+
+        // In viewpoint coordinates, section path starts at x=-5 (u=0.0).
+        // The cut wall is at world x=0, so unfolded u = 5.0m (span [4.88, 5.12]).
+        // Background wall line at z=3.0 was running continuously across u ∈ [0, 10].
+        // Occlusion clipping against the opaque CutFill should remove the segment behind the cut wall!
+        for prim in &primitives {
+            if prim.role == PrimitiveRole::ProjectedEdge {
+                if let Geometry2d::Line { start, end } = prim.geometry {
+                    // Check if any projected line segment crosses the center of the cut wall (u = 5.0, z = 1.5)
+                    let min_u = start.x_m.min(end.x_m);
+                    let max_u = start.x_m.max(end.x_m);
+                    assert!(
+                        !(min_u < 4.95 && max_u > 5.05),
+                        "Background edge [{:?} -> {:?}] must not span across the opaque cut wall at u = 5.0",
+                        start,
+                        end
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn test_occlusion_window_hole_see_through() {
+        let view_id = ModelViewId::new();
+        let source = SourceReference::new(ElementRef::new(ModelId::new(), ElementId::new()));
+
+        // 1. Foreground opaque wall [0..10, 0..3] with window opening hole [3..5, 1..2] at depth 1.0m
+        let wall_region = Geometry2d::Region {
+            outer: vec![
+                Point2::new(0.0, 0.0),
+                Point2::new(10.0, 0.0),
+                Point2::new(10.0, 3.0),
+                Point2::new(0.0, 3.0),
+            ],
+            holes: vec![vec![
+                Point2::new(3.0, 1.0),
+                Point2::new(5.0, 1.0),
+                Point2::new(5.0, 2.0),
+                Point2::new(3.0, 2.0),
+            ]],
+        };
+        let wall_prim = DerivedPrimitive {
+            id: PrimitiveId::new(view_id, 1, 1),
+            role: PrimitiveRole::SurfaceFill,
+            geometry: wall_region,
+            sources: SourceSet::new(vec![source.clone()]).unwrap(),
+            depth: DepthInterval::new(1.0, 1.0).unwrap(),
+            style: ResolvedStyle::solid_stroke(PaperMm::new(0.18).unwrap()),
+            edit_handles: vec![],
+        };
+
+        // 2. Background continuous line at depth 5.0m across y = 1.5 (passes through the window hole at x ∈ [3, 5])
+        let bg_line = DerivedPrimitive {
+            id: PrimitiveId::new(view_id, 1, 2),
+            role: PrimitiveRole::ProjectedEdge,
+            geometry: Geometry2d::Line {
+                start: Point2::new(0.0, 1.5),
+                end: Point2::new(10.0, 1.5),
+            },
+            sources: SourceSet::new(vec![source]).unwrap(),
+            depth: DepthInterval::new(5.0, 5.0).unwrap(),
+            style: ResolvedStyle::solid_stroke(PaperMm::new(0.25).unwrap()),
+            edit_handles: vec![],
+        };
+
+        let mut prims = vec![wall_prim, bg_line];
+        process_silhouette_and_depth(&mut prims, &SilhouetteOptions { emit_hidden_lines: false, max_depth_distance: None }).unwrap();
+
+        // The background line must be clipped so that ONLY the segment inside the window hole [3..5] is visible!
+        let visible_bg: Vec<_> = prims.iter().filter(|p| p.role == PrimitiveRole::ProjectedEdge).collect();
+        assert_eq!(visible_bg.len(), 1, "Only the segment seen through the window hole should remain visible");
+        if let Geometry2d::Line { start, end } = visible_bg[0].geometry {
+            assert!((start.x_m - 3.0).abs() < 1e-3, "Start must be at window left jamb x = 3.0");
+            assert!((end.x_m - 5.0).abs() < 1e-3, "End must be at window right jamb x = 5.0");
+        }
     }
 }

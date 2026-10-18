@@ -14,10 +14,10 @@ use acadrust::{CadDocument, EntityType, Handle};
 
 use super::model_view::{ModelView, UpdatePolicy, ViewRevisions};
 use super::provenance::{
-    DerivedPrimitive, FeatureKey, Geometry2d, PrimitiveRole,
+    DerivedPrimitive, ElementRef, FeatureKey, Geometry2d, PrimitiveRole,
 };
 use super::viewpoint::Viewpoint;
-use super::{ModelViewId, Point2, Revision, ValidationError, ViewpointId};
+use super::{ElementId, ModelId, ModelViewId, Point2, Revision, ValidationError, ViewpointId};
 use crate::modules::aec::engine::owner_index;
 use crate::modules::aec::engine::xdata::{ensure_app_id, AEC_APPID};
 
@@ -270,6 +270,38 @@ pub fn find_view_carriers_for_model_view(
         .collect()
 }
 
+/// Finds the first `DerivedViewCarrier` referencing a specific `ViewpointId`.
+pub fn find_view_carrier_by_viewpoint(
+    doc: &CadDocument,
+    viewpoint_id: ViewpointId,
+) -> Option<DerivedViewCarrier> {
+    all_view_carriers(doc)
+        .into_iter()
+        .find(|c| c.viewpoint_id == viewpoint_id)
+}
+
+/// Finds the `DerivedViewCarrier` that owns a derived CAD entity.
+pub fn find_view_carrier_owning_handle(doc: &CadDocument, child: Handle) -> Option<DerivedViewCarrier> {
+    if let Some(entity) = doc.get_entity(child) {
+        if let Some(meta) = read_derived_primitive_metadata(entity) {
+            if let Some(carrier_h) = meta.carrier_handle {
+                if let Some(c) = find_view_carrier_by_handle(doc, carrier_h) {
+                    return Some(c);
+                }
+            }
+        }
+    }
+    // Check owner index and carrier handle lists
+    for ent in doc.entities() {
+        if let Some(carrier) = read_view_carrier(doc, ent) {
+            if carrier.derived_handles.contains(&child) {
+                return Some(carrier);
+            }
+        }
+    }
+    None
+}
+
 /// Stores the full `Viewpoint` and `ModelView` definitions on the carrier entity.
 pub fn write_view_carrier_definitions(
     doc: &mut CadDocument,
@@ -412,7 +444,7 @@ pub fn sync_carrier_primitives(
                 let mut ent = EntityType::Line(line);
                 ent.common_mut().handle = h;
                 ent.common_mut().layer = layer_name.to_string();
-                attach_primitive_xdata(doc, &mut ent, prim);
+                attach_primitive_xdata(doc, &mut ent, prim, carrier.handle);
                 let _ = doc.add_entity(ent);
                 new_handles.push(h);
             }
@@ -427,7 +459,7 @@ pub fn sync_carrier_primitives(
                 let mut ent = EntityType::LwPolyline(pl);
                 ent.common_mut().handle = h;
                 ent.common_mut().layer = layer_name.to_string();
-                attach_primitive_xdata(doc, &mut ent, prim);
+                attach_primitive_xdata(doc, &mut ent, prim, carrier.handle);
                 let _ = doc.add_entity(ent);
                 new_handles.push(h);
             }
@@ -486,7 +518,7 @@ pub fn sync_carrier_primitives(
                     let mut hent = EntityType::Hatch(hatch);
                     hent.common_mut().handle = hh;
                     hent.common_mut().layer = layer_name.to_string();
-                    attach_primitive_xdata(doc, &mut hent, prim);
+                    attach_primitive_xdata(doc, &mut hent, prim, carrier.handle);
                     let _ = doc.add_entity(hent);
                     new_handles.push(hh);
                 } else if prim.role != PrimitiveRole::SurfaceFill {
@@ -501,7 +533,7 @@ pub fn sync_carrier_primitives(
                     let mut ent = EntityType::LwPolyline(pl);
                     ent.common_mut().handle = h;
                     ent.common_mut().layer = layer_name.to_string();
-                    attach_primitive_xdata(doc, &mut ent, prim);
+                    attach_primitive_xdata(doc, &mut ent, prim, carrier.handle);
                     let _ = doc.add_entity(ent);
                     new_handles.push(h);
 
@@ -517,7 +549,7 @@ pub fn sync_carrier_primitives(
                         let mut hent = EntityType::LwPolyline(hole_pl);
                         hent.common_mut().handle = hh;
                         hent.common_mut().layer = layer_name.to_string();
-                        attach_primitive_xdata(doc, &mut hent, prim);
+                        attach_primitive_xdata(doc, &mut hent, prim, carrier.handle);
                         let _ = doc.add_entity(hent);
                         new_handles.push(hh);
                     }
@@ -540,7 +572,7 @@ pub fn sync_carrier_primitives(
                 let mut ent = EntityType::LwPolyline(pl);
                 ent.common_mut().handle = h;
                 ent.common_mut().layer = layer_name.to_string();
-                attach_primitive_xdata(doc, &mut ent, prim);
+                attach_primitive_xdata(doc, &mut ent, prim, carrier.handle);
                 let _ = doc.add_entity(ent);
                 new_handles.push(h);
             }
@@ -550,11 +582,106 @@ pub fn sync_carrier_primitives(
     carrier.derived_handles = new_handles;
     carrier.is_outdated = false;
     write_view_carrier(doc, carrier);
+    owner_index::set_children(doc, carrier.handle, &carrier.derived_handles);
 
     Ok(())
 }
 
-fn attach_primitive_xdata(_doc: &CadDocument, entity: &mut EntityType, prim: &DerivedPrimitive) {
+/// Typed metadata parsed from an entity's `DERIVED_PRIMITIVE` XDATA.
+#[derive(Clone, Debug, PartialEq)]
+pub struct DerivedPrimitiveMetadata {
+    pub view_id: ModelViewId,
+    pub index: u32,
+    pub role: PrimitiveRole,
+    pub element_ref: Option<ElementRef>,
+    pub feature: Option<FeatureKey>,
+    pub xref_name: Option<String>,
+    pub carrier_handle: Option<Handle>,
+}
+
+/// Reads typed `DerivedPrimitiveMetadata` from an entity's `DERIVED_PRIMITIVE` XDATA record.
+pub fn read_derived_primitive_metadata(entity: &EntityType) -> Option<DerivedPrimitiveMetadata> {
+    let rec = entity.common().extended_data.records().iter().find(|r| {
+        r.application_name == AEC_APPID
+            && matches!(r.values.first(), Some(XDataValue::String(s)) if s == DERIVED_PRIMITIVE_TAG)
+    })?;
+
+    let values = &rec.values;
+    let view_id_str = match values.get(1) {
+        Some(XDataValue::String(s)) => s,
+        _ => return None,
+    };
+    let uuid = Uuid::parse_str(view_id_str).ok()?;
+    let view_id = ModelViewId::from_uuid(uuid);
+
+    let index = match values.get(2) {
+        Some(XDataValue::Integer32(idx)) => *idx as u32,
+        _ => 0,
+    };
+
+    let role = match values.get(3) {
+        Some(XDataValue::String(s)) => match s.as_str() {
+            "CutBoundary" => PrimitiveRole::CutBoundary,
+            "CutFill" => PrimitiveRole::CutFill,
+            "ProjectedEdge" => PrimitiveRole::ProjectedEdge,
+            "HiddenEdge" => PrimitiveRole::HiddenEdge,
+            "SurfaceFill" => PrimitiveRole::SurfaceFill,
+            "Symbol" => PrimitiveRole::Symbol,
+            _ => PrimitiveRole::ProjectedEdge,
+        },
+        _ => PrimitiveRole::ProjectedEdge,
+    };
+
+    let mut element_ref = None;
+    if let (Some(XDataValue::String(m_str)), Some(XDataValue::String(e_str))) = (values.get(4), values.get(5)) {
+        if let (Ok(m_uuid), Ok(e_uuid)) = (Uuid::parse_str(m_str), Uuid::parse_str(e_str)) {
+            element_ref = Some(ElementRef::new(ModelId::from_uuid(m_uuid), ElementId::from_uuid(e_uuid)));
+        }
+    }
+
+    let feature = values.get(6).and_then(|v| match v {
+        XDataValue::String(s) => match s.as_str() {
+            "WallTop" => Some(FeatureKey::WallTop),
+            "WallBase" => Some(FeatureKey::WallBase),
+            "OpeningSill" => Some(FeatureKey::OpeningSill),
+            "OpeningHead" => Some(FeatureKey::OpeningHead),
+            "OpeningLeftJamb" => Some(FeatureKey::OpeningLeftJamb),
+            "OpeningRightJamb" => Some(FeatureKey::OpeningRightJamb),
+            "LayerFace" => Some(FeatureKey::LayerFace),
+            "SlabTop" => Some(FeatureKey::SlabTop),
+            "SlabBottom" => Some(FeatureKey::SlabBottom),
+            _ => None,
+        },
+        _ => None,
+    });
+
+    let mut xref_name = None;
+    let mut carrier_handle = None;
+
+    for val in values.iter().skip(7) {
+        match val {
+            XDataValue::Handle(h) => carrier_handle = Some(*h),
+            XDataValue::String(s) if !s.is_empty() => {
+                if xref_name.is_none() {
+                    xref_name = Some(s.clone());
+                }
+            }
+            _ => {}
+        }
+    }
+
+    Some(DerivedPrimitiveMetadata {
+        view_id,
+        index,
+        role,
+        element_ref,
+        feature,
+        xref_name,
+        carrier_handle,
+    })
+}
+
+fn attach_primitive_xdata(_doc: &CadDocument, entity: &mut EntityType, prim: &DerivedPrimitive, carrier_handle: Handle) {
     let mut rec = ExtendedDataRecord::new(AEC_APPID);
     rec.add_value(XDataValue::String(DERIVED_PRIMITIVE_TAG.to_string()));
     rec.add_value(XDataValue::String(prim.id.view_id.as_uuid().to_string()));
@@ -587,12 +714,15 @@ fn attach_primitive_xdata(_doc: &CadDocument, entity: &mut EntityType, prim: &De
                 _ => "Other",
             };
             rec.add_value(XDataValue::String(feat_str.to_string()));
+        } else {
+            rec.add_value(XDataValue::String("None".to_string()));
         }
         if let Some(xref) = &src.xref_source {
             rec.add_value(XDataValue::String(xref.block_record_name.clone()));
         }
     }
 
+    rec.add_value(XDataValue::Handle(carrier_handle));
     entity.common_mut().extended_data.add_record(rec);
 }
 
@@ -678,5 +808,12 @@ mod tests {
         // Read carrier again
         let read = find_view_carrier_by_handle(&doc, carrier.handle).expect("carrier exists");
         assert_eq!(read.derived_handles, vec![child_handle]);
+
+        let meta = read_derived_primitive_metadata(child_ent).expect("metadata present");
+        assert_eq!(meta.feature, Some(FeatureKey::WallTop));
+        assert_eq!(meta.carrier_handle, Some(carrier.handle));
+
+        let owning_carrier = find_view_carrier_owning_handle(&doc, child_handle).expect("carrier found");
+        assert_eq!(owning_carrier.handle, carrier.handle);
     }
 }

@@ -182,6 +182,7 @@ impl OpenCADStudio {
         // Grip-menu toggles live only as long as the gesture.
         self.tabs[i].grip_copy = false;
         self.tabs[i].grip_base_pending = false;
+        self.aec.aec_pending_derived_view_grip = None;
         let had_grip = self.tabs[i].active_grip.take().is_some()
             || self.grip_add_provisional.is_some()
             || !self.grip_preview_handles.is_empty()

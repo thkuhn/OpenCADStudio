@@ -100,6 +100,312 @@ impl OpenCADStudio {
         true
     }
 
+    /// Interactive grip handler for DIN 1356 Section and Elevation markers.
+    /// Updates polyline vertices and marker XDATA in-place and renders preview wires
+    /// during mouse movement, deferring view regeneration to commit time.
+    pub(crate) fn apply_aec_section_marker_grip(
+        &mut self,
+        tab: usize,
+        handle: acadrust::Handle,
+        grip_id: usize,
+        apply: &crate::scene::model::object::GripApply,
+        orig_ent: Option<&acadrust::EntityType>,
+    ) -> bool {
+        let scene = &mut self.tabs[tab].scene;
+        let marker_handle = crate::modules::aec::properties::resolve_section_marker_package(
+            scene,
+            handle,
+        )
+        .unwrap_or(handle);
+
+        let Some(ent) = scene.document.get_entity(marker_handle) else {
+            return false;
+        };
+        let is_marker = crate::modules::aec::views::din1356::read_section_marker(&scene.document, ent).is_some();
+        if !is_marker {
+            return false;
+        }
+
+        let orig_marker = orig_ent.and_then(|e| {
+            crate::modules::aec::views::din1356::read_section_marker(&scene.document, e)
+        });
+
+        if let Some(res) = crate::modules::aec::views::din1356::apply_section_marker_grip_pure(
+            &mut scene.document,
+            marker_handle,
+            grip_id,
+            apply,
+            orig_marker.as_ref(),
+        ) {
+            let mut wire_models = Vec::new();
+            for (p1, p2) in res.preview_wires {
+                let pts = vec![
+                    [p1.x_m, p1.y_m, res.marker.z_min],
+                    [p2.x_m, p2.y_m, res.marker.z_min],
+                ];
+                wire_models.push(crate::scene::model::wire_model::WireModel::solid_f64(
+                    "marker_grip_preview".into(),
+                    pts,
+                    crate::scene::model::wire_model::WireModel::CYAN,
+                    false,
+                ));
+            }
+            scene.set_preview_wires(wire_models);
+            self.tabs[tab].dirty = true;
+        }
+        true
+    }
+
+    /// Interactive grip handler for derived section and elevation primitives.
+    /// Computes semantic mutation in real-time and renders preview wires
+    /// during mouse movement, storing the pending mutation on AecState to commit on mouse release.
+    pub(crate) fn apply_aec_derived_view_grip(
+        &mut self,
+        tab: usize,
+        handle: acadrust::Handle,
+        grip_id: usize,
+        apply: &crate::scene::model::object::GripApply,
+        orig_ent: Option<&acadrust::EntityType>,
+    ) -> bool {
+        if grip_id < crate::modules::aec::properties::DERIVED_VIEW_GRIP_BASE {
+            return false;
+        }
+
+        let scene = &self.tabs[tab].scene;
+        let Some(carrier) = crate::modules::aec::engine::views::carrier::find_view_carrier_owning_handle(&scene.document, handle) else {
+            return false;
+        };
+
+        let Some((viewpoint, _model_view)) = crate::modules::aec::engine::views::carrier::read_view_carrier_definitions(&scene.document, carrier.handle) else {
+            return false;
+        };
+
+        let Some(entity) = scene.document.get_entity(handle) else {
+            return false;
+        };
+        let effective_ent = orig_ent.unwrap_or(entity);
+        let Some(meta) = crate::modules::aec::engine::views::carrier::read_derived_primitive_metadata(effective_ent) else {
+            return false;
+        };
+        let Some(feat) = meta.feature else {
+            return false;
+        };
+
+        // Determine view delta in local carrier coordinate system
+        let original_center = match effective_ent {
+            acadrust::EntityType::Line(l) => {
+                glam::DVec3::new(
+                    (l.start.x + l.end.x) * 0.5,
+                    (l.start.y + l.end.y) * 0.5,
+                    (l.start.z + l.end.z) * 0.5,
+                )
+            }
+            acadrust::EntityType::LwPolyline(pl) => {
+                if pl.vertices.is_empty() {
+                    return false;
+                }
+                let mut sx = 0.0;
+                let mut sy = 0.0;
+                for v in &pl.vertices {
+                    sx += v.location.x;
+                    sy += v.location.y;
+                }
+                let n = pl.vertices.len() as f64;
+                glam::DVec3::new(sx / n, sy / n, pl.elevation)
+            }
+            _ => return false,
+        };
+
+        let new_world_pos = match apply {
+            crate::scene::model::object::GripApply::Absolute(pt) => *pt,
+            crate::scene::model::object::GripApply::Translate(delta) => original_center + *delta,
+        };
+
+        let world_delta = new_world_pos - original_center;
+
+        // Build preview wire points before ending immutable borrow
+        let mut wire_pts = Vec::new();
+        match effective_ent {
+            acadrust::EntityType::Line(l) => {
+                wire_pts.push([l.start.x + world_delta.x, l.start.y + world_delta.y, l.start.z]);
+                wire_pts.push([l.end.x + world_delta.x, l.end.y + world_delta.y, l.end.z]);
+            }
+            acadrust::EntityType::LwPolyline(pl) => {
+                for v in &pl.vertices {
+                    wire_pts.push([v.location.x + world_delta.x, v.location.y + world_delta.y, pl.elevation]);
+                }
+            }
+            _ => {}
+        }
+
+        let cos_r = carrier.rotation_rad.cos();
+        let sin_r = carrier.rotation_rad.sin();
+        let scale = if carrier.scale.abs() > 1e-6 { carrier.scale } else { 1.0 };
+
+        let unrot_x = cos_r * world_delta.x + sin_r * world_delta.y;
+        let unrot_y = -sin_r * world_delta.x + cos_r * world_delta.y;
+        let view_delta = crate::modules::aec::engine::views::Vector2::new(unrot_x / scale, unrot_y / scale);
+
+        let elem_ref = match meta.element_ref {
+            Some(r) => r,
+            None => return false,
+        };
+
+        let collector = crate::modules::aec::engine::views::scene_collector::SceneGeometryCollector::collect_from_document(
+            &scene.document,
+            elem_ref.model_id,
+        );
+        let (action, direction_hint) = match feat {
+            crate::modules::aec::engine::views::provenance::FeatureKey::WallTop => {
+                (crate::modules::aec::engine::views::provenance::ModelEditAction::SetWallHeight, crate::modules::aec::engine::views::Vector2::new(0.0, 1.0))
+            }
+            crate::modules::aec::engine::views::provenance::FeatureKey::OpeningSill => {
+                (crate::modules::aec::engine::views::provenance::ModelEditAction::SetOpeningSillHeight, crate::modules::aec::engine::views::Vector2::new(0.0, 1.0))
+            }
+            crate::modules::aec::engine::views::provenance::FeatureKey::OpeningHead => {
+                (crate::modules::aec::engine::views::provenance::ModelEditAction::ChangeParameter(crate::modules::aec::engine::views::provenance::ModelParameter::OpeningHeadHeight), crate::modules::aec::engine::views::Vector2::new(0.0, 1.0))
+            }
+            crate::modules::aec::engine::views::provenance::FeatureKey::SlabTop => {
+                (crate::modules::aec::engine::views::provenance::ModelEditAction::SetSlabElevation, crate::modules::aec::engine::views::Vector2::new(0.0, 1.0))
+            }
+            _ => return false,
+        };
+
+        let src = crate::modules::aec::engine::views::provenance::SourceReference {
+            element: elem_ref,
+            xref_source: meta.xref_name.map(|n| crate::modules::aec::engine::views::provenance::XrefSourceRef::identity(n)),
+            component_id: None,
+            feature: Some(feat.clone()),
+            display_component_id: None,
+        };
+
+        let edit_handle = crate::modules::aec::engine::views::provenance::EditHandle {
+            id: format!("grip_{}", meta.index),
+            position: crate::modules::aec::engine::views::Point2::new(0.0, 0.0),
+            action,
+            direction_hint,
+            target_feature: Some(feat),
+            source: src,
+        };
+
+        let mutation = match crate::modules::aec::engine::views::resolve_handle_drag(
+            &edit_handle,
+            &viewpoint,
+            crate::modules::aec::engine::views::Point2::new(view_delta.x, view_delta.y),
+            &collector,
+        ) {
+            Ok(m) => m,
+            Err(_) => return false,
+        };
+
+        if !wire_pts.is_empty() {
+            let wire = crate::scene::model::wire_model::WireModel::solid_f64(
+                "derived_view_grip_preview".into(),
+                wire_pts,
+                crate::scene::model::wire_model::WireModel::CYAN,
+                false,
+            );
+            self.tabs[tab].scene.set_preview_wires(vec![wire]);
+            self.tabs[tab].dirty = true;
+        }
+
+        self.aec.aec_pending_derived_view_grip = Some((carrier.handle, mutation));
+        true
+    }
+
+    /// Interactive grip handler for DerivedViewCarrier entities.
+    /// Handles insertion relocation (grip 60_000) and cut-height adjustments (grip 60_001)
+    /// with real-time preview wires, deferring regeneration to commit time.
+    pub(crate) fn apply_aec_carrier_grip(
+        &mut self,
+        tab: usize,
+        handle: acadrust::Handle,
+        grip_id: usize,
+        apply: &crate::scene::model::object::GripApply,
+    ) -> bool {
+        if grip_id != crate::modules::aec::properties::CARRIER_GRIP_INSERTION
+            && grip_id != crate::modules::aec::properties::CARRIER_GRIP_CUT_HEIGHT
+        {
+            return false;
+        }
+
+        let scene = &self.tabs[tab].scene;
+        let Some(entity) = scene.document.get_entity(handle) else {
+            return false;
+        };
+        let Some(carrier) = crate::modules::aec::engine::views::carrier::read_view_carrier(&scene.document, entity) else {
+            return false;
+        };
+
+        match grip_id {
+            crate::modules::aec::properties::CARRIER_GRIP_INSERTION => {
+                let orig = glam::DVec3::new(carrier.insertion_point.x_m, carrier.insertion_point.y_m, 0.0);
+                let new_pos = match apply {
+                    crate::scene::model::object::GripApply::Absolute(pt) => *pt,
+                    crate::scene::model::object::GripApply::Translate(delta) => orig + *delta,
+                };
+                let new_ins = crate::modules::aec::engine::views::Point2::new(new_pos.x, new_pos.y);
+                self.aec.aec_pending_carrier_insertion = Some((carrier.handle, new_ins));
+
+                let wire = crate::scene::model::wire_model::WireModel::solid_f64(
+                    "carrier_insertion_grip_preview".into(),
+                    vec![
+                        [orig.x, orig.y, 0.0],
+                        [new_pos.x, new_pos.y, 0.0],
+                    ],
+                    crate::scene::model::wire_model::WireModel::CYAN,
+                    false,
+                );
+                self.tabs[tab].scene.set_preview_wires(vec![wire]);
+                self.tabs[tab].dirty = true;
+                true
+            }
+            crate::modules::aec::properties::CARRIER_GRIP_CUT_HEIGHT => {
+                let Some((vp, _)) = crate::modules::aec::engine::views::carrier::read_view_carrier_definitions(&scene.document, carrier.handle) else {
+                    return false;
+                };
+                let current_cut_h = match &vp.kind {
+                    crate::modules::aec::engine::views::viewpoint::ViewKind::FloorPlan { range } => {
+                        (vp.z_range.z_min.get() + range.below_cut.get()).clamp(vp.z_range.z_min.get(), vp.z_range.z_max.get())
+                    }
+                    crate::modules::aec::engine::views::viewpoint::ViewKind::ReflectedCeilingPlan { range } => {
+                        (vp.z_range.z_max.get() - range.above_cut.get()).clamp(vp.z_range.z_min.get(), vp.z_range.z_max.get())
+                    }
+                    _ => return false,
+                };
+
+                let orig_grip = glam::DVec3::new(carrier.insertion_point.x_m, carrier.insertion_point.y_m + current_cut_h, 0.0);
+                let new_grip_pos = match apply {
+                    crate::scene::model::object::GripApply::Absolute(pt) => *pt,
+                    crate::scene::model::object::GripApply::Translate(delta) => orig_grip + *delta,
+                };
+
+                let new_cut_h = new_grip_pos.y - carrier.insertion_point.y_m;
+                let z_min = vp.z_range.z_min.get();
+                let z_max = vp.z_range.z_max.get();
+                let clamped_h = new_cut_h.clamp(z_min, z_max);
+                self.aec.aec_pending_carrier_cut_height = Some((carrier.handle, clamped_h));
+
+                let x0 = carrier.insertion_point.x_m - 2.0;
+                let x1 = carrier.insertion_point.x_m + 12.0;
+                let y = carrier.insertion_point.y_m + clamped_h;
+                let wire = crate::scene::model::wire_model::WireModel::solid_f64(
+                    "carrier_cut_height_preview".into(),
+                    vec![
+                        [x0, y, 0.0],
+                        [x1, y, 0.0],
+                    ],
+                    crate::scene::model::wire_model::WireModel::CYAN,
+                    false,
+                );
+                self.tabs[tab].scene.set_preview_wires(vec![wire]);
+                self.tabs[tab].dirty = true;
+                true
+            }
+            _ => false,
+        }
+    }
+
     pub(crate) fn remember_last_wall_defaults(
         &mut self,
         tab_index: usize,

@@ -292,10 +292,14 @@ pub fn expand_handles_for_wall_packages(scene: &Scene, handles: &[Handle]) -> Ve
             continue;
         }
         let owner = resolve_wall_package(scene, handle);
-        for package in wall_package_handles(scene, owner) {
-            if seen.insert(package) {
-                out.push(package);
+        if scene.document.get_entity(owner).is_some_and(|e| wall_from_entity(e).is_some()) {
+            for package in wall_package_handles(scene, owner) {
+                if seen.insert(package) {
+                    out.push(package);
+                }
             }
+        } else if seen.insert(handle) {
+            out.push(handle);
         }
     }
     out

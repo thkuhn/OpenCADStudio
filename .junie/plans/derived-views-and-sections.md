@@ -5,88 +5,91 @@ sessionId: session-261016-022649-1urm
 # Requirements
 
 ### Overview & Goals
-Ziel dieses Pakets ist die Einführung **modellassoziierter 2D-Darstellungen (Grundrisse, Schnitte, Ansichten, Deckenspiegel und Schalpläne)** in OpenCADStudio AEC. 
+Ziel dieses Pakets ist die **fundierte Überarbeitung, Fehlerbehebung und funktionale Komplettierung der modellassoziierten 2D-Schnitt-, Ansichts- und Grundriss-Erzeugung** in OpenCADStudio AEC.
 
-Basierend auf den Prinzipien führender Architektur-CAD-Systeme (Revit, Archicad, Allplan, AutoCAD Architecture) und den fundierten Vorrecherchen wird ein **drei-stufiges Assoziativitätsmodell** implementiert:
-1. **Viewpoint (Geometrische Sicht):** Definition von Lage, Blickrichtung, Schnittebene, Höhen-/Tiefenbereich und Begrenzung im Raum.
-2. **ModelView (Fachliche Planansicht):** Verknüpfung des Viewpoints mit einer Planart (`DisplayConfig`), Maßstab, Detaillierungsgrad, Schichtfiltern und lokalen Darstellungsüberschreibungen.
-3. **DerivedPrimitive & Provenance (Herkunftsgekoppelte Darstellung):** Generierte 2D-Vektorgeometrien (Linien, Schraffuren, Kanten) mit lückenloser Rückverfolgbarkeit auf Quellbauteile (`element_id`), Schichten (`component_id`) und Features (`feature_key`).
-
-Dadurch wird nicht nur die automatisierte, konsistente Planerstellung aus dem 3D-Gebäudemodell ermöglicht, sondern auch die **semantische Rückbearbeitung des Modells direkt aus Schnitten und Ansichten** (z. B. Ziehen von Wandoberkanten oder Fensterbrüstungen).
+Basierend auf den praktischen Tests und Rückmeldungen müssen die bisherigen Grundlagen um fehlende Interaktivitäts- und Qualitätsmerkmale ergänzt werden:
+1. **Assoziative Schnitt- und Ansichtsmarkierungen im Grundriss (`Din1356SectionSymbol`):** Die im Plan erzeugten Schnittlinien, Richtungspfeile und Beschriftungen dürfen keine isolierten ("dummen") Linien sein, sondern müssen als parametrische AEC-Trägerobjekte mit Metadaten persistiert werden. Sie erhalten interaktive Viewport-Griffe für Anfangs-/Endpunkte, Schnittversätze (Jogs), Blicktiefe und Richtungsumkehr (Flip) sowie volle Anbindung an das Eigenschaften-Panel.
+2. **Assoziative Modellgriffe an abgeleiteten Schnittkanten (Modell-Rückbearbeitung):** Beim Auswählen abgeleiteter Bauteile im Schnitt (z. B. Wandoberkanten, Deckenoberkanten, Fensterbrüstungen, Stürze) werden im Viewport echte Griffe (`EditHandle`) angezeigt. Das Ziehen dieser Griffe führt über `commit_view_drag_and_update` direkte semantische Änderungen am 3D-BIM-Modell aus.
+3. **Nachträglich editierbare Blicktiefe, Z-Höhenbereiche und Grundriss-Schnitthöhen:** Sowohl über Griffe als auch über das Eigenschaften-Panel (`carrier_prop_section`, `marker_prop_section`) können Parameter wie Blicktiefe (`far_depth`), vertikaler Schnittbereich ($Z_{min}, Z_{max}$), Schnitthöhe (`z_cut`) und Maßstab nachträglich modifiziert werden; betroffene Ansichten werden unmittelbar aktualisiert.
+4. **Koordinatenlokalisierung der Grundriss-Engine (`floorplan_engine.rs`):** Behebung von Darstellungs- und Versatzfehlern bei `AEC_FLOORPLAN` / `AEC_RCP` durch konsistente Transformation in den lokalen Ursprung des Viewpoints.
+5. **Präzise Verdeckungsberechnung (2D-Occlusion / Silhouette):** Sauberes Abschneiden bzw. Entfernen verdeckter Hintergrundkanten hinter massiven Wandschichten und Decken sowie saubere Begrenzungskanten ohne visuelle Lücken.
+6. **XREF-Planartensynchronisation & 3D-Körper-Stabilität:** Zuverlässiges Rendern von 3D-Volumenkörpern (ACIS SAT) und Schichtschraffuren im Gesamtmodell beim Umschalten zwischen Planarten und 2D/3D-Modus.
 
 ---
 
 ### Scope
 
 #### In Scope
-- **Gesamtmodell- & XREF-Verarbeitung (Multi-Geschoss-Modell):** Ableitung von Gebäudeschnitten und -ansichten aus dem Gesamtmodell (`Haus.dwg`), in dem Einzelgeschosse (EG, OG, DG), Dächer oder Fachmodelle als externe Referenzen (XREFs) mit Z-Versatz platziert sind. Traversierung aller referenzierten Bauteile unter Berücksichtigung ihrer Transformationsmatrizen ($T_{xref}$).
-- **Geometrische Viewpoints:** Gerade und gestufte Vertikalschnitte (`Section` mit Schnittversatz / Jogged Sections), Fassadenansichten (`Elevation`), Grundrisse mit Schnitthöhe (`FloorPlan`) und Deckenspiegel (`ReflectedCeilingPlan`).
-- **Interaktives Preview-Polygon & Höhenbereich:** Visuelle Eingabe von Schnittlinie, Blickrichtung und Blicktiefe über ein dynamisches Sichtbereichs-Polygon in der 2D-Zeichnung; interaktive Höhenfestlegung des Schnittkörpers mit automatischer Vorgabe der Gesamtgebäudehöhe aus dem Geschossmanager (`ProjectFile`).
-- **Bauteilstile & Planarten-Integration (auch über XREFs):** Volle Berücksichtigung der Bauteilstile (Wände, Decken, Öffnungen, künftige Bauteile) und der aktiven `DisplayConfig` / `DisplayProfile` (Materialschraffuren, Schichtfilter, Linienstärken, Sichtbarkeiten für Ausführung 1:50, Entwurf 1:100, Schalplan/Rohbau 1:50) über alle referenzierten Geschosse hinweg.
-- **Öffnungs-Darstellungskomponenten (Slots):** Auswertung und Darstellung der in den Öffnungsstilen definierten 2D/3D-Slots (z. B. Fenster- und Türansichten mit `ElevationContour2D`, `ElevationSwing2D`, `ElevationSill2D`, `ElevationMuntins2D` sowie Blocks/Generators/Skizzen) in Ansichten und Schnitten.
-- **Fachliche ModelViews:** Mehrere Planarten aus demselben Viewpoint (z. B. Schnitt A–A als Ausführungsplan 1:50, Entwurfsplan 1:100 und Schalplan 1:50).
-- **Herkunftsverfolgung (Provenance mit XREF-Bezug):** Speicherung von Bauteil-, XREF-/Dateiquellen-, Schicht- und Feature-Referenzen an jedem erzeugten 2D-Grafikelement.
-- **Schnitt- & Projektionsberechnung:**
-  - Exakter 3D-Schnitt durch mehrschichtige Wände und Decken aller Geschosse mit Schichtgrenzen und Materialschraffuren (auch für gestufte Schnittverläufe).
-  - Berücksichtigung von Wandöffnungen, Fenster-/Türprofilen und Nischen über alle Geschossebenen.
-  - Tiefenbegrenzte Projektion sichtbarer Kanten im Hintergrund (`silhouette`).
-- **Assoziative View-Carrier:** Modellbereichsblöcke mit XDATA-Metadaten für automatische oder manuelle Aktualisierung (`UpdatePolicy`).
-- **Semantische Modellgriffe & Rückbearbeitung:** Bearbeitung von Wandoberkanten, Deckenhöhen und Öffnungsbrüstungen direkt im Schnitt (mit Zielzuordnung auf native Entitäten bzw. referenzierte Quelldokumente).
-- **Interaktive Befehle & UI:** `AEC_SECTION`, `AEC_ELEVATION`, `AEC_FLOORPLAN`, `AEC_RCP`, `AEC_VIEWUPDATE` sowie DIN 1356 Schnittverlaufs- und Pfeilsymbole.
-- **Layout- & Blatt-Integration:** Platzierung von ModelViews auf Papierbereich-Layouts (`MVIEW`) mit Maßstabsbindung.
+- **Assoziative Schnitt- und Ansichtsmarkierungen (`AEC_SECTION_MARKER` / `AEC_ELEVATION_MARKER`):**
+  - Kapselung der DIN 1356 Geometrien in einer identifizierbaren AEC-Entität mit XDATA-Bindung an `Viewpoint` und `DerivedViewCarrier`.
+  - Bereitstellung von Viewport-Griffen:
+    - Schnittlinien-Anfangs- und Endgriff (Verschieben / Strecken).
+    - Tiefengriff am Frustum-Begrenzungspolygon (Blicktiefe interaktiv ziehen).
+    - Flip-Griff (Umkehren der Blickrichtung und Richtungspfeile).
+    - Segment-Griffe bei gestuften Schnittlinien (Schnittversätze verschieben).
+- **Semantische Modell-Rückbearbeitung im Schnitt (`edit_ops.rs` Viewport-Integration):**
+  - Anzeige von interaktiven Ziehgriffen an abgeleiteten Kanten im Schnitt (`WallTop`, `SlabTop`, `OpeningSill`, `OpeningHead`, `OpeningLeftJamb`, `OpeningRightJamb`).
+  - Anbindung an die zentrale Grip-Ereignisschleife (`apply_aec_derived_view_grip`), Validierung zulässiger Freiheitsgrade und Ausführung von Modelltransaktionen.
+- **Vollständige Eigenschaften-Unterstützung (Properties Panel):**
+  - Anzeige und Editierbarkeit von Schnitt-/Ansichtsparametern im Eigenschaften-Panel: Name, Maßstab, Tiefenbegrenzung / Distanz, Z-Bereich, Schnitthöhe, Update-Modus und Status.
+  - Implementierung der Eigenschafts-Anwendung via `aec_apply_property_field` mit sofortiger automatischer Regenerierung.
+- **Korrektur der Grundriss- und Horizontalschnitt-Engine:**
+  - Lokale Koordinatentransformation relativ zum Viewpoint-Ursprung; Beseitigung von Skalierungs- und Versatzproblemen beim Platzieren.
+  - Nachträgliche Justierung der Schnitthöhe (`z_cut`) und des Darstellungsbereichs über Griffe und Eigenschaften.
+- **Härtung der Verdeckungs- und Schraffur-Engine:**
+  - Verdeckungsschnitt (Clipping) von Hintergrundkanten gegen deckende 2D-Flächenmasken (`SurfaceFill` / `CutFill`).
+  - Vollständige Begrenzungslinien (`CutBoundary`) für jede geschnittene Wandschicht und Deckenkante.
+- **Gesamtmodell- & XREF-Härtung:**
+  - Synchronisation der `DisplayConfig` über referenzierte Geschosse ohne Schraffurverlust.
+  - Sicherstellung des 3D-Körper-Renderings (Solid3D / ACIS SAT) nach Planarten- und Ansichtswechseln.
 
 #### Out of Scope
-- Beliebig gekrümmte (kurvenförmige/splinebasierte) Schnittführungen (vorgesehen für ein separates Folgepaket; orthogonale/gestufte Schnittlinien sind in Scope).
-- Perspektivische oder axonometrische 2D-Schnittableitungen.
-- Vollautomatische Bewehrungsgenerierung in Schalplänen.
+- Beliebig gekrümmte (kurvenförmige/splinebasierte) Schnittführungen.
+- Vollautomatische Bewehrungsberechnung in Schalplänen.
 
 ---
 
 ### User Stories
 
-- **Als Architekt** möchte ich im Gesamtmodell (`Haus.dwg`) mit referenzierten Geschossen eine Schnittlinie durch das gesamte Gebäude ziehen (`AEC_SECTION`), damit alle Geschosse (EG, OG, DG, Dach) mit ihren korrekten Z-Höhenlagen, Deckenauflagern und Wandschichten geschnitten und dargestellt werden.
-- **Als Planer** möchte ich denselben Gebäudeschnitt in verschiedenen Maßstäben und Planarten darstellen (1:100 Übersicht, 1:50 Ausführung, 1:50 Rohbau/Schalplan), ohne den Schnitt mehrfach neu konstruieren zu müssen.
-- **Als Konstrukteur** möchte ich im Schnitt die Brüstungshöhe eines Fensters oder die Oberkante einer Wand per Griff verschieben, sodass das 3D-Modell, die Grundrisse und alle weiteren Schnitte synchron aktualisiert werden.
-- **Als Zeichner** möchte ich Schnitte und Ansichten direkt auf Papierbereich-Layouts platzieren (`AEC_PLACE_VIEW`), wobei Maßstab und Plankopf assoziativ gekoppelt bleiben.
+- **Als Architekt** möchte ich eine Schnittlinie im Grundriss anklicken und an Griffen verschieben, strecken oder in der Blicktiefe anpassen können, sodass sich der Schnitt und die Pfeile automatisch anpassen.
+- **Als Planer** möchte ich im Eigenschaften-Panel einer abgeleiteten Ansicht oder eines Schnitts den Maßstab (z. B. von 1:100 auf 1:50) oder die Blicktiefe ändern und sofort die aktualisierte Zeichnung sehen.
+- **Als Konstrukteur** möchte ich im Schnitt die Wandoberkante oder die Brüstung eines Fensters per Griff nach oben ziehen können, damit das 3D-Modell, die Grundrisse und alle weiteren Ansichten synchron mitgeändert werden.
+- **Als Zeichner** möchte ich einen horizontalen Grundriss (`AEC_FLOORPLAN`) an jedem beliebigen Einfügepunkt im Modellbereich platzieren können, ohne dass Geometrien versetzt oder unsichtbar sind.
+- **Als Master-Modell-Bearbeiter** möchte ich zwischen Ausführungsplan, Schalplan und 3D-Ansicht umschalten, ohne dass Bauteile der referenzierten Geschosse (XREFs) verschwinden oder Schraffuren erst nach manuellem Neuladen sichtbar werden.
 
 ---
 
 ### Functional Requirements
 
-- **FR-1: Viewpoint-Definition, Gestufte Schnitte & Preview-Polygon:**
-  - Interaktive Definition von Schnitten und Ansichten über ein dynamisches Preview-Polygon (Schnittverlauf, Blickrichtung und Blicktiefe `far_depth` / `depth`) in der Grundrisszeichnung.
-  - Unterstützung für **gestufte Schnittlinien (Schnittversatz / Jogged Sections)** mit mehreren parallelen Schnittebenen und Verbindungsabschnitten.
-  - Einstellbare obere und untere Höhenbegrenzung (Z-Schnittbereich), standardmäßig initialisiert mit der Gesamtgebäudehöhe aus dem Geschossmanager (`ProjectFile`).
-  - Ursprung (`ViewOrigin`, welt- oder geschossrelativ), orthogonale Achsen (`right`, `up`, `forward`) und Begrenzungsrahmen (`crop`).
-  - Automatische Nachführung geschossrelativer Schnitte bei Höhenänderungen von Stockwerken.
-- **FR-2: Schnitt- und Projektions-Engine mit Multi-XREF-, Stile- & Slot-Berücksichtigung:**
-  - **Multi-Geschoss- & XREF-Traversierung:** Die Engine scannt und schneidet native Modellbereichs-Objekte sowie alle in Block-Definitionen referenzierten XREF-Geschosse. Bauteile werden über die Transformationsmatrix $T_{xref}$ (Einfügepunkt $X, Y, Z$, Drehung, Skalierung) in den globalen Modell-Raum transformiert.
-  - Berechnung der Schnittpolygone (`CutBoundary`) und Schichtfüllungen (`CutFill`) für alle durchdrungenen Wände und Decken anhand der aktiven `DisplayConfig` (z. B. Kern/Structural im Schalplan vs. alle Schichten mit Materialschraffuren im Ausführungsplan).
-  - Volle Integration der **Öffnungs-Slots** (`OpeningComponentSlot`):
-    - Im Schnitt: Schnittflächen durch Rahmen, Flügel, Glas und Füllungen sowie Laibungsdetails.
-    - In der Ansicht/Projektion: Verwendung der definierten Ansichtskomponenten wie `ElevationContour2D`, `ElevationSwing2D` (Öffnungsrichtungssymbol/Flügelaufschlag), `ElevationSill2D` (Fenstersims/Sohle), `ElevationMuntins2D` (Sprossen) und parametrischen Blöcken/Generatoren.
-  - Projektion sichtbarer Bauteilkanten im Hintergrund bis zur definierten Schnitttiefe mit Tiefenstaffelung.
-- **FR-3: Lückenlose Provenienz (Herkunftsdaten mit XREF-Identifikation):**
-  - Jedes 2D-Primitive erhält ein `SourceSet` mit Quellangabe (`element_id`, optionaler `xref_source` / `document_id`), Schicht-ID (`component_id`) und Feature (`feature_key`, z. B. `WallTop`, `OpeningSill`, `LayerFace`).
-  - Schnittlinien und Bemaßungen binden sich an stabile semantische Features statt flüchtiger Vertex-IDs, auch über externe Referenzen hinweg.
-- **FR-4: Assoziative Aktualisierung & Dirty-Tracking:**
-  - Änderungen am 3D-Modell (Wand versetzt, Öffnung geändert) markieren betroffene Schnitte als veraltet (`is_outdated`).
-  - Unterstützung für automatische Neuberechnung (`UpdatePolicy::Automatic`) oder manuelle Aktualisierung (`UpdatePolicy::Manual` / `AEC_VIEWUPDATE`).
-- **FR-5: Direkte Modellbearbeitung im Schnitt:**
-  - Bereitstellung interaktiver Griffe für zulässige Freiheitsgrade (z. B. vertikale Höhenänderung von Wänden, Decken und Brüstungen).
-  - Umrechnung von 2D-Ziehvektoren in 3D-Modelloperationen (`lift_view_delta`) unter voller Einbindung in das Undo/Redo-System.
-- **FR-6: Planbeschriftung & DIN 1356:**
-  - Generierung normgerechter Schnittverlaufslinien im Grundriss mit Kennbuchstaben (z. B. A–A) und Blickrichtungspfeilen.
-  - Automatische Höhenkoten- und Beschriftungssymbole im Schnitt.
+- **FR-1: Assoziative Schnitt- und Ansichtsmarkierungen mit Viewport-Griffen:**
+  - Speicherung von Schnittverläufen als verknüpfte Markierungsobjekte mit `AEC_SECTION_MARKER` XDATA.
+  - Interaktive Griffe: Start-/Endpunktverschiebung, Versatzpunkte (Jogs), Blicktiefen-Polygon und Blickrichtungs-Spiegelung.
+  - Synchrones Dirty-Tracking: Jede Geometrieänderung an der Markierung markiert den verknüpften `DerivedViewCarrier` als veraltet oder triggert bei automatischer Policy direkt die Neuberechnung.
+- **FR-2: Semantische Griffe an abgeleiteten Schnittkanten:**
+  - Erkennung von `DerivedPrimitive`-Entitäten bei Selektion und Bereitstellung von `EditHandle`-Griffen (Höhe Wand, Brüstung, Sturz, Deckenhöhe).
+  - Umrechnung von 2D-Ziehvektoren in 3D-Modellmutationen via `resolve_handle_drag` und Transaktionscommit via `commit_view_drag_and_update`.
+  - Visuelle Drahtvorschau während des Ziehens und Undo/Redo-Sicherheit.
+- **FR-3: Parameter-Inspektion und -Änderung im Eigenschaften-Panel:**
+  - Schnittmarkierung: Name, Kennbuchstabe, Blicktiefe, Z-Bereich ($Z_{min}, Z_{max}$), Planart, verknüpfter Carrier.
+  - View-Carrier: Name, Maßstab (1:X), Status, Update-Modus, Button "Jetzt aktualisieren".
+  - Abgeleitetes Bauteil: Quell-Element-ID, Schicht, Feature, editierbare Parameter (z. B. Wandhöhe, Brüstungshöhe).
+  - Implementierung in `aec_apply_property_field` zur unmittelbaren Aktualisierung des Dokuments.
+- **FR-4: Präzise Grundriss- und Horizontalschnitt-Ableitung:**
+  - Lokale Transformation in das Koordinatensystem des Viewpoints vor der Carrier-Platzierung.
+  - Unterstützung für nachträgliche Höhenanpassung der Schnittebene (`z_cut`) über Griffe und Eigenschaften.
+- **FR-5: Saubere Kantenverdeckung und Schichtkonturen:**
+  - 2D-Occlusion-Clipping aller sichtbaren Hintergrundkanten an deckenden Schnitt- und Flächenpolygonen.
+  - Vollständige Begrenzungskanten um jede geschnittene Wandschicht und Decke.
+- **FR-6: Stabile XREF- und Multi-Storey-Darstellung:**
+  - Erhaltung von ACIS 3D-Meshes und Schalplan-/Materialschraffuren über alle referenzierten Geschosse beim Umschalten von Ansichten und Planarten.
 
 ---
 
 ### Non-Functional Requirements
 
-- **AEC-Modul-Isolation:** Sämtliche Ansichts-, Schnitt- und Provenienzlogik liegt strikt unter `src/modules/aec/**`.
-- **Performanz & Caching:** Caching der generierten 2D-Geometrien im `DerivedViewCache`, sodass beim Öffnen von Zeichnungen keine vollständige Neuberechnung erforderlich ist.
-- **Robuste Fehlerbehandlung & Validierung:** Strikte Gültigkeitsprüfungen für Koordinatensysteme (keine Singularitäten, orthonormale Achsen, endliche Fließkommazahlen).
-- **Konsistente Lokalisierung:** Alle UI-Texte, Eingabeaufforderungen und Fehlermeldungen unterstützen Deutsch und Englisch via `locales/`.
+- **AEC-Modul-Isolation:** Sämtliche Ansichts-, Schnitt-, Markierungs- und Provenienzlogik liegt strikt unter `src/modules/aec/**`. Core-Hooks in `properties.rs` und `viewport.rs` bleiben schlank und delegierend.
+- **Performanz:** Bounding-Box-Vorfilterung und asynchroner bzw. schneller Re-Bake bei Griff- und Parameteränderungen.
+- **Konsistente Lokalisierung:** Alle UI-Texte, Grifftipps, Eigenschaftsbezeichner und Statusmeldungen unterstützen Deutsch und Englisch.
 
 # Technical Design
 
@@ -108,35 +111,57 @@ Dadurch wird nicht nur die automatisierte, konsistente Planerstellung aus dem 3D
    - *Entscheidung:* Die Schnitt-Engine (`cut_engine.rs`) arbeitet auf einer aggregierten Szene (`SceneGeometryCollector`), die sowohl native Modellbereichsobjekte als auch aufgelöste externe Referenzen (XREFs mit Höhenversatz $Z_{storey}$) verarbeitet.
    - *Begründung:* Schnitte und Ansichten entstehen in der architektonischen Praxis typischerweise im Gesamtmodell (`Haus.dwg`), in welchem die einzelnen Geschossdateien per XREF zusammengeführt sind.
 
-3. **Gestufte Schnittpfade (Jogged Sections) & Sichtkörper-Polygon:**
-   - *Entscheidung:* `ViewKind::Section` unterstützt segmentierte Schnittpfade (`SectionPath::Segmented(Vec<SectionSegment>)`) mit versetzten parallelen Ebenen. Der Schnittkörper wird im Grundriss als geschlossenes interaktives Preview-Polygon (Bounding Frustum) visualisiert.
-   - *Begründung:* Architektonische Schnitte müssen häufig versetzt geführt werden, um Treppenhäuser, Fensterachsen und Wandversprünge in einem Plan abzubilden.
+3. **Assoziative Schnittmarkierungen mit Viewport-Griffen (`Din1356SectionMarker`):**
+   - *Entscheidung:* Schnitt- und Ansichtsmarkierungen werden als eigenständige parametrische AEC-Entitäten mit `AEC_SECTION_MARKER` XDATA persistiert, gekoppelt an `viewpoint_id` und den zugehörigen Zeichnungsträger (`carrier_handle`).
+   - *Begründung:* Schnittlinien dürfen keine "dummen" Linien sein; Anwender müssen Schnittverlauf, Schnitttiefe und Blickrichtung (Flip) direkt an Griffen im Grundriss manipulieren können.
 
-4. **Wiederverwendung vorhandener AEC-Stile & Öffnungs-Slots:**
-   - *Entscheidung:* Die Ableitungs-Engine greift direkt auf `WallStyle`, `SlabStyle`, `OpeningStyle` und `DisplayConfig` (`WallComponentSlot`, `OpeningComponentSlot`) zu. Ansichts- und Schnittgeometrien von Öffnungen nutzen vorhandene Slot-Generatoren (`bake_opening_generators_with_doc`), Blöcke (`SlotGeometry::Block`) und Skizzen.
-   - *Begründung:* Verhindert Daten- und Logikduplizierung; Stilanpassungen (z. B. geänderte Fensterbank oder Materialschraffur) wirken unmittelbar in allen abgeleiteten Ansichten.
+4. **Viewport-Anbindung semantischer Modellgriffe (`apply_aec_derived_view_grip`):**
+   - *Entscheidung:* Selektierte abgeleitete Kanten (Wandoberkante, Deckenhöhe, Brüstungslinie, Sturz) blenden im Viewport interaktive `EditHandle`-Griffe ein. Beim Ziehen führt Core über AEC-Hooks direkte semantische Mutationen (`commit_view_drag_and_update`) am 3D-BIM-Modell aus.
+   - *Begründung:* Erfüllt die zentrale Anforderung der Modell-Rückbearbeitung ("keine dummen Linien"), ohne Core mit AEC-Fachlogik zu überfrachten.
 
-5. **Gebäudehöhen-Vorgabe aus Geschossmanager:**
-   - *Entscheidung:* Bei Erstellung von Schnitten und Ansichten wird der vertikale Schnittbereich ($Z_{min}$ bis $Z_{max}$) standardmäßig aus den aggregierten Geschosshöhen (OKRD/OKFF) der `ProjectFile` ermittelt, bleibt jedoch manuell im Befehl oder per Griff anpassbar.
-   - *Begründung:* Schnitte erfassen standardmäßig das gesamte Bauwerk, ohne manuelle Höhenraterei bei der Eingabe.
+5. **Bidirektionale Eigenschaften-Steuerung & Sofort-Aktualisierung:**
+   - *Entscheidung:* Das Eigenschaften-Panel (`aec_apply_property_field`) unterstützt die Modifikation aller View-Parameter (Maßstab, Blicktiefe, Z-Bereich, Schnitthöhe `z_cut`, Planart) und löst eine synchrone Regenerierung der abgeleiteten Zeichnung aus.
+   - *Begründung:* Maximale Flexibilität für Planer, um Ansichts- und Schnittparameter feingranular im Dialog nachzujustieren.
 
-6. **Lückenlose Herkunftsverfolgung mit XREF-Unterstützung (Provenance):**
-   - *Entscheidung:* Jedes erzeugte 2D-Element referenziert die Quellbauteil-ID, optionale XREF-/Dokumentenreferenz, Schicht-ID und das semantische Feature (`FeatureKey`).
-   - *Begründung:* Essentiell für assoziative Bemaßung und direkte Modell-Rückbearbeitung aus der 2D-Schnittansicht über Dateigrenzen hinweg.
+6. **Lokalisierte Viewpoint-Koordinaten in der Grundriss-Engine:**
+   - *Entscheidung:* `floorplan_engine.rs` transformiert alle geschnittenen Bauteile in das lokale Koordinatensystem des Viewpoints relativ zum Viewpoint-Ursprung.
+   - *Begründung:* Beseitigt Darstellungsabbrüche und extreme Positionsverschiebungen bei der Platzierung von Grundrissen (`AEC_FLOORPLAN`) und Deckenspiegeln (`AEC_RCP`).
 
-7. **Assoziativer View-Carrier im Modellbereich:**
-   - *Entscheidung:* Speicherung abgeleiteter 2D-Schnitte als eigenständige Blockstrukturen (`DerivedViewCarrier`) mit `OPENCAD_AEC`-Metadaten.
-   - *Begründung:* Maximale DWG/DXF-Kompatibilität bei gleichzeitiger Beibehaltung der Modellbindung.
+7. **Präzises 2D-Occlusion-Clipping & vollständige Schichtkonturen:**
+   - *Entscheidung:* Hintergrundkanten werden über Polygon-Clipping an vordergründigen Schnittflächen (`CutFill`) und opaken Oberflächenmasken (`SurfaceFill`) beschnitten. Jede Wandschicht und Decke erhält lückenlose Begrenzungskanten (`CutBoundary`).
+   - *Begründung:* Verhindert durchscheinende Linien und stellt normgerechte Plandarstellungen nach DIN 1356 sicher.
 
-8. **Semantische Modell-Rückbearbeitung statt 2D-zu-3D-Inversion:**
-   - *Entscheidung:* Keine freie Geometrietransformation von 2D-Linien, sondern gezielte, capability-geprüfte Modellbefehle (`SetWallHeight`, `SetOpeningSillHeight`).
-   - *Begründung:* Orthografische Projektionen verlieren die Tiefeninformation; nur semantisch definierte Freiheitsgrade garantieren ein konsistentes 3D-Modell.
+8. **Wiederverwendung vorhandener AEC-Stile & Öffnungs-Slots:**
+   - *Entscheidung:* Die Ableitungs-Engine greift direkt auf `WallStyle`, `SlabStyle`, `OpeningStyle` und `DisplayConfig` zu; Öffnungen nutzen Slots wie `ElevationContour2D`, `ElevationSwing2D` und `ElevationSill2D`.
+   - *Begründung:* Konsistente Stildarstellung und Vermeidung redundanter Geometrieberechnungen.
 
 ---
 
 ### Data Models / Contracts
 
 ```rust
+// In src/modules/aec/views/din1356.rs
+pub struct Din1356SectionMarker {
+    pub viewpoint_id: ViewpointId,
+    pub carrier_handle: Option<Handle>,
+    pub label: String,
+    pub path: SectionPath,
+    pub far_depth: Option<f64>,
+    pub z_min: f64,
+    pub z_max: f64,
+    pub flip_direction: bool,
+}
+
+// Marker Grip Identifiers in src/modules/aec/properties.rs
+pub const SECTION_MARKER_START_GRIP: usize = 0;
+pub const SECTION_MARKER_END_GRIP: usize = 1;
+pub const SECTION_MARKER_DEPTH_GRIP: usize = 2;
+pub const SECTION_MARKER_FLIP_GRIP: usize = 3;
+pub const SECTION_MARKER_JOG_BASE: usize = 100;
+
+// Derived Primitive Edit Grip Identifiers
+pub const DERIVED_VIEW_GRIP_BASE: usize = 50_000;
+
 // In src/modules/aec/engine/views/viewpoint.rs
 pub struct Viewpoint {
     pub id: ViewpointId,
@@ -145,95 +170,12 @@ pub struct Viewpoint {
     pub origin: ViewOrigin,
     pub axes: ViewAxes,
     pub kind: ViewKind,
-    pub z_range: VerticalRange, // Untere und obere Z-Grenze (Default: Gesamtgebäude aus Geschossmanager)
+    pub z_range: VerticalRange,
     pub mapping: ProjectionMapping,
     pub crop: Option<Rect2>,
 }
 
-pub enum ViewKind {
-    FloorPlan { range: PlanRange },
-    ReflectedCeilingPlan { range: CeilingRange },
-    Section {
-        path: SectionPath, // Gerade oder gestufte Schnittlinie (mit Versatz)
-        far_depth: Option<PositiveMetres>,
-    },
-    Elevation {
-        depth: DepthRange,
-    },
-}
-
-pub enum SectionPath {
-    Straight {
-        start: Point2,
-        end: Point2,
-    },
-    Jogged {
-        segments: Vec<SectionSegment>, // Parallele Hauptschnitte und Querversätze
-    },
-}
-
-pub struct SectionSegment {
-    pub start: Point2,
-    pub end: Point2,
-    pub is_jog_transition: bool,
-}
-
-pub struct VerticalRange {
-    pub z_min: Metres,
-    pub z_max: Metres,
-}
-
-pub enum ViewOrigin {
-    World(Point3),
-    StoryRelative {
-        story: StoryRef,
-        xy_world: Point2,
-        offset: Metres,
-    },
-}
-
-// In src/modules/aec/engine/views/model_view.rs
-pub struct ModelView {
-    pub id: ModelViewId,
-    pub name: String,
-    pub viewpoint_id: ViewpointId,
-    pub profile_id: ViewProfileId,
-    pub scale: ScaleDenominator,
-    pub detail: DetailPolicy,
-    pub excluded_elements: BTreeSet<ElementRef>,
-    pub graphic_overrides: Vec<GraphicOverride>,
-    pub annotation_ids: Vec<AnnotationId>,
-    pub update_policy: UpdatePolicy,
-    pub revisions: ViewRevisions,
-}
-
 // In src/modules/aec/engine/views/provenance.rs
-pub struct SourceReference {
-    pub element: ElementRef,
-    pub xref_source: Option<XrefSourceRef>, // Herkunft aus referenziertem Geschoss (XREF)
-    pub component_id: Option<ComponentId>,
-    pub feature: Option<FeatureKey>,
-    pub display_component_id: Option<DisplayComponentId>,
-}
-
-pub struct XrefSourceRef {
-    pub block_record_name: String,
-    pub source_path: Option<std::path::PathBuf>,
-    pub transform: Mat4,
-}
-
-pub enum FeatureKey {
-    WallTop,
-    WallBottom,
-    OpeningSill,
-    OpeningHead,
-    OpeningJambLeft,
-    OpeningJambRight,
-    LayerFace,
-    SlabTop,
-    SlabBottom,
-}
-
 pub struct DerivedPrimitive {
     pub id: PrimitiveId,
     pub role: PrimitiveRole,
@@ -243,6 +185,22 @@ pub struct DerivedPrimitive {
     pub style: ResolvedStyle,
     pub edit_handles: Vec<EditHandle>,
 }
+
+// In src/modules/aec/engine/views/edit_ops.rs
+pub fn resolve_handle_drag(
+    viewpoint: &Viewpoint,
+    model_view: &ModelView,
+    scene: &SceneGeometryCollector,
+    primitive: &DerivedPrimitive,
+    handle_idx: usize,
+    view_delta: Vector2,
+) -> Result<SemanticMutation, EditOpError>;
+
+pub fn commit_view_drag_and_update(
+    doc: &mut CadDocument,
+    carrier_handle: Handle,
+    mutation: &SemanticMutation,
+) -> Result<DerivedViewCarrier, Box<dyn std::error::Error>>;
 ```
 
 ---
@@ -251,42 +209,39 @@ pub struct DerivedPrimitive {
 
 ```mermaid
 graph TD
-  subgraph Multi-Storey Master Model Haus.dwg
-    MM[Master Document] --> XREF_EG[XREF: Drawing1.dwg - EG Z=0.0m]
-    MM --> XREF_OG[XREF: Drawing2.dwg - OG Z=2.8m]
-    MM --> XREF_DG[XREF: Roof / DG Z=5.6m]
-    XREF_EG --> W1[Walls, Slabs, Openings EG]
-    XREF_OG --> W2[Walls, Slabs, Openings OG]
-    XREF_DG --> W3[Roof, Slabs, Walls DG]
+  subgraph Plan View / Grundriss
+    SM[DIN 1356 Section Marker Entity] --> VP[Viewpoint: Path, Z-Range, Depth, Flip]
+    SM_Grip[Marker Grips: Start, End, Depth, Flip] --> SM
   end
 
-  subgraph Scene Geometry Collector
-    MM & XREF_EG & XREF_OG & XREF_DG --> Col[Spatial Bounding & Transform T_xref]
+  subgraph Properties Panel
+    Prop[Eigenschaften: Name, Tiefe, Höhe, Maßstab] --> aec_apply[aec_apply_property_field]
+    aec_apply --> VP
+    aec_apply --> Carrier
   end
 
-  subgraph View Definition
-    VP[Viewpoint: Straight/Jogged, Z-Range from StoreyManager, Preview-Polygon]
-    DC[DisplayConfig: Profile, Detail, Scale, Layer Filters]
-    MV[ModelView: VP + DC + Overrides]
-    VP --> MV
-    DC --> MV
+  subgraph BIM Model & XREFs
+    Model[Gesamtmodell Haus.dwg + XREF EG/OG/DG] --> Col[Scene Geometry Collector]
   end
 
-  subgraph 2D Derivation Engine
-    Col & MV --> CE[Cut & Silhouette Engine with Slots]
-    CE --> DVC[DerivedViewCache]
-    DVC --> DP[DerivedPrimitives + XREF-Provenance]
+  subgraph Derivation Engines
+    VP & Col --> Engines[Cut, Elevation & Floorplan Engine]
+    Engines --> Sil[2D Occlusion & Silhouette Clipping]
+    Sil --> Prims[DerivedPrimitives with EditHandles & Provenance]
   end
 
-  subgraph Viewport & Layout
-    DP --> Carrier[2D View Carrier in DWG]
-    Carrier --> MVIEW[Paper Space Layout / MVIEW]
+  subgraph Derived 2D Drawing
+    Prims --> Carrier[DerivedViewCarrier in Model Space]
+    Carrier --> SecEnts[CAD Entities: CutBoundary, CutFill, ProjectedEdge]
   end
 
-  subgraph Backward Editing
-    Grip[Grip Drag in Section] --> Lift[lift_view_delta]
-    Lift --> Cmd[Semantic Model Command to Host / XREF Target]
-    Cmd --> MM
+  subgraph Semantic Backward Editing
+    SecEnts --> PrimGrip[EditHandle Drag: WallTop, Sill, Head]
+    PrimGrip --> DragHook[apply_aec_derived_view_grip]
+    DragHook --> SemMut[resolve_handle_drag & SemanticMutation]
+    SemMut --> Commit[commit_view_drag_and_update]
+    Commit --> Model
+    Commit --> Carrier
   end
 ```
 
@@ -294,123 +249,125 @@ graph TD
 
 ### File Structure & Components
 
-- `src/modules/aec/engine/views/`
-  - `mod.rs`: Modul-Export und Typdefinitionen.
-  - `viewpoint.rs`: Geometrische Schnittkörper, Schnittpfade (gerade & gestuft), Z-Bereiche und Preview-Polygone.
-  - `model_view.rs`: Fachliche Planansichten, Maßstäbe und grafische Überschreibungen.
-  - `scene_collector.rs`: Aggregation und räumliche Filterung nativer Entitäten und referenzierter XREF-Geschosse mit Transformationsmatrizen ($T_{xref}$).
-  - `provenance.rs`: Herkunftsverfolgung (`SourceReference`, `XrefSourceRef`), Features und Rollen.
-  - `cut_engine.rs`: 3D-Schnittflächenberechnung für mehrschichtige Bauteile, gestufte Schnitte und Öffnungs-Slots über alle Geschossebenen.
-  - `elevation_engine.rs`: Ansichtsberechnung mit Einbindung von `OpeningComponentSlot` (`ElevationContour2D`, `ElevationSwing2D`, `ElevationSill2D`).
-  - `silhouette.rs`: Verdeckungsprüfung und Projektion sichtbarer Hintergrundkanten.
-  - `carrier.rs`: XDATA-Kapselung und Verwaltung des assoziativen 2D-Zeichnungsträgers.
-  - `edit_ops.rs`: Semantische Modellrückbearbeitung und Drag-Delta-Transformationen.
 - `src/modules/aec/views/`
-  - `aec_section.rs`: Interaktiver Befehl zur Schnittlinienerstellung (inkl. Versatz, Gesamtmodell-Erfassung & Preview-Polygon).
-  - `aec_elevation.rs`: Interaktiver Befehl für Gebäude- und Raumansichten mit Blicktiefe-Polygon.
-  - `aec_viewupdate.rs`: Aktualisierungsbefehl für veraltete Ansichten.
-  - `sheet_placement.rs`: Layout-Platzierung und Ansichtsfensterkopplung.
-- `locales/de.json` & `locales/en.json`: Lokalisierung aller Befehlsabfragen, Menüs und Fehlermeldungen.
+  - `din1356.rs`: Assoziative `Din1356SectionMarker`-Entität, Griffdefinitionen und Vektorgenerierung.
+  - `aec_section.rs`: Schnittbefehl, Marker-Erzeugung mit Koppelung an den View-Carrier.
+  - `aec_elevation.rs`: Fassadenansichtsbefehl mit Blicktiefen-Polygon und assoziativer Markierung.
+  - `aec_floorplan.rs`: Grundrissbefehl mit lokalisierter Platzierung und Höhenabfrage.
+  - `aec_viewupdate.rs`: Aktualisierungsbefehl für veraltete Träger und Marker.
+- `src/modules/aec/engine/views/`
+  - `floorplan_engine.rs`: Horizontale Schnittberechnung mit relativer Viewpoint-Koordinatentransformation.
+  - `cut_engine.rs`: Vertikalschnitte mit lückenlosen Schnittkanten (`CutBoundary`) und Hintergrundprojektion.
+  - `elevation_engine.rs`: Ansichtsprojektion mit Öffnungs-Slots und opaken Masken.
+  - `silhouette.rs`: Präzises 2D-Occlusion-Clipping für verdeckte Linien.
+  - `carrier.rs`: Träger-Persistenz, Definitionsspeicherung und CAD-Entity-Synchronisation.
+  - `edit_ops.rs`: Semantische Mutationen und Transaktions-Commit.
+- `src/modules/aec/`
+  - `properties.rs`: `append_section_marker_grips`, `append_derived_view_grips`, Eigenschaftspanel-Sektionen und `aec_apply_property_field`.
+  - `walls/axis_session.rs` / `spawn.rs`: Dispatching von Marker- und Bauteil-Grips.
+- `src/app/`
+  - `properties.rs`: Hook zur Übergabe von AEC-Marker- und View-Griffen an das UI.
+  - `update/viewport.rs`: Hook zur Ausführung von Marker- und abgeleiteten Modellgriffen während des Ziehens.
 
 ---
 
 ### Risks & Mitigations
 
-- **Performanz bei komplexen Gebäudemodellen:**
-  - *Risiko:* Schnitt- und Silhouette-Berechnung kann bei vielen Bauteilen Rechenzeit beanspruchen.
-  - *Mitigation:* Räumlicher Index (Bounding-Box-Filterung gegen das Sichtvolumen) vor der B-Rep-Auswertung sowie Zwischenspeicherung im `DerivedViewCache`.
-- **Verlust von Bemaßungsbezügen bei Modelländerungen:**
-  - *Risiko:* Stark veränderte Geometrien können Linienhandles ungültig machen.
-  - *Mitigation:* Bindung assoziativer Bemaßungen an semantische Features (`FeatureKey`) statt Vertex-Indizes; sichtbare Kennzeichnung verwaister Maße.
+- **Degenerierte Griffe bei schrägen Ansichten:**
+  - *Risiko:* Ziehen eines Höhengriffs in einer nicht-vertikalen Ansicht könnte undefinierte 3D-Geometrie erzeugen.
+  - *Mitigation:* Strikte Capability- und Achsenprüfung in `resolve_handle_drag` – bei degenerierten Blickwinkeln wird der Griff gesperrt oder ausgeblendet.
+- **Mehrfach-Regenerierung bei interaktivem Ziehen:**
+  - *Risiko:* Komplette Schnittneuberechnung bei jedem Pixel-Mausmove könnte die Bildrate beeinträchtigen.
+  - *Mitigation:* Während des Ziehens wird eine schlanke Live-Drahtvorschau (`preview_wires`) gerendert; die vollständige Schnittregenerierung erfolgt atomar erst beim Loslassen der Maustaste (Commit).
 
 # Testing
 
 ### Validation Approach
-Die Validierung erfolgt mehrstufig über automatisierte Unit-Tests im AEC-Modul, Schnitt- und Geometrietests sowie End-to-End-Befehlsszenarien:
-1. **Unit-Tests für Datenmodelle:** Validierung von Koordinatensystemen, Serde-Serialisierung und `lift_view_delta`-Transformationen.
-2. **Geometrie- & Schnitt-Engine-Tests:** Verifikation der Schichtdurchdringung, Materialschraffuren und Aussparungen bei Wänden und Decken.
-3. **Herkunfts- & Assoziativitätsprüfungen:** Sicherstellung, dass jedes erzeugte 2D-Primitive seine korrekten `SourceReference`-Einträge trägt.
-4. **Modell-Rückbearbeitungstests:** Testen von Modelltransaktionen (Änderung der Wandhöhe oder Brüstungshöhe im Schnitt) und deren Auswirkung auf das 3D-Modell.
+Die Validierung erfolgt mehrstufig:
+1. **Unit-Tests für Datenmodelle und Marker:** Testen der Marker-Serialisierung, Griff-Berechnung und Koordinatentransformationen.
+2. **Schnitt- & Verdeckungs-Tests:** Verifikation geschlossener Schnittkonturen, Schraffuren und des Occlusion-Clippings.
+3. **Grip- & Modell-Rückbearbeitungstests:** Prüfung, dass Drag-Deltas an Wandoberkanten, Brüstungen und Decken korrekte Modelloperationen ausführen und XDATA sauber aktualisieren.
+4. **Eigenschaften-Tests:** Verifikation, dass Parameteränderungen im Dialog sofortige Aktualisierungen an Markern und Carriern auslösen.
+5. **End-to-End-Test im Beispielprojekt:** Gesamtablauf im mehrgeschossigen Modell mit XREFs, Umschaltung von Planarten und 2D/3D-Darstellung.
 
 ---
 
 ### Key Scenarios
 
-- **Szenario 1: Mehrgeschossiges Gesamtmodell mit XREFs und gestuftem Schnitt:**
-  - Gesamtmodell (`Haus.dwg`) mit referenziertem EG (`Drawing1.dwg`, $Z=0,0\,\text{m}$) und OG (`Drawing2.dwg`, $Z=2,8\,\text{m}$) sowie Geschossdecken aufbauen.
-  - `AEC_SECTION` mit versetzter Schnittlinie über das gesamte Gebäude platzieren.
-  - *Erwartetes Ergebnis:* Schnittflächen beider Geschosse und der Zwischendecke werden mit korrekten Z-Höhenlagen, Materialschraffuren und Schichtgrenzen dargestellt; die Herkunftsmetadaten referenzieren die jeweilige Quell-XREF-Datei.
-- **Szenario 2: Fassadenansicht mit Öffnungs-Slots über mehrere Geschosse:**
-  - Gebäudeansicht mit `AEC_ELEVATION` über ein Blicktiefen-Polygon im Gesamtmodell erstellen.
-  - *Erwartetes Ergebnis:* Alle Fenster und Türen aus EG und OG stellen ihre konfigurierten Ansichtselemente dar (`ElevationContour2D`, Flügelaufschlag `ElevationSwing2D`, Fensterbank `ElevationSill2D`); Geschossübergänge und Fassadenbekleidungen schließen nahtlos an.
-- **Szenario 3: Drei Planarten aus einem Schnitt:**
-  - Erzeugen eines Schnitts mit ModelViews für Entwurf (1:100), Ausführung (1:50) und Schalplan (1:50).
-  - *Erwartetes Ergebnis:* 1:100 zeigt vereinfachte Kontur, 1:50 zeigt alle Schichten und Schraffuren, Schalplan 1:50 filtert Bekleidungen heraus und stellt nur Beton-/Rohbaukörper dar.
-- **Szenario 4: Modelländerung aus dem Schnitt (Modellgriff):**
-  - Im Schnitt die Wandoberkante per Griff um 0,5 m anheben.
-  - *Erwartetes Ergebnis:* Wandhöhe im 3D-Modell ändert sich; Grundriss und andere Schnitte sind als dirty markiert und aktualisieren sich synchron.
-- **Szenario 5: Fensterbrüstung im Schnitt verschieben:**
-  - Im Schnitt die Brüstungslinie eines Fensters nach oben ziehen.
-  - *Erwartetes Ergebnis:* `sill_height` der Quellöffnung im 3D-Modell wird aktualisiert; Wandöffnung passt sich in allen Ansichten an.
+- **Szenario 1: Schnittlinie im Grundriss per Griff verändern:**
+  - Schnitt A–A im Grundriss auswählen; Tiefengriff um 2,0 m nach hinten ziehen.
+  - *Erwartetes Ergebnis:* Tiefenpolygon vergrößert sich; Schnitt aktualisiert sich und zeigt nun zusätzliche dahinterliegende Bauteile.
+- **Szenario 2: Schnittrichtung umkehren (Flip):**
+  - Flip-Griff an der Schnittmarkierung anklicken.
+  - *Erwartetes Ergebnis:* Richtungspfeile zeigen in die entgegengesetzte Richtung; Schnittansicht wird gespiegelt neu generiert.
+- **Szenario 3: Wandoberkante im Schnitt anheben:**
+  - Wandoberkante im Schnitt anklicken und den Höhengriff um 0,5 m nach oben ziehen.
+  - *Erwartetes Ergebnis:* Wandhöhe im 3D-Modell ändert sich von 2,80 m auf 3,30 m; alle abhängigen Ansichten und das 3D-Modell sind synchron.
+- **Szenario 4: Fensterbrüstung im Schnitt verschieben:**
+  - Brüstungslinie eines Fensters im Schnitt nach oben ziehen.
+  - *Erwartetes Ergebnis:* Brüstungshöhe im Quellbauteil wird angepasst; Öffnungshöhe bleibt erhalten; Grundriss und Fassade aktualisieren sich.
+- **Szenario 5: Maßstab und Blicktiefe im Eigenschaften-Panel ändern:**
+  - View-Carrier auswählen und Maßstab von 1:50 auf 1:100 ändern.
+  - *Erwartetes Ergebnis:* Schraffurskalierung, Linienstärken und Detaildarstellung passen sich sofort an.
+- **Szenario 6: Grundriss platzieren:**
+  - `AEC_FLOORPLAN` ausführen und an Punkt (50, 0) im Modellbereich platzieren.
+  - *Erwartetes Ergebnis:* Die Grundrissgeometrie erscheint exakt an der gewählten Einfügeposition mit allen Wandschichten, Türanschlägen und Schraffuren.
 
 ---
 
 ### Edge Cases
 
-- **Schnittlinie schneidet genau durch Öffnungslaibung:**
-  - Robuste Schnittflächenberechnung ohne Singularitäten oder numerische Lücken an tangentialen Schnittpunkten.
-- **Wandachse liegt exakt parallel zur Blickrichtung:**
-  - Korrekte Projektion der Wandstirnseite als Ansichtsfläche (`silhouette`); Sperrung unzulässiger Querverschiebungen bei Modellgriffen.
-- **Geschossverschiebung im Projekt:**
-  - Ändert sich die lichte Geschosshöhe in der Projektdatei (`.ocsproj`), führen geschossrelative Viewpoints ihre Höhenlage automatisch mit.
+- **Drag an Element aus schreibgeschützter XREF:**
+  - Versuch, eine Wand aus einer externen Referenz im Schnitt zu ziehen, meldet verständlichen Hinweis (`XrefReadOnly`) und verhindert ungültige Schreiboperationen.
+- **Verdeckung bei koplanaren Wänden:**
+  - Wandflächen, die in gleicher Tiefe aneinanderstoßen, erzeugen keine doppelten oder flackernden Trennlinien.
+- **Minimalmaße bei Öffnungen:**
+  - Ein Griffzug nach unten begrenzt die Brüstungshöhe auf $\ge 0{,}0\,\text{m}$ und verhindert negative oder unzulässige Werte.
 
 ---
 
 ### Test Changes
-- Ergänzung der Testsuite `src/modules/aec/engine/views/` um mindestens 30 Unit-Tests für Viewpoint-Validierung, Schnittberechnung, Herkunftsauflösung und Rückbearbeitungsoperationen.
-- Integrationstests für das Zusammenspiel mit bestehenden `WallStyle`-, `SlabStyle`- und `DisplayConfig`-Definitionen.
+- Ergänzung von Unit-Tests in `src/modules/aec/engine/views/` für Marker-Grips, semantische Rückbearbeitung und lokalisierte Grundrisstransformation.
+- Testfälle in `properties.rs` zur Überprüfung aller `carrier_` und `marker_` Parameteränderungen.
 
 # Delivery Steps
 
-### ✓ Step 1: View-Datenmodell, Gestufte Schnitte & Provenienz mit XREF-Bezug
-Das typisierte Datenmodell für persistente Viewpoints, gestufte Schnittpfade, profilgebundene ModelViews und herkunftsgekoppelte Primitives (inkl. XREF-Quellreferenzen) ist im AEC-Modul integriert und unit-getestet.
+### * Step 1: Assoziative Schnitt- und Ansichtsmarkierungen mit Viewport-Griffen & Properties
+Die Schnitt- und Ansichtsmarkierungen im Grundriss (`Din1356SectionSymbol`) sind als parametrische AEC-Objekte persistiert und bieten interaktive Griffe für Schnittverlauf, Tiefe und Richtung sowie volle Eigenschaften-Unterstützung.
 
-- Implementierung von `Viewpoint`, `ViewAxes`, `ViewKind` (Section, Elevation, FloorPlan, ReflectedCeilingPlan), `SectionPath` (Straight & Jogged), `VerticalRange` und `ViewOrigin` (World vs. Storey-Relative) in `src/modules/aec/engine/views/viewpoint.rs`.
-- Implementierung von `ModelView`, `GraphicOverride`, `GraphicPatch` und `DetailPolicy` in `src/modules/aec/engine/views/model_view.rs` unter Nutzung der vorhandenen `DisplayConfig`-IDs.
-- Implementierung von `SourceReference` (mit `XrefSourceRef` für externe Referenzen), `SourceSet`, `FeatureKey`, `PrimitiveRole` und `EditHandle` in `src/modules/aec/engine/views/provenance.rs`.
-- Integration der View-Definitionen in die Projektdatei `ProjectFile` (`.ocsproj`) in `src/modules/aec/engine/project.rs`.
-- Bereitstellung umfassender Unit-Tests für Validierung, Koordinatentransformationen (`lift_view_delta`) und Serde-Serialisierung.
+- Persistierung der DIN 1356 Schnitt- und Ansichtsmarkierungen als Trägerobjekte mit `AEC_SECTION_MARKER` / `AEC_ELEVATION_MARKER` XDATA unter Koppelung an `Viewpoint` und `DerivedViewCarrier`.
+- Implementierung der Griffe in `src/modules/aec/properties.rs` (`append_section_marker_grips`): Anfangs-/Endgriff, Jog-Segmentgriffe, Frustum-Tiefengriff und Flip-Griff für Blickrichtungspfeile.
+- Integration der Viewport-Grip-Handler in `src/modules/aec/walls/axis_session.rs` / `viewport.rs` (`apply_aec_section_marker_grip`) mit automatischer Markierung des Carriers als veraltet bzw. Sofort-Neuberechnung.
+- Erweiterung des Eigenschaften-Panels (`marker_prop_section`, `carrier_prop_section`, `aec_apply_property_field`) zur direkten Änderung von Schnittname, Blicktiefe, Z-Bereich und Maßstab.
 
-### ✓ Step 2: Schnitt- & Projektions-Engine mit Multi-XREF-Aggregation, Stilen & Öffnungs-Slots
-Die Schnitt- und Projektions-Engine schneidet beliebige 3D-AEC-Bauteile (Wände, Decken, Öffnungen) aus dem Gesamtmodell und referenzierten Geschossen (XREFs), wickelt gestufte Schnitte ab und extrahiert Schichtgrenzen, Materialschraffuren sowie Öffnungs-Slots.
+###   Step 2: Viewport-Anbindung semantischer Modellgriffe an abgeleiteten Schnittkanten
+Ausgewählte abgeleitete Kanten im Schnitt (Wandoberkanten, Brüstungen, Stürze, Decken) bieten aktive Modellgriffe, deren Manipulation das 3D-BIM-Modell direkt verändert.
 
-- Implementierung von `scene_collector.rs` zur Transformation und Aggregation von Bauteilen aus nativen Modellbereichen und referenzierten Geschoss-XREFs ($T_{xref}$).
-- Implementierung des 3D-Schnitts (`cut_engine.rs`) für mehrschichtige Wände und Decken mit Berücksichtigung gerader und gestufter Schnittpfade (`SectionPath::Jogged`) über alle Geschosse.
-- Einbindung der Bauteilstile (`WallStyle`, `SlabStyle`, `OpeningStyle`) und `DisplayConfig`-Filter (Schalplan/Rohbau vs. Entwurf vs. Ausführung) über alle referenzierten Geschosse.
-- Anbindung der Öffnungs-Darstellungskomponenten (`OpeningComponentSlot` wie `ElevationContour2D`, `ElevationSwing2D`, `ElevationSill2D`, `ElevationMuntins2D`, Rahmen/Flügel) in `elevation_engine.rs` und `cut_engine.rs` via Generator-/Block-Baking.
-- Implementierung der Hintergrund- und Kantenprojektion (`silhouette.rs`) für Objekte im sichtbaren Tiefenbereich (`DepthRange`) mit Tiefenklassifizierung und Verdeckung.
+- Erweiterung von `append_derived_view_grips` in `src/modules/aec/properties.rs`, um für ausgewählte `DerivedPrimitive`-Entitäten ihre `edit_handles` als interaktive Ziehgriffe anzuzeigen.
+- Implementierung von `apply_aec_derived_view_grip` in Core-Dispatch (`viewport.rs`), das über `resolve_handle_drag` und `commit_view_drag_and_update` (`edit_ops.rs`) atomare Modellmutationen ausführt.
+- Bereitstellung einer Live-Drahtvorschau während des Ziehens (z. B. Wandoberkantenlinie oder Brüstungsrechteck) ohne vorzeitiges Zerstören der bestehenden Schnittgrafik.
+- Vollständige Einbindung in das Undo/Redo-System und automatische Aktualisierung abhängiger Ansichten nach dem Commit.
 
-### ✓ Step 3: Assoziative View-Carrier & Modellbereich-Verwaltung
-Abgeleitete 2D-Schnittzeichnungen werden als assoziative Trägerblöcke im Modellbereich verwaltet und bei Modelländerungen zielgerichtet aktualisiert.
+###   Step 3: Lokalisierte Koordinatentransformation & Korrektur der Grundriss-Engine
+`AEC_FLOORPLAN` und `AEC_RCP` generieren exakt positionierte 2D-Grundrisse und Deckenspiegel am gewählten Einfügepunkt mit nachträglich anpassbarer Schnitthöhe.
 
-- Implementierung von `DerivedViewCarrier` in `src/modules/aec/engine/views/carrier.rs` zur Kapselung der erzeugten 2D-Linien, Schraffuren und Textsymbole unter `OPENCAD_AEC` XDATA.
-- Aufbau des Dependency- und Dirty-Tracking-Systems (`update_ops.rs`), das betroffene Schnitte bei Geometrie-, Stil- oder Geschossänderungen als aktualisierungsbedürftig markiert.
-- Synchronisation der 2D-Geometrie im Modellbereich ohne Zerstörung bestehender Anwender-Layer oder manueller Ergänzungen.
-- Bereitstellung des automatischen und manuellen Neuberechnungsmodus (`UpdatePolicy::Automatic` / `Manual`).
+- Anpassung von `floorplan_engine.rs` zur relativen Projektion aller Schnittpolygone, Leibungen und Öffnungssymbole in das lokale Koordinatensystem des Viewpoints (`p - origin`).
+- Korrektur der Bounding-Box- und Einfügepunkt-Zuordnung in `carrier.rs` (`transform_pt`), sodass der vom Anwender gewählte Klickpunkt exakt der Ursprung der platzierten 2D-Zeichnung ist.
+- Unterstützung der nachträglichen Höhenänderung der Schnittebene (`z_cut`, Z-Range) sowohl über Eigenschaften (`view_cut_height`) als auch über interaktive Griffe.
+- Validierung der Decken-, Wand- und Öffnungsdarstellung (inkl. Anschlagssymbole und Türöffnungswinkel) in 2D-Grundrissen.
 
-### ✓ Step 4: Semantische Modell-Rückbearbeitung aus Schnittansichten
-Interaktive Griffe an Schnittkanten (z. B. Wandoberkanten, Fensterbrüstungen, Deckenhöhen) führen Änderungen direkt auf die 3D-Quellbauteile zurück.
+###   Step 4: Härtung der Verdeckungsberechnung, Schichtkonturen & XREF-Planartensynchronisation
+Verdeckte Kanten werden sauber beschnitten, geschnittene Bauteile besitzen geschlossene Konturen und XREF-Geschosse bleiben bei Planartenwechseln stabil gerendert.
 
-- Implementierung von `EditHandle`-Interaktionen im Viewport für ausgewählte abgeleitete Kanten und Profile.
-- Bereitstellung semantischer Modelloperationen (`SetWallHeight`, `SetOpeningSillHeight`, `MoveOpeningAlongHost`, `SetSlabElevation`) in `src/modules/aec/engine/views/edit_ops.rs`.
-- Schutz vor ungültigen Rücktransformationen durch Richtungs- und Capability-Prüfungen (z. B. Sperre bei degenerierten Blickwinkeln quer zur Wandachse).
-- Integration in das Transaktions- und Undo/Redo-System der Kernanwendung.
+- Präzisierung des 2D-Occlusion-Clippings in `silhouette.rs` und `cut_engine.rs` gegen opake Flächenmasken (`SurfaceFill` / `CutFill`) zur Vermeidung durchscheinender Hintergrundlinien.
+- Sicherstellung geschlossener Randkonturen (`CutBoundary`) für jede einzelne Wandschicht und Deckenkante auch an Öffnungsleibungen und Stufenübergängen.
+- Härtung des XREF-Geometrie- und Tessellierungs-Caches im Gesamtmodell: Erhaltung von 3D-Meshes (ACIS SAT) und Schichtschraffuren beim Hin- und Herschalten zwischen Entwurf, Ausführung, Schalplan und 3D.
+- Aktualisierung des Generator- und Testmoduls (`sample_project.rs`) zur dauerhaften Absicherung aller Korrekturen im Multi-Geschoss-Szenario.
 
-### ✓ Step 5: Interaktive Befehle mit Preview-Polygon, Gebäudehöhe & Layout-Platzierung
-Anwender können Schnitte (gerade und gestuft) sowie Ansichten über dynamische Sichtbereich-Preview-Polygone interaktiv definieren, aktualisieren und auf Layouts platzieren.
+###   Step 5: End-to-End-Validierung, Beispielprojekt-Aktualisierung & Dokumentation
+Das Gesamtsystem für Schnitte, Ansichten, Grundrisse und Modellrückbearbeitung ist vollständig integriert, getestet und im Beispielprojekt verifiziert.
 
-- Implementierung der interaktiven Befehle `AEC_SECTION`, `AEC_ELEVATION`, `AEC_FLOORPLAN` und `AEC_RCP` mit visueller Eingabe des Schnittpfads (inkl. Jogged Sections / Schnittversatz) und des Blicktiefe-/Preview-Polygons.
-- Automatische Vorbelegung der Schnitthöhe / Z-Begrenzung aus den aggregierten Geschosshöhen des Geschossmanagers (`ProjectFile`) mit interaktiver Anpassungsmöglichkeit.
-- Erstellung des Aktualisierungsbefehls `AEC_VIEWUPDATE` für ausgewählte oder alle veralteten Ansichten.
-- Bereitstellung des Layout-Platzierungsbefehls `AEC_PLACE_VIEW` zur automatischen Erstellung konfigurierter Ansichtsfenster (`MVIEW`) mit Maßstabsbindung auf Planblättern.
-- Einbindung der Symbole für Schnittführungen, Blickrichtungspfeile und Schnittbezeichnungen nach DIN 1356 in Grundrisszeichnungen.
+- Aktualisierung und Validierung aller automatisierten Unit- und Integrationstests in `modules::aec::views` und `modules::aec::engine::views`.
+- Neugenerierung des Beispielprojekts `Beispielprojekt` und `examples/beispiel_haus/` mit den neuen assoziativen Schnitt- und Ansichtsmarkierungen.
+- Überprüfung des vollständigen Arbeitsablaufs: Schnittmarkierungs-Grips, Höhengriffe im Schnitt, Parameteranpassung im Properties-Panel und Planarten-Sync.
+- Aktualisierung der Dokumentation und Kurzanleitungen für die Anwenderbedienung.

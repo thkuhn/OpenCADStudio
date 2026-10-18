@@ -169,7 +169,10 @@ pub fn derive_section_view(
         );
     }
 
-    // 4. Perform Silhouette & Occlusion processing
+    // 4. Deduplicate coincident cut boundary lines
+    deduplicate_cut_boundaries(&mut primitives);
+
+    // 5. Perform Silhouette & Occlusion processing
     super::silhouette::process_silhouette_and_depth(
         &mut primitives,
         &super::silhouette::SilhouetteOptions {
@@ -179,6 +182,66 @@ pub fn derive_section_view(
     )?;
 
     Ok(primitives)
+}
+
+/// Deduplicates identical cut boundary line segments arising from adjacent wall layers or touching elements.
+fn deduplicate_cut_boundaries(primitives: &mut Vec<DerivedPrimitive>) {
+    let mut i = 0;
+    while i < primitives.len() {
+        if primitives[i].role != PrimitiveRole::CutBoundary {
+            i += 1;
+            continue;
+        }
+
+        let (a0, a1) = match &primitives[i].geometry {
+            Geometry2d::Line { start, end } => (*start, *end),
+            _ => {
+                i += 1;
+                continue;
+            }
+        };
+
+        let mut j = i + 1;
+        while j < primitives.len() {
+            if primitives[j].role != PrimitiveRole::CutBoundary {
+                j += 1;
+                continue;
+            }
+
+            let (b0, b1) = match &primitives[j].geometry {
+                Geometry2d::Line { start, end } => (*start, *end),
+                _ => {
+                    j += 1;
+                    continue;
+                }
+            };
+
+            let same_dir = (a0.x_m - b0.x_m).hypot(a0.y_m - b0.y_m) < 1e-4
+                && (a1.x_m - b1.x_m).hypot(a1.y_m - b1.y_m) < 1e-4;
+            let opp_dir = (a0.x_m - b1.x_m).hypot(a0.y_m - b1.y_m) < 1e-4
+                && (a1.x_m - b0.x_m).hypot(a1.y_m - b0.y_m) < 1e-4;
+
+            if same_dir || opp_dir {
+                let extra_sources = primitives[j].sources.as_slice().to_vec();
+                let mut merged = primitives[i].sources.as_slice().to_vec();
+                merged.extend(extra_sources);
+                if let Ok(new_sources) = SourceSet::new(merged) {
+                    primitives[i].sources = new_sources;
+                }
+                let extra_handles = primitives[j].edit_handles.clone();
+                for eh in extra_handles {
+                    if !primitives[i].edit_handles.contains(&eh) {
+                        primitives[i].edit_handles.push(eh);
+                    }
+                }
+                primitives.swap_remove(j);
+            } else {
+                j += 1;
+            }
+        }
+
+        i += 1;
+    }
 }
 
 /// Cuts a multi-layer wall against a single section segment.

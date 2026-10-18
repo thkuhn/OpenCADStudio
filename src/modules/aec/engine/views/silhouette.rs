@@ -28,6 +28,7 @@ impl Default for SilhouetteOptions {
 struct OpaquePolygon {
     depth_max: f64,
     ring: Vec<Point2>,
+    holes: Vec<Vec<Point2>>,
 }
 
 /// Applies depth classification, sorting, and occlusion rules to derived primitives.
@@ -56,16 +57,18 @@ pub fn process_silhouette_and_depth(
     for prim in primitives.iter() {
         if prim.role == PrimitiveRole::CutFill || prim.role == PrimitiveRole::SurfaceFill {
             match &prim.geometry {
-                Geometry2d::Region { outer, .. } if outer.len() >= 3 => {
+                Geometry2d::Region { outer, holes } if outer.len() >= 3 => {
                     opaque_polygons.push(OpaquePolygon {
                         depth_max: prim.depth.max_m,
                         ring: outer.clone(),
+                        holes: holes.clone(),
                     });
                 }
                 Geometry2d::Polyline { vertices, closed: true } if vertices.len() >= 3 => {
                     opaque_polygons.push(OpaquePolygon {
                         depth_max: prim.depth.max_m,
                         ring: vertices.clone(),
+                        holes: vec![],
                     });
                 }
                 _ => {}
@@ -218,7 +221,7 @@ fn clip_segment_against_polygons(
                 continue;
             }
 
-            let split_segs = clip_subsegment_against_poly(p0, p1, &poly.ring);
+            let split_segs = clip_subsegment_against_opaque_poly(p0, p1, poly);
             next_segments.extend(split_segs);
         }
         current_segments = next_segments;
@@ -227,30 +230,28 @@ fn clip_segment_against_polygons(
     current_segments
 }
 
-fn clip_subsegment_against_poly(
+fn clip_subsegment_against_opaque_poly(
     p0: Point2,
     p1: Point2,
-    ring: &[Point2],
+    poly: &OpaquePolygon,
 ) -> Vec<(Point2, Point2, bool)> {
     let dx = p1.x_m - p0.x_m;
     let dy = p1.y_m - p0.y_m;
     let len = dx.hypot(dy);
     if len < EPS {
-        return vec![(p0, p1, point_in_polygon(p0, ring))];
+        let inside_ring = point_in_polygon(p0, &poly.ring) || point_on_polygon_boundary(p0, &poly.ring, 1e-4);
+        let in_hole = poly.holes.iter().any(|h| point_in_polygon(p0, h));
+        return vec![(p0, p1, inside_ring && !in_hole)];
     }
 
     let mut t_params = vec![0.0, 1.0];
-    let n = ring.len();
 
-    for i in 0..n {
-        let e0 = ring[i];
-        let e1 = ring[(i + 1) % n];
+    // Check intersections and colinear overlaps against outer ring
+    collect_edge_splits(p0, p1, &poly.ring, &mut t_params);
 
-        if let Some(t) = line_segment_intersection(p0, p1, e0, e1) {
-            if t > EPS && t < 1.0 - EPS {
-                t_params.push(t);
-            }
-        }
+    // Check intersections and colinear overlaps against opening holes
+    for hole in &poly.holes {
+        collect_edge_splits(p0, p1, hole, &mut t_params);
     }
 
     t_params.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
@@ -272,11 +273,95 @@ fn clip_subsegment_against_poly(
             p0.y_m + dy * (t_a + t_b) * 0.5,
         );
 
-        let occluded = point_in_polygon(mid, ring);
+        let inside_ring = point_in_polygon(mid, &poly.ring) || point_on_polygon_boundary(mid, &poly.ring, 1e-4);
+        let in_hole = poly.holes.iter().any(|h| point_in_polygon(mid, h));
+        let occluded = inside_ring && !in_hole;
+
         results.push((sub_p0, sub_p1, occluded));
     }
 
     results
+}
+
+fn collect_edge_splits(p0: Point2, p1: Point2, ring: &[Point2], t_params: &mut Vec<f64>) {
+    let n = ring.len();
+    for i in 0..n {
+        let e0 = ring[i];
+        let e1 = ring[(i + 1) % n];
+
+        if let Some(t) = line_segment_intersection(p0, p1, e0, e1) {
+            if t > EPS && t < 1.0 - EPS {
+                t_params.push(t);
+            }
+        }
+
+        if let Some((t0, t1)) = colinear_segment_projection(p0, p1, e0, e1, 1e-4) {
+            if t0 > EPS && t0 < 1.0 - EPS {
+                t_params.push(t0);
+            }
+            if t1 > EPS && t1 < 1.0 - EPS {
+                t_params.push(t1);
+            }
+        }
+    }
+}
+
+fn colinear_segment_projection(
+    p0: Point2,
+    p1: Point2,
+    e0: Point2,
+    e1: Point2,
+    eps: f64,
+) -> Option<(f64, f64)> {
+    let p_dx = p1.x_m - p0.x_m;
+    let p_dy = p1.y_m - p0.y_m;
+    let p_len_sq = p_dx * p_dx + p_dy * p_dy;
+    if p_len_sq < 1e-12 {
+        return None;
+    }
+    let p_len = p_len_sq.sqrt();
+    let cross0 = ((e0.x_m - p0.x_m) * p_dy - (e0.y_m - p0.y_m) * p_dx).abs() / p_len;
+    let cross1 = ((e1.x_m - p0.x_m) * p_dy - (e1.y_m - p0.y_m) * p_dx).abs() / p_len;
+    if cross0 <= eps && cross1 <= eps {
+        let t0 = ((e0.x_m - p0.x_m) * p_dx + (e0.y_m - p0.y_m) * p_dy) / p_len_sq;
+        let t1 = ((e1.x_m - p0.x_m) * p_dx + (e1.y_m - p0.y_m) * p_dy) / p_len_sq;
+        Some((t0, t1))
+    } else {
+        None
+    }
+}
+
+fn point_on_segment(pt: Point2, a: Point2, b: Point2, eps: f64) -> bool {
+    let ab_x = b.x_m - a.x_m;
+    let ab_y = b.y_m - a.y_m;
+    let ap_x = pt.x_m - a.x_m;
+    let ap_y = pt.y_m - a.y_m;
+    let len_sq = ab_x * ab_x + ab_y * ab_y;
+    if len_sq < 1e-12 {
+        return ap_x.hypot(ap_y) <= eps;
+    }
+    let t = (ap_x * ab_x + ap_y * ab_y) / len_sq;
+    if t < -eps || t > 1.0 + eps {
+        return false;
+    }
+    let proj_x = a.x_m + t.clamp(0.0, 1.0) * ab_x;
+    let proj_y = a.y_m + t.clamp(0.0, 1.0) * ab_y;
+    (pt.x_m - proj_x).hypot(pt.y_m - proj_y) <= eps
+}
+
+fn point_on_polygon_boundary(pt: Point2, ring: &[Point2], eps: f64) -> bool {
+    let n = ring.len();
+    if n < 2 {
+        return false;
+    }
+    for i in 0..n {
+        let e0 = ring[i];
+        let e1 = ring[(i + 1) % n];
+        if point_on_segment(pt, e0, e1, eps) {
+            return true;
+        }
+    }
+    false
 }
 
 fn line_segment_intersection(

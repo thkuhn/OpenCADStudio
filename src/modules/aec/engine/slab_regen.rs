@@ -232,6 +232,16 @@ pub fn regenerate_slab_representation(
 
     // Default reference Z from storey or origin
     let ref_z = slab.base_origin[2];
+    let model_space_handle = scene.document.header.model_space_block_handle;
+    let (slab_owner_handle, xref_layer_prefix) = slab_owner_and_layer_prefix(scene, slab_handle);
+    let prefix_layer = |layer: &str| -> String {
+        if let Some(ref p) = xref_layer_prefix {
+            if !layer.starts_with(p) {
+                return format!("{p}{layer}");
+            }
+        }
+        layer.to_string()
+    };
 
     // Collect opening models and geometries
     let mut opening_data: Vec<(Handle, SlabOpening, Vec<(f64, f64)>)> = Vec::new();
@@ -307,15 +317,16 @@ pub fn regenerate_slab_representation(
         pl.elevation = slab.top_z_at_xy(boundary_pts[0].0, boundary_pts[0].1, ref_z);
 
         let contour_handle =
-            reuse_or_add_slab_contour(scene, &mut reusable_contours, pl, Some(slab_handle));
+            reuse_or_add_slab_contour(scene, &mut reusable_contours, pl, Some(slab_owner_handle));
 
-        let layer_name = contour_style
+        let base_layer = contour_style
             .and_then(|s| s.cad_layer.as_deref())
             .unwrap_or(AEC_SLAB_CONTOUR_LAYER);
-        scene.ensure_layer(layer_name);
+        let layer_name = prefix_layer(base_layer);
+        scene.ensure_layer(&layer_name);
 
         if let Some(e) = scene.document.get_entity_mut(contour_handle) {
-            e.as_entity_mut().set_layer(layer_name.to_string());
+            e.as_entity_mut().set_layer(layer_name);
             if let Some(color) = contour_style.and_then(|s| s.line_color) {
                 e.as_entity_mut().set_color(color);
             }
@@ -340,15 +351,16 @@ pub fn regenerate_slab_representation(
         pl.elevation = slab.bottom_z_at_xy(boundary_pts[0].0, boundary_pts[0].1, ref_z);
 
         let ceiling_handle =
-            reuse_or_add_slab_contour(scene, &mut reusable_contours, pl, Some(slab_handle));
+            reuse_or_add_slab_contour(scene, &mut reusable_contours, pl, Some(slab_owner_handle));
 
-        let layer_name = ceiling_style
+        let base_layer = ceiling_style
             .and_then(|s| s.cad_layer.as_deref())
             .unwrap_or(AEC_SLAB_CEILING_LAYER);
-        scene.ensure_layer(layer_name);
+        let layer_name = prefix_layer(base_layer);
+        scene.ensure_layer(&layer_name);
 
         if let Some(e) = scene.document.get_entity_mut(ceiling_handle) {
-            e.as_entity_mut().set_layer(layer_name.to_string());
+            e.as_entity_mut().set_layer(layer_name);
             if let Some(color) = ceiling_style.and_then(|s| s.line_color) {
                 e.as_entity_mut().set_color(color);
             }
@@ -503,11 +515,14 @@ pub fn regenerate_slab_representation(
         });
 
         let hatch_handle = scene.add_hatch(hatch_model, None, hatch_style);
-        scene.ensure_layer(AEC_SLAB_HATCH_LAYER);
+        let hatch_layer = prefix_layer(AEC_SLAB_HATCH_LAYER);
+        scene.ensure_layer(&hatch_layer);
 
         if let Some(e) = scene.document.get_entity_mut(hatch_handle) {
-            e.as_entity_mut().set_layer(AEC_SLAB_HATCH_LAYER.to_string());
-            e.common_mut().owner_handle = slab_handle;
+            e.as_entity_mut().set_layer(hatch_layer);
+            if !slab_owner_handle.is_null() && slab_owner_handle != model_space_handle {
+                e.common_mut().owner_handle = slab_owner_handle;
+            }
         }
 
         write_slab_display_tag(scene, hatch_handle, slab_handle, SLAB_REP_ROLE_HATCH);
@@ -593,15 +608,18 @@ pub fn regenerate_slab_representation(
                 {
                     let s3d = crate::modules::aec::engine::geometry::create_solid3d_from_body(&body);
                     let mut s3d_entity = EntityType::Solid3D(s3d);
-                    s3d_entity.common_mut().owner_handle = slab_handle;
+                    if !slab_owner_handle.is_null() && slab_owner_handle != model_space_handle {
+                        s3d_entity.common_mut().owner_handle = slab_owner_handle;
+                    }
 
-                    let layer_name = layer
+                    let base_layer = layer
                         .layer_override
                         .as_deref()
                         .filter(|s| !s.is_empty())
                         .unwrap_or(AEC_SLAB_SOLID_LAYER);
-                    scene.ensure_layer(layer_name);
-                    s3d_entity.as_entity_mut().set_layer(layer_name.to_string());
+                    let layer_name = prefix_layer(base_layer);
+                    scene.ensure_layer(&layer_name);
+                    s3d_entity.as_entity_mut().set_layer(layer_name);
 
                     let solid_handle = scene.add_entity(s3d_entity);
                     scene.register_solid_model(solid_handle, body);
@@ -1433,5 +1451,49 @@ mod tests {
         assert_eq!(pl_after_remove.vertices.len(), 4);
 
         assert!(regenerate_slab_representation(&mut scene, slab_h, None, None));
+    }
+
+    #[test]
+    fn test_xref_slab_owner_handle_and_layer_prefix() {
+        let mut scene = Scene::new();
+        let mut br = acadrust::BlockRecord::new("EG");
+        let xref_block_handle = Handle::new(999);
+        br.handle = xref_block_handle;
+        br.flags.is_xref = true;
+        let _ = scene.document.block_records.add(br);
+
+        let mut pl = LwPolyline::new();
+        pl.add_vertex(LwVertex::new(Vector2::new(0.0, 0.0)));
+        pl.add_vertex(LwVertex::new(Vector2::new(10.0, 0.0)));
+        pl.add_vertex(LwVertex::new(Vector2::new(10.0, 10.0)));
+        pl.add_vertex(LwVertex::new(Vector2::new(0.0, 10.0)));
+        pl.is_closed = true;
+        let mut pl_entity = EntityType::LwPolyline(pl);
+        pl_entity.common_mut().owner_handle = xref_block_handle;
+        pl_entity.common_mut().layer = "EG|AEC_SLAB".to_string();
+        let slab_h = scene.add_entity(pl_entity);
+
+        let mut slab = Slab::new("style_slab_concrete_20", 1);
+        slab.layers = vec![SlabLayer::new("Concrete", 0.20, LayerFunction::Structural)];
+        write_slab_record(&mut scene.document, slab_h, &slab);
+
+        assert!(regenerate_slab_representation(&mut scene, slab_h, None, None));
+
+        let updated_slab = slab_from_entity(scene.document.get_entity(slab_h).unwrap()).unwrap();
+        assert!(!updated_slab.derived_handles.is_empty());
+
+        for child in &updated_slab.derived_handles {
+            let ent = scene.document.get_entity(*child).unwrap();
+            assert_eq!(
+                ent.common().owner_handle,
+                xref_block_handle,
+                "Child entity must belong to XREF block record"
+            );
+            assert!(
+                ent.common().layer.starts_with("EG|"),
+                "Child entity layer '{}' must have 'EG|' prefix",
+                ent.common().layer
+            );
+        }
     }
 }

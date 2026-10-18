@@ -92,7 +92,27 @@ pub fn aec_entity_title(
         return Some(crate::tr!("aec", "control-plane"));
     }
     if crate::modules::aec::engine::views::carrier::read_view_carrier(&scene.document, entity).is_some() {
-        return Some("AEC Planansicht / Schnitt".to_string());
+        return Some(crate::tr!("aec", "view-carrier-title"));
+    }
+    if let Some(marker) = crate::modules::aec::views::din1356::read_section_marker(&scene.document, entity) {
+        return Some(if marker.is_elevation {
+            crate::tr!("aec", "elevation-marker-title")
+        } else {
+            crate::tr!("aec", "section-marker-title")
+        });
+    }
+    if let Some(marker_owner) = resolve_section_marker_package(scene, handle) {
+        if marker_owner != handle {
+            if let Some(owner_ent) = scene.document.get_entity(marker_owner) {
+                if let Some(marker) = crate::modules::aec::views::din1356::read_section_marker(&scene.document, owner_ent) {
+                    return Some(if marker.is_elevation {
+                        crate::tr!("aec", "elevation-marker-title")
+                    } else {
+                        crate::tr!("aec", "section-marker-title")
+                    });
+                }
+            }
+        }
     }
     if entity.common().extended_data.records().iter().any(|r| {
         r.application_name == crate::modules::aec::engine::xdata::AEC_APPID
@@ -129,6 +149,50 @@ pub fn collapse_selection_to_aec_package<'a>(
                 collapsed.push((handle, entity));
             }
         }
+    }
+
+    let wall_handles: rustc_hash::FxHashSet<Handle> = collapsed
+        .iter()
+        .filter_map(|(h, e)| {
+            if xdata::wall_from_entity(e).is_some() {
+                Some(*h)
+            } else {
+                None
+            }
+        })
+        .collect();
+
+    let slab_handles: rustc_hash::FxHashSet<Handle> = collapsed
+        .iter()
+        .filter_map(|(h, e)| {
+            if slab_xdata::slab_from_entity(e).is_some() {
+                Some(*h)
+            } else {
+                None
+            }
+        })
+        .collect();
+
+    if !wall_handles.is_empty() || !slab_handles.is_empty() {
+        collapsed.retain(|(h, e)| {
+            if !wall_handles.is_empty() {
+                if let Some(op) = opening_xdata::opening_from_entity(e, *h) {
+                    let host = wall_package::resolve_wall_package(scene, op.host_wall);
+                    if wall_handles.contains(&op.host_wall) || wall_handles.contains(&host) {
+                        return false;
+                    }
+                }
+            }
+            if !slab_handles.is_empty() {
+                if let Some(op) = slab_xdata::slab_opening_from_entity(e) {
+                    let host = slab_package::resolve_slab_package(scene, op.host_slab);
+                    if slab_handles.contains(&op.host_slab) || slab_handles.contains(&host) {
+                        return false;
+                    }
+                }
+            }
+            true
+        });
     }
 
     collapsed
@@ -996,6 +1060,11 @@ pub fn extend_entity_sections(
     if let Some(carrier_section) = carrier_prop_section(entity, &scene.document) {
         sections.push(carrier_section);
     }
+    let marker_handle = resolve_section_marker_package(scene, handle).unwrap_or(handle);
+    let marker_entity = scene.document.get_entity(marker_handle).unwrap_or(entity);
+    if let Some(marker_section) = marker_prop_section(marker_entity, &scene.document) {
+        sections.push(marker_section);
+    }
     if let Some(prim_section) = derived_primitive_prop_section(entity) {
         sections.push(prim_section);
     }
@@ -1005,50 +1074,205 @@ pub fn carrier_prop_section(
     entity: &EntityType,
     doc: &CadDocument,
 ) -> Option<crate::scene::model::object::PropSection> {
-    use crate::modules::aec::engine::views::carrier::read_view_carrier;
+    use crate::modules::aec::engine::views::carrier::{read_view_carrier, read_view_carrier_definitions};
     let carrier = read_view_carrier(doc, entity)?;
     let mut props = Vec::new();
 
     props.push(crate::entities::common::ro_prop(
-        "Typ",
+        crate::tr!("aec", "prop-type").as_ref(),
         "carrier_type",
-        "AEC View Carrier / Planansicht",
+        crate::tr!("aec", "carrier-type"),
     ));
+
+    let defs = read_view_carrier_definitions(doc, carrier.handle);
+    if let Some((ref vp, _)) = defs {
+        props.push(crate::scene::model::object::Property {
+            label: crate::tr!("aec", "prop-label"),
+            field: "carrier_name",
+            value: crate::scene::model::object::PropValue::PlainText(vp.name.clone()),
+        });
+    }
+
     props.push(crate::entities::common::ro_prop(
-        "Viewpoint ID",
+        crate::tr!("aec", "prop-viewpoint-id").as_ref(),
         "carrier_vp_id",
         carrier.viewpoint_id.as_uuid().to_string(),
     ));
     props.push(crate::entities::common::ro_prop(
-        "ModelView ID",
+        crate::tr!("aec", "prop-model-view-id").as_ref(),
         "carrier_mv_id",
         carrier.model_view_id.as_uuid().to_string(),
     ));
-    props.push(crate::entities::common::edit_prop(
-        "Maßstab (1:X)",
+    let scale_val = defs.as_ref().map(|(_, mv)| mv.scale.get()).unwrap_or(100.0);
+    props.push(crate::entities::common::edit_scalar_prop(
+        crate::tr!("aec", "prop-scale").as_ref(),
         "carrier_scale",
-        carrier.scale,
+        scale_val,
     ));
+
+    if let Some((ref vp, _)) = defs {
+        match &vp.kind {
+            crate::modules::aec::engine::views::viewpoint::ViewKind::Section { far_depth, .. } => {
+                let depth_val = far_depth.as_ref().map(|d| d.get()).unwrap_or(0.0);
+                props.push(crate::entities::common::edit_prop(
+                    crate::tr!("aec", "prop-far-depth").as_ref(),
+                    "carrier_far_depth",
+                    depth_val,
+                ));
+            }
+            crate::modules::aec::engine::views::viewpoint::ViewKind::Elevation { depth } => {
+                let depth_val = depth.far.as_ref().map(|d| d.get()).unwrap_or(0.0);
+                props.push(crate::entities::common::edit_prop(
+                    crate::tr!("aec", "prop-far-depth").as_ref(),
+                    "carrier_far_depth",
+                    depth_val,
+                ));
+            }
+            crate::modules::aec::engine::views::viewpoint::ViewKind::FloorPlan { range } => {
+                let cut_h = (vp.z_range.z_min.get() + range.below_cut.get())
+                    .clamp(vp.z_range.z_min.get(), vp.z_range.z_max.get());
+                props.push(crate::entities::common::edit_prop(
+                    crate::tr!("aec", "prop-cut-height").as_ref(),
+                    "carrier_cut_height",
+                    cut_h,
+                ));
+            }
+            crate::modules::aec::engine::views::viewpoint::ViewKind::ReflectedCeilingPlan { range } => {
+                let cut_h = (vp.z_range.z_max.get() - range.above_cut.get())
+                    .clamp(vp.z_range.z_min.get(), vp.z_range.z_max.get());
+                props.push(crate::entities::common::edit_prop(
+                    crate::tr!("aec", "prop-cut-height").as_ref(),
+                    "carrier_cut_height",
+                    cut_h,
+                ));
+            }
+        }
+        props.push(crate::entities::common::edit_prop(
+            crate::tr!("aec", "prop-z-min").as_ref(),
+            "carrier_z_min",
+            vp.z_range.z_min.get(),
+        ));
+        props.push(crate::entities::common::edit_prop(
+            crate::tr!("aec", "prop-z-max").as_ref(),
+            "carrier_z_max",
+            vp.z_range.z_max.get(),
+        ));
+    }
+
     props.push(crate::entities::common::ro_prop(
-        "Status",
+        crate::tr!("aec", "prop-status").as_ref(),
         "carrier_status",
         if carrier.is_outdated {
-            "Veraltet (Update erforderlich)"
+            crate::tr!("aec", "carrier-status-outdated")
         } else {
-            "Aktuell"
+            crate::tr!("aec", "carrier-status-current")
         },
     ));
-    props.push(crate::entities::common::ro_prop(
-        "Update-Modus",
-        "carrier_update_policy",
-        match carrier.update_policy {
-            crate::modules::aec::engine::views::model_view::UpdatePolicy::Automatic => "Automatisch",
-            crate::modules::aec::engine::views::model_view::UpdatePolicy::Manual => "Manuell (AEC_VIEWUPDATE)",
+    let policy_auto = crate::tr!("aec", "carrier-policy-automatic");
+    let policy_manual = crate::tr!("aec", "carrier-policy-manual");
+    props.push(crate::scene::model::object::Property {
+        label: crate::tr!("aec", "prop-update-policy"),
+        field: "carrier_update_policy",
+        value: crate::scene::model::object::PropValue::Choice {
+            selected: match carrier.update_policy {
+                crate::modules::aec::engine::views::model_view::UpdatePolicy::Automatic => {
+                    policy_auto.clone()
+                }
+                crate::modules::aec::engine::views::model_view::UpdatePolicy::Manual => {
+                    policy_manual.clone()
+                }
+            },
+            options: vec![policy_auto, policy_manual],
         },
+    });
+    let action_none = crate::tr!("aec", "carrier-action-none");
+    let action_update = crate::tr!("aec", "carrier-action-update");
+    props.push(crate::scene::model::object::Property {
+        label: crate::tr!("aec", "prop-action"),
+        field: "carrier_action",
+        value: crate::scene::model::object::PropValue::Choice {
+            selected: action_none.clone(),
+            options: vec![action_none, action_update],
+        },
+    });
+
+    Some(crate::scene::model::object::PropSection {
+        title: crate::tr!("aec", "view-carrier-title"),
+        props,
+    })
+}
+
+pub fn marker_prop_section(
+    entity: &EntityType,
+    doc: &CadDocument,
+) -> Option<crate::scene::model::object::PropSection> {
+    use crate::modules::aec::views::din1356::read_section_marker;
+    let marker = read_section_marker(doc, entity)?;
+    let mut props = Vec::new();
+
+    props.push(crate::entities::common::ro_prop(
+        crate::tr!("aec", "prop-type").as_ref(),
+        "marker_type",
+        if marker.is_elevation {
+            crate::tr!("aec", "marker-type-elevation")
+        } else {
+            crate::tr!("aec", "marker-type-section")
+        },
+    ));
+    props.push(crate::scene::model::object::Property {
+        label: crate::tr!("aec", "prop-label"),
+        field: "marker_label",
+        value: crate::scene::model::object::PropValue::PlainText(marker.label.clone()),
+    });
+    props.push(crate::entities::common::edit_prop(
+        crate::tr!("aec", "prop-far-depth").as_ref(),
+        "marker_far_depth",
+        marker.far_depth.unwrap_or(0.0),
+    ));
+    props.push(crate::entities::common::edit_prop(
+        crate::tr!("aec", "prop-z-min").as_ref(),
+        "marker_z_min",
+        marker.z_min,
+    ));
+    props.push(crate::entities::common::edit_prop(
+        crate::tr!("aec", "prop-z-max").as_ref(),
+        "marker_z_max",
+        marker.z_max,
+    ));
+    let flip_normal = crate::tr!("aec", "marker-flip-normal");
+    let flip_flipped = crate::tr!("aec", "marker-flip-flipped");
+    props.push(crate::scene::model::object::Property {
+        label: crate::tr!("aec", "prop-view-direction"),
+        field: "marker_flip",
+        value: crate::scene::model::object::PropValue::Choice {
+            selected: if marker.flip_direction {
+                flip_flipped.clone()
+            } else {
+                flip_normal.clone()
+            },
+            options: vec![flip_normal, flip_flipped],
+        },
+    });
+    props.push(crate::entities::common::ro_prop(
+        crate::tr!("aec", "prop-viewpoint-id").as_ref(),
+        "marker_vp_id",
+        marker.viewpoint_id.as_uuid().to_string(),
+    ));
+    props.push(crate::entities::common::ro_prop(
+        crate::tr!("aec", "prop-carrier-handle").as_ref(),
+        "marker_carrier",
+        marker
+            .carrier_handle
+            .map(|h| h.to_string())
+            .unwrap_or_else(|| "-".to_string()),
     ));
 
     Some(crate::scene::model::object::PropSection {
-        title: "AEC Planansicht / Schnitt".to_string(),
+        title: if marker.is_elevation {
+            crate::tr!("aec", "elevation-marker-title")
+        } else {
+            crate::tr!("aec", "section-marker-title")
+        },
         props,
     })
 }
@@ -1624,12 +1848,60 @@ pub fn is_wall_derived_non_axis(scene: &crate::scene::Scene, handle: Handle) -> 
     wall_package::is_wall_derived_non_axis(scene, handle)
 }
 
+pub fn resolve_section_marker_package(scene: &crate::scene::Scene, handle: Handle) -> Option<Handle> {
+    let ent = scene.document.get_entity(handle)?;
+    if crate::modules::aec::views::din1356::read_section_marker(&scene.document, ent).is_some() {
+        return Some(handle);
+    }
+    let owner = crate::modules::aec::views::din1356::section_marker_owner_from_entity(ent)?;
+    if scene
+        .document
+        .get_entity(owner)
+        .is_some_and(|owner_ent| {
+            crate::modules::aec::views::din1356::read_section_marker(&scene.document, owner_ent)
+                .is_some()
+        })
+    {
+        Some(owner)
+    } else {
+        None
+    }
+}
+
+pub fn is_section_marker_derived(scene: &crate::scene::Scene, handle: Handle) -> bool {
+    resolve_section_marker_package(scene, handle).is_some_and(|owner| owner != handle)
+}
+
+pub fn expand_handles_for_section_marker_packages(
+    scene: &crate::scene::Scene,
+    handles: &[Handle],
+) -> Vec<Handle> {
+    let mut out = Vec::with_capacity(handles.len());
+    let mut seen = rustc_hash::FxHashSet::default();
+    for &h in handles {
+        if let Some(owner) = resolve_section_marker_package(scene, h) {
+            if seen.insert(owner) {
+                out.push(owner);
+            }
+            for child in crate::modules::aec::engine::owner_index::children_of(&scene.document, owner) {
+                if scene.document.get_entity(child).is_some() && seen.insert(child) {
+                    out.push(child);
+                }
+            }
+        } else if seen.insert(h) {
+            out.push(h);
+        }
+    }
+    out
+}
+
 pub fn is_aec_derived_non_carrier(scene: &crate::scene::Scene, handle: Handle) -> bool {
     wall_package::is_wall_derived_non_axis(scene, handle)
         || slab_package::is_slab_derived(scene, handle)
         || slab_package::slab_opening_owner_if_any(scene, handle).is_some_and(|owner| owner != handle)
         || opening_display::opening_owner_if_any(scene, handle).is_some_and(|owner| owner != handle)
         || scene.document.get_entity(handle).map(room_package::is_room_derived).unwrap_or(false)
+        || is_section_marker_derived(scene, handle)
 }
 
 pub fn resolve_wall_package(scene: &crate::scene::Scene, handle: Handle) -> Handle {
@@ -1639,7 +1911,8 @@ pub fn resolve_wall_package(scene: &crate::scene::Scene, handle: Handle) -> Hand
 pub fn expand_handles_for_aec_packages(scene: &crate::scene::Scene, handles: &[Handle]) -> Vec<Handle> {
     let handles = wall_package::expand_handles_for_wall_packages(scene, handles);
     let handles = slab_package::expand_handles_for_slab_packages(scene, &handles);
-    room_package::expand_handles_for_room_packages(scene, &handles)
+    let handles = room_package::expand_handles_for_room_packages(scene, &handles);
+    expand_handles_for_section_marker_packages(scene, &handles)
 }
 
 pub fn resolve_aec_package(scene: &crate::scene::Scene, handle: Handle) -> Handle {
@@ -1652,6 +1925,11 @@ pub fn resolve_aec_package(scene: &crate::scene::Scene, handle: Handle) -> Handl
     if let Some(ent) = scene.document.get_entity(handle) {
         if let Some(room_owner) = room_package::resolve_room_package(ent) {
             return room_owner;
+        }
+    }
+    if let Some(marker_owner) = resolve_section_marker_package(scene, handle) {
+        if marker_owner != handle {
+            return marker_owner;
         }
     }
     let wall_owner = wall_package::resolve_wall_package(scene, handle);
@@ -1699,6 +1977,523 @@ pub fn selection_is_all_walls(
     any
 }
 
+const CHOICE_NORMAL: &str = "normal";
+const CHOICE_FLIPPED: &str = "flipped";
+const CHOICE_AUTOMATIC: &str = "automatic";
+const CHOICE_MANUAL: &str = "manual";
+const CHOICE_ACTION_NONE: &str = "-";
+const CHOICE_ACTION_UPDATE: &str = "update-now";
+
+fn choice_matches(val: &str, id: &str, localized: &str) -> bool {
+    let trimmed = val.trim();
+    trimmed.eq_ignore_ascii_case(id) || trimmed == localized
+}
+
+/// Parses a viewing-depth field. `0` and negative values mean unlimited (`None`).
+/// Returns `None` when the input cannot be parsed as a finite number.
+fn parse_view_depth(val: &str) -> Option<Option<f64>> {
+    let v = crate::entities::common::parse_f64(val)?;
+    if !v.is_finite() {
+        return None;
+    }
+    if v > 0.0 {
+        Some(Some(v))
+    } else {
+        Some(None)
+    }
+}
+
+fn parse_finite_metres(val: &str) -> Option<f64> {
+    let v = crate::entities::common::parse_f64(val)?;
+    v.is_finite().then_some(v)
+}
+
+fn is_flipped_choice(val: &str) -> bool {
+    let trimmed = val.trim();
+    choice_matches(trimmed, CHOICE_FLIPPED, &crate::tr!("aec", "marker-flip-flipped"))
+        || trimmed.eq_ignore_ascii_case("true")
+        || trimmed == "1"
+}
+
+fn is_normal_choice(val: &str) -> bool {
+    let trimmed = val.trim();
+    choice_matches(trimmed, CHOICE_NORMAL, &crate::tr!("aec", "marker-flip-normal"))
+        || trimmed.eq_ignore_ascii_case("false")
+        || trimmed == "0"
+}
+
+/// Applies an editable property to a `Din1356SectionMarker` entity.
+/// Synchronizes the CAD entities and associated carrier/viewpoint definitions.
+pub fn apply_marker_property(
+    doc: &mut CadDocument,
+    marker_handle: Handle,
+    field: &str,
+    val: &str,
+) -> bool {
+    use crate::modules::aec::views::din1356::{
+        read_section_marker, sync_marker_to_carrier, sync_section_marker_cad_entities,
+    };
+
+    let Some(entity) = doc.get_entity(marker_handle) else {
+        return false;
+    };
+    let Some(mut marker) = read_section_marker(doc, entity) else {
+        return false;
+    };
+
+    match field {
+        "marker_label" => {
+            let name = val.trim();
+            if name.is_empty() {
+                return false;
+            }
+            marker.label = name.to_string();
+        }
+        "marker_far_depth" => {
+            let Some(depth) = parse_view_depth(val) else {
+                return false;
+            };
+            marker.far_depth = depth;
+        }
+        "marker_z_min" => {
+            let Some(v) = parse_finite_metres(val) else {
+                return false;
+            };
+            if v > marker.z_max {
+                return false;
+            }
+            marker.z_min = v;
+        }
+        "marker_z_max" => {
+            let Some(v) = parse_finite_metres(val) else {
+                return false;
+            };
+            if v < marker.z_min {
+                return false;
+            }
+            marker.z_max = v;
+        }
+        "marker_flip" => {
+            if is_flipped_choice(val) {
+                marker.flip_direction = true;
+            } else if is_normal_choice(val) {
+                marker.flip_direction = false;
+            } else {
+                return false;
+            }
+        }
+        _ => return false,
+    }
+
+    sync_section_marker_cad_entities(doc, marker_handle, &marker);
+    sync_marker_to_carrier(doc, &marker);
+
+    true
+}
+
+/// Applies an editable property to a `DerivedViewCarrier` entity.
+/// Optionally regenerates the view carrier or marks it outdated.
+pub fn apply_carrier_property(
+    doc: &mut CadDocument,
+    carrier_handle: Handle,
+    field: &str,
+    val: &str,
+) -> bool {
+    use crate::modules::aec::engine::views::carrier::{
+        find_view_carrier_by_handle, read_view_carrier_definitions, write_view_carrier,
+        write_view_carrier_definitions,
+    };
+    use crate::modules::aec::engine::views::model_view::UpdatePolicy;
+    use crate::modules::aec::engine::views::update_ops::regenerate_or_mark_outdated;
+    use crate::modules::aec::engine::views::viewpoint::VerticalRange;
+    use crate::modules::aec::engine::views::{Metres, PositiveMetres, ScaleDenominator};
+    use crate::modules::aec::views::din1356::{
+        find_section_marker_by_carrier, sync_section_marker_cad_entities,
+    };
+
+    let Some(mut carrier) = find_view_carrier_by_handle(doc, carrier_handle) else {
+        return false;
+    };
+
+    let mut defs = read_view_carrier_definitions(doc, carrier_handle);
+    let mut needs_regen = false;
+    let mut linked_marker = find_section_marker_by_carrier(doc, carrier_handle);
+
+    match field {
+        "carrier_name" => {
+            let name = val.trim();
+            if name.is_empty() {
+                return false;
+            }
+            let Some((ref mut vp, ref mut mv)) = defs else {
+                return false;
+            };
+            vp.name = name.to_string();
+            mv.name = match &vp.kind {
+                crate::modules::aec::engine::views::viewpoint::ViewKind::Section { .. } => {
+                    format!("Section {}", name)
+                }
+                crate::modules::aec::engine::views::viewpoint::ViewKind::Elevation { .. } => {
+                    format!("Elevation {}", name)
+                }
+                _ => name.to_string(),
+            };
+            if let Some((_, ref mut marker)) = linked_marker {
+                marker.label = name.to_string();
+            }
+        }
+        "carrier_scale" => {
+            let Some(v) = crate::entities::common::parse_f64(val) else {
+                return false;
+            };
+            let Ok(scale_denom) = ScaleDenominator::new(v) else {
+                return false;
+            };
+            let Some((_, ref mut mv)) = defs else {
+                return false;
+            };
+            mv.scale = scale_denom;
+            if carrier.update_policy == UpdatePolicy::Automatic {
+                needs_regen = true;
+            } else {
+                carrier.is_outdated = true;
+            }
+        }
+        "carrier_update_policy" => {
+            if choice_matches(val, CHOICE_AUTOMATIC, &crate::tr!("aec", "carrier-policy-automatic")) {
+                carrier.update_policy = UpdatePolicy::Automatic;
+                if carrier.is_outdated {
+                    needs_regen = true;
+                }
+            } else if choice_matches(val, CHOICE_MANUAL, &crate::tr!("aec", "carrier-policy-manual")) {
+                carrier.update_policy = UpdatePolicy::Manual;
+            } else {
+                return false;
+            }
+        }
+        "carrier_far_depth" => {
+            let Some(depth) = parse_view_depth(val) else {
+                return false;
+            };
+            let Some((ref mut vp, _)) = defs else {
+                return false;
+            };
+            match &mut vp.kind {
+                crate::modules::aec::engine::views::viewpoint::ViewKind::Section { far_depth, .. } => {
+                    *far_depth = depth.and_then(|d| PositiveMetres::new(d).ok());
+                }
+                crate::modules::aec::engine::views::viewpoint::ViewKind::Elevation { depth: d } => {
+                    d.far = depth.and_then(|d| PositiveMetres::new(d).ok());
+                }
+                _ => return false,
+            }
+            if let Some((_, ref mut marker)) = linked_marker {
+                marker.far_depth = depth;
+            }
+            if carrier.update_policy == UpdatePolicy::Automatic {
+                needs_regen = true;
+            } else {
+                carrier.is_outdated = true;
+            }
+        }
+        "carrier_cut_height" | "view_cut_height" => {
+            let Some(new_cut_h) = parse_finite_metres(val) else {
+                return false;
+            };
+            let Some((ref mut vp, _)) = defs else {
+                return false;
+            };
+            let z_min = vp.z_range.z_min.get();
+            let z_max = vp.z_range.z_max.get();
+            if new_cut_h < z_min || new_cut_h > z_max {
+                return false;
+            }
+            match &mut vp.kind {
+                crate::modules::aec::engine::views::viewpoint::ViewKind::FloorPlan { range } => {
+                    let offset = (new_cut_h - z_min).max(0.0);
+                    if let Ok(m) = crate::modules::aec::engine::views::NonNegativeMetres::new(offset) {
+                        range.below_cut = m;
+                    }
+                    if let crate::modules::aec::engine::views::viewpoint::ViewOrigin::World(ref mut p) = vp.origin {
+                        p.z_m = new_cut_h;
+                    }
+                }
+                crate::modules::aec::engine::views::viewpoint::ViewKind::ReflectedCeilingPlan { range } => {
+                    let offset = (z_max - new_cut_h).max(0.0);
+                    if let Ok(m) = crate::modules::aec::engine::views::NonNegativeMetres::new(offset) {
+                        range.above_cut = m;
+                    }
+                    if let crate::modules::aec::engine::views::viewpoint::ViewOrigin::World(ref mut p) = vp.origin {
+                        p.z_m = new_cut_h;
+                    }
+                }
+                _ => return false,
+            }
+            if carrier.update_policy == UpdatePolicy::Automatic {
+                needs_regen = true;
+            } else {
+                carrier.is_outdated = true;
+            }
+        }
+        "carrier_z_min" | "carrier_z_max" => {
+            let Some(v) = parse_finite_metres(val) else {
+                return false;
+            };
+            let Some((ref mut vp, _)) = defs else {
+                return false;
+            };
+            let mut z_min = vp.z_range.z_min.get();
+            let mut z_max = vp.z_range.z_max.get();
+            if field == "carrier_z_min" {
+                z_min = v;
+            } else {
+                z_max = v;
+            }
+            if z_min > z_max {
+                return false;
+            }
+            let (Ok(zm), Ok(zx)) = (Metres::new(z_min), Metres::new(z_max)) else {
+                return false;
+            };
+            let Ok(vr) = VerticalRange::new(zm, zx) else {
+                return false;
+            };
+            vp.z_range = vr;
+            if let Some((_, ref mut marker)) = linked_marker {
+                marker.z_min = z_min;
+                marker.z_max = z_max;
+            }
+            if carrier.update_policy == UpdatePolicy::Automatic {
+                needs_regen = true;
+            } else {
+                carrier.is_outdated = true;
+            }
+        }
+        "carrier_action" => {
+            if choice_matches(val, CHOICE_ACTION_UPDATE, &crate::tr!("aec", "carrier-action-update")) {
+                needs_regen = true;
+            } else if choice_matches(val, CHOICE_ACTION_NONE, &crate::tr!("aec", "carrier-action-none")) {
+                // no-op
+            } else {
+                return false;
+            }
+        }
+        _ => return false,
+    }
+
+    if let Some((ref vp, ref mv)) = defs {
+        write_view_carrier_definitions(doc, carrier_handle, vp, mv);
+    }
+    write_view_carrier(doc, &carrier);
+
+    if let Some((m_handle, marker)) = linked_marker {
+        match field {
+            "carrier_name" | "carrier_far_depth" | "carrier_z_min" | "carrier_z_max" => {
+                sync_section_marker_cad_entities(doc, m_handle, &marker);
+            }
+            _ => {}
+        }
+    }
+
+    if needs_regen {
+        if let Some((ref vp, ref mv)) = defs {
+            regenerate_or_mark_outdated(doc, carrier_handle, vp, mv);
+        }
+    }
+
+    true
+}
+
+pub const SECTION_MARKER_START_GRIP: usize = 0;
+pub const SECTION_MARKER_END_GRIP: usize = 1;
+pub const SECTION_MARKER_DEPTH_GRIP: usize = 2;
+pub const SECTION_MARKER_FLIP_GRIP: usize = 3;
+pub const SECTION_MARKER_JOG_BASE: usize = 100;
+
+pub fn append_section_marker_grips(
+    scene: &crate::scene::Scene,
+    handle: Handle,
+    entity_grips: &mut Vec<crate::scene::model::object::GripDef>,
+) {
+    let marker_handle = resolve_section_marker_package(scene, handle).unwrap_or(handle);
+    let Some(entity) = scene.document.get_entity(marker_handle) else {
+        return;
+    };
+    let Some(marker) = crate::modules::aec::views::din1356::read_section_marker(&scene.document, entity) else {
+        return;
+    };
+
+    let segments = marker.path.segments();
+    if segments.is_empty() {
+        return;
+    }
+
+    entity_grips.clear();
+
+    let z = match entity {
+        EntityType::LwPolyline(pl) => pl.elevation,
+        _ => 0.0,
+    };
+
+    let first = &segments[0];
+    let last = &segments[segments.len() - 1];
+
+    // 0: Start grip
+    entity_grips.push(crate::entities::common::square_grip(
+        SECTION_MARKER_START_GRIP,
+        glam::DVec3::new(first.start.x_m, first.start.y_m, z),
+    ));
+
+    // 1: End grip
+    entity_grips.push(crate::entities::common::square_grip(
+        SECTION_MARKER_END_GRIP,
+        glam::DVec3::new(last.end.x_m, last.end.y_m, z),
+    ));
+
+    // 100+: Intermediate jog transition grips
+    for i in 0..segments.len().saturating_sub(1) {
+        let jog_pt = glam::DVec3::new(segments[i].end.x_m, segments[i].end.y_m, z);
+        entity_grips.push(crate::entities::common::square_grip(
+            SECTION_MARKER_JOG_BASE + i,
+            jog_pt,
+        ));
+    }
+
+    // Midpoint of the cut path
+    let mid_x = (first.start.x_m + last.end.x_m) * 0.5;
+    let mid_y = (first.start.y_m + last.end.y_m) * 0.5;
+    let mid = glam::DVec3::new(mid_x, mid_y, z);
+
+    let dir = first.direction().unwrap_or(crate::modules::aec::engine::views::Vector2::new(1.0, 0.0));
+    let normal = if !marker.flip_direction {
+        crate::modules::aec::engine::views::Vector2::new(-dir.y, dir.x)
+    } else {
+        crate::modules::aec::engine::views::Vector2::new(dir.y, -dir.x)
+    };
+
+    // 2: Depth grip along normal
+    if let Some(depth) = marker.far_depth {
+        let depth_pos = mid + glam::DVec3::new(normal.x * depth, normal.y * depth, 0.0);
+        let mut depth_grip = crate::entities::common::rectangle_grip(
+            SECTION_MARKER_DEPTH_GRIP,
+            depth_pos,
+            [normal.x as f32, normal.y as f32],
+        );
+        depth_grip.axis = Some(glam::DVec3::new(normal.x, normal.y, 0.0));
+        entity_grips.push(depth_grip);
+    }
+
+    // 3: Flip grip pointing along normal
+    let flip_offset = 1.0;
+    let flip_pos = mid + glam::DVec3::new(normal.x * flip_offset, normal.y * flip_offset, 0.0);
+    let flip_grip = crate::entities::common::oriented_triangle_grip(
+        SECTION_MARKER_FLIP_GRIP,
+        flip_pos,
+        glam::DVec3::new(normal.x, normal.y, 0.0),
+    );
+    entity_grips.push(flip_grip);
+}
+
+pub const DERIVED_VIEW_GRIP_BASE: usize = 50_000;
+
+/// Appends interactive semantic model grips for derived section primitives.
+pub fn append_derived_view_grips(
+    scene: &crate::scene::Scene,
+    handle: Handle,
+    entity_grips: &mut Vec<crate::scene::model::object::GripDef>,
+) {
+    let Some(entity) = scene.document.get_entity(handle) else {
+        return;
+    };
+    let Some(meta) = crate::modules::aec::engine::views::carrier::read_derived_primitive_metadata(entity) else {
+        return;
+    };
+    let Some(feat) = meta.feature else {
+        return;
+    };
+    match feat {
+        crate::modules::aec::engine::views::provenance::FeatureKey::WallTop
+        | crate::modules::aec::engine::views::provenance::FeatureKey::OpeningSill
+        | crate::modules::aec::engine::views::provenance::FeatureKey::OpeningHead
+        | crate::modules::aec::engine::views::provenance::FeatureKey::SlabTop => {}
+        _ => return,
+    }
+
+    let pos = match entity {
+        EntityType::Line(l) => {
+            glam::DVec3::new(
+                (l.start.x + l.end.x) * 0.5,
+                (l.start.y + l.end.y) * 0.5,
+                (l.start.z + l.end.z) * 0.5,
+            )
+        }
+        EntityType::LwPolyline(pl) => {
+            if pl.vertices.is_empty() {
+                return;
+            }
+            let mut sx = 0.0;
+            let mut sy = 0.0;
+            for v in &pl.vertices {
+                sx += v.location.x;
+                sy += v.location.y;
+            }
+            let n = pl.vertices.len() as f64;
+            glam::DVec3::new(sx / n, sy / n, pl.elevation)
+        }
+        _ => return,
+    };
+
+    entity_grips.clear();
+    let mut grip = crate::entities::common::square_grip(DERIVED_VIEW_GRIP_BASE, pos);
+    grip.axis = Some(glam::DVec3::new(0.0, 1.0, 0.0));
+    entity_grips.push(grip);
+}
+
+pub const CARRIER_GRIP_INSERTION: usize = 60_000;
+pub const CARRIER_GRIP_CUT_HEIGHT: usize = 60_001;
+
+/// Appends interactive grips for a `DerivedViewCarrier` entity (insertion relocation and cut height).
+pub fn append_view_carrier_grips(
+    scene: &crate::scene::Scene,
+    handle: Handle,
+    entity_grips: &mut Vec<crate::scene::model::object::GripDef>,
+) {
+    let Some(entity) = scene.document.get_entity(handle) else {
+        return;
+    };
+    let Some(carrier) = crate::modules::aec::engine::views::carrier::read_view_carrier(&scene.document, entity) else {
+        return;
+    };
+
+    // Grip 0: Insertion point (to move the drawing)
+    let ins = glam::DVec3::new(carrier.insertion_point.x_m, carrier.insertion_point.y_m, 0.0);
+    entity_grips.push(crate::entities::common::square_grip(CARRIER_GRIP_INSERTION, ins));
+
+    // Grip 1: Cut height adjustment for FloorPlan / RCP
+    let defs = crate::modules::aec::engine::views::carrier::read_view_carrier_definitions(&scene.document, carrier.handle);
+    if let Some((vp, _)) = defs {
+        match &vp.kind {
+            crate::modules::aec::engine::views::viewpoint::ViewKind::FloorPlan { range } => {
+                let cut_h = (vp.z_range.z_min.get() + range.below_cut.get())
+                    .clamp(vp.z_range.z_min.get(), vp.z_range.z_max.get());
+                let cut_pos = glam::DVec3::new(carrier.insertion_point.x_m, carrier.insertion_point.y_m + cut_h, 0.0);
+                let mut grip = crate::entities::common::round_grip(CARRIER_GRIP_CUT_HEIGHT, cut_pos);
+                grip.axis = Some(glam::DVec3::new(0.0, 1.0, 0.0));
+                entity_grips.push(grip);
+            }
+            crate::modules::aec::engine::views::viewpoint::ViewKind::ReflectedCeilingPlan { range } => {
+                let cut_h = (vp.z_range.z_max.get() - range.above_cut.get())
+                    .clamp(vp.z_range.z_min.get(), vp.z_range.z_max.get());
+                let cut_pos = glam::DVec3::new(carrier.insertion_point.x_m, carrier.insertion_point.y_m + cut_h, 0.0);
+                let mut grip = crate::entities::common::round_grip(CARRIER_GRIP_CUT_HEIGHT, cut_pos);
+                grip.axis = Some(glam::DVec3::new(0.0, 1.0, 0.0));
+                entity_grips.push(grip);
+            }
+            _ => {}
+        }
+    }
+}
+
 impl crate::app::OpenCADStudio {
     /// Apply an AEC properties field. Returns `true` when `field` is AEC-owned
     /// so Core must skip the generic geom path.
@@ -1713,6 +2508,9 @@ impl crate::app::OpenCADStudio {
             || field.starts_with("slab_")
             || field.starts_with("slabopening_")
             || field.starts_with("room_")
+            || field.starts_with("marker_")
+            || field.starts_with("carrier_")
+            || field == "view_cut_height"
             || matches!(
                 field,
                 "wall_justification"
@@ -1732,6 +2530,48 @@ impl crate::app::OpenCADStudio {
             return false;
         }
         if self.tabs[tab].scene.is_layer_locked(handle) {
+            return true;
+        }
+        if field.starts_with("marker_") {
+            let marker_owner = resolve_section_marker_package(&self.tabs[tab].scene, handle).unwrap_or(handle);
+            if self.aec.aec_last_applied_property
+                == Some((marker_owner, field.to_string(), val.to_string()))
+            {
+                return true;
+            }
+            self.aec.aec_last_applied_property =
+                Some((marker_owner, field.to_string(), val.to_string()));
+
+            let ok = apply_marker_property(&mut self.tabs[tab].scene.document, marker_owner, field, val);
+            if ok {
+                self.tabs[tab].dirty = true;
+                self.tabs[tab].scene.bump_geometry();
+            }
+            return true;
+        }
+        if field.starts_with("carrier_") || field == "view_cut_height" {
+            let carrier_handle = handle;
+            // `carrier_action` is a one-shot command; skip dedup so "Update now"
+            // can be triggered repeatedly on the same carrier.
+            let skip_dedup = field == "carrier_action";
+            if !skip_dedup
+                && self.aec.aec_last_applied_property
+                    == Some((carrier_handle, field.to_string(), val.to_string()))
+            {
+                return true;
+            }
+            if skip_dedup {
+                self.aec.aec_last_applied_property = None;
+            } else {
+                self.aec.aec_last_applied_property =
+                    Some((carrier_handle, field.to_string(), val.to_string()));
+            }
+
+            let ok = apply_carrier_property(&mut self.tabs[tab].scene.document, carrier_handle, field, val);
+            if ok {
+                self.tabs[tab].dirty = true;
+                self.tabs[tab].scene.bump_geometry();
+            }
             return true;
         }
         if field.starts_with("room_") {
@@ -2896,5 +3736,979 @@ mod tests {
 
         let op_title = aec_entity_title(&scene, collapsed_op[0].0, collapsed_op[0].1).expect("opening title");
         assert_eq!(op_title, crate::tr!("aec", "slabopening-title"));
+    }
+
+    fn prop_text(section: &crate::scene::model::object::PropSection, field: &str) -> String {
+        match &section.props.iter().find(|p| p.field == field).expect(field).value {
+            crate::scene::model::object::PropValue::ReadOnly(s)
+            | crate::scene::model::object::PropValue::PlainText(s)
+            | crate::scene::model::object::PropValue::EditText(s) => s.clone(),
+            other => panic!("{field} unexpected {other:?}"),
+        }
+    }
+
+    fn prop_edit_number(section: &crate::scene::model::object::PropSection, field: &str) -> f64 {
+        match &section.props.iter().find(|p| p.field == field).expect(field).value {
+            crate::scene::model::object::PropValue::EditText(s) => {
+                crate::entities::common::parse_f64(s).unwrap_or_else(|| s.parse().expect(field))
+            }
+            other => panic!("{field} unexpected {other:?}"),
+        }
+    }
+
+    fn sample_section_viewpoint(
+        vp_id: crate::modules::aec::engine::views::ViewpointId,
+        name: &str,
+        path: crate::modules::aec::engine::views::viewpoint::SectionPath,
+        far_depth: Option<f64>,
+        z_min: f64,
+        z_max: f64,
+        flip: bool,
+    ) -> crate::modules::aec::engine::views::viewpoint::Viewpoint {
+        use crate::modules::aec::engine::views::viewpoint::{
+            ProjectionMapping, VerticalRange, ViewAxes, ViewKind, ViewOrigin, Viewpoint,
+        };
+        use crate::modules::aec::engine::views::{Metres, Point3, PositiveMetres, Revision, Vector2};
+        Viewpoint {
+            id: vp_id,
+            name: name.into(),
+            revision: Revision::default(),
+            origin: ViewOrigin::World(Point3::new(0.0, 0.0, z_min)),
+            axes: ViewAxes::section_with_side(Vector2::new(1.0, 0.0), flip).unwrap(),
+            kind: ViewKind::Section {
+                path,
+                far_depth: far_depth.and_then(|d| PositiveMetres::new(d).ok()),
+            },
+            z_range: VerticalRange::new(Metres::new(z_min).unwrap(), Metres::new(z_max).unwrap())
+                .unwrap(),
+            mapping: ProjectionMapping::default(),
+            crop: None,
+        }
+    }
+
+    fn sample_model_view(
+        mv_id: crate::modules::aec::engine::views::ModelViewId,
+        vp_id: crate::modules::aec::engine::views::ViewpointId,
+        name: &str,
+        policy: crate::modules::aec::engine::views::model_view::UpdatePolicy,
+    ) -> crate::modules::aec::engine::views::model_view::ModelView {
+        use crate::modules::aec::engine::views::model_view::{DetailPolicy, ModelView, ViewRevisions};
+        use crate::modules::aec::engine::views::{ScaleDenominator, ViewProfileId};
+        ModelView {
+            id: mv_id,
+            name: name.into(),
+            viewpoint_id: vp_id,
+            profile_id: ViewProfileId::new(),
+            scale: ScaleDenominator::new(50.0).unwrap(),
+            detail: DetailPolicy::FromProfileAndScale,
+            excluded_elements: std::collections::BTreeSet::new(),
+            graphic_overrides: vec![],
+            annotation_ids: vec![],
+            update_policy: policy,
+            revisions: ViewRevisions::default(),
+        }
+    }
+
+    fn viewpoint_far_depth(
+        vp: &crate::modules::aec::engine::views::viewpoint::Viewpoint,
+    ) -> Option<f64> {
+        use crate::modules::aec::engine::views::viewpoint::ViewKind;
+        match &vp.kind {
+            ViewKind::Section { far_depth, .. } => far_depth.as_ref().map(|d| d.get()),
+            ViewKind::Elevation { depth } => depth.far.as_ref().map(|d| d.get()),
+            _ => None,
+        }
+    }
+
+    fn add_test_wall(doc: &mut acadrust::CadDocument) -> Handle {
+        use acadrust::entities::{LwPolyline, LwVertex};
+        use acadrust::types::Vector2 as CadVec2;
+        use acadrust::xdata::ExtendedDataRecord;
+        use crate::modules::aec::engine::plan_view::PlanPhase;
+        use crate::modules::aec::engine::wall::WallJustification;
+        use crate::modules::aec::engine::WallLayer;
+        use crate::modules::aec::engine::xdata::{wall_record, AEC_APPID};
+
+        let mut pl = LwPolyline::default();
+        pl.vertices.push(LwVertex {
+            location: CadVec2::new(5.0, -2.0),
+            bulge: 0.0,
+            start_width: 0.0,
+            end_width: 0.0,
+            vertex_id: 0,
+        });
+        pl.vertices.push(LwVertex {
+            location: CadVec2::new(5.0, 2.0),
+            bulge: 0.0,
+            start_width: 0.0,
+            end_width: 0.0,
+            vertex_id: 1,
+        });
+        let handle = doc.allocate_handle();
+        pl.common.handle = handle;
+        let layer = WallLayer {
+            material: "Concrete".into(),
+            thickness: 0.24,
+            function: "Structural".into(),
+            axis_offset: -0.12,
+            bottom_offset: 0.0,
+            top_offset: 0.0,
+            layer_override: None,
+            hatch_override: None,
+            layer_id: uuid::Uuid::new_v4(),
+        };
+        let rec_values = wall_record(
+            "W1",
+            2.8,
+            0,
+            &[layer],
+            &[],
+            WallJustification::Center,
+            PlanPhase::Existing,
+            None,
+        );
+        let mut rec = ExtendedDataRecord::new(AEC_APPID);
+        rec.values = rec_values;
+        pl.common.extended_data.add_record(rec);
+        let _ = doc.add_entity(EntityType::LwPolyline(pl));
+        handle
+    }
+
+    #[test]
+    fn test_section_marker_prop_section() {
+        use crate::modules::aec::engine::views::viewpoint::SectionPath;
+        use crate::modules::aec::engine::views::{Point2, ViewpointId};
+        use crate::modules::aec::views::din1356::{create_section_marker, Din1356SectionMarker};
+        use crate::scene::Scene;
+
+        let mut scene = Scene::new();
+        let vp_id = ViewpointId::new();
+        let path = SectionPath::straight(Point2::new(0.0, 0.0), Point2::new(10.0, 0.0));
+        let marker = Din1356SectionMarker::new_section("A - A", path, vp_id, Some(Handle::new(77)))
+            .with_depth(Some(6.0))
+            .with_z_range(0.0, 3.5);
+        let marker_h = create_section_marker(&mut scene.document, &marker);
+
+        let entity = scene.document.get_entity(marker_h).expect("marker entity");
+        let section = marker_prop_section(entity, &scene.document).expect("marker prop section");
+
+        assert_eq!(section.title, crate::tr!("aec", "section-marker-title"));
+        assert_eq!(
+            prop_text(&section, "marker_type"),
+            crate::tr!("aec", "marker-type-section")
+        );
+        assert_eq!(prop_text(&section, "marker_label"), "A - A");
+        assert!((prop_edit_number(&section, "marker_far_depth") - 6.0).abs() < 1e-6);
+        assert!((prop_edit_number(&section, "marker_z_min") - 0.0).abs() < 1e-6);
+        assert!((prop_edit_number(&section, "marker_z_max") - 3.5).abs() < 1e-6);
+        match &section
+            .props
+            .iter()
+            .find(|p| p.field == "marker_flip")
+            .expect("marker_flip")
+            .value
+        {
+            crate::scene::model::object::PropValue::Choice { selected, options } => {
+                assert_eq!(selected, &crate::tr!("aec", "marker-flip-normal"));
+                assert!(options.contains(&crate::tr!("aec", "marker-flip-flipped")));
+            }
+            other => panic!("wrong prop type for marker_flip: {other:?}"),
+        }
+        assert_eq!(
+            prop_text(&section, "marker_carrier"),
+            Handle::new(77).to_string()
+        );
+    }
+
+    #[test]
+    fn test_elevation_marker_prop_section() {
+        use crate::modules::aec::engine::views::{Point2, ViewpointId};
+        use crate::modules::aec::views::din1356::{create_section_marker, Din1356SectionMarker};
+        use crate::scene::Scene;
+
+        let mut scene = Scene::new();
+        let vp_id = ViewpointId::new();
+        let marker = Din1356SectionMarker::new_elevation(
+            "Südansicht",
+            Point2::new(0.0, 0.0),
+            Point2::new(12.0, 0.0),
+            vp_id,
+            None,
+        )
+        .with_depth(Some(15.0))
+        .with_flip(true);
+
+        let marker_h = create_section_marker(&mut scene.document, &marker);
+        let entity = scene.document.get_entity(marker_h).expect("elevation entity");
+        let section = marker_prop_section(entity, &scene.document).expect("marker prop section");
+
+        assert_eq!(section.title, crate::tr!("aec", "elevation-marker-title"));
+        assert_eq!(
+            prop_text(&section, "marker_type"),
+            crate::tr!("aec", "marker-type-elevation")
+        );
+        match &section
+            .props
+            .iter()
+            .find(|p| p.field == "marker_flip")
+            .expect("marker_flip")
+            .value
+        {
+            crate::scene::model::object::PropValue::Choice { selected, .. } => {
+                assert_eq!(selected, &crate::tr!("aec", "marker-flip-flipped"));
+            }
+            other => panic!("wrong prop type for marker_flip: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_apply_marker_property() {
+        use crate::modules::aec::engine::views::viewpoint::SectionPath;
+        use crate::modules::aec::engine::views::{Point2, ViewpointId};
+        use crate::modules::aec::views::din1356::{
+            create_section_marker, read_section_marker, Din1356SectionMarker,
+        };
+        use crate::scene::Scene;
+
+        let mut scene = Scene::new();
+        let vp_id = ViewpointId::new();
+        let path = SectionPath::straight(Point2::new(0.0, 0.0), Point2::new(8.0, 0.0));
+        let marker = Din1356SectionMarker::new_section("A - A", path, vp_id, None);
+        let marker_h = create_section_marker(&mut scene.document, &marker);
+
+        assert!(apply_marker_property(
+            &mut scene.document,
+            marker_h,
+            "marker_label",
+            "B - B"
+        ));
+        assert!(apply_marker_property(
+            &mut scene.document,
+            marker_h,
+            "marker_far_depth",
+            "12.5"
+        ));
+        assert!(apply_marker_property(
+            &mut scene.document,
+            marker_h,
+            "marker_z_min",
+            "-0.8"
+        ));
+        assert!(apply_marker_property(
+            &mut scene.document,
+            marker_h,
+            "marker_z_max",
+            "4.2"
+        ));
+        assert!(apply_marker_property(
+            &mut scene.document,
+            marker_h,
+            "marker_flip",
+            CHOICE_FLIPPED
+        ));
+
+        let ent = scene.document.get_entity(marker_h).expect("marker ent");
+        let updated = read_section_marker(&scene.document, ent).expect("read updated marker");
+
+        assert_eq!(updated.label, "B - B");
+        assert_eq!(updated.far_depth, Some(12.5));
+        assert!((updated.z_min - (-0.8)).abs() < 1e-6);
+        assert!((updated.z_max - 4.2).abs() < 1e-6);
+        assert!(updated.flip_direction);
+    }
+
+    #[test]
+    fn test_carrier_prop_section_and_apply() {
+        use crate::modules::aec::engine::views::carrier::{
+            create_view_carrier, find_view_carrier_by_handle, read_view_carrier_definitions,
+            write_view_carrier_definitions,
+        };
+        use crate::modules::aec::engine::views::model_view::UpdatePolicy;
+        use crate::modules::aec::engine::views::viewpoint::SectionPath;
+        use crate::modules::aec::engine::views::{ModelViewId, Point2, ViewpointId};
+        use crate::scene::Scene;
+
+        let mut scene = Scene::new();
+        let vp_id = ViewpointId::new();
+        let mv_id = ModelViewId::new();
+        let carrier = create_view_carrier(
+            &mut scene.document,
+            vp_id,
+            mv_id,
+            Point2::new(0.0, 0.0),
+            1.0,
+            0.0,
+            UpdatePolicy::Manual,
+        )
+        .expect("carrier created");
+        let pl_h = carrier.handle;
+
+        let path = SectionPath::straight(Point2::new(0.0, 0.0), Point2::new(10.0, 0.0));
+        let vp = sample_section_viewpoint(vp_id, "Schnitt 1", path, None, 0.0, 3.0, false);
+        let mv = sample_model_view(mv_id, vp_id, "MV 1", UpdatePolicy::Manual);
+        write_view_carrier_definitions(&mut scene.document, pl_h, &vp, &mv);
+
+        let entity = scene.document.get_entity(pl_h).unwrap();
+        let section = carrier_prop_section(entity, &scene.document).expect("carrier section");
+
+        assert_eq!(section.title, crate::tr!("aec", "view-carrier-title"));
+        // Displays ModelView scale denominator 1:50, not geometric multiplier (1.0)
+        assert!((prop_edit_number(&section, "carrier_scale") - 50.0).abs() < 1e-6);
+        assert_eq!(prop_text(&section, "carrier_name"), "Schnitt 1");
+
+        assert!(apply_carrier_property(
+            &mut scene.document,
+            pl_h,
+            "carrier_scale",
+            "100.0"
+        ));
+        assert!(apply_carrier_property(
+            &mut scene.document,
+            pl_h,
+            "carrier_update_policy",
+            CHOICE_AUTOMATIC
+        ));
+
+        let updated_carrier = find_view_carrier_by_handle(&scene.document, pl_h).expect("carrier");
+        // Carrier geometric multiplier remains 1.0
+        assert!((updated_carrier.scale - 1.0).abs() < 1e-6);
+        assert_eq!(updated_carrier.update_policy, UpdatePolicy::Automatic);
+
+        // ModelView drawing scale denominator is updated to 100.0 (1:100)
+        let (_, updated_mv) = read_view_carrier_definitions(&scene.document, pl_h).expect("defs");
+        assert!((updated_mv.scale.get() - 100.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn test_floorplan_carrier_cut_height_prop_and_grips() {
+        use crate::modules::aec::engine::views::carrier::{
+            create_view_carrier, read_view_carrier_definitions,
+            write_view_carrier_definitions,
+        };
+        use crate::modules::aec::engine::views::model_view::{DetailPolicy, ModelView, ViewRevisions};
+        use crate::modules::aec::engine::views::viewpoint::{PlanRange, VerticalRange, ViewAxes, ViewKind, ViewOrigin, Viewpoint};
+        use crate::modules::aec::engine::views::{
+            Metres, ModelViewId, NonNegativeMetres, Point2, Point3, Revision, ScaleDenominator,
+            ViewProfileId, ViewpointId,
+        };
+        use crate::modules::aec::engine::views::model_view::UpdatePolicy;
+        use crate::scene::Scene;
+
+        let mut scene = Scene::new();
+        let vp_id = ViewpointId::new();
+        let mv_id = ModelViewId::new();
+
+        let viewpoint = Viewpoint {
+            id: vp_id,
+            name: "EG Grundriss".into(),
+            revision: Revision(1),
+            origin: ViewOrigin::World(Point3::new(10.0, 20.0, 1.0)),
+            axes: ViewAxes::floor_plan(),
+            kind: ViewKind::FloorPlan {
+                range: PlanRange {
+                    above_cut: NonNegativeMetres::new(1.8).unwrap(),
+                    below_cut: NonNegativeMetres::new(1.0).unwrap(),
+                    beyond_below: NonNegativeMetres::ZERO,
+                },
+            },
+            z_range: VerticalRange::new(Metres::new(0.0).unwrap(), Metres::new(2.8).unwrap()).unwrap(),
+            mapping: Default::default(),
+            crop: None,
+        };
+
+        let model_view = ModelView {
+            id: mv_id,
+            name: "1:50 EG".into(),
+            viewpoint_id: vp_id,
+            profile_id: ViewProfileId::new(),
+            scale: ScaleDenominator::new(50.0).unwrap(),
+            detail: DetailPolicy::FromProfileAndScale,
+            excluded_elements: Default::default(),
+            graphic_overrides: Vec::new(),
+            annotation_ids: Vec::new(),
+            update_policy: UpdatePolicy::Manual,
+            revisions: ViewRevisions::default(),
+        };
+
+        let carrier = create_view_carrier(
+            &mut scene.document,
+            vp_id,
+            mv_id,
+            Point2::new(40.0, 10.0),
+            1.0,
+            0.0,
+            UpdatePolicy::Manual,
+        )
+        .expect("carrier created");
+        let carrier_h = carrier.handle;
+        write_view_carrier_definitions(&mut scene.document, carrier_h, &viewpoint, &model_view);
+
+        let entity = scene.document.get_entity(carrier_h).unwrap();
+        let section = carrier_prop_section(entity, &scene.document).expect("carrier section");
+
+        // Verify that cut height is displayed (0.0 + 1.0 = 1.0)
+        assert!((prop_edit_number(&section, "carrier_cut_height") - 1.0).abs() < 1e-4);
+
+        // Apply new cut height: 1.5m
+        assert!(apply_carrier_property(
+            &mut scene.document,
+            carrier_h,
+            "carrier_cut_height",
+            "1.5"
+        ));
+
+        let (updated_vp, _) = read_view_carrier_definitions(&scene.document, carrier_h).expect("defs");
+        match updated_vp.kind {
+            ViewKind::FloorPlan { range } => {
+                assert!((range.below_cut.get() - 1.5).abs() < 1e-4);
+            }
+            _ => panic!("expected floor plan"),
+        }
+
+        // Verify grips
+        let mut grips = Vec::new();
+        append_view_carrier_grips(&scene, carrier_h, &mut grips);
+        assert_eq!(grips.len(), 2);
+        let ins_grip = grips.iter().find(|g| g.id == CARRIER_GRIP_INSERTION).unwrap();
+        assert_eq!(ins_grip.world, glam::DVec3::new(40.0, 10.0, 0.0));
+        let cut_grip = grips.iter().find(|g| g.id == CARRIER_GRIP_CUT_HEIGHT).unwrap();
+        // Cut height 1.5m offset in Y from insertion point (10.0 + 1.5 = 11.5)
+        assert!((cut_grip.world.y - 11.5).abs() < 1e-4);
+    }
+
+    #[test]
+    fn test_append_section_marker_grips_straight_and_jogged() {
+        use crate::modules::aec::engine::views::viewpoint::{SectionPath, SectionSegment};
+        use crate::modules::aec::engine::views::{Point2, ViewpointId};
+        use crate::modules::aec::views::din1356::{create_section_marker, Din1356SectionMarker};
+        use crate::scene::model::object::GripShape;
+        use crate::scene::Scene;
+
+        let mut scene = Scene::new();
+        let vp_id = ViewpointId::new();
+
+        // 1. Straight marker
+        let path = SectionPath::straight(Point2::new(0.0, 0.0), Point2::new(10.0, 0.0));
+        let marker = Din1356SectionMarker::new_section("A - A", path, vp_id, None)
+            .with_depth(Some(4.0));
+        let straight_h = create_section_marker(&mut scene.document, &marker);
+
+        let mut grips = Vec::new();
+        append_section_marker_grips(&scene, straight_h, &mut grips);
+
+        assert_eq!(grips.len(), 4); // Start, End, Depth, Flip
+        let start_grip = grips.iter().find(|g| g.id == SECTION_MARKER_START_GRIP).unwrap();
+        assert_eq!(start_grip.world, glam::DVec3::new(0.0, 0.0, 0.0));
+        assert_eq!(start_grip.shape, GripShape::Square);
+
+        let end_grip = grips.iter().find(|g| g.id == SECTION_MARKER_END_GRIP).unwrap();
+        assert_eq!(end_grip.world, glam::DVec3::new(10.0, 0.0, 0.0));
+        assert_eq!(end_grip.shape, GripShape::Square);
+
+        let depth_grip = grips.iter().find(|g| g.id == SECTION_MARKER_DEPTH_GRIP).unwrap();
+        assert_eq!(depth_grip.world, glam::DVec3::new(5.0, 4.0, 0.0));
+        assert!(matches!(depth_grip.shape, GripShape::Rectangle { .. }));
+        assert_eq!(depth_grip.axis, Some(glam::DVec3::new(0.0, 1.0, 0.0)));
+
+        let flip_grip = grips.iter().find(|g| g.id == SECTION_MARKER_FLIP_GRIP).unwrap();
+        assert_eq!(flip_grip.world, glam::DVec3::new(5.0, 1.0, 0.0));
+        assert!(matches!(flip_grip.shape, GripShape::Triangle { .. }));
+
+        // 2. Jogged marker (3 segments)
+        let jogged_path = SectionPath::jogged(vec![
+            SectionSegment::new(Point2::new(0.0, 0.0), Point2::new(5.0, 0.0), false),
+            SectionSegment::new(Point2::new(5.0, 0.0), Point2::new(5.0, 2.0), true),
+            SectionSegment::new(Point2::new(5.0, 2.0), Point2::new(10.0, 2.0), false),
+        ]);
+        let jogged_marker = Din1356SectionMarker::new_section("B - B", jogged_path, vp_id, None)
+            .with_depth(Some(3.0));
+        let jogged_h = create_section_marker(&mut scene.document, &jogged_marker);
+
+        let mut jog_grips = Vec::new();
+        append_section_marker_grips(&scene, jogged_h, &mut jog_grips);
+
+        // Start (0), End (1), Jog0 (100), Jog1 (101), Depth (2), Flip (3) => 6 grips
+        assert_eq!(jog_grips.len(), 6);
+        let jog0 = jog_grips.iter().find(|g| g.id == SECTION_MARKER_JOG_BASE).unwrap();
+        assert_eq!(jog0.world, glam::DVec3::new(5.0, 0.0, 0.0));
+        let jog1 = jog_grips.iter().find(|g| g.id == SECTION_MARKER_JOG_BASE + 1).unwrap();
+        assert_eq!(jog1.world, glam::DVec3::new(5.0, 2.0, 0.0));
+    }
+
+    #[test]
+    fn test_section_marker_package_resolution_and_expansion() {
+        use crate::modules::aec::engine::owner_index;
+        use crate::modules::aec::engine::views::viewpoint::SectionPath;
+        use crate::modules::aec::engine::views::{Point2, ViewpointId};
+        use crate::modules::aec::views::din1356::{
+            create_section_marker, section_marker_owner_from_entity, Din1356SectionMarker,
+        };
+        use crate::scene::Scene;
+        use acadrust::entities::LwPolyline;
+
+        let mut scene = Scene::new();
+        let vp_id = ViewpointId::new();
+        let path = SectionPath::straight(Point2::new(0.0, 0.0), Point2::new(10.0, 0.0));
+        let marker = Din1356SectionMarker::new_section("A - A", path, vp_id, None);
+        let marker_h = create_section_marker(&mut scene.document, &marker);
+
+        let children = owner_index::children_of(&scene.document, marker_h);
+        assert!(!children.is_empty(), "Marker should have child CAD entities");
+
+        let child_h = children[0];
+        {
+            let child_ent = scene.document.get_entity(child_h).unwrap();
+            assert_eq!(section_marker_owner_from_entity(child_ent), Some(marker_h));
+        }
+
+        // 1. Package resolution is O(1) via the child owner back-reference.
+        assert_eq!(resolve_section_marker_package(&scene, marker_h), Some(marker_h));
+        assert_eq!(resolve_section_marker_package(&scene, child_h), Some(marker_h));
+        assert_eq!(resolve_aec_package(&scene, child_h), marker_h);
+
+        let unrelated = scene.add_entity(EntityType::LwPolyline(LwPolyline::new()));
+        assert_eq!(resolve_section_marker_package(&scene, unrelated), None);
+
+        // 2. Derived non-carrier check
+        assert!(!is_section_marker_derived(&scene, marker_h));
+        assert!(is_section_marker_derived(&scene, child_h));
+        assert!(is_aec_derived_non_carrier(&scene, child_h));
+
+        // 3. Selection expansion
+        let expanded = expand_handles_for_aec_packages(&scene, &[child_h]);
+        assert!(expanded.contains(&marker_h));
+        for c in &children {
+            assert!(expanded.contains(c));
+        }
+
+        // 4. Title resolution on child entity
+        let child_ent = scene.document.get_entity(child_h).unwrap();
+        let title = aec_entity_title(&scene, child_h, child_ent).expect("title");
+        assert_eq!(title, crate::tr!("aec", "section-marker-title"));
+    }
+
+    #[test]
+    fn test_marker_carrier_sync_roundtrip_manual_and_automatic() {
+        use crate::modules::aec::engine::views::carrier::{
+            create_view_carrier, find_view_carrier_by_handle, read_view_carrier_definitions,
+            write_view_carrier_definitions,
+        };
+        use crate::modules::aec::engine::views::model_view::UpdatePolicy;
+        use crate::modules::aec::engine::views::viewpoint::{SectionPath, ViewAxes};
+        use crate::modules::aec::engine::views::{ModelViewId, Point2, Vector2, ViewpointId};
+        use crate::modules::aec::views::din1356::{
+            create_section_marker, read_section_marker, Din1356SectionMarker,
+        };
+        use crate::scene::Scene;
+
+        let mut scene = Scene::new();
+        // Add real wall geometry to the scene document so cuts produce derived geometry.
+        add_test_wall(&mut scene.document);
+        let path = SectionPath::straight(Point2::new(0.0, 0.0), Point2::new(10.0, 0.0));
+
+        // --- Manual: marker edits mark the carrier outdated and update Viewpoint ---
+        let vp_id_manual = ViewpointId::new();
+        let mv_id_manual = ModelViewId::new();
+        let carrier_manual = create_view_carrier(
+            &mut scene.document,
+            vp_id_manual,
+            mv_id_manual,
+            Point2::new(20.0, 0.0),
+            1.0, // Placement scale multiplier stays 1.0
+            0.0,
+            UpdatePolicy::Manual,
+        )
+        .expect("manual carrier");
+        let vp_manual = sample_section_viewpoint(
+            vp_id_manual,
+            "A - A",
+            path.clone(),
+            Some(5.0),
+            0.0,
+            3.0,
+            false,
+        );
+        let mv_manual = sample_model_view(
+            mv_id_manual,
+            vp_id_manual,
+            "Section 1:50",
+            UpdatePolicy::Manual,
+        );
+        write_view_carrier_definitions(&mut scene.document, carrier_manual.handle, &vp_manual, &mv_manual);
+
+        let marker_manual = Din1356SectionMarker::new_section(
+            "A - A",
+            path.clone(),
+            vp_id_manual,
+            Some(carrier_manual.handle),
+        )
+        .with_depth(Some(5.0))
+        .with_z_range(0.0, 3.0);
+        let marker_manual_h = create_section_marker(&mut scene.document, &marker_manual);
+
+        assert!(apply_marker_property(
+            &mut scene.document,
+            marker_manual_h,
+            "marker_far_depth",
+            "8.0"
+        ));
+        assert!(apply_marker_property(
+            &mut scene.document,
+            marker_manual_h,
+            "marker_z_min",
+            "-0.5"
+        ));
+        assert!(apply_marker_property(
+            &mut scene.document,
+            marker_manual_h,
+            "marker_z_max",
+            "4.0"
+        ));
+        assert!(apply_marker_property(
+            &mut scene.document,
+            marker_manual_h,
+            "marker_flip",
+            CHOICE_FLIPPED
+        ));
+        assert!(apply_marker_property(
+            &mut scene.document,
+            marker_manual_h,
+            "marker_label",
+            "A1 - A1"
+        ));
+
+        let (vp_after, mv_after) =
+            read_view_carrier_definitions(&scene.document, carrier_manual.handle).expect("defs");
+        let carrier_after =
+            find_view_carrier_by_handle(&scene.document, carrier_manual.handle).expect("carrier");
+        assert!(carrier_after.is_outdated);
+        assert_eq!(carrier_after.scale, 1.0);
+        assert_eq!(vp_after.name, "A1 - A1");
+        assert_eq!(mv_after.name, "Section A1 - A1");
+        assert_eq!(viewpoint_far_depth(&vp_after), Some(8.0));
+        assert!((vp_after.z_range.z_min.get() - (-0.5)).abs() < 1e-9);
+        assert!((vp_after.z_range.z_max.get() - 4.0).abs() < 1e-9);
+        assert_eq!(
+            vp_after.axes,
+            ViewAxes::section_with_side(Vector2::new(1.0, 0.0), true).unwrap()
+        );
+
+        // "Update now" action on outdated manual carrier must regenerate and clear outdated flag
+        assert!(apply_carrier_property(
+            &mut scene.document,
+            carrier_manual.handle,
+            "carrier_action",
+            CHOICE_ACTION_UPDATE
+        ));
+        let carrier_manual_updated =
+            find_view_carrier_by_handle(&scene.document, carrier_manual.handle).expect("carrier");
+        assert!(!carrier_manual_updated.is_outdated, "Update now clears is_outdated");
+        assert!(!carrier_manual_updated.derived_handles.is_empty(), "Update now rebuilds derived CAD handles");
+
+        // Changing marker parameter again marks it outdated
+        assert!(apply_marker_property(
+            &mut scene.document,
+            marker_manual_h,
+            "marker_far_depth",
+            "6.0"
+        ));
+        let carrier_dirty_again =
+            find_view_carrier_by_handle(&scene.document, carrier_manual.handle).expect("carrier");
+        assert!(carrier_dirty_again.is_outdated);
+
+        // Switching policy from Manual to Automatic while outdated must immediately regenerate
+        assert!(apply_carrier_property(
+            &mut scene.document,
+            carrier_manual.handle,
+            "carrier_update_policy",
+            CHOICE_AUTOMATIC
+        ));
+        let carrier_switched =
+            find_view_carrier_by_handle(&scene.document, carrier_manual.handle).expect("carrier");
+        assert_eq!(carrier_switched.update_policy, UpdatePolicy::Automatic);
+        assert!(!carrier_switched.is_outdated, "Switching manual->auto while outdated must regenerate");
+        assert!(!carrier_switched.derived_handles.is_empty());
+
+        // --- Automatic: marker edits regenerate and keep the carrier current ---
+        let vp_id_auto = ViewpointId::new();
+        let mv_id_auto = ModelViewId::new();
+        let carrier_auto = create_view_carrier(
+            &mut scene.document,
+            vp_id_auto,
+            mv_id_auto,
+            Point2::new(40.0, 0.0),
+            1.0, // Placement scale multiplier stays 1.0
+            0.0,
+            UpdatePolicy::Automatic,
+        )
+        .expect("auto carrier");
+        let vp_auto = sample_section_viewpoint(
+            vp_id_auto,
+            "B - B",
+            path.clone(),
+            Some(5.0),
+            0.0,
+            3.0,
+            false,
+        );
+        let mv_auto = sample_model_view(
+            mv_id_auto,
+            vp_id_auto,
+            "Section auto",
+            UpdatePolicy::Automatic,
+        );
+        write_view_carrier_definitions(&mut scene.document, carrier_auto.handle, &vp_auto, &mv_auto);
+
+        let marker_auto = Din1356SectionMarker::new_section(
+            "B - B",
+            path,
+            vp_id_auto,
+            Some(carrier_auto.handle),
+        )
+        .with_depth(Some(5.0))
+        .with_z_range(0.0, 3.0);
+        let marker_auto_h = create_section_marker(&mut scene.document, &marker_auto);
+
+        assert!(apply_marker_property(
+            &mut scene.document,
+            marker_auto_h,
+            "marker_far_depth",
+            "9.5"
+        ));
+
+        let (vp_auto_after, _) =
+            read_view_carrier_definitions(&scene.document, carrier_auto.handle).expect("auto defs");
+        let carrier_auto_after =
+            find_view_carrier_by_handle(&scene.document, carrier_auto.handle).expect("auto carrier");
+        assert!(!carrier_auto_after.is_outdated, "Automatic carrier must be current after marker edit");
+        assert!(!carrier_auto_after.derived_handles.is_empty(), "Automatic carrier must have derived geometry");
+        assert_eq!(carrier_auto_after.scale, 1.0);
+        assert_eq!(viewpoint_far_depth(&vp_auto_after), Some(9.5));
+
+        // Carrier edits propagate back onto the linked marker.
+        assert!(apply_carrier_property(
+            &mut scene.document,
+            carrier_auto.handle,
+            "carrier_name",
+            "Nord"
+        ));
+        assert!(apply_carrier_property(
+            &mut scene.document,
+            carrier_auto.handle,
+            "carrier_far_depth",
+            "11.0"
+        ));
+        assert!(apply_carrier_property(
+            &mut scene.document,
+            carrier_auto.handle,
+            "carrier_z_min",
+            "0.2"
+        ));
+        assert!(apply_carrier_property(
+            &mut scene.document,
+            carrier_auto.handle,
+            "carrier_z_max",
+            "3.8"
+        ));
+
+        let marker_ent = scene.document.get_entity(marker_auto_h).expect("marker");
+        let marker_back = read_section_marker(&scene.document, marker_ent).expect("read marker");
+        assert_eq!(marker_back.label, "Nord");
+        assert_eq!(marker_back.far_depth, Some(11.0));
+        assert!((marker_back.z_min - 0.2).abs() < 1e-9);
+        assert!((marker_back.z_max - 3.8).abs() < 1e-9);
+
+        let (vp_back, mv_back) =
+            read_view_carrier_definitions(&scene.document, carrier_auto.handle).expect("back defs");
+        assert_eq!(vp_back.name, "Nord");
+        assert_eq!(mv_back.name, "Section Nord");
+        assert_eq!(viewpoint_far_depth(&vp_back), Some(11.0));
+
+        // Repeated "Update now" is a valid no-op that still succeeds.
+        assert!(apply_carrier_property(
+            &mut scene.document,
+            carrier_auto.handle,
+            "carrier_action",
+            CHOICE_ACTION_UPDATE
+        ));
+        assert!(apply_carrier_property(
+            &mut scene.document,
+            carrier_auto.handle,
+            "carrier_action",
+            CHOICE_ACTION_UPDATE
+        ));
+    }
+
+    #[test]
+    fn test_apply_marker_and_carrier_reject_invalid() {
+        use crate::modules::aec::engine::views::carrier::{
+            create_view_carrier, find_view_carrier_by_handle, read_view_carrier_definitions,
+            write_view_carrier_definitions,
+        };
+        use crate::modules::aec::engine::views::model_view::UpdatePolicy;
+        use crate::modules::aec::engine::views::viewpoint::SectionPath;
+        use crate::modules::aec::engine::views::{ModelViewId, Point2, ViewpointId};
+        use crate::modules::aec::views::din1356::{
+            create_section_marker, read_section_marker, Din1356SectionMarker,
+        };
+        use crate::scene::Scene;
+
+        let mut scene = Scene::new();
+        let vp_id = ViewpointId::new();
+        let mv_id = ModelViewId::new();
+        let path = SectionPath::straight(Point2::new(0.0, 0.0), Point2::new(10.0, 0.0));
+        let carrier = create_view_carrier(
+            &mut scene.document,
+            vp_id,
+            mv_id,
+            Point2::new(0.0, 0.0),
+            1.0, // Placement scale multiplier stays 1.0
+            0.0,
+            UpdatePolicy::Manual,
+        )
+        .expect("carrier");
+        let vp = sample_section_viewpoint(vp_id, "A - A", path.clone(), Some(5.0), 0.0, 3.0, false);
+        let mv = sample_model_view(mv_id, vp_id, "MV", UpdatePolicy::Manual);
+        write_view_carrier_definitions(&mut scene.document, carrier.handle, &vp, &mv);
+
+        let marker = Din1356SectionMarker::new_section(
+            "A - A",
+            path,
+            vp_id,
+            Some(carrier.handle),
+        )
+        .with_depth(Some(5.0))
+        .with_z_range(0.0, 3.0);
+        let marker_h = create_section_marker(&mut scene.document, &marker);
+
+        assert!(!apply_marker_property(
+            &mut scene.document,
+            marker_h,
+            "marker_label",
+            "   "
+        ));
+        assert!(!apply_marker_property(
+            &mut scene.document,
+            marker_h,
+            "marker_z_min",
+            "10.0"
+        ));
+        assert!(!apply_marker_property(
+            &mut scene.document,
+            marker_h,
+            "marker_z_max",
+            "-1.0"
+        ));
+        assert!(!apply_carrier_property(
+            &mut scene.document,
+            carrier.handle,
+            "carrier_z_min",
+            "9.0"
+        ));
+        assert!(!apply_carrier_property(
+            &mut scene.document,
+            carrier.handle,
+            "carrier_name",
+            ""
+        ));
+        assert!(!apply_carrier_property(
+            &mut scene.document,
+            carrier.handle,
+            "carrier_scale",
+            "0"
+        ));
+        assert!(!apply_carrier_property(
+            &mut scene.document,
+            carrier.handle,
+            "carrier_scale",
+            "-10.0"
+        ));
+
+        let marker_ent = scene.document.get_entity(marker_h).expect("marker");
+        let unchanged = read_section_marker(&scene.document, marker_ent).expect("read");
+        assert_eq!(unchanged.label, "A - A");
+        assert_eq!(unchanged.far_depth, Some(5.0));
+        assert!((unchanged.z_min - 0.0).abs() < 1e-9);
+        assert!((unchanged.z_max - 3.0).abs() < 1e-9);
+
+        let (vp_unchanged, mv_unchanged) =
+            read_view_carrier_definitions(&scene.document, carrier.handle).expect("defs");
+        let carrier_unchanged =
+            find_view_carrier_by_handle(&scene.document, carrier.handle).expect("carrier");
+        assert_eq!(carrier_unchanged.scale, 1.0);
+        assert_eq!(mv_unchanged.scale.get(), 50.0);
+        assert_eq!(vp_unchanged.name, "A - A");
+        assert!((vp_unchanged.z_range.z_min.get() - 0.0).abs() < 1e-9);
+        assert!((vp_unchanged.z_range.z_max.get() - 3.0).abs() < 1e-9);
+
+        // 0 means unlimited depth on both sides.
+        assert!(apply_marker_property(
+            &mut scene.document,
+            marker_h,
+            "marker_far_depth",
+            "0"
+        ));
+        let marker_ent = scene.document.get_entity(marker_h).expect("marker");
+        let unlimited = read_section_marker(&scene.document, marker_ent).expect("read");
+        assert_eq!(unlimited.far_depth, None);
+        let (vp_unlimited, _) =
+            read_view_carrier_definitions(&scene.document, carrier.handle).expect("defs");
+        assert_eq!(viewpoint_far_depth(&vp_unlimited), None);
+
+        assert!(apply_carrier_property(
+            &mut scene.document,
+            carrier.handle,
+            "carrier_far_depth",
+            "0"
+        ));
+        let marker_ent = scene.document.get_entity(marker_h).expect("marker");
+        let still_unlimited = read_section_marker(&scene.document, marker_ent).expect("read");
+        assert_eq!(still_unlimited.far_depth, None);
+        let carrier_after =
+            find_view_carrier_by_handle(&scene.document, carrier.handle).expect("carrier");
+        assert!(carrier_after.is_outdated);
+    }
+
+    #[test]
+    fn test_regeneration_failure_marks_carrier_outdated() {
+        use crate::modules::aec::engine::views::carrier::{
+            create_view_carrier, find_view_carrier_by_handle, write_view_carrier_definitions,
+        };
+        use crate::modules::aec::engine::views::model_view::UpdatePolicy;
+        use crate::modules::aec::engine::views::update_ops::regenerate_or_mark_outdated;
+        use crate::modules::aec::engine::views::viewpoint::SectionPath;
+        use crate::modules::aec::engine::views::{ModelViewId, Point2, ViewpointId};
+        use crate::scene::Scene;
+
+        let mut scene = Scene::new();
+        let vp_id = ViewpointId::new();
+        let mv_id = ModelViewId::new();
+        let carrier = create_view_carrier(
+            &mut scene.document,
+            vp_id,
+            mv_id,
+            Point2::new(0.0, 0.0),
+            1.0,
+            0.0,
+            UpdatePolicy::Automatic,
+        )
+        .expect("carrier");
+        assert!(!carrier.is_outdated);
+
+        // Use the matching viewpoint ID but invalid definitions so regeneration
+        // fails validation rather than falling back to a valid embedded viewpoint.
+        let path = SectionPath::straight(Point2::new(0.0, 0.0), Point2::new(10.0, 0.0));
+        let vp_invalid = sample_section_viewpoint(vp_id, "", path, None, 0.0, 3.0, false);
+        let mv = sample_model_view(mv_id, vp_id, "MV", UpdatePolicy::Automatic);
+        write_view_carrier_definitions(&mut scene.document, carrier.handle, &vp_invalid, &mv);
+
+        let success = regenerate_or_mark_outdated(&mut scene.document, carrier.handle, &vp_invalid, &mv);
+        assert!(!success, "Regeneration must fail for an invalid viewpoint");
+
+        let carrier_after_fail = find_view_carrier_by_handle(&scene.document, carrier.handle).expect("carrier");
+        assert!(
+            carrier_after_fail.is_outdated,
+            "Regeneration failure must mark carrier as outdated instead of falsely claiming current"
+        );
     }
 }

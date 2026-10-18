@@ -268,6 +268,32 @@ impl OpenCADStudio {
         delta.dirty_after = dirty_after;
     }
 
+    pub(super) fn capture_package_regen_history(
+        &mut self,
+        i: usize,
+        before_images: Vec<(Handle, Option<Arc<EntityType>>)>,
+    ) {
+        if before_images.is_empty() {
+            return;
+        }
+        let after_images: Vec<_> = before_images
+            .into_iter()
+            .map(|(h, before_opt)| {
+                let after_opt = self.tabs[i].scene.document.get_entity_arc(h);
+                (h, before_opt, after_opt)
+            })
+            .collect();
+        if let Some(HistorySnapshot::Delta(delta)) = self.tabs[i].history.undo_stack.last_mut() {
+            for (h, before_opt, after_opt) in after_images {
+                if let Some(existing) = delta.entities.iter_mut().find(|(entry_h, _, _)| *entry_h == h) {
+                    existing.2 = after_opt;
+                } else {
+                    delta.entities.push((h, before_opt, after_opt));
+                }
+            }
+        }
+    }
+
     pub(super) fn discard_last_undo_entry(&mut self, i: usize) {
         if self.tabs[i].history.pending.take().is_some() {
             self.tabs[i].scene.document.end_entity_change_recording();
