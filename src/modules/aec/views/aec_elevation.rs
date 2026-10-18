@@ -235,7 +235,10 @@ impl ElevationCommand {
         .with_depth(self.depth)
         .with_z_range(self.z_min, self.z_max)
         .with_flip(self.flip_direction);
-        let _ = create_section_marker(&mut scene.document, &marker);
+        let marker_h = create_section_marker(&mut scene.document, &marker);
+        crate::modules::aec::engine::owner_index::link_peers(&mut scene.document, marker_h, carrier.handle);
+        carrier.marker_handle = Some(marker_h);
+        crate::modules::aec::engine::views::carrier::write_view_carrier(&mut scene.document, &carrier);
 
         scene.bump_geometry();
 

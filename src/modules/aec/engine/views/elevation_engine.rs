@@ -112,6 +112,7 @@ pub fn derive_elevation_view(
         &super::silhouette::SilhouetteOptions {
             emit_hidden_lines: options.show_hidden_edges,
             max_depth_distance: Some(far_depth),
+            hidden_layer: Some("AEC_HIDDEN".to_string()),
         },
     )?;
 

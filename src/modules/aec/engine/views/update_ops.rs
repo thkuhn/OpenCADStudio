@@ -147,15 +147,48 @@ pub fn regenerate_carrier(
         ValidationError(format!("model view {:?} not found for carrier", carrier.model_view_id))
     })?;
 
+    let dc_lib = crate::modules::aec::engine::project::resolve_display_config_library(None);
+    let style_lib = crate::modules::aec::engine::project::resolve_style_library(None);
+
+    let display_config = dc_lib
+        .configs
+        .iter()
+        .find(|c| c.id == mv.profile_id.as_uuid())
+        .or_else(|| {
+            dc_lib
+                .configs
+                .iter()
+                .find(|c| mv.name.contains(&c.name))
+        })
+        .or_else(|| {
+            let target_view_type = match &vp.kind {
+                ViewKind::Section { .. } => crate::modules::aec::engine::plan_view::ViewType::Section,
+                ViewKind::Elevation { .. } => crate::modules::aec::engine::plan_view::ViewType::Elevation,
+                ViewKind::FloorPlan { .. } | ViewKind::ReflectedCeilingPlan { .. } => {
+                    crate::modules::aec::engine::plan_view::ViewType::FloorPlan
+                }
+            };
+            dc_lib.configs.iter().find(|c| c.view_type == target_view_type)
+        })
+        .cloned();
+
     let mut primitives = match &vp.kind {
         ViewKind::Section { .. } => {
-            derive_section_view(&vp, &mv, scene, &CutEngineOptions::default())?
+            derive_section_view(&vp, &mv, scene, &CutEngineOptions {
+                display_config,
+                style_library: Some(style_lib),
+                ..CutEngineOptions::default()
+            })?
         }
         ViewKind::Elevation { .. } => {
             derive_elevation_view(&vp, &mv, scene, &ElevationEngineOptions::default())?
         }
         ViewKind::FloorPlan { .. } | ViewKind::ReflectedCeilingPlan { .. } => {
-            derive_floorplan_view(&vp, &mv, scene, &FloorPlanEngineOptions::default())?
+            derive_floorplan_view(&vp, &mv, scene, &FloorPlanEngineOptions {
+                display_config,
+                style_library: Some(style_lib),
+                ..FloorPlanEngineOptions::default()
+            })?
         }
     };
 

@@ -1280,31 +1280,30 @@ pub fn marker_prop_section(
 pub fn derived_primitive_prop_section(
     entity: &EntityType,
 ) -> Option<crate::scene::model::object::PropSection> {
-    use crate::modules::aec::engine::views::carrier::DERIVED_PRIMITIVE_TAG;
-    use crate::modules::aec::engine::xdata::AEC_APPID;
-    use acadrust::xdata::XDataValue;
-
-    let rec = entity.common().extended_data.records().iter().find(|r| {
-        r.application_name == AEC_APPID
-            && matches!(r.values.first(), Some(XDataValue::String(s)) if s == DERIVED_PRIMITIVE_TAG)
-    })?;
+    let meta = crate::modules::aec::engine::views::carrier::read_derived_primitive_metadata(entity)?;
 
     let mut props = Vec::new();
-    let values = &rec.values;
-    if let Some(XDataValue::String(role)) = values.get(3) {
-        props.push(crate::entities::common::ro_prop("Rolle", "prim_role", role.clone()));
+    props.push(crate::entities::common::ro_prop("Rolle", "prim_role", format!("{:?}", meta.role)));
+    if let Some(ref elem_ref) = meta.element_ref {
+        props.push(crate::entities::common::ro_prop("Modell ID", "prim_model_id", elem_ref.model_id.as_uuid().to_string()));
+        props.push(crate::entities::common::ro_prop("Element ID", "prim_elem_id", elem_ref.element_id.as_uuid().to_string()));
     }
-    if let Some(XDataValue::String(model_id)) = values.get(4) {
-        props.push(crate::entities::common::ro_prop("Modell ID", "prim_model_id", model_id.clone()));
+    if let Some(feat) = meta.feature {
+        props.push(crate::entities::common::ro_prop("Feature", "prim_feature", format!("{:?}", feat)));
     }
-    if let Some(XDataValue::String(elem_id)) = values.get(5) {
-        props.push(crate::entities::common::ro_prop("Element ID", "prim_elem_id", elem_id.clone()));
-    }
-    if let Some(XDataValue::String(feat)) = values.get(6) {
-        props.push(crate::entities::common::ro_prop("Feature", "prim_feature", feat.clone()));
-    }
-    if let Some(XDataValue::String(xref)) = values.get(7) {
+    if let Some(ref xref) = meta.xref_name {
         props.push(crate::entities::common::ro_prop("XREF Quelle", "prim_xref", xref.clone()));
+    }
+    if let Some(source_h) = meta.source_handle.or_else(|| meta.element_ref.and_then(|r| crate::modules::aec::engine::views::scene_collector::element_id_to_handle(r.element_id))) {
+        let display = format!("Bauteil #{}", source_h);
+        props.push(crate::scene::model::object::Property {
+            label: "Quell-Bauteil".to_string(),
+            field: "prim_source_entity",
+            value: crate::scene::model::object::PropValue::EntityRef {
+                display,
+                handle: source_h,
+            },
+        });
     }
 
     if props.is_empty() {
@@ -2411,11 +2410,21 @@ pub fn append_derived_view_grips(
     let Some(feat) = meta.feature else {
         return;
     };
+    let is_horizontal_grip = matches!(
+        feat,
+        crate::modules::aec::engine::views::provenance::FeatureKey::OpeningLeftJamb
+            | crate::modules::aec::engine::views::provenance::FeatureKey::OpeningRightJamb
+    );
+
     match feat {
         crate::modules::aec::engine::views::provenance::FeatureKey::WallTop
+        | crate::modules::aec::engine::views::provenance::FeatureKey::WallBase
         | crate::modules::aec::engine::views::provenance::FeatureKey::OpeningSill
         | crate::modules::aec::engine::views::provenance::FeatureKey::OpeningHead
-        | crate::modules::aec::engine::views::provenance::FeatureKey::SlabTop => {}
+        | crate::modules::aec::engine::views::provenance::FeatureKey::OpeningLeftJamb
+        | crate::modules::aec::engine::views::provenance::FeatureKey::OpeningRightJamb
+        | crate::modules::aec::engine::views::provenance::FeatureKey::SlabTop
+        | crate::modules::aec::engine::views::provenance::FeatureKey::SlabBottom => {}
         _ => return,
     }
 
@@ -2445,7 +2454,11 @@ pub fn append_derived_view_grips(
 
     entity_grips.clear();
     let mut grip = crate::entities::common::square_grip(DERIVED_VIEW_GRIP_BASE, pos);
-    grip.axis = Some(glam::DVec3::new(0.0, 1.0, 0.0));
+    if is_horizontal_grip {
+        grip.axis = Some(glam::DVec3::new(1.0, 0.0, 0.0));
+    } else {
+        grip.axis = Some(glam::DVec3::new(0.0, 1.0, 0.0));
+    }
     entity_grips.push(grip);
 }
 
@@ -4710,5 +4723,94 @@ mod tests {
             carrier_after_fail.is_outdated,
             "Regeneration failure must mark carrier as outdated instead of falsely claiming current"
         );
+    }
+
+    #[test]
+    fn test_derived_primitive_prop_section_entity_ref_and_all_grips() {
+        use crate::modules::aec::engine::views::carrier::{
+            create_view_carrier, sync_carrier_primitives,
+        };
+        use crate::modules::aec::engine::views::model_view::UpdatePolicy;
+        use crate::modules::aec::engine::views::provenance::{
+            DepthInterval, DerivedPrimitive, ElementRef, FeatureKey, Geometry2d, PrimitiveRole,
+            ResolvedStyle, SourceReference, SourceSet,
+        };
+        use crate::modules::aec::engine::views::{ModelId, ModelViewId, PaperMm, Point2, ViewpointId};
+        use crate::scene::Scene;
+
+        let mut scene = Scene::new();
+        let vp_id = ViewpointId::new();
+        let mv_id = ModelViewId::new();
+        let mut carrier = create_view_carrier(
+            &mut scene.document,
+            vp_id,
+            mv_id,
+            Point2::new(0.0, 0.0),
+            1.0,
+            0.0,
+            UpdatePolicy::Automatic,
+        )
+        .expect("carrier");
+
+        let source_handle = Handle::new(42);
+        let elem_id = crate::modules::aec::engine::views::scene_collector::handle_to_element_id(source_handle);
+        let elem_ref = ElementRef::new(ModelId::new(), elem_id);
+
+        let test_cases = vec![
+            (FeatureKey::WallBase, glam::DVec3::new(0.0, 1.0, 0.0)),
+            (FeatureKey::SlabBottom, glam::DVec3::new(0.0, 1.0, 0.0)),
+            (FeatureKey::OpeningLeftJamb, glam::DVec3::new(1.0, 0.0, 0.0)),
+            (FeatureKey::OpeningRightJamb, glam::DVec3::new(1.0, 0.0, 0.0)),
+        ];
+
+        for (feat, expected_axis) in test_cases {
+            let src = SourceReference {
+                element: elem_ref,
+                xref_source: None,
+                component_id: None,
+                feature: Some(feat.clone()),
+                display_component_id: None,
+            };
+
+            let prim = DerivedPrimitive {
+                id: crate::modules::aec::engine::views::provenance::PrimitiveId::new(mv_id, 1, 1),
+                role: PrimitiveRole::CutBoundary,
+                geometry: Geometry2d::Line {
+                    start: Point2::new(0.0, 0.0),
+                    end: Point2::new(4.0, 0.0),
+                },
+                sources: SourceSet::new(vec![src]).unwrap(),
+                depth: DepthInterval::new(0.0, 0.0).unwrap(),
+                style: ResolvedStyle::solid_stroke(PaperMm::new(0.35).unwrap()),
+                edit_handles: vec![],
+            };
+
+            sync_carrier_primitives(&mut scene.document, &mut carrier, &[prim]).expect("sync");
+            assert_eq!(carrier.derived_handles.len(), 1);
+            let child_handle = carrier.derived_handles[0];
+            let child_ent = scene.document.get_entity(child_handle).expect("child");
+
+            // 1. Verify Properties Section with EntityRef
+            let section = derived_primitive_prop_section(child_ent).expect("prop section");
+            assert_eq!(section.title, "AEC Assoziiertes Bauteil");
+            let source_prop = section.props.iter().find(|p| p.field == "prim_source_entity").expect("source entity prop");
+            assert_eq!(source_prop.label, "Quell-Bauteil");
+            match &source_prop.value {
+                crate::scene::model::object::PropValue::EntityRef { display, handle } => {
+                    assert_eq!(*handle, source_handle);
+                    assert_eq!(display, &format!("Bauteil #{}", source_handle));
+                }
+                _ => panic!("Expected PropValue::EntityRef"),
+            }
+
+            // 2. Verify Viewport Grips & Constraints
+            let mut grips = Vec::new();
+            append_derived_view_grips(&scene, child_handle, &mut grips);
+            assert_eq!(grips.len(), 1, "Expected 1 grip for {:?}", feat);
+            let grip = &grips[0];
+            assert_eq!(grip.id, DERIVED_VIEW_GRIP_BASE);
+            assert_eq!(grip.world, glam::DVec3::new(2.0, 0.0, 0.0));
+            assert_eq!(grip.axis, Some(expected_axis), "Axis mismatch for {:?}", feat);
+        }
     }
 }

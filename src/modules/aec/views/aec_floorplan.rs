@@ -143,7 +143,36 @@ impl FloorPlanCommand {
             revisions: Default::default(),
         };
 
-        let primitives = derive_floorplan_view(&viewpoint, &model_view, &collector, &FloorPlanEngineOptions::default()).unwrap_or_default();
+        let dc_lib = crate::modules::aec::engine::project::resolve_display_config_library(None);
+        let style_lib = crate::modules::aec::engine::project::resolve_style_library(None);
+        let display_config = dc_lib
+            .configs
+            .iter()
+            .find(|c| c.id == model_view.profile_id.as_uuid())
+            .or_else(|| {
+                dc_lib
+                    .configs
+                    .iter()
+                    .find(|c| model_view.name.contains(&c.name))
+            })
+            .or_else(|| {
+                dc_lib
+                    .configs
+                    .iter()
+                    .find(|c| c.view_type == crate::modules::aec::engine::plan_view::ViewType::FloorPlan)
+            })
+            .cloned();
+
+        let primitives = derive_floorplan_view(
+            &viewpoint,
+            &model_view,
+            &collector,
+            &FloorPlanEngineOptions {
+                display_config,
+                style_library: Some(style_lib),
+                ..FloorPlanEngineOptions::default()
+            },
+        ).unwrap_or_default();
 
         let mut carrier = create_view_carrier(
             &mut scene.document,

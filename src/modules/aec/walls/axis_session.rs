@@ -259,13 +259,24 @@ impl OpenCADStudio {
             crate::modules::aec::engine::views::provenance::FeatureKey::WallTop => {
                 (crate::modules::aec::engine::views::provenance::ModelEditAction::SetWallHeight, crate::modules::aec::engine::views::Vector2::new(0.0, 1.0))
             }
+            crate::modules::aec::engine::views::provenance::FeatureKey::WallBase => {
+                (crate::modules::aec::engine::views::provenance::ModelEditAction::SetWallHeight, crate::modules::aec::engine::views::Vector2::new(0.0, -1.0))
+            }
             crate::modules::aec::engine::views::provenance::FeatureKey::OpeningSill => {
                 (crate::modules::aec::engine::views::provenance::ModelEditAction::SetOpeningSillHeight, crate::modules::aec::engine::views::Vector2::new(0.0, 1.0))
             }
             crate::modules::aec::engine::views::provenance::FeatureKey::OpeningHead => {
                 (crate::modules::aec::engine::views::provenance::ModelEditAction::ChangeParameter(crate::modules::aec::engine::views::provenance::ModelParameter::OpeningHeadHeight), crate::modules::aec::engine::views::Vector2::new(0.0, 1.0))
             }
-            crate::modules::aec::engine::views::provenance::FeatureKey::SlabTop => {
+            crate::modules::aec::engine::views::provenance::FeatureKey::OpeningLeftJamb
+            | crate::modules::aec::engine::views::provenance::FeatureKey::OpeningRightJamb => {
+                (crate::modules::aec::engine::views::provenance::ModelEditAction::MoveAlongHost {
+                    host: elem_ref,
+                    axis_world: crate::modules::aec::engine::views::Vector3::new(1.0, 0.0, 0.0),
+                }, crate::modules::aec::engine::views::Vector2::new(1.0, 0.0))
+            }
+            crate::modules::aec::engine::views::provenance::FeatureKey::SlabTop
+            | crate::modules::aec::engine::views::provenance::FeatureKey::SlabBottom => {
                 (crate::modules::aec::engine::views::provenance::ModelEditAction::SetSlabElevation, crate::modules::aec::engine::views::Vector2::new(0.0, 1.0))
             }
             _ => return false,

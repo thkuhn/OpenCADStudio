@@ -267,12 +267,36 @@ impl SectionCommand {
         };
 
         // 3. Collect scene & derive 2D primitives
+        let dc_lib = crate::modules::aec::engine::project::resolve_display_config_library(None);
+        let style_lib = crate::modules::aec::engine::project::resolve_style_library(None);
+        let display_config = dc_lib
+            .configs
+            .iter()
+            .find(|c| c.id == model_view.profile_id.as_uuid())
+            .or_else(|| {
+                dc_lib
+                    .configs
+                    .iter()
+                    .find(|c| model_view.name.contains(&c.name))
+            })
+            .or_else(|| {
+                dc_lib
+                    .configs
+                    .iter()
+                    .find(|c| c.view_type == crate::modules::aec::engine::plan_view::ViewType::Section)
+            })
+            .cloned();
+
         let collector = SceneGeometryCollector::collect_from_document(&scene.document, ModelId::new());
         let mut primitives = derive_section_view(
             &viewpoint,
             &model_view,
             &collector,
-            &CutEngineOptions::default(),
+            &CutEngineOptions {
+                display_config,
+                style_library: Some(style_lib),
+                ..CutEngineOptions::default()
+            },
         )
         .unwrap_or_default();
 
@@ -303,7 +327,10 @@ impl SectionCommand {
         .with_depth(self.far_depth)
         .with_z_range(self.z_min, self.z_max)
         .with_flip(self.flip_direction);
-        let _ = create_section_marker(&mut scene.document, &marker);
+        let marker_h = create_section_marker(&mut scene.document, &marker);
+        crate::modules::aec::engine::owner_index::link_peers(&mut scene.document, marker_h, carrier.handle);
+        carrier.marker_handle = Some(marker_h);
+        crate::modules::aec::engine::views::carrier::write_view_carrier(&mut scene.document, &carrier);
 
         scene.bump_geometry();
 

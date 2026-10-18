@@ -39,6 +39,7 @@ pub struct DerivedViewCarrier {
     pub update_policy: UpdatePolicy,
     pub last_updated_revisions: ViewRevisions,
     pub derived_handles: Vec<Handle>,
+    pub marker_handle: Option<Handle>,
 }
 
 impl DerivedViewCarrier {
@@ -59,6 +60,7 @@ impl DerivedViewCarrier {
             update_policy: UpdatePolicy::Automatic,
             last_updated_revisions: ViewRevisions::default(),
             derived_handles: Vec::new(),
+            marker_handle: None,
         }
     }
 }
@@ -130,6 +132,13 @@ pub fn read_view_carrier(doc: &CadDocument, entity: &EntityType) -> Option<Deriv
 
     let handle = entity.common().handle;
     let derived_handles = owner_index::children_of(doc, handle);
+    let marker_handle = owner_index::peers_of(doc, handle)
+        .first()
+        .copied()
+        .or_else(|| match values.get(12) {
+            Some(XDataValue::Handle(h)) => Some(*h),
+            _ => None,
+        });
 
     Some(DerivedViewCarrier {
         handle,
@@ -146,6 +155,7 @@ pub fn read_view_carrier(doc: &CadDocument, entity: &EntityType) -> Option<Deriv
             presentation: pres_rev,
         },
         derived_handles,
+        marker_handle,
     })
 }
 
@@ -170,6 +180,9 @@ pub fn write_view_carrier(doc: &mut CadDocument, carrier: &DerivedViewCarrier) -
     record.add_value(XDataValue::Integer32(carrier.last_updated_revisions.geometry.0 as i32));
     record.add_value(XDataValue::Integer32(carrier.last_updated_revisions.style.0 as i32));
     record.add_value(XDataValue::Integer32(carrier.last_updated_revisions.presentation.0 as i32));
+    if let Some(mh) = carrier.marker_handle {
+        record.add_value(XDataValue::Handle(mh));
+    }
 
     let Some(entity) = doc.get_entity_mut(carrier.handle) else {
         return false;
@@ -198,6 +211,9 @@ pub fn write_view_carrier(doc: &mut CadDocument, carrier: &DerivedViewCarrier) -
     }
 
     owner_index::set_children(doc, carrier.handle, &carrier.derived_handles);
+    if let Some(mh) = carrier.marker_handle {
+        owner_index::link_peers(doc, carrier.handle, mh);
+    }
     true
 }
 
@@ -233,6 +249,7 @@ pub fn create_view_carrier(
         update_policy,
         last_updated_revisions: ViewRevisions::default(),
         derived_handles: Vec::new(),
+        marker_handle: None,
     };
 
     if !write_view_carrier(doc, &carrier) {
@@ -394,6 +411,7 @@ pub fn sync_carrier_primitives(
     primitives: &[DerivedPrimitive],
 ) -> Result<(), ValidationError> {
     ensure_app_id(doc);
+    ensure_document_linetypes(doc);
 
     // 1. Erase old child handles
     for child in &carrier.derived_handles {
@@ -406,6 +424,11 @@ pub fn sync_carrier_primitives(
     let ins_x = carrier.insertion_point.x_m;
     let ins_y = carrier.insertion_point.y_m;
     let s = carrier.scale;
+
+    let scale_denom = read_view_carrier_definitions(doc, carrier.handle)
+        .map(|(_, mv)| mv.scale.get())
+        .unwrap_or(100.0);
+    let lt_scale = ((scale_denom / 1000.0) * carrier.scale).max(0.01);
 
     let transform_pt = |p: Point2| -> Point2 {
         let sx = p.x_m * s;
@@ -432,6 +455,11 @@ pub fn sync_carrier_primitives(
                 PrimitiveRole::Symbol => "AEC_SECTION_SYMBOLS",
             });
 
+        let is_hidden_or_overhead = prim.role == PrimitiveRole::HiddenEdge
+            || layer_name == "AEC_OVERHEAD"
+            || layer_name.contains("HIDDEN");
+        ensure_carrier_layer(doc, layer_name, is_hidden_or_overhead);
+
         match &prim.geometry {
             Geometry2d::Line { start, end } => {
                 let p0 = transform_pt(*start);
@@ -443,7 +471,7 @@ pub fn sync_carrier_primitives(
                 let h = doc.allocate_handle();
                 let mut ent = EntityType::Line(line);
                 ent.common_mut().handle = h;
-                ent.common_mut().layer = layer_name.to_string();
+                apply_primitive_style_to_entity(&mut ent, prim, carrier.handle, layer_name, lt_scale);
                 attach_primitive_xdata(doc, &mut ent, prim, carrier.handle);
                 let _ = doc.add_entity(ent);
                 new_handles.push(h);
@@ -458,7 +486,7 @@ pub fn sync_carrier_primitives(
                 let h = doc.allocate_handle();
                 let mut ent = EntityType::LwPolyline(pl);
                 ent.common_mut().handle = h;
-                ent.common_mut().layer = layer_name.to_string();
+                apply_primitive_style_to_entity(&mut ent, prim, carrier.handle, layer_name, lt_scale);
                 attach_primitive_xdata(doc, &mut ent, prim, carrier.handle);
                 let _ = doc.add_entity(ent);
                 new_handles.push(h);
@@ -475,7 +503,7 @@ pub fn sync_carrier_primitives(
                         .hatch_pattern
                         .clone()
                         .unwrap_or_else(|| "ANSI31".to_string());
-                    if pat_name.eq_ignore_ascii_case("SOLID") {
+                    if pat_name.is_empty() || pat_name.eq_ignore_ascii_case("SOLID") {
                         hatch.is_solid = true;
                     } else {
                         hatch.is_solid = false;
@@ -517,7 +545,7 @@ pub fn sync_carrier_primitives(
                     let hh = doc.allocate_handle();
                     let mut hent = EntityType::Hatch(hatch);
                     hent.common_mut().handle = hh;
-                    hent.common_mut().layer = layer_name.to_string();
+                    apply_primitive_style_to_entity(&mut hent, prim, carrier.handle, layer_name, lt_scale);
                     attach_primitive_xdata(doc, &mut hent, prim, carrier.handle);
                     let _ = doc.add_entity(hent);
                     new_handles.push(hh);
@@ -532,7 +560,7 @@ pub fn sync_carrier_primitives(
                     let h = doc.allocate_handle();
                     let mut ent = EntityType::LwPolyline(pl);
                     ent.common_mut().handle = h;
-                    ent.common_mut().layer = layer_name.to_string();
+                    apply_primitive_style_to_entity(&mut ent, prim, carrier.handle, layer_name, lt_scale);
                     attach_primitive_xdata(doc, &mut ent, prim, carrier.handle);
                     let _ = doc.add_entity(ent);
                     new_handles.push(h);
@@ -548,7 +576,7 @@ pub fn sync_carrier_primitives(
                         let hh = doc.allocate_handle();
                         let mut hent = EntityType::LwPolyline(hole_pl);
                         hent.common_mut().handle = hh;
-                        hent.common_mut().layer = layer_name.to_string();
+                        apply_primitive_style_to_entity(&mut hent, prim, carrier.handle, layer_name, lt_scale);
                         attach_primitive_xdata(doc, &mut hent, prim, carrier.handle);
                         let _ = doc.add_entity(hent);
                         new_handles.push(hh);
@@ -571,7 +599,7 @@ pub fn sync_carrier_primitives(
                 let h = doc.allocate_handle();
                 let mut ent = EntityType::LwPolyline(pl);
                 ent.common_mut().handle = h;
-                ent.common_mut().layer = layer_name.to_string();
+                apply_primitive_style_to_entity(&mut ent, prim, carrier.handle, layer_name, lt_scale);
                 attach_primitive_xdata(doc, &mut ent, prim, carrier.handle);
                 let _ = doc.add_entity(ent);
                 new_handles.push(h);
@@ -587,6 +615,82 @@ pub fn sync_carrier_primitives(
     Ok(())
 }
 
+/// Ensures that standard linetypes including `"DASHED"` are populated in the CAD document.
+pub fn ensure_document_linetypes(doc: &mut CadDocument) {
+    if !doc.line_types.iter().any(|lt| lt.name.eq_ignore_ascii_case("DASHED")) {
+        crate::io::linetypes::populate_document_from_source(
+            doc,
+            "*DASHED,Dashed __ __ __ __ __ __ __ __ __ __ __ __ __ _\nA, 12.7, -6.35\n",
+        );
+    }
+}
+
+/// Ensures a carrier layer exists in the document with standard defaults.
+pub fn ensure_carrier_layer(doc: &mut CadDocument, layer_name: &str, is_hidden_or_overhead: bool) {
+    if !doc.layers.contains(layer_name) {
+        let mut layer = acadrust::tables::Layer::new(layer_name);
+        layer.handle = doc.allocate_handle();
+        if is_hidden_or_overhead {
+            layer.line_type = "DASHED".to_string();
+            layer.color = acadrust::types::Color::Index(8); // Gray
+        } else {
+            layer.line_type = "Continuous".to_string();
+        }
+        let _ = doc.layers.add(layer);
+    }
+}
+
+/// Applies primitive style attributes (carrier reactor, linetype, linetype_scale, lineweight, color) to a CAD entity.
+fn apply_primitive_style_to_entity(
+    ent: &mut EntityType,
+    prim: &DerivedPrimitive,
+    carrier_handle: Handle,
+    layer_name: &str,
+    linetype_scale: f64,
+) {
+    let is_hatch = matches!(ent, EntityType::Hatch(_));
+    let common = ent.common_mut();
+    if !common.reactors.contains(&carrier_handle) {
+        common.reactors.push(carrier_handle);
+    }
+    common.layer = layer_name.to_string();
+
+    // Linetype
+    if let Some(lt) = &prim.style.line_type {
+        common.linetype = lt.clone();
+    } else if prim.role == PrimitiveRole::HiddenEdge
+        || layer_name == "AEC_OVERHEAD"
+        || layer_name.contains("HIDDEN")
+    {
+        common.linetype = "DASHED".to_string();
+    }
+
+    if !common.linetype.is_empty() && !common.linetype.eq_ignore_ascii_case("Continuous") {
+        common.linetype_scale = linetype_scale;
+    }
+
+    // Lineweight (convert mm to hundredths of mm as i16)
+    let lw_val = (prim.style.line_weight_mm.get() * 100.0).round() as i16;
+    common.line_weight = acadrust::types::LineWeight::from_value(lw_val);
+
+    // Color
+    if is_hatch {
+        if let Some(c) = prim.style.fill_color.or(prim.style.line_color) {
+            common.color = acadrust::types::Color::Rgb {
+                r: c.r,
+                g: c.g,
+                b: c.b,
+            };
+        }
+    } else if let Some(c) = prim.style.line_color {
+        common.color = acadrust::types::Color::Rgb {
+            r: c.r,
+            g: c.g,
+            b: c.b,
+        };
+    }
+}
+
 /// Typed metadata parsed from an entity's `DERIVED_PRIMITIVE` XDATA.
 #[derive(Clone, Debug, PartialEq)]
 pub struct DerivedPrimitiveMetadata {
@@ -594,6 +698,7 @@ pub struct DerivedPrimitiveMetadata {
     pub index: u32,
     pub role: PrimitiveRole,
     pub element_ref: Option<ElementRef>,
+    pub source_handle: Option<Handle>,
     pub feature: Option<FeatureKey>,
     pub xref_name: Option<String>,
     pub carrier_handle: Option<Handle>,
@@ -657,10 +762,12 @@ pub fn read_derived_primitive_metadata(entity: &EntityType) -> Option<DerivedPri
 
     let mut xref_name = None;
     let mut carrier_handle = None;
+    let mut source_handle = None;
 
+    let mut handles_seen = Vec::new();
     for val in values.iter().skip(7) {
         match val {
-            XDataValue::Handle(h) => carrier_handle = Some(*h),
+            XDataValue::Handle(h) => handles_seen.push(*h),
             XDataValue::String(s) if !s.is_empty() => {
                 if xref_name.is_none() {
                     xref_name = Some(s.clone());
@@ -670,11 +777,25 @@ pub fn read_derived_primitive_metadata(entity: &EntityType) -> Option<DerivedPri
         }
     }
 
+    if handles_seen.len() >= 2 {
+        source_handle = Some(handles_seen[0]);
+        carrier_handle = Some(handles_seen[1]);
+    } else if handles_seen.len() == 1 {
+        carrier_handle = Some(handles_seen[0]);
+    }
+
+    if source_handle.is_none() {
+        if let Some(ref el) = element_ref {
+            source_handle = super::scene_collector::element_id_to_handle(el.element_id);
+        }
+    }
+
     Some(DerivedPrimitiveMetadata {
         view_id,
         index,
         role,
         element_ref,
+        source_handle,
         feature,
         xref_name,
         carrier_handle,
@@ -697,9 +818,11 @@ fn attach_primitive_xdata(_doc: &CadDocument, entity: &mut EntityType, prim: &De
     };
     rec.add_value(XDataValue::String(role_str.to_string()));
 
+    let mut source_handle = None;
     if let Some(src) = prim.sources.as_slice().first() {
         rec.add_value(XDataValue::String(src.element.model_id.as_uuid().to_string()));
         rec.add_value(XDataValue::String(src.element.element_id.as_uuid().to_string()));
+        source_handle = super::scene_collector::element_id_to_handle(src.element.element_id);
         if let Some(feat) = &src.feature {
             let feat_str = match feat {
                 FeatureKey::WallTop => "WallTop",
@@ -722,6 +845,9 @@ fn attach_primitive_xdata(_doc: &CadDocument, entity: &mut EntityType, prim: &De
         }
     }
 
+    if let Some(sh) = source_handle {
+        rec.add_value(XDataValue::Handle(sh));
+    }
     rec.add_value(XDataValue::Handle(carrier_handle));
     entity.common_mut().extended_data.add_record(rec);
 }
@@ -815,5 +941,173 @@ mod tests {
 
         let owning_carrier = find_view_carrier_owning_handle(&doc, child_handle).expect("carrier found");
         assert_eq!(owning_carrier.handle, carrier.handle);
+    }
+
+    #[test]
+    fn test_sync_carrier_hidden_edge_attributes() {
+        let mut doc = CadDocument::new();
+        let vp_id = ViewpointId::new();
+        let mv_id = ModelViewId::new();
+
+        let mut carrier = create_view_carrier(
+            &mut doc,
+            vp_id,
+            mv_id,
+            Point2::new(0.0, 0.0),
+            1.0,
+            0.0,
+            UpdatePolicy::Automatic,
+        )
+        .expect("create carrier");
+
+        let elem_ref = ElementRef::new(ModelId::new(), ElementId::new());
+        let src = SourceReference {
+            element: elem_ref,
+            xref_source: None,
+            component_id: None,
+            feature: Some(FeatureKey::OpeningHead),
+            display_component_id: None,
+        };
+
+        // Test fallback with line_type: None on a HiddenEdge
+        let hidden_prim = DerivedPrimitive {
+            id: super::super::provenance::PrimitiveId::new(mv_id, 1, 1),
+            role: PrimitiveRole::HiddenEdge,
+            geometry: Geometry2d::Line {
+                start: Point2::new(1.0, 2.0),
+                end: Point2::new(3.0, 2.0),
+            },
+            sources: SourceSet::new(vec![src]).unwrap(),
+            depth: DepthInterval::new(0.0, 1.0).unwrap(),
+            style: ResolvedStyle {
+                line_weight_mm: PaperMm::new(0.25).unwrap(),
+                line_color: Some(crate::modules::aec::engine::views::provenance::Rgba8::new(200, 100, 50, 255)),
+                line_type: None, // Test fallback to DASHED!
+                fill_color: None,
+                hatch_pattern: None,
+                hatch_scale: None,
+                hatch_angle_rad: None,
+                layer_name: Some("AEC_OVERHEAD".to_string()),
+            },
+            edit_handles: vec![],
+        };
+
+        sync_carrier_primitives(&mut doc, &mut carrier, &[hidden_prim]).expect("sync primitives");
+        assert_eq!(carrier.derived_handles.len(), 1);
+
+        let child_handle = carrier.derived_handles[0];
+        let child_ent = doc.get_entity(child_handle).expect("child exists");
+
+        // Verify valid CAD ownership and viewport visibility
+        assert_eq!(
+            child_ent.common().owner_handle,
+            doc.header.model_space_block_handle,
+            "Child entity must be owned by model space block record, NOT point carrier"
+        );
+        assert!(
+            child_ent.common().reactors.contains(&carrier.handle),
+            "Child entity must reference carrier in reactors"
+        );
+        assert_eq!(
+            crate::modules::aec::engine::owner_index::children_of(&doc, carrier.handle),
+            vec![child_handle],
+            "Carrier owner_index must list the derived child"
+        );
+
+        let mut scene = crate::scene::Scene::new();
+        scene.document = doc.clone();
+        assert!(
+            scene.entity_belongs_to_current_layout(child_handle),
+            "Derived entity must belong to current layout / visible block"
+        );
+
+        // Verify linetype fallback and attributes
+        assert_eq!(child_ent.common().linetype, "DASHED");
+        assert!((child_ent.common().linetype_scale - 0.1).abs() < 1e-4);
+        assert_eq!(child_ent.common().layer, "AEC_OVERHEAD");
+        assert_eq!(child_ent.common().line_weight, acadrust::types::LineWeight::from_value(25));
+        assert_eq!(
+            child_ent.common().color,
+            acadrust::types::Color::Rgb { r: 200, g: 100, b: 50 }
+        );
+
+        // Verify document linetypes table contains DASHED
+        assert!(doc.line_types.iter().any(|lt| lt.name.eq_ignore_ascii_case("DASHED")));
+        // Verify document layers table contains AEC_OVERHEAD
+        assert!(doc.layers.contains("AEC_OVERHEAD"));
+    }
+
+    #[test]
+    fn test_carrier_metadata_source_handle_and_marker_peer_link() {
+        let mut doc = CadDocument::new();
+        let vp_id = ViewpointId::new();
+        let mv_id = ModelViewId::new();
+
+        let mut carrier = create_view_carrier(
+            &mut doc,
+            vp_id,
+            mv_id,
+            Point2::new(0.0, 0.0),
+            1.0,
+            0.0,
+            UpdatePolicy::Automatic,
+        )
+        .expect("create carrier");
+
+        // Simulate an original CAD wall entity with handle 42
+        let wall_handle = Handle::new(42);
+        let elem_id = super::super::scene_collector::handle_to_element_id(wall_handle);
+        let elem_ref = ElementRef::new(ModelId::new(), elem_id);
+        let src = SourceReference {
+            element: elem_ref,
+            xref_source: None,
+            component_id: None,
+            feature: Some(FeatureKey::WallBase),
+            display_component_id: None,
+        };
+
+        let prim = DerivedPrimitive {
+            id: super::super::provenance::PrimitiveId::new(mv_id, 1, 1),
+            role: PrimitiveRole::CutBoundary,
+            geometry: Geometry2d::Line {
+                start: Point2::new(0.0, 0.0),
+                end: Point2::new(5.0, 0.0),
+            },
+            sources: SourceSet::new(vec![src]).unwrap(),
+            depth: DepthInterval::new(0.0, 0.0).unwrap(),
+            style: ResolvedStyle::solid_stroke(PaperMm::new(0.35).unwrap()),
+            edit_handles: vec![],
+        };
+
+        sync_carrier_primitives(&mut doc, &mut carrier, &[prim]).expect("sync primitives");
+        assert_eq!(carrier.derived_handles.len(), 1);
+
+        let child_handle = carrier.derived_handles[0];
+        let child_ent = doc.get_entity(child_handle).expect("child exists");
+
+        let meta = read_derived_primitive_metadata(child_ent).expect("metadata present");
+        assert_eq!(meta.source_handle, Some(wall_handle));
+        assert_eq!(meta.carrier_handle, Some(carrier.handle));
+        assert_eq!(meta.feature, Some(FeatureKey::WallBase));
+
+        // Test marker handle peer linkage with an actual entity in doc
+        let mut marker_ent = EntityType::Point(Point::from_coords(0.0, 0.0, 0.0));
+        let marker_handle = doc.allocate_handle();
+        marker_ent.common_mut().handle = marker_handle;
+        let _ = doc.add_entity(marker_ent);
+
+        carrier.marker_handle = Some(marker_handle);
+        assert!(write_view_carrier(&mut doc, &carrier));
+
+        let read_carrier = find_view_carrier_by_handle(&doc, carrier.handle).expect("carrier exists");
+        assert_eq!(read_carrier.marker_handle, Some(marker_handle));
+        assert_eq!(
+            crate::modules::aec::engine::owner_index::peers_of(&doc, carrier.handle),
+            vec![marker_handle]
+        );
+        assert_eq!(
+            crate::modules::aec::engine::owner_index::peers_of(&doc, marker_handle),
+            vec![carrier.handle]
+        );
     }
 }

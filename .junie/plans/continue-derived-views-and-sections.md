@@ -5,127 +5,136 @@ sessionId: session-261017-191835-1hcf
 # Requirements
 
 ### Overview & Goals
-Ziel dieses Plans ist die **konsequente Fortsetzung und Vollendung der modellassoziierten 2D-Schnitt-, Ansichts- und Grundriss-Erzeugung** in OpenCADStudio AEC gemäß dem aktiven Arbeitsplan `.junie/plans/derived-views-and-sections.md`.
-
-Nach dem vorangegangenen Sitzungsabbruch müssen zunächst die bestehenden Compiler- und Testfehler in der Arbeitskopie (speziell im Bereich von `src/app/update/viewport.rs` und `src/modules/aec/views/din1356.rs`) behoben werden, um Step 1 abzuschließen. Anschließend werden die nachfolgenden Stufen für semantische Modellgriffe im Schnitt, die präzise Grundriss-Lokalisierung sowie Verdeckungs- und XREF-Härtung implementiert und durch das Beispielprojekt validiert.
+Ziel dieses Plans ist die **präzise Korrektur und Vervollständigung der 2D-Grundriss-, Schnitt- und Ansichtserzeugung** in OpenCADStudio AEC entlang dreier konkreter Kernanforderungen:
+1. **Korrekte verdeckte Linien:** Zuverlässige Erkennung und Erzeugung verdeckter Kanten (als gestrichelte Linien auf dedizierten Layern) sowie Überkopf-Kanten (z. B. Öffnungsstürze und Unterzüge über der Schnittebene im Grundriss) unter Eliminierung von Verdeckungsartefakten.
+2. **Linientypen, Schraffuren & Stile aus Planart und Komponenten:** Vollständige Ablösung fest verdrahteter Muster (`ANSI31`, feste Linienstärken) durch eine dynamische Stil- und Darstellungskaskade basierend auf der aktiven Planart (`DisplayConfig`), Komponentenregeln (`ComponentRuleSet`), Bauteilstilen (`WallStyle`, `SlabStyle`, `OpeningStyle`) und der Materialbibliothek.
+3. **Korrektur und Vervollständigung von Handles an assoziativen Elementen:** Durchgängige Etablierung sowohl nativer CAD-Entity-Handles (Besitzerhierarchie `owner_handle`, bidirektionale Marker-Träger-Kopplung, Quell-Handle-Rückverfolgung in XDATA) als auch interaktiver Viewport-Ziehgriffe (`EditHandle`) für Öffnungsleibungen (Verschieben entlang der Wandachse), Wandunterkanten und Deckenunterkanten im Schnitt und Grundriss.
 
 ---
 
 ### Scope
 
 #### In Scope
-- **Abschluss Step 1 (Marker-Grips & Properties):**
-  - Korrektur der Compilerfehler in `src/app/update/viewport.rs` (Importe und `commit_active_grip_edit()`).
-  - Platzierung der Modultests im AEC-Bereich (`din1356.rs`) nach den Architekturrichtlinien (`AEC != Core`).
-  - Fertigstellung der assoziativen DIN 1356 Schnitt- und Ansichtsmarkierungen (`Din1356SectionMarker`).
-- **Step 2 (Semantische Modell-Rückbearbeitung im Schnitt):**
-  - Interaktive `EditHandle`-Griffe an abgeleiteten Schnittkanten (`WallTop`, `SlabTop`, `OpeningSill`, etc.).
-  - Dispatching in Core-Hooks (`apply_aec_derived_view_grip`) und Transaktionscommit (`commit_view_drag_and_update`).
-  - Live-Drahtvorschau während des interaktiven Ziehens.
-- **Step 3 (Lokalisierte Grundriss-Engine):**
-  - Relative Transformation zum Viewpoint-Ursprung in `floorplan_engine.rs`.
-  - Exakte Einfügepunkt-Verortung des `DerivedViewCarrier`.
-  - Nachträgliche Höhenverstellung der Schnittebene (`z_cut`).
-- **Step 4 (Occlusion & XREF-Stabilität):**
-  - 2D-Occlusion-Clipping gegen opake Flächenmasken in `silhouette.rs` und `cut_engine.rs`.
-  - Geschlossene Schichtkonturen (`CutBoundary`) für Wände und Decken.
-  - Stabile Erhaltung von 3D-Meshes und Schraffuren bei XREF-Darstellungswechseln.
-- **Step 5 (End-to-End-Validierung):**
-  - Aktualisierung der Beispieldateien in `examples/beispiel_haus/`.
-  - Durchführung der Gesamttestsuite und Dokumentationsupdate.
+- **Verdeckte Linien & Überkopf-Darstellung:**
+  - Konfigurierbare Ausgabe verdeckter Kanten (`emit_hidden_lines`) in `CutEngineOptions` und `FloorPlanEngineOptions` gesteuert über `DisplayConfig` / `ModelView`.
+  - Ableitung von Überkopf-Kanten (`FeatureKey::OpeningHead`, Deckenkanten über Schnittebene) in `floorplan_engine.rs` als `PrimitiveRole::HiddenEdge` mit gestricheltem Linientyp.
+  - Härtung des 2D-Occlusion-Clippings in `silhouette.rs` für kolineare Segmentüberlappungen und saubere Zuteilung des Linientyps `"DASHED"` und Layers `"AEC_HIDDEN"` / `"AEC_SECTION_HIDDEN"`.
+  - Übertragung von Linientyp (`linetype`), Farbe (`color`) und Linienstärke (`lineweight`) auf native CAD-Entities in `carrier.rs`.
+- **Planart-, Komponenten- und Material-Stile:**
+  - Zentraler Style-Resolver `resolve_view_primitive_style` mit Kaskade: `ModelView.graphic_overrides` > `DisplayConfig` (Regeln & Komponenten-Slots) > Bauteilstil > Materialbibliothek > Fallback-Rolle.
+  - Berücksichtigung von `DisplayConfig.detail` (Schraffuren ein/aus, Schichtfilterung nach Tragfähigkeit `StructuralOnly`/`CoreOnly`, Öffnungssymbole ein/aus).
+  - Berücksichtigung von Phasenfiltern (`DisplayConfig.phase_filter` für Abbruch/Bestand) mit normgerechten Liniendarstellungen.
+  - Materialschraffuren mit dynamischem Muster, Maßstab, Drehwinkel und Farbe in Schnitten und Grundrissen.
+- **CAD- und Viewport-Handles an assoziativen Elementen:**
+  - Zuweisung der CAD-Besitzerhierarchie `ent.common_mut().owner_handle = carrier.handle` für alle abgeleiteten Kind-Entities.
+  - Speicherung des direkten Quell-Bauteil-Handles (`source_handle`) in der `DERIVED_PRIMITIVE`-XDATA und robuste Indizierung.
+  - Bidirektionale Verknüpfung von `Din1356SectionMarker` und `DerivedViewCarrier` (`marker.carrier_handle` und `carrier.marker_handle` via `owner_index::link_peers`).
+  - Vervollständigung der interaktiven Viewport-Modellgriffe (`EditHandle`) in `properties.rs` und `axis_session.rs` für `WallBase` (Wandunterkante), `SlabBottom` (Deckenunterkante) und `OpeningLeftJamb`/`OpeningRightJamb` (horizontales Verschieben entlang der Wandachse).
+  - Navigation zum Quell-Bauteil im Eigenschaften-Panel (`derived_primitive_prop_section`) über anklickbare `EntityRef`.
 
 #### Out of Scope
-- Freiform- und Spline-Schnittführungen.
-- Vollautomatische Bewehrungsplangenerierung in Schalplänen.
+- Beliebige 3D-B-Rep-Boolesche Schnittverschneidungen außerhalb von Wänden, Decken und Öffnungen.
+- Automatische Text-Kollisionsvermeidung für Maßketten (Gegenstand eines separaten Bemaßungsplans).
 
 ---
 
 ### User Stories
-- **Als Architekt** möchte ich eine Schnittlinie im Grundriss anklicken und an Griffen strecken, verschieben oder die Blicktiefe anpassen können, sodass sich der zugehörige Schnitt synchron aktualisiert.
-- **Als Konstrukteur** möchte ich im Schnitt die Oberkante einer Wand oder Decke per Griff ziehen können, wodurch sich die Wandhöhe im 3D-Modell und in allen Plänen ändert.
-- **Als Planer** möchte ich einen horizontalen Grundriss an jedem beliebigen Punkt platzieren können, ohne dass Geometrien verschoben oder abgeschnitten werden.
-- **Als Anwender** möchte ich zwischen Ausführungs-, Entwurfs- und Schalplan umschalten, ohne dass Bauteile referenzierter Geschosse verschwinden.
+- **Als Architekt** möchte ich, dass verdeckte Bauteilkanten hinter Schnittebenen oder opaken Schichten normgerecht gestrichelt gezeichnet werden, anstatt unsichtbar zu sein oder ungestrichelt durchzuscheinen.
+- **Als Planer** möchte ich im Grundriss Türstürze und Unterzüge über der Schnittebene als gestrichelte Überkopf-Linien sehen, damit Durchbrüche und Sturzhöhen im 2D-Plan sofort erkennbar sind.
+- **Als Konstrukteur** möchte ich zwischen Entwurfs-, Ausführungs- und Tragwerksplan umschalten, sodass Schraffuren, Linienstärken und nicht-tragende Schichten exakt gemäß der gewählten Planart und den Materialdefinitionen dargestellt werden.
+- **Als CAD-Anwender** möchte ich ein Fenster oder eine Tür im Schnitt oder Grundriss an den Leibungsgriffen anfassen und entlang der Wand verschieben können, während das 3D-Modell synchron nachgeführt wird.
+- **Als Prüfer** möchte ich beim Anklicken einer abgeleiteten Schnittkante im Eigenschaften-Panel sofort das ursprüngliche Quellbauteil (Wand, Decke, Fenster) mit seinem CAD-Handle sehen und anspringen können.
 
 ---
 
 ### Functional Requirements
-- **FR-1:** DIN 1356 Schnitt- und Ansichtsmarkierungen besitzen Viewport-Griffe (Start, Ende, Tiefe, Flip, Jogs) und sind bidirektional an den `DerivedViewCarrier` gekoppelt.
-- **FR-2:** Abgeleitete Schnittkanten stellen semantische Modellgriffe bereit, die 3D-BIM-Mutationen ausführen und Undo/Redo unterstützen.
-- **FR-3:** Das Eigenschaften-Panel erlaubt die Bearbeitung von Name, Tiefe, Z-Bereich, Schnitthöhe und Maßstab mit automatischer Planaktualisierung.
-- **FR-4:** Grundrisse und Deckenspiegel werden relativ zum Viewpoint-Ursprung transformiert und am gewählten Klickpunkt eingefügt.
-- **FR-5:** Hintergrundkanten werden hinter opaken Schichten sauber beschnitten, und geschnittene Schichten weisen geschlossene Außenlinien auf.
-- **FR-6:** Das Gesamtmodell behält ACIS-Meshes und Schraffuren über XREFs bei Planartenwechseln dauerhaft bei.
+- **FR-1:** Verdeckte Kanten werden bei aktivierter Option als `PrimitiveRole::HiddenEdge` mit Linientyp `"DASHED"` erzeugt und im CAD-Dokument mit korrekter Linienart gerendert.
+- **FR-2:** Im Grundriss werden Öffnungsstürze und Kanten oberhalb der Schnittebene als gestrichelte Überkopf-Linien auf `AEC_OVERHEAD` dargestellt.
+- **FR-3:** Der Style-Resolver wendet Materialmuster, Maßstäbe und Winkel aus der Materialbibliothek an (`material.hatch_pattern`, `hatch_scale`, `hatch_angle`).
+- **FR-4:** Planart-Einstellungen steuern die Sichtbarkeit von Schichten (`StructuralOnly`), Schraffuren (`hatches: false`) und Phasenstilen (`phase_filter`).
+- **FR-5:** Alle abgeleiteten Entities besitzen ihren Träger als `owner_handle` und speichern den CAD-Handle ihres Quellbauteils in XDATA.
+- **FR-6:** Leibungsgriffe (`OpeningLeftJamb`, `OpeningRightJamb`) ermöglichen das interaktive Verschieben von Öffnungen entlang der Wandachse.
+- **FR-7:** Wandunterkanten (`WallBase`) und Deckenunterkanten (`SlabBottom`) bieten vertikale Höhengriffe mit synchroner BIM-Modellaktualisierung.
 
 ---
 
 ### Non-Functional Requirements
-- **Architekturtreue:** Core (`src/app/**`) enthält nur minimale, delegierende Hooks; die Fachlogik und Tests verbleiben in `src/modules/aec/**`.
-- **Performanz:** Schnelle Bounding-Box-Vorfilterung und flüssige Live-Vorschau ohne vorzeitigen Full-Rebuild während des Ziehens.
-- **Lokalisierung:** Konsistente Übersetzung (de-DE und en-US) für alle Grifftipps und Eigenschaftsfelder.
+- **Architekturtreue (AEC != Core):** Sämtliche Stilauflösungen, Verdeckungslogiken und Griffberechnungen verbleiben strikt unter `src/modules/aec/**`.
+- **DXF/DWG-Standardkonformität:** Linientypen (`DASHED`, `CONTINUOUS`) und Layer entsprechen den CAD-Standards, sodass externe Viewer gestrichelte Linien sofort nativ darstellen.
+- **Performanz:** Keine redundanten Mehrfachschnitte; Occlusion-Clipping nutzt Bounding-Box-Vorfilterung und frühe Tiefenausschlüsse.
 
 # Technical Design
 
 ### Current Implementation
-- In der Arbeitskopie liegt die Implementierung von `Din1356SectionMarker` in `src/modules/aec/views/din1356.rs` und die Griff-Definition in `src/modules/aec/properties.rs` vor.
-- In `src/app/update/viewport.rs` wurde der Dispatcher `apply_aec_section_marker_grip` integriert. Am Ende der Datei befindet sich jedoch ein unvollständiger Test mit Compilerfehlern (private Importe, falsche Signatur von `commit_active_grip_edit`).
-- Das Fundament für Modellgriffe (`resolve_handle_drag`, `commit_view_drag_and_update`) existiert in `src/modules/aec/engine/views/edit_ops.rs`, muss jedoch noch an die Viewport-Ereignisschleife angebunden werden.
+- **Verdeckte Linien:** In `cut_engine.rs` ist `emit_hidden_lines: false` fest kodiert. In `floorplan_engine.rs` existiert keine Überkopf-Kantenerzeugung für Stürze. `silhouette.rs` besitzt zwar `clip_segment_against_polygons`, jedoch fehlen Linientyp-Zuweisungen im Entity-Bake in `carrier.rs`.
+- **Stile & Schraffuren:** In `cut_engine.rs` und `floorplan_engine.rs` wird `"ANSI31"` fest als Fallback gesetzt; `DisplayConfig`, `ComponentRuleSet` und `Material`-Eigenschaften fließen nicht in die abgeleiteten Primitives ein.
+- **Handles & Assoziativität:** Kind-Entities erhalten in `carrier.rs` `owner_handle = 0`. In `read_derived_primitive_metadata` führt das Fehlen von Quell-Handles zu Ausfällen beim Auslesen des Trägers. In `properties.rs` fehlen Griffe für Leibungen, Wand- und Deckenunterkanten.
 
 ---
 
 ### Key Decisions
-1. **Regelkonforme Testorganisation (AEC != Core):**
-   - *Entscheidung:* Der Regressionstest für Schnittmarkierungs-Grips und Undo-Verhalten wird aus `src/app/update/viewport.rs` in `src/modules/aec/views/din1356.rs` (bzw. ein Testmodul unter `src/modules/aec/`) überführt.
-   - *Begründung:* Gewährleistet die Einhaltung der AGENTS-Richtlinie, dass keine AEC-Fachlogik und keine AEC-spezifischen Unittests in `src/app/**` wachsen.
-2. **Entkopplung der Live-Vorschau von der Schnittberechnung:**
-   - *Entscheidung:* Während des Mausziehens an Schnitt- oder Modellgriffen wird nur eine Vektor-Vorschau (`grip_reference_wires`) gerendert. Die vollständige Schnitt- und Modellaktualisierung erfolgt erst beim Commit beim Loslassen der Maustaste.
-   - *Begründung:* Garantiert 60 FPS bei der Interaktion auch in komplexen Multi-Storey-Gebäudemodellen.
-3. **Relative Koordinatentransformation in der Grundriss-Engine:**
-   - *Entscheidung:* Alle Schnittkanten in `floorplan_engine.rs` werden über `pt - viewpoint.origin` in den lokalen Viewpoint-Raum überführt, bevor der Carrier sie im Modellbereich positioniert.
-   - *Begründung:* Beseitigt Koordinatenversätze und garantiert die exakte Platzierung am Benutzer-Klickpunkt.
+1. **Zentralisierter View-Style-Resolver:**
+   - *Entscheidung:* Einführung von `resolve_view_primitive_style` in `src/modules/aec/engine/views/style_resolver.rs`.
+   - *Begründung:* Vermeidet Code-Duplizierung zwischen `cut_engine.rs`, `floorplan_engine.rs` und `elevation_engine.rs` und stellt sicher, dass `ModelView.graphic_overrides`, `DisplayConfig`, `ComponentRuleSet` und `Material` konsistent ausgewertet werden.
+2. **CAD-Besitzerhierarchie & Source-Handle-Integrität:**
+   - *Entscheidung:* `ent.common_mut().owner_handle = carrier.handle` wird beim Erzeugen jedes Primitives gesetzt; in der `DERIVED_PRIMITIVE`-XDATA wird das Handle des Quellbauteils als `XDataValue::Handle(source_handle)` persistent abgelegt.
+   - *Begründung:* Ermöglicht bidirektionale Navigation im Eigenschaften-Panel, sauberen Block-Export und verhindert verwaiste Kindelemente.
+3. **Leibungs- und Höhengriffe im Viewport:**
+   - *Entscheidung:* Aktivierung von `OpeningLeftJamb` und `OpeningRightJamb` mit horizontaler Achsenbeschränkung (`axis = glam::DVec3::new(1.0, 0.0, 0.0)`) sowie `WallBase` und `SlabBottom` mit vertikaler Beschränkung (`axis = glam::DVec3::new(0.0, 1.0, 0.0)`).
+   - *Begründung:* Die mathematische Rückrechnung existiert bereits in `edit_ops.rs` (`MoveAlongHost`, `SetSlabElevation`), war jedoch im Viewport-Dispatcher noch nicht freigeschaltet.
 
 ---
 
 ### Proposed Changes
-- **Core-Bereinigung (`src/app/update/viewport.rs`):**
-  - Bereinigung des Testabschnitts und der ungenutzten Variablen.
-  - Anbindung von `apply_aec_derived_view_grip` an die Selektions- und Grip-Schleife analog zu den Marker-Grips.
-- **AEC-Modul (`src/modules/aec/**`):**
-  - Fertigstellung und Testabsicherung der DIN 1356 Marker in `views/din1356.rs`.
-  - Ergänzung der Modellgriff-Anbindung in `properties.rs` und `walls/axis_session.rs`.
-  - Koordinatenkorrektur in `engine/views/floorplan_engine.rs` und `carrier.rs`.
-  - 2D-Occlusion-Härtung in `engine/views/silhouette.rs` und `cut_engine.rs`.
+- **`src/modules/aec/engine/views/style_resolver.rs` (Neu):**
+  - Kaskadierende Auflösung von Linientyp, Linienstärke, RGB-Farbe, Schraffurmuster, Maßstab, Drehwinkel und Layer für Wände, Decken und Öffnungen.
+- **`src/modules/aec/engine/views/silhouette.rs` & `cut_engine.rs`:**
+  - `CutEngineOptions.emit_hidden_lines` ansteuerbar machen; Verdeckungsausschlüsse bei kolinearen Segmenten bereinigen; verdeckte Kanten als `PrimitiveRole::HiddenEdge` mit `"DASHED"` erzeugen.
+- **`src/modules/aec/engine/views/floorplan_engine.rs`:**
+  - Überkopf-Kanten für Öffnungsstürze und Unterzüge über der Schnittebene als `PrimitiveRole::HiddenEdge` auf `AEC_OVERHEAD` erzeugen.
+  - Planart-Filterung (`detail.hatches`, `detail.layers`) einbinden.
+- **`src/modules/aec/engine/views/carrier.rs`:**
+  - `owner_handle = carrier.handle` auf generierten CAD-Entities setzen.
+  - `ent.common_mut().linetype` aus `prim.style.line_type` (bzw. Fallback `"DASHED"`) zuweisen.
+  - XDATA um `source_handle` erweitern und Deserialisierung härten.
+- **`src/modules/aec/properties.rs` & `axis_session.rs`:**
+  - Viewport-Griffe für Leibungen (`OpeningLeftJamb`, `OpeningRightJamb`), Wandbasis (`WallBase`) und Deckenunterkante (`SlabBottom`) registrieren und dispatchen.
+  - Im Eigenschaften-Panel `derived_primitive_prop_section` das Quell-Element als navigierbare `EntityRef` anzeigen.
 
 ---
 
 ### Data Models / Contracts
 ```rust
-// Din1356SectionMarker in src/modules/aec/views/din1356.rs
-pub struct Din1356SectionMarker {
-    pub viewpoint_id: ViewpointId,
-    pub carrier_handle: Option<Handle>,
-    pub label: String,
-    pub path: SectionPath,
-    pub far_depth: Option<f64>,
-    pub z_min: f64,
-    pub z_max: f64,
-    pub flip_direction: bool,
+// Style-Resolver-Schnittstelle
+pub struct ViewStyleContext<'a> {
+    pub display_config: Option<&'a DisplayConfig>,
+    pub style_library: Option<&'a StyleLibrary>,
+    pub model_view: &'a ModelView,
 }
 
-// Semantischer Modellgriff in src/modules/aec/engine/views/edit_ops.rs
-pub fn resolve_handle_drag(
-    viewpoint: &Viewpoint,
-    model_view: &ModelView,
-    scene: &SceneGeometryCollector,
-    primitive: &DerivedPrimitive,
-    handle_idx: usize,
-    view_delta: Vector2,
-) -> Result<SemanticMutation, EditOpError>;
+pub fn resolve_layer_cut_style(
+    ctx: &ViewStyleContext,
+    wall: &CollectedWall,
+    layer_idx: usize,
+) -> (ResolvedStyle, Option<ResolvedStyle>); // (Contour/Boundary, Hatch/Fill)
 
-pub fn commit_view_drag_and_update(
-    doc: &mut CadDocument,
-    carrier_handle: Handle,
-    mutation: &SemanticMutation,
-) -> Result<DerivedViewCarrier, Box<dyn std::error::Error>>;
+pub fn resolve_opening_view_style(
+    ctx: &ViewStyleContext,
+    opening: &CollectedOpening,
+    slot: OpeningComponentSlot,
+) -> ResolvedStyle;
+
+// Erweiterte DerivedPrimitiveMetadata
+pub struct DerivedPrimitiveMetadata {
+    pub view_id: ModelViewId,
+    pub index: u32,
+    pub role: PrimitiveRole,
+    pub element_ref: Option<ElementRef>,
+    pub source_handle: Option<Handle>,
+    pub feature: Option<FeatureKey>,
+    pub xref_name: Option<String>,
+    pub carrier_handle: Option<Handle>,
+}
 ```
 
 ---
@@ -133,112 +142,119 @@ pub fn commit_view_drag_and_update(
 ### Architecture Diagram
 ```mermaid
 graph TD
-  subgraph Plan View
-    Marker[DIN 1356 Section Marker] -->|Grip Drag| MarkerGrip[apply_aec_section_marker_grip]
-    MarkerGrip -->|Update XDATA| ViewpointDef[Viewpoint: Path, Depth, Flip]
-    ViewpointDef -->|Mark Dirty / Re-Bake| Carrier[DerivedViewCarrier Entity]
+  subgraph Style & Configuration Cascade
+    MV[ModelView / Profile] --> Resolver[ViewStyleResolver]
+    DC[DisplayConfig / Planart] --> Resolver
+    Rules[ComponentRuleSet / Slots] --> Resolver
+    Lib[StyleLibrary / Materials] --> Resolver
   end
 
-  subgraph Derived Section View
-    DerivedEdge[Derived Primitive: WallTop, Sill] -->|Model Grip Drag| DerivedGrip[apply_aec_derived_view_grip]
-    DerivedGrip -->|resolve_handle_drag| Mutation[SemanticMutation]
-    Mutation -->|commit_view_drag_and_update| BimModel[3D BIM Model: Wall, Slab, Window]
-    BimModel -->|Regenerate| Carrier
+  subgraph 2D View Generation
+    Resolver --> CutEng[cut_engine: Sections]
+    Resolver --> FloorEng[floorplan_engine: Floor Plans & Overhead]
+    Resolver --> ElevEng[elevation_engine: Elevations]
+    CutEng --> Sil[silhouette: 2D Occlusion & Hidden Lines]
+    ElevEng --> Sil
+  end
+
+  subgraph CAD Entity & Handle Baking
+    Sil --> CarrierBake[carrier: sync_carrier_primitives]
+    FloorEng --> CarrierBake
+    CarrierBake --> CADEntities[Lines, Polylines, Hatches with owner_handle, linetype & XDATA]
+  end
+
+  subgraph Viewport & Properties Interaction
+    CADEntities --> Grips[properties: Viewport EditHandles]
+    Grips -->|Jamb Drag: Slide Along Host| AxisSession[axis_session: apply_aec_derived_view_grip]
+    Grips -->|Base/Top Drag: Height/Elevation| AxisSession
+    AxisSession --> BIMMutation[edit_ops: commit_view_drag_and_update]
+    CADEntities --> PropPanel[properties: derived_primitive_prop_section with EntityRef]
   end
 ```
 
 ---
 
 ### File Structure
-- `src/app/update/viewport.rs`: Core-Grip-Dispatching (Marker & Modellgriffe).
-- `src/modules/aec/views/din1356.rs`: Parametrische Marker-Entität, Vektoren und Tests.
-- `src/modules/aec/properties.rs`: Grip-Definitionen und Properties-Panel-Anbindung.
-- `src/modules/aec/engine/views/`:
-  - `edit_ops.rs`: Semantische Modellmutationen.
-  - `floorplan_engine.rs`: Horizontalschnitte und Grundrisse.
-  - `cut_engine.rs`: Vertikalschnitte und geschlossene Konturen.
-  - `silhouette.rs`: 2D-Occlusion-Clipping.
-  - `carrier.rs`: Träger-Persistenz und Koordinatentransformation.
+- `src/modules/aec/engine/views/style_resolver.rs`: Zentraler Style- und Material-Resolver für alle 2D-Ansichten.
+- `src/modules/aec/engine/views/silhouette.rs`: Verdeckungsberechnung, Kanten-Clipping und gestrichelte Linien.
+- `src/modules/aec/engine/views/cut_engine.rs`: Vertikalschnitt-Generierung mit dynamischen Schichtstilen und verdeckten Kanten.
+- `src/modules/aec/engine/views/floorplan_engine.rs`: Grundriss- und Deckenspiegel-Generierung inklusive Überkopf-Kanten und Planart-Filterung.
+- `src/modules/aec/engine/views/carrier.rs`: Native CAD-Konvertierung, `owner_handle`, Linientyp-Zuweisung und XDATA.
+- `src/modules/aec/properties.rs`: Erweiterte Viewport-Griffe (Leibung, Wandbasis, Deckenbasis) und Properties-Panel-Verknüpfung.
+- `src/modules/aec/walls/axis_session.rs`: Interaktiver Dispatcher und Preview-Wires für Leibungs- und Höhen-Grips.
 
 ---
 
 ### Risks & Mitigations
-- **Degenerierte Griffe bei schrägen Projektionen:** Strikte Validierung der Normalenvektoren in `resolve_handle_drag`; bei unzulässigen Winkeln wird der Griff blockiert.
-- **Performance-Einbruch beim kontinuierlichen Ziehen:** Vollständiges Re-Bake erfolgt erst im Commit beim Loslassen der Maus; während der Bewegung wird nur eine leichte Drahtvorschau aktualisiert.
+- **Übermäßige Liniendichte bei verdeckten Kanten:** Option zur Deaktivierung verdeckter Linien in Entwurfsplänen über `DisplayConfig.detail.hidden_lines` bzw. `CutEngineOptions`.
+- **CAD-Linientypen in DXF ohne geladene Linetype-Tabelle:** Sicherstellung, dass der Linientyp `"DASHED"` in der CAD-Dokument-Linientyp-Tabelle registriert ist, damit DWG/DXF-Exportoren ihn nicht ignorieren.
 
 # Testing
 
 ### Validation Approach
-Die Validierung erfolgt mehrstufig:
-1. **Kompilierung & statische Prüfung:** Sicherstellung, dass `cargo check --lib` und `cargo test --lib` ohne Fehler und unzulässige Warnungen durchlaufen.
-2. **Modul- und Unit-Tests:** Dedizierte Tests für Marker-Serialisierung, Grip-Transformationen, semantische Modellmutationen und Schnitthöhenkorrekturen.
-3. **Interaktive Viewport- und Properties-Tests:** Überprüfung von Start-/Endgriff, Tiefengriff, Flip-Griff sowie Parameteränderungen im Eigenschaften-Panel.
-4. **End-to-End-Prüfung im Beispielhaus:** Regenerierung aller Geschosse und des Gesamtmodells in `examples/beispiel_haus/` mit Validierung von 2D- und 3D-Darstellungen.
+1. **Unit-Tests für Style-Resolution:** Überprüfung, dass Materialschraffuren (`AR-CONC`, `BRICK`, `EARTH`), Skalierungen und Winkel korrekt auf `DerivedPrimitive` abgebildet werden.
+2. **Verdeckungs- und Linientyp-Tests:** Testfälle in `silhouette.rs` und `cut_engine.rs`, die sicherstellen, dass verdeckte Segmente exakt den Linientyp `"DASHED"` erhalten und Überkopf-Stürze im Grundriss erscheinen.
+3. **Handle- und Ownership-Validierung:** Tests in `carrier.rs`, die verifizieren, dass jedes Kindelement `owner_handle == carrier.handle` besitzt und das Quell-Handle in XDATA hinterlegt ist.
+4. **Interaktionstests für Leibungs- und Höhengriffe:** Simulation von Griff-Ziehoperationen an Fensterleibungen (`OpeningLeftJamb`), Wandunterkanten (`WallBase`) und Deckenunterkanten (`SlabBottom`) mit anschließender Prüfung der BIM-Modellmutation.
+5. **System- und Beispielhaustests:** Kompletter Durchlauf von `test_generate_sample_project` zur Verifikation der fehlerfreien Generierung aller Pläne.
 
 ---
 
 ### Key Scenarios
-- **Szenario 1: DIN 1356 Schnittmarkierung manipulieren:**
-  - Schnittlinie im Grundriss auswählen, Startpunkt und Blicktiefengriff ziehen.
-  - *Erwartetes Ergebnis:* Schnittverlauf und Blicktiefe passen sich an; der assoziierte Schnitt wird korrekt aktualisiert.
-- **Szenario 2: Blickrichtung umkehren (Flip):**
-  - Flip-Griff an der Schnittmarkierung betätigen.
-  - *Erwartetes Ergebnis:* Richtungspfeile und Beschriftung kehren sich um; der Schnitt spiegelt sich normgerecht.
-- **Szenario 3: Wandoberkante im Schnitt per Griff anheben:**
-  - Oberkante einer Wand im Schnitt auswählen und nach oben ziehen.
-  - *Erwartetes Ergebnis:* 3D-Wandhöhe ändert sich; alle Grundrisse, Schnitte und das 3D-Modell spiegeln die neue Höhe wider.
-- **Szenario 4: Grundriss lokalisieren:**
-  - `AEC_FLOORPLAN` an Punkt (40, 10) einfügen.
-  - *Erwartetes Ergebnis:* Die Geometrie erscheint ohne Versatz exakt am gewählten Klickpunkt.
-- **Szenario 5: Planarten-Wechsel im Gesamtmodell:**
-  - Umschalten zwischen Entwurfs-, Ausführungs- und Schalplan im Gesamtmodell.
-  - *Erwartetes Ergebnis:* XREF-Bauteile behalten ihre Schraffuren und 3D-Solids bei, ohne Darstellungsabbrüche.
+- **Szenario 1: Verdeckte Kanten im Schnitt:**
+  - Wand mit Öffnung im Hintergrund einer Schnittführung ableiten.
+  - *Erwartetes Ergebnis:* Verdeckte Kanten der Öffnung werden gestrichelt auf `AEC_SECTION_HIDDEN` gezeichnet; sichtbare Kanten im Vordergrund bleiben durchgezogen.
+- **Szenario 2: Überkopf-Sturz im Grundriss:**
+  - Grundriss mit Fenster- und Türöffnungen ableiten.
+  - *Erwartetes Ergebnis:* Stürze oberhalb der Schnittebene (`z_cut = 1.0m`) erscheinen als gestrichelte Linien auf `AEC_OVERHEAD`.
+- **Szenario 3: Planart- und Materialschraffuren:**
+  - Schnittableitung einer Stahlbetonwand mit Material `"Stahlbeton"` (`hatch_pattern = "AR-CONC"`).
+  - *Erwartetes Ergebnis:* Die Schnittfläche wird mit dem Muster `AR-CONC` im passenden Maßstab und Winkel schraffiert.
+- **Szenario 4: Leibungsgriff verschieben:**
+  - Im Schnitt oder Grundriss den Leibungsgriff einer Tür anklicken und 0.50m nach rechts ziehen.
+  - *Erwartetes Ergebnis:* Die Tür verschiebt sich entlang der Wandachse; 3D-Modell, Grundriss und Schnitt aktualisieren sich synchron.
+- **Szenario 5: Quellbauteil-Navigation im Eigenschaften-Panel:**
+  - Eine abgeleitete Kante im Schnitt anklicken.
+  - *Erwartetes Ergebnis:* Das Eigenschaften-Panel zeigt „AEC Assoziiertes Bauteil“ mit direkter `EntityRef` zum Quellbauteil.
 
 ---
 
 ### Edge Cases
-- **Ziehoperationen an schreibgeschützten XREF-Bauteilen:** Sichere Blockierung mit Benutzerhinweis ohne Fehlermutation.
-- **Koplanare Wandflächen im Schnitt:** Keine doppelten Trennlinien oder fehlerhaften Verdeckungsartefakte.
-- **Undo/Redo nach Griffbearbeitung:** Einzelschritt-Undo stellt den vorherigen Zustand des Markers, seiner Kindelemente und des Schnitt-Trägers exakt wieder her.
+- **Kolineare Überlappungen an Wandecken:** Keine doppelten oder fraktionierten Liniensegmente bei verdeckten Kanten.
+- **Öffnungen ohne Sturz (raumhoch):** Keine fälschliche Erzeugung von Überkopf-Linien, wenn die Öffnung bis zur Deckenunterkante reicht.
+- **Undo nach Leibungsverschiebung:** Vollständige Rücknahme der Bauteilverschiebung und Wiederherstellung der ursprünglichen 2D-Schnittzeichnung.
 
 # Delivery Steps
 
-### ✓ Step 1: Bereinigung und Fertigstellung von Step 1 (Marker-Grips, Properties & Tests)
-Alle Komponenten von Step 1 kompilieren fehlerfrei, die Markierungs-Griffe funktionieren im Viewport wie im Eigenschaften-Panel und werden durch saubere AEC-Tests abgesichert.
+### ✓ Step 1: Härtung und Vervollständigung der Verdeckungs- und Linienberechnung (Hidden Lines & Overhead Edges)
+Verdeckte Kanten und Überkopf-Bauteile werden in Grundrissen, Schnitten und Ansichten präzise als gestrichelte Linien auf dedizierten Layern berechnet.
 
-- Behebung der Compilerfehler in `src/app/update/viewport.rs`: Beseitigung der privaten Typenimporte (`ModelViewId`, `ScaleDenominator`, `ViewProfileId` aus `views`) und Korrektur des argumentlosen Aufrufs von `commit_active_grip_edit()`.
-- Verschiebung bzw. Ausrichtung der AEC-Marker-Grip- und Undo-Tests in das dafür vorgesehene Modul `src/modules/aec/views/din1356.rs` gemäß den Projektrichtlinien (AEC-Logik und -Tests verbleiben strikt im AEC-Modul).
-- Verifikation des synchronen Dirty-Trackings und der Neuberechnung verknüpfter `DerivedViewCarrier`-Instanzen bei Marker-Manipulationen (Start, Ende, Blicktiefe, Flip, Jog-Segmente).
-- Validierung der Parameteranpassungen im Eigenschaften-Panel (`marker_prop_section`, `carrier_prop_section`) über `cargo test --lib din1356`.
+- Erweiterung von `CutEngineOptions` und `FloorPlanEngineOptions` um `emit_hidden_lines` bzw. `show_overhead_edges`.
+- Ableitung von Überkopf-Kanten in `floorplan_engine.rs` (z. B. Stürze über der Schnittebene, Deckenkanten) als `PrimitiveRole::HiddenEdge` mit gestricheltem Linientyp auf `AEC_OVERHEAD`.
+- Härtung des 2D-Occlusion-Clippings in `src/modules/aec/engine/views/silhouette.rs` für kolineare Kanten und Erzeugung sauberer `HiddenEdge`-Segmente ohne Null-Längen.
+- Zuverlässige Übertragung von `prim.style.line_type` (z. B. `"DASHED"`), Linienstärken und RGB-Farben auf native CAD-Entities in `carrier.rs` sowie Sicherstellung der Linetype-Tabelle im Dokument.
 
-### ✓ Step 2: Viewport-Anbindung semantischer Modellgriffe an abgeleiteten Schnittkanten
-Abgeleitete Kanten im Schnitt bieten interaktive Griffe im Viewport, deren Manipulation über Transaktions-Commits direkt das 3D-BIM-Modell verändert.
+### ✓ Step 2: Dynamische Stile, Linientypen und Schraffuren aus Planart, Darstellungskomponenten und Materialbibliothek
+Schnitt- und Grundriss-Primitives übernehmen Schraffurmuster, Maßstäbe, Winkel, Linientypen und Filter dynamisch aus der aktiven Planart (`DisplayConfig`), den Komponentenregeln und den Materialdefinitionen.
 
-- Erweiterung von `append_derived_view_grips` in `src/modules/aec/properties.rs`, um für ausgewählte `DerivedPrimitive`-Entitäten ihre `edit_handles` als interaktive Ziehgriffe anzuzeigen.
-- Implementierung von `apply_aec_derived_view_grip` in Core-Dispatch (`src/app/update/viewport.rs`), das über `resolve_handle_drag` und `commit_view_drag_and_update` (`edit_ops.rs`) atomare Modellmutationen ausführt.
-- Bereitstellung einer Live-Drahtvorschau während des Ziehens (z. B. Wandoberkantenlinie oder Brüstungsrechteck) ohne vorzeitiges Zerstören der bestehenden Schnittgrafik.
-- Vollständige Einbindung in das Undo/Redo-System und automatische Aktualisierung abhängiger Ansichten nach dem Commit.
+- Implementierung eines zentralen Style-Resolvers in `src/modules/aec/engine/views/style_resolver.rs`, der die Kaskade `ModelView.graphic_overrides` > `DisplayConfig` (`ComponentRuleSet` / Slot-Overrides) > Bauteilstil (`WallStyle` / `SlabStyle`) > `Material` auflöst.
+- Auswertung von `DisplayConfig.detail` in Grundriss- und Schnitt-Engines: Abschaltung von Schraffuren (`hatches: false`), Schichtfilterung (`layers: StructuralOnly` / `CoreOnly`) und Öffnungssymbolen (`opening_symbols: false`).
+- Phasenfilter-Unterstützung (`DisplayConfig.phase_filter`): Visualisierung von Abbruch/Bestand mit spezifischen Linientypen (z. B. gestrichelt) und Schraffuren.
+- Dynamische Schraffuren in `cut_engine.rs`, `floorplan_engine.rs` und `carrier.rs` unter Verwendung der tatsächlichen Materialeigenschaften (Muster, Skalierung, Ausrichtungswinkel).
 
-### ✓ Step 3: Lokalisierte Koordinatentransformation & Korrektur der Grundriss-Engine
-Grundrisse und Deckenspiegel werden exakt relativ zum Viewpoint-Ursprung am gewählten Einfügepunkt abgeleitet und erlauben nachträgliche Höhenkorrekturen.
+### ✓ Step 3: Korrektur und Vervollständigung von CAD- und Viewport-Handles an assoziativen Elementen
+Alle assoziativen 2D-Elemente besitzen vollständige CAD-Besitzerhierarchien, bidirektionale XDATA-Referenzen sowie interaktive Viewport-Modellgriffe für alle Bauteil- und Öffnungskanten.
 
-- Anpassung von `src/modules/aec/engine/views/floorplan_engine.rs` zur relativen Projektion aller Schnittpolygone, Leibungen und Öffnungssymbole in das lokale Koordinatensystem des Viewpoints (`p - origin`).
-- Korrektur der Bounding-Box- und Einfügepunkt-Zuordnung in `src/modules/aec/engine/views/carrier.rs` (`transform_pt`), sodass der vom Anwender gewählte Klickpunkt exakt der Ursprung der platzierten 2D-Zeichnung ist.
-- Unterstützung der nachträglichen Höhenänderung der Schnittebene (`z_cut`, Z-Range) sowohl über Eigenschaften (`view_cut_height`) als auch über interaktive Griffe.
-- Validierung der Decken-, Wand- und Öffnungsdarstellung (inkl. Anschlagssymbole und Türöffnungswinkel) in 2D-Grundrissen.
+- Setzen der CAD-Besitzerhierarchie `ent.common_mut().owner_handle = carrier.handle` für alle abgeleiteten Entities in `carrier.rs`.
+- Härtung der XDATA-Serialisierung in `attach_primitive_xdata` und `read_derived_primitive_metadata` inklusive direkter CAD-Source-Handles und robuster Indizierung.
+- Bidirektionale Verknüpfung von `Din1356SectionMarker` und `DerivedViewCarrier` über `owner_index::link_peers` und Speicherung des `marker_handle`.
+- Vervollständigung der Viewport-Modellgriffe (`EditHandle`) in `properties.rs` und `axis_session.rs`: Griffe für `WallBase` (Wandunterkante), `SlabBottom` (Deckenunterkante) und `OpeningLeftJamb` / `OpeningRightJamb` (Horizontales Verschieben der Öffnung entlang der Wandachse in Schnitt und Grundriss).
+- Anzeige des Quell-Elements als navigierbare `EntityRef` im Eigenschaften-Panel (`derived_primitive_prop_section`).
 
-### ✓ Step 4: Härtung der Verdeckungsberechnung, Schichtkonturen & XREF-Planartensynchronisation
-Hintergrundkanten sind an Schnittflächen verdeckt, Bauteile weisen geschlossene Konturen auf und XREF-Geschosse bleiben im Gesamtmodell stabil gerendert.
+### ✓ Step 4: End-to-End-Integration, Validierung im Beispielhaus und Regressionsabsicherung
+Alle Workflows zur Planableitung, Verdeckung, Stilübernahme und Griffbearbeitung sind durchgängig integriert, im Beispielhaus validiert und durch automatisierte Tests abgesichert.
 
-- Präzisierung des 2D-Occlusion-Clippings in `src/modules/aec/engine/views/silhouette.rs` und `cut_engine.rs` gegen opake Flächenmasken (`SurfaceFill` / `CutFill`) zur Vermeidung durchscheinender Hintergrundlinien.
-- Sicherstellung geschlossener Randkonturen (`CutBoundary`) für jede einzelne Wandschicht und Deckenkante auch an Öffnungsleibungen und Stufenübergängen.
-- Härtung des XREF-Geometrie- und Tessellierungs-Caches im Gesamtmodell: Erhaltung von 3D-Meshes (ACIS SAT) und Schichtschraffuren beim Hin- und Herschalten zwischen Entwurf, Ausführung, Schalplan und 3D.
-- Absicherung gegen Schnittartefakte bei koplanaren Bauteilen und Vermeidung doppelter Kanten.
-
-### ✓ Step 5: End-to-End-Validierung, Beispielprojekt-Aktualisierung & Dokumentation
-Das Gesamtsystem für Schnitte, Ansichten und Modell-Rückbearbeitung ist vollständig integriert, im Beispielhaus validiert und dokumentiert.
-
-- Neugenerierung aller DWG-, DXF- und OCSProj-Dateien im Beispielprojekt `examples/beispiel_haus/` mit den neuen assoziativen DIN 1356 Markierungen und aktualisierten Ableitungen.
-- Gesamttest aller Workflows: Schnittlinien-Manipulation per Griff im Grundriss, Höhenverstellung per Griff im Schnitt, Modifikation im Properties-Panel und Planarten-Umschaltung.
-- Ausführung der gesamten Testsuite (`cargo test --lib`) zur Sicherstellung von Regressionsfreiheit über das gesamte AEC- und Core-Modul.
-- Dokumentation der neuen Schnitt- und Ansichtsfunktionen, Tastenkürzel und Griff-Interaktionen in der Anwenderdokumentation.
+- Aktualisierung der Beispielhaus-Pläne in `examples/beispiel_haus/` mit dynamischen Materialschraffuren, korrekten verdeckten Linien und vollständigen Handles.
+- Integrationstests für Planarten-Umschaltung (z. B. Entwurf vs. Ausführung vs. Statik) an Schnitten und Grundrissen.
+- Modul- und Regressionstests für verdeckte Linien, Style-Resolution, CAD-Ownership und Jamb-Grip-Interaktionen.
+- Ausführung der gesamten Testsuite (`cargo test --lib`) zur Sicherstellung von Regressionsfreiheit.

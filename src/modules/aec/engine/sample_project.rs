@@ -84,7 +84,7 @@ pub fn generate_sample_project(target_dir: &Path) -> Result<(), Box<dyn std::err
 
     // 4. Generate Master Gesamtmodell (Haus_Gesamt, attaches EG, OG, DG with Z-offsets)
     let mut master_scene = Scene::new();
-    build_master_geometry(&mut master_scene, target_dir)?;
+    build_master_geometry(&mut master_scene, target_dir, &library)?;
     save_drawing_variants(&master_scene, &target_dir.join("Haus_Gesamt"))?;
 
     // 5. Generate Project File (.ocsproj)
@@ -386,6 +386,7 @@ fn build_dg_geometry(scene: &mut Scene, _library: &StyleLibrary) {
 fn build_master_geometry(
     scene: &mut Scene,
     project_dir: &Path,
+    library: &StyleLibrary,
 ) -> Result<(), Box<dyn std::error::Error>> {
     // Add XREF Block records and INSERT entities for EG, OG, DG
     let storeys = [
@@ -467,6 +468,9 @@ fn build_master_geometry(
             structural_only: false,
             include_openings: true,
             detail_level: DetailLevel::Fine,
+            emit_hidden_lines: false,
+            style_library: Some(library.clone()),
+            ..Default::default()
         },
     )
     .unwrap_or_default();
@@ -495,7 +499,10 @@ fn build_master_geometry(
             Some(carrier.handle),
         )
         .with_depth(Some(12.0));
-        let _ = create_section_marker(&mut scene.document, &section_marker);
+        let marker_h = create_section_marker(&mut scene.document, &section_marker);
+        crate::modules::aec::engine::owner_index::link_peers(&mut scene.document, marker_h, carrier.handle);
+        carrier.marker_handle = Some(marker_h);
+        crate::modules::aec::engine::views::carrier::write_view_carrier(&mut scene.document, &carrier);
     }
 
     // 2. Südansicht (Elevation)
@@ -564,7 +571,10 @@ fn build_master_geometry(
             Some(carrier.handle),
         )
         .with_depth(Some(15.0));
-        let _ = create_section_marker(&mut scene.document, &elev_marker);
+        let marker_h = create_section_marker(&mut scene.document, &elev_marker);
+        crate::modules::aec::engine::owner_index::link_peers(&mut scene.document, marker_h, carrier.handle);
+        carrier.marker_handle = Some(marker_h);
+        crate::modules::aec::engine::views::carrier::write_view_carrier(&mut scene.document, &carrier);
     }
 
     // 3. EG Grundriss (Floor Plan 1:50) mit lokalisierter Projektion
@@ -605,7 +615,10 @@ fn build_master_geometry(
         &fp_vp,
         &fp_mv,
         &collector,
-        &FloorPlanEngineOptions::default(),
+        &FloorPlanEngineOptions {
+            style_library: Some(library.clone()),
+            ..FloorPlanEngineOptions::default()
+        },
     )
     .unwrap_or_default();
 

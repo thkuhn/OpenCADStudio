@@ -133,11 +133,11 @@ pub fn resolve_handle_drag(
     let is_vertical_view = up_z.abs() > 0.5;
 
     match (&handle.action, handle.target_feature.as_ref()) {
-        // 1. Wall Top / Wall Height
+        // 1. Wall Top / Wall Base / Wall Height
         (ModelEditAction::SetWallHeight, _)
         | (ModelEditAction::ChangeParameter(ModelParameter::WallHeight), _)
         | (ModelEditAction::ChangeParameter(ModelParameter::WallTopOffset), _)
-        | (_, Some(FeatureKey::WallTop)) => {
+        | (_, Some(FeatureKey::WallTop | FeatureKey::WallBase)) => {
             if !is_vertical_view {
                 return Err(EditOpError::DegenerateProjection(
                     "Cannot adjust vertical wall height in a horizontal plan view".into(),
@@ -151,7 +151,12 @@ pub fn resolve_handle_drag(
                 .ok_or(EditOpError::ElementNotFound(elem_ref))?;
 
             // View delta dy represents vertical change
-            let delta_z = view_delta.y_m * up_z.signum();
+            let factor = if matches!(handle.target_feature, Some(FeatureKey::WallBase)) {
+                -1.0
+            } else {
+                1.0
+            };
+            let delta_z = view_delta.y_m * up_z.signum() * factor;
             let new_height = wall.height + delta_z;
 
             if new_height < 0.05 {
@@ -255,8 +260,20 @@ pub fn resolve_handle_drag(
                 .map(|w| ((w[1].x_m - w[0].x_m).powi(2) + (w[1].y_m - w[0].y_m).powi(2)).sqrt())
                 .sum();
 
-            // Horizontal view displacement dx
-            let delta_s = view_delta.x_m;
+            let delta_s = if is_vertical_view {
+                view_delta.x_m
+            } else {
+                let dx = axis_pts[1].x_m - axis_pts[0].x_m;
+                let dy = axis_pts[1].y_m - axis_pts[0].y_m;
+                let len = (dx * dx + dy * dy).sqrt();
+                if len > 1e-6 {
+                    let dir_x = dx / len;
+                    let dir_y = dy / len;
+                    view_delta.x_m * dir_x + view_delta.y_m * dir_y
+                } else {
+                    view_delta.x_m
+                }
+            };
             let new_distance = opening.distance_along_axis + delta_s;
 
             if new_distance < 0.0 || new_distance > host_len {

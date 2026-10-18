@@ -7,16 +7,24 @@
 use super::model_view::{DetailLevel, ModelView};
 use super::provenance::{
     DerivedPrimitive, EditHandle, FeatureKey, Geometry2d, ModelEditAction, ModelParameter,
-    PrimitiveId, PrimitiveRole, ResolvedStyle, Rgba8, SourceReference, SourceSet,
+    PrimitiveId, PrimitiveRole, ResolvedStyle, SourceReference, SourceSet,
 };
 use super::scene_collector::{
     CollectedOpening, CollectedSlab, CollectedWall, SceneGeometryCollector,
+};
+use super::style_resolver::{
+    is_draw_suppressed, is_opening_slot_visible, is_slab_layer_active, is_slab_phase_visible,
+    is_wall_layer_active, is_wall_phase_visible, resolve_layer_cut_style,
+    resolve_opening_view_style, resolve_slab_layer_cut_style, ViewStyleContext,
 };
 use super::viewpoint::{SectionSegment, ViewKind, Viewpoint};
 use super::{
     PaperMm, Point2, ValidationError, Vector2,
 };
+use crate::modules::aec::engine::display_component::OpeningComponentSlot;
+use crate::modules::aec::engine::library::StyleLibrary;
 use crate::modules::aec::engine::openings::OpeningKind;
+use crate::modules::aec::engine::plan_view::DisplayConfig;
 
 const EPS: f64 = 1e-6;
 
@@ -26,6 +34,9 @@ pub struct CutEngineOptions {
     pub structural_only: bool,
     pub include_openings: bool,
     pub detail_level: DetailLevel,
+    pub emit_hidden_lines: bool,
+    pub display_config: Option<DisplayConfig>,
+    pub style_library: Option<StyleLibrary>,
 }
 
 impl Default for CutEngineOptions {
@@ -34,6 +45,9 @@ impl Default for CutEngineOptions {
             structural_only: false,
             include_openings: true,
             detail_level: DetailLevel::Fine,
+            emit_hidden_lines: false,
+            display_config: None,
+            style_library: None,
         }
     }
 }
@@ -64,6 +78,24 @@ pub fn derive_section_view(
     let z_min = viewpoint.z_range.z_min.get();
     let z_max = viewpoint.z_range.z_max.get();
 
+    // Deterministic, I/O-free defaults: the caller supplies the active Planart (`DisplayConfig`)
+    // and the project/global style library; without them an in-memory seed library and the
+    // neutral plan type (everything visible) apply.
+    let default_style_lib;
+    let style_library = if let Some(lib) = options.style_library.as_ref() {
+        lib
+    } else {
+        default_style_lib = crate::modules::aec::engine::library::seed_default_library();
+        &default_style_lib
+    };
+
+    let ctx = ViewStyleContext::new(
+        model_view,
+        options.display_config.as_ref(),
+        Some(style_library),
+        true,
+    );
+
     // Cumulative horizontal distance along the unfolded section path
     let mut accum_s = 0.0;
 
@@ -88,6 +120,7 @@ pub fn derive_section_view(
                 accum_s,
                 model_view,
                 options,
+                &ctx,
                 &mut primitives,
                 &mut primitive_counter,
             )?;
@@ -109,6 +142,7 @@ pub fn derive_section_view(
                 accum_s,
                 model_view,
                 options,
+                &ctx,
                 &mut primitives,
                 &mut primitive_counter,
             )?;
@@ -125,13 +159,16 @@ pub fn derive_section_view(
     };
 
     let elev_opts = crate::modules::aec::engine::views::elevation_engine::ElevationEngineOptions {
-        show_hidden_edges: false,
+        show_hidden_edges: options.emit_hidden_lines,
         include_opening_symbols: options.include_openings,
         detail_level: options.detail_level,
     };
 
     for wall in &scene.walls {
         if model_view.excluded_elements.contains(&wall.element_ref) {
+            continue;
+        }
+        if !is_wall_phase_visible(&ctx, wall) || is_draw_suppressed(&ctx, &wall.element_ref, None) {
             continue;
         }
         if wall.top_z < z_min || wall.base_z > z_max {
@@ -151,6 +188,9 @@ pub fn derive_section_view(
 
     for slab in &scene.slabs {
         if model_view.excluded_elements.contains(&slab.element_ref) {
+            continue;
+        }
+        if !is_slab_phase_visible(&ctx, slab) || is_draw_suppressed(&ctx, &slab.element_ref, None) {
             continue;
         }
         let (slab_z_min, slab_z_max) = slab.z_range();
@@ -176,10 +216,13 @@ pub fn derive_section_view(
     super::silhouette::process_silhouette_and_depth(
         &mut primitives,
         &super::silhouette::SilhouetteOptions {
-            emit_hidden_lines: false,
+            emit_hidden_lines: options.emit_hidden_lines,
             max_depth_distance: Some(forward_depth_max),
+            hidden_layer: Some("AEC_SECTION_HIDDEN".to_string()),
         },
     )?;
+
+    primitives.retain(|p| p.style.layer_name.as_deref() != Some(super::silhouette::TRANSIENT_OCCLUDER_LAYER));
 
     Ok(primitives)
 }
@@ -251,9 +294,13 @@ fn cut_wall_with_segment(
     accum_s: f64,
     model_view: &ModelView,
     options: &CutEngineOptions,
+    ctx: &ViewStyleContext,
     primitives: &mut Vec<DerivedPrimitive>,
     counter: &mut u32,
 ) -> Result<(), ValidationError> {
+    if !is_wall_phase_visible(ctx, wall) {
+        return Ok(());
+    }
     if wall.axis_points.len() < 2 {
         return Ok(());
     }
@@ -279,8 +326,14 @@ fn cut_wall_with_segment(
 
         // Process each wall layer
         for (i, layer) in wall.layers.iter().enumerate() {
-            if options.structural_only && !layer.is_structural {
+            if !is_wall_layer_active(ctx, wall, i) {
                 continue;
+            }
+
+            let (mut boundary_style_opt, mut fill_style_opt) = resolve_layer_cut_style(ctx, wall, i);
+            if options.structural_only && !layer.is_structural {
+                boundary_style_opt = None;
+                fill_style_opt = None;
             }
 
             let (layer_offset, layer_thick) = layer_offsets[i];
@@ -364,6 +417,7 @@ fn cut_wall_with_segment(
                         u_max,
                         accum_s,
                         model_view,
+                        ctx,
                         primitives,
                         counter,
                     )?;
@@ -392,109 +446,125 @@ fn cut_wall_with_segment(
                 };
 
                 // 1. Cut fill (Hatch / Solid)
-                *counter += 1;
-                let fill_style = ResolvedStyle {
-                    line_weight_mm: PaperMm::new(0.18)?,
-                    line_color: Some(Rgba8::new(128, 128, 128, 255)),
-                    line_type: None,
-                    fill_color: None,
-                    hatch_pattern: Some(layer.hatch_override.clone().unwrap_or_else(|| "ANSI31".into())),
-                    hatch_scale: Some(1.0),
-                    hatch_angle_rad: Some(0.785398),
-                    layer_name: None,
-                };
-
-                primitives.push(DerivedPrimitive {
-                    id: PrimitiveId::new(model_view.id, 1, *counter),
-                    role: PrimitiveRole::CutFill,
-                    geometry: Geometry2d::Region {
-                        outer: poly_points,
-                        holes: vec![],
-                    },
-                    sources: SourceSet::new(vec![source_ref.clone()])?,
-                    depth: super::DepthInterval::cut_plane(),
-                    style: fill_style,
-                    edit_handles: vec![],
-                });
+                if let Some(fill_style) = fill_style_opt.as_ref() {
+                    *counter += 1;
+                    primitives.push(DerivedPrimitive {
+                        id: PrimitiveId::new(model_view.id, 1, *counter),
+                        role: PrimitiveRole::CutFill,
+                        geometry: Geometry2d::Region {
+                            outer: poly_points,
+                            holes: vec![],
+                        },
+                        sources: SourceSet::new(vec![source_ref.clone()])?,
+                        depth: super::DepthInterval::cut_plane(),
+                        style: fill_style.clone(),
+                        edit_handles: vec![],
+                    });
+                } else {
+                    // When hatches are disabled, emit a transient CutFill occluder so background lines
+                    // are still properly occluded by the cut wall. This is cleaned up after silhouette processing.
+                    *counter += 1;
+                    primitives.push(DerivedPrimitive {
+                        id: PrimitiveId::new(model_view.id, 1, *counter),
+                        role: PrimitiveRole::CutFill,
+                        geometry: Geometry2d::Region {
+                            outer: poly_points,
+                            holes: vec![],
+                        },
+                        sources: SourceSet::new(vec![source_ref.clone()])?,
+                        depth: super::DepthInterval::cut_plane(),
+                        style: ResolvedStyle {
+                            line_weight_mm: PaperMm::new(0.18)?,
+                            line_color: None,
+                            line_type: None,
+                            fill_color: None,
+                            hatch_pattern: None,
+                            hatch_scale: None,
+                            hatch_angle_rad: None,
+                            layer_name: Some(super::silhouette::TRANSIENT_OCCLUDER_LAYER.to_string()),
+                        },
+                        edit_handles: vec![],
+                    });
+                }
 
                 // 2. Cut boundary lines
-                let boundary_style = ResolvedStyle::solid_stroke(PaperMm::new(0.35)?);
+                if let Some(boundary_style) = boundary_style_opt.as_ref() {
+                    // Wall top edge
+                    let mut top_source = source_ref.clone();
+                    top_source.feature = Some(FeatureKey::WallTop);
+                    *counter += 1;
+                    let top_anchor = Point2::new((u_min + u_max) * 0.5, zt);
+                    primitives.push(DerivedPrimitive {
+                        id: PrimitiveId::new(model_view.id, 1, *counter),
+                        role: PrimitiveRole::CutBoundary,
+                        geometry: Geometry2d::Line {
+                            start: Point2::new(u_min, zt),
+                            end: Point2::new(u_max, zt),
+                        },
+                        sources: SourceSet::new(vec![top_source.clone()])?,
+                        depth: super::DepthInterval::cut_plane(),
+                        style: boundary_style.clone(),
+                        edit_handles: vec![EditHandle {
+                            id: format!("wall_top_{}", counter),
+                            position: top_anchor,
+                            action: ModelEditAction::ChangeParameter(ModelParameter::WallTopOffset),
+                            direction_hint: Vector2::new(0.0, 1.0),
+                            target_feature: Some(FeatureKey::WallTop),
+                            source: top_source,
+                        }],
+                    });
 
-                // Wall top edge
-                let mut top_source = source_ref.clone();
-                top_source.feature = Some(FeatureKey::WallTop);
-                *counter += 1;
-                let top_anchor = Point2::new((u_min + u_max) * 0.5, zt);
-                primitives.push(DerivedPrimitive {
-                    id: PrimitiveId::new(model_view.id, 1, *counter),
-                    role: PrimitiveRole::CutBoundary,
-                    geometry: Geometry2d::Line {
-                        start: Point2::new(u_min, zt),
-                        end: Point2::new(u_max, zt),
-                    },
-                    sources: SourceSet::new(vec![top_source.clone()])?,
-                    depth: super::DepthInterval::cut_plane(),
-                    style: boundary_style.clone(),
-                    edit_handles: vec![EditHandle {
-                        id: format!("wall_top_{}", counter),
-                        position: top_anchor,
-                        action: ModelEditAction::ChangeParameter(ModelParameter::WallTopOffset),
-                        direction_hint: Vector2::new(0.0, 1.0),
-                        target_feature: Some(FeatureKey::WallTop),
-                        source: top_source,
-                    }],
-                });
+                    // Wall bottom edge
+                    let mut bot_source = source_ref.clone();
+                    bot_source.feature = Some(FeatureKey::WallBase);
+                    *counter += 1;
+                    primitives.push(DerivedPrimitive {
+                        id: PrimitiveId::new(model_view.id, 1, *counter),
+                        role: PrimitiveRole::CutBoundary,
+                        geometry: Geometry2d::Line {
+                            start: Point2::new(u_min, zb),
+                            end: Point2::new(u_max, zb),
+                        },
+                        sources: SourceSet::new(vec![bot_source])?,
+                        depth: super::DepthInterval::cut_plane(),
+                        style: boundary_style.clone(),
+                        edit_handles: vec![],
+                    });
 
-                // Wall bottom edge
-                let mut bot_source = source_ref.clone();
-                bot_source.feature = Some(FeatureKey::WallBase);
-                *counter += 1;
-                primitives.push(DerivedPrimitive {
-                    id: PrimitiveId::new(model_view.id, 1, *counter),
-                    role: PrimitiveRole::CutBoundary,
-                    geometry: Geometry2d::Line {
-                        start: Point2::new(u_min, zb),
-                        end: Point2::new(u_max, zb),
-                    },
-                    sources: SourceSet::new(vec![bot_source])?,
-                    depth: super::DepthInterval::cut_plane(),
-                    style: boundary_style.clone(),
-                    edit_handles: vec![],
-                });
+                    // Wall left boundary edge (jamb)
+                    let mut left_source = source_ref.clone();
+                    left_source.feature = Some(FeatureKey::LayerFace);
+                    *counter += 1;
+                    primitives.push(DerivedPrimitive {
+                        id: PrimitiveId::new(model_view.id, 1, *counter),
+                        role: PrimitiveRole::CutBoundary,
+                        geometry: Geometry2d::Line {
+                            start: Point2::new(u_min, zb),
+                            end: Point2::new(u_min, zt),
+                        },
+                        sources: SourceSet::new(vec![left_source])?,
+                        depth: super::DepthInterval::cut_plane(),
+                        style: boundary_style.clone(),
+                        edit_handles: vec![],
+                    });
 
-                // Wall left boundary edge (jamb)
-                let mut left_source = source_ref.clone();
-                left_source.feature = Some(FeatureKey::LayerFace);
-                *counter += 1;
-                primitives.push(DerivedPrimitive {
-                    id: PrimitiveId::new(model_view.id, 1, *counter),
-                    role: PrimitiveRole::CutBoundary,
-                    geometry: Geometry2d::Line {
-                        start: Point2::new(u_min, zb),
-                        end: Point2::new(u_min, zt),
-                    },
-                    sources: SourceSet::new(vec![left_source])?,
-                    depth: super::DepthInterval::cut_plane(),
-                    style: boundary_style.clone(),
-                    edit_handles: vec![],
-                });
-
-                // Wall right boundary edge (jamb)
-                let mut right_source = source_ref.clone();
-                right_source.feature = Some(FeatureKey::LayerFace);
-                *counter += 1;
-                primitives.push(DerivedPrimitive {
-                    id: PrimitiveId::new(model_view.id, 1, *counter),
-                    role: PrimitiveRole::CutBoundary,
-                    geometry: Geometry2d::Line {
-                        start: Point2::new(u_max, zb),
-                        end: Point2::new(u_max, zt),
-                    },
-                    sources: SourceSet::new(vec![right_source])?,
-                    depth: super::DepthInterval::cut_plane(),
-                    style: boundary_style.clone(),
-                    edit_handles: vec![],
-                });
+                    // Wall right boundary edge (jamb)
+                    let mut right_source = source_ref.clone();
+                    right_source.feature = Some(FeatureKey::LayerFace);
+                    *counter += 1;
+                    primitives.push(DerivedPrimitive {
+                        id: PrimitiveId::new(model_view.id, 1, *counter),
+                        role: PrimitiveRole::CutBoundary,
+                        geometry: Geometry2d::Line {
+                            start: Point2::new(u_max, zb),
+                            end: Point2::new(u_max, zt),
+                        },
+                        sources: SourceSet::new(vec![right_source])?,
+                        depth: super::DepthInterval::cut_plane(),
+                        style: boundary_style.clone(),
+                        edit_handles: vec![],
+                    });
+                }
             }
         }
     }
@@ -510,6 +580,7 @@ fn emit_opening_cut_details(
     u_max: f64,
     _accum_s: f64,
     model_view: &ModelView,
+    ctx: &ViewStyleContext,
     primitives: &mut Vec<DerivedPrimitive>,
     counter: &mut u32,
 ) -> Result<(), ValidationError> {
@@ -524,64 +595,59 @@ fn emit_opening_cut_details(
         display_component_id: None,
     };
 
-    let opening_line_style = ResolvedStyle {
-        line_weight_mm: PaperMm::new(0.25)?,
-        line_color: Some(Rgba8::new(0, 0, 180, 255)),
-        line_type: None,
-        fill_color: None,
-        hatch_pattern: None,
-        hatch_scale: None,
-        hatch_angle_rad: None,
-        layer_name: None,
-    };
-
     // Sill line with interactive sill grip handle
-    *counter += 1;
-    let sill_anchor = Point2::new((u_min + u_max) * 0.5, op_z_sill);
-    primitives.push(DerivedPrimitive {
-        id: PrimitiveId::new(model_view.id, 1, *counter),
-        role: PrimitiveRole::CutBoundary,
-        geometry: Geometry2d::Line {
-            start: Point2::new(u_min, op_z_sill),
-            end: Point2::new(u_max, op_z_sill),
-        },
-        sources: SourceSet::new(vec![op_source.clone()])?,
-        depth: super::DepthInterval::cut_plane(),
-        style: opening_line_style.clone(),
-        edit_handles: vec![EditHandle {
-            id: format!("opening_sill_{}", counter),
-            position: sill_anchor,
-            action: ModelEditAction::ChangeParameter(ModelParameter::OpeningSillHeight),
-            direction_hint: Vector2::new(0.0, 1.0),
-            target_feature: Some(FeatureKey::OpeningSill),
-            source: op_source.clone(),
-        }],
-    });
+    if is_opening_slot_visible(ctx, op, OpeningComponentSlot::Sill2D) {
+        let sill_style = resolve_opening_view_style(ctx, op, OpeningComponentSlot::Sill2D);
+        *counter += 1;
+        let sill_anchor = Point2::new((u_min + u_max) * 0.5, op_z_sill);
+        primitives.push(DerivedPrimitive {
+            id: PrimitiveId::new(model_view.id, 1, *counter),
+            role: PrimitiveRole::CutBoundary,
+            geometry: Geometry2d::Line {
+                start: Point2::new(u_min, op_z_sill),
+                end: Point2::new(u_max, op_z_sill),
+            },
+            sources: SourceSet::new(vec![op_source.clone()])?,
+            depth: super::DepthInterval::cut_plane(),
+            style: sill_style,
+            edit_handles: vec![EditHandle {
+                id: format!("opening_sill_{}", counter),
+                position: sill_anchor,
+                action: ModelEditAction::ChangeParameter(ModelParameter::OpeningSillHeight),
+                direction_hint: Vector2::new(0.0, 1.0),
+                target_feature: Some(FeatureKey::OpeningSill),
+                source: op_source.clone(),
+            }],
+        });
+    }
 
     // Head line with interactive head grip handle
-    let mut head_source = op_source;
-    head_source.feature = Some(FeatureKey::OpeningHead);
-    *counter += 1;
-    let head_anchor = Point2::new((u_min + u_max) * 0.5, op_z_head);
-    primitives.push(DerivedPrimitive {
-        id: PrimitiveId::new(model_view.id, 1, *counter),
-        role: PrimitiveRole::CutBoundary,
-        geometry: Geometry2d::Line {
-            start: Point2::new(u_min, op_z_head),
-            end: Point2::new(u_max, op_z_head),
-        },
-        sources: SourceSet::new(vec![head_source.clone()])?,
-        depth: super::DepthInterval::cut_plane(),
-        style: opening_line_style,
-        edit_handles: vec![EditHandle {
-            id: format!("opening_head_{}", counter),
-            position: head_anchor,
-            action: ModelEditAction::ChangeParameter(ModelParameter::OpeningHeadHeight),
-            direction_hint: Vector2::new(0.0, 1.0),
-            target_feature: Some(FeatureKey::OpeningHead),
-            source: head_source,
-        }],
-    });
+    if is_opening_slot_visible(ctx, op, OpeningComponentSlot::Frame2D) {
+        let head_style = resolve_opening_view_style(ctx, op, OpeningComponentSlot::Frame2D);
+        let mut head_source = op_source;
+        head_source.feature = Some(FeatureKey::OpeningHead);
+        *counter += 1;
+        let head_anchor = Point2::new((u_min + u_max) * 0.5, op_z_head);
+        primitives.push(DerivedPrimitive {
+            id: PrimitiveId::new(model_view.id, 1, *counter),
+            role: PrimitiveRole::CutBoundary,
+            geometry: Geometry2d::Line {
+                start: Point2::new(u_min, op_z_head),
+                end: Point2::new(u_max, op_z_head),
+            },
+            sources: SourceSet::new(vec![head_source.clone()])?,
+            depth: super::DepthInterval::cut_plane(),
+            style: head_style,
+            edit_handles: vec![EditHandle {
+                id: format!("opening_head_{}", counter),
+                position: head_anchor,
+                action: ModelEditAction::ChangeParameter(ModelParameter::OpeningHeadHeight),
+                direction_hint: Vector2::new(0.0, 1.0),
+                target_feature: Some(FeatureKey::OpeningHead),
+                source: head_source,
+            }],
+        });
+    }
 
     Ok(())
 }
@@ -593,9 +659,13 @@ fn cut_slab_with_segment(
     accum_s: f64,
     model_view: &ModelView,
     options: &CutEngineOptions,
+    ctx: &ViewStyleContext,
     primitives: &mut Vec<DerivedPrimitive>,
     counter: &mut u32,
 ) -> Result<(), ValidationError> {
+    if !is_slab_phase_visible(ctx, slab) {
+        return Ok(());
+    }
     if slab.polygon.len() < 3 {
         return Ok(());
     }
@@ -607,10 +677,16 @@ fn cut_slab_with_segment(
 
     let mut current_z = slab.base_z;
 
-    for layer in &slab.layers {
-        if options.structural_only && !layer.is_structural {
+    for (layer_idx, layer) in slab.layers.iter().enumerate() {
+        if !is_slab_layer_active(ctx, slab, layer_idx) {
             current_z += layer.thickness;
             continue;
+        }
+
+        let (mut boundary_style_opt, mut fill_style_opt) = resolve_slab_layer_cut_style(ctx, slab, layer_idx);
+        if options.structural_only && !layer.is_structural {
+            boundary_style_opt = None;
+            fill_style_opt = None;
         }
 
         let z_bottom = current_z;
@@ -639,97 +715,115 @@ fn cut_slab_with_segment(
             };
 
             // Slab fill
-            *counter += 1;
-            primitives.push(DerivedPrimitive {
-                id: PrimitiveId::new(model_view.id, 1, *counter),
-                role: PrimitiveRole::CutFill,
-                geometry: Geometry2d::Region {
-                    outer: poly_points,
-                    holes: vec![],
-                },
-                sources: SourceSet::new(vec![source_ref.clone()])?,
-                depth: super::DepthInterval::cut_plane(),
-                style: ResolvedStyle {
-                    line_weight_mm: PaperMm::new(0.18)?,
-                    line_color: Some(Rgba8::new(100, 100, 100, 255)),
-                    line_type: None,
-                    fill_color: None,
-                    hatch_pattern: Some(layer.hatch_override.clone().unwrap_or_else(|| "AR-CONC".into())),
-                    hatch_scale: Some(1.0),
-                    hatch_angle_rad: Some(0.785398),
-                    layer_name: None,
-                },
-                edit_handles: vec![],
-            });
+            if let Some(fill_style) = fill_style_opt.as_ref() {
+                *counter += 1;
+                primitives.push(DerivedPrimitive {
+                    id: PrimitiveId::new(model_view.id, 1, *counter),
+                    role: PrimitiveRole::CutFill,
+                    geometry: Geometry2d::Region {
+                        outer: poly_points,
+                        holes: vec![],
+                    },
+                    sources: SourceSet::new(vec![source_ref.clone()])?,
+                    depth: super::DepthInterval::cut_plane(),
+                    style: fill_style.clone(),
+                    edit_handles: vec![],
+                });
+            } else {
+                // When hatches are disabled, emit a transient CutFill occluder so background lines
+                // are still properly occluded by the cut slab. This is cleaned up after silhouette processing.
+                *counter += 1;
+                primitives.push(DerivedPrimitive {
+                    id: PrimitiveId::new(model_view.id, 1, *counter),
+                    role: PrimitiveRole::CutFill,
+                    geometry: Geometry2d::Region {
+                        outer: poly_points,
+                        holes: vec![],
+                    },
+                    sources: SourceSet::new(vec![source_ref.clone()])?,
+                    depth: super::DepthInterval::cut_plane(),
+                    style: ResolvedStyle {
+                        line_weight_mm: PaperMm::new(0.18)?,
+                        line_color: None,
+                        line_type: None,
+                        fill_color: None,
+                        hatch_pattern: None,
+                        hatch_scale: None,
+                        hatch_angle_rad: None,
+                        layer_name: Some(super::silhouette::TRANSIENT_OCCLUDER_LAYER.to_string()),
+                    },
+                    edit_handles: vec![],
+                });
+            }
 
             // Slab top & bottom boundary lines
-            let boundary_style = ResolvedStyle::solid_stroke(PaperMm::new(0.35)?);
+            if let Some(boundary_style) = boundary_style_opt.as_ref() {
+                let mut top_source = source_ref.clone();
+                top_source.feature = Some(FeatureKey::SlabTop);
+                *counter += 1;
+                primitives.push(DerivedPrimitive {
+                    id: PrimitiveId::new(model_view.id, 1, *counter),
+                    role: PrimitiveRole::CutBoundary,
+                    geometry: Geometry2d::Line {
+                        start: Point2::new(u_min, z_top),
+                        end: Point2::new(u_max, z_top),
+                    },
+                    sources: SourceSet::new(vec![top_source])?,
+                    depth: super::DepthInterval::cut_plane(),
+                    style: boundary_style.clone(),
+                    edit_handles: vec![],
+                });
 
-            let mut top_source = source_ref.clone();
-            top_source.feature = Some(FeatureKey::SlabTop);
-            *counter += 1;
-            primitives.push(DerivedPrimitive {
-                id: PrimitiveId::new(model_view.id, 1, *counter),
-                role: PrimitiveRole::CutBoundary,
-                geometry: Geometry2d::Line {
-                    start: Point2::new(u_min, z_top),
-                    end: Point2::new(u_max, z_top),
-                },
-                sources: SourceSet::new(vec![top_source])?,
-                depth: super::DepthInterval::cut_plane(),
-                style: boundary_style.clone(),
-                edit_handles: vec![],
-            });
+                let mut bot_source = source_ref.clone();
+                bot_source.feature = Some(FeatureKey::SlabBottom);
+                *counter += 1;
+                primitives.push(DerivedPrimitive {
+                    id: PrimitiveId::new(model_view.id, 1, *counter),
+                    role: PrimitiveRole::CutBoundary,
+                    geometry: Geometry2d::Line {
+                        start: Point2::new(u_min, z_bottom),
+                        end: Point2::new(u_max, z_bottom),
+                    },
+                    sources: SourceSet::new(vec![bot_source])?,
+                    depth: super::DepthInterval::cut_plane(),
+                    style: boundary_style.clone(),
+                    edit_handles: vec![],
+                });
 
-            let mut bot_source = source_ref.clone();
-            bot_source.feature = Some(FeatureKey::SlabBottom);
-            *counter += 1;
-            primitives.push(DerivedPrimitive {
-                id: PrimitiveId::new(model_view.id, 1, *counter),
-                role: PrimitiveRole::CutBoundary,
-                geometry: Geometry2d::Line {
-                    start: Point2::new(u_min, z_bottom),
-                    end: Point2::new(u_max, z_bottom),
-                },
-                sources: SourceSet::new(vec![bot_source])?,
-                depth: super::DepthInterval::cut_plane(),
-                style: boundary_style.clone(),
-                edit_handles: vec![],
-            });
+                // Slab left boundary edge
+                let mut left_source = source_ref.clone();
+                left_source.feature = Some(FeatureKey::LayerFace);
+                *counter += 1;
+                primitives.push(DerivedPrimitive {
+                    id: PrimitiveId::new(model_view.id, 1, *counter),
+                    role: PrimitiveRole::CutBoundary,
+                    geometry: Geometry2d::Line {
+                        start: Point2::new(u_min, z_bottom),
+                        end: Point2::new(u_min, z_top),
+                    },
+                    sources: SourceSet::new(vec![left_source])?,
+                    depth: super::DepthInterval::cut_plane(),
+                    style: boundary_style.clone(),
+                    edit_handles: vec![],
+                });
 
-            // Slab left boundary edge
-            let mut left_source = source_ref.clone();
-            left_source.feature = Some(FeatureKey::LayerFace);
-            *counter += 1;
-            primitives.push(DerivedPrimitive {
-                id: PrimitiveId::new(model_view.id, 1, *counter),
-                role: PrimitiveRole::CutBoundary,
-                geometry: Geometry2d::Line {
-                    start: Point2::new(u_min, z_bottom),
-                    end: Point2::new(u_min, z_top),
-                },
-                sources: SourceSet::new(vec![left_source])?,
-                depth: super::DepthInterval::cut_plane(),
-                style: boundary_style.clone(),
-                edit_handles: vec![],
-            });
-
-            // Slab right boundary edge
-            let mut right_source = source_ref;
-            right_source.feature = Some(FeatureKey::LayerFace);
-            *counter += 1;
-            primitives.push(DerivedPrimitive {
-                id: PrimitiveId::new(model_view.id, 1, *counter),
-                role: PrimitiveRole::CutBoundary,
-                geometry: Geometry2d::Line {
-                    start: Point2::new(u_max, z_bottom),
-                    end: Point2::new(u_max, z_top),
-                },
-                sources: SourceSet::new(vec![right_source])?,
-                depth: super::DepthInterval::cut_plane(),
-                style: boundary_style,
-                edit_handles: vec![],
-            });
+                // Slab right boundary edge
+                let mut right_source = source_ref;
+                right_source.feature = Some(FeatureKey::LayerFace);
+                *counter += 1;
+                primitives.push(DerivedPrimitive {
+                    id: PrimitiveId::new(model_view.id, 1, *counter),
+                    role: PrimitiveRole::CutBoundary,
+                    geometry: Geometry2d::Line {
+                        start: Point2::new(u_max, z_bottom),
+                        end: Point2::new(u_max, z_top),
+                    },
+                    sources: SourceSet::new(vec![right_source])?,
+                    depth: super::DepthInterval::cut_plane(),
+                    style: boundary_style.clone(),
+                    edit_handles: vec![],
+                });
+            }
         }
     }
 

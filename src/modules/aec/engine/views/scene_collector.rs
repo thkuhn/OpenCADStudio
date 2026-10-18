@@ -182,10 +182,25 @@ pub struct SceneGeometryCollector {
     pub slabs: Vec<CollectedSlab>,
 }
 
-fn handle_to_element_id(handle: Handle) -> ElementId {
+pub fn handle_to_element_id(handle: Handle) -> ElementId {
     let mut bytes = [0u8; 16];
     bytes[8..16].copy_from_slice(&handle.value().to_be_bytes());
     ElementId::from_uuid(uuid::Uuid::from_bytes(bytes))
+}
+
+pub fn element_id_to_handle(element_id: ElementId) -> Option<Handle> {
+    let uuid = element_id.as_uuid();
+    let bytes = uuid.as_bytes();
+    if bytes[0..8] == [0u8; 8] {
+        let val = u64::from_be_bytes(bytes[8..16].try_into().ok()?);
+        if val != 0 {
+            Some(Handle::new(val))
+        } else {
+            None
+        }
+    } else {
+        None
+    }
 }
 
 impl SceneGeometryCollector {
