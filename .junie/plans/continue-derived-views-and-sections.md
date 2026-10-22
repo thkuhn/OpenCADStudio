@@ -5,256 +5,262 @@ sessionId: session-261017-191835-1hcf
 # Requirements
 
 ### Overview & Goals
-Ziel dieses Plans ist die **präzise Korrektur und Vervollständigung der 2D-Grundriss-, Schnitt- und Ansichtserzeugung** in OpenCADStudio AEC entlang dreier konkreter Kernanforderungen:
-1. **Korrekte verdeckte Linien:** Zuverlässige Erkennung und Erzeugung verdeckter Kanten (als gestrichelte Linien auf dedizierten Layern) sowie Überkopf-Kanten (z. B. Öffnungsstürze und Unterzüge über der Schnittebene im Grundriss) unter Eliminierung von Verdeckungsartefakten.
-2. **Linientypen, Schraffuren & Stile aus Planart und Komponenten:** Vollständige Ablösung fest verdrahteter Muster (`ANSI31`, feste Linienstärken) durch eine dynamische Stil- und Darstellungskaskade basierend auf der aktiven Planart (`DisplayConfig`), Komponentenregeln (`ComponentRuleSet`), Bauteilstilen (`WallStyle`, `SlabStyle`, `OpeningStyle`) und der Materialbibliothek.
-3. **Korrektur und Vervollständigung von Handles an assoziativen Elementen:** Durchgängige Etablierung sowohl nativer CAD-Entity-Handles (Besitzerhierarchie `owner_handle`, bidirektionale Marker-Träger-Kopplung, Quell-Handle-Rückverfolgung in XDATA) als auch interaktiver Viewport-Ziehgriffe (`EditHandle`) für Öffnungsleibungen (Verschieben entlang der Wandachse), Wandunterkanten und Deckenunterkanten im Schnitt und Grundriss.
+Ziel dieses Plans ist die **Realisierung einer robusten, fehlertoleranten Interaktionslogik für assoziative Ansichten und 2D/3D-Bauteilmodellierung** (Schritt 1 der Roadmap). 
+
+Anstelle eines unkontrollierten Direkt-Ziehens per Mausgriff, das zu unbeabsichtigten Modellverzerrungen führen kann, wird eine **Kontextmenü- und Dropdown-Architektur** etabliert (analog zu den bewährten Wandverschneidungs-Menüs `wall_junction_dropdown_grip`):
+1. **Geführte Aktionen über Kontextmenüs & Dropdown-Griffe:** Beim Klick auf den Dropdown-Griff oder Rechtsklick auf ein Bauteil (Leibung, Wandbasis, Deckenkante) öffnet sich ein fokussiertes Kontextmenü mit gezielten Wahlmöglichkeiten:
+   - **Öffnungen (Fenster / Türen):** *Verschieben entlang Wandachse*, *Öffnungsbreite ändern (Strecken)*, *Stil ändern*, *Bezugsebene / Brüstungshöhe anpassen*, *Aufschlag / Anschlag spiegeln*.
+   - **Wandunterkante (`WallBase`):** *Wandbasis-Offset anpassen* (bei absolut fixierter Wandoberkante), *Bezugsebene zuweisen*, *Wandstil ändern*.
+   - **Deckenunterkante (`SlabBottom`):** *Deckendicke der Tragschicht anpassen* (bei absolut fixierter Deckenoberkante), *Decke in Z versetzen*, *Bezugsebene zuweisen*, *Deckenstil ändern*.
+2. **Mathematische Korrektur der 2D/3D-Achsenprojektionen:**
+   - Dynamische Ermittlung der 2D-Wandachse im Grundriss (`OpeningLeftJamb`, `OpeningRightJamb`) unter vollständiger Berücksichtigung der Trägerdrehung (`carrier.rotation_rad`) und Wandrichtung, sodass sich Öffnungen auch auf vertikalen und schrägen Wänden reibungslos manipulieren lassen.
+   - Richtungsbereinigung im Schnitt: Auswertung des Skalarprodukts zwischen Wandachse und Schnittblickrichtung (`dot(wall_dir, view_right)`), sodass Ziehen nach rechts immer die intuitive Richtung im 3D-Raum bewegt (selbst bei gespiegeltem Schnitt).
+3. **Invarianz- und Integritätsregeln für Bauteilabhängigkeiten:**
+   - Beim Absenken der Wandbasis (z. B. ins Fundament) verbleiben Fenster und Türen auf ihrer absoluten Geschosshöhe (`sill_height += delta_z`), anstatt in den Boden zu wandern.
+   - Beim Anpassen der Deckenunterkante wird gezielt die tragende Kernschicht (`structural_layer_index`) vergrößert/verkleinert, während Oberbeläge und Deckenoberkanten unberührt bleiben.
 
 ---
 
 ### Scope
 
 #### In Scope
-- **Verdeckte Linien & Überkopf-Darstellung:**
-  - Konfigurierbare Ausgabe verdeckter Kanten (`emit_hidden_lines`) in `CutEngineOptions` und `FloorPlanEngineOptions` gesteuert über `DisplayConfig` / `ModelView`.
-  - Ableitung von Überkopf-Kanten (`FeatureKey::OpeningHead`, Deckenkanten über Schnittebene) in `floorplan_engine.rs` als `PrimitiveRole::HiddenEdge` mit gestricheltem Linientyp.
-  - Härtung des 2D-Occlusion-Clippings in `silhouette.rs` für kolineare Segmentüberlappungen und saubere Zuteilung des Linientyps `"DASHED"` und Layers `"AEC_HIDDEN"` / `"AEC_SECTION_HIDDEN"`.
-  - Übertragung von Linientyp (`linetype`), Farbe (`color`) und Linienstärke (`lineweight`) auf native CAD-Entities in `carrier.rs`.
-- **Planart-, Komponenten- und Material-Stile:**
-  - Zentraler Style-Resolver `resolve_view_primitive_style` mit Kaskade: `ModelView.graphic_overrides` > `DisplayConfig` (Regeln & Komponenten-Slots) > Bauteilstil > Materialbibliothek > Fallback-Rolle.
-  - Berücksichtigung von `DisplayConfig.detail` (Schraffuren ein/aus, Schichtfilterung nach Tragfähigkeit `StructuralOnly`/`CoreOnly`, Öffnungssymbole ein/aus).
-  - Berücksichtigung von Phasenfiltern (`DisplayConfig.phase_filter` für Abbruch/Bestand) mit normgerechten Liniendarstellungen.
-  - Materialschraffuren mit dynamischem Muster, Maßstab, Drehwinkel und Farbe in Schnitten und Grundrissen.
-- **CAD- und Viewport-Handles an assoziativen Elementen:**
-  - Zuweisung der CAD-Besitzerhierarchie `ent.common_mut().owner_handle = carrier.handle` für alle abgeleiteten Kind-Entities.
-  - Speicherung des direkten Quell-Bauteil-Handles (`source_handle`) in der `DERIVED_PRIMITIVE`-XDATA und robuste Indizierung.
-  - Bidirektionale Verknüpfung von `Din1356SectionMarker` und `DerivedViewCarrier` (`marker.carrier_handle` und `carrier.marker_handle` via `owner_index::link_peers`).
-  - Vervollständigung der interaktiven Viewport-Modellgriffe (`EditHandle`) in `properties.rs` und `axis_session.rs` für `WallBase` (Wandunterkante), `SlabBottom` (Deckenunterkante) und `OpeningLeftJamb`/`OpeningRightJamb` (horizontales Verschieben entlang der Wandachse).
-  - Navigation zum Quell-Bauteil im Eigenschaften-Panel (`derived_primitive_prop_section`) über anklickbare `EntityRef`.
+- **Kontextmenüs & Dropdown-Griffe (UI/UX):**
+  - Dropdown-Griffe (`GripShape::Dropdown`) an Öffnungsleibungen, Wandunterkanten und Deckenunterkanten im Grundriss und Schnitt.
+  - Dedizierte Menüs in `src/modules/aec/ui/context_menu.rs` für Öffnungen, Wände und Decken.
+  - Submenüs für schnellen Stilwechsel (`WallStyle`, `OpeningStyle`, `SlabStyle`) direkt am Objekt.
+  - Aktionen zur Zuweisung von Bezugsebenen (Geschosse, Deckenbezug).
+- **Geführte Drag-Interaktionen:**
+  - Exakte Achsensperrung beim Ausführen von *Verschieben* oder *Strecken* im Viewport mit Live-Drahtvorschau (`WireModel::CYAN`).
+  - Streck-Interaktion (`ResizeOpeningWidth`): Ändert die lichte Weite der Öffnung, während die gegenüberliegende Leibung unbewegt verankert bleibt.
+- **Mathematische Projektionskorrektur in Grundriss und Schnitt:**
+  - Grundriss: Projektion der Mausbewegung auf die 2D-Wandachse `(dir_x, dir_y)` unter Berücksichtigung von `carrier.rotation_rad` und Maßstab.
+  - Schnitt: Projektion auf die horizontale Ansichtsachse unter Berücksichtigung des Skalarprodukts `dot(wall_dir, view_right)` und `flip_direction`.
+- **Modell-Integrität & Invarianz:**
+  - `WallBase`: Absenken/Anheben des Wandfußes bei fixierter Wandoberkante und automatischer Kompensation der Öffnungsbrüstungen (`sill_height += delta_z`).
+  - `SlabBottom`: Anpassen der Deckendicke über `structural_layer_index` bei fixierter Deckenoberkante (`SetSlabThickness`).
 
 #### Out of Scope
-- Beliebige 3D-B-Rep-Boolesche Schnittverschneidungen außerhalb von Wänden, Decken und Öffnungen.
-- Automatische Text-Kollisionsvermeidung für Maßketten (Gegenstand eines separaten Bemaßungsplans).
+- Vollständiger grafischer Schnitt-Detail-Editor für 3D-Bewehrungsstäbe.
+- Automatische Mehrfachkollisionsprüfung mit haustechnischen Durchbrüchen (TGA).
 
 ---
 
 ### User Stories
-- **Als Architekt** möchte ich, dass verdeckte Bauteilkanten hinter Schnittebenen oder opaken Schichten normgerecht gestrichelt gezeichnet werden, anstatt unsichtbar zu sein oder ungestrichelt durchzuscheinen.
-- **Als Planer** möchte ich im Grundriss Türstürze und Unterzüge über der Schnittebene als gestrichelte Überkopf-Linien sehen, damit Durchbrüche und Sturzhöhen im 2D-Plan sofort erkennbar sind.
-- **Als Konstrukteur** möchte ich zwischen Entwurfs-, Ausführungs- und Tragwerksplan umschalten, sodass Schraffuren, Linienstärken und nicht-tragende Schichten exakt gemäß der gewählten Planart und den Materialdefinitionen dargestellt werden.
-- **Als CAD-Anwender** möchte ich ein Fenster oder eine Tür im Schnitt oder Grundriss an den Leibungsgriffen anfassen und entlang der Wand verschieben können, während das 3D-Modell synchron nachgeführt wird.
-- **Als Prüfer** möchte ich beim Anklicken einer abgeleiteten Schnittkante im Eigenschaften-Panel sofort das ursprüngliche Quellbauteil (Wand, Decke, Fenster) mit seinem CAD-Handle sehen und anspringen können.
+- **Als Architekt** möchte ich an einer Türleibung im Grundriss auf einen Dropdown-Griff klicken, um gezielt zwischen „Verschieben“, „Breite ändern“ oder „Stil ändern“ zu wählen, anstatt versehentlich beim Anklicken die Position zu verziehen.
+- **Als Planer** möchte ich die Wandunterkante im Schnitt nach unten ins Fundament ziehen können, wobei die Wandoberkante und alle Fenster auf ihrer absoluten Geschosshöhe verharren und nicht nach unten rutschen.
+- **Als Tragwerksplaner** möchte ich an der Deckenunterkante die Dicke der Stahlbeton-Tragschicht vergrößern, während der Fußbodenaufbau auf der Deckenoberseite unberührt bleibt.
+- **Als CAD-Anwender** möchte ich Fenster auch auf schrägen und vertikalen Wänden im Grundriss zuverlässig entlang der Wandachse verschieben können, ohne dass die Bewegung auf die Welt-X-Achse blockiert wird.
 
 ---
 
 ### Functional Requirements
-- **FR-1:** Verdeckte Kanten werden bei aktivierter Option als `PrimitiveRole::HiddenEdge` mit Linientyp `"DASHED"` erzeugt und im CAD-Dokument mit korrekter Linienart gerendert.
-- **FR-2:** Im Grundriss werden Öffnungsstürze und Kanten oberhalb der Schnittebene als gestrichelte Überkopf-Linien auf `AEC_OVERHEAD` dargestellt.
-- **FR-3:** Der Style-Resolver wendet Materialmuster, Maßstäbe und Winkel aus der Materialbibliothek an (`material.hatch_pattern`, `hatch_scale`, `hatch_angle`).
-- **FR-4:** Planart-Einstellungen steuern die Sichtbarkeit von Schichten (`StructuralOnly`), Schraffuren (`hatches: false`) und Phasenstilen (`phase_filter`).
-- **FR-5:** Alle abgeleiteten Entities besitzen ihren Träger als `owner_handle` und speichern den CAD-Handle ihres Quellbauteils in XDATA.
-- **FR-6:** Leibungsgriffe (`OpeningLeftJamb`, `OpeningRightJamb`) ermöglichen das interaktive Verschieben von Öffnungen entlang der Wandachse.
-- **FR-7:** Wandunterkanten (`WallBase`) und Deckenunterkanten (`SlabBottom`) bieten vertikale Höhengriffe mit synchroner BIM-Modellaktualisierung.
+- **FR-1 (Öffnungs-Kontextmenü):** Beim Klick auf den Dropdown-Griff einer Öffnung oder Rechtsklick auf eine Leibung öffnet sich ein Menü mit: *Verschieben*, *Breite ändern*, *Stil ändern*, *Aufschlag spiegeln*, *Brüstungshöhe ändern*.
+- **FR-2 (Wand-Kontextmenü):** Beim Klick auf den Dropdown-Griff der Wandbasis öffnet sich ein Menü mit: *Unterkante versetzen (Offset)*, *Wandhöhe anpassen*, *Bezugsebene zuweisen*, *Wandstil ändern*.
+- **FR-3 (Decken-Kontextmenü):** Beim Klick auf den Dropdown-Griff der Deckenunterkante öffnet sich ein Menü mit: *Dicke der Tragschicht anpassen*, *Gesamte Deckenhöhe versetzen*, *Bezugsebene zuweisen*, *Deckenstil ändern*.
+- **FR-4 (Dynamische Wandachsenprojektion):** Die Griffachse für `OpeningLeftJamb` und `OpeningRightJamb` im Grundriss richtet sich nach dem Richtungsvektor der Wandachse gedreht um `carrier.rotation_rad`.
+- **FR-5 (Schnitt-Richtungsbereinigung):** Die Verschieberichtung im Schnitt wird mit `dot(wall_dir, view_right).signum()` multipliziert, sodass die optische Ziehrichtung mit der realen 3D-Verschiebung übereinstimmt.
+- **FR-6 (Höheninvarianz bei Wandfuß):** Die Absenkung der Wandunterkante um $\Delta z$ verringert die Basiselevation um $\Delta z$, erhöht die Wandhöhe um $\Delta z$ und addiert $\Delta z$ auf die Brüstungshöhen aller enthaltenen Öffnungen.
+- **FR-7 (Dickenanpassung der Tragschicht):** Das Ziehen der Deckenunterkante modifiziert die Tragschichtdicke (`structural_layer_index`) und lässt die Deckenoberkante fixiert.
 
 ---
 
 ### Non-Functional Requirements
-- **Architekturtreue (AEC != Core):** Sämtliche Stilauflösungen, Verdeckungslogiken und Griffberechnungen verbleiben strikt unter `src/modules/aec/**`.
-- **DXF/DWG-Standardkonformität:** Linientypen (`DASHED`, `CONTINUOUS`) und Layer entsprechen den CAD-Standards, sodass externe Viewer gestrichelte Linien sofort nativ darstellen.
-- **Performanz:** Keine redundanten Mehrfachschnitte; Occlusion-Clipping nutzt Bounding-Box-Vorfilterung und frühe Tiefenausschlüsse.
+- **Architekturtreue (AEC != Core):** Kontextmenüzeilen und Ausführungslogik liegen strikt in `src/modules/aec/**`.
+- **Echtzeit-Feedback:** Mausbewegungen bei geführten Aktionen rendern eine flüssige Cyan-Drahtvorschau (`WireModel`) ohne vorzeitiges Re-Baken des Gesamtmodells.
+- **Internationalisierung:** Sämtliche Menüeinträge und Tooltipps nutzen den Fluent-Lokalisierungskatalog (`locales/**`).
 
 # Technical Design
 
 ### Current Implementation
-- **Verdeckte Linien:** In `cut_engine.rs` ist `emit_hidden_lines: false` fest kodiert. In `floorplan_engine.rs` existiert keine Überkopf-Kantenerzeugung für Stürze. `silhouette.rs` besitzt zwar `clip_segment_against_polygons`, jedoch fehlen Linientyp-Zuweisungen im Entity-Bake in `carrier.rs`.
-- **Stile & Schraffuren:** In `cut_engine.rs` und `floorplan_engine.rs` wird `"ANSI31"` fest als Fallback gesetzt; `DisplayConfig`, `ComponentRuleSet` und `Material`-Eigenschaften fließen nicht in die abgeleiteten Primitives ein.
-- **Handles & Assoziativität:** Kind-Entities erhalten in `carrier.rs` `owner_handle = 0`. In `read_derived_primitive_metadata` führt das Fehlen von Quell-Handles zu Ausfällen beim Auslesen des Trägers. In `properties.rs` fehlen Griffe für Leibungen, Wand- und Deckenunterkanten.
+- **Öffnungsleibungen in `properties.rs`:** In `append_derived_view_grips` ist `axis = Some(glam::DVec3::new(1.0, 0.0, 0.0))` statisch hinterlegt. Liegt eine Wand auf der Y-Achse, ist das Skalarprodukt 0 und die Öffnung lässt sich im Grundriss nicht verschieben.
+- **Schnitt-Richtung in `edit_ops.rs`:** `delta_s` wird in vertikalen Ansichten vereinfachend mit `view_delta.x_m` gleichgesetzt. Verläuft die Wand von rechts nach links oder ist der Schnitt gespiegelt, bewegt sich das Bauteil invertiert.
+- **Wandbasis in `edit_ops.rs`:** `WallBase` rechnet aktuell `wall.height += delta_z` ohne die Basiselevation zu verändern. Dadurch wächst die Wand nach oben, anstatt nach unten vergrößert zu werden.
+- **Deckenbasis in `edit_ops.rs`:** `SlabBottom` führt `SetSlabElevation` aus und verschiebt die gesamte Decke, statt die Tragschichtdicke zu justieren.
+- **Fehlende Dropdown-Menüs:** An abgeleiteten Kanten gibt es bisher nur Direkt-Drag-Griffe, jedoch keine `GripShape::Dropdown`-Griffe mit Aktionsmenüs wie bei Wandverbindungen.
 
 ---
 
 ### Key Decisions
-1. **Zentralisierter View-Style-Resolver:**
-   - *Entscheidung:* Einführung von `resolve_view_primitive_style` in `src/modules/aec/engine/views/style_resolver.rs`.
-   - *Begründung:* Vermeidet Code-Duplizierung zwischen `cut_engine.rs`, `floorplan_engine.rs` und `elevation_engine.rs` und stellt sicher, dass `ModelView.graphic_overrides`, `DisplayConfig`, `ComponentRuleSet` und `Material` konsistent ausgewertet werden.
-2. **CAD-Besitzerhierarchie & Source-Handle-Integrität:**
-   - *Entscheidung:* `ent.common_mut().owner_handle = carrier.handle` wird beim Erzeugen jedes Primitives gesetzt; in der `DERIVED_PRIMITIVE`-XDATA wird das Handle des Quellbauteils als `XDataValue::Handle(source_handle)` persistent abgelegt.
-   - *Begründung:* Ermöglicht bidirektionale Navigation im Eigenschaften-Panel, sauberen Block-Export und verhindert verwaiste Kindelemente.
-3. **Leibungs- und Höhengriffe im Viewport:**
-   - *Entscheidung:* Aktivierung von `OpeningLeftJamb` und `OpeningRightJamb` mit horizontaler Achsenbeschränkung (`axis = glam::DVec3::new(1.0, 0.0, 0.0)`) sowie `WallBase` und `SlabBottom` mit vertikaler Beschränkung (`axis = glam::DVec3::new(0.0, 1.0, 0.0)`).
-   - *Begründung:* Die mathematische Rückrechnung existiert bereits in `edit_ops.rs` (`MoveAlongHost`, `SetSlabElevation`), war jedoch im Viewport-Dispatcher noch nicht freigeschaltet.
+
+1. **Dropdown-Griffe und fokussierte Kontextmenüs:**
+   - *Entscheidung:* Anstelle von ungeführtem Blind-Drag erhalten Öffnungsleibungen, Wand- und Deckenkanten neben dem direkten Ziehgriff einen Dropdown-Griff (`GripShape::Dropdown`).
+   - *Begründung:* Ermöglicht dem Anwender die explizite Auswahl zwischen Verschieben, Strecken, Stilwechsel und Bezugsebenen-Zuweisung, analog zum erfolgreichen Muster bei Wandverschneidungen (`junction_pick.rs`).
+2. **Dynamische Achsentransformation im Grundriss:**
+   - *Entscheidung:* Berechnung des Einheitsvektors der Wandachse im Grundriss:
+     $\vec{u}_{\text{world}} = \frac{(x_1 - x_0, y_1 - y_0)}{\|P_1 - P_0\|}$
+     Unter Berücksichtigung der Trägerdrehung $\theta$:
+     $\vec{u}_{\text{carrier}} = (\cos\theta \cdot u_x - \sin\theta \cdot u_y, \; \sin\theta \cdot u_x + \cos\theta \cdot u_y, \; 0.0)$
+   - *Begründung:* Gewährleistet einwandfreies Verschieben und Strecken unabhängig vom Wandwinkel und Trägerausrichtung.
+3. **Richtungsauflösung im Schnitt:**
+   - *Entscheidung:* Auswertung von $\operatorname{sign}(\vec{u}_{\text{wall}} \cdot \vec{u}_{\text{view,right}})$.
+   - *Begründung:* Zieht der Nutzer nach rechts im Schnittfenster, wandert das Fenster garantiert in Blickrichtung nach rechts.
+4. **Höheninvarianz für Öffnungen bei Wandbasisanpassungen:**
+   - *Entscheidung:* Beim Ändern des Wandbasis-Offsets um $\Delta z$ wird `wall.base_offset += delta_z`, `wall.height -= delta_z` gesetzt und bei allen Öffnungen der Wand `opening.sill_height -= delta_z` kompensiert.
+   - *Begründung:* Fenster und Türen bleiben exakt an ihrer absoluten Höhenkote im Raum stehen, während der Sockel verlängert wird.
+5. **Selektive Tragschicht-Modifikation bei Decken:**
+   - *Entscheidung:* `SetSlabThickness` ermittelt über `slab.structural_layer_index()` die tragende Schicht und passt ausschließlich deren Stärke an.
+   - *Begründung:* Verhindert, dass Estrich- oder Putzschichten versehentlich auf unplausible Maße skaliert werden.
 
 ---
 
 ### Proposed Changes
-- **`src/modules/aec/engine/views/style_resolver.rs` (Neu):**
-  - Kaskadierende Auflösung von Linientyp, Linienstärke, RGB-Farbe, Schraffurmuster, Maßstab, Drehwinkel und Layer für Wände, Decken und Öffnungen.
-- **`src/modules/aec/engine/views/silhouette.rs` & `cut_engine.rs`:**
-  - `CutEngineOptions.emit_hidden_lines` ansteuerbar machen; Verdeckungsausschlüsse bei kolinearen Segmenten bereinigen; verdeckte Kanten als `PrimitiveRole::HiddenEdge` mit `"DASHED"` erzeugen.
-- **`src/modules/aec/engine/views/floorplan_engine.rs`:**
-  - Überkopf-Kanten für Öffnungsstürze und Unterzüge über der Schnittebene als `PrimitiveRole::HiddenEdge` auf `AEC_OVERHEAD` erzeugen.
-  - Planart-Filterung (`detail.hatches`, `detail.layers`) einbinden.
-- **`src/modules/aec/engine/views/carrier.rs`:**
-  - `owner_handle = carrier.handle` auf generierten CAD-Entities setzen.
-  - `ent.common_mut().linetype` aus `prim.style.line_type` (bzw. Fallback `"DASHED"`) zuweisen.
-  - XDATA um `source_handle` erweitern und Deserialisierung härten.
-- **`src/modules/aec/properties.rs` & `axis_session.rs`:**
-  - Viewport-Griffe für Leibungen (`OpeningLeftJamb`, `OpeningRightJamb`), Wandbasis (`WallBase`) und Deckenunterkante (`SlabBottom`) registrieren und dispatchen.
-  - Im Eigenschaften-Panel `derived_primitive_prop_section` das Quell-Element als navigierbare `EntityRef` anzeigen.
 
----
+#### 1. UI & Menü-Integration (`src/modules/aec/ui/context_menu.rs`, `src/app/update/viewport.rs`)
+- Neue exklusive Menümuster in `AecMenuExclusive`: `OpeningGrip(Handle, usize)`, `WallBaseGrip(Handle)`, `SlabBottomGrip(Handle)`.
+- Kontextmenü-Einträge:
+  - Öffnung: *Entlang Wandachse verschieben*, *Öffnungsbreite ändern*, *Stil ändern* (Submenu), *Aufschlag spiegeln*, *Brüstungshöhe ändern*.
+  - Wandbasis: *Unterkante versetzen (Offset)*, *Wandhöhe anpassen*, *Bezugsebene zuweisen*, *Wandstil ändern* (Submenu).
+  - Deckenbasis: *Dicke der Tragschicht anpassen*, *Höhe versetzen*, *Bezugsebene zuweisen*, *Deckenstil ändern* (Submenu).
+- Einbindung in `viewport.rs` beim Klick auf `GripShape::Dropdown` an abgeleiteten Primitives.
 
-### Data Models / Contracts
-```rust
-// Style-Resolver-Schnittstelle
-pub struct ViewStyleContext<'a> {
-    pub display_config: Option<&'a DisplayConfig>,
-    pub style_library: Option<&'a StyleLibrary>,
-    pub model_view: &'a ModelView,
-}
+#### 2. Griff-Registrierung & Achsenberechnung (`src/modules/aec/properties.rs`)
+- In `append_derived_view_grips`:
+  - Dynamische Berechnung von `grip.axis` für Grundrisse anhand der Wandscheibengeometrie und `carrier.rotation_rad`.
+  - Ergänzung von `dropdown_grip` neben dem Positions-/Streckgriff.
+  - Zuweisung semantischer Grip-IDs für Dropdown-Aktionen.
 
-pub fn resolve_layer_cut_style(
-    ctx: &ViewStyleContext,
-    wall: &CollectedWall,
-    layer_idx: usize,
-) -> (ResolvedStyle, Option<ResolvedStyle>); // (Contour/Boundary, Hatch/Fill)
+#### 3. Semantische Modellmutationen & Richtungslogik (`src/modules/aec/engine/views/edit_ops.rs`)
+- Implementierung von `SemanticMutation::ResizeOpeningWidth { element, handle, left_jamb, new_width, new_distance }`.
+- Anpassung von `MoveOpeningAlongHost` mit Skalarprodukt `dot(wall_dir, view_right)`.
+- Überarbeitung von `SetWallHeight` bei `WallBase`: Modifikation der Basishöhe/des Basis-Offsets bei fixierter Oberkante und Brüstungskompensation für Öffnungen.
+- Überarbeitung von `SetSlabThickness`: Gezielte Anpassung der Tragschichtstärke bei unveränderter Deckenoberkante.
 
-pub fn resolve_opening_view_style(
-    ctx: &ViewStyleContext,
-    opening: &CollectedOpening,
-    slot: OpeningComponentSlot,
-) -> ResolvedStyle;
-
-// Erweiterte DerivedPrimitiveMetadata
-pub struct DerivedPrimitiveMetadata {
-    pub view_id: ModelViewId,
-    pub index: u32,
-    pub role: PrimitiveRole,
-    pub element_ref: Option<ElementRef>,
-    pub source_handle: Option<Handle>,
-    pub feature: Option<FeatureKey>,
-    pub xref_name: Option<String>,
-    pub carrier_handle: Option<Handle>,
-}
-```
+#### 4. Interaktive Vorschau & Commit (`src/modules/aec/walls/axis_session.rs`)
+- Bereitstellung von Echtzeit-Drahtmodellen (`WireModel`) für Breitenstreckung von Öffnungen und Wandfußabsenkung während der Mausbewegung.
+- Entkopplung der Menü-Aktionsaufrufe von unkoordinierten Drag-Gesten.
 
 ---
 
 ### Architecture Diagram
 ```mermaid
 graph TD
-  subgraph Style & Configuration Cascade
-    MV[ModelView / Profile] --> Resolver[ViewStyleResolver]
-    DC[DisplayConfig / Planart] --> Resolver
-    Rules[ComponentRuleSet / Slots] --> Resolver
-    Lib[StyleLibrary / Materials] --> Resolver
+  subgraph Viewport Interaction
+    UserClick[User Clicks Grip / Dropdown] --> CheckType{Grip Type}
+    CheckType -->|Direct Drag| DragSession[axis_session: Compute Projected Delta]
+    CheckType -->|Dropdown Click| MenuOpen[context_menu: AecMenuExclusive]
   end
 
-  subgraph 2D View Generation
-    Resolver --> CutEng[cut_engine: Sections]
-    Resolver --> FloorEng[floorplan_engine: Floor Plans & Overhead]
-    Resolver --> ElevEng[elevation_engine: Elevations]
-    CutEng --> Sil[silhouette: 2D Occlusion & Hidden Lines]
-    ElevEng --> Sil
+  subgraph Context Menu Selection
+    MenuOpen --> OptMove[Move Along Wall]
+    MenuOpen --> OptResize[Resize Width]
+    MenuOpen --> OptStyle[Change Style Submenu]
+    MenuOpen --> OptPlane[Assign Reference Plane]
+    MenuOpen --> OptOffset[Change Base Offset / Thickness]
+    OptMove --> DragSession
+    OptResize --> DragSession
+    OptOffset --> DragSession
   end
 
-  subgraph CAD Entity & Handle Baking
-    Sil --> CarrierBake[carrier: sync_carrier_primitives]
-    FloorEng --> CarrierBake
-    CarrierBake --> CADEntities[Lines, Polylines, Hatches with owner_handle, linetype & XDATA]
+  subgraph Semantic Resolution
+    DragSession --> Resolve[edit_ops: resolve_handle_drag]
+    Resolve --> CheckWallDir[Vector Projection & ViewAxes Dot Product]
+    CheckWallDir --> Mutate[SemanticMutation]
   end
 
-  subgraph Viewport & Properties Interaction
-    CADEntities --> Grips[properties: Viewport EditHandles]
-    Grips -->|Jamb Drag: Slide Along Host| AxisSession[axis_session: apply_aec_derived_view_grip]
-    Grips -->|Base/Top Drag: Height/Elevation| AxisSession
-    AxisSession --> BIMMutation[edit_ops: commit_view_drag_and_update]
-    CADEntities --> PropPanel[properties: derived_primitive_prop_section with EntityRef]
+  subgraph BIM Model Execution
+    Mutate -->|Opening Move/Resize| ApplyOpening[Update Opening XDATA]
+    Mutate -->|WallBase: Lower Base + Keep Top/Sill| ApplyWall[Update Wall Base & Openings]
+    Mutate -->|SlabBottom: Change Structural Core| ApplySlab[Update Slab Core Thickness]
+    ApplyOpening --> UpdateCarriers[update_ops: Regenerate Views]
+    ApplyWall --> UpdateCarriers
+    ApplySlab --> UpdateCarriers
   end
 ```
 
 ---
 
 ### File Structure
-- `src/modules/aec/engine/views/style_resolver.rs`: Zentraler Style- und Material-Resolver für alle 2D-Ansichten.
-- `src/modules/aec/engine/views/silhouette.rs`: Verdeckungsberechnung, Kanten-Clipping und gestrichelte Linien.
-- `src/modules/aec/engine/views/cut_engine.rs`: Vertikalschnitt-Generierung mit dynamischen Schichtstilen und verdeckten Kanten.
-- `src/modules/aec/engine/views/floorplan_engine.rs`: Grundriss- und Deckenspiegel-Generierung inklusive Überkopf-Kanten und Planart-Filterung.
-- `src/modules/aec/engine/views/carrier.rs`: Native CAD-Konvertierung, `owner_handle`, Linientyp-Zuweisung und XDATA.
-- `src/modules/aec/properties.rs`: Erweiterte Viewport-Griffe (Leibung, Wandbasis, Deckenbasis) und Properties-Panel-Verknüpfung.
-- `src/modules/aec/walls/axis_session.rs`: Interaktiver Dispatcher und Preview-Wires für Leibungs- und Höhen-Grips.
+- `src/modules/aec/ui/context_menu.rs`: Menüzustände und Einträge für Öffnungs-, Wand- und Deckengriffe.
+- `src/modules/aec/properties.rs`: Berechnung dynamischer 2D-Griffachsen und Platzierung von Dropdown-Griffen.
+- `src/modules/aec/engine/views/edit_ops.rs`: Mathematische Projektionen, Öffnungsstreckung, Wandfuß-Invarianz und Deckentragkern-Dicke.
+- `src/modules/aec/walls/axis_session.rs`: Interaktiver Dispatcher, Vorschau-Drahtmodelle und Menü-Hook-Verknüpfung.
+- `locales/**/opencadstudio.ftl`: Lokalisierungsschlüssel für Menüoptionen in allen unterstützten Sprachen.
 
 ---
 
 ### Risks & Mitigations
-- **Übermäßige Liniendichte bei verdeckten Kanten:** Option zur Deaktivierung verdeckter Linien in Entwurfsplänen über `DisplayConfig.detail.hidden_lines` bzw. `CutEngineOptions`.
-- **CAD-Linientypen in DXF ohne geladene Linetype-Tabelle:** Sicherstellung, dass der Linientyp `"DASHED"` in der CAD-Dokument-Linientyp-Tabelle registriert ist, damit DWG/DXF-Exportoren ihn nicht ignorieren.
+- **Risiko: Unerwünschte Deckenverformung bei komplexen Mehrschichtaufbauten:**
+  *Mitigation:* Falls kein expliziter Tragschicht-Tag existiert, wird die dickste Schicht als statischer Kern angenommen, anstatt die empfindliche Deckschicht zu modifizieren.
+- **Risiko: Wandunterkante schneidet Öffnungen bei extremer Anhebung nach oben:**
+  *Mitigation:* Validierungsprüfung in `edit_ops.rs`: Die Wandbasis darf nicht über die Brüstungshöhe der niedrigsten Öffnung angehoben werden.
+- **Risiko: Menü-Überdeckung im Viewport:**
+  *Mitigation:* Automatische Platzierung des Kontextmenüs am Klickpunkt mit Viewport-Randbegrenzung analog zu den Wandverschneidungen.
 
 # Testing
 
 ### Validation Approach
-1. **Unit-Tests für Style-Resolution:** Überprüfung, dass Materialschraffuren (`AR-CONC`, `BRICK`, `EARTH`), Skalierungen und Winkel korrekt auf `DerivedPrimitive` abgebildet werden.
-2. **Verdeckungs- und Linientyp-Tests:** Testfälle in `silhouette.rs` und `cut_engine.rs`, die sicherstellen, dass verdeckte Segmente exakt den Linientyp `"DASHED"` erhalten und Überkopf-Stürze im Grundriss erscheinen.
-3. **Handle- und Ownership-Validierung:** Tests in `carrier.rs`, die verifizieren, dass jedes Kindelement `owner_handle == carrier.handle` besitzt und das Quell-Handle in XDATA hinterlegt ist.
-4. **Interaktionstests für Leibungs- und Höhengriffe:** Simulation von Griff-Ziehoperationen an Fensterleibungen (`OpeningLeftJamb`), Wandunterkanten (`WallBase`) und Deckenunterkanten (`SlabBottom`) mit anschließender Prüfung der BIM-Modellmutation.
-5. **System- und Beispielhaustests:** Kompletter Durchlauf von `test_generate_sample_project` zur Verifikation der fehlerfreien Generierung aller Pläne.
+1. **Mathematische Projektions-Tests:** Unit-Tests in `edit_ops.rs` für 0°, 45°, 90° und 135° gedrehte Wände im Grundriss sowie gespiegelte Schnitte (`flip_direction`).
+2. **Invarianz-Tests für Wandbasis:** Prüfung, dass beim Absenken der Wandbasis um 0.50m die absolute Z-Koordinate von Wandoberkante und Fensterbrüstung auf den Millimeter identisch bleibt.
+3. **Decken-Tragschicht-Tests:** Verifikation, dass bei einer dreischichtigen Decke (Estrich, Stahlbeton, Putz) ausschließlich die Stahlbetonschicht in ihrer Dicke angepasst wird.
+4. **Öffnungsbreiten-Streckung:** Test der `ResizeOpeningWidth`-Mutation: Linke Leibung ziehen vergrößert die Öffnung, während die rechte Leibung fixiert bleibt.
+5. **Kontextmenü-Aktionsabdeckung:** Überprüfung aller erzeugten Menüeinträge und der entsprechenden Nachrichten-Handler.
 
 ---
 
 ### Key Scenarios
-- **Szenario 1: Verdeckte Kanten im Schnitt:**
-  - Wand mit Öffnung im Hintergrund einer Schnittführung ableiten.
-  - *Erwartetes Ergebnis:* Verdeckte Kanten der Öffnung werden gestrichelt auf `AEC_SECTION_HIDDEN` gezeichnet; sichtbare Kanten im Vordergrund bleiben durchgezogen.
-- **Szenario 2: Überkopf-Sturz im Grundriss:**
-  - Grundriss mit Fenster- und Türöffnungen ableiten.
-  - *Erwartetes Ergebnis:* Stürze oberhalb der Schnittebene (`z_cut = 1.0m`) erscheinen als gestrichelte Linien auf `AEC_OVERHEAD`.
-- **Szenario 3: Planart- und Materialschraffuren:**
-  - Schnittableitung einer Stahlbetonwand mit Material `"Stahlbeton"` (`hatch_pattern = "AR-CONC"`).
-  - *Erwartetes Ergebnis:* Die Schnittfläche wird mit dem Muster `AR-CONC` im passenden Maßstab und Winkel schraffiert.
-- **Szenario 4: Leibungsgriff verschieben:**
-  - Im Schnitt oder Grundriss den Leibungsgriff einer Tür anklicken und 0.50m nach rechts ziehen.
-  - *Erwartetes Ergebnis:* Die Tür verschiebt sich entlang der Wandachse; 3D-Modell, Grundriss und Schnitt aktualisieren sich synchron.
-- **Szenario 5: Quellbauteil-Navigation im Eigenschaften-Panel:**
-  - Eine abgeleitete Kante im Schnitt anklicken.
-  - *Erwartetes Ergebnis:* Das Eigenschaften-Panel zeigt „AEC Assoziiertes Bauteil“ mit direkter `EntityRef` zum Quellbauteil.
+- **Szenario 1: Tür auf vertikaler Wand im Grundriss verschieben:**
+  - Wand verläuft entlang der Y-Achse (0,0) bis (0,10).
+  - Türleibung anklicken und 1.0m nach oben ziehen.
+  - *Erwartetes Ergebnis:* Die Tür verschiebt sich exakt um 1.0m entlang der Wandachse; keine Blockade auf der X-Achse.
+- **Szenario 2: Fenster im Schnitt nach rechts ziehen:**
+  - Schnitt von rechts nach links durch eine Wand.
+  - Fensterleibung nach rechts ziehen.
+  - *Erwartetes Ergebnis:* Das Fenster bewegt sich im Schnitt optisch nach rechts und im 3D-Modell synchron in die passende Richtung.
+- **Szenario 3: Wandbasis absenken:**
+  - Wand mit Brüstungshöhe 1.00m im Schnitt an der Basis um 0.30m nach unten ziehen.
+  - *Erwartetes Ergebnis:* Die Wandbasis sinkt ab; Wandoberkante und Fensterbrüstung behalten ihre absolute Geschosshöhe.
+- **Szenario 4: Deckenunterkante nach unten ziehen:**
+  - Mehrschichtige Decke im Schnitt an der Unterkante um 0.10m nach unten ziehen.
+  - *Erwartetes Ergebnis:* Die Dicke der Stahlbeton-Tragschicht wächst um 0.10m; die Deckenoberkante (Rohfußboden) bleibt unverändert.
+- **Szenario 5: Kontextmenü an Fenster aufrufen:**
+  - Klick auf den Dropdown-Griff der Fensterleibung.
+  - *Erwartetes Ergebnis:* Kontextmenü öffnet sich mit Verschieben, Breitenänderung, Stilwechsel und Brüstungshöhe.
 
 ---
 
 ### Edge Cases
 - **Kolineare Überlappungen an Wandecken:** Keine doppelten oder fraktionierten Liniensegmente bei verdeckten Kanten.
 - **Öffnungen ohne Sturz (raumhoch):** Keine fälschliche Erzeugung von Überkopf-Linien, wenn die Öffnung bis zur Deckenunterkante reicht.
+- **Schräge Wände im Grundriss:** Saubere Projektion bei Winkeln ungleich 90° ohne Koordinatensprünge.
 - **Undo nach Leibungsverschiebung:** Vollständige Rücknahme der Bauteilverschiebung und Wiederherstellung der ursprünglichen 2D-Schnittzeichnung.
 
 # Delivery Steps
 
-### ✓ Step 1: Härtung und Vervollständigung der Verdeckungs- und Linienberechnung (Hidden Lines & Overhead Edges)
-Verdeckte Kanten und Überkopf-Bauteile werden in Grundrissen, Schnitten und Ansichten präzise als gestrichelte Linien auf dedizierten Layern berechnet.
+### ✓ Step 1: Mathematische Korrektur der 2D/3D-Achsenprojektionen und Richtungsberechnungen
+Grip-Ziehgesten im Grundriss und Schnitt sind mathematisch exakt entlang der Wandachsen ausgerichtet und richtungsstabil.
 
-- Erweiterung von `CutEngineOptions` und `FloorPlanEngineOptions` um `emit_hidden_lines` bzw. `show_overhead_edges`.
-- Ableitung von Überkopf-Kanten in `floorplan_engine.rs` (z. B. Stürze über der Schnittebene, Deckenkanten) als `PrimitiveRole::HiddenEdge` mit gestricheltem Linientyp auf `AEC_OVERHEAD`.
-- Härtung des 2D-Occlusion-Clippings in `src/modules/aec/engine/views/silhouette.rs` für kolineare Kanten und Erzeugung sauberer `HiddenEdge`-Segmente ohne Null-Längen.
-- Zuverlässige Übertragung von `prim.style.line_type` (z. B. `"DASHED"`), Linienstärken und RGB-Farben auf native CAD-Entities in `carrier.rs` sowie Sicherstellung der Linetype-Tabelle im Dokument.
+- Ermittlung des 2D-Wandachsenvektors in `src/modules/aec/properties.rs` für Öffnungsleibungen im Grundriss.
+- Einbezug von `carrier.rotation_rad` und Maßstab in die Griffachsbeschränkung `grip.axis`.
+- Richtungsbereinigung in `src/modules/aec/engine/views/edit_ops.rs` für vertikale Ansichten mittels `dot(wall_dir, view_right)`.
+- Absicherung gegen Null-Vektoren und Degenerationen bei horizontalen und vertikalen Wänden.
 
-### ✓ Step 2: Dynamische Stile, Linientypen und Schraffuren aus Planart, Darstellungskomponenten und Materialbibliothek
-Schnitt- und Grundriss-Primitives übernehmen Schraffurmuster, Maßstäbe, Winkel, Linientypen und Filter dynamisch aus der aktiven Planart (`DisplayConfig`), den Komponentenregeln und den Materialdefinitionen.
+### ✓ Step 2: Härtung der Modellmutationen für Wandbasis und Deckenunterkante
+Grip-Ziehgesten im Grundriss und Schnitt sind mathematisch exakt entlang der Wandachsen ausgerichtet und richtungsstabil.
 
-- Implementierung eines zentralen Style-Resolvers in `src/modules/aec/engine/views/style_resolver.rs`, der die Kaskade `ModelView.graphic_overrides` > `DisplayConfig` (`ComponentRuleSet` / Slot-Overrides) > Bauteilstil (`WallStyle` / `SlabStyle`) > `Material` auflöst.
-- Auswertung von `DisplayConfig.detail` in Grundriss- und Schnitt-Engines: Abschaltung von Schraffuren (`hatches: false`), Schichtfilterung (`layers: StructuralOnly` / `CoreOnly`) und Öffnungssymbolen (`opening_symbols: false`).
-- Phasenfilter-Unterstützung (`DisplayConfig.phase_filter`): Visualisierung von Abbruch/Bestand mit spezifischen Linientypen (z. B. gestrichelt) und Schraffuren.
-- Dynamische Schraffuren in `cut_engine.rs`, `floorplan_engine.rs` und `carrier.rs` unter Verwendung der tatsächlichen Materialeigenschaften (Muster, Skalierung, Ausrichtungswinkel).
+- Überarbeitung von `SetWallHeight` bei `WallBase` in `edit_ops.rs`: Absenken des Wandbasis-Offsets bei fixierter Oberkante.
+- Invarianzanpassung für Öffnungen: Kompensation der Brüstungshöhen (`sill_height += delta_z`), sodass Fenster und Türen auf ihrer absoluten Geschosshöhe bleiben.
+- Überarbeitung von `SetSlabThickness` bei `SlabBottom`: Gezielte Anpassung der Kernschicht (`structural_layer_index`) bei fixierter Oberkante.
+- Unit- und Regressionstests für Wandfuß- und Deckendicken-Mutationen.
 
-### ✓ Step 3: Korrektur und Vervollständigung von CAD- und Viewport-Handles an assoziativen Elementen
-Alle assoziativen 2D-Elemente besitzen vollständige CAD-Besitzerhierarchien, bidirektionale XDATA-Referenzen sowie interaktive Viewport-Modellgriffe für alle Bauteil- und Öffnungskanten.
+### ✓ Step 3: Kontextmenüs und Dropdown-Griffe für Öffnungsleibungen
+Fenster- und Türleibungen bieten Dropdown-Griffe und geführte Menüoptionen für Verschieben, Strecken und Stilwechsel.
 
-- Setzen der CAD-Besitzerhierarchie `ent.common_mut().owner_handle = carrier.handle` für alle abgeleiteten Entities in `carrier.rs`.
-- Härtung der XDATA-Serialisierung in `attach_primitive_xdata` und `read_derived_primitive_metadata` inklusive direkter CAD-Source-Handles und robuster Indizierung.
-- Bidirektionale Verknüpfung von `Din1356SectionMarker` und `DerivedViewCarrier` über `owner_index::link_peers` und Speicherung des `marker_handle`.
-- Vervollständigung der Viewport-Modellgriffe (`EditHandle`) in `properties.rs` und `axis_session.rs`: Griffe für `WallBase` (Wandunterkante), `SlabBottom` (Deckenunterkante) und `OpeningLeftJamb` / `OpeningRightJamb` (Horizontales Verschieben der Öffnung entlang der Wandachse in Schnitt und Grundriss).
-- Anzeige des Quell-Elements als navigierbare `EntityRef` im Eigenschaften-Panel (`derived_primitive_prop_section`).
+- Registrierung von `GripShape::Dropdown` an Öffnungsleibungen in `src/modules/aec/properties.rs`.
+- Ergänzung von `AecMenuExclusive::OpeningGrip` in `src/modules/aec/ui/context_menu.rs` mit Aktionen für Verschieben, Breitenänderung, Stil-Submenu und Anschlag-Spiegelung.
+- Implementierung der Streck-Mutation `ResizeOpeningWidth` in `edit_ops.rs` (feste Gegenseite).
+- Anbindung des Klick-Handlers in `src/app/update/viewport.rs` an das Öffnungsmenü.
 
-### ✓ Step 4: End-to-End-Integration, Validierung im Beispielhaus und Regressionsabsicherung
-Alle Workflows zur Planableitung, Verdeckung, Stilübernahme und Griffbearbeitung sind durchgängig integriert, im Beispielhaus validiert und durch automatisierte Tests abgesichert.
+### ✓ Step 4: Kontextmenüs und Dropdown-Griffe für Wandbasis und Deckenunterkante
+Wandunterkanten und Deckenunterkanten bieten geführte Menüs für Offset, Dicke, Bezugsebenen und Stile.
 
-- Aktualisierung der Beispielhaus-Pläne in `examples/beispiel_haus/` mit dynamischen Materialschraffuren, korrekten verdeckten Linien und vollständigen Handles.
-- Integrationstests für Planarten-Umschaltung (z. B. Entwurf vs. Ausführung vs. Statik) an Schnitten und Grundrissen.
-- Modul- und Regressionstests für verdeckte Linien, Style-Resolution, CAD-Ownership und Jamb-Grip-Interaktionen.
-- Ausführung der gesamten Testsuite (`cargo test --lib`) zur Sicherstellung von Regressionsfreiheit.
+- Registrierung von `GripShape::Dropdown` an Wandbasis- und Deckenunterkanten in `properties.rs`.
+- Ergänzung von `AecMenuExclusive::WallBaseGrip` und `AecMenuExclusive::SlabBottomGrip` in `context_menu.rs`.
+- Aktionen für Wandbasis-Offset, Deckendicke, Zuweisung zu Geschossebenen und Submenüs für Wand-/Deckenstile.
+- Anbindung der Dispatcher-Nachrichten in `src/modules/aec/update.rs`.
+
+### ✓ Step 5: End-to-End-Integration, Lokalisierung und Validierung im Beispielhaus
+Alle Interaktionen, Kontextmenüs und Mutationen sind vollständig lokalisiert und im Gesamtmodell verifiziert.
+
+- Bereitstellung aller Lokalisierungsschlüssel in `locales/**/opencadstudio.ftl` für Deutsch und Englisch.
+- Testen aller geführten Workflows an Wänden, Decken und Öffnungen im Beispielhaus (`test_generate_sample_project`).
+- Ausführung der gesamten Testsuite (`cargo test --lib modules::aec`).
