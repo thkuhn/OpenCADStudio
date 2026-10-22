@@ -6468,6 +6468,20 @@ aec =
     .prop-action = Action
     .carrier-action-none = -
     .carrier-action-update = Update now
+    .prop-display-config = Plan type
+    .menu-opening-move = Move along wall axis
+    .menu-opening-resize = Change opening width (stretch)
+    .menu-opening-flip-hinge = Flip hinge side
+    .menu-opening-flip-swing = Flip swing direction (inside/outside)
+    .menu-change-style = Change style
+    .menu-opening-sill = Adjust sill height
+    .menu-wall-base-offset = Adjust wall base offset
+    .menu-wall-top-move = Adjust wall height (top)
+    .menu-wall-style = Change wall style
+    .menu-slab-thickness = Adjust structural layer thickness
+    .menu-slab-top-move = Adjust slab elevation (top)
+    .menu-slab-style = Change slab style
+    .menu-assign-plane = Assign reference level
 
 
 aec-ui =
