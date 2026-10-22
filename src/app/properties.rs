@@ -2841,6 +2841,7 @@ handles={handles_ms:.1} panel={:.1} ribbon={ribbon_ms:.1} tail={:.1} selected={}
                             crate::modules::aec::properties::wall_from_entity(e)
                                 || crate::modules::aec::properties::slab_from_entity(e)
                                 || crate::modules::aec::properties::slab_opening_from_entity(e)
+                                || crate::modules::aec::properties::opening_from_entity(e)
                         })
             });
             let single_handle = if let Some(owner) = single_aec {
@@ -2994,6 +2995,12 @@ handles={handles_ms:.1} panel={:.1} ribbon={ribbon_ms:.1} tail={:.1} selected={}
                     handle,
                 ));
                 crate::modules::aec::properties::append_wall_junction_grips(
+                    &self.tabs[i].scene,
+                    handle,
+                    contextual.as_ref(),
+                    &mut entity_grips,
+                );
+                crate::modules::aec::properties::append_slab_base_grips(
                     &self.tabs[i].scene,
                     handle,
                     contextual.as_ref(),

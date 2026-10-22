@@ -508,12 +508,12 @@ pub fn sync_carrier_primitives(
                     } else {
                         hatch.is_solid = false;
                         hatch.pattern = HatchPattern::new(&pat_name);
-                        hatch.pattern_scale = prim.style.hatch_scale.unwrap_or(1.0).max(1e-4);
+                        hatch.pattern_scale = (prim.style.hatch_scale.unwrap_or(1.0) * carrier.scale).max(1e-4);
                         hatch.pattern_angle = prim
                             .style
                             .hatch_angle_rad
-                            .map(|rad| rad.to_degrees())
-                            .unwrap_or(0.0);
+                            .unwrap_or(0.0)
+                            + carrier.rotation_rad;
                     }
 
                     let outer_pts: Vec<Vector2> = outer
@@ -1109,5 +1109,79 @@ mod tests {
             crate::modules::aec::engine::owner_index::peers_of(&doc, marker_handle),
             vec![carrier.handle]
         );
+    }
+
+    #[test]
+    fn test_carrier_hatch_scale_angle_and_bylayer_color() {
+        let mut doc = CadDocument::new();
+        let vp_id = ViewpointId::new();
+        let mv_id = ModelViewId::new();
+
+        let mut carrier = create_view_carrier(
+            &mut doc,
+            vp_id,
+            mv_id,
+            Point2::new(10.0, 20.0),
+            2.0, // scale factor 2
+            0.5, // rotation 0.5 rad
+            UpdatePolicy::Automatic,
+        )
+        .expect("create carrier");
+
+        let elem_ref = ElementRef::new(ModelId::new(), ElementId::new());
+        let src = SourceReference {
+            element: elem_ref,
+            xref_source: None,
+            component_id: None,
+            feature: Some(FeatureKey::LayerFace),
+            display_component_id: None,
+        };
+
+        let prim = DerivedPrimitive {
+            id: super::super::provenance::PrimitiveId::new(mv_id, 1, 1),
+            role: PrimitiveRole::CutFill,
+            geometry: Geometry2d::Region {
+                outer: vec![
+                    Point2::new(0.0, 0.0),
+                    Point2::new(5.0, 0.0),
+                    Point2::new(5.0, 2.0),
+                    Point2::new(0.0, 2.0),
+                ],
+                holes: vec![],
+            },
+            sources: SourceSet::new(vec![src]).unwrap(),
+            depth: DepthInterval::cut_plane(),
+            style: ResolvedStyle {
+                line_weight_mm: PaperMm::new(0.18).unwrap(),
+                line_color: None, // Must become ByLayer in CAD
+                line_type: None,
+                fill_color: None,
+                hatch_pattern: Some("ANSI31".to_string()),
+                hatch_scale: Some(0.5),
+                hatch_angle_rad: Some(0.785398), // 45 deg
+                layer_name: Some("AEC_WALL_HATCH".to_string()),
+            },
+            edit_handles: vec![],
+        };
+
+        sync_carrier_primitives(&mut doc, &mut carrier, &[prim]).expect("sync primitives");
+        assert_eq!(carrier.derived_handles.len(), 1);
+
+        let hatch_handle = carrier.derived_handles[0];
+        let hatch_ent = doc.get_entity(hatch_handle).expect("hatch exists");
+
+        // Color must be ByLayer when style has None for color
+        assert_eq!(hatch_ent.common().color, acadrust::types::Color::ByLayer);
+
+        if let EntityType::Hatch(hatch) = hatch_ent {
+            assert!(!hatch.is_solid);
+            assert_eq!(hatch.pattern.name, "ANSI31");
+            // pattern_scale = hatch_scale * carrier.scale = 0.5 * 2.0 = 1.0
+            assert!((hatch.pattern_scale - 1.0).abs() < 1e-4);
+            // pattern_angle = hatch_angle_rad + carrier.rotation_rad = 0.785398 + 0.5 = 1.285398
+            assert!((hatch.pattern_angle - (0.785398 + 0.5)).abs() < 1e-4);
+        } else {
+            panic!("Expected Hatch entity");
+        }
     }
 }

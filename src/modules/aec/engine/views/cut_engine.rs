@@ -162,6 +162,8 @@ pub fn derive_section_view(
         show_hidden_edges: options.emit_hidden_lines,
         include_opening_symbols: options.include_openings,
         detail_level: options.detail_level,
+        display_config: options.display_config.clone(),
+        style_library: options.style_library.clone(),
     };
 
     for wall in &scene.walls {
@@ -181,6 +183,7 @@ pub fn derive_section_view(
             forward_depth_max,
             model_view,
             &elev_opts,
+            &ctx,
             &mut primitives,
             &mut primitive_counter,
         );
@@ -204,6 +207,7 @@ pub fn derive_section_view(
             forward_depth_max,
             model_view,
             &elev_opts,
+            &ctx,
             &mut primitives,
             &mut primitive_counter,
         );

@@ -202,17 +202,55 @@ pub fn derive_floorplan_view(
         }
     }
 
-    // 2. Process Walls (Horizontally sliced at z_cut)
-    for wall in &scene.walls {
-        if model_view.excluded_elements.contains(&wall.element_ref) {
-            continue;
-        }
-        if wall.top_z < z_cut - EPS || wall.base_z > z_cut + EPS {
-            continue;
-        }
+    // 2. Process Walls (Horizontally sliced at z_cut with mitered layer junctions)
+    let eligible_walls: Vec<&CollectedWall> = scene
+        .walls
+        .iter()
+        .filter(|wall| {
+            !model_view.excluded_elements.contains(&wall.element_ref)
+                && wall.top_z >= z_cut - EPS
+                && wall.base_z <= z_cut + EPS
+        })
+        .collect();
+
+    let wall_join_inputs: Vec<crate::modules::aec::engine::junction_solver::WallJoinInput> = eligible_walls
+        .iter()
+        .map(|w| {
+            let axis: Vec<glam::DVec3> = w
+                .axis_points
+                .iter()
+                .map(|p| glam::DVec3::new(p.x_m, p.y_m, w.base_z))
+                .collect();
+            let layers: Vec<crate::modules::aec::engine::miter::MiterLayer> = w
+                .layers
+                .iter()
+                .map(|l| crate::modules::aec::engine::miter::MiterLayer {
+                    thickness: l.thickness,
+                    axis_offset: l.axis_offset,
+                    material: l.material.clone(),
+                    function: l.function.clone(),
+                    layer_id: l.layer_id,
+                })
+                .collect();
+            crate::modules::aec::engine::junction_solver::WallJoinInput {
+                axis,
+                bulges: vec![],
+                layers,
+                override_start: None,
+                override_end: None,
+                override_span: None,
+            }
+        })
+        .collect();
+
+    let solved_network = crate::modules::aec::engine::junction_solver::solve_network(&wall_join_inputs, 0.05);
+
+    for (w_idx, wall) in eligible_walls.iter().enumerate() {
+        let wall_footprints = solved_network.footprints.get(w_idx);
 
         slice_wall_horizontal(
             wall,
+            wall_footprints,
             z_cut,
             z_max,
             viewpoint,
@@ -310,6 +348,7 @@ fn slab_covers_opening_center(
 
 fn slice_wall_horizontal(
     wall: &CollectedWall,
+    wall_footprints: Option<&Vec<Option<Vec<(f64, f64)>>>>,
     z_cut: f64,
     z_max: f64,
     viewpoint: &Viewpoint,
@@ -392,23 +431,90 @@ fn slice_wall_horizontal(
             axis_segments.push((cur_s, axis_len));
         }
 
-        // Emit solid wall pieces
-        for (s0, s1) in axis_segments {
-            if s1 - s0 < EPS {
+        let footprint_opt = wall_footprints
+            .and_then(|fps| fps.get(layer_idx))
+            .and_then(|f| f.as_ref());
+
+        let wall_axis_2d: Vec<(f64, f64)> = wall.axis_points.iter().map(|p| (p.x_m, p.y_m)).collect();
+        let opening_objs: Vec<crate::modules::aec::engine::openings::Opening> = cut_openings
+            .iter()
+            .map(|op| {
+                crate::modules::aec::engine::openings::Opening {
+                    handle: acadrust::Handle::new(0),
+                    host_wall: acadrust::Handle::new(0),
+                    distance_along_axis: op.distance_along_axis,
+                    width: op.width,
+                    height: op.height,
+                    sill_height: op.sill_height,
+                    kind: op.kind,
+                    style_id: op.style_id.clone(),
+                    hinge: op.hinge,
+                    shape: crate::modules::aec::engine::opening_shape::OpeningShape::Rectangle,
+                    spring_height: 0.0,
+                    reference_side: crate::modules::aec::engine::openings::OpeningReferenceSide::Center,
+                    cross_axis_offset: 0.0,
+                    depth: None,
+                    niche_side: crate::modules::aec::engine::openings::NicheSide::Exterior,
+                    swing_side: op.swing_side,
+                    sill_plane_id: None,
+                    head_plane_id: None,
+                    sill_plane_name: None,
+                    head_plane_name: None,
+                    sill_offset: 0.0,
+                    head_offset: 0.0,
+                    sill_origin: [0.0; 3],
+                    sill_normal: [0.0, 0.0, 1.0],
+                    head_origin: [0.0; 3],
+                    head_normal: [0.0, 0.0, 1.0],
+                }
+            })
+            .collect();
+
+        let layer_rings: Vec<Vec<Point2>> = if let Some(mitered_poly) = footprint_opt {
+            if !opening_objs.is_empty() {
+                let split_rings = crate::modules::aec::engine::miter::split_mitered_footprint_by_openings(
+                    mitered_poly,
+                    &wall_axis_2d,
+                    &opening_objs,
+                );
+                split_rings
+                    .into_iter()
+                    .map(|ring| {
+                        ring.into_iter()
+                            .map(|(x, y)| viewpoint.world_to_view(Point3::new(x, y, z_cut)).0)
+                            .collect()
+                    })
+                    .collect()
+            } else {
+                vec![
+                    mitered_poly
+                        .iter()
+                        .map(|&(x, y)| viewpoint.world_to_view(Point3::new(x, y, z_cut)).0)
+                        .collect()
+                ]
+            }
+        } else {
+            axis_segments
+                .iter()
+                .map(|&(s0, s1)| {
+                    let p0 = axis_p0 + axis_dir * s0 + normal * y_min_offset;
+                    let p1 = axis_p0 + axis_dir * s1 + normal * y_min_offset;
+                    let p2 = axis_p0 + axis_dir * s1 + normal * y_max_offset;
+                    let p3 = axis_p0 + axis_dir * s0 + normal * y_max_offset;
+                    vec![
+                        viewpoint.world_to_view(Point3::new(p0.x, p0.y, z_cut)).0,
+                        viewpoint.world_to_view(Point3::new(p1.x, p1.y, z_cut)).0,
+                        viewpoint.world_to_view(Point3::new(p2.x, p2.y, z_cut)).0,
+                        viewpoint.world_to_view(Point3::new(p3.x, p3.y, z_cut)).0,
+                    ]
+                })
+                .collect()
+        };
+
+        for ring in layer_rings {
+            if ring.len() < 3 {
                 continue;
             }
-
-            let p0 = axis_p0 + axis_dir * s0 + normal * y_min_offset;
-            let p1 = axis_p0 + axis_dir * s1 + normal * y_min_offset;
-            let p2 = axis_p0 + axis_dir * s1 + normal * y_max_offset;
-            let p3 = axis_p0 + axis_dir * s0 + normal * y_max_offset;
-
-            let uv0 = viewpoint.world_to_view(Point3::new(p0.x, p0.y, z_cut)).0;
-            let uv1 = viewpoint.world_to_view(Point3::new(p1.x, p1.y, z_cut)).0;
-            let uv2 = viewpoint.world_to_view(Point3::new(p2.x, p2.y, z_cut)).0;
-            let uv3 = viewpoint.world_to_view(Point3::new(p3.x, p3.y, z_cut)).0;
-
-            let ring = vec![uv0, uv1, uv2, uv3];
 
             let source = SourceReference {
                 element: wall.element_ref,
@@ -465,7 +571,7 @@ fn slice_wall_horizontal(
                     sources,
                     depth: DepthInterval::cut_plane(),
                     style: ResolvedStyle {
-                        line_weight_mm: PaperMm::new(0.18)?,
+                        line_weight_mm: PaperMm::new(0.18).unwrap(),
                         line_color: None,
                         line_type: None,
                         fill_color: None,
@@ -1479,6 +1585,7 @@ mod tests {
                     spring_height: 0.0,
                     shape: OpeningShape::Rectangle,
                     hinge: HingeSide::Left,
+                    swing_side: Default::default(),
                     reference_side: OpeningReferenceSide::Start,
                     cross_axis_offset: 0.0,
                     depth: None,
@@ -1641,6 +1748,7 @@ mod tests {
                 spring_height: 0.0,
                 shape: OpeningShape::Rectangle,
                 hinge: HingeSide::Left,
+                swing_side: Default::default(),
                 reference_side: OpeningReferenceSide::Start,
                 cross_axis_offset: 0.0,
                 depth: None,
@@ -1744,6 +1852,7 @@ mod tests {
                 spring_height: 0.0,
                 shape: OpeningShape::Rectangle,
                 hinge: HingeSide::Left,
+                swing_side: Default::default(),
                 reference_side: OpeningReferenceSide::Start,
                 cross_axis_offset: 0.0,
                 depth: None,
@@ -1842,6 +1951,7 @@ mod tests {
                 spring_height: 0.0,
                 shape: OpeningShape::Rectangle,
                 hinge: HingeSide::Left,
+                swing_side: Default::default(),
                 reference_side: OpeningReferenceSide::Start,
                 cross_axis_offset: 0.0,
                 depth: None,
@@ -1943,6 +2053,7 @@ mod tests {
                 spring_height: 0.0,
                 shape: OpeningShape::Rectangle,
                 hinge: HingeSide::Left,
+                swing_side: Default::default(),
                 reference_side: OpeningReferenceSide::Start,
                 cross_axis_offset: 0.0,
                 depth: None,
@@ -2351,6 +2462,7 @@ mod tests {
                 spring_height: 0.0,
                 shape: OpeningShape::Rectangle,
                 hinge: HingeSide::Left,
+                swing_side: Default::default(),
                 reference_side: OpeningReferenceSide::Start,
                 cross_axis_offset: 0.0,
                 depth: None,
@@ -2465,6 +2577,7 @@ mod tests {
                     spring_height: 0.0,
                     shape: OpeningShape::Rectangle,
                     hinge: HingeSide::Left,
+                    swing_side: Default::default(),
                     reference_side: OpeningReferenceSide::Start,
                     cross_axis_offset: 0.0,
                     depth: None,
@@ -2486,6 +2599,7 @@ mod tests {
                     spring_height: 0.0,
                     shape: OpeningShape::Rectangle,
                     hinge: HingeSide::Left,
+                    swing_side: Default::default(),
                     reference_side: OpeningReferenceSide::Start,
                     cross_axis_offset: 0.0,
                     depth: None,
@@ -2720,6 +2834,7 @@ mod tests {
                     spring_height: 0.0,
                     shape: OpeningShape::Rectangle,
                     hinge: HingeSide::Left,
+                    swing_side: Default::default(),
                     reference_side: OpeningReferenceSide::Start,
                     cross_axis_offset: 0.0,
                     depth: None,
@@ -2740,6 +2855,7 @@ mod tests {
                     spring_height: 0.0,
                     shape: OpeningShape::Rectangle,
                     hinge: HingeSide::Left,
+                    swing_side: Default::default(),
                     reference_side: OpeningReferenceSide::Start,
                     cross_axis_offset: 0.0,
                     depth: None,
@@ -2945,6 +3061,7 @@ mod tests {
                     spring_height: 0.0,
                     shape: OpeningShape::Rectangle,
                     hinge: HingeSide::Left,
+                    swing_side: Default::default(),
                     reference_side: OpeningReferenceSide::Start,
                     cross_axis_offset: 0.0,
                     depth: None,
@@ -2966,6 +3083,7 @@ mod tests {
                     spring_height: 0.0,
                     shape: OpeningShape::Rectangle,
                     hinge: HingeSide::Left,
+                    swing_side: Default::default(),
                     reference_side: OpeningReferenceSide::Start,
                     cross_axis_offset: 0.0,
                     depth: None,
@@ -3103,6 +3221,7 @@ mod tests {
                     spring_height: 0.0,
                     shape: OpeningShape::Rectangle,
                     hinge: HingeSide::Left,
+                    swing_side: Default::default(),
                     reference_side: OpeningReferenceSide::Start,
                     cross_axis_offset: 0.0,
                     depth: None,
@@ -3217,6 +3336,7 @@ mod tests {
                     spring_height: 0.0,
                     shape: OpeningShape::Rectangle,
                     hinge: HingeSide::Left,
+                    swing_side: Default::default(),
                     reference_side: OpeningReferenceSide::Start,
                     cross_axis_offset: 0.0,
                     depth: None,
@@ -3349,6 +3469,7 @@ mod tests {
                     spring_height: 0.0,
                     shape: OpeningShape::Rectangle,
                     hinge: HingeSide::Left,
+                    swing_side: Default::default(),
                     reference_side: OpeningReferenceSide::Start,
                     cross_axis_offset: 0.0,
                     depth: None,

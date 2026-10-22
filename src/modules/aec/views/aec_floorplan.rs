@@ -129,7 +129,7 @@ impl FloorPlanCommand {
             crop: None,
         };
 
-        let model_view = ModelView {
+        let mut model_view = ModelView {
             id: ModelViewId::new(),
             name: self.name.clone(),
             viewpoint_id: viewpoint.id,
@@ -162,6 +162,15 @@ impl FloorPlanCommand {
                     .find(|c| c.view_type == crate::modules::aec::engine::plan_view::ViewType::FloorPlan)
             })
             .cloned();
+
+        if let Some(ref dc) = display_config {
+            model_view.profile_id = ViewProfileId::from_uuid(dc.id);
+            if let Some(scale) = dc.scale {
+                if let Ok(sd) = ScaleDenominator::new(scale) {
+                    model_view.scale = sd;
+                }
+            }
+        }
 
         let primitives = derive_floorplan_view(
             &viewpoint,

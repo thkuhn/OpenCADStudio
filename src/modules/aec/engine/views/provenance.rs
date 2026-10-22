@@ -429,9 +429,11 @@ impl ResolvedStyle {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ModelParameter {
     WallTopOffset,
+    WallBaseOffset,
     OpeningSillHeight,
     OpeningHeadHeight,
     SlabOffset,
+    SlabThickness,
     WallHeight,
     OpeningWidth,
 }
@@ -448,6 +450,7 @@ pub enum ModelEditAction {
     SetWallHeight,
     SetOpeningSillHeight,
     SetSlabElevation,
+    SetSlabThickness,
 }
 
 /// An interactive handle allowing semantic direct modification of the BIM model from 2D views.

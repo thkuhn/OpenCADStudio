@@ -730,5 +730,26 @@ mod tests {
         assert!(user_folder.join("DG.dwg").exists());
         assert!(user_folder.join("Haus_Gesamt.dwg").exists());
         assert!(user_folder.join("README.md").exists());
+
+        // Check primitives in Haus_Gesamt
+        let mut scene = crate::scene::Scene::new();
+        let doc = crate::io::load_file(&repo_folder.join("Haus_Gesamt.dxf")).unwrap();
+        scene.document = doc;
+        let carriers = crate::modules::aec::engine::views::carrier::all_view_carriers(&scene.document);
+        println!("SAMPLE PROJECT: CARRIERS COUNT = {}", carriers.len());
+        for c in &carriers {
+            println!("  carrier: {:?}, derived_handles: {}", c.handle, c.derived_handles.len());
+            let mut feats = Vec::new();
+            for &dh in &c.derived_handles {
+                if let Some(ent) = scene.document.get_entity(dh) {
+                    if let Some(meta) = crate::modules::aec::engine::views::carrier::read_derived_primitive_metadata(ent) {
+                        if let Some(feat) = meta.feature {
+                            feats.push(feat);
+                        }
+                    }
+                }
+            }
+            println!("    features: {:?}", feats);
+        }
     }
 }

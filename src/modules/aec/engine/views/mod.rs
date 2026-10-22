@@ -469,8 +469,9 @@ pub use viewpoint::{
 mod tests {
     use super::*;
     use std::collections::BTreeSet;
-    use crate::modules::aec::engine::openings::OpeningKind;
+    use crate::modules::aec::engine::openings::{OpeningKind, SwingSide};
     use crate::modules::aec::engine::opening_style::HingeSide;
+    use super::floorplan_engine::{derive_floorplan_view, FloorPlanEngineOptions};
 
     #[test]
     fn test_view_document_validation_and_serde() {
@@ -839,6 +840,7 @@ mod tests {
             spring_height: 0.0,
             shape: crate::modules::aec::engine::opening_shape::OpeningShape::Rectangle,
             hinge: HingeSide::Left,
+            swing_side: Default::default(),
             reference_side: crate::modules::aec::engine::openings::OpeningReferenceSide::Center,
             cross_axis_offset: 0.0,
             depth: None,
@@ -1023,6 +1025,7 @@ mod tests {
             spring_height: 0.0,
             shape: crate::modules::aec::engine::opening_shape::OpeningShape::Rectangle,
             hinge: HingeSide::Left,
+            swing_side: Default::default(),
             reference_side: crate::modules::aec::engine::openings::OpeningReferenceSide::Center,
             cross_axis_offset: 0.0,
             depth: None,
@@ -1715,6 +1718,7 @@ mod tests {
                 spring_height: 0.0,
                 shape: crate::modules::aec::engine::opening_shape::OpeningShape::Rectangle,
                 hinge: HingeSide::Left,
+                swing_side: Default::default(),
                 reference_side: crate::modules::aec::engine::openings::OpeningReferenceSide::Center,
                 cross_axis_offset: 0.0,
                 depth: None,
@@ -2166,5 +2170,398 @@ mod tests {
             found_full_span,
             "Visible background wall edge must span full width [2.0, 8.0] unoccluded by hidden background wall"
         );
+    }
+
+    #[test]
+    fn test_elevation_opening_is_opaque_and_occludes_background() {
+        let model_id = ModelId::new();
+        let mut collector = SceneGeometryCollector::new();
+
+        // 1. Foreground wall at y = 0.0 with a window at x = 0.0 (span [-1.0, 1.0]), sill = 0.9, height = 1.2
+        let fg_wall = CollectedWall {
+            handle: acadrust::Handle::new(10),
+            element_ref: ElementRef::new(model_id, ElementId::new()),
+            xref_source: None,
+            style_id: "Wall_FG".into(),
+            height: 3.0,
+            base_z: 0.0,
+            top_z: 3.0,
+            axis_points: vec![Point2::new(-5.0, 0.0), Point2::new(5.0, 0.0)],
+            layers: vec![CollectedWallLayer {
+                material: "Concrete".into(),
+                thickness: 0.24,
+                function: "Structural".into(),
+                axis_offset: 0.0,
+                bottom_offset: 0.0,
+                top_offset: 0.0,
+                hatch_override: None,
+                layer_id: Uuid::new_v4(),
+                component_id: ComponentId::new(),
+                is_structural: true,
+            }],
+            total_thickness: 0.24,
+            justification: crate::modules::aec::engine::wall::WallJustification::Center,
+            openings: vec![CollectedOpening {
+                handle: acadrust::Handle::new(11),
+                element_ref: ElementRef::new(model_id, ElementId::new()),
+                xref_source: None,
+                host_wall_handle: acadrust::Handle::new(10),
+                kind: OpeningKind::Window,
+                style_id: Some("Window".into()),
+                distance_along_axis: 5.0,
+                width: 2.0,
+                height: 1.2,
+                sill_height: 0.9,
+                spring_height: 0.0,
+                shape: crate::modules::aec::engine::opening_shape::OpeningShape::Rectangle,
+                hinge: HingeSide::Left,
+                swing_side: SwingSide::Exterior,
+                reference_side: crate::modules::aec::engine::openings::OpeningReferenceSide::Center,
+                cross_axis_offset: 0.0,
+                depth: None,
+                world_center: Point3::new(0.0, 0.0, 1.5),
+                axis_span_local: (4.0, 6.0),
+            }],
+            phase: crate::modules::aec::engine::plan_view::PlanPhase::New,
+        };
+        collector.walls.push(fg_wall);
+
+        // 2. Background wall at y = 4.0, base_z = 0, top_z = 3, spanning x in [-5.0, 5.0]
+        let bg_wall = CollectedWall {
+            handle: acadrust::Handle::new(20),
+            element_ref: ElementRef::new(model_id, ElementId::new()),
+            xref_source: None,
+            style_id: "Wall_BG".into(),
+            height: 3.0,
+            base_z: 0.0,
+            top_z: 3.0,
+            axis_points: vec![Point2::new(-5.0, 4.0), Point2::new(5.0, 4.0)],
+            layers: vec![CollectedWallLayer {
+                material: "Concrete".into(),
+                thickness: 0.24,
+                function: "Structural".into(),
+                axis_offset: 0.0,
+                bottom_offset: 0.0,
+                top_offset: 0.0,
+                hatch_override: None,
+                layer_id: Uuid::new_v4(),
+                component_id: ComponentId::new(),
+                is_structural: true,
+            }],
+            total_thickness: 0.24,
+            justification: crate::modules::aec::engine::wall::WallJustification::Center,
+            openings: vec![],
+            phase: crate::modules::aec::engine::plan_view::PlanPhase::New,
+        };
+        let bg_ref = bg_wall.element_ref;
+        collector.walls.push(bg_wall);
+
+        let vp = Viewpoint {
+            id: ViewpointId::new(),
+            name: "Suedansicht".into(),
+            revision: Revision(1),
+            origin: ViewOrigin::World(Point3::new(0.0, -5.0, 0.0)),
+            axes: ViewAxes::front_elevation(),
+            kind: ViewKind::Elevation {
+                depth: DepthRange {
+                    near: NonNegativeMetres::new(0.0).unwrap(),
+                    far: Some(PositiveMetres::new(20.0).unwrap()),
+                },
+            },
+            z_range: VerticalRange::new(Metres::new(0.0).unwrap(), Metres::new(5.0).unwrap()).unwrap(),
+            mapping: ProjectionMapping::default(),
+            crop: None,
+        };
+
+        let mv = ModelView {
+            id: ModelViewId::new(),
+            name: "Ansicht 1:100".into(),
+            viewpoint_id: vp.id,
+            profile_id: ViewProfileId::new(),
+            scale: ScaleDenominator::new(100.0).unwrap(),
+            detail: DetailPolicy::FromProfileAndScale,
+            excluded_elements: BTreeSet::new(),
+            graphic_overrides: vec![],
+            annotation_ids: vec![],
+            update_policy: UpdatePolicy::Automatic,
+            revisions: ViewRevisions::default(),
+        };
+
+        let opts = ElevationEngineOptions::default();
+        let primitives = derive_elevation_view(&vp, &mv, &collector, &opts).unwrap();
+
+        // Check that the window emitted a SurfaceFill occluder
+        let window_fill = primitives
+            .iter()
+            .find(|p| p.role == PrimitiveRole::SurfaceFill && p.style.layer_name.as_deref() == Some("AEC_OPENING_SURFACE"));
+        assert!(window_fill.is_some(), "Window must emit an opaque SurfaceFill occluder to prevent see-through");
+
+        // Check that any projected line from the background wall does NOT pass through the window center (u ≈ 0.0, v ≈ 1.5)
+        for prim in &primitives {
+            if prim.sources.as_slice().iter().any(|s| s.element == bg_ref) {
+                if let Geometry2d::Line { start, end } = &prim.geometry {
+                    // If line is at window elevation (e.g. mid-height or sill/head), it must not pass through [-0.9, 0.9]
+                    if (start.y_m - 1.5).abs() < 0.5 {
+                        let min_u = start.x_m.min(end.x_m);
+                        let max_u = start.x_m.max(end.x_m);
+                        assert!(
+                            max_u <= -0.95 || min_u >= 0.95,
+                            "Background wall edge ({:?} to {:?}) should be occluded behind window [-1.0, 1.0]",
+                            start,
+                            end
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn test_elevation_opening_swing_triangle_orientation_and_linetype() {
+        let model_id = ModelId::new();
+        let mut collector = SceneGeometryCollector::new();
+
+        // Wall along X with Door: swing_side = Exterior (+Normal), hinge = Left
+        let door = CollectedOpening {
+            handle: acadrust::Handle::new(11),
+            element_ref: ElementRef::new(model_id, ElementId::new()),
+            xref_source: None,
+            host_wall_handle: acadrust::Handle::new(10),
+            kind: OpeningKind::Door,
+            style_id: Some("Door".into()),
+            distance_along_axis: 5.0,
+            width: 1.0,
+            height: 2.1,
+            sill_height: 0.0,
+            spring_height: 0.0,
+            shape: crate::modules::aec::engine::opening_shape::OpeningShape::Rectangle,
+            hinge: HingeSide::Left,
+            swing_side: SwingSide::Interior,
+            reference_side: crate::modules::aec::engine::openings::OpeningReferenceSide::Center,
+            cross_axis_offset: 0.0,
+            depth: None,
+            world_center: Point3::new(0.0, 0.0, 1.05),
+            axis_span_local: (4.5, 5.5),
+        };
+
+        let wall = CollectedWall {
+            handle: acadrust::Handle::new(10),
+            element_ref: ElementRef::new(model_id, ElementId::new()),
+            xref_source: None,
+            style_id: "Wall".into(),
+            height: 3.0,
+            base_z: 0.0,
+            top_z: 3.0,
+            axis_points: vec![Point2::new(-5.0, 0.0), Point2::new(5.0, 0.0)],
+            layers: vec![CollectedWallLayer {
+                material: "Concrete".into(),
+                thickness: 0.24,
+                function: "Structural".into(),
+                axis_offset: 0.0,
+                bottom_offset: 0.0,
+                top_offset: 0.0,
+                hatch_override: None,
+                layer_id: Uuid::new_v4(),
+                component_id: ComponentId::new(),
+                is_structural: true,
+            }],
+            total_thickness: 0.24,
+            justification: crate::modules::aec::engine::wall::WallJustification::Center,
+            openings: vec![door],
+            phase: crate::modules::aec::engine::plan_view::PlanPhase::New,
+        };
+        collector.walls.push(wall);
+
+        // 1. Exterior view (front elevation looking from -Y toward +Y, facing the exterior swing side)
+        let vp_ext = Viewpoint {
+            id: ViewpointId::new(),
+            name: "Front Elevation".into(),
+            revision: Revision(1),
+            origin: ViewOrigin::World(Point3::new(0.0, -5.0, 0.0)),
+            axes: ViewAxes::front_elevation(),
+            kind: ViewKind::Elevation {
+                depth: DepthRange {
+                    near: NonNegativeMetres::new(0.0).unwrap(),
+                    far: Some(PositiveMetres::new(10.0).unwrap()),
+                },
+            },
+            z_range: VerticalRange::new(Metres::new(0.0).unwrap(), Metres::new(5.0).unwrap()).unwrap(),
+            mapping: ProjectionMapping::default(),
+            crop: None,
+        };
+
+        let mv = ModelView {
+            id: ModelViewId::new(),
+            name: "Ansicht".into(),
+            viewpoint_id: vp_ext.id,
+            profile_id: ViewProfileId::new(),
+            scale: ScaleDenominator::new(100.0).unwrap(),
+            detail: DetailPolicy::FromProfileAndScale,
+            excluded_elements: BTreeSet::new(),
+            graphic_overrides: vec![],
+            annotation_ids: vec![],
+            update_policy: UpdatePolicy::Automatic,
+            revisions: ViewRevisions::default(),
+        };
+
+        let prims_ext = derive_elevation_view(&vp_ext, &mv, &collector, &ElevationEngineOptions::default()).unwrap();
+        let swing_ext = prims_ext.iter().find(|p| p.role == PrimitiveRole::Symbol).expect("swing symbol");
+
+        // When facing the swing side, DIN opening swing triangle should be a solid line (not DASHED)
+        assert_ne!(
+            swing_ext.style.line_type.as_deref(),
+            Some("DASHED"),
+            "Swing symbol facing the observer must be solid"
+        );
+
+        if let Geometry2d::Polyline { vertices, .. } = &swing_ext.geometry {
+            assert_eq!(vertices.len(), 3, "Swing triangle must have 3 vertices (hinge_top, apex, hinge_bot)");
+            // Hinge is Left, so apex (vertex 1) must be at the right side (strike side, x > 0)
+            let apex = vertices[1];
+            assert!(apex.x_m > vertices[0].x_m, "Apex must point towards strike edge (screen right)");
+        } else {
+            panic!("Expected polyline geometry for swing symbol");
+        }
+
+        // 2. Interior view (back elevation looking from +Y toward -Y, opposite to swing side)
+        let vp_int = Viewpoint {
+            id: ViewpointId::new(),
+            name: "Back Elevation".into(),
+            revision: Revision(1),
+            origin: ViewOrigin::World(Point3::new(0.0, 5.0, 0.0)),
+            axes: ViewAxes::section_with_side(Vector2::new(-1.0, 0.0), false).unwrap(),
+            kind: ViewKind::Elevation {
+                depth: DepthRange {
+                    near: NonNegativeMetres::new(0.0).unwrap(),
+                    far: Some(PositiveMetres::new(10.0).unwrap()),
+                },
+            },
+            z_range: VerticalRange::new(Metres::new(0.0).unwrap(), Metres::new(5.0).unwrap()).unwrap(),
+            mapping: ProjectionMapping::default(),
+            crop: None,
+        };
+
+        let prims_int = derive_elevation_view(&vp_int, &mv, &collector, &ElevationEngineOptions::default()).unwrap();
+        let swing_int = prims_int.iter().find(|p| p.role == PrimitiveRole::Symbol).expect("interior swing symbol");
+
+        // When viewing from the opposite side, the swing triangle must be DASHED per DIN
+        assert_eq!(
+            swing_int.style.line_type.as_deref(),
+            Some("DASHED"),
+            "Swing symbol on opposite side must be DASHED"
+        );
+    }
+
+    #[test]
+    fn test_floorplan_layer_mitered_junctions() {
+        let model_id = ModelId::new();
+        let mut collector = SceneGeometryCollector::new();
+
+        // Two perpendicular walls meeting at an L-corner at (0, 0)
+        let wall1 = CollectedWall {
+            handle: acadrust::Handle::new(10),
+            element_ref: ElementRef::new(model_id, ElementId::new()),
+            xref_source: None,
+            style_id: "Wall_24cm".into(),
+            height: 3.0,
+            base_z: 0.0,
+            top_z: 3.0,
+            axis_points: vec![Point2::new(-5.0, 0.0), Point2::new(0.0, 0.0)],
+            layers: vec![CollectedWallLayer {
+                material: "Concrete".into(),
+                thickness: 0.24,
+                function: "Structural".into(),
+                axis_offset: -0.12,
+                bottom_offset: 0.0,
+                top_offset: 0.0,
+                hatch_override: None,
+                layer_id: Uuid::new_v4(),
+                component_id: ComponentId::new(),
+                is_structural: true,
+            }],
+            total_thickness: 0.24,
+            justification: crate::modules::aec::engine::wall::WallJustification::Center,
+            openings: vec![],
+            phase: crate::modules::aec::engine::plan_view::PlanPhase::New,
+        };
+
+        let wall2 = CollectedWall {
+            handle: acadrust::Handle::new(20),
+            element_ref: ElementRef::new(model_id, ElementId::new()),
+            xref_source: None,
+            style_id: "Wall_24cm".into(),
+            height: 3.0,
+            base_z: 0.0,
+            top_z: 3.0,
+            axis_points: vec![Point2::new(0.0, 0.0), Point2::new(0.0, 5.0)],
+            layers: vec![CollectedWallLayer {
+                material: "Concrete".into(),
+                thickness: 0.24,
+                function: "Structural".into(),
+                axis_offset: -0.12,
+                bottom_offset: 0.0,
+                top_offset: 0.0,
+                hatch_override: None,
+                layer_id: Uuid::new_v4(),
+                component_id: ComponentId::new(),
+                is_structural: true,
+            }],
+            total_thickness: 0.24,
+            justification: crate::modules::aec::engine::wall::WallJustification::Center,
+            openings: vec![],
+            phase: crate::modules::aec::engine::plan_view::PlanPhase::New,
+        };
+
+        collector.walls.push(wall1);
+        collector.walls.push(wall2);
+
+        let vp = Viewpoint {
+            id: ViewpointId::new(),
+            name: "Floor Plan".into(),
+            revision: Revision(1),
+            origin: ViewOrigin::World(Point3::new(0.0, 0.0, 0.0)),
+            axes: ViewAxes::floor_plan(),
+            kind: ViewKind::FloorPlan {
+                range: PlanRange {
+                    above_cut: NonNegativeMetres::new(1.5).unwrap(),
+                    below_cut: NonNegativeMetres::new(1.0).unwrap(),
+                    beyond_below: NonNegativeMetres::ZERO,
+                },
+            },
+            z_range: VerticalRange::new(Metres::new(0.0).unwrap(), Metres::new(4.0).unwrap()).unwrap(),
+            mapping: ProjectionMapping::default(),
+            crop: None,
+        };
+
+        let mv = ModelView {
+            id: ModelViewId::new(),
+            name: "EG".into(),
+            viewpoint_id: vp.id,
+            profile_id: ViewProfileId::new(),
+            scale: ScaleDenominator::new(50.0).unwrap(),
+            detail: DetailPolicy::FromProfileAndScale,
+            excluded_elements: BTreeSet::new(),
+            graphic_overrides: vec![],
+            annotation_ids: vec![],
+            update_policy: UpdatePolicy::Automatic,
+            revisions: ViewRevisions::default(),
+        };
+
+        let prims = derive_floorplan_view(&vp, &mv, &collector, &FloorPlanEngineOptions::default()).unwrap();
+        let boundaries: Vec<_> = prims.iter().filter(|p| p.role == PrimitiveRole::CutBoundary).collect();
+        assert_eq!(boundaries.len(), 2, "Each wall should emit a cut boundary");
+
+        // The mitered corner polygon should feature the diagonal miter vertex at (0.12, -0.12)
+        let mut found_miter_corner = false;
+        for b in &boundaries {
+            if let Geometry2d::Polyline { vertices, .. } = &b.geometry {
+                for v in vertices {
+                    if (v.x_m - 0.12).abs() < 0.01 && (v.y_m - -0.12).abs() < 0.01 {
+                        found_miter_corner = true;
+                    }
+                }
+            }
+        }
+        assert!(found_miter_corner, "Cut boundary must use mitered junction geometry at the L-corner");
     }
 }

@@ -175,18 +175,22 @@ pub fn regenerate_carrier(
     let mut primitives = match &vp.kind {
         ViewKind::Section { .. } => {
             derive_section_view(&vp, &mv, scene, &CutEngineOptions {
-                display_config,
-                style_library: Some(style_lib),
+                display_config: display_config.clone(),
+                style_library: Some(style_lib.clone()),
                 ..CutEngineOptions::default()
             })?
         }
         ViewKind::Elevation { .. } => {
-            derive_elevation_view(&vp, &mv, scene, &ElevationEngineOptions::default())?
+            derive_elevation_view(&vp, &mv, scene, &ElevationEngineOptions {
+                display_config: display_config.clone(),
+                style_library: Some(style_lib.clone()),
+                ..ElevationEngineOptions::default()
+            })?
         }
         ViewKind::FloorPlan { .. } | ViewKind::ReflectedCeilingPlan { .. } => {
             derive_floorplan_view(&vp, &mv, scene, &FloorPlanEngineOptions {
-                display_config,
-                style_library: Some(style_lib),
+                display_config: display_config.clone(),
+                style_library: Some(style_lib.clone()),
                 ..FloorPlanEngineOptions::default()
             })?
         }

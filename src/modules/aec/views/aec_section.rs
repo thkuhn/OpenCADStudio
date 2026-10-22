@@ -252,7 +252,7 @@ impl SectionCommand {
         };
 
         // 2. Build ModelView
-        let model_view = ModelView {
+        let mut model_view = ModelView {
             id: ModelViewId::new(),
             name: format!("Section {}", self.label),
             viewpoint_id: viewpoint.id,
@@ -286,6 +286,15 @@ impl SectionCommand {
                     .find(|c| c.view_type == crate::modules::aec::engine::plan_view::ViewType::Section)
             })
             .cloned();
+
+        if let Some(ref dc) = display_config {
+            model_view.profile_id = ViewProfileId::from_uuid(dc.id);
+            if let Some(scale) = dc.scale {
+                if let Ok(sd) = ScaleDenominator::new(scale) {
+                    model_view.scale = sd;
+                }
+            }
+        }
 
         let collector = SceneGeometryCollector::collect_from_document(&scene.document, ModelId::new());
         let mut primitives = derive_section_view(

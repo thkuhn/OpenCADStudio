@@ -6,15 +6,23 @@
 use super::model_view::{DetailLevel, ModelView};
 use super::provenance::{
     DerivedPrimitive, EditHandle, FeatureKey, Geometry2d, ModelEditAction, ModelParameter,
-    PrimitiveId, PrimitiveRole, ResolvedStyle, Rgba8, SourceReference, SourceSet,
+    PrimitiveId, PrimitiveRole, ResolvedStyle, SourceReference, SourceSet,
 };
 use super::scene_collector::{CollectedOpening, CollectedSlab, CollectedWall, SceneGeometryCollector};
 use super::viewpoint::{ViewKind, Viewpoint};
 use super::{
     DepthInterval, PaperMm, Point2, Point3, ValidationError, Vector2,
 };
+use crate::modules::aec::engine::display_component::OpeningComponentSlot;
+use crate::modules::aec::engine::library::StyleLibrary;
 use crate::modules::aec::engine::opening_style::HingeSide;
-use crate::modules::aec::engine::openings::OpeningKind;
+use crate::modules::aec::engine::openings::{OpeningKind, SwingSide};
+use crate::modules::aec::engine::plan_view::DisplayConfig;
+use super::style_resolver::{
+    is_draw_suppressed, is_opening_slot_visible, is_wall_phase_visible,
+    resolve_opening_view_fill_style, resolve_opening_view_style,
+    resolve_wall_elevation_contour_style, ViewStyleContext,
+};
 
 const EPS: f64 = 1e-6;
 
@@ -23,6 +31,8 @@ pub struct ElevationEngineOptions {
     pub show_hidden_edges: bool,
     pub include_opening_symbols: bool,
     pub detail_level: DetailLevel,
+    pub display_config: Option<DisplayConfig>,
+    pub style_library: Option<StyleLibrary>,
 }
 
 impl Default for ElevationEngineOptions {
@@ -31,6 +41,8 @@ impl Default for ElevationEngineOptions {
             show_hidden_edges: false,
             include_opening_symbols: true,
             detail_level: DetailLevel::Fine,
+            display_config: None,
+            style_library: None,
         }
     }
 }
@@ -57,6 +69,21 @@ pub fn derive_elevation_view(
         _ => (0.0, f64::INFINITY),
     };
 
+    let default_style_lib;
+    let style_library = if let Some(lib) = options.style_library.as_ref() {
+        lib
+    } else {
+        default_style_lib = crate::modules::aec::engine::library::seed_default_library();
+        &default_style_lib
+    };
+
+    let ctx = ViewStyleContext::new(
+        model_view,
+        options.display_config.as_ref(),
+        Some(style_library),
+        true,
+    );
+
     let mut primitives = Vec::new();
     let mut primitive_counter: u32 = 0;
 
@@ -79,6 +106,7 @@ pub fn derive_elevation_view(
             far_depth,
             model_view,
             options,
+            &ctx,
             &mut primitives,
             &mut primitive_counter,
         )?;
@@ -101,6 +129,7 @@ pub fn derive_elevation_view(
             far_depth,
             model_view,
             options,
+            &ctx,
             &mut primitives,
             &mut primitive_counter,
         )?;
@@ -116,6 +145,10 @@ pub fn derive_elevation_view(
         },
     )?;
 
+    primitives.retain(|p| {
+        p.style.layer_name.as_deref() != Some(super::silhouette::TRANSIENT_OCCLUDER_LAYER)
+    });
+
     Ok(primitives)
 }
 
@@ -126,12 +159,18 @@ pub fn project_wall_elevation(
     far_depth: f64,
     model_view: &ModelView,
     options: &ElevationEngineOptions,
+    ctx: &ViewStyleContext,
     primitives: &mut Vec<DerivedPrimitive>,
     counter: &mut u32,
 ) -> Result<(), ValidationError> {
+    if !is_wall_phase_visible(ctx, wall) || is_draw_suppressed(ctx, &wall.element_ref, None) {
+        return Ok(());
+    }
     if wall.axis_points.len() < 2 {
         return Ok(());
     }
+
+    let style = resolve_wall_elevation_contour_style(ctx, wall);
 
     for window in wall.axis_points.windows(2) {
         let p0 = window[0];
@@ -160,8 +199,6 @@ pub fn project_wall_elevation(
             feature: Some(FeatureKey::WallTop),
             display_component_id: None,
         };
-
-        let style = ResolvedStyle::solid_stroke(PaperMm::new(0.25)?);
 
         // Wall Top projected edge
         *counter += 1;
@@ -228,7 +265,7 @@ pub fn project_wall_elevation(
             },
             sources: SourceSet::new(vec![wall_source.clone()])?,
             depth: DepthInterval::new(avg_depth, avg_depth)?,
-            style,
+            style: style.clone(),
             edit_handles: vec![],
         });
 
@@ -288,6 +325,7 @@ pub fn project_wall_elevation(
                     near_depth,
                     far_depth,
                     model_view,
+                    ctx,
                     primitives,
                     counter,
                 )?;
@@ -307,9 +345,14 @@ fn project_opening_elevation(
     near_depth: f64,
     far_depth: f64,
     model_view: &ModelView,
+    ctx: &ViewStyleContext,
     primitives: &mut Vec<DerivedPrimitive>,
     counter: &mut u32,
 ) -> Result<(), ValidationError> {
+    if is_draw_suppressed(ctx, &op.element_ref, None) {
+        return Ok(());
+    }
+
     let seg_vec = Vector2::new(w_p1.x_m - w_p0.x_m, w_p1.y_m - w_p0.y_m);
     let seg_len = seg_vec.length();
     if seg_len < EPS {
@@ -345,81 +388,129 @@ fn project_opening_elevation(
         display_component_id: None,
     };
 
-    let frame_style = ResolvedStyle {
-        line_weight_mm: PaperMm::new(0.35)?,
-        line_color: Some(Rgba8::new(0, 90, 180, 255)),
-        line_type: None,
-        fill_color: None,
-        hatch_pattern: None,
-        hatch_scale: None,
-        hatch_angle_rad: None,
-        layer_name: None,
-    };
-
-    // 1. ElevationContour2D: Outer frame contour
-    *counter += 1;
     let frame_poly = vec![uv_bl, uv_br, uv_tr, uv_tl];
-    let sill_anchor = Point2::new((uv_bl.x_m + uv_br.x_m) * 0.5, (uv_bl.y_m + uv_br.y_m) * 0.5);
-    let head_anchor = Point2::new((uv_tl.x_m + uv_tr.x_m) * 0.5, (uv_tl.y_m + uv_tr.y_m) * 0.5);
 
-    primitives.push(DerivedPrimitive {
-        id: PrimitiveId::new(model_view.id, 1, *counter),
-        role: PrimitiveRole::ProjectedEdge,
-        geometry: Geometry2d::Region {
-            outer: frame_poly,
-            holes: vec![],
-        },
-        sources: SourceSet::new(vec![op_source.clone()])?,
-        depth: DepthInterval::new(avg_depth, avg_depth)?,
-        style: frame_style,
-        edit_handles: vec![
-            EditHandle {
-                id: format!("op_sill_{}", counter),
-                position: sill_anchor,
-                action: ModelEditAction::ChangeParameter(ModelParameter::OpeningSillHeight),
-                direction_hint: Vector2::new(0.0, 1.0),
-                target_feature: Some(FeatureKey::OpeningSill),
-                source: op_source.clone(),
-            },
-            EditHandle {
-                id: format!("op_head_{}", counter),
-                position: head_anchor,
-                action: ModelEditAction::ChangeParameter(ModelParameter::OpeningHeadHeight),
-                direction_hint: Vector2::new(0.0, 1.0),
-                target_feature: Some(FeatureKey::OpeningHead),
-                source: op_source.clone(),
-            },
-        ],
-    });
-
-    // 2. ElevationSwing2D: DIN Opening triangle symbol
-    if op.kind == OpeningKind::Window || op.kind == OpeningKind::Door {
-        let apex = match op.hinge {
-            HingeSide::Left => Point2::new(
-                uv_br.x_m,
-                (uv_br.y_m + uv_tr.y_m) * 0.5,
-            ),
-            HingeSide::Right => Point2::new(
-                uv_bl.x_m,
-                (uv_bl.y_m + uv_tl.y_m) * 0.5,
-            ),
-        };
-
-        let swing_pts = match op.hinge {
-            HingeSide::Left => vec![uv_tl, apex, uv_bl],
-            HingeSide::Right => vec![uv_tr, apex, uv_br],
-        };
-
-        let swing_style = ResolvedStyle {
-            line_weight_mm: PaperMm::new(0.18)?,
-            line_color: Some(Rgba8::new(100, 100, 100, 255)),
-            line_type: Some("DASHED".into()),
+    // 0. Opaque opening surface filler: prevents background geometry from shining through opening
+    let fill_slot = if op.kind == OpeningKind::Door {
+        OpeningComponentSlot::Leaf2D
+    } else {
+        OpeningComponentSlot::Glazing2D
+    };
+    let fill_style = resolve_opening_view_fill_style(ctx, op, fill_slot).unwrap_or_else(|| {
+        ResolvedStyle {
+            line_weight_mm: PaperMm::new(0.18).unwrap(),
+            line_color: None,
+            line_type: None,
             fill_color: None,
             hatch_pattern: None,
             hatch_scale: None,
             hatch_angle_rad: None,
-            layer_name: None,
+            layer_name: Some("AEC_OPENING_SURFACE".to_string()),
+        }
+    });
+
+    *counter += 1;
+    primitives.push(DerivedPrimitive {
+        id: PrimitiveId::new(model_view.id, 1, *counter),
+        role: PrimitiveRole::SurfaceFill,
+        geometry: Geometry2d::Region {
+            outer: frame_poly.clone(),
+            holes: vec![],
+        },
+        sources: SourceSet::new(vec![op_source.clone()])?,
+        depth: DepthInterval::new(avg_depth, avg_depth)?,
+        style: fill_style,
+        edit_handles: vec![],
+    });
+
+    // 1. ElevationContour2D: Outer frame contour
+    if is_opening_slot_visible(ctx, op, OpeningComponentSlot::ElevationContour2D) {
+        let frame_style = resolve_opening_view_style(ctx, op, OpeningComponentSlot::ElevationContour2D);
+        *counter += 1;
+        let sill_anchor = Point2::new((uv_bl.x_m + uv_br.x_m) * 0.5, (uv_bl.y_m + uv_br.y_m) * 0.5);
+        let head_anchor = Point2::new((uv_tl.x_m + uv_tr.x_m) * 0.5, (uv_tl.y_m + uv_tr.y_m) * 0.5);
+
+        primitives.push(DerivedPrimitive {
+            id: PrimitiveId::new(model_view.id, 1, *counter),
+            role: PrimitiveRole::ProjectedEdge,
+            geometry: Geometry2d::Region {
+                outer: frame_poly.clone(),
+                holes: vec![],
+            },
+            sources: SourceSet::new(vec![op_source.clone()])?,
+            depth: DepthInterval::new(avg_depth, avg_depth)?,
+            style: frame_style,
+            edit_handles: vec![
+                EditHandle {
+                    id: format!("op_sill_{}", counter),
+                    position: sill_anchor,
+                    action: ModelEditAction::ChangeParameter(ModelParameter::OpeningSillHeight),
+                    direction_hint: Vector2::new(0.0, 1.0),
+                    target_feature: Some(FeatureKey::OpeningSill),
+                    source: op_source.clone(),
+                },
+                EditHandle {
+                    id: format!("op_head_{}", counter),
+                    position: head_anchor,
+                    action: ModelEditAction::ChangeParameter(ModelParameter::OpeningHeadHeight),
+                    direction_hint: Vector2::new(0.0, 1.0),
+                    target_feature: Some(FeatureKey::OpeningHead),
+                    source: op_source.clone(),
+                },
+            ],
+        });
+    }
+
+    // 2. ElevationSwing2D: DIN Opening triangle symbol
+    if (op.kind == OpeningKind::Window || op.kind == OpeningKind::Door)
+        && is_opening_slot_visible(ctx, op, OpeningComponentSlot::ElevationSwing2D)
+    {
+        let wall_screen_ltr = uv_bl.x_m <= uv_br.x_m;
+        let (screen_left_bot, screen_left_top, screen_right_bot, screen_right_top) = if wall_screen_ltr {
+            (uv_bl, uv_tl, uv_br, uv_tr)
+        } else {
+            (uv_br, uv_tr, uv_bl, uv_tl)
         };
+
+        let w_normal = Vector2::new(-seg_vec.y, seg_vec.x);
+        let view_dir = viewpoint.axes.forward;
+        let dot_normal = view_dir.x * w_normal.x + view_dir.y * w_normal.y;
+
+        let observer_on_swing_side = if dot_normal <= 0.0 {
+            op.swing_side == SwingSide::Exterior
+        } else {
+            op.swing_side == SwingSide::Interior
+        };
+
+        let hinge_on_screen_left = if observer_on_swing_side {
+            op.hinge == HingeSide::Left
+        } else {
+            op.hinge == HingeSide::Right
+        };
+
+        let (hinge_top, hinge_bot, strike_x, strike_mid_y) = if hinge_on_screen_left {
+            (
+                screen_left_top,
+                screen_left_bot,
+                screen_right_top.x_m,
+                (screen_right_bot.y_m + screen_right_top.y_m) * 0.5,
+            )
+        } else {
+            (
+                screen_right_top,
+                screen_right_bot,
+                screen_left_top.x_m,
+                (screen_left_bot.y_m + screen_left_top.y_m) * 0.5,
+            )
+        };
+
+        let apex = Point2::new(strike_x, strike_mid_y);
+        let swing_pts = vec![hinge_top, apex, hinge_bot];
+
+        let mut swing_style = resolve_opening_view_style(ctx, op, OpeningComponentSlot::ElevationSwing2D);
+        if observer_on_swing_side && swing_style.line_type.as_deref() == Some("DASHED") {
+            swing_style.line_type = None;
+        }
 
         *counter += 1;
         primitives.push(DerivedPrimitive {
@@ -437,21 +528,12 @@ fn project_opening_elevation(
     }
 
     // 3. ElevationSill2D: Window sill projection line
-    if op.kind == OpeningKind::Window {
+    if op.kind == OpeningKind::Window && is_opening_slot_visible(ctx, op, OpeningComponentSlot::ElevationSill2D) {
         let ear = 0.05;
-        let sill_p0 = Point2::new(uv_bl.x_m - ear, uv_bl.y_m - 0.04);
-        let sill_p1 = Point2::new(uv_br.x_m + ear, uv_br.y_m - 0.04);
+        let sill_p0 = Point2::new(uv_bl.x_m.min(uv_br.x_m) - ear, uv_bl.y_m.min(uv_br.y_m) - 0.04);
+        let sill_p1 = Point2::new(uv_bl.x_m.max(uv_br.x_m) + ear, uv_bl.y_m.min(uv_br.y_m) - 0.04);
 
-        let sill_style = ResolvedStyle {
-            line_weight_mm: PaperMm::new(0.25)?,
-            line_color: Some(Rgba8::new(0, 0, 0, 255)),
-            line_type: None,
-            fill_color: None,
-            hatch_pattern: None,
-            hatch_scale: None,
-            hatch_angle_rad: None,
-            layer_name: None,
-        };
+        let sill_style = resolve_opening_view_style(ctx, op, OpeningComponentSlot::ElevationSill2D);
 
         *counter += 1;
         primitives.push(DerivedPrimitive {
@@ -478,9 +560,15 @@ pub fn project_slab_elevation(
     far_depth: f64,
     model_view: &ModelView,
     _options: &ElevationEngineOptions,
+    ctx: &ViewStyleContext,
     primitives: &mut Vec<DerivedPrimitive>,
     counter: &mut u32,
 ) -> Result<(), ValidationError> {
+    if !crate::modules::aec::engine::views::style_resolver::is_slab_phase_visible(ctx, slab)
+        || is_draw_suppressed(ctx, &slab.element_ref, None)
+    {
+        return Ok(());
+    }
     let n = slab.polygon.len();
     if n < 3 {
         return Ok(());
@@ -516,7 +604,7 @@ pub fn project_slab_elevation(
             display_component_id: None,
         };
 
-        let style = ResolvedStyle::solid_stroke(PaperMm::new(0.25)?);
+        let style = crate::modules::aec::engine::views::style_resolver::resolve_slab_contour_style(ctx, slab, false);
 
         *counter += 1;
         primitives.push(DerivedPrimitive {

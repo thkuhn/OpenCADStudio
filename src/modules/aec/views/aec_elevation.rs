@@ -186,7 +186,7 @@ impl ElevationCommand {
             )),
         };
 
-        let model_view = ModelView {
+        let mut model_view = ModelView {
             id: ModelViewId::new(),
             name: format!("Elevation {}", self.name),
             viewpoint_id: viewpoint.id,
@@ -200,12 +200,29 @@ impl ElevationCommand {
             revisions: Default::default(),
         };
 
+        let style_lib = crate::modules::aec::engine::project::resolve_style_library(None);
+        let dc_lib = crate::modules::aec::engine::project::resolve_display_config_library(None);
+        let display_config = dc_lib.configs.iter().find(|c| c.view_type == crate::modules::aec::engine::plan_view::ViewType::Elevation).cloned();
+
+        if let Some(ref dc) = display_config {
+            model_view.profile_id = ViewProfileId::from_uuid(dc.id);
+            if let Some(scale) = dc.scale {
+                if let Ok(sd) = ScaleDenominator::new(scale) {
+                    model_view.scale = sd;
+                }
+            }
+        }
+
         let collector = SceneGeometryCollector::collect_from_document(&scene.document, ModelId::new());
         let mut primitives = derive_elevation_view(
             &viewpoint,
             &model_view,
             &collector,
-            &ElevationEngineOptions::default(),
+            &ElevationEngineOptions {
+                display_config,
+                style_library: Some(style_lib),
+                ..ElevationEngineOptions::default()
+            },
         )
         .unwrap_or_default();
 

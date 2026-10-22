@@ -488,6 +488,15 @@ impl OpenCADStudio {
                 if is_wall {
                     let _ = self.regenerate_wall_respecting_active_display_config(tab_index, mutated_handle);
                 }
+                let host_wall = self.tabs[tab_index]
+                    .scene
+                    .document
+                    .get_entity(mutated_handle)
+                    .and_then(|e| crate::modules::aec::engine::opening_xdata::opening_from_entity(e, mutated_handle))
+                    .map(|o| o.host_wall);
+                if let Some(wall_h) = host_wall {
+                    let _ = self.regenerate_wall_respecting_active_display_config(tab_index, wall_h);
+                }
                 let is_slab = self.tabs[tab_index]
                     .scene
                     .document

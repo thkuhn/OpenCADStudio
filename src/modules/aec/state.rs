@@ -266,6 +266,8 @@ pub struct AecState {
     pub aec_pending_carrier_cut_height: Option<(acadrust::Handle, f64)>,
     /// Pending carrier insertion mutation from an active carrier grip drag (handle, new_insertion_pt).
     pub aec_pending_carrier_insertion: Option<(acadrust::Handle, crate::modules::aec::engine::views::Point2)>,
+    /// Currently open context menu for an AEC grip (Opening, WallBase, SlabBottom).
+    pub aec_active_grip_menu: Option<crate::modules::aec::ui::context_menu::AecMenuExclusive>,
 
     // ── AEC DisplayConfig Manager (Step 5) ─────────────────────────────────
     /// Loaded (or seeded) on `AEC_PLANMANAGER`; holds the `DisplayConfig`
@@ -370,6 +372,7 @@ impl Default for AecState {
             aec_pending_derived_view_grip: None,
             aec_pending_carrier_cut_height: None,
             aec_pending_carrier_insertion: None,
+            aec_active_grip_menu: None,
             aec_plan_library: None,
             aec_junction_editor_target: None,
             aec_junction_editor_default_style: None,

@@ -767,6 +767,17 @@ impl OpenCADStudio {
         }
     }
 
+    pub(crate) fn engage_grip_edit(
+        &mut self,
+        tab: usize,
+        handle: Handle,
+        grip_id: usize,
+        world: glam::DVec3,
+    ) {
+        let edit = self.grip_edit_for_hit(tab, handle, grip_id, false, world);
+        self.tabs[tab].active_grip = Some(edit);
+    }
+
     pub(in crate::app) fn grip_edit_for_hit(
         &mut self,
         i: usize,
@@ -3856,6 +3867,55 @@ impl OpenCADStudio {
                             sel.junction_menu_submenu = true;
                             sel.junction_menu_only = true;
                             sel.junction_menu = Some((axis, end_index));
+                            drop(sel);
+                            self.grip_hover = None;
+                            self.grip_popup = None;
+                            return Task::none();
+                        }
+                        if grip_id >= crate::modules::aec::properties::DERIVED_VIEW_DROPDOWN_GRIP_BASE
+                            && grip_id < crate::modules::aec::properties::DERIVED_VIEW_DROPDOWN_GRIP_BASE + 100
+                        {
+                            if let Some(menu_exclusive) =
+                                crate::modules::aec::ui::context_menu::derived_view_dropdown_menu(
+                                    &self.tabs[i].scene,
+                                    handle,
+                                    grip_id,
+                                )
+                            {
+                                self.aec.aec_active_grip_menu = Some(menu_exclusive);
+                                let mut sel = self.tabs[i].scene.selection.borrow_mut();
+                                sel.open_context_menu(p_full);
+                                drop(sel);
+                                self.grip_hover = None;
+                                self.grip_popup = None;
+                                return Task::none();
+                            }
+                        }
+                        if grip_id == crate::modules::aec::properties::OPENING_DROPDOWN_GRIP_ID {
+                            let op_handle = crate::modules::aec::engine::opening_display::opening_owner_if_any(&self.tabs[i].scene, handle).unwrap_or(handle);
+                            self.aec.aec_active_grip_menu = Some(crate::modules::aec::ui::context_menu::AecMenuExclusive::OpeningGrip(op_handle, 0));
+                            let mut sel = self.tabs[i].scene.selection.borrow_mut();
+                            sel.open_context_menu(p_full);
+                            drop(sel);
+                            self.grip_hover = None;
+                            self.grip_popup = None;
+                            return Task::none();
+                        }
+                        if grip_id == crate::modules::aec::properties::WALL_BASE_DROPDOWN_GRIP_ID {
+                            let wall_handle = crate::modules::aec::engine::wall_package::resolve_wall_package(&self.tabs[i].scene, handle);
+                            self.aec.aec_active_grip_menu = Some(crate::modules::aec::ui::context_menu::AecMenuExclusive::WallBaseGrip(wall_handle));
+                            let mut sel = self.tabs[i].scene.selection.borrow_mut();
+                            sel.open_context_menu(p_full);
+                            drop(sel);
+                            self.grip_hover = None;
+                            self.grip_popup = None;
+                            return Task::none();
+                        }
+                        if grip_id == crate::modules::aec::properties::SLAB_BOTTOM_DROPDOWN_GRIP_ID {
+                            let slab_handle = crate::modules::aec::engine::slab_package::resolve_slab_package(&self.tabs[i].scene, handle);
+                            self.aec.aec_active_grip_menu = Some(crate::modules::aec::ui::context_menu::AecMenuExclusive::SlabBottomGrip(slab_handle));
+                            let mut sel = self.tabs[i].scene.selection.borrow_mut();
+                            sel.open_context_menu(p_full);
                             drop(sel);
                             self.grip_hover = None;
                             self.grip_popup = None;

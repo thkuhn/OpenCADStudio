@@ -608,6 +608,21 @@ pub enum AecMessage {
     /// Remove the entire override for the open junction (same effect as
     /// Step 4's context-menu reset) and close the panel.
     AecJunctionEditorFullReset,
+    // ── Derived View Grip context menus ─────────────────────────────────
+    AecOpeningGripMove(acadrust::Handle, usize),
+    AecOpeningGripResize(acadrust::Handle, usize),
+    AecOpeningGripFlipHinge(acadrust::Handle),
+    AecOpeningGripFlipSwing(acadrust::Handle),
+    AecOpeningGripSetStyle(acadrust::Handle, String),
+    AecOpeningGripSetSill(acadrust::Handle, f64),
+    AecWallBaseOffsetPrompt(acadrust::Handle),
+    AecWallTopMove(acadrust::Handle),
+    AecWallSetElevation(acadrust::Handle, f64),
+    AecWallSetStyle(acadrust::Handle, String),
+    AecSlabThicknessPrompt(acadrust::Handle),
+    AecSlabTopMove(acadrust::Handle),
+    AecSlabSetElevation(acadrust::Handle, f64),
+    AecSlabSetStyle(acadrust::Handle, String),
 }
 
 

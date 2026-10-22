@@ -32,7 +32,21 @@ impl OpenCADStudio {
             let sel = tab.scene.selection.borrow();
             (sel.junction_menu, sel.junction_menu_only)
         };
-        let exclusive = if self
+        let exclusive = if let Some(ex) = self.aec.aec_active_grip_menu {
+            ex
+        } else if tab.scene.selected.len() == 1 {
+            let h = *tab.scene.selected.iter().next().unwrap();
+            let resolved = crate::modules::aec::properties::resolve_aec_package(&tab.scene, h);
+            if let Some(_op) = tab.scene.document.get_entity(resolved).and_then(|e| crate::modules::aec::engine::opening_xdata::opening_from_entity(e, resolved)) {
+                AecMenuExclusive::OpeningGrip(resolved, 0)
+            } else if let Some(ex) = crate::modules::aec::ui::context_menu::derived_primitive_context_menu(&tab.scene, h) {
+                ex
+            } else if tab.scene.document.get_entity(resolved).is_some_and(crate::modules::aec::properties::slab_from_entity) {
+                AecMenuExclusive::SlabBottomGrip(resolved)
+            } else {
+                AecMenuExclusive::None
+            }
+        } else if self
             .aec
             .aec_layer_pair_draw
             .as_ref()
@@ -117,6 +131,7 @@ impl OpenCADStudio {
 
     /// Close the menu and give the keyboard back to the command line.
     pub(in crate::app) fn close_context_menu(&mut self) -> Task<Message> {
+        self.aec.aec_active_grip_menu = None;
         let i = self.active_tab;
         let mut sel = self.tabs[i].scene.selection.borrow_mut();
         if sel.menu.open_at.is_none() {
@@ -154,6 +169,7 @@ impl OpenCADStudio {
         if let MenuAction::ToggleSubmenu(id) = action {
             return self.on_context_menu_submenu_toggle(id);
         }
+        self.aec.aec_active_grip_menu = None;
         let i = self.active_tab;
         {
             let mut sel = self.tabs[i].scene.selection.borrow_mut();
@@ -872,6 +888,140 @@ mod tests {
             assert!(!app.tabs[0].grip_base_pending);
             let (x, y) = line_start(&app, handle);
             assert!((x - 1.0).abs() < 1e-3 && (y - 1.0).abs() < 1e-3);
+        });
+    }
+
+    #[test]
+    fn test_aec_exclusive_context_menus_view_and_navigation() {
+        use crate::modules::aec::engine::views::provenance::{DerivedPrimitive, ElementRef, FeatureKey, Geometry2d, PrimitiveRole, ResolvedStyle, SourceReference, SourceSet};
+        use crate::modules::aec::engine::views::carrier::{create_view_carrier, sync_carrier_primitives};
+        use crate::modules::aec::engine::views::model_view::UpdatePolicy;
+        use crate::modules::aec::engine::views::{DepthInterval, ModelId, ModelViewId, PaperMm, Point2, ViewpointId};
+        use crate::modules::aec::engine::wall::Wall;
+        use crate::modules::aec::engine::openings::Opening;
+        use crate::modules::aec::engine::opening_xdata::write_opening_instance;
+        use crate::modules::aec::engine::slab::Slab;
+        use crate::modules::aec::engine::slab_xdata::write_slab_record;
+        use acadrust::entities::{LwPolyline, LwVertex};
+        use acadrust::types::Vector2;
+        use codec::EntityType;
+
+        with_stack(|| {
+            let mut app = app();
+            let wid = app.main_window.unwrap_or_else(iced::window::Id::unique);
+
+            // 1. Setup 3D Wall
+            let wall = Wall::new("W1", 2.8, 0);
+            let mut pl = LwPolyline::new();
+            pl.add_vertex(LwVertex::new(Vector2::new(0.0, 0.0)));
+            pl.add_vertex(LwVertex::new(Vector2::new(10.0, 0.0)));
+            let mut wall_entity = EntityType::LwPolyline(pl);
+            let mut rec = acadrust::xdata::ExtendedDataRecord::new(crate::modules::aec::engine::xdata::AEC_APPID);
+            rec.values = crate::modules::aec::engine::xdata::wall_record_for_wall(&wall);
+            wall_entity.common_mut().extended_data.add_record(rec);
+            let wall_handle = app.tabs[0].scene.document.add_entity(wall_entity).unwrap();
+
+            // 2. Setup 3D Opening
+            let op_h = app.tabs[0].scene.document.allocate_handle();
+            let mut op_ent = EntityType::Point(codec::Point::default());
+            op_ent.common_mut().handle = op_h;
+            app.tabs[0].scene.document.add_entity(op_ent).unwrap();
+            let opening = Opening::door(op_h, wall_handle, 2.0);
+            write_opening_instance(&mut app.tabs[0].scene, &opening);
+
+            // 3. Setup 3D Slab
+            let slab_h = app.tabs[0].scene.document.allocate_handle();
+            let mut slab_pl = LwPolyline::new();
+            slab_pl.common.handle = slab_h;
+            slab_pl.add_vertex(LwVertex::new(Vector2::new(0.0, 0.0)));
+            slab_pl.add_vertex(LwVertex::new(Vector2::new(5.0, 0.0)));
+            slab_pl.add_vertex(LwVertex::new(Vector2::new(5.0, 5.0)));
+            let slab_ent = EntityType::LwPolyline(slab_pl);
+            app.tabs[0].scene.document.add_entity(slab_ent).unwrap();
+            let slab = Slab::new("default", 0);
+            write_slab_record(&mut app.tabs[0].scene.document, slab_h, &slab);
+
+            // 4. Setup View Carrier and derived primitives
+            let vp_id = ViewpointId::new();
+            let mv_id = ModelViewId::new();
+            let mut carrier = create_view_carrier(
+                &mut app.tabs[0].scene.document,
+                vp_id,
+                mv_id,
+                Point2::new(0.0, 0.0),
+                1.0,
+                0.0,
+                UpdatePolicy::Automatic,
+            ).expect("carrier");
+
+            let op_ref = ElementRef::new(ModelId::new(), crate::modules::aec::engine::views::scene_collector::handle_to_element_id(op_h));
+            let src_op = SourceReference {
+                element: op_ref,
+                xref_source: None,
+                component_id: None,
+                feature: Some(FeatureKey::OpeningLeftJamb),
+                display_component_id: None,
+            };
+            let prim_op = DerivedPrimitive {
+                id: crate::modules::aec::engine::views::provenance::PrimitiveId::new(mv_id, 1, 1),
+                role: PrimitiveRole::CutBoundary,
+                geometry: Geometry2d::Line { start: Point2::new(0.0, 0.0), end: Point2::new(1.0, 0.0) },
+                sources: SourceSet::new(vec![src_op]).unwrap(),
+                depth: DepthInterval::new(0.0, 0.0).unwrap(),
+                style: ResolvedStyle::solid_stroke(PaperMm::new(0.35).unwrap()),
+                edit_handles: vec![],
+            };
+            sync_carrier_primitives(&mut app.tabs[0].scene.document, &mut carrier, &[prim_op]).expect("sync");
+            let op_child = carrier.derived_handles[0];
+
+            // Test Case 1: Select 3D Opening -> Open context menu -> View -> Submenu Toggle -> View
+            app.tabs[0].scene.deselect_all();
+            app.tabs[0].scene.select_entity(op_h, true);
+            app.tabs[0].scene.selection.borrow_mut().open_context_menu(iced::Point::new(100.0, 100.0));
+            assert!(menu_open(&app));
+            let _ = app.view(wid);
+
+            let _ = app.update(Message::ContextMenuSubmenuToggle(SubmenuId::AecOpeningStyle));
+            let _ = app.view(wid);
+            let _ = app.update(Message::ContextMenuNavigate(ContextMenuNav::Down));
+            let _ = app.update(Message::ContextMenuNavigate(ContextMenuNav::Up));
+            let _ = app.update(Message::ContextMenuSubmenuToggle(SubmenuId::AecOpeningSill));
+            let _ = app.view(wid);
+            let _ = app.close_context_menu();
+            assert!(!menu_open(&app));
+
+            // Test Case 2: Select 3D Slab -> Open context menu -> View -> Submenu Toggle -> View
+            app.tabs[0].scene.deselect_all();
+            app.tabs[0].scene.select_entity(slab_h, true);
+            app.tabs[0].scene.selection.borrow_mut().open_context_menu(iced::Point::new(100.0, 100.0));
+            assert!(menu_open(&app));
+            let _ = app.view(wid);
+            let _ = app.update(Message::ContextMenuSubmenuToggle(SubmenuId::AecSlabStyle));
+            let _ = app.view(wid);
+            let _ = app.update(Message::ContextMenuSubmenuToggle(SubmenuId::AecSlabPlane));
+            let _ = app.view(wid);
+            let _ = app.close_context_menu();
+
+            // Test Case 3: Select Derived Opening Primitive -> Open context menu -> View -> Submenu Toggle -> View
+            app.tabs[0].scene.deselect_all();
+            app.tabs[0].scene.select_entity(op_child, true);
+            app.tabs[0].scene.selection.borrow_mut().open_context_menu(iced::Point::new(100.0, 100.0));
+            assert!(menu_open(&app));
+            let _ = app.view(wid);
+            let _ = app.update(Message::ContextMenuSubmenuToggle(SubmenuId::AecOpeningStyle));
+            let _ = app.view(wid);
+            let _ = app.close_context_menu();
+
+            // Test Case 4: WallBase Dropdown Grip hover and click
+            app.aec.aec_active_grip_menu = Some(crate::modules::aec::ui::context_menu::AecMenuExclusive::WallBaseGrip(wall_handle));
+            app.tabs[0].scene.selection.borrow_mut().open_context_menu(iced::Point::new(100.0, 100.0));
+            assert!(menu_open(&app));
+            let _ = app.view(wid);
+            let _ = app.update(Message::ContextMenuSubmenuToggle(SubmenuId::AecWallStyle));
+            let _ = app.view(wid);
+            let _ = app.update(Message::ContextMenuSubmenuToggle(SubmenuId::AecWallPlane));
+            let _ = app.view(wid);
+            let _ = app.close_context_menu();
         });
     }
 }

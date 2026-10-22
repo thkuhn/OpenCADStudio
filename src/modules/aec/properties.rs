@@ -1110,6 +1110,61 @@ pub fn carrier_prop_section(
         scale_val,
     ));
 
+    let dc_lib = crate::modules::aec::engine::project::resolve_display_config_library(None);
+    let current_config_name = if let Some((ref vp, ref mv)) = defs {
+        dc_lib
+            .configs
+            .iter()
+            .find(|c| c.id == mv.profile_id.as_uuid())
+            .or_else(|| {
+                dc_lib
+                    .configs
+                    .iter()
+                    .find(|c| mv.name.contains(&c.name))
+            })
+            .or_else(|| {
+                let target_view_type = match &vp.kind {
+                    crate::modules::aec::engine::views::viewpoint::ViewKind::Section { .. } => {
+                        crate::modules::aec::engine::plan_view::ViewType::Section
+                    }
+                    crate::modules::aec::engine::views::viewpoint::ViewKind::Elevation { .. } => {
+                        crate::modules::aec::engine::plan_view::ViewType::Elevation
+                    }
+                    crate::modules::aec::engine::views::viewpoint::ViewKind::FloorPlan { .. }
+                    | crate::modules::aec::engine::views::viewpoint::ViewKind::ReflectedCeilingPlan { .. } => {
+                        crate::modules::aec::engine::plan_view::ViewType::FloorPlan
+                    }
+                };
+                dc_lib.configs.iter().find(|c| c.view_type == target_view_type)
+            })
+            .map(|c| c.name.clone())
+            .unwrap_or_else(|| {
+                if let Some(first) = dc_lib.configs.first() {
+                    first.name.clone()
+                } else {
+                    "Standard".to_string()
+                }
+            })
+    } else {
+        "Standard".to_string()
+    };
+
+    let mut config_options: Vec<String> = dc_lib.configs.iter().map(|c| c.name.clone()).collect();
+    if config_options.is_empty() {
+        config_options.push(current_config_name.clone());
+    } else if !config_options.contains(&current_config_name) {
+        config_options.insert(0, current_config_name.clone());
+    }
+
+    props.push(crate::scene::model::object::Property {
+        label: crate::tr!("aec", "prop-display-config"),
+        field: "carrier_display_config",
+        value: crate::scene::model::object::PropValue::Choice {
+            selected: current_config_name,
+            options: config_options,
+        },
+    });
+
     if let Some((ref vp, _)) = defs {
         match &vp.kind {
             crate::modules::aec::engine::views::viewpoint::ViewKind::Section { far_depth, .. } => {
@@ -1196,6 +1251,31 @@ pub fn carrier_prop_section(
         },
     });
 
+    let marker_h = carrier.marker_handle.or_else(|| {
+        crate::modules::aec::engine::owner_index::peers_of(doc, carrier.handle).into_iter().next()
+    });
+    if let Some(mh) = marker_h {
+        let is_elev = doc
+            .get_entity(mh)
+            .and_then(|e| crate::modules::aec::views::din1356::read_section_marker(doc, e))
+            .map(|m| m.is_elevation)
+            .unwrap_or(false);
+        let title = if is_elev {
+            crate::tr!("aec", "elevation-marker-title")
+        } else {
+            crate::tr!("aec", "section-marker-title")
+        };
+        let display = format!("{} #{}", title, mh);
+        props.push(crate::scene::model::object::Property {
+            label: title.to_string(),
+            field: "carrier_marker_entity",
+            value: crate::scene::model::object::PropValue::EntityRef {
+                display,
+                handle: mh,
+            },
+        });
+    }
+
     Some(crate::scene::model::object::PropSection {
         title: crate::tr!("aec", "view-carrier-title"),
         props,
@@ -1258,14 +1338,27 @@ pub fn marker_prop_section(
         "marker_vp_id",
         marker.viewpoint_id.as_uuid().to_string(),
     ));
-    props.push(crate::entities::common::ro_prop(
-        crate::tr!("aec", "prop-carrier-handle").as_ref(),
-        "marker_carrier",
-        marker
-            .carrier_handle
-            .map(|h| h.to_string())
-            .unwrap_or_else(|| "-".to_string()),
-    ));
+    let carrier_h = marker.carrier_handle.or_else(|| {
+        crate::modules::aec::engine::owner_index::peers_of(doc, entity.common().handle).into_iter().next()
+    });
+    if let Some(ch) = carrier_h {
+        let title = crate::tr!("aec", "view-carrier-title");
+        let display = format!("{} #{}", title, ch);
+        props.push(crate::scene::model::object::Property {
+            label: crate::tr!("aec", "prop-carrier-handle"),
+            field: "marker_carrier",
+            value: crate::scene::model::object::PropValue::EntityRef {
+                display,
+                handle: ch,
+            },
+        });
+    } else {
+        props.push(crate::entities::common::ro_prop(
+            crate::tr!("aec", "prop-carrier-handle").as_ref(),
+            "marker_carrier",
+            "-".to_string(),
+        ));
+    }
 
     Some(crate::scene::model::object::PropSection {
         title: if marker.is_elevation {
@@ -1302,6 +1395,18 @@ pub fn derived_primitive_prop_section(
             value: crate::scene::model::object::PropValue::EntityRef {
                 display,
                 handle: source_h,
+            },
+        });
+    }
+    if let Some(carrier_h) = meta.carrier_handle {
+        let title = crate::tr!("aec", "view-carrier-title");
+        let display = format!("{} #{}", title, carrier_h);
+        props.push(crate::scene::model::object::Property {
+            label: crate::tr!("aec", "prop-carrier-handle"),
+            field: "prim_carrier_entity",
+            value: crate::scene::model::object::PropValue::EntityRef {
+                display,
+                handle: carrier_h,
             },
         });
     }
@@ -1895,6 +2000,11 @@ pub fn expand_handles_for_section_marker_packages(
 }
 
 pub fn is_aec_derived_non_carrier(scene: &crate::scene::Scene, handle: Handle) -> bool {
+    if let Some(ent) = scene.document.get_entity(handle) {
+        if crate::modules::aec::engine::views::carrier::read_derived_primitive_metadata(ent).is_some() {
+            return false;
+        }
+    }
     wall_package::is_wall_derived_non_axis(scene, handle)
         || slab_package::is_slab_derived(scene, handle)
         || slab_package::slab_opening_owner_if_any(scene, handle).is_some_and(|owner| owner != handle)
@@ -1915,6 +2025,11 @@ pub fn expand_handles_for_aec_packages(scene: &crate::scene::Scene, handles: &[H
 }
 
 pub fn resolve_aec_package(scene: &crate::scene::Scene, handle: Handle) -> Handle {
+    if let Some(ent) = scene.document.get_entity(handle) {
+        if crate::modules::aec::engine::views::carrier::read_derived_primitive_metadata(ent).is_some() {
+            return handle;
+        }
+    }
     if let Some(opening_owner) = opening_display::opening_owner_if_any(scene, handle) {
         return opening_owner;
     }
@@ -1952,6 +2067,10 @@ pub fn slab_from_entity(entity: &EntityType) -> bool {
 
 pub fn slab_opening_from_entity(entity: &EntityType) -> bool {
     slab_xdata::slab_opening_from_entity(entity).is_some()
+}
+
+pub fn opening_from_entity(entity: &EntityType) -> bool {
+    opening_xdata::opening_from_entity(entity, entity.common().handle).is_some()
 }
 
 pub fn room_from_entity(entity: &EntityType) -> bool {
@@ -2152,6 +2271,26 @@ pub fn apply_carrier_property(
                 return false;
             };
             mv.scale = scale_denom;
+            if carrier.update_policy == UpdatePolicy::Automatic {
+                needs_regen = true;
+            } else {
+                carrier.is_outdated = true;
+            }
+        }
+        "carrier_display_config" => {
+            let dc_lib = crate::modules::aec::engine::project::resolve_display_config_library(None);
+            let Some(matched_config) = dc_lib.configs.iter().find(|c| c.name == val) else {
+                return false;
+            };
+            let Some((_, ref mut mv)) = defs else {
+                return false;
+            };
+            mv.profile_id = crate::modules::aec::engine::views::ViewProfileId::from_uuid(matched_config.id);
+            if let Some(cfg_scale) = matched_config.scale {
+                if let Ok(denom) = ScaleDenominator::new(cfg_scale) {
+                    mv.scale = denom;
+                }
+            }
             if carrier.update_policy == UpdatePolicy::Automatic {
                 needs_regen = true;
             } else {
@@ -2452,14 +2591,116 @@ pub fn append_derived_view_grips(
         _ => return,
     };
 
+    let carrier = meta
+        .carrier_handle
+        .and_then(|ch| scene.document.get_entity(ch))
+        .and_then(|e| crate::modules::aec::engine::views::carrier::read_view_carrier(&scene.document, e))
+        .or_else(|| crate::modules::aec::engine::views::carrier::find_view_carrier_owning_handle(&scene.document, handle));
+
+    let rot = carrier.as_ref().map(|c| c.rotation_rad).unwrap_or(0.0);
+    let cos_r = rot.cos();
+    let sin_r = rot.sin();
+
+    let is_vertical_view = carrier
+        .as_ref()
+        .and_then(|c| crate::modules::aec::engine::views::carrier::read_view_carrier_definitions(&scene.document, c.handle))
+        .map(|(vp, _)| matches!(vp.kind, crate::modules::aec::engine::views::viewpoint::ViewKind::Section { .. } | crate::modules::aec::engine::views::viewpoint::ViewKind::Elevation { .. }))
+        .unwrap_or(true);
+
+    let axis_dir = if is_horizontal_grip {
+        if is_vertical_view {
+            let rx = cos_r;
+            let ry = sin_r;
+            glam::DVec3::new(rx, ry, 0.0)
+        } else {
+            // In a horizontal view (FloorPlan / RCP), opening jambs move along the 2D host wall axis.
+            let world_wall_dir = (|| {
+                let elem_ref = meta.element_ref?;
+                let uuid = elem_ref.element_id.as_uuid();
+                let bytes = uuid.as_bytes();
+                let handle_val = u64::from_be_bytes(bytes[8..16].try_into().ok()?);
+                let op_handle = Handle::new(handle_val);
+                let op_ent = scene.document.get_entity(op_handle)?;
+                let opening = crate::modules::aec::engine::opening_xdata::opening_from_entity(op_ent, op_handle)?;
+                let wall = crate::modules::aec::engine::wall_package::resolve_wall_package(scene, opening.host_wall);
+                let pts = crate::modules::aec::engine::xdata::get_wall_vertices(scene, wall);
+                if pts.len() >= 2 {
+                    let dx = pts[1].x - pts[0].x;
+                    let dy = pts[1].y - pts[0].y;
+                    let len = dx.hypot(dy);
+                    if len > 1e-6 {
+                        return Some((dx / len, dy / len));
+                    }
+                }
+                None
+            })();
+
+            if let Some((dir_x, dir_y)) = world_wall_dir {
+                let rx = cos_r * dir_x - sin_r * dir_y;
+                let ry = sin_r * dir_x + cos_r * dir_y;
+                let v = glam::DVec3::new(rx, ry, 0.0);
+                if v.length_squared() > 1e-6 {
+                    v.normalize()
+                } else {
+                    glam::DVec3::new(1.0, 0.0, 0.0)
+                }
+            } else if let EntityType::Line(l) = entity {
+                // Fallback: the jamb line segment in CAD space is perpendicular to the wall axis.
+                let jx = l.end.x - l.start.x;
+                let jy = l.end.y - l.start.y;
+                let j_len = jx.hypot(jy);
+                if j_len > 1e-6 {
+                    glam::DVec3::new(-jy / j_len, jx / j_len, 0.0)
+                } else {
+                    glam::DVec3::new(cos_r, sin_r, 0.0)
+                }
+            } else {
+                glam::DVec3::new(cos_r, sin_r, 0.0)
+            }
+        }
+    } else {
+        let rx = -sin_r;
+        let ry = cos_r;
+        glam::DVec3::new(rx, ry, 0.0)
+    };
+
     entity_grips.clear();
     let mut grip = crate::entities::common::square_grip(DERIVED_VIEW_GRIP_BASE, pos);
-    if is_horizontal_grip {
-        grip.axis = Some(glam::DVec3::new(1.0, 0.0, 0.0));
-    } else {
-        grip.axis = Some(glam::DVec3::new(0.0, 1.0, 0.0));
-    }
+    grip.axis = Some(axis_dir);
     entity_grips.push(grip);
+
+    match feat {
+        crate::modules::aec::engine::views::provenance::FeatureKey::OpeningLeftJamb
+        | crate::modules::aec::engine::views::provenance::FeatureKey::OpeningRightJamb
+        | crate::modules::aec::engine::views::provenance::FeatureKey::WallBase
+        | crate::modules::aec::engine::views::provenance::FeatureKey::SlabBottom => {
+            let dropdown = crate::entities::common::dropdown_grip(DERIVED_VIEW_DROPDOWN_GRIP_BASE, pos);
+            entity_grips.push(dropdown);
+        }
+        _ => {}
+    }
+}
+
+pub const DERIVED_VIEW_DROPDOWN_GRIP_BASE: usize = 50_100;
+pub const DERIVED_VIEW_RESIZE_GRIP_BASE: usize = 50_200;
+pub const OPENING_DROPDOWN_GRIP_ID: usize = 50_300;
+pub const WALL_BASE_DROPDOWN_GRIP_ID: usize = 50_400;
+pub const SLAB_BOTTOM_DROPDOWN_GRIP_ID: usize = 50_500;
+
+pub fn opening_handle_from_derived_primitive(doc: &acadrust::CadDocument, derived_handle: Handle) -> Option<Handle> {
+    let ent = doc.get_entity(derived_handle)?;
+    let meta = crate::modules::aec::engine::views::carrier::read_derived_primitive_metadata(ent)?;
+    let elem_ref = meta.element_ref?;
+    let uuid = elem_ref.element_id.as_uuid();
+    let bytes = uuid.as_bytes();
+    let handle_val = u64::from_be_bytes(bytes[8..16].try_into().ok()?);
+    Some(Handle::new(handle_val))
+}
+
+pub fn carrier_handle_from_derived_primitive(doc: &acadrust::CadDocument, derived_handle: Handle) -> Option<Handle> {
+    let ent = doc.get_entity(derived_handle)?;
+    let meta = crate::modules::aec::engine::views::carrier::read_derived_primitive_metadata(ent)?;
+    meta.carrier_handle.or_else(|| crate::modules::aec::engine::views::carrier::find_view_carrier_owning_handle(doc, derived_handle).map(|c| c.handle))
 }
 
 pub const CARRIER_GRIP_INSERTION: usize = 60_000;
@@ -3135,6 +3376,12 @@ pub fn append_opening_axis_grips(
     }
     entity_grips.clear();
     entity_grips.extend(grips);
+    let center = if let Some(((cx, cy), _)) = crate::modules::aec::engine::openings::point_and_tangent_at_distance(&axis, opening.center_along_axis()) {
+        glam::DVec3::new(cx, cy, base_z)
+    } else {
+        glam::DVec3::ZERO
+    };
+    entity_grips.push(crate::entities::common::dropdown_grip(OPENING_DROPDOWN_GRIP_ID, center));
 }
 
 pub const ROOM_STAMP_GRIP_ID: usize = usize::MAX - 10;
@@ -3195,6 +3442,32 @@ pub fn append_wall_junction_grips(
             ));
         }
     }
+    let mid = (verts[0] + verts[verts.len() - 1]) * 0.5;
+    entity_grips.push(crate::entities::common::dropdown_grip(
+        WALL_BASE_DROPDOWN_GRIP_ID,
+        mid,
+    ));
+}
+
+pub fn append_slab_base_grips(
+    _scene: &crate::scene::Scene,
+    _handle: Handle,
+    entity: &EntityType,
+    entity_grips: &mut Vec<crate::scene::model::object::GripDef>,
+) {
+    if slab_xdata::slab_from_entity(entity).is_none() {
+        return;
+    }
+    let pos = match entity {
+        EntityType::LwPolyline(pl) if !pl.vertices.is_empty() => {
+            glam::DVec3::new(pl.vertices[0].location.x, pl.vertices[0].location.y, pl.elevation)
+        }
+        _ => return,
+    };
+    entity_grips.push(crate::entities::common::dropdown_grip(
+        SLAB_BOTTOM_DROPDOWN_GRIP_ID,
+        pos,
+    ));
 }
 
 #[cfg(test)]
@@ -3756,6 +4029,7 @@ mod tests {
             crate::scene::model::object::PropValue::ReadOnly(s)
             | crate::scene::model::object::PropValue::PlainText(s)
             | crate::scene::model::object::PropValue::EditText(s) => s.clone(),
+            crate::scene::model::object::PropValue::EntityRef { handle, .. } => handle.to_string(),
             other => panic!("{field} unexpected {other:?}"),
         }
     }
@@ -4803,14 +5077,298 @@ mod tests {
                 _ => panic!("Expected PropValue::EntityRef"),
             }
 
+            let carrier_prop = section.props.iter().find(|p| p.field == "prim_carrier_entity").expect("carrier entity prop");
+            match &carrier_prop.value {
+                crate::scene::model::object::PropValue::EntityRef { handle, .. } => {
+                    assert_eq!(*handle, carrier.handle);
+                }
+                _ => panic!("Expected PropValue::EntityRef"),
+            }
+
             // 2. Verify Viewport Grips & Constraints
             let mut grips = Vec::new();
             append_derived_view_grips(&scene, child_handle, &mut grips);
-            assert_eq!(grips.len(), 1, "Expected 1 grip for {:?}", feat);
+            assert_eq!(grips.len(), 2, "Expected 2 grips (direct + dropdown) for {:?}", feat);
             let grip = &grips[0];
             assert_eq!(grip.id, DERIVED_VIEW_GRIP_BASE);
             assert_eq!(grip.world, glam::DVec3::new(2.0, 0.0, 0.0));
             assert_eq!(grip.axis, Some(expected_axis), "Axis mismatch for {:?}", feat);
+            assert_eq!(grips[1].shape, crate::scene::model::object::GripShape::Dropdown);
         }
+    }
+
+    #[test]
+    fn test_carrier_display_config_and_marker_navigation() {
+        use crate::modules::aec::engine::views::carrier::{
+            create_view_carrier, read_view_carrier_definitions, write_view_carrier_definitions,
+        };
+        use crate::modules::aec::engine::views::model_view::UpdatePolicy;
+        use crate::modules::aec::engine::views::viewpoint::SectionPath;
+        use crate::modules::aec::engine::views::{ModelViewId, Point2, ViewpointId};
+        use crate::modules::aec::views::din1356::{create_section_marker, Din1356SectionMarker};
+        use crate::scene::Scene;
+
+        let mut scene = Scene::new();
+        add_test_wall(&mut scene.document);
+
+        let vp_id = ViewpointId::new();
+        let mv_id = ModelViewId::new();
+        let carrier = create_view_carrier(
+            &mut scene.document,
+            vp_id,
+            mv_id,
+            Point2::new(10.0, 0.0),
+            1.0,
+            0.0,
+            UpdatePolicy::Automatic,
+        )
+        .expect("carrier");
+
+        let path = SectionPath::straight(Point2::new(0.0, 0.0), Point2::new(10.0, 0.0));
+        let vp = sample_section_viewpoint(vp_id, "Schnitt 1", path.clone(), Some(5.0), 0.0, 3.0, false);
+        let mv = sample_model_view(mv_id, vp_id, "Section 1", UpdatePolicy::Automatic);
+        write_view_carrier_definitions(&mut scene.document, carrier.handle, &vp, &mv);
+
+        let marker = Din1356SectionMarker::new_section("Schnitt 1", path, vp_id, Some(carrier.handle));
+        let marker_h = create_section_marker(&mut scene.document, &marker);
+
+        crate::modules::aec::engine::owner_index::link_peers(&mut scene.document, marker_h, carrier.handle);
+
+        // 1. Verify carrier property section has display config choice & marker entity ref
+        let carrier_ent = scene.document.get_entity(carrier.handle).expect("carrier entity");
+        let carrier_section = carrier_prop_section(carrier_ent, &scene.document).expect("carrier prop section");
+
+        let dc_prop = carrier_section.props.iter().find(|p| p.field == "carrier_display_config").expect("dc prop");
+        match &dc_prop.value {
+            crate::scene::model::object::PropValue::Choice { selected, options } => {
+                assert!(!selected.is_empty());
+                assert!(!options.is_empty());
+            }
+            _ => panic!("Expected Choice for display config"),
+        }
+
+        let marker_ref_prop = carrier_section.props.iter().find(|p| p.field == "carrier_marker_entity").expect("marker entity prop");
+        match &marker_ref_prop.value {
+            crate::scene::model::object::PropValue::EntityRef { handle, .. } => {
+                assert_eq!(*handle, marker_h);
+            }
+            _ => panic!("Expected EntityRef for marker on carrier"),
+        }
+
+        // 2. Verify marker property section has carrier entity ref
+        let marker_ent = scene.document.get_entity(marker_h).expect("marker entity");
+        let marker_section = marker_prop_section(marker_ent, &scene.document).expect("marker prop section");
+        let carrier_ref_prop = marker_section.props.iter().find(|p| p.field == "marker_carrier").expect("carrier ref prop");
+        match &carrier_ref_prop.value {
+            crate::scene::model::object::PropValue::EntityRef { handle, .. } => {
+                assert_eq!(*handle, carrier.handle);
+            }
+            _ => panic!("Expected EntityRef for carrier on marker"),
+        }
+
+        // 3. Test changing display config via apply_carrier_property
+        let dc_lib = crate::modules::aec::engine::project::resolve_display_config_library(None);
+        let first_cfg = &dc_lib.configs[0];
+        assert!(apply_carrier_property(
+            &mut scene.document,
+            carrier.handle,
+            "carrier_display_config",
+            &first_cfg.name,
+        ));
+
+        let (_, mv_after) = read_view_carrier_definitions(&scene.document, carrier.handle).expect("defs after");
+        assert_eq!(mv_after.profile_id.as_uuid(), first_cfg.id);
+        if let Some(scale) = first_cfg.scale {
+            assert_eq!(mv_after.scale.get(), scale);
+        }
+    }
+
+    #[test]
+    fn test_opening_jamb_grip_axis_aligns_with_floorplan_wall() {
+        use crate::modules::aec::engine::openings::Opening;
+        use crate::modules::aec::engine::opening_xdata::write_opening_instance;
+        use crate::modules::aec::engine::views::carrier::{
+            create_view_carrier, sync_carrier_primitives, write_view_carrier_definitions,
+        };
+        use crate::modules::aec::engine::views::model_view::UpdatePolicy;
+        use crate::modules::aec::engine::views::provenance::{
+            DepthInterval, DerivedPrimitive, ElementRef, FeatureKey, Geometry2d, PrimitiveRole,
+            ResolvedStyle, SourceReference, SourceSet,
+        };
+        use crate::modules::aec::engine::views::viewpoint::{PlanRange, ViewAxes, ViewKind, ViewOrigin};
+        use crate::modules::aec::engine::views::{
+            Metres, ModelId, ModelViewId, NonNegativeMetres, PaperMm, Point2, Point3, Revision,
+            ScaleDenominator, VerticalRange, ViewProfileId, ViewRevisions, ViewpointId,
+        };
+        use crate::scene::Scene;
+
+        let mut scene = Scene::new();
+
+        // 1. Create a vertical wall along Y using add_test_wall
+        let wall_h = add_test_wall(&mut scene.document);
+
+        // 2. Create an opening on this wall
+        let op_h = scene.document.allocate_handle();
+        let mut op_ent = codec::EntityType::Point(codec::Point::default());
+        op_ent.common_mut().handle = op_h;
+        scene.document.add_entity(op_ent).expect("add op entity");
+        let opening = Opening::door(op_h, wall_h, 1.0);
+        write_opening_instance(&mut scene, &opening);
+
+        // 3. Create a FloorPlan carrier
+        let vp_id = ViewpointId::new();
+        let mv_id = ModelViewId::new();
+        let mut carrier = create_view_carrier(
+            &mut scene.document,
+            vp_id,
+            mv_id,
+            Point2::new(0.0, 0.0),
+            1.0,
+            0.0,
+            UpdatePolicy::Automatic,
+        )
+        .expect("carrier");
+
+        let vp = crate::modules::aec::engine::views::viewpoint::Viewpoint {
+            id: vp_id,
+            name: "Floor Plan".into(),
+            revision: Revision::default(),
+            origin: ViewOrigin::World(Point3::new(0.0, 0.0, 1.0)),
+            axes: ViewAxes::floor_plan(),
+            kind: ViewKind::FloorPlan {
+                range: PlanRange {
+                    above_cut: NonNegativeMetres::new(1.0).unwrap(),
+                    below_cut: NonNegativeMetres::new(1.0).unwrap(),
+                    beyond_below: NonNegativeMetres::new(0.0).unwrap(),
+                },
+            },
+            z_range: VerticalRange::new(Metres::new(0.0).unwrap(), Metres::new(3.0).unwrap()).unwrap(),
+            mapping: Default::default(),
+            crop: None,
+        };
+        let mv = crate::modules::aec::engine::views::model_view::ModelView {
+            id: mv_id,
+            name: "Floor Plan MV".into(),
+            viewpoint_id: vp_id,
+            profile_id: ViewProfileId::new(),
+            scale: ScaleDenominator::new(50.0).unwrap(),
+            detail: crate::modules::aec::engine::views::model_view::DetailPolicy::FromProfileAndScale,
+            excluded_elements: Default::default(),
+            graphic_overrides: Vec::new(),
+            annotation_ids: Vec::new(),
+            update_policy: UpdatePolicy::Automatic,
+            revisions: ViewRevisions::default(),
+        };
+        write_view_carrier_definitions(&mut scene.document, carrier.handle, &vp, &mv);
+
+        let elem_id = crate::modules::aec::engine::views::scene_collector::handle_to_element_id(op_h);
+        let elem_ref = ElementRef::new(ModelId::new(), elem_id);
+
+        let src = SourceReference {
+            element: elem_ref,
+            xref_source: None,
+            component_id: None,
+            feature: Some(FeatureKey::OpeningLeftJamb),
+            display_component_id: None,
+        };
+
+        let prim = DerivedPrimitive {
+            id: crate::modules::aec::engine::views::provenance::PrimitiveId::new(mv_id, 1, 1),
+            role: PrimitiveRole::CutBoundary,
+            geometry: Geometry2d::Line {
+                start: Point2::new(0.0, 3.0),
+                end: Point2::new(0.24, 3.0),
+            },
+            sources: SourceSet::new(vec![src]).unwrap(),
+            depth: DepthInterval::new(0.0, 0.0).unwrap(),
+            style: ResolvedStyle::solid_stroke(PaperMm::new(0.35).unwrap()),
+            edit_handles: vec![],
+        };
+
+        sync_carrier_primitives(&mut scene.document, &mut carrier, &[prim]).expect("sync");
+        let child_handle = carrier.derived_handles[0];
+
+        // 4. Verify grip axis is dynamically aligned with host wall axis along Y: (0, 1, 0)
+        let mut grips = Vec::new();
+        append_derived_view_grips(&scene, child_handle, &mut grips);
+        assert_eq!(grips.len(), 2);
+        let axis = grips[0].axis.expect("axis must be present");
+        assert!((axis.x - 0.0).abs() < 1e-4, "axis.x was {}", axis.x);
+        assert!((axis.y - 1.0).abs() < 1e-4, "axis.y was {}", axis.y);
+        assert_eq!(grips[1].shape, crate::scene::model::object::GripShape::Dropdown);
+    }
+
+    #[test]
+    fn test_model_elements_dropdown_grips() {
+        use crate::modules::aec::engine::openings::Opening;
+        use crate::modules::aec::engine::opening_xdata::write_opening_instance;
+        use crate::modules::aec::engine::slab::Slab;
+        use crate::modules::aec::engine::slab_xdata::write_slab_record;
+        use crate::scene::Scene;
+
+        let mut scene = Scene::new();
+
+        // 1. Wall Dropdown Grip
+        let wall_h = add_test_wall(&mut scene.document);
+        let mut wall_grips = Vec::new();
+        let wall_ent = scene.document.get_entity(wall_h).unwrap().clone();
+        append_wall_junction_grips(&scene, wall_h, &wall_ent, &mut wall_grips);
+        assert!(
+            wall_grips.iter().any(|g| g.id == WALL_BASE_DROPDOWN_GRIP_ID && g.shape == crate::scene::model::object::GripShape::Dropdown),
+            "Wall must have a WallBase dropdown grip"
+        );
+
+        // 2. Opening Dropdown Grip
+        let op_h = scene.document.allocate_handle();
+        let mut op_ent = codec::EntityType::Point(codec::Point::default());
+        op_ent.common_mut().handle = op_h;
+        scene.document.add_entity(op_ent).expect("add op entity");
+        let opening = Opening::door(op_h, wall_h, 1.0);
+        write_opening_instance(&mut scene, &opening);
+
+        let mut op_grips = Vec::new();
+        append_opening_axis_grips(&scene, op_h, &mut op_grips);
+        assert!(
+            op_grips.iter().any(|g| g.id == OPENING_DROPDOWN_GRIP_ID && g.shape == crate::scene::model::object::GripShape::Dropdown),
+            "Opening must have an Opening dropdown grip"
+        );
+
+        // 3. Slab Dropdown Grip
+        let slab_h = scene.document.allocate_handle();
+        let mut slab_pl = acadrust::entities::LwPolyline::default();
+        slab_pl.common.handle = slab_h;
+        slab_pl.vertices.push(acadrust::entities::LwVertex {
+            location: acadrust::types::Vector2::new(0.0, 0.0),
+            bulge: 0.0,
+            start_width: 0.0,
+            end_width: 0.0,
+            vertex_id: 0,
+        });
+        slab_pl.vertices.push(acadrust::entities::LwVertex {
+            location: acadrust::types::Vector2::new(5.0, 0.0),
+            bulge: 0.0,
+            start_width: 0.0,
+            end_width: 0.0,
+            vertex_id: 1,
+        });
+        slab_pl.vertices.push(acadrust::entities::LwVertex {
+            location: acadrust::types::Vector2::new(5.0, 5.0),
+            bulge: 0.0,
+            start_width: 0.0,
+            end_width: 0.0,
+            vertex_id: 2,
+        });
+        let slab_ent = EntityType::LwPolyline(slab_pl);
+        scene.document.add_entity(slab_ent).expect("add slab entity");
+        let slab = Slab::new("default", 0);
+        write_slab_record(&mut scene.document, slab_h, &slab);
+
+        let slab_ent_updated = scene.document.get_entity(slab_h).unwrap().clone();
+        let mut slab_grips = Vec::new();
+        append_slab_base_grips(&scene, slab_h, &slab_ent_updated, &mut slab_grips);
+        assert!(
+            slab_grips.iter().any(|g| g.id == SLAB_BOTTOM_DROPDOWN_GRIP_ID && g.shape == crate::scene::model::object::GripShape::Dropdown),
+            "Slab must have a SlabBottom dropdown grip"
+        );
     }
 }

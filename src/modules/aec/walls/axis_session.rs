@@ -255,12 +255,12 @@ impl OpenCADStudio {
             &scene.document,
             elem_ref.model_id,
         );
-        let (action, direction_hint) = match feat {
+        let (mut action, direction_hint) = match feat {
             crate::modules::aec::engine::views::provenance::FeatureKey::WallTop => {
                 (crate::modules::aec::engine::views::provenance::ModelEditAction::SetWallHeight, crate::modules::aec::engine::views::Vector2::new(0.0, 1.0))
             }
             crate::modules::aec::engine::views::provenance::FeatureKey::WallBase => {
-                (crate::modules::aec::engine::views::provenance::ModelEditAction::SetWallHeight, crate::modules::aec::engine::views::Vector2::new(0.0, -1.0))
+                (crate::modules::aec::engine::views::provenance::ModelEditAction::ChangeParameter(crate::modules::aec::engine::views::provenance::ModelParameter::WallBaseOffset), crate::modules::aec::engine::views::Vector2::new(0.0, -1.0))
             }
             crate::modules::aec::engine::views::provenance::FeatureKey::OpeningSill => {
                 (crate::modules::aec::engine::views::provenance::ModelEditAction::SetOpeningSillHeight, crate::modules::aec::engine::views::Vector2::new(0.0, 1.0))
@@ -275,12 +275,20 @@ impl OpenCADStudio {
                     axis_world: crate::modules::aec::engine::views::Vector3::new(1.0, 0.0, 0.0),
                 }, crate::modules::aec::engine::views::Vector2::new(1.0, 0.0))
             }
-            crate::modules::aec::engine::views::provenance::FeatureKey::SlabTop
-            | crate::modules::aec::engine::views::provenance::FeatureKey::SlabBottom => {
+            crate::modules::aec::engine::views::provenance::FeatureKey::SlabTop => {
                 (crate::modules::aec::engine::views::provenance::ModelEditAction::SetSlabElevation, crate::modules::aec::engine::views::Vector2::new(0.0, 1.0))
+            }
+            crate::modules::aec::engine::views::provenance::FeatureKey::SlabBottom => {
+                (crate::modules::aec::engine::views::provenance::ModelEditAction::SetSlabThickness, crate::modules::aec::engine::views::Vector2::new(0.0, -1.0))
             }
             _ => return false,
         };
+
+        if grip_id == crate::modules::aec::properties::DERIVED_VIEW_RESIZE_GRIP_BASE {
+            action = crate::modules::aec::engine::views::provenance::ModelEditAction::ChangeParameter(
+                crate::modules::aec::engine::views::provenance::ModelParameter::OpeningWidth,
+            );
+        }
 
         let src = crate::modules::aec::engine::views::provenance::SourceReference {
             element: elem_ref,

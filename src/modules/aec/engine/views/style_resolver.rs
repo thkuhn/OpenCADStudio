@@ -54,10 +54,15 @@ const FALLBACK_SLAB_HATCH: &str = "AR-CONC";
 
 /// Converts an `acadrust::types::Color` into `Rgba8`.
 pub fn color_to_rgba8(c: &Color) -> Rgba8 {
+    color_to_rgba8_opt(c).unwrap_or(Rgba8::BLACK)
+}
+
+/// Converts an `acadrust::types::Color` into `Option<Rgba8>`, returning `None` for ByLayer and ByBlock.
+pub fn color_to_rgba8_opt(c: &Color) -> Option<Rgba8> {
     match c {
-        Color::Rgb { r, g, b } => Rgba8::new(*r, *g, *b, 255),
-        Color::ByLayer | Color::ByBlock => Rgba8::BLACK,
-        Color::Index(idx) => match idx {
+        Color::ByLayer | Color::ByBlock => None,
+        Color::Rgb { r, g, b } => Some(Rgba8::new(*r, *g, *b, 255)),
+        Color::Index(idx) => Some(match idx {
             1 => Rgba8::new(255, 0, 0, 255),
             2 => Rgba8::new(255, 255, 0, 255),
             3 => Rgba8::new(0, 255, 0, 255),
@@ -68,8 +73,8 @@ pub fn color_to_rgba8(c: &Color) -> Rgba8 {
             8 => Rgba8::new(128, 128, 128, 255),
             9 => Rgba8::new(192, 192, 192, 255),
             _ => Rgba8::BLACK,
-        },
-        _ => Rgba8::BLACK,
+        }),
+        _ => None,
     }
 }
 
@@ -372,14 +377,14 @@ fn base_stroke(
     mat: Option<&Material>,
     default_layer: &str,
 ) -> Stroke {
+    let color = ov
+        .line_color
+        .as_ref()
+        .and_then(color_to_rgba8_opt)
+        .or_else(|| mat.and_then(|m| if m.line_color != 0 { Some(u32_to_rgba8(m.line_color)) } else { None }));
     Stroke {
         weight: PaperMm::new(0.35).unwrap(),
-        color: ov
-            .line_color
-            .as_ref()
-            .map(color_to_rgba8)
-            .or_else(|| mat.map(|m| u32_to_rgba8(m.line_color)))
-            .or(Some(Rgba8::BLACK)),
+        color,
         line_type: non_empty(&ov.line_type).or_else(|| material_line_type(mat)),
         layer: non_empty(&ov.cad_layer).or_else(|| Some(default_layer.to_string())),
     }
@@ -400,17 +405,22 @@ fn base_hatch(
     let color = ov
         .hatch_color
         .as_ref()
-        .map(color_to_rgba8)
+        .and_then(color_to_rgba8_opt)
         .or_else(|| {
             if is_solid {
-                ov.fill_color.as_ref().map(color_to_rgba8)
+                ov.fill_color.as_ref().and_then(color_to_rgba8_opt)
             } else {
                 None
             }
         })
-        .or_else(|| mat.and_then(|m| m.hatch_color.as_ref().map(color_to_rgba8)))
-        .or_else(|| mat.map(|m| u32_to_rgba8(m.line_color)))
-        .or(Some(Rgba8::new(128, 128, 128, 255)));
+        .or_else(|| mat.and_then(|m| m.hatch_color.as_ref().and_then(color_to_rgba8_opt)))
+        .or_else(|| {
+            if is_solid {
+                mat.and_then(|m| if m.line_color != 0 { Some(u32_to_rgba8(m.line_color)) } else { None })
+            } else {
+                None
+            }
+        });
     Hatch {
         weight: PaperMm::new(0.18).unwrap(),
         color,
@@ -855,6 +865,38 @@ pub fn resolve_slab_contour_style(
     stroke_style(stroke)
 }
 
+/// Resolves the contour style for walls in elevation view.
+pub fn resolve_wall_elevation_contour_style(
+    ctx: &ViewStyleContext,
+    wall: &CollectedWall,
+) -> ResolvedStyle {
+    let rules = ctx.wall_rules(&wall.style_id);
+    let mut contour_ov = rules
+        .style_for(WallComponentSlot::Contour2D)
+        .cloned()
+        .unwrap_or_default();
+    let mut unused_hatch = ComponentStyleOverride::default();
+    let phase = apply_phase_filter(wall.phase, ctx.config().phase_filter.as_ref());
+    overlay_phase_extra(&mut contour_ov, &mut unused_hatch, phase.extra_style.as_ref());
+
+    let mut stroke = Stroke {
+        weight: PaperMm::new(0.35).unwrap(),
+        color: contour_ov
+            .line_color
+            .as_ref()
+            .and_then(color_to_rgba8_opt),
+        line_type: non_empty(&contour_ov.line_type),
+        layer: Some(
+            non_empty(&contour_ov.cad_layer).unwrap_or_else(|| "AEC_WALL_CONTOUR".to_string()),
+        ),
+    };
+
+    for rule in matching_overrides(ctx, &wall.element_ref, None) {
+        apply_patch_to_stroke(&mut stroke, &rule.patch);
+    }
+    stroke_style(stroke)
+}
+
 // ── Openings ─────────────────────────────────────────────────────────────────
 
 /// Resolves overhead lintel edge style for cut openings in floor plans.
@@ -893,30 +935,49 @@ pub fn resolve_opening_view_style(
         _ => (0.25, None, "AEC_OPENING"),
     };
 
+    let rules = ctx.opening_rules(opening);
+    let ov_opt = rules.style_override.get(slot.key());
+
     let mut stroke = Stroke {
         weight: PaperMm::new(default_weight).unwrap(),
-        color: Some(Rgba8::BLACK),
-        line_type: default_lt,
-        layer: Some(default_layer.to_string()),
+        color: ov_opt.and_then(|ov| ov.line_color.as_ref()).and_then(color_to_rgba8_opt),
+        line_type: ov_opt.and_then(|ov| non_empty(&ov.line_type)).or(default_lt),
+        layer: ov_opt.and_then(|ov| non_empty(&ov.cad_layer)).or_else(|| Some(default_layer.to_string())),
     };
-
-    let rules = ctx.opening_rules(opening);
-    if let Some(ov) = rules.style_override.get(slot.key()) {
-        if let Some(lt) = non_empty(&ov.line_type) {
-            stroke.line_type = Some(lt);
-        }
-        if let Some(c) = ov.line_color.as_ref() {
-            stroke.color = Some(color_to_rgba8(c));
-        }
-        if let Some(l) = non_empty(&ov.cad_layer) {
-            stroke.layer = Some(l);
-        }
-    }
 
     for rule in matching_overrides(ctx, &opening.element_ref, None) {
         apply_patch_to_stroke(&mut stroke, &rule.patch);
     }
     stroke_style(stroke)
+}
+
+/// Resolves an opaque or patterned fill style for an opening slot (e.g. Glazing2D or Leaf2D in elevation views).
+pub fn resolve_opening_view_fill_style(
+    ctx: &ViewStyleContext,
+    opening: &CollectedOpening,
+    slot: OpeningComponentSlot,
+) -> Option<ResolvedStyle> {
+    let rules = ctx.opening_rules(opening);
+    let ov_opt = rules.style_override.get(slot.key());
+
+    let fill_color = ov_opt.and_then(|ov| ov.fill_color.as_ref()).and_then(color_to_rgba8_opt);
+    let hatch_color = ov_opt.and_then(|ov| ov.hatch_color.as_ref()).and_then(color_to_rgba8_opt);
+    let hatch_pat = ov_opt.and_then(|ov| non_empty(&ov.hatch_pattern));
+
+    let cad_layer = ov_opt
+        .and_then(|ov| non_empty(&ov.cad_layer))
+        .unwrap_or_else(|| "AEC_OPENING_SURFACE".to_string());
+
+    Some(ResolvedStyle {
+        line_weight_mm: PaperMm::new(0.18).unwrap(),
+        line_color: None,
+        line_type: None,
+        fill_color: fill_color.or(hatch_color),
+        hatch_pattern: hatch_pat,
+        hatch_scale: ov_opt.and_then(|ov| ov.hatch_scale),
+        hatch_angle_rad: ov_opt.and_then(|ov| ov.hatch_angle).map(|a| a.to_radians()),
+        layer_name: Some(cad_layer),
+    })
 }
 
 #[cfg(test)]
@@ -1143,6 +1204,7 @@ pub(crate) mod tests {
             distance_along_axis: 2.0,
             axis_span_local: (1.5, 2.5),
             hinge: HingeSide::Left,
+            swing_side: Default::default(),
         }
     }
 
@@ -1373,6 +1435,7 @@ pub(crate) mod tests {
             distance_along_axis: 2.0,
             axis_span_local: (1.5, 2.5),
             hinge: HingeSide::Left,
+            swing_side: Default::default(),
         };
 
         let mut dc = DisplayConfig::new(

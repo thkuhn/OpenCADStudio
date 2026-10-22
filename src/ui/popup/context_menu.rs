@@ -44,6 +44,12 @@ pub enum SubmenuId {
     SnapOverrides,
     WallJustification,
     WallJunction,
+    AecOpeningStyle,
+    AecOpeningSill,
+    AecWallStyle,
+    AecWallPlane,
+    AecSlabStyle,
+    AecSlabPlane,
 }
 
 /// Glyph drawn in a row's icon gutter (commercial solutions show one for object snaps
@@ -395,8 +401,8 @@ pub enum MenuContext {
 pub fn build_context_menu(ctx: &MenuContext, open_submenu: Option<SubmenuId>) -> ContextMenu {
     use crate::modules::aec::ui::context_menu as aec_menu;
     let rows = match ctx {
-        MenuContext::Idle { aec, .. } if aec_menu::exclusive_rows(aec).is_some() => {
-            aec_menu::exclusive_rows(aec).expect("exclusive")
+        MenuContext::Idle { aec, .. } if aec_menu::exclusive_rows(aec, open_submenu).is_some() => {
+            aec_menu::exclusive_rows(aec, open_submenu).expect("exclusive")
         }
         MenuContext::Command {
             options,

@@ -3966,6 +3966,24 @@ impl OpenCADStudio {
                     .selection
                     .borrow_mut()
                     .junction_menu = junction;
+                if let Some(h) = self.grip_hover.as_ref() {
+                    if h.grip_id == crate::modules::aec::properties::OPENING_DROPDOWN_GRIP_ID
+                        || (h.grip_id <= 4 && crate::modules::aec::engine::opening_display::opening_owner_if_any(&self.tabs[i].scene, h.handle).is_some())
+                    {
+                        let op_h = crate::modules::aec::engine::opening_display::opening_owner_if_any(&self.tabs[i].scene, h.handle).unwrap_or(h.handle);
+                        self.aec.aec_active_grip_menu = Some(crate::modules::aec::ui::context_menu::AecMenuExclusive::OpeningGrip(op_h, h.grip_id));
+                    } else if h.grip_id == crate::modules::aec::properties::WALL_BASE_DROPDOWN_GRIP_ID {
+                        let wall_h = crate::modules::aec::engine::wall_package::resolve_wall_package(&self.tabs[i].scene, h.handle);
+                        self.aec.aec_active_grip_menu = Some(crate::modules::aec::ui::context_menu::AecMenuExclusive::WallBaseGrip(wall_h));
+                    } else if h.grip_id == crate::modules::aec::properties::SLAB_BOTTOM_DROPDOWN_GRIP_ID {
+                        let slab_h = crate::modules::aec::engine::slab_package::resolve_slab_package(&self.tabs[i].scene, h.handle);
+                        self.aec.aec_active_grip_menu = Some(crate::modules::aec::ui::context_menu::AecMenuExclusive::SlabBottomGrip(slab_h));
+                    } else if h.grip_id >= crate::modules::aec::properties::DERIVED_VIEW_DROPDOWN_GRIP_BASE
+                        && h.grip_id < crate::modules::aec::properties::DERIVED_VIEW_DROPDOWN_GRIP_BASE + 100
+                    {
+                        self.aec.aec_active_grip_menu = crate::modules::aec::ui::context_menu::derived_view_dropdown_menu(&self.tabs[i].scene, h.handle, h.grip_id);
+                    }
+                }
                 // Take the keyboard away from the command-line field so keys
                 // reach the menu through the global subscription; the field
                 // is re-focused when the menu closes.
