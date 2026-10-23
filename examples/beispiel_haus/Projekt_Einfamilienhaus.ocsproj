@@ -1,18 +1,18 @@
 {
   "buildings": [
     {
-      "id": "0207226f-ed0b-441c-8a43-b4f2703f8f8a",
+      "id": "27e04d77-2268-4521-a5b4-ceadea7aeb2c",
       "name": "Einfamilienhaus",
       "storeys": [
         {
-          "id": "bf1c4061-9e2d-4b88-a574-50a2e08e6b1e",
+          "id": "90d47b7e-d0a3-412e-8e74-2bdc1978d62a",
           "name": "EG",
           "elevation": 0.0,
           "height": 3.0,
           "drawing_path": "EG.dwg",
           "control_planes": [
             {
-              "id": "cbd8b994-2391-46cc-8965-675d1f7fb3c4",
+              "id": "22c1f6ac-96ce-4794-9070-53a5272bd7cf",
               "name": "EG_ELEVATION",
               "origin": [
                 -5.0,
@@ -55,7 +55,7 @@
               "visible": true
             },
             {
-              "id": "a7314df2-d303-4703-9a75-38409fbc8609",
+              "id": "35a07d00-94ee-47f5-9a59-fec1e4617fbc",
               "name": "EG_OKGH",
               "origin": [
                 -5.0,
@@ -98,18 +98,18 @@
               "visible": true
             }
           ],
-          "floor_plane_id": "cbd8b994-2391-46cc-8965-675d1f7fb3c4",
-          "ceiling_plane_id": "a7314df2-d303-4703-9a75-38409fbc8609"
+          "floor_plane_id": "22c1f6ac-96ce-4794-9070-53a5272bd7cf",
+          "ceiling_plane_id": "35a07d00-94ee-47f5-9a59-fec1e4617fbc"
         },
         {
-          "id": "f37a339f-0e5c-41b3-ab6b-57d62f67c90f",
+          "id": "c92bc02b-ce9d-4aac-8328-897e89bd69ed",
           "name": "OG",
           "elevation": 2.8,
           "height": 3.0,
           "drawing_path": "OG.dwg",
           "control_planes": [
             {
-              "id": "b04b4b1e-d949-4b80-bdce-c53d503c8dc9",
+              "id": "35af148d-d5f7-40b4-9e28-3ce28ed39cb3",
               "name": "OG_ELEVATION",
               "origin": [
                 -5.0,
@@ -152,7 +152,7 @@
               "visible": true
             },
             {
-              "id": "57b6c173-067b-4f8f-900a-7755dc697cc7",
+              "id": "9080a935-e01c-43de-a708-59de4d53731c",
               "name": "OG_OKGH",
               "origin": [
                 -5.0,
@@ -195,18 +195,18 @@
               "visible": true
             }
           ],
-          "floor_plane_id": "b04b4b1e-d949-4b80-bdce-c53d503c8dc9",
-          "ceiling_plane_id": "57b6c173-067b-4f8f-900a-7755dc697cc7"
+          "floor_plane_id": "35af148d-d5f7-40b4-9e28-3ce28ed39cb3",
+          "ceiling_plane_id": "9080a935-e01c-43de-a708-59de4d53731c"
         },
         {
-          "id": "831d3d36-a976-4276-9daa-c6f4dc21203d",
+          "id": "eb6e9cc1-cdee-4dbe-8f2c-d4d23a20c925",
           "name": "DG",
           "elevation": 5.6,
           "height": 3.0,
           "drawing_path": "DG.dwg",
           "control_planes": [
             {
-              "id": "72e106b0-d120-4e3d-af41-41244812f817",
+              "id": "588a4a1f-7deb-442c-b122-ad9317ee648d",
               "name": "DG_ELEVATION",
               "origin": [
                 -5.0,
@@ -249,7 +249,7 @@
               "visible": true
             },
             {
-              "id": "47881287-11e8-4d7a-bd1e-8b94210ca8fe",
+              "id": "0abec862-e750-42ec-a782-4e507227706e",
               "name": "DG_OKGH",
               "origin": [
                 -5.0,
@@ -292,8 +292,8 @@
               "visible": true
             }
           ],
-          "floor_plane_id": "72e106b0-d120-4e3d-af41-41244812f817",
-          "ceiling_plane_id": "47881287-11e8-4d7a-bd1e-8b94210ca8fe"
+          "floor_plane_id": "588a4a1f-7deb-442c-b122-ad9317ee648d",
+          "ceiling_plane_id": "0abec862-e750-42ec-a782-4e507227706e"
         }
       ]
     }
@@ -319,9 +319,25 @@
         "shape": "Rectangle",
         "spring_height": 0.0,
         "slots": {
+          "Frame2D": {
+            "kind": "Generator",
+            "value": "FrameRect"
+          },
+          "ElevationSill2D": {
+            "kind": "Generator",
+            "value": "ElevationSillLine"
+          },
           "Frame3D": {
             "kind": "Generator",
             "value": "SolidFrame"
+          },
+          "ElevationContour2D": {
+            "kind": "Generator",
+            "value": "ElevationFrameRect"
+          },
+          "Glazing3D": {
+            "kind": "Generator",
+            "value": "SolidGlazing"
           },
           "Leaf2D": {
             "kind": "Generator",
@@ -331,33 +347,17 @@
             "kind": "Generator",
             "value": "ElevationSwingTriangle"
           },
-          "Frame2D": {
-            "kind": "Generator",
-            "value": "FrameRect"
-          },
           "Glazing2D": {
             "kind": "Generator",
             "value": "GlazingLine"
-          },
-          "OpeningLabel2D": {
-            "kind": "Generator",
-            "value": "OpeningLabel"
-          },
-          "ElevationSill2D": {
-            "kind": "Generator",
-            "value": "ElevationSillLine"
-          },
-          "Glazing3D": {
-            "kind": "Generator",
-            "value": "SolidGlazing"
           },
           "Sill2D": {
             "kind": "Generator",
             "value": "SillLines"
           },
-          "ElevationContour2D": {
+          "OpeningLabel2D": {
             "kind": "Generator",
-            "value": "ElevationFrameRect"
+            "value": "OpeningLabel"
           }
         }
       },
@@ -378,41 +378,41 @@
         "shape": "Rectangle",
         "spring_height": 0.0,
         "slots": {
-          "Frame3D": {
-            "kind": "Generator",
-            "value": "SolidFrame"
-          },
-          "Swing2D": {
-            "kind": "Generator",
-            "value": "SwingArc"
-          },
           "Leaf3D": {
             "kind": "Generator",
             "value": "SolidLeaf"
-          },
-          "ElevationSwing2D": {
-            "kind": "Generator",
-            "value": "ElevationSwingTriangle"
           },
           "Frame2D": {
             "kind": "Generator",
             "value": "FrameRect"
           },
-          "Threshold2D": {
-            "kind": "Generator",
-            "value": "ThresholdLine"
-          },
           "Leaf2D": {
             "kind": "Generator",
             "value": "LeafLine"
+          },
+          "ElevationSwing2D": {
+            "kind": "Generator",
+            "value": "ElevationSwingTriangle"
+          },
+          "Swing2D": {
+            "kind": "Generator",
+            "value": "SwingArc"
+          },
+          "ElevationContour2D": {
+            "kind": "Generator",
+            "value": "ElevationFrameRect"
           },
           "OpeningLabel2D": {
             "kind": "Generator",
             "value": "OpeningLabel"
           },
-          "ElevationContour2D": {
+          "Frame3D": {
             "kind": "Generator",
-            "value": "ElevationFrameRect"
+            "value": "SolidFrame"
+          },
+          "Threshold2D": {
+            "kind": "Generator",
+            "value": "ThresholdLine"
           }
         }
       }
