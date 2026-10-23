@@ -45,6 +45,7 @@ AEC layout details: `src/modules/aec/AGENTS.md`.
 
 ## Other rules
 
+- Commit messages must always be in English (e.g. Conventional Commits: `feat(...)`, `fix(...)`, etc.).
 - Do not loosen Core’s public API for AEC (visibility, types).
 - Reuse existing Core patterns (commands, ribbon, properties) via hooks; do not duplicate them.
 - No exploit/malware artifacts; local fixes only in the codebase sense.

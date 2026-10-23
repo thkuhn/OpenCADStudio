@@ -26,6 +26,7 @@ Draw model: `src/modules/draw/line.rs` — `tool()` + command in the same file,
 
 ## Do
 
+- Commit messages always in English (e.g. Conventional Commits).
 - New preview/sync logic under `project/`, not a dump file.
 - New ribbon tools: own file under the domain group (`walls/`, …).
 - Tests in the feature file (`#[cfg(test)]`).
