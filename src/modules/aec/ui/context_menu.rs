@@ -338,7 +338,7 @@ pub fn derived_view_dropdown_menu(scene: &crate::scene::Scene, handle: Handle, _
             Some(AecMenuExclusive::OpeningGrip(handle, crate::modules::aec::properties::DERIVED_VIEW_GRIP_BASE))
         }
         crate::modules::aec::engine::views::provenance::FeatureKey::WallBase => {
-            Some(AecMenuExclusive::WallBaseGrip(handle))
+            None
         }
         crate::modules::aec::engine::views::provenance::FeatureKey::SlabBottom => {
             Some(AecMenuExclusive::SlabBottomGrip(handle))
@@ -588,6 +588,11 @@ mod tests {
             })
             .collect();
         assert!(cmds.contains(&"AEC_WALLJOIN"));
+        assert!(cmds.contains(&"AEC_WALLEXTEND"));
+        assert!(cmds.contains(&"AEC_WALLREVERSE"));
+        assert!(cmds.contains(&"AEC_WINDOW"));
+        assert!(cmds.contains(&"AEC_DOOR"));
+        assert!(cmds.contains(&"AEC_OPENING"));
         assert!(matches!(
             rows.iter().find(|r| matches!(
                 r,
@@ -657,13 +662,13 @@ mod tests {
             sync_carrier_primitives(&mut scene.document, &mut carrier, &[prim]).expect("sync");
             let child = carrier.derived_handles[0];
 
-            let menu = derived_primitive_context_menu(&scene, child).expect("must have context menu");
-            if is_opening {
-                assert!(matches!(menu, AecMenuExclusive::OpeningGrip(h, _) if h == child));
-            } else if feat == FeatureKey::WallBase {
-                assert!(matches!(menu, AecMenuExclusive::WallBaseGrip(h) if h == child));
+            let menu = derived_primitive_context_menu(&scene, child);
+            if feat == FeatureKey::WallBase {
+                assert!(menu.is_none(), "WallBase derived primitive context menu must be deactivated");
+            } else if is_opening {
+                assert!(matches!(menu.expect("must have context menu"), AecMenuExclusive::OpeningGrip(h, _) if h == child));
             } else {
-                assert!(matches!(menu, AecMenuExclusive::SlabBottomGrip(h) if h == child));
+                assert!(matches!(menu.expect("must have context menu"), AecMenuExclusive::SlabBottomGrip(h) if h == child));
             }
         }
     }
@@ -801,11 +806,14 @@ mod tests {
         sync_carrier_primitives(&mut app.tabs[tab].scene.document, &mut carrier, &[prim_wall]).expect("sync");
         let wall_child = carrier.derived_handles[0];
 
-        let menu_wall = derived_primitive_context_menu(&app.tabs[tab].scene, wall_child).expect("wall menu");
+        let menu_wall = derived_primitive_context_menu(&app.tabs[tab].scene, wall_child);
+        assert!(menu_wall.is_none(), "WallBase derived primitive context menu must be deactivated");
+
+        // Verify that WallBaseGrip exclusive menu still works when explicitly invoked
         let snap_wall = AecMenuSnapshot {
             only_walls: false,
             junction: None,
-            exclusive: menu_wall,
+            exclusive: AecMenuExclusive::WallBaseGrip(wall_handle),
         };
         let rows_wall = exclusive_rows(&snap_wall, None).expect("rows");
         for row in rows_wall {

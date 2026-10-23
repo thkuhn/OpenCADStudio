@@ -278,7 +278,7 @@ fn build_eg_geometry(scene: &mut Scene, library: &StyleLibrary) {
 }
 
 fn build_og_geometry(scene: &mut Scene, library: &StyleLibrary) {
-    let z = 2.80;
+    let z = 0.0;
     let h = 2.80;
 
     // Ceiling / Slab over EG
@@ -361,7 +361,7 @@ fn build_og_geometry(scene: &mut Scene, library: &StyleLibrary) {
 }
 
 fn build_dg_geometry(scene: &mut Scene, _library: &StyleLibrary) {
-    let z = 5.60;
+    let z = 0.0;
     let h_drempel = 1.20;
     let h_giebel = 3.20;
 

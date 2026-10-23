@@ -57,6 +57,9 @@ pub fn apply_wall_plane_choice(
     let mut record = ExtendedDataRecord::new(AEC_APPID);
     record.values = wall_record_for_wall(&wall);
     write_aec_record(&mut scene.document, handle, record);
+    if let Some(acadrust::EntityType::LwPolyline(pl)) = scene.document.get_entity_mut(handle) {
+        pl.elevation = wall.base_origin[2];
+    }
     if let Ok(touched) = regenerate_wall_representation(scene, handle, library) {
         let changes: Vec<_> = touched
             .into_iter()
@@ -82,7 +85,13 @@ pub fn apply_wall_base_z(scene: &mut Scene, handle: Handle, z: f64) -> bool {
     wall.base_origin[2] = z;
     let mut record = ExtendedDataRecord::new(AEC_APPID);
     record.values = wall_record_for_wall(&wall);
-    write_aec_record(&mut scene.document, handle, record)
+    let ok = write_aec_record(&mut scene.document, handle, record);
+    if ok {
+        if let Some(acadrust::EntityType::LwPolyline(pl)) = scene.document.get_entity_mut(handle) {
+            pl.elevation = z;
+        }
+    }
+    ok
 }
 
 pub(crate) fn parse_plane_choice(project: Option<&ProjectFile>, choice: &str) -> Option<Uuid> {

@@ -332,13 +332,33 @@ impl SceneGeometryCollector {
                     }
 
                     if axis_points.len() >= 2 {
-                        let mut base_z = wall.base_origin[2];
-                        let mut top_z = base_z + wall.height;
-                        if let Some(xref) = &xref_source {
-                            let (_, _, z_t) = xref.transform_coords(0.0, 0.0, base_z);
-                            base_z = z_t;
-                            top_z = base_z + wall.height;
-                        }
+                        let (v0, v1) = (&pl.vertices[0].location, &pl.vertices[pl.vertices.len() - 1].location);
+                        let mid_local_x = (v0.x + v1.x) * 0.5;
+                        let mid_local_y = (v0.y + v1.y) * 0.5;
+
+                        let raw_base = if wall.base_plane_id.is_some() || !wall.base_facets.is_empty() {
+                            wall.base_z_at_xy(mid_local_x, mid_local_y)
+                        } else if wall.base_origin[2].abs() > 1e-6 {
+                            wall.base_origin[2]
+                        } else if pl.elevation.abs() > 1e-6 {
+                            pl.elevation + wall.base_offset
+                        } else {
+                            wall.base_offset
+                        };
+
+                        let raw_top = if wall.top_plane_id.is_some() || !wall.top_facets.is_empty() {
+                            wall.top_z_at_xy(mid_local_x, mid_local_y)
+                        } else {
+                            raw_base + wall.height + wall.top_offset
+                        };
+
+                        let (base_z, top_z) = if let Some(xref) = &xref_source {
+                            let (_, _, z_b) = xref.transform_coords(0.0, 0.0, raw_base);
+                            let (_, _, z_t) = xref.transform_coords(0.0, 0.0, raw_top);
+                            (z_b, z_t)
+                        } else {
+                            (raw_base, raw_top)
+                        };
 
                         let total_thickness: f64 = wall.layers.iter().map(|l| l.thickness).sum();
 
@@ -446,11 +466,19 @@ impl SceneGeometryCollector {
                     }
 
                     if polygon.len() >= 3 {
-                        let mut base_z = slab.base_origin[2];
-                        if let Some(xref) = &xref_source {
-                            let (_, _, z_t) = xref.transform_coords(0.0, 0.0, base_z);
-                            base_z = z_t;
-                        }
+                        let raw_base = if slab.base_origin[2].abs() > 1e-6 {
+                            slab.base_origin[2]
+                        } else if pl.elevation.abs() > 1e-6 {
+                            pl.elevation + slab.base_offset
+                        } else {
+                            slab.base_offset
+                        };
+                        let base_z = if let Some(xref) = &xref_source {
+                            let (_, _, z_t) = xref.transform_coords(0.0, 0.0, raw_base);
+                            z_t
+                        } else {
+                            raw_base
+                        };
 
                         let total_thickness = slab.total_thickness();
                         let collected_layers: Vec<CollectedSlabLayer> = slab
@@ -526,5 +554,94 @@ impl SceneGeometryCollector {
             .cloned()
             .collect();
         Self { walls, slabs }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use acadrust::entities::{LwPolyline, LwVertex};
+    use acadrust::types::Vector2;
+    use acadrust::xdata::ExtendedDataRecord;
+    use crate::modules::aec::engine::control_plane::ControlPlaneFacet;
+    use crate::modules::aec::engine::wall::Wall;
+    use crate::modules::aec::engine::xdata::{wall_record_for_wall, AEC_APPID};
+    use crate::scene::Scene;
+
+    #[test]
+    fn test_wall_elevation_and_plane_offsets_collection() {
+        let mut scene = Scene::new();
+        let model_id = ModelId::new();
+
+        // 1. Wall with polyline elevation = 2.80 and base_origin = 0.0
+        let mut pl1 = LwPolyline::new();
+        pl1.add_vertex(LwVertex::new(Vector2::new(0.0, 0.0)));
+        pl1.add_vertex(LwVertex::new(Vector2::new(10.0, 0.0)));
+        pl1.elevation = 2.80;
+        let mut wall1 = Wall::new("Standard", 2.80, 0);
+        wall1.base_origin = [0.0, 0.0, 0.0];
+        let mut ent1 = EntityType::LwPolyline(pl1);
+        let mut rec1 = ExtendedDataRecord::new(AEC_APPID);
+        rec1.values = wall_record_for_wall(&wall1);
+        ent1.common_mut().extended_data.add_record(rec1);
+        scene.add_entity(ent1);
+
+        // 2. Wall with polyline elevation = 2.80, base_offset = 0.10, top_offset = -0.05
+        let mut pl2 = LwPolyline::new();
+        pl2.add_vertex(LwVertex::new(Vector2::new(0.0, 5.0)));
+        pl2.add_vertex(LwVertex::new(Vector2::new(10.0, 5.0)));
+        pl2.elevation = 2.80;
+        let mut wall2 = Wall::new("Standard", 2.80, 0);
+        wall2.base_origin = [0.0, 0.0, 0.0];
+        wall2.base_offset = 0.10;
+        wall2.top_offset = -0.05;
+        let mut ent2 = EntityType::LwPolyline(pl2);
+        let mut rec2 = ExtendedDataRecord::new(AEC_APPID);
+        rec2.values = wall_record_for_wall(&wall2);
+        ent2.common_mut().extended_data.add_record(rec2);
+        scene.add_entity(ent2);
+
+        // 3. Wall with sloped top plane (top plane facets)
+        let mut pl3 = LwPolyline::new();
+        pl3.add_vertex(LwVertex::new(Vector2::new(0.0, 10.0)));
+        pl3.add_vertex(LwVertex::new(Vector2::new(10.0, 10.0)));
+        pl3.elevation = 0.0;
+        let mut wall3 = Wall::new("RoofWall", 4.0, 0);
+        wall3.base_origin = [0.0, 10.0, 0.0];
+        wall3.top_plane_id = Some(uuid::Uuid::new_v4());
+        // Sloped roof facet: at x = 0: z = 5.0, at x = 10: z = 3.0 -> mid at x = 5 is z = 4.0
+        let roof_facet = ControlPlaneFacet::new(
+            "Roof",
+            vec![
+                [0.0, 5.0, 5.0],
+                [10.0, 5.0, 3.0],
+                [10.0, 15.0, 3.0],
+                [0.0, 15.0, 5.0],
+            ],
+        );
+        wall3.top_facets = vec![roof_facet];
+        let mut ent3 = EntityType::LwPolyline(pl3);
+        let mut rec3 = ExtendedDataRecord::new(AEC_APPID);
+        rec3.values = wall_record_for_wall(&wall3);
+        ent3.common_mut().extended_data.add_record(rec3);
+        scene.add_entity(ent3);
+
+        let collector = SceneGeometryCollector::collect_from_document(&scene.document, model_id);
+        assert_eq!(collector.walls.len(), 3);
+
+        // Verify Wall 1: base = 2.80, top = 5.60
+        let w1 = &collector.walls[0];
+        assert!((w1.base_z - 2.80).abs() < 1e-6, "w1 base_z expected 2.80, got {}", w1.base_z);
+        assert!((w1.top_z - 5.60).abs() < 1e-6, "w1 top_z expected 5.60, got {}", w1.top_z);
+
+        // Verify Wall 2: base = 2.90, top = 5.65
+        let w2 = &collector.walls[1];
+        assert!((w2.base_z - 2.90).abs() < 1e-6, "w2 base_z expected 2.90, got {}", w2.base_z);
+        assert!((w2.top_z - 5.65).abs() < 1e-6, "w2 top_z expected 5.65, got {}", w2.top_z);
+
+        // Verify Wall 3: base = 0.0, top = 4.0 at midpoint (x=5.0)
+        let w3 = &collector.walls[2];
+        assert!((w3.base_z - 0.0).abs() < 1e-6, "w3 base_z expected 0.0, got {}", w3.base_z);
+        assert!((w3.top_z - 4.0).abs() < 1e-6, "w3 top_z expected 4.0, got {}", w3.top_z);
     }
 }

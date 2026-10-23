@@ -2672,7 +2672,6 @@ pub fn append_derived_view_grips(
     match feat {
         crate::modules::aec::engine::views::provenance::FeatureKey::OpeningLeftJamb
         | crate::modules::aec::engine::views::provenance::FeatureKey::OpeningRightJamb
-        | crate::modules::aec::engine::views::provenance::FeatureKey::WallBase
         | crate::modules::aec::engine::views::provenance::FeatureKey::SlabBottom => {
             let dropdown = crate::entities::common::dropdown_grip(DERIVED_VIEW_DROPDOWN_GRIP_BASE, pos);
             entity_grips.push(dropdown);
@@ -3442,11 +3441,6 @@ pub fn append_wall_junction_grips(
             ));
         }
     }
-    let mid = (verts[0] + verts[verts.len() - 1]) * 0.5;
-    entity_grips.push(crate::entities::common::dropdown_grip(
-        WALL_BASE_DROPDOWN_GRIP_ID,
-        mid,
-    ));
 }
 
 pub fn append_slab_base_grips(
@@ -5088,12 +5082,15 @@ mod tests {
             // 2. Verify Viewport Grips & Constraints
             let mut grips = Vec::new();
             append_derived_view_grips(&scene, child_handle, &mut grips);
-            assert_eq!(grips.len(), 2, "Expected 2 grips (direct + dropdown) for {:?}", feat);
+            let expected_len = if feat == FeatureKey::WallBase { 1 } else { 2 };
+            assert_eq!(grips.len(), expected_len, "Expected {} grips for {:?}", expected_len, feat);
             let grip = &grips[0];
             assert_eq!(grip.id, DERIVED_VIEW_GRIP_BASE);
             assert_eq!(grip.world, glam::DVec3::new(2.0, 0.0, 0.0));
             assert_eq!(grip.axis, Some(expected_axis), "Axis mismatch for {:?}", feat);
-            assert_eq!(grips[1].shape, crate::scene::model::object::GripShape::Dropdown);
+            if feat != FeatureKey::WallBase {
+                assert_eq!(grips[1].shape, crate::scene::model::object::GripShape::Dropdown);
+            }
         }
     }
 
@@ -5308,14 +5305,14 @@ mod tests {
 
         let mut scene = Scene::new();
 
-        // 1. Wall Dropdown Grip
+        // 1. Wall Dropdown Grip (removed from model walls to preserve standard context menu)
         let wall_h = add_test_wall(&mut scene.document);
         let mut wall_grips = Vec::new();
         let wall_ent = scene.document.get_entity(wall_h).unwrap().clone();
         append_wall_junction_grips(&scene, wall_h, &wall_ent, &mut wall_grips);
         assert!(
-            wall_grips.iter().any(|g| g.id == WALL_BASE_DROPDOWN_GRIP_ID && g.shape == crate::scene::model::object::GripShape::Dropdown),
-            "Wall must have a WallBase dropdown grip"
+            !wall_grips.iter().any(|g| g.id == WALL_BASE_DROPDOWN_GRIP_ID),
+            "Wall must not have a WallBase dropdown grip in model view"
         );
 
         // 2. Opening Dropdown Grip

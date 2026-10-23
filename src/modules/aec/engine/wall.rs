@@ -280,7 +280,7 @@ impl Wall {
                 return self.base_z_at_xy(x, y) + self.height + self.top_offset;
             }
         }
-        if self.top_plane_id.is_none() && (self.top_origin[2] - self.base_origin[2]).abs() <= 1e-6 {
+        if self.top_plane_id.is_none() && self.top_facets.is_empty() {
             return self.base_z_at_xy(x, y) + self.height;
         }
         let n = self.top_normal;

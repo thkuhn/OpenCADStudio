@@ -1022,6 +1022,23 @@ mod tests {
             let _ = app.update(Message::ContextMenuSubmenuToggle(SubmenuId::AecWallPlane));
             let _ = app.view(wid);
             let _ = app.close_context_menu();
+
+            // Test Case 5: Select Wall in regular model -> Verify standard wall menu with only_walls is shown
+            app.tabs[0].scene.deselect_all();
+            app.aec.aec_active_grip_menu = None;
+            app.tabs[0].scene.select_entity(wall_handle, true);
+            app.tabs[0].scene.selection.borrow_mut().open_context_menu(iced::Point::new(100.0, 100.0));
+            assert!(menu_open(&app));
+            let ctx = app.context_menu_context();
+            match ctx {
+                crate::ui::popup::context_menu::MenuContext::Idle { aec, .. } => {
+                    assert_eq!(aec.exclusive, crate::modules::aec::ui::context_menu::AecMenuExclusive::None);
+                    assert!(aec.only_walls);
+                }
+                _ => panic!("Expected MenuContext::Idle"),
+            }
+            let _ = app.view(wid);
+            let _ = app.close_context_menu();
         });
     }
 }
