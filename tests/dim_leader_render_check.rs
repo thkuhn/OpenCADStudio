@@ -1,9 +1,9 @@
 //! Check DIMTMOVE through the scene's actual dimension tessellation.
 
-use acadrust::entities::{Dimension, DimensionAligned, DimensionLinear};
-use acadrust::types::Vector3;
-use acadrust::xdata::XDataValue;
-use acadrust::EntityType;
+use codec::entities::{Dimension, DimensionAligned, DimensionLinear};
+use codec::types::Vector3;
+use codec::xdata::XDataValue;
+use codec::EntityType;
 use OpenCADStudio::entities::dim_override as ov;
 use OpenCADStudio::scene::Scene;
 
@@ -38,7 +38,7 @@ fn dim_leader_extends_only_when_requested() {
                 base.insertion_point = base.text_middle_point;
                 base.text_user_positioned = true;
                 base.style_name = "Standard".into();
-                let handle = scene.add_entity(EntityType::Dimension(dim));
+                let handle = scene.add_entity(EntityType::Dimension(Box::new(dim)));
                 for (code, value) in [
                     (ov::DIMTMOVE, XDataValue::Integer16(movement)),
                     (ov::DIMTXT, XDataValue::Real(3.5)),

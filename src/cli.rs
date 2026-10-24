@@ -1,10 +1,12 @@
 //! Command-line interface.
 //!
-//! Parsing lives here; `main` interprets the result. Four run modes split out
+//! Parsing lives here; `main` interprets the result. These run modes split out
 //! of the parsed args:
 //!   - `--mcp`              local stdio MCP server for AI clients
 //!   - `--serve`            headless JSON automation server (see `app::serve`)
 //!   - `--export IN OUT`    one-shot headless format conversion, then exit
+//!   - `--batch SCRIPT`     run a script headless, then exit
+//!   - `--each SCRIPT FILES` run a script headless on each drawing, then exit
 //!   - otherwise            launch the GUI editor, configured via [`GuiConfig`]
 //!
 //! GUI-only options (open-file, `--new`, `--read-only`, `--script`) are stashed
@@ -80,25 +82,59 @@ pub struct Cli {
     #[arg(help = crate::t!("Connect AI clients to the running editor over MCP stdio.").into_owned(), long_help = None)]
     pub mcp: bool,
 
+    /// Export and synchronize AI agent MCP tool schemas to ~/.gemini/antigravity/mcp/opencadstudio/ and exit.
+    #[arg(long = "sync-mcp-schemas")]
+    #[arg(help = crate::t!("Export and synchronize AI agent MCP tool schemas to ~/.gemini/antigravity/mcp/opencadstudio/ and exit.").into_owned(), long_help = None)]
+    pub sync_mcp_schemas: bool,
+
     /// TCP port for --serve (defaults to stdin/stdout).
     #[arg(long, value_name = "PORT")]
     #[arg(help = crate::t!("TCP port for --serve (defaults to stdin/stdout).").into_owned(), long_help = None)]
     pub port: Option<u16>,
+
+    /// Expose the headless automation API as a REST HTTP server on this port.
+    #[arg(long, value_name = "PORT")]
+    #[arg(help = crate::t!("Serve the automation API over REST on http://127.0.0.1:PORT").into_owned(), long_help = None)]
+    pub http: Option<u16>,
 
     /// Headless convert: read IN, write OUT (format from OUT's extension), exit.
     #[arg(long, num_args = 2, value_names = ["IN", "OUT"])]
     #[arg(help = crate::t!("Convert IN to OUT using the output file extension, then exit.").into_owned(), long_help = None)]
     pub export: Option<Vec<PathBuf>>,
 
+    /// Explicit output CAD version for --export (R14, 2000, 2004, 2007,
+    /// 2010, 2013 or 2018). Without it the source document version is kept.
+    #[arg(long, value_name = "VERSION", requires = "export")]
+    pub target_version: Option<String>,
+
     /// Run a command script at startup: one command line per line of FILE.
     #[arg(long, value_name = "FILE")]
     #[arg(help = crate::t!("Run a command script at startup, one command per line.").into_owned(), long_help = None)]
     pub script: Option<PathBuf>,
 
+    /// Run a command script with no window and exit when it ends (exit
+    /// code 1 when a row failed). Starts with no drawing open.
+    #[arg(long, value_name = "SCRIPT", conflicts_with_all = ["each", "files"])]
+    #[arg(help = crate::t!("Run a script with no window, then exit (1 if a row failed).").into_owned(), long_help = None)]
+    pub batch: Option<PathBuf>,
+
+    /// Run a command script with no window once per listed drawing: open,
+    /// run, close without saving what the script did not save.
+    #[arg(long, value_name = "SCRIPT", requires = "files")]
+    #[arg(help = crate::t!("Run a script on each listed drawing with no window, then exit.").into_owned(), long_help = None)]
+    pub each: Option<PathBuf>,
+
     /// Log level (error|warn|info|debug|trace). Also honours RUST_LOG.
     #[arg(long, value_name = "LEVEL")]
     #[arg(help = crate::t!("Log level (error|warn|info|debug|trace). Also reads RUST_LOG.").into_owned(), long_help = None)]
     pub log: Option<String>,
+
+    /// Internal: probe one GPU backend offscreen (`dx12|vulkan|gl|sw`), print
+    /// one JSON line on success, then exit 0/1. Spawned by the GPU backend
+    /// resolver so a legacy-driver abort kills only the probe child, never
+    /// the editor itself.
+    #[arg(long, value_name = "BACKEND", hide = true)]
+    pub gpu_probe: Option<String>,
 
     /// Internal: run as the plugin runner child process.
     #[arg(long, value_names = ["SOCKET", "CDYLIB"], num_args = 2, hide = true)]
@@ -124,6 +160,12 @@ pub struct GuiConfig {
     pub compat_renderer: bool,
     /// Command lines to run once the editor is up.
     pub script_lines: Vec<String>,
+    /// Why this launch switched graphics backend, if it did. Shown once
+    /// as a command-line warning so the switch is never silent.
+    pub gpu_fallback_notice: Option<String>,
+    /// The GPU probe found no shader storage buffers: the packed
+    /// compatibility renderer was enabled automatically for this session.
+    pub gpu_compat_auto: bool,
 }
 
 /// Set once by `main` before the GUI boots; read by `app::boot`.

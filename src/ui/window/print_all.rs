@@ -1,23 +1,8 @@
 use crate::app::Message;
 use crate::t;
+use crate::ui::style::common::muted_style as muted;
 use iced::widget::{button, checkbox, column, container, row, scrollable, text, Space};
 use iced::{Background, Border, Element, Length, Theme};
-
-fn button_style(primary: bool) -> impl Fn(&Theme, button::Status) -> button::Style {
-    move |theme, status| {
-        if primary {
-            button::primary(theme, status)
-        } else {
-            button::secondary(theme, status)
-        }
-    }
-}
-
-fn muted(theme: &Theme) -> iced::widget::text::Style {
-    iced::widget::text::Style {
-        color: Some(theme.palette().background.base.text.scale_alpha(0.68)),
-    }
-}
 
 pub fn view_window<'a>(
     layouts: &'a [(String, bool)],
@@ -42,12 +27,18 @@ pub fn view_window<'a>(
         })
         .collect();
     let list: Element<'a, Message> = if rows.is_empty() {
-        container(text(t!("No paper layouts are available.")).size(12).style(muted))
-            .center_x(Length::Fill)
-            .center_y(Length::Fill)
-            .into()
+        container(
+            text(t!("No paper layouts are available."))
+                .size(12)
+                .style(muted),
+        )
+        .center_x(Length::Fill)
+        .center_y(Length::Fill)
+        .into()
     } else {
-        scrollable(column(rows).spacing(2)).height(sizing.height).into()
+        scrollable(column(rows).spacing(2))
+            .height(sizing.height)
+            .into()
     };
     let printer = printer
         .filter(|name| !name.is_empty())
@@ -60,10 +51,10 @@ pub fn view_window<'a>(
     };
 
     let mut pdf = button(text(t!("PDF")).size(11))
-        .style(button_style(false))
+        .style(button::secondary)
         .padding([5, 16]);
     let mut print = button(text(t!("Print")).size(11))
-        .style(button_style(true))
+        .style(button::primary)
         .padding([5, 18]);
     if selected > 0 {
         pdf = pdf.on_press(Message::PrintAllPdf);
@@ -86,16 +77,18 @@ pub fn view_window<'a>(
 
     container(
         column![
-            text(t!("Select the layouts to output. Each page is printed in Layout mode."))
-                .size(12),
+            text(t!(
+                "Select the layouts to output. Each page is printed in Layout mode."
+            ))
+            .size(12),
             row![
                 button(text(t!("Select all")).size(11))
                     .on_press(Message::PrintAllSelectAll)
-                    .style(button_style(false))
+                    .style(button::secondary)
                     .padding([4, 10]),
                 button(text(t!("Select none")).size(11))
                     .on_press(Message::PrintAllSelectNone)
-                    .style(button_style(false))
+                    .style(button::secondary)
                     .padding([4, 10]),
                 Space::new().width(Length::Fill),
                 text(summary).size(11).style(muted),
@@ -110,7 +103,7 @@ pub fn view_window<'a>(
                 Space::new().width(Length::Fill),
                 button(text(t!("Options…")).size(11))
                     .on_press(Message::PrintAllOptions)
-                    .style(button_style(false))
+                    .style(button::secondary)
                     .padding([5, 12]),
                 pdf,
                 print,

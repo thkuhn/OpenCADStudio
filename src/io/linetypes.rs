@@ -8,10 +8,36 @@
 use rustc_hash::FxHashMap as HashMap;
 use std::sync::OnceLock;
 
-use acadrust::tables::linetype::{LineType, LineTypeComplexContent, LineTypeElement};
-use acadrust::{CadDocument, TableEntry};
+use codec::tables::linetype::{LineType, LineTypeComplexContent, LineTypeElement};
+use codec::{CadDocument, TableEntry};
 
 // ── Complex linetype types ────────────────────────────────────────────────
+
+/// How a complex linetype element's rotation is measured (`.lin` `R=`,
+/// `A=`, `U=`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum LtRotation {
+    /// Relative to the line direction.
+    #[default]
+    Relative,
+    /// Relative to the world X axis, whatever the line direction.
+    Absolute,
+    /// Relative to the line, turned half a turn where it would read upside
+    /// down.
+    Upright,
+}
+
+impl LtRotation {
+    fn of(data: &codec::tables::linetype::LineTypeComplexData) -> Self {
+        if data.upright {
+            Self::Upright
+        } else if data.absolute_rotation {
+            Self::Absolute
+        } else {
+            Self::Relative
+        }
+    }
+}
 
 /// One element in a complex linetype pattern.
 #[derive(Clone, Debug)]
@@ -39,6 +65,8 @@ pub enum LtSegment {
         scale: f32,
         /// Optional rotation in degrees (0 = along the line).
         rot_deg: f32,
+        /// What `rot_deg` is measured from.
+        rot_mode: LtRotation,
     },
     /// Draw a text string at the current pen position.
     Text {
@@ -54,6 +82,8 @@ pub enum LtSegment {
         scale: f32,
         /// Rotation in degrees (0 = along the line).
         rot_deg: f32,
+        /// What `rot_deg` is measured from.
+        rot_mode: LtRotation,
     },
 }
 
@@ -69,7 +99,7 @@ static COMPLEX_CATALOG: OnceLock<HashMap<String, ComplexLt>> = OnceLock::new();
 /// Returns `None` for simple (dash-only) linetypes or unknown names.
 pub fn complex_lt(name: &str) -> Option<&'static ComplexLt> {
     COMPLEX_CATALOG
-        .get_or_init(|| parse_complex(LIN_SOURCE))
+        .get_or_init(|| parse_complex(lin_source()))
         .get(&name.to_ascii_uppercase())
 }
 
@@ -120,10 +150,9 @@ pub fn document_lt_segments(document: &CadDocument, name: &str) -> Option<Comple
                         .find(|s| s.handle == c.style_handle)
                         .map(|s| s.name.as_str())
                         .unwrap_or("");
-                    let font = crate::entities::text_support::resolve_text_style(
-                        style_name, document,
-                    )
-                    .font_name;
+                    let font =
+                        crate::entities::text_support::resolve_text_style(style_name, document)
+                            .font_name;
                     let scale = c.scale as f32;
                     segments.push(LtSegment::Text {
                         text: text.clone(),
@@ -134,6 +163,7 @@ pub fn document_lt_segments(document: &CadDocument, name: &str) -> Option<Comple
                         // DWG stores the element rotation in RADIANS; the
                         // segment field carries degrees (the `.lin` unit).
                         rot_deg: (c.rotation as f32).to_degrees(),
+                        rot_mode: LtRotation::of(c),
                     });
                 }
                 LineTypeComplexContent::Shape { shape_number } => {
@@ -155,20 +185,18 @@ pub fn document_lt_segments(document: &CadDocument, name: &str) -> Option<Comple
                         .map(std::path::Path::new)
                         .and_then(|p| p.parent());
                     let resolved = (!font.is_empty())
-                        .then(|| crate::io::resolve_image_file(&font, base))
+                        .then(|| {
+                            crate::io::resolve_image_file(&font, base).or_else(|| {
+                                crate::io::font_repo::local_font_file(&font)
+                                    .map(|path| path.to_string_lossy().into_owned())
+                            })
+                        })
                         .flatten();
-                    // The standard ltypeshp.shx numbers map to the bundled
-                    // LFF substitute shapes, so the glyph still draws when
-                    // the shape file isn't on disk (the usual case — traded
-                    // drawings rarely ship their .shx).
-                    let sub_name = match *shape_number {
-                        130 => "TRACK1",
-                        131 => "ZIG",
-                        132 => "BOX",
-                        133 => "CIRC1",
-                        134 => "BAT",
-                        _ => "",
-                    };
+                    // The standard ltypeshp.shx numbers (and the bundled
+                    // catalog's own) map to the LFF substitute shapes, so the
+                    // glyph still draws when the shape file isn't on disk
+                    // (the usual case — traded drawings rarely ship their .shx).
+                    let sub_name = bundled_shape_name(&font, *shape_number).unwrap_or("");
                     if resolved.is_none() && sub_name.is_empty() {
                         continue;
                     }
@@ -181,6 +209,7 @@ pub fn document_lt_segments(document: &CadDocument, name: &str) -> Option<Comple
                         y: c.offset[1] as f32,
                         scale: if scale.abs() < 1e-6 { 1.0 } else { scale },
                         rot_deg: (c.rotation as f32).to_degrees(),
+                        rot_mode: LtRotation::of(c),
                     });
                 }
             }
@@ -240,6 +269,17 @@ pub fn resolve_complex_lt(document: &CadDocument, name: &str) -> Option<ComplexL
 
 const LIN_SOURCE: &str = include_str!("../../assets/linetypes/OpenCADStudio.lin");
 
+/// The bundled linetypes followed by the user's own `.lin` files.
+fn lin_source() -> &'static str {
+    static SOURCE: OnceLock<String> = OnceLock::new();
+    SOURCE.get_or_init(|| {
+        format!(
+            "{LIN_SOURCE}\n{}",
+            crate::io::patterns::user_definitions("linetypes", "lin")
+        )
+    })
+}
+
 // ── Pattern art extraction ────────────────────────────────────────────────
 
 /// Extract the ASCII-art portion of a LIN description.
@@ -265,23 +305,286 @@ pub fn extract_pattern(desc: &str) -> String {
 
 /// Add all standard OpenCADStudio linetypes to `doc`, skipping existing ones.
 pub fn populate_document(doc: &mut CadDocument) {
-    populate_document_from_source(doc, LIN_SOURCE);
+    populate_document_from_source(doc, lin_source(), None);
 }
 
-/// Add all simple linetypes parsed from a caller-supplied `.lin` source.
+/// Repair the catalog linetypes `doc` already has (see
+/// [`populate_document_from_source`]) without adding any: an opened drawing
+/// keeps exactly its own linetypes, so a purged one stays purged.
+pub fn repair_document(doc: &mut CadDocument) {
+    populate_matching(doc, lin_source(), None, |_| false);
+}
+
+/// The catalog linetypes `doc` does not have, as (name, description): what a
+/// picker offers beside the drawing's own. Picking one loads it with
+/// [`ensure_catalog_linetype`].
+pub fn catalog_missing_from(doc: &CadDocument) -> Vec<(String, String)> {
+    static CATALOG: OnceLock<Vec<(String, String)>> = OnceLock::new();
+    CATALOG
+        .get_or_init(|| {
+            parse(lin_source())
+                .into_iter()
+                .map(|lt| (lt.name, lt.description))
+                .collect()
+        })
+        .iter()
+        .filter(|(name, _)| !doc.line_types.contains(name))
+        .cloned()
+        .collect()
+}
+
+/// Load catalog linetype `name` into `doc` when the drawing lacks it.
+/// Returns whether it was added.
+pub fn ensure_catalog_linetype(doc: &mut CadDocument, name: &str) -> bool {
+    !doc.line_types.contains(name)
+        && populate_matching(doc, lin_source(), None, |candidate| {
+            candidate.eq_ignore_ascii_case(name)
+        }) > 0
+}
+
+/// Add the linetypes of a caller-supplied `.lin` source, embedded shapes and
+/// text included, so the drawing draws them and a saved file carries them.
 /// Returns the number of definitions newly registered in the drawing.
-pub fn populate_document_from_source(doc: &mut CadDocument, source: &str) -> usize {
+/// `lin_dir` is the folder the `.lin` came from: the shape files it names
+/// are looked for there.
+///
+/// A linetype the drawing already has keeps its own definition, with one
+/// repair: a copy stripped to its dashes (as this loader used to add them,
+/// and so saved) gets its shapes and text back when its dashes match the
+/// source's exactly.
+pub fn populate_document_from_source(
+    doc: &mut CadDocument,
+    source: &str,
+    lin_dir: Option<&std::path::Path>,
+) -> usize {
+    populate_matching(doc, source, lin_dir, |_| true)
+}
+
+/// [`populate_document_from_source`], adding only the missing linetypes
+/// `add` accepts by name; existing ones are repaired either way.
+fn populate_matching(
+    doc: &mut CadDocument,
+    source: &str,
+    lin_dir: Option<&std::path::Path>,
+    add: impl Fn(&str) -> bool,
+) -> usize {
+    let complex = parse_complex(source);
     let mut added = 0;
     for mut lt in parse(source) {
-        if !doc.line_types.contains(&lt.name) {
-            lt.set_handle(doc.allocate_handle());
-            doc.line_types.add(lt).ok();
-            added += 1;
+        let segments = complex.get(&lt.name.to_ascii_uppercase());
+        if let Some(existing) = doc.line_types.get(&lt.name) {
+            let stripped =
+                segments.is_some()
+                    && !existing.is_complex()
+                    && existing.elements.len() == lt.elements.len()
+                    && existing.elements.iter().zip(&lt.elements).all(|(a, b)| {
+                        (a.length - b.length).abs() <= 1e-9 * b.length.abs().max(1.0)
+                    });
+            if stripped {
+                if let Some(elements) =
+                    segments.and_then(|s| complex_elements(doc, s, &lt.elements, lin_dir))
+                {
+                    if let Some(existing) = doc.line_types.get_mut(&lt.name) {
+                        existing.elements = elements;
+                    }
+                }
+            }
+            continue;
         }
+        if !add(&lt.name) {
+            continue;
+        }
+        if let Some(elements) =
+            segments.and_then(|s| complex_elements(doc, s, &lt.elements, lin_dir))
+        {
+            lt.elements = elements;
+        }
+        lt.set_handle(doc.allocate_handle());
+        doc.line_types.add(lt).ok();
+        added += 1;
     }
     added
 }
 
+/// Shape numbers for the shape files the bundled catalog references,
+/// keyed by file stem and shape name. The `ltypeshp` 130–134 are the
+/// standard ones; the rest exist only in the bundled LFF substitutes, so
+/// their numbers are this application's own.
+const BUNDLED_SHAPES: &[(&str, &str, i16)] = &[
+    ("ltypeshp", "TRACK1", 130),
+    ("ltypeshp", "ZIG", 131),
+    ("ltypeshp", "BOX", 132),
+    ("ltypeshp", "CIRC1", 133),
+    ("ltypeshp", "BAT", 134),
+    ("ltypeshp", "PT1", 135),
+    ("ltypeshp", "PT2", 136),
+    ("ltypeshp", "PLANT1", 137),
+    ("ltypeshp", "PLANT2", 138),
+    ("ltypeshp", "PLANT3", 139),
+    ("ltypeshp", "PLANT4", 140),
+    ("ltypeshp", "PLANT5", 141),
+    ("ltypeshp", "PLANT6", 142),
+    ("qcadshp", "RIGHT_ARROW", 130),
+];
+
+/// A catalog value as the decimal it was written as: 2.54 stays 2.54, not
+/// the 2.5399999618… an `f32` widens to.
+fn decimal(value: f32) -> f64 {
+    value.to_string().parse().unwrap_or(value as f64)
+}
+
+fn shape_file_stem(file: &str) -> String {
+    let name = file.rsplit(['/', '\\']).next().unwrap_or(file);
+    name.split('.').next().unwrap_or(name).to_ascii_lowercase()
+}
+
+/// The bundled shape a stored shape number names in `file` (an empty file
+/// reads as `ltypeshp`).
+fn bundled_shape_name(file: &str, number: i16) -> Option<&'static str> {
+    let stem = shape_file_stem(file);
+    let stem = if stem.is_empty() {
+        "ltypeshp".to_string()
+    } else {
+        stem
+    };
+    BUNDLED_SHAPES
+        .iter()
+        .find(|(file, _, n)| *file == stem && *n == number)
+        .map(|(_, name, _)| *name)
+}
+
+/// Whether `file` is a shape file the bundled LFF substitutes stand in for,
+/// so its absence on disk never needs reporting.
+pub fn is_bundled_shape_file(file: &str) -> bool {
+    let stem = shape_file_stem(file);
+    BUNDLED_SHAPES.iter().any(|(f, _, _)| *f == stem)
+}
+
+/// The shape file a `.lin` names, found as written, next to the `.lin`
+/// (in any letter case, as the names in a `.lin` rarely match the files'),
+/// or in the fonts folder.
+fn find_shape_file(file: &str, lin_dir: Option<&std::path::Path>) -> Option<String> {
+    if let Some(found) = crate::io::resolve_image_file(file, lin_dir) {
+        return Some(found);
+    }
+    let name = file.rsplit(['/', '\\']).next()?;
+    lin_dir
+        .and_then(|dir| {
+            std::fs::read_dir(dir)
+                .ok()?
+                .filter_map(Result::ok)
+                .find(|entry| entry.file_name().to_string_lossy().eq_ignore_ascii_case(name))
+                .map(|entry| entry.path())
+        })
+        .or_else(|| crate::io::font_repo::local_font_file(name))
+        .map(|path| path.to_string_lossy().into_owned())
+}
+
+/// The drawing's shape-file STYLE for `file`, added when missing (an empty
+/// name, as shape files are stored).
+fn shape_file_style(doc: &mut CadDocument, file: &str) -> codec::Handle {
+    if let Some(style) = doc
+        .text_styles
+        .iter()
+        .find(|s| s.is_shape_file && s.font_file.eq_ignore_ascii_case(file))
+    {
+        return style.handle;
+    }
+    let mut style = codec::tables::TextStyle::new("");
+    style.handle = doc.allocate_handle();
+    style.is_shape_file = true;
+    style.font_file = file.to_string();
+    let handle = style.handle;
+    doc.text_styles.add_allow_duplicate(style);
+    handle
+}
+
+/// Document elements for catalog segments: each shape or text rides on the
+/// element before it, as in the `.lin` token order. `None` when a piece
+/// cannot be stored (an unknown shape or text style), so the caller keeps
+/// the plain dashes rather than a half-built pattern.
+///
+/// The lengths come from `plain` — the same pattern parsed at full
+/// precision — rather than the catalog's `f32` segments. A shape the
+/// bundled substitutes don't cover is looked up by name in its shape file
+/// (see [`find_shape_file`]), and the style keeps the path it was found at.
+fn complex_elements(
+    doc: &mut CadDocument,
+    lt: &ComplexLt,
+    plain: &[LineTypeElement],
+    lin_dir: Option<&std::path::Path>,
+) -> Option<Vec<LineTypeElement>> {
+    use codec::tables::linetype::LineTypeComplexData;
+    let mut out: Vec<LineTypeElement> = Vec::new();
+    let mut lengths = plain.iter();
+    for segment in &lt.segments {
+        let complex = match segment {
+            LtSegment::Dash(_) | LtSegment::Space(_) | LtSegment::Dot => {
+                out.push(lengths.next()?.clone());
+                continue;
+            }
+            LtSegment::Shape {
+                name,
+                shx_file,
+                x,
+                y,
+                scale,
+                rot_deg,
+                rot_mode,
+                ..
+            } => {
+                let stem = shape_file_stem(shx_file);
+                let bundled = BUNDLED_SHAPES
+                    .iter()
+                    .find(|(file, shape, _)| *file == stem && shape.eq_ignore_ascii_case(name));
+                let (number, file) = match bundled {
+                    Some(&(_, _, number)) => (number, shx_file.clone()),
+                    None => {
+                        let path = find_shape_file(shx_file, lin_dir)?;
+                        let number = crate::scene::text::shx::shape_number(&path, name)?;
+                        (i16::try_from(number).ok()?, path)
+                    }
+                };
+                LineTypeComplexData {
+                    content: LineTypeComplexContent::Shape {
+                        shape_number: number,
+                    },
+                    style_handle: shape_file_style(doc, &file),
+                    scale: decimal(*scale),
+                    rotation: decimal(*rot_deg).to_radians(),
+                    absolute_rotation: *rot_mode == LtRotation::Absolute,
+                    upright: *rot_mode == LtRotation::Upright,
+                    source_flags: 0,
+                    offset: [decimal(*x), decimal(*y)],
+                }
+            }
+            LtSegment::Text {
+                text,
+                style,
+                x,
+                y,
+                scale,
+                rot_deg,
+                rot_mode,
+            } => LineTypeComplexData {
+                content: LineTypeComplexContent::Text { text: text.clone() },
+                style_handle: doc
+                    .text_styles
+                    .iter()
+                    .find(|s| !s.is_shape_file && s.name.eq_ignore_ascii_case(style))?
+                    .handle,
+                scale: decimal(*scale),
+                rotation: decimal(*rot_deg).to_radians(),
+                absolute_rotation: *rot_mode == LtRotation::Absolute,
+                upright: *rot_mode == LtRotation::Upright,
+                source_flags: 0,
+                offset: [decimal(*x), decimal(*y)],
+            },
+        };
+        out.last_mut()?.complex = Some(complex);
+    }
+    (lengths.next().is_none()).then_some(out)
+}
 
 // ── Parser ────────────────────────────────────────────────────────────────
 
@@ -428,7 +731,11 @@ fn parse_complex(src: &str) -> HashMap<String, ComplexLt> {
                 continue;
             }
 
-            catalog.insert(name.to_ascii_uppercase(), ComplexLt { segments });
+            // A name defined twice keeps its first definition, as the
+            // drawing does (see `populate_matching`).
+            catalog
+                .entry(name.to_ascii_uppercase())
+                .or_insert(ComplexLt { segments });
         }
     }
     catalog
@@ -506,6 +813,7 @@ fn parse_shape_element(inner: &str) -> Option<LtSegment> {
     let mut y = 0.0f32;
     let mut scale = 1.0f32;
     let mut rot_deg = 0.0f32;
+    let mut rot_mode = LtRotation::Relative;
     let mut shx_file = String::new();
 
     for part in parts {
@@ -516,13 +824,9 @@ fn parse_shape_element(inner: &str) -> Option<LtSegment> {
             y = v.parse().unwrap_or(0.0);
         } else if let Some(v) = p.strip_prefix("s=").or_else(|| p.strip_prefix("S=")) {
             scale = v.parse().unwrap_or(1.0);
-        } else if let Some(v) = p
-            .strip_prefix("r=")
-            .or_else(|| p.strip_prefix("R="))
-            .or_else(|| p.strip_prefix("u="))
-            .or_else(|| p.strip_prefix("U="))
-        {
-            rot_deg = v.parse().unwrap_or(0.0);
+        } else if let Some((mode, v)) = rotation_field(p) {
+            rot_mode = mode;
+            rot_deg = v;
         } else if p.to_ascii_lowercase().ends_with(".shx") {
             // `[NAME,ltypeshp.shx,…]` — the shape file reference.
             shx_file = p.to_string();
@@ -537,7 +841,20 @@ fn parse_shape_element(inner: &str) -> Option<LtSegment> {
         y,
         scale,
         rot_deg,
+        rot_mode,
     })
+}
+
+/// A `R=` / `A=` / `U=` rotation field: its mode and angle in degrees.
+fn rotation_field(part: &str) -> Option<(LtRotation, f32)> {
+    let (key, value) = part.split_once('=')?;
+    let mode = match key.trim() {
+        "r" | "R" => LtRotation::Relative,
+        "a" | "A" => LtRotation::Absolute,
+        "u" | "U" => LtRotation::Upright,
+        _ => return None,
+    };
+    Some((mode, value.trim().parse().unwrap_or(0.0)))
 }
 
 /// Parse `"TEXT",STYLE,x=v,y=v,s=v,r=v` into an `LtSegment::Text`.
@@ -563,6 +880,7 @@ fn parse_text_element(inner: &str) -> Option<LtSegment> {
     let mut y = 0.0f32;
     let mut scale = 1.0f32;
     let mut rot_deg = 0.0f32;
+    let mut rot_mode = LtRotation::Relative;
 
     for part in parts {
         let p = part.trim();
@@ -572,13 +890,9 @@ fn parse_text_element(inner: &str) -> Option<LtSegment> {
             y = v.parse().unwrap_or(0.0);
         } else if let Some(v) = p.strip_prefix("s=").or_else(|| p.strip_prefix("S=")) {
             scale = v.parse().unwrap_or(1.0);
-        } else if let Some(v) = p
-            .strip_prefix("r=")
-            .or_else(|| p.strip_prefix("R="))
-            .or_else(|| p.strip_prefix("u="))
-            .or_else(|| p.strip_prefix("U="))
-        {
-            rot_deg = v.parse().unwrap_or(0.0);
+        } else if let Some((mode, v)) = rotation_field(p) {
+            rot_mode = mode;
+            rot_deg = v;
         }
     }
 
@@ -589,6 +903,7 @@ fn parse_text_element(inner: &str) -> Option<LtSegment> {
         y,
         scale,
         rot_deg,
+        rot_mode,
     })
 }
 
@@ -612,14 +927,14 @@ fn push_lt_segment(token: &str, out: &mut Vec<LtSegment>) {
 #[cfg(test)]
 mod header_tests {
     use super::{parse, populate_document_from_source};
-    use acadrust::CadDocument;
+    use codec::CadDocument;
 
     /// A `.lin` header's description is optional, and without one the comma
     /// goes too: `*PLAIN` followed by its `A,` line is a whole definition.
     #[test]
     fn a_linetype_without_a_description_is_loaded() {
         let mut doc = CadDocument::new();
-        let added = populate_document_from_source(&mut doc, "*PLAIN\nA,.5,-.25\n");
+        let added = populate_document_from_source(&mut doc, "*PLAIN\nA,.5,-.25\n", None);
         assert_eq!(added, 1, "the definition was dropped");
         assert!(doc.line_types.contains("PLAIN"));
 
@@ -635,5 +950,64 @@ mod header_tests {
         let types = parse("*DASHED,Dashed __ __\nA,.5,-.25\n");
         assert_eq!(types[0].name, "DASHED");
         assert_eq!(types[0].description, "Dashed __ __");
+    }
+}
+
+#[cfg(test)]
+mod rotation_tests {
+    use super::{parse_text_element, LtRotation, LtSegment};
+
+    #[test]
+    fn rotation_fields_keep_their_mode() {
+        for (field, mode, deg) in [
+            ("R=10", LtRotation::Relative, 10.0),
+            ("a=45", LtRotation::Absolute, 45.0),
+            ("U=0.0", LtRotation::Upright, 0.0),
+        ] {
+            let inner = format!("\"GAS\",STANDARD,S=.1,{field},X=-0.1,Y=-.05");
+            let Some(LtSegment::Text {
+                rot_mode, rot_deg, ..
+            }) = parse_text_element(&inner)
+            else {
+                panic!("{inner} did not parse");
+            };
+            assert_eq!((rot_mode, rot_deg), (mode, deg), "{inner}");
+        }
+    }
+}
+
+#[cfg(test)]
+mod shape_file_tests {
+    use super::{document_complex_lt, populate_document_from_source, LtSegment};
+    use codec::CadDocument;
+
+    /// A `.lin` shape from its own shape file (not one of the bundled
+    /// substitutes) loads with the shape it names, the file found next to
+    /// the `.lin` whatever its letter case (#1982).
+    #[test]
+    fn a_shape_from_the_lin_folder_is_loaded() {
+        let dir = std::env::temp_dir().join(format!("ocs-lin-shx-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        // `shapes 1.0`: first, last, count, then (number, length) and the
+        // data — NUL-terminated name, one unit vector east, end.
+        let mut shx = b"shapes 1.0\r\n\x1a".to_vec();
+        for word in [7u16, 7, 1, 7, 7] {
+            shx.extend_from_slice(&word.to_le_bytes());
+        }
+        shx.extend_from_slice(b"TICK\0\x10\0");
+        std::fs::write(dir.join("tst.shx"), shx).unwrap();
+
+        let mut doc = CadDocument::new();
+        let source = "*TICKS,ticks\nA,1,[TICK,TST.SHX,s=.5],-1\n";
+        populate_document_from_source(&mut doc, source, Some(&dir));
+        let lt = document_complex_lt(&doc, "TICKS").expect("the shape was dropped");
+        let shape = lt.segments.iter().find_map(|s| match s {
+            LtSegment::Shape { number, shx_file, .. } => Some((*number, shx_file.clone())),
+            _ => None,
+        });
+        let _ = std::fs::remove_dir_all(&dir);
+        let (number, file) = shape.expect("no shape segment");
+        assert_eq!(number, 7);
+        assert!(file.to_ascii_lowercase().ends_with("tst.shx"), "{file}");
     }
 }

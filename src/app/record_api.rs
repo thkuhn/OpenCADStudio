@@ -1,7 +1,7 @@
-use acadrust::tables::{Table, TableEntry};
+use codec::tables::{Table, TableEntry};
 use iced::Task;
-use serde::{Serialize, de::DeserializeOwned};
-use serde_json::{Map, Value, json};
+use serde::{de::DeserializeOwned, Serialize};
+use serde_json::{json, Map, Value};
 use std::collections::VecDeque;
 use std::sync::OnceLock;
 
@@ -191,7 +191,7 @@ fn decode_enum<T: DeserializeOwned>(kind: &str, properties: Value) -> Result<T, 
     serde_json::from_value(Value::Object(wrapper)).map_err(|error| error.to_string())
 }
 
-fn handle_text(handle: acadrust::Handle) -> String {
+fn handle_text(handle: codec::Handle) -> String {
     format!("{:X}", handle.value())
 }
 
@@ -205,7 +205,7 @@ fn without_hex_prefix(value: &str) -> &str {
 fn record(
     collection: &str,
     kind: &str,
-    handle: Option<acadrust::Handle>,
+    handle: Option<codec::Handle>,
     name: Option<&str>,
     mutable: bool,
     properties: Value,
@@ -226,7 +226,11 @@ fn record(
     value
 }
 
-fn entity_record(entity: &acadrust::EntityType) -> Result<Value, String> {
+fn entity_record(
+    entity: &codec::EntityType,
+    reference_only: bool,
+    disabled_plugins: &rustc_hash::FxHashSet<String>,
+) -> Result<Value, String> {
     let (kind, properties) = enum_parts(entity)?;
     let mut value = record(
         "entities",
@@ -237,20 +241,32 @@ fn entity_record(entity: &acadrust::EntityType) -> Result<Value, String> {
         properties,
     );
     let object = value.as_object_mut().expect("record object");
+    // `display_type` carries the plugin-declared class label
+    // ("<Label> (<Native>)") while a live declaring plugin claims the
+    // entity's XDATA class identity; without one it is byte-identical to the
+    // native ui_name. The raw `type` and `record_type` fields stay native so
+    // existing scripts and filters keep working.
+    let native = crate::entities::names::ui_name(entity);
     object.insert(
         "display_type".into(),
-        json!(crate::entities::names::ui_name(entity)),
+        json!(crate::plugin::entity_labels::display_type_title(
+            crate::plugin::entity_labels::custom_entity_class_label(disabled_plugins, entity),
+            native.to_string(),
+        )),
     );
     object.insert(
         "record_type".into(),
         json!(crate::entities::names::dxf_name(entity)),
     );
+    // Scene-scoped designation (API v9): the set membership of this entity's
+    // handle, resolved by the caller from the live scene.
+    object.insert("reference_only".into(), json!(reference_only));
     Ok(value)
 }
 
 fn object_record(
-    handle: acadrust::Handle,
-    object: &acadrust::objects::ObjectType,
+    handle: codec::Handle,
+    object: &codec::objects::ObjectType,
 ) -> Result<Value, String> {
     let (kind, properties) = enum_parts(object)?;
     Ok(record(
@@ -286,7 +302,7 @@ fn table_records<T: Serialize + TableEntry>(
 fn map_records<T: Serialize>(
     collection: &str,
     kind: &str,
-    values: &std::collections::HashMap<acadrust::Handle, T>,
+    values: &std::collections::HashMap<codec::Handle, T>,
 ) -> Result<Vec<Value>, String> {
     let mut entries: Vec<_> = values.iter().collect();
     entries.sort_by_key(|(handle, _)| handle.value());
@@ -306,11 +322,22 @@ fn map_records<T: Serialize>(
 }
 
 fn collection_records(
-    document: &acadrust::CadDocument,
+    scene: &crate::scene::Scene,
     collection: &str,
+    disabled_plugins: &rustc_hash::FxHashSet<String>,
 ) -> Result<Vec<Value>, String> {
+    let document = &scene.document;
     match collection {
-        "entities" => document.entities().map(entity_record).collect(),
+        "entities" => document
+            .entities()
+            .map(|entity| {
+                entity_record(
+                    entity,
+                    scene.is_reference_only(entity.common().handle),
+                    disabled_plugins,
+                )
+            })
+            .collect(),
         "objects" => {
             let mut objects: Vec<_> = document.objects.iter().collect();
             objects.sort_by_key(|(handle, _)| handle.value());
@@ -469,7 +496,7 @@ fn collection_records(
     }
 }
 
-fn collection_count(document: &acadrust::CadDocument, collection: &str) -> usize {
+fn collection_count(document: &codec::CadDocument, collection: &str) -> usize {
     match collection {
         "entities" => document.entities().count(),
         "objects" => document.objects.len(),
@@ -499,7 +526,7 @@ fn collection_count(document: &acadrust::CadDocument, collection: &str) -> usize
     }
 }
 
-fn compare(
+pub(crate) fn compare(
     actual: Option<&Value>,
     operator: &str,
     expected: Option<&Value>,
@@ -1096,11 +1123,11 @@ fn collection_record_types(collection: &str) -> Vec<Value> {
     })]
 }
 
-fn requested_handle(request: &Value) -> Result<acadrust::Handle, String> {
+fn requested_handle(request: &Value) -> Result<codec::Handle, String> {
     request["handle"]
         .as_str()
         .and_then(|value| u64::from_str_radix(without_hex_prefix(value), 16).ok())
-        .map(acadrust::Handle::new)
+        .map(codec::Handle::new)
         .ok_or_else(|| "set_properties requires a hexadecimal handle".to_string())
 }
 
@@ -1136,7 +1163,7 @@ fn apply_updates(
             .pointer_mut(path)
             .ok_or_else(|| format!("property does not exist: {path}"))?;
         if let Some(expected) = update.get("expected") {
-            if target != expected {
+            if !json_values_match(target, expected) {
                 return Err(format!("property changed before update: {path}"));
             }
         }
@@ -1151,6 +1178,47 @@ fn apply_updates(
     Ok(paths)
 }
 
+/// Structural equality in which numbers compare by value. serde_json keeps
+/// `10` and `10.0` as different `Number`s, and a JavaScript client cannot send
+/// `10.0` at all (`JSON.stringify(10.0) === "10"`), so a stored whole-number
+/// float would otherwise never match its `expected` value.
+fn json_values_match(actual: &Value, expected: &Value) -> bool {
+    match (actual, expected) {
+        (Value::Number(a), Value::Number(b)) if a.is_f64() || b.is_f64() => numbers_match(a, b),
+        (Value::Array(a), Value::Array(b)) => {
+            a.len() == b.len() && a.iter().zip(b).all(|(a, b)| json_values_match(a, b))
+        }
+        (Value::Object(a), Value::Object(b)) => {
+            a.len() == b.len()
+                && a.iter()
+                    .all(|(key, a)| b.get(key).is_some_and(|b| json_values_match(a, b)))
+        }
+        _ => actual == expected,
+    }
+}
+
+/// `10.0` matches `10`, but an integer past f64 precision never matches a
+/// float it merely rounds onto: a mixed pair is equal only when the float is
+/// whole and converts back to exactly that integer.
+fn numbers_match(a: &serde_json::Number, b: &serde_json::Number) -> bool {
+    let (int, float) = match (a.as_f64(), b.as_f64()) {
+        (Some(x), Some(y)) if a.is_f64() && b.is_f64() => return x == y,
+        (_, Some(y)) if b.is_f64() => (a, y),
+        (Some(x), _) => (b, x),
+        _ => return false,
+    };
+    if !float.is_finite() || float.fract() != 0.0 {
+        return false;
+    }
+    if let Some(i) = int.as_i64() {
+        i as f64 == float && float as i64 == i
+    } else if let Some(u) = int.as_u64() {
+        u as f64 == float && float as u64 == u
+    } else {
+        false
+    }
+}
+
 fn patched_table_entry<T>(
     table: &Table<T>,
     request: &Value,
@@ -1162,7 +1230,7 @@ where
     let requested = request["handle"].as_str().and_then(|value| {
         u64::from_str_radix(without_hex_prefix(value), 16)
             .ok()
-            .map(acadrust::Handle::new)
+            .map(codec::Handle::new)
     });
     let name = request["name"].as_str();
     let source = table
@@ -1182,7 +1250,7 @@ where
     Ok((source, edited, paths))
 }
 
-fn replace_table_entry<T: TableEntry>(table: &mut Table<T>, handle: acadrust::Handle, edited: T) {
+fn replace_table_entry<T: TableEntry>(table: &mut Table<T>, handle: codec::Handle, edited: T) {
     let target = table
         .iter_mut()
         .find(|entry| entry.handle() == handle)
@@ -1200,6 +1268,29 @@ impl OpenCADStudio {
             "concurrency":{"document_id":true,"revision":true,"request_id":true},
             "transactions":{"undo":true,"redo":true,"atomic_property_updates":true,"batch":true},
             "geometry":{"query":true,"kernel_measurements":true,"spatial_filters":true,"interactive_commands":true},
+            "operations":{
+                "batch":true,
+                "block_define":true,
+                "block_delete":true,
+                "embed_image":true,
+                "close":true,
+                "entities_copy_to":true,
+                "entities_create":true,
+                "entities_delete":true,
+                "entities_transform":true,
+                "file_identity":true,
+                "group_create":true,
+                "layout_create":true,
+                "page_setup_set":true,
+                "selection_set_load":true,
+                "selection_set_save":true,
+                "sysvar":true,
+                "plot":true,
+                "view_focus":true,
+                "wblock":true,
+                "xdata_get":true,
+                "xdata_set":true,
+            },
             "records":{
                 "read":"records",
                 "write":"set_properties",
@@ -1319,28 +1410,32 @@ impl OpenCADStudio {
         }
         let definitions = referenced_definitions(&root_type);
         let runtime_schema = collection.and_then(|collection| {
-            collection_records(&self.tabs[self.active_tab].scene.document, collection)
-                .ok()?
-                .into_iter()
-                .find(|record| {
-                    let type_matches = record["type"]
-                        .as_str()
-                        .is_some_and(|name| name.eq_ignore_ascii_case(requested_type))
-                        || collection_root_type(collection)
-                            .is_some_and(|name| name.eq_ignore_ascii_case(requested_type));
-                    type_matches
-                        && request["handle"].as_str().is_none_or(|handle| {
-                            record["handle"].as_str().is_some_and(|actual| {
-                                actual.eq_ignore_ascii_case(without_hex_prefix(handle))
-                            })
+            collection_records(
+                &self.tabs[self.active_tab].scene,
+                collection,
+                &self.disabled_plugins,
+            )
+            .ok()?
+            .into_iter()
+            .find(|record| {
+                let type_matches = record["type"]
+                    .as_str()
+                    .is_some_and(|name| name.eq_ignore_ascii_case(requested_type))
+                    || collection_root_type(collection)
+                        .is_some_and(|name| name.eq_ignore_ascii_case(requested_type));
+                type_matches
+                    && request["handle"].as_str().is_none_or(|handle| {
+                        record["handle"].as_str().is_some_and(|actual| {
+                            actual.eq_ignore_ascii_case(without_hex_prefix(handle))
                         })
-                        && request["name"].as_str().is_none_or(|name| {
-                            record["name"]
-                                .as_str()
-                                .is_some_and(|actual| actual.eq_ignore_ascii_case(name))
-                        })
-                })
-                .map(|record| runtime_value_schema(&record["properties"], collection, ""))
+                    })
+                    && request["name"].as_str().is_none_or(|name| {
+                        record["name"]
+                            .as_str()
+                            .is_some_and(|actual| actual.eq_ignore_ascii_case(name))
+                    })
+            })
+            .map(|record| runtime_value_schema(&record["properties"], collection, ""))
         });
         json!({
             "ok":true,
@@ -1363,20 +1458,20 @@ impl OpenCADStudio {
     }
 
     pub(super) fn record_query(&self, request: &Value) -> Value {
-        let document = &self.tabs[self.active_tab].scene.document;
+        let scene = &self.tabs[self.active_tab].scene;
         let Some(collection) = request["collection"].as_str() else {
             return self.record_capabilities();
         };
         let mut records = Vec::new();
         if collection == "all" {
             for (name, _) in COLLECTIONS {
-                match collection_records(document, name) {
+                match collection_records(scene, name, &self.disabled_plugins) {
                     Ok(mut values) => records.append(&mut values),
                     Err(error) => return failure("serialization_failed", error),
                 }
             }
         } else {
-            match collection_records(document, collection) {
+            match collection_records(scene, collection, &self.disabled_plugins) {
                 Ok(values) => records = values,
                 Err(error) => return failure("unknown_collection", error),
             }
@@ -1440,6 +1535,12 @@ impl OpenCADStudio {
                 if self.tabs[i].scene.is_layer_locked(handle) {
                     return Err(failure("layer_locked", "entity is on a locked layer"));
                 }
+                if self.tabs[i].scene.is_reference_only(handle) {
+                    return Err(failure(
+                        "reference_only",
+                        "entity is reference-only (plugin-owned display data)",
+                    ));
+                }
                 let source = self.tabs[i]
                     .scene
                     .document
@@ -1450,7 +1551,7 @@ impl OpenCADStudio {
                     enum_parts(&source).map_err(|error| failure("serialization_failed", error))?;
                 paths = apply_updates(&mut properties, request, collection)
                     .map_err(|error| failure("invalid_update", error))?;
-                let mut edited: acadrust::EntityType = decode_enum(&kind, properties)
+                let mut edited: codec::EntityType = decode_enum(&kind, properties)
                     .map_err(|error| failure("invalid_value", error))?;
                 if edited.common().handle != handle {
                     return Err(failure("identity_changed", "entity identity is read-only"));
@@ -1481,7 +1582,7 @@ impl OpenCADStudio {
                     enum_parts(&source).map_err(|error| failure("serialization_failed", error))?;
                 paths = apply_updates(&mut properties, request, collection)
                     .map_err(|error| failure("invalid_update", error))?;
-                let mut edited: acadrust::objects::ObjectType = decode_enum(&kind, properties)
+                let mut edited: codec::objects::ObjectType = decode_enum(&kind, properties)
                     .map_err(|error| failure("invalid_value", error))?;
                 edited.preserve_storage_data_from(&source);
                 changed = edited != source;
@@ -1567,7 +1668,12 @@ impl OpenCADStudio {
                     "app_ids" => patch_table!(app_ids),
                     "views" => patch_table!(views),
                     "vports" => patch_table!(vports),
-                    "ucss" => patch_table!(ucss),
+                    "ucss" => {
+                        patch_table!(ucss);
+                        if changed {
+                            self.tabs[i].scene.bump_ucs_epoch();
+                        }
+                    }
                     "vx_table" => patch_table!(vx_table),
                     _ => unreachable!(),
                 }
@@ -1589,12 +1695,39 @@ impl OpenCADStudio {
 
 #[cfg(test)]
 mod tests {
-    use acadrust::entities::{AttributeEntity, EntityType, Insert};
-    use acadrust::objects::{Dictionary, ObjectType};
-    use acadrust::types::{Handle, Vector3};
-    use serde_json::{Value, json};
+    use codec::entities::{AttributeEntity, EntityType, Insert};
+    use codec::objects::{Dictionary, ObjectType};
+    use codec::types::{Handle, Vector3};
+    use serde_json::{json, Value};
 
     use super::OpenCADStudio;
+
+    /// Whole floats match their integer; integers past f64 precision never
+    /// match the neighbouring float they round onto.
+    #[test]
+    fn numbers_match_by_value_without_precision_loss() {
+        let number = |value: Value| match value {
+            Value::Number(number) => number,
+            _ => unreachable!(),
+        };
+        assert!(super::numbers_match(
+            &number(json!(10)),
+            &number(json!(10.0))
+        ));
+        assert!(!super::numbers_match(
+            &number(json!(10)),
+            &number(json!(10.5))
+        ));
+        let past_precision = number(json!(9_007_199_254_740_993_u64));
+        assert!(!super::numbers_match(
+            &past_precision,
+            &number(json!(9_007_199_254_740_992.0))
+        ));
+        assert!(super::numbers_match(
+            &number(json!(-3)),
+            &number(json!(-3.0))
+        ));
+    }
 
     fn execute(app: &mut OpenCADStudio, mut request: Value, id: &str) -> Value {
         let state = app.automation_op(r#"{"protocol":1,"op":"state"}"#);
@@ -1604,6 +1737,90 @@ mod tests {
         object.insert("document_id".into(), state["document_id"].clone());
         object.insert("revision".into(), state["revision"].clone());
         app.automation_op(&request.to_string())
+    }
+
+    #[test]
+    fn entities_records_expose_the_reference_only_designation() {
+        let mut app = OpenCADStudio::new_for_test();
+        app.automation_op(r#"{"op":"new"}"#);
+        let i = app.active_tab;
+
+        let handle =
+            app.tabs[i]
+                .scene
+                .add_entity(EntityType::Line(codec::entities::Line::from_points(
+                    Vector3::new(0.0, 0.0, 0.0),
+                    Vector3::new(10.0, 0.0, 0.0),
+                )));
+        // The designation is plugin-mutated scene state: mark through the
+        // same host API a plugin uses, so the read surface reflects the
+        // live set rather than any stored marker.
+        fn mark(app: &mut OpenCADStudio, handle: Handle, on: bool) {
+            let i = app.active_tab;
+            crate::app::plugin_host::HostSession::new(app, i)
+                .set_reference_only(handle, on)
+                .expect("mark through the plugin host API");
+        }
+
+        // The read surface reports the designation alongside the record.
+        mark(&mut app, handle, true);
+        let records = app.record_query(&json!({"collection":"entities"}));
+        assert_eq!(records["count"], 1);
+        assert_eq!(
+            records["records"][0]["handle"],
+            json!(format!("{:X}", handle.value()))
+        );
+        assert_eq!(records["records"][0]["reference_only"], json!(true));
+
+        // The MCP write path treats a reference-only entity like a locked
+        // layer: the edit is refused, honestly.
+        let refused = execute(
+            &mut app,
+            json!({
+                "op":"set_properties",
+                "collection":"entities",
+                "handle": format!("{:X}", handle.value()),
+                "updates":[{"path":"/end/x","value":20.0}],
+            }),
+            "reference-only",
+        );
+        assert_eq!(refused["ok"], json!(false));
+        assert_eq!(refused["code"], json!("reference_only"));
+
+        // Clearing the designation is reported too.
+        mark(&mut app, handle, false);
+        let records = app.record_query(&json!({"collection":"entities"}));
+        assert_eq!(records["records"][0]["reference_only"], json!(false));
+    }
+
+    #[test]
+    fn entities_records_display_type_stays_native_without_a_loaded_plugin() {
+        let mut app = OpenCADStudio::new_for_test();
+        app.automation_op(r#"{"op":"new"}"#);
+        let i = app.active_tab;
+
+        // An entity stamped with a perfect plugin class identity (registered
+        // app, class-prefix key) still shows the native display while no
+        // declaring plugin is loaded — the gating is live manager state.
+        let mut entity = EntityType::Line(codec::entities::Line::from_points(
+            Vector3::new(0.0, 0.0, 0.0),
+            Vector3::new(10.0, 0.0, 0.0),
+        ));
+        let mut record = codec::xdata::ExtendedDataRecord::new("CVIFC");
+        record.add_value(codec::xdata::XDataValue::String(
+            "CVIFC-CLASS:LINE".to_string(),
+        ));
+        entity.common_mut().extended_data.add_record(record);
+        app.tabs[i].scene.add_entity(entity);
+
+        let records = app.record_query(&json!({"collection":"entities"}));
+        assert_eq!(records["count"], 1);
+        assert_eq!(records["records"][0]["type"], json!("Line"));
+        assert_eq!(
+            records["records"][0]["display_type"],
+            json!("Line"),
+            "display_type is byte-identical to the native ui_name when no plugin is loaded"
+        );
     }
 
     #[test]
@@ -1727,6 +1944,67 @@ mod tests {
         let undo = execute(&mut app, json!({"op":"undo"}), "undo-summary");
         assert_eq!(undo["status"], "completed", "{undo}");
         assert!(app.tabs[i].scene.document.summary_info.author.is_empty());
+    }
+
+    #[test]
+    fn set_properties_expected_matches_whole_number_floats_by_value() {
+        let mut app = OpenCADStudio::new_for_test();
+        app.automation_op(r#"{"op":"new"}"#);
+        let i = app.active_tab;
+        let insert = Insert::new("A_CPT", Vector3::new(12.0, 34.0, 5.0));
+        let entity = app.tabs[i].scene.add_entity(EntityType::Insert(insert));
+        let handle = format!("{:X}", entity.value());
+
+        // `12` is how every JSON client sends the stored `12.0`.
+        let scalar = execute(
+            &mut app,
+            json!({
+                "op":"set_properties",
+                "collection":"entities",
+                "handle":handle,
+                "updates":[{"path":"/insert_point/x","expected":12,"value":20.0}]
+            }),
+            "whole-number-scalar",
+        );
+        assert_eq!(scalar["status"], "completed", "{scalar}");
+
+        let nested = execute(
+            &mut app,
+            json!({
+                "op":"set_properties",
+                "collection":"entities",
+                "handle":handle,
+                "updates":[{
+                    "path":"/insert_point",
+                    "expected":{"x":20,"y":34,"z":5},
+                    "value":{"x":1.5,"y":2.0,"z":3.0}
+                }]
+            }),
+            "whole-number-nested",
+        );
+        assert_eq!(nested["status"], "completed", "{nested}");
+        let EntityType::Insert(insert) = app.tabs[i].scene.document.get_entity(entity).unwrap()
+        else {
+            panic!("expected insert")
+        };
+        assert_eq!(insert.insert_point.x, 1.5);
+
+        let stale = execute(
+            &mut app,
+            json!({
+                "op":"set_properties",
+                "collection":"entities",
+                "handle":handle,
+                "updates":[{"path":"/insert_point/x","expected":2,"value":9.0}]
+            }),
+            "stale-number",
+        );
+        assert_ne!(stale["status"], "completed", "{stale}");
+        let EntityType::Insert(insert) = app.tabs[i].scene.document.get_entity(entity).unwrap()
+        else {
+            panic!("expected insert")
+        };
+        assert_eq!(insert.insert_point.x, 1.5);
     }
 
     #[test]

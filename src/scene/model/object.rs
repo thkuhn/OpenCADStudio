@@ -1,11 +1,45 @@
 // Shared value types used by the dispatch and grip systems.
 
-use acadrust::types::{Color as AcadColor, Handle, LineWeight};
+use codec::types::{Color as AcadColor, Handle, LineWeight};
 use glam::DVec3;
+
+/// Stable identity of a native reference parameter property.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct BlockParameterKey {
+    pub document: u64,
+    pub definition: Handle,
+    pub insert: Handle,
+    pub parameter: Handle,
+    pub component: BlockParameterComponent,
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum BlockParameterComponent {
+    X,
+    Y,
+    Distance,
+    Angle,
+    Flip,
+    TableRow(u64),
+    LookupOutput { column: usize, revision: u64 },
+}
 
 /// The kind of value held by a property row.
 #[derive(Clone, Debug, PartialEq)]
 pub enum PropValue {
+    /// Native numeric reference value, edited independently of its display grip.
+    BlockNumber {
+        key: BlockParameterKey,
+        value: String,
+        description: String,
+    },
+    /// Native state labels, with the state index retained separately from text.
+    BlockChoice {
+        key: BlockParameterKey,
+        selected: usize,
+        options: Vec<String>,
+        description: String,
+    },
+
     /// Read-only display text.
     ReadOnly(String),
     /// Read-only display text with a tooltip explaining why it cannot be edited.
@@ -14,12 +48,21 @@ pub enum PropValue {
     EditText(String),
     /// Editable text that must not be expression-evaluated.
     PlainText(String),
+    /// Hyperlink collection summary. The value is display-only in the row;
+    /// the adjacent collection button opens the URL/description editor.
+    Hyperlink(String),
     /// Layer name — rendered as a combo_box.
     LayerChoice(String),
     /// Generic string choice rendered as a combo_box.
     Choice {
         selected: String,
         options: Vec<String>,
+    },
+    /// String choice retaining authored help text in editable and read-only views.
+    ChoiceWithTooltip {
+        selected: String,
+        options: Vec<String>,
+        tooltip: String,
     },
     /// Editable text plus a dropdown of existing options (block reference
     /// Name row): picking an option re-points the reference, submitting a
@@ -132,6 +175,11 @@ pub enum GripShape {
     Dropdown,
     /// Menu selector placed immediately beside its anchor grip.
     DropdownAdjacent,
+    /// Move-gizmo arrow along world X (0), Y (1) or Z (2); the grip's world
+    /// point is the gizmo centre, the marker sits at the arrow tip.
+    GizmoAxis(u8),
+    /// Move-gizmo square between two axes: XY (0), YZ (1) or ZX (2).
+    GizmoPlane(u8),
 }
 
 /// Describes one grip point for an entity.

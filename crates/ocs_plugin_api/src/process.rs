@@ -8,7 +8,7 @@
 //! 2. The runner presents a pre-shared token via [`crate::ipc::protocol::PLUGIN_TOKEN_ENV`];
 //!    the host rejects the connection on mismatch.
 //! 3. The host requests the manifest, checks `api_version` and (for v4+) the
-//!    acadrust source gate, then keeps the process alive.
+//!    opencadcodec source gate, then keeps the process alive.
 //! 4. Host → plugin calls (`dispatch`, `execute_code`, interactive events) are
 //!    sent over the socket with a configurable per-call timeout.
 //! 5. Stdout/stderr of the child are drained into `PluginIoLine` records for
@@ -28,7 +28,9 @@ use std::time::{Duration, Instant};
 use interprocess::local_socket::traits::Listener;
 use interprocess::local_socket::{GenericNamespaced, ListenerOptions, Stream, ToNsName};
 
-use crate::host::{CommandSource, CommandStep, ExecutionResult, HostApi, HostNotification, PluginNotification};
+use crate::host::{
+    CommandSource, CommandStep, ExecutionResult, HostApi, HostNotification, PluginNotification,
+};
 use crate::ipc::protocol::{
     CadDocument, EntityType, Handle, HostRequest, HostResponse, HostToPlugin, InteractiveEvent,
     PluginToHost, RunnerHandshake, PLUGIN_TOKEN_ENV,
@@ -100,7 +102,11 @@ impl HostApi for NullHost {
     ) -> Option<&crate::ipc::protocol::ExtendedDataRecord> {
         None
     }
-    fn write_record(&mut self, _handle: Handle, _record: crate::ipc::protocol::ExtendedDataRecord) -> bool {
+    fn write_record(
+        &mut self,
+        _handle: Handle,
+        _record: crate::ipc::protocol::ExtendedDataRecord,
+    ) -> bool {
         false
     }
     fn remove_record(&mut self, _handle: Handle, _app_name: &str) -> bool {
@@ -112,10 +118,7 @@ impl HostApi for NullHost {
     fn push_output(&mut self, _msg: &str) {}
     fn push_error(&mut self, _msg: &str) {}
     fn start_interactive(&mut self, _command: Box<dyn crate::host::InteractiveCommand>) {}
-    fn plugin_state_any(
-        &self,
-        _plugin_id: &str,
-    ) -> Option<&(dyn std::any::Any + Send + Sync)> {
+    fn plugin_state_any(&self, _plugin_id: &str) -> Option<&(dyn std::any::Any + Send + Sync)> {
         None
     }
     fn plugin_state_any_mut(
@@ -128,8 +131,8 @@ impl HostApi for NullHost {
         &mut self,
         _plugin_id: &'static str,
         _init: &mut dyn FnMut() -> Box<dyn std::any::Any + Send + Sync>,
-    ) -> &mut (dyn std::any::Any + Send + Sync) {
-        panic!("NullHost: ensure_plugin_state_any not available")
+    ) -> Option<&mut (dyn std::any::Any + Send + Sync)> {
+        None
     }
 }
 
@@ -193,7 +196,7 @@ fn call_timeout() -> Duration {
 
 /// Per-request-kind timeout floors. The user-configured default is raised to
 /// these minima so that no request kind can be configured into an unsafe value.
-fn request_timeout(kind: &'static str) -> Duration {
+pub(crate) fn request_timeout(kind: &'static str) -> Duration {
     base_max_floor(call_timeout(), kind)
 }
 
@@ -220,15 +223,17 @@ fn base_max_floor(base: Duration, kind: &'static str) -> Duration {
     }
     let floor = match kind {
         "GetManifest" | "GetRibbon" => Duration::from_secs(5),
-        "Dispatch" => Duration::from_secs(10),
-        "InteractiveEvent" | "GetPrompt" | "NeedsEntityPick" => Duration::from_secs(2),
+        "Dispatch" | "CustomGripSettle" => Duration::from_secs(10),
+        "InteractiveEvent" | "GetPrompt" | "NeedsEntityPick" | "CustomGripBegin"
+        | "CustomGripCancel" => Duration::from_secs(2),
+        "CursorMove" | "CustomGripMove" => Duration::from_millis(500),
         "ExecuteCode" => execute_code_timeout(),
         _ => Duration::from_secs(1),
     };
     base.max(floor)
 }
 
-fn request_kind(req: &HostRequest) -> &'static str {
+pub(crate) fn request_kind(req: &HostRequest) -> &'static str {
     match req {
         HostRequest::GetManifest => "GetManifest",
         HostRequest::GetRibbon => "GetRibbon",
@@ -236,7 +241,18 @@ fn request_kind(req: &HostRequest) -> &'static str {
         HostRequest::InteractiveEvent { .. } => "InteractiveEvent",
         HostRequest::GetPrompt { .. } => "GetPrompt",
         HostRequest::NeedsEntityPick { .. } => "NeedsEntityPick",
+        HostRequest::IsSelectionGathering { .. } => "IsSelectionGathering",
+        HostRequest::AcceptsDragSelection { .. } => "AcceptsDragSelection",
+        HostRequest::SelectionRejectsLockedLayers { .. } => "SelectionRejectsLockedLayers",
         HostRequest::ExecuteCode { .. } => "ExecuteCode",
+        HostRequest::DropInteractive { .. } => "DropInteractive",
+        HostRequest::CursorMove { .. } => "CursorMove",
+        HostRequest::CustomGripEvent { event, .. } => match event.phase {
+            crate::host::CustomGripPhase::Begin => "CustomGripBegin",
+            crate::host::CustomGripPhase::Move => "CustomGripMove",
+            crate::host::CustomGripPhase::Settle => "CustomGripSettle",
+            crate::host::CustomGripPhase::Cancel => "CustomGripCancel",
+        },
         HostRequest::Shutdown => "Shutdown",
     }
 }
@@ -416,7 +432,11 @@ impl PluginProcess {
             // the V4 reader thread. The notification handler receives an empty
             // plugin id until we read the manifest below; that brief window is
             // fine because the plugin has not yet been asked to do work.
-            let stream = stream.lock().unwrap_or_else(|e| e.into_inner()).take().expect("V4 stream");
+            let stream = stream
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .take()
+                .expect("V4 stream");
             let plugin_id_placeholder = Arc::new(std::sync::Mutex::new(String::new()));
             let handler_for_v4: Arc<dyn Fn(Option<u64>, PluginNotification) + Send + Sync> = {
                 let plugin_id = Arc::clone(&plugin_id_placeholder);
@@ -431,7 +451,10 @@ impl PluginProcess {
                 HostResponse::Manifest(m) => m,
                 other => return Err(PluginError::UnexpectedResponse(Box::new(other))),
             };
-            *plugin_id_placeholder.lock().unwrap_or_else(|e| e.into_inner()) = manifest.id.clone();
+            *plugin_id_placeholder
+                .lock()
+                .unwrap_or_else(|e| e.into_inner()) = manifest.id.clone();
+            v4_conn.attach_plugin_id(&manifest.id);
             ribbon = match v4_conn.call(host, HostRequest::GetRibbon, no_op)? {
                 HostResponse::Ribbon(r) => r,
                 other => return Err(PluginError::UnexpectedResponse(Box::new(other))),
@@ -440,11 +463,14 @@ impl PluginProcess {
         } else {
             // The runner first answers GetManifest and GetRibbon so the host can
             // build the UI without keeping the plugin object alive.
-            manifest = match call(&stream, &child, host, HostRequest::GetManifest, no_op)? {
+            // The manifest id is unknown until GetManifest returns, so nested
+            // requests during the handshake serve with an empty identity — no
+            // grip declaration can exist in that window.
+            manifest = match call(&stream, &child, host, "", HostRequest::GetManifest, no_op)? {
                 HostResponse::Manifest(m) => m,
                 other => return Err(PluginError::UnexpectedResponse(Box::new(other))),
             };
-            ribbon = match call(&stream, &child, host, HostRequest::GetRibbon, no_op)? {
+            ribbon = match call(&stream, &child, host, "", HostRequest::GetRibbon, no_op)? {
                 HostResponse::Ribbon(r) => r,
                 other => return Err(PluginError::UnexpectedResponse(Box::new(other))),
             };
@@ -523,6 +549,7 @@ impl PluginProcess {
                 &self.stream,
                 &self.child,
                 host,
+                &self.id,
                 HostRequest::Dispatch {
                     cmd: cmd.to_string(),
                 },
@@ -534,6 +561,71 @@ impl PluginProcess {
         };
         vlog!("[plugin] dispatch {cmd} result: {result:?}");
         result
+    }
+
+    /// Issue a custom-grip drag event WITHOUT waiting (API v12; begin, move,
+    /// settle and cancel alike). The app parks move points and keeps at most
+    /// one move in flight, drops superseded cursor points, and never blocks
+    /// the UI loop on plugin latency — [`Self::custom_grip_poll`] collects the
+    /// answers at pump ticks, and [`Self::custom_grip_abandon`] is the
+    /// watchdog for plugins that never answer. Nested command frames
+    /// (`run_command`/`execute_command`) are REFUSED in this serving context:
+    /// their execution would need the host message loop the grip delivery
+    /// cannot pump (the v11.1 UI-freeze wedge); every other nested request —
+    /// including `push_undo` and direct writes — is served inline, so the
+    /// settle callback keeps its full HostApi write window. V4 transport
+    /// only; V3 connections refuse (no multiplexed link, no nested writes).
+    #[allow(clippy::result_large_err)]
+    pub fn custom_grip_event_send(
+        &self,
+        tab_index: usize,
+        event: crate::host::CustomGripEvent,
+    ) -> Result<u64, PluginError> {
+        let Some(v4) = &self.v4 else {
+            return Err(PluginError::Runner(
+                "custom grips require the V4 protocol".into(),
+            ));
+        };
+        v4.send_grip_event(tab_index, event)
+    }
+
+    /// Poll (bounded) for the next outstanding custom-grip answer, serving
+    /// nested plugin requests inline on the way. `Ok(None)`: not answered
+    /// yet. The poll never marks the connection dead.
+    #[allow(clippy::result_large_err)]
+    pub fn custom_grip_poll(
+        &self,
+        host: &mut dyn HostApi,
+        wait: std::time::Duration,
+    ) -> Result<Option<(u64, crate::host::CustomGripResponse)>, PluginError> {
+        let Some(v4) = &self.v4 else {
+            return Err(PluginError::Runner(
+                "custom grips require the V4 protocol".into(),
+            ));
+        };
+        match v4.poll_grip(host, wait)? {
+            Some((id, HostResponse::CustomGrip(resp))) => Ok(Some((id, resp))),
+            Some((_, other)) => Err(PluginError::UnexpectedResponse(Box::new(other))),
+            None => Ok(None),
+        }
+    }
+
+    /// Whether a custom-grip delivery is still unanswered.
+    pub fn custom_grip_move_in_flight(&self) -> bool {
+        self.v4
+            .as_ref()
+            .is_some_and(|v4| v4.has_grip_move_in_flight())
+    }
+
+    /// The watchdog (API v12): abandon a grip delivery that outlived its
+    /// deadline by tearing the plugin's connection down. The UI loop
+    /// recovers, the drag ends as a cancel, an error line names the plugin;
+    /// the runner reaps the dead connection. The plugin process is the
+    /// untrusted side — never waited on.
+    pub fn custom_grip_abandon(&self) {
+        if let Some(v4) = &self.v4 {
+            v4.abandon("grip-event delivery deadline exceeded");
+        }
     }
 
     /// Execute a REPL code snippet on a V4 plugin. The session is tied to the
@@ -550,6 +642,43 @@ impl PluginProcess {
             None => Err(PluginError::Runner(
                 "ExecuteCode requires V4 protocol".into(),
             )),
+        }
+    }
+
+    /// Legacy (non-V4) round trip for simple interactive calls: send `req`,
+    /// then loop until the matching response arrives, answering any nested
+    /// plugin request with an error. `kind` drives the timeout floor;
+    /// `nested_what` names the operation in that error; `extract` pulls the
+    /// expected payload out of the response.
+    fn call_simple<T>(
+        &self,
+        req: HostRequest,
+        kind: &'static str,
+        nested_what: &'static str,
+        extract: impl Fn(HostResponse) -> Result<T, Box<HostResponse>>,
+    ) -> Result<T, PluginError> {
+        self.send_request(req)?;
+        let timeout = request_timeout(kind);
+        let deadline = Instant::now() + timeout;
+        loop {
+            match recv_with_deadline::<PluginToHost>(
+                &self.stream,
+                &self.child,
+                deadline,
+                timeout,
+                kind,
+            )? {
+                PluginToHost::Response(resp) => match extract(resp) {
+                    Ok(v) => return Ok(v),
+                    Err(other) => return Err(PluginError::UnexpectedResponse(other)),
+                },
+                PluginToHost::Request(req) => {
+                    let resp = crate::ipc::protocol::PluginResponse::Error(format!(
+                        "unexpected nested request during {nested_what}: {req:?}"
+                    ));
+                    self.send_response(resp)?;
+                }
+            }
         }
     }
 
@@ -572,30 +701,30 @@ impl PluginProcess {
                 other => Err(PluginError::UnexpectedResponse(Box::new(other))),
             }
         } else {
-            self.send_request(HostRequest::InteractiveEvent { command_id, event })?;
-            let kind = "InteractiveEvent";
-            let timeout = request_timeout(kind);
-            let deadline = Instant::now() + timeout;
-            loop {
-                match recv_with_deadline::<PluginToHost>(
-                    &self.stream,
-                    &self.child,
-                    deadline,
-                    timeout,
-                    kind,
-                )? {
-                    PluginToHost::Response(HostResponse::CommandStep(s)) => return Ok(*s),
-                    PluginToHost::Response(other) => {
-                        return Err(PluginError::UnexpectedResponse(Box::new(other)))
-                    }
-                    PluginToHost::Request(req) => {
-                        let resp = crate::ipc::protocol::PluginResponse::Error(format!(
-                            "unexpected nested request during interactive event: {req:?}"
-                        ));
-                        self.send_response(resp)?;
-                    }
-                }
-            }
+            self.call_simple(
+                HostRequest::InteractiveEvent { command_id, event },
+                "InteractiveEvent",
+                "interactive event",
+                |resp| match resp {
+                    HostResponse::CommandStep(s) => Ok(*s),
+                    other => Err(Box::new(other)),
+                },
+            )
+        }
+    }
+
+    /// Release a completed or abandoned V4 interactive command in the runner.
+    pub fn drop_interactive(&self, command_id: u64) -> Result<(), PluginError> {
+        let Some(v4) = &self.v4 else {
+            return Ok(());
+        };
+        match v4.call(
+            &mut NullHost,
+            HostRequest::DropInteractive { command_id },
+            &mut |_| {},
+        )? {
+            HostResponse::Bool(true) => Ok(()),
+            other => Err(PluginError::UnexpectedResponse(Box::new(other))),
         }
     }
 
@@ -612,30 +741,15 @@ impl PluginProcess {
                 other => Err(PluginError::UnexpectedResponse(Box::new(other))),
             }
         } else {
-            self.send_request(HostRequest::GetPrompt { command_id })?;
-            let kind = "GetPrompt";
-            let timeout = request_timeout(kind);
-            let deadline = Instant::now() + timeout;
-            loop {
-                match recv_with_deadline::<PluginToHost>(
-                    &self.stream,
-                    &self.child,
-                    deadline,
-                    timeout,
-                    kind,
-                )? {
-                    PluginToHost::Response(HostResponse::Text(s)) => return Ok(s),
-                    PluginToHost::Response(other) => {
-                        return Err(PluginError::UnexpectedResponse(Box::new(other)))
-                    }
-                    PluginToHost::Request(req) => {
-                        let resp = crate::ipc::protocol::PluginResponse::Error(format!(
-                            "unexpected nested request during get_prompt: {req:?}"
-                        ));
-                        self.send_response(resp)?;
-                    }
-                }
-            }
+            self.call_simple(
+                HostRequest::GetPrompt { command_id },
+                "GetPrompt",
+                "get_prompt",
+                |resp| match resp {
+                    HostResponse::Text(s) => Ok(s),
+                    other => Err(Box::new(other)),
+                },
+            )
         }
     }
 
@@ -652,30 +766,119 @@ impl PluginProcess {
                 other => Err(PluginError::UnexpectedResponse(Box::new(other))),
             }
         } else {
-            self.send_request(HostRequest::NeedsEntityPick { command_id })?;
-            let kind = "NeedsEntityPick";
-            let timeout = request_timeout(kind);
-            let deadline = Instant::now() + timeout;
-            loop {
-                match recv_with_deadline::<PluginToHost>(
-                    &self.stream,
-                    &self.child,
-                    deadline,
-                    timeout,
-                    kind,
-                )? {
-                    PluginToHost::Response(HostResponse::Bool(b)) => return Ok(b),
-                    PluginToHost::Response(other) => {
-                        return Err(PluginError::UnexpectedResponse(Box::new(other)))
-                    }
-                    PluginToHost::Request(req) => {
-                        let resp = crate::ipc::protocol::PluginResponse::Error(format!(
-                            "unexpected nested request during needs_entity_pick: {req:?}"
-                        ));
-                        self.send_response(resp)?;
-                    }
-                }
+            self.call_simple(
+                HostRequest::NeedsEntityPick { command_id },
+                "NeedsEntityPick",
+                "needs_entity_pick",
+                |resp| match resp {
+                    HostResponse::Bool(b) => Ok(b),
+                    other => Err(Box::new(other)),
+                },
+            )
+        }
+    }
+
+    /// Ask the plugin process whether an interactive command is in selection-gathering mode.
+    pub fn is_selection_gathering(&self, command_id: u64) -> Result<bool, PluginError> {
+        if let Some(v4) = &self.v4 {
+            let resp = v4.call(
+                &mut NullHost,
+                HostRequest::IsSelectionGathering { command_id },
+                &mut |_| {},
+            )?;
+            match resp {
+                HostResponse::Bool(b) => Ok(b),
+                other => Err(PluginError::UnexpectedResponse(Box::new(other))),
             }
+        } else {
+            self.call_simple(
+                HostRequest::IsSelectionGathering { command_id },
+                "IsSelectionGathering",
+                "is_selection_gathering",
+                |resp| match resp {
+                    HostResponse::Bool(b) => Ok(b),
+                    other => Err(Box::new(other)),
+                },
+            )
+        }
+    }
+
+    /// Ask the plugin process whether an interactive command accepts drag selections.
+    pub fn accepts_drag_selection(&self, command_id: u64) -> Result<bool, PluginError> {
+        if let Some(v4) = &self.v4 {
+            let resp = v4.call(
+                &mut NullHost,
+                HostRequest::AcceptsDragSelection { command_id },
+                &mut |_| {},
+            )?;
+            match resp {
+                HostResponse::Bool(b) => Ok(b),
+                other => Err(PluginError::UnexpectedResponse(Box::new(other))),
+            }
+        } else {
+            self.call_simple(
+                HostRequest::AcceptsDragSelection { command_id },
+                "AcceptsDragSelection",
+                "accepts_drag_selection",
+                |resp| match resp {
+                    HostResponse::Bool(b) => Ok(b),
+                    other => Err(Box::new(other)),
+                },
+            )
+        }
+    }
+
+    /// Ask the plugin process whether an interactive command rejects locked layers during selection.
+    pub fn selection_rejects_locked_layers(&self, command_id: u64) -> Result<bool, PluginError> {
+        if let Some(v4) = &self.v4 {
+            let resp = v4.call(
+                &mut NullHost,
+                HostRequest::SelectionRejectsLockedLayers { command_id },
+                &mut |_| {},
+            )?;
+            match resp {
+                HostResponse::Bool(b) => Ok(b),
+                other => Err(PluginError::UnexpectedResponse(Box::new(other))),
+            }
+        } else {
+            self.call_simple(
+                HostRequest::SelectionRejectsLockedLayers { command_id },
+                "SelectionRejectsLockedLayers",
+                "selection_rejects_locked_layers",
+                |resp| match resp {
+                    HostResponse::Bool(b) => Ok(b),
+                    other => Err(Box::new(other)),
+                },
+            )
+        }
+    }
+
+    /// Ask the plugin process for real-time preview wires for the cursor position.
+    pub fn on_cursor_move(
+        &self,
+        command_id: u64,
+        pt: [f64; 3],
+    ) -> Result<Vec<crate::host::PreviewWire>, PluginError> {
+        if let Some(v4) = &self.v4 {
+            let resp = v4.call(
+                &mut NullHost,
+                HostRequest::CursorMove { command_id, pt },
+                &mut |_| {},
+            )?;
+            match resp {
+                HostResponse::PreviewWires(w) => Ok(w),
+                other => Err(PluginError::UnexpectedResponse(Box::new(other))),
+            }
+        } else {
+            self.call_simple(
+                HostRequest::CursorMove { command_id, pt },
+                "CursorMove",
+                "cursor_move",
+                |resp| match resp {
+                    HostResponse::PreviewWires(w) => Ok(w),
+                    other => Err(Box::new(other)),
+                },
+            )
         }
     }
 
@@ -853,10 +1056,7 @@ fn format_exit_status(status: Option<std::process::ExitStatus>) -> String {
 
 /// Describe why a runner failed before/during connection, including any stderr
 /// it produced.
-fn spawn_failure_status(
-    child: &Mutex<Option<Child>>,
-    last_stderr: &Mutex<String>,
-) -> String {
+fn spawn_failure_status(child: &Mutex<Option<Child>>, last_stderr: &Mutex<String>) -> String {
     let mut parts = vec![format_exit_status(child_status(child))];
     if let Ok(line) = last_stderr.lock() {
         if !line.is_empty() {
@@ -950,11 +1150,14 @@ fn recv_with_deadline<T: DeserializeOwned + Send + 'static>(
 }
 
 /// Send a host request and wait for the response, handling any nested plugin
-/// requests inline using the supplied `HostApi`.
+/// requests inline using the supplied `HostApi`. `plugin_id` identifies the
+/// process whose requests are served (attached to grip declarations; before
+/// the manifest is read it is empty, where no grip traffic can exist).
 fn call(
     stream: &Mutex<Option<Stream>>,
     child: &Mutex<Option<Child>>,
     host: &mut dyn HostApi,
+    plugin_id: &str,
     req: HostRequest,
     on_start_interactive: &mut dyn FnMut(u64),
 ) -> Result<HostResponse, PluginError> {
@@ -973,7 +1176,8 @@ fn call(
         match msg {
             PluginToHost::Response(resp) => return Ok(resp),
             PluginToHost::Request(plugin_req) => {
-                let resp = handle_plugin_request(host, *plugin_req, on_start_interactive);
+                let resp =
+                    handle_plugin_request(host, plugin_id, *plugin_req, on_start_interactive, true);
                 vlog!("[plugin] host -> runner response: {resp:?}");
                 let mut guard = stream.lock().unwrap_or_else(|e| e.into_inner());
                 let stream = guard.as_mut().ok_or_else(shutdown_error)?;
@@ -1105,6 +1309,74 @@ fn generate_token() -> Result<String, PluginError> {
     Ok(out)
 }
 
+/// In-crate test support: build a `PluginProcess` whose fields are otherwise
+/// private to this module, so sibling test modules (`process::manager`) can
+/// put one in a `PluginManager` without spawning a real runner.
+#[cfg(all(test, feature = "host"))]
+impl PluginProcess {
+    /// A process backed by a real sleeping child process and a local socket
+    /// pair, carrying the given manifest (no cdylib, no runner). The
+    /// runner-side peer socket is dropped immediately; nothing reads it.
+    pub(crate) fn fake(manifest: OwnedPluginManifest) -> Self {
+        use interprocess::local_socket::traits::Stream as StreamTrait;
+
+        static COUNTER: AtomicU64 = AtomicU64::new(0);
+        let name = format!(
+            "ocs_plugin_fake_process_test_{}_{}",
+            std::process::id(),
+            COUNTER.fetch_add(1, Ordering::Relaxed)
+        );
+        let name_ref = name
+            .clone()
+            .to_ns_name::<GenericNamespaced>()
+            .expect("valid name");
+        let listener = ListenerOptions::new()
+            .name(name_ref)
+            .create_sync()
+            .expect("listener");
+        let client_name = name.clone();
+        let client_thread: std::thread::JoinHandle<Stream> = std::thread::spawn(move || {
+            StreamTrait::connect(client_name.to_ns_name::<GenericNamespaced>().unwrap())
+                .expect("connect")
+        });
+        let host_stream = listener.accept().expect("accept");
+        drop(client_thread.join().expect("client thread"));
+
+        Self {
+            stream: Mutex::new(Some(host_stream)),
+            v4: None,
+            child: Mutex::new(Some(sleepy_test_child())),
+            id: manifest.id.clone(),
+            manifest,
+            ribbon: vec![],
+            io_lines: Mutex::new(None),
+        }
+    }
+}
+
+/// A child that lives ~30 s — long enough to read as "alive", short enough to
+/// never hang a leaked test. Shared by `PluginProcess::fake` and this module's
+/// own tests.
+#[cfg(all(test, feature = "host"))]
+fn sleepy_test_child() -> Child {
+    #[cfg(windows)]
+    {
+        std::process::Command::new("cmd")
+            .arg("/c")
+            .arg("ping -n 30 127.0.0.1")
+            .stdout(std::process::Stdio::null())
+            .spawn()
+            .expect("spawn sleep")
+    }
+    #[cfg(not(windows))]
+    {
+        std::process::Command::new("sleep")
+            .arg("30")
+            .spawn()
+            .expect("spawn sleep")
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1125,6 +1397,22 @@ mod tests {
         let runner = distinct_runner_path(&host);
         assert_eq!(runner, PathBuf::from("/app/OpenCADStudio-plugin-runner"));
     }
+
+    #[test]
+    fn null_host_ensure_plugin_state_does_not_panic() {
+        let mut null = NullHost;
+        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _ = null.ensure_plugin_state_any("opencad.demo", &mut || Box::new(7u32));
+        }));
+        assert!(
+            outcome.is_ok(),
+            "NullHost ensure_plugin_state must degrade, not panic: {:?}",
+            outcome.err()
+        );
+        assert!(null
+            .ensure_plugin_state_any("opencad.demo", &mut || Box::new(7u32))
+            .is_none());
+    }
 }
 
 #[cfg(all(test, feature = "host"))]
@@ -1138,8 +1426,8 @@ mod timeout_tests {
     use crate::ipc::transport::{recv, send};
     use crate::ribbon::owned::OwnedPluginManifest;
     use crate::test_lock::ENV_LOCK;
-    use acadrust::xdata::ExtendedDataRecord;
-    use acadrust::{CadDocument, EntityType, Handle};
+    use codec::xdata::ExtendedDataRecord;
+    use codec::{CadDocument, EntityType, Handle};
     use interprocess::local_socket::{
         traits::{Listener, Stream as StreamTrait},
         GenericNamespaced, ListenerOptions, Stream, ToNsName,
@@ -1210,7 +1498,10 @@ mod timeout_tests {
         fn push_undo(&mut self, _label: &str) {}
         fn set_dirty(&mut self) {}
         fn push_info(&mut self, msg: &str) {
-            self.push_info_messages.lock().unwrap().push(msg.to_string());
+            self.push_info_messages
+                .lock()
+                .unwrap()
+                .push(msg.to_string());
         }
         fn push_output(&mut self, _msg: &str) {}
         fn push_error(&mut self, _msg: &str) {}
@@ -1228,8 +1519,8 @@ mod timeout_tests {
             &mut self,
             _plugin_id: &'static str,
             _init: &mut dyn FnMut() -> Box<dyn std::any::Any + Send + Sync>,
-        ) -> &mut (dyn std::any::Any + Send + Sync) {
-            panic!("not used")
+        ) -> Option<&mut (dyn std::any::Any + Send + Sync)> {
+            None
         }
     }
 
@@ -1288,6 +1579,7 @@ mod timeout_tests {
             ribbon_order: 0,
             xdata_apps: vec![],
             command_prefixes: vec![],
+            entity_classes: None,
         }
     }
 
@@ -1384,7 +1676,9 @@ mod timeout_tests {
             )
             .expect("send nested request");
             let resp = recv::<HostToPlugin>(&mut peer).expect("read nested response");
-            assert!(matches!(resp, HostToPlugin::Response(ref r) if matches!(**r, PluginResponse::Ok)));
+            assert!(
+                matches!(resp, HostToPlugin::Response(ref r) if matches!(**r, PluginResponse::Ok))
+            );
             send(&mut peer, &PluginToHost::Response(HostResponse::Bool(true)))
                 .expect("send final response");
         });
@@ -1394,7 +1688,11 @@ mod timeout_tests {
         assert!(result.expect("dispatch succeeds"));
         assert!(process.is_alive(), "process should still be alive");
         let infos = host.take_push_info();
-        assert_eq!(infos, vec!["hello".to_string()], "push_info should be delivered to host");
+        assert_eq!(
+            infos,
+            vec!["hello".to_string()],
+            "push_info should be delivered to host"
+        );
 
         // Clean up the helper child so it does not outlive the test.
         if let Some(mut child) = process
@@ -1427,19 +1725,22 @@ mod timeout_tests {
 
     #[test]
     fn runner_handshake_correct_token_is_accepted() {
-        let _guard = ENV_LOCK.lock().unwrap();
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         std::env::remove_var("OCS_PLUGIN_MAX_API_VERSION");
         let result = verify_runner_handshake(
             RunnerHandshake::Token("correct-token".to_string()),
             "correct-token",
         );
-        assert!(result.is_ok(), "expected authentication success, got {result:?}");
+        assert!(
+            result.is_ok(),
+            "expected authentication success, got {result:?}"
+        );
         assert!(!result.unwrap(), "V3 token should select V3 path");
     }
 
     #[test]
     fn runner_handshake_tokenv4_selects_v4_path() {
-        let _guard = ENV_LOCK.lock().unwrap();
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         std::env::remove_var("OCS_PLUGIN_MAX_API_VERSION");
         let result = verify_runner_handshake(
             RunnerHandshake::TokenV4 {
@@ -1448,13 +1749,16 @@ mod timeout_tests {
             },
             "correct-token",
         );
-        assert!(result.is_ok(), "expected authentication success, got {result:?}");
+        assert!(
+            result.is_ok(),
+            "expected authentication success, got {result:?}"
+        );
         assert!(result.unwrap(), "TokenV4 should select V4 path");
     }
 
     #[test]
     fn runner_handshake_tokenv4_mismatched_version_is_rejected() {
-        let _guard = ENV_LOCK.lock().unwrap();
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         std::env::remove_var("OCS_PLUGIN_MAX_API_VERSION");
         let result = verify_runner_handshake(
             RunnerHandshake::TokenV4 {
@@ -1471,7 +1775,7 @@ mod timeout_tests {
 
     #[test]
     fn runner_handshake_tokenv4_rejected_when_v4_disabled() {
-        let _guard = ENV_LOCK.lock().unwrap();
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         std::env::set_var("OCS_PLUGIN_MAX_API_VERSION", "3");
         let result = verify_runner_handshake(
             RunnerHandshake::TokenV4 {

@@ -13,12 +13,38 @@
 //   Polar array: copies rotated around a center point by a total angle.
 //   1. Center point → 2. Item count (text) → 3. Total angle in degrees (text)
 
-use acadrust::Handle;
-use glam::DVec3;
 use crate::t;
+use codec::Handle;
+use glam::DVec3;
 
 use crate::command::{CadCommand, CmdResult, EntityTransform, WorkingPlane};
 use crate::modules::draw::defaults;
+
+/// The Associative option button, labelled with its current state.
+fn associative_option(on: bool) -> crate::command::CmdOption {
+    crate::command::CmdOption {
+        label: format!(
+            "{}: {}",
+            crate::t!("Associative"),
+            crate::t!(if on { "Yes" } else { "No" })
+        ),
+        keyword: "AS".to_string(),
+    }
+}
+
+/// Typed `AS` / `ASSOCIATIVE` flips the Associative option.
+fn is_associative_keyword(text: &str) -> bool {
+    matches!(
+        text.trim().to_ascii_uppercase().as_str(),
+        "AS" | "ASSOCIATIVE" | "_AS"
+    )
+}
+
+/// Associative arrays are built in world axes; a rotated working plane
+/// falls back to plain copies.
+fn world_plane(plane: WorkingPlane) -> bool {
+    plane.x.abs_diff_eq(DVec3::X, 1e-12) && plane.z.abs_diff_eq(DVec3::Z, 1e-12)
+}
 use crate::modules::IconKind;
 use crate::scene::model::wire_model::WireModel;
 
@@ -45,6 +71,27 @@ pub const DROPDOWN_ITEMS: &[(&str, &str, IconKind)] = &[
     ),
 ];
 
+// ── Item limit ─────────────────────────────────────────────────────────────
+
+/// Most items one array may create, including the source. Every item becomes
+/// a transform and then a copy of each selected object, so an unbounded typed
+/// count exhausts memory before anything is drawn.
+pub(crate) const MAX_ARRAY_ITEMS: u64 = 100_000;
+
+/// Whether an array of `counts` (rows, columns, levels, ...) stays in bounds.
+pub(crate) fn array_items_within_limit(counts: &[u64]) -> bool {
+    counts
+        .iter()
+        .try_fold(1u64, |total, &count| total.checked_mul(count))
+        .is_some_and(|total| total <= MAX_ARRAY_ITEMS)
+}
+
+pub(crate) fn array_limit_error() -> CmdResult {
+    CmdResult::ReportError(
+        crate::tf!("Array size exceeds the limit of {} items.", MAX_ARRAY_ITEMS).into_owned(),
+    )
+}
+
 // ── Rectangular Array ──────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Copy)]
@@ -63,6 +110,7 @@ pub struct ArrayRectCommand {
     default_cols: u32,
     default_row_sp: f64,
     default_col_sp: f64,
+    associative: bool,
     plane: WorkingPlane,
 }
 
@@ -72,10 +120,11 @@ impl ArrayRectCommand {
             handles,
             wire_models,
             step: RectStep::Rows,
-            default_rows: defaults::get_array_rows() as u32,
-            default_cols: defaults::get_array_cols() as u32,
+            default_rows: (defaults::get_array_rows() as u32).clamp(1, MAX_ARRAY_ITEMS as u32),
+            default_cols: (defaults::get_array_cols() as u32).clamp(1, MAX_ARRAY_ITEMS as u32),
             default_row_sp: defaults::get_array_row_sp(),
             default_col_sp: defaults::get_array_col_sp(),
+            associative: defaults::get_array_assoc() != 0.0,
             plane: WorkingPlane::default(),
         }
     }
@@ -94,11 +143,9 @@ impl ArrayRectCommand {
                 if r == 0 && c == 0 {
                     continue;
                 }
-                t.push(EntityTransform::Translate(plane.vector_to_world(DVec3::new(
-                    col_sp * c as f64,
-                    row_sp * r as f64,
-                    0.0,
-                ))));
+                t.push(EntityTransform::Translate(plane.vector_to_world(
+                    DVec3::new(col_sp * c as f64, row_sp * r as f64, 0.0),
+                )));
             }
         }
         t
@@ -108,6 +155,10 @@ impl ArrayRectCommand {
 impl CadCommand for ArrayRectCommand {
     fn name(&self) -> &'static str {
         "ARRAYRECT"
+    }
+
+    fn options(&self) -> Vec<crate::command::CmdOption> {
+        vec![associative_option(self.associative)]
     }
 
     fn set_working_plane(&mut self, plane: WorkingPlane) {
@@ -146,6 +197,11 @@ impl CadCommand for ArrayRectCommand {
     }
 
     fn on_text_input(&mut self, text: &str) -> Option<CmdResult> {
+        if is_associative_keyword(text) {
+            self.associative = !self.associative;
+            defaults::set_array_assoc(f64::from(u8::from(self.associative)));
+            return None;
+        }
         let t = text.trim().replace(',', ".");
         let t = t.as_str();
         match self.step {
@@ -154,6 +210,9 @@ impl CadCommand for ArrayRectCommand {
                     self.default_rows
                 } else {
                     let v = t.parse::<u32>().unwrap_or(self.default_rows).max(1);
+                    if !array_items_within_limit(&[v as u64]) {
+                        return Some(array_limit_error());
+                    }
                     defaults::set_array_rows(v as f64);
                     self.default_rows = v;
                     v
@@ -165,11 +224,15 @@ impl CadCommand for ArrayRectCommand {
                 let cols = if t.is_empty() {
                     self.default_cols
                 } else {
-                    let v = t.parse::<u32>().unwrap_or(self.default_cols).max(1);
-                    defaults::set_array_cols(v as f64);
-                    self.default_cols = v;
-                    v
+                    t.parse::<u32>().unwrap_or(self.default_cols).max(1)
                 };
+                if !array_items_within_limit(&[rows as u64, cols as u64]) {
+                    return Some(array_limit_error());
+                }
+                if !t.is_empty() {
+                    defaults::set_array_cols(cols as f64);
+                    self.default_cols = cols;
+                }
                 self.step = RectStep::RowSp { rows, cols };
                 None
             }
@@ -195,6 +258,17 @@ impl CadCommand for ArrayRectCommand {
                     defaults::set_array_col_sp(v);
                     v
                 };
+                if self.associative && world_plane(self.plane) {
+                    return Some(CmdResult::AssocArray {
+                        handles: self.handles.clone(),
+                        spec: crate::scene::assoc_array::AssocArraySpec::Rectangular {
+                            columns: cols,
+                            rows,
+                            column_spacing: col_sp,
+                            row_spacing: row_sp,
+                        },
+                    });
+                }
                 Some(CmdResult::BatchCopy(
                     self.handles.clone(),
                     Self::build_transforms(rows, cols, row_sp, col_sp, self.plane),
@@ -222,6 +296,10 @@ impl CadCommand for ArrayRectCommand {
             }
             RectStep::ColSp { rows, cols, row_sp } => (rows, cols, row_sp, self.default_col_sp),
         };
+        // Defaults are only bounded one count at a time.
+        if !array_items_within_limit(&[rows as u64, cols as u64]) {
+            return vec![];
+        }
         Self::build_transforms(rows, cols, row_sp, col_sp, self.plane)
             .iter()
             .flat_map(|t| {
@@ -265,6 +343,7 @@ pub struct ArrayPolarCommand {
     step: PolarStep,
     default_count: u32,
     default_angle: f64,
+    associative: bool,
     plane: WorkingPlane,
 }
 
@@ -274,8 +353,9 @@ impl ArrayPolarCommand {
             handles,
             wire_models,
             step: PolarStep::Center,
-            default_count: defaults::get_array_p_count() as u32,
+            default_count: (defaults::get_array_p_count() as u32).clamp(2, MAX_ARRAY_ITEMS as u32),
             default_angle: defaults::get_array_p_angle(),
+            associative: defaults::get_array_assoc() != 0.0,
             plane: WorkingPlane::default(),
         }
     }
@@ -288,6 +368,10 @@ impl CadCommand for ArrayPolarCommand {
 
     fn name(&self) -> &'static str {
         "ARRAYPOLAR"
+    }
+
+    fn options(&self) -> Vec<crate::command::CmdOption> {
+        vec![associative_option(self.associative)]
     }
 
     fn prompt(&self) -> String {
@@ -321,6 +405,11 @@ impl CadCommand for ArrayPolarCommand {
     }
 
     fn on_text_input(&mut self, text: &str) -> Option<CmdResult> {
+        if is_associative_keyword(text) {
+            self.associative = !self.associative;
+            defaults::set_array_assoc(f64::from(u8::from(self.associative)));
+            return None;
+        }
         let t = text.trim().replace(',', ".");
         let t = t.as_str();
         match &self.step {
@@ -330,6 +419,9 @@ impl CadCommand for ArrayPolarCommand {
                     self.default_count
                 } else {
                     let v = t.parse::<u32>().unwrap_or(self.default_count).max(2);
+                    if !array_items_within_limit(&[v as u64]) {
+                        return Some(array_limit_error());
+                    }
                     defaults::set_array_p_count(v as f64);
                     self.default_count = v;
                     v
@@ -350,6 +442,16 @@ impl CadCommand for ArrayPolarCommand {
                     defaults::set_array_p_angle(v);
                     v
                 };
+                if self.associative && world_plane(self.plane) {
+                    return Some(CmdResult::AssocArray {
+                        handles: self.handles.clone(),
+                        spec: crate::scene::assoc_array::AssocArraySpec::Polar {
+                            center,
+                            items: count,
+                            fill_angle: total_deg.to_radians(),
+                        },
+                    });
+                }
                 let step_rad = total_deg.to_radians() / count as f64;
                 let transforms = (1..count)
                     .map(|n| EntityTransform::Rotate {
@@ -371,9 +473,7 @@ impl CadCommand for ArrayPolarCommand {
             PolarStep::Count { center } => {
                 (center.as_vec3(), self.default_count, self.default_angle)
             }
-            PolarStep::Angle { center, count } => {
-                (center.as_vec3(), *count, self.default_angle)
-            }
+            PolarStep::Angle { center, count } => (center.as_vec3(), *count, self.default_angle),
         };
         let step_rad = total_deg.to_radians() / count as f64;
         let axis = self.plane.z.as_vec3();
@@ -421,14 +521,12 @@ impl CadCommand for ArrayPolarCommand {
 //   2. Enter item count (total, including the original at the path start)
 //   → Returns BatchCopy with Translate transforms derived from path samples.
 
-use acadrust::EntityType;
 use crate::entities::curve::entity_curve;
+use codec::EntityType;
 use std::f64::consts::PI as FPI;
 use std::f64::consts::TAU as FTAU;
 
 // ── Path geometry helpers ──────────────────────────────────────────────────
-
-
 
 // ── State machine ──────────────────────────────────────────────────────────
 
@@ -461,7 +559,8 @@ impl ArrayPathCommand {
             wire_models,
             all_entities,
             step: PathStep::SelectPath,
-            default_count: defaults::get_array_path_count() as u32,
+            default_count: (defaults::get_array_path_count() as u32)
+                .clamp(2, MAX_ARRAY_ITEMS as u32),
             pick_pt: DVec3::ZERO,
         }
     }
@@ -686,6 +785,9 @@ impl CadCommand for ArrayPathCommand {
             self.default_count
         } else {
             let v = t.parse::<u32>().unwrap_or(self.default_count).max(2);
+            if !array_items_within_limit(&[v as u64]) {
+                return Some(array_limit_error());
+            }
             defaults::set_array_path_count(v as f64);
             self.default_count = v;
             v
@@ -712,7 +814,9 @@ impl CadCommand for ArrayPathCommand {
                     .iter()
                     .map(|w| w.translated(delta.as_vec3()))
                     .collect::<Vec<_>>(),
-                EntityTransform::Rotate { center, angle_rad, .. } => self
+                EntityTransform::Rotate {
+                    center, angle_rad, ..
+                } => self
                     .wire_models
                     .iter()
                     .map(|w| w.rotated(center.as_vec3(), *angle_rad as f32))
@@ -891,6 +995,9 @@ impl CadCommand for Array3DCommand {
                 } else {
                     t.parse::<u32>().unwrap_or(2).max(1)
                 };
+                if !array_items_within_limit(&[v as u64]) {
+                    return Some(array_limit_error());
+                }
                 self.step = Array3DStep::Cols { rows: v };
                 Some(CmdResult::NeedPoint)
             }
@@ -900,6 +1007,9 @@ impl CadCommand for Array3DCommand {
                 } else {
                     t.parse::<u32>().unwrap_or(2).max(1)
                 };
+                if !array_items_within_limit(&[rows as u64, v as u64]) {
+                    return Some(array_limit_error());
+                }
                 self.step = Array3DStep::Levels { rows, cols: v };
                 Some(CmdResult::NeedPoint)
             }
@@ -909,6 +1019,9 @@ impl CadCommand for Array3DCommand {
                 } else {
                     t.parse::<u32>().unwrap_or(2).max(1)
                 };
+                if !array_items_within_limit(&[rows as u64, cols as u64, v as u64]) {
+                    return Some(array_limit_error());
+                }
                 self.step = Array3DStep::RowSp {
                     rows,
                     cols,
@@ -986,4 +1099,57 @@ impl CadCommand for Array3DCommand {
 }
 
 // ── Autocomplete registry ─────────────────────────────────
-inventory::submit!(crate::command::CommandRegistration { names: &["ARRAY3D", "3DARRAY"] });
+inventory::submit!(crate::command::CommandRegistration {
+    names: &["ARRAY3D", "3DARRAY"]
+});
+
+#[cfg(test)]
+mod item_limit_tests {
+    use super::*;
+
+    #[test]
+    fn item_limit_counts_every_dimension_without_overflow() {
+        assert!(array_items_within_limit(&[MAX_ARRAY_ITEMS]));
+        assert!(!array_items_within_limit(&[MAX_ARRAY_ITEMS + 1]));
+        assert!(!array_items_within_limit(&[1_000, 1_000]));
+        assert!(!array_items_within_limit(&[
+            u32::MAX as u64,
+            u32::MAX as u64,
+            u32::MAX as u64
+        ]));
+    }
+
+    #[test]
+    fn oversized_counts_are_rejected_at_the_prompt() {
+        let mut rect = ArrayRectCommand::new(vec![Handle::new(1)], Vec::new());
+        assert!(rect.on_text_input("100000").is_none());
+        assert!(matches!(
+            rect.on_text_input("100000"),
+            Some(CmdResult::ReportError(_))
+        ));
+        assert!(matches!(rect.step, RectStep::Cols { rows: 100_000 }));
+
+        let mut polar = ArrayPolarCommand::new(vec![Handle::new(1)], Vec::new());
+        polar.step = PolarStep::Count {
+            center: DVec3::ZERO,
+        };
+        assert!(matches!(
+            polar.on_text_input("4294967295"),
+            Some(CmdResult::ReportError(_))
+        ));
+
+        let mut cube = Array3DCommand::new(vec![Handle::new(1)]);
+        assert!(matches!(
+            cube.on_text_input("300"),
+            Some(CmdResult::NeedPoint)
+        ));
+        assert!(matches!(
+            cube.on_text_input("300"),
+            Some(CmdResult::NeedPoint)
+        ));
+        assert!(matches!(
+            cube.on_text_input("2"),
+            Some(CmdResult::ReportError(_))
+        ));
+    }
+}

@@ -15,7 +15,8 @@
 
 #![cfg_attr(target_arch = "wasm32", allow(dead_code))]
 
-use std::path::PathBuf;
+use std::collections::BTreeMap;
+use std::path::{Path, PathBuf};
 
 /// One entry in the curated plugin registry (`plugins/registry.json`).
 #[derive(Debug, Clone)]
@@ -30,7 +31,7 @@ pub struct RegistryEntry {
 pub struct ReleaseInfo {
     pub tag: String,
     pub api_version: u32,
-    /// Full `acadrust` git source used by the release.
+    /// Full `opencadcodec` git source used by the release.
     pub acadrust_source: Option<String>,
     /// Whether `[opencad]` declares `acadrust_source`.
     pub acadrust_declared: bool,
@@ -56,7 +57,7 @@ pub struct ExternalPlugin {
     /// an older `plugin.toml` does not declare `repository`.
     pub repository: Option<String>,
     pub api_version: u32,
-    /// Full `acadrust` git source used by the plugin.
+    /// Full `opencadcodec` git source used by the plugin.
     pub acadrust_source: Option<String>,
     /// Whether `[opencad]` declares `acadrust_source`.
     pub acadrust_declared: bool,
@@ -68,6 +69,9 @@ pub struct ExternalPlugin {
     pub command_prefixes: Vec<String>,
     /// The package directory under the plugins folder.
     pub dir: PathBuf,
+    /// True when the package ships inside the application rather than the
+    /// per-user plugin directory.
+    pub bundled: bool,
     /// Whether a native library for this platform sits beside `plugin.toml`.
     pub lib_present: bool,
 }
@@ -155,6 +159,24 @@ pub fn plugins_dir() -> Option<PathBuf> {
     Some(p)
 }
 
+/// Read-only plugins shipped with the application. The environment override
+/// makes development and packaging tests independent of a particular bundle
+/// layout.
+pub fn bundled_plugins_dir() -> Option<PathBuf> {
+    if let Ok(p) = std::env::var("OCS_BUNDLED_PLUGINS_DIR") {
+        return Some(PathBuf::from(p));
+    }
+    let exe = std::env::current_exe().ok()?;
+    #[cfg(target_os = "macos")]
+    {
+        return Some(exe.parent()?.parent()?.join("Resources").join("plugins"));
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        Some(exe.parent()?.join("plugins"))
+    }
+}
+
 /// Delete an installed package's folder. It stays loaded for the current
 /// session (the library is resident); the removal takes effect on next start.
 #[cfg(not(target_arch = "wasm32"))]
@@ -179,16 +201,33 @@ fn lib_extension() -> &'static str {
     }
 }
 
-/// Discover every package under the plugins directory, sorted by `ribbon_order`
-/// then id. Missing directory → empty list (not an error).
+/// Discover bundled and per-user packages, sorted by `ribbon_order` then id.
+/// A per-user package with the same id explicitly overrides the bundled copy.
+/// Missing directories are ignored.
 pub fn discover() -> Vec<ExternalPlugin> {
-    let Some(root) = plugins_dir() else {
-        return Vec::new();
+    discover_from_roots(bundled_plugins_dir().as_deref(), plugins_dir().as_deref())
+}
+
+fn discover_from_roots(
+    bundled_root: Option<&Path>,
+    user_root: Option<&Path>,
+) -> Vec<ExternalPlugin> {
+    let mut found = BTreeMap::new();
+    if let Some(root) = bundled_root {
+        discover_root(root, true, &mut found);
+    }
+    if let Some(root) = user_root {
+        discover_root(root, false, &mut found);
+    }
+    let mut found: Vec<_> = found.into_values().collect();
+    found.sort_by(|a, b| a.ribbon_order.cmp(&b.ribbon_order).then(a.id.cmp(&b.id)));
+    found
+}
+
+fn discover_root(root: &Path, bundled: bool, found: &mut BTreeMap<String, ExternalPlugin>) {
+    let Ok(entries) = std::fs::read_dir(root) else {
+        return;
     };
-    let Ok(entries) = std::fs::read_dir(&root) else {
-        return Vec::new();
-    };
-    let mut found = Vec::new();
     for entry in entries.flatten() {
         let dir = entry.path();
         if !dir.is_dir() {
@@ -206,11 +245,10 @@ pub fn discover() -> Vec<ExternalPlugin> {
             }
             p.lib_present = lib_present_in(&dir);
             p.dir = dir;
-            found.push(p);
+            p.bundled = bundled;
+            found.insert(p.id.clone(), p);
         }
     }
-    found.sort_by(|a, b| a.ribbon_order.cmp(&b.ribbon_order).then(a.id.cmp(&b.id)));
-    found
 }
 
 /// True when a file with this platform's dynamic-library extension exists in
@@ -251,9 +289,7 @@ pub(crate) fn parse_plugin_toml(text: &str) -> Option<ExternalPlugin> {
             continue;
         }
         if let Some(header) = line.strip_prefix('[') {
-            section = header
-                .find(']')
-                .map(|end| header[..end].trim());
+            section = header.find(']').map(|end| header[..end].trim());
             continue;
         }
         let Some((key, value)) = line.split_once('=') else {
@@ -298,6 +334,7 @@ pub(crate) fn parse_plugin_toml(text: &str) -> Option<ExternalPlugin> {
         ribbon_order,
         command_prefixes,
         dir: PathBuf::new(),
+        bundled: false,
         lib_present: false,
     })
 }
@@ -351,12 +388,16 @@ fn parse_string_array(s: &str) -> Vec<String> {
 
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) use loader::{shutdown_plugins, with_manager};
+#[cfg(test)]
+pub(crate) use loader::PROCESS_TESTS_LOCK;
 
 #[cfg(all(not(target_arch = "wasm32"), not(test)))]
 pub(crate) use loader::{load_at_startup, loaded_ids};
 
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) use loader::remove_plugin;
+#[cfg(test)]
+pub(crate) use loader::{remove_plugin_for_tests, spawn_into_manager_for_tests};
 
 #[cfg(not(target_arch = "wasm32"))]
 #[cfg_attr(test, allow(dead_code))]
@@ -364,13 +405,25 @@ mod loader {
     use super::lib_extension;
     use crate::plugin::v4_support;
     use ocs_plugin_api::process::PluginManager;
-    use std::cell::RefCell;
     use std::path::{Path, PathBuf};
 
-    // Process-wide plugin manager. Drop kills every runner process asynchronously
-    // so host shutdown is never delayed by a plugin.
+    // Plugin manager. THREAD-LOCAL and REENTRANT (RefCell immutable borrows
+    // nest): every with_manager caller runs on the app's thread — dispatch
+    // (whose nested inline serving of plugin write frames re-enters with_manager
+    // through the boundary broadcasts), the drains, the grips pump. The V4
+    // reader threads that surface plugin notifications never touch the manager:
+    // the API v13 `ChannelReady` attach ack goes through the QUEUE and is
+    // processed by the app thread at its next message boundary (v4_support::
+    // drain_channel_ready_acks) — which is what the queue exists for. A
+    // process-GLOBAL Mutex here was tried in v13 and SELF-DEADLOCKED the first
+    // plugin-write boundary (AppHangB1, the consumer's CVI_ALIGN_BYPI repro):
+    // the outer with_manager(manager.dispatch) held the mutex while the
+    // plugin's nested write frames were served inline, and the boundary
+    // publish re-entered with_manager on the same thread — a non-reentrant
+    // lock waiting on itself. RefCell borrows are the never-freeze shape here.
     thread_local! {
-        static MANAGER: RefCell<Option<PluginManager>> = const { RefCell::new(None) };
+        static MANAGER: std::cell::RefCell<Option<PluginManager>> =
+            const { std::cell::RefCell::new(None) };
     }
 
     /// Discover packages and spawn every API-compatible one as a separate
@@ -385,6 +438,21 @@ mod loader {
         let mut out = Vec::new();
         for d in &discovered {
             if !d.api_compatible() {
+                // LOUD (v13.1): an API-skipped plugin used to vanish silently —
+                // the machine then answered every one of its commands with
+                // "unknown command" and nothing named the cause. The plugin is
+                // still in the plugin manager UI's list of packages; this line
+                // is the only place the reason reaches the user.
+                out.push((
+                    d.id.clone(),
+                    Err(format!(
+                        "plugin declares api_version {}, host accepts {}..{}; \
+                         update the plugin (pins the matching host rev)",
+                        d.api_version,
+                        ocs_plugin_api::manifest::API_VERSION_MIN_SUPPORTED,
+                        ocs_plugin_api::manifest::API_VERSION
+                    )),
+                ));
                 continue;
             }
             if !d.lib_present {
@@ -395,7 +463,7 @@ mod loader {
                 && d.acadrust_source.is_none()
             {
                 eprintln!(
-                    "[plugin] {} declares acadrust metadata but has no fingerprint; cannot verify compatibility",
+                    "[plugin] {} declares opencadcodec metadata but has no fingerprint; cannot verify compatibility",
                     d.id
                 );
             }
@@ -411,7 +479,7 @@ mod loader {
                 out.push((
                     d.id.clone(),
                     Err(format!(
-                        "Plugin built for acadrust @{plugin_hash}, but this host uses @{host_hash}"
+                        "Plugin built for opencadcodec @{plugin_hash}, but this host uses @{host_hash}"
                     )),
                 ));
                 continue;
@@ -449,7 +517,10 @@ mod loader {
         MANAGER.with(|m| m.borrow().as_ref().map(|mgr| mgr.ids()).unwrap_or_default())
     }
 
-    /// Run `f` with a reference to the loaded plugin manager.
+    /// Run `f` with a reference to the loaded plugin manager. REENTRANT
+    /// while holding an immutable borrow: the dispatch path re-enters
+    /// (nested inline serving → boundary broadcasts); nested immutable
+    /// borrows of the RefCell are exactly what makes that safe.
     pub fn with_manager<R>(f: impl FnOnce(&PluginManager) -> R) -> R {
         MANAGER.with(|m| {
             let guard = m.borrow();
@@ -462,13 +533,61 @@ mod loader {
         })
     }
 
+    /// Serializes the process-spawning tests (spawn/dispatch/notification-attach)
+    /// against each other: they share the process-global ChannelReady attach
+    /// queue and runner bookkeeping; concurrent boots would test
+    /// interference, not determinism. Grab at the top of each such test.
+    #[cfg(test)]
+    pub(crate) static PROCESS_TESTS_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    /// Spawn one plugin and insert it into the process-wide manager — the
+    /// single-plugin twin of the boot-time load path, so tests exercise the
+    /// SAME live machinery a real boot uses (broadcasts, dispatches, the API
+    /// v13 notification attach). The caller owns cleanup: `remove_plugin(id)`
+    /// after the assertions.
+    #[cfg(test)]
+    pub(crate) fn spawn_into_manager_for_tests(
+        cdylib_path: &std::path::Path,
+        host: &mut dyn ocs_plugin_api::host::HostApi,
+        handler: ocs_plugin_api::process::NotificationHandler,
+    ) -> Result<
+        (
+            String,
+            std::sync::Arc<ocs_plugin_api::process::PluginProcess>,
+        ),
+        String,
+    > {
+        MANAGER.with(|m| {
+            let mut guard = m.borrow_mut();
+            let mut manager = guard.take().unwrap_or_default();
+            manager.set_notification_handler(handler);
+            let result = manager
+                .load(cdylib_path, host)
+                .map(|id| {
+                    let process = manager
+                        .grip_endpoint(&id)
+                        .map(|(process, _, _)| process)
+                        .expect("just loaded");
+                    (id, process)
+                })
+                .map_err(|e| e.to_string());
+            *guard = Some(manager);
+            result
+        })
+    }
+
+    /// Remove a loaded plugin from the process-wide manager (test cleanup
+    /// after [`spawn_into_manager_for_tests`]); its process shuts down first.
+    #[cfg(test)]
+    pub(crate) fn remove_plugin_for_tests(id: &str) -> bool {
+        remove_plugin(id)
+    }
+
     /// Eagerly shut down all plugin runner processes.
     pub fn shutdown_plugins() {
-        MANAGER.with(|m| {
-            if let Some(mut manager) = m.borrow_mut().take() {
-                manager.shutdown_all();
-            }
-        });
+        if let Some(mut manager) = MANAGER.with(|m| m.borrow_mut().take()) {
+            manager.shutdown_all();
+        }
     }
 
     /// Shut down the loaded plugin with `id` and remove it from the manager so
@@ -476,7 +595,8 @@ mod loader {
     /// loaded and has been removed.
     pub fn remove_plugin(id: &str) -> bool {
         MANAGER.with(|m| {
-            if let Some(manager) = m.borrow_mut().as_mut() {
+            let mut guard = m.borrow_mut();
+            if let Some(manager) = guard.as_mut() {
                 if manager.ids().iter().any(|loaded| loaded == id) {
                     manager.remove(id)
                 } else {
@@ -514,21 +634,62 @@ description = "Template plugin"
 repository = "https://github.com/example/opencad-my-plugin.git"
 
 [opencad]
-api_version = 2
+api_version = 3
 ribbon_order = 60
 command_prefixes = ["MP_"]
 xdata_apps = ["MYPLUGIN_RECORD"]
 "#;
         let p = parse_plugin_toml(toml).expect("parsed");
-        assert_eq!(p.api_version, 2);
+        assert_eq!(p.api_version, 3);
         assert_eq!(p.repository.as_deref(), Some("example/opencad-my-plugin"));
         assert!(p.command_prefixes.contains(&"MP_".to_string()));
-        assert!(p.api_compatible(), "V2 plugins must be accepted by the V4 host");
+        assert!(
+            p.api_compatible(),
+            "V3 plugins must be accepted by the current host"
+        );
+        let v2 = parse_plugin_toml("id=\"old\"\napi_version = 2").expect("parsed");
+        assert!(!v2.api_compatible(), "V2 plugins are no longer loaded");
     }
 
     #[test]
     fn missing_id_is_rejected() {
         assert!(parse_plugin_toml("name = \"x\"").is_none());
+    }
+
+    #[test]
+    fn discovers_bundled_plugins_and_allows_a_user_override() {
+        let base = std::env::temp_dir().join(format!(
+            "ocs-bundled-plugin-discovery-{}",
+            std::process::id()
+        ));
+        let bundled = base.join("bundled").join("opencad.python");
+        let user = base.join("user").join("opencad.python");
+        std::fs::create_dir_all(&bundled).unwrap();
+        std::fs::create_dir_all(&user).unwrap();
+        let manifest = |version: &str| {
+            format!(
+                "[plugin]\nid=\"opencad.python\"\nversion=\"{version}\"\n[opencad]\napi_version=7\n"
+            )
+        };
+        std::fs::write(bundled.join("plugin.toml"), manifest("bundled")).unwrap();
+        std::fs::write(user.join("plugin.toml"), manifest("user")).unwrap();
+        std::fs::write(
+            bundled.join(format!("plugin.{}", lib_extension())),
+            b"fixture",
+        )
+        .unwrap();
+        std::fs::write(user.join(format!("plugin.{}", lib_extension())), b"fixture").unwrap();
+
+        let bundled_only = discover_from_roots(Some(&base.join("bundled")), None);
+        assert_eq!(bundled_only.len(), 1);
+        assert!(bundled_only[0].bundled);
+        assert_eq!(bundled_only[0].version, "bundled");
+
+        let overridden = discover_from_roots(Some(&base.join("bundled")), Some(&base.join("user")));
+        assert_eq!(overridden.len(), 1);
+        assert!(!overridden[0].bundled);
+        assert_eq!(overridden[0].version, "user");
+        std::fs::remove_dir_all(base).unwrap();
     }
 
     #[test]
@@ -569,7 +730,10 @@ rustc_version = ""
         let p = parse_plugin_toml(toml).expect("parsed");
         assert!(p.rustc_declared);
         assert!(p.rustc_version.is_none());
-        assert!(!p.rustc_compatible(), "declared but empty rustc is incompatible");
+        assert!(
+            !p.rustc_compatible(),
+            "declared but empty rustc is incompatible"
+        );
         assert!(!p.loadable());
     }
 
@@ -604,7 +768,10 @@ rustc_version = "{other}"
         );
         let p = parse_plugin_toml(&toml).expect("parsed");
         assert!(p.rustc_declared);
-        assert!(!p.rustc_compatible(), "mismatched rustc should be incompatible");
+        assert!(
+            !p.rustc_compatible(),
+            "mismatched rustc should be incompatible"
+        );
         assert!(!p.loadable());
     }
 
@@ -635,7 +802,7 @@ rustc_version = "{host}"
 id = "opencad.test"
 name = "Test"
 version = "0.1.0"
-api_version = 2
+api_version = 3
 
 [opencad]
 rustc_version = "rustc 0.0.0-fake"
@@ -645,7 +812,7 @@ rustc_version = "rustc 0.0.0-fake"
         assert!(p.rustc_declared);
         assert!(
             p.rustc_compatible(),
-            "API v2 plugin should bypass rustc gate"
+            "API v3 plugin should bypass rustc gate"
         );
         assert!(p.loadable());
     }
@@ -681,7 +848,10 @@ acadrust_source = ""
         let p = parse_plugin_toml(toml).expect("parsed");
         assert!(p.acadrust_declared);
         assert!(p.acadrust_source.is_none());
-        assert!(!p.acadrust_compatible(), "declared but empty source is incompatible");
+        assert!(
+            !p.acadrust_compatible(),
+            "declared but empty source is incompatible"
+        );
         assert!(!p.loadable());
     }
 
@@ -702,9 +872,9 @@ acadrust_source = "0123456789012345678901234567890123456789"
     fn acadrust_mismatch_detected() {
         let host = ocs_plugin_api::version_info::host_acadrust_source();
         let other = if host.contains("94df2c3") {
-            "git+https://github.com/HakanSeven12/cadcodec.git?rev=0908da7#0908da7b6e4f702a6c78359a57f53e2b79cf39eb"
+            "git+https://github.com/HakanSeven12/opencadcodec.git?rev=0908da7#0908da7b6e4f702a6c78359a57f53e2b79cf39eb"
         } else {
-            "git+https://github.com/HakanSeven12/cadcodec.git?rev=94df2c3#94df2c3f87fa051b16ffc3923f80e9247c85c5fd"
+            "git+https://github.com/HakanSeven12/opencadcodec.git?rev=94df2c3#94df2c3f87fa051b16ffc3923f80e9247c85c5fd"
         };
         let toml = format!(
             r#"
@@ -720,7 +890,10 @@ acadrust_source = "{other}"
         );
         let p = parse_plugin_toml(&toml).expect("parsed");
         assert!(p.acadrust_declared);
-        assert!(!p.acadrust_compatible(), "mismatched acadrust fingerprint should be incompatible");
+        assert!(
+            !p.acadrust_compatible(),
+            "mismatched opencadcodec fingerprint should be incompatible"
+        );
         assert!(!p.loadable());
     }
 
@@ -741,7 +914,10 @@ acadrust_source = "{host}"
         );
         let p = parse_plugin_toml(&toml).expect("parsed");
         assert!(p.acadrust_declared);
-        assert!(p.acadrust_compatible(), "matching acadrust fingerprint should be compatible");
+        assert!(
+            p.acadrust_compatible(),
+            "matching opencadcodec fingerprint should be compatible"
+        );
     }
 
     #[test]
@@ -751,17 +927,17 @@ acadrust_source = "{host}"
 id = "opencad.test"
 name = "Test"
 version = "0.1.0"
-api_version = 2
+api_version = 3
 
 [opencad]
-acadrust_source = "git+https://github.com/HakanSeven12/cadcodec.git?rev=0908da7#0908da7b6e4f702a6c78359a57f53e2b79cf39eb"
+acadrust_source = "git+https://github.com/HakanSeven12/opencadcodec.git?rev=0908da7#0908da7b6e4f702a6c78359a57f53e2b79cf39eb"
 "#;
         let mut p = parse_plugin_toml(toml).expect("parsed");
         p.lib_present = true;
         assert!(p.acadrust_declared);
         assert!(
             p.acadrust_compatible(),
-            "API v2 plugin should bypass acadrust gate"
+            "API v3 plugin should bypass opencadcodec gate"
         );
         assert!(p.loadable());
     }
@@ -770,7 +946,52 @@ acadrust_source = "git+https://github.com/HakanSeven12/cadcodec.git?rev=0908da7#
     /// Set `OCS_TEST_PLUGIN` to the built cdylib path and make sure the
     /// `OpenCADStudio` binary is built; the test uses it as the runner host.
     #[test]
+    fn with_manager_reentry_survives_the_first_write_boundary() {
+        // The FIRST-WRITE-BOUNDARY hang class (v13 AppHangB1, the consumer's
+        // CVI_ALIGN_BYPI repro): the dispatch path holds the manager access
+        // for the whole call, and the plugin's inline-served write frames
+        // re-enter `with_manager` at their boundary broadcasts. This guards
+        // the REENTRANCY directly; a watchdog thread turns a regression
+        // into a bounded failure instead of another AppHangB1 (the suite
+        // must never hang).
+        let done = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let flag = std::sync::Arc::clone(&done);
+        let worker = std::thread::spawn(move || {
+            // The dispatch shape: an outer with_manager whose closure —
+            // while the manager access is held — triggers the boundary
+            // broadcasts that themselves go through with_manager, exactly
+            // what a plugin's inline-served add_entity does.
+            with_manager(|manager| {
+                let _ = manager.ids();
+                crate::plugin::v4_support::publish_document_changed(93);
+                crate::plugin::v4_support::publish_document_changed_regions(
+                    1,
+                    93,
+                    Vec::new(),
+                    Vec::new(),
+                );
+                flag.store(true, std::sync::atomic::Ordering::SeqCst);
+            });
+        });
+        for _ in 0..100 {
+            if done.load(std::sync::atomic::Ordering::SeqCst) {
+                worker.join().expect("worker");
+                return;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
+        panic!(
+            "with_manager self-deadlocked on re-entry — the first-write-boundary \
+             AppHangB1 class is back (a non-reentrant manager access)"
+        );
+    }
+
+    #[test]
     fn spawn_and_dispatch_test_plugin() {
+        let _guard = PROCESS_TESTS_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        // Process-spawning tests tolerate a busy machine: raise the plugin
+        // call timeout for the whole test binary (never lowers any floor).
+        std::env::set_var("OCS_PLUGIN_CALL_TIMEOUT_SECS", "10");
         let path = match std::env::var_os("OCS_TEST_PLUGIN") {
             Some(p) => std::path::PathBuf::from(p),
             None => return,
@@ -793,11 +1014,11 @@ acadrust_source = "git+https://github.com/HakanSeven12/cadcodec.git?rev=0908da7#
         let mut app = crate::app::OpenCADStudio::new_for_test();
         let mut host = crate::app::plugin_host::HostSession::new(&mut app, 0);
         let process = ocs_plugin_api::process::PluginProcess::spawn(
-                &path,
-                &mut host,
-                v4_support::notification_handler(),
-            )
-            .expect("spawn test plugin");
+            &path,
+            &mut host,
+            v4_support::notification_handler(),
+        )
+        .expect("spawn test plugin");
         assert_eq!(process.id(), "opencad.my_plugin");
         let mut started = false;
         let handled = process
@@ -807,5 +1028,73 @@ acadrust_source = "git+https://github.com/HakanSeven12/cadcodec.git?rev=0908da7#
             .expect("dispatch MP_HELLO");
         assert!(handled, "plugin should handle MP_HELLO");
         assert!(!started, "MP_HELLO is not interactive");
+
+        // The FIRST-WRITE-BOUNDARY shape (the v13 AppHangB1 class): the
+        // nested write frames of a dispatched command are served inline
+        // under the manager access the dispatch holds; the boundary publish
+        // must re-enter cleanly. Bounded: the call's own timeout would fire
+        // on a regression, never a hang.
+        let start = std::time::Instant::now();
+        let wrote = process
+            .dispatch(&mut host, "MP_WRITE", &mut |_| {})
+            .unwrap_or_else(|e| panic!("MP_WRITE failed: {e}"));
+        assert!(wrote, "MP_WRITE must dispatch");
+        assert!(
+            start.elapsed() < std::time::Duration::from_secs(5),
+            "the first write boundary spent {:?} — regression shape",
+            start.elapsed()
+        );
+    }
+
+    /// Deterministic boot (API v12 hardening): plugin commands must dispatch
+    /// on N consecutive FRESH spawns — the consumer's real-host validation
+    /// saw a boot-dependent "unknown command" flake where both plugins were
+    /// listed as loaded yet dispatch answered unhandled. Each iteration is a
+    /// full fresh boot: a new app, a new runner process, a fresh handshake.
+    #[test]
+    fn plugin_dispatch_is_deterministic_across_consecutive_fresh_spawns() {
+        let _guard = PROCESS_TESTS_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        // Process-spawning tests tolerate a busy machine: raise the plugin
+        // call timeout for the whole test binary (never lowers any floor).
+        std::env::set_var("OCS_PLUGIN_CALL_TIMEOUT_SECS", "10");
+        let path = match std::env::var_os("OCS_TEST_PLUGIN") {
+            Some(p) => std::path::PathBuf::from(p),
+            None => return,
+        };
+        if !path.exists() {
+            eprintln!("OCS_TEST_PLUGIN does not exist: {}", path.display());
+            return;
+        }
+        let host_exe = std::path::PathBuf::from(
+            std::env::var_os("OCS_PLUGIN_RUNNER_EXE")
+                .unwrap_or_else(|| std::env::current_exe().unwrap().into_os_string()),
+        );
+        assert!(
+            host_exe.exists(),
+            "host exe not found: {}",
+            host_exe.display()
+        );
+        std::env::set_var("OCS_PLUGIN_RUNNER_EXE", &host_exe);
+
+        const FRESH_BOOTS: usize = 3;
+        for boot in 1..=FRESH_BOOTS {
+            let mut app = crate::app::OpenCADStudio::new_for_test();
+            let mut host = crate::app::plugin_host::HostSession::new(&mut app, 0);
+            let process = ocs_plugin_api::process::PluginProcess::spawn(
+                &path,
+                &mut host,
+                v4_support::notification_handler(),
+            )
+            .unwrap_or_else(|e| panic!("fresh boot {boot}: spawn failed: {e}"));
+            let handled = process
+                .dispatch(&mut host, "MP_HELLO", &mut |_| {})
+                .unwrap_or_else(|e| panic!("fresh boot {boot}: dispatch failed: {e}"));
+            assert!(
+                handled,
+                "fresh boot {boot}/{FRESH_BOOTS}: MP_HELLO must dispatch — a boot-dependent \
+                 dispatch flake is a release blocker"
+            );
+            process.shutdown();
+        }
     }
 }

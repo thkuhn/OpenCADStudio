@@ -230,8 +230,27 @@ mod windows_impl {
             if owns_com {
                 CoUninitialize();
             }
-            result
+            // Windows 10/11 retired the advanced-association dialog (it fails
+            // with 0x80070490, #725); its Settings page takes over.
+            result.or_else(|error| open_default_apps_settings().ok_or(error))
         }
+    }
+
+    /// Open Settings → Default apps on this app's page (Windows 11; Windows
+    /// 10 shows the general page).
+    fn open_default_apps_settings() -> Option<String> {
+        let uri = format!(
+            "ms-settings:defaultapps?registeredAppUser={}",
+            APP_REGISTRY_NAME.replace(' ', "%20")
+        );
+        std::process::Command::new("explorer.exe")
+            .arg(uri)
+            .spawn()
+            .ok()?;
+        Some(
+            "Opened Settings → Default apps — choose Open CAD Studio for .dwg / .dxf there."
+                .to_string(),
+        )
     }
 
     use windows_sys::Win32::System::Registry::{
@@ -269,7 +288,10 @@ mod windows_impl {
     }
 
     fn wide(s: &str) -> Vec<u16> {
-        std::ffi::OsStr::new(s).encode_wide().chain(Some(0)).collect()
+        std::ffi::OsStr::new(s)
+            .encode_wide()
+            .chain(Some(0))
+            .collect()
     }
 
     // Create `subkey` under HKCU and write `data` into `value` (None = the key's
@@ -298,9 +320,8 @@ mod windows_impl {
         let data_w = wide(data);
         // cbData counts bytes including the trailing NUL that `wide` appended.
         let cb = (data_w.len() * std::mem::size_of::<u16>()) as u32;
-        let rc = unsafe {
-            RegSetValueExW(hkey, name_ptr, 0, REG_SZ, data_w.as_ptr() as *const u8, cb)
-        };
+        let rc =
+            unsafe { RegSetValueExW(hkey, name_ptr, 0, REG_SZ, data_w.as_ptr() as *const u8, cb) };
         unsafe { RegCloseKey(hkey) };
         if rc != 0 {
             return Err(format!("RegSetValueExW failed ({rc}) for {subkey}"));
@@ -348,7 +369,11 @@ mod windows_impl {
     fn register_progid(exe: &str, progid: &str, description: &str) -> Result<(), String> {
         let base = format!(r"Software\Classes\{progid}");
         set_string(&base, None, description)?;
-        set_string(&format!(r"{base}\DefaultIcon"), None, &format!("\"{exe}\",0"))?;
+        set_string(
+            &format!(r"{base}\DefaultIcon"),
+            None,
+            &format!("\"{exe}\",0"),
+        )?;
         set_string(
             &format!(r"{base}\shell\open\command"),
             None,
@@ -377,7 +402,11 @@ mod windows_impl {
         set_string(APP_BASE, Some("FriendlyAppName"), "Open CAD Studio")?;
         // DefaultIcon is what Windows uses to show the app icon in the
         // "Open with" context-menu list and the "Choose another app" picker.
-        set_string(&format!(r"{APP_BASE}\DefaultIcon"), None, &format!("\"{exe}\",0"))?;
+        set_string(
+            &format!(r"{APP_BASE}\DefaultIcon"),
+            None,
+            &format!("\"{exe}\",0"),
+        )?;
         // Listing the extensions under SupportedTypes is what makes the app
         // appear in the "Open with → Choose another app" picker for them.
         set_string(&format!(r"{APP_BASE}\SupportedTypes"), Some(".dwg"), "")?;
@@ -420,9 +449,21 @@ mod windows_impl {
             Some("ApplicationDescription"),
             "2D/3D CAD application for DWG and DXF drawings.",
         )?;
-        set_string(&format!(r"{CAP}\FileAssociations"), Some(".dwg"), "OpenCADStudio.DWG")?;
-        set_string(&format!(r"{CAP}\FileAssociations"), Some(".dxf"), "OpenCADStudio.DXF")?;
-        set_string(&format!(r"{CAP}\FileAssociations"), Some(".bak"), "OpenCADStudio.BAK")?;
+        set_string(
+            &format!(r"{CAP}\FileAssociations"),
+            Some(".dwg"),
+            "OpenCADStudio.DWG",
+        )?;
+        set_string(
+            &format!(r"{CAP}\FileAssociations"),
+            Some(".dxf"),
+            "OpenCADStudio.DXF",
+        )?;
+        set_string(
+            &format!(r"{CAP}\FileAssociations"),
+            Some(".bak"),
+            "OpenCADStudio.BAK",
+        )?;
         set_string(
             r"Software\RegisteredApplications",
             Some("Open CAD Studio"),
@@ -653,6 +694,7 @@ mod linux_impl {
         let mut changed = false;
         for (name, bytes) in [
             ("image-vnd.dwg.svg", DWG_ICON),
+            ("application-x-dwg.svg", DWG_ICON),
             ("image-vnd.dxf.svg", DXF_ICON),
         ] {
             let path = dir.join(name);
@@ -671,7 +713,38 @@ mod linux_impl {
                 .args(["--force", "--quiet", &hicolor.to_string_lossy()])
                 .status();
         }
+        install_mime_icon_names();
         Ok(())
+    }
+
+    fn install_mime_icon_names() {
+        let Ok(home) = data_home() else { return };
+        let pkgs = home.join("mime/packages");
+        let xml_path = pkgs.join(format!("{APP_ID}-icons.xml"));
+        let xml = r#"<?xml version="1.0" encoding="UTF-8"?>
+<mime-info xmlns="http://www.freedesktop.org/standards/shared-mime-info">
+  <mime-type type="image/vnd.dwg">
+    <icon name="image-vnd.dwg"/>
+    <generic-icon name="image-vnd.dwg"/>
+  </mime-type>
+  <mime-type type="application/x-dwg">
+    <icon name="application-x-dwg"/>
+    <generic-icon name="application-x-dwg"/>
+  </mime-type>
+  <mime-type type="image/vnd.dxf">
+    <icon name="image-vnd.dxf"/>
+    <generic-icon name="image-vnd.dxf"/>
+  </mime-type>
+</mime-info>
+"#;
+        if std::fs::read_to_string(&xml_path).ok().as_deref() == Some(xml) {
+            return;
+        }
+        if std::fs::create_dir_all(&pkgs).is_ok() && std::fs::write(&xml_path, xml).is_ok() {
+            let _ = std::process::Command::new("update-mime-database")
+                .arg(home.join("mime"))
+                .status();
+        }
     }
 
     fn data_home() -> Result<PathBuf, String> {

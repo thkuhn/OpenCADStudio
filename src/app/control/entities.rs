@@ -1,0 +1,655 @@
+//! Entity-level automation operations — create, erase, transform, XData and
+//! block-definition operations on the drawing database. All operations are atomic (one undo step), validate
+//! every input before touching the document, and address entities by the
+//! hexadecimal handles that `query`/`records` return.
+
+use super::*;
+use crate::command::EntityTransform;
+use crate::entity_creation::{build_entity, deg_field, point_field};
+
+type Parsed<T> = Result<T, Value>;
+
+pub(super) fn hex_handles(req: &Value, key: &str) -> Parsed<Vec<codec::Handle>> {
+    let list = req[key]
+        .as_array()
+        .filter(|v| !v.is_empty())
+        .ok_or_else(|| {
+            failure(
+                "handles_required",
+                format!("Supply a non-empty {key}:[…] list"),
+            )
+        })?;
+    list.iter()
+        .map(|v| {
+            u64::from_str_radix(
+                v.as_str()
+                    .unwrap_or("")
+                    .trim_start_matches("0x")
+                    .trim_start_matches("0X"),
+                16,
+            )
+            .map(codec::Handle::new)
+            .map_err(|_| {
+                failure(
+                    "invalid_handle",
+                    format!("Expected a hexadecimal handle, got {v}"),
+                )
+            })
+        })
+        .collect()
+}
+
+/// Every handle must exist in the document; otherwise `entity_absent` naming
+/// the missing ones so the caller can refresh instead of guessing.
+pub(super) fn require_existing(
+    document: &codec::CadDocument,
+    handles: &[codec::Handle],
+) -> Parsed<()> {
+    let missing: Vec<String> = handles
+        .iter()
+        .filter(|h| document.get_entity(**h).is_none())
+        .map(|h| format!("{:X}", h.value()))
+        .collect();
+    if missing.is_empty() {
+        Ok(())
+    } else {
+        Err(failure(
+            "entity_absent",
+            format!("Handles not found: {}", missing.join(", ")),
+        ))
+    }
+}
+
+impl OpenCADStudio {
+    /// `entities_create` — build a batch of typed entities, auto-create the
+    /// layers they name, and commit everything as one undoable step. All definitions are validated before the first
+    /// entity is added, so the batch is all-or-nothing.
+    pub(super) fn control_entities_create(&mut self, req: &Value) -> Result<Task<Message>, Value> {
+        if self.tabs[self.active_tab].scene.block_edit_block.is_some() {
+            return Err(failure(
+                "block_editor_open",
+                "finish the open block editor before adding entities to a block",
+            ));
+        }
+        let list = req["entities"]
+            .as_array()
+            .filter(|v| !v.is_empty())
+            .ok_or_else(|| failure("entities_required", "Supply entities:[{type:…},…]"))?;
+        let built: Vec<codec::EntityType> = {
+            let document = &self.tabs[self.active_tab].scene.document;
+            list.iter()
+                .map(|spec| build_entity(spec, Some(document)))
+                .collect::<Parsed<_>>()?
+        };
+
+        let i = self.active_tab;
+        self.push_undo_snapshot(i, "ENTITIESCREATE");
+        // Auto-create missing layers (Catalog §1.4: "create layer if missing")
+        // after the undo snapshot, so undo removes them together with the
+        // entities.
+        let mut layers_created = Vec::new();
+        {
+            let document = &mut self.tabs[i].scene.document;
+            for entity in &built {
+                let layer = entity.common().layer.clone();
+                if layer.is_empty() || document.layers.contains(&layer) {
+                    continue;
+                }
+                let mut layer_record = codec::tables::Layer::new(layer.clone());
+                layer_record.handle = document.allocate_handle();
+                document
+                    .layers
+                    .add(layer_record)
+                    .map_err(|e| failure("layer_failed", e))?;
+                layers_created.push(layer);
+            }
+        }
+        let handles: Vec<String> = {
+            let scene = &mut self.tabs[i].scene;
+            built
+                .into_iter()
+                .map(|entity| format!("{:X}", scene.add_entity(entity).value()))
+                .collect()
+        };
+        self.post_ref_op(i);
+        let created = handles.len();
+        self.set_control_result(json!({
+            "handles": handles,
+            "created": created,
+            "layers_created": layers_created,
+        }));
+        Ok(Task::none())
+    }
+
+    /// `entities_delete` — erase by handles. Every handle is
+    /// checked up front; nothing is erased when one is missing.
+    pub(super) fn control_entities_delete(&mut self, req: &Value) -> Result<Task<Message>, Value> {
+        let handles = hex_handles(req, "handles")?;
+        let i = self.active_tab;
+        require_existing(&self.tabs[i].scene.document, &handles)?;
+        self.push_undo_snapshot(i, "ENTITIESDELETE");
+        self.tabs[i].scene.erase_entities(&handles);
+        self.post_ref_op(i);
+        let erased = handles.len();
+        self.set_control_result(json!({ "erased": erased }));
+        Ok(Task::none())
+    }
+
+    /// `entities_transform` — move/copy/rotate/scale/mirror/array by handles
+    /// Angles are degrees. `copy`, mirror with
+    /// `"copy":true` and `array` return the newly created handles.
+    pub(super) fn control_entities_transform(
+        &mut self,
+        req: &Value,
+    ) -> Result<Task<Message>, Value> {
+        let handles = hex_handles(req, "handles")?;
+        let action = req["action"]
+            .as_str()
+            .unwrap_or("move")
+            .trim()
+            .to_ascii_lowercase();
+        let i = self.active_tab;
+        require_existing(&self.tabs[i].scene.document, &handles)?;
+        if !matches!(
+            action.as_str(),
+            "move" | "copy" | "rotate" | "scale" | "mirror" | "array"
+        ) {
+            return Err(failure(
+                "invalid_action",
+                format!(
+                    "Unknown transform action '{action}'. Use move, copy, rotate, scale, mirror or array"
+                ),
+            ));
+        }
+
+        let transform = |req: &Value| -> Parsed<EntityTransform> {
+            Ok(match action.as_str() {
+                "move" | "copy" => EntityTransform::Translate(glam::DVec3::new(
+                    req["vector"][0].as_f64().unwrap_or(0.0),
+                    req["vector"][1].as_f64().unwrap_or(0.0),
+                    req["vector"][2].as_f64().unwrap_or(0.0),
+                )),
+                "rotate" => EntityTransform::Rotate {
+                    center: glam::DVec3::new(
+                        req["center"][0].as_f64().unwrap_or(0.0),
+                        req["center"][1].as_f64().unwrap_or(0.0),
+                        req["center"][2].as_f64().unwrap_or(0.0),
+                    ),
+                    axis: glam::DVec3::Z,
+                    angle_rad: deg_field(req, "angle_deg"),
+                },
+                "scale" => {
+                    let factor = req["factor"]
+                        .as_f64()
+                        .filter(|f| f.is_finite() && *f != 0.0)
+                        .ok_or_else(|| {
+                            failure("invalid_factor", "scale needs a nonzero finite factor")
+                        })?;
+                    EntityTransform::Scale {
+                        center: glam::DVec3::new(
+                            req["center"][0].as_f64().unwrap_or(0.0),
+                            req["center"][1].as_f64().unwrap_or(0.0),
+                            req["center"][2].as_f64().unwrap_or(0.0),
+                        ),
+                        factor,
+                    }
+                }
+                "mirror" => {
+                    let axis = req["axis"]
+                        .as_array()
+                        .filter(|v| v.len() == 2)
+                        .ok_or_else(|| {
+                            failure("invalid_axis", "mirror needs axis:[[x1,y1],[x2,y2]]")
+                        })?;
+                    let end = |k: usize| {
+                        axis[k]
+                            .as_array()
+                            .filter(|v| v.len() >= 2)
+                            .ok_or_else(|| {
+                                failure("invalid_axis", "mirror needs axis:[[x1,y1],[x2,y2]]")
+                            })
+                    };
+                    let (a, b) = (end(0)?, end(1)?);
+                    let coord = |v: &[Value], k: usize| {
+                        v[k].as_f64()
+                            .filter(|f| f.is_finite())
+                            .ok_or_else(|| failure("invalid_axis", "mirror axis points must be finite"))
+                    };
+                    let p1 = glam::DVec3::new(coord(&a, 0)?, coord(&a, 1)?, 0.0);
+                    let p2 = glam::DVec3::new(coord(&b, 0)?, coord(&b, 1)?, 0.0);
+                    if p1 == p2 {
+                        return Err(failure(
+                            "invalid_axis",
+                            "mirror axis points must differ",
+                        ));
+                    }
+                    EntityTransform::Mirror {
+                        p1,
+                        p2,
+                        working_normal: glam::DVec3::Z,
+                    }
+                }
+                other => {
+                    return Err(failure(
+                        "invalid_action",
+                        format!(
+                            "Unknown transform action '{other}'. Use move, copy, rotate, scale, mirror or array"
+                        ),
+                    ))
+                }
+            })
+        };
+
+        self.push_undo_snapshot(i, "ENTITIESTRANSFORM");
+        let scene = &mut self.tabs[i].scene;
+        let mut created: Vec<String> = Vec::new();
+        let affected;
+        match action.as_str() {
+            "move" | "rotate" | "scale" => {
+                let t = transform(req)?;
+                scene.transform_entities(&handles, &t);
+                affected = handles.len();
+            }
+            "mirror" => {
+                let t = transform(req)?;
+                if req["copy"].as_bool().unwrap_or(false) {
+                    created = scene
+                        .copy_entities(&handles, &t)
+                        .into_iter()
+                        .map(|h| format!("{:X}", h.value()))
+                        .collect();
+                } else {
+                    scene.transform_entities(&handles, &t);
+                }
+                affected = handles.len();
+            }
+            "copy" => {
+                let t = transform(req)?;
+                created = scene
+                    .copy_entities(&handles, &t)
+                    .into_iter()
+                    .map(|h| format!("{:X}", h.value()))
+                    .collect();
+                affected = handles.len();
+            }
+            "array" => {
+                let rows = req["rows"].as_u64().unwrap_or(1).clamp(1, 100) as i32;
+                let columns = req["columns"].as_u64().unwrap_or(1).clamp(1, 100) as i32;
+                let row_spacing = req["row_spacing"].as_f64().unwrap_or(0.0);
+                let column_spacing = req["column_spacing"].as_f64().unwrap_or(0.0);
+                for row in 0..rows {
+                    for column in 0..columns {
+                        if row == 0 && column == 0 {
+                            continue;
+                        }
+                        let t = EntityTransform::Translate(glam::DVec3::new(
+                            column as f64 * column_spacing,
+                            row as f64 * row_spacing,
+                            0.0,
+                        ));
+                        created.extend(
+                            scene
+                                .copy_entities(&handles, &t)
+                                .into_iter()
+                                .map(|h| format!("{:X}", h.value())),
+                        );
+                    }
+                }
+                affected = handles.len();
+            }
+            other => {
+                return Err(failure(
+                    "invalid_action",
+                    format!(
+                        "Unknown transform action '{other}'. Use move, copy, rotate, scale, mirror or array"
+                    ),
+                ))
+            }
+        }
+        self.post_ref_op(i);
+        self.set_control_result(json!({
+            "affected": affected,
+            "created": created,
+        }));
+        Ok(Task::none())
+    }
+
+    /// `xdata_set` — replace one application's extended-data record on every
+    /// listed handle. The APPID table entry is
+    /// registered implicitly; an empty (or absent) `data` list removes the
+    /// application's record.
+    pub(super) fn control_xdata_set(&mut self, req: &Value) -> Result<Task<Message>, Value> {
+        let handles = hex_handles(req, "handles")?;
+        let app = string(req, "app")?.to_owned();
+        if app.is_empty() {
+            return Err(failure("app_required", "Supply an application name"));
+        }
+        let values = parse_xdata_values(req)?;
+        let i = self.active_tab;
+        require_existing(&self.tabs[i].scene.document, &handles)?;
+        self.push_undo_snapshot(i, "XDATASET");
+        {
+            let document = &mut self.tabs[i].scene.document;
+            for handle in &handles {
+                crate::scene::view::dispatch::set_entity_xdata(
+                    document,
+                    *handle,
+                    &app,
+                    values.clone(),
+                );
+            }
+        }
+        let updated = handles.len();
+        self.set_control_result(json!({ "updated": updated, "app": app }));
+        Ok(Task::none())
+    }
+
+    /// `xdata_get` — read extended data back, optionally for one application.
+    /// A read: dispatched through the query path, no request_id needed.
+    pub(super) fn xdata_read(&self, req: &Value) -> Value {
+        let handles = match hex_handles(req, "handles") {
+            Ok(handles) => handles,
+            Err(error) => return error,
+        };
+        let app = req["app"].as_str().unwrap_or("");
+        let i = self.active_tab;
+        if let Err(error) = require_existing(&self.tabs[i].scene.document, &handles) {
+            return error;
+        }
+        let document = &self.tabs[i].scene.document;
+        let items: Vec<Value> = handles
+            .iter()
+            .filter_map(|handle| {
+                let entity = document.get_entity(*handle)?;
+                let extended = &entity.common().extended_data;
+                let records: serde_json::Map<String, Value> = extended
+                    .records()
+                    .iter()
+                    .filter(|record| app.is_empty() || record.application_name == app)
+                    .map(|record| {
+                        (
+                            record.application_name.clone(),
+                            json!(record
+                                .values
+                                .iter()
+                                .map(xdata_value_json)
+                                .collect::<Vec<_>>()),
+                        )
+                    })
+                    .collect();
+                Some(json!({
+                    "handle": format!("{:X}", handle.value()),
+                    "xdata": records,
+                }))
+            })
+            .collect();
+        json!({ "ok": true, "items": items })
+    }
+
+    /// `block_define` — turn the listed entities into a new block definition
+    /// (block-definition semantics, as the BLOCK command: the sources become
+    /// the definition's content and an Insert is placed at `insert_at`,
+    /// defaulting to `base`, so the drawing looks unchanged).
+    pub(super) fn control_block_define(&mut self, req: &Value) -> Result<Task<Message>, Value> {
+        let name = string(req, "name")?.to_owned();
+        if name.is_empty() {
+            return Err(failure("name_required", "Supply a block name"));
+        }
+        let handles = hex_handles(req, "handles")?;
+        let base = point_field(req, "base")?;
+        let insert_at = if req.get("insert_at").is_some() {
+            point_field(req, "insert_at")?
+        } else {
+            base
+        };
+        let i = self.active_tab;
+        require_existing(&self.tabs[i].scene.document, &handles)?;
+
+        // World → block space translates `base` onto the block origin; the
+        // inverse places the Insert so entities keep their world position.
+        let world_to_block = codec::types::Transform::from_translation(codec::types::Vector3::new(
+            -base.x, -base.y, -base.z,
+        ));
+        let block_to_world = codec::types::Transform::from_translation(insert_at);
+        self.push_undo_snapshot(i, "BLOCKDEFINE");
+        // CF-01.3 (barcode re-import): `replace:true` drops the previous
+        // definition — its children, markers and inserts — inside the same
+        // undo step, so the new definition can take the name.
+        if req["replace"].as_bool().unwrap_or(false) {
+            erase_block_definition(&mut self.tabs[i].scene, &name);
+        }
+        let insert = self.tabs[i]
+            .scene
+            .create_block_from_entities(&handles, &name, &world_to_block, &block_to_world)
+            .map_err(|e| failure("block_failed", e))?;
+        self.post_ref_op(i);
+        self.set_control_result(json!({
+            "block": name,
+            "insert": format!("{:X}", insert.value()),
+        }));
+        Ok(Task::none())
+    }
+
+    /// `block_delete` — remove a block definition. A definition something
+    /// still points at is refused unless the request carries `"force": true`,
+    /// which erases the referencing INSERTs in the same undo step.
+    pub(super) fn control_block_delete(&mut self, req: &Value) -> Result<Task<Message>, Value> {
+        let name = string(req, "name")?.to_owned();
+        let force = req["force"].as_bool().unwrap_or(false);
+        let i = self.active_tab;
+        let open_edits: Vec<codec::Handle> = self.tabs[i]
+            .block_edits
+            .iter()
+            .map(|session| session.br_handle)
+            .collect();
+        self.push_undo_snapshot(i, format!("Delete block {name}"));
+        let options = crate::scene::block_service::DeleteOptions {
+            force,
+            open_edits: &open_edits,
+        };
+        let outcome =
+            match crate::scene::block_service::delete(&mut self.tabs[i].scene, &name, options) {
+                Ok(outcome) => outcome,
+                Err(error) => {
+                    self.discard_last_undo_entry(i);
+                    return Err(failure(block_error_code(&error), error.to_string()));
+                }
+            };
+        self.post_ref_op(i);
+        self.set_control_result(json!({
+            "block": outcome.name,
+            "erased": outcome.erased,
+            "references": outcome.references.len(),
+        }));
+        Ok(Task::none())
+    }
+
+    /// `view_focus` — fit the listed entities into the view and highlight
+    /// them (Catalog §1.3). GUI sessions only; headless servers answer
+    /// `gui_required`.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(super) fn control_view_focus(&mut self, req: &Value) -> Result<Task<Message>, Value> {
+        if self.main_window.is_none() {
+            return Err(failure(
+                "gui_required",
+                "view_focus needs the editor window",
+            ));
+        }
+        let handles = hex_handles(req, "handles")?;
+        let i = self.active_tab;
+        require_existing(&self.tabs[i].scene.document, &handles)?;
+        if req["highlight"].as_bool().unwrap_or(true) {
+            let scene = &mut self.tabs[i].scene;
+            scene.deselect_all();
+            for handle in &handles {
+                scene.select_entity(*handle, false);
+            }
+        }
+        let zoomed = self.tabs[i].scene.zoom_to_entities(&handles);
+        let selected = self.tabs[i].scene.selected_entities().len();
+        self.set_control_result(json!({ "zoomed": zoomed, "selected": selected }));
+        Ok(Task::none())
+    }
+}
+
+/// Remove one block definition from the scene: every entity owned by the
+/// block record, every Insert referencing the name, the Block/BlockEnd
+/// markers (which the entity iterator skips) and the table record itself.
+/// Silent no-op for an unknown name (callers validate first);
+/// `*`-prefixed layout records are rejected by the callers. Returns the
+/// number of entities erased.
+pub(crate) fn erase_block_definition(scene: &mut crate::scene::Scene, name: &str) -> usize {
+    let Some(record) = scene.document.block_records.get(name) else {
+        return 0;
+    };
+    let owner = record.handle;
+    let block_markers = [record.block_entity_handle, record.block_end_handle];
+    let mut victims: Vec<codec::Handle> = scene
+        .document
+        .entities()
+        .filter(|entity| {
+            entity.common().owner_handle == owner
+                || matches!(
+                    entity,
+                    codec::EntityType::Insert(insert)
+                        if insert.block_name.eq_ignore_ascii_case(name)
+                )
+        })
+        .map(|entity| entity.common().handle)
+        .collect();
+    victims.extend_from_slice(&block_markers);
+    scene.erase_entities(&victims);
+    scene.document.block_records.remove(name);
+    victims.len()
+}
+
+/// The automation error code for each [`BlockServiceError`], so a headless
+/// client branches on a stable machine-readable code while the text stays the
+/// one the shared formatter produced.
+fn block_error_code(error: &crate::scene::block_service::BlockServiceError) -> &'static str {
+    use crate::scene::block_service::BlockServiceError as E;
+    match error {
+        E::NotFound(_) => "block_missing",
+        E::InvalidName(_) => "block_invalid_name",
+        E::NameExists(_) => "block_exists",
+        E::Referenced { .. } => "block_referenced",
+        E::InEditSession(_) => "block_in_edit",
+        E::Protected(_) => "block_protected",
+    }
+}
+
+/// `data:[{code,value},…]` → typed XData values; an absent or empty list
+/// means "remove this application's record".
+fn parse_xdata_values(req: &Value) -> Parsed<Option<Vec<codec::xdata::XDataValue>>> {
+    use codec::xdata::XDataValue;
+    let Some(list) = req["data"].as_array() else {
+        return Ok(None);
+    };
+    if list.is_empty() {
+        return Ok(None);
+    }
+    let mut values = Vec::with_capacity(list.len());
+    for item in list {
+        let code = item["code"]
+            .as_i64()
+            .ok_or_else(|| failure("invalid_xdata", "data entries need an integer code"))?;
+        let value = &item["value"];
+        let parsed = match code {
+            1000 => XDataValue::String(
+                value.as_str().ok_or_else(|| {
+                    failure("invalid_xdata", "code 1000 needs a string value")
+                })?
+                    .to_string(),
+            ),
+            1003 => XDataValue::LayerName(
+                value.as_str().ok_or_else(|| {
+                    failure("invalid_xdata", "code 1003 needs a layer name")
+                })?
+                    .to_string(),
+            ),
+            1004 => {
+                let hex = value.as_str().ok_or_else(|| {
+                    failure("invalid_xdata", "code 1004 needs a hex byte string")
+                })?;
+                ((0..hex.len()).step_by(2))
+                    .map(|k| {
+                        u8::from_str_radix(&hex[k..(k + 2).min(hex.len())], 16).map_err(|_| {
+                            failure("invalid_xdata", "code 1004 needs a valid hex byte string")
+                        })
+                    })
+                    .collect::<Result<Vec<u8>, Value>>()
+                    .map(XDataValue::BinaryData)?
+            }
+            1005 => {
+                let raw = value.as_str().ok_or_else(|| {
+                    failure("invalid_xdata", "code 1005 needs a hex handle")
+                })?;
+                let raw = raw.trim_start_matches("0x").trim_start_matches("0X");
+                let handle = u64::from_str_radix(raw, 16)
+                    .map_err(|_| failure("invalid_xdata", "code 1005 needs a valid hex handle"))?;
+                XDataValue::Handle(codec::Handle::new(handle))
+            }
+            1010..=1013 => {
+                let point = value.as_array().filter(|v| !v.is_empty()).ok_or_else(|| {
+                    failure("invalid_xdata", "codes 1010-1013 need [x,y,z]")
+                })?;
+                let coord = |k: usize| point.get(k).and_then(Value::as_f64).unwrap_or(0.0);
+                let point = codec::types::Vector3::new(coord(0), coord(1), coord(2));
+                match code {
+                    1010 => XDataValue::Point3D(point),
+                    1011 => XDataValue::Position3D(point),
+                    1012 => XDataValue::Displacement3D(point),
+                    _ => XDataValue::Direction3D(point),
+                }
+            }
+            1040 => XDataValue::Real(value.as_f64().unwrap_or(0.0)),
+            1041 => XDataValue::Distance(value.as_f64().unwrap_or(0.0)),
+            1042 => XDataValue::ScaleFactor(value.as_f64().unwrap_or(0.0)),
+            1070 => XDataValue::Integer16(
+                value
+                    .as_i64()
+                    .and_then(|v| i16::try_from(v).ok())
+                    .ok_or_else(|| failure("invalid_xdata", "code 1070 needs a 16-bit integer"))?,
+            ),
+            1071 => XDataValue::Integer32(
+                value
+                    .as_i64()
+                    .and_then(|v| i32::try_from(v).ok())
+                    .ok_or_else(|| failure("invalid_xdata", "code 1071 needs a 32-bit integer"))?,
+            ),
+            other => {
+                return Err(failure(
+                    "invalid_xdata",
+                    format!(
+                        "Unsupported xdata code {other}. Use 1000, 1003, 1004, 1005, 1010-1013, 1040, 1041, 1042, 1070 or 1071"
+                    ),
+                ))
+            }
+        };
+        values.push(parsed);
+    }
+    Ok(Some(values))
+}
+
+/// JSON shape for one stored XData value.
+fn xdata_value_json(value: &codec::xdata::XDataValue) -> Value {
+    use codec::xdata::XDataValue;
+    match value {
+        XDataValue::String(text)
+        | XDataValue::ControlString(text)
+        | XDataValue::LayerName(text) => json!(text),
+        XDataValue::BinaryData(bytes) => json!({
+            "binary": bytes.iter().map(|b| format!("{b:02X}")).collect::<String>()
+        }),
+        XDataValue::Handle(handle) => json!(format!("{:X}", handle.value())),
+        XDataValue::Point3D(point)
+        | XDataValue::Position3D(point)
+        | XDataValue::Displacement3D(point)
+        | XDataValue::Direction3D(point) => json!([point.x, point.y, point.z]),
+        XDataValue::Real(number)
+        | XDataValue::Distance(number)
+        | XDataValue::ScaleFactor(number) => json!(number),
+        XDataValue::Integer16(number) => json!(number),
+        XDataValue::Integer32(number) => json!(number),
+    }
+}

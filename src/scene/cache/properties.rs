@@ -1,5 +1,5 @@
-use acadrust::{EntityType, Handle, Transparency};
 use crate::t;
+use codec::{EntityType, Handle, Transparency};
 
 use crate::scene::model::object::{PropSection, PropValue, Property};
 
@@ -30,7 +30,9 @@ pub fn general_section(entity: &EntityType) -> PropSection {
         },
     );
 
-    let hyperlink = crate::scene::pe_url_of(entity).unwrap_or_default().to_owned();
+    let hyperlink = crate::scene::hyperlink::Link::of(entity)
+        .map(|link| link.label())
+        .unwrap_or_default();
 
     let section = PropSection {
         title: t!("General").into_owned(),
@@ -83,7 +85,7 @@ pub fn general_section(entity: &EntityType) -> PropSection {
             Property {
                 label: t!("Hyperlink").into_owned(),
                 field: "hyperlink",
-                value: PropValue::PlainText(hyperlink),
+                value: PropValue::Hyperlink(hyperlink),
             },
         ],
     };
@@ -102,9 +104,18 @@ pub fn visualization_section(entity: &EntityType) -> Option<PropSection> {
             | EntityType::Seqend(_)
             | EntityType::Leader(_)
             | EntityType::Wipeout(_)
+            // The reference lists no 3D group for an underlay; a point
+            // cloud's is its own (stylization and colour scheme).
+            | EntityType::Underlay(_)
+            // Nor for an OLE object.
+            | EntityType::Ole2Frame(_)
             | EntityType::Unknown(_)
             // Non-plotting drawing-view border: never rendered, no properties.
             | EntityType::ViewBorder(_)
+    ) || matches!(
+        entity,
+        EntityType::Extended(extended)
+            if matches!(extended.data, codec::entities::ExtendedEntityData::PointCloudEx(_))
     ) {
         return None;
     }

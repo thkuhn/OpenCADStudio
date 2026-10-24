@@ -3,10 +3,10 @@
 // survives a DWG save/reload — i.e. an OCS-authored annotative object carries a
 // genuine per-scale representation, interoperably, not just the native flag.
 
-use acadrust::entities::{EntityType, MText};
-use acadrust::objects::{Dictionary, ObjectContextKind, ObjectType, Scale};
-use acadrust::types::Vector3;
-use acadrust::{CadDocument, DxfVersion, Handle};
+use codec::entities::{EntityType, MText};
+use codec::objects::{Dictionary, ObjectContextKind, ObjectType, Scale};
+use codec::types::Vector3;
+use codec::{CadDocument, DxfVersion, Handle};
 use OpenCADStudio::io;
 use OpenCADStudio::scene::annotative;
 
@@ -20,7 +20,7 @@ fn empty_annotation_scales_is_not_annotative() {
     let mut doc = CadDocument::with_version(DxfVersion::AC1032);
     let mut m = MText::new();
     m.is_annotative = false; // no native flag, no annotative style
-    let ent = doc.add_entity(EntityType::MText(m)).unwrap();
+    let ent = doc.add_entity(EntityType::MText(Box::new(m))).unwrap();
 
     // Build xdict -> "AcDbContextDataManager" -> "ACDB_ANNOTATIONSCALES" (empty).
     let mk = |doc: &mut CadDocument, owner: Handle| -> Handle {
@@ -64,10 +64,14 @@ fn empty_annotation_scales_is_not_annotative() {
 /// Walk an entity's xdict → "AcDbContextDataManager" → "ACDB_ANNOTATIONSCALES"
 /// and return its leaf handles.
 fn context_leaves(doc: &CadDocument, entity: Handle) -> Vec<Handle> {
-    let Some(xd) = doc.get_entity(entity).and_then(|e| e.common().xdictionary_handle) else {
+    let Some(xd) = doc
+        .get_entity(entity)
+        .and_then(|e| e.common().xdictionary_handle)
+    else {
         return vec![];
     };
-    let Some(mgr) = annotative::as_dict(doc, xd).and_then(|d| d.get("AcDbContextDataManager")) else {
+    let Some(mgr) = annotative::as_dict(doc, xd).and_then(|d| d.get("AcDbContextDataManager"))
+    else {
         return vec![];
     };
     let Some(coll) = annotative::as_dict(doc, mgr).and_then(|d| d.get("ACDB_ANNOTATIONSCALES"))
@@ -88,7 +92,7 @@ fn ocs_synthesized_mtext_context_survives_dwg_roundtrip() {
     m.insertion_point = Vector3::new(100.0, 200.0, 0.0);
     m.rectangle_width = 50.0;
     m.is_annotative = true;
-    let ent = doc.add_entity(EntityType::MText(m)).expect("add mtext");
+    let ent = doc.add_entity(EntityType::MText(Box::new(m))).expect("add mtext");
 
     let sh = doc.allocate_handle();
     let mut scale = Scale::new("1:50", 1.0, 50.0);
@@ -134,7 +138,7 @@ fn ocs_synthesized_mtext_context_survives_dwg_roundtrip() {
 
 #[test]
 fn ocs_synthesized_block_context_survives_dwg_roundtrip() {
-    use acadrust::entities::Insert;
+    use codec::entities::Insert;
 
     let mut doc = CadDocument::with_version(DxfVersion::AC1032);
 
@@ -156,7 +160,10 @@ fn ocs_synthesized_block_context_survives_dwg_roundtrip() {
     assert_eq!(leaves.len(), 1, "block context leaf lost");
     match doc2.objects.get(&leaves[0]) {
         Some(ObjectType::ObjectContextData(c)) => {
-            assert!(matches!(c.kind, ObjectContextKind::BlkRef { .. }), "not a BLKREF context");
+            assert!(
+                matches!(c.kind, ObjectContextKind::BlkRef { .. }),
+                "not a BLKREF context"
+            );
         }
         other => panic!("leaf is not an ObjectContextData: {other:?}"),
     }
@@ -167,7 +174,7 @@ fn object_scale_membership_add_remove_roundtrips() {
     let mut doc = CadDocument::with_version(DxfVersion::AC1032);
     let mut m = MText::new();
     m.insertion_point = Vector3::new(1.0, 2.0, 0.0);
-    let ent = doc.add_entity(EntityType::MText(m)).unwrap();
+    let ent = doc.add_entity(EntityType::MText(Box::new(m))).unwrap();
 
     let mk_scale = |doc: &mut CadDocument, name: &str, d: f64| {
         let h = doc.allocate_handle();
@@ -190,14 +197,20 @@ fn object_scale_membership_add_remove_roundtrips() {
     assert_eq!(names, vec!["1:100", "1:50"], "both memberships expected");
 
     // Remove one, keep the other; survives a round-trip.
-    assert!(annotative::remove_annotation_context_for_scale(&mut doc, ent, s50));
+    assert!(annotative::remove_annotation_context_for_scale(
+        &mut doc, ent, s50
+    ));
     let bytes = io::save_to_bytes(&doc, "dwg", DxfVersion::AC1032).unwrap();
     let doc2 = io::load_bytes("rt.dwg", bytes).unwrap();
     let remaining: Vec<String> = annotative::object_scale_memberships(&doc2, ent)
         .into_iter()
         .map(|(n, _)| n)
         .collect();
-    assert_eq!(remaining, vec!["1:100"], "exactly the un-removed scale remains");
+    assert_eq!(
+        remaining,
+        vec!["1:100"],
+        "exactly the un-removed scale remains"
+    );
 
     // Removing the last representation tears the chain down → non-annotative.
     let mut doc3 = doc2.clone();
@@ -207,7 +220,9 @@ fn object_scale_membership_add_remove_roundtrips() {
         .iter()
         .find_map(|(h, o)| matches!(o, ObjectType::Scale(s) if s.name == "1:100").then_some(*h))
         .unwrap();
-    assert!(annotative::remove_annotation_context_for_scale(&mut doc3, ent, s100b));
+    assert!(annotative::remove_annotation_context_for_scale(
+        &mut doc3, ent, s100b
+    ));
     assert!(
         annotative::object_scale_memberships(&doc3, ent).is_empty(),
         "no memberships after removing the last"

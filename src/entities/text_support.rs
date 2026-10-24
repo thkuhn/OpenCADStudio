@@ -1,9 +1,44 @@
-use acadrust::types::aci_table::aci_to_rgb;
-use acadrust::CadDocument;
+use codec::types::aci_table::aci_to_rgb;
+use codec::CadDocument;
 
 use crate::scene::convert::acad_to_render::{GlyphRun, TextStroke};
 use crate::scene::text::font_face::Face;
 use crate::scene::text::lff;
+
+/// A font reference a drawing holds — a style's font file, or an inline `\f`
+/// code — turned into an installed family.
+///
+/// An embedded stroke font wins over anything installed, so `romans.shx` keeps
+/// rendering as it did even where a font of that name happens to be installed;
+/// only a name no stroke font answers to is looked up among the system faces,
+/// first by family and then by file name (see `sysfont::family_for_reference`).
+fn resolve_font_reference(reference: &str) -> Option<String> {
+    if lff::is_builtin(reference) {
+        return None;
+    }
+    crate::scene::text::sysfont::family_for_reference(reference)
+}
+
+/// `font_name` naming its own bold / italic face when it is a TrueType
+/// family that has one (see `sysfont::styled_family`); `None` for a stroke
+/// font, a big-font pairing, or a family without such a face — bold stroke
+/// text keeps its wider pen, italic its slant.
+pub fn styled_font(font_name: &str, bold: bool, italic: bool) -> Option<String> {
+    if !(bold || italic) || font_name.contains(crate::scene::text::font_face::BIG_FONT_SEP) {
+        return None;
+    }
+    match Face::resolve(font_name) {
+        Face::Ttf { family, .. } => {
+            crate::scene::text::sysfont::styled_family(&family, bold, italic)
+        }
+        _ => None,
+    }
+}
+
+/// Italic bit of a text style's TrueType typeface flags.
+pub const TTF_FLAG_ITALIC: i32 = 0x0100_0000;
+/// Bold bit of a text style's TrueType typeface flags.
+pub const TTF_FLAG_BOLD: i32 = 0x0200_0000;
 
 pub struct ResolvedTextStyle {
     pub font_name: String,
@@ -21,34 +56,52 @@ pub fn resolve_text_style(style_name: &str, document: &CadDocument) -> ResolvedT
     });
 
     let mut font_name = if let Some(style) = style {
-        if !style.true_type_font.trim().is_empty() {
-            style.true_type_font.trim().to_string()
-        } else if !style.font_file.trim().is_empty() {
-            let file = style.font_file.trim();
+        // A style names a font *file* — `GOST2304_TypeA_italic.ttf`,
+        // `romans.shx`, sometimes with a directory; `true_type_font` carries the
+        // same thing for the styles that set it.
+        let file = if !style.true_type_font.trim().is_empty() {
+            style.true_type_font.trim()
+        } else {
+            style.font_file.trim()
+        };
+        if !file.is_empty() {
             // A .shx font that resolves on disk (as stored, or next to the
             // drawing) renders its REAL stroke glyphs — pass the absolute
-            // path through so `Face::resolve` picks the SHX face. Only an
-            // unresolvable file falls back to the stem's LFF substitute.
-            let shx_path = file
-                .to_ascii_lowercase()
-                .ends_with(".shx")
-                .then(|| {
-                    let base = document
-                        .source_path
-                        .as_deref()
-                        .map(std::path::Path::new)
-                        .and_then(|p| p.parent());
-                    crate::io::resolve_image_file(file, base)
-                        // Fonts fetched from the community repository live in
-                        // the per-user fonts folder — search it last.
-                        .or_else(|| {
-                        crate::io::font_repo::local_font_file(file)
-                            .map(|path| path.to_string_lossy().into_owned())
-                    })
+            // path through so `Face::resolve` picks the SHX face. Fonts fetched
+            // from the community repository live in the per-user fonts folder,
+            // so that is searched last, after the drawing folder. A bare name
+            // (`txt`) is looked up as its .shx file first, before any
+            // installed face (measured: `Txt` draws txt.shx, `swiss` swiss.ttf).
+            let explicit_shx = lff::is_shx_name(file);
+            let shx_file = if explicit_shx {
+                Some(file.to_string())
+            } else if std::path::Path::new(file).extension().is_none() {
+                Some(format!("{file}.shx"))
+            } else {
+                None
+            };
+            let shx_path = shx_file.and_then(|shx_file| {
+                let base = document
+                    .source_path
+                    .as_deref()
+                    .map(std::path::Path::new)
+                    .and_then(|p| p.parent());
+                crate::io::resolve_image_file(&shx_file, base).or_else(|| {
+                    crate::io::font_repo::local_font_file(&shx_file)
+                        .map(|path| path.to_string_lossy().into_owned())
                 })
-                .flatten();
+            });
             if let Some(p) = shx_path {
                 p
+            } else if explicit_shx {
+                // A missing .shx file draws with the stroke substitute of its
+                // name, never with an installed TrueType face (measured).
+                file.rsplit(['/', '\\']).next().unwrap_or(file).trim().to_string()
+            } else if let Some(family) = resolve_font_reference(file) {
+                // The file is installed, so its family is the face to draw with.
+                // Substituting a stroke font instead drops every letter that
+                // font does not have — for a Cyrillic drawing, all of them.
+                family
             } else {
                 let basename = file.rsplit(['/', '\\']).next().unwrap_or(file);
                 let stem = basename.split('.').next().unwrap_or(basename).trim();
@@ -71,9 +124,43 @@ pub fn resolve_text_style(style_name: &str, document: &CadDocument) -> ResolvedT
         style_name.trim().to_string()
     };
 
-    if !lff::is_builtin(&font_name) {
+    if !lff::is_builtin(&font_name) && !lff::is_shx_name(&font_name) {
         if let Some(canonical) = crate::scene::text::sysfont::canonical_family_name(&font_name) {
             font_name = canonical;
+        }
+    }
+
+    // A TrueType style's font style (Bold / Italic) rides in its typeface
+    // flags.
+    if let Some(style) = style.filter(|s| !s.true_type_font.trim().is_empty()) {
+        let flags = style.true_type_font_flags;
+        if let Some(styled) = styled_font(
+            &font_name,
+            flags & TTF_FLAG_BOLD != 0,
+            flags & TTF_FLAG_ITALIC != 0,
+        ) {
+            font_name = styled;
+        }
+    }
+
+    // A style's "Big Font" (`chineset.shx`, `hztxt.shx`, …) supplies the
+    // double-byte characters. Resolve it like the primary font (next to the
+    // drawing, then the per-user fonts folder) and pair it with the face; an
+    // unresolvable big font just leaves those characters to the fallback.
+    if let Some(big) = style
+        .map(|s| s.big_font_file.trim())
+        .filter(|big| !big.is_empty() && big.to_ascii_lowercase().ends_with(".shx"))
+    {
+        let base = document
+            .source_path
+            .as_deref()
+            .map(std::path::Path::new)
+            .and_then(|p| p.parent());
+        let big_path = crate::io::resolve_image_file(big, base).or_else(|| {
+            crate::io::font_repo::local_font_file(big).map(|p| p.to_string_lossy().into_owned())
+        });
+        if let Some(big_path) = big_path {
+            font_name = Face::with_big_font(&font_name, &big_path);
         }
     }
 
@@ -171,7 +258,7 @@ pub fn text_local_bounds(
                         max_y = max_y.max(sy);
                     }
                 }
-                cursor_x += glyph.advance + face.letter_spacing();
+                cursor_x += glyph.advance + face.spacing_after(ch);
             }
             None => {
                 cursor_x += 6.0 + face.letter_spacing();
@@ -192,6 +279,49 @@ pub fn text_local_bounds(
     } else {
         None
     }
+}
+
+/// Each character's [left, right] pen cell along a TEXT line (DXF specials
+/// already resolved), measured as [`text_local_bounds`] lays the line out:
+/// the shaper's glyph cells for a TrueType font or a script that needs
+/// shaping, else the stroke font's advances.
+pub fn text_char_cells(
+    font_name: &str,
+    text: &str,
+    height: f32,
+    width_factor: f32,
+) -> Vec<(f32, f32)> {
+    let face = Face::resolve(font_name);
+    let scale = height / 9.0;
+    let wf = width_factor.abs().clamp(0.01, 100.0);
+    let shaping_family = face.ttf_family().or_else(|| {
+        crate::scene::text::web_font::requires_shaping(text)
+            .then(|| crate::scene::text::web_font::primary_script().family())
+    });
+    if let Some(run) =
+        shaping_family.and_then(|family| crate::scene::text::ttf_glyph::shape_run(family, text))
+    {
+        return crate::scene::text::ttf_glyph::char_cells(&run, text)
+            .into_iter()
+            .map(|(x0, x1)| (x0 * scale * wf, x1 * scale * wf))
+            .collect();
+    }
+    let mut cursor = 0.0_f32;
+    text.chars()
+        .map(|ch| {
+            let advance = if ch == ' ' {
+                face.word_spacing()
+            } else {
+                match face.glyph(ch) {
+                    Some(glyph) => glyph.advance + face.spacing_after(ch),
+                    None => 6.0 + face.letter_spacing(),
+                }
+            };
+            let cell = (cursor * scale * wf, (cursor + advance) * scale * wf);
+            cursor += advance;
+            cell
+        })
+        .collect()
 }
 
 /// Expand DXF `%%x` special-character sequences that appear in both TEXT and MTEXT values:
@@ -340,8 +470,12 @@ pub struct RunState {
     pub underline: bool,
     pub overline: bool,
     pub strike: bool,
-    /// Bold run — rendered with a wider SDF pen (thicker strokes).
+    /// Bold run — the family's bold face, or a wider SDF pen (thicker
+    /// strokes) for a stroke font.
     pub bold: bool,
+    /// Italic run drawn with the family's own italic face (otherwise italic
+    /// is the `oblique_rad` slant).
+    pub italic: bool,
 }
 
 impl Default for RunState {
@@ -358,6 +492,7 @@ impl Default for RunState {
             overline: false,
             strike: false,
             bold: false,
+            italic: false,
         }
     }
 }
@@ -432,7 +567,6 @@ impl MTextLine {
     }
 }
 
-
 /// Font-name stem: drop any path and extension, so a `\F` font path like
 /// `C:\\fonts\\arial.ttf` and a plain `\f` name `arial` resolve to the same font.
 fn font_stem(name: &str) -> String {
@@ -445,30 +579,84 @@ fn font_stem(name: &str) -> String {
         .to_string()
 }
 
-/// Parse an MTEXT string into the layout's `Vec<MTextLine>`, using acadrust's
+/// The visible-character offset that follows the MTEXT string `s` — the
+/// `vis` index [`layout_mtext`]'s glyph boxes give the first character of
+/// whatever comes after `s` in a longer string: every laid-out character,
+/// a tab or stack slot, and one per paragraph break.
+pub fn mtext_visible_count(s: &str) -> usize {
+    adapt_mtext_paragraphs(s, 1.0, false)
+        .iter()
+        .enumerate()
+        .map(|(i, para)| {
+            usize::from(i > 0)
+                + para
+                    .runs
+                    .iter()
+                    .map(|run| match &run.kind {
+                        MTextRunKind::Glyphs(text) => text.chars().count(),
+                        MTextRunKind::Tab => 1,
+                        MTextRunKind::Stack {
+                            numerator,
+                            denominator,
+                            ..
+                        } => {
+                            numerator.chars().count()
+                                + denominator.chars().count()
+                                + usize::from(!denominator.is_empty())
+                        }
+                    })
+                    .sum::<usize>()
+        })
+        .sum()
+}
+
+/// Parse an MTEXT string into the layout's `Vec<MTextLine>`, using opencadcodec's
 /// structured `mtext_format::parse_mtext` — OCS keeps only the layout engine
 /// (`layout_mtext` and callers read `MTextLine`/`RunState`), not a second MTEXT
 /// inline parser.
 ///
 /// Representation notes:
-///  - DXF `%%d`/`%%p`/`%%c` arrive already resolved to Unicode from acadrust;
+///  - DXF `%%d`/`%%p`/`%%c` arrive already resolved to Unicode from opencadcodec;
 ///    the stroke tokenizer treats those as ordinary glyphs.
 ///  - Stacking (`\S`) is flattened inline to `num<sep>den` (`^` for limit, else
 ///    `/`) since the stroke path has no fraction layout.
 ///  - `\H`: a relative factor (`\Hx`) applies directly; an absolute height is
-///    divided by the entity height. See `acadrust::…::MTextScalar`.
+///    divided by the entity height. See `codec::…::MTextScalar`.
 pub fn adapt_mtext_paragraphs(
     s: &str,
     entity_height: f32,
     trim_blank_edges: bool,
 ) -> Vec<MTextLine> {
-    use acadrust::entities::mtext_format::{
+    use codec::entities::mtext_format::{
         parse_mtext, MTextColor, MTextLineAlignment, MTextLineSpacing, MTextParagraphAlignment,
         MTextScalar, ParagraphProperties, SpanProperties, StackingType,
     };
 
     let entity_height = entity_height.max(1e-6);
     let doc = parse_mtext(s, true);
+    // Paragraph indents and tab stops: the extended `\px…;` form measures
+    // them in text heights, the bare `\p…;` form (older editors and
+    // text-to-MTEXT converters, which centre each line with it) in drawing
+    // units (#1918). A block sets them when one of its comma-separated codes
+    // starts with i, l, r or t; alignment (`ql`, `qc`, …) and spacing codes
+    // don't.
+    let sets_indent = |props: &str| {
+        props.split(';').next().unwrap_or("").split(',').any(|code| {
+            code.starts_with(['i', 'l', 'r', 't'])
+        })
+    };
+    let (mut has_px_indent, mut has_bare_p_indent) = (false, false);
+    for (i, _) in s.match_indices("\\p") {
+        match s[i + 2..].strip_prefix('x') {
+            Some(extended) => has_px_indent |= sets_indent(extended),
+            None => has_bare_p_indent |= sets_indent(&s[i + 2..]),
+        }
+    }
+    let para_unit = if has_bare_p_indent || !has_px_indent {
+        1.0
+    } else {
+        entity_height
+    };
 
     fn map_align(a: MTextParagraphAlignment) -> Option<ParagraphAlign> {
         match a {
@@ -539,24 +727,31 @@ pub fn adapt_mtext_paragraphs(
         }
         let (align, indent_first, indent_left, indent_right, tab_stops) =
             if has_own_props(props) || carried.is_none() {
+                // Values are in `para_unit`, and the first-line indent is
+                // relative to the left indent (a numbered list's hanging
+                // indent is `i-1.5,l1.5`: number at the margin, wrapped lines
+                // 1.5 units in).
+                let left = props.left_margin.unwrap_or(0.0) as f32 * para_unit;
                 let v = (
                     props.alignment.and_then(map_align),
-                    props.first_line_indent.unwrap_or(0.0) as f32,
-                    props.left_margin.unwrap_or(0.0) as f32,
-                    props.right_margin.unwrap_or(0.0) as f32,
+                    left + props.first_line_indent.unwrap_or(0.0) as f32 * para_unit,
+                    left,
+                    props.right_margin.unwrap_or(0.0) as f32 * para_unit,
                     props
                         .tab_stops
                         .iter()
                         .map(|ts| {
-                            use acadrust::entities::mtext_format::TabStop as ATab;
+                            use codec::entities::mtext_format::TabStop as ATab;
                             let kind = match ts {
                                 ATab::Left(_) => TabKind::Left,
                                 ATab::Center(_) => TabKind::Center,
                                 ATab::Right(_) => TabKind::Right,
-                                ATab::Decimal(_) => TabKind::Decimal,
+                                ATab::Decimal(..) | ATab::DecimalWithCharacter { .. } => {
+                                    TabKind::Decimal
+                                }
                             };
                             TabStop {
-                                position: ts.position() as f32,
+                                position: ts.position() as f32 * para_unit,
                                 kind,
                             }
                         })
@@ -581,6 +776,15 @@ pub fn adapt_mtext_paragraphs(
         };
         for span in &para.spans {
             let p = &span.properties;
+            let font = p.font.as_ref().map(|f| font_stem(&f.name));
+            // A family with its own italic face draws it; the slant stands in
+            // for the rest.
+            let italic_face = p.font.as_ref().is_some_and(|f| f.italic)
+                && font
+                    .as_deref()
+                    .and_then(resolve_font_reference)
+                    .and_then(|family| styled_font(&family, false, true))
+                    .is_some();
             let state = RunState {
                 // Relative `\H…x;` is a factor applied directly; absolute `\H…;`
                 // is a drawing-unit height resolved against the entity height.
@@ -595,7 +799,7 @@ pub fn adapt_mtext_paragraphs(
                 // button applies, so imported italic text isn't shown upright.
                 oblique_rad: match p.oblique_angle {
                     Some(q) => (q as f32).to_radians(),
-                    None if p.font.as_ref().is_some_and(|f| f.italic) => {
+                    None if p.font.as_ref().is_some_and(|f| f.italic) && !italic_face => {
                         15.0_f32.to_radians()
                     }
                     None => 0.0,
@@ -606,8 +810,9 @@ pub fn adapt_mtext_paragraphs(
                     Some(MTextLineAlignment::Top) => 2,
                     _ => 0,
                 },
-                font: p.font.as_ref().map(|f| font_stem(&f.name)),
+                font,
                 bold: p.font.as_ref().map(|f| f.bold).unwrap_or(false),
+                italic: italic_face,
                 color: color_of(p),
                 underline: p.stroke.underline(),
                 overline: p.stroke.overline(),
@@ -669,7 +874,7 @@ pub fn adapt_mtext_paragraphs(
 // `measure_mtext_chars`, `word_wrap`) were removed when every text-bearing
 // entity switched to the run-aware pipeline below. The pipeline now owns
 // per-run width measurement and word-wrap; MTEXT inline parsing now comes from
-// acadrust via `adapt_mtext_paragraphs`. The supported surface for callers is
+// opencadcodec via `adapt_mtext_paragraphs`. The supported surface for callers is
 // `adapt_mtext_paragraphs`, `layout_mtext`, `mtext_line_count`,
 // `text_local_bounds`, and `resolve_dxf_special_chars`.
 
@@ -683,7 +888,7 @@ pub fn adapt_mtext_paragraphs(
 // it carries inline codes).
 //
 // The pipeline mirrors the MTEXT renderer:
-//   1. Parse — via `adapt_mtext_paragraphs` (acadrust `parse_mtext`).
+//   1. Parse — via `adapt_mtext_paragraphs` (opencadcodec `parse_mtext`).
 //   2. Atomise — turn each MTextLine.runs into a flat sequence of atoms
 //      (Word / Space / Tab) so the wrapper operates at break boundaries
 //      while keeping per-character formatting state.
@@ -751,130 +956,185 @@ pub fn is_rtl_char(c: char) -> bool {
     )
 }
 
-/// Reorder a line's atoms into visual order (left to right) using the Unicode
-/// Bidirectional Algorithm (UBA) Rule L2. If the line contains no RTL characters
-/// and is not an RTL paragraph, returns the atoms unchanged.
-pub fn reorder_line_atoms(atoms: Vec<LayoutAtom>, is_rtl: bool) -> Vec<LayoutAtom> {
-    if atoms.len() <= 1 && !is_rtl {
-        return atoms;
-    }
-    let has_rtl = atoms.iter().any(|atom| match &atom.kind {
-        AtomKind::Word(w) => w.chars().any(is_rtl_char),
-        _ => false,
-    });
-    if !has_rtl && !is_rtl {
-        return atoms;
-    }
+/// Left-to-right mark: keeps the shaper's paragraph direction left to right
+/// and closes a right-to-left run inside a word.
+pub(crate) use crate::scene::text::ttf_glyph::LRM;
 
-    let mut line_text = String::new();
-    let mut ranges = Vec::with_capacity(atoms.len());
-    for atom in &atoms {
-        let start = line_text.len();
-        match &atom.kind {
-            AtomKind::Word(w) => line_text.push_str(w),
-            AtomKind::Space => line_text.push(' '),
-            AtomKind::Tab => line_text.push('\t'),
-            AtomKind::Stack { numerator, denominator, .. } => {
-                line_text.push_str(numerator);
-                line_text.push('/');
-                line_text.push_str(denominator);
-            }
-        }
-        let end = line_text.len();
-        ranges.push(start..end);
-    }
-
-    let base_level = if is_rtl {
-        Some(unicode_bidi::Level::rtl())
-    } else {
-        Some(unicode_bidi::Level::ltr())
-    };
-    let bidi = unicode_bidi::BidiInfo::new(&line_text, base_level);
-    if bidi.paragraphs.is_empty() {
-        return atoms;
-    }
-
-    let atom_levels: Vec<u8> = ranges
-        .iter()
-        .map(|r| {
-            let mut lvl = None;
-            for i in r.clone() {
-                if i < bidi.levels.len() {
-                    let c = line_text[i..].chars().next().unwrap_or(' ');
-                    match unicode_bidi::bidi_class(c) {
-                        unicode_bidi::BidiClass::L
-                        | unicode_bidi::BidiClass::R
-                        | unicode_bidi::BidiClass::AL => {
-                            lvl = Some(bidi.levels[i].number());
-                            break;
-                        }
-                        _ => {}
-                    }
-                }
-            }
-            lvl.unwrap_or_else(|| {
-                if r.start < bidi.levels.len() {
-                    bidi.levels[r.start].number()
-                } else if is_rtl {
-                    1
-                } else {
-                    0
-                }
-            })
+/// Whether a word is written right to left as a whole: right-to-left
+/// letters (and their marks) only.
+fn is_rtl_word(w: &str) -> bool {
+    w.chars().any(is_rtl_char)
+        && w.chars().all(|c| {
+            matches!(
+                unicode_bidi::bidi_class(c),
+                unicode_bidi::BidiClass::R
+                    | unicode_bidi::BidiClass::AL
+                    | unicode_bidi::BidiClass::NSM
+            )
         })
-        .collect();
+}
 
-    let max_level = atom_levels.iter().copied().max().unwrap_or(0);
-    let min_odd_level = atom_levels
-        .iter()
-        .copied()
-        .filter(|&l| l % 2 != 0)
-        .min()
-        .unwrap_or(1);
-
-    let mut order: Vec<usize> = (0..atoms.len()).collect();
-    for level in (min_odd_level..=max_level).rev() {
-        let mut start = 0;
-        while start < order.len() {
-            if atom_levels[order[start]] >= level {
-                let mut end = start + 1;
-                while end < order.len() && atom_levels[order[end]] >= level {
-                    end += 1;
-                }
-                order[start..end].reverse();
-                start = end;
-            } else {
-                start += 1;
-            }
-        }
+/// A word as the reference draws it inside MTEXT: each run of right-to-left
+/// letters reads backwards in place, everything else (digits, punctuation,
+/// Latin) keeps its order — `אב_123_גד` shows `בא_123_דג`. A mark after
+/// each right-to-left run keeps the shaper from carrying neutrals and
+/// numbers into it.
+pub(crate) fn rtl_display_word(word: String) -> String {
+    if !word.chars().any(is_rtl_char) || is_rtl_word(&word) {
+        return word;
     }
-
-    let mut opt_atoms: Vec<Option<LayoutAtom>> = atoms.into_iter().map(Some).collect();
-    let mut reordered = Vec::with_capacity(opt_atoms.len());
-    for idx in order {
-        if let Some(atom) = opt_atoms[idx].take() {
-            reordered.push(atom);
+    let mut out = String::with_capacity(word.len() + 6);
+    let mut in_rtl = false;
+    for c in word.chars() {
+        let rtl = matches!(
+            unicode_bidi::bidi_class(c),
+            unicode_bidi::BidiClass::R | unicode_bidi::BidiClass::AL
+        ) || (in_rtl && unicode_bidi::bidi_class(c) == unicode_bidi::BidiClass::NSM);
+        if in_rtl && !rtl {
+            out.push(LRM);
         }
+        out.push(c);
+        in_rtl = rtl;
     }
-    reordered
+    out
+}
+
+/// The reference's MTEXT line order: words keep their order left to right,
+/// except that a run of right-to-left words — with the spaces between and
+/// after them — reads backwards as a whole (`אבג דה abc` shows
+/// ` הד גבאabc`). Each right-to-left word is itself shaped backwards.
+pub fn reorder_rtl_runs(atoms: Vec<LayoutAtom>) -> Vec<LayoutAtom> {
+    let rtl = |a: &LayoutAtom| matches!(&a.kind, AtomKind::Word(w) if is_rtl_word(w));
+    if !atoms.iter().any(rtl) {
+        return atoms;
+    }
+    let mut atoms = atoms;
+    let mut i = 0;
+    while i < atoms.len() {
+        if !rtl(&atoms[i]) {
+            i += 1;
+            continue;
+        }
+        let mut end = i + 1;
+        while end < atoms.len() && (rtl(&atoms[end]) || matches!(atoms[end].kind, AtomKind::Space))
+        {
+            end += 1;
+        }
+        atoms[i..end].reverse();
+        i = end;
+    }
+    atoms
 }
 
 pub fn run_scale(state: &RunState, entity_h: f32, base_wf: f32) -> f32 {
     (state.height_mul * entity_h / 9.0) * (state.width_mul * base_wf.abs())
 }
 
+/// The font a run draws with: its `\f` override (else `base`), in the bold
+/// / italic face the run asks for when the family has one.
 pub fn resolve_font<'a>(state: &'a RunState, base: &'a str) -> std::borrow::Cow<'a, str> {
-    let Some(font) = state.font.as_deref().map(str::trim).filter(|f| !f.is_empty()) else {
+    let font = run_font(state, base);
+    match styled_font(&font, state.bold, state.italic) {
+        Some(styled) => std::borrow::Cow::Owned(styled),
+        None => font,
+    }
+}
+
+fn run_font<'a>(state: &'a RunState, base: &'a str) -> std::borrow::Cow<'a, str> {
+    let Some(font) = state
+        .font
+        .as_deref()
+        .map(str::trim)
+        .filter(|f| !f.is_empty())
+    else {
         return std::borrow::Cow::Borrowed(base);
     };
     if lff::is_builtin(font) {
         return std::borrow::Cow::Borrowed(font);
     }
-    if let Some(canonical) = crate::scene::text::sysfont::canonical_family_name(font) {
-        std::borrow::Cow::Owned(canonical)
-    } else {
-        std::borrow::Cow::Borrowed(base)
+    match resolve_font_reference(font) {
+        Some(canonical) => std::borrow::Cow::Owned(canonical),
+        None => std::borrow::Cow::Borrowed(base),
     }
+}
+
+/// Whether a line may break between `prev` and `next`. Ideographic text has
+/// no spaces, so a break is allowed on either side of a full-width character,
+/// except before a closing mark (`，。、）」…`) or after an opening one
+/// (`（「《…`) — the basic kinsoku rule.
+pub(crate) fn cjk_break_between(prev: char, next: char) -> bool {
+    use crate::scene::text::ttf_glyph::is_full_width;
+    const CLOSING: &str = "，。、；：？！）」』】〕》〉』﹚﹞．～…‥、〞”’,.;:!?)]}%";
+    const OPENING: &str = "（「『【〔《〈﹙﹝“‘([{";
+    if !(is_full_width(prev) || is_full_width(next)) {
+        return false;
+    }
+    !CLOSING.contains(next) && !OPENING.contains(prev)
+}
+
+/// A word's font runs, in logical order: `true` for a stretch the shaper
+/// draws, `false` for one the stroke font draws. With a stroke font the
+/// reference draws a mixed word run by run — Latin, digits and punctuation
+/// in the style's font, the letters of a script that needs shaping (with the
+/// marks that close them) in a TrueType face — so `שלום|12` keeps a thin
+/// bar and digits. A TrueType style shapes the whole word.
+pub(crate) fn word_runs<'t>(text: &'t str, face: &Face) -> Vec<(&'t str, bool)> {
+    use crate::scene::text::web_font::requires_shaping;
+    if face.ttf_family().is_some() {
+        return vec![(text, true)];
+    }
+    if !requires_shaping(text) {
+        return vec![(text, false)];
+    }
+    let mut runs: Vec<(&str, bool)> = Vec::new();
+    let mut start = 0;
+    let mut shaped_run = None;
+    for (i, c) in text.char_indices() {
+        let mut buf = [0u8; 4];
+        let shaped = requires_shaping(c.encode_utf8(&mut buf))
+            || (shaped_run == Some(true)
+                && (c == LRM || unicode_bidi::bidi_class(c) == unicode_bidi::BidiClass::NSM));
+        match shaped_run {
+            Some(prev) if prev != shaped => {
+                runs.push((&text[start..i], prev));
+                start = i;
+            }
+            _ => {}
+        }
+        shaped_run = Some(shaped);
+    }
+    if let Some(shaped) = shaped_run {
+        runs.push((&text[start..], shaped));
+    }
+    runs
+}
+
+/// The shaper's face for a word run.
+fn run_family(face: &Face) -> &str {
+    face.ttf_family()
+        .unwrap_or_else(|| crate::scene::text::web_font::primary_script().family())
+}
+
+/// Advance of a stroke-font run (glyph units × `scale`).
+fn stroke_run_width(face: &Face, text: &str, tracking: f32, scale: f32) -> f32 {
+    // The direction mark takes no room.
+    text.chars()
+        .filter(|ch| *ch != LRM)
+        .map(|ch| match face.glyph(ch) {
+            Some(g) => (g.advance + face.spacing_after(ch) * tracking) * scale,
+            None => (6.0 + face.letter_spacing() * tracking) * scale,
+        })
+        .sum()
+}
+
+/// Width of one word run, as it is drawn.
+pub(crate) fn run_width(face: &Face, text: &str, shaped: bool, tracking: f32, scale: f32) -> f32 {
+    if shaped {
+        if let Some(run) = crate::scene::text::ttf_glyph::shape_run(run_family(face), text) {
+            return run.advance * scale;
+        }
+    }
+    stroke_run_width(face, text, tracking, scale)
 }
 
 pub fn measure_word(
@@ -887,23 +1147,79 @@ pub fn measure_word(
     let scale = run_scale(state, entity_h, base_wf);
     let font_name = resolve_font(state, base_font);
     let face = Face::resolve(&font_name);
-    let shaping_family = face.ttf_family().or_else(|| {
-        crate::scene::text::web_font::requires_shaping(text)
-            .then(|| crate::scene::text::web_font::primary_script().family())
-    });
-    if let Some(fam) = shaping_family {
-        if let Some(run) = crate::scene::text::ttf_glyph::shape_run(fam, text) {
-            return run.advance * scale;
+    word_runs(text, &face)
+        .into_iter()
+        .map(|(run, shaped)| run_width(&face, run, shaped, state.tracking, scale))
+        .sum()
+}
+
+/// Per-character cells of a word laid out by the shaper — the visual
+/// [left, right] of each character in logical order, from the word start,
+/// in drawing units — when the word is shaped (a TrueType font or a script
+/// that needs shaping), as [`measure_word`] measures it. A glyph that
+/// covers several characters (a ligature) shares its cell among them.
+pub fn word_cells(
+    text: &str,
+    state: &RunState,
+    entity_h: f32,
+    base_wf: f32,
+    base_font: &str,
+) -> Option<Vec<(f32, f32)>> {
+    let scale = run_scale(state, entity_h, base_wf);
+    let font_name = resolve_font(state, base_font);
+    let face = Face::resolve(&font_name);
+    let runs = word_runs(text, &face);
+    if !runs.iter().any(|(_, shaped)| *shaped) {
+        return None;
+    }
+    let mut cells = Vec::new();
+    let mut x = 0.0_f32;
+    for (run, shaped) in runs {
+        let shaped_run = shaped
+            .then(|| crate::scene::text::ttf_glyph::shape_run(run_family(&face), run))
+            .flatten();
+        match shaped_run {
+            Some(shaped_run) => {
+                cells.extend(
+                    crate::scene::text::ttf_glyph::char_cells(&shaped_run, run)
+                        .into_iter()
+                        .zip(run.chars())
+                        .filter(|(_, c)| *c != LRM)
+                        .map(|((x0, x1), _)| (x + x0 * scale, x + x1 * scale)),
+                );
+                x += shaped_run.advance * scale;
+            }
+            None => {
+                for ch in run.chars().filter(|c| *c != LRM) {
+                    let w = stroke_run_width(
+                        &face,
+                        ch.encode_utf8(&mut [0u8; 4]),
+                        state.tracking,
+                        scale,
+                    );
+                    cells.push((x, x + w));
+                    x += w;
+                }
+            }
         }
     }
-    let mut w = 0.0_f32;
-    for ch in text.chars() {
-        w += match face.glyph(ch) {
-            Some(g) => (g.advance + face.letter_spacing() * state.tracking) * scale,
-            None => (6.0 + face.letter_spacing() * state.tracking) * scale,
-        };
-    }
-    w
+    Some(cells)
+}
+
+/// The letter spacing a stroke-font word leaves after its last glyph (0 for
+/// shaped words, whose advance carries no extra spacing).
+fn trailing_letter_gap(atom: &LayoutAtom, entity_h: f32, base_wf: f32, base_font: &str) -> f32 {
+    let AtomKind::Word(text) = &atom.kind else {
+        return 0.0;
+    };
+    let font_name = resolve_font(&atom.state, base_font);
+    let face = Face::resolve(&font_name);
+    let Some((text, false)) = word_runs(text, &face).last().copied() else {
+        return 0.0;
+    };
+    text.chars().rev().find(|c| *c != LRM).map_or(0.0, |c| {
+        face.spacing_after(c) * atom.state.tracking * run_scale(&atom.state, entity_h, base_wf)
+    })
 }
 
 pub fn measure_space(state: &RunState, entity_h: f32, base_wf: f32, base_font: &str) -> f32 {
@@ -935,19 +1251,19 @@ pub fn atom_width(atom: &LayoutAtom, entity_h: f32, base_wf: f32, base_font: &st
 
 /// Cursor position after a `\t` atom: advance to the next user-defined tab
 /// stop that lies past `cur_x`, falling back to a 4-em default grid when no
-/// stop is reached.
+/// stop is reached. `cur_x` and the stops are measured from the column's left
+/// edge, not from the paragraph indent: a hanging list `i-3,l3,t3` puts the
+/// text after `1.<tab>` at 3, in line with its wrapped lines. (#1918)
 pub fn next_tab_position(
     cur_x: f32,
     tab_stops: &[TabStop],
     indent_left: f32,
     entity_h: f32,
 ) -> f32 {
-    let local = cur_x - indent_left;
-    for ts in tab_stops {
-        if ts.position > local + 1e-4 {
-            return indent_left + ts.position;
-        }
+    if let Some(ts) = tab_stops.iter().find(|ts| ts.position > cur_x + 1e-4) {
+        return ts.position;
     }
+    let local = cur_x - indent_left;
     let default_interval = entity_h * 4.0;
     let n = (local / default_interval).floor() + 1.0;
     indent_left + n * default_interval
@@ -985,7 +1301,11 @@ pub fn wrap_paragraph(
             AtomKind::Word(_) | AtomKind::Stack { .. } => {
                 let w = atom_width(&atom, entity_h, base_wf, base_font);
                 let max_w = line_max_w(subline_idx);
-                if !cur.is_empty() && cur_w + w > max_w && !after_align_tab {
+                let has_content = cur.iter().any(|a| !matches!(a.kind, AtomKind::Space));
+                // A word fits when its ink does: the letter spacing after its
+                // last glyph may run past the edge.
+                let ink_w = w - trailing_letter_gap(&atom, entity_h, base_wf, base_font);
+                if has_content && cur_w + ink_w > max_w && !after_align_tab {
                     while matches!(cur.last().map(|a| &a.kind), Some(AtomKind::Space)) {
                         cur.pop();
                     }
@@ -999,7 +1319,9 @@ pub fn wrap_paragraph(
             }
             AtomKind::Space => {
                 after_align_tab = false;
-                if cur.is_empty() {
+                // A wrapped line does not start with the spaces it broke at;
+                // the paragraph's own leading spaces keep their width.
+                if cur.is_empty() && subline_idx > 0 {
                     continue;
                 }
                 cur_w += atom_width(&atom, entity_h, base_wf, base_font);
@@ -1007,14 +1329,14 @@ pub fn wrap_paragraph(
             }
             AtomKind::Tab => {
                 let start_x = line_start_x(subline_idx);
-                let local = cur_w + start_x - indent_left;
+                let local = cur_w + start_x;
                 let is_align = tab_stops
                     .iter()
                     .find(|ts| ts.position > local + 1e-4)
                     .map(|ts| !matches!(ts.kind, TabKind::Left))
                     .unwrap_or(false);
-                let new_w = next_tab_position(cur_w + start_x, tab_stops, indent_left, entity_h)
-                    - start_x;
+                let new_w =
+                    next_tab_position(cur_w + start_x, tab_stops, indent_left, entity_h) - start_x;
                 let max_w = line_max_w(subline_idx);
                 if new_w > max_w && !cur.is_empty() {
                     sublines.push(std::mem::take(&mut cur));
@@ -1061,9 +1383,14 @@ pub fn line_total_width(
 pub fn resolve_inline_color(c: &InlineColor) -> Option<[f32; 3]> {
     match c {
         InlineColor::Aci(idx) => aci_to_rgb(*idx).map(|(r, g, b)| {
-            [r as f32 / 255.0, g as f32 / 255.0, b as f32 / 255.0]
+            let rgb = [r as f32 / 255.0, g as f32 / 255.0, b as f32 / 255.0];
+            if *idx == 7 {
+                rgb
+            } else {
+                crate::scene::convert::tess_util::authored_rgb(rgb)
+            }
         }),
-        InlineColor::True(rgb) => Some(*rgb),
+        InlineColor::True(rgb) => Some(crate::scene::convert::tess_util::authored_rgb(*rgb)),
     }
 }
 
@@ -1141,9 +1468,9 @@ pub fn flow_grip_axis(
     };
     let k = if vertical {
         match v_anchor {
-            MTextVAnchor::Top
-            | MTextVAnchor::MiddleOfTopLine
-            | MTextVAnchor::BottomOfTopLine => 1.0,
+            MTextVAnchor::Top | MTextVAnchor::MiddleOfTopLine | MTextVAnchor::BottomOfTopLine => {
+                1.0
+            }
             MTextVAnchor::Middle => 0.5,
             MTextVAnchor::Bottom | MTextVAnchor::MiddleOfBottomLine => -1.0,
         }
@@ -1243,8 +1570,7 @@ impl MTextColumns {
     }
 
     fn total_width(&self) -> f32 {
-        self.width * self.count as f32
-            + self.gutter.max(0.0) * self.count.saturating_sub(1) as f32
+        self.width * self.count as f32 + self.gutter.max(0.0) * self.count.saturating_sub(1) as f32
     }
 }
 
@@ -1259,6 +1585,10 @@ pub struct GlyphBox {
     pub ymin: f32,
     pub ymax: f32,
     pub is_rtl: bool,
+    /// The same cell unrotated, relative to the insertion point
+    /// [left, bottom, right, top]: exact for rotated text, where the world
+    /// box above is only the bounds of two corners.
+    pub local: [f32; 4],
 }
 
 /// Output of [`layout_mtext`]: stroke groups + the geometry the caller
@@ -1295,10 +1625,22 @@ pub struct MTextLayout {
 /// (text frame, background fill, low-detail LOD substitutes) around the
 /// text block.
 pub fn layout_mtext(opts: &MTextRenderOpts) -> MTextLayout {
+    // Vertical text stacks characters one per cell and has no runs to turn.
+    let display_word = |word: String| {
+        if opts.vertical_text {
+            word
+        } else {
+            rtl_display_word(word)
+        }
+    };
     let base_font_name = opts.style.font_name.clone();
     let base_font = Face::resolve(&base_font_name);
     let base_wf_abs = opts.style.width_factor.max(0.01);
-    let base_wf = if opts.style.is_backward { -base_wf_abs } else { base_wf_abs };
+    let base_wf = if opts.style.is_backward {
+        -base_wf_abs
+    } else {
+        base_wf_abs
+    };
     let base_oblique = opts.style.oblique_angle;
     let entity_h = opts.height;
     let rect_w = opts.rect_w;
@@ -1312,7 +1654,6 @@ pub fn layout_mtext(opts: &MTextRenderOpts) -> MTextLayout {
     struct SubLine {
         atoms: Vec<LayoutAtom>,
         align: Option<ParagraphAlign>,
-        is_rtl: bool,
         indent_first: f32,
         indent_left: f32,
         indent_right: f32,
@@ -1361,12 +1702,12 @@ pub fn layout_mtext(opts: &MTextRenderOpts) -> MTextLayout {
                         } else if ch == ' ' || ch == '\t' {
                             if !word.is_empty() {
                                 atoms.push(LayoutAtom {
-                                    kind: AtomKind::Word(std::mem::take(&mut word)),
+                                    kind: AtomKind::Word(display_word(std::mem::take(&mut word))),
                                     state: run.state.clone(),
                                     char_offset: word_start,
                                 });
                             }
-                            // A literal tab (acadrust keeps `^I` / `\t` as a tab
+                            // A literal tab (opencadcodec keeps `^I` / `\t` as a tab
                             // char in the span) advances to the paragraph's next
                             // tab stop, aligning the field that follows it.
                             atoms.push(LayoutAtom {
@@ -1381,13 +1722,30 @@ pub fn layout_mtext(opts: &MTextRenderOpts) -> MTextLayout {
                             doc_char_offset += 1;
                             word_start = doc_char_offset;
                         } else {
+                            // CJK text carries no spaces: every ideograph is a
+                            // wrap opportunity (bar the usual "no line starts
+                            // with a closing mark / ends with an opening one"
+                            // rule), so a long Chinese sentence must not stay
+                            // one unbreakable word that overshoots its column.
+                            if let Some(prev) = word.chars().last() {
+                                if cjk_break_between(prev, ch) {
+                                    atoms.push(LayoutAtom {
+                                        kind: AtomKind::Word(display_word(std::mem::take(
+                                            &mut word,
+                                        ))),
+                                        state: run.state.clone(),
+                                        char_offset: word_start,
+                                    });
+                                    word_start = doc_char_offset;
+                                }
+                            }
                             word.push(ch);
                             doc_char_offset += 1;
                         }
                     }
                     if !word.is_empty() {
                         atoms.push(LayoutAtom {
-                            kind: AtomKind::Word(word),
+                            kind: AtomKind::Word(display_word(word)),
                             state: run.state.clone(),
                             char_offset: word_start,
                         });
@@ -1423,52 +1781,23 @@ pub fn layout_mtext(opts: &MTextRenderOpts) -> MTextLayout {
             }
         }
 
-        // Trim leading + trailing Space atoms so line_w / cursor_start agree
-        // on the paragraph's visible content. Without this a stray trailing
-        // space measures wider than it draws and centring / right-alignment
-        // is off by half a space-width.
+        // Trailing Space atoms draw nothing; the line width that centring /
+        // right-alignment use leaves them out (see `line_w` below), while
+        // leading spaces keep their width, as in the reference application.
         //
-        // Skipped when emitting glyph boxes (the MText editor) so a space the
+        // Kept when emitting glyph boxes (the MText editor) so a space the
         // user just typed at the end keeps a selectable box and the caret can
         // sit after it.
         if !opts.want_glyph_boxes {
-            let first_word = atoms
-                .iter()
-                .position(|a| !matches!(a.kind, AtomKind::Space))
-                .unwrap_or(atoms.len());
-            atoms.drain(..first_word);
             while matches!(atoms.last().map(|a| &a.kind), Some(AtomKind::Space)) {
                 atoms.pop();
             }
         }
 
-        let is_rtl_para = {
-            let mut strong_rtl = None;
-            for atom in &atoms {
-                match &atom.kind {
-                    AtomKind::Word(w) => {
-                        for ch in w.chars() {
-                            match unicode_bidi::bidi_class(ch) {
-                                unicode_bidi::BidiClass::R | unicode_bidi::BidiClass::AL => {
-                                    strong_rtl = Some(true);
-                                    break;
-                                }
-                                unicode_bidi::BidiClass::L => {
-                                    strong_rtl = Some(false);
-                                    break;
-                                }
-                                _ => {}
-                            }
-                        }
-                        if strong_rtl.is_some() {
-                            break;
-                        }
-                    }
-                    _ => {}
-                }
-            }
-            strong_rtl.unwrap_or(false)
-        };
+        // The reference lays every MTEXT paragraph out left to right, also
+        // one that starts with Hebrew or Arabic: alignment follows the
+        // attachment, and only right-to-left runs read backwards in place
+        // (`reorder_rtl_runs`).
 
         // Wrap to the column the text actually flows down, not to the block:
         // measuring against the full width would let a line run across the
@@ -1498,12 +1827,11 @@ pub fn layout_mtext(opts: &MTextRenderOpts) -> MTextLayout {
             let atoms = if opts.vertical_text {
                 atoms
             } else {
-                reorder_line_atoms(atoms, is_rtl_para)
+                reorder_rtl_runs(atoms)
             };
             sub_lines.push(SubLine {
                 atoms,
                 align: para.align,
-                is_rtl: is_rtl_para,
                 indent_first: para.indent_first,
                 indent_left: para.indent_left,
                 indent_right: para.indent_right,
@@ -1527,7 +1855,6 @@ pub fn layout_mtext(opts: &MTextRenderOpts) -> MTextLayout {
         sub_lines.push(SubLine {
             atoms: Vec::new(),
             align: None,
-            is_rtl: false,
             indent_first: 0.0,
             indent_left: 0.0,
             indent_right: 0.0,
@@ -1630,8 +1957,7 @@ pub fn layout_mtext(opts: &MTextRenderOpts) -> MTextLayout {
                     mh * m * (5.0 / 3.0) * base_font.line_spacing()
                 }
                 _ if opts.exact_line_spacing => entity_gap,
-                _ => (mh * ls_factor * (5.0 / 3.0) * base_font.line_spacing())
-                    .max(entity_gap),
+                _ => (mh * ls_factor * (5.0 / 3.0) * base_font.line_spacing()).max(entity_gap),
             }
         })
         .collect();
@@ -1903,9 +2229,7 @@ pub fn layout_mtext(opts: &MTextRenderOpts) -> MTextLayout {
 
         let content_left = if rect_w > 0.0 {
             box_left
-                + if sub.is_rtl {
-                    sub.indent_right
-                } else if sub.is_first_in_paragraph {
+                + if sub.is_first_in_paragraph {
                     sub.indent_first
                 } else {
                     sub.indent_left
@@ -1914,16 +2238,7 @@ pub fn layout_mtext(opts: &MTextRenderOpts) -> MTextLayout {
             0.0
         };
         let content_right = if rect_w > 0.0 {
-            box_left + rect_w
-                - if sub.is_rtl {
-                    if sub.is_first_in_paragraph {
-                        sub.indent_first
-                    } else {
-                        sub.indent_left
-                    }
-                } else {
-                    sub.indent_right
-                }
+            box_left + rect_w - sub.indent_right
         } else {
             0.0
         };
@@ -1934,24 +2249,29 @@ pub fn layout_mtext(opts: &MTextRenderOpts) -> MTextLayout {
             | Some(ParagraphAlign::Distribute) => 0.0,
             Some(ParagraphAlign::Center) => 0.5,
             Some(ParagraphAlign::Right) => 1.0,
-            None => {
-                if sub.is_rtl {
-                    1.0
-                } else {
-                    attach_h_anchor
-                }
-            }
+            None => attach_h_anchor,
         };
 
+        let visible_atoms = sub
+            .atoms
+            .iter()
+            .rposition(|a| !matches!(a.kind, AtomKind::Space))
+            .map_or(0, |i| i + 1);
         let line_w = line_total_width(
-            &sub.atoms,
+            &sub.atoms[..visible_atoms],
             entity_h,
             base_wf,
             &base_font_name,
             0.0,
             sub.indent_left,
             &sub.tab_stops,
-        );
+        )
+        // Aligned on the last glyph's ink: the letter spacing after it is not
+        // part of the width centring / right alignment use (the reference
+        // puts a right-aligned line's last stroke on the edge).
+        - sub.atoms[..visible_atoms]
+            .last()
+            .map_or(0.0, |atom| trailing_letter_gap(atom, entity_h, base_wf, &base_font_name));
         line_widths.push(line_w);
 
         let cursor_start = if rect_w > 0.0 {
@@ -1985,7 +2305,13 @@ pub fn layout_mtext(opts: &MTextRenderOpts) -> MTextLayout {
                 xmax: ax,
                 ymin: ay.min(by),
                 ymax: ay.max(by),
-                is_rtl: sub.is_rtl,
+                is_rtl: false,
+                local: [
+                    line_lx + cursor_start,
+                    line_ly,
+                    line_lx + cursor_start,
+                    line_ly + caret_h,
+                ],
             });
             vis += 1;
         }
@@ -1999,22 +2325,21 @@ pub fn layout_mtext(opts: &MTextRenderOpts) -> MTextLayout {
             .get(i + 1)
             .is_none_or(|n| n.is_first_in_paragraph || n.column != sub.column);
         let (spread_letters, gap) = {
-            let justify =
-                matches!(sub.align, Some(ParagraphAlign::Justify)) && !is_last_in_para;
+            let justify = matches!(sub.align, Some(ParagraphAlign::Justify)) && !is_last_in_para;
             let distribute = matches!(sub.align, Some(ParagraphAlign::Distribute));
             let slack = (content_right - content_left).max(0.0) - line_w;
             if rect_w > 0.0 && (justify || distribute) && slack > 1e-6 {
-                let spaces = sub
-                    .atoms
+                // The gaps the measured width holds: none after the last
+                // visible atom, and no direction marks.
+                let spaces = sub.atoms[..visible_atoms]
                     .iter()
                     .filter(|a| matches!(a.kind, AtomKind::Space))
                     .count();
                 if distribute {
-                    let chars: usize = sub
-                        .atoms
+                    let chars: usize = sub.atoms[..visible_atoms]
                         .iter()
                         .filter_map(|a| match &a.kind {
-                            AtomKind::Word(t) => Some(t.chars().count()),
+                            AtomKind::Word(t) => Some(t.chars().filter(|c| *c != LRM).count()),
                             _ => None,
                         })
                         .sum();
@@ -2030,13 +2355,16 @@ pub fn layout_mtext(opts: &MTextRenderOpts) -> MTextLayout {
             }
         };
 
-        let mut cursor_x = if opts.vertical_text { 0.0 } else { cursor_start };
+        let mut cursor_x = if opts.vertical_text {
+            0.0
+        } else {
+            cursor_start
+        };
         for (ai, atom) in sub.atoms.iter().enumerate() {
             match &atom.kind {
                 AtomKind::Word(text) => {
                     let run_h = atom.state.height_mul * entity_h;
-                    let signed_wf =
-                        base_wf.signum() * atom.state.width_mul * base_wf.abs();
+                    let signed_wf = base_wf.signum() * atom.state.width_mul * base_wf.abs();
                     let oblique = base_oblique + atom.state.oblique_rad;
                     let font_name = resolve_font(&atom.state, &base_font_name);
                     if opts.vertical_text {
@@ -2046,8 +2374,7 @@ pub fn layout_mtext(opts: &MTextRenderOpts) -> MTextLayout {
                         // own single-glyph run so the SDF path draws it at its
                         // cell origin; 1.4×height is the classic vertical cell
                         // advance.
-                        let color =
-                            atom.state.color.as_ref().and_then(resolve_inline_color);
+                        let color = atom.state.color.as_ref().and_then(resolve_inline_color);
                         let cell = run_h * 1.4;
                         // Word wrap, vertically: a word that would overrun the
                         // column limit moves WHOLE to the next column (the
@@ -2143,43 +2470,13 @@ pub fn layout_mtext(opts: &MTextRenderOpts) -> MTextLayout {
                         ins_y + (line_base_y + world_dy) as f64,
                     ];
                     // Glyphs from the plain word — the SDF run and the stroke
-                    // fallback both draw clean characters.
-                    let (strokes, fill_tris) = lff::tessellate_text_run(
-                        [0.0, 0.0],
-                        run_h,
-                        rot,
-                        signed_wf,
-                        oblique,
-                        tracking,
-                        &font_name,
-                        text,
-                    );
-                    let glyph_n = strokes.len();
-                    all_strokes.push(TextStroke {
-                        strokes,
-                        origin,
-                        color,
-                        fill_tris,
-                        plane: None,
-                        run: Some(GlyphRun {
-                            text: text.clone(),
-                            font: font_name.to_string(),
-                            height: run_h,
-                            rotation: rot,
-                            width_factor: signed_wf,
-                            oblique,
-                            tracking,
-                            bold: atom.state.bold,
-                        }),
-                    });
-                    // Underline / overline / strike are lines, not glyphs; a
-                    // run-group's strokes are suppressed by the SDF path, so
-                    // emit the decorations in their own RUN-LESS group. Reuse
-                    // lff's exact positions by tessellating the decorated word
-                    // and taking the strokes it appends after the glyphs.
-                    if atom.state.underline || atom.state.overline || atom.state.strike {
-                        let body = decorated(text, &atom.state);
-                        let (deco, _) = lff::tessellate_text_run(
+                    // fallback both draw clean characters. A mixed word draws
+                    // run by run (see `word_runs`), each at its own pen.
+                    let face = Face::resolve(&font_name);
+                    let run_scale_x = run_h / 9.0 * signed_wf.abs();
+                    let mut run_x = 0.0_f32;
+                    for (run_text, shaped) in word_runs(text, &face) {
+                        let (strokes, fill_tris) = lff::tessellate_text_run(
                             [0.0, 0.0],
                             run_h,
                             rot,
@@ -2187,22 +2484,64 @@ pub fn layout_mtext(opts: &MTextRenderOpts) -> MTextLayout {
                             oblique,
                             tracking,
                             &font_name,
-                            &body,
+                            run_text,
                         );
-                        if deco.len() > glyph_n {
-                            all_strokes.push(TextStroke {
-                                strokes: deco[glyph_n..].to_vec(),
-                                origin,
-                                color,
-                                fill_tris: vec![],
-                                plane: None,
-                                run: None,
-                            });
+                        let (dx, dy) = (run_x * cos_r, run_x * sin_r);
+                        all_strokes.push(TextStroke {
+                            strokes,
+                            origin: [origin[0] + dx as f64, origin[1] + dy as f64],
+                            color,
+                            fill_tris,
+                            plane: None,
+                            run: Some(GlyphRun {
+                                text: run_text.to_string(),
+                                font: font_name.to_string(),
+                                height: run_h,
+                                rotation: rot,
+                                width_factor: signed_wf,
+                                oblique,
+                                tracking,
+                                bold: atom.state.bold,
+                            }),
+                        });
+                        // Underline / overline / strike are lines, not glyphs;
+                        // a run-group's strokes are suppressed by the SDF path,
+                        // so emit the decorations in their own RUN-LESS group,
+                        // run by run so they span what is drawn. Reuse lff's
+                        // exact positions by tessellating the decorated run and
+                        // taking the strokes it appends after the glyphs.
+                        if atom.state.underline || atom.state.overline || atom.state.strike {
+                            let tessellate = |body: &str| {
+                                lff::tessellate_text_run(
+                                    [0.0, 0.0],
+                                    run_h,
+                                    rot,
+                                    signed_wf,
+                                    oblique,
+                                    tracking,
+                                    &font_name,
+                                    body,
+                                )
+                                .0
+                            };
+                            let glyph_n = tessellate(run_text).len();
+                            let deco = tessellate(&decorated(run_text, &atom.state));
+                            if deco.len() > glyph_n {
+                                all_strokes.push(TextStroke {
+                                    strokes: deco[glyph_n..].to_vec(),
+                                    origin: [origin[0] + dx as f64, origin[1] + dy as f64],
+                                    color,
+                                    fill_tris: vec![],
+                                    plane: None,
+                                    run: None,
+                                });
+                            }
                         }
+                        run_x += run_width(&face, run_text, shaped, tracking, run_scale_x);
                     }
                     if opts.want_glyph_boxes {
                         let run_h = atom.state.height_mul * entity_h;
-                        let count = text.chars().count();
+                        let count = text.chars().filter(|c| *c != LRM).count();
                         let is_rtl = text.chars().any(is_rtl_char);
                         if is_rtl && count > 0 {
                             let word_w = if tracking != atom.state.tracking {
@@ -2212,35 +2551,63 @@ pub fn layout_mtext(opts: &MTextRenderOpts) -> MTextLayout {
                             } else {
                                 measure_word(text, &atom.state, entity_h, base_wf, &base_font_name)
                             };
+                            // The shaper's own glyph cells (visual positions,
+                            // per character in logical order); evenly divided
+                            // slots only when the word is not shaped.
                             let slot_w = word_w / count as f32;
-                            for ci in 0..count {
-                                let cx = cursor_x + ci as f32 * slot_w;
-                                let (ax, ay) = to_world(line_base_x, line_base_y, cx, ly);
-                                let (bx, by) = to_world(line_base_x, line_base_y, cx + slot_w, ly + run_h);
+                            let cells =
+                                word_cells(text, &atom.state, entity_h, base_wf, &base_font_name)
+                                    .unwrap_or_else(|| {
+                                        (0..count)
+                                            .map(|ci| {
+                                                let x = (count - 1 - ci) as f32 * slot_w;
+                                                (x, x + slot_w)
+                                            })
+                                            .collect()
+                                    });
+                            for (ci, (x0, x1)) in cells.into_iter().enumerate() {
+                                let (cx0, cx1) = (cursor_x + x0, cursor_x + x1);
+                                let (ax, ay) = to_world(line_base_x, line_base_y, cx0, ly);
+                                let (bx, by) = to_world(line_base_x, line_base_y, cx1, ly + run_h);
                                 glyph_boxes.push(GlyphBox {
-                                    vis: atom.char_offset + count - 1 - ci,
+                                    vis: atom.char_offset + ci,
                                     xmin: ax.min(bx),
                                     xmax: ax.max(bx),
                                     ymin: ay.min(by),
                                     ymax: ay.max(by),
                                     is_rtl: true,
+                                    local: [
+                                        line_lx + cx0,
+                                        line_ly + ly,
+                                        line_lx + cx1,
+                                        line_ly + ly + run_h,
+                                    ],
                                 });
                             }
                         } else {
                             // Per-character boxes, advancing exactly as
                             // `measure_word` does so they track the glyphs.
+                            // A shaped word (TrueType or a complex script)
+                            // takes the shaper's cells, as it draws.
                             let scale = run_scale(&atom.state, entity_h, base_wf);
                             let face = Face::resolve(&font_name);
+                            let shaped =
+                                word_cells(text, &atom.state, entity_h, base_wf, &base_font_name);
                             let mut cx = cursor_x;
-                            for (ci, ch) in text.chars().enumerate() {
+                            for (ci, ch) in text.chars().filter(|c| *c != LRM).enumerate() {
                                 let adv = match face.glyph(ch) {
                                     Some(g) => {
-                                        (g.advance + face.letter_spacing() * tracking) * scale
+                                        (g.advance + face.spacing_after(ch) * tracking) * scale
                                     }
                                     None => (6.0 + face.letter_spacing() * tracking) * scale,
                                 };
-                                let (ax, ay) = to_world(line_base_x, line_base_y, cx, ly);
-                                let (bx, by) = to_world(line_base_x, line_base_y, cx + adv, ly + run_h);
+                                let (cx0, cx1) =
+                                    match shaped.as_ref().and_then(|cells| cells.get(ci)) {
+                                        Some(&(x0, x1)) => (cursor_x + x0, cursor_x + x1),
+                                        None => (cx, cx + adv),
+                                    };
+                                let (ax, ay) = to_world(line_base_x, line_base_y, cx0, ly);
+                                let (bx, by) = to_world(line_base_x, line_base_y, cx1, ly + run_h);
                                 glyph_boxes.push(GlyphBox {
                                     vis: atom.char_offset + ci,
                                     xmin: ax.min(bx),
@@ -2248,6 +2615,12 @@ pub fn layout_mtext(opts: &MTextRenderOpts) -> MTextLayout {
                                     ymin: ay.min(by),
                                     ymax: ay.max(by),
                                     is_rtl: false,
+                                    local: [
+                                        line_lx + cx0,
+                                        line_ly + ly,
+                                        line_lx + cx1,
+                                        line_ly + ly + run_h,
+                                    ],
                                 });
                                 cx += adv;
                             }
@@ -2352,18 +2725,14 @@ pub fn layout_mtext(opts: &MTextRenderOpts) -> MTextLayout {
                                     to_world(line_base_x, line_base_y, x0, top),
                                     to_world(line_base_x, line_base_y, x1, top),
                                 ];
-                                let xmin = corners
-                                    .iter()
-                                    .map(|p| p.0)
-                                    .fold(f32::INFINITY, f32::min);
+                                let xmin =
+                                    corners.iter().map(|p| p.0).fold(f32::INFINITY, f32::min);
                                 let xmax = corners
                                     .iter()
                                     .map(|p| p.0)
                                     .fold(f32::NEG_INFINITY, f32::max);
-                                let ymin = corners
-                                    .iter()
-                                    .map(|p| p.1)
-                                    .fold(f32::INFINITY, f32::min);
+                                let ymin =
+                                    corners.iter().map(|p| p.1).fold(f32::INFINITY, f32::min);
                                 let ymax = corners
                                     .iter()
                                     .map(|p| p.1)
@@ -2375,6 +2744,12 @@ pub fn layout_mtext(opts: &MTextRenderOpts) -> MTextLayout {
                                     ymin,
                                     ymax,
                                     is_rtl: false,
+                                    local: [
+                                        line_lx + x0,
+                                        line_ly + valign_dy,
+                                        line_lx + x1,
+                                        line_ly + top,
+                                    ],
                                 });
                             }
                         }
@@ -2430,8 +2805,7 @@ pub fn layout_mtext(opts: &MTextRenderOpts) -> MTextLayout {
                         continue;
                     }
                     // Justify / distribute widen every word gap by `gap`.
-                    let adv =
-                        measure_space(&atom.state, entity_h, base_wf, &base_font_name) + gap;
+                    let adv = measure_space(&atom.state, entity_h, base_wf, &base_font_name) + gap;
                     // A space inside a decorated span carries the underline /
                     // overline / strike state but draws no glyph, so without this
                     // the rule breaks at every inter-word gap. Emit the decoration
@@ -2439,8 +2813,7 @@ pub fn layout_mtext(opts: &MTextRenderOpts) -> MTextLayout {
                     // exactly `measure_space`, so the rule meets the neighbours'.
                     if atom.state.underline || atom.state.overline || atom.state.strike {
                         let run_h = atom.state.height_mul * entity_h;
-                        let signed_wf =
-                            base_wf.signum() * atom.state.width_mul * base_wf.abs();
+                        let signed_wf = base_wf.signum() * atom.state.width_mul * base_wf.abs();
                         let oblique = base_oblique + atom.state.oblique_rad;
                         let font_name = resolve_font(&atom.state, &base_font_name);
                         let tracking = atom.state.tracking;
@@ -2449,8 +2822,7 @@ pub fn layout_mtext(opts: &MTextRenderOpts) -> MTextLayout {
                             2 => line_max_h - run_h,
                             _ => 0.0,
                         };
-                        let color =
-                            atom.state.color.as_ref().and_then(resolve_inline_color);
+                        let color = atom.state.color.as_ref().and_then(resolve_inline_color);
                         let lx = cursor_x;
                         let ly = valign_dy;
                         let origin: [f64; 2] = [
@@ -2482,8 +2854,7 @@ pub fn layout_mtext(opts: &MTextRenderOpts) -> MTextLayout {
                     if opts.want_glyph_boxes {
                         let run_h = atom.state.height_mul * entity_h;
                         let (ax, ay) = to_world(line_base_x, line_base_y, cursor_x, 0.0);
-                        let (bx, by) =
-                            to_world(line_base_x, line_base_y, cursor_x + adv, run_h);
+                        let (bx, by) = to_world(line_base_x, line_base_y, cursor_x + adv, run_h);
                         glyph_boxes.push(GlyphBox {
                             vis: atom.char_offset,
                             xmin: ax.min(bx),
@@ -2491,6 +2862,12 @@ pub fn layout_mtext(opts: &MTextRenderOpts) -> MTextLayout {
                             ymin: ay.min(by),
                             ymax: ay.max(by),
                             is_rtl: false,
+                            local: [
+                                line_lx + cursor_x,
+                                line_ly,
+                                line_lx + cursor_x + adv,
+                                line_ly + run_h,
+                            ],
                         });
                     }
                     cursor_x += adv;
@@ -2501,11 +2878,11 @@ pub fn layout_mtext(opts: &MTextRenderOpts) -> MTextLayout {
                     // than just advancing the pen. Decimal places the first `.`
                     // on the stop; right the field's end; center its middle.
                     //
-                    // Stop positions are relative to the paragraph's own left
-                    // edge, so measure against `box_left` (the column's left,
-                    // which `cursor_x` already carries) — not the raw indent, or
-                    // a second column's tabs miss every stop and shoot off right.
-                    let tab_base = box_left + sub.indent_left;
+                    // Stop positions are measured from `box_left` (the column's
+                    // left, which `cursor_x` already carries) — not the raw
+                    // indent, or a second column's tabs miss every stop and
+                    // shoot off right.
+                    let tab_base = box_left;
                     let local = cursor_x - tab_base;
                     let stop = sub
                         .tab_stops
@@ -2544,12 +2921,8 @@ pub fn layout_mtext(opts: &MTextRenderOpts) -> MTextLayout {
                                         );
                                     }
                                     AtomKind::Stack { .. } => {
-                                        field_w += atom_width(
-                                            next,
-                                            entity_h,
-                                            base_wf,
-                                            &base_font_name,
-                                        );
+                                        field_w +=
+                                            atom_width(next, entity_h, base_wf, &base_font_name);
                                     }
                                     _ => break,
                                 }
@@ -2568,12 +2941,13 @@ pub fn layout_mtext(opts: &MTextRenderOpts) -> MTextLayout {
                             cursor_x = sx - offset;
                         }
                         _ => {
-                            cursor_x = next_tab_position(
-                                cursor_x,
-                                &sub.tab_stops,
-                                tab_base,
-                                entity_h,
-                            );
+                            cursor_x = tab_base
+                                + next_tab_position(
+                                    local,
+                                    &sub.tab_stops,
+                                    sub.indent_left,
+                                    entity_h,
+                                );
                         }
                     }
                 }
@@ -2742,7 +3116,7 @@ mod adapter_tests {
     #[test]
     fn relative_height_is_a_factor() {
         // `\H2x;` multiplies the current height → height_mul 2.0, independent of
-        // the entity height. (This is the case that needed acadrust's MTextScalar.)
+        // the entity height. (This is the case that needed opencadcodec's MTextScalar.)
         let (_, st) = first_run(&adapt_mtext_paragraphs("\\H2x;big", 2.5, true));
         assert!((st.height_mul - 2.0).abs() < 1e-4, "got {}", st.height_mul);
     }
@@ -2782,8 +3156,8 @@ mod adapter_tests {
         // applies (~15°) — not upright.
         let (_, it) = first_run(&adapt_mtext_paragraphs("\\fArial|i1;x", 2.5, true));
         assert!(
-            (it.oblique_rad - 15f32.to_radians()).abs() < 1e-4,
-            "italic flag should slant, got {}",
+            it.italic || (it.oblique_rad - 15f32.to_radians()).abs() < 1e-4,
+            "italic flag should slant or use italic face, got {}",
             it.oblique_rad
         );
         // A non-italic font stays upright.
@@ -2791,7 +3165,11 @@ mod adapter_tests {
         assert!(up.oblique_rad.abs() < 1e-4, "got {}", up.oblique_rad);
         // An explicit `\Q` wins over the italic flag (no double slant).
         let (_, q) = first_run(&adapt_mtext_paragraphs("\\Q30;\\fArial|i1;x", 2.5, true));
-        assert!((q.oblique_rad - 30f32.to_radians()).abs() < 1e-4, "got {}", q.oblique_rad);
+        assert!(
+            (q.oblique_rad - 30f32.to_radians()).abs() < 1e-4,
+            "got {}",
+            q.oblique_rad
+        );
     }
 
     #[test]
@@ -2829,9 +3207,7 @@ mod adapter_tests {
         let lines = adapt_mtext_paragraphs("a\\Pb\\Pc", 2.5, true);
         assert_eq!(lines.len(), 3);
     }
-
 }
-
 
 #[cfg(test)]
 mod v_anchor_tests {
@@ -2913,8 +3289,8 @@ mod v_anchor_tests {
     }
 
     #[test]
-    fn test_bidi_atoms() {
-        fn reorder_atoms(words: &[&str], is_rtl: bool) -> Vec<String> {
+    fn right_to_left_runs_read_backwards_in_place() {
+        fn reorder(words: &[&str]) -> Vec<String> {
             let atoms: Vec<super::LayoutAtom> = words
                 .iter()
                 .map(|w| super::LayoutAtom {
@@ -2927,8 +3303,7 @@ mod v_anchor_tests {
                     char_offset: 0,
                 })
                 .collect();
-            let reordered = super::reorder_line_atoms(atoms, is_rtl);
-            reordered
+            super::reorder_rtl_runs(atoms)
                 .into_iter()
                 .map(|a| match a.kind {
                     super::AtomKind::Word(w) => w,
@@ -2938,39 +3313,151 @@ mod v_anchor_tests {
                 .collect()
         }
 
-        // Case 1: Pure Arabic
-        let words1 = ["بسم", " ", "الله", " ", "الرحمن", " ", "الرحيم"];
-        let reordered1 = reorder_atoms(&words1, true);
-        assert_eq!(reordered1, vec!["الرحيم", " ", "الرحمن", " ", "الله", " ", "بسم"]);
-
-        // Case 2: Arabic with numbers
-        let words2 = ["بسم", " ", "الله", " ", "123", " ", "الرحمن"];
-        let reordered2 = reorder_atoms(&words2, true);
-        assert_eq!(reordered2, vec!["الرحمن", " ", "123", " ", "الله", " ", "بسم"]);
-
-        // Case 3: English with Arabic
-        let words3 = ["Hello", " ", "بسم", " ", "الله", " ", "world"];
-        let reordered3 = reorder_atoms(&words3, false);
-        assert_eq!(reordered3, vec!["Hello", " ", "الله", " ", "بسم", " ", "world"]);
-
-        // Case 4: Pure English
-        let words4 = ["Hello", " ", "world"];
-        let reordered4 = reorder_atoms(&words4, false);
-        assert_eq!(reordered4, vec!["Hello", " ", "world"]);
-
-        // Case 5: Mixed Urdu + Arabic + Hebrew + English
-        let text_b = "یہ اردو ہے۔ مرحبا! שלום שנה 2026 is here!";
-        let words_b: Vec<&str> = text_b.split_inclusive(' ').collect();
-        let reordered_b = reorder_atoms(&words_b, true);
+        // A run of right-to-left words turns round with the spaces after it;
+        // everything else keeps its order.
         assert_eq!(
-            reordered_b,
-            vec!["2026 ", "is ", "here!", "שנה ", "שלום ", "مرحبا! ", "ہے۔ ", "اردو ", "یہ "]
+            reorder(&["אבג", " ", "דה", " ", "abc"]),
+            vec![" ", "דה", " ", "אבג", "abc"]
         );
+        assert_eq!(
+            reorder(&["Hello", " ", "world"]),
+            vec!["Hello", " ", "world"]
+        );
+        // A word starting with multi-byte punctuation ends the run whole.
+        assert_eq!(reorder(&["שלום", " ", "«x"]), vec![" ", "שלום", "«x"]);
+    }
+
+    #[test]
+    fn cjk_paragraph_wraps_between_ideographs() {
+        use crate::entities::text_support::{
+            layout_mtext, MTextRenderOpts, MTextVAnchor, ResolvedTextStyle,
+        };
+        // Breaks are allowed between ideographs but not before a closing mark
+        // or after an opening one.
+        assert!(cjk_break_between('工', '程'));
+        assert!(cjk_break_between('程', 'A'));
+        assert!(!cjk_break_between('工', '，'));
+        assert!(!cjk_break_between('（', '工'));
+        assert!(!cjk_break_between('a', 'b'));
+
+        let style = ResolvedTextStyle {
+            font_name: "Standard".to_string(),
+            width_factor: 1.0,
+            oblique_angle: 0.0,
+            is_backward: false,
+            is_upside_down: false,
+            is_vertical: false,
+        };
+        // 40 ideographs with no spaces in a column ~12 characters wide used
+        // to stay one unbreakable word: a single line overshooting the box.
+        let value = "本工程之各種平面圖均須相互配合如有不符或須更正處均按工程慣例施工至完整並請於估價前提出";
+        let opts = MTextRenderOpts {
+            columns: Default::default(),
+            value,
+            insertion: [0.0, 0.0, 0.0],
+            height: 2.5,
+            rect_w: 30.0,
+            rotation: 0.0,
+            style: &style,
+            attach_h_anchor: 0.0,
+            v_anchor: MTextVAnchor::Top,
+            line_spacing_factor: 1.0,
+            exact_line_spacing: false,
+            rectangle_height: 0.0,
+            vertical_text: false,
+            want_glyph_boxes: true,
+        };
+        let layout = layout_mtext(&opts);
+        assert!(
+            layout.line_count >= 3,
+            "a 40-ideograph paragraph in a 30-unit column must wrap (got {} line(s))",
+            layout.line_count
+        );
+        assert!(
+            layout.line_widths.iter().all(|w| *w <= 30.0 + 1e-3),
+            "no wrapped line may overshoot the column: {:?}",
+            layout.line_widths
+        );
+    }
+
+    /// A bare `\pi…;` list measures in drawing units and its tab stop from the
+    /// column edge: the text after `1.<tab>` lines up with its wrapped lines.
+    #[test]
+    fn bare_p_hanging_list_aligns_on_its_tab_stop() {
+        use crate::entities::text_support::{
+            layout_mtext, MTextRenderOpts, MTextVAnchor, ResolvedTextStyle,
+        };
+        let style = ResolvedTextStyle {
+            font_name: "Standard".to_string(),
+            width_factor: 1.0,
+            oblique_angle: 0.0,
+            is_backward: false,
+            is_upside_down: false,
+            is_vertical: false,
+        };
+        let layout = layout_mtext(&MTextRenderOpts {
+            columns: Default::default(),
+            value: "\\pi-36,l36,t36;1.\tAAA BBB CCC DDD EEE FFF GGG HHH III JJJ",
+            insertion: [0.0, 0.0, 0.0],
+            height: 12.0,
+            rect_w: 200.0,
+            rotation: 0.0,
+            style: &style,
+            attach_h_anchor: 0.0,
+            v_anchor: MTextVAnchor::Top,
+            line_spacing_factor: 1.0,
+            exact_line_spacing: false,
+            rectangle_height: 0.0,
+            vertical_text: false,
+            want_glyph_boxes: false,
+        });
+        let first = &layout.strokes[1];
+        let wrapped = layout
+            .strokes
+            .iter()
+            .find(|s| s.origin[1] < first.origin[1] - 1.0)
+            .expect("the list item must wrap");
+        assert!(layout.strokes[0].origin[0].abs() < 1e-3);
+        assert!((first.origin[0] - 36.0).abs() < 1e-3, "{:?}", first.origin);
+        assert!((wrapped.origin[0] - 36.0).abs() < 1e-3, "{:?}", wrapped.origin);
+    }
+
+    /// Paragraph indents with bare `\p` and paragraph alignment `\pxqc` or `\pqc`
+    /// must measure in drawing units without being scaled by text height. (#1918)
+    #[test]
+    fn bare_p_with_alignment_measures_in_drawing_units() {
+        use crate::entities::text_support::adapt_mtext_paragraphs;
+        // Case 1: AutoCAD standard bare \pi with drawing units (e.g. beam label SB5: height 250, indent -250, left 500)
+        let doc1 = adapt_mtext_paragraphs("\\A1;\\pi-250,l500,t500,1000;{\\W1;SB5}", 250.0, true);
+        assert_eq!(doc1.len(), 1);
+        assert!((doc1[0].indent_first - 250.0).abs() < 1e-3, "first indent should be 250, got {}", doc1[0].indent_first);
+        assert!((doc1[0].indent_left - 500.0).abs() < 1e-3, "left margin should be 500, got {}", doc1[0].indent_left);
+        assert_eq!(doc1[0].tab_stops.len(), 2);
+        assert!((doc1[0].tab_stops[0].position - 500.0).abs() < 1e-3);
+        assert!((doc1[0].tab_stops[1].position - 1000.0).abs() < 1e-3);
+
+        // Case 2: \pxqc paragraph alignment combined with bare \pi indents
+        let doc2 = adapt_mtext_paragraphs("\\pxqc;\\pi-250,l500;SB5", 250.0, true);
+        assert_eq!(doc2.len(), 1);
+        assert!((doc2[0].indent_first - 250.0).abs() < 1e-3, "first indent should be 250, got {}", doc2[0].indent_first);
+        assert!((doc2[0].indent_left - 500.0).abs() < 1e-3, "left margin should be 500, got {}", doc2[0].indent_left);
+
+        // Case 3: Bare \p with alignment first (\pqc,i-250,l500;)
+        let doc3 = adapt_mtext_paragraphs("\\pqc,i-250,l500;SB5", 250.0, true);
+        assert_eq!(doc3.len(), 1);
+        assert!((doc3[0].indent_first - 250.0).abs() < 1e-3, "first indent should be 250, got {}", doc3[0].indent_first);
+        assert!((doc3[0].indent_left - 500.0).abs() < 1e-3, "left margin should be 500, got {}", doc3[0].indent_left);
+
+        // Case 4: left alignment beside the extended form keeps text heights.
+        let doc4 = adapt_mtext_paragraphs("\\pql;\\pxi-1,l2;SB5", 250.0, true);
+        assert!((doc4[0].indent_left - 500.0).abs() < 1e-3, "got {}", doc4[0].indent_left);
     }
 
     #[test]
     fn test_mtext_arabic_bidi_layout() {
-        use crate::entities::text_support::{layout_mtext, MTextRenderOpts, MTextVAnchor, ResolvedTextStyle};
+        use crate::entities::text_support::{
+            layout_mtext, MTextRenderOpts, MTextVAnchor, ResolvedTextStyle,
+        };
 
         let style = ResolvedTextStyle {
             font_name: "Standard".to_string(),
@@ -3005,7 +3492,11 @@ mod v_anchor_tests {
         // Stroke origins should increase monotonically in X (left to right visual order)
         let origins_x: Vec<f64> = layout.strokes.iter().map(|s| s.origin[0]).collect();
         for w in origins_x.windows(2) {
-            assert!(w[0] < w[1], "Each subsequent visual word must sit further to the right: {:?}", origins_x);
+            assert!(
+                w[0] < w[1],
+                "Each subsequent visual word must sit further to the right: {:?}",
+                origins_x
+            );
         }
 
         // For RTL text with rect_w == 0.0, the last visual word (which is "بسم", the first spoken word)
@@ -3015,7 +3506,10 @@ mod v_anchor_tests {
 
         // Glyph boxes should have is_rtl = true for Arabic words
         let rtl_boxes: Vec<_> = layout.glyph_boxes.iter().filter(|b| b.is_rtl).collect();
-        assert!(!rtl_boxes.is_empty(), "Arabic characters must produce is_rtl = true glyph boxes");
+        assert!(
+            !rtl_boxes.is_empty(),
+            "Arabic characters must produce is_rtl = true glyph boxes"
+        );
 
         // Test mixed multilingual string in wrapped box (rect_w = 200.0)
         let opts_mixed = MTextRenderOpts {
@@ -3036,10 +3530,18 @@ mod v_anchor_tests {
         };
         let layout_mixed = layout_mtext(&opts_mixed);
         assert!(!layout_mixed.strokes.is_empty());
-        // In a wrapped box of width 200.0, RTL paragraph right-aligns:
-        // the rightmost stroke group should end near 200.0
-        let max_origin = layout_mixed.strokes.iter().map(|s| s.origin[0]).fold(f64::NEG_INFINITY, f64::max);
-        assert!(max_origin > 100.0, "RTL text in 200-width box should be right-aligned near the right margin (got max_origin={})", max_origin);
+        // A paragraph starting with right-to-left text still follows the
+        // attachment: left-anchored in a 200-wide box, it starts at the left.
+        let min_origin = layout_mixed
+            .strokes
+            .iter()
+            .map(|s| s.origin[0])
+            .fold(f64::INFINITY, f64::min);
+        // (The space after the turned run leads, as the reference shows it.)
+        assert!(
+            min_origin < 5.0,
+            "a left-anchored paragraph starts at the left margin (got min_origin={min_origin})"
+        );
 
         // Test single Arabic word "ميل"
         let opts_mayl = MTextRenderOpts {
@@ -3061,6 +3563,49 @@ mod v_anchor_tests {
         let layout_mayl = layout_mtext(&opts_mayl);
         assert_eq!(layout_mayl.strokes.len(), 1);
         let s = &layout_mayl.strokes[0];
-        assert!(!s.strokes.is_empty() || !s.fill_tris.is_empty(), "Shaped glyphs must produce vector geometry");
+        assert!(
+            !s.strokes.is_empty() || !s.fill_tris.is_empty(),
+            "Shaped glyphs must produce vector geometry"
+        );
+    }
+}
+
+#[cfg(test)]
+mod font_style_tests {
+    use super::{resolve_font, resolve_text_style, RunState, TTF_FLAG_BOLD};
+    use crate::scene::text::sysfont;
+
+    /// Bold — inline or the style's — draws the family's own bold face, a
+    /// separate file, not the regular one (#1974). Skips where no family
+    /// with a bold file is installed.
+    #[test]
+    fn bold_draws_the_bold_face() {
+        let Some(family) = ["Liberation Sans", "DejaVu Sans", "Arial"]
+            .into_iter()
+            .find(|f| sysfont::styled_family(f, true, false).is_some())
+        else {
+            eprintln!("no family with a bold face installed; skipping");
+            return;
+        };
+        let state = RunState {
+            font: Some(family.to_string()),
+            bold: true,
+            ..Default::default()
+        };
+        let bold = resolve_font(&state, "Standard").into_owned();
+        assert_eq!(sysfont::split_style(&bold), (family, true, false));
+        let width = |f: &str| {
+            crate::scene::text::ttf_glyph::shape_run(f, "Bold text")
+                .expect("shaped")
+                .advance
+        };
+        assert!(width(&bold) > width(family), "the bold face was not used");
+
+        let mut doc = codec::CadDocument::new();
+        let mut style = codec::tables::TextStyle::with_truetype("B", family);
+        style.true_type_font_flags |= TTF_FLAG_BOLD;
+        style.handle = doc.allocate_handle();
+        doc.text_styles.add(style).unwrap();
+        assert_eq!(resolve_text_style("B", &doc).font_name, bold);
     }
 }

@@ -1,8 +1,8 @@
 //! Annotation / viewport scale status menu.
 
+use crate::t;
 use iced::widget::{button, row, text};
 use iced::{Element, Fill};
-use crate::t;
 
 use crate::app::Message;
 use crate::ui::statusbar::status_menu::Entry;
@@ -17,20 +17,19 @@ pub fn menu_entries(
     is_model: bool,
     current_scale_name: &str,
     viewport_scale: Option<f64>,
-    file_scales: Vec<(String, f32, f64)>,
+    file_scales: &[(String, f32, f64)],
 ) -> Vec<Entry<'static>> {
     let mut entries: Vec<Entry<'static>> = file_scales
-        .into_iter()
+        .iter()
         .map(|(label, _anno_scale, vp_scale)| {
+            let vp_scale = *vp_scale;
             let active = if is_model {
                 label.eq_ignore_ascii_case(current_scale_name)
             } else {
                 label.eq_ignore_ascii_case(current_scale_name)
                     || (current_scale_name.is_empty()
                         && viewport_scale
-                            .map(|vs| {
-                                (vs - vp_scale).abs() < 0.001 * vp_scale.max(0.001)
-                            })
+                            .map(|vs| (vs - vp_scale).abs() < 0.001 * vp_scale.max(0.001))
                             .unwrap_or(false))
             };
             let msg = if is_model {
@@ -38,7 +37,7 @@ pub fn menu_entries(
             } else {
                 Message::SetViewportScale(label.clone())
             };
-            Entry::close(scale_row(label, active, msg))
+            Entry::close(scale_row(label.clone(), active, msg))
         })
         .collect();
 

@@ -5,7 +5,7 @@
 //   Step 1: pick base point
 //   Step 2+: each click makes another copy at (click - base); Enter to finish.
 
-use acadrust::Handle;
+use codec::Handle;
 use glam::DVec3;
 
 use crate::command::{CadCommand, CmdResult, EntityTransform};
@@ -75,21 +75,20 @@ impl CadCommand for CopyCommand {
             return crate::tr!("command-copy", "mode");
         }
         match &self.step {
-            Step::Base => crate::tr!(
-                "command-copy", "base",
-                count = (self.handles.len() as i64),
-            ),
+            Step::Base => crate::tr!("command-copy", "base", count = (self.handles.len() as i64),),
             Step::Placing(base) => {
                 if let Some(n) = self.array_count {
                     crate::tr!(
-                        "command-copy", "array-target",
+                        "command-copy",
+                        "array-target",
                         count = (n as i64),
                         x = format!("{:.3}", base.x),
                         y = format!("{:.3}", base.y),
                     )
                 } else {
                     crate::tr!(
-                        "command-copy", "target",
+                        "command-copy",
+                        "target",
                         count = (self.count as i64),
                         x = format!("{:.3}", base.x),
                         y = format!("{:.3}", base.y),
@@ -154,17 +153,13 @@ impl CadCommand for CopyCommand {
                     )
                 } else {
                     self.count += 1;
-                    CmdResult::CopySelected(
-                        self.handles.clone(),
-                        EntityTransform::Translate(delta),
-                    )
+                    CmdResult::CopySelected(self.handles.clone(), EntityTransform::Translate(delta))
                 }
             }
             // The point (typically typed as `dx,dy`) is the displacement itself.
-            Step::Displacement => CmdResult::BatchCopy(
-                self.handles.clone(),
-                vec![EntityTransform::Translate(pt)],
-            ),
+            Step::Displacement => {
+                CmdResult::BatchCopy(self.handles.clone(), vec![EntityTransform::Translate(pt)])
+            }
         }
     }
 
@@ -199,6 +194,9 @@ impl CadCommand for CopyCommand {
     fn on_text_input(&mut self, text: &str) -> Option<CmdResult> {
         if self.awaiting_count {
             if let Ok(n) = text.trim().parse::<usize>() {
+                if !super::array::array_items_within_limit(&[n as u64]) {
+                    return Some(super::array::array_limit_error());
+                }
                 if n >= 2 {
                     self.array_count = Some(n);
                 }
@@ -278,6 +276,18 @@ mod tests {
     }
 
     #[test]
+    fn array_count_above_the_item_limit_is_rejected() {
+        let mut cmd = CopyCommand::new(vec![Handle::new(1)], vec![]);
+        cmd.awaiting_count = true;
+        assert!(matches!(
+            cmd.on_text_input("18446744073709551615"),
+            Some(CmdResult::ReportError(_))
+        ));
+        assert!(cmd.awaiting_count, "the count prompt stays up");
+        assert_eq!(cmd.array_count, None);
+    }
+
+    #[test]
     fn mode_single_exits_after_one_copy() {
         let mut cmd = CopyCommand::new(vec![Handle::new(1)], vec![]);
         assert_eq!(keywords(&cmd), ["D", "O"]);
@@ -301,7 +311,10 @@ mod tests {
             CmdResult::CopySelected(..)
         ));
         assert_eq!(keywords(&cmd), ["A", "U", ""]);
-        assert!(matches!(cmd.on_text_input("U"), Some(CmdResult::UndoDocument)));
+        assert!(matches!(
+            cmd.on_text_input("U"),
+            Some(CmdResult::UndoDocument)
+        ));
         assert_eq!(keywords(&cmd), ["A", ""]);
         assert!(cmd.on_text_input("U").is_none(), "nothing left to undo");
     }
@@ -312,7 +325,9 @@ mod tests {
         cmd.on_text_input("D");
         match cmd.on_point(DVec3::new(1.0, 2.0, 0.0)) {
             CmdResult::BatchCopy(_, transforms) => {
-                assert!(matches!(transforms[0], EntityTransform::Translate(d) if d == DVec3::new(1.0, 2.0, 0.0)));
+                assert!(
+                    matches!(transforms[0], EntityTransform::Translate(d) if d == DVec3::new(1.0, 2.0, 0.0))
+                );
             }
             _ => panic!("expected one copy by the displacement"),
         }

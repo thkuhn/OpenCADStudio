@@ -1,12 +1,12 @@
 // Dispatch entry points for entity editing.
 
-use acadrust::types::{Color as AcadColor, LineWeight, Transparency};
-use acadrust::{EntityType, Handle};
+use codec::types::{Color as AcadColor, LineWeight, Transparency};
+use codec::{EntityType, Handle};
 
 use crate::command::EntityTransform;
 use crate::entities::traits::EntityTypeOps;
-use crate::scene::model::object::{GripDef, PropSection};
 use crate::scene::cache::properties;
+use crate::scene::model::object::{GripDef, PropSection};
 
 thread_local! {
     /// Which vertex a multi-vertex entity's Properties panel is focused on
@@ -34,12 +34,12 @@ pub fn prop_current_vertex() -> usize {
 /// through untouched. Per-entity grip code works in raw field space, so the
 /// dispatch layer converts: display grips OCS→WCS, incoming edits WCS→OCS.
 fn planar_ocs_normal(entity: &EntityType) -> Option<(f64, f64, f64)> {
+    // Arc, Circle and Solid grips are already world-space (their grip code
+    // places them through the OCS itself); converting them again mirrors
+    // them for a flipped normal.
     let n = match entity {
-        EntityType::Arc(e) => e.normal,
-        EntityType::Circle(e) => e.normal,
         EntityType::LwPolyline(e) => e.normal,
         EntityType::Polyline2D(e) => e.normal,
-        EntityType::Solid(e) => e.normal,
         EntityType::Text(e) => e.normal,
         EntityType::AttributeDefinition(e) => e.normal,
         EntityType::Hatch(e) => e.normal,
@@ -81,11 +81,14 @@ pub fn properties_sectioned(
         sections.extend(groups);
     }
     if let Some(thickness) = entity_thickness(entity) {
-        let already_present = sections.iter().flat_map(|section| &section.props).any(|property| {
-            property.field == "thickness"
-                || property.field == "sl_thickness"
-                || property.label == crate::t!("Thickness").as_ref()
-        });
+        let already_present = sections
+            .iter()
+            .flat_map(|section| &section.props)
+            .any(|property| {
+                property.field == "thickness"
+                    || property.field == "sl_thickness"
+                    || property.label == crate::t!("Thickness").as_ref()
+            });
         if !already_present {
             if let Some(geometry) = sections
                 .iter_mut()
@@ -136,6 +139,9 @@ pub fn apply_geom_prop_in_working_plane(
 }
 
 pub fn apply_common_prop(entity: &mut EntityType, field: &str, value: &str) {
+    if matches!(field, "layer" | "linetype") && crate::scene::block_construction::is_construction(entity.common()) {
+        return;
+    }
     let e = entity.as_entity_mut();
     match field {
         "layer" => e.set_layer(value.to_string()),
@@ -232,13 +238,13 @@ pub fn apply_common_prop(entity: &mut EntityType, field: &str, value: &str) {
 ///     stale verbatim block (matched by APPID handle) so the new value wins.
 /// Other applications' verbatim blocks are preserved for round-trip fidelity.
 pub fn set_entity_xdata(
-    doc: &mut acadrust::CadDocument,
-    handle: acadrust::Handle,
+    doc: &mut codec::CadDocument,
+    handle: codec::Handle,
     app: &str,
-    values: Option<Vec<acadrust::xdata::XDataValue>>,
+    values: Option<Vec<codec::xdata::XDataValue>>,
 ) {
     if values.is_some() && !doc.app_ids.contains(app) {
-        let mut a = acadrust::tables::AppId::new(app);
+        let mut a = codec::tables::AppId::new(app);
         a.handle = doc.allocate_handle();
         let _ = doc.app_ids.add(a);
     }
@@ -247,14 +253,14 @@ pub fn set_entity_xdata(
         return;
     };
     let common = entity.common_mut();
-    let mut rebuilt = acadrust::xdata::ExtendedData::new();
+    let mut rebuilt = codec::xdata::ExtendedData::new();
     for r in common.extended_data.records() {
         if r.application_name != app {
             rebuilt.add_record(r.clone());
         }
     }
     if let Some(vals) = values {
-        let mut rec = acadrust::xdata::ExtendedDataRecord::new(app);
+        let mut rec = codec::xdata::ExtendedDataRecord::new(app);
         for v in vals {
             rec.add_value(v);
         }
@@ -308,15 +314,24 @@ pub fn set_entity_thickness(entity: &mut EntityType, v: f64) {
 }
 
 pub fn toggle_invisible(entity: &mut EntityType) {
+    if crate::scene::block_construction::is_construction(entity.common()) { return }
     let cur = entity.as_entity_mut().is_invisible();
     entity.as_entity_mut().set_invisible(!cur);
 }
 
 pub fn apply_color(entity: &mut EntityType, color: AcadColor) {
+    if crate::scene::block_construction::is_construction(entity.common()) { return }
     entity.as_entity_mut().set_color(color);
     let common = entity.common_mut();
     common.color_name = None;
     common.color_book_handle = None;
+}
+
+/// Like [`apply_color`], but keeps a colour-book identity (`BOOK$NAME`).
+pub fn apply_named_color(entity: &mut EntityType, color: AcadColor, name: Option<String>) {
+    if crate::scene::block_construction::is_construction(entity.common()) { return }
+    apply_color(entity, color);
+    entity.common_mut().color_name = name;
 }
 
 pub fn apply_line_weight(entity: &mut EntityType, lw: LineWeight) {
@@ -327,7 +342,11 @@ pub fn apply_geom_prop(entity: &mut EntityType, field: &str, value: &str) {
     EntityTypeOps::apply_geom_prop(entity, field, value);
 }
 
-pub fn apply_grip(entity: &mut EntityType, grip_id: usize, apply: crate::scene::model::object::GripApply) {
+pub fn apply_grip(
+    entity: &mut EntityType,
+    grip_id: usize,
+    apply: crate::scene::model::object::GripApply,
+) {
     use crate::scene::model::object::GripApply;
     // Grip drags arrive in world space; per-entity apply code writes raw
     // fields, which for planar entities live in OCS — convert first (the
@@ -371,11 +390,7 @@ pub fn refit_arc_grips(
             .collect::<Vec<_>>(),
         None => edits.to_vec(),
     };
-    Some(crate::entities::arc::refit_grips(
-        arc,
-        original_arc,
-        &edits,
-    ))
+    Some(crate::entities::arc::refit_grips(arc, original_arc, &edits))
 }
 
 /// Convert a world-space cursor point into the value expected by an
@@ -388,8 +403,7 @@ pub fn grip_menu_point_value(
 ) -> Option<f64> {
     let point = match planar_ocs_normal(entity) {
         Some(normal) => {
-            let (x, y, z) =
-                super::transform::wcs_point_to_ocs((point.x, point.y, point.z), normal);
+            let (x, y, z) = super::transform::wcs_point_to_ocs((point.x, point.y, point.z), normal);
             glam::DVec3::new(x, y, z)
         }
         None => point,
@@ -404,11 +418,11 @@ pub fn apply_transform(entity: &mut EntityType, t: &EntityTransform) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use acadrust::types::Vector3;
+    use codec::types::Vector3;
 
     #[test]
     fn line_thickness_follows_the_entity_geometry_rows() {
-        let mut line = acadrust::entities::Line::from_points(Vector3::ZERO, Vector3::UNIT_X);
+        let mut line = codec::entities::Line::from_points(Vector3::ZERO, Vector3::UNIT_X);
         line.thickness = 2.5;
         let sections = properties_sectioned(Handle::NULL, &EntityType::Line(line), &[]);
 
@@ -418,7 +432,12 @@ mod tests {
             .any(|property| property.field == "thickness"));
         let geometry = sections
             .iter()
-            .find(|section| section.props.iter().any(|property| property.field == "start_x"))
+            .find(|section| {
+                section
+                    .props
+                    .iter()
+                    .any(|property| property.field == "start_x")
+            })
             .unwrap();
         assert_eq!(geometry.props.last().unwrap().field, "thickness");
     }

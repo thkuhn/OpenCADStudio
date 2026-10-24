@@ -7,9 +7,65 @@
 
 use crate::app::Message;
 use crate::ui::style::common::muted_style;
-use iced::widget::{button, container, pick_list, row, text, text_input, Space};
+use iced::widget::{button, container, pick_list, radio, row, text, text_input, Space};
 use iced::{Background, Border, Element, Length, Theme};
 use std::borrow::Cow;
+
+/// Standard dialog footer action button (OK, Cancel, Apply, Close, Help, etc.),
+/// matching the Drafting Settings / Options appearance: 12px text, [6, 18] padding,
+/// themed primary or secondary style.
+pub fn dialog_button<'a>(
+    label: impl text::IntoFragment<'a>,
+    on_press: Message,
+    primary: bool,
+) -> button::Button<'a, Message> {
+    dialog_button_styled(
+        label,
+        on_press,
+        if primary {
+            button::primary
+        } else {
+            button::secondary
+        },
+    )
+}
+
+/// Standard dialog action button with an explicit button style and optional on_press action.
+pub fn dialog_button_styled_opt<'a>(
+    label: impl text::IntoFragment<'a>,
+    on_press: Option<Message>,
+    style: fn(&Theme, button::Status) -> button::Style,
+) -> button::Button<'a, Message> {
+    button(text(label).size(12))
+        .on_press_maybe(on_press)
+        .padding([6, 18])
+        .style(style)
+}
+
+/// Standard dialog action button with an explicit button style (primary, secondary, danger, warning, etc.).
+pub fn dialog_button_styled<'a>(
+    label: impl text::IntoFragment<'a>,
+    on_press: Message,
+    style: fn(&Theme, button::Status) -> button::Style,
+) -> button::Button<'a, Message> {
+    dialog_button_styled_opt(label, Some(on_press), style)
+}
+
+/// Unified radio button helper ensuring consistent 16px size for exact pixel-grid concentric alignment.
+pub fn form_radio<'a, T>(
+    label: impl Into<String>,
+    value: T,
+    selected: Option<T>,
+    on_click: impl Fn(T) -> Message + 'a,
+) -> radio::Radio<'a, Message>
+where
+    T: Copy + Eq + 'a,
+{
+    radio(label, value, selected, on_click)
+        .size(16)
+        .spacing(6)
+        .text_size(11)
+}
 
 /// Width of the label column in a `label : control` row.
 pub const LABEL_WIDTH: f32 = 92.0;
@@ -40,6 +96,19 @@ pub fn button_style(accent: bool) -> impl Fn(&Theme, button::Status) -> button::
 
 /// Text field: base background, neutral border that turns primary on focus.
 pub fn field_style(theme: &Theme, status: text_input::Status) -> text_input::Style {
+    field_style_with_radius(theme, status, 3.0)
+}
+
+/// Shared text-field styling with a caller-selected corner radius.
+///
+/// The default dialog radius is 3px. A small number of compact dialogs use
+/// 4px; they can preserve that visual choice without duplicating the palette
+/// and focus-border logic.
+pub fn field_style_with_radius(
+    theme: &Theme,
+    status: text_input::Status,
+    radius: f32,
+) -> text_input::Style {
     let palette = theme.palette();
     let border = match status {
         text_input::Status::Focused { .. } => palette.primary.base.color,
@@ -50,7 +119,7 @@ pub fn field_style(theme: &Theme, status: text_input::Status) -> text_input::Sty
         border: Border {
             color: border,
             width: 1.0,
-            radius: 3.0.into(),
+            radius: radius.into(),
         },
         icon: palette.background.base.text,
         placeholder: palette.background.base.text.scale_alpha(0.48),
@@ -81,6 +150,12 @@ pub fn vseparator<'a>(height: Length) -> Element<'a, Message> {
             ..Default::default()
         })
         .into()
+}
+
+/// Alias kept for call sites that historically used `vsep`.
+/// Same implementation as [`vseparator`].
+pub fn vsep<'a>(height: Length) -> Element<'a, Message> {
+    vseparator(height)
 }
 
 /// Muted section heading.

@@ -1,4 +1,4 @@
-use acadrust::entities::{
+use codec::entities::{
     Dimension, DimensionAligned, DimensionAngular2Ln, DimensionAngular3Pt, DimensionArc,
     DimensionBase, DimensionDiameter, DimensionLargeRadial, DimensionLinear, DimensionOrdinate,
     DimensionRadius,
@@ -25,7 +25,16 @@ pub(crate) fn set_dimension_text_override(base: &mut DimensionBase, text: Option
     base.user_text = text;
 }
 
-fn dimension_definition_point(dim: &Dimension) -> acadrust::types::Vector3 {
+/// Recompute the fields a script cannot set: the base definition point and
+/// the stored measurement, exactly as grip edits do.
+#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+pub(crate) fn normalize_scripted_dimension(dim: &mut Dimension) {
+    let definition_point = dimension_definition_point(dim);
+    dim.base_mut().definition_point = definition_point;
+    dim.base_mut().actual_measurement = dim.stored_measurement();
+}
+
+fn dimension_definition_point(dim: &Dimension) -> codec::types::Vector3 {
     match dim {
         Dimension::Aligned(d) => d.definition_point,
         Dimension::Linear(d) => d.definition_point,
@@ -39,7 +48,10 @@ fn dimension_definition_point(dim: &Dimension) -> acadrust::types::Vector3 {
     }
 }
 
-fn base_props(base: &DimensionBase) -> Vec<crate::scene::model::object::Property> {
+fn base_props(
+    base: &DimensionBase,
+    measurement: f64,
+) -> Vec<crate::scene::model::object::Property> {
     vec![
         crate::scene::model::object::Property {
             label: t!("Text").into_owned(),
@@ -79,7 +91,7 @@ fn base_props(base: &DimensionBase) -> Vec<crate::scene::model::object::Property
         ro(
             t!("Measurement").as_ref(),
             "measurement",
-            format!("{:.4}", base.actual_measurement),
+            format!("{:.4}", measurement),
         ),
     ]
 }
@@ -99,11 +111,7 @@ fn properties(dim: &Dimension) -> Vec<PropSection> {
                     field: "style_name",
                     value: PropValue::PlainText(base.style_name.clone()),
                 },
-                edit(
-                    t!("Leader Length").as_ref(),
-                    "leader_length",
-                    leader_length,
-                ),
+                edit(t!("Leader Length").as_ref(), "leader_length", leader_length),
             ],
         }];
     }
@@ -118,15 +126,10 @@ fn properties(dim: &Dimension) -> Vec<PropSection> {
         }];
     }
     let compact_linear = match dim {
-        Dimension::Linear(d) => Some((
-            &d.base,
-            d.rotation,
-            d.ext_line_rotation,
-        )),
+        Dimension::Linear(d) => Some((&d.base, d.rotation, d.ext_line_rotation)),
         Dimension::Aligned(d) => Some((
             &d.base,
-            (d.second_point.y - d.first_point.y)
-                .atan2(d.second_point.x - d.first_point.x),
+            (d.second_point.y - d.first_point.y).atan2(d.second_point.x - d.first_point.x),
             d.ext_line_rotation,
         )),
         _ => None,
@@ -194,7 +197,8 @@ fn properties(dim: &Dimension) -> Vec<PropSection> {
             }],
         }];
     }
-    let mut props = base_props(dim.base());
+    // The measurement in display units: an angular one stores radians.
+    let mut props = base_props(dim.base(), dim.measurement());
     match dim {
         Dimension::Aligned(d) => {
             props.extend(linear_like_props(
@@ -214,7 +218,11 @@ fn properties(dim: &Dimension) -> Vec<PropSection> {
                 d.second_point,
                 d.definition_point,
             ));
-            props.push(edit_angle(t!("Rotation").as_ref(), "rotation", d.rotation.to_degrees()));
+            props.push(edit_angle(
+                t!("Rotation").as_ref(),
+                "rotation",
+                d.rotation.to_degrees(),
+            ));
             props.push(edit(
                 t!("Ext Rotation (deg)").as_ref(),
                 "ext_line_rotation",
@@ -223,11 +231,19 @@ fn properties(dim: &Dimension) -> Vec<PropSection> {
         }
         Dimension::Radius(d) => {
             props.extend(radius_like_props(d.angle_vertex, d.definition_point));
-            props.push(edit(t!("Leader Length").as_ref(), "leader_length", d.leader_length));
+            props.push(edit(
+                t!("Leader Length").as_ref(),
+                "leader_length",
+                d.leader_length,
+            ));
         }
         Dimension::Diameter(d) => {
             props.extend(radius_like_props(d.angle_vertex, d.definition_point));
-            props.push(edit(t!("Leader Length").as_ref(), "leader_length", d.leader_length));
+            props.push(edit(
+                t!("Leader Length").as_ref(),
+                "leader_length",
+                d.leader_length,
+            ));
         }
         Dimension::Angular2Ln(d) => {
             props.extend(angular_props(
@@ -236,9 +252,21 @@ fn properties(dim: &Dimension) -> Vec<PropSection> {
                 d.second_point,
                 d.definition_point,
             ));
-            props.push(edit(t!("Arc X").as_ref(), "dimension_arc_x", d.dimension_arc.x));
-            props.push(edit(t!("Arc Y").as_ref(), "dimension_arc_y", d.dimension_arc.y));
-            props.push(edit(t!("Arc Z").as_ref(), "dimension_arc_z", d.dimension_arc.z));
+            props.push(edit(
+                t!("Arc X").as_ref(),
+                "dimension_arc_x",
+                d.dimension_arc.x,
+            ));
+            props.push(edit(
+                t!("Arc Y").as_ref(),
+                "dimension_arc_y",
+                d.dimension_arc.y,
+            ));
+            props.push(edit(
+                t!("Arc Z").as_ref(),
+                "dimension_arc_z",
+                d.dimension_arc.z,
+            ));
         }
         Dimension::Angular3Pt(d) => {
             props.extend(angular_props(
@@ -249,15 +277,51 @@ fn properties(dim: &Dimension) -> Vec<PropSection> {
             ));
         }
         Dimension::Ordinate(d) => {
-            props.push(edit(t!("Origin X").as_ref(), "definition_x", d.definition_point.x));
-            props.push(edit(t!("Origin Y").as_ref(), "definition_y", d.definition_point.y));
-            props.push(edit(t!("Origin Z").as_ref(), "definition_z", d.definition_point.z));
-            props.push(edit(t!("Feature X").as_ref(), "feature_x", d.feature_location.x));
-            props.push(edit(t!("Feature Y").as_ref(), "feature_y", d.feature_location.y));
-            props.push(edit(t!("Feature Z").as_ref(), "feature_z", d.feature_location.z));
-            props.push(edit(t!("Leader X").as_ref(), "leader_x", d.leader_endpoint.x));
-            props.push(edit(t!("Leader Y").as_ref(), "leader_y", d.leader_endpoint.y));
-            props.push(edit(t!("Leader Z").as_ref(), "leader_z", d.leader_endpoint.z));
+            props.push(edit(
+                t!("Origin X").as_ref(),
+                "definition_x",
+                d.definition_point.x,
+            ));
+            props.push(edit(
+                t!("Origin Y").as_ref(),
+                "definition_y",
+                d.definition_point.y,
+            ));
+            props.push(edit(
+                t!("Origin Z").as_ref(),
+                "definition_z",
+                d.definition_point.z,
+            ));
+            props.push(edit(
+                t!("Feature X").as_ref(),
+                "feature_x",
+                d.feature_location.x,
+            ));
+            props.push(edit(
+                t!("Feature Y").as_ref(),
+                "feature_y",
+                d.feature_location.y,
+            ));
+            props.push(edit(
+                t!("Feature Z").as_ref(),
+                "feature_z",
+                d.feature_location.z,
+            ));
+            props.push(edit(
+                t!("Leader X").as_ref(),
+                "leader_x",
+                d.leader_endpoint.x,
+            ));
+            props.push(edit(
+                t!("Leader Y").as_ref(),
+                "leader_y",
+                d.leader_endpoint.y,
+            ));
+            props.push(edit(
+                t!("Leader Z").as_ref(),
+                "leader_z",
+                d.leader_endpoint.z,
+            ));
             props.push(ro(
                 t!("Ordinate Type").as_ref(),
                 "ordinate_type",
@@ -281,14 +345,46 @@ fn properties(dim: &Dimension) -> Vec<PropSection> {
                 "arc_end_parameter",
                 d.arc_end_parameter.to_degrees(),
             ));
-            props.push(ro(t!("Partial").as_ref(), "is_partial", d.is_partial.to_string()));
-            props.push(ro(t!("Has Leader").as_ref(), "has_leader", d.has_leader.to_string()));
-            props.push(edit(t!("Leader 1 X").as_ref(), "leader1_x", d.first_leader_point.x));
-            props.push(edit(t!("Leader 1 Y").as_ref(), "leader1_y", d.first_leader_point.y));
-            props.push(edit(t!("Leader 1 Z").as_ref(), "leader1_z", d.first_leader_point.z));
-            props.push(edit(t!("Leader 2 X").as_ref(), "leader2_x", d.second_leader_point.x));
-            props.push(edit(t!("Leader 2 Y").as_ref(), "leader2_y", d.second_leader_point.y));
-            props.push(edit(t!("Leader 2 Z").as_ref(), "leader2_z", d.second_leader_point.z));
+            props.push(ro(
+                t!("Partial").as_ref(),
+                "is_partial",
+                d.is_partial.to_string(),
+            ));
+            props.push(ro(
+                t!("Has Leader").as_ref(),
+                "has_leader",
+                d.has_leader.to_string(),
+            ));
+            props.push(edit(
+                t!("Leader 1 X").as_ref(),
+                "leader1_x",
+                d.first_leader_point.x,
+            ));
+            props.push(edit(
+                t!("Leader 1 Y").as_ref(),
+                "leader1_y",
+                d.first_leader_point.y,
+            ));
+            props.push(edit(
+                t!("Leader 1 Z").as_ref(),
+                "leader1_z",
+                d.first_leader_point.z,
+            ));
+            props.push(edit(
+                t!("Leader 2 X").as_ref(),
+                "leader2_x",
+                d.second_leader_point.x,
+            ));
+            props.push(edit(
+                t!("Leader 2 Y").as_ref(),
+                "leader2_y",
+                d.second_leader_point.y,
+            ));
+            props.push(edit(
+                t!("Leader 2 Z").as_ref(),
+                "leader2_z",
+                d.second_leader_point.z,
+            ));
         }
         Dimension::LargeRadial(_) => unreachable!("handled by compact large-radial properties"),
     }
@@ -299,9 +395,9 @@ fn properties(dim: &Dimension) -> Vec<PropSection> {
 }
 
 fn linear_like_props(
-    first: acadrust::types::Vector3,
-    second: acadrust::types::Vector3,
-    definition: acadrust::types::Vector3,
+    first: codec::types::Vector3,
+    second: codec::types::Vector3,
+    definition: codec::types::Vector3,
 ) -> Vec<crate::scene::model::object::Property> {
     vec![
         edit(t!("First X").as_ref(), "first_x", first.x),
@@ -317,8 +413,8 @@ fn linear_like_props(
 }
 
 fn radius_like_props(
-    center: acadrust::types::Vector3,
-    point: acadrust::types::Vector3,
+    center: codec::types::Vector3,
+    point: codec::types::Vector3,
 ) -> Vec<crate::scene::model::object::Property> {
     vec![
         edit(t!("Center X").as_ref(), "center_x", center.x),
@@ -331,10 +427,10 @@ fn radius_like_props(
 }
 
 fn angular_props(
-    vertex: acadrust::types::Vector3,
-    first: acadrust::types::Vector3,
-    second: acadrust::types::Vector3,
-    definition: acadrust::types::Vector3,
+    vertex: codec::types::Vector3,
+    first: codec::types::Vector3,
+    second: codec::types::Vector3,
+    definition: codec::types::Vector3,
 ) -> Vec<crate::scene::model::object::Property> {
     vec![
         edit(t!("Vertex X").as_ref(), "vertex_x", vertex.x),
@@ -355,15 +451,19 @@ fn angular_props(
 fn apply_base_prop(base: &mut DimensionBase, field: &str, value: &str) -> bool {
     match field {
         "text" | "user_text" | "text_override" => {
-            set_dimension_text_override(base, if value.trim().is_empty() {
-                None
-            } else {
-                Some(value.to_string())
-            });
+            set_dimension_text_override(
+                base,
+                if value.trim().is_empty() {
+                    None
+                } else {
+                    Some(value.to_string())
+                },
+            );
             true
         }
         "style_name" => {
             base.style_name = value.to_string();
+            reset_automatic_text_position(base);
             true
         }
         // Editing the text position in the properties panel pins it to a
@@ -460,7 +560,7 @@ fn apply_geom_prop(dim: &mut Dimension, field: &str, value: &str) {
     }
     let definition_point = dimension_definition_point(dim);
     dim.base_mut().definition_point = definition_point;
-    dim.base_mut().actual_measurement = dim.measurement();
+    dim.base_mut().actual_measurement = dim.stored_measurement();
 }
 
 fn apply_linear_fields_aligned(d: &mut DimensionAligned, field: &str, value: &str) {
@@ -468,12 +568,12 @@ fn apply_linear_fields_aligned(d: &mut DimensionAligned, field: &str, value: &st
         let Some(angle) = parse_f64(value).map(f64::to_radians) else {
             return;
         };
-        let old_angle = (d.second_point.y - d.first_point.y)
-            .atan2(d.second_point.x - d.first_point.x);
+        let old_angle =
+            (d.second_point.y - d.first_point.y).atan2(d.second_point.x - d.first_point.x);
         let delta = angle - old_angle;
         let origin_x = d.first_point.x;
         let origin_y = d.first_point.y;
-        let rotate = |point: &mut acadrust::types::Vector3| {
+        let rotate = |point: &mut codec::types::Vector3| {
             let x = point.x - origin_x;
             let y = point.y - origin_y;
             let (sin, cos) = delta.sin_cos();
@@ -521,9 +621,9 @@ fn apply_linear_fields_linear(d: &mut DimensionLinear, field: &str, value: &str)
 }
 
 fn apply_linear_common(
-    first: &mut acadrust::types::Vector3,
-    second: &mut acadrust::types::Vector3,
-    definition: &mut acadrust::types::Vector3,
+    first: &mut codec::types::Vector3,
+    second: &mut codec::types::Vector3,
+    definition: &mut codec::types::Vector3,
     field: &str,
     value: &str,
 ) {
@@ -574,8 +674,8 @@ fn apply_diameter_fields(d: &mut DimensionDiameter, field: &str, value: &str) {
 }
 
 fn apply_radius_common(
-    center: &mut acadrust::types::Vector3,
-    point: &mut acadrust::types::Vector3,
+    center: &mut codec::types::Vector3,
+    point: &mut codec::types::Vector3,
     field: &str,
     value: &str,
 ) {
@@ -637,10 +737,10 @@ fn apply_angular3_fields(d: &mut DimensionAngular3Pt, field: &str, value: &str) 
 }
 
 fn apply_angular_common(
-    vertex: &mut acadrust::types::Vector3,
-    first: &mut acadrust::types::Vector3,
-    second: &mut acadrust::types::Vector3,
-    definition: &mut acadrust::types::Vector3,
+    vertex: &mut codec::types::Vector3,
+    first: &mut codec::types::Vector3,
+    second: &mut codec::types::Vector3,
+    definition: &mut codec::types::Vector3,
     field: &str,
     value: &str,
 ) {
@@ -763,7 +863,7 @@ fn apply_large_radial_fields(d: &mut DimensionLargeRadial, field: &str, value: &
         };
         let delta = angle - large_radial_rotation(d);
         let origin = d.definition_point;
-        let rotate = |point: &mut acadrust::types::Vector3| {
+        let rotate = |point: &mut codec::types::Vector3| {
             let x = point.x - origin.x;
             let y = point.y - origin.y;
             let (sin, cos) = delta.sin_cos();
@@ -832,12 +932,22 @@ fn large_radial_rotation(d: &DimensionLargeRadial) -> f64 {
 }
 
 fn apply_transform(dim: &mut Dimension, t: &EntityTransform) {
+    // A zero text point is the "placed automatically" sentinel, not a
+    // location: moving it to wherever the origin lands left the text there.
+    let auto_text = {
+        let base = dim.base();
+        let p = base.text_middle_point;
+        !base.text_user_positioned && p.x == 0.0 && p.y == 0.0 && p.z == 0.0
+    };
     crate::scene::view::transform::apply_standard_entity_transform(dim, t, |entity, p1, p2| {
-        acadrust::Entity::apply_transform(
+        codec::Entity::apply_transform(
             entity,
             &crate::scene::view::transform::reflection_about_xy_line(p1, p2),
         );
     });
+    if auto_text {
+        reset_automatic_text_position(dim.base_mut());
+    }
 }
 
 impl PropertyEditable for Dimension {
@@ -860,30 +970,28 @@ impl Transformable for Dimension {
 
 /// f64 variant for grip positions — grips must not round UTM-scale
 /// coordinates through f32 before the world-offset subtraction.
-fn dv3(v: &acadrust::types::Vector3) -> glam::DVec3 {
+fn dv3(v: &codec::types::Vector3) -> glam::DVec3 {
     glam::DVec3::new(v.x, v.y, v.z)
 }
 
-fn set_v3(target: &mut acadrust::types::Vector3, p: DVec3) {
+fn set_v3(target: &mut codec::types::Vector3, p: DVec3) {
     target.x = p.x;
     target.y = p.y;
     target.z = p.z;
 }
 
-fn translate_v3(target: &mut acadrust::types::Vector3, d: DVec3) {
+fn translate_v3(target: &mut codec::types::Vector3, d: DVec3) {
     target.x += d.x;
     target.y += d.y;
     target.z += d.z;
 }
 
-fn apply_to_v3(target: &mut acadrust::types::Vector3, apply: &GripApply) {
+fn apply_to_v3(target: &mut codec::types::Vector3, apply: &GripApply) {
     match apply {
         GripApply::Absolute(p) => set_v3(target, *p),
         GripApply::Translate(d) => translate_v3(target, *d),
     }
 }
-
-
 
 #[derive(Clone, Copy)]
 struct DimTextRelativePosition {
@@ -968,8 +1076,7 @@ fn capture_dim_text_relative_position(dim: &Dimension) -> Option<DimTextRelative
     let line_x = defpt.x + ax * along;
     let line_y = defpt.y + ay * along;
 
-    let perpendicular_offset =
-        (text.x - line_x) * px + (text.y - line_y) * py;
+    let perpendicular_offset = (text.x - line_x) * px + (text.y - line_y) * py;
 
     Some(DimTextRelativePosition {
         along_fraction,
@@ -978,10 +1085,7 @@ fn capture_dim_text_relative_position(dim: &Dimension) -> Option<DimTextRelative
     })
 }
 
-fn restore_dim_text_relative_position(
-    dim: &mut Dimension,
-    saved: DimTextRelativePosition,
-) {
+fn restore_dim_text_relative_position(dim: &mut Dimension, saved: DimTextRelativePosition) {
     let (first, second, defpt, ax, ay) = match dim {
         Dimension::Linear(d) => (
             d.first_point,
@@ -1081,50 +1185,14 @@ fn dimension_line_grip_position(dim: &Dimension) -> Option<DVec3> {
     let py = ax;
 
     // Project both extension origins onto the current dimension line.
-    let off1 =
-        (defpt.x - first.x) * px + (defpt.y - first.y) * py;
-    let off2 =
-        (defpt.x - second.x) * px + (defpt.y - second.y) * py;
+    let off1 = (defpt.x - first.x) * px + (defpt.y - first.y) * py;
+    let off2 = (defpt.x - second.x) * px + (defpt.y - second.y) * py;
 
-    let p1 = DVec3::new(
-        first.x + px * off1,
-        first.y + py * off1,
-        defpt.z,
-    );
+    let p1 = DVec3::new(first.x + px * off1, first.y + py * off1, defpt.z);
 
-    let p2 = DVec3::new(
-        second.x + px * off2,
-        second.y + py * off2,
-        defpt.z,
-    );
+    let p2 = DVec3::new(second.x + px * off2, second.y + py * off2, defpt.z);
 
     Some((p1 + p2) * 0.5)
-}
-
-fn above_dimension_text_position(dim: &Dimension) -> Option<DVec3> {
-    if let Some((vertex, start, end, radius)) = angular_dimension_frame(dim) {
-        let angle = (start + end) * 0.5;
-        let direction = DVec3::new(angle.cos() as f64, angle.sin() as f64, 0.0);
-        return Some(
-            DVec3::new(vertex.x as f64, vertex.y as f64, vertex.z as f64)
-                + direction * (radius as f64 + 1.0),
-        );
-    }
-    let center = dimension_line_grip_position(dim)?;
-    let (ax, ay) = match dim {
-        Dimension::Linear(d) => (d.rotation.cos(), d.rotation.sin()),
-        Dimension::Aligned(d) => {
-            let dx = d.second_point.x - d.first_point.x;
-            let dy = d.second_point.y - d.first_point.y;
-            let length = (dx * dx + dy * dy).sqrt();
-            if length <= 1e-12 {
-                return None;
-            }
-            (dx / length, dy / length)
-        }
-        _ => return Some(center + DVec3::Y),
-    };
-    Some(center + DVec3::new(-ay, ax, 0.0))
 }
 
 impl Grippable for Dimension {
@@ -1146,8 +1214,7 @@ impl Grippable for Dimension {
                 center_grip(1, dv3(&d.second_point)),
                 center_grip(
                     2,
-                    dimension_line_grip_position(self)
-                        .unwrap_or_else(|| dv3(&d.definition_point)),
+                    dimension_line_grip_position(self).unwrap_or_else(|| dv3(&d.definition_point)),
                 ),
                 center_grip(3, text),
             ],
@@ -1156,8 +1223,7 @@ impl Grippable for Dimension {
                 center_grip(1, dv3(&d.second_point)),
                 center_grip(
                     2,
-                    dimension_line_grip_position(self)
-                        .unwrap_or_else(|| dv3(&d.definition_point)),
+                    dimension_line_grip_position(self).unwrap_or_else(|| dv3(&d.definition_point)),
                 ),
                 center_grip(3, text),
             ],
@@ -1217,8 +1283,6 @@ impl Grippable for Dimension {
         }
     }
 
-
-
     fn apply_grip(&mut self, grip_id: usize, apply: GripApply) {
         if matches!(self, Dimension::Ordinate(_)) && grip_id == 2 {
             let old_text = dimension_text_pos_f64(self, None, 2.5, 1.0);
@@ -1240,7 +1304,13 @@ impl Grippable for Dimension {
             Dimension::Angular2Ln(_) => 5,
             Dimension::Angular3Pt(_) => 4,
             Dimension::Ordinate(_) => 2,
-            Dimension::Arc(d) => if d.has_leader { 6 } else { 4 },
+            Dimension::Arc(d) => {
+                if d.has_leader {
+                    6
+                } else {
+                    4
+                }
+            }
             Dimension::LargeRadial(_) => 4,
         };
         if grip_id == text_grip {
@@ -1260,6 +1330,19 @@ impl Grippable for Dimension {
                     // Keep the endpoint nearest the text on the text side.
                     d.angle_vertex = center + radial;
                     d.definition_point = center - radial;
+                    d.base.definition_point = d.definition_point;
+                    d.base.actual_measurement = d.measurement();
+                }
+            }
+
+            // A radius turns about its centre the same way: the point on the
+            // arc follows the text instead of the line kinking to reach it.
+            if let Dimension::Radius(d) = self {
+                let center = d.angle_vertex;
+                let radius = d.measurement();
+                let offset = d.base.text_middle_point - center;
+                if offset.length_squared() > 1e-24 && radius > 1e-12 {
+                    d.definition_point = center + offset.normalize() * radius;
                     d.base.definition_point = d.definition_point;
                     d.base.actual_measurement = d.measurement();
                 }
@@ -1369,7 +1452,7 @@ impl Grippable for Dimension {
 
         let definition_point = dimension_definition_point(self);
         self.base_mut().definition_point = definition_point;
-        self.base_mut().actual_measurement = self.measurement();
+        self.base_mut().actual_measurement = self.stored_measurement();
     }
 
     fn grip_menu(&self, grip_id: usize) -> Vec<crate::scene::model::object::GripMenuItem> {
@@ -1479,12 +1562,13 @@ impl Grippable for Dimension {
                 base.flip_arrow1 = !base.flip_arrow1;
                 base.flip_arrow2 = !base.flip_arrow2;
             }
+            // The caller sets DIMTAD = Above as an override; the text goes
+            // back to automatic placement so DIMGAP and the text height set
+            // how far above the line it sits, at any drawing scale. (#543)
             A::AboveDimLine if grip_id == text_grip => {
-                if let Some(point) = above_dimension_text_position(self) {
-                    let base = self.base_mut();
-                    base.text_middle_point = Vector3::new(point.x, point.y + 1.0, point.z);
-                    base.text_user_positioned = true;
-                }
+                let b = self.base_mut();
+                b.text_middle_point = Vector3::new(0.0, 0.0, 0.0);
+                b.text_user_positioned = false;
             }
             _ => {}
         }
@@ -1502,11 +1586,16 @@ impl Grippable for Dimension {
             Dimension::Angular2Ln(_) => 5,
             Dimension::Angular3Pt(_) => 4,
             Dimension::Ordinate(_) => 2,
-            Dimension::Arc(d) => if d.has_leader { 6 } else { 4 },
+            Dimension::Arc(d) => {
+                if d.has_leader {
+                    6
+                } else {
+                    4
+                }
+            }
             Dimension::LargeRadial(_) => 4,
         };
-        (grip_id == text_grip && matches!(action, A::RotateText))
-            .then_some("Specify text rotation")
+        (grip_id == text_grip && matches!(action, A::RotateText)).then_some("Specify text rotation")
     }
 
     fn apply_grip_menu_value(
@@ -1516,8 +1605,7 @@ impl Grippable for Dimension {
         value: f64,
     ) {
         use crate::scene::model::object::GripMenuAction as A;
-        if self.grip_menu_value_prompt(grip_id, action).is_some()
-            && matches!(action, A::RotateText)
+        if self.grip_menu_value_prompt(grip_id, action).is_some() && matches!(action, A::RotateText)
         {
             self.base_mut().text_rotation = value.to_radians();
         }
@@ -1533,9 +1621,9 @@ impl Grippable for Dimension {
 // `normalized_or`, `entity_z`, `offset_snap_pts`) lives in
 // `scene::convert::tessellate` and is reused by Leader / MultiLeader too.
 
-use acadrust::entities::{MText, Text};
-use acadrust::tables::DimStyle;
-use acadrust::types::{Color as AcadColor, Vector3};
+use codec::entities::{MText, Text};
+use codec::tables::DimStyle;
+use codec::types::{Color as AcadColor, Vector3};
 
 pub(crate) fn resolved_dimension_style(
     source: &DimStyle,
@@ -1663,9 +1751,28 @@ pub(crate) fn resolved_dimension_style(
     }
     if let Some(value) = ov::handle(data, ov::DIMTXSTY) {
         style.dimtxsty_handle = value;
-        if let Some(record) = document.text_styles.iter().find(|record| record.handle == value) {
+        if let Some(record) = document
+            .text_styles
+            .iter()
+            .find(|record| record.handle == value)
+        {
             style.dimtxsty = record.name.clone();
         }
+    }
+
+    // The dimension's own annotation context decides whether it scales with
+    // the annotation scale; the style only seeds new dimensions. A dimension
+    // turned non-annotative under an annotative style uses its DIMSCALE.
+    // An arc length dimension carries no context, so its style decides.
+    // (#1917)
+    if !matches!(dimension, Dimension::Arc(_)) {
+        style.annotative =
+            crate::scene::annotative::object_is_annotative(document, &dimension.base().common);
+    }
+    // An annotative dimension sizes its features by the annotation scale; the
+    // DIMSCALE it still stores is inert.
+    if style.annotative {
+        style.dimscale = 0.0;
     }
 
     // Negative DIMLFAC applies only in paper space, and there only to a
@@ -1694,7 +1801,7 @@ fn calculated_dimlfac(dimension: &Dimension) -> Option<f64> {
         .get_record("ACAD_DIMASSOC_CALC_DIMLFAC")
         .and_then(|record| {
             record.values.iter().find_map(|value| match value {
-                acadrust::xdata::XDataValue::Real(factor) if factor.is_finite() => Some(*factor),
+                codec::xdata::XDataValue::Real(factor) if factor.is_finite() => Some(*factor),
                 _ => None,
             })
         })
@@ -1708,7 +1815,7 @@ pub(crate) fn dimension_in_paper_space(dimension: &Dimension, document: &CadDocu
     }
     document.objects.values().any(|object| {
         matches!(object,
-            acadrust::objects::ObjectType::Layout(layout)
+            codec::objects::ObjectType::Layout(layout)
                 if layout.name != "Model" && layout.block_record == owner
         )
     }) || document.block_records.iter().any(|block| {
@@ -1753,9 +1860,8 @@ pub fn style_sections(
     let data = &dimension.base().common.extended_data;
     let real = |code, inherited| ov::real(data, code).unwrap_or(inherited);
     let int = |code, inherited| ov::int(data, code).unwrap_or(inherited);
-    let string = |code, inherited: &str| {
-        ov::string(data, code).unwrap_or_else(|| inherited.to_string())
-    };
+    let string =
+        |code, inherited: &str| ov::string(data, code).unwrap_or_else(|| inherited.to_string());
     let on = |value: bool| if value { "On" } else { "Off" };
     let yes = |value: bool| if value { "Yes" } else { "No" };
     let number = |label: &str, field: &'static str, value: f64, editable: bool| {
@@ -1780,21 +1886,18 @@ pub fn style_sections(
             },
         )
     };
-    let choice = |label: &str,
-                  field: &'static str,
-                  selected: &str,
-                  options: &[&str],
-                  editable: bool| {
-        property(
-            label,
-            field,
-            if editable {
-                choice_value(selected, options)
-            } else {
-                PropValue::ReadOnly(selected.to_string())
-            },
-        )
-    };
+    let choice =
+        |label: &str, field: &'static str, selected: &str, options: &[&str], editable: bool| {
+            property(
+                label,
+                field,
+                if editable {
+                    choice_value(selected, options)
+                } else {
+                    PropValue::ReadOnly(selected.to_string())
+                },
+            )
+        };
 
     let s = &effective_style;
     let dimfxlon = int(ov::DIMFXLON, s.dimfxlon as i16) != 0;
@@ -1818,21 +1921,13 @@ pub fn style_sections(
     } else {
         "None"
     };
-    let tolerance_enabled = matches!(
-        tolerance_display,
-        "Symmetrical" | "Deviation" | "Limits"
-    );
+    let tolerance_enabled = matches!(tolerance_display, "Symmetrical" | "Deviation" | "Limits");
     let alternate_tolerance_enabled = tolerance_enabled && dimalt;
     let dimzin = int(ov::DIMZIN, s.dimzin);
     let dimaltz = int(ov::DIMALTZ, s.dimaltz);
     let dimtzin = int(ov::DIMTZIN, s.dimtzin);
     let dimalttz = int(ov::DIMALTTZ, s.dimalttz);
-    let annotative = s.annotative
-        || !crate::scene::annotative::object_scale_memberships(
-            document,
-            dimension.base().common.handle,
-        )
-        .is_empty();
+    let annotative = s.annotative;
 
     let overridden_text_style = ov::handle(data, ov::DIMTXSTY);
     let text_style_name = overridden_text_style
@@ -1848,17 +1943,14 @@ pub fn style_sections(
         .text_styles
         .iter()
         .find(|record| {
-            overridden_text_style
-                .is_some_and(|handle| record.handle == handle)
+            overridden_text_style.is_some_and(|handle| record.handle == handle)
                 || (overridden_text_style.is_none()
                     && record.name.eq_ignore_ascii_case(&text_style_name))
         })
         .is_none_or(|record| !record.has_fixed_height());
 
-    let (dim_prefix, dim_suffix) =
-        split_measurement_template(&string(ov::DIMPOST, &s.dimpost));
-    let (alt_prefix, alt_suffix) =
-        split_measurement_template(&string(ov::DIMAPOST, &s.dimapost));
+    let (dim_prefix, dim_suffix) = split_measurement_template(&string(ov::DIMPOST, &s.dimpost));
+    let (alt_prefix, alt_suffix) = split_measurement_template(&string(ov::DIMAPOST, &s.dimapost));
     let decimal_separator = {
         let value = int(ov::DIMDSEP, s.dimdsep);
         let character = value as u8 as char;
@@ -1869,15 +1961,6 @@ pub fn style_sections(
         }
     };
 
-    let mut arrow_options: Vec<String> = std::iter::once("Closed filled".to_string())
-        .chain(
-            document
-                .block_records
-                .iter()
-                .map(|record| record.name.clone())
-                .filter(|name| !name.is_empty()),
-        )
-        .collect();
     let mut linetype_options: Vec<String> = document
         .line_types
         .iter()
@@ -1896,33 +1979,28 @@ pub fn style_sections(
             .map(|handle| block_name(document, handle, inherited_name))
             .unwrap_or_else(|| block_name(document, inherited_handle, inherited_name))
     };
-    let linetype = |code, inherited| {
-        linetype_name(document, ov::handle(data, code).unwrap_or(inherited))
-    };
+    let linetype =
+        |code, inherited| linetype_name(document, ov::handle(data, code).unwrap_or(inherited));
     let arrow_1 = if matches!(dimension, Dimension::Radius(_) | Dimension::LargeRadial(_)) {
         block_name(
             document,
             ov::handle(data, ov::DIMLDRBLK).unwrap_or(s.dimldrblk),
             "Closed filled",
         )
+    } else if s.dimsah {
+        arrow_name(ov::DIMBLK1, s.dimblk1, &s.dimblk1_name)
     } else {
-        let inherited = if matches!(dimension, Dimension::Diameter(_)) && !s.dimsah {
-            (s.dimblk, s.dimblk_name.as_str())
-        } else {
-            (s.dimblk1, s.dimblk1_name.as_str())
-        };
-        arrow_name(ov::DIMBLK1, inherited.0, inherited.1)
+        // Separate arrows off: both ends draw DIMBLK, as the renderer does.
+        block_name(document, s.dimblk, &s.dimblk_name)
     };
-    let arrow_2 = if matches!(dimension, Dimension::Diameter(_)) && !s.dimsah {
-        arrow_name(ov::DIMBLK2, s.dimblk, &s.dimblk_name)
-    } else {
+    let arrow_2 = if s.dimsah {
         arrow_name(ov::DIMBLK2, s.dimblk2, &s.dimblk2_name)
+    } else {
+        block_name(document, s.dimblk, &s.dimblk_name)
     };
-    for current in [&arrow_1, &arrow_2] {
-        if !arrow_options.contains(current) {
-            arrow_options.push(current.clone());
-        }
-    }
+    // The standard arrowheads, then any user arrow block in use. (#1820)
+    let arrow_options =
+        crate::entities::arrowheads::options([&arrow_1, &arrow_2].map(String::as_str));
     for current in [
         linetype(ov::DIMLTYPE, s.dimltex_handle),
         linetype(ov::DIMLTEX1, s.dimltex1_handle),
@@ -1954,8 +2032,8 @@ pub fn style_sections(
     ];
 
     let fill_mode = int(ov::DIMTFILL, s.dimtfill);
-    let fill_color = ov::color(data, ov::DIMTFILLCLR)
-        .unwrap_or_else(|| AcadColor::from_index(s.dimtfillclr));
+    let fill_color =
+        ov::color(data, ov::DIMTFILLCLR).unwrap_or_else(|| AcadColor::from_index(s.dimtfillclr));
     let fill_value = match fill_mode {
         1 => choice_value("Background", &["None", "Background", "Color"]),
         2 => PropValue::ColorChoice(fill_color),
@@ -2108,11 +2186,7 @@ pub fn style_sections(
         PropSection {
             title: t!("Text").into_owned(),
             props: vec![
-                property(
-                    t!("Fill color").as_ref(),
-                    "dim_text_fill_color",
-                    fill_value,
-                ),
+                property(t!("Fill color").as_ref(), "dim_text_fill_color", fill_value),
                 choice(
                     t!("Fractional type").as_ref(),
                     "dim_fractional_type",
@@ -2143,7 +2217,7 @@ pub fn style_sections(
                 choice(
                     t!("Text outside align").as_ref(),
                     "dim_text_outside_align",
-                    on(int(ov::DIMTOH, s.dimtoh as i16) != 0),
+                    on(int(ov::DIMTOH, s.dimtoh as i16) == 0),
                     &["On", "Off"],
                     true,
                 ),
@@ -2178,25 +2252,25 @@ pub fn style_sections(
                 choice(
                     t!("Text inside align").as_ref(),
                     "dim_text_inside_align",
-                    on(int(ov::DIMTIH, s.dimtih as i16) != 0),
+                    on(int(ov::DIMTIH, s.dimtih as i16) == 0),
                     &["On", "Off"],
-                    dimtix || matches!(dimension, Dimension::LargeRadial(_)),
+                    dimtix
+                        || matches!(
+                            dimension,
+                            Dimension::LargeRadial(_)
+                                | Dimension::Angular2Ln(_)
+                                | Dimension::Angular3Pt(_)
+                        ),
                 ),
                 property(
                     t!("Text position X").as_ref(),
                     "text_x",
-                    PropValue::EditText(format!(
-                        "{:.4}",
-                        dimension.base().text_middle_point.x
-                    )),
+                    PropValue::EditText(format!("{:.4}", dimension.base().text_middle_point.x)),
                 ),
                 property(
                     t!("Text position Y").as_ref(),
                     "text_y",
-                    PropValue::EditText(format!(
-                        "{:.4}",
-                        dimension.base().text_middle_point.y
-                    )),
+                    PropValue::EditText(format!("{:.4}", dimension.base().text_middle_point.y)),
                 ),
                 property(
                     t!("Text rotation").as_ref(),
@@ -2283,7 +2357,7 @@ pub fn style_sections(
                 choice(
                     t!("Dim line inside").as_ref(),
                     "dim_line_inside",
-                    on(int(ov::DIMSOXD, s.dimsoxd as i16) != 0),
+                    on(int(ov::DIMSOXD, s.dimsoxd as i16) == 0),
                     &["On", "Off"],
                     true,
                 ),
@@ -2926,18 +3000,17 @@ pub fn style_sections(
                     t!("Arc length symbol").as_ref(),
                     "dim_arc_symbol",
                     symbol,
-                    &[
-                        "Preceding dimension text",
-                        "Above dimension text",
-                        "None",
-                    ],
+                    &["Preceding dimension text", "Above dimension text", "None"],
                     true,
                 ),
             );
         }
     }
 
-    if matches!(dimension, Dimension::Angular2Ln(_) | Dimension::Angular3Pt(_)) {
+    if matches!(
+        dimension,
+        Dimension::Angular2Ln(_) | Dimension::Angular3Pt(_)
+    ) {
         if let Some(text_section) = sections
             .iter_mut()
             .find(|section| section.title == t!("Text").as_ref())
@@ -2999,40 +3072,135 @@ pub fn style_sections(
             ];
         }
         sections.retain(|section| section.title != t!("Alternate Units").as_ref());
+        let by_order = |order: &'static [&'static str]| {
+            move |property: &Property| {
+                order
+                    .iter()
+                    .position(|field| *field == property.field)
+                    .unwrap_or(order.len())
+            }
+        };
         if let Some(tolerances) = sections
             .iter_mut()
             .find(|section| section.title == t!("Tolerances").as_ref())
         {
-            tolerances
+            tolerances.props.retain(|property| {
+                !property.field.starts_with("dim_alt_tolerance_")
+                    && !matches!(
+                        property.field,
+                        "dim_tolerance_suppress_zero_feet" | "dim_tolerance_suppress_zero_inches"
+                    )
+            });
+            tolerances.props.sort_by_key(by_order(&[
+                "dim_tolerance_alignment",
+                "dim_tolerance_display",
+                "dim_tolerance_limit_lower",
+                "dim_tolerance_limit_upper",
+                "dim_tolerance_pos_vert",
+                "dim_tolerance_precision",
+                "dim_tolerance_suppress_leading_zeros",
+                "dim_tolerance_suppress_trailing_zeros",
+                "dim_tolerance_text_height",
+            ]));
+        }
+        // An arc has no dimension line extension.
+        if let Some(lines) = sections
+            .iter_mut()
+            .find(|section| section.title == t!("Lines & Arrows").as_ref())
+        {
+            lines
                 .props
-                .retain(|property| !property.field.starts_with("dim_alt_tolerance_"));
+                .retain(|property| property.field != "dim_line_ext");
+        }
+        if let Some(fit) = sections
+            .iter_mut()
+            .find(|section| section.title == t!("Fit").as_ref())
+        {
+            fit.props.sort_by_key(by_order(&[
+                "dim_line_forced",
+                "dim_line_inside",
+                "dim_scale_overall",
+                "dim_fit",
+                "dim_text_inside",
+                "dim_text_movement",
+            ]));
+        }
+        if let Some(units) = sections
+            .iter_mut()
+            .find(|section| section.title == t!("Primary Units").as_ref())
+        {
+            units.props.sort_by_key(by_order(&[
+                "dim_decimal_separator",
+                "dim_prefix",
+                "dim_suffix",
+                "dim_angle_suppress_leading_zeros",
+                "dim_angle_suppress_trailing_zeros",
+                "dim_angle_precision",
+                "dim_angle_units",
+            ]));
+        }
+        // The measurement reads at the angular precision, and automatic text
+        // reports where it is drawn rather than an unset point.
+        if let Some(text_section) = sections
+            .iter_mut()
+            .find(|section| section.title == t!("Text").as_ref())
+        {
+            let automatic = stored_text_point(dimension)
+                .is_none()
+                .then(|| styled_dimension_text_position(dimension, s, 1.0));
+            for property in &mut text_section.props {
+                match property.field {
+                    "measurement" => {
+                        // The row shows the number at the angular precision,
+                        // without the text's degree sign.
+                        let value = format_angular_value(
+                            displayed_measurement(dimension, Some(s)),
+                            Some(s),
+                        );
+                        property.value =
+                            PropValue::ReadOnly(value.trim_end_matches('°').to_string());
+                    }
+                    "text_x" => {
+                        if let Some(position) = automatic {
+                            property.value = PropValue::EditText(format!("{:.4}", position.x));
+                        }
+                    }
+                    "text_y" => {
+                        if let Some(position) = automatic {
+                            property.value = PropValue::EditText(format!("{:.4}", position.y));
+                        }
+                    }
+                    _ => {}
+                }
+            }
         }
     }
 
     if matches!(dimension, Dimension::Ordinate(_)) {
         for section in &mut sections {
-            section.props.retain(|property| match section.title.as_str() {
-                title if title == t!("Lines & Arrows").as_ref() => matches!(
-                    property.field,
-                    "dim_arrow_size"
-                        | "dim_ext_line_lineweight"
-                        | "dim_ext_linetype_1"
-                        | "dim_ext_line_1"
-                        | "dim_ext_line_fixed"
-                        | "dim_ext_line_fixed_length"
-                        | "dim_ext_line_color"
-                        | "dim_ext_line_offset"
-                ),
-                title if title == t!("Text").as_ref() => !matches!(
-                    property.field,
-                    "dim_text_outside_align" | "dim_text_pos_hor" | "dim_text_inside_align"
-                ),
-                title if title == t!("Fit").as_ref() => matches!(
-                    property.field,
-                    "dim_text_movement" | "dim_scale_overall"
-                ),
-                _ => true,
-            });
+            section
+                .props
+                .retain(|property| match section.title.as_str() {
+                    title if title == t!("Lines & Arrows").as_ref() => matches!(
+                        property.field,
+                        "dim_arrow_size"
+                            | "dim_ext_line_lineweight"
+                            | "dim_ext_linetype_1"
+                            | "dim_ext_line_1"
+                            | "dim_ext_line_fixed"
+                            | "dim_ext_line_fixed_length"
+                            | "dim_ext_line_color"
+                            | "dim_ext_line_offset"
+                    ),
+                    title if title == t!("Text").as_ref() => !matches!(
+                        property.field,
+                        "dim_text_outside_align" | "dim_text_pos_hor" | "dim_text_inside_align"
+                    ),
+                    title if title == t!("Fit").as_ref() => {
+                        matches!(property.field, "dim_text_movement" | "dim_scale_overall")
+                    }
+                    _ => true,
+                });
         }
         let dim_scale = if s.dimscale > 1e-6 { s.dimscale } else { 1.0 };
         let text_position = dimension_text_pos_f64(
@@ -3086,13 +3254,13 @@ pub(crate) fn materialize_large_radial_text_position(
     let Some(EntityType::Dimension(dimension)) = document.get_entity(handle) else {
         return;
     };
-    if !matches!(dimension, Dimension::LargeRadial(_))
-        || dimension.base().text_user_positioned
-    {
+    if !matches!(&**dimension, Dimension::LargeRadial(_)) || dimension.base().text_user_positioned {
         return;
     }
     let source = document.dim_styles.iter().find(|style| {
-        style.name.eq_ignore_ascii_case(&dimension.base().style_name)
+        style
+            .name
+            .eq_ignore_ascii_case(&dimension.base().style_name)
             || (dimension.base().style_name.trim().is_empty()
                 && style.name.eq_ignore_ascii_case("Standard"))
     });
@@ -3100,8 +3268,8 @@ pub(crate) fn materialize_large_radial_text_position(
         .map(|style| resolved_dimension_style(style, dimension, document))
         .map(|style| styled_dimension_text_position(dimension, &style, 1.0))
         .unwrap_or_else(|| dimension_text_pos_f64(dimension, None, 2.5, 1.0));
-    if let Some(EntityType::Dimension(Dimension::LargeRadial(radial))) =
-        document.get_entity_mut(handle)
+    if let Some(Dimension::LargeRadial(radial)) =
+        document.get_entity_mut(handle).and_then(as_dimension_mut)
     {
         radial.base.text_middle_point = position;
     }
@@ -3222,29 +3390,23 @@ fn tolerance_alignment_label(value: i16) -> &'static str {
     }
 }
 
-fn choice_value(
-    selected: &str,
-    options: &[&str],
-) -> crate::scene::model::object::PropValue {
+fn choice_value(selected: &str, options: &[&str]) -> crate::scene::model::object::PropValue {
     crate::scene::model::object::PropValue::Choice {
         selected: selected.to_string(),
         options: options.iter().map(|value| (*value).to_string()).collect(),
     }
 }
 
-fn block_name(document: &CadDocument, handle: acadrust::Handle, fallback: &str) -> String {
-    if handle.is_null() {
-        return "Closed filled".to_string();
+/// The arrowhead picker's name for `handle`; `fallback` names a block the
+/// drawing does not hold.
+fn block_name(document: &CadDocument, handle: codec::Handle, fallback: &str) -> String {
+    if !handle.is_null() && !document.block_records.iter().any(|b| b.handle == handle) {
+        return crate::entities::arrowheads::label_for_block(fallback);
     }
-    document
-        .block_records
-        .iter()
-        .find(|record| record.handle == handle)
-        .map(|record| record.name.clone())
-        .unwrap_or_else(|| fallback.to_string())
+    crate::entities::arrowheads::label(document, handle)
 }
 
-fn linetype_name(document: &CadDocument, handle: acadrust::Handle) -> String {
+fn linetype_name(document: &CadDocument, handle: codec::Handle) -> String {
     document
         .line_types
         .iter()
@@ -3264,7 +3426,7 @@ fn linear_unit_label(value: i16) -> &'static str {
     }
 }
 
-use acadrust::{CadDocument, EntityType, Handle};
+use codec::{CadDocument, EntityType, Handle};
 
 use crate::scene::convert::tess_util::aci_to_rgba;
 use crate::scene::convert::tessellate::{
@@ -3273,20 +3435,15 @@ use crate::scene::convert::tessellate::{
 };
 use crate::scene::model::wire_model::{SnapHint, TangentGeom, WireModel};
 
-fn apply_dimension_breaks(
-    document: &CadDocument,
-    dimension: Handle,
-    lines: &mut Vec<[f32; 3]>,
-) {
+fn apply_dimension_breaks(document: &CadDocument, dimension: Handle, lines: &mut Vec<[f32; 3]>) {
     let references: Vec<_> = document
         .objects
         .values()
         .filter_map(|object| {
-            let acadrust::objects::ObjectType::DataObject(object) = object else {
+            let codec::objects::ObjectType::DataObject(object) = object else {
                 return None;
             };
-            let acadrust::objects::DataObjectData::BreakData(data) = &object.data
-            else {
+            let codec::objects::DataObjectData::BreakData(data) = &object.data else {
                 return None;
             };
             (data.dimension_reference == dimension).then_some(&data.point_references)
@@ -3294,9 +3451,9 @@ fn apply_dimension_breaks(
         .flatten()
         .filter(|reference| {
             let points = [reference.first_point, reference.second_point];
-            points.iter().all(|point| {
-                point.x.is_finite() && point.y.is_finite() && point.z.is_finite()
-            })
+            points
+                .iter()
+                .all(|point| point.x.is_finite() && point.y.is_finite() && point.z.is_finite())
         })
         .collect();
     if references.is_empty() || lines.len() < 2 {
@@ -3357,11 +3514,7 @@ fn apply_dimension_breaks(
             }
             for (start, end) in intervals {
                 if end - start > 1e-6 {
-                    add_segment(
-                        &mut output,
-                        a + direction * start,
-                        a + direction * end,
-                    );
+                    add_segment(&mut output, a + direction * start, a + direction * end);
                 }
             }
         }
@@ -3380,7 +3533,7 @@ fn dimension_jog_point(dimension: &Dimension) -> Option<Vec3> {
         .get_record("ACAD_DSTYLE_DIMJAG_POSITION")
         .and_then(|record| {
             record.values.iter().rev().find_map(|value| match value {
-                acadrust::xdata::XDataValue::Point3D(point) => Some(vec3_local(*point)),
+                codec::xdata::XDataValue::Point3D(point) => Some(vec3_local(*point)),
                 _ => None,
             })
         })
@@ -3407,15 +3560,17 @@ fn apply_dimension_jog(
             )
         })
         .collect::<Vec<_>>();
-    let coordinates = segments.iter().map(|(_, segment)| *segment).collect::<Vec<_>>();
-    let Some((candidate, center)) = cadkernel::space::nearest_segment_point(
-        &coordinates,
-        requested.to_array().map(f64::from),
-    ) else {
+    let coordinates = segments
+        .iter()
+        .map(|(_, segment)| *segment)
+        .collect::<Vec<_>>();
+    let Some((candidate, center)) =
+        kernel::space::nearest_segment_point(&coordinates, requested.to_array().map(f64::from))
+    else {
         return;
     };
     let target = segments[candidate].0;
-    let Some(jog) = cadkernel::space::dimension_jog_points(
+    let Some(jog) = kernel::space::dimension_jog_points(
         coordinates[candidate],
         center,
         normal.to_array().map(f64::from),
@@ -3445,9 +3600,7 @@ fn apply_dimension_jog(
         output.push(second);
     }
     if target + 2 < lines.len() {
-        if !output.last().is_some_and(|point| point[0].is_nan())
-            && !lines[target + 2][0].is_nan()
-        {
+        if !output.last().is_some_and(|point| point[0].is_nan()) && !lines[target + 2][0].is_nan() {
             output.push([f32::NAN; 3]);
         }
         output.extend_from_slice(&lines[target + 2..]);
@@ -3456,6 +3609,7 @@ fn apply_dimension_jog(
 }
 
 pub trait DimensionTess {
+    #[allow(clippy::too_many_arguments)]
     fn tessellate(
         &self,
         document: &CadDocument,
@@ -3464,15 +3618,17 @@ pub trait DimensionTess {
         entity_color: [f32; 4],
         line_weight_px: f32,
         anno_scale: f32,
-        selected_set: &rustc_hash::FxHashSet<acadrust::Handle>,
-        active_viewport: Option<acadrust::Handle>,
+        selected_set: &rustc_hash::FxHashSet<codec::Handle>,
+        active_viewport: Option<codec::Handle>,
         bg_color: [f32; 4],
         view_aabb: Option<[f32; 4]>,
         world_per_pixel: Option<f32>,
+        reference_only: &rustc_hash::FxHashSet<codec::Handle>,
     ) -> Vec<WireModel>;
 }
 
 impl DimensionTess for Dimension {
+    #[allow(clippy::too_many_arguments)]
     fn tessellate(
         &self,
         document: &CadDocument,
@@ -3481,11 +3637,12 @@ impl DimensionTess for Dimension {
         entity_color: [f32; 4],
         line_weight_px: f32,
         anno_scale: f32,
-        selected_set: &rustc_hash::FxHashSet<acadrust::Handle>,
-        active_viewport: Option<acadrust::Handle>,
+        selected_set: &rustc_hash::FxHashSet<codec::Handle>,
+        active_viewport: Option<codec::Handle>,
         bg_color: [f32; 4],
         view_aabb: Option<[f32; 4]>,
         world_per_pixel: Option<f32>,
+        reference_only: &rustc_hash::FxHashSet<codec::Handle>,
     ) -> Vec<WireModel> {
         tessellate_dimension_inner(
             document,
@@ -3500,10 +3657,12 @@ impl DimensionTess for Dimension {
             bg_color,
             view_aabb,
             world_per_pixel,
+            reference_only,
         )
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn tessellate_dimension_inner(
     document: &CadDocument,
     handle: Handle,
@@ -3515,11 +3674,12 @@ fn tessellate_dimension_inner(
     // LOD hints — when present, synthesised dim text routes through the
     // top-level LOD ladder (baseline / greek / full) instead of the render
     // path so far-out drawings collapse to a colored rect or baseline.
-    selected_set: &rustc_hash::FxHashSet<acadrust::Handle>,
-    active_viewport: Option<acadrust::Handle>,
+    selected_set: &rustc_hash::FxHashSet<codec::Handle>,
+    active_viewport: Option<codec::Handle>,
     bg_color: [f32; 4],
     view_aabb: Option<[f32; 4]>,
     world_per_pixel: Option<f32>,
+    reference_only: &rustc_hash::FxHashSet<codec::Handle>,
 ) -> Vec<WireModel> {
     if let Dimension::Arc(arc) = dim {
         if let Some((local_arc, normal)) = arc_dimension_in_ocs(arc) {
@@ -3536,6 +3696,7 @@ fn tessellate_dimension_inner(
                 bg_color,
                 None,
                 world_per_pixel,
+                reference_only,
             );
             for wire in &mut wires {
                 map_wire_ocs_to_wcs(wire, normal);
@@ -3558,6 +3719,7 @@ fn tessellate_dimension_inner(
                 bg_color,
                 None,
                 world_per_pixel,
+                reference_only,
             );
             for wire in &mut wires {
                 map_wire_ocs_to_wcs(wire, normal);
@@ -3579,6 +3741,7 @@ fn tessellate_dimension_inner(
             bg_color,
             None,
             world_per_pixel,
+            reference_only,
         );
         for wire in &mut wires {
             map_wire_ocs_to_wcs(wire, normal);
@@ -3661,11 +3824,7 @@ fn tessellate_dimension_inner(
         let name = dim.base().block_name.trim();
         let mut memo = std::collections::HashMap::new();
         !name.is_empty()
-            && crate::scene::render_graph::block_contains_hatch(
-                document,
-                name,
-                &mut memo,
-            )
+            && crate::scene::render_graph::block_contains_hatch(document, name, &mut memo)
     };
     let (arrow1, arrow2) = if dimtsz_raw > 1e-9 {
         let t = ArrowKind::Tick {
@@ -3679,38 +3838,20 @@ fn tessellate_dimension_inner(
                 crate::entities::dim_override::DIMLDRBLK,
             )
             .unwrap_or(s.dimldrblk);
-            let arrow = arrow_from_block_with_deferred_hatch(
-                document,
-                handle,
-                dimasz,
-                defer_arrow_hatches,
-            );
+            let arrow =
+                arrow_from_block_with_deferred_hatch(document, handle, dimasz, defer_arrow_hatches);
             (arrow.clone(), arrow)
         } else if matches!(dim, Dimension::Diameter(_)) {
             let data = &dim.base().common.extended_data;
-            let first = crate::entities::dim_override::handle(
-                data,
-                crate::entities::dim_override::DIMBLK1,
-            )
-            .unwrap_or(if dimsah { s.dimblk1 } else { s.dimblk });
-            let second = crate::entities::dim_override::handle(
-                data,
-                crate::entities::dim_override::DIMBLK2,
-            )
-            .unwrap_or(if dimsah { s.dimblk2 } else { s.dimblk });
+            let first =
+                crate::entities::dim_override::handle(data, crate::entities::dim_override::DIMBLK1)
+                    .unwrap_or(if dimsah { s.dimblk1 } else { s.dimblk });
+            let second =
+                crate::entities::dim_override::handle(data, crate::entities::dim_override::DIMBLK2)
+                    .unwrap_or(if dimsah { s.dimblk2 } else { s.dimblk });
             (
-                arrow_from_block_with_deferred_hatch(
-                    document,
-                    first,
-                    dimasz,
-                    defer_arrow_hatches,
-                ),
-                arrow_from_block_with_deferred_hatch(
-                    document,
-                    second,
-                    dimasz,
-                    defer_arrow_hatches,
-                ),
+                arrow_from_block_with_deferred_hatch(document, first, dimasz, defer_arrow_hatches),
+                arrow_from_block_with_deferred_hatch(document, second, dimasz, defer_arrow_hatches),
             )
         } else if dimsah {
             (
@@ -3759,14 +3900,23 @@ fn tessellate_dimension_inner(
             dimfxlon,
             dimsoxd,
             dimcen,
-            ticks: dimtsz_raw > 1e-9,
+            // Oblique-stroke and architectural-tick arrow blocks are ticks
+            // too: they sit on the extension line and need no room of their
+            // own, and DIMDLE applies to them. Given arrow-sized room, an
+            // 18-long dimension flipped its strokes outside (#898).
+            ticks: dimtsz_raw > 1e-9
+                || (matches!(arrow1, ArrowKind::Tick { .. })
+                    && matches!(arrow2, ArrowKind::Tick { .. })),
             arrow_len: dimasz,
             text_width: text_layout.width,
+            text_height: dim_txt as f32,
+            constraint: dynamic_constraint_dimension(dim),
             dimatfit: style.map(|s| s.dimatfit).unwrap_or(3),
             dimtix: style.is_some_and(|s| s.dimtix),
             dimtofl: style.map(|s| s.dimtofl).unwrap_or(false),
             text_position: text_layout.position,
             horizontal_text: text_layout.horizontal,
+            text_lifted: style.map(|s| s.dimtad).unwrap_or(1) != 0,
             text_movement: style.map(|s| s.dimtmove).unwrap_or(0),
             text_break: text_layout.break_box,
             leader_anchor: style
@@ -3904,15 +4054,18 @@ fn tessellate_dimension_inner(
     // DIMLTEX (dim line) / DIMLTEX1 (ext1) / DIMLTEX2 (ext2) — linetype
     // handles → pattern. Looked up in document.line_types by handle.
     let lt_scale = document.header.linetype_scale as f32 * dim.base().common.linetype_scale as f32;
-    let (dim_pat_len, dim_pat) = style
-        .map(|s| resolve_pattern_by_handle(document, s.dimltex_handle, lt_scale))
-        .unwrap_or((0.0, [0.0; 8]));
-    let (ext1_pat_len, ext1_pat) = style
-        .map(|s| resolve_pattern_by_handle(document, s.dimltex1_handle, lt_scale))
-        .unwrap_or((0.0, [0.0; 8]));
-    let (ext2_pat_len, ext2_pat) = style
-        .map(|s| resolve_pattern_by_handle(document, s.dimltex2_handle, lt_scale))
-        .unwrap_or((0.0, [0.0; 8]));
+    let pattern = |line_type: Option<codec::types::Handle>| {
+        resolve_pattern_by_handle(
+            document,
+            line_type.unwrap_or(codec::types::Handle::NULL),
+            &dim.base().common,
+            active_viewport,
+            lt_scale,
+        )
+    };
+    let (dim_pat_len, dim_pat) = pattern(style.map(|s| s.dimltex_handle));
+    let (ext1_pat_len, ext1_pat) = pattern(style.map(|s| s.dimltex1_handle));
+    let (ext2_pat_len, ext2_pat) = pattern(style.map(|s| s.dimltex2_handle));
 
     let mut wires = Vec::new();
 
@@ -3931,15 +4084,16 @@ fn tessellate_dimension_inner(
                     world_width: 0.0,
                     depth_override: None,
                     display_visible: true,
+                    snap_only: false,
                     plot_visible: true,
                     fill_is_3d: false,
                     fill_is_2d_solid: false,
                     render_instance: None,
                     pick_tris: Vec::new(),
                     pick_tris_low: Vec::new(),
-            dash_from_start: false,
-            dash_align_end: None,
-            text_verts: Vec::new(),
+                    dash_from_start: false,
+                    dash_align_end: None,
+                    text_verts: Vec::new(),
                     name: name.clone(),
                     points: ext1,
                     points_low: Vec::new(),
@@ -3956,6 +4110,8 @@ fn tessellate_dimension_inner(
                     plinegen: true,
                     fill_tris: vec![],
                     fill_tris_low: Vec::new(),
+
+                    ..Default::default()
                 });
             }
             if !ext2.is_empty() {
@@ -3967,15 +4123,16 @@ fn tessellate_dimension_inner(
                     world_width: 0.0,
                     depth_override: None,
                     display_visible: true,
+                    snap_only: false,
                     plot_visible: true,
                     fill_is_3d: false,
                     fill_is_2d_solid: false,
                     render_instance: None,
                     pick_tris: Vec::new(),
                     pick_tris_low: Vec::new(),
-            dash_from_start: false,
-            dash_align_end: None,
-            text_verts: Vec::new(),
+                    dash_from_start: false,
+                    dash_align_end: None,
+                    text_verts: Vec::new(),
                     name: name.clone(),
                     points: ext2,
                     points_low: Vec::new(),
@@ -3992,6 +4149,8 @@ fn tessellate_dimension_inner(
                     plinegen: true,
                     fill_tris: vec![],
                     fill_tris_low: Vec::new(),
+
+                    ..Default::default()
                 });
             }
         } else {
@@ -4003,15 +4162,16 @@ fn tessellate_dimension_inner(
                 world_width: 0.0,
                 depth_override: None,
                 display_visible: true,
+                snap_only: false,
                 plot_visible: true,
                 fill_is_3d: false,
                 fill_is_2d_solid: false,
                 render_instance: None,
                 pick_tris: Vec::new(),
                 pick_tris_low: Vec::new(),
-            dash_from_start: false,
-            dash_align_end: None,
-            text_verts: Vec::new(),
+                dash_from_start: false,
+                dash_align_end: None,
+                text_verts: Vec::new(),
                 name: name.clone(),
                 points: geom.ext_lines,
                 points_low: Vec::new(),
@@ -4028,6 +4188,8 @@ fn tessellate_dimension_inner(
                 plinegen: true,
                 fill_tris: vec![],
                 fill_tris_low: Vec::new(),
+
+                ..Default::default()
             });
         }
     }
@@ -4040,15 +4202,16 @@ fn tessellate_dimension_inner(
         world_width: 0.0,
         depth_override: None,
         display_visible: true,
+        snap_only: false,
         plot_visible: true,
         fill_is_3d: false,
         fill_is_2d_solid: false,
         render_instance: None,
         pick_tris: Vec::new(),
         pick_tris_low: Vec::new(),
-            dash_from_start: false,
-            dash_align_end: None,
-            text_verts: Vec::new(),
+        dash_from_start: false,
+        dash_align_end: None,
+        text_verts: Vec::new(),
         name: name.clone(),
         points: geom.dim_lines,
         points_low: Vec::new(),
@@ -4070,7 +4233,24 @@ fn tessellate_dimension_inner(
         // — not a crash. Follow-up: double-single-split via points_to_ds to
         // match emit_wire's paired fill path.
         fill_tris_low: Vec::new(),
+
+        ..Default::default()
     });
+    // Arrowheads and ticks: the dimension line's colour and weight, never
+    // its dashes.
+    if !geom.arrow_lines.is_empty() {
+        if let Some(line) = wires.last() {
+            let mut arrows = line.clone();
+            arrows.points = std::mem::take(&mut geom.arrow_lines);
+            arrows.pattern_length = 0.0;
+            arrows.pattern = [0.0; 8];
+            arrows.fill_tris = Vec::new();
+            arrows.snap_pts = Vec::new();
+            arrows.key_vertices = Vec::new();
+            arrows.tangent_geoms = Vec::new();
+            wires.push(arrows);
+        }
+    }
 
     if let Some(symbol) = style.and_then(|style| {
         arc_length_symbol_points(dim, Some(style), dim_txt, dim_scale, style.dimarcsym)
@@ -4085,6 +4265,7 @@ fn tessellate_dimension_inner(
             world_width: 0.0,
             depth_override: None,
             display_visible: true,
+            snap_only: false,
             plot_visible: true,
             fill_is_3d: false,
             fill_is_2d_solid: false,
@@ -4097,7 +4278,11 @@ fn tessellate_dimension_inner(
             name: name.clone(),
             points,
             points_low: Vec::new(),
-            color: if selected { WireModel::SELECTED } else { text_color },
+            color: if selected {
+                WireModel::SELECTED
+            } else {
+                text_color
+            },
             selected,
             aci: 0,
             pattern_length: 0.0,
@@ -4110,6 +4295,8 @@ fn tessellate_dimension_inner(
             plinegen: true,
             fill_tris: vec![],
             fill_tris_low: Vec::new(),
+
+            ..Default::default()
         });
     }
 
@@ -4134,15 +4321,16 @@ fn tessellate_dimension_inner(
                     world_width: 0.0,
                     depth_override: None,
                     display_visible: true,
+                    snap_only: false,
                     plot_visible: true,
                     fill_is_3d: false,
                     fill_is_2d_solid: false,
                     render_instance: None,
                     pick_tris: Vec::new(),
                     pick_tris_low: Vec::new(),
-            dash_from_start: false,
-            dash_align_end: None,
-            text_verts: Vec::new(),
+                    dash_from_start: false,
+                    dash_align_end: None,
+                    text_verts: Vec::new(),
                     name: name.clone(),
                     points: vec![],
                     points_low: Vec::new(),
@@ -4164,6 +4352,8 @@ fn tessellate_dimension_inner(
                     // (sub-metre error at UTM scale) — not a crash. Follow-up:
                     // double-single-split via points_to_ds to match emit_wire.
                     fill_tris_low: Vec::new(),
+
+                    ..Default::default()
                 });
             }
         }
@@ -4185,6 +4375,7 @@ fn tessellate_dimension_inner(
                 world_width: 0.0,
                 depth_override: None,
                 display_visible: true,
+                snap_only: false,
                 plot_visible: true,
                 fill_is_3d: false,
                 fill_is_2d_solid: false,
@@ -4197,7 +4388,11 @@ fn tessellate_dimension_inner(
                 name: name.clone(),
                 points: vec![p1, p2, p2, p3, p3, p4, p4, p1],
                 points_low: Vec::new(),
-                color: if selected { WireModel::SELECTED } else { text_color },
+                color: if selected {
+                    WireModel::SELECTED
+                } else {
+                    text_color
+                },
                 selected,
                 aci: 0,
                 pattern_length: 0.0,
@@ -4210,12 +4405,26 @@ fn tessellate_dimension_inner(
                 plinegen: true,
                 fill_tris: vec![],
                 fill_tris_low: Vec::new(),
+
+                ..Default::default()
             });
         }
     }
 
-    if let Some(synth_text_entity) = dimension_text_entity(dim, dim_txt, style, document, dim_scale)
+    if let Some(mut synth_text_entity) =
+        dimension_text_entity(dim, dim_txt, style, document, dim_scale)
     {
+        // The glyphs take their colour from the text entity itself, which
+        // copies the dimension's (usually ByLayer); an explicit DIMCLRT has to
+        // be on the entity or the layer colour wins. (#898)
+        let text_index = dim_color_index(
+            xd,
+            crate::entities::dim_override::DIMCLRT,
+            style.map(|s| s.dimclrt).unwrap_or(0),
+        );
+        if (1..=255).contains(&text_index) {
+            synth_text_entity.common_mut().color = AcadColor::from_index(text_index);
+        }
         // Tolerance Text rendered separately so DIMTFAC scales its height
         // and DIMTOLJ aligns it vertically against the primary text.
         let tol_entity = dimension_tolerance_entity(dim, style, &synth_text_entity, dim_txt);
@@ -4233,6 +4442,7 @@ fn tessellate_dimension_inner(
             view_aabb,
             world_per_pixel,
             text_color,
+            reference_only,
         );
         for mut w in text_wires {
             w.name = name.clone();
@@ -4250,6 +4460,7 @@ fn tessellate_dimension_inner(
                 view_aabb,
                 world_per_pixel,
                 text_color,
+                reference_only,
             );
             for mut w in tol_wires {
                 w.name = name.clone();
@@ -4264,11 +4475,7 @@ fn tessellate_dimension_inner(
 /// override when the entity carries one, else the dimension style's value.
 /// The Properties panel reads and writes these same overrides, so the renderer
 /// has to consult them or an edited colour shows in the panel and nowhere else.
-fn dim_color_index(
-    xd: &acadrust::xdata::ExtendedData,
-    code: i16,
-    inherited: i16,
-) -> i16 {
+fn dim_color_index(xd: &codec::xdata::ExtendedData, code: i16, inherited: i16) -> i16 {
     crate::entities::dim_override::int(xd, code).unwrap_or(inherited)
 }
 
@@ -4295,23 +4502,49 @@ fn resolve_dim_lineweight_px(code: i16, fallback_px: f32) -> f32 {
 
 /// Look up a linetype in the document's line_types table by handle and
 /// resolve it to a (pattern_length, pattern) pair compatible with WireModel.
+/// An arrowhead of a dimension, kept apart from its dimension line: the
+/// line takes DIMLTYPE's dashes, an arrowhead or tick is always drawn solid —
+/// dashed, a tick broke into two stubs once the line followed its layer's
+/// linetype. (#898)
+fn append_dim_arrow(g: &mut DimGeom, tip: Vec3, dir: Vec3, arrow: &ArrowKind) {
+    let mut head = DimGeom::new();
+    append_arrow(&mut head, tip, dir, arrow);
+    if !head.dim_lines.is_empty() {
+        if g.arrow_lines.last().is_some_and(|point| !point[0].is_nan()) {
+            g.arrow_lines.push([f32::NAN; 3]);
+        }
+        g.arrow_lines.extend(head.dim_lines);
+    }
+    g.arrow_fill.extend(head.arrow_fill);
+}
+
+/// A dimension line's dash pattern. A linetype the style names draws as
+/// itself; none or ByBlock takes the dimension's own linetype (ByLayer: its
+/// layer's), which is what the ByBlock lines of its baked `*D` block drew —
+/// an edited dimension, drawn live, lost its layer's dashes. (#898)
 fn resolve_pattern_by_handle(
     doc: &CadDocument,
-    handle: acadrust::types::Handle,
+    handle: codec::types::Handle,
+    common: &codec::entities::EntityCommon,
+    viewport: Option<codec::Handle>,
     scale: f32,
 ) -> (f32, [f32; 8]) {
-    if handle.is_null() {
-        return (0.0, [0.0; 8]);
-    }
-    let name = doc
-        .line_types
-        .iter()
-        .find(|lt| lt.handle == handle)
-        .map(|lt| lt.name.clone());
-    match name {
-        Some(n) => crate::scene::view::render::resolve_pattern(&doc.line_types, &n, scale),
-        None => (0.0, [0.0; 8]),
-    }
+    let named = (!handle.is_null())
+        .then(|| doc.line_types.iter().find(|lt| lt.handle == handle))
+        .flatten()
+        .map(|lt| lt.name.as_str())
+        .filter(|name| !name.eq_ignore_ascii_case("byblock"));
+    let name = match named {
+        Some(name) if name.eq_ignore_ascii_case("bylayer") => doc
+            .layers
+            .get(&common.layer)
+            .map_or("Continuous", |layer| layer.line_type.as_str()),
+        Some(name) => name,
+        None => {
+            crate::scene::view::render::linetype_name_for_common_viewport(doc, common, viewport)
+        }
+    };
+    crate::scene::view::render::resolve_pattern(&doc.line_types, name, scale)
 }
 
 /// Split the combined ext-lines point list (NaN-separated segment pairs)
@@ -4348,8 +4581,11 @@ fn dimtmove_leader_endpoints(
     let linear = |first: Vec3, second: Vec3, definition: Vec3, axis: [f64; 2]| {
         let bounds = text.break_box?;
         let xy = |point: Vec3| [point.x as f64, point.y as f64];
-        let (leader, under_text) = cadkernel::geom2d::linear_dimension_leader(
-            cadkernel::geom2d::Line { start: xy(first), end: xy(second) },
+        let (leader, under_text) = kernel::geom2d::linear_dimension_leader(
+            kernel::geom2d::Line {
+                start: xy(first),
+                end: xy(second),
+            },
             xy(definition),
             axis,
             xy(txt),
@@ -4378,7 +4614,10 @@ fn dimtmove_leader_endpoints(
                 first,
                 second,
                 lv(d.definition_point),
-                [d.second_point.x - d.first_point.x, d.second_point.y - d.first_point.y],
+                [
+                    d.second_point.x - d.first_point.x,
+                    d.second_point.y - d.first_point.y,
+                ],
             );
         }
         _ => {}
@@ -4400,20 +4639,16 @@ fn dimtmove_leader_endpoints(
             let chord = lv(d.chord_point);
             let jog = lv(d.jog_point);
             let override_center = lv(d.override_center);
-            let (near, far) =
-                jogged_radial_break(chord, jog, override_center, d.jog_angle as f32);
-            let curves = [(chord, near), (near, far), (far, override_center)].map(
-                |(start, end)| {
-                    cadkernel::geom2d::Curve::Line(cadkernel::geom2d::Line {
+            let (near, far) = jogged_radial_break(chord, jog, override_center, d.jog_angle as f32);
+            let curves =
+                [(chord, near), (near, far), (far, override_center)].map(|(start, end)| {
+                    kernel::geom2d::Curve::Line(kernel::geom2d::Line {
                         start: [start.x as f64, start.y as f64],
                         end: [end.x as f64, end.y as f64],
                     })
-                },
-            );
-            let (_, closest) = cadkernel::geom2d::nearest_of(
-                curves.iter(),
-                [txt.x as f64, txt.y as f64],
-            )?;
+                });
+            let (_, closest) =
+                kernel::geom2d::nearest_of(curves.iter(), [txt.x as f64, txt.y as f64])?;
             Vec3::new(closest.point[0] as f32, closest.point[1] as f32, chord.z)
         }
         _ => return None,
@@ -4490,7 +4725,10 @@ fn arc_length_symbol_points(
     let (center_x, center_y) = if symbol_position == 1 {
         (0.0, text_height * 0.72)
     } else {
-        (-(text_width * 0.5 + symbol_width * 0.70), text_height * 0.02)
+        (
+            -(text_width * 0.5 + symbol_width * 0.70),
+            text_height * 0.02,
+        )
     };
     let transform = |x: f64, y: f64| {
         let local_x = center_x + x;
@@ -4569,9 +4807,8 @@ fn dimension_text_layout(
         rotation: dimension_text_rotation(dimension, style),
     });
     let outside = dimension_text_is_outside(dimension, style);
-    let horizontal = style.is_some_and(|style| {
-        (outside && style.dimtoh) || (!outside && style.dimtih)
-    });
+    let horizontal =
+        style.is_some_and(|style| (outside && style.dimtoh) || (!outside && style.dimtih));
     DimensionTextLayout {
         position,
         width,
@@ -4593,11 +4830,18 @@ struct DimLineParams {
     /// Arrowhead length (DIMASZ, scaled) — used to decide arrow-outside fit.
     arrow_len: f32,
     text_width: f32,
+    /// Text height (DIMTXT, scaled) — a radial leader is sized by it.
+    text_height: f32,
+    /// This dimension is a dimensional constraint's dynamic dimension, which
+    /// the reference draws by its own radial rules.
+    constraint: bool,
     dimatfit: i16,
     dimtix: bool,
     dimtofl: bool,
     text_position: Vec3,
     horizontal_text: bool,
+    /// DIMTAD lifts aligned text off its dimension line.
+    text_lifted: bool,
     text_movement: i16,
     text_break: Option<TextBreak>,
     /// DIMTMOVE 1: the point the file stores is where the leader's hook starts,
@@ -4678,22 +4922,55 @@ fn dimension_geometry(
             }
             let radius = (point - center).length();
             let text_is_outside = text.distance(center) > radius + 1e-5;
-            // Text inside the arc: the dimension line runs from the arc point
-            // to the centre. Text outside: only a leader from the arc point to
-            // the text, unless DIMTOFL asks for the inside line as well.
-            if !jogged && !suppress.dim2 && (!text_is_outside || params.dimtofl) {
-                add_segment(&mut g.dim_lines, center, point);
-            }
-            if text_is_outside && !suppress.dim2 {
-                append_radial_leader(&mut g, point, text, &params);
-            }
-            if !suppress.dim2 {
-                // The arrowhead sits on the arc with its body toward the text.
-                let body = if text_is_outside { point - center } else { center - point };
-                append_arrow(&mut g, point, normalized_or(body, Vec3::X), arrow1);
-            }
-            if text_is_outside {
-                append_center_mark(&mut g, center, params.dimcen, radius);
+            if params.constraint {
+                // A dimensional constraint reads on its own dimension line,
+                // which runs from the centre to the arc point and breaks
+                // where the text sits on it. Text that no longer fits inside
+                // is reached by a leader from the arc point, and the
+                // arrowhead stays on the arc either way.
+                if !jogged && !suppress.dim2 {
+                    add_segment_with_text_break(&mut g.dim_lines, center, point, params.text_break);
+                }
+                if text_is_outside && !suppress.dim2 {
+                    append_radial_leader(&mut g, point, point - center, text, &params);
+                }
+                if !suppress.dim2 {
+                    // The arrowhead's tip is on the arc, its body inside.
+                    append_dim_arrow(
+                        &mut g,
+                        point,
+                        normalized_or(center - point, Vec3::X),
+                        arrow1,
+                    );
+                }
+                // The centre mark belongs to a radius drawn without its
+                // inside line; the line itself already marks the centre.
+                if jogged || suppress.dim2 {
+                    append_center_mark(&mut g, center, params.dimcen, radius);
+                }
+            } else {
+                // Text inside the arc: the dimension line runs from the arc
+                // point to the centre. Text outside: only a leader from the
+                // arc point to the text, unless DIMTOFL asks for the inside
+                // line as well.
+                if !jogged && !suppress.dim2 && (!text_is_outside || params.dimtofl) {
+                    add_segment(&mut g.dim_lines, center, point);
+                }
+                if text_is_outside && !suppress.dim2 {
+                    append_radial_leader(&mut g, point, point - center, text, &params);
+                }
+                if !suppress.dim2 {
+                    // The arrowhead sits on the arc with its body toward the text.
+                    let body = if text_is_outside {
+                        point - center
+                    } else {
+                        center - point
+                    };
+                    append_dim_arrow(&mut g, point, normalized_or(body, Vec3::X), arrow1);
+                }
+                if text_is_outside {
+                    append_center_mark(&mut g, center, params.dimcen, radius);
+                }
             }
         }
         Dimension::Diameter(d) => {
@@ -4709,9 +4986,11 @@ fn dimension_geometry(
                 params,
                 suppress,
             );
-            let center = (chord + far_chord) * 0.5;
-            let radius = chord.distance(far_chord) * 0.5;
-            append_center_mark(&mut g, center, params.dimcen, radius);
+            if !params.constraint {
+                let center = (chord + far_chord) * 0.5;
+                let radius = chord.distance(far_chord) * 0.5;
+                append_center_mark(&mut g, center, params.dimcen, radius);
+            }
         }
         Dimension::Angular2Ln(d) => {
             // A two-line angular dimension stores two LINES, not two rays:
@@ -4724,18 +5003,51 @@ fn dimension_geometry(
             let (p3, p4) = (lv(d.angle_vertex), lv(d.definition_point));
             let arc_point = lv(d.dimension_arc);
             match two_line_angle_frame(p1, p2, p3, p4, arc_point) {
-                Some((vertex, start, end)) => append_angular_dimension(
-                    &mut g,
-                    vertex,
-                    vertex,
-                    vertex,
-                    arc_point,
-                    arrow1,
-                    arrow2,
-                    Some((start, end)),
-                    params,
-                    suppress,
-                ),
+                Some((vertex, start, end)) => {
+                    // An extension line runs from a side's nearer end out to
+                    // the arc only where the arc lies beyond that side; where
+                    // the arc crosses the side itself there is nothing to add.
+                    let radius = vertex.distance(arc_point);
+                    let side = |angle: f32| -> (Vec3, bool) {
+                        let dir = Vec3::new(angle.cos(), angle.sin(), 0.0);
+                        let deviation =
+                            |a: Vec3, b: Vec3| normalized_or(b - a, dir).cross(dir).length();
+                        let (a, b) = if deviation(p1, p2) <= deviation(p3, p4) {
+                            (p1, p2)
+                        } else {
+                            (p3, p4)
+                        };
+                        let along = |p: Vec3| (p - vertex).dot(dir);
+                        let (lo, hi) = (along(a).min(along(b)), along(a).max(along(b)));
+                        let arc_end = vertex + dir * radius;
+                        let near = if a.distance(arc_end) <= b.distance(arc_end) {
+                            a
+                        } else {
+                            b
+                        };
+                        (near, radius >= lo - 1e-6 && radius <= hi + 1e-6)
+                    };
+                    let (first, first_covered) = side(start);
+                    let (second, second_covered) = side(end);
+                    let suppress = SuppressFlags {
+                        ext1: suppress.ext1 || first_covered,
+                        ext2: suppress.ext2 || second_covered,
+                        dim1: suppress.dim1,
+                        dim2: suppress.dim2,
+                    };
+                    append_angular_dimension(
+                        &mut g,
+                        vertex,
+                        first,
+                        second,
+                        arc_point,
+                        arrow1,
+                        arrow2,
+                        Some((start, end)),
+                        params,
+                        suppress,
+                    )
+                }
                 // Parallel lines have no vertex and so no angle to draw; the
                 // extension lines alone say where the dimension was.
                 None => {
@@ -4749,14 +5061,14 @@ fn dimension_geometry(
             let first = lv(d.first_point);
             let second = lv(d.second_point);
             let arc_point = lv(d.definition_point);
-            let explicit_sweep = two_line_angle_frame(
-                vertex,
-                first,
-                vertex,
-                second,
-                arc_point,
-            )
-            .map(|(_, start, end)| (start, end));
+            // The sweep starts at whichever ray the arc point says; the
+            // extension lines swap with it, or they would cross the angle.
+            let (first, second, explicit_sweep) =
+                match three_point_frame(vertex, first, second, arc_point) {
+                    Some((start, end, true)) => (second, first, Some((start, end))),
+                    Some((start, end, false)) => (first, second, Some((start, end))),
+                    None => (first, second, None),
+                };
             append_angular_dimension(
                 &mut g,
                 vertex,
@@ -4772,9 +5084,7 @@ fn dimension_geometry(
         }
         Dimension::Ordinate(d) => {
             if !suppress.ext1 {
-                let fixed_length = params
-                    .dimfxlon
-                    .then_some(params.dimfxl.max(0.0) as f64);
+                let fixed_length = params.dimfxlon.then_some(params.dimfxl.max(0.0) as f64);
                 let points = d.leader_polyline(
                     (params.arrow_len * 2.0) as f64,
                     params.dimexo as f64,
@@ -4815,8 +5125,7 @@ fn dimension_geometry(
             let chord = lv(d.chord_point);
             let jog = lv(d.jog_point);
             let override_center = lv(d.override_center);
-            let (near, far) =
-                jogged_radial_break(chord, jog, override_center, d.jog_angle as f32);
+            let (near, far) = jogged_radial_break(chord, jog, override_center, d.jog_angle as f32);
             let axis = normalized_or(chord - override_center, Vec3::X);
             let available = chord.distance(override_center);
             let arrows_outside = if params.ticks || params.arrow_len <= 1.0e-6 {
@@ -4858,7 +5167,7 @@ fn dimension_geometry(
                 );
             }
             if !suppress.dim2 {
-                append_arrow(
+                append_dim_arrow(
                     &mut g,
                     chord,
                     if arrows_outside { axis } else { -axis },
@@ -4896,11 +5205,11 @@ fn add_segment_with_text_break(
         add_segment(points, start, end);
         return;
     };
-    let segment_curve = cadkernel::geom2d::Curve::Line(cadkernel::geom2d::Line {
+    let segment_curve = kernel::geom2d::Curve::Line(kernel::geom2d::Line {
         start: [start.x as f64, start.y as f64],
         end: [end.x as f64, end.y as f64],
     });
-    let tolerance = cadkernel::geom2d::Tolerance::new((length as f64 * 1.0e-9).max(1.0e-9));
+    let tolerance = kernel::geom2d::Tolerance::new((length as f64 * 1.0e-9).max(1.0e-9));
     let inside = |padding: f32| {
         let (sin, cos) = text_break.rotation.sin_cos();
         let x_axis = Vec3::new(cos as f32, sin as f32, 0.0);
@@ -4916,13 +5225,13 @@ fn add_segment_with_text_break(
         let boundary: Vec<_> = (0..4)
             .map(|index| {
                 let next = (index + 1) % 4;
-                cadkernel::geom2d::Curve::Line(cadkernel::geom2d::Line {
+                kernel::geom2d::Curve::Line(kernel::geom2d::Line {
                     start: [corners[index].x as f64, corners[index].y as f64],
                     end: [corners[next].x as f64, corners[next].y as f64],
                 })
             })
             .collect();
-        cadkernel::geom2d::inside_spans(&boundary, &segment_curve, tolerance)
+        kernel::geom2d::inside_spans(&boundary, &segment_curve, tolerance)
     };
     if inside(0.0).is_empty() {
         add_segment(points, start, end);
@@ -5007,9 +5316,13 @@ fn append_linear_dimension(
     // When oblique, lengths are measured along ext_dir instead of perp.
     let (ext1_start, ext1_end, ext2_start, ext2_end) = if params.dimfxlon {
         let fxl = params.dimfxl.max(0.0);
-        let s1 = d1 - ext_dir * (sign1 * fxl);
+        // Never past the DIMEXO gap at the definition point: a length longer
+        // than the line itself would otherwise shoot far beyond the object.
+        let fxl1 = fxl.min((offset1.abs() - params.dimexo).max(0.0));
+        let fxl2 = fxl.min((offset2.abs() - params.dimexo).max(0.0));
+        let s1 = d1 - ext_dir * (sign1 * fxl1);
         let e1 = d1 + ext_dir * (sign1 * params.dimexe);
-        let s2 = d2 - ext_dir * (sign2 * fxl);
+        let s2 = d2 - ext_dir * (sign2 * fxl2);
         let e2 = d2 + ext_dir * (sign2 * params.dimexe);
         (s1, e1, s2, e2)
     } else {
@@ -5094,7 +5407,8 @@ fn append_linear_dimension(
     }
     // Outside the extension lines the dimension line runs two arrow lengths,
     // or on to the text when the text sits further out along the line.
-    let reach = |default: f32, toward_text: Option<f32>| toward_text.map_or(default, |t| t.max(default));
+    let reach =
+        |default: f32, toward_text: Option<f32>| toward_text.map_or(default, |t| t.max(default));
     let stub = params.arrow_len * 2.0;
     let text_beyond_d1 = text_span
         .filter(|(_, hi)| *hi < 0.0 && !hooks_out_horizontally)
@@ -5102,28 +5416,46 @@ fn append_linear_dimension(
     let text_beyond_d2 = text_span
         .filter(|(lo, _)| *lo > gap as f64 && !hooks_out_horizontally)
         .map(|(lo, _)| (lo - gap as f64) as f32);
-    if (arrows_outside && !params.dimsoxd) || text_beyond_d1.is_some() || text_beyond_d2.is_some() {
-        if !suppress.dim1 && (arrows_outside || text_beyond_d1.is_some()) {
-            add_segment(&mut g.dim_lines, d1 - dir_d1_to_d2 * reach(stub, text_beyond_d1), d1);
+    // DIMTMOVE=2 leaves moved text outside the dimension without a fine
+    // leader or an extension that chases the text. Keep genuine arrow-fit
+    // stubs, but do not turn a user-placed text point into another segment.
+    let chase_text = params.text_movement != 2;
+    let beyond_d1 = chase_text.then_some(text_beyond_d1).flatten();
+    let beyond_d2 = chase_text.then_some(text_beyond_d2).flatten();
+    if (arrows_outside && !params.dimsoxd) || beyond_d1.is_some() || beyond_d2.is_some() {
+        if !suppress.dim1 && (arrows_outside || beyond_d1.is_some()) {
+            add_segment(
+                &mut g.dim_lines,
+                d1 - dir_d1_to_d2 * reach(stub, beyond_d1),
+                d1,
+            );
         }
-        if !suppress.dim2 && (arrows_outside || text_beyond_d2.is_some()) {
-            add_segment(&mut g.dim_lines, d2, d2 + dir_d1_to_d2 * reach(stub, text_beyond_d2));
+        if !suppress.dim2 && (arrows_outside || beyond_d2.is_some()) {
+            add_segment(
+                &mut g.dim_lines,
+                d2,
+                d2 + dir_d1_to_d2 * reach(stub, beyond_d2),
+            );
         }
     }
 
     if arrows_outside {
         // Tip on the ext line, body pointing outward.
-        append_arrow(g, d1, normalized_or(d1 - d2, -axis), arrow1);
-        append_arrow(g, d2, normalized_or(d2 - d1, axis), arrow2);
+        append_dim_arrow(g, d1, normalized_or(d1 - d2, -axis), arrow1);
+        append_dim_arrow(g, d2, normalized_or(d2 - d1, axis), arrow2);
     } else {
-        append_arrow(g, d1, normalized_or(d2 - d1, axis), arrow1);
-        append_arrow(g, d2, normalized_or(d1 - d2, -axis), arrow2);
+        append_dim_arrow(g, d1, normalized_or(d2 - d1, axis), arrow1);
+        append_dim_arrow(g, d2, normalized_or(d1 - d2, -axis), arrow2);
     }
 
     // Horizontal text outside the extension lines of a dimension that is not
     // horizontal itself: the dimension line runs on to the text's height and
     // turns a hook one arrow long toward the text, which sits against it.
-    if params.horizontal_text && !params.ticks && dir_d1_to_d2.y.abs() > 1e-3 {
+    if params.text_movement != 2
+        && params.horizontal_text
+        && !params.ticks
+        && dir_d1_to_d2.y.abs() > 1e-3
+    {
         if let Some(text_break) = params.text_break {
             let along = (text_break.center - d1).dot(dir_d1_to_d2);
             let outside = if along < 0.0 {
@@ -5137,7 +5469,11 @@ fn append_linear_dimension(
                 let travel = (text_break.center.y - end.y) / outward.y;
                 if travel > 0.0 && !suppressed {
                     let elbow = end + outward * travel;
-                    let side = if text_break.center.x >= elbow.x { 1.0 } else { -1.0 };
+                    let side = if text_break.center.x >= elbow.x {
+                        1.0
+                    } else {
+                        -1.0
+                    };
                     let hook_end = Vec3::new(elbow.x + side * params.arrow_len, elbow.y, elbow.z);
                     add_segment(&mut g.dim_lines, end, elbow);
                     add_segment(&mut g.dim_lines, elbow, hook_end);
@@ -5147,11 +5483,36 @@ fn append_linear_dimension(
     }
 }
 
-/// Leader from a point on the circle to text outside it. Horizontal text gets a
-/// hook one arrow long that the text sits against; aligned text is reached by a
-/// straight leader that stops a gap short of it. `text_width` already carries
-/// a gap on each side.
-fn append_radial_leader(g: &mut DimGeom, tip: Vec3, text: Vec3, params: &DimLineParams) {
+/// Leader from a point on the circle to text outside it.
+///
+/// A dimensional constraint's dimension leaves the rim along its dimension
+/// line, elbows level with the text and hooks under it. An ordinary radial
+/// dimension keeps its measured layout: horizontal text gets a hook one arrow
+/// long that the text sits against, and aligned text is reached by a straight
+/// leader that stops a gap short of it. `text_width` already carries a gap on
+/// each side.
+fn append_radial_leader(
+    g: &mut DimGeom,
+    tip: Vec3,
+    direction: Vec3,
+    text: Vec3,
+    params: &DimLineParams,
+) {
+    if params.constraint {
+        let side = if text.x >= tip.x { 1.0 } else { -1.0 };
+        let edge = match params.leader_anchor {
+            Some(anchor) => anchor,
+            None => Vec3::new(text.x - side * params.text_width * 0.5, text.y, text.z),
+        };
+        let elbow = tip
+            + normalized_or(direction, Vec3::X)
+                * radial_leader_run(params.text_height as f64) as f32;
+        // The hook is horizontal at the text's height; the run reaches it.
+        let elbow = Vec3::new(elbow.x, edge.y, edge.z);
+        add_segment(&mut g.dim_lines, tip, elbow);
+        add_segment(&mut g.dim_lines, elbow, edge);
+        return;
+    }
     if params.horizontal_text {
         let side = if text.x >= tip.x { 1.0 } else { -1.0 };
         let (hook_start, text_edge) = match params.leader_anchor {
@@ -5168,6 +5529,14 @@ fn append_radial_leader(g: &mut DimGeom, tip: Vec3, text: Vec3, params: &DimLine
             add_segment(&mut g.dim_lines, hook_start, text_edge);
         } else {
             add_segment(&mut g.dim_lines, tip, text_edge);
+        }
+    } else if params.text_lifted {
+        // Text above or below the line: the line carries on out from the
+        // rim, under the whole text to its far end.
+        let along = normalized_or(direction, Vec3::X);
+        let reach = (text - tip).dot(along) + params.text_width * 0.5;
+        if reach > 0.0 {
+            add_segment(&mut g.dim_lines, tip, tip + along * reach);
         }
     } else {
         let toward = normalized_or(text - tip, Vec3::X);
@@ -5193,11 +5562,13 @@ fn append_diameter_dimension(
     }
     let center = (chord + far_chord) * 0.5;
     let text_is_outside = params.text_position.distance(center) > diameter * 0.5 + 1e-5;
-    if text_is_outside && !params.dimtofl {
-        // Outside text without DIMTOFL: no line across the circle, just a
-        // leader from the near side with the arrowhead on the circle and its
-        // body toward the text. DIMTMOVE 2 keeps the arrowhead and drops the
-        // leader.
+    if text_is_outside && (params.constraint || !params.dimtofl) {
+        // A dimensional constraint carries its text on a leader from the
+        // nearer end of the dimension line, and the line and both arrowheads
+        // stay inside the circle. An ordinary diameter draws no line across
+        // the circle at all: just that leader, with one arrowhead on the
+        // circle and its body toward the text. DIMTMOVE 2 keeps the arrowhead
+        // and drops the leader.
         let (tip, suppressed) = if params.text_position.distance_squared(chord)
             <= params.text_position.distance_squared(far_chord)
         {
@@ -5205,19 +5576,24 @@ fn append_diameter_dimension(
         } else {
             (far_chord, suppress.dim2)
         };
-        if !suppressed {
-            if params.text_movement != 2 {
-                append_radial_leader(g, tip, params.text_position, &params);
-            }
-            append_arrow(g, tip, normalized_or(tip - center, axis), arrow1);
+        if !suppressed && params.text_movement != 2 {
+            append_radial_leader(g, tip, tip - center, params.text_position, &params);
         }
-        return;
+        if !params.constraint {
+            if !suppressed {
+                append_dim_arrow(g, tip, normalized_or(tip - center, axis), arrow1);
+            }
+            return;
+        }
     }
     // Text projected outside the diameter requires inward-pointing arrowheads.
     let text_along = (params.text_position - chord).dot(axis);
     let text_outside = text_along < 0.0 || text_along > diameter;
 
     let arrows_outside = if params.ticks || params.arrow_len <= 1e-6 {
+        false
+    } else if text_is_outside {
+        // The leader carries the text; the arrowheads keep the circle.
         false
     } else if text_outside {
         true
@@ -5261,12 +5637,16 @@ fn append_diameter_dimension(
         }
     }
 
+    if params.constraint && !draw_inside_line {
+        let center = (chord + far_chord) * 0.5;
+        append_center_mark(g, center, params.dimcen, diameter * 0.5);
+    }
     if arrows_outside {
-        append_arrow(g, chord, -axis, arrow1);
-        append_arrow(g, far_chord, axis, arrow2);
+        append_dim_arrow(g, chord, -axis, arrow1);
+        append_dim_arrow(g, far_chord, axis, arrow2);
     } else {
-        append_arrow(g, chord, axis, arrow1);
-        append_arrow(g, far_chord, -axis, arrow2);
+        append_dim_arrow(g, chord, axis, arrow1);
+        append_dim_arrow(g, far_chord, -axis, arrow2);
     }
 
     if params.text_movement == 0 {
@@ -5358,7 +5738,7 @@ fn two_line_angle_frame(
     arc_point: Vec3,
 ) -> Option<(Vec3, f32, f32)> {
     let (u, v) = (a2 - a1, b2 - b1);
-    let (t, _) = cadkernel::geom2d::line_line(
+    let (t, _) = kernel::geom2d::line_line(
         [a1.x as f64, a1.y as f64],
         [u.x as f64, u.y as f64],
         [b1.x as f64, b1.y as f64],
@@ -5398,6 +5778,35 @@ fn two_line_angle_frame(
     Some((vertex, start, end))
 }
 
+/// The sweep of a three-point angular dimension: counter-clockwise from the
+/// first ray to the second when the arc point lies in that sweep, otherwise
+/// the other way round (`swapped`). Rays need no crossing, so a straight
+/// angle draws, and a reflex one is kept as picked.
+fn three_point_frame(
+    vertex: Vec3,
+    first: Vec3,
+    second: Vec3,
+    arc_point: Vec3,
+) -> Option<(f32, f32, bool)> {
+    let angle_of = |d: Vec3| d.y.atan2(d.x);
+    let (r1, r2, at) = (first - vertex, second - vertex, arc_point - vertex);
+    if r1.length_squared() <= 1e-12 || r2.length_squared() <= 1e-12 || at.length_squared() <= 1e-12
+    {
+        return None;
+    }
+    let tau = std::f32::consts::TAU;
+    let (a1, a2) = (angle_of(r1), angle_of(r2));
+    let sweep = (a2 - a1).rem_euclid(tau);
+    if sweep <= 1e-6 {
+        return None;
+    }
+    if (angle_of(at) - a1).rem_euclid(tau) <= sweep {
+        Some((a1, a1 + sweep, false))
+    } else {
+        Some((a2, a2 + (tau - sweep), true))
+    }
+}
+
 pub(crate) fn arc_dimension_angles(dimension: &DimensionArc) -> Option<(f32, f32)> {
     let raw = dimension.arc_end_parameter - dimension.arc_start_parameter;
     let mut sweep = raw.rem_euclid(std::f64::consts::TAU);
@@ -5417,9 +5826,7 @@ pub(crate) fn arc_dimension_angles(dimension: &DimensionArc) -> Option<(f32, f32
     (sweep > 1.0e-12).then_some((start as f32, (start + sweep) as f32))
 }
 
-pub(crate) fn arc_dimension_in_ocs(
-    dimension: &DimensionArc,
-) -> Option<(DimensionArc, Vector3)> {
+pub(crate) fn arc_dimension_in_ocs(dimension: &DimensionArc) -> Option<(DimensionArc, Vector3)> {
     let length = dimension.base.normal.length();
     if !length.is_finite() || length <= 1.0e-12 {
         return None;
@@ -5570,9 +5977,15 @@ fn map_wire_ocs_to_wcs(wire: &mut WireModel, normal: Vector3) {
     map_split(&mut wire.points, &mut wire.points_low);
     map_split(&mut wire.fill_tris, &mut wire.fill_tris_low);
     map_split(&mut wire.pick_tris, &mut wire.pick_tris_low);
-    wire.text_verts = crate::scene::model::wire_model::map_text_verts(
-        &wire.text_verts,
-        map,
+    wire.text_verts = crate::scene::model::wire_model::map_text_verts(&wire.text_verts, map);
+    // OCS→WCS is rigid: unit height scale, no in-plane rotation change.
+    wire.map_searchable_runs(
+        &|p| {
+            let mapped = map(p[0], p[1], p[2]);
+            [mapped.0, mapped.1, mapped.2]
+        },
+        1.0,
+        0.0,
     );
     for (point, _) in &mut wire.snap_pts {
         let mapped = map(point.x, point.y, point.z);
@@ -5602,11 +6015,7 @@ fn map_wire_ocs_to_wcs(wire: &mut WireModel, normal: Vector3) {
                 *p2 = [second.0 as f32, second.1 as f32, second.2 as f32];
             }
             TangentGeom::Circle { center, radius } => {
-                let center = map(
-                    center[0] as f64,
-                    center[1] as f64,
-                    center[2] as f64,
-                );
+                let center = map(center[0] as f64, center[1] as f64, center[2] as f64);
                 let (x_axis, y_axis) = crate::scene::view::transform::ocs_axes(normal_tuple);
                 *tangent = TangentGeom::PlanarCircle {
                     center: [center.0, center.1, center.2],
@@ -5615,8 +6024,18 @@ fn map_wire_ocs_to_wcs(wire: &mut WireModel, normal: Vector3) {
                     radius: *radius as f64,
                 };
             }
-            TangentGeom::PlanarCircle { center, axis_x, axis_y, .. }
-            | TangentGeom::Arc { center, axis_x, axis_y, .. } => {
+            TangentGeom::PlanarCircle {
+                center,
+                axis_x,
+                axis_y,
+                ..
+            }
+            | TangentGeom::Arc {
+                center,
+                axis_x,
+                axis_y,
+                ..
+            } => {
                 let mapped = map(center[0], center[1], center[2]);
                 let map_vector = |axis: [f64; 3]| {
                     let mapped = map(axis[0], axis[1], axis[2]);
@@ -5654,13 +6073,8 @@ fn angular_dimension_frame(dim: &Dimension) -> Option<(Vec3, f32, f32, f32)> {
             let second_start = vec3_local(value.angle_vertex);
             let second_end = vec3_local(value.definition_point);
             let arc_point = vec3_local(value.dimension_arc);
-            let (vertex, start, end) = two_line_angle_frame(
-                first_start,
-                first_end,
-                second_start,
-                second_end,
-                arc_point,
-            )?;
+            let (vertex, start, end) =
+                two_line_angle_frame(first_start, first_end, second_start, second_end, arc_point)?;
             (vertex, start, end, arc_point)
         }
         Dimension::Angular3Pt(value) => {
@@ -5668,8 +6082,7 @@ fn angular_dimension_frame(dim: &Dimension) -> Option<(Vec3, f32, f32, f32)> {
             let first = vec3_local(value.first_point);
             let second = vec3_local(value.second_point);
             let arc_point = vec3_local(value.definition_point);
-            let (vertex, start, end) =
-                two_line_angle_frame(vertex, first, vertex, second, arc_point)?;
+            let (start, end, _) = three_point_frame(vertex, first, second, arc_point)?;
             (vertex, start, end, arc_point)
         }
         Dimension::Arc(value) => {
@@ -5713,8 +6126,10 @@ fn append_angular_dimension(
     let arc_end = vertex + dir2 * radius;
     let extension = |origin: Vec3, endpoint: Vec3, direction: Vec3| {
         if params.dimfxlon {
+            // Never past the DIMEXO gap at the measured point.
+            let free = (endpoint.distance(origin) - params.dimexo).max(0.0);
             (
-                endpoint - direction * params.dimfxl.max(0.0),
+                endpoint - direction * params.dimfxl.max(0.0).min(free),
                 endpoint + direction * params.dimexe,
             )
         } else {
@@ -5764,7 +6179,11 @@ fn append_angular_dimension(
         false
     };
     let draw_inside_line = !arrows_outside || params.dimtofl;
-    let arc_extension = if params.ticks { params.dimdle / radius } else { 0.0 };
+    let arc_extension = if params.ticks {
+        params.dimdle / radius
+    } else {
+        0.0
+    };
     let direction = delta.signum();
     let draw_start = start - direction * arc_extension;
     let draw_delta = delta + direction * arc_extension * 2.0;
@@ -5836,30 +6255,32 @@ fn append_angular_dimension(
     let end_tangent = Vec3::new(-end.sin(), end.cos(), 0.0) * direction;
     let draw_arrows = !arrows_outside || !params.dimsoxd;
     if draw_arrows && !suppress.dim1 {
-        append_arrow(
+        append_dim_arrow(
             g,
             arc_start,
-            if arrows_outside { -start_tangent } else { start_tangent },
+            if arrows_outside {
+                -start_tangent
+            } else {
+                start_tangent
+            },
             arrow1,
         );
     }
     if draw_arrows && !suppress.dim2 {
-        append_arrow(
+        append_dim_arrow(
             g,
             arc_end,
-            if arrows_outside { end_tangent } else { -end_tangent },
+            if arrows_outside {
+                end_tangent
+            } else {
+                -end_tangent
+            },
             arrow2,
         );
     }
 }
 
-fn append_sampled_arc(
-    lines: &mut Vec<[f32; 3]>,
-    vertex: Vec3,
-    radius: f32,
-    start: f32,
-    end: f32,
-) {
+fn append_sampled_arc(lines: &mut Vec<[f32; 3]>, vertex: Vec3, radius: f32, start: f32, end: f32) {
     for pair in sample_angular_arc(vertex, radius, start, end - start).windows(2) {
         add_segment(lines, pair[0], pair[1]);
     }
@@ -5888,13 +6309,13 @@ fn sample_angular_arc(vertex: Vec3, radius: f32, start: f32, sweep: f32) -> Vec<
     } else {
         (end, start, true)
     };
-    let mut points: Vec<_> = cadkernel::geom2d::tessellate::arc(
+    let mut points: Vec<_> = kernel::geom2d::tessellate::arc(
         [vertex.x as f64, vertex.y as f64],
         radius as f64,
         from as f64,
         to as f64,
         vertex.z as f64,
-        cadkernel::geom2d::tessellate::DEFAULT_SEGMENTS_PER_RADIAN,
+        kernel::geom2d::tessellate::DEFAULT_SEGMENTS_PER_RADIAN,
     )
     .into_iter()
     .map(|point| Vec3::new(point[0] as f32, point[1] as f32, point[2] as f32))
@@ -5906,8 +6327,8 @@ fn sample_angular_arc(vertex: Vec3, radius: f32, start: f32, sweep: f32) -> Vec<
 }
 
 fn dimension_snap_pts(dim: &Dimension) -> Vec<(glam::DVec3, SnapHint)> {
-    let lv = |v: acadrust::types::Vector3| glam::DVec3::new(v.x, v.y, v.z);
-    let node = |v: acadrust::types::Vector3| (lv(v), SnapHint::Node);
+    let lv = |v: codec::types::Vector3| glam::DVec3::new(v.x, v.y, v.z);
+    let node = |v: codec::types::Vector3| (lv(v), SnapHint::Node);
     match dim {
         Dimension::Linear(d) => vec![
             node(d.first_point),
@@ -5934,10 +6355,7 @@ fn dimension_snap_pts(dim: &Dimension) -> Vec<(glam::DVec3, SnapHint)> {
             node(d.second_point),
             node(d.definition_point),
         ],
-        Dimension::Ordinate(d) => vec![
-            node(d.feature_location),
-            node(d.leader_endpoint),
-        ],
+        Dimension::Ordinate(d) => vec![node(d.feature_location), node(d.leader_endpoint)],
         Dimension::Arc(d) => {
             let mut points = vec![
                 node(d.center_point),
@@ -6062,8 +6480,8 @@ fn dimension_text_entity(
     // (`\f`, `\C`, `\H`, `\S`, brace scopes, …). Otherwise stay on the Text
     // path — single-line dim text doesn't need the full MText pipeline.
     if value_has_mtext_codes(&value) {
-        use acadrust::entities::dimension::AttachmentPointType as DA;
-        use acadrust::entities::AttachmentPoint as MA;
+        use codec::entities::dimension::AttachmentPointType as DA;
+        use codec::entities::AttachmentPoint as MA;
         let attachment_point = match base.attachment_point {
             DA::TopLeft => MA::TopLeft,
             DA::TopCenter => MA::TopCenter,
@@ -6084,8 +6502,8 @@ fn dimension_text_entity(
             mtext.line_spacing_factor = base.line_spacing_factor;
         }
         mtext.normal = base.normal;
-        mtext.common = base.common.clone();
-        return Some(EntityType::MText(mtext));
+        mtext.common = synthesized_text_common(base);
+        return Some(EntityType::MText(Box::new(mtext)));
     }
 
     let value = if style.is_some_and(|style| style.dimtxtdirection) {
@@ -6096,6 +6514,7 @@ fn dimension_text_entity(
     let mut text = Text::with_value(value, pos_f64)
         .with_height(text_height)
         .with_rotation(rotation);
+    text.width_factor = style_width_factor(&style_name, document);
     text.style = style_name;
 
     // Map AttachmentPointType (1..9 grid) to Text horizontal + vertical
@@ -6111,18 +6530,35 @@ fn dimension_text_entity(
     // assumes XY, so non-XY normals are read but not applied here.
     let _ = base.normal;
 
-    text.common = base.common.clone();
+    text.common = synthesized_text_common(base);
     Some(EntityType::Text(text))
 }
 
+/// Width factor for a synthesized dimension TEXT. Dimension text is drawn at
+/// its text style's width factor; a TEXT's own factor (1.0 when synthesized)
+/// would otherwise win over the style's.
+fn style_width_factor(style_name: &str, document: &CadDocument) -> f64 {
+    f64::from(crate::entities::text_support::resolve_text_style(style_name, document).width_factor)
+}
+
+/// The dimension's properties for its synthesized text, less its extension
+/// dictionary. The text height already carries the annotation scale; with the
+/// dimension's per-scale contexts the text would resolve as annotative itself
+/// and scale a second time at every scale but the default one. (#1939)
+fn synthesized_text_common(base: &DimensionBase) -> codec::entities::EntityCommon {
+    let mut common = base.common.clone();
+    common.xdictionary_handle = None;
+    common
+}
+
 fn attachment_to_text_align(
-    attach: acadrust::entities::dimension::AttachmentPointType,
+    attach: codec::entities::dimension::AttachmentPointType,
 ) -> (
-    acadrust::entities::text::TextHorizontalAlignment,
-    acadrust::entities::text::TextVerticalAlignment,
+    codec::entities::text::TextHorizontalAlignment,
+    codec::entities::text::TextVerticalAlignment,
 ) {
-    use acadrust::entities::dimension::AttachmentPointType as A;
-    use acadrust::entities::text::{TextHorizontalAlignment as H, TextVerticalAlignment as V};
+    use codec::entities::dimension::AttachmentPointType as A;
+    use codec::entities::text::{TextHorizontalAlignment as H, TextVerticalAlignment as V};
     match attach {
         A::TopLeft => (H::Left, V::Top),
         A::TopCenter => (H::Center, V::Top),
@@ -6138,8 +6574,8 @@ fn attachment_to_text_align(
 
 /// Reading rotation for a dimension's measurement text, resolving the style
 /// flags the same way the live renderer does: explicit text_rotation, then
-/// horizontal_direction, then DIMTIH/DIMTOH force-horizontal, else the natural
-/// dim-line angle (+90° for DIMJUST 3/4). Shared by the live text entity and
+/// DIMTIH/DIMTOH force-horizontal (along horizontal_direction), else the
+/// natural dim-line angle (+90° for DIMJUST 3/4). Shared by the live text entity and
 /// the bake so a reloaded dimension's text reads at the same angle. (#181)
 fn dimension_text_rotation(dim: &Dimension, style: Option<&DimStyle>) -> f64 {
     let base = dim.base();
@@ -6151,10 +6587,10 @@ fn dimension_text_rotation(dim: &Dimension, style: Option<&DimStyle>) -> f64 {
         base.text_rotation
     } else if matches!(dim, Dimension::Ordinate(_)) {
         dimension_text_natural_rotation(dim)
-    } else if base.horizontal_direction.abs() > 1e-9 {
-        base.horizontal_direction
     } else if (outside && dimtoh) || (!outside && dimtih) {
-        0.0
+        // Text forced horizontal reads along the dimension's horizontal
+        // direction; text aligned with the dimension line ignores it.
+        base.horizontal_direction
     } else {
         let mut r = dimension_text_natural_rotation(dim);
         if dimjust == 3 || dimjust == 4 {
@@ -6172,13 +6608,16 @@ fn dimension_text_is_outside(dim: &Dimension, style: Option<&DimStyle>) -> bool 
         if let Some(point) = stored_text_point(dim) {
             let text = vec3_local(point);
             let angle = (text.y - vertex.y).atan2(text.x - vertex.x);
-            return (angle - start).rem_euclid(std::f32::consts::TAU)
-                > end - start + 1.0e-6;
+            return (angle - start).rem_euclid(std::f32::consts::TAU) > end - start + 1.0e-6;
         }
         if style.dimtix {
             return false;
         }
-        let scale = if style.dimscale > 1e-9 { style.dimscale } else { 1.0 };
+        let scale = if style.dimscale > 1e-9 {
+            style.dimscale
+        } else {
+            1.0
+        };
         let height = style.dimtxt * scale;
         let gap = style.dimgap.abs() * scale;
         let text_width = dimension_text_cells(dim, Some(style))
@@ -6227,14 +6666,17 @@ fn dimension_text_is_outside(dim: &Dimension, style: Option<&DimStyle>) -> bool 
         let dy = radius.definition_point.y - radius.angle_vertex.y;
         let available = dx.hypot(dy);
         if let Some(text) = stored_text_point(dim) {
-            return (text.x - radius.angle_vertex.x)
-                .hypot(text.y - radius.angle_vertex.y)
+            return (text.x - radius.angle_vertex.x).hypot(text.y - radius.angle_vertex.y)
                 > available + 1e-9;
         }
         if style.dimtix {
             return false;
         }
-        let scale = if style.dimscale > 1e-9 { style.dimscale } else { 1.0 };
+        let scale = if style.dimscale > 1e-9 {
+            style.dimscale
+        } else {
+            1.0
+        };
         let height = style.dimtxt * scale;
         let gap = style.dimgap.abs() * scale;
         let text_width = dimension_text_cells(dim, Some(style))
@@ -6278,7 +6720,11 @@ fn dimension_text_is_outside(dim: &Dimension, style: Option<&DimStyle>) -> bool 
     if style.dimtix {
         return false;
     }
-    let scale = if style.dimscale > 1e-9 { style.dimscale } else { 1.0 };
+    let scale = if style.dimscale > 1e-9 {
+        style.dimscale
+    } else {
+        1.0
+    };
     let height = style.dimtxt * scale;
     let gap = style.dimgap.abs() * scale;
     let text_width = dimension_text_cells(dim, Some(style))
@@ -6295,34 +6741,99 @@ fn dimension_text_is_outside(dim: &Dimension, style: Option<&DimStyle>) -> bool 
         }
 }
 
-fn dimension_text_natural_rotation(dim: &Dimension) -> f64 {
-    let angle = match dim {
-        Dimension::Linear(d) => d.rotation,
-        Dimension::Aligned(d) => {
-            let dx = d.second_point.x - d.first_point.x;
-            let dy = d.second_point.y - d.first_point.y;
-            dy.atan2(dx)
-        }
-        Dimension::Angular2Ln(_) | Dimension::Angular3Pt(_) | Dimension::Arc(_) => angular_dimension_frame(dim)
-            .map(|(_, start, end, _)| {
-                ((start + end) * 0.5 + std::f32::consts::FRAC_PI_2) as f64
-            })
-            .unwrap_or(0.0),
-        Dimension::Radius(d) => (d.definition_point.y - d.angle_vertex.y)
-            .atan2(d.definition_point.x - d.angle_vertex.x),
-        Dimension::Diameter(d) => (d.definition_point.y - d.angle_vertex.y)
-            .atan2(d.definition_point.x - d.angle_vertex.x),
-        Dimension::LargeRadial(d) => (d.chord_point.y - d.override_center.y)
-            .atan2(d.chord_point.x - d.override_center.x),
-        Dimension::Ordinate(d) => {
-            let axis_rotation = -d.base.horizontal_direction;
-            if d.is_ordinate_type_x {
-                axis_rotation + std::f64::consts::FRAC_PI_2
+/// Where a dynamic dimension's lock mark sits: just after the text on its
+/// baseline, with the direction that points away from the text.
+pub(crate) fn dynamic_dimension_lock_anchor(
+    document: &CadDocument,
+    dim: &Dimension,
+    anno_scale: f64,
+) -> Option<(Vector3, Vector3)> {
+    let style_name = &dim.base().style_name;
+    let source_style = document.dim_styles.iter().find(|s| {
+        s.name.eq_ignore_ascii_case(style_name)
+            || (style_name.trim().is_empty() && s.name.eq_ignore_ascii_case("Standard"))
+    });
+    let effective_style = source_style.map(|style| resolved_dimension_style(style, dim, document));
+    let style = effective_style.as_ref();
+    let dim_scale = style
+        .map(|s| {
+            if s.dimscale > 1e-6 {
+                s.dimscale
             } else {
-                axis_rotation
+                anno_scale
             }
-        }
+        })
+        .unwrap_or(1.0);
+    let text_height = style.map(|s| s.dimtxt * dim_scale).unwrap_or(2.5);
+    let value = dimension_text_value(dim, style)?;
+    let stack_scale = style.map(dimtfac_or_one).unwrap_or(1.0);
+    let half_width = text_cells(&value, stack_scale) * text_height * CELL_WIDTH * 0.5;
+    let pos = dimension_text_pos_f64(dim, style, text_height, dim_scale);
+    // The text angle the renderer draws (DIMTIH/DIMTOH overrides make a
+    // dynamic dimension's text horizontal).
+    let (sr, cr) = dimension_text_rotation(dim, style).sin_cos();
+    let outward = Vector3::new(cr, sr, 0.0);
+    // A glyph-sized gap keeps the lock clear of the last digit.
+    let reach = half_width + text_height * 0.9;
+    Some((
+        Vector3::new(pos.x + outward.x * reach, pos.y + outward.y * reach, pos.z),
+        outward,
+    ))
+}
+
+/// The two ends of an angular dimension's arc, each with the direction
+/// pointing away from the arc: where a dynamic angle's triangle grips sit.
+pub(crate) fn angular_arc_ends(dim: &Dimension) -> Option<[(glam::DVec3, glam::DVec3); 2]> {
+    let (vertex, start, end, radius) = angular_dimension_frame(dim)?;
+    let point = |angle: f32| {
+        let p = vertex + Vec3::new(angle.cos(), angle.sin(), 0.0) * radius;
+        glam::DVec3::new(p.x as f64, p.y as f64, p.z as f64)
     };
+    let away = |angle: f32, sign: f32| {
+        glam::DVec3::new(
+            (-angle.sin() * sign) as f64,
+            (angle.cos() * sign) as f64,
+            0.0,
+        )
+    };
+    Some([
+        (point(start), away(start, -1.0)),
+        (point(end), away(end, 1.0)),
+    ])
+}
+
+fn dimension_text_natural_rotation(dim: &Dimension) -> f64 {
+    let angle =
+        match dim {
+            Dimension::Linear(d) => d.rotation,
+            Dimension::Aligned(d) => {
+                let dx = d.second_point.x - d.first_point.x;
+                let dy = d.second_point.y - d.first_point.y;
+                dy.atan2(dx)
+            }
+            Dimension::Angular2Ln(_) | Dimension::Angular3Pt(_) | Dimension::Arc(_) => {
+                angular_dimension_frame(dim)
+                    .map(|(_, start, end, _)| {
+                        ((start + end) * 0.5 + std::f32::consts::FRAC_PI_2) as f64
+                    })
+                    .unwrap_or(0.0)
+            }
+            Dimension::Radius(d) => (d.definition_point.y - d.angle_vertex.y)
+                .atan2(d.definition_point.x - d.angle_vertex.x),
+            Dimension::Diameter(d) => (d.definition_point.y - d.angle_vertex.y)
+                .atan2(d.definition_point.x - d.angle_vertex.x),
+            Dimension::LargeRadial(d) => {
+                (d.chord_point.y - d.override_center.y).atan2(d.chord_point.x - d.override_center.x)
+            }
+            Dimension::Ordinate(d) => {
+                let axis_rotation = -d.base.horizontal_direction;
+                if d.is_ordinate_type_x {
+                    axis_rotation + std::f64::consts::FRAC_PI_2
+                } else {
+                    axis_rotation
+                }
+            }
+        };
     // Clamp to (-π/2, π/2] so text never appears upside-down.
     let pi = std::f64::consts::PI;
     if angle > pi / 2.0 {
@@ -6504,10 +7015,7 @@ fn build_tolerance_suffix(
             if alignment == 0 {
                 align_tolerance_decimals(&mut upper, &mut lower, s.dimdsep);
             }
-            return Some(format!(
-                "\\S+{}{}^-{}{};",
-                upper, unit, lower, unit
-            ));
+            return Some(format!("\\S+{}{}^-{}{};", upper, unit, lower, unit));
         }
     }
     None
@@ -6541,9 +7049,7 @@ fn alternate_units_text(measurement: f64, style: Option<&DimStyle>) -> Option<St
         return None;
     }
     let scaled = measurement * s.dimaltf;
-    let use_sub_units = s.dimaltz & 4 != 0
-        && scaled.abs() < 1.0
-        && s.dimaltmzf.abs() > 1e-12;
+    let use_sub_units = s.dimaltz & 4 != 0 && scaled.abs() < 1.0 && s.dimaltmzf.abs() > 1e-12;
     // DIMALTMZF replaces the ordinary alternate-unit factor for sub-unit
     // values; it is not an additional multiplier.
     let mut v = if use_sub_units {
@@ -6672,9 +7178,9 @@ fn dimension_tolerance_entity(
         mtext.height = tol_height;
         mtext.rotation = rot;
         mtext.style = primary_style;
-        mtext.attachment_point = acadrust::entities::AttachmentPoint::MiddleCenter;
+        mtext.attachment_point = codec::entities::AttachmentPoint::MiddleCenter;
         mtext.common = primary_common;
-        return Some(EntityType::MText(mtext));
+        return Some(EntityType::MText(Box::new(mtext)));
     }
 
     let mut t = Text::with_value(tol, pos)
@@ -6682,8 +7188,8 @@ fn dimension_tolerance_entity(
         .with_rotation(rot);
     t.style = primary_style;
     t.common = primary_common;
-    t.horizontal_alignment = acadrust::entities::text::TextHorizontalAlignment::Center;
-    t.vertical_alignment = acadrust::entities::text::TextVerticalAlignment::Middle;
+    t.horizontal_alignment = codec::entities::text::TextHorizontalAlignment::Center;
+    t.vertical_alignment = codec::entities::text::TextVerticalAlignment::Middle;
     Some(EntityType::Text(t))
 }
 
@@ -6730,7 +7236,11 @@ fn dimtfac_or_one(s: &DimStyle) -> f64 {
 
 /// Vertical extent of a dimension's whole value: the first line (or limits
 /// stack) plus any `\P` continuation lines at MText's default spacing.
-fn dimension_text_extent_height(dim: &Dimension, style: Option<&DimStyle>, text_height: f64) -> f64 {
+fn dimension_text_extent_height(
+    dim: &Dimension,
+    style: Option<&DimStyle>,
+    text_height: f64,
+) -> f64 {
     let lines = dimension_text_value(dim, style)
         .map(|value| text_lines(&value))
         .unwrap_or(1);
@@ -6901,7 +7411,11 @@ fn format_engineering(inches: f64, dec: usize) -> String {
     let scale = 10f64.powi(dec.min(15) as i32);
     let ticks = (inches.abs() * scale).round();
     let per_foot = 12.0 * scale;
-    let sign = if inches < 0.0 && ticks != 0.0 { "-" } else { "" };
+    let sign = if inches < 0.0 && ticks != 0.0 {
+        "-"
+    } else {
+        ""
+    };
     let feet = (ticks / per_foot).trunc();
     let rem_in = (ticks - feet * per_foot) / scale;
     format!("{}{:.0}'-{:.*}\"", sign, feet, dec, rem_in)
@@ -7023,7 +7537,10 @@ fn format_angular_value(measurement_deg: f64, style: Option<&DimStyle>) -> Strin
             let raw = format!("{:.*}", adec, g);
             format!(
                 "{}g",
-                swap_decimal_sep(&apply_angular_zero_suppression(&raw, azin), decimal_separator)
+                swap_decimal_sep(
+                    &apply_angular_zero_suppression(&raw, azin),
+                    decimal_separator
+                )
             )
         }
         // 3 = Radians
@@ -7032,7 +7549,10 @@ fn format_angular_value(measurement_deg: f64, style: Option<&DimStyle>) -> Strin
             let raw = format!("{:.*}", adec, r);
             format!(
                 "{}r",
-                swap_decimal_sep(&apply_angular_zero_suppression(&raw, azin), decimal_separator)
+                swap_decimal_sep(
+                    &apply_angular_zero_suppression(&raw, azin),
+                    decimal_separator
+                )
             )
         }
         // 4 = Surveyor's units
@@ -7042,7 +7562,10 @@ fn format_angular_value(measurement_deg: f64, style: Option<&DimStyle>) -> Strin
             let raw = format!("{:.*}", adec, measurement_deg);
             format!(
                 "{}°",
-                swap_decimal_sep(&apply_angular_zero_suppression(&raw, azin), decimal_separator)
+                swap_decimal_sep(
+                    &apply_angular_zero_suppression(&raw, azin),
+                    decimal_separator
+                )
             )
         }
     }
@@ -7139,6 +7662,10 @@ fn strip_trailing_zeros(s: &str) -> String {
     if !s.contains('.') {
         return s.to_string();
     }
+    // Engineering units end in the inch mark: the inches lose their zeros.
+    if let Some(number) = s.strip_suffix('"') {
+        return format!("{}\"", strip_trailing_zeros(number));
+    }
     let trimmed = s.trim_end_matches('0').trim_end_matches('.');
     if trimmed.is_empty() || trimmed == "-" {
         "0".to_string()
@@ -7184,6 +7711,7 @@ fn text_on_dim_line(
     dimjust: i16,
     perp_off: f64,
     text_w: f64,
+    gap: f64,
     arrow: f64,
     dimtix: bool,
     dimatfit: i16,
@@ -7221,10 +7749,16 @@ fn text_on_dim_line(
     // Along-axis positions of the extension points relative to the dim line.
     let t1 = (first.x - defpt.x) * ax + (first.y - defpt.y) * ay;
     let t2 = (second.x - defpt.x) * ax + (second.y - defpt.y) * ay;
-    // DIMJUST: 0=centred, 1/3=near first ext, 2/4=near second ext.
+    // DIMJUST: 0=centred, 1/3=near first ext, 2/4=near second ext. Beside
+    // an extension line (1/2) the text starts an arrow and two gaps from it,
+    // towards the other one; `text_w` already carries a gap each side.
+    let inward = if t2 >= t1 { 1.0 } else { -1.0 };
+    let beside = arrow + gap + (text_w * 0.5).max(0.0);
     let mut along = match dimjust {
-        1 | 3 => t1,
-        2 | 4 => t2,
+        1 => t1 + inward * beside,
+        2 => t2 - inward * beside,
+        3 => t1,
+        4 => t2,
         _ => (t1 + t2) * 0.5,
     };
     // DIMATFIT / DIMTIX fit: move text according to the selected priority when
@@ -7292,9 +7826,13 @@ fn text_on_single_arrow_dim_line(
     let perpendicular_sign = match tad {
         4 => -1.0,
         2 => {
-            let offset = (defpt.x - first.x) * perpendicular_x
-                + (defpt.y - first.y) * perpendicular_y;
-            if offset >= 0.0 { 1.0 } else { -1.0 }
+            let offset =
+                (defpt.x - first.x) * perpendicular_x + (defpt.y - first.y) * perpendicular_y;
+            if offset >= 0.0 {
+                1.0
+            } else {
+                -1.0
+            }
         }
         _ => 1.0,
     };
@@ -7331,6 +7869,147 @@ fn stored_text_point(dim: &Dimension) -> Option<Vector3> {
     (p.x * p.x + p.y * p.y + p.z * p.z > 1e-16).then_some(p)
 }
 
+/// Where a dimension's text sits by its style in this drawing (its
+/// overrides applied) when the user has not placed it. Text beside an
+/// extension line (DIMJUST 1/2) is measured by the glyphs of its font, not
+/// by character cells.
+pub(crate) fn automatic_text_position(document: &CadDocument, dim: &Dimension) -> Option<Vector3> {
+    let name = &dim.base().style_name;
+    let source = document.dim_styles.iter().find(|s| {
+        s.name.eq_ignore_ascii_case(name)
+            || (name.trim().is_empty() && s.name.eq_ignore_ascii_case("Standard"))
+    })?;
+    let style = resolved_dimension_style(source, dim, document);
+    let scale = if style.dimscale > 1e-6 { style.dimscale } else { 1.0 };
+    let height = style.dimtxt * scale;
+    let mut position = dimension_text_pos_f64(dim, Some(&style), height, scale);
+    // Text beside an extension line, or a radius's text, which sits out past
+    // its arc point two arrows and a gap from it.
+    let outside = dimension_text_is_outside(dim, Some(&style));
+    let measured = match dim {
+        Dimension::Radius(_) => true,
+        _ => matches!(style.dimjust, 1 | 2) && !outside,
+    };
+    if !measured {
+        return Some(position);
+    }
+    let Some(ink) = dimension_text_ink_width(document, dim, &style, height) else {
+        return Some(position);
+    };
+    // The layout spaced the text by character cells; it moves by half the
+    // difference to its inked width, away from the line it sits beside
+    // (or from the arc).
+    let cells = dimension_text_cells(dim, Some(&style)).unwrap_or(0.0) * height * CELL_WIDTH;
+    let half = (ink - cells) * 0.5;
+    let axis = |first: Vector3, second: Vector3, defpt: Vector3, ax: f64, ay: f64| {
+        let t1 = (first.x - defpt.x) * ax + (first.y - defpt.y) * ay;
+        let t2 = (second.x - defpt.x) * ax + (second.y - defpt.y) * ay;
+        let towards_second = if t2 >= t1 { 1.0 } else { -1.0 };
+        let inward = if style.dimjust == 1 { towards_second } else { -towards_second };
+        (ax * half * inward, ay * half * inward)
+    };
+    match dim {
+        Dimension::Linear(d) => {
+            let (dx, dy) = axis(
+                d.first_point,
+                d.second_point,
+                d.definition_point,
+                d.rotation.cos(),
+                d.rotation.sin(),
+            );
+            position.x += dx;
+            position.y += dy;
+        }
+        Dimension::Aligned(d) => {
+            let (ex, ey) = (d.second_point.x - d.first_point.x, d.second_point.y - d.first_point.y);
+            let len = ex.hypot(ey).max(1e-12);
+            let (dx, dy) =
+                axis(d.first_point, d.second_point, d.definition_point, ex / len, ey / len);
+            position.x += dx;
+            position.y += dy;
+        }
+        Dimension::Angular2Ln(_) | Dimension::Angular3Pt(_) => {
+            if let Some((vertex, start, end, radius)) = angular_dimension_frame(dim) {
+                let toward_end = if end >= start { 1.0 } else { -1.0 };
+                let sign = if style.dimjust == 1 { -toward_end } else { toward_end };
+                let (sin, cos) = (half * sign / f64::from(radius).max(1e-12)).sin_cos();
+                let (cx, cy) = (f64::from(vertex.x), f64::from(vertex.y));
+                let (px, py) = (position.x - cx, position.y - cy);
+                position.x = cx + px * cos - py * sin;
+                position.y = cy + px * sin + py * cos;
+            }
+        }
+        Dimension::Radius(d) => {
+            let (dx, dy) = (
+                d.definition_point.x - d.angle_vertex.x,
+                d.definition_point.y - d.angle_vertex.y,
+            );
+            let len = dx.hypot(dy).max(1e-12);
+            let reach = (2.0 * style.dimasz + style.dimgap.abs()) * scale + ink * 0.5;
+            position.x = d.definition_point.x + dx / len * reach;
+            position.y = d.definition_point.y + dy / len * reach;
+        }
+        _ => {}
+    }
+    Some(position)
+}
+
+/// The inked width of a dimension's text: its characters (formatting codes
+/// left out) in its font (an `\F` font in the text, else the style's text
+/// style) at `height`.
+fn dimension_text_ink_width(
+    document: &CadDocument,
+    dim: &Dimension,
+    style: &DimStyle,
+    height: f64,
+) -> Option<f64> {
+    let value = dimension_text_value(dim, Some(style))?;
+    let mut plain = String::new();
+    let mut font = None;
+    let mut chars = value.chars().peekable();
+    while let Some(c) = chars.next() {
+        match c {
+            '{' | '}' => {}
+            '\\' => match chars.next() {
+                Some('F' | 'f') => {
+                    let body: String = chars.by_ref().take_while(|c| *c != ';').collect();
+                    font.get_or_insert_with(|| body.split('|').next().unwrap_or("").to_string());
+                }
+                Some('C' | 'c' | 'H' | 'h' | 'W' | 'w' | 'Q' | 'q' | 'T' | 't' | 'A' | 'a' | 'p') => {
+                    chars.by_ref().find(|c| *c == ';');
+                }
+                Some('P') => plain.push(' '),
+                Some('~') => plain.push(' '),
+                Some(other @ ('\\' | '{' | '}')) => plain.push(other),
+                _ => {}
+            },
+            '~' => plain.push(' '),
+            other => plain.push(other),
+        }
+    }
+    let font = font.filter(|f| !f.is_empty()).unwrap_or_else(|| {
+        crate::entities::text_support::resolve_text_style(&style.dimtxsty, document).font_name
+    });
+    let bounds = crate::entities::text_support::text_local_bounds(
+        &font,
+        plain.trim(),
+        height as f32,
+        1.0,
+        0.0,
+    )?;
+    Some(f64::from(bounds.ink_max[0] - bounds.ink_min[0]))
+}
+
+/// Clear an automatic text position so the dimension is laid out from its
+/// current settings again. A loaded point is kept so a drawing looks as it
+/// was drawn; a new dimension, or one whose style or overrides just changed,
+/// has no valid one. Text the user placed keeps its point (#1412).
+pub(crate) fn reset_automatic_text_position(base: &mut DimensionBase) {
+    if !base.text_user_positioned {
+        base.text_middle_point = Vector3::new(0.0, 0.0, 0.0);
+    }
+}
+
 /// The point on the circle a radial leader leaves from: the arc point of a
 /// radius, or whichever end of a diameter's chord is nearer the text.
 fn radial_leader_tip(dim: &Dimension, text: Vector3) -> Vector3 {
@@ -7345,6 +8024,83 @@ fn radial_leader_tip(dim: &Dimension, text: Vector3) -> Vector3 {
         }
         _ => dim.base().text_middle_point,
     }
+}
+
+/// A dimensional constraint's dynamic dimension: the reference keeps it on
+/// its own hidden layer and draws it by its own rules.
+fn dynamic_constraint_dimension(dim: &Dimension) -> bool {
+    crate::scene::parametric_constraints::is_dynamic_dimension_layer(&dim.base().common.layer)
+}
+
+/// How far a radial leader runs out from the rim before its hook, and how
+/// long that hook is: about one text height, so the text always clears the
+/// circle.
+fn radial_leader_run(text_height: f64) -> f64 {
+    text_height
+}
+
+/// Where a radius or diameter dimension's text sits once it no longer fits
+/// inside: beside the circle, level with the end of the leader's run, its
+/// near edge one arrow away so the hook has room.
+fn radial_outside_text(
+    tip: Vector3,
+    ux: f64,
+    uy: f64,
+    text_height: f64,
+    text_width: f64,
+) -> Vector3 {
+    let run = radial_leader_run(text_height);
+    let elbow = Vector3::new(tip.x + ux * run, tip.y + uy * run, tip.z);
+    let side = if ux >= 0.0 { 1.0 } else { -1.0 };
+    Vector3::new(elbow.x + side * (run + text_width * 0.5), elbow.y, elbow.z)
+}
+
+/// Whether `point` lies on the diameter's leader line — the line through its
+/// two defining points — rather than a DIMTAD offset away from it.
+fn diameter_point_on_leader(
+    d: &codec::entities::dimension::DimensionDiameter,
+    point: Vector3,
+    offset: f64,
+) -> bool {
+    point_on_line(d.angle_vertex, d.definition_point, point, offset)
+}
+
+/// Whether `point` lies on the line through `a` and `b` rather than an
+/// `offset` (a DIMTAD lift) away from it.
+fn point_on_line(a: Vector3, b: Vector3, point: Vector3, offset: f64) -> bool {
+    let (dx, dy) = (b.x - a.x, b.y - a.y);
+    let length = dx.hypot(dy);
+    if length < 1e-12 {
+        return true;
+    }
+    let across = ((point.x - a.x) * dy - (point.y - a.y) * dx) / length;
+    across.abs() < offset.abs() * 0.5
+}
+
+/// `point` on the line through `a` and `b`, lifted `offset` to the side the
+/// line's readable text stands on (below for DIMTAD 4).
+fn lift_off_line(a: Vector3, b: Vector3, point: Vector3, offset: f64, dimtad: i16) -> Vector3 {
+    let (dx, dy) = (b.x - a.x, b.y - a.y);
+    let len = (dx * dx + dy * dy).sqrt().max(1e-12);
+    // Match the readable orientation used by text_on_dim_line().
+    let (mut nx, mut ny) = (dx / len, dy / len);
+    if nx < 0.0 || (nx == 0.0 && ny < 0.0) {
+        nx = -nx;
+        ny = -ny;
+    }
+    let (px, py) = (-ny, nx);
+    let sign = if dimtad == 4 { -1.0 } else { 1.0 };
+    Vector3::new(
+        point.x + px * offset * sign,
+        point.y + py * offset * sign,
+        point.z,
+    )
+}
+
+/// DIMTOH / DIMTIH turn this dimension's text horizontal where it sits.
+fn dimension_text_reads_horizontal(dim: &Dimension, style: Option<&DimStyle>) -> bool {
+    let outside = dimension_text_is_outside(dim, style);
+    style.is_some_and(|style| (outside && style.dimtoh) || (!outside && style.dimtih))
 }
 
 fn dimension_text_pos_f64(
@@ -7398,25 +8154,29 @@ fn dimension_text_pos_f64(
                 let side = if point.x >= tip.x { 1.0 } else { -1.0 };
                 Vector3::new(point.x + side * (arrow + text_w * 0.5), point.y, point.z)
             }
+            // A radius places its text where it was clicked, on the line
+            // through the centre and the arc point; DIMTAD lifts aligned text
+            // off that line as it does on a diameter, and the line runs on
+            // under it. A point already off the line is the text's own
+            // middle, as a file saved elsewhere writes it. (#1675)
+            Dimension::Radius(d)
+                if dimtad != 0
+                    && !dimension_text_reads_horizontal(dim, style)
+                    && point_on_line(d.angle_vertex, d.definition_point, point, perp_off) =>
+            {
+                lift_off_line(d.angle_vertex, d.definition_point, point, perp_off, dimtad)
+            }
             // A diameter whose text the user dragged keeps the grip point on
             // the leader and lifts the text by the DIMTAD offset (#1323).
-            Dimension::Diameter(d) if base.text_user_positioned && dimtad != 0 => {
-                let dx = d.definition_point.x - d.angle_vertex.x;
-                let dy = d.definition_point.y - d.angle_vertex.y;
-                let len = (dx * dx + dy * dy).sqrt().max(1e-12);
-                // Match the readable orientation used by text_on_dim_line().
-                let (mut nx, mut ny) = (dx / len, dy / len);
-                if nx < 0.0 || (nx == 0.0 && ny < 0.0) {
-                    nx = -nx;
-                    ny = -ny;
-                }
-                let (px, py) = (-ny, nx);
-                let perp_sign = if dimtad == 4 { -1.0 } else { 1.0 };
-                Vector3::new(
-                    point.x + px * perp_off * perp_sign,
-                    point.y + py * perp_off * perp_sign,
-                    point.z,
-                )
+            // A stored point already standing off the leader is the text's
+            // own middle, as a file saved elsewhere writes it; lifting that
+            // again floated the text a text height clear of its line (#898).
+            Dimension::Diameter(d)
+                if base.text_user_positioned
+                    && dimtad != 0
+                    && diameter_point_on_leader(d, point, perp_off) =>
+            {
+                lift_off_line(d.angle_vertex, d.definition_point, point, perp_off, dimtad)
             }
             _ => point,
         };
@@ -7435,6 +8195,7 @@ fn dimension_text_pos_f64(
                 dimjust,
                 perp_off,
                 text_w,
+                dimgap,
                 arrow,
                 dimtix,
                 dimatfit,
@@ -7455,6 +8216,7 @@ fn dimension_text_pos_f64(
                 dimjust,
                 perp_off,
                 text_w,
+                dimgap,
                 arrow,
                 dimtix,
                 dimatfit,
@@ -7475,8 +8237,20 @@ fn dimension_text_pos_f64(
                     1 | 3 => text_w > span,
                     _ => text_w > span,
                 };
+            // Beside an extension line the text starts an arrow and three
+            // gaps along the arc from it when it breaks the arc (one gap off
+            // the arc): DIMJUST 1 by the second line, 2 by the first
+            // (`text_w` carries a gap each side).
+            let gaps = if dimtad == 0 { 2.0 } else { 0.0 };
+            let beside =
+                (arrow + gaps * dimgap + text_w * 0.5) / (radius as f64).max(1.0e-12);
+            let toward_end = if end >= start { 1.0 } else { -1.0 };
             let angle = if move_outside {
                 end as f64 + (text_w * 0.5 + dimgap + arrow) / (radius as f64).max(1.0e-12)
+            } else if dimjust == 1 {
+                end as f64 - toward_end * beside
+            } else if dimjust == 2 {
+                start as f64 + toward_end * beside
             } else {
                 ((start + end) * 0.5) as f64
             };
@@ -7495,6 +8269,11 @@ fn dimension_text_pos_f64(
             let ux = dx / radius;
             let uy = dy / radius;
             let outside = dimension_text_is_outside(dim, style);
+            if outside && dynamic_constraint_dimension(dim) {
+                // A constraint's text moves beside the circle at the end of
+                // its leader; an ordinary radius keeps its measured offset.
+                return radial_outside_text(d.definition_point, ux, uy, text_height, text_w);
+            }
             let (mut x, mut y) = if outside {
                 let distance = arrow + text_w * 0.5 + dimgap;
                 (
@@ -7536,15 +8315,27 @@ fn dimension_text_pos_f64(
             let dx = d.definition_point.x - d.angle_vertex.x;
             let dy = d.definition_point.y - d.angle_vertex.y;
             let len = (dx * dx + dy * dy).sqrt().max(1e-12);
+            if dimension_text_is_outside(dim, style) && dynamic_constraint_dimension(dim) {
+                // Beyond the end the dimension line was placed towards.
+                return radial_outside_text(
+                    d.angle_vertex,
+                    -dx / len,
+                    -dy / len,
+                    text_height,
+                    text_w,
+                );
+            }
             text_on_dim_line(
                 d.angle_vertex,
                 d.definition_point,
                 d.angle_vertex,
                 dx / len,
                 dy / len,
-                dimjust,
+                // DIMJUST places linear and angular text only.
+                0,
                 perp_off,
                 text_w,
+                dimgap,
                 arrow,
                 dimtix,
                 dimatfit,
@@ -7557,7 +8348,11 @@ fn dimension_text_pos_f64(
             let text_axis = if d.is_ordinate_type_x { y_axis } else { x_axis };
             let perpendicular = if d.is_ordinate_type_x { x_axis } else { y_axis };
             let delta = d.leader_endpoint - d.feature_location;
-            let direction_sign = if delta.dot(&text_axis) < 0.0 { -1.0 } else { 1.0 };
+            let direction_sign = if delta.dot(&text_axis) < 0.0 {
+                -1.0
+            } else {
+                1.0
+            };
             let perpendicular_sign = if delta.dot(&perpendicular) < 0.0 {
                 -1.0
             } else {
@@ -7602,16 +8397,19 @@ pub(crate) fn baked_large_radial_geometry(
         .iter()
         .find(|style| {
             style.name.eq_ignore_ascii_case(style_name)
-                || (style_name.trim().is_empty()
-                    && style.name.eq_ignore_ascii_case("Standard"))
+                || (style_name.trim().is_empty() && style.name.eq_ignore_ascii_case("Standard"))
         })
         .map(|style| resolved_dimension_style(style, dimension, document));
     let style = effective_style.as_ref();
     let scale = style
         .map(|style| dimension_style_scale(style, 1.0))
         .unwrap_or(1.0);
-    let text_height = style.map(|style| style.dimtxt * scale).unwrap_or(2.5 * scale);
-    let arrow_size_raw = style.map(|style| style.dimasz * scale).unwrap_or(0.18 * scale);
+    let text_height = style
+        .map(|style| style.dimtxt * scale)
+        .unwrap_or(2.5 * scale);
+    let arrow_size_raw = style
+        .map(|style| style.dimasz * scale)
+        .unwrap_or(0.18 * scale);
     let tick_size = style.map(|style| style.dimtsz * scale).unwrap_or(0.0);
     let arrow_size = (arrow_size_raw as f32).max(0.001);
     let arrow = if tick_size > 1.0e-9 {
@@ -7633,21 +8431,35 @@ pub(crate) fn baked_large_radial_geometry(
         &arrow,
         &arrow,
         DimLineParams {
-            dimexo: style.map(|style| (style.dimexo * scale) as f32).unwrap_or(0.0),
-            dimexe: style.map(|style| (style.dimexe * scale) as f32).unwrap_or(0.0),
-            dimdle: style.map(|style| (style.dimdle * scale) as f32).unwrap_or(0.0),
-            dimfxl: style.map(|style| (style.dimfxl * scale) as f32).unwrap_or(1.0),
+            dimexo: style
+                .map(|style| (style.dimexo * scale) as f32)
+                .unwrap_or(0.0),
+            dimexe: style
+                .map(|style| (style.dimexe * scale) as f32)
+                .unwrap_or(0.0),
+            dimdle: style
+                .map(|style| (style.dimdle * scale) as f32)
+                .unwrap_or(0.0),
+            dimfxl: style
+                .map(|style| (style.dimfxl * scale) as f32)
+                .unwrap_or(1.0),
             dimfxlon: style.is_some_and(|style| style.dimfxlon),
             dimsoxd: style.is_some_and(|style| style.dimsoxd),
-            dimcen: style.map(|style| (style.dimcen * scale) as f32).unwrap_or(0.09),
+            dimcen: style
+                .map(|style| (style.dimcen * scale) as f32)
+                .unwrap_or(0.09),
             ticks: tick_size > 1.0e-9,
             arrow_len: arrow_size,
             text_width: text.width,
+            text_height: text_height as f32,
+            // A LargeRadial is never a dimensional constraint's dimension.
+            constraint: false,
             dimatfit: style.map(|style| style.dimatfit).unwrap_or(3),
             dimtix: style.is_some_and(|style| style.dimtix),
             dimtofl: style.is_some_and(|style| style.dimtofl),
             text_position: text.position,
             horizontal_text: text.horizontal,
+            text_lifted: style.map(|style| style.dimtad).unwrap_or(1) != 0,
             text_movement: style.map(|style| style.dimtmove).unwrap_or(0),
             text_break: text.break_box,
             leader_anchor: None,
@@ -7671,9 +8483,7 @@ pub(crate) fn baked_large_radial_geometry(
         }
     }
     if style.is_some_and(|style| style.dimtmove == 1) {
-        if let Some((anchor, endpoint, under_text)) =
-            dimtmove_leader_endpoints(dimension, text)
-        {
+        if let Some((anchor, endpoint, under_text)) = dimtmove_leader_endpoints(dimension, text) {
             if under_text || anchor.distance(endpoint) > text_height as f32 {
                 add_segment_with_text_break(
                     &mut geometry.dim_lines,
@@ -7709,8 +8519,7 @@ pub(crate) fn baked_dimension_text_entity(
         .iter()
         .find(|style| {
             style.name.eq_ignore_ascii_case(style_name)
-                || (style_name.trim().is_empty()
-                    && style.name.eq_ignore_ascii_case("Standard"))
+                || (style_name.trim().is_empty() && style.name.eq_ignore_ascii_case("Standard"))
         })
         .map(|style| resolved_dimension_style(style, dim, document));
     let style = effective_style.as_ref();
@@ -7789,7 +8598,7 @@ pub(crate) fn dimension_text_grip_position(
 #[cfg(test)]
 mod dimtad_tests {
     use super::text_on_dim_line;
-    use acadrust::types::Vector3;
+    use codec::types::Vector3;
 
     fn v(x: f64, y: f64) -> Vector3 {
         Vector3::new(x, y, 0.0)
@@ -7801,11 +8610,17 @@ mod dimtad_tests {
     fn above_is_up_regardless_of_direction() {
         let (first, second, defpt) = (v(0.0, 10.0), v(20.0, 10.0), v(0.0, 0.0));
         let perp = 5.0;
-        let fwd = text_on_dim_line(first, second, defpt, 1.0, 0.0, 0, perp, 0.0, 1.0, false, 3, 1, false);
-        let rev = text_on_dim_line(first, second, defpt, -1.0, 0.0, 0, perp, 0.0, 1.0, false, 3, 1, false);
+        let fwd = text_on_dim_line(
+            first, second, defpt, 1.0, 0.0, 0, perp, 0.0, 0.0, 1.0, false, 3, 1, false,
+        );
+        let rev = text_on_dim_line(
+            first, second, defpt, -1.0, 0.0, 0, perp, 0.0, 0.0, 1.0, false, 3, 1, false,
+        );
         assert!(fwd.y > 0.0, "above must be +Y, got {}", fwd.y);
         assert!(rev.y > 0.0, "above must be +Y even reversed, got {}", rev.y);
-        let below = text_on_dim_line(first, second, defpt, 1.0, 0.0, 0, perp, 0.0, 1.0, false, 3, 4, false);
+        let below = text_on_dim_line(
+            first, second, defpt, 1.0, 0.0, 0, perp, 0.0, 0.0, 1.0, false, 3, 4, false,
+        );
         assert!(below.y < 0.0, "below must be -Y, got {}", below.y);
     }
 
@@ -7824,12 +8639,13 @@ mod dimtad_tests {
             0,
             perp,
             0.0,
+            0.0,
             1.0,
             false,
             3,
             2,
-        false,
-    );
+            false,
+        );
         assert!(
             above.y > 10.0,
             "outside must clear the object side, got {}",
@@ -7845,12 +8661,13 @@ mod dimtad_tests {
             0,
             perp,
             0.0,
+            0.0,
             1.0,
             false,
             3,
             2,
-        false,
-    );
+            false,
+        );
         assert!(
             below.y < -10.0,
             "outside must clear the object side, got {}",
@@ -7862,7 +8679,7 @@ mod dimtad_tests {
 #[cfg(test)]
 mod angular_unit_tests {
     use super::format_angular_value;
-    use acadrust::tables::DimStyle;
+    use codec::tables::DimStyle;
 
     fn style(dimaunit: i16, dimadec: i16) -> DimStyle {
         let mut s = DimStyle::standard();
@@ -7876,10 +8693,22 @@ mod angular_unit_tests {
     // units read as plain degrees while AUNITS=4 elsewhere wrote a bearing.
     #[test]
     fn surveyor_units_write_a_bearing() {
-        assert_eq!(format_angular_value(45.0, Some(&style(4, 0))), "N 45\u{b0}0'0\" E");
-        assert_eq!(format_angular_value(135.0, Some(&style(4, 0))), "N 45\u{b0}0'0\" W");
-        assert_eq!(format_angular_value(200.0, Some(&style(4, 0))), "S 70\u{b0}0'0\" W");
-        assert_eq!(format_angular_value(300.0, Some(&style(4, 0))), "S 30\u{b0}0'0\" E");
+        assert_eq!(
+            format_angular_value(45.0, Some(&style(4, 0))),
+            "N 45\u{b0}0'0\" E"
+        );
+        assert_eq!(
+            format_angular_value(135.0, Some(&style(4, 0))),
+            "N 45\u{b0}0'0\" W"
+        );
+        assert_eq!(
+            format_angular_value(200.0, Some(&style(4, 0))),
+            "S 70\u{b0}0'0\" W"
+        );
+        assert_eq!(
+            format_angular_value(300.0, Some(&style(4, 0))),
+            "S 30\u{b0}0'0\" E"
+        );
         // A hair under a cardinal must not quote a quarter-turn bearing.
         assert_eq!(format_angular_value(89.99999, Some(&style(4, 0))), "N");
         assert_eq!(format_angular_value(90.0, Some(&style(4, 0))), "N");
@@ -7889,7 +8718,10 @@ mod angular_unit_tests {
     // The other unit formats are untouched.
     #[test]
     fn other_angular_units_unchanged() {
-        assert_eq!(format_angular_value(45.5, Some(&style(1, 0))), "45\u{b0}30'0\"");
+        assert_eq!(
+            format_angular_value(45.5, Some(&style(1, 0))),
+            "45\u{b0}30'0\""
+        );
         assert_eq!(format_angular_value(90.0, Some(&style(2, 1))), "100.0g");
     }
 }
@@ -7898,7 +8730,7 @@ mod angular_unit_tests {
 mod dim_color_override_tests {
     use super::dim_color_index;
     use crate::entities::dim_override::{DIMCLRD, DIMCLRE, DIMCLRT};
-    use acadrust::xdata::{ExtendedData, ExtendedDataRecord, XDataValue};
+    use codec::xdata::{ExtendedData, ExtendedDataRecord, XDataValue};
 
     // An ACAD/DSTYLE record holding the overrides the Properties panel writes.
     fn xdata(overrides: &[(i16, i16)]) -> ExtendedData {
@@ -8019,8 +8851,8 @@ mod arch_format_tests {
 #[cfg(test)]
 mod dimtmove_leader_tests {
     use super::*;
-    use acadrust::entities::DimensionLinear;
-    use acadrust::types::Vector3;
+    use codec::entities::DimensionLinear;
+    use codec::types::Vector3;
 
     fn v(x: f64, y: f64) -> Vector3 {
         Vector3::new(x, y, 0.0)
@@ -8049,10 +8881,17 @@ mod dimtmove_leader_tests {
         let dim = Dimension::Linear(d);
         // text anchor outside on the right: centre x=30, half width 3 → far edge 33
         let txt = vec3_local(v(30.0, -3.0));
-        let (anchor, end, under) = dimtmove_leader_endpoints(&dim, layout(txt, 3.0)).expect("leader");
+        let (anchor, end, under) =
+            dimtmove_leader_endpoints(&dim, layout(txt, 3.0)).expect("leader");
         assert!(under, "outside text extends the dimension line");
-        assert!((anchor.x - 20.0).abs() < 1e-4 && (anchor.y + 5.0).abs() < 1e-4, "near end should be the dim line's right end (20,-5), got {anchor:?}");
-        assert!((end.x - 33.0).abs() < 1e-4 && (end.y + 5.0).abs() < 1e-4, "far end should be the text's far edge (33,-5), got {end:?}");
+        assert!(
+            (anchor.x - 20.0).abs() < 1e-4 && (anchor.y + 5.0).abs() < 1e-4,
+            "near end should be the dim line's right end (20,-5), got {anchor:?}"
+        );
+        assert!(
+            (end.x - 33.0).abs() < 1e-4 && (end.y + 5.0).abs() < 1e-4,
+            "far end should be the text's far edge (33,-5), got {end:?}"
+        );
     }
 
     /// Text outside on the left → extends leftwards.
@@ -8062,10 +8901,17 @@ mod dimtmove_leader_tests {
         d.definition_point = v(0.0, -5.0);
         let dim = Dimension::Linear(d);
         let txt = vec3_local(v(-12.0, -3.0));
-        let (anchor, end, under) = dimtmove_leader_endpoints(&dim, layout(txt, 2.0)).expect("leader");
+        let (anchor, end, under) =
+            dimtmove_leader_endpoints(&dim, layout(txt, 2.0)).expect("leader");
         assert!(under);
-        assert!((anchor.x - 0.0).abs() < 1e-4, "near end should be the dim line's left end, got {anchor:?}");
-        assert!((end.x + 14.0).abs() < 1e-4, "far end should be the text's far edge at -14, got {end:?}");
+        assert!(
+            (anchor.x - 0.0).abs() < 1e-4,
+            "near end should be the dim line's left end, got {anchor:?}"
+        );
+        assert!(
+            (end.x + 14.0).abs() < 1e-4,
+            "far end should be the text's far edge at -14, got {end:?}"
+        );
     }
 
     /// Text still inside (only moved up/down) → leader from the dim line to the text.
@@ -8075,17 +8921,31 @@ mod dimtmove_leader_tests {
         d.definition_point = v(0.0, -5.0);
         let dim = Dimension::Linear(d);
         let txt = vec3_local(v(10.0, 2.0));
-        let (anchor, end, under) = dimtmove_leader_endpoints(&dim, layout(txt, 3.0)).expect("leader");
-        assert!(!under, "inside → keep the connect-to-text leader (text break allowed)");
-        assert!((anchor.x - 10.0).abs() < 1e-4 && (anchor.y + 5.0).abs() < 1e-4, "anchor should be the dim line point facing the text, got {anchor:?}");
-        assert!((end.y - 2.0).abs() < 1e-4, "end should be the text position, got {end:?}");
+        let (anchor, end, under) =
+            dimtmove_leader_endpoints(&dim, layout(txt, 3.0)).expect("leader");
+        assert!(
+            !under,
+            "inside → keep the connect-to-text leader (text break allowed)"
+        );
+        assert!(
+            (anchor.x - 10.0).abs() < 1e-4 && (anchor.y + 5.0).abs() < 1e-4,
+            "anchor should be the dim line point facing the text, got {anchor:?}"
+        );
+        assert!(
+            (end.y - 2.0).abs() < 1e-4,
+            "end should be the text position, got {end:?}"
+        );
     }
 
     /// Radius dimensions draw no leader (unchanged).
     #[test]
     fn radius_has_no_leader() {
-        let r = acadrust::entities::DimensionRadius::new(v(0.0, 0.0), v(0.0, 5.0));
-        assert!(dimtmove_leader_endpoints(&Dimension::Radius(r), layout(vec3_local(v(0.0, 8.0)), 2.0)).is_none());
+        let r = codec::entities::DimensionRadius::new(v(0.0, 0.0), v(0.0, 5.0));
+        assert!(dimtmove_leader_endpoints(
+            &Dimension::Radius(r),
+            layout(vec3_local(v(0.0, 8.0)), 2.0)
+        )
+        .is_none());
     }
 
     #[test]
@@ -8097,7 +8957,10 @@ mod dimtmove_leader_tests {
         assert!(outside);
         let mut points = Vec::new();
         add_segment_with_text_break(&mut points, start, end, text.break_box);
-        let finite: Vec<_> = points.into_iter().filter(|point| point[0].is_finite()).collect();
+        let finite: Vec<_> = points
+            .into_iter()
+            .filter(|point| point[0].is_finite())
+            .collect();
         assert_eq!(finite, vec![[20.0, -5.0, 0.0], [27.0, -5.0, 0.0]]);
     }
 }
@@ -8105,7 +8968,7 @@ mod dimtmove_leader_tests {
 #[cfg(test)]
 mod linear_transform_tests {
     use super::*;
-    use acadrust::entities::DimensionLinear;
+    use codec::entities::DimensionLinear;
     use std::f64::consts::FRAC_PI_2;
 
     /// A horizontal linear dimension measuring 10 units along X.
@@ -8277,6 +9140,7 @@ mod linear_transform_tests {
             [0.0, 0.0, 0.0, 1.0],
             None,
             None,
+            &rustc_hash::FxHashSet::default(),
         );
         let mut points = Vec::new();
         for wire in &wires {
@@ -8338,11 +9202,10 @@ mod linear_transform_tests {
     }
 }
 
-
 #[cfg(test)]
 mod limits_format_tests {
     use super::*;
-    use acadrust::entities::DimensionLinear;
+    use codec::entities::DimensionLinear;
 
     /// A horizontal linear dimension measuring 10 units along X.
     fn horizontal() -> Dimension {
@@ -8478,7 +9341,11 @@ mod limits_format_tests {
         assert_eq!(text_cells("10.000", 0.5), 6.0);
         assert_eq!(text_cells(r"R\S1.020^0.98;", 0.5), 1.0 + 5.0 * 0.5);
         assert_eq!(text_cells(r"\S10.020^9.950; REF", 1.0), 6.0 + 4.0);
-        assert_eq!(text_cells(r"\S1.020^0.980;\PCutouts", 1.0), 7.0, "widest line, not the sum");
+        assert_eq!(
+            text_cells(r"\S1.020^0.980;\PCutouts", 1.0),
+            7.0,
+            "widest line, not the sum"
+        );
         assert_eq!(text_lines(r"4X <>\PNominal"), 2);
         assert_eq!(
             text_cells(r"{\fArial|b0|i1|c0|p34;Cutouts}", 1.0),
@@ -8492,7 +9359,7 @@ mod limits_format_tests {
     // with the vertex measures nothing; the stored angle keeps the text.
     #[test]
     fn degenerate_angular_dimension_reports_its_stored_angle() {
-        use acadrust::entities::DimensionAngular3Pt;
+        use codec::entities::DimensionAngular3Pt;
         let mut d = DimensionAngular3Pt::default();
         d.angle_vertex = Vector3::new(6.0, 4.85, 0.0);
         d.first_point = d.angle_vertex;
@@ -8563,7 +9430,7 @@ mod limits_format_tests {
 #[cfg(test)]
 mod layout_parity_tests {
     use super::*;
-    use acadrust::entities::{DimensionDiameter, DimensionLinear, DimensionRadius};
+    use codec::entities::{DimensionDiameter, DimensionLinear, DimensionRadius};
     use glam::DVec3;
 
     /// A document whose Standard style has imperial sizes and horizontal text.
@@ -8584,7 +9451,11 @@ mod layout_parity_tests {
     }
 
     fn style(document: &CadDocument) -> DimStyle {
-        document.dim_styles.get("Standard").expect("Standard style").clone()
+        document
+            .dim_styles
+            .get("Standard")
+            .expect("Standard style")
+            .clone()
     }
 
     /// Stroke endpoints and arrowhead triangle count of the drawn dimension.
@@ -8601,6 +9472,7 @@ mod layout_parity_tests {
             [0.0, 0.0, 0.0, 1.0],
             None,
             None,
+            &rustc_hash::FxHashSet::default(),
         );
         let mut points = Vec::new();
         let mut fills = 0;
@@ -8627,7 +9499,8 @@ mod layout_parity_tests {
     #[test]
     fn stored_text_point_places_automatic_text() {
         let document = document();
-        let mut d = DimensionLinear::horizontal(Vector3::new(0.0, 0.0, 0.0), Vector3::new(10.0, 0.0, 0.0));
+        let mut d =
+            DimensionLinear::horizontal(Vector3::new(0.0, 0.0, 0.0), Vector3::new(10.0, 0.0, 0.0));
         d.definition_point = Vector3::new(0.0, 5.0, 0.0);
         d.base.text_middle_point = Vector3::new(7.0, 5.2, 0.0);
         d.base.text_user_positioned = false;
@@ -8641,7 +9514,8 @@ mod layout_parity_tests {
     #[test]
     fn outside_text_clears_the_stub_and_a_gap() {
         let document = document();
-        let mut d = DimensionLinear::horizontal(Vector3::new(0.0, 0.0, 0.0), Vector3::new(0.2, 0.0, 0.0));
+        let mut d =
+            DimensionLinear::horizontal(Vector3::new(0.0, 0.0, 0.0), Vector3::new(0.2, 0.0, 0.0));
         d.definition_point = Vector3::new(0.0, 1.0, 0.0);
         let dim = Dimension::Linear(d);
         let s = style(&document);
@@ -8680,16 +9554,54 @@ mod layout_parity_tests {
         );
     }
 
+    #[test]
+    fn dimtmove_two_does_not_chase_moved_linear_text() {
+        let make = |movement| {
+            let mut document = document();
+            document.dim_styles.get_mut("Standard").unwrap().dimtmove = movement;
+            let mut d = DimensionLinear::horizontal(
+                Vector3::new(0.0, 0.0, 0.0),
+                Vector3::new(0.8, 0.0, 0.0),
+            );
+            d.definition_point = Vector3::new(0.0, 2.0, 0.0);
+            d.base.text_middle_point = Vector3::new(2.5, 2.0, 0.0);
+            drawn(&document, &Dimension::Linear(d)).0
+        };
+        let with_leader = make(1);
+        let without_leader = make(2);
+        assert!(
+            with_leader.len() > without_leader.len(),
+            "DIMTMOVE=1 should add a leader: {} vs {} points",
+            with_leader.len(),
+            without_leader.len()
+        );
+        // DIMTMOVE=1 reaches the moved text; DIMTMOVE=2 keeps only the
+        // legitimate arrow-outside stub and never chases the text.
+        assert!(
+            with_leader
+                .iter()
+                .any(|p| p.x >= 2.0 && (p.y - 2.0).abs() <= 1e-6),
+            "DIMTMOVE=1 should reach the moved text: {with_leader:?}"
+        );
+        assert!(
+            without_leader
+                .iter()
+                .all(|p| p.x <= 1.5 || (p.y - 2.0).abs() > 1e-6),
+            "DIMTMOVE=2 must not reach the moved text: {without_leader:?}"
+        );
+    }
+
     // A negative DIMLFAC scales only a paper-space dimension that measures
     // model space through a viewport. The association record carries the
     // applied factor; zero means the dimension reads its sheet distance.
     #[test]
     fn negative_dimlfac_follows_the_recorded_association_factor() {
-        use acadrust::xdata::{ExtendedDataRecord, XDataValue};
+        use codec::xdata::{ExtendedDataRecord, XDataValue};
         let document = CadDocument::new();
         let mut source = style(&document);
         source.dimlfac = -4.0;
-        let mut d = DimensionLinear::horizontal(Vector3::new(0.0, 0.0, 0.0), Vector3::new(4.457, 0.0, 0.0));
+        let mut d =
+            DimensionLinear::horizontal(Vector3::new(0.0, 0.0, 0.0), Vector3::new(4.457, 0.0, 0.0));
         d.definition_point = Vector3::new(0.0, 1.0, 0.0);
         let with_factor = |factor: f64| {
             let mut d = d.clone();
@@ -8701,9 +9613,15 @@ mod layout_parity_tests {
         let sheet = resolved_dimension_style(&source, &with_factor(0.0), &document);
         assert_eq!(sheet.dimlfac, 1.0, "no factor applied: sheet distance");
         let through_viewport = resolved_dimension_style(&source, &with_factor(-4.0), &document);
-        assert_eq!(through_viewport.dimlfac, 4.0, "the recorded factor, made positive");
+        assert_eq!(
+            through_viewport.dimlfac, 4.0,
+            "the recorded factor, made positive"
+        );
         let unknown = resolved_dimension_style(&source, &Dimension::Linear(d.clone()), &document);
-        assert_eq!(unknown.dimlfac, 1.0, "model space without a record: unscaled");
+        assert_eq!(
+            unknown.dimlfac, 1.0,
+            "model space without a record: unscaled"
+        );
         let invalid = resolved_dimension_style(&source, &with_factor(f64::NAN), &document);
         assert_eq!(invalid.dimlfac, 1.0, "invalid recorded factor: unscaled");
     }
@@ -8720,13 +9638,27 @@ mod layout_parity_tests {
         d.base.text_middle_point = Vector3::new(3.0, 1.5, 0.0);
         let dim = Dimension::Radius(d);
         let (points, _) = drawn(&document, &dim);
-        let hook: Vec<f64> = points.iter().filter(|p| (p.y - 1.5).abs() < 1e-6).map(|p| p.x).collect();
-        let (lo, hi) = (hook.iter().cloned().fold(f64::MAX, f64::min), hook.iter().cloned().fold(f64::MIN, f64::max));
-        assert!((lo - 3.0).abs() < 1e-6 && (hi - 3.18).abs() < 1e-6, "hook from the stored point one arrow toward the text: {lo}..{hi}");
+        let hook: Vec<f64> = points
+            .iter()
+            .filter(|p| (p.y - 1.5).abs() < 1e-6)
+            .map(|p| p.x)
+            .collect();
+        let (lo, hi) = (
+            hook.iter().cloned().fold(f64::MAX, f64::min),
+            hook.iter().cloned().fold(f64::MIN, f64::max),
+        );
+        assert!(
+            (lo - 3.0).abs() < 1e-6 && (hi - 3.18).abs() < 1e-6,
+            "hook from the stored point one arrow toward the text: {lo}..{hi}"
+        );
         let s = style(&document);
         let position = dimension_text_pos_f64(&dim, Some(&s), 0.18, 1.0);
         let half = dimension_text_cells(&dim, Some(&s)).unwrap() * 0.18 * CELL_WIDTH * 0.5;
-        assert!((position.x - half - 0.09 - 3.18).abs() < 1e-6, "text starts a gap past the hook end, got {}", position.x - half);
+        assert!(
+            (position.x - half - 0.09 - 3.18).abs() < 1e-6,
+            "text starts a gap past the hook end, got {}",
+            position.x - half
+        );
     }
 
     // Text stored well past the second extension line of a horizontal
@@ -8735,7 +9667,8 @@ mod layout_parity_tests {
     #[test]
     fn outside_text_on_the_axis_pulls_the_line_out_to_it() {
         let document = document();
-        let mut d = DimensionLinear::horizontal(Vector3::new(0.0, 0.0, 0.0), Vector3::new(0.8, 0.0, 0.0));
+        let mut d =
+            DimensionLinear::horizontal(Vector3::new(0.0, 0.0, 0.0), Vector3::new(0.8, 0.0, 0.0));
         d.definition_point = Vector3::new(0.0, 2.0, 0.0);
         d.base.text_middle_point = Vector3::new(2.5, 2.0, 0.0);
         let (points, _) = drawn(&document, &Dimension::Linear(d));
@@ -8756,11 +9689,15 @@ mod layout_parity_tests {
         d.base.text_middle_point = Vector3::new(-0.5 + 0.9, 1.0, 0.0);
         let (points, _) = drawn(&document, &Dimension::Linear(d));
         assert!(
-            points.iter().any(|p| (p.y - 1.0).abs() < 1e-6 && (p.x + 0.5).abs() < 1e-6),
+            points
+                .iter()
+                .any(|p| (p.y - 1.0).abs() < 1e-6 && (p.x + 0.5).abs() < 1e-6),
             "the dimension line reaches the text height at the extension line"
         );
         assert!(
-            points.iter().any(|p| (p.y - 1.0).abs() < 1e-6 && (p.x - (-0.5 + 0.18)).abs() < 1e-6),
+            points
+                .iter()
+                .any(|p| (p.y - 1.0).abs() < 1e-6 && (p.x - (-0.5 + 0.18)).abs() < 1e-6),
             "a hook one arrow long turns toward the text"
         );
     }
@@ -8780,7 +9717,10 @@ mod layout_parity_tests {
             "no dimension line reaches the centre"
         );
         let hook: Vec<_> = points.iter().filter(|p| (p.y - 0.8).abs() < 1e-6).collect();
-        assert!(hook.len() >= 2, "a horizontal hook at the text height: {hook:?}");
+        assert!(
+            hook.len() >= 2,
+            "a horizontal hook at the text height: {hook:?}"
+        );
         assert!(
             points.iter().any(|p| p.x > 1.05 && p.x < 1.3 && p.y > 0.0),
             "arrowhead body lies outside the arc along the leader"
@@ -8803,6 +9743,66 @@ mod layout_parity_tests {
             "nothing is drawn on the far side of the circle"
         );
         assert_eq!(fills, 1, "one arrowhead");
-        assert!(points.iter().any(|p| (p.y - 0.8).abs() < 1e-6), "hook at the text height");
+        assert!(
+            points.iter().any(|p| (p.y - 0.8).abs() < 1e-6),
+            "hook at the text height"
+        );
+    }
+}
+
+/// The dimension an entity is, if it is one. The variant holds it boxed, so
+/// a pattern cannot reach into it; match on this instead.
+pub(crate) fn as_dimension(entity: &codec::EntityType) -> Option<&codec::entities::Dimension> {
+    match entity {
+        codec::EntityType::Dimension(dimension) => Some(dimension),
+        _ => None,
+    }
+}
+
+/// [`as_dimension`], mutably.
+pub(crate) fn as_dimension_mut(
+    entity: &mut codec::EntityType,
+) -> Option<&mut codec::entities::Dimension> {
+    match entity {
+        codec::EntityType::Dimension(dimension) => Some(dimension),
+        _ => None,
+    }
+}
+
+#[cfg(test)]
+mod text_width_factor_tests {
+    use super::*;
+    use codec::entities::DimensionLinear;
+    use codec::tables::{DimStyle as DimStyleRecord, TextStyle};
+    use codec::types::Vector3;
+
+    #[test]
+    fn dimension_text_takes_its_style_width_factor() {
+        // A drawing whose dimension style writes with a 0.6-wide text style:
+        // AutoCAD 2025 draws the measurement 0.6 as wide; OCS drew it at 1.0.
+        let mut doc = CadDocument::default();
+        let mut narrow = TextStyle::new("narrow");
+        narrow.handle = doc.allocate_handle();
+        narrow.width_factor = 0.6;
+        let narrow_handle = narrow.handle;
+        doc.text_styles.add(narrow).unwrap();
+        let mut style = DimStyleRecord::new("NarrowDims");
+        style.dimtxsty = "narrow".to_string();
+        style.dimtxsty_handle = narrow_handle;
+        doc.dim_styles.add(style).unwrap();
+
+        let mut d =
+            DimensionLinear::horizontal(Vector3::new(0.0, 0.0, 0.0), Vector3::new(200.0, 0.0, 0.0));
+        d.base.style_name = "NarrowDims".to_string();
+        let Some(EntityType::Text(text)) =
+            baked_dimension_text_entity(&Dimension::Linear(d), &doc, 1.0)
+        else {
+            panic!("a plain measurement is synthesized as TEXT");
+        };
+        assert!(
+            (text.width_factor - 0.6).abs() < 1.0e-6,
+            "dimension text uses its style's width factor, got {}",
+            text.width_factor
+        );
     }
 }

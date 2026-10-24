@@ -8,21 +8,21 @@
 use crate::scene::model::hatch_model::HatchModel;
 use crate::scene::model::wire_model::WireModel;
 use crate::scene::Scene;
-use acadrust::{EntityType, Handle};
+use codec::{EntityType, Handle};
 use glam::DVec3;
 
 #[derive(Clone, Debug)]
 pub enum HatchEditOperation {
     Appearance {
-        color: Option<acadrust::types::Color>,
+        color: Option<codec::types::Color>,
         layer: Option<String>,
-        transparency: Option<acadrust::types::Transparency>,
+        transparency: Option<codec::types::Transparency>,
     },
     Update {
         origin: Option<(f64, f64)>,
         store_origin: bool,
         disassociate: bool,
-        style: Option<acadrust::entities::HatchStyleType>,
+        style: Option<codec::entities::HatchStyleType>,
         annotative: Option<bool>,
     },
     RecreateBoundary {
@@ -30,7 +30,7 @@ pub enum HatchEditOperation {
         region: bool,
     },
     BeginAssociate,
-    AssociatePaths(Vec<acadrust::entities::BoundaryPath>),
+    AssociatePaths(Vec<codec::entities::BoundaryPath>),
     DrawOrderBoundary {
         above: bool,
     },
@@ -110,8 +110,8 @@ impl WorkingPlane {
         (direction.x.hypot(direction.y) > f64::EPSILON).then(|| direction.y.atan2(direction.x))
     }
 
-    pub fn to_world_transform(self) -> acadrust::types::Transform {
-        use acadrust::types::{Matrix4, Transform};
+    pub fn to_world_transform(self) -> codec::types::Transform {
+        use codec::types::{Matrix4, Transform};
         Transform::from_matrix(Matrix4 {
             m: [
                 [self.x.x, self.y.x, self.z.x, self.origin.x],
@@ -122,8 +122,8 @@ impl WorkingPlane {
         })
     }
 
-    pub fn to_local_transform(self) -> acadrust::types::Transform {
-        use acadrust::types::{Matrix4, Transform};
+    pub fn to_local_transform(self) -> codec::types::Transform {
+        use codec::types::{Matrix4, Transform};
         Transform::from_matrix(Matrix4 {
             m: [
                 [self.x.x, self.x.y, self.x.z, -self.origin.dot(self.x)],
@@ -180,6 +180,13 @@ pub struct SelectionEntity {
     pub handle: Handle,
     pub entity: EntityType,
     pub surface_area: Option<f64>,
+}
+
+/// Live preview shown while a selection-gathering command hovers a target.
+#[derive(Default)]
+pub struct SelectionHoverPreview {
+    pub wires: Vec<WireModel>,
+    pub hatches: Vec<HatchModel>,
 }
 
 /// Association source with an optional sub-entity marker.
@@ -249,18 +256,25 @@ pub enum EntityTransform {
     },
     /// General affine transform. Used when a complete UCS basis must be baked
     /// into block-local geometry instead of stored as drawing UCS state.
-    Affine(acadrust::types::Transform),
+    Affine(codec::types::Transform),
 }
 
 // ── Tangent object ─────────────────────────────────────────────────────────
 
 /// Geometric representation of a tangent-snap target.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub enum TangentObject {
     /// Infinite line through two world-space XZ-plane points.
     Line { p1: DVec3, p2: DVec3 },
     /// Circle in the world XY plane.
     Circle { center: DVec3, radius: f64 },
+    /// Planar ellipse in world space.
+    Ellipse {
+        center: DVec3,
+        major_axis: DVec3,
+        normal: DVec3,
+        minor_axis_ratio: f64,
+    },
 }
 
 /// One unit of input to the active command's step machine.
@@ -344,6 +358,120 @@ impl CadCommand for ValuePromptCommand {
     fn on_enter(&mut self) -> CmdResult {
         // Bare Enter → report the current value via the inline handler.
         CmdResult::Dispatch(format!("{} ", self.name))
+    }
+}
+
+/// One-value prompt that preserves spaces and letter casing. This is intended
+/// for symbol names entered through the command line, where a space belongs to
+/// the value instead of submitting the current token.
+pub struct FreeTextValuePromptCommand {
+    name: &'static str,
+    prompt: &'static str,
+}
+
+impl FreeTextValuePromptCommand {
+    pub fn new(name: &'static str, prompt: &'static str) -> Self {
+        Self { name, prompt }
+    }
+}
+
+impl CadCommand for FreeTextValuePromptCommand {
+    fn name(&self) -> &'static str {
+        self.name
+    }
+
+    fn prompt(&self) -> String {
+        crate::t!(self.prompt).into_owned()
+    }
+
+    fn input_kind(&self) -> InputKind {
+        InputKind::FreeText
+    }
+
+    fn on_text_input(&mut self, text: &str) -> Option<CmdResult> {
+        Some(CmdResult::Dispatch(format!(
+            "{} {}",
+            self.name,
+            text.trim()
+        )))
+    }
+
+    fn on_point(&mut self, _pt: DVec3) -> CmdResult {
+        CmdResult::NeedPoint
+    }
+
+    fn on_enter(&mut self) -> CmdResult {
+        CmdResult::Dispatch(format!("{} ", self.name))
+    }
+}
+
+/// Interactive pick for `UCS FACE` and `UCS OBJECT`.
+///
+/// Hands the picked entity to the inline `UCS FACE <handle> <x,y,z>` /
+/// `UCS OBJECT <handle>` handler via [`CmdResult::Dispatch`], so the plane
+/// construction lives in one place whether the user clicked or typed the
+/// arguments. For a face the click lands *on the solid's surface*
+/// (`entity_pick_uses_surface_point`) and that point becomes the plane
+/// origin; for an object only the handle matters.
+pub struct UcsPickCommand {
+    /// `true` picks a solid face; `false` picks a planar entity.
+    pub face: bool,
+}
+
+impl CadCommand for UcsPickCommand {
+    fn name(&self) -> &'static str {
+        "UCS"
+    }
+
+    fn prompt(&self) -> String {
+        if self.face {
+            crate::t!("UCS FACE  Select a face to draw on:").into_owned()
+        } else {
+            crate::t!("UCS OBJECT  Select object to align UCS:").into_owned()
+        }
+    }
+
+    fn needs_entity_pick(&self) -> bool {
+        true
+    }
+
+    fn entity_pick_includes_fills(&self) -> bool {
+        self.face
+    }
+
+    fn entity_pick_uses_surface_point(&self) -> bool {
+        self.face
+    }
+
+    fn entity_pick_highlights_hover(&self) -> bool {
+        true
+    }
+
+    fn on_entity_pick(&mut self, handle: Handle, pt: DVec3) -> CmdResult {
+        if handle.is_null() {
+            return CmdResult::NeedPoint;
+        }
+        if !self.face {
+            return CmdResult::Dispatch(format!("UCS OBJECT {:X}", handle.value()));
+        }
+        // Hex handle and comma-separated coordinates are what the inline
+        // parser reads back. Full `{}` precision, not a rounded format: the
+        // point has to stay on the face for the planar-face lookup.
+        CmdResult::Dispatch(format!(
+            "UCS FACE {:X} {},{},{}",
+            handle.value(),
+            pt.x,
+            pt.y,
+            pt.z
+        ))
+    }
+
+    fn on_point(&mut self, _pt: DVec3) -> CmdResult {
+        CmdResult::NeedPoint
+    }
+
+    fn on_enter(&mut self) -> CmdResult {
+        CmdResult::Cancel
     }
 }
 
@@ -437,11 +565,11 @@ impl CadCommand for RenameCommand {
                 let canonical = match t.to_uppercase().as_str() {
                     "LAYER" | "LA" => "LAYER",
                     "BLOCK" | "B" => "BLOCK",
-                    "STYLE" | "TEXTSTYLE" | "ST" => "STYLE",
+                    "STYLE" | "TEXTSTYLE" | "ST" | "S" => "STYLE",
                     "DIMSTYLE" | "D" => "DIMSTYLE",
-                    "LINETYPE" | "LT" => "LINETYPE",
-                    "UCS" => "UCS",
-                    "VIEW" | "V" => "VIEW",
+                    "LINETYPE" | "LTYPE" | "LT" => "LINETYPE",
+                    "UCS" | "U" => "UCS",
+                    "VIEW" | "VI" | "V" => "VIEW",
                     _ => return Some(CmdResult::NeedPoint),
                 };
                 self.step = RenameStep::Old {
@@ -657,6 +785,8 @@ impl CadCommand for KeywordCommand {
             // Consumed inputs that keep prompting return `Some(NeedPoint)` —
             // `None` would hand the same text to the command a second time.
             None => {
+                // A leading underscore marks the English keyword, as in scripts.
+                let t = t.strip_prefix('_').unwrap_or(t);
                 let Some((_, keyword, value_prompt)) = match_cmd_option(&self.options, t) else {
                     // Unknown verb — keep prompting rather than dispatch garbage.
                     return Some(CmdResult::NeedPoint);
@@ -755,6 +885,186 @@ impl CadCommand for TwoValuePromptCommand {
             // Enter on the second step with nothing typed = report / no-op form.
             Some(first) => CmdResult::Dispatch(format!("{} {first}", self.name)),
             None => CmdResult::Cancel,
+        }
+    }
+}
+
+// ── Script prompt sequences (-LAYER, -PURGE, -STYLE …) ─────────────────────
+
+/// What a [`ScriptPromptCommand`] does next, decided from the answers so far.
+pub enum PromptStep {
+    /// Ask: translated prompt, the answer a bare Enter gives (`None` = Enter
+    /// ends the command), and the option buttons `(label, keyword)`.
+    Ask(String, Option<String>, Vec<(&'static str, &'static str)>),
+    /// Every answer is in: dispatch this command line to the inline handler.
+    Run(String),
+    /// The last answer does not fit its prompt: drop it, say why, ask again.
+    Retry(&'static str),
+    /// End quietly.
+    Finish,
+}
+
+/// Reads the answers of a prompt sequence in order; a flow is written as the
+/// prompts it asks, and the first one without an answer yet becomes the
+/// current prompt (returned as `Err`).
+pub struct PromptAnswers<'a> {
+    answers: &'a [String],
+    pos: usize,
+}
+
+impl<'a> PromptAnswers<'a> {
+    pub fn new(answers: &'a [String]) -> Self {
+        Self { answers, pos: 0 }
+    }
+
+    /// Free text (a name, a list, a path).
+    pub fn text(&mut self, prompt: String, default: Option<String>) -> Result<String, PromptStep> {
+        let answer = self.answers.get(self.pos).cloned();
+        self.pos += 1;
+        answer.ok_or(PromptStep::Ask(prompt, default, Vec::new()))
+    }
+
+    /// One of `options` `(label, keyword)`: the full label or keyword, or the
+    /// label's capitalised short form and anything longer (`LA`, `LAY` for
+    /// `LAyers`). `default` is the keyword a bare Enter picks.
+    pub fn keyword(
+        &mut self,
+        prompt: String,
+        default: Option<&str>,
+        options: &[(&'static str, &'static str)],
+    ) -> Result<&'static str, PromptStep> {
+        let Some(answer) = self.answers.get(self.pos) else {
+            return Err(PromptStep::Ask(
+                prompt,
+                default.map(str::to_string),
+                options.to_vec(),
+            ));
+        };
+        self.pos += 1;
+        options
+            .iter()
+            .find(|(label, keyword)| keyword_matches(label, keyword, answer))
+            .map(|(_, keyword)| *keyword)
+            .ok_or(PromptStep::Retry("Invalid option keyword."))
+    }
+
+    pub fn yes_no(&mut self, prompt: String, default: bool) -> Result<bool, PromptStep> {
+        let default = if default { "Y" } else { "N" };
+        Ok(self.keyword(prompt, Some(default), &[("Yes", "Y"), ("No", "N")])? == "Y")
+    }
+
+    pub fn number(&mut self, prompt: String, default: f64) -> Result<f64, PromptStep> {
+        let answer = self.text(prompt, Some(default.to_string()))?;
+        answer
+            .trim()
+            .parse::<f64>()
+            .ok()
+            .filter(|v| v.is_finite())
+            .ok_or(PromptStep::Retry("Invalid input."))
+    }
+}
+
+/// A typed option matches its full keyword or label, or the label's
+/// capitalised letters (`LA` in `LAyers`, `ST` in `textSTyles`) followed by
+/// more of the same word.
+fn keyword_matches(label: &str, keyword: &str, typed: &str) -> bool {
+    let typed = typed.trim().to_uppercase();
+    if typed.is_empty() {
+        return false;
+    }
+    if typed == keyword.to_uppercase() || typed == label.to_uppercase() {
+        return true;
+    }
+    let Some(start) = label.find(|c: char| c.is_ascii_uppercase()) else {
+        return false;
+    };
+    let short: String = label[start..]
+        .chars()
+        .take_while(|c| !c.is_ascii_lowercase())
+        .collect();
+    typed.starts_with(&short) && label[start..].to_uppercase().starts_with(&typed)
+}
+
+pub type PromptFlow = Box<dyn Fn(&[String]) -> PromptStep + Send>;
+
+/// The command-line form of a dialog command, the way scripts drive it: a
+/// fixed sequence of prompts where each answer decides the next one. The
+/// answers then dispatch to the command's existing inline handler, as
+/// [`KeywordCommand`] does.
+pub struct ScriptPromptCommand {
+    name: &'static str,
+    answers: Vec<String>,
+    flow: PromptFlow,
+}
+
+impl ScriptPromptCommand {
+    pub fn new(name: &'static str, flow: PromptFlow) -> Self {
+        Self {
+            name,
+            answers: Vec::new(),
+            flow,
+        }
+    }
+
+    fn answer(&mut self, text: String) -> CmdResult {
+        self.answers.push(text);
+        match (self.flow)(&self.answers) {
+            PromptStep::Ask(..) => CmdResult::NeedPoint,
+            PromptStep::Run(line) => CmdResult::Dispatch(line),
+            PromptStep::Finish => CmdResult::Measurement(String::new()),
+            PromptStep::Retry(why) => {
+                self.answers.pop();
+                CmdResult::ReportError(crate::t!(why).into_owned())
+            }
+        }
+    }
+}
+
+impl CadCommand for ScriptPromptCommand {
+    fn name(&self) -> &'static str {
+        self.name
+    }
+
+    fn prompt(&self) -> String {
+        match (self.flow)(&self.answers) {
+            PromptStep::Ask(prompt, ..) => prompt,
+            _ => self.name.to_string(),
+        }
+    }
+
+    fn options(&self) -> Vec<CmdOption> {
+        match (self.flow)(&self.answers) {
+            PromptStep::Ask(_, _, options) => options
+                .iter()
+                .map(|(label, keyword)| CmdOption::new(label, keyword))
+                .collect(),
+            _ => Vec::new(),
+        }
+    }
+
+    fn wants_text_input(&self) -> bool {
+        true
+    }
+
+    fn on_text_input(&mut self, text: &str) -> Option<CmdResult> {
+        let t = text.trim();
+        if t.is_empty() {
+            return None;
+        }
+        // A leading underscore marks the English keyword, as in scripts.
+        let t = t.strip_prefix('_').filter(|r| !r.is_empty()).unwrap_or(t);
+        Some(self.answer(t.trim_matches('"').to_string()))
+    }
+
+    fn on_point(&mut self, pt: DVec3) -> CmdResult {
+        // A typed `x,y` arrives as a point; prompts read it back as text.
+        self.answer(format!("{},{}", pt.x, pt.y))
+    }
+
+    fn on_enter(&mut self) -> CmdResult {
+        match (self.flow)(&self.answers) {
+            PromptStep::Ask(_, Some(default), _) => self.answer(default),
+            _ => CmdResult::Measurement(String::new()),
         }
     }
 }
@@ -1258,6 +1568,18 @@ pub enum HorizontalConstraintSelection {
     Points(CoincidentPick, CoincidentPick),
 }
 
+/// The two input forms accepted by the Symmetric geometric constraint.
+/// Object picks retain their curve or segment references; point picks are
+/// resolved by the host against the live document.
+#[derive(Clone, Copy, Debug)]
+pub enum SymmetricConstraintSelection {
+    Objects(
+        crate::scene::parametric_constraints::ParametricRef,
+        crate::scene::parametric_constraints::ParametricRef,
+    ),
+    Points(CoincidentPick, CoincidentPick),
+}
+
 /// Construction options shared by SWEEP creation and its live preview.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct SweepOptions {
@@ -1267,6 +1589,9 @@ pub struct SweepOptions {
     pub scale: f64,
     /// Total twist along the path, in radians.
     pub twist_angle: f64,
+    /// Where the path was picked: an open path is swept from its end nearest
+    /// this point (seen from above), as the reference does.
+    pub path_pick: Option<DVec3>,
 }
 
 impl Default for SweepOptions {
@@ -1277,6 +1602,7 @@ impl Default for SweepOptions {
             base_point: None,
             scale: 1.0,
             twist_angle: 0.0,
+            path_pick: None,
         }
     }
 }
@@ -1375,19 +1701,139 @@ impl DimensionPreview {
 /// Returned by every `CadCommand` method to tell main.rs what to do.
 #[allow(dead_code)]
 pub enum CmdResult {
+    SetBlockActionBars {
+        document: u64,
+        definition: Handle,
+        mode: crate::modules::block_editor::action_bar::Mode,
+        parameters: Vec<Handle>,
+    },
+    AssociateBlockAction {
+        document: u64,
+        definition: Handle,
+        action: Handle,
+        expected: Box<codec::objects::ObjectType>,
+        parameter: Handle,
+        key_point: Option<crate::scene::block_actions::XyKeyPoint>,
+    },
+    EditBlockActionSet {
+        document: u64,
+        definition: Handle,
+        action: Handle,
+        expected: Box<codec::objects::ObjectType>,
+        targets: Vec<Handle>,
+        frame: Option<Vec<DVec3>>,
+        rotate_only: Option<Vec<Handle>>,
+    },
+    SetBlockParameterGrips {
+        document: u64,
+        definition: Handle,
+        parameter: Handle,
+        expected: Vec<(Handle, codec::objects::ObjectType)>,
+        count: Option<usize>,
+    },
+    EditBlockAuthoring {
+        document: u64,
+        definition: Handle,
+        handle: Handle,
+        part: crate::scene::block_authoring::edit::Part,
+        position: DVec3,
+    },
+    PlaceBlockAction {
+        document: u64,
+        definition: Handle,
+        kind: crate::scene::block_actions::Kind,
+        parameter: Handle,
+        xy_key_point: Option<crate::scene::block_actions::XyKeyPoint>,
+        targets: Vec<Handle>,
+        location: DVec3,
+        frame: Option<Vec<DVec3>>,
+        array_offsets: Option<(f64, f64)>,
+        displacement_overrides: Option<(f64, f64)>,
+        rotate_only: Vec<Handle>,
+    },
+    SetBlockConstruction {
+        document: u64,
+        definition: Handle,
+        handles: Vec<Handle>,
+        operation: crate::modules::block_editor::construction::Operation,
+    },
+    AlignBlockReference {
+        document: u64,
+        alignment: Box<crate::scene::block_alignment::Alignment>,
+        cursor: DVec3,
+        context: Option<PointPickContext>,
+        flipped: bool,
+    },
+    EvaluateBlockParameter {
+        /// Native runtime grip identity, retained for commit-time eligibility checks.
+        grip: Option<usize>,
+        insert: Option<Handle>,
+        document: u64,
+        definition: Handle,
+        parameter: Handle,
+        value: crate::scene::block_actions::Value,
+    },
+    /// Place or relocate a Basepoint, or place a Lookup parameter.
+    PlaceBlockSingleParameter {
+        document_id: u64,
+        definition: Handle,
+        kind: crate::modules::block_editor::single_parameter::Kind,
+        location: DVec3,
+    },
+    /// Place a native Rotation, Alignment or Flip parameter.
+    PlaceBlockOrientationParameter {
+        document_id: u64,
+        definition: Handle,
+        kind: crate::scene::block_orientation_parameter::Kind,
+        perpendicular: bool,
+        base: DVec3,
+        end: DVec3,
+        reference: DVec3,
+    },
+    /// Place a native two-point parameter after its base, end and label picks.
+    PlaceBlockDistanceParameter {
+        document_id: u64,
+        definition: Handle,
+        kind: crate::scene::block_distance_parameter::Kind,
+        base: DVec3,
+        end: DVec3,
+        label: DVec3,
+    },
+    /// Place a native Point parameter after both authoring picks complete.
+    PlaceBlockPointParameter {
+        document_id: u64,
+        definition: Handle,
+        location: DVec3,
+        label: DVec3,
+    },
+    /// Place the visibility parameter in the definition that requested it.
+    PlaceBlockVisibilityParameter {
+        document_id: u64,
+        definition: Handle,
+        location: DVec3,
+    },
+    /// Return the suspended filter after a read-only sample pick or cancellation.
+    QSelectSample {
+        state: Box<crate::app::QSelectState>,
+        tab_id: u64,
+        handle: Option<Handle>,
+    },
+    /// A QuickCalc pick finished: the point, distance or angle it measured,
+    /// for the pallet's input.
+    QuickCalcPick(crate::app::calc::Value),
     /// Command is still waiting for the next point; show updated prompt.
     NeedPoint,
     /// Update the committed-segment wire (normal colour) and keep collecting points.
     InterimWire(WireModel),
     /// Update the in-progress (cyan) preview wire in the viewport.
     Preview(WireModel),
-    /// Commit an acadrust entity to the document; keep the command active.
+    /// Commit an opencadcodec entity to the document; keep the command active.
     CommitEntity(EntityType),
-    /// Commit several acadrust entities in one undo step; keep the command active.
+    /// Commit several opencadcodec entities in one undo step; keep the command active.
     CommitEntities(Vec<EntityType>),
     /// Commit several entities in one undo step and end the command.
     CommitEntitiesAndExit(Vec<EntityType>),
-    /// Commit an acadrust entity to the document and end the command.
+    /// Commit an opencadcodec entity to the document and end the command.
     CommitAndExit(EntityType),
     /// Commit a dimension using the drawing's association mode.
     CommitDimension {
@@ -1416,16 +1862,16 @@ pub enum CmdResult {
         handles: Vec<Handle>,
         point: DVec3,
     },
-    /// Commit a Model-tab 3D solid: the acadrust entity (for selection /
+    /// Commit a Model-tab 3D solid: the opencadcodec entity (for selection /
     /// persistence) plus its B-rep (cached for boolean ops + shaded
     /// rendering). Ends the command.
     CommitSolid {
         entity: EntityType,
-        solid: Box<cadkernel::brep::Body>,
-        history: acadrust::objects::SolidHistoryOperation,
+        solid: Box<kernel::brep::Body>,
+        history: codec::objects::SolidHistoryOperation,
         erase_source: Option<Handle>,
     },
-    /// Commit an acadrust entity, end the command, and open the in-place text
+    /// Commit an opencadcodec entity, end the command, and open the in-place text
     /// editor on it (used by MLEADER to type the annotation after placement).
     CommitAndEditText(EntityType),
     /// Commit several entities, end the command, and open the in-place text
@@ -1442,6 +1888,10 @@ pub enum CmdResult {
         name: String,
         base: DVec3,
     },
+    /// Create a block definition with full dialog options (Retain/Convert/Delete, units, annotative, etc.).
+    CreateBlockWithOptions {
+        options: Box<crate::scene::CreateBlockOptions>,
+    },
     /// Apply a transform to selected entities and end the command.
     TransformSelected(Vec<Handle>, EntityTransform),
     /// Copy selected entities with a transform; command stays active for more copies.
@@ -1456,24 +1906,70 @@ pub enum CmdResult {
     /// Commit a hatch with the selected hatch's entity colour and transparency.
     CommitStyledHatch {
         hatch: HatchModel,
-        color: acadrust::types::Color,
-        transparency: acadrust::types::Transparency,
+        color: codec::types::Color,
+        transparency: codec::types::Transparency,
     },
     /// Commit a hatch and retain each boundary ring as an entity.
     CommitHatchWithBoundaries {
         hatch: HatchModel,
         boundaries: Vec<EntityType>,
-        entity_style: Option<(acadrust::types::Color, acadrust::types::Transparency)>,
+        entity_style: Option<(codec::types::Color, codec::types::Transparency)>,
     },
     /// Commit independently editable hatch entities for every selected region.
     CommitHatches {
         hatches: Vec<HatchModel>,
-        entity_style: Option<(acadrust::types::Color, acadrust::types::Transparency)>,
+        entity_style: Option<(codec::types::Color, codec::types::Transparency)>,
     },
     /// Copy selected entities with multiple transforms (e.g. rectangular array); end command.
     BatchCopy(Vec<Handle>, Vec<EntityTransform>),
+    /// Turn the objects into an associative array; end command.
+    AssocArray {
+        handles: Vec<Handle>,
+        spec: crate::scene::assoc_array::AssocArraySpec,
+    },
     /// Erase `handle` and replace with new entities; command stays active.
     ReplaceEntity(Handle, Vec<EntityType>),
+    /// XCLIP on block references; ends the command.
+    XClip {
+        inserts: Vec<Handle>,
+        action: crate::modules::insert::xclip::XclipAction,
+    },
+    /// Open the PDF Import Settings dialog; the command keeps its prompt.
+    OpenPdfImportSettings,
+    /// Ask for the password of an encrypted PDF typed at a file prompt; the
+    /// command keeps its prompt and gets `input` again once the file is
+    /// unlocked.
+    PdfPassword {
+        path: String,
+        input: String,
+        stage: crate::scene::model::pdf_password::Stage,
+        /// A password supplied earlier opened the document but not its
+        /// restrictions.
+        remembered: bool,
+        /// Attaching: document access is enough and cancelling prints that
+        /// the file is encrypted. Importing needs owner access and asks
+        /// again silently.
+        attach: bool,
+    },
+    /// Import a page of a file (PDFIMPORT File); ends the command.
+    PdfImportFile(crate::modules::insert::pdf_import::PdfFileImport),
+    /// Attach a point cloud: the host creates or reuses its definition,
+    /// commits the cloud in one undo step, then ends the command. The
+    /// message is the last prompt's echo.
+    AttachPointCloud {
+        placement: crate::modules::insert::pc_attach::PointCloudPlacement,
+        message: String,
+    },
+    /// Attach PDF pages: each page's underlay with its file (as stored) and
+    /// page; the host creates or reuses the definitions and commits them all
+    /// in one undo step, then ends the command.
+    AttachPdfPages {
+        kind: codec::entities::UnderlayType,
+        path: String,
+        pages: Vec<(String, EntityType)>,
+    },
+    /// Import the vector content of a PDF underlay (PDFIMPORT); ends the command.
+    PdfImport(crate::modules::insert::pdf_import::PdfImportRequest),
     /// Update one entity in place, preserve its handle, and end the command.
     UpdateEntityAndFinish {
         handle: Handle,
@@ -1504,12 +2000,107 @@ pub enum CmdResult {
         /// Undo-history label, e.g. `"Horizontal constraint"`.
         label: &'static str,
     },
-    /// Adds a Horizontal relation against the UCS X direction captured when
-    /// the command starts. The direction is persisted with the constraint so
-    /// later edits and save/reopen do not silently fall back to world X.
+    /// Adds a Horizontal or Vertical relation (`kind`) against the UCS X or
+    /// Y direction captured when the command starts. The direction is
+    /// persisted with the constraint so later edits and save/reopen do not
+    /// silently fall back to the world axis.
     AddHorizontalConstraint {
+        kind: crate::scene::parametric_constraints::ConstraintKind,
         selection: HorizontalConstraintSelection,
-        direction: acadrust::types::Vector3,
+        direction: codec::types::Vector3,
+        label: &'static str,
+    },
+    /// Resolves the first 2Points pick of a Horizontal or Vertical constraint
+    /// against the live document so a miss is reported at once, before the
+    /// second point is asked for.
+    CheckHorizontalPoint {
+        kind: crate::scene::parametric_constraints::ConstraintKind,
+        pick: CoincidentPick,
+    },
+    /// Adds an Equal relation from `first` to each of `others` (the second
+    /// object, or a Multiple set). The host resizes every follower to the
+    /// first object's length or radius before the relation holds it there.
+    AddEqualConstraint {
+        first: crate::scene::parametric_constraints::ParametricRef,
+        others: Vec<crate::scene::parametric_constraints::ParametricRef>,
+        /// A Multiple flow: the command stays for more picks; an empty
+        /// `others` is its Enter and prints the summary line.
+        multiple: bool,
+        label: &'static str,
+    },
+    /// Resolves a constraint-point pick against the live document and hands
+    /// it back through `CadCommand::accept_constraint_point`; a miss reports
+    /// `No valid constraint point found.` and asks again.
+    CheckConstraintPoint(CoincidentPick),
+    /// Adds a dimensional constraint between two constraint points together
+    /// with the dynamic dimension that shows it and the parameter
+    /// (`name` = `expression`) that drives it.
+    AddDimensionalConstraint {
+        kind: crate::scene::parametric_constraints::ConstraintKind,
+        first: crate::scene::parametric_constraints::ParametricRef,
+        second: crate::scene::parametric_constraints::ParametricRef,
+        first_point: DVec3,
+        second_point: DVec3,
+        location: DVec3,
+        axis: DVec3,
+        /// Aligned's Point & line / 2Lines: the line the distance is
+        /// measured perpendicular to.
+        direction: Option<crate::scene::parametric_constraints::ParametricRef>,
+        name: String,
+        expression: String,
+        /// The user named the parameter (`name=expression`); an existing
+        /// name is then refused.
+        renamed: bool,
+        label: &'static str,
+    },
+    /// Adds a radius or diameter constraint with its dynamic radial
+    /// dimension and the `radN`/`diaN` parameter that drives it.
+    AddRadialConstraint {
+        circle: crate::scene::parametric_constraints::ParametricRef,
+        center: DVec3,
+        radius: f64,
+        /// Where the dimension line was picked; its direction from the
+        /// centre places the dimension.
+        location: DVec3,
+        diameter: bool,
+        name: String,
+        expression: String,
+        /// The user named the parameter (`name=expression`); an existing
+        /// name is then refused.
+        renamed: bool,
+    },
+    /// Adds an angular constraint with its dynamic angular dimension and
+    /// the `angN` parameter that drives it. Two lines: `refs` =
+    /// `[first_line, second_line]`, `points` = both lines' ends; three
+    /// points: `refs` = `[first, vertex, second]`, `points` =
+    /// `[vertex, first, second]`.
+    AddAngularConstraint {
+        refs: Vec<crate::scene::parametric_constraints::ParametricRef>,
+        points: Vec<DVec3>,
+        location: DVec3,
+        /// Which of the four angles the dimension line location picked.
+        sector: u8,
+        name: String,
+        expression: String,
+        renamed: bool,
+    },
+    /// Aligned's 2Lines: makes `second_line` parallel to `first_line` (whose
+    /// ends stay put), then hands the second line's solved ends back through
+    /// `CadCommand::accept_parallel_line`.
+    MakeParallel {
+        first_line: crate::scene::parametric_constraints::ParametricRef,
+        first_ends: [crate::scene::parametric_constraints::ParametricRef; 2],
+        /// Where the first line was picked: the second line settles at the
+        /// distance this point had from it.
+        first_pick: DVec3,
+        second_line: crate::scene::parametric_constraints::ParametricRef,
+        second_ends: [crate::scene::parametric_constraints::ParametricRef; 2],
+    },
+    /// Adds a point or object symmetry relation around a picked line. The
+    /// first reference and axis remain fixed during initial placement.
+    AddSymmetricConstraint {
+        selection: SymmetricConstraintSelection,
+        axis: crate::scene::parametric_constraints::ParametricRef,
         label: &'static str,
     },
     /// Adds an ordered perpendicular relation. The first picked direction and
@@ -1537,6 +2128,9 @@ pub enum CmdResult {
         second: crate::scene::parametric_constraints::ParametricRef,
         label: &'static str,
     },
+    /// Opens the Text to MText Settings dialog from TXT2MTXT's selection
+    /// prompt; the command keeps its prompt.
+    OpenTxt2MtxtSettings,
     /// Opens the Auto Constrain settings dialog from the selection prompt.
     OpenAutoConstrainSettings,
     /// Adds an ordered Coincident relation.  Point/point selections create a
@@ -1570,6 +2164,11 @@ pub enum CmdResult {
         kind: crate::scene::parametric_constraints::ConstraintKind,
         label: &'static str,
     },
+    /// Add a persistent `Fixed` constraint (`crate::modules::parametric::fixed`)
+    /// at one picked constraint point (`whole_curve == false`, resolved by the
+    /// host like `AddPointOnEntityConstraint`'s point) or on the whole curve /
+    /// polyline segment under the pick (`whole_curve == true`).
+    AddFixedConstraint(CoincidentPick),
     /// Add a persistent `EqualDistance` constraint
     /// (`crate::modules::parametric::equal_distance`): the distance
     /// between `points[0]`/`points[1]` equals the distance between
@@ -1601,6 +2200,8 @@ pub enum CmdResult {
     },
     /// Cancel: discard any preview and end the command.
     Cancel,
+    /// Cleanly end the command without reporting cancellation.
+    Done,
     /// End the command and begin in-place editing of the table cell under
     /// `point` on table `handle` (TABLEDIT). The host resolves the cell —
     /// it owns the document needed for the table-style lookup — honors
@@ -1631,6 +2232,11 @@ pub enum CmdResult {
     /// collecting an option + value, then running `UCS Z 90`). Unlike
     /// `Relaunch` it does not touch the selection.
     Dispatch(String),
+    /// End the command and run `script` as typed command-line input, one
+    /// line after another (a plugin's `CommandStep::Dispatch`, e.g. the
+    /// command calls of a script). A plugin command's script starts from an
+    /// empty selection.
+    Script(String),
     /// Move `dest` entities to the layer of the `src` entity; end command.
     MatchEntityLayer {
         dest: Vec<Handle>,
@@ -1660,17 +2266,46 @@ pub enum CmdResult {
     PasteClipboard {
         base_pt: DVec3,
     },
+    /// Set the view's twist about its line of sight (radians,
+    /// counter-clockwise); the command stays active.
+    TwistView(f64),
     /// Zoom the model-space camera to fit the given corner points; end command.
     ZoomToWindow {
         p1: DVec3,
         p2: DVec3,
     },
-    /// Print a measurement result to the command line and end the command.
+    /// Zoom to the given corner points; the command stays active.
+    Show {
+        p1: DVec3,
+        p2: DVec3,
+    },
+    /// Commit `entity`, then zoom to the given corner points; end command.
+    CommitAndZoom {
+        entity: EntityType,
+        p1: DVec3,
+        p2: DVec3,
+    },
+    /// Scale the given layout viewports to `factor` paper units per model
+    /// unit; end command.
+    ScaleViewports {
+        handles: Vec<Handle>,
+        factor: f64,
+    },
+    /// Print a measurement result to the command line and end the command
+    /// (an empty one ends it silently).
     Measurement(String),
     /// Print a measurement result and keep the command active.
     ReportMeasurement(String),
     /// Print an input error and keep the command active.
     ReportError(String),
+    /// Reports an error and ends the command (`Lines are parallel.`).
+    CancelWithMessage(String),
+    /// Explode this block reference and commit its pieces; end the command
+    /// unless `keep_going` (repeated placement).
+    CommitExplodedInsert {
+        insert: EntityType,
+        keep_going: bool,
+    },
     /// Print a measurement result, clear the current selection, and keep the command active.
     ReportMeasurementAndDeselect(String),
     /// Clear the current selection and keep the command active at its updated step.
@@ -1728,7 +2363,7 @@ pub enum CmdResult {
     /// Create a paper-space viewport. `preserve_view` keeps an explicitly
     /// selected/defined view instead of applying the normal model-extents fit.
     MviewCreate {
-        viewport: acadrust::entities::Viewport,
+        viewport: codec::entities::Viewport,
         preserve_view: bool,
     },
     /// Create a viewport clipped by either a new polygon boundary or an
@@ -1736,6 +2371,9 @@ pub enum CmdResult {
     MviewCreateClipped {
         boundary: Option<EntityType>,
         boundary_handle: Handle,
+        /// VPCLIP: the viewport to clip instead of creating one (NULL for
+        /// MVIEW). With neither boundary nor handle its clip is deleted.
+        target: Handle,
     },
     /// Create a wipeout from an existing closed polyline in the active space.
     /// `erase_source` controls whether the source boundary is consumed.
@@ -1777,7 +2415,7 @@ pub enum CmdResult {
         /// command (boundary, rotation, attachment, spacing and columns).
         /// Existing-entity edits leave this as `None` and load the document
         /// entity instead.
-        template: Option<Box<acadrust::MText>>,
+        template: Option<Box<codec::MText>>,
     },
     /// Collect rich text without creating an MText entity.
     SuspendForMTextInput {
@@ -1800,7 +2438,7 @@ pub enum CmdResult {
     /// the command resumes so another line can be placed directly below it.
     SuspendForTextInput {
         pos: DVec3,
-        entity: acadrust::entities::Text,
+        entity: codec::entities::Text,
     },
     /// Apply new pattern/scale/angle to an existing hatch entity.
     HatcheditApply {
@@ -1817,6 +2455,11 @@ pub enum CmdResult {
         handles: Vec<Handle>,
         /// Every crossing window gathered so far.
         windows: Vec<(DVec3, DVec3)>,
+        /// Previously selected vertices removed with Shift+click or Shift+window.
+        excluded_points: Vec<(Handle, DVec3)>,
+        /// A Shift+window excludes points inside this area without adding a
+        /// new crossing window or subtracting whole entities.
+        subtract_window: Option<(DVec3, DVec3)>,
     },
     /// Stretch entities: move only vertices/endpoints inside any gathered
     /// crossing window.
@@ -1824,6 +2467,8 @@ pub enum CmdResult {
         handles: Vec<Handle>,
         /// Independent crossing windows that define the points to move.
         windows: Vec<(DVec3, DVec3)>,
+        /// Vertices explicitly removed from this operation using Shift+click.
+        excluded_points: Vec<(Handle, DVec3)>,
         /// Translation vector applied once to every selected point.
         delta: DVec3,
     },
@@ -1858,6 +2503,9 @@ pub enum CmdResult {
         handles: Vec<Handle>,
         axis_start: glam::DVec3,
         axis_end: glam::DVec3,
+        /// The line picked as the axis (Object), which an associative
+        /// surface keeps reading.
+        axis_object: Option<Handle>,
         angle: f64,
         start_angle: f64,
         mode: ExtrudeMode,
@@ -1870,6 +2518,9 @@ pub enum CmdResult {
         mode: ExtrudeMode,
         options: SweepOptions,
         color: [f32; 4],
+        /// Scale and twist expressions entered with the Expression option;
+        /// a swept surface stays linked to them.
+        expressions: [Option<String>; 2],
     },
     /// Loft through ordered cross-sections, with optional guides or a path.
     LoftEntities {
@@ -1883,8 +2534,8 @@ pub enum CmdResult {
     /// Round or bevel one or more resolved B-rep edges on a solid.
     SolidEdgeBlend {
         handle: Handle,
-        edges: Vec<cadkernel::brep::EdgeKey>,
-        base_face: Option<cadkernel::brep::FaceKey>,
+        edges: Vec<kernel::brep::EdgeKey>,
+        base_face: Option<kernel::brep::FaceKey>,
         value: f64,
         other_value: f64,
         fillet: bool,
@@ -1905,13 +2556,13 @@ pub enum CmdResult {
     /// containing that WCS point.
     SliceEntities {
         targets: Vec<Handle>,
-        plane: cadkernel::space::Plane,
+        plane: kernel::space::Plane,
         keep_point: Option<DVec3>,
     },
     /// Split selected solids or surfaces with one selected analytic sheet.
     SliceSurfaceEntities {
         targets: Vec<Handle>,
-        cutter: Box<cadkernel::brep::Body>,
+        cutter: Box<kernel::brep::Body>,
         keep_point: Option<DVec3>,
     },
     /// INSERT landed on a block that has AttributeDefinitions.
@@ -1951,6 +2602,8 @@ pub enum CmdResult {
     SetTexteditMode(bool),
     /// Return a resolved point back to a suspended parent command (e.g. MTP / M2P).
     ReturnPoint(DVec3),
+    /// Import a DGN model (DGNIMPORT); ends the command.
+    DgnImport(crate::modules::insert::dgn_import::DgnImportRequest),
 }
 
 /// What kind of value the active command is currently asking for. Drives
@@ -2193,6 +2846,32 @@ pub struct PointPickContext {
     pub aperture_px: f32,
 }
 
+/// One context-sensitive command-line autocomplete entry.
+///
+/// Normal command-name autocomplete only needs `value`. Interactive commands
+/// may optionally attach CAD display metadata, allowing the shared suggestion
+/// popup to render richer rows without knowing which command supplied them.
+#[derive(Clone, Debug)]
+pub struct CommandSuggestion {
+    pub value: String,
+    pub color: Option<codec::types::Color>,
+    pub visible: Option<bool>,
+    pub frozen: Option<bool>,
+    pub locked: Option<bool>,
+}
+
+impl CommandSuggestion {
+    pub fn plain(value: impl Into<String>) -> Self {
+        Self {
+            value: value.into(),
+            color: None,
+            visible: None,
+            frozen: None,
+            locked: None,
+        }
+    }
+}
+
 pub trait CadCommand: Send {
     /// Preserve source appearance for commands that extract existing entities.
     fn preserve_commit_style(&self) -> bool {
@@ -2202,7 +2881,7 @@ pub trait CadCommand: Send {
         None
     }
     /// Symbol localization is committed together with the extracted entities.
-    fn nested_copy_symbol_names(&self) -> Option<&acadrust::nested_copy::NestedCopySymbolNames> {
+    fn nested_copy_symbol_names(&self) -> Option<&codec::nested_copy::NestedCopySymbolNames> {
         None
     }
     /// Keep the layer already carried by entities committed by this command
@@ -2234,6 +2913,15 @@ pub trait CadCommand: Send {
         false
     }
 
+    /// Context-sensitive autocomplete entries for the command line while this
+    /// command is active. Unlike normal command-name completion these entries
+    /// may be drawing data such as layer, block or style names.
+    ///
+    /// Commands that do not provide contextual completion leave this empty.
+    fn text_suggestions(&self, _input: &str) -> Vec<CommandSuggestion> {
+        Vec::new()
+    }
+
     /// Push the active coordinate frame in full precision. Geometry commands
     /// use it for plane-local construction; inquiry and modify commands use it
     /// for local deltas, angles and transformation axes.
@@ -2248,6 +2936,17 @@ pub trait CadCommand: Send {
     /// TRIM/EXTEND use it for the shift-select swap (Shift+click extends
     /// during TRIM and trims during EXTEND, #336). Default no-op.
     fn set_shift(&mut self, _shift: bool) {}
+
+    /// Remove one selected vertex in STRETCH's crossing-window collection stage.
+    /// Other commands keep the normal Shift+grip behavior.
+    fn remove_stretch_point(&mut self, _handle: Handle, _world: DVec3) -> bool {
+        false
+    }
+
+    /// Consume the matching release after STRETCH removed a selected grip.
+    fn consume_stretch_remove_release(&mut self) -> bool {
+        false
+    }
 
     /// Constrain the cursor to a construction axis for this step.
     fn cursor_axis(&self) -> Option<(DVec3, DVec3)> {
@@ -2278,6 +2977,9 @@ pub trait CadCommand: Send {
 
     /// Refreshed for each point input so zoom and viewport changes are reflected.
     fn set_point_pick_context(&mut self, _context: Option<PointPickContext>) {}
+
+    /// Refresh geometry used by scene-aware point placement before input/preview.
+    fn refresh_point_pick_scene(&mut self, _scene: &Scene) {}
 
     /// Called when the user presses Enter (finalize / next option).
     fn on_enter(&mut self) -> CmdResult;
@@ -2338,6 +3040,29 @@ pub trait CadCommand: Send {
         false
     }
 
+    /// Take a typed coordinate at an object prompt as a pick at that point.
+    fn typed_point_picks_entity(&self) -> bool {
+        false
+    }
+
+    /// A constraint point the host resolved for a `CheckConstraintPoint`
+    /// pick, with its world position.
+    fn accept_constraint_point(
+        &mut self,
+        _reference: crate::scene::parametric_constraints::ParametricRef,
+        _point: DVec3,
+    ) -> CmdResult {
+        CmdResult::NeedPoint
+    }
+
+    /// The second line's ends after a `MakeParallel` solve.
+    fn accept_parallel_line(
+        &mut self,
+        _ends: [(crate::scene::parametric_constraints::ParametricRef, DVec3); 2],
+    ) -> CmdResult {
+        CmdResult::NeedPoint
+    }
+
     /// Include filled hatch / DXF SOLID regions in the entity hit-test.
     ///
     /// Most entity-pick commands operate on curve geometry and intentionally
@@ -2385,6 +3110,12 @@ pub trait CadCommand: Send {
     /// Resume the command with collected rich text.
     fn on_editor_text(&mut self, _value: String) {}
 
+    /// A field (code and referenced objects) to attach to the entity this
+    /// command commits.
+    fn text_field(&self) -> Option<(String, Vec<Handle>)> {
+        None
+    }
+
     fn on_editor_display_height(&mut self, _height: f64) {}
 
     /// Called when the user clicks and `needs_entity_pick()` is true.
@@ -2424,7 +3155,8 @@ pub trait CadCommand: Send {
         vec![]
     }
 
-    /// Message when `resolve_object_pick` returns none on click.
+    /// Message when `resolve_object_pick` returns none on click; an empty one
+    /// passes the click to `on_point` instead.
     fn object_pick_miss_message(&self) -> &'static str {
         "No object near click."
     }
@@ -2452,18 +3184,55 @@ pub trait CadCommand: Send {
     /// Commands that stay active across replaces should update their internal snapshots here.
     fn on_entity_replaced(&mut self, _old: Handle, _new_handles: &[Handle]) {}
 
+    /// Called after `CmdResult::CommitEntity` / `CommitEntities` added
+    /// entities while the command stays active, with the entities as stored
+    /// (fresh handles). Commands that pick from a snapshot add them here so
+    /// their own results can be hovered and picked next. (#673)
+    fn on_entities_committed(&mut self, _entities: &[codec::EntityType]) {}
+
+    /// Batch counterpart of `on_entity_replaced` for `ReplaceManyContinue`.
+    /// The default forwards each pair; commands with derived caches override
+    /// it to rebuild once per batch.
+    fn on_entities_replaced(&mut self, replacements: &[(Handle, Vec<Handle>)]) {
+        for (old, new_handles) in replacements {
+            self.on_entity_replaced(*old, new_handles);
+        }
+    }
+
     /// Called after a PEDIT operation changed its target.
     fn on_pedit_applied(&mut self) {}
 
     /// Consume a lasso or drag-box gesture while the command is active.
     /// `fence` is the gesture boundary in drawing coordinates; `window` is
-    /// present for rectangular gestures. Returning `Some` prevents the normal
+    /// present for rectangular gestures and `crossing` tells a right-to-left
+    /// box from a left-to-right window. Returning `Some` prevents the normal
     /// selection system from selecting the crossed entities.
     fn on_drag_selection(
         &mut self,
         _fence: &[[f64; 2]],
         _window: Option<([f64; 2], [f64; 2])>,
+        _crossing: bool,
     ) -> Option<CmdResult> {
+        None
+    }
+
+    /// Opt in only for commands with useful, potentially expensive preview
+    /// geometry. Normal selection and other modify commands stay untouched.
+    fn drag_selection_preview_enabled(&self) -> bool {
+        false
+    }
+
+    /// Live preview for a drag box or lasso, before the mouse release commits
+    /// its selection. The host supplies only spatially nearby handles so an
+    /// interactive preview need not scan every entity in a large DWG.
+    /// Returning None retains the command's ordinary hover preview.
+    fn on_drag_selection_preview(
+        &mut self,
+        _fence: &[[f64; 2]],
+        _window: Option<([f64; 2], [f64; 2])>,
+        _crossing: bool,
+        _candidate_handles: &[Handle],
+    ) -> Option<Vec<WireModel>> {
         None
     }
 
@@ -2488,6 +3257,29 @@ pub trait CadCommand: Send {
 
     fn inject_hover_entity(&mut self, _handle: Handle, _entity: EntityType) {}
 
+    /// The step a QuickCalc pick is on (1-based), for the pallet's banner.
+    fn quick_calc_step(&self) -> Option<u8> {
+        None
+    }
+
+    /// Preview wires that must survive generic command-preview refreshes such
+    /// as snap-dwell ticks. Transient hover candidates remain supplied by
+    /// `on_hover_entity` on viewport moves.
+    fn persistent_preview_wires(&self) -> Vec<WireModel> {
+        vec![]
+    }
+
+    /// Opt in to transient measurement text; unrelated Measurement users keep
+    /// their existing command-line-only behavior.
+    fn has_measurement_readout(&self) -> bool {
+        false
+    }
+
+    /// Live inquiry text at the same full-precision point as the preview.
+    fn measurement_readout(&self, _cursor: DVec3) -> Option<String> {
+        None
+    }
+
     /// Called on every mouse-move in the viewport.
     /// Return `Some(WireModel)` to update the rubber-band preview, `None` to skip.
     fn on_mouse_move(&mut self, _pt: DVec3) -> Option<WireModel> {
@@ -2500,10 +3292,34 @@ pub trait CadCommand: Send {
         self.on_mouse_move(pt).into_iter().collect()
     }
 
+    /// Called on every mouse-move with optional live tangent snap target under the cursor.
+    /// Default: forwards to `on_preview_wires(pt)`.
+    fn on_preview_wires_with_tangent(
+        &mut self,
+        pt: DVec3,
+        _tangent: Option<TangentObject>,
+    ) -> Vec<WireModel> {
+        self.on_preview_wires(pt)
+    }
+
+    /// Entities the host draws as the live preview, tessellated like the
+    /// drawing's own (arcs, text, linetypes and all). Commands whose preview
+    /// changes an entity's shape return edited copies of it here.
+    fn preview_entities(&mut self, _document: &codec::CadDocument, _pt: DVec3) -> Vec<EntityType> {
+        Vec::new()
+    }
+
     /// Source entities replaced by the current live preview. The host removes
     /// these from the resident render until the command commits or cancels.
     /// Commands such as COPY keep their sources visible and use the default.
     fn preview_hidden_handles(&self) -> &[Handle] {
+        &[]
+    }
+
+    /// Original, stationary wires available as discrete snap references while
+    /// a command shows replacement geometry. Never includes the moving preview.
+    /// The default leaves every other command's snapping unchanged.
+    fn preview_original_snap_wires(&self) -> &[WireModel] {
         &[]
     }
 
@@ -2570,13 +3386,82 @@ pub trait CadCommand: Send {
     /// While true, viewport clicks are routed through the normal selection
     /// system (single / box / polygon) instead of the command's point-pick path.
     /// After each completed selection action the host calls `on_selection_complete`.
+    /// A selection command may reveal state-hidden BEDIT members for picking.
+    /// This is a display request only; the document visibility flags stay intact.
+    fn reveals_hidden_block_objects(&self) -> bool {
+        false
+    }
+
+    /// Native parameter being edited, for read-only grip feedback. A missing
+    /// reference denotes the editor's temporary Test Block reference.
+    fn block_parameter_target(&self) -> Option<(Option<codec::Handle>, codec::Handle)> {
+        None
+    }
+    fn block_parameter_grip_id(&self) -> Option<usize> {
+        None
+    }
+
+    /// Non-mutating parameter input for the host's staged geometry preview.
+    fn block_parameter_preview(&self, _cursor: DVec3) -> Option<CmdResult> {
+        None
+    }
+
+    /// Advance the insertion anchor on a rising Ctrl key edge.
+    fn cycle_insertion_point(&mut self) -> bool {
+        false
+    }
+
     fn is_selection_gathering(&self) -> bool {
         false
+    }
+
+    /// Enable a lightweight hover pick while gathering entities. Commands can
+    /// return geometry restyled with their pending operation without changing
+    /// the document.
+    fn selection_hover_preview_enabled(&self) -> bool {
+        false
+    }
+
+    fn selection_hover_preview(
+        &self,
+        _scene: &Scene,
+        _hovered: Option<Handle>,
+    ) -> Option<SelectionHoverPreview> {
+        None
     }
 
     fn selection_forces_add(&self) -> bool {
         false
     }
+
+    /// The command takes associative dimensions only. The host drops every
+    /// other object from a completed selection, says how many it dropped, and
+    /// hands the command what is left.
+    fn selection_keeps_associative_dimensions(&self) -> bool {
+        false
+    }
+
+    /// The kinds of object the command takes (ADJUST): the host drops the
+    /// rest of each completed selection without a word.
+    fn selection_entity_filter(&self) -> Option<fn(&EntityType) -> bool> {
+        None
+    }
+
+    /// The command takes block references only (XCLIP): the host drops the
+    /// rest and says how many were ineligible.
+    fn selection_keeps_block_references(&self) -> bool {
+        false
+    }
+
+    /// The command moves, turns or resizes what it gathers: the host drops
+    /// locked point clouds from each completed selection and says so.
+    fn selection_drops_locked_point_clouds(&self) -> bool {
+        false
+    }
+
+    /// Before each input the host says which block references carry a clip
+    /// boundary.
+    fn inject_clipped(&mut self, _clipped: &dyn Fn(Handle) -> bool) {}
 
     /// Called after a selection action completes while `is_selection_gathering` is true.
     /// `handles` is the full set of currently selected entities.
@@ -2587,6 +3472,11 @@ pub trait CadCommand: Send {
 
     /// Exclude locked-layer entities from injected selection geometry.
     fn selection_entities_exclude_locked(&self) -> bool {
+        false
+    }
+
+    /// Exclude locked-layer entities from interactive selection (e.g. ssget ":L").
+    fn selection_rejects_locked_layers(&self) -> bool {
         false
     }
 
@@ -2610,6 +3500,27 @@ pub trait CadCommand: Send {
         false
     }
 
+    /// The step takes the bare cursor position: an internal point picked
+    /// inside an area (HATCH, BOUNDARY). Object snap, tracking and the
+    /// Ortho/Polar lock would move the pick onto a nearby edge and select the
+    /// neighbouring area, so the host skips them all for this step. Default
+    /// `false`. (#2009)
+    fn wants_raw_point(&self) -> bool {
+        false
+    }
+
+    /// HPGAPTOL as the command currently has it, so a gap tolerance changed
+    /// at its prompt is kept for later boundary picks. Default `None`.
+    fn hatch_gap_tolerance(&self) -> Option<f64> {
+        None
+    }
+
+    /// The step draws a window that selects objects rather than placing
+    /// geometry: no coordinate boxes at the cursor. Default `false`.
+    fn selects_by_window(&self) -> bool {
+        false
+    }
+
     /// The already-picked first corner of the selection window (world space)
     /// while `window_corner_pick()` is true and the opposite corner is being
     /// dragged. The host projects it and draws a filled selection marquee to the
@@ -2624,30 +3535,41 @@ pub trait CadCommand: Send {
         false
     }
 
-    /// If this command is XATTACH, returns the file path to attach.
-    /// Default: None.
-    fn xattach_path(&self) -> Option<String> {
+    /// If this command is XATTACH, what it attaches and how the reference is
+    /// stored. Default: None.
+    fn xattach_request(&self) -> Option<crate::modules::insert::xattach::XrefAttachRequest> {
         None
     }
 
     /// The block reference an ATTEDIT pick has resolved to, awaiting the
     /// attribute editor dialog; else None.
-    fn attedit_pending_handle(&self) -> Option<acadrust::Handle> {
+    fn attedit_pending_handle(&self) -> Option<codec::Handle> {
         None
     }
 
     /// Inject block attribute definitions after the INSERT point is picked.
     fn attreq_set_attdefs(
         &mut self,
-        _attdefs: Vec<acadrust::entities::AttributeDefinition>,
-    ) -> Option<acadrust::EntityType> {
+        _attdefs: Vec<codec::entities::AttributeDefinition>,
+    ) -> Option<codec::EntityType> {
         None
+    }
+
+    /// Supply the referenced block's insertion base point so the attributes
+    /// the command now owns are placed through the same base-point convention
+    /// as the render path. Default: no-op (no base point).
+    fn attreq_set_block_base(&mut self, _base: codec::types::Vector3) {}
+
+    /// After the host commits an ATTREQ insert: keep the command running
+    /// (repeated placement) instead of ending it.
+    fn attreq_continue(&self) -> bool {
+        false
     }
 
     /// Returns the INSERT entity built so far (pending attr fill) if this is an
     /// ATTREQ-aware INSERT command waiting for attdef injection.
     /// Called by the host after `AttreqNeeded` to commit the completed Insert.
-    fn attreq_take_insert(&mut self) -> Option<acadrust::EntityType> {
+    fn attreq_take_insert(&mut self) -> Option<codec::EntityType> {
         None
     }
 
@@ -2690,13 +3612,13 @@ pub trait CadCommand: Send {
     /// Called by update.rs to inject the cloned entity into commands
     /// that need to read/modify it (e.g. DIMTEDIT, MLEADERADD, MLEADERREMOVE).
     /// Default: no-op.
-    fn inject_picked_entity(&mut self, _entity: acadrust::EntityType) {}
+    fn inject_picked_entity(&mut self, _entity: codec::EntityType) {}
 
     /// The host undid one document step on the command's behalf
     /// (`CmdResult::UndoDocument`) and the command stays active. Commands
     /// that cache document entities (FILLET, CHAMFER) refresh them here so
     /// the next pick sees the restored geometry. Default: no-op.
-    fn on_document_undone(&mut self, _document: &acadrust::CadDocument) {}
+    fn on_document_undone(&mut self, _document: &codec::CadDocument) {}
 
     /// Supply the tessellated surface area associated with the picked entity.
     /// Commands that measure mesh-backed objects can opt in without owning the
@@ -2782,6 +3704,17 @@ pub fn all_registered_command_names() -> Vec<&'static str> {
 mod constraint_registry_tests {
     use super::*;
 
+    #[test]
+    fn default_block_alias_targets_are_registered() {
+        let names = all_registered_command_names();
+        for target in ["-BLOCK", "-WBLOCK", "-ATTEDIT"] {
+            assert!(
+                names.contains(&target),
+                "{target} must validate in ALIASEDIT"
+            );
+        }
+    }
+
     /// Ensures every constraint command remains discoverable by autocomplete
     /// and command listings.
     #[test]
@@ -2797,15 +3730,18 @@ mod constraint_registry_tests {
             "OCCONSTRAINT",
             "GCHORIZONTAL",
             "VCONSTRAINT",
+            "GCVERTICAL",
             "PCONSTRAINT",
             "QCONSTRAINT",
             "GCPERPENDICULAR",
             "ECONSTRAINT",
+            "GCEQUAL",
             "TCONSTRAINT",
             "GCCONCENTRIC",
             "NRCONSTRAINT",
             "LCONSTRAINT",
             "FXCONSTRAINT",
+            "GCFIX",
             "SYCONSTRAINT",
             "DCONSTRAINT",
             "ACONSTRAINT",

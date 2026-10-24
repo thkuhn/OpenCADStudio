@@ -1,0 +1,80 @@
+name: Tests
+
+# Runs the workspace tests on every push to main and on every pull request,
+# on Linux, Windows and macOS. A separate lint job reports rustfmt and clippy
+# results without blocking merges until the existing tree has been cleaned up.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: tests-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-22.04, windows-latest, macos-14]
+    steps:
+      - uses: actions/checkout@v4
+
+      # The same libraries the Linux release build needs (windowing, GL,
+      # fonts); the packaging tools are left out.
+      - name: System libraries (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libgl1-mesa-dev libx11-dev libxcursor-dev libxi-dev libxrandr-dev \
+            libxkbcommon-dev libwayland-dev libfontconfig1-dev libfreetype6-dev
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      # LC_ALL=C: a few tests compare English message text. The GPU-backed
+      # tests are #[ignore]d and need an adapter, so they do not run here.
+      - name: cargo test
+        env:
+          LC_ALL: C
+        run: cargo test --workspace --locked
+
+  lint:
+    name: lint (informational)
+    runs-on: ubuntu-22.04
+    # Non-blocking until the existing tree is cleaned up. The tree currently has
+    # thousands of rustfmt diffs and several clippy warnings and errors, so
+    # these checks report in the log without failing the job: a job-level
+    # continue-on-error still shows a red check on every pull request.
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: System libraries
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libgl1-mesa-dev libx11-dev libxcursor-dev libxi-dev libxrandr-dev \
+            libxkbcommon-dev libwayland-dev libfontconfig1-dev libfreetype6-dev
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: cargo fmt --check
+        continue-on-error: true
+        run: cargo fmt --all -- --check
+
+      - name: cargo clippy
+        continue-on-error: true
+        run: cargo clippy --workspace --all-targets --locked

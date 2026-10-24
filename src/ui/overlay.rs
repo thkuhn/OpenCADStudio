@@ -1,15 +1,16 @@
 //! Viewport overlay widgets.
 
+pub mod authoring;
+
 use std::cell::RefCell;
-use std::collections::HashMap;
 
 use glam::{Mat4, Vec3};
 use iced::mouse;
 use iced::widget::canvas;
 use iced::{Color, Element, Length, Point, Size, Theme};
 
-use crate::app::Message;
 use crate::app::settings::{CursorType, IsoPlane};
+use crate::app::Message;
 use crate::scene::model::object::GripShape;
 use crate::scene::SelectionState;
 
@@ -22,30 +23,16 @@ pub const CROSSHAIR_ARM: f32 = 60.0;
 const DEFAULT_CURSOR_SIZE: i32 = 5;
 const DEFAULT_PICK_BOX: i32 = 3;
 const DEFAULT_PICK_APERTURE: f32 = 8.0;
-const CONSTRAINT_GLYPH_SIZE: f32 = 14.0;
-const CONSTRAINT_GLYPH_PAD_X: f32 = 7.0;
-const CONSTRAINT_GLYPH_PAD_Y: f32 = 4.0;
-const CONSTRAINT_GLYPH_GAP: f32 = 6.0;
-const CONSTRAINT_GLYPH_ROW_GAP: f32 = 4.0;
 const CONSTRAINT_HOVER_MARKER_RADIUS: f32 = 7.0;
-const COINCIDENT_GLYPH_SIZE: f32 = 9.0;
 
-fn is_compact_coincident_glyph(label: &str) -> bool {
-    matches!(label, "≡" | "∈")
-}
+use crate::scene::parametric_constraints::{
+    glyph_hit_test_entries, glyph_is_compact, glyph_is_fixed, glyph_is_vertical, GlyphEntry,
+    GLYPH_SIZE,
+};
 
-fn constraint_glyph_size(label: &str) -> Size {
-    if is_compact_coincident_glyph(label) {
-        return Size::new(COINCIDENT_GLYPH_SIZE, COINCIDENT_GLYPH_SIZE);
-    }
-    if label == "G²" {
-        let side = CONSTRAINT_GLYPH_SIZE + CONSTRAINT_GLYPH_PAD_Y * 2.0;
-        return Size::new(side, side);
-    }
-    let w = label.chars().count() as f32 * CONSTRAINT_GLYPH_SIZE * 0.62
-        + CONSTRAINT_GLYPH_PAD_X * 2.0;
-    let h = CONSTRAINT_GLYPH_SIZE + CONSTRAINT_GLYPH_PAD_Y * 2.0;
-    Size::new(w, h)
+/// The lock mark a dynamic dimension carries (`DYNAMIC_DIMENSION_GLYPH`).
+fn is_dynamic_dimension_glyph(label: &str) -> bool {
+    label == crate::scene::parametric_constraints::DYNAMIC_DIMENSION_GLYPH
 }
 
 fn draw_smooth_constraint_glyph(frame: &mut canvas::Frame, center: Point, color: Color) {
@@ -68,11 +55,7 @@ fn draw_smooth_constraint_glyph(frame: &mut canvas::Frame, center: Point, color:
     frame.fill(&canvas::Path::circle(center, 1.35), color);
 }
 
-fn draw_tangent_constraint_glyph(
-    frame: &mut canvas::Frame,
-    center: Point,
-    color: Color,
-) {
+fn draw_tangent_constraint_glyph(frame: &mut canvas::Frame, center: Point, color: Color) {
     let radius = 4.5;
     let circle_center = Point::new(center.x - 0.3, center.y + 2.75);
     let diagonal = radius * std::f32::consts::FRAC_1_SQRT_2;
@@ -84,104 +67,176 @@ fn draw_tangent_constraint_glyph(
     frame.stroke(&canvas::Path::line(contact, tangent_end), stroke);
 }
 
-fn draw_concentric_constraint_glyph(
-    frame: &mut canvas::Frame,
-    center: Point,
-    color: Color,
-) {
+fn draw_concentric_constraint_glyph(frame: &mut canvas::Frame, center: Point, color: Color) {
     let stroke = canvas::Stroke::default().with_color(color).with_width(1.25);
     frame.stroke(&canvas::Path::circle(center, 4.7), stroke.clone());
     frame.stroke(&canvas::Path::circle(center, 2.15), stroke);
 }
 
-fn constraint_glyph_box(
-    anchor: Point,
-    outward: [f32; 2],
-    label: &str,
-    tangent_offset: f32,
-) -> (Point, Size) {
-    let size = constraint_glyph_size(label);
-    let gap = if is_compact_coincident_glyph(label) {
-        1.0
-    } else {
-        CONSTRAINT_GLYPH_GAP
-    };
-    let distance = outward[0].abs() * size.width * 0.5
-        + outward[1].abs() * size.height * 0.5
-        + gap;
-    let tangent = [-outward[1], outward[0]];
-    (
+/// Strokes a closed four-corner polygon — the outline half of the brush glyph.
+fn stroke_quad(frame: &mut canvas::Frame, corners: [Point; 4], stroke: &canvas::Stroke<'_>) {
+    let path = canvas::Path::new(|p| {
+        p.move_to(corners[0]);
+        p.line_to(corners[1]);
+        p.line_to(corners[2]);
+        p.line_to(corners[3]);
+        p.close();
+    });
+    frame.stroke(&path, stroke.clone());
+}
+
+/// MATCHPROP's paintbrush cursor.
+///
+/// While the user is transferring properties the CAD crosshair is replaced by a
+/// paintbrush whose tip sits exactly on the pick point, as the reference does. The
+/// body leans up-and-right so it never covers the object being picked.
+///
+/// Deliberately monochrome and geometric: the crosshair's own colour, a single
+/// stroke weight and one filled wedge, so the glyph reads as part of the CAD
+/// cursor family rather than clip-art.
+fn draw_match_brush(frame: &mut canvas::Frame, tip: Point, color: Color) {
+    let inv = std::f32::consts::FRAC_1_SQRT_2;
+    // `along` runs up-and-right (handle direction); `across` is perpendicular.
+    let along = (inv, -inv);
+    let across = (inv, inv);
+    let at = |a: f32, w: f32| {
         Point::new(
-            anchor.x + outward[0] * distance + tangent[0] * tangent_offset
-                - size.width * 0.5,
-            anchor.y + outward[1] * distance + tangent[1] * tangent_offset
-                - size.height * 0.5,
-        ),
-        size,
-    )
+            tip.x + along.0 * a + across.0 * w,
+            tip.y + along.1 * a + across.1 * w,
+        )
+    };
+    let stroke = canvas::Stroke {
+        width: 1.25,
+        style: canvas::Style::Solid(color),
+        line_join: canvas::LineJoin::Miter,
+        ..Default::default()
+    };
+
+    // Bristles: the only solid mass, so the working end carries the weight and
+    // the silhouette still reads at cursor size.
+    let bristles = canvas::Path::new(|p| {
+        p.move_to(at(0.0, 0.0));
+        p.line_to(at(9.0, -3.2));
+        p.line_to(at(12.0, -3.2));
+        p.line_to(at(12.0, 3.2));
+        p.line_to(at(9.0, 3.2));
+        p.close();
+    });
+    frame.fill(&bristles, color);
+
+    // Ferrule and handle stay outline-only: line work, not clip-art.
+    stroke_quad(
+        frame,
+        [at(12.0, -3.2), at(15.5, -3.2), at(15.5, 3.2), at(12.0, 3.2)],
+        &stroke,
+    );
+    stroke_quad(
+        frame,
+        [at(15.5, -2.3), at(30.0, -1.9), at(30.0, 1.9), at(15.5, 2.3)],
+        &stroke,
+    );
 }
 
-fn constraint_glyph_offsets(glyphs: &[(Point, [f32; 2], String, bool)]) -> Vec<f32> {
-    let mut groups: HashMap<[u32; 4], Vec<usize>> = HashMap::new();
-    for (index, (anchor, outward, _, _)) in glyphs.iter().enumerate() {
-        groups
-            .entry([
-                anchor.x.to_bits(),
-                anchor.y.to_bits(),
-                outward[0].to_bits(),
-                outward[1].to_bits(),
-            ])
-            .or_default()
-            .push(index);
-    }
-
-    let mut offsets = vec![0.0; glyphs.len()];
-    for indices in groups.values().filter(|indices| indices.len() > 1) {
-        let half_extents: Vec<f32> = indices
-            .iter()
-            .map(|index| {
-                let (_, outward, label, _) = &glyphs[*index];
-                let size = constraint_glyph_size(label);
-                let tangent = [-outward[1], outward[0]];
-                tangent[0].abs() * size.width * 0.5
-                    + tangent[1].abs() * size.height * 0.5
-            })
-            .collect();
-        let total = half_extents.iter().sum::<f32>() * 2.0
-            + CONSTRAINT_GLYPH_ROW_GAP * (indices.len() - 1) as f32;
-        let mut cursor = -total * 0.5;
-        for (index, half_extent) in indices.iter().zip(half_extents) {
-            offsets[*index] = cursor + half_extent;
-            cursor += half_extent * 2.0 + CONSTRAINT_GLYPH_ROW_GAP;
+/// The reference bar's padlock: white with a small orange point marker
+/// when one point is held, red when a whole curve or segment is.
+fn draw_fixed_constraint_glyph(
+    frame: &mut canvas::Frame,
+    center: Point,
+    lock: Color,
+    badge: Color,
+    point_marker: bool,
+) {
+    let shackle = canvas::Path::new(|builder| {
+        let shackle_center = Point::new(center.x, center.y - 1.6);
+        for step in 0..=12 {
+            let angle = std::f32::consts::PI * (1.0 - step as f32 / 12.0);
+            let point = Point::new(
+                shackle_center.x + angle.cos() * 3.1,
+                shackle_center.y - angle.sin() * 3.1,
+            );
+            if step == 0 {
+                builder.move_to(Point::new(point.x, center.y - 0.6));
+                builder.line_to(point);
+            } else {
+                builder.line_to(point);
+            }
         }
+        builder.line_to(Point::new(center.x + 3.1, center.y - 0.6));
+    });
+    frame.stroke(
+        &shackle,
+        canvas::Stroke::default().with_color(lock).with_width(1.5),
+    );
+    let body = canvas::Path::rounded_rectangle(
+        Point::new(center.x - 5.0, center.y - 0.8),
+        Size::new(10.0, 7.6),
+        1.4.into(),
+    );
+    frame.fill(&body, lock);
+    frame.stroke(
+        &canvas::Path::line(
+            Point::new(center.x, center.y + 1.4),
+            Point::new(center.x, center.y + 4.6),
+        ),
+        canvas::Stroke::default().with_color(badge).with_width(1.3),
+    );
+    if point_marker {
+        frame.stroke(
+            &canvas::Path::rectangle(
+                Point::new(center.x + 4.0, center.y + 3.6),
+                Size::new(4.6, 4.6),
+            ),
+            canvas::Stroke::default()
+                .with_color(Color::from_rgb8(224, 130, 62))
+                .with_width(1.2),
+        );
     }
-    offsets
 }
 
-/// Hit-tests screen point `p` against the same glyph-pill layout `draw`
-/// renders — reusing `constraint_glyph_offsets`/`constraint_glyph_box` so
-/// the clickable area can never drift from what's actually drawn, including
-/// the tangential fan-out applied when several glyphs share one anchor.
-/// Returns the index into `glyphs` of the topmost (last-drawn) match.
-/// `Scene::constraint_glyph_hit` maps the index back to a constraint id.
-pub(crate) fn constraint_glyph_hit_test(
-    glyphs: &[(Point, [f32; 2], String, bool)],
-    p: Point,
-) -> Option<usize> {
-    let offsets = constraint_glyph_offsets(glyphs);
-    glyphs
-        .iter()
-        .zip(offsets)
-        .enumerate()
-        .rev()
-        .find_map(|(index, ((anchor, outward, label, _), tangent_offset))| {
-            let (top_left, size) = constraint_glyph_box(*anchor, *outward, label, tangent_offset);
-            let within = p.x >= top_left.x
-                && p.x <= top_left.x + size.width
-                && p.y >= top_left.y
-                && p.y <= top_left.y + size.height;
-            within.then_some(index)
-        })
+/// The reference bar's Vertical mark: a red datum line hatched on its left,
+/// the constrained direction beside it, plus the orange point marker for a
+/// two-point relation.
+fn draw_vertical_constraint_glyph(
+    frame: &mut canvas::Frame,
+    center: Point,
+    text: Color,
+    point_marker: bool,
+) {
+    let datum = Color::from_rgb8(214, 76, 76);
+    let datum_x = center.x - 2.5;
+    let stroke = canvas::Stroke::default().with_color(datum).with_width(1.5);
+    frame.stroke(
+        &canvas::Path::line(
+            Point::new(datum_x, center.y - 6.5),
+            Point::new(datum_x, center.y + 6.5),
+        ),
+        stroke.clone(),
+    );
+    for step in 0..3 {
+        let y = center.y - 4.5 + step as f32 * 4.0;
+        frame.stroke(
+            &canvas::Path::line(Point::new(datum_x, y), Point::new(datum_x - 4.0, y + 3.5)),
+            stroke.clone(),
+        );
+    }
+    frame.stroke(
+        &canvas::Path::line(
+            Point::new(center.x + 2.5, center.y - 6.0),
+            Point::new(center.x + 2.5, center.y + 6.0),
+        ),
+        canvas::Stroke::default().with_color(text).with_width(1.4),
+    );
+    if point_marker {
+        frame.stroke(
+            &canvas::Path::rectangle(
+                Point::new(center.x + 4.5, center.y - 2.3),
+                Size::new(4.6, 4.6),
+            ),
+            canvas::Stroke::default()
+                .with_color(Color::from_rgb8(224, 130, 62))
+                .with_width(1.2),
+        );
+    }
 }
 
 /// Convert CURSORSIZE to a screen-space arm length while keeping the original
@@ -222,6 +277,18 @@ pub(crate) fn pick_box_aperture_px(value: i32) -> f32 {
     aperture.max(1.0)
 }
 
+/// Which interactive navigation tool is armed. Each one owns the whole
+/// viewport and hides the CAD crosshair, but they do not share a cursor: the
+/// hand reads as "drag the sheet", which is wrong for a zoom or an orbit.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum NavCursor {
+    #[default]
+    None,
+    Pan,
+    Orbit,
+    Zoom,
+}
+
 #[derive(Clone, Copy)]
 pub struct CrosshairOptions {
     pub size_percent: i32,
@@ -232,6 +299,26 @@ pub struct CrosshairOptions {
     pub iso_plane: IsoPlane,
     pub snap_angle_deg: f32,
     pub point_mode: bool,
+    /// A client pick (`user_select` / `getpoint`) is waiting for the person:
+    /// the crosshair arms disappear and a blue pickbox remains — the
+    /// screen-level "the client wants YOU to pick" signal.
+    pub pick_pending: bool,
+    /// MATCHPROP is asking for its source object (hollow pickbox).
+    pub matchprop_source_pick: bool,
+    /// Keep the MATCHPROP pickbox visible while selecting destination objects.
+    pub matchprop_pickbox: bool,
+    /// Draw only the pickbox: the active command previews a line that the
+    /// full-length arms would cover.
+    pub hide_arms: bool,
+    /// Keep the arms at the default short length even when CURSORSIZE asks
+    /// for full-screen ones: an infinite-line preview through the cursor
+    /// must stay visible past them, but the cursor itself must not vanish.
+    pub short_arms: bool,
+    /// Explicit object-snap marker colour; `None` picks one that reads on
+    /// the canvas.
+    pub snap_color: Option<[u8; 3]>,
+    /// Object-snap marker half-size in pixels (SNAPMARKERSIZE, 1–20).
+    pub snap_size: f32,
 }
 
 /// Rendering style for the viewport grid.
@@ -239,6 +326,9 @@ pub struct CrosshairOptions {
 pub struct GridStyle {
     pub opacity: u8,
     pub bg_luminance: f32,
+    pub color: [f32; 3],
+    /// Draw the coloured X/Y axis lines through the grid origin.
+    pub axes: bool,
 }
 
 impl Default for GridStyle {
@@ -246,6 +336,8 @@ impl Default for GridStyle {
         Self {
             opacity: 18,
             bg_luminance: 0.15,
+            color: [0.80, 0.80, 0.80],
+            axes: true,
         }
     }
 }
@@ -262,6 +354,7 @@ pub struct SelectionVisualOptions {
     pub grip_color: u8,
     pub grip_hot: u8,
     pub grip_hover: u8,
+    pub grip_dynamic: u8,
 }
 
 impl Default for SelectionVisualOptions {
@@ -276,6 +369,7 @@ impl Default for SelectionVisualOptions {
             grip_color: 0,
             grip_hot: 0,
             grip_hover: 0,
+            grip_dynamic: 140,
         }
     }
 }
@@ -300,10 +394,7 @@ pub const DEFAULT_WINDOW_COLOR: Color = Color {
 /// Crossing is always a theme-harmonious green/teal variant, and Window is always a theme-harmonious blue/cyan variant.
 pub fn theme_selection_colors(theme: &Theme) -> (Color, Color) {
     match theme {
-        Theme::Dark => (
-            DEFAULT_CROSSING_COLOR,
-            DEFAULT_WINDOW_COLOR,
-        ),
+        Theme::Dark => (DEFAULT_CROSSING_COLOR, DEFAULT_WINDOW_COLOR),
         Theme::Light => (
             Color::from_rgb(0.12, 0.52, 0.30), // Engineering Forest Green
             Color::from_rgb(0.13, 0.40, 0.70), // Engineering Blueprint Blue
@@ -384,10 +475,7 @@ pub fn theme_selection_colors(theme: &Theme) -> (Color, Color) {
             Color::from_rgb(0.69, 0.87, 0.63), // Ferra Sage Green (#b1dda1)
             Color::from_rgb(0.69, 0.84, 0.97), // Ferra Ice Blue (#b1d5f7)
         ),
-        _ => (
-            DEFAULT_CROSSING_COLOR,
-            DEFAULT_WINDOW_COLOR,
-        ),
+        _ => (DEFAULT_CROSSING_COLOR, DEFAULT_WINDOW_COLOR),
     }
 }
 
@@ -480,7 +568,7 @@ pub fn resolve_selection_base_color(
     // ACI 0 (BYBLOCK) and 256 (BYLAYER) are not explicit overrides;
     // the sysvar uses 0 as the unset sentinel; valid user picks are 1..=255.
     if custom > 0 {
-        if let Some((r, g, b)) = acadrust::types::aci_table::aci_to_rgb(custom) {
+        if let Some((r, g, b)) = codec::types::aci_table::aci_to_rgb(custom) {
             return Color::from_rgb8(r, g, b);
         }
     }
@@ -498,7 +586,10 @@ pub fn resolve_selection_base_color(
 // ── Grip marker data ──────────────────────────────────────────────────────
 
 /// Describes one grip to be drawn in the viewport overlay.
-#[derive(Clone, Debug)]
+///
+/// `PartialEq` feeds the cached grips layer key: the static grip geometry is
+/// only rebuilt when a marker's position, shape, or interaction flag changes.
+#[derive(Clone, Debug, PartialEq)]
 pub struct GripMarker {
     /// Screen-space position (viewport-relative pixels).
     pub pos: Point,
@@ -510,6 +601,12 @@ pub struct GripMarker {
     pub is_hovered: bool,
     /// Screen-plane direction with positive Y pointing up.
     pub dir: Option<[f32; 2]>,
+    /// True → a plugin-declared custom grip (API v11): drawn with the
+    /// distinct plugin accent so it reads differently from built-in
+    /// selection grips.
+    pub is_plugin: bool,
+    pub is_authoring: bool,
+    pub is_dynamic: bool,
 }
 
 // ── Grid display params ───────────────────────────────────────────────────
@@ -561,7 +658,11 @@ impl GridGeometry {
     /// the `None` path.
     #[doc(hidden)]
     pub fn empty() -> Self {
-        Self { segments: Vec::new(), major_segments: Vec::new(), axis_extent: 0.0 }
+        Self {
+            segments: Vec::new(),
+            major_segments: Vec::new(),
+            axis_extent: 0.0,
+        }
     }
 }
 
@@ -587,7 +688,11 @@ impl GridKey {
     /// Build a key from the per-pane `GridParams`, overlay bounds, and grid style.
     #[doc(hidden)]
     pub fn from_grids(grids: &[GridParams], bounds: iced::Rectangle, style: GridStyle) -> Self {
-        Self { grids: grids.to_vec(), bounds, style }
+        Self {
+            grids: grids.to_vec(),
+            bounds,
+            style,
+        }
     }
 }
 
@@ -626,6 +731,30 @@ pub struct GridCanvasState {
 /// least `MIN_GRID_PX` pixels apart at the camera pivot. Both orthographic and
 /// perspective cameras have the same vertical scale there. Camera rotation is
 /// intentionally absent so orbiting cannot rescale the visible grid or snap.
+/// World → viewport-local screen via relative-to-eye: subtract the f64 eye
+/// first so points near the camera stay precise at UTM-scale coords.
+/// Rejects points on/behind the perspective eye plane before dividing by W —
+/// without this a behind-camera point wraps to a finite mirrored coordinate
+/// (screen centre for on-axis points) and strokes garbage (#46).
+fn project_point(
+    view_rot: Mat4,
+    eye: glam::DVec3,
+    bounds: iced::Rectangle,
+    world: glam::DVec3,
+) -> Option<Point> {
+    let rel = (world - eye).as_vec3();
+    let clip = view_rot * rel.extend(1.0);
+    if !clip.is_finite() || clip.w <= 1e-7 {
+        return None;
+    }
+    let ndc = clip.truncate() / clip.w;
+    let screen = Point::new(
+        (ndc.x + 1.0) * 0.5 * bounds.width,
+        (1.0 - ndc.y) * 0.5 * bounds.height,
+    );
+    (screen.x.is_finite() && screen.y.is_finite()).then_some(screen)
+}
+
 /// Clip the screen segment `p0`→`p1` to `bounds` (Liang–Barsky), returning the
 /// visible part, or `None` when it misses entirely.
 ///
@@ -645,7 +774,12 @@ fn clip_seg(p0: Point, p1: Point, bounds: iced::Rectangle) -> Option<(Point, Poi
     let (xmax, ymax) = (bounds.width + PAD, bounds.height + PAD);
     let (dx, dy) = (p1.x - p0.x, p1.y - p0.y);
     let (mut t0, mut t1) = (0.0f32, 1.0f32);
-    for (p, q) in [(-dx, p0.x - xmin), (dx, xmax - p0.x), (-dy, p0.y - ymin), (dy, ymax - p0.y)] {
+    for (p, q) in [
+        (-dx, p0.x - xmin),
+        (dx, xmax - p0.x),
+        (-dy, p0.y - ymin),
+        (dy, ymax - p0.y),
+    ] {
         if p == 0.0 {
             // Parallel to this edge: outside it means the whole segment is out.
             if q < 0.0 {
@@ -670,6 +804,56 @@ fn clip_seg(p0: Point, p1: Point, bounds: iced::Rectangle) -> Option<(Point, Poi
         Point::new(p0.x + t0 * dx, p0.y + t0 * dy),
         Point::new(p0.x + t1 * dx, p0.y + t1 * dy),
     ))
+}
+
+/// Build a snap-guide end on the acquired screen ray, not on the noisy
+/// cursor-to-base line. Returns the normalized ray and its forward tip.
+fn extension_guide_tip(
+    base: Point,
+    snapped: Point,
+    acquired_direction: Option<Point>,
+) -> Option<(Point, Point)> {
+    let delta = acquired_direction.unwrap_or(Point::new(snapped.x - base.x, snapped.y - base.y));
+    let len = delta.x.hypot(delta.y);
+    if !len.is_finite() || len <= 1e-3 {
+        return None;
+    }
+    let u = Point::new(delta.x / len, delta.y / len);
+    let along = (snapped.x - base.x) * u.x + (snapped.y - base.y) * u.y;
+    let tip = Point::new(base.x + u.x * (along + 18.0), base.y + u.y * (along + 18.0));
+    Some((u, tip))
+}
+
+#[cfg(test)]
+mod extension_guide_tests {
+    use super::*;
+
+    #[test]
+    fn acquired_extension_guide_stays_on_its_origin_when_cursor_wanders() {
+        let base = Point::new(100.0, 200.0);
+        for snap in [
+            Point::new(140.0, 202.0),
+            Point::new(175.0, 193.0),
+            Point::new(240.0, 215.0),
+        ] {
+            let (unit, tip) =
+                extension_guide_tip(base, snap, Some(Point::new(300.0, 0.0))).unwrap();
+            assert!((unit.y).abs() < 1e-5);
+            assert!((tip.y - base.y).abs() < 1e-5);
+            assert!((tip.x - (snap.x + 18.0)).abs() < 1e-5);
+        }
+    }
+
+    #[test]
+    fn extension_guide_fallback_keeps_original_behavior_without_acquired_ray() {
+        let base = Point::new(100.0, 200.0);
+        let snap = Point::new(130.0, 240.0);
+        let (u, tip) = extension_guide_tip(base, snap, None).unwrap();
+        assert!((u.x - 0.6).abs() < 1e-5);
+        assert!((u.y - 0.8).abs() < 1e-5);
+        assert!((tip.x - 140.8).abs() < 1e-4);
+        assert!((tip.y - 254.4).abs() < 1e-4);
+    }
 }
 
 pub fn compute_grid_step(distance: f32, fov_y: f32, bounds: iced::Rectangle) -> f32 {
@@ -752,15 +936,15 @@ pub struct UcsIconParams {
 // ── Selection overlay ───────────────────────────────────────────────────
 
 /// An acquired OST tracking point with its screen position.
-#[derive(Clone, Debug)]
+///
+/// `PartialEq` feeds the cached tracking-marks layer key: two frames show the
+/// same crosses only when every acquired point sits on the same pixel.
+#[derive(Clone, Debug, PartialEq)]
 pub struct OstTrackPoint {
     pub screen: Point,
 }
 
-pub fn grid_overlay<'a>(
-    grid: Vec<GridParams>,
-    style: GridStyle,
-) -> Element<'a, Message> {
+pub fn grid_overlay<'a>(grid: Vec<GridParams>, style: GridStyle) -> Element<'a, Message> {
     canvas(GridCanvas { grid, style })
         .width(Length::Fill)
         .height(Length::Fill)
@@ -846,56 +1030,93 @@ pub fn selection_overlay<'a>(
     snap: Option<(Point, SnapType)>,
     snap_ext_base: Option<Point>,
     snap_ext_base2: Option<Point>,
+    snap_ext_dir: Option<Point>,
     grips: Vec<GripMarker>,
     control_polygon: Option<(Vec<Point>, bool)>,
     grip_clip: Option<iced::Rectangle>,
     ucs_icons: Vec<UcsIconParams>,
     ost_points: Vec<OstTrackPoint>,
-    otrack_line: Option<(Point, Point)>,
+    otrack_lines: Vec<(Point, Point)>,
     parallel_ref_marker: Option<Point>,
     show_viewcube: bool,
     dividers: Vec<iced::Rectangle>,
     pane_move_rect: Option<iced::Rectangle>,
     pane_drop_rect: Option<iced::Rectangle>,
-    pan_mode: bool,
+    nav: NavCursor,
     suppressed: bool,
     hover_locked: bool,
     crosshair_bg: [f32; 4],
     crosshair: CrosshairOptions,
+    // MATCHPROP is armed: paintbrush cursor replaces the crosshair.
+    show_match_brush: bool,
     selection_visual: SelectionVisualOptions,
-    constraint_glyphs: Vec<(Point, [f32; 2], String, bool, bool, Vec<Point>)>,
+    constraint_glyphs: Arc<[GlyphEntry]>,
+    // Per-glyph selection flags, parallel to `constraint_glyphs`, applied
+    // post-hoc by the view layer — deliberately outside the memoised entries
+    // so selection changes never invalidate the placement cache.
+    constraint_glyph_selected: Arc<[bool]>,
     constraint_glyph_tooltip: Option<String>,
     constraint_cursor_badge: Option<String>,
+    authoring_visibility: Option<(Point, String, iced::Rectangle, bool)>,
+    authoring_points: Vec<(Point, Point, String, iced::Rectangle, bool)>,
+    authoring_dimensions: Vec<AuthoringDimension>,
+    authoring_visual: authoring::AuthoringVisualOptions,
+    authoring_feedback: authoring::AuthoringFeedback,
 ) -> Element<'a, Message> {
     canvas(SelectionCanvas {
         selection,
         snap,
         snap_ext_base,
         snap_ext_base2,
+        snap_ext_dir,
         grips,
         control_polygon,
         grip_clip,
         ucs_icons,
         ost_points,
-        otrack_line,
+        otrack_lines,
         parallel_ref_marker,
         show_viewcube,
         dividers,
         pane_move_rect,
         pane_drop_rect,
-        pan_mode,
+        nav,
         suppressed,
         hover_locked,
         crosshair_bg,
         crosshair,
+        show_match_brush,
         selection_visual,
         constraint_glyphs,
+        constraint_glyph_selected,
         constraint_glyph_tooltip,
         constraint_cursor_badge,
+        authoring_visibility,
+        authoring_points,
+        authoring_dimensions,
+        authoring_visual,
+        authoring_feedback,
     })
     .width(Length::Fill)
     .height(Length::Fill)
     .into()
+}
+
+/// One authoring dimension's static drawing batch (witness lines, round/base
+/// grips, segments, labels, clip). `PartialEq` feeds the cached authoring
+/// layer key so this geometry is only rebuilt when the batch actually changes.
+#[derive(Clone, Debug, PartialEq)]
+pub struct AuthoringDimension {
+    pub selected: bool,
+    pub is_action: bool,
+    pub lines: Vec<[Point; 2]>,
+    pub round_grips: Vec<Point>,
+    pub base_grips: Vec<Point>,
+    pub lookup_grips: Vec<Point>,
+    pub dimensions: Vec<[Point; 2]>,
+    pub labels: Vec<(Point, String)>,
+    pub grips: Vec<(Point, Option<Point>)>,
+    pub clip: iced::Rectangle,
 }
 
 struct SelectionCanvas {
@@ -907,6 +1128,7 @@ struct SelectionCanvas {
     /// Second extension-guide base, present only for an extended intersection so
     /// both crossing extensions stay drawn when the crossing is caught. (#247, #259)
     snap_ext_base2: Option<Point>,
+    snap_ext_dir: Option<Point>,
     grips: Vec<GripMarker>,
     /// Selected spline control polygon and closed state.
     control_polygon: Option<(Vec<Point>, bool)>,
@@ -918,11 +1140,12 @@ struct SelectionCanvas {
     /// entry carries hover/selected (grips).
     ucs_icons: Vec<UcsIconParams>,
     ost_points: Vec<OstTrackPoint>,
-    /// Active OTRACK alignment: (acquired tracking point, locked cursor), both
-    /// in screen space. Drawn as a dashed guide extended a little past the
-    /// cursor so the extension / tracking line the user snapped to is visible.
-    /// (#219)
-    otrack_line: Option<(Point, Point)>,
+    /// Active OTRACK alignments, each (acquired tracking point, locked cursor)
+    /// in screen space. Drawn as dashed guides extended a little past the
+    /// cursor so the extension / tracking line the user snapped to is visible
+    /// (#219). An intersection lock contributes both of its crossing vectors,
+    /// so the point reads as their meeting rather than a lone guide (#1313).
+    otrack_lines: Vec<(Point, Point)>,
     /// The acquired Parallel-snap reference point (screen), marked with a small
     /// ∥ glyph so the user sees which line is the parallel reference. (#277)
     parallel_ref_marker: Option<Point>,
@@ -935,9 +1158,10 @@ struct SelectionCanvas {
     pane_move_rect: Option<iced::Rectangle>,
     /// The pane under the cursor during a pane move (drop target), highlighted.
     pane_drop_rect: Option<iced::Rectangle>,
-    /// Interactive PAN mode: the crosshair is hidden and the cursor becomes a
-    /// hand so the viewport reads as a draggable surface.
-    pan_mode: bool,
+    /// Which interactive navigation tool is armed. Any of them hides the
+    /// crosshair — the viewport is being driven, not drawn on — and each
+    /// picks its own cursor in `mouse_interaction`.
+    nav: NavCursor,
     /// A ribbon dropdown (or similar overlay) is open over the viewport. The
     /// crosshair is not drawn and the OS cursor is shown normally so the panel
     /// is usable instead of the cursor vanishing over it. (#227)
@@ -949,31 +1173,134 @@ struct SelectionCanvas {
     /// rather than the UI theme, which may be light over a dark model viewport.
     crosshair_bg: [f32; 4],
     crosshair: CrosshairOptions,
+    /// MATCHPROP is armed: the crosshair gives way to a paintbrush cursor
+    /// whose tip marks the pick point.
+    show_match_brush: bool,
     selection_visual: SelectionVisualOptions,
-    /// Constraint glyph anchor, outward screen direction, label, conflict
-    /// state, whether the pill itself is the current click-to-select target,
-    /// and the points to mark while the pill is hovered.
-    constraint_glyphs: Vec<(Point, [f32; 2], String, bool, bool, Vec<Point>)>,
+    /// Memoised constraint-glyph entries (precomputed anchor/outward/label +
+    /// layout) shared with the hit-test and tooltip paths — draw reads
+    /// `top_left`/`size` directly and never recomputes offsets or clones
+    /// labels.
+    constraint_glyphs: Arc<[GlyphEntry]>,
+    /// Per-glyph selection flags, parallel to `constraint_glyphs`, applied
+    /// post-hoc by the view layer (outside the cache).
+    constraint_glyph_selected: Arc<[bool]>,
     /// Localized kind name made visible after the app-level hover dwell.
     constraint_glyph_tooltip: Option<String>,
     /// Symbol shown beside the cursor while it targets an entity that already
     /// participates in an enabled geometric constraint.
     constraint_cursor_badge: Option<String>,
+    authoring_visibility: Option<(Point, String, iced::Rectangle, bool)>,
+    authoring_points: Vec<(Point, Point, String, iced::Rectangle, bool)>,
+    authoring_dimensions: Vec<AuthoringDimension>,
+    authoring_visual: authoring::AuthoringVisualOptions,
+    authoring_feedback: authoring::AuthoringFeedback,
+}
+
+/// The move gizmo: an arrow per axis (X red, Y green, Z blue) from the
+/// centre grip and a square per axis pair; the hovered or dragged part is
+/// yellow.
+fn draw_move_gizmo(frame: &mut canvas::Frame, grips: &[GripMarker]) {
+    use crate::scene::pick::grip::{gizmo_plane_axes, GIZMO_AXIS_PX};
+    const COLORS: [Color; 3] = [
+        Color::from_rgb(0.90, 0.22, 0.20),
+        Color::from_rgb(0.27, 0.70, 0.29),
+        Color::from_rgb(0.18, 0.52, 0.93),
+    ];
+    let active = Color::from_rgb(1.0, 0.84, 0.0);
+    // Unit screen direction (y down) and tip of each shown arrow.
+    let mut axes: [Option<(Point, iced::Vector)>; 3] = [None; 3];
+    for grip in grips {
+        if let (GripShape::GizmoAxis(k), Some([dx, dy])) = (grip.shape, grip.dir) {
+            axes[k as usize % 3] = Some((grip.pos, iced::Vector::new(dx, -dy)));
+        }
+    }
+    let Some(center) = axes
+        .iter()
+        .flatten()
+        .next()
+        .map(|(tip, d)| Point::new(tip.x - d.x * GIZMO_AXIS_PX, tip.y - d.y * GIZMO_AXIS_PX))
+    else {
+        return;
+    };
+    for grip in grips {
+        let GripShape::GizmoPlane(k) = grip.shape else {
+            continue;
+        };
+        let (a, b) = gizmo_plane_axes(k);
+        let (Some((_, a)), Some((_, b))) = (axes[a as usize], axes[b as usize]) else {
+            continue;
+        };
+        let corner = |u: f32, v: f32| {
+            Point::new(
+                center.x + (a.x * u + b.x * v) * GIZMO_AXIS_PX,
+                center.y + (a.y * u + b.y * v) * GIZMO_AXIS_PX,
+            )
+        };
+        let quad = canvas::Path::new(|p| {
+            p.move_to(corner(0.18, 0.18));
+            p.line_to(corner(0.42, 0.18));
+            p.line_to(corner(0.42, 0.42));
+            p.line_to(corner(0.18, 0.42));
+            p.close();
+        });
+        let lit = grip.is_hovered || grip.is_hot;
+        let color = if lit {
+            active
+        } else {
+            Color::from_rgb(0.85, 0.85, 0.85)
+        };
+        frame.fill(&quad, color.scale_alpha(if lit { 0.55 } else { 0.25 }));
+        frame.stroke(
+            &quad,
+            canvas::Stroke::default().with_width(1.0).with_color(color),
+        );
+    }
+    for grip in grips {
+        let (GripShape::GizmoAxis(k), Some((tip, d))) = (
+            grip.shape,
+            grip.dir
+                .map(|[dx, dy]| (grip.pos, iced::Vector::new(dx, -dy))),
+        ) else {
+            continue;
+        };
+        let color = if grip.is_hovered || grip.is_hot {
+            active
+        } else {
+            COLORS[k as usize % 3]
+        };
+        let base = Point::new(tip.x - d.x * 13.0, tip.y - d.y * 13.0);
+        frame.stroke(
+            &canvas::Path::line(center, base),
+            canvas::Stroke::default().with_width(2.5).with_color(color),
+        );
+        let head = canvas::Path::new(|p| {
+            p.move_to(tip);
+            p.line_to(Point::new(base.x - d.y * 6.0, base.y + d.x * 6.0));
+            p.line_to(Point::new(base.x + d.y * 6.0, base.y - d.x * 6.0));
+            p.close();
+        });
+        frame.fill(&head, color);
+    }
 }
 
 fn draw_grip_marker(
     frame: &mut canvas::Frame,
     grip: &GripMarker,
-    theme: &Theme,
+    palette: &iced::theme::Palette,
     visual: &SelectionVisualOptions,
+    authoring: &authoring::AuthoringVisualOptions,
 ) {
     let sp = grip.pos;
-    let h = visual.grip_size.clamp(1.0, 25.0);
+    let h = if grip.is_authoring {
+        authoring.grip_size / 2.0
+    } else {
+        visual.grip_size.clamp(1.0, 25.0)
+    };
     let path = match grip.shape {
-        GripShape::Square => canvas::Path::rectangle(
-            Point::new(sp.x - h, sp.y - h),
-            Size::new(h * 2.0, h * 2.0),
-        ),
+        GripShape::Square => {
+            canvas::Path::rectangle(Point::new(sp.x - h, sp.y - h), Size::new(h * 2.0, h * 2.0))
+        }
         GripShape::Rectangle => {
             // Mid-segment stretch handle: small box, longer along the segment
             // direction so the affordance reads as "stretch perpendicular".
@@ -1014,6 +1341,7 @@ fn draw_grip_marker(
             b.close();
         }),
         GripShape::Circle => canvas::Path::circle(Point::new(sp.x, sp.y), h),
+        GripShape::GizmoAxis(_) | GripShape::GizmoPlane(_) => return,
         GripShape::Dropdown | GripShape::DropdownAdjacent => canvas::Path::new(|b| {
             b.move_to(Point::new(sp.x - h, sp.y - h * 0.5));
             b.line_to(Point::new(sp.x + h, sp.y - h * 0.5));
@@ -1024,19 +1352,19 @@ fn draw_grip_marker(
 
     if grip.is_hot {
         let hot_color = if visual.grip_hot > 0 {
-            if let Some((r, g, b)) = acadrust::types::aci_table::aci_to_rgb(visual.grip_hot) {
+            if let Some((r, g, b)) = codec::types::aci_table::aci_to_rgb(visual.grip_hot) {
                 Color::from_rgb8(r, g, b)
             } else {
-                theme.palette().danger.base.color
+                palette.danger.base.color
             }
         } else {
-            theme.palette().danger.base.color
+            palette.danger.base.color
         };
         frame.fill(&path, hot_color);
     } else if grip.is_hovered {
-        let pair = theme.palette().primary.strong;
+        let pair = palette.primary.strong;
         let hover_color = if visual.grip_hover > 0 {
-            if let Some((r, g, b)) = acadrust::types::aci_table::aci_to_rgb(visual.grip_hover) {
+            if let Some((r, g, b)) = codec::types::aci_table::aci_to_rgb(visual.grip_hover) {
                 Color::from_rgb8(r, g, b)
             } else {
                 pair.color
@@ -1054,9 +1382,18 @@ fn draw_grip_marker(
             },
         );
     } else {
-        let palette = theme.palette();
-        let color = if visual.grip_color > 0 {
-            if let Some((r, g, b)) = acadrust::types::aci_table::aci_to_rgb(visual.grip_color) {
+        let color = if grip.is_authoring {
+            authoring.grip
+        } else if grip.is_dynamic {
+            codec::types::aci_table::aci_to_rgb(visual.grip_dynamic)
+                .map(|(r,g,b)| Color::from_rgb8(r,g,b)).unwrap_or(palette.primary.base.color)
+        } else if grip.is_plugin {
+            // Plugin-declared custom grip (API v11): a distinct accent so
+            // it never reads as a built-in selection grip. Hot and hover
+            // treatments stay identical to built-ins.
+            palette.success.base.color
+        } else if visual.grip_color > 0 {
+            if let Some((r, g, b)) = codec::types::aci_table::aci_to_rgb(visual.grip_color) {
                 Color::from_rgb8(r, g, b)
             } else {
                 palette.primary.base.color
@@ -1064,7 +1401,7 @@ fn draw_grip_marker(
         } else {
             palette.primary.base.color
         };
-        let fill = if matches!(
+        let fill = if grip.is_dynamic || matches!(
             grip.shape,
             GripShape::Dropdown | GripShape::DropdownAdjacent
         ) {
@@ -1102,12 +1439,383 @@ impl SelectionCanvas {
     }
 }
 
+// ── Selection overlay frame caches ─────────────────────────────────────────
+
+/// Cache hit decision for one selection-overlay layer: `true` iff `cached`
+/// is `Some` and structurally equal to `new`. Reference-based so the stored
+/// key never has to be moved out of its `RefCell`.
+#[doc(hidden)]
+pub fn should_reuse_layer<K: PartialEq>(cached: Option<&K>, new: &K) -> bool {
+    match cached {
+        Some(old) => old == new,
+        None => false,
+    }
+}
+
+/// One cached static layer of the selection overlay: the key of the geometry
+/// currently in the cache plus the `canvas::Cache` holding it. Mirrors
+/// `GridCanvasState` — one instance per layer, so a change to one layer's
+/// inputs (say, a glyph selection) never rebuilds the others.
+///
+/// Every layer's key contains the frame bounds, so a key match implies the
+/// iced-level bounds match too and `draw_with_bounds`'s early return
+/// applies. `clear()` on a key miss forces the closure to run even when the
+/// bounds happen to be unchanged (e.g. a document edit at the same canvas
+/// size).
+#[doc(hidden)]
+pub struct CachedOverlayLayer<K> {
+    pub key: RefCell<Option<K>>,
+    pub cache: canvas::Cache<iced::Renderer>,
+}
+
+impl<K> Default for CachedOverlayLayer<K> {
+    fn default() -> Self {
+        Self {
+            key: RefCell::new(None),
+            cache: canvas::Cache::new(),
+        }
+    }
+}
+
+impl<K: Clone + PartialEq> CachedOverlayLayer<K> {
+    /// Draw one layer, replaying the cached geometry when `key` matches the
+    /// layer's stored key. `bounds` is the frame bounds every layer is built
+    /// with (`Rectangle::with_size(bounds.size())`), which reproduces the
+    /// clip bounds the overlay's single frame had before it was split.
+    pub fn draw(
+        &self,
+        renderer: &iced::Renderer,
+        bounds: iced::Rectangle,
+        key: &K,
+        build: impl FnOnce(&mut canvas::Frame),
+    ) -> canvas::Geometry {
+        // Scoped borrow: `self.key` is written again after `build` has run,
+        // so the decision borrow must end first.
+        let hit = {
+            let cached = self.key.borrow();
+            should_reuse_layer(cached.as_ref(), key)
+        };
+        let geometry = if hit {
+            // No-op closure: the fork short-circuits on bounds match and
+            // returns the cached geometry without invoking the closure.
+            self.cache.draw_with_bounds(renderer, bounds, |_frame| {})
+        } else {
+            // Key or bounds changed. Clear so the closure runs even when the
+            // bounds happen to match the previously cached frame.
+            self.cache.clear();
+            self.cache.draw_with_bounds(renderer, bounds, build)
+        };
+        *self.key.borrow_mut() = Some(key.clone());
+        geometry
+    }
+}
+
+/// Build a one-frame geometry for a dynamic layer (cursor, marquees, hover
+/// feedback) that is rebuilt every frame. The frame keeps the clip bounds
+/// the pre-split single frame had, so staged clip regions resolve
+/// identically.
+#[doc(hidden)]
+pub fn transient_layer(
+    renderer: &iced::Renderer,
+    bounds: iced::Rectangle,
+    build: impl FnOnce(&mut canvas::Frame),
+) -> canvas::Geometry {
+    let mut frame = canvas::Frame::new(renderer, bounds.size());
+    build(&mut frame);
+    frame.into_geometry()
+}
+
+/// Key for the static pane-divider layer.
+#[doc(hidden)]
+#[derive(Clone, Debug, PartialEq)]
+pub struct DividerLayerKey {
+    pub bounds: iced::Rectangle,
+    pub palette: iced::theme::Palette,
+    pub dividers: Vec<iced::Rectangle>,
+}
+
+/// Flat, comparable copy of `authoring::AuthoringVisualOptions` (the source
+/// type lives outside this module and carries no `PartialEq`).
+#[doc(hidden)]
+#[derive(Clone, Debug, PartialEq)]
+pub struct AuthoringStyleKey {
+    pub action: Color,
+    pub parameter: Color,
+    pub grip: Color,
+    pub grip_size: f32,
+    pub text_size: f32,
+    pub font: String,
+    pub horizontal: bool,
+}
+
+impl From<&authoring::AuthoringVisualOptions> for AuthoringStyleKey {
+    fn from(value: &authoring::AuthoringVisualOptions) -> Self {
+        Self {
+            action: value.action,
+            parameter: value.parameter,
+            grip: value.grip,
+            grip_size: value.grip_size,
+            text_size: value.text_size,
+            font: value.font.clone(),
+            horizontal: value.horizontal,
+        }
+    }
+}
+
+/// Key for the static grips / control-polygon / authoring-feedback layer.
+#[doc(hidden)]
+#[derive(Clone, Debug, PartialEq)]
+pub struct GripLayerKey {
+    pub bounds: iced::Rectangle,
+    pub palette: iced::theme::Palette,
+    pub grips: Vec<GripMarker>,
+    pub control_polygon: Option<(Vec<Point>, bool)>,
+    pub grip_clip: Option<iced::Rectangle>,
+    pub selection_visual: SelectionVisualOptions,
+    pub authoring_style: AuthoringStyleKey,
+    pub feedback_clip: iced::Rectangle,
+    pub feedback_dependencies: Vec<[Point; 2]>,
+    pub feedback_markers: Vec<Point>,
+}
+
+/// Key for the static authoring visibility / point / dimension layer.
+#[doc(hidden)]
+#[derive(Clone, Debug, PartialEq)]
+pub struct AuthoringLayerKey {
+    pub bounds: iced::Rectangle,
+    pub crosshair_bg: [f32; 4],
+    pub visibility: Option<(Point, String, iced::Rectangle, bool)>,
+    pub points: Vec<(Point, Point, String, iced::Rectangle, bool)>,
+    pub dimensions: Vec<AuthoringDimension>,
+    pub authoring_style: AuthoringStyleKey,
+}
+
+/// Key for the static constraint-glyph pill layer.
+///
+/// The memoised `GlyphEntry` slice has no `PartialEq`, so `eq` compares the
+/// entries field by field (via `same_glyph_entries`) instead of deriving it.
+#[doc(hidden)]
+#[derive(Clone, Debug)]
+pub struct GlyphLayerKey {
+    pub bounds: iced::Rectangle,
+    pub glyphs: Arc<[GlyphEntry]>,
+    pub selected: Arc<[bool]>,
+    pub palette: iced::theme::Palette,
+}
+
+impl GlyphLayerKey {
+    /// Build a key from the memoised entry Arcs. The Arcs are cloned (not
+    /// the entries), so key construction is cheap; the upstream cache owns
+    /// the entries, and pinning them here keeps a hit valid even if a later
+    /// rebuild replaces the shared slice.
+    #[doc(hidden)]
+    pub fn new(
+        bounds: iced::Rectangle,
+        glyphs: &Arc<[GlyphEntry]>,
+        selected: &Arc<[bool]>,
+        palette: iced::theme::Palette,
+    ) -> Self {
+        Self {
+            bounds,
+            glyphs: Arc::clone(glyphs),
+            selected: Arc::clone(selected),
+            palette,
+        }
+    }
+}
+
+impl PartialEq for GlyphLayerKey {
+    fn eq(&self, other: &Self) -> bool {
+        self.bounds == other.bounds
+            && self.palette == other.palette
+            && *self.selected == *other.selected
+            && same_glyph_entries(&self.glyphs, &other.glyphs)
+    }
+}
+
+/// Structural equality for two memoised glyph-entry slices. `Arc::ptr_eq`
+/// fast path first — the view hands back the same allocation on a memoised
+/// hit — then a field-by-field compare. All `f32` fields compare by bit
+/// pattern so a NaN anchor cannot pin the layer to a permanent cache miss.
+fn same_glyph_entries(a: &Arc<[GlyphEntry]>, b: &Arc<[GlyphEntry]>) -> bool {
+    if Arc::ptr_eq(a, b) {
+        return true;
+    }
+    a.len() == b.len()
+        && a.iter()
+            .zip(b.iter())
+            .all(|(x, y)| {
+                x.id == y.id
+                    && x.anchor.x.to_bits() == y.anchor.x.to_bits()
+                    && x.anchor.y.to_bits() == y.anchor.y.to_bits()
+                    && x.outward[0].to_bits() == y.outward[0].to_bits()
+                    && x.outward[1].to_bits() == y.outward[1].to_bits()
+                    && (Arc::ptr_eq(&x.label, &y.label) || x.label == y.label)
+                    && x.conflicting == y.conflicting
+                    && (Arc::ptr_eq(&x.hover, &y.hover)
+                        || (x.hover.len() == y.hover.len()
+                            && x.hover.iter().zip(y.hover.iter()).all(|(a, b)| {
+                                a.x.to_bits() == b.x.to_bits()
+                                    && a.y.to_bits() == b.y.to_bits()
+                            })))
+                    && x.size.width.to_bits() == y.size.width.to_bits()
+                    && x.size.height.to_bits() == y.size.height.to_bits()
+                    && x.tangent_dx.to_bits() == y.tangent_dx.to_bits()
+                    && x.top_left.x.to_bits() == y.top_left.x.to_bits()
+                    && x.top_left.y.to_bits() == y.top_left.y.to_bits()
+            })
+}
+
+/// Key for the static object-snap-tracking crosses layer.
+#[doc(hidden)]
+#[derive(Clone, Debug, PartialEq)]
+pub struct TrackingMarksLayerKey {
+    pub bounds: iced::Rectangle,
+    pub palette: iced::theme::Palette,
+    pub ost_points: Vec<OstTrackPoint>,
+}
+
+/// `Program::State` for `SelectionCanvas`: one `CachedOverlayLayer` per
+/// static layer of the overlay. The dynamic layers (cursor, marquees,
+/// hover feedback) are rebuilt each frame and keep no state.
+#[doc(hidden)]
+#[derive(Default)]
+pub struct SelectionCanvasState {
+    pub dividers: CachedOverlayLayer<DividerLayerKey>,
+    pub grips: CachedOverlayLayer<GripLayerKey>,
+    pub authoring: CachedOverlayLayer<AuthoringLayerKey>,
+    pub glyphs: CachedOverlayLayer<GlyphLayerKey>,
+    pub tracking_marks: CachedOverlayLayer<TrackingMarksLayerKey>,
+}
+
+/// Draw the static constraint-glyph pills (badge, selection ring, symbol)
+/// for one frame. Split out of `SelectionCanvas::draw` so the cached layer
+/// and the benchmark share exactly one implementation of this path.
+/// Returns the number of pill badges emitted — one per entry with a finite
+/// anchor; callers ignore it outside the benchmark.
+#[doc(hidden)]
+pub fn draw_constraint_glyph_layer(
+    frame: &mut canvas::Frame,
+    glyphs: &[GlyphEntry],
+    selected: &[bool],
+    palette: &iced::theme::Palette,
+) -> usize {
+    let mut pills = 0usize;
+    let normal_bg = Color::from_rgb8(103, 109, 118);
+    let normal_fg = Color::WHITE;
+    // A redundant or conflicting constraint gets the danger palette instead
+    // of the ordinary primary one — same information a resolver panel would
+    // show, surfaced right on the geometry.
+    let conflict_bg = palette.danger.base.color;
+    let conflict_fg = palette.danger.base.text;
+    let selected_ring = palette.primary.strong.color;
+    let coincident_bg = Color::from_rgb8(35, 145, 230);
+    for (entry, is_selected) in glyphs.iter().zip(selected.iter()) {
+        let label: &str = &entry.label;
+        if !entry.anchor.x.is_finite() || !entry.anchor.y.is_finite() {
+            continue;
+        }
+        pills += 1;
+        let compact_coincident = glyph_is_compact(label);
+        let (bg, fg) = if entry.conflicting {
+            (conflict_bg, conflict_fg)
+        } else if compact_coincident {
+            (coincident_bg, normal_fg)
+        } else {
+            (normal_bg, normal_fg)
+        };
+        let (top_left, size) = (entry.top_left, entry.size);
+        let pill = canvas::Path::rounded_rectangle(
+            top_left,
+            size,
+            (if compact_coincident {
+                1.0
+            } else {
+                size.height * 0.5
+            })
+            .into(),
+        );
+        // A dynamic dimension's lock sits bare on the drawing.
+        if !is_dynamic_dimension_glyph(label) {
+            frame.fill(&pill, bg);
+        }
+        if *is_selected {
+            frame.stroke(
+                &pill,
+                canvas::Stroke::default()
+                    .with_color(selected_ring)
+                    .with_width(2.0),
+            );
+        }
+        if !compact_coincident {
+            let glyph_center = Point::new(
+                top_left.x + size.width * 0.5,
+                top_left.y + size.height * 0.5,
+            );
+            if label == "T" {
+                draw_tangent_constraint_glyph(frame, glyph_center, fg);
+            } else if label == "G²" {
+                draw_smooth_constraint_glyph(frame, glyph_center, fg);
+            } else if label == "◎" {
+                draw_concentric_constraint_glyph(frame, glyph_center, fg);
+            } else if is_dynamic_dimension_glyph(label) {
+                draw_fixed_constraint_glyph(frame, glyph_center, fg, bg, false);
+            } else if glyph_is_fixed(label) {
+                let point = label == crate::scene::parametric_constraints::FIXED_POINT_GLYPH;
+                // The object-mode lock reads red, the point-mode one white.
+                let lock = if point {
+                    fg
+                } else {
+                    Color::from_rgb8(214, 76, 76)
+                };
+                draw_fixed_constraint_glyph(frame, glyph_center, lock, bg, point);
+            } else if glyph_is_vertical(label) {
+                draw_vertical_constraint_glyph(
+                    frame,
+                    glyph_center,
+                    fg,
+                    label == crate::scene::parametric_constraints::VERTICAL_POINTS_GLYPH,
+                );
+            } else {
+                // The Equal symbol reads green on its badge, as asked.
+                let color = if label == "=" {
+                    Color::from_rgb8(72, 199, 116)
+                } else {
+                    fg
+                };
+                frame.fill_text(canvas::Text {
+                    content: label.to_string(),
+                    position: glyph_center,
+                    color,
+                    size: iced::Pixels(GLYPH_SIZE),
+                    align_x: iced::alignment::Horizontal::Center.into(),
+                    align_y: iced::alignment::Vertical::Center,
+                    shaping: iced::advanced::text::Shaping::Advanced,
+                    ..Default::default()
+                });
+            }
+        }
+    }
+    pills
+}
+
+/// Count the pill badges [`draw_constraint_glyph_layer`] emits for these
+/// entries — one per entry with a finite anchor. Used as the benchmark's
+/// renderer-free sink so both timing arms produce the same value.
+#[doc(hidden)]
+pub fn count_constraint_glyph_pills(glyphs: &[GlyphEntry]) -> usize {
+    glyphs
+        .iter()
+        .filter(|entry| entry.anchor.x.is_finite() && entry.anchor.y.is_finite())
+        .count()
+}
+
 impl canvas::Program<Message> for SelectionCanvas {
-    type State = ();
+    type State = SelectionCanvasState;
 
     fn mouse_interaction(
         &self,
-        _state: &(),
+        _state: &SelectionCanvasState,
         bounds: iced::Rectangle,
         cursor: mouse::Cursor,
     ) -> mouse::Interaction {
@@ -1117,13 +1825,30 @@ impl canvas::Program<Message> for SelectionCanvas {
         if self.suppressed {
             return mouse::Interaction::default();
         }
-        // PAN mode owns the whole viewport: an open hand when hovering, a
-        // closed hand while dragging.
-        if self.pan_mode && cursor.is_over(bounds) {
-            return if self.selection.borrow().middle_down {
-                mouse::Interaction::Grabbing
-            } else {
-                mouse::Interaction::Grab
+        // An armed navigation tool owns the whole viewport, and the cursor
+        // says which one: a hand to drag the sheet, four-way arrows to swing
+        // the model, a magnifier that carries the sign of the zoom actually
+        // under way. Hovering before the drag starts shows the neutral "+"
+        // magnifier rather than guessing a direction.
+        if self.nav != NavCursor::None && cursor.is_over(bounds) {
+            let dragging = self.selection.borrow().input.middle_down;
+            return match self.nav {
+                NavCursor::Pan => {
+                    if dragging {
+                        mouse::Interaction::Grabbing
+                    } else {
+                        mouse::Interaction::Grab
+                    }
+                }
+                NavCursor::Orbit => mouse::Interaction::AllScroll,
+                NavCursor::Zoom => {
+                    if dragging && self.selection.borrow().input.zoom_dir_out {
+                        mouse::Interaction::ZoomOut
+                    } else {
+                        mouse::Interaction::ZoomIn
+                    }
+                }
+                NavCursor::None => unreachable!("guarded above"),
             };
         }
         if self.show_viewcube {
@@ -1141,14 +1866,7 @@ impl canvas::Program<Message> for SelectionCanvas {
             }
         }
         if let Some(pos) = cursor.position_in(bounds) {
-            let glyphs: Vec<_> = self
-                .constraint_glyphs
-                .iter()
-                .map(|(anchor, outward, label, conflict, _, _)| {
-                    (*anchor, *outward, label.clone(), *conflict)
-                })
-                .collect();
-            if constraint_glyph_hit_test(&glyphs, pos).is_some() {
+            if glyph_hit_test_entries(&self.constraint_glyphs, pos).is_some() {
                 return mouse::Interaction::Pointer;
             }
         }
@@ -1168,18 +1886,25 @@ impl canvas::Program<Message> for SelectionCanvas {
 
     fn draw(
         &self,
-        _state: &(),
+        state: &SelectionCanvasState,
         renderer: &iced::Renderer,
         theme: &Theme,
         bounds: iced::Rectangle,
         cursor: mouse::Cursor,
     ) -> Vec<canvas::Geometry> {
-        let mut frame = canvas::Frame::new(renderer, bounds.size());
+        let frame_bounds = iced::Rectangle::with_size(bounds.size());
+        let mut layers: Vec<canvas::Geometry> = Vec::new();
 
         // ── Pane dividers (Model-space tiled layout) ──────────────────────
         // Filled bars in the pane_grid spacing gaps, so adjacent panes read as
         // distinct viewports. Drawn first so all other overlays sit on top.
         if !self.dividers.is_empty() {
+            let key = DividerLayerKey {
+                bounds,
+                palette: *theme.palette(),
+                dividers: self.dividers.clone(),
+            };
+            layers.push(state.dividers.draw(renderer, frame_bounds, &key, |frame| {
             let divider = theme.palette().background.neutral.color;
             for d in &self.dividers {
                 let bar = canvas::Path::rectangle(
@@ -1188,17 +1913,21 @@ impl canvas::Program<Message> for SelectionCanvas {
                 );
                 frame.fill(&bar, divider);
             }
+            }));
         }
 
         // ── Pane move (drag-to-swap) ──────────────────────────────────────
         // While armed: dim the lifted source pane, highlight the drop target
         // under the cursor, and drag a translucent ghost card along the cursor
         // so the pane is visibly "moving".
+        layers.push(transient_layer(renderer, bounds, |frame| {
         if let Some(src) = self.pane_move_rect {
             let accent = theme.palette().primary.base.color;
             // Source pane: dimmed + dashed-feel outline (it has been lifted).
-            let src_path =
-                canvas::Path::rectangle(Point::new(src.x, src.y), iced::Size::new(src.width, src.height));
+            let src_path = canvas::Path::rectangle(
+                Point::new(src.x, src.y),
+                iced::Size::new(src.width, src.height),
+            );
             frame.fill(
                 &src_path,
                 theme.palette().background.strong.color.scale_alpha(0.28),
@@ -1229,7 +1958,7 @@ impl canvas::Program<Message> for SelectionCanvas {
             }
             // Ghost card dragged under the cursor — a 0.32× preview of the
             // source pane, centred on the cursor.
-            if let Some(c) = self.selection.borrow().last_move_pos {
+            if let Some(c) = self.selection.borrow().input.last_move_pos {
                 let gw = (src.width * 0.32).clamp(60.0, 280.0);
                 let gh = (src.height * 0.32).clamp(40.0, 200.0);
                 let g = canvas::Path::rectangle(
@@ -1247,7 +1976,6 @@ impl canvas::Program<Message> for SelectionCanvas {
                 );
             }
         }
-
 
         // Draw a selection marquee (green crossing / blue window) as a filled,
         // stroked rectangle between two canvas points. Shared by the live
@@ -1294,26 +2022,59 @@ impl canvas::Program<Message> for SelectionCanvas {
             );
         }
 
-        if let (Some(a), Some(b)) = (self.selection.borrow().box_anchor, self.selection.borrow().box_current) {
-            draw_marquee(&mut frame, a, b, self.selection.borrow().box_crossing, theme, &self.selection_visual, self.crosshair_bg);
+        // ZOOM Dynamic reuses `box_anchor` to remember where the drag began,
+        // so the marquee would otherwise rubber-band across the screen while
+        // the view zooms. Suppress the drawing, not the state — the anchor is
+        // still re-projected as the camera moves.
+        if self.nav != NavCursor::Zoom {
+            if let (Some(a), Some(b)) = (
+                self.selection.borrow().gesture.box_anchor,
+                self.selection.borrow().gesture.box_current,
+            ) {
+                draw_marquee(
+                    frame,
+                    a,
+                    b,
+                    self.selection.borrow().gesture.box_crossing,
+                    theme,
+                    &self.selection_visual,
+                    self.crosshair_bg,
+                );
+            }
         }
         // Preview marquee for point-picked windows (STRETCH) — same look, no pick.
-        if let Some((a, b, crossing)) = self.selection.borrow().preview_box {
-            draw_marquee(&mut frame, a, b, crossing, theme, &self.selection_visual, self.crosshair_bg);
+        if let Some((a, b, crossing)) = self.selection.borrow().gesture.preview_box {
+            draw_marquee(
+                frame,
+                a,
+                b,
+                crossing,
+                theme,
+                &self.selection_visual,
+                self.crosshair_bg,
+            );
         }
 
-        if self.selection.borrow().poly_active && self.selection.borrow().poly_points.len() > 1 {
-            let crossing = self.selection.borrow().poly_crossing;
-            let base = resolve_selection_base_color(crossing, theme, &self.selection_visual, self.crosshair_bg);
+        if self.selection.borrow().gesture.poly_active
+            && self.selection.borrow().gesture.poly_points.len() > 1
+        {
+            let crossing = self.selection.borrow().gesture.poly_crossing;
+            let base = resolve_selection_base_color(
+                crossing,
+                theme,
+                &self.selection_visual,
+                self.crosshair_bg,
+            );
             let canvas_light = crate::ui::style::common::canvas_is_light(self.crosshair_bg);
             if self.selection_visual.area && self.selection_visual.opacity > 0 {
-                let alpha = selection_fill_alpha(self.selection_visual.opacity as f32, canvas_light);
+                let alpha =
+                    selection_fill_alpha(self.selection_visual.opacity as f32, canvas_light);
                 let fill = base.scale_alpha(alpha);
-                if let Some(cur) = self.selection.borrow().last_move_pos {
-                    let start = self.selection.borrow().poly_points[0];
+                if let Some(cur) = self.selection.borrow().input.last_move_pos {
+                    let start = self.selection.borrow().gesture.poly_points[0];
                     let fill_path = canvas::Path::new(|p| {
                         p.move_to(start);
-                        for pt in &self.selection.borrow().poly_points[1..] {
+                        for pt in &self.selection.borrow().gesture.poly_points[1..] {
                             p.line_to(*pt);
                         }
                         p.line_to(cur);
@@ -1325,8 +2086,8 @@ impl canvas::Program<Message> for SelectionCanvas {
             let stroke_alpha = if canvas_light { 0.95 } else { 0.90 };
             let stroke = base.scale_alpha(stroke_alpha);
             let path = canvas::Path::new(|p| {
-                p.move_to(self.selection.borrow().poly_points[0]);
-                for pt in &self.selection.borrow().poly_points[1..] {
+                p.move_to(self.selection.borrow().gesture.poly_points[0]);
+                for pt in &self.selection.borrow().gesture.poly_points[1..] {
                     p.line_to(*pt);
                 }
             });
@@ -1344,9 +2105,9 @@ impl canvas::Program<Message> for SelectionCanvas {
                 ..Default::default()
             };
             frame.stroke(&path, stroke_style.clone());
-            if let Some(cur) = self.selection.borrow().last_move_pos {
-                let start = self.selection.borrow().poly_points[0];
-                let last = *self.selection.borrow().poly_points.last().unwrap();
+            if let Some(cur) = self.selection.borrow().input.last_move_pos {
+                let start = self.selection.borrow().gesture.poly_points[0];
+                let last = *self.selection.borrow().gesture.poly_points.last().unwrap();
                 let preview = canvas::Path::new(|p| {
                     p.move_to(last);
                     p.line_to(cur);
@@ -1355,8 +2116,39 @@ impl canvas::Program<Message> for SelectionCanvas {
                 frame.stroke(&preview, stroke_style);
             }
         }
+        }));
 
         // ── Grip markers ──────────────────────────────────────────────────
+        let grip_key = GripLayerKey {
+            bounds,
+            palette: *theme.palette(),
+            grips: self.grips.clone(),
+            control_polygon: self.control_polygon.clone(),
+            grip_clip: self.grip_clip,
+            selection_visual: self.selection_visual,
+            authoring_style: AuthoringStyleKey::from(&self.authoring_visual),
+            feedback_clip: self.authoring_feedback.clip,
+            feedback_dependencies: self.authoring_feedback.dependencies.clone(),
+            feedback_markers: self.authoring_feedback.markers.clone(),
+        };
+        layers.push(state.grips.draw(renderer, frame_bounds, &grip_key, |frame| {
+        frame.with_clip(self.authoring_feedback.clip, |frame| {
+            let color = self.authoring_visual.parameter;
+            for [a,b] in &self.authoring_feedback.dependencies {
+                let line = canvas::Path::line(*a,*b);
+                frame.stroke(&line,canvas::Stroke::default().with_color(color.scale_alpha(0.35)).with_width(7.0));
+                frame.stroke(&line,canvas::Stroke::default().with_color(color).with_width(1.0));
+            }
+            for point in &self.authoring_feedback.markers {
+                let marker = canvas::Path::new(|path| {
+                    path.move_to(Point::new(point.x-3.0,point.y));
+                    path.line_to(Point::new(point.x+3.0,point.y));
+                    path.move_to(Point::new(point.x,point.y-3.0));
+                    path.line_to(Point::new(point.x,point.y+3.0));
+                });
+                frame.stroke(&marker,canvas::Stroke::default().with_color(color).with_width(1.5));
+            }
+        });
         let grip_bounds = self.grip_clip.unwrap_or(bounds);
         let grip_x0 = grip_bounds.x.max(0.0);
         let grip_y0 = grip_bounds.y.max(0.0);
@@ -1395,343 +2187,389 @@ impl canvas::Program<Message> for SelectionCanvas {
                         );
                     }
                 }
+                draw_move_gizmo(frame, &self.grips);
                 for grip in &self.grips {
-                    draw_grip_marker(frame, grip, theme, &self.selection_visual);
+                    if !matches!(
+                        grip.shape,
+                        GripShape::GizmoAxis(_) | GripShape::GizmoPlane(_)
+                    ) {
+                        draw_grip_marker(
+                            frame,
+                            grip,
+                            theme.palette(),
+                            &self.selection_visual,
+                            &self.authoring_visual,
+                        );
+                    }
                 }
             });
         }
+        }));
 
         // ── Snap marker ───────────────────────────────────────────────────
+        layers.push(transient_layer(renderer, bounds, |frame| {
         if let Some((sp, snap_type)) = self.snap {
             let (r, g, b) = if snap_type == SnapType::ObjectPick {
                 (0.95_f32, 0.50, 0.08) // orange object-snap marker
+            } else if let Some([r, g, b]) = self.crosshair.snap_color {
+                (r as f32 / 255.0, g as f32 / 255.0, b as f32 / 255.0)
+            } else if crate::ui::style::common::canvas_is_light(self.crosshair_bg) {
+                (0.80, 0.45, 0.0) // dark amber: yellow vanishes on a light canvas
             } else {
                 (1.0, 0.9, 0.1) // classic yellow OSNAP
             };
             let marker = Color { r, g, b, a: 1.0 };
             let stroke = canvas::Stroke {
-                width: if snap_type == SnapType::ObjectPick { 2.0 } else { 1.5 },
+                width: if snap_type == SnapType::ObjectPick {
+                    2.0
+                } else {
+                    1.5
+                },
                 style: canvas::Style::Solid(marker),
                 ..Default::default()
             };
+            // Construction guides are canvas-space geometry, NOT snap glyphs.
+            // They must be drawn before the SNAPMARKERSIZE transform below.
+            // Scaling a guide around the moving snap position makes a fixed
+            // acquired endpoint visibly slide as the cursor moves.
+            let extension_ray = self.snap_ext_base.and_then(|base| {
+                let acquired = self.snap_ext_dir.or_else(|| {
+                    self.otrack_lines.iter().find_map(|&(origin, tip)| {
+                        let offset = (origin.x - base.x).hypot(origin.y - base.y);
+                        (offset <= 2.0)
+                            .then_some(Point::new(tip.x - origin.x, tip.y - origin.y))
+                    })
+                });
+                extension_guide_tip(base, sp, acquired)
+                    .map(|(unit, tip)| (base, unit, tip))
+            });
+            let guide_dash = canvas::Stroke {
+                line_dash: canvas::LineDash {
+                    segments: &[4.0, 4.0],
+                    offset: 0,
+                },
+                ..canvas::Stroke::default().with_color(marker).with_width(1.0)
+            };
             match snap_type {
-                SnapType::ObjectPick => {
-                    // Target box + center dot (object-acquisition glyph).
-                    let h = 7.0_f32;
-                    let rect = canvas::Path::rectangle(
-                        Point::new(sp.x - h, sp.y - h),
-                        Size::new(h * 2.0, h * 2.0),
-                    );
-                    frame.stroke(&rect, stroke.clone());
-                    let r = 3.0_f32;
-                    frame.fill(
-                        &canvas::Path::circle(sp, r),
-                        Color {
-                            r: 0.95,
-                            g: 0.50,
-                            b: 0.08,
-                            a: 0.85,
-                        },
-                    );
-                }
-                SnapType::Endpoint => {
-                    let h = 5.0_f32;
-                    let rect = canvas::Path::rectangle(
-                        Point::new(sp.x - h, sp.y - h),
-                        Size::new(h * 2.0, h * 2.0),
-                    );
-                    frame.stroke(&rect, stroke);
-                }
-                SnapType::Midpoint => {
-                    let r = 6.0_f32;
-                    let path = canvas::Path::new(|b| {
-                        b.move_to(Point::new(sp.x, sp.y - r));
-                        b.line_to(Point::new(sp.x + r * 0.866, sp.y + r * 0.5));
-                        b.line_to(Point::new(sp.x - r * 0.866, sp.y + r * 0.5));
-                        b.close();
-                    });
-                    frame.stroke(&path, stroke);
-                }
-                SnapType::Center => {
-                    let r = 5.5_f32;
-                    let path = canvas::Path::circle(sp, r);
-                    frame.stroke(&path, stroke);
-                }
-                SnapType::Node => {
-                    // Circle with an inscribed X.
-                    let r = 5.5_f32;
-                    let cpath = canvas::Path::circle(sp, r);
-                    frame.stroke(&cpath, stroke.clone());
-                    let d = r * std::f32::consts::FRAC_1_SQRT_2;
-                    let x1 = canvas::Path::new(|b| {
-                        b.move_to(Point::new(sp.x - d, sp.y - d));
-                        b.line_to(Point::new(sp.x + d, sp.y + d));
-                    });
-                    let x2 = canvas::Path::new(|b| {
-                        b.move_to(Point::new(sp.x - d, sp.y + d));
-                        b.line_to(Point::new(sp.x + d, sp.y - d));
-                    });
-                    frame.stroke(&x1, stroke.clone());
-                    frame.stroke(&x2, stroke);
-                }
-                SnapType::Quadrant => {
-                    let r = 6.0_f32;
-                    let path = canvas::Path::new(|b| {
-                        b.move_to(Point::new(sp.x, sp.y - r));
-                        b.line_to(Point::new(sp.x + r, sp.y));
-                        b.line_to(Point::new(sp.x, sp.y + r));
-                        b.line_to(Point::new(sp.x - r, sp.y));
-                        b.close();
-                    });
-                    frame.stroke(&path, stroke);
+                SnapType::Extension => {
+                    if let Some((base, _, tip)) = extension_ray {
+                        if let Some((a, b)) = clip_seg(base, tip, bounds) {
+                            frame.stroke(&canvas::Path::line(a, b), guide_dash.clone());
+                        }
+                    }
                 }
                 SnapType::Intersection => {
-                    // An extended intersection sets one or two extension bases;
-                    // draw a dashed guide from each endpoint through the crossing
-                    // so both contributing extension paths stay visible. A real
-                    // on-segment crossing carries no bases, so nothing draws here.
-                    // (#247, #259)
+                    // Extended-intersection guide origins must also remain
+                    // fixed when SNAPMARKERSIZE changes.
                     for base in [self.snap_ext_base, self.snap_ext_base2]
                         .into_iter()
                         .flatten()
                     {
                         let dx = sp.x - base.x;
                         let dy = sp.y - base.y;
-                        let len = (dx * dx + dy * dy).sqrt();
+                        let len = dx.hypot(dy);
                         if len > 1e-3 {
-                            let dash = canvas::Stroke {
-                                line_dash: canvas::LineDash {
-                                    segments: &[4.0, 4.0],
-                                    offset: 0,
-                                },
-                                ..canvas::Stroke::default().with_color(marker).with_width(1.0)
-                            };
-                            let tip = Point::new(
-                                sp.x + dx / len * 18.0,
-                                sp.y + dy / len * 18.0,
-                            );
-                            // `base` is a projected entity endpoint: clip before
-                            // stroking (see `clip_seg`).
+                            let tip = Point::new(sp.x + dx / len * 18.0, sp.y + dy / len * 18.0);
                             if let Some((a, b)) = clip_seg(base, tip, bounds) {
-                                frame.stroke(&canvas::Path::line(a, b), dash);
+                                frame.stroke(&canvas::Path::line(a, b), guide_dash.clone());
                             }
                         }
                     }
-                    let r = 5.0_f32;
-                    let p1 = canvas::Path::new(|b| {
-                        b.move_to(Point::new(sp.x - r, sp.y - r));
-                        b.line_to(Point::new(sp.x + r, sp.y + r));
-                    });
-                    let p2 = canvas::Path::new(|b| {
-                        b.move_to(Point::new(sp.x - r, sp.y + r));
-                        b.line_to(Point::new(sp.x + r, sp.y - r));
-                    });
-                    frame.stroke(&p1, stroke.clone());
-                    frame.stroke(&p2, stroke);
                 }
-                SnapType::ApparentIntersection => {
-                    // X like Intersection, framed by a small square so the
-                    // two are visually distinguishable.
-                    let r = 5.0_f32;
-                    let rect = canvas::Path::rectangle(
-                        Point::new(sp.x - r, sp.y - r),
-                        Size::new(r * 2.0, r * 2.0),
-                    );
-                    frame.stroke(&rect, stroke.clone());
-                    let xr = r - 1.5;
-                    let p1 = canvas::Path::new(|b| {
-                        b.move_to(Point::new(sp.x - xr, sp.y - xr));
-                        b.line_to(Point::new(sp.x + xr, sp.y + xr));
-                    });
-                    let p2 = canvas::Path::new(|b| {
-                        b.move_to(Point::new(sp.x - xr, sp.y + xr));
-                        b.line_to(Point::new(sp.x + xr, sp.y - xr));
-                    });
-                    frame.stroke(&p1, stroke.clone());
-                    frame.stroke(&p2, stroke);
-                }
-                SnapType::Insertion => {
-                    // Two overlapping rectangles (a small "tag" glyph).
-                    let r = 5.0_f32;
-                    let inner = canvas::Path::rectangle(
-                        Point::new(sp.x - r * 0.5, sp.y - r),
-                        Size::new(r, r * 2.0),
-                    );
-                    let outer = canvas::Path::rectangle(
-                        Point::new(sp.x - r, sp.y - r * 0.5),
-                        Size::new(r * 2.0, r),
-                    );
-                    frame.stroke(&outer, stroke.clone());
-                    frame.stroke(&inner, stroke);
-                }
-                SnapType::Perpendicular => {
-                    // Right-angle hook in the lower-left quadrant.
-                    let r = 6.0_f32;
-                    let p = canvas::Path::new(|b| {
-                        b.move_to(Point::new(sp.x - r, sp.y - r));
-                        b.line_to(Point::new(sp.x - r, sp.y + r));
-                        b.line_to(Point::new(sp.x + r, sp.y + r));
-                    });
-                    let foot = canvas::Path::new(|b| {
-                        b.move_to(Point::new(sp.x - r, sp.y));
-                        b.line_to(Point::new(sp.x, sp.y));
-                        b.line_to(Point::new(sp.x, sp.y + r));
-                    });
-                    frame.stroke(&p, stroke.clone());
-                    frame.stroke(&foot, stroke);
-                }
-                SnapType::Tangent => {
-                    // Circle with a tangent bar across the top.
-                    let r = 5.5_f32;
-                    let c = canvas::Path::circle(sp, r);
-                    frame.stroke(&c, stroke.clone());
-                    let bar = canvas::Path::new(|b| {
-                        b.move_to(Point::new(sp.x - r, sp.y - r));
-                        b.line_to(Point::new(sp.x + r, sp.y - r));
-                    });
-                    frame.stroke(&bar, stroke);
-                }
-                SnapType::Nearest => {
-                    // Bowtie / hourglass — two opposed triangles meeting at sp.
-                    let r = 5.5_f32;
-                    let path = canvas::Path::new(|b| {
-                        b.move_to(Point::new(sp.x - r, sp.y - r));
-                        b.line_to(Point::new(sp.x + r, sp.y - r));
-                        b.line_to(Point::new(sp.x - r, sp.y + r));
-                        b.line_to(Point::new(sp.x + r, sp.y + r));
-                        b.close();
-                    });
-                    frame.stroke(&path, stroke);
-                }
-                SnapType::Extension => {
-                    // Unit direction from the endpoint the snap extends from
-                    // toward the snap point, so the guide line and the three
-                    // dots follow the actual extension path (#238).
-                    let dir = self.snap_ext_base.and_then(|base| {
-                        let dx = sp.x - base.x;
-                        let dy = sp.y - base.y;
-                        let len = (dx * dx + dy * dy).sqrt();
-                        (len > 1e-3).then(|| (base, Point::new(dx / len, dy / len)))
-                    });
-                    // Dashed guide line from that endpoint, through the snap
-                    // point and a little beyond, so the extension path is
-                    // visible as the cursor tracks along it.
-                    if let Some((base, u)) = dir {
-                        let dash = canvas::Stroke {
-                            line_dash: canvas::LineDash {
-                                segments: &[4.0, 4.0],
-                                offset: 0,
-                            },
-                            ..canvas::Stroke::default().with_color(marker).with_width(1.0)
-                        };
-                        let tip = Point::new(sp.x + u.x * 18.0, sp.y + u.y * 18.0);
-                        // `base` is a projected entity endpoint: clip before
-                        // stroking (see `clip_seg`).
-                        if let Some((a, b)) = clip_seg(base, tip, bounds) {
-                            frame.stroke(&canvas::Path::line(a, b), dash);
-                        }
-                    }
-                    // Three dots at the snap point, strung along the extension
-                    // direction (horizontal fallback when the base is unknown).
-                    let u = dir.map(|(_, u)| u).unwrap_or(Point::new(1.0, 0.0));
-                    let r = 1.4_f32;
-                    for k in [-7.0_f32, 0.0, 7.0] {
-                        let dot =
-                            canvas::Path::circle(Point::new(sp.x + u.x * k, sp.y + u.y * k), r);
-                        frame.fill(&dot, marker);
-                    }
-                }
-                SnapType::Parallel => {
-                    // Two short parallel diagonal bars.
-                    let r = 6.0_f32;
-                    let off = 3.0_f32;
-                    let b1 = canvas::Path::new(|b| {
-                        b.move_to(Point::new(sp.x - r - off, sp.y + r));
-                        b.line_to(Point::new(sp.x + r - off, sp.y - r));
-                    });
-                    let b2 = canvas::Path::new(|b| {
-                        b.move_to(Point::new(sp.x - r + off, sp.y + r));
-                        b.line_to(Point::new(sp.x + r + off, sp.y - r));
-                    });
-                    frame.stroke(&b1, stroke.clone());
-                    frame.stroke(&b2, stroke);
-                }
-                SnapType::Grid => {
-                    let arm = 4.0_f32;
-                    let h = canvas::Path::new(|b| {
-                        b.move_to(Point::new(sp.x - arm, sp.y));
-                        b.line_to(Point::new(sp.x + arm, sp.y));
-                    });
-                    let v = canvas::Path::new(|b| {
-                        b.move_to(Point::new(sp.x, sp.y - arm));
-                        b.line_to(Point::new(sp.x, sp.y + arm));
-                    });
-                    frame.stroke(&h, stroke.clone());
-                    frame.stroke(&v, stroke);
-                }
-                SnapType::Vertex => {
-                    // Filled square: the solid rhyme of Endpoint's hollow box.
-                    let h = 5.0_f32;
-                    frame.fill(
-                        &canvas::Path::rectangle(
+                _ => {}
+            }
+
+            // SNAPMARKERSIZE scales the glyphs drawn for the default 5 px.
+            let scale = self.crosshair.snap_size.clamp(1.0, 20.0) / 5.0;
+            frame.with_save(|frame| {
+                frame.translate(iced::Vector::new(sp.x, sp.y));
+                frame.scale(scale);
+                frame.translate(iced::Vector::new(-sp.x, -sp.y));
+                match snap_type {
+                    SnapType::ObjectPick => {
+                        // Target box + center dot (object-acquisition glyph).
+                        let h = 7.0_f32;
+                        let rect = canvas::Path::rectangle(
                             Point::new(sp.x - h, sp.y - h),
                             Size::new(h * 2.0, h * 2.0),
-                        ),
-                        marker,
-                    );
+                        );
+                        frame.stroke(&rect, stroke.clone());
+                        let r = 3.0_f32;
+                        frame.fill(
+                            &canvas::Path::circle(sp, r),
+                            Color {
+                                r: 0.95,
+                                g: 0.50,
+                                b: 0.08,
+                                a: 0.85,
+                            },
+                        );
+                    }
+                    SnapType::Endpoint => {
+                        let h = 5.0_f32;
+                        let rect = canvas::Path::rectangle(
+                            Point::new(sp.x - h, sp.y - h),
+                            Size::new(h * 2.0, h * 2.0),
+                        );
+                        frame.stroke(&rect, stroke);
+                    }
+                    SnapType::Midpoint => {
+                        let r = 6.0_f32;
+                        let path = canvas::Path::new(|b| {
+                            b.move_to(Point::new(sp.x, sp.y - r));
+                            b.line_to(Point::new(sp.x + r * 0.866, sp.y + r * 0.5));
+                            b.line_to(Point::new(sp.x - r * 0.866, sp.y + r * 0.5));
+                            b.close();
+                        });
+                        frame.stroke(&path, stroke);
+                    }
+                    SnapType::Center => {
+                        let r = 5.5_f32;
+                        let path = canvas::Path::circle(sp, r);
+                        frame.stroke(&path, stroke);
+                    }
+                    SnapType::GeometricCenter => {
+                        // Pentagon around a centre dot: the area centroid.
+                        let r = 6.5_f32;
+                        let path = canvas::Path::new(|b| {
+                            for k in 0..5 {
+                                let a = -std::f32::consts::FRAC_PI_2
+                                    + k as f32 * std::f32::consts::TAU / 5.0;
+                                let p = Point::new(sp.x + r * a.cos(), sp.y + r * a.sin());
+                                if k == 0 {
+                                    b.move_to(p);
+                                } else {
+                                    b.line_to(p);
+                                }
+                            }
+                            b.close();
+                        });
+                        frame.stroke(&path, stroke.clone());
+                        frame.fill(&canvas::Path::circle(sp, 1.6), marker);
+                    }
+                    SnapType::Node => {
+                        // Circle with an inscribed X.
+                        let r = 5.5_f32;
+                        let cpath = canvas::Path::circle(sp, r);
+                        frame.stroke(&cpath, stroke.clone());
+                        let d = r * std::f32::consts::FRAC_1_SQRT_2;
+                        let x1 = canvas::Path::new(|b| {
+                            b.move_to(Point::new(sp.x - d, sp.y - d));
+                            b.line_to(Point::new(sp.x + d, sp.y + d));
+                        });
+                        let x2 = canvas::Path::new(|b| {
+                            b.move_to(Point::new(sp.x - d, sp.y + d));
+                            b.line_to(Point::new(sp.x + d, sp.y - d));
+                        });
+                        frame.stroke(&x1, stroke.clone());
+                        frame.stroke(&x2, stroke);
+                    }
+                    SnapType::Quadrant => {
+                        let r = 6.0_f32;
+                        let path = canvas::Path::new(|b| {
+                            b.move_to(Point::new(sp.x, sp.y - r));
+                            b.line_to(Point::new(sp.x + r, sp.y));
+                            b.line_to(Point::new(sp.x, sp.y + r));
+                            b.line_to(Point::new(sp.x - r, sp.y));
+                            b.close();
+                        });
+                        frame.stroke(&path, stroke);
+                    }
+                    SnapType::Intersection => {
+                        // The guide is drawn unscaled above; only the X glyph
+                        // belongs inside the SNAPMARKERSIZE transform.
+                        let r = 5.0_f32;
+                        let p1 = canvas::Path::new(|b| {
+                            b.move_to(Point::new(sp.x - r, sp.y - r));
+                            b.line_to(Point::new(sp.x + r, sp.y + r));
+                        });
+                        let p2 = canvas::Path::new(|b| {
+                            b.move_to(Point::new(sp.x - r, sp.y + r));
+                            b.line_to(Point::new(sp.x + r, sp.y - r));
+                        });
+                        frame.stroke(&p1, stroke.clone());
+                        frame.stroke(&p2, stroke);
+                    }
+                    SnapType::ApparentIntersection => {
+                        // X like Intersection, framed by a small square so the
+                        // two are visually distinguishable.
+                        let r = 5.0_f32;
+                        let rect = canvas::Path::rectangle(
+                            Point::new(sp.x - r, sp.y - r),
+                            Size::new(r * 2.0, r * 2.0),
+                        );
+                        frame.stroke(&rect, stroke.clone());
+                        let xr = r - 1.5;
+                        let p1 = canvas::Path::new(|b| {
+                            b.move_to(Point::new(sp.x - xr, sp.y - xr));
+                            b.line_to(Point::new(sp.x + xr, sp.y + xr));
+                        });
+                        let p2 = canvas::Path::new(|b| {
+                            b.move_to(Point::new(sp.x - xr, sp.y + xr));
+                            b.line_to(Point::new(sp.x + xr, sp.y - xr));
+                        });
+                        frame.stroke(&p1, stroke.clone());
+                        frame.stroke(&p2, stroke);
+                    }
+                    SnapType::Insertion => {
+                        // Two overlapping rectangles (a small "tag" glyph).
+                        let r = 5.0_f32;
+                        let inner = canvas::Path::rectangle(
+                            Point::new(sp.x - r * 0.5, sp.y - r),
+                            Size::new(r, r * 2.0),
+                        );
+                        let outer = canvas::Path::rectangle(
+                            Point::new(sp.x - r, sp.y - r * 0.5),
+                            Size::new(r * 2.0, r),
+                        );
+                        frame.stroke(&outer, stroke.clone());
+                        frame.stroke(&inner, stroke);
+                    }
+                    SnapType::Perpendicular => {
+                        // Right-angle hook in the lower-left quadrant.
+                        let r = 6.0_f32;
+                        let p = canvas::Path::new(|b| {
+                            b.move_to(Point::new(sp.x - r, sp.y - r));
+                            b.line_to(Point::new(sp.x - r, sp.y + r));
+                            b.line_to(Point::new(sp.x + r, sp.y + r));
+                        });
+                        let foot = canvas::Path::new(|b| {
+                            b.move_to(Point::new(sp.x - r, sp.y));
+                            b.line_to(Point::new(sp.x, sp.y));
+                            b.line_to(Point::new(sp.x, sp.y + r));
+                        });
+                        frame.stroke(&p, stroke.clone());
+                        frame.stroke(&foot, stroke);
+                    }
+                    SnapType::Tangent => {
+                        // Circle with a tangent bar across the top.
+                        let r = 5.5_f32;
+                        let c = canvas::Path::circle(sp, r);
+                        frame.stroke(&c, stroke.clone());
+                        let bar = canvas::Path::new(|b| {
+                            b.move_to(Point::new(sp.x - r, sp.y - r));
+                            b.line_to(Point::new(sp.x + r, sp.y - r));
+                        });
+                        frame.stroke(&bar, stroke);
+                    }
+                    SnapType::Nearest => {
+                        // Bowtie / hourglass — two opposed triangles meeting at sp.
+                        let r = 5.5_f32;
+                        let path = canvas::Path::new(|b| {
+                            b.move_to(Point::new(sp.x - r, sp.y - r));
+                            b.line_to(Point::new(sp.x + r, sp.y - r));
+                            b.line_to(Point::new(sp.x - r, sp.y + r));
+                            b.line_to(Point::new(sp.x + r, sp.y + r));
+                            b.close();
+                        });
+                        frame.stroke(&path, stroke);
+                    }
+                    SnapType::Extension => {
+                        // Only the three-dot marker is scaled. The actual
+                        // guide and diagnostic dot are drawn in canvas space.
+                        let dir = extension_ray;
+                        // Three dots stay aligned with the *same* acquired ray
+                        // used by the dashed guide (rather than cursor jitter).
+                        let u = dir.map(|(_, u, _)| u).unwrap_or(Point::new(1.0, 0.0));
+                        let r = 1.4_f32;
+                        for k in [-7.0_f32, 0.0, 7.0] {
+                            let dot =
+                                canvas::Path::circle(Point::new(sp.x + u.x * k, sp.y + u.y * k), r);
+                            frame.fill(&dot, marker);
+                        }
+                    }
+                    SnapType::Parallel => {
+                        // Two short parallel diagonal bars.
+                        let r = 6.0_f32;
+                        let off = 3.0_f32;
+                        let b1 = canvas::Path::new(|b| {
+                            b.move_to(Point::new(sp.x - r - off, sp.y + r));
+                            b.line_to(Point::new(sp.x + r - off, sp.y - r));
+                        });
+                        let b2 = canvas::Path::new(|b| {
+                            b.move_to(Point::new(sp.x - r + off, sp.y + r));
+                            b.line_to(Point::new(sp.x + r + off, sp.y - r));
+                        });
+                        frame.stroke(&b1, stroke.clone());
+                        frame.stroke(&b2, stroke);
+                    }
+                    SnapType::Grid => {
+                        let arm = 4.0_f32;
+                        let h = canvas::Path::new(|b| {
+                            b.move_to(Point::new(sp.x - arm, sp.y));
+                            b.line_to(Point::new(sp.x + arm, sp.y));
+                        });
+                        let v = canvas::Path::new(|b| {
+                            b.move_to(Point::new(sp.x, sp.y - arm));
+                            b.line_to(Point::new(sp.x, sp.y + arm));
+                        });
+                        frame.stroke(&h, stroke.clone());
+                        frame.stroke(&v, stroke);
+                    }
+                    SnapType::Vertex => {
+                        // Filled square: the solid rhyme of Endpoint's hollow box.
+                        let h = 5.0_f32;
+                        frame.fill(
+                            &canvas::Path::rectangle(
+                                Point::new(sp.x - h, sp.y - h),
+                                Size::new(h * 2.0, h * 2.0),
+                            ),
+                            marker,
+                        );
+                    }
+                    SnapType::EdgeMidpoint => {
+                        // Filled triangle: the solid rhyme of Midpoint's outline.
+                        let r = 6.0_f32;
+                        let path = canvas::Path::new(|b| {
+                            b.move_to(Point::new(sp.x, sp.y - r));
+                            b.line_to(Point::new(sp.x + r * 0.866, sp.y + r * 0.5));
+                            b.line_to(Point::new(sp.x - r * 0.866, sp.y + r * 0.5));
+                            b.close();
+                        });
+                        frame.fill(&path, marker);
+                    }
+                    SnapType::FaceCenter => {
+                        // Filled disc: the solid rhyme of Center's outline.
+                        frame.fill(&canvas::Path::circle(sp, 5.5_f32), marker);
+                    }
+                    SnapType::Knot => {
+                        // Filled diamond: distinct from Quadrant's outline.
+                        let r = 5.5_f32;
+                        let path = canvas::Path::new(|b| {
+                            b.move_to(Point::new(sp.x, sp.y - r));
+                            b.line_to(Point::new(sp.x + r, sp.y));
+                            b.line_to(Point::new(sp.x, sp.y + r));
+                            b.line_to(Point::new(sp.x - r, sp.y));
+                            b.close();
+                        });
+                        frame.fill(&path, marker);
+                    }
+                    SnapType::FacePerpendicular => {
+                        // Right-angle hook like the 2D marker, plus a filled foot
+                        // dot marking the face contact.
+                        let r = 6.0_f32;
+                        let p = canvas::Path::new(|b| {
+                            b.move_to(Point::new(sp.x - r, sp.y - r));
+                            b.line_to(Point::new(sp.x - r, sp.y + r));
+                            b.line_to(Point::new(sp.x + r, sp.y + r));
+                        });
+                        frame.stroke(&p, stroke.clone());
+                        frame.fill(&canvas::Path::circle(sp, 2.0_f32), marker);
+                    }
+                    SnapType::NearestFace => {
+                        // Filled bowtie: the solid rhyme of Nearest's outline.
+                        let r = 5.5_f32;
+                        let path = canvas::Path::new(|b| {
+                            b.move_to(Point::new(sp.x - r, sp.y - r));
+                            b.line_to(Point::new(sp.x + r, sp.y - r));
+                            b.line_to(Point::new(sp.x - r, sp.y + r));
+                            b.line_to(Point::new(sp.x + r, sp.y + r));
+                            b.close();
+                        });
+                        frame.fill(&path, marker);
+                    }
                 }
-                SnapType::EdgeMidpoint => {
-                    // Filled triangle: the solid rhyme of Midpoint's outline.
-                    let r = 6.0_f32;
-                    let path = canvas::Path::new(|b| {
-                        b.move_to(Point::new(sp.x, sp.y - r));
-                        b.line_to(Point::new(sp.x + r * 0.866, sp.y + r * 0.5));
-                        b.line_to(Point::new(sp.x - r * 0.866, sp.y + r * 0.5));
-                        b.close();
-                    });
-                    frame.fill(&path, marker);
-                }
-                SnapType::FaceCenter => {
-                    // Filled disc: the solid rhyme of Center's outline.
-                    frame.fill(&canvas::Path::circle(sp, 5.5_f32), marker);
-                }
-                SnapType::Knot => {
-                    // Filled diamond: distinct from Quadrant's outline.
-                    let r = 5.5_f32;
-                    let path = canvas::Path::new(|b| {
-                        b.move_to(Point::new(sp.x, sp.y - r));
-                        b.line_to(Point::new(sp.x + r, sp.y));
-                        b.line_to(Point::new(sp.x, sp.y + r));
-                        b.line_to(Point::new(sp.x - r, sp.y));
-                        b.close();
-                    });
-                    frame.fill(&path, marker);
-                }
-                SnapType::FacePerpendicular => {
-                    // Right-angle hook like the 2D marker, plus a filled foot
-                    // dot marking the face contact.
-                    let r = 6.0_f32;
-                    let p = canvas::Path::new(|b| {
-                        b.move_to(Point::new(sp.x - r, sp.y - r));
-                        b.line_to(Point::new(sp.x - r, sp.y + r));
-                        b.line_to(Point::new(sp.x + r, sp.y + r));
-                    });
-                    frame.stroke(&p, stroke.clone());
-                    frame.fill(&canvas::Path::circle(sp, 2.0_f32), marker);
-                }
-                SnapType::NearestFace => {
-                    // Filled bowtie: the solid rhyme of Nearest's outline.
-                    let r = 5.5_f32;
-                    let path = canvas::Path::new(|b| {
-                        b.move_to(Point::new(sp.x - r, sp.y - r));
-                        b.line_to(Point::new(sp.x + r, sp.y - r));
-                        b.line_to(Point::new(sp.x - r, sp.y + r));
-                        b.line_to(Point::new(sp.x + r, sp.y + r));
-                        b.close();
-                    });
-                    frame.fill(&path, marker);
-                }
-            }
+            });
         }
 
         // ── CAD crosshair cursor ──────────────────────────────────────────────
@@ -1750,14 +2588,109 @@ impl canvas::Program<Message> for SelectionCanvas {
         // arrow (see `mouse_interaction`); drawing the CAD crosshair on
         // top of it would double up the visual feedback.
         let over_divider = self.divider_under(cursor, bounds);
-        // PAN mode replaces the crosshair with a hand cursor.
+        // Off the viewport (or under an overlay that took the pointer) the
+        // cursor is the OS arrow; no crosshair or brush lingers at the last spot.
+        let pointer_away = self.selection.borrow().input.pointer_away;
+        // ── MATCHPROP paintbrush cursor ───────────────────────────────
+        // While MATCHPROP is armed the user is transferring properties from a
+        // source object onto others, so the crosshair gives way to a paintbrush
+        // whose tip rides the pick point, as the reference does. Drawn *instead of*
+        // the crosshair below, never on top of it.
         if !over_viewcube
             && !over_divider
-            && !self.pan_mode
+            && !pointer_away
+            && self.nav == NavCursor::None
             && !self.suppressed
+            && self.show_match_brush
+        {
+            if let Some(cp) = self
+                .grips
+                .iter()
+                .find(|grip| grip.is_hovered)
+                .map(|grip| grip.pos)
+                .or(self.selection.borrow().input.last_move_pos)
+            {
+                // Inherit the crosshair's own colour (including a custom
+                // crosshair colour) so only the shape changes, never the ink.
+                let [cr, cg, cb, ca] = self.crosshair.color.map_or_else(
+                    || {
+                        crate::scene::view::render::adapt_to_bg(
+                            [1.0, 1.0, 1.0, 0.90],
+                            self.crosshair_bg,
+                        )
+                    },
+                    |[r, g, b]| [r as f32 / 255.0, g as f32 / 255.0, b as f32 / 255.0, 0.90],
+                );
+                let pickbox_half = if self.crosshair.matchprop_pickbox {
+                    pick_box_aperture_px(self.crosshair.pick_box)
+                } else {
+                    0.0
+                };
+                // The brush points into the pickbox from its upper-right
+                // corner; its bristle width just meets the frame without
+                // covering the box or moving the actual click point.
+                let brush_gap = pickbox_half + 3.2 * std::f32::consts::FRAC_1_SQRT_2;
+                let brush_tip = if self.crosshair.matchprop_pickbox {
+                    Point::new(cp.x + brush_gap, cp.y - brush_gap)
+                } else {
+                    cp
+                };
+                draw_match_brush(
+                    frame,
+                    brush_tip,
+                    Color {
+                        r: cr,
+                        g: cg,
+                        b: cb,
+                        a: ca,
+                    },
+                );
+                if self.crosshair.matchprop_pickbox {
+                    let half = pickbox_half;
+                    let square = canvas::Path::rectangle(
+                        Point::new(cp.x - half, cp.y - half),
+                        Size::new(half * 2.0, half * 2.0),
+                    );
+                    if !self.crosshair.matchprop_source_pick {
+                        frame.fill(
+                            &square,
+                            Color {
+                                r: 0.24,
+                                g: 0.52,
+                                b: 0.98,
+                                a: 0.88,
+                            },
+                        );
+                    }
+                    frame.stroke(
+                        &square,
+                        canvas::Stroke {
+                            width: 1.25,
+                            style: canvas::Style::Solid(Color::from_rgb(0.30, 0.55, 0.98)),
+                            ..Default::default()
+                        },
+                    );
+                }
+            }
+        }
+
+        // An armed navigation tool replaces the crosshair with its own cursor.
+        if !over_viewcube
+            && !over_divider
+            && !pointer_away
+            && self.nav == NavCursor::None
+            && !self.suppressed
+            && !self.show_match_brush
             && self.crosshair.cursor_type == CursorType::Crosshair
         {
-            if let Some(cp) = self.selection.borrow().last_move_pos {
+            // Over a grip the crosshair locks onto it, so the click lands on
+            // the grip exactly.
+            let hovered_grip = self
+                .grips
+                .iter()
+                .find(|grip| grip.is_hovered)
+                .map(|grip| grip.pos);
+            if let Some(cp) = hovered_grip.or(self.selection.borrow().input.last_move_pos) {
                 let [r, g, b, a] = self.crosshair.color.map_or_else(
                     || {
                         crate::scene::view::render::adapt_to_bg(
@@ -1765,18 +2698,19 @@ impl canvas::Program<Message> for SelectionCanvas {
                             self.crosshair_bg,
                         )
                     },
-                    |[r, g, b]| {
-                        [
-                            r as f32 / 255.0,
-                            g as f32 / 255.0,
-                            b as f32 / 255.0,
-                            0.90,
-                        ]
-                    },
+                    |[r, g, b]| [r as f32 / 255.0, g as f32 / 255.0, b as f32 / 255.0, 0.90],
                 );
                 let color = Color { r, g, b, a };
+                // Pending client pick: drop the arms, keep a blue pickbox —
+                // the same blue as the MCP "waiting for you to pick" pill.
+                let pick_pending = self.crosshair.pick_pending;
+                let color = if pick_pending {
+                    Color::from_rgb(0.30, 0.55, 0.98)
+                } else {
+                    color
+                };
                 let stroke = canvas::Stroke {
-                    width: 1.0,
+                    width: if pick_pending { 1.5 } else { 1.0 },
                     style: canvas::Style::Solid(color),
                     ..Default::default()
                 };
@@ -1786,39 +2720,52 @@ impl canvas::Program<Message> for SelectionCanvas {
                 } else {
                     pick_box_half_px(self.crosshair.pick_box)
                 };
-                let arm = crosshair_arm_px(bounds, self.crosshair.size_percent);
+                let mut arm = crosshair_arm_px(bounds, self.crosshair.size_percent);
+                if self.crosshair.short_arms {
+                    arm = arm.min(CROSSHAIR_ARM);
+                }
                 let base_angles: [f64; 2] = if self.crosshair.isometric {
                     self.crosshair.iso_plane.angles()
                 } else {
                     [0.0, 90.0]
                 };
-                for angle in base_angles {
-                    let rad = (angle + self.crosshair.snap_angle_deg as f64).to_radians();
-                    let dir = Point::new(rad.cos() as f32, -rad.sin() as f32);
-                    let gap = if point_mode {
-                        9.0
-                    } else if sq > 0.0 {
-                        sq / dir.x.abs().max(dir.y.abs()).max(1e-6)
-                    } else {
-                        0.0
-                    };
-                    let arms = canvas::Path::new(|path| {
-                        path.move_to(Point::new(cp.x + dir.x * gap, cp.y + dir.y * gap));
-                        path.line_to(Point::new(cp.x + dir.x * arm, cp.y + dir.y * arm));
-                        path.move_to(Point::new(cp.x - dir.x * gap, cp.y - dir.y * gap));
-                        path.line_to(Point::new(cp.x - dir.x * arm, cp.y - dir.y * arm));
-                    });
-                    frame.stroke(&arms, stroke.clone());
+                // The arms stay only for the normal (non-pending) cursor: a
+                // waiting pick shows the box alone, regardless of the UCS
+                // rotation, so the square is unmistakable.
+                if !pick_pending && !self.crosshair.hide_arms {
+                    for angle in base_angles {
+                        let rad = (angle + self.crosshair.snap_angle_deg as f64).to_radians();
+                        let dir = Point::new(rad.cos() as f32, -rad.sin() as f32);
+                        let gap = if point_mode {
+                            9.0
+                        } else if sq > 0.0 {
+                            sq / dir.x.abs().max(dir.y.abs()).max(1e-6)
+                        } else {
+                            0.0
+                        };
+                        let arms = canvas::Path::new(|path| {
+                            path.move_to(Point::new(cp.x + dir.x * gap, cp.y + dir.y * gap));
+                            path.line_to(Point::new(cp.x + dir.x * arm, cp.y + dir.y * arm));
+                            path.move_to(Point::new(cp.x - dir.x * gap, cp.y - dir.y * gap));
+                            path.line_to(Point::new(cp.x - dir.x * arm, cp.y - dir.y * arm));
+                        });
+                        frame.stroke(&arms, stroke.clone());
+                    }
                 }
                 if point_mode {
                     let dot = canvas::Path::circle(cp, 1.75);
                     frame.fill(&dot, color);
-                } else if sq > 0.0 {
-                    let square = canvas::Path::rectangle(
-                        Point::new(cp.x - sq, cp.y - sq),
-                        Size::new(sq * 2.0, sq * 2.0),
-                    );
-                    frame.stroke(&square, stroke);
+                } else {
+                    // A pending pick keeps the square visible even when the
+                    // user's PICKBOX setting would hide it.
+                    let sq = if pick_pending { sq.max(8.0) } else { sq };
+                    if sq > 0.0 {
+                        let square = canvas::Path::rectangle(
+                            Point::new(cp.x - sq, cp.y - sq),
+                            Size::new(sq * 2.0, sq * 2.0),
+                        );
+                        frame.stroke(&square, stroke);
+                    }
                 }
 
                 // Locked-layer badge: a small padlock beside the crosshair when
@@ -1831,10 +2778,8 @@ impl canvas::Program<Message> for SelectionCanvas {
                     let bx = cp.x + sq + 7.0;
                     let by = cp.y - sq - 13.0;
                     // Lock body (filled).
-                    let body = canvas::Path::rectangle(
-                        Point::new(bx, by + 6.0),
-                        Size::new(12.0, 9.0),
-                    );
+                    let body =
+                        canvas::Path::rectangle(Point::new(bx, by + 6.0), Size::new(12.0, 9.0));
                     frame.fill(&body, amber);
                     // Shackle: an inverted-U above the body (squared so the
                     // shape is unambiguous regardless of arc winding).
@@ -1858,14 +2803,17 @@ impl canvas::Program<Message> for SelectionCanvas {
                     frame.fill(&hole, dark);
                 }
                 if let Some(label) = &self.constraint_cursor_badge {
-                    let center = Point::new(cp.x + sq + if self.hover_locked { 30.0 } else { 12.0 }, cp.y - sq - 7.0);
+                    let center = Point::new(
+                        cp.x + sq + if self.hover_locked { 30.0 } else { 12.0 },
+                        cp.y - sq - 7.0,
+                    );
                     let blue = Color::from_rgb8(35, 145, 230);
                     let badge = canvas::Path::circle(center, 8.5);
                     frame.fill(&badge, blue);
                     if label == "◎" {
-                        draw_concentric_constraint_glyph(&mut frame, center, Color::WHITE);
+                        draw_concentric_constraint_glyph(frame, center, Color::WHITE);
                     } else if label == "T" {
-                        draw_tangent_constraint_glyph(&mut frame, center, Color::WHITE);
+                        draw_tangent_constraint_glyph(frame, center, Color::WHITE);
                     } else {
                         frame.fill_text(canvas::Text {
                             content: label.clone(),
@@ -1885,7 +2833,7 @@ impl canvas::Program<Message> for SelectionCanvas {
         // ── UCS icon (one per Model pane) ─────────────────────────────────
         for ucs in &self.ucs_icons {
             draw_ucs_icon(
-                &mut frame,
+                frame,
                 ucs.view_proj,
                 ucs.bounds,
                 ucs.axes,
@@ -1902,7 +2850,7 @@ impl canvas::Program<Message> for SelectionCanvas {
         // real angle from the acquired point through the lock and a little
         // beyond, dashed so it reads as a construction guide. This covers the
         // ortho (0°/90°), polar, and edge-extension cases uniformly (#219).
-        if let Some((base, tip)) = self.otrack_line {
+        for &(base, tip) in &self.otrack_lines {
             let dx = tip.x - base.x;
             let dy = tip.y - base.y;
             let len = (dx * dx + dy * dy).sqrt();
@@ -1950,94 +2898,239 @@ impl canvas::Program<Message> for SelectionCanvas {
             frame.stroke(&b1, stroke.clone());
             frame.stroke(&b2, stroke);
         }
-        // Hit testing shares this layout math with the scene projection.
-        if !self.constraint_glyphs.is_empty() {
-            // `constraint_glyph_offsets` only needs the anchor/outward/label/
-            // conflict quadruple it was written against; project away the
-            // trailing display fields rather than widen its signature.
-            let glyphs_for_offsets: Vec<(Point, [f32; 2], String, bool)> = self
-                .constraint_glyphs
-                .iter()
-                .map(|(anchor, outward, label, is_conflicting, _, _)| {
-                    (*anchor, *outward, label.clone(), *is_conflicting)
-                })
-                .collect();
-            let offsets = constraint_glyph_offsets(&glyphs_for_offsets);
-            let hovered = cursor
-                .position_in(bounds)
-                .and_then(|point| constraint_glyph_hit_test(&glyphs_for_offsets, point));
-            let normal_bg = Color::from_rgb8(103, 109, 118);
-            let normal_fg = Color::WHITE;
-            // A redundant or conflicting constraint gets the danger palette
-            // instead of the
-            // ordinary primary one — same information a resolver panel
-            // would show, surfaced right on the geometry.
-            let conflict_bg = theme.palette().danger.base.color;
-            let conflict_fg = theme.palette().danger.base.text;
-            let selected_ring = theme.palette().primary.strong.color;
-            let coincident_bg = Color::from_rgb8(35, 145, 230);
-            for ((anchor, outward, label, is_conflicting, is_selected, _), tangent_offset) in
-                self.constraint_glyphs.iter().zip(offsets.iter().copied())
-            {
-                if !anchor.x.is_finite() || !anchor.y.is_finite() {
-                    continue;
-                }
-                let compact_coincident = is_compact_coincident_glyph(label);
-                let (bg, fg) = if *is_conflicting {
-                    (conflict_bg, conflict_fg)
-                } else if compact_coincident {
-                    (coincident_bg, normal_fg)
-                } else {
-                    (normal_bg, normal_fg)
-                };
-                let (top_left, size) =
-                    constraint_glyph_box(*anchor, *outward, label, tangent_offset);
-                let pill = canvas::Path::rounded_rectangle(
-                    top_left,
-                    size,
-                    (if compact_coincident {
-                        1.0
-                    } else {
-                        size.height * 0.5
-                    })
-                    .into(),
-                );
-                frame.fill(&pill, bg);
-                if *is_selected {
+        }));
+
+        let authoring_active = self.authoring_visibility.is_some()
+            || !self.authoring_points.is_empty()
+            || !self.authoring_dimensions.is_empty();
+        if authoring_active {
+            let authoring_key = AuthoringLayerKey {
+                bounds,
+                crosshair_bg: self.crosshair_bg,
+                visibility: self.authoring_visibility.clone(),
+                points: self.authoring_points.clone(),
+                dimensions: self.authoring_dimensions.clone(),
+                authoring_style: AuthoringStyleKey::from(&self.authoring_visual),
+            };
+            layers.push(state.authoring.draw(renderer, frame_bounds, &authoring_key, |frame| {
+            if let Some((point, label, clip, selected)) = &self.authoring_visibility {
+            frame.with_clip(*clip, |frame| {
+                let style = &self.authoring_visual;
+                let color = style.parameter;
+                let r = style.grip_size / 2.0;
+                let triangle = canvas::Path::new(|builder| {
+                    builder.move_to(Point::new(point.x - r, point.y - r));
+                    builder.line_to(Point::new(point.x + r, point.y - r));
+                    builder.line_to(Point::new(point.x, point.y + r));
+                    builder.close();
+                });
+                if *selected {
                     frame.stroke(
-                        &pill,
-                        canvas::Stroke::default().with_color(selected_ring).with_width(2.0),
+                        &canvas::Path::circle(*point, 10.0),
+                        canvas::Stroke::default().with_color(color).with_width(2.0),
                     );
                 }
-                if !compact_coincident {
-                    let glyph_center = Point::new(
-                        top_left.x + size.width * 0.5,
-                        top_left.y + size.height * 0.5,
+                frame.fill(&triangle, style.grip);
+                authoring::draw_label(
+                    frame,
+                    Point::new(point.x + 5.0, point.y - 4.0),
+                    label,
+                    color,
+                    None,
+                    0.0,
+                    style,
+                );
+            });
+        }
+        for (point, label_point, label, clip, selected) in &self.authoring_points {
+            frame.with_clip(*clip, |frame| {
+                let style = &self.authoring_visual;
+                let color = style.parameter;
+                if *selected {
+                    frame.stroke(
+                        &canvas::Path::circle(*point, 10.0),
+                        canvas::Stroke::default().with_color(color).with_width(2.0),
                     );
-                    if label == "T" {
-                        draw_tangent_constraint_glyph(&mut frame, glyph_center, fg);
-                    } else if label == "G²" {
-                        draw_smooth_constraint_glyph(&mut frame, glyph_center, fg);
-                    } else if label == "◎" {
-                        draw_concentric_constraint_glyph(&mut frame, glyph_center, fg);
-                    } else {
-                        frame.fill_text(canvas::Text {
-                            content: label.clone(),
-                            position: glyph_center,
-                            color: fg,
-                            size: iced::Pixels(CONSTRAINT_GLYPH_SIZE),
-                            align_x: iced::alignment::Horizontal::Center.into(),
-                            align_y: iced::alignment::Vertical::Center,
-                            shaping: iced::advanced::text::Shaping::Advanced,
-                            ..Default::default()
-                        });
+                }
+                frame.stroke(
+                    &canvas::Path::line(*point, *label_point),
+                    canvas::Stroke::default().with_color(color),
+                );
+                frame.fill(
+                    &authoring::grip_rectangle(*point, style.grip_size),
+                    style.grip,
+                );
+                authoring::draw_label(
+                    frame,
+                    Point::new(label_point.x + 5.0, label_point.y - 4.0),
+                    label,
+                    color,
+                    None,
+                    0.0,
+                    style,
+                );
+            });
+        }
+        for dimension in &self.authoring_dimensions {
+            frame.with_clip(dimension.clip, |frame| {
+                let style = &self.authoring_visual;
+                let color = if dimension.is_action {
+                    style.action
+                } else {
+                    style.parameter
+                };
+                let grip_scale = style.grip_size / 8.0;
+                if dimension.selected {
+                    for point in dimension
+                        .base_grips
+                        .iter()
+                        .chain(dimension.lookup_grips.iter())
+                        .chain(dimension.round_grips.iter())
+                        .chain(dimension.grips.iter().map(|(point, _)| point))
+                    {
+                        frame.stroke(
+                            &canvas::Path::circle(*point, 10.0),
+                            canvas::Stroke::default().with_color(color).with_width(2.0),
+                        );
                     }
                 }
-            }
-            if let Some(index) = hovered {
+                for [a, b] in &dimension.lines {
+                    frame.stroke(
+                        &canvas::Path::line(*a, *b),
+                        canvas::Stroke::default().with_color(color),
+                    );
+                }
+                for [a, b] in &dimension.dimensions {
+                    let dx = b.x - a.x;
+                    let dy = b.y - a.y;
+                    let length = dx.hypot(dy).max(1.0);
+                    let (x, y) = (dx / length, dy / length);
+                    for (point, sign) in [(a, 1.0), (b, -1.0)] {
+                        let tip = Point::new(point.x + sign * 7.0 * x, point.y + sign * 7.0 * y);
+                        let arrow = canvas::Path::new(|path| {
+                            path.move_to(*point);
+                            path.line_to(Point::new(tip.x - 2.5 * y, tip.y + 2.5 * x));
+                            path.line_to(Point::new(tip.x + 2.5 * y, tip.y - 2.5 * x));
+                            path.close();
+                        });
+                        frame.fill(&arrow, color);
+                    }
+                }
+                for (index, (point, label)) in dimension.labels.iter().enumerate() {
+                    // Keep diagonal dimension lines from crossing the label.
+                    let background = Color::from_rgba(
+                        self.crosshair_bg[0],
+                        self.crosshair_bg[1],
+                        self.crosshair_bg[2],
+                        self.crosshair_bg[3],
+                    );
+                    let angle = authoring::label_angle(&dimension.dimensions, index, style.horizontal);
+                    authoring::draw_label(
+                        frame,
+                        Point::new(point.x + 5.0, point.y - 4.0),
+                        label,
+                        color,
+                        Some(background),
+                        angle,
+                        style,
+                    );
+                }
+                for point in &dimension.base_grips {
+                    let stroke = canvas::Stroke::default().with_color(style.grip);
+                    frame.stroke(&canvas::Path::circle(*point, 6.0 * grip_scale), stroke);
+                    frame.stroke(
+                        &canvas::Path::line(
+                            Point::new(point.x - 9.0 * grip_scale, point.y),
+                            Point::new(point.x + 9.0 * grip_scale, point.y),
+                        ),
+                        stroke,
+                    );
+                    frame.stroke(
+                        &canvas::Path::line(
+                            Point::new(point.x, point.y - 9.0 * grip_scale),
+                            Point::new(point.x, point.y + 9.0 * grip_scale),
+                        ),
+                        stroke,
+                    );
+                }
+                for point in &dimension.lookup_grips {
+                    frame.fill(
+                        &canvas::Path::new(|p| {
+                            p.move_to(Point::new(
+                                point.x - 5.0 * grip_scale,
+                                point.y - 4.0 * grip_scale,
+                            ));
+                            p.line_to(Point::new(
+                                point.x + 5.0 * grip_scale,
+                                point.y - 4.0 * grip_scale,
+                            ));
+                            p.line_to(Point::new(point.x, point.y + 5.0 * grip_scale));
+                            p.close();
+                        }),
+                        style.grip,
+                    );
+                }
+                for point in &dimension.round_grips {
+                    frame.fill(&canvas::Path::circle(*point, 3.5 * grip_scale), style.grip);
+                }
+                for (point, base) in &dimension.grips {
+                    let marker = if let Some(base) = base {
+                        let dx = point.x - base.x;
+                        let dy = point.y - base.y;
+                        let length = dx.hypot(dy).max(1.0);
+                        let (x, y) = (dx / length, dy / length);
+                        canvas::Path::new(|path| {
+                            path.move_to(Point::new(
+                                point.x + 5.0 * x * grip_scale,
+                                point.y + 5.0 * y * grip_scale,
+                            ));
+                            path.line_to(Point::new(
+                                point.x - (4.0 * x + 4.0 * y) * grip_scale,
+                                point.y - (4.0 * y - 4.0 * x) * grip_scale,
+                            ));
+                            path.line_to(Point::new(
+                                point.x - (4.0 * x - 4.0 * y) * grip_scale,
+                                point.y - (4.0 * y + 4.0 * x) * grip_scale,
+                            ));
+                            path.close();
+                        })
+                    } else {
+                        authoring::grip_rectangle(*point, style.grip_size)
+                    };
+                    frame.fill(&marker, style.grip);
+                }
+            });
+        }
+            }));
+        }
+
+        // Draw + hover + tooltip all read the memoised entries' precomputed
+        // `top_left`/`size` — one shared `hovered` lookup feeds both the
+        // draw and the hover, with no offset recompute or label clones.
+        let hovered = cursor
+            .position_in(bounds)
+            .and_then(|point| glyph_hit_test_entries(&self.constraint_glyphs, point));
+        if !self.constraint_glyphs.is_empty() {
+            let glyph_key = GlyphLayerKey::new(
+                bounds,
+                &self.constraint_glyphs,
+                &self.constraint_glyph_selected,
+                *theme.palette(),
+            );
+            layers.push(state.glyphs.draw(renderer, frame_bounds, &glyph_key, |frame| {
+            draw_constraint_glyph_layer(
+                frame,
+                &self.constraint_glyphs,
+                &self.constraint_glyph_selected,
+                theme.palette(),
+            );
+            }));
+        }
+        if let Some(index) = hovered {
+            layers.push(transient_layer(renderer, bounds, |frame| {
                 let red = Color::from_rgb(1.0, 0.0, 0.0);
                 let stroke = canvas::Stroke::default().with_color(red).with_width(1.5);
-                for point in &self.constraint_glyphs[index].5 {
+                for point in self.constraint_glyphs[index].hover.iter() {
                     let first = canvas::Path::line(
                         Point::new(
                             point.x - CONSTRAINT_HOVER_MARKER_RADIUS,
@@ -2062,15 +3155,15 @@ impl canvas::Program<Message> for SelectionCanvas {
                     frame.stroke(&second, stroke.clone());
                 }
                 if let Some(label) = &self.constraint_glyph_tooltip {
-                    let (glyph_top_left, glyph_size) = constraint_glyph_box(
-                        self.constraint_glyphs[index].0,
-                        self.constraint_glyphs[index].1,
-                        &self.constraint_glyphs[index].2,
-                        offsets[index],
+                    let (glyph_top_left, glyph_size) = (
+                        self.constraint_glyphs[index].top_left,
+                        self.constraint_glyphs[index].size,
                     );
                     let width = (label.chars().count() as f32 * 7.0 + 14.0).max(54.0);
                     let height = 24.0;
-                    let left = glyph_top_left.x.clamp(2.0, (bounds.width - width - 2.0).max(2.0));
+                    let left = glyph_top_left
+                        .x
+                        .clamp(2.0, (bounds.width - width - 2.0).max(2.0));
                     let top = (glyph_top_left.y + glyph_size.height + 4.0)
                         .clamp(2.0, (bounds.height - height - 2.0).max(2.0));
                     let tooltip = canvas::Path::rounded_rectangle(
@@ -2086,7 +3179,7 @@ impl canvas::Program<Message> for SelectionCanvas {
                             .with_width(1.0),
                     );
                     frame.fill_text(canvas::Text {
-                        content: label.clone(),
+                        content: label.to_string(),
                         position: Point::new(left + width * 0.5, top + height * 0.5),
                         color: theme.palette().background.strong.text,
                         size: iced::Pixels(12.0),
@@ -2096,10 +3189,18 @@ impl canvas::Program<Message> for SelectionCanvas {
                         ..Default::default()
                     });
                 }
-            }
+            }));
         }
         // Small cross at each acquired tracking point.
-        for ost in &self.ost_points {
+        if !self.ost_points.is_empty() {
+            let tracking_key = TrackingMarksLayerKey {
+                bounds,
+                palette: *theme.palette(),
+                ost_points: self.ost_points.clone(),
+            };
+            layers.push(state.tracking_marks.draw(renderer, frame_bounds, &tracking_key, |frame| {
+            let track_color = theme.palette().primary.base.color.scale_alpha(0.7);
+            for ost in &self.ost_points {
             let tp = ost.screen;
             let stroke = canvas::Stroke::default()
                 .with_color(track_color)
@@ -2128,8 +3229,10 @@ impl canvas::Program<Message> for SelectionCanvas {
             frame.stroke(&h, stroke.clone());
             frame.stroke(&v, stroke);
         }
+            }));
+        }
 
-        vec![frame.into_geometry()]
+        layers
     }
 }
 
@@ -2158,11 +3261,7 @@ fn draw_grid(
     // Major lines stay subtle: ~1.5x the minor alpha with a slightly heavier
     // stroke, matching the reference hierarchy without glaring.
     let major_alpha = (alpha * 1.5).clamp(0.03, 1.0);
-    let (r, g, b) = if style.bg_luminance > 0.5 {
-        (0.10, 0.10, 0.10)
-    } else {
-        (0.80, 0.80, 0.80)
-    };
+    let [r, g, b] = style.color;
     let minor_stroke = canvas::Stroke {
         width: 0.5,
         style: canvas::Style::Solid(Color { r, g, b, a: alpha }),
@@ -2170,11 +3269,25 @@ fn draw_grid(
     };
     let major_stroke = canvas::Stroke {
         width: 0.75,
-        style: canvas::Style::Solid(Color { r, g, b, a: major_alpha }),
+        style: canvas::Style::Solid(Color {
+            r,
+            g,
+            b,
+            a: major_alpha,
+        }),
         ..Default::default()
     };
-    let geometry =
-        grid_segments(view_rot, eye, bounds, step_x, step_y, major_every, grid_origin, grid_axes, limits);
+    let geometry = grid_segments(
+        view_rot,
+        eye,
+        bounds,
+        step_x,
+        step_y,
+        major_every,
+        grid_origin,
+        grid_axes,
+        limits,
+    );
     if !geometry.segments.is_empty() {
         let path = canvas::Path::new(|builder| {
             for (p0, p1) in &geometry.segments {
@@ -2193,10 +3306,19 @@ fn draw_grid(
         });
         frame.stroke(&path, major_stroke);
     }
-    if geometry.axis_extent > 0.0 {
+    if style.axes && geometry.axis_extent > 0.0 {
         let (gx, gy, gz) = grid_axes;
         let extent = (geometry.axis_extent + step_x.max(step_y)) * 1.5;
-        draw_axes(frame, view_rot, eye, bounds, extent.max(10.0), grid_origin, (gx, gy, gz), style.bg_luminance);
+        draw_axes(
+            frame,
+            view_rot,
+            eye,
+            bounds,
+            extent.max(10.0),
+            grid_origin,
+            (gx, gy, gz),
+            style.bg_luminance,
+        );
     }
 }
 
@@ -2226,8 +3348,14 @@ pub fn grid_segments(
 
     // World → viewport-local screen via relative-to-eye: subtract the f64 eye
     // first so grid points near the camera stay precise at UTM-scale coords.
-    // Reject points on/behind the perspective eye plane before dividing by W.
-    let project = |world: glam::DVec3| -> Option<Point> {
+    // Shared eye-plane guard — see project_point (#46).
+    let project =
+        |world: glam::DVec3| -> Option<Point> { project_point(view_rot, eye, bounds, world) };
+
+    // Same world→screen projection as `project` (bit-identical arithmetic),
+    // additionally returning the homogeneous clip position. The clip
+    // coordinates feed the cross-family finiteness bound in `grid_gap`.
+    let project_clip = |world: glam::DVec3| -> Option<(Point, glam::Vec4)> {
         let rel = (world - eye).as_vec3();
         let clip = view_rot * rel.extend(1.0);
         if !clip.is_finite() || clip.w <= 1e-7 {
@@ -2238,8 +3366,15 @@ pub fn grid_segments(
             (ndc.x + 1.0) * 0.5 * bounds.width,
             (1.0 - ndc.y) * 0.5 * bounds.height,
         );
-        (screen.x.is_finite() && screen.y.is_finite()).then_some(screen)
+        (screen.x.is_finite() && screen.y.is_finite()).then_some((screen, clip))
     };
+    // Row norms of the view-projection: for a step vector `v` (w = 0),
+    // |(view_rot · v).row| ≤ |v| · row_norm. Hoisted once per rebuild; used by
+    // the cross-family finiteness bound below.
+    let view_rows = view_rot.transpose();
+    let row_x_norm = view_rows.x_axis.truncate().length();
+    let row_y_norm = view_rows.y_axis.truncate().length();
+    let row_w_norm = view_rows.w_axis.truncate().length();
 
     // Grid is intentionally restricted to the active UCS XY plane.
     let (gx, gy, gz) = grid_axes;
@@ -2252,18 +3387,19 @@ pub fn grid_segments(
     // Intersect a viewport-local screen ray with the real XY plane. Unlike the
     // old mid-depth approximation, this covers the complete viewport after an
     // orbit and also tells us when a ray crosses the perspective horizon.
-    let unproject = |sx: f32, sy: f32| -> Option<glam::DVec3> {
+    // Returns the world hit together with its validated world→screen
+    // projection (and clip position): every consumer of the hit point needs
+    // `project(world)` as well (gap measurement base), and computing it once
+    // here instead of once per consumer removes a whole projection per
+    // evaluated sample.
+    let unproject = |sx: f32, sy: f32| -> Option<(glam::DVec3, Point, glam::Vec4)> {
         let ndc_x = (sx / bounds.width) * 2.0 - 1.0;
         let ndc_y = 1.0 - (sy / bounds.height) * 2.0;
         let near = inv.project_point3(Vec3::new(ndc_x, ndc_y, 0.0));
         let far = inv.project_point3(Vec3::new(ndc_x, ndc_y, 1.0));
         let ray = far - near;
         let denom = ray.dot(plane_normal);
-        if !near.is_finite()
-            || !far.is_finite()
-            || !denom.is_finite()
-            || denom.abs() < 1e-7
-        {
+        if !near.is_finite() || !far.is_finite() || !denom.is_finite() || denom.abs() < 1e-7 {
             return None;
         }
         let t = (plane_rel - near).dot(plane_normal) / denom;
@@ -2280,71 +3416,19 @@ pub fn grid_segments(
             return None;
         }
         let world = eye + hit.as_dvec3();
-        project(world).map(|_| world)
-    };
-
-    // Perpendicular screen gap between the two neighbouring lines of each
-    // family at a point on the grid. Measuring the perpendicular component,
-    // rather than point-to-point distance, remains correct for a skewed
-    // perspective grid.
-    let grid_gaps = |world: glam::DVec3, sx: f32, sy: f32| -> Option<(f32, f32)> {
-        let p = project(world)?;
-        let projected_deltas = |axis: Vec3, amount: f32| {
-            [amount, -amount].map(|signed_step| {
-                project(world + (axis * signed_step).as_dvec3())
-                    .map(|next| glam::Vec2::new(next.x - p.x, next.y - p.y))
-            })
-        };
-        let neighbours1 = projected_deltas(axis1, sx);
-        let neighbours2 = projected_deltas(axis2, sy);
-        // A full grid step is needed to measure adjacent-line distance, but it
-        // is too large for the line's local tangent near the eye. A small
-        // derivative keeps the tangent measurable without crossing the eye.
-        // BUG FIX: the tangent used a single shared step for both families, so
-        // a non-square GRIDUNIT (sx != sy) measured the wrong local direction.
-        // Each family now uses its own derivative.
-        let tangents1 = projected_deltas(axis1, (sx * 0.01).max(1e-4));
-        let tangents2 = projected_deltas(axis2, (sy * 0.01).max(1e-4));
-
-        // At the near side of a perspective plane a large +step neighbour may
-        // cross behind the eye while the -step neighbour remains perfectly
-        // visible (or vice versa). Requiring only +X/+Y cut away that entire
-        // near side after zoom-out. Use whichever visible neighbour gives the
-        // readable separation for each line family.
-        let mut gap1 = 0.0_f32;
-        let mut gap2 = 0.0_f32;
-        for neighbour in neighbours1.into_iter().flatten() {
-            for tangent in tangents2.into_iter().flatten() {
-                let tangent_len = tangent.length();
-                if tangent_len > 1e-6 {
-                    let area =
-                        (neighbour.x * tangent.y - neighbour.y * tangent.x).abs();
-                    gap1 = gap1.max(area / tangent_len);
-                }
-            }
-        }
-        for neighbour in neighbours2.into_iter().flatten() {
-            for tangent in tangents1.into_iter().flatten() {
-                let tangent_len = tangent.length();
-                if tangent_len > 1e-6 {
-                    let area =
-                        (neighbour.x * tangent.y - neighbour.y * tangent.x).abs();
-                    gap2 = gap2.max(area / tangent_len);
-                }
-            }
-        }
-        (gap1.is_finite() && gap2.is_finite()).then_some((gap1, gap2))
+        project_clip(world).map(|(p, clip)| (world, p, clip))
     };
 
     // Use several interior points because the UCS origin may be off-screen or
-    // arbitrarily close to the perspective horizon.
+    // arbitrarily close to the perspective horizon. `p` is the hit point's
+    // already-computed screen position (see `unproject`).
     const SAMPLE_FRACTIONS: [f32; 5] = [0.02, 0.25, 0.5, 0.75, 0.98];
     let mut samples = Vec::with_capacity(SAMPLE_FRACTIONS.len().pow(2));
     for fy in SAMPLE_FRACTIONS {
         for fx in SAMPLE_FRACTIONS {
             let screen = glam::Vec2::new(bounds.width * fx, bounds.height * fy);
-            if let Some(world) = unproject(screen.x, screen.y) {
-                samples.push((screen, world));
+            if let Some((world, p, _)) = unproject(screen.x, screen.y) {
+                samples.push((screen, world, p));
             }
         }
     }
@@ -2360,68 +3444,180 @@ pub fn grid_segments(
         return GridGeometry::empty();
     }
     let (sx, sy) = (step_x, step_y);
-    let is_major = |index: i32| {
-        major_every >= 2 && (index.rem_euclid(major_every as i32) == 0)
+    let is_major = |index: i32| major_every >= 2 && (index.rem_euclid(major_every as i32) == 0);
+
+    // Perpendicular screen gap between the two neighbouring lines of ONE
+    // family at a point on the grid. Measuring the perpendicular component,
+    // rather than point-to-point distance, remains correct for a skewed
+    // perspective grid. Family 0 (lines at a fixed axis1 coordinate) measures
+    // with the axis1 step neighbours against the axis2 tangent; family 1 is
+    // the mirror image — every consumer only reads one family, so computing
+    // both doubled the projections per evaluated sample for nothing.
+    //
+    // A full grid step is needed to measure adjacent-line distance, but it
+    // is too large for the line's local tangent near the eye. A small
+    // derivative keeps the tangent measurable without crossing the eye.
+    // BUG FIX: the tangent used a single shared step for both families, so
+    // a non-square GRIDUNIT (sx != sy) measured the wrong local direction.
+    // Each family now uses its own derivative.
+    let derivative1 = (sx * 0.01).max(1e-4);
+    let derivative2 = (sy * 0.01).max(1e-4);
+    let projected_deltas = |world: glam::DVec3, p: Point, axis: Vec3, amount: f32| {
+        [amount, -amount].map(|signed_step| {
+            project(world + (axis * signed_step).as_dvec3())
+                .map(|next| glam::Vec2::new(next.x - p.x, next.y - p.y))
+        })
+    };
+    // `p` is the point's own screen position, shared from `unproject` — the
+    // old two-family helper re-projected the same world point a second time.
+    let family_gap = |p: Point, world: glam::DVec3, family: usize| -> f32 {
+        let (neighbour_axis, tangent_axis, step, derivative) = if family == 0 {
+            (axis1, axis2, sx, derivative2)
+        } else {
+            (axis2, axis1, sy, derivative1)
+        };
+        let neighbours = projected_deltas(world, p, neighbour_axis, step);
+        let tangents = projected_deltas(world, p, tangent_axis, derivative);
+
+        // At the near side of a perspective plane a large +step neighbour may
+        // cross behind the eye while the -step neighbour remains perfectly
+        // visible (or vice versa). Requiring only +X/+Y cut away that entire
+        // near side after zoom-out. Use whichever visible neighbour gives the
+        // readable separation for each line family.
+        let mut gap = 0.0_f32;
+        for neighbour in neighbours.into_iter().flatten() {
+            for tangent in tangents.into_iter().flatten() {
+                let tangent_len = tangent.length();
+                if tangent_len > 1e-6 {
+                    let area = (neighbour.x * tangent.y - neighbour.y * tangent.x).abs();
+                    gap = gap.max(area / tangent_len);
+                }
+            }
+        }
+        gap
+    };
+    // Both families in one pass (shared projections), used where both are
+    // read — the anchors for the two line families. The old code ran the
+    // full two-family gap math once per family over the same samples.
+    let grid_gaps = |p: Point, world: glam::DVec3| -> Option<(f32, f32)> {
+        let gap1 = family_gap(p, world, 0);
+        let gap2 = family_gap(p, world, 1);
+        (gap1.is_finite() && gap2.is_finite()).then_some((gap1, gap2))
+    };
+    // Conservative bound proving that the OTHER family's gap must be finite
+    // at this world point, so its projections can be skipped.
+    //
+    // The other family's gap is `max(|cross product| / tangent_len)` over
+    // projections of `world ± step·axis`; it is non-finite only when one of
+    // those cross products overflows f32 (~3.4e38), which needs screen-space
+    // neighbour/tangent deltas of ~1e19 px. Bound every projection of
+    // `world ± v` (|v| = `step`, a unit axis): its clip position is the
+    // point's own clip plus `view_rot · v`, and any projection that survives
+    // the eye-plane guard has |ndc| ≤ |clip_xy| · 1e7 (clip.w > 1e-7) — or
+    // the tighter |clip_xy| / w_min when the step cannot push the neighbour
+    // near the eye plane. Screen deltas are then ≤ 2·bound, the cross product
+    // ≤ 8·bound², and the gap ≤ 8e6·bound² (tangent_len > 1e-6), so
+    // bound² < 4e31 guarantees finiteness. When the bound does not apply
+    // (absurd steps ~1e9 world units, degenerate view matrices), the cross
+    // gap is computed exactly as before — correct, just not faster.
+    let cross_gap_bounded = |clip: glam::Vec4, step: f32| -> bool {
+        // The tangent derivative is max(0.01·step, 1e-4), never longer than
+        // max(step, 1e-4) — bound both the neighbour and the tangent steps.
+        // 1.01 headroom for f32 rounding in the neighbour's mat-vec product.
+        let step = step.max(1e-4) * 1.01;
+        let w_min = clip.w - step * row_w_norm;
+        let inv_w = if w_min > 1e-7 { 1.0 / w_min } else { 1e7_f32 };
+        let ndc_bound_x = (clip.x.abs() + step * row_x_norm) * inv_w;
+        let ndc_bound_y = (clip.y.abs() + step * row_y_norm) * inv_w;
+        let bound_x = (ndc_bound_x + 1.0) * 0.5 * bounds.width;
+        let bound_y = (ndc_bound_y + 1.0) * 0.5 * bounds.height;
+        let bound = bound_x.max(bound_y);
+        bound.is_finite() && bound * bound < 4.0e31
+    };
+    // One family, for the visibility predicates (`trim_line`, `collect_extent`).
+    //
+    // EXACT-semantics note: the old two-family helper returned `None` when
+    // EITHER family's gap was non-finite, but every caller immediately
+    // compared only its own family against `MIN_HORIZON_GRID_PX`. A non-finite
+    // gap is `>= MIN_HORIZON_GRID_PX` too, so the own-family gate is kept
+    // verbatim, and the cross-family finiteness gate is only evaluated when
+    // it is observable — i.e. when this family's gap actually passes the
+    // threshold (otherwise both the old `None` and the new `Some(gap)` read
+    // as "not visible"). Where the gate is observable, it is answered with
+    // the provable `cross_gap_bounded` bound (no-op cost) or, failing that,
+    // by computing the cross gap with the same math as before — the
+    // visibility predicate stays bit-identical to the old code.
+    let grid_gap = |p: Point, clip: glam::Vec4, world: glam::DVec3, family: usize| -> Option<f32> {
+        let gap = family_gap(p, world, family);
+        if !gap.is_finite() {
+            return None;
+        }
+        if gap >= MIN_HORIZON_GRID_PX {
+            let cross_step = if family == 0 { sy } else { sx };
+            if !cross_gap_bounded(clip, cross_step)
+                && !family_gap(p, world, 1 - family).is_finite()
+            {
+                return None;
+            }
+        }
+        Some(gap)
     };
 
     // Trace a family-specific visible region around the viewport perimeter.
     // When a boundary ray points through the horizon, binary-search back toward
     // a readable anchor and stop where neighbouring lines reach the minimum gap.
-    let collect_extent = |
-        family: usize,
-        anchor_screen: glam::Vec2,
-        anchor_world: glam::DVec3,
-    | -> Vec<glam::DVec3> {
-        let visible_at = |screen: glam::Vec2| -> Option<glam::DVec3> {
-            let world = unproject(screen.x, screen.y)?;
-            let gaps = grid_gaps(world, sx, sy)?;
-            let gap = if family == 0 { gaps.0 } else { gaps.1 };
-            (gap >= MIN_HORIZON_GRID_PX).then_some(world)
+    let collect_extent =
+        |family: usize, anchor_screen: glam::Vec2, anchor_world: glam::DVec3| -> Vec<glam::DVec3> {
+            let visible_at = |screen: glam::Vec2| -> Option<glam::DVec3> {
+                let (world, p, clip) = unproject(screen.x, screen.y)?;
+                let gap = grid_gap(p, clip, world, family)?;
+                (gap >= MIN_HORIZON_GRID_PX).then_some(world)
+            };
+
+            const EDGE_STEPS: usize = 12;
+            const SEARCH_STEPS: usize = 16;
+            let mut hits = vec![anchor_world];
+            for i in 0..=EDGE_STEPS {
+                let f = i as f32 / EDGE_STEPS as f32;
+                let targets = [
+                    glam::Vec2::new(bounds.width * f, 0.0),
+                    glam::Vec2::new(bounds.width * f, bounds.height),
+                    glam::Vec2::new(0.0, bounds.height * f),
+                    glam::Vec2::new(bounds.width, bounds.height * f),
+                ];
+                for target in targets {
+                    if let Some(world) = visible_at(target) {
+                        hits.push(world);
+                        continue;
+                    }
+                    let mut near_screen = anchor_screen;
+                    let mut far_screen = target;
+                    let mut near_world = anchor_world;
+                    for _ in 0..SEARCH_STEPS {
+                        let middle = (near_screen + far_screen) * 0.5;
+                        if let Some(world) = visible_at(middle) {
+                            near_screen = middle;
+                            near_world = world;
+                        } else {
+                            far_screen = middle;
+                        }
+                    }
+                    hits.push(near_world);
+                }
+            }
+            hits
         };
 
-        const EDGE_STEPS: usize = 12;
-        const SEARCH_STEPS: usize = 16;
-        let mut hits = vec![anchor_world];
-        for i in 0..=EDGE_STEPS {
-            let f = i as f32 / EDGE_STEPS as f32;
-            let targets = [
-                glam::Vec2::new(bounds.width * f, 0.0),
-                glam::Vec2::new(bounds.width * f, bounds.height),
-                glam::Vec2::new(0.0, bounds.height * f),
-                glam::Vec2::new(bounds.width, bounds.height * f),
-            ];
-            for target in targets {
-                if let Some(world) = visible_at(target) {
-                    hits.push(world);
-                    continue;
-                }
-                let mut near_screen = anchor_screen;
-                let mut far_screen = target;
-                let mut near_world = anchor_world;
-                for _ in 0..SEARCH_STEPS {
-                    let middle = (near_screen + far_screen) * 0.5;
-                    if let Some(world) = visible_at(middle) {
-                        near_screen = middle;
-                        near_world = world;
-                    } else {
-                        far_screen = middle;
-                    }
-                }
-                hits.push(near_world);
-            }
-        }
-        hits
-    };
-
-    let best_anchor = |family: usize| -> Option<(glam::Vec2, glam::DVec3, f32)> {
-        let mut best = None;
-        for (screen, world) in &samples {
-            let Some(gaps) = grid_gaps(*world, sx, sy) else {
+    let best_anchors = |samples: &[(glam::Vec2, glam::DVec3, Point)]| -> [Option<(glam::Vec2, glam::DVec3, f32)>; 2] {
+        let mut best: [Option<(glam::Vec2, glam::DVec3, f32)>; 2] = [None, None];
+        for (screen, world, p) in samples {
+            let Some((gap1, gap2)) = grid_gaps(*p, *world) else {
                 continue;
             };
-            let gap = if family == 0 { gaps.0 } else { gaps.1 };
-            if best.map_or(true, |(_, _, best_gap)| gap > best_gap) {
-                best = Some((*screen, *world, gap));
+            for (slot, gap) in best.iter_mut().zip([gap1, gap2]) {
+                if slot.map_or(true, |(_, _, best_gap)| gap > best_gap) {
+                    *slot = Some((*screen, *world, gap));
+                }
             }
         }
         best
@@ -2458,15 +3654,9 @@ pub fn grid_segments(
     let grid_clip_axis2 = view_rot * axis2.extend(0.0);
     let project_line = |family: usize, value: f32| -> Option<(glam::Vec2, glam::Vec2)> {
         let (base, direction) = if family == 0 {
-            (
-                grid_clip_origin + grid_clip_axis1 * value,
-                grid_clip_axis2,
-            )
+            (grid_clip_origin + grid_clip_axis1 * value, grid_clip_axis2)
         } else {
-            (
-                grid_clip_origin + grid_clip_axis2 * value,
-                grid_clip_axis1,
-            )
+            (grid_clip_origin + grid_clip_axis2 * value, grid_clip_axis1)
         };
         let screen_h = |clip: glam::Vec4| {
             glam::Vec3::new(
@@ -2481,7 +3671,11 @@ pub fn grid_segments(
         }
 
         const EDGE_EPS: f32 = 0.5;
-        let mut points = Vec::with_capacity(4);
+        // Stack buffer instead of `Vec::with_capacity(4)`: `project_line` runs
+        // once per grid line, and this path used to allocate a heap buffer per
+        // line just to hold at most four viewport-edge intersections.
+        let mut points = [glam::Vec2::ZERO; 4];
+        let mut point_count = 0usize;
         let mut add_point = |point: glam::Vec2| {
             if !point.is_finite()
                 || point.x < -EDGE_EPS
@@ -2495,8 +3689,12 @@ pub fn grid_segments(
                 point.x.clamp(0.0, bounds.width),
                 point.y.clamp(0.0, bounds.height),
             );
-            if points.iter().all(|p: &glam::Vec2| p.distance_squared(point) > 1e-4) {
-                points.push(point);
+            if points[..point_count]
+                .iter()
+                .all(|p: &glam::Vec2| p.distance_squared(point) > 1e-4)
+            {
+                points[point_count] = point;
+                point_count += 1;
             }
         };
         if line.y.abs() > 1e-8 {
@@ -2513,14 +3711,14 @@ pub fn grid_segments(
                 bounds.height,
             ));
         }
-        if points.len() < 2 {
+        if point_count < 2 {
             return None;
         }
 
         let mut best = (points[0], points[1]);
         let mut best_distance = best.0.distance_squared(best.1);
-        for i in 0..points.len() {
-            for j in i + 1..points.len() {
+        for i in 0..point_count {
+            for j in i + 1..point_count {
                 let distance = points[i].distance_squared(points[j]);
                 if distance > best_distance {
                     best = (points[i], points[j]);
@@ -2534,21 +3732,20 @@ pub fn grid_segments(
     // Keep only the parts of one projected line where its neighbouring line is
     // at least the configured physical-pixel gap away. The visible interval is found in screen
     // space, so oblique/trapezoidal views no longer inherit rectangular world
-    // bounds from the top view.
-    let trim_line = |
-        family: usize,
-        p0: glam::Vec2,
-        p1: glam::Vec2,
-    | -> Vec<(Point, Point)> {
+    // bounds from the top view. Segments are pushed into `out` so a fully
+    // hidden line no longer allocates (and drops) an empty `Vec` per line.
+    let trim_line = |family: usize,
+                     p0: glam::Vec2,
+                     p1: glam::Vec2,
+                     out: &mut Vec<(Point, Point)>| {
         let visible = |t: f32| {
             let screen = p0.lerp(p1, t);
-            let Some(world) = unproject(screen.x, screen.y) else {
+            let Some((world, p, clip)) = unproject(screen.x, screen.y) else {
                 return false;
             };
-            let Some(gaps) = grid_gaps(world, sx, sy) else {
+            let Some(gap) = grid_gap(p, clip, world, family) else {
                 return false;
             };
-            let gap = if family == 0 { gaps.0 } else { gaps.1 };
             gap >= MIN_HORIZON_GRID_PX
         };
         let find_transition = |mut low: f32, mut high: f32, low_visible: bool| {
@@ -2564,7 +3761,6 @@ pub fn grid_segments(
         };
 
         const LINE_SAMPLES: usize = 16;
-        let mut result = Vec::with_capacity(2);
         let mut previous_t = 0.0_f32;
         let mut previous_visible = visible(previous_t);
         let mut run_start = previous_visible.then_some(previous_t);
@@ -2578,7 +3774,7 @@ pub fn grid_segments(
                 } else if let Some(start) = run_start.take() {
                     let a = p0.lerp(p1, start);
                     let b = p0.lerp(p1, boundary);
-                    result.push((
+                    out.push((
                         Point::new(a.x + bounds.x, a.y + bounds.y),
                         Point::new(b.x + bounds.x, b.y + bounds.y),
                     ));
@@ -2589,12 +3785,11 @@ pub fn grid_segments(
         }
         if let Some(start) = run_start {
             let a = p0.lerp(p1, start);
-            result.push((
+            out.push((
                 Point::new(a.x + bounds.x, a.y + bounds.y),
                 Point::new(p1.x + bounds.x, p1.y + bounds.y),
             ));
         }
-        result
     };
 
     let mut all_segments: Vec<(Point, Point)> = Vec::new();
@@ -2663,24 +3858,33 @@ pub fn grid_segments(
         let (min2, max2) = coordinate_range(axis2);
         let mut minor = Vec::new();
         let mut major = Vec::new();
-        if let Some((_, anchor_world, gap)) = best_anchor(0) {
+        let [anchor1, anchor2] = best_anchors(&samples);
+        if let Some((_, anchor_world, gap)) = anchor1 {
             if gap >= MIN_HORIZON_GRID_PX {
                 let anchor = (anchor_world - grid_origin).as_vec3().dot(axis1);
                 let (start, end) = line_range(min1, max1, anchor, sx);
                 for index in start..=end {
                     if let Some(segment) = clip_world_line(0, index as f32 * sx) {
-                        if is_major(index) { major.push(segment); } else { minor.push(segment); }
+                        if is_major(index) {
+                            major.push(segment);
+                        } else {
+                            minor.push(segment);
+                        }
                     }
                 }
             }
         }
-        if let Some((_, anchor_world, gap)) = best_anchor(1) {
+        if let Some((_, anchor_world, gap)) = anchor2 {
             if gap >= MIN_HORIZON_GRID_PX {
                 let anchor = (anchor_world - grid_origin).as_vec3().dot(axis2);
                 let (start, end) = line_range(min2, max2, anchor, sy);
                 for index in start..=end {
                     if let Some(segment) = clip_world_line(1, index as f32 * sy) {
-                        if is_major(index) { major.push(segment); } else { minor.push(segment); }
+                        if is_major(index) {
+                            major.push(segment);
+                        } else {
+                            minor.push(segment);
+                        }
                     }
                 }
             }
@@ -2691,7 +3895,7 @@ pub fn grid_segments(
         // LIMITS bounds the grid, not the UCS axes. Size the axes from the
         // visible grid plane so X/Y/Z still span the viewport even when the
         // finite grid rectangle is small or currently off-screen.
-        let limits_extent = samples.iter().fold(0.0_f32, |extent, (_, world)| {
+        let limits_extent = samples.iter().fold(0.0_f32, |extent, (_, world, _)| {
             let delta = (*world - grid_origin).as_vec3();
             extent
                 .max(delta.dot(axis1).abs())
@@ -2700,12 +3904,17 @@ pub fn grid_segments(
         if limits_extent > 0.0 {
             axis_extent = limits_extent;
         }
-        return GridGeometry { segments: all_segments, major_segments: all_major, axis_extent };
+        return GridGeometry {
+            segments: all_segments,
+            major_segments: all_major,
+            axis_extent,
+        };
     }
 
     let mut all_major: Vec<(Point, Point)> = Vec::new();
+    let [anchor1, anchor2] = best_anchors(&samples);
     // Lines parallel to axis2 (varying axis1 position).
-    if let Some((anchor_screen, anchor_world, gap)) = best_anchor(0) {
+    if let Some((anchor_screen, anchor_world, gap)) = anchor1 {
         if gap >= MIN_HORIZON_GRID_PX {
             let hits = collect_extent(0, anchor_screen, anchor_world);
             if let (Some((min1, max1)), Some((min2, max2))) =
@@ -2716,8 +3925,11 @@ pub fn grid_segments(
                 for i in start..=end {
                     let value = i as f32 * sx;
                     if let Some((p0, p1)) = project_line(0, value) {
-                        let segs = trim_line(0, p0, p1);
-                        if is_major(i) { all_major.extend(segs); } else { all_segments.extend(segs); }
+                        if is_major(i) {
+                            trim_line(0, p0, p1, &mut all_major);
+                        } else {
+                            trim_line(0, p0, p1, &mut all_segments);
+                        }
                     }
                 }
                 axis_extent =
@@ -2727,7 +3939,7 @@ pub fn grid_segments(
     }
 
     // Lines parallel to axis1 (varying axis2 position).
-    if let Some((anchor_screen, anchor_world, gap)) = best_anchor(1) {
+    if let Some((anchor_screen, anchor_world, gap)) = anchor2 {
         if gap >= MIN_HORIZON_GRID_PX {
             let hits = collect_extent(1, anchor_screen, anchor_world);
             if let (Some((min1, max1)), Some((min2, max2))) =
@@ -2738,8 +3950,11 @@ pub fn grid_segments(
                 for i in start..=end {
                     let value = i as f32 * sy;
                     if let Some((p0, p1)) = project_line(1, value) {
-                        let segs = trim_line(1, p0, p1);
-                        if is_major(i) { all_major.extend(segs); } else { all_segments.extend(segs); }
+                        if is_major(i) {
+                            trim_line(1, p0, p1, &mut all_major);
+                        } else {
+                            trim_line(1, p0, p1, &mut all_segments);
+                        }
                     }
                 }
                 axis_extent =
@@ -2749,11 +3964,16 @@ pub fn grid_segments(
     }
 
     let _ = gz; // gz unused after move; retained for symmetry with `draw_axes` call sites.
-    GridGeometry { segments: all_segments, major_segments: all_major, axis_extent }
+    GridGeometry {
+        segments: all_segments,
+        major_segments: all_major,
+        axis_extent,
+    }
 }
 
 // ── Coloured UCS axes ──────────────────────────────────────────────────────
 
+#[allow(clippy::too_many_arguments)]
 #[allow(clippy::too_many_arguments)]
 fn draw_axes(
     frame: &mut canvas::Frame,
@@ -2765,34 +3985,67 @@ fn draw_axes(
     axes: (Vec3, Vec3, Vec3),
     bg_luminance: f32,
 ) {
-    let w2s = |world: glam::DVec3| -> Point {
-        let ndc = view_rot.project_point3((world - eye).as_vec3());
-        Point::new(
-            bounds.x + (ndc.x + 1.0) * 0.5 * bounds.width,
-            bounds.y + (1.0 - ndc.y) * 0.5 * bounds.height,
-        )
-    };
-    let e = extent;
-    let (ax, ay, az) = axes;
     let axis_stroke = |r: f32, g: f32, b: f32| canvas::Stroke {
         width: 1.5,
         style: canvas::Style::Solid(Color { r, g, b, a: 0.85 }),
         ..Default::default()
     };
-    // Axes run through the UCS origin along the UCS axis directions.
-    let mut line = |dir: Vec3, r: f32, g: f32, b: f32| {
+    let y_green = if bg_luminance > 0.5 { 0.60 } else { 0.85 };
+    for ((a, b), (r, g, bl)) in axes_segments(view_rot, eye, bounds, extent, origin, axes)
+        .into_iter()
+        .zip([
+            (0.90, 0.20, 0.20),
+            (0.20, y_green, 0.20),
+            (0.20, 0.40, 0.90),
+        ])
+    {
         frame.stroke(
             &canvas::Path::new(|p| {
-                p.move_to(w2s(origin - (dir * e).as_dvec3()));
-                p.line_to(w2s(origin + (dir * e).as_dvec3()));
+                p.move_to(a);
+                p.line_to(b);
             }),
-            axis_stroke(r, g, b),
+            axis_stroke(r, g, bl),
         );
+    }
+}
+
+/// Pure geometry for [`draw_axes`]: per-axis canvas-space segments in X/Y/Z
+/// order after the eye-plane guard and frame clip. An axis with either end
+/// behind the eye is absent entirely (#46) — screen-space clipping of a
+/// mirror-wrapped segment would be garbage, same policy as grid lines.
+/// Extracted so the skip/clip/offset contract is unit-testable without a
+/// renderer (iced `Frame` needs one).
+fn axes_segments(
+    view_rot: Mat4,
+    eye: glam::DVec3,
+    bounds: iced::Rectangle,
+    extent: f32,
+    origin: glam::DVec3,
+    axes: (Vec3, Vec3, Vec3),
+) -> Vec<(Point, Point)> {
+    // Axes run through the UCS origin along the UCS axis directions. NOTE: the
+    // pane origin offset below reproduces draw_axes' historical canvas placement
+    // verbatim — whether grid geometry as a whole should be pane-local or
+    // canvas-placed is a separate open question (see #60), not this fix.
+    let w2s = |world: glam::DVec3| -> Option<Point> {
+        project_point(view_rot, eye, bounds, world)
+            .map(|p| Point::new(p.x + bounds.x, p.y + bounds.y))
     };
-    let y_green = if bg_luminance > 0.5 { 0.60 } else { 0.85 };
-    line(ax, 0.90, 0.20, 0.20); // X — red
-    line(ay, 0.20, y_green, 0.20); // Y — green
-    line(az, 0.20, 0.40, 0.90); // Z — blue
+    // clip_seg works frame-local: shift, clip, shift back.
+    let local = |p: Point| Point::new(p.x - bounds.x, p.y - bounds.y);
+    let back = |p: Point| Point::new(p.x + bounds.x, p.y + bounds.y);
+    let (ax, ay, az) = axes;
+    [ax, ay, az]
+        .into_iter()
+        .filter_map(|dir| {
+            let (p0, p1) = (
+                w2s(origin - (dir * extent).as_dvec3())?,
+                w2s(origin + (dir * extent).as_dvec3())?,
+            );
+            let (c0, c1) = clip_seg(local(p0), local(p1), bounds)?;
+            Some((back(c0), back(c1)))
+        })
+        .collect()
 }
 
 // ── UCS icon ──────────────────────────────────────────────────────────────
@@ -2927,8 +4180,7 @@ fn draw_ucs_icon(
     selected: bool,
     crosshair_bg: [f32; 4],
 ) {
-    let Some((icon_origin, at_origin, geom)) =
-        ucs_icon_geometry(vp, bounds, axes, origin_screen)
+    let Some((icon_origin, at_origin, geom)) = ucs_icon_geometry(vp, bounds, axes, origin_screen)
     else {
         return;
     };
@@ -2937,7 +4189,8 @@ fn draw_ucs_icon(
     // corner), so hover/selection highlight applies there too.
     let _ = at_origin;
     let highlight = hover || selected;
-    let is_light_bg = 0.299 * crosshair_bg[0] + 0.587 * crosshair_bg[1] + 0.114 * crosshair_bg[2] > 0.5;
+    let is_light_bg =
+        0.299 * crosshair_bg[0] + 0.587 * crosshair_bg[1] + 0.114 * crosshair_bg[2] > 0.5;
     let y_green = if is_light_bg { 0.60 } else { 0.85 };
 
     struct AxisInfo {
@@ -3192,10 +4445,11 @@ impl DynInputCanvas {
     fn dotted(theme: &Theme) -> canvas::Stroke<'static> {
         canvas::Stroke {
             width: 1.0,
-            style: canvas::Style::Solid(
-                theme.palette().background.neutral.color.scale_alpha(0.9)
-            ),
-            line_dash: canvas::LineDash { segments: &[2.0, 3.0], offset: 0 },
+            style: canvas::Style::Solid(theme.palette().background.neutral.color.scale_alpha(0.9)),
+            line_dash: canvas::LineDash {
+                segments: &[2.0, 3.0],
+                offset: 0,
+            },
             ..Default::default()
         }
     }
@@ -3214,6 +4468,37 @@ impl DynInputCanvas {
         (Self::box_content(b).len() as f32 * DYN_CHAR_W) + DYN_PAD * 2.0
     }
 
+    /// Slide a box centred at `center` straight away from the crosshair until
+    /// it neither covers the aim point nor a box already placed (#1546).
+    fn clear_of(center: Point, w: f32, cursor: Point, placed: &[iced::Rectangle]) -> Point {
+        const KEEP: f32 = 18.0;
+        let hits = |c: Point| {
+            let r = iced::Rectangle {
+                x: c.x - w * 0.5,
+                y: c.y - DYN_BOX_H * 0.5,
+                width: w,
+                height: DYN_BOX_H,
+            };
+            r.expand(KEEP).contains(cursor) || placed.iter().any(|p| p.intersects(&r))
+        };
+        let (mut dx, mut dy) = (center.x - cursor.x, center.y - cursor.y);
+        let len = (dx * dx + dy * dy).sqrt();
+        if len < 1.0 {
+            (dx, dy) = (0.0, 1.0);
+        } else {
+            (dx, dy) = (dx / len, dy / len);
+        }
+        let mut c = center;
+        for _ in 0..60 {
+            if !hits(c) {
+                break;
+            }
+            c.x += dx * 4.0;
+            c.y += dy * 4.0;
+        }
+        c
+    }
+
     /// Draw a value box centred at `center`, clamped inside `bounds`.
     fn draw_box(
         frame: &mut canvas::Frame,
@@ -3226,7 +4511,13 @@ impl DynInputCanvas {
         let w = Self::box_width(b);
         let x = (center.x - w * 0.5).clamp(0.0, (bounds.width - w).max(0.0));
         let y = (center.y - DYN_BOX_H * 0.5).clamp(0.0, (bounds.height - DYN_BOX_H).max(0.0));
-        let rect = canvas::Path::rectangle(Point { x, y }, Size { width: w, height: DYN_BOX_H });
+        let rect = canvas::Path::rectangle(
+            Point { x, y },
+            Size {
+                width: w,
+                height: DYN_BOX_H,
+            },
+        );
         let (fill, border, text) = Self::box_colors(b, theme);
         frame.fill(&rect, fill);
         frame.stroke(
@@ -3237,7 +4528,10 @@ impl DynInputCanvas {
         );
         frame.fill_text(canvas::Text {
             content,
-            position: Point { x: x + DYN_PAD, y: y + DYN_PAD },
+            position: Point {
+                x: x + DYN_PAD,
+                y: y + DYN_PAD,
+            },
             color: text,
             size: iced::Pixels(DYN_FONT),
             // Force Advanced shaping: the default `Auto` uses Basic shaping for
@@ -3279,7 +4573,13 @@ impl DynInputCanvas {
         }
         let palette = theme.palette();
         let pw = (self.prompt.len() as f32 * DYN_CHAR_W) + DYN_PAD * 2.0;
-        let rect = canvas::Path::rectangle(pos, Size { width: pw, height: DYN_BOX_H });
+        let rect = canvas::Path::rectangle(
+            pos,
+            Size {
+                width: pw,
+                height: DYN_BOX_H,
+            },
+        );
         frame.fill(&rect, palette.background.strong.color);
         frame.stroke(
             &rect,
@@ -3289,7 +4589,10 @@ impl DynInputCanvas {
         );
         frame.fill_text(canvas::Text {
             content: self.prompt.clone(),
-            position: Point { x: pos.x + DYN_PAD, y: pos.y + DYN_PAD },
+            position: Point {
+                x: pos.x + DYN_PAD,
+                y: pos.y + DYN_PAD,
+            },
             color: palette.background.strong.text,
             size: iced::Pixels(DYN_FONT),
             shaping: iced::advanced::text::Shaping::Advanced,
@@ -3297,12 +4600,7 @@ impl DynInputCanvas {
         });
     }
 
-    fn draw_tracking_hint(
-        &self,
-        frame: &mut canvas::Frame,
-        pos: Point,
-        theme: &Theme,
-    ) {
+    fn draw_tracking_hint(&self, frame: &mut canvas::Frame, pos: Point, theme: &Theme) {
         let Some(text) = self.tracking_hint.as_deref() else {
             return;
         };
@@ -3393,7 +4691,10 @@ impl DynInputCanvas {
         while sweep <= -std::f32::consts::PI {
             sweep += std::f32::consts::TAU;
         }
-        let corner = Point { x: cursor.x, y: base.y }; // axis-delta elbow
+        let corner = Point {
+            x: cursor.x,
+            y: base.y,
+        }; // axis-delta elbow
 
         // Perp / PerpDim: perpendicular direction to the reference line, the
         // measured endpoint along it (`end`), and an offset dimension segment
@@ -3404,10 +4705,19 @@ impl DynInputCanvas {
             let (ux, uy) = (ax / al, ay / al); // axis unit (base → ref)
             let (px, py) = (-uy, ux); // perpendicular unit
             let signed = (cursor.x - base.x) * px + (cursor.y - base.y) * py;
-            let end = Point { x: base.x + px * signed, y: base.y + py * signed };
+            let end = Point {
+                x: base.x + px * signed,
+                y: base.y + py * signed,
+            };
             const OFF: f32 = 16.0; // dimension offset, away from the reference
-            let off_base = Point { x: base.x - ux * OFF, y: base.y - uy * OFF };
-            let off_end = Point { x: end.x - ux * OFF, y: end.y - uy * OFF };
+            let off_base = Point {
+                x: base.x - ux * OFF,
+                y: base.y - uy * OFF,
+            };
+            let off_end = Point {
+                x: end.x - ux * OFF,
+                y: end.y - uy * OFF,
+            };
             (end, off_base, off_end)
         });
 
@@ -3488,7 +4798,10 @@ impl DynInputCanvas {
                     // Close the rectangle so both side pairs read as a box.
                     let rest = canvas::Path::new(|p| {
                         p.move_to(base);
-                        p.line_to(Point { x: base.x, y: cursor.y });
+                        p.line_to(Point {
+                            x: base.x,
+                            y: cursor.y,
+                        });
                         p.line_to(cursor);
                     });
                     frame.stroke(&rest, Self::dotted(theme));
@@ -3498,6 +4811,7 @@ impl DynInputCanvas {
         }
 
         // ── Box placement by role ──
+        let mut placed: Vec<iced::Rectangle> = Vec::with_capacity(self.boxes.len());
         for b in &self.boxes {
             let center = b.center.unwrap_or_else(|| match b.role {
                 DynRole::Angle => self.label_screen.unwrap_or_else(|| {
@@ -3530,9 +4844,15 @@ impl DynInputCanvas {
                 {
                     let (end, ob, oe) = perp_info.unwrap();
                     if self.guide == DynGuide::PerpDim {
-                        Point { x: (ob.x + oe.x) * 0.5 + 8.0, y: (ob.y + oe.y) * 0.5 }
+                        Point {
+                            x: (ob.x + oe.x) * 0.5 + 8.0,
+                            y: (ob.y + oe.y) * 0.5,
+                        }
                     } else {
-                        Point { x: (base.x + end.x) * 0.5 + 8.0, y: (base.y + end.y) * 0.5 }
+                        Point {
+                            x: (base.x + end.x) * 0.5 + 8.0,
+                            y: (base.y + end.y) * 0.5,
+                        }
                     }
                 }
                 // Distance / Radius / Diameter and anything else ride the line.
@@ -3540,6 +4860,14 @@ impl DynInputCanvas {
                     x: base.x + dx * len * 0.5 + nx * 16.0,
                     y: base.y + dy * len * 0.5 + ny * 16.0,
                 },
+            });
+            let w = Self::box_width(b);
+            let center = Self::clear_of(center, w, cursor, &placed);
+            placed.push(iced::Rectangle {
+                x: center.x - w * 0.5,
+                y: center.y - DYN_BOX_H * 0.5,
+                width: w,
+                height: DYN_BOX_H,
             });
             Self::draw_box(frame, b, center, bounds, theme);
         }
@@ -3558,14 +4886,7 @@ impl DynInputCanvas {
                 hy = (self.cursor_screen.y - DYN_BOX_H - 4.0).max(0.0);
             }
 
-            self.draw_tracking_hint(
-                frame,
-                Point {
-                    x: hx,
-                    y: hy,
-                },
-                theme,
-            );
+            self.draw_tracking_hint(frame, Point { x: hx, y: hy }, theme);
         }
     }
 
@@ -3586,8 +4907,7 @@ impl DynInputCanvas {
             .iter()
             .map(|t| (t.len() as f32 * DYN_CHAR_W) + DYN_PAD * 2.0)
             .collect();
-        let total_w: f32 =
-            widths.iter().sum::<f32>() + DYN_GAP * (self.boxes.len() as f32 - 1.0);
+        let total_w: f32 = widths.iter().sum::<f32>() + DYN_GAP * (self.boxes.len() as f32 - 1.0);
 
         // Offset the block off the crosshair by the same gap horizontally and
         // vertically; the prompt sits a gap below the horizontal axis and the
@@ -3621,8 +4941,13 @@ impl DynInputCanvas {
                     continue;
                 }
             }
-            let rect =
-                canvas::Path::rectangle(Point { x, y: by }, Size { width: w, height: DYN_BOX_H });
+            let rect = canvas::Path::rectangle(
+                Point { x, y: by },
+                Size {
+                    width: w,
+                    height: DYN_BOX_H,
+                },
+            );
             let (fill, border, text) = Self::box_colors(b, theme);
             frame.fill(&rect, fill);
             frame.stroke(
@@ -3633,7 +4958,10 @@ impl DynInputCanvas {
             );
             frame.fill_text(canvas::Text {
                 content: texts[i].clone(),
-                position: Point { x: x + DYN_PAD, y: by + DYN_PAD },
+                position: Point {
+                    x: x + DYN_PAD,
+                    y: by + DYN_PAD,
+                },
                 color: text,
                 size: iced::Pixels(DYN_FONT),
                 shaping: iced::advanced::text::Shaping::Advanced,
@@ -3650,14 +4978,7 @@ impl DynInputCanvas {
                 hy = (py - DYN_BOX_H - 3.0).max(0.0);
             }
 
-            self.draw_tracking_hint(
-                frame,
-                Point {
-                    x: bx,
-                    y: hy,
-                },
-                theme,
-            );
+            self.draw_tracking_hint(frame, Point { x: bx, y: hy }, theme);
         }
     }
 }
@@ -3701,14 +5022,7 @@ impl canvas::Program<Message> for DynInputCanvas {
                 if self.tracking_hint.is_some() {
                     let hint_y = py + DYN_BOX_H + 3.0;
 
-                    self.draw_tracking_hint(
-                        &mut frame,
-                        Point {
-                            x: px,
-                            y: hint_y,
-                        },
-                        theme,
-                    );
+                    self.draw_tracking_hint(&mut frame, Point { x: px, y: hint_y }, theme);
                 }
             }
             return vec![frame.into_geometry()];
@@ -3725,10 +5039,142 @@ impl canvas::Program<Message> for DynInputCanvas {
 
 #[cfg(test)]
 mod clip_tests {
+    // Shared eye-plane projection shared by grid_segments and draw_axes (#46).
+    // Behind-eye points must project to None, never to a mirrored finite point.
+    #[test]
+    fn project_point_rejects_behind_eye() {
+        use glam::camera::rh::proj::directx;
+        let eye = glam::DVec3::new(0.0, 0.0, 500.0);
+        let view_rot: glam::Mat4 =
+            directx::perspective(60_f32.to_radians(), 800.0 / 600.0, 0.5, 5000.0);
+        let bounds = iced::Rectangle {
+            x: 0.0,
+            y: 0.0,
+            width: 800.0,
+            height: 600.0,
+        };
+        assert!(
+            project_point(view_rot, eye, bounds, glam::DVec3::new(0.0, 0.0, 600.0)).is_none(),
+            "behind-eye must be rejected"
+        );
+        assert!(
+            project_point(view_rot, eye, bounds, glam::DVec3::new(0.0, 0.0, 400.0)).is_some(),
+            "in-front must project"
+        );
+    }
+
+    fn axes_cam() -> (glam::Mat4, glam::DVec3) {
+        use glam::camera::rh::proj::directx;
+        let eye = glam::DVec3::new(0.0, 0.0, 500.0);
+        let view_rot: glam::Mat4 =
+            directx::perspective(60_f32.to_radians(), 800.0 / 600.0, 0.5, 5000.0);
+        (view_rot, eye)
+    }
+
+    /// draw_axes-level contract without a renderer: all three axes present up
+    /// front, each clipped inside the frame.
+    #[test]
+    fn axes_segments_draws_three_when_in_front() {
+        let (view_rot, eye) = axes_cam();
+        let segs = super::axes_segments(
+            view_rot,
+            eye,
+            b(),
+            100.0,
+            glam::DVec3::ZERO,
+            (Vec3::X, Vec3::Y, Vec3::Z),
+        );
+        assert_eq!(segs.len(), 3, "all three axes must survive");
+        for (a, c) in &segs {
+            for p in [a, c] {
+                assert!(
+                    p.x >= -16.0 && p.x <= 816.0 && p.y >= -16.0 && p.y <= 616.0,
+                    "segment must be frame-clipped, got ({}, {})",
+                    p.x,
+                    p.y
+                );
+            }
+        }
+    }
+
+    /// Straddling axis (origin in front, far tip behind the eye) is skipped
+    /// whole — screen-space clipping of a wrapped segment would be garbage.
+    #[test]
+    fn axes_segments_skips_straddling_axis() {
+        let (view_rot, eye) = axes_cam();
+        // Origin 100 in front; Z extent 200 puts the +Z tip 100 behind.
+        let segs = super::axes_segments(
+            view_rot,
+            eye,
+            b(),
+            200.0,
+            glam::DVec3::new(0.0, 0.0, 400.0),
+            (Vec3::X, Vec3::Y, Vec3::Z),
+        );
+        assert_eq!(segs.len(), 2, "straddling Z axis must be skipped, X/Y kept");
+    }
+
+    /// Fully behind-eye origin draws nothing at all.
+    #[test]
+    fn axes_segments_empty_when_behind_eye() {
+        let (view_rot, eye) = axes_cam();
+        let segs = super::axes_segments(
+            view_rot,
+            eye,
+            b(),
+            100.0,
+            glam::DVec3::new(0.0, 0.0, 600.0),
+            (Vec3::X, Vec3::Y, Vec3::Z),
+        );
+        assert!(segs.is_empty(), "nothing projectable, nothing drawn");
+    }
+
+    /// Legacy canvas placement: a pane origin offset shifts every segment by
+    /// exactly that offset (pins the historical draw_axes mapping).
+    #[test]
+    fn axes_segments_preserves_pane_offset() {
+        let (view_rot, eye) = axes_cam();
+        let plain = super::axes_segments(
+            view_rot,
+            eye,
+            b(),
+            100.0,
+            glam::DVec3::ZERO,
+            (Vec3::X, Vec3::Y, Vec3::Z),
+        );
+        let shifted_bounds = iced::Rectangle {
+            x: 100.0,
+            y: 50.0,
+            width: 800.0,
+            height: 600.0,
+        };
+        let shifted = super::axes_segments(
+            view_rot,
+            eye,
+            shifted_bounds,
+            100.0,
+            glam::DVec3::ZERO,
+            (Vec3::X, Vec3::Y, Vec3::Z),
+        );
+        assert_eq!(plain.len(), shifted.len());
+        for ((a0, c0), (a1, c1)) in plain.iter().zip(shifted.iter()) {
+            for (p0, p1, dx, dy) in [(a0, a1, 100.0, 50.0), (c0, c1, 100.0, 50.0)] {
+                assert!(
+                    (p1.x - p0.x - dx).abs() < 1e-3 && (p1.y - p0.y - dy).abs() < 1e-3,
+                    "pane offset must carry through exactly"
+                );
+            }
+        }
+    }
     use super::*;
 
     fn b() -> iced::Rectangle {
-        iced::Rectangle { x: 0.0, y: 0.0, width: 800.0, height: 600.0 }
+        iced::Rectangle {
+            x: 0.0,
+            y: 0.0,
+            width: 800.0,
+            height: 600.0,
+        }
     }
 
     /// The #406 shape: a guide from a point projected millions of pixels away,
@@ -3761,48 +5207,78 @@ mod clip_tests {
     fn keeps_a_fully_visible_segment_and_drops_a_missing_one() {
         let (a, c) = clip_seg(Point::new(10.0, 10.0), Point::new(700.0, 500.0), b()).unwrap();
         assert!((a.x - 10.0).abs() < 0.01 && (c.x - 700.0).abs() < 0.01);
-        assert!(clip_seg(Point::new(-9000.0, -9000.0), Point::new(-8000.0, -8000.0), b()).is_none());
+        assert!(clip_seg(
+            Point::new(-9000.0, -9000.0),
+            Point::new(-8000.0, -8000.0),
+            b()
+        )
+        .is_none());
     }
 }
 
 #[cfg(test)]
 mod constraint_glyph_tests {
     use super::*;
+    use crate::scene::parametric_constraints::{constraint_glyph_box, constraint_glyph_offsets};
+    use std::sync::Arc;
+
+    /// Build cache-shaped entries the same way
+    /// `Scene::cached_glyph_placements` does: one offsets pass, then size +
+    /// box per glyph. Keeps this test on the single source of truth instead
+    /// of a local layout copy.
+    fn entries_for(glyphs: &[(Point, [f32; 2], &str)]) -> Arc<[GlyphEntry]> {
+        let offsets = constraint_glyph_offsets(glyphs);
+        Arc::from(
+            glyphs
+                .iter()
+                .zip(offsets)
+                .enumerate()
+                .map(|(i, ((anchor, outward, label), tangent_dx))| {
+                    let size = crate::scene::parametric_constraints::constraint_glyph_size(label);
+                    let (top_left, _) = constraint_glyph_box(*anchor, *outward, label, tangent_dx);
+                    GlyphEntry {
+                        id: i as u32,
+                        anchor: *anchor,
+                        outward: *outward,
+                        label: Arc::from(*label),
+                        conflicting: false,
+                        hover: Arc::from([]),
+                        size,
+                        tangent_dx,
+                        top_left,
+                    }
+                })
+                .collect::<Vec<_>>(),
+        )
+    }
 
     #[test]
     fn enlarged_glyph_box_stays_clear_of_its_geometry_anchor() {
         let anchor = Point::new(100.0, 80.0);
         let (right, size) = constraint_glyph_box(anchor, [1.0, 0.0], "⊥", 0.0);
         assert_eq!(size.height, 22.0);
-        assert!((right.x - anchor.x - CONSTRAINT_GLYPH_GAP).abs() < 1e-6);
+        assert!((right.x - anchor.x - 6.0).abs() < 1e-6);
 
         let (above, size) = constraint_glyph_box(anchor, [0.0, -1.0], "↔ 25.00", 0.0);
-        assert!((anchor.y - (above.y + size.height) - CONSTRAINT_GLYPH_GAP).abs() < 1e-6);
+        assert!((anchor.y - (above.y + size.height) - 6.0).abs() < 1e-6);
     }
 
     #[test]
     fn coincident_glyphs_are_arranged_side_by_side() {
         let anchor = Point::new(100.0, 80.0);
-        let glyphs = vec![
-            (anchor, [0.0, -1.0], "—".to_string(), false),
-            (anchor, [0.0, -1.0], "∥".to_string(), false),
-        ];
-        let offsets = constraint_glyph_offsets(&glyphs);
-        let (left, left_size) =
-            constraint_glyph_box(anchor, glyphs[0].1, &glyphs[0].2, offsets[0]);
-        let (right, right_size) =
-            constraint_glyph_box(anchor, glyphs[1].1, &glyphs[1].2, offsets[1]);
+        let entries = entries_for(&[(anchor, [0.0, -1.0], "—"), (anchor, [0.0, -1.0], "∥")]);
+        let (left, left_size) = (entries[0].top_left, entries[0].size);
+        let (right, right_size) = (entries[1].top_left, entries[1].size);
 
         assert!((left.y - right.y).abs() < 1e-6);
-        assert!(
-            (right.x - (left.x + left_size.width) - CONSTRAINT_GLYPH_ROW_GAP).abs() < 1e-4
-        );
-        assert!(
-            (anchor.y - (left.y + right_size.height) - CONSTRAINT_GLYPH_GAP).abs() < 1e-6
-        );
+        assert!((right.x - (left.x + left_size.width) - 4.0).abs() < 1e-4);
+        assert!((anchor.y - (left.y + right_size.height) - 6.0).abs() < 1e-6);
 
-        let click = Point::new(left.x + left_size.width * 0.5, left.y + left_size.height * 0.5);
-        assert_eq!(constraint_glyph_hit_test(&glyphs, click), Some(0));
+        let click = Point::new(
+            left.x + left_size.width * 0.5,
+            left.y + left_size.height * 0.5,
+        );
+        assert_eq!(glyph_hit_test_entries(&entries, click), Some(0));
     }
 }
 
@@ -3838,7 +5314,12 @@ mod grid_key_tests {
     #[test]
     fn grid_key_matches_identical_params() {
         let grids = vec![baseline_params(), baseline_params()];
-        let bounds = iced::Rectangle { x: 0.0, y: 0.0, width: 1920.0, height: 720.0 };
+        let bounds = iced::Rectangle {
+            x: 0.0,
+            y: 0.0,
+            width: 1920.0,
+            height: 720.0,
+        };
         let a = GridKey::from_grids(&grids, bounds, GridStyle::default());
         let b = GridKey::from_grids(&grids, bounds, GridStyle::default());
         assert_eq!(a, b);
@@ -3857,7 +5338,8 @@ mod grid_key_tests {
             height: 720.0,
         };
         let baseline_grids = vec![baseline_params()];
-        let baseline_key = GridKey::from_grids(&baseline_grids, baseline_bounds, GridStyle::default());
+        let baseline_key =
+            GridKey::from_grids(&baseline_grids, baseline_bounds, GridStyle::default());
 
         // view_rot: small extra rotation
         let mut p = baseline_params();
@@ -3968,7 +5450,12 @@ mod grid_key_tests {
     /// when any pane is dirty.
     #[test]
     fn grid_key_invalidates_when_any_pane_changes() {
-        let bounds = iced::Rectangle { x: 0.0, y: 0.0, width: 1920.0, height: 720.0 };
+        let bounds = iced::Rectangle {
+            x: 0.0,
+            y: 0.0,
+            width: 1920.0,
+            height: 720.0,
+        };
         let pane1 = baseline_params();
         let pane2 = baseline_params();
         let both = vec![pane1.clone(), pane2.clone()];
@@ -3988,7 +5475,12 @@ mod grid_key_tests {
     #[test]
     fn should_reuse_empty() {
         let grids = vec![baseline_params()];
-        let bounds = iced::Rectangle { x: 0.0, y: 0.0, width: 1920.0, height: 720.0 };
+        let bounds = iced::Rectangle {
+            x: 0.0,
+            y: 0.0,
+            width: 1920.0,
+            height: 720.0,
+        };
         let key = GridKey::from_grids(&grids, bounds, GridStyle::default());
         assert!(!should_reuse(None, &key));
     }
@@ -3997,7 +5489,12 @@ mod grid_key_tests {
     #[test]
     fn should_reuse_equal() {
         let grids = vec![baseline_params()];
-        let bounds = iced::Rectangle { x: 0.0, y: 0.0, width: 1920.0, height: 720.0 };
+        let bounds = iced::Rectangle {
+            x: 0.0,
+            y: 0.0,
+            width: 1920.0,
+            height: 720.0,
+        };
         let key = GridKey::from_grids(&grids, bounds, GridStyle::default());
         assert!(should_reuse(Some(&key), &key));
     }
@@ -4010,7 +5507,12 @@ mod grid_key_tests {
         let mut pane2 = baseline_params();
         pane2.step_x = 160.0;
         let grids_b = vec![pane2];
-        let bounds = iced::Rectangle { x: 0.0, y: 0.0, width: 1920.0, height: 720.0 };
+        let bounds = iced::Rectangle {
+            x: 0.0,
+            y: 0.0,
+            width: 1920.0,
+            height: 720.0,
+        };
         let old = GridKey::from_grids(&grids_a, bounds, GridStyle::default());
         let new = GridKey::from_grids(&grids_b, bounds, GridStyle::default());
         assert!(!should_reuse(Some(&old), &new));
@@ -4020,7 +5522,12 @@ mod grid_key_tests {
     /// ignored the DSettings grid spacing). Fixed mode returns the base verbatim.
     #[test]
     fn grid_steps_follow_base_and_adaptive_flag() {
-        let bounds = iced::Rectangle { x: 0.0, y: 0.0, width: 1280.0, height: 720.0 };
+        let bounds = iced::Rectangle {
+            x: 0.0,
+            y: 0.0,
+            width: 1280.0,
+            height: 720.0,
+        };
         // Far zoom: 10-unit base must scale up to stay readable.
         let (sx, sy) = compute_grid_steps(10.0, 10.0, 5000.0, 0.6, bounds, true);
         assert!(sx >= 10.0 && sy >= 10.0);
@@ -4029,16 +5536,27 @@ mod grid_key_tests {
         let (nx, ny) = compute_grid_steps(10.0, 2.0, 5000.0, 0.6, bounds, true);
         assert!(nx >= 10.0 && ny >= 2.0);
         // Fixed mode returns exactly what was typed.
-        assert_eq!(compute_grid_steps(7.5, 2.5, 5000.0, 0.6, bounds, false), (7.5, 2.5));
+        assert_eq!(
+            compute_grid_steps(7.5, 2.5, 5000.0, 0.6, bounds, false),
+            (7.5, 2.5)
+        );
         // Degenerate input sanitizes to 1.0 instead of emptying the grid.
-        assert_eq!(compute_grid_steps(0.0, -3.0, 5000.0, 0.6, bounds, false), (1.0, 1.0));
+        assert_eq!(
+            compute_grid_steps(0.0, -3.0, 5000.0, 0.6, bounds, false),
+            (1.0, 1.0)
+        );
     }
 
     /// Overflow fallback keeps each axis on its own base: an extreme zoom-out
     /// that pushes the 5x growth past 1e9 must return (bx, by), never (bx, bx).
     #[test]
     fn grid_steps_overflow_falls_back_per_axis() {
-        let bounds = iced::Rectangle { x: 0.0, y: 0.0, width: 1280.0, height: 720.0 };
+        let bounds = iced::Rectangle {
+            x: 0.0,
+            y: 0.0,
+            width: 1280.0,
+            height: 720.0,
+        };
         assert_eq!(
             compute_grid_steps(10.0, 2.0, 1e15, 0.6, bounds, true),
             (10.0, 2.0)
@@ -4057,10 +5575,22 @@ mod grid_key_tests {
             Vec3::Y,
         );
         let eye = glam::DVec3::new(0.0, 0.0, 500.0);
-        let bounds = iced::Rectangle { x: 0.0, y: 0.0, width: 800.0, height: 600.0 };
+        let bounds = iced::Rectangle {
+            x: 0.0,
+            y: 0.0,
+            width: 800.0,
+            height: 600.0,
+        };
         let g = grid_segments(
-            view_rot, eye, bounds, 10.0, 2.0, 5,
-            glam::DVec3::ZERO, (Vec3::X, Vec3::Y, Vec3::Z), None,
+            view_rot,
+            eye,
+            bounds,
+            10.0,
+            2.0,
+            5,
+            glam::DVec3::ZERO,
+            (Vec3::X, Vec3::Y, Vec3::Z),
+            None,
         );
         assert!(!g.segments.is_empty(), "grid lines expected");
     }
@@ -4077,17 +5607,36 @@ mod grid_key_tests {
             Vec3::Y,
         );
         let eye = glam::DVec3::new(0.0, 0.0, 500.0);
-        let bounds = iced::Rectangle { x: 0.0, y: 0.0, width: 800.0, height: 600.0 };
+        let bounds = iced::Rectangle {
+            x: 0.0,
+            y: 0.0,
+            width: 800.0,
+            height: 600.0,
+        };
         let g = grid_segments(
-            view_rot, eye, bounds, 10.0, 10.0, 5,
-            glam::DVec3::ZERO, (Vec3::X, Vec3::Y, Vec3::Z), None,
+            view_rot,
+            eye,
+            bounds,
+            10.0,
+            10.0,
+            5,
+            glam::DVec3::ZERO,
+            (Vec3::X, Vec3::Y, Vec3::Z),
+            None,
         );
         assert!(!g.segments.is_empty(), "minor lines expected");
         assert!(!g.major_segments.is_empty(), "major lines expected");
         // major_every = 1 disables the split: everything is minor.
         let flat = grid_segments(
-            view_rot, eye, bounds, 10.0, 10.0, 1,
-            glam::DVec3::ZERO, (Vec3::X, Vec3::Y, Vec3::Z), None,
+            view_rot,
+            eye,
+            bounds,
+            10.0,
+            10.0,
+            1,
+            glam::DVec3::ZERO,
+            (Vec3::X, Vec3::Y, Vec3::Z),
+            None,
         );
         assert!(flat.major_segments.is_empty());
         assert!(!flat.segments.is_empty());
@@ -4115,7 +5664,12 @@ mod grid_canvas_state_tests {
     fn stored_key_is_recognized_by_should_reuse() {
         let view_rot = Mat4::from_rotation_x(0.15) * Mat4::from_rotation_y(0.05);
         let eye = glam::DVec3::new(4.0, 3.5, 9.0);
-        let bounds = iced::Rectangle { x: 0.0, y: 0.0, width: 1280.0, height: 720.0 };
+        let bounds = iced::Rectangle {
+            x: 0.0,
+            y: 0.0,
+            width: 1280.0,
+            height: 720.0,
+        };
         let grid_origin = glam::DVec3::new(0.0, 0.0, 0.0);
         let grid_axes = (Vec3::X, Vec3::Y, Vec3::Z);
         let limits: Option<(glam::DVec2, glam::DVec2)> = None;
@@ -4140,9 +5694,181 @@ mod grid_canvas_state_tests {
         assert!(should_reuse(state.key.borrow().as_ref(), &key));
 
         // Different bounds on the same params ⇒ different key, do not reuse.
-        let other_bounds = iced::Rectangle { x: 0.0, y: 0.0, width: 640.0, height: 480.0 };
+        let other_bounds = iced::Rectangle {
+            x: 0.0,
+            y: 0.0,
+            width: 640.0,
+            height: 480.0,
+        };
         let other_key = GridKey::from_grids(&[params], other_bounds, GridStyle::default());
         assert!(!should_reuse(state.key.borrow().as_ref(), &other_key));
+    }
+}
+
+#[cfg(test)]
+mod selection_canvas_state_tests {
+    use super::*;
+
+    /// A fresh `SelectionCanvasState` must hold no cached key on any layer —
+    /// the first draw of a session always misses, so no layer can replay
+    /// geometry it never built.
+    #[test]
+    fn default_state_has_no_cached_keys() {
+        let state = SelectionCanvasState::default();
+        assert!(state.dividers.key.borrow().is_none());
+        assert!(state.grips.key.borrow().is_none());
+        assert!(state.authoring.key.borrow().is_none());
+        assert!(state.glyphs.key.borrow().is_none());
+        assert!(state.tracking_marks.key.borrow().is_none());
+    }
+
+    /// `should_reuse_layer` is the whole hit/miss decision: no stored key
+    /// ⇒ miss, equal stored key ⇒ hit, changed stored key ⇒ miss.
+    #[test]
+    fn should_reuse_layer_decides_on_key_equality() {
+        let bounds = iced::Rectangle::with_size(Size::new(1280.0, 720.0));
+        let palette = *Theme::Dark.palette();
+        let key = TrackingMarksLayerKey {
+            bounds,
+            palette,
+            ost_points: vec![OstTrackPoint {
+                screen: Point::new(10.0, 20.0),
+            }],
+        };
+        assert!(!should_reuse_layer(None::<&TrackingMarksLayerKey>, &key));
+        assert!(should_reuse_layer(Some(&key), &key));
+        let moved = TrackingMarksLayerKey {
+            ost_points: vec![OstTrackPoint {
+                screen: Point::new(11.0, 20.0),
+            }],
+            ..key.clone()
+        };
+        assert!(!should_reuse_layer(Some(&key), &moved));
+    }
+
+    fn glyph_entry(id: u32, label: &str, x: f32) -> GlyphEntry {
+        GlyphEntry {
+            id,
+            anchor: Point::new(x, 30.0),
+            outward: [1.0, 0.0],
+            label: Arc::from(label),
+            conflicting: false,
+            hover: Arc::from(vec![Point::new(x, 30.0)]),
+            size: Size::new(28.0, 22.0),
+            tangent_dx: 14.0,
+            top_left: Point::new(x - 14.0, 19.0),
+        }
+    }
+
+    /// The glyph layer's key must reuse across equal-but-separately-allocated
+    /// memoised slices (the view rebuilds its Arcs on edits that leave every
+    /// glyph in place) and invalidate whenever any key input changes.
+    #[test]
+    fn glyph_layer_key_reuses_equal_entries_and_invalidates_on_changes() {
+        let bounds = iced::Rectangle::with_size(Size::new(800.0, 600.0));
+        let palette = *Theme::Dark.palette();
+        let selected = Arc::from(vec![true, false]);
+        let glyphs = Arc::from(vec![glyph_entry(1, "H", 10.0), glyph_entry(2, "=", 40.0)]);
+        let key = GlyphLayerKey::new(bounds, &glyphs, &selected, palette);
+
+        // Separate Arc allocations with identical contents ⇒ reuse.
+        let glyphs2 = Arc::from(vec![glyph_entry(1, "H", 10.0), glyph_entry(2, "=", 40.0)]);
+        let selected2 = Arc::from(vec![true, false]);
+        assert!(!Arc::ptr_eq(&glyphs, &glyphs2));
+        assert_eq!(
+            key,
+            GlyphLayerKey::new(bounds, &glyphs2, &selected2, palette)
+        );
+
+        // Changed label ⇒ rebuild.
+        let relabelled = Arc::from(vec![glyph_entry(1, "V", 10.0), glyph_entry(2, "=", 40.0)]);
+        assert_ne!(
+            key,
+            GlyphLayerKey::new(bounds, &relabelled, &selected, palette)
+        );
+
+        // Flipped selection ring ⇒ rebuild.
+        let flipped = Arc::from(vec![false, true]);
+        assert_ne!(key, GlyphLayerKey::new(bounds, &glyphs, &flipped, palette));
+
+        // Theme change ⇒ rebuild (the palette feeds pill colors).
+        assert_ne!(
+            key,
+            GlyphLayerKey::new(bounds, &glyphs, &selected, *Theme::Light.palette())
+        );
+
+        // Widget resize ⇒ rebuild (clip bounds changed).
+        let resized = iced::Rectangle::with_size(Size::new(640.0, 480.0));
+        assert_ne!(
+            key,
+            GlyphLayerKey::new(resized, &glyphs, &selected, palette)
+        );
+
+        // A NaN anchor must not pin the layer to a permanent miss: bit-equal
+        // entries compare equal even though the float itself never does.
+        let nan_a = Arc::from(vec![glyph_entry(9, "F", f32::NAN)]);
+        let nan_b = Arc::from(vec![glyph_entry(9, "F", f32::NAN)]);
+        let nan_selected = Arc::from(vec![true]);
+        assert_eq!(
+            GlyphLayerKey::new(bounds, &nan_a, &nan_selected, palette),
+            GlyphLayerKey::new(bounds, &nan_b, &nan_selected, palette),
+        );
+    }
+
+    /// The grips layer key must invalidate when a marker's interaction flag
+    /// flips — the hover fill is baked into the cached geometry.
+    #[test]
+    fn grip_layer_key_invalidates_on_hover_flip() {
+        let make_key = |hovered: bool| GripLayerKey {
+            bounds: iced::Rectangle::with_size(Size::new(1024.0, 768.0)),
+            palette: *Theme::Dark.palette(),
+            grips: vec![GripMarker {
+                pos: Point::new(12.0, 34.0),
+                shape: GripShape::Square,
+                is_hot: false,
+                is_hovered: hovered,
+                dir: None,
+                is_plugin: false,
+                is_authoring: false,
+                is_dynamic: false,
+            }],
+            control_polygon: None,
+            grip_clip: None,
+            selection_visual: SelectionVisualOptions::default(),
+            authoring_style: AuthoringStyleKey {
+                action: Color::WHITE,
+                parameter: Color::WHITE,
+                grip: Color::WHITE,
+                grip_size: 5.0,
+                text_size: 12.0,
+                font: String::new(),
+                horizontal: true,
+            },
+            feedback_clip: iced::Rectangle::default(),
+            feedback_dependencies: Vec::new(),
+            feedback_markers: Vec::new(),
+        };
+        assert_eq!(make_key(false), make_key(false));
+        assert_ne!(make_key(false), make_key(true));
+    }
+
+    /// The tracking-marks layer must rebuild when a new OST point lands.
+    #[test]
+    fn tracking_marks_layer_key_invalidates_on_new_point() {
+        let bounds = iced::Rectangle::with_size(Size::new(800.0, 600.0));
+        let palette = *Theme::Dark.palette();
+        let key = TrackingMarksLayerKey {
+            bounds,
+            palette,
+            ost_points: vec![OstTrackPoint {
+                screen: Point::new(5.0, 5.0),
+            }],
+        };
+        let mut grown = key.clone();
+        grown.ost_points.push(OstTrackPoint {
+            screen: Point::new(6.0, 6.0),
+        });
+        assert_ne!(key, grown);
     }
 }
 
@@ -4186,8 +5912,16 @@ mod selection_visual_color_tests {
             let (c, w) = theme_selection_colors(theme);
             assert_eq!(c.a, 1.0, "Theme {:?} crossing alpha should be 1.0", theme);
             assert_eq!(w.a, 1.0, "Theme {:?} window alpha should be 1.0", theme);
-            assert!(c.g > 0.0, "Theme {:?} crossing should have green component", theme);
-            assert!(w.b > 0.0 || w.g > 0.0, "Theme {:?} window should have blue/cyan component", theme);
+            assert!(
+                c.g > 0.0,
+                "Theme {:?} crossing should have green component",
+                theme
+            );
+            assert!(
+                w.b > 0.0 || w.g > 0.0,
+                "Theme {:?} window should have blue/cyan component",
+                theme
+            );
         }
     }
 

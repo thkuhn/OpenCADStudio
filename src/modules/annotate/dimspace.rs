@@ -5,7 +5,7 @@
 //   2. Select the other dimensions to space (click each, Enter to finish)
 //   3. Enter a non-negative spacing value, or choose Auto
 
-use acadrust::{EntityType, Handle};
+use codec::{EntityType, Handle};
 use glam::DVec3;
 
 use crate::command::{CadCommand, CmdOption, CmdResult, InputKind, SelectionEntity};
@@ -57,8 +57,7 @@ impl CadCommand for DimSpaceCommand {
             )
             .into_owned(),
             Step::EnterSpacing { .. } => {
-                t!("DIMSPACE  Specify distance between dimensions or [Auto] <Auto>:")
-                    .into_owned()
+                t!("DIMSPACE  Specify distance between dimensions or [Auto] <Auto>:").into_owned()
             }
         }
     }
@@ -105,10 +104,10 @@ impl CadCommand for DimSpaceCommand {
         for selected in entities {
             if selected.handle != *base
                 && matches!(
-                    selected.entity,
-                    EntityType::Dimension(
-                        acadrust::entities::Dimension::Linear(_)
-                            | acadrust::entities::Dimension::Aligned(_)
+                    crate::entities::dimension::as_dimension(&selected.entity),
+                    Some(
+                        codec::entities::Dimension::Linear(_)
+                            | codec::entities::Dimension::Aligned(_)
                     )
                 )
                 && !others.contains(&selected.handle)
@@ -125,11 +124,14 @@ impl CadCommand for DimSpaceCommand {
         match &mut self.step {
             Step::PickBase => {
                 if !matches!(
-                    self.picked_entity.take(),
-                    Some(EntityType::Dimension(
-                        acadrust::entities::Dimension::Linear(_)
-                            | acadrust::entities::Dimension::Aligned(_)
-                    ))
+                    self.picked_entity
+                        .take()
+                        .as_ref()
+                        .and_then(crate::entities::dimension::as_dimension),
+                    Some(
+                        codec::entities::Dimension::Linear(_)
+                            | codec::entities::Dimension::Aligned(_)
+                    )
                 ) {
                     return CmdResult::ReportError(
                         t!("DIMSPACE: select a linear or aligned dimension.").into_owned(),
@@ -193,14 +195,14 @@ impl CadCommand for DimSpaceCommand {
 
     fn on_enter(&mut self) -> CmdResult {
         if matches!(self.step, Step::EnterSpacing { .. }) {
-            return self
-                .on_text_input("AUTO")
-                .unwrap_or(CmdResult::Cancel);
+            return self.on_text_input("AUTO").unwrap_or(CmdResult::Cancel);
         }
         CmdResult::Cancel
     }
 }
-inventory::submit!(crate::command::CommandRegistration { names: &["DIMSPACE", "DSPACE"] });
+inventory::submit!(crate::command::CommandRegistration {
+    names: &["DIMSPACE", "DSPACE"]
+});
 
 #[cfg(test)]
 mod tests {

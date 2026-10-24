@@ -1,6 +1,6 @@
-use acadrust::entities::{Dimension, DimensionDiameter};
-use acadrust::types::{Handle, Vector3};
-use acadrust::EntityType;
+use codec::entities::{Dimension, DimensionDiameter};
+use codec::types::{Handle, Vector3};
+use codec::EntityType;
 use glam::{DVec3, Vec3};
 
 use crate::command::{
@@ -83,13 +83,31 @@ impl DiameterDimensionCommand {
         if let Some(angle) = self.text_angle {
             dim.base.text_rotation = angle;
         }
-        plane.place_entity(EntityType::Dimension(Dimension::Diameter(dim)))
+        plane.place_entity(EntityType::Dimension(Box::new(Dimension::Diameter(dim))))
     }
 }
 
+/// A diameter dimension for a dimensional constraint: the dimension line
+/// runs through the centre towards `location`, and the style places the
+/// text.
+pub(crate) fn diameter_constraint_entity(
+    center: DVec3,
+    radius: f64,
+    location: DVec3,
+    text: Option<String>,
+) -> Option<EntityType> {
+    let direction = super::radius_dim::radial_direction(center, location)?;
+    let chord = center + direction * radius;
+    let far_chord = center - direction * radius;
+    let mut dim = DimensionDiameter::new(v3(chord), v3(far_chord));
+    dim.leader_length = chord.distance(location).max(radius * 0.5);
+    dim.base.actual_measurement = dim.measurement();
+    crate::entities::dimension::set_dimension_text_override(&mut dim.base, text);
+    Some(EntityType::Dimension(Box::new(Dimension::Diameter(dim))))
+}
+
 impl CadCommand for DiameterDimensionCommand {
-    fn set_working_plane(&mut self, _plane: WorkingPlane) {
-    }
+    fn set_working_plane(&mut self, _plane: WorkingPlane) {}
 
     fn name(&self) -> &'static str {
         "DIMDIAMETER"
@@ -97,19 +115,18 @@ impl CadCommand for DiameterDimensionCommand {
 
     fn prompt(&self) -> String {
         if self.awaiting_text {
-            return t!("DIMDIAMETER  Enter dimension text (blank = measured value):")
-                .into_owned();
+            return t!("DIMDIAMETER  Enter dimension text (blank = measured value):").into_owned();
         }
         if self.awaiting_angle {
             return t!("DIMDIAMETER  Specify text angle (degrees):").into_owned();
         }
         match self.step {
             Step::SelectObject => {
-                t!("DIMDIAMETER  Select arc, circle, or polyline arc:").into_owned()
+                t!("DIMDIAMETER  Select arc, circle, polyline arc, or circular region edge:")
+                    .into_owned()
             }
             Step::DimLine(_) => {
-                t!("DIMDIAMETER  Specify dimension line location  [Mtext/Text/Angle]:")
-                    .into_owned()
+                t!("DIMDIAMETER  Specify dimension line location  [Mtext/Text/Angle]:").into_owned()
             }
         }
     }
@@ -117,14 +134,12 @@ impl CadCommand for DiameterDimensionCommand {
     fn on_point(&mut self, pt: DVec3) -> CmdResult {
         match self.step {
             Step::SelectObject => CmdResult::NeedPoint,
-            Step::DimLine(source) => {
-                CmdResult::CommitDimension {
-                    entity: self.build_dimension(source, pt),
-                    association: DimensionAssociationInput::Infer(self.source_handle),
-                    preserve_base_style: false,
-                    continue_command: false,
-                }
-            }
+            Step::DimLine(source) => CmdResult::CommitDimension {
+                entity: self.build_dimension(source, pt),
+                association: DimensionAssociationInput::Infer(self.source_handle),
+                preserve_base_style: false,
+                continue_command: false,
+            },
         }
     }
 
@@ -291,7 +306,9 @@ impl CadCommand for DiameterDimensionCommand {
         let Step::DimLine(source) = self.step else {
             return None;
         };
-        Some(vec![DimensionPreview::current_style(self.build_dimension(source, cursor))])
+        Some(vec![DimensionPreview::current_style(
+            self.build_dimension(source, cursor),
+        )])
     }
 }
 
@@ -313,6 +330,7 @@ fn preview_line(far_chord: Vec3, chord: Vec3, text: Vec3) -> WireModel {
         world_width: 0.0,
         depth_override: None,
         display_visible: true,
+        snap_only: false,
         plot_visible: true,
         fill_is_3d: false,
         fill_is_2d_solid: false,
@@ -344,7 +362,11 @@ fn preview_line(far_chord: Vec3, chord: Vec3, text: Vec3) -> WireModel {
         plinegen: true,
         fill_tris: vec![],
         fill_tris_low: Vec::new(),
+
+        ..Default::default()
     }
 }
 
-inventory::submit!(crate::command::CommandRegistration { names: &["DIMDIAMETER"] });
+inventory::submit!(crate::command::CommandRegistration {
+    names: &["DIMDIAMETER"]
+});
