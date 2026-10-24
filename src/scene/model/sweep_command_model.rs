@@ -6,14 +6,26 @@ use codec::types::Vector3;
 use codec::EntityType;
 use kernel::brep::Body;
 
-use crate::command::{ExtrudeMode, SweepOptions};
 use super::sweep_model::{embedded_path, embedded_revolve_profile};
+use crate::command::{ExtrudeMode, SweepOptions};
 
 /// A 3D polyline profile or path as the reference records it: a wire body.
-fn embedded_sweep_profile(entity: &EntityType) -> Option<(codec::entities::EmbeddedEntity, [f64; 16])> {
+fn embedded_sweep_profile(
+    entity: &EntityType,
+) -> Option<(codec::entities::EmbeddedEntity, [f64; 16])> {
     match entity {
-        EntityType::Region(region) => Some((codec::entities::EmbeddedEntity::Region(region.clone()), glam::DMat4::IDENTITY.to_cols_array())),
-        EntityType::Polyline3D(value) => Some((polyline_wire(value)?, glam::DMat4::IDENTITY.to_cols_array())),
+        // A region as the curve round it, as the reference records it.
+        EntityType::Region(region) => {
+            super::sweep_model::region_boundary_entity(entity).or_else(|| {
+                Some((
+                    codec::entities::EmbeddedEntity::Region(region.clone()),
+                    glam::DMat4::IDENTITY.to_cols_array(),
+                ))
+            })
+        }
+        EntityType::Polyline3D(value) => {
+            Some((polyline_wire(value)?, glam::DMat4::IDENTITY.to_cols_array()))
+        }
         _ => embedded_revolve_profile(entity),
     }
 }
@@ -28,7 +40,9 @@ fn embedded_sweep_path(path: &EntityType) -> Option<codec::entities::EmbeddedEnt
 }
 
 fn polyline_wire(value: &codec::entities::Polyline3D) -> Option<codec::entities::EmbeddedEntity> {
-    let points = value.vertices.iter()
+    let points = value
+        .vertices
+        .iter()
         .map(|vertex| [vertex.position.x, vertex.position.y, vertex.position.z])
         .collect::<Vec<_>>();
     let mut document = codec::entities::acis::SatDocument::new();
@@ -48,7 +62,9 @@ pub fn is_sweep_profile(entity: &EntityType) -> bool {
 
 /// The vertices of a 3D polyline profile that does not lie in one plane.
 pub fn spatial_profile(entity: &EntityType) -> Option<(Vec<[f64; 3]>, bool)> {
-    let EntityType::Polyline3D(_) = entity else { return None };
+    let EntityType::Polyline3D(_) = entity else {
+        return None;
+    };
     let (profile, transform) = embedded_sweep_profile(entity)?;
     kernel::acis::sweep_spatial_profile(&profile, transform)
 }
@@ -59,7 +75,11 @@ pub fn spatial_profile(entity: &EntityType) -> Option<(Vec<[f64; 3]>, bool)> {
 /// refuses it: along a path with a corner (85036), and when the profile seen
 /// from above crosses itself (85021); a side that is a point when seen from
 /// above cannot be swept at all (`None` code).
-pub fn spatial_sweep_record(profile: &EntityType, path: &EntityType, options: SweepOptions) -> Result<SolidHistorySweep, Option<u32>> {
+pub fn spatial_sweep_record(
+    profile: &EntityType,
+    path: &EntityType,
+    options: SweepOptions,
+) -> Result<SolidHistorySweep, Option<u32>> {
     let (points, closed) = spatial_profile(profile).ok_or(None)?;
     let count = points.len();
     let sides = if closed { count } else { count - 1 };
@@ -71,11 +91,15 @@ pub fn spatial_sweep_record(profile: &EntityType, path: &EntityType, options: Sw
     for i in 0..sides {
         for j in i + 1..sides {
             // Neighbouring sides share a corner.
-            if j == i + 1 || (closed && i == 0 && j == sides - 1) { continue; }
+            if j == i + 1 || (closed && i == 0 && j == sides - 1) {
+                continue;
+            }
             let (p, r) = (plan(i), plan(i + 1) - plan(i));
             let (q, s) = (plan(j), plan(j + 1) - plan(j));
             let denominator = cross(r, s);
-            if denominator.abs() <= 1e-12 { continue; }
+            if denominator.abs() <= 1e-12 {
+                continue;
+            }
             let t = cross(q - p, s) / denominator;
             let u = cross(q - p, r) / denominator;
             if (0.0..=1.0).contains(&t) && (0.0..=1.0).contains(&u) {
@@ -100,7 +124,9 @@ pub fn spatial_sweep_record(profile: &EntityType, path: &EntityType, options: Sw
         bank: options.bank,
         sweep_entity_transform: glam::DMat4::IDENTITY.to_cols_array(),
         path_entity_transform: glam::DMat4::IDENTITY.to_cols_array(),
-        reference_point: base_point.map_or(Vector3::new(0.0, 0.0, 0.0), |p| Vector3::new(p[0], p[1], p[2])),
+        reference_point: base_point.map_or(Vector3::new(0.0, 0.0, 0.0), |p| {
+            Vector3::new(p[0], p[1], p[2])
+        }),
         miter_option: 2,
         ..SolidHistorySweep::default()
     };
@@ -126,13 +152,20 @@ pub fn scaled_sweep_path_refusal(path: &EntityType) -> Option<&'static str> {
         Some(planar) => (planar.curve.is_closed(), true),
         None => match path {
             EntityType::Polyline3D(value) => {
-                let points = value.vertices.iter()
-                    .map(|vertex| glam::DVec3::new(vertex.position.x, vertex.position.y, vertex.position.z))
+                let points = value
+                    .vertices
+                    .iter()
+                    .map(|vertex| {
+                        glam::DVec3::new(vertex.position.x, vertex.position.y, vertex.position.z)
+                    })
                     .collect::<Vec<_>>();
-                let directions = points.windows(2)
+                let directions = points
+                    .windows(2)
                     .filter_map(|pair| (pair[1] - pair[0]).try_normalize())
                     .collect::<Vec<_>>();
-                let straight = directions.windows(2).all(|pair| pair[0].dot(pair[1]) >= 1.0 - 1e-9);
+                let straight = directions
+                    .windows(2)
+                    .all(|pair| pair[0].dot(pair[1]) >= 1.0 - 1e-9);
                 (value.is_closed(), straight && !value.is_closed())
             }
             EntityType::Spline(value) => (value.flags.closed, value.degree > 1),
@@ -151,8 +184,9 @@ pub fn scaled_sweep_path_refusal(path: &EntityType) -> Option<&'static str> {
 pub fn is_sweep_path(entity: &EntityType) -> bool {
     match embedded_path(entity) {
         Some(codec::entities::EmbeddedEntity::Spline(value)) => {
-            value.degree > 0 && (value.control_points.len() > value.degree as usize
-                || value.fit_points.len() >= 2)
+            value.degree > 0
+                && (value.control_points.len() > value.degree as usize
+                    || value.fit_points.len() >= 2)
         }
         Some(_) => crate::entities::curve::entity_curve(entity)
             .is_some_and(|curve| curve.curve.length().is_finite() && curve.curve.length() > 1e-9),
@@ -161,12 +195,18 @@ pub fn is_sweep_path(entity: &EntityType) -> bool {
 }
 
 /// All selected profiles use one base point, preserving their relative offsets.
-pub fn sweep_selection_options(profiles: &[EntityType], mut options: SweepOptions) -> Option<SweepOptions> {
+pub fn sweep_selection_options(
+    profiles: &[EntityType],
+    mut options: SweepOptions,
+) -> Option<SweepOptions> {
     if options.base_point.is_some() {
         return Some(options);
     }
     // Spatial profiles keep their own anchor.
-    let profiles = profiles.iter().filter(|profile| spatial_profile(profile).is_none()).collect::<Vec<_>>();
+    let profiles = profiles
+        .iter()
+        .filter(|profile| spatial_profile(profile).is_none())
+        .collect::<Vec<_>>();
     // A single profile takes its base from the path it is swept along
     // (`sweep_record`).
     // ponytail: several profiles share the group anchor even when the path
@@ -174,11 +214,15 @@ pub fn sweep_selection_options(profiles: &[EntityType], mut options: SweepOption
     if profiles.len() < 2 {
         return Some(options);
     }
-    let geometry = profiles.iter().map(|profile| {
-        let (entity, transform) = embedded_sweep_profile(profile)?;
-        let (plane, wires, _) = kernel::acis::sweep_profile_geometry(&entity, transform).ok()?;
-        Some((plane, wires))
-    }).collect::<Option<Vec<_>>>()?;
+    let geometry = profiles
+        .iter()
+        .map(|profile| {
+            let (entity, transform) = embedded_sweep_profile(profile)?;
+            let (plane, wires, _) =
+                kernel::acis::sweep_profile_geometry(&entity, transform).ok()?;
+            Some((plane, wires))
+        })
+        .collect::<Option<Vec<_>>>()?;
     options.base_point = Some(glam::DVec3::from_array(
         kernel::brep::sweep_profile_group_base(&geometry)?,
     ));
@@ -190,13 +234,20 @@ pub fn sweep_selection_options(profiles: &[EntityType], mut options: SweepOption
 fn reversed_toward_pick(path: &EntityType, pick: glam::DVec3) -> Option<EntityType> {
     let (start, end) = path_ends(path)?;
     let flat = |p: glam::DVec3| p.truncate().distance(pick.truncate());
-    if flat(end) >= flat(start) { return None; }
+    if flat(end) >= flat(start) {
+        return None;
+    }
     match path {
         // An arc has one direction; reversed it is a one-segment polyline.
         EntityType::Arc(arc) => {
             let mut polyline = codec::LwPolyline::new();
             let sweep = (arc.end_angle - arc.start_angle).rem_euclid(std::f64::consts::TAU);
-            let at = |angle: f64| codec::types::Vector2::new(arc.center.x + arc.radius * angle.cos(), arc.center.y + arc.radius * angle.sin());
+            let at = |angle: f64| {
+                codec::types::Vector2::new(
+                    arc.center.x + arc.radius * angle.cos(),
+                    arc.center.y + arc.radius * angle.sin(),
+                )
+            };
             let mut first = codec::entities::LwVertex::new(at(arc.end_angle));
             first.bulge = -(sweep / 4.0).tan();
             polyline.vertices = vec![first, codec::entities::LwVertex::new(at(arc.start_angle))];
@@ -212,28 +263,51 @@ fn reversed_toward_pick(path: &EntityType, pick: glam::DVec3) -> Option<EntityTy
 fn path_ends(path: &EntityType) -> Option<(glam::DVec3, glam::DVec3)> {
     Some(match path {
         EntityType::Polyline3D(value) if !value.is_closed() => {
-            let p = |v: &codec::entities::Vertex3DPolyline| glam::DVec3::new(v.position.x, v.position.y, v.position.z);
+            let p = |v: &codec::entities::Vertex3DPolyline| {
+                glam::DVec3::new(v.position.x, v.position.y, v.position.z)
+            };
             (p(value.vertices.first()?), p(value.vertices.last()?))
         }
         EntityType::Spline(value) if !value.flags.closed => {
-            let points = if value.control_points.is_empty() { &value.fit_points } else { &value.control_points };
+            let points = if value.control_points.is_empty() {
+                &value.fit_points
+            } else {
+                &value.control_points
+            };
             let p = |v: &codec::types::Vector3| glam::DVec3::new(v.x, v.y, v.z);
             (p(points.first()?), p(points.last()?))
         }
         _ => {
             let planar = crate::entities::curve::entity_curve(path)?;
-            if planar.curve.is_closed() { return None; }
-            let at = |t: f64| glam::DVec3::from_array(planar.plane.point_at(planar.curve.point_at(t)));
+            if planar.curve.is_closed() {
+                return None;
+            }
+            let at =
+                |t: f64| glam::DVec3::from_array(planar.plane.point_at(planar.curve.point_at(t)));
             (at(0.0), at(1.0))
         }
     })
 }
 
-pub fn sweep_record(profile: &EntityType, path: &EntityType, options: SweepOptions) -> Option<SolidHistorySweep> {
+pub fn sweep_record(
+    profile: &EntityType,
+    path: &EntityType,
+    options: SweepOptions,
+) -> Option<SolidHistorySweep> {
     // Placed from the picked end; the record keeps the original path, and
     // the placed frame tells which end the sweep starts from.
-    if let Some(reversed) = options.path_pick.and_then(|pick| reversed_toward_pick(path, pick)) {
-        let mut record = sweep_record(profile, &reversed, SweepOptions { path_pick: None, ..options })?;
+    if let Some(reversed) = options
+        .path_pick
+        .and_then(|pick| reversed_toward_pick(path, pick))
+    {
+        let mut record = sweep_record(
+            profile,
+            &reversed,
+            SweepOptions {
+                path_pick: None,
+                ..options
+            },
+        )?;
         record.path_entity = Some(embedded_sweep_path(path)?);
         return Some(record);
     }
@@ -241,7 +315,12 @@ pub fn sweep_record(profile: &EntityType, path: &EntityType, options: SweepOptio
     kernel::acis::sweep_profile_geometry(&sweep_entity, sweep_entity_transform).ok()?;
     let base_point = match options.base_point {
         Some(point) => point.to_array(),
-        None => kernel::acis::sweep_default_base(&sweep_entity, sweep_entity_transform, &embedded_sweep_path(path)?).ok()?,
+        None => kernel::acis::sweep_default_base(
+            &sweep_entity,
+            sweep_entity_transform,
+            &embedded_sweep_path(path)?,
+        )
+        .ok()?,
     };
     let mut base = SolidHistoryNodeBase::new(1);
     base.transform = glam::DMat4::IDENTITY.to_cols_array();
@@ -267,7 +346,10 @@ pub fn sweep_record(profile: &EntityType, path: &EntityType, options: SweepOptio
 /// The record the reference reads: the profile stored already placed at the
 /// path start (base point, alignment and profile rotation applied) with flag
 /// 295 set, and no reference point.
-fn placed_sweep_record(profile: &EntityType, mut record: SolidHistorySweep) -> Option<SolidHistorySweep> {
+fn placed_sweep_record(
+    profile: &EntityType,
+    mut record: SolidHistorySweep,
+) -> Option<SolidHistorySweep> {
     let (placed, _) = kernel::acis::sweep_history_placements(&record).ok()?;
     let embedded_to_world = glam::DMat4::from_cols(
         glam::DVec4::new(placed.x_axis[0], placed.x_axis[1], placed.x_axis[2], 0.0),
@@ -276,7 +358,8 @@ fn placed_sweep_record(profile: &EntityType, mut record: SolidHistorySweep) -> O
         glam::DVec4::new(placed.origin[0], placed.origin[1], placed.origin[2], 1.0),
     );
     // Source world geometry -> placed world geometry.
-    let map = embedded_to_world * glam::DMat4::from_cols_array(&record.sweep_entity_transform).inverse();
+    let map =
+        embedded_to_world * glam::DMat4::from_cols_array(&record.sweep_entity_transform).inverse();
     let m = map.to_cols_array_2d();
     let transform = codec::types::Transform::from_matrix(codec::types::Matrix4 {
         m: [
@@ -292,10 +375,15 @@ fn placed_sweep_record(profile: &EntityType, mut record: SolidHistorySweep) -> O
     let (plane, _, _) = kernel::acis::sweep_profile_geometry(
         record.sweep_entity.as_ref()?,
         record.sweep_entity_transform,
-    ).ok()?;
+    )
+    .ok()?;
     let x_axis = glam::DVec3::from_array(plane.x_axis).try_normalize()?;
     let normal = glam::DVec3::from_array(plane.normal()?);
-    let base = glam::DVec3::new(record.reference_point.x, record.reference_point.y, record.reference_point.z);
+    let base = glam::DVec3::new(
+        record.reference_point.x,
+        record.reference_point.y,
+        record.reference_point.z,
+    );
     let source_frame = glam::DMat4::from_cols(
         x_axis.extend(0.0),
         normal.cross(x_axis).extend(0.0),
@@ -303,7 +391,10 @@ fn placed_sweep_record(profile: &EntityType, mut record: SolidHistorySweep) -> O
         base.extend(1.0),
     );
     let mut moved = profile.clone();
-    crate::scene::view::dispatch::apply_transform(&mut moved, &crate::command::EntityTransform::Affine(transform));
+    crate::scene::view::dispatch::apply_transform(
+        &mut moved,
+        &crate::command::EntityTransform::Affine(transform),
+    );
     let (sweep_entity, _) = embedded_sweep_profile(&moved)?;
     record.sweep_entity = Some(sweep_entity);
     record.sweep_entity_transform = source_frame.to_cols_array();
@@ -316,9 +407,18 @@ fn placed_sweep_record(profile: &EntityType, mut record: SolidHistorySweep) -> O
     Some(record)
 }
 
-pub fn swept_with_options(profile: &EntityType, path: &EntityType, mode: ExtrudeMode, options: SweepOptions) -> Option<Body> {
+pub fn swept_with_options(
+    profile: &EntityType,
+    path: &EntityType,
+    mode: ExtrudeMode,
+    options: SweepOptions,
+) -> Option<Body> {
     if spatial_profile(profile).is_some() {
-        return kernel::acis::rebuild_sweep_with_mode(&spatial_sweep_record(profile, path, options).ok()?, true).ok();
+        return kernel::acis::rebuild_sweep_with_mode(
+            &spatial_sweep_record(profile, path, options).ok()?,
+            true,
+        )
+        .ok();
     }
     let record = sweep_record(profile, path, options)?;
     kernel::acis::rebuild_sweep_with_mode(&record, mode == ExtrudeMode::Surface).ok()
@@ -335,7 +435,9 @@ pub fn link_sweep_expressions(
     handle: codec::Handle,
     expressions: &[Option<String>; 2],
 ) {
-    if handle.is_null() || expressions.iter().all(Option::is_none) { return; }
+    if handle.is_null() || expressions.iter().all(Option::is_none) {
+        return;
+    }
     let mut values = Vec::new();
     for (name, expression) in ["ScaleFactor", "TwistAngle"].iter().zip(expressions) {
         if let Some(expression) = expression {
@@ -343,13 +445,19 @@ pub fn link_sweep_expressions(
             values.push(codec::xdata::XDataValue::String(expression.clone()));
         }
     }
-    crate::scene::view::dispatch::set_entity_xdata(document, handle, SWEEP_EXPRESSION_APP, Some(values));
+    crate::scene::view::dispatch::set_entity_xdata(
+        document,
+        handle,
+        SWEEP_EXPRESSION_APP,
+        Some(values),
+    );
 }
 
 /// SURFACEASSOCIATIVITY: whether new surfaces stay associative to the
 /// objects they were made from. A profile setting, so one value for every
 /// drawing.
-static SURFACE_ASSOCIATIVITY: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
+static SURFACE_ASSOCIATIVITY: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(true);
 
 pub fn surface_associativity() -> bool {
     SURFACE_ASSOCIATIVITY.load(std::sync::atomic::Ordering::Relaxed)
@@ -374,27 +482,41 @@ pub fn link_sweep_sources(
     options: &SweepOptions,
 ) {
     use codec::xdata::XDataValue;
-    if surface.is_null() { return; }
+    if surface.is_null() {
+        return;
+    }
     let point = |p: glam::DVec3| XDataValue::Point3D(Vector3::new(p.x, p.y, p.z));
     // The path keeps the direction it was swept in when it is edited.
-    let reversed = options.path_pick
+    let reversed = options
+        .path_pick
         .zip(document.get_entity(path))
         .is_some_and(|(pick, path)| reversed_toward_pick(path, pick).is_some());
     let mut values = vec![
         XDataValue::Handle(profile),
         XDataValue::Handle(path),
-        XDataValue::Integer16(i16::from(options.align) | (i16::from(options.bank) << 1) | (i16::from(reversed) << 2)),
+        XDataValue::Integer16(
+            i16::from(options.align) | (i16::from(options.bank) << 1) | (i16::from(reversed) << 2),
+        ),
     ];
     if let Some(base) = options.base_point {
         values.push(XDataValue::String("BASE".to_string()));
         values.push(point(base));
     }
-    crate::scene::view::dispatch::set_entity_xdata(document, surface, SWEEP_SOURCES_APP, Some(values));
+    crate::scene::view::dispatch::set_entity_xdata(
+        document,
+        surface,
+        SWEEP_SOURCES_APP,
+        Some(values),
+    );
 }
 
 /// The profile and path an associative swept surface was swept from.
 pub fn sweep_sources(entity: &EntityType) -> Option<(codec::Handle, codec::Handle)> {
-    let record = entity.common().extended_data.records().iter()
+    let record = entity
+        .common()
+        .extended_data
+        .records()
+        .iter()
         .find(|record| record.application_name == SWEEP_SOURCES_APP)?;
     let mut handles = record.values.iter().filter_map(|value| match value {
         codec::xdata::XDataValue::Handle(handle) => Some(*handle),
@@ -411,10 +533,21 @@ pub fn resweep_from_sources(
     path: &EntityType,
 ) -> Option<(SolidHistorySweep, Body)> {
     use codec::xdata::XDataValue;
-    let record = surface.common().extended_data.records().iter()
+    let record = surface
+        .common()
+        .extended_data
+        .records()
+        .iter()
         .find(|record| record.application_name == SWEEP_SOURCES_APP)?;
-    let EntityType::Surface(value) = surface else { return None };
-    let SurfaceData::Swept { options: stored, .. } = &value.surface_data else { return None };
+    let EntityType::Surface(value) = surface else {
+        return None;
+    };
+    let SurfaceData::Swept {
+        options: stored, ..
+    } = &value.surface_data
+    else {
+        return None;
+    };
     let mut options = SweepOptions {
         scale: stored.scale_factor,
         twist_angle: stored.twist_angle,
@@ -452,46 +585,103 @@ pub fn resweep_from_sources(
 /// parameter: line segment (23: start, vector to the end), arc (11:
 /// centre, normal, reference axis, radius, start and end angle, 0) or a
 /// composite of those (47: count, then each part's type and values).
-pub fn assoc_edge_curve(entity: &EntityType) -> Option<(i32, codec::objects::AssocSubcurveKind, Vec<codec::objects::AssocCurveValue>)> {
+pub fn assoc_edge_curve(entity: &EntityType) -> Option<AssocCurve> {
     use codec::objects::{AssocCurveValue as V, AssocSubcurveKind as K};
     use codec::types::Vector3 as P;
     let point = |p: glam::DVec3| V::Point(P::new(p.x, p.y, p.z));
     let segment = |a: glam::DVec3, b: glam::DVec3| vec![point(a), point(b - a)];
     // An arc about `normal` from `start` through `sweep` (signed, about the
     // normal) on a circle of `radius`; measured from the reference axis.
-    let arc = |centre: glam::DVec3, normal: glam::DVec3, axis: glam::DVec3, radius: f64, start: f64, end: f64| vec![
-        point(centre), point(normal), point(axis), V::Real(radius), V::Real(start), V::Real(end), V::Real(0.0),
-    ];
+    let arc = |centre: glam::DVec3,
+               normal: glam::DVec3,
+               axis: glam::DVec3,
+               radius: f64,
+               start: f64,
+               end: f64| {
+        vec![
+            point(centre),
+            point(normal),
+            point(axis),
+            V::Real(radius),
+            V::Real(start),
+            V::Real(end),
+            V::Real(0.0),
+        ]
+    };
     match entity {
         EntityType::Line(line) => {
-            let (a, b) = (glam::DVec3::new(line.start.x, line.start.y, line.start.z), glam::DVec3::new(line.end.x, line.end.y, line.end.z));
+            let (a, b) = (
+                glam::DVec3::new(line.start.x, line.start.y, line.start.z),
+                glam::DVec3::new(line.end.x, line.end.y, line.end.z),
+            );
             Some((23, K::LineSegment3d, segment(a, b)))
         }
         EntityType::Circle(circle) => {
-            let normal = glam::DVec3::new(circle.normal.x, circle.normal.y, circle.normal.z).try_normalize()?;
+            let normal = glam::DVec3::new(circle.normal.x, circle.normal.y, circle.normal.z)
+                .try_normalize()?;
             let axis = arbitrary_x(normal);
-            Some((11, K::Arc, arc(glam::DVec3::new(circle.center.x, circle.center.y, circle.center.z), normal, axis, circle.radius, 0.0, std::f64::consts::TAU)))
+            Some((
+                11,
+                K::Arc,
+                arc(
+                    glam::DVec3::new(circle.center.x, circle.center.y, circle.center.z),
+                    normal,
+                    axis,
+                    circle.radius,
+                    0.0,
+                    std::f64::consts::TAU,
+                ),
+            ))
         }
         EntityType::Arc(value) => {
-            let normal = glam::DVec3::new(value.normal.x, value.normal.y, value.normal.z).try_normalize()?;
+            let normal =
+                glam::DVec3::new(value.normal.x, value.normal.y, value.normal.z).try_normalize()?;
             let axis = arbitrary_x(normal);
             // The end past the start by the arc's sweep; an equal pair is a
             // full turn. (A loop adding TAU never ends on a huge angle.)
             let sweep = (value.end_angle - value.start_angle).rem_euclid(std::f64::consts::TAU);
-            let end = value.start_angle + if sweep > 0.0 { sweep } else { std::f64::consts::TAU };
-            Some((11, K::Arc, arc(glam::DVec3::new(value.center.x, value.center.y, value.center.z), normal, axis, value.radius, value.start_angle, end)))
+            let end = value.start_angle
+                + if sweep > 0.0 {
+                    sweep
+                } else {
+                    std::f64::consts::TAU
+                };
+            Some((
+                11,
+                K::Arc,
+                arc(
+                    glam::DVec3::new(value.center.x, value.center.y, value.center.z),
+                    normal,
+                    axis,
+                    value.radius,
+                    value.start_angle,
+                    end,
+                ),
+            ))
         }
         EntityType::LwPolyline(polyline) => {
-            let normal = glam::DVec3::new(polyline.normal.x, polyline.normal.y, polyline.normal.z).try_normalize()?;
+            let normal = glam::DVec3::new(polyline.normal.x, polyline.normal.y, polyline.normal.z)
+                .try_normalize()?;
             let axis_x = arbitrary_x(normal);
             let axis_y = normal.cross(axis_x);
-            let at = |v: &codec::entities::LwVertex| axis_x * v.location.x + axis_y * v.location.y + normal * polyline.elevation;
+            let at = |v: &codec::entities::LwVertex| {
+                axis_x * v.location.x + axis_y * v.location.y + normal * polyline.elevation
+            };
             let count = polyline.vertices.len();
-            let spans = if polyline.is_closed { count } else { count.saturating_sub(1) };
-            if spans == 0 { return None; }
+            let spans = if polyline.is_closed {
+                count
+            } else {
+                count.saturating_sub(1)
+            };
+            if spans == 0 {
+                return None;
+            }
             let mut values = vec![V::Int(spans as i32)];
             for index in 0..spans {
-                let (from, to) = (&polyline.vertices[index], &polyline.vertices[(index + 1) % count]);
+                let (from, to) = (
+                    &polyline.vertices[index],
+                    &polyline.vertices[(index + 1) % count],
+                );
                 let (a, b) = (at(from), at(to));
                 if from.bulge.abs() <= 1e-12 {
                     values.push(V::Int(23));
@@ -501,11 +691,14 @@ pub fn assoc_edge_curve(entity: &EntityType) -> Option<(i32, codec::objects::Ass
                     // the opposite normal, from the same reference axis.
                     let bulge = from.bulge;
                     let chord = b - a;
-                    let centre = a + chord * 0.5 + normal.cross(chord) * ((1.0 - bulge * bulge) / (4.0 * bulge));
+                    let centre = a
+                        + chord * 0.5
+                        + normal.cross(chord) * ((1.0 - bulge * bulge) / (4.0 * bulge));
                     let radius = chord.length() * (1.0 + bulge * bulge) / (4.0 * bulge.abs());
                     let turn = normal * bulge.signum();
                     let across = turn.cross(axis_x);
-                    let angle = |p: glam::DVec3| (p - centre).dot(across).atan2((p - centre).dot(axis_x));
+                    let angle =
+                        |p: glam::DVec3| (p - centre).dot(across).atan2((p - centre).dot(axis_x));
                     let start = angle(a);
                     let end = start + 4.0 * bulge.atan().abs();
                     values.push(V::Int(11));
@@ -515,9 +708,19 @@ pub fn assoc_edge_curve(entity: &EntityType) -> Option<(i32, codec::objects::Ass
             Some((47, K::None, values))
         }
         EntityType::Polyline3D(polyline) => {
-            let points = polyline.vertices.iter().map(|v| glam::DVec3::new(v.position.x, v.position.y, v.position.z)).collect::<Vec<_>>();
-            let spans = if polyline.is_closed() { points.len() } else { points.len().saturating_sub(1) };
-            if spans == 0 { return None; }
+            let points = polyline
+                .vertices
+                .iter()
+                .map(|v| glam::DVec3::new(v.position.x, v.position.y, v.position.z))
+                .collect::<Vec<_>>();
+            let spans = if polyline.is_closed() {
+                points.len()
+            } else {
+                points.len().saturating_sub(1)
+            };
+            if spans == 0 {
+                return None;
+            }
             let mut values = vec![V::Int(spans as i32)];
             for index in 0..spans {
                 values.push(V::Int(23));
@@ -525,24 +728,283 @@ pub fn assoc_edge_curve(entity: &EntityType) -> Option<(i32, codec::objects::Ass
             }
             Some((47, K::None, values))
         }
+        // Ellipse (17): centre, unit major axis, unit minor axis (the normal
+        // across the major one), major and minor radius, start and end
+        // parameter, 0.
+        EntityType::Ellipse(ellipse) => {
+            let major = glam::DVec3::new(
+                ellipse.major_axis.x,
+                ellipse.major_axis.y,
+                ellipse.major_axis.z,
+            );
+            let normal = glam::DVec3::new(ellipse.normal.x, ellipse.normal.y, ellipse.normal.z)
+                .try_normalize()?;
+            let radius = major.length();
+            let axis = major.try_normalize()?;
+            Some((
+                17,
+                K::Ellipse,
+                vec![
+                    point(glam::DVec3::new(
+                        ellipse.center.x,
+                        ellipse.center.y,
+                        ellipse.center.z,
+                    )),
+                    point(axis),
+                    point(normal.cross(axis)),
+                    V::Real(radius),
+                    V::Real(radius * ellipse.minor_axis_ratio),
+                    V::Real(ellipse.start_parameter),
+                    V::Real(ellipse.end_parameter),
+                    V::Real(0.0),
+                ],
+            ))
+        }
+        // NURBS (42): rational flag, a second flag (0), degree, knot
+        // tolerance, then knots, weights (empty unless rational) and control
+        // points, each as its length, the length reserved (at least 8) and the
+        // growth step 8, followed by the items.
+        EntityType::Spline(spline) => {
+            // A fit-point spline as the curve through its points, its knots
+            // in the fit parameter (chord length) as the reference keeps them.
+            let curve = crate::entities::spline::nurbs3(spline)?;
+            let mut knots = curve.knots().to_vec();
+            if crate::entities::spline::uses_fit_method(spline) && spline.knot_parameterization == 0
+            {
+                let chord: f64 = spline
+                    .fit_points
+                    .windows(2)
+                    .map(|pair| {
+                        ((pair[1].x - pair[0].x).powi(2)
+                            + (pair[1].y - pair[0].y).powi(2)
+                            + (pair[1].z - pair[0].z).powi(2))
+                        .sqrt()
+                    })
+                    .sum();
+                let (low, high) = (knots[0], knots[knots.len() - 1]);
+                if high - low > 0.0 && chord > 0.0 && (high - low - chord).abs() > 1e-9 * chord {
+                    knots
+                        .iter_mut()
+                        .for_each(|knot| *knot = (*knot - low) / (high - low) * chord);
+                }
+            }
+            let points = curve.control_points();
+            if points.len() < 2 || knots.is_empty() {
+                return None;
+            }
+            let tolerance = if spline.knot_tolerance > 0.0 {
+                spline.knot_tolerance
+            } else {
+                1e-9
+            };
+            let points = points
+                .iter()
+                .map(|p| glam::DVec3::from_array(*p))
+                .collect::<Vec<_>>();
+            Some(nurbs_curve(
+                curve.degree(),
+                tolerance,
+                &knots,
+                curve.weights(),
+                &points,
+            ))
+        }
         _ => None,
     }
 }
 
+/// A NURBS curve's edge parameter values (42): rational flag, a second flag
+/// (0), degree, knot tolerance, then knots, weights (empty unless rational)
+/// and control points, each as its length, the length reserved (at least
+/// 8) and the growth step 8, followed by the items.
+fn nurbs_curve(
+    degree: usize,
+    tolerance: f64,
+    knots: &[f64],
+    weights: &[f64],
+    points: &[glam::DVec3],
+) -> AssocCurve {
+    use codec::objects::{AssocCurveValue as V, AssocSubcurveKind as K};
+    let rational = weights.iter().any(|weight| (weight - 1.0).abs() > 1e-12);
+    let header = |values: &mut Vec<V>, count: usize| {
+        values.extend([
+            V::Int(count as i32),
+            V::Int(if count == 0 { 0 } else { count.max(8) } as i32),
+            V::Int(8),
+        ]);
+    };
+    let mut values = vec![
+        V::Bool(rational),
+        V::Bool(false),
+        V::Int(degree as i32),
+        V::Real(tolerance),
+    ];
+    header(&mut values, knots.len());
+    values.extend(knots.iter().map(|knot| V::Real(*knot)));
+    let weights = if rational { weights } else { &[] };
+    header(&mut values, weights.len());
+    values.extend(weights.iter().map(|weight| V::Real(*weight)));
+    header(&mut values, points.len());
+    values.extend(
+        points
+            .iter()
+            .map(|p| V::Point(codec::types::Vector3::new(p.x, p.y, p.z))),
+    );
+    (42, K::Nurb3d, values)
+}
+
+/// An edge parameter's curve: kind, subcurve kind and values.
+pub type AssocCurve = (
+    i32,
+    codec::objects::AssocSubcurveKind,
+    Vec<codec::objects::AssocCurveValue>,
+);
+
+/// A region's edges as an associative action reads them, loop by loop, each
+/// loop from its second edge on as the reference lists them: lines (23),
+/// circles and arcs (11) measured from the arbitrary axis of the region's
+/// normal, elliptical arcs (17) and NURBS curves (42).
+pub fn region_edge_curves(entity: &EntityType) -> Option<Vec<Vec<AssocCurve>>> {
+    use codec::objects::{AssocCurveValue as V, AssocSubcurveKind as K};
+    use kernel::geom2d::Curve;
+    let EntityType::Region(_) = entity else {
+        return None;
+    };
+    let Some((plane, loops, true)) = super::presspull_model::profile_geometry(entity) else {
+        return None;
+    };
+    let at = |uv: [f64; 2]| glam::DVec3::from_array(plane.point_at(uv));
+    let normal = glam::DVec3::from_array(plane.x_axis)
+        .cross(glam::DVec3::from_array(plane.y_axis))
+        .try_normalize()?;
+    let axis = arbitrary_x(normal);
+    let across = normal.cross(axis);
+    let point = |p: glam::DVec3| V::Point(codec::types::Vector3::new(p.x, p.y, p.z));
+    let arc = |centre: glam::DVec3, radius: f64, start: f64, end: f64| {
+        (
+            11,
+            K::Arc,
+            vec![
+                point(centre),
+                point(normal),
+                point(axis),
+                V::Real(radius),
+                V::Real(start),
+                V::Real(end),
+                V::Real(0.0),
+            ],
+        )
+    };
+    let curve = |piece: &Curve| -> Option<AssocCurve> {
+        match piece {
+            Curve::Line(line) => {
+                let (a, b) = (at(line.start), at(line.end));
+                Some((23, K::LineSegment3d, vec![point(a), point(b - a)]))
+            }
+            Curve::Circle(circle) => Some(arc(
+                at(circle.centre),
+                circle.radius,
+                0.0,
+                std::f64::consts::TAU,
+            )),
+            Curve::Arc(value) => {
+                let centre = at(value.centre);
+                let offset = at([
+                    value.centre[0] + value.start_angle.cos(),
+                    value.centre[1] + value.start_angle.sin(),
+                ]) - centre;
+                let start = offset.dot(across).atan2(offset.dot(axis));
+                Some(arc(centre, value.radius, start, start + value.sweep()))
+            }
+            Curve::Ellipse(value) => {
+                let ellipse = value.ellipse;
+                let centre = at(ellipse.centre);
+                let tip = [
+                    ellipse.centre[0] + ellipse.major_axis[0],
+                    ellipse.centre[1] + ellipse.major_axis[1],
+                ];
+                let major = (at(tip) - centre).try_normalize()?;
+                let end = if value.end_parameter > value.start_parameter {
+                    value.end_parameter
+                } else {
+                    value.end_parameter + std::f64::consts::TAU
+                };
+                Some((
+                    17,
+                    K::Ellipse,
+                    vec![
+                        point(centre),
+                        point(major),
+                        point(normal.cross(major)),
+                        V::Real(ellipse.major_radius),
+                        V::Real(ellipse.minor_radius),
+                        V::Real(value.start_parameter),
+                        V::Real(end),
+                        V::Real(0.0),
+                    ],
+                ))
+            }
+            Curve::Nurbs(value) => {
+                let points = value
+                    .control_points()
+                    .iter()
+                    .map(|p| at(*p))
+                    .collect::<Vec<_>>();
+                Some(nurbs_curve(
+                    value.degree(),
+                    1e-9,
+                    value.knots(),
+                    value.weights(),
+                    &points,
+                ))
+            }
+            _ => None,
+        }
+    };
+    loops
+        .iter()
+        .map(|pieces| {
+            let mut curves = pieces.iter().map(curve).collect::<Option<Vec<_>>>()?;
+            if curves.len() > 1 {
+                curves.rotate_left(1);
+            }
+            Some(curves)
+        })
+        .collect()
+}
+
+/// Whether an associative action can read this source: a region's edges
+/// or the entity's own curve.
+pub fn assoc_source_supported(entity: &EntityType) -> bool {
+    region_edge_curves(entity).is_some() || assoc_edge_curve(entity).is_some()
+}
+
 /// The arbitrary-axis X direction of an entity normal.
-fn arbitrary_x(normal: glam::DVec3) -> glam::DVec3 {
-    let world = if normal.x.abs() < 1.0 / 64.0 && normal.y.abs() < 1.0 / 64.0 { glam::DVec3::Y } else { glam::DVec3::Z };
+pub(crate) fn arbitrary_x(normal: glam::DVec3) -> glam::DVec3 {
+    let world = if normal.x.abs() < 1.0 / 64.0 && normal.y.abs() < 1.0 / 64.0 {
+        glam::DVec3::Y
+    } else {
+        glam::DVec3::Z
+    };
     world.cross(normal).normalize()
 }
 
 /// The scale and twist expressions a swept surface is linked to.
 pub fn sweep_expressions(entity: &EntityType) -> Option<[Option<String>; 2]> {
-    let record = entity.common().extended_data.records().iter()
+    let record = entity
+        .common()
+        .extended_data
+        .records()
+        .iter()
         .find(|record| record.application_name == SWEEP_EXPRESSION_APP)?;
-    let strings = record.values.iter().filter_map(|value| match value {
-        codec::xdata::XDataValue::String(text) => Some(text.clone()),
-        _ => None,
-    }).collect::<Vec<_>>();
+    let strings = record
+        .values
+        .iter()
+        .filter_map(|value| match value {
+            codec::xdata::XDataValue::String(text) => Some(text.clone()),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
     let mut result = [None, None];
     for pair in strings.chunks(2) {
         if let [name, expression] = pair {
@@ -558,8 +1020,18 @@ pub fn sweep_expressions(entity: &EntityType) -> Option<[Option<String>; 2]> {
 
 /// The sweep record a swept surface was made from.
 pub fn surface_sweep_record(entity: &EntityType) -> Option<SolidHistorySweep> {
-    let EntityType::Surface(surface) = entity else { return None };
-    let SurfaceData::Swept { sweep_entity, path_entity, options, .. } = &surface.surface_data else { return None };
+    let EntityType::Surface(surface) = entity else {
+        return None;
+    };
+    let SurfaceData::Swept {
+        sweep_entity,
+        path_entity,
+        options,
+        ..
+    } = &surface.surface_data
+    else {
+        return None;
+    };
     let mut base = SolidHistoryNodeBase::new(1);
     base.transform = glam::DMat4::IDENTITY.to_cols_array();
     Some(SolidHistorySweep {
@@ -578,7 +1050,11 @@ pub fn surface_sweep_record(entity: &EntityType) -> Option<SolidHistorySweep> {
         sweep_entity_transform: options.sweep_entity_transform,
         path_entity_transform: options.path_entity_transform,
         reference_point: options.reference_vector,
-        flags_294_296: [false, options.sweep_entity_transform_computed, options.path_entity_transform_computed],
+        flags_294_296: [
+            false,
+            options.sweep_entity_transform_computed,
+            options.path_entity_transform_computed,
+        ],
         miter_option: 2,
         ..SolidHistorySweep::default()
     })

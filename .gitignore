@@ -36,7 +36,6 @@ __pycache__/
 # Claude Code local preview/dev-server config
 .claude/launch.json
 
-.idea
 .idea/
 
 # Local agent/test logs and packaging artifacts
@@ -45,7 +44,6 @@ __pycache__/
 test_errs.log
 *.AppImage
 AppDir/
-
 # Worktrees created for isolated runs
 .claude/worktrees/
 

@@ -1,13 +1,12 @@
 //! Layer State Manager — native DWG/DXF named layer-state UI.
 
 use crate::app::{LayerStateLayerFlag, LayerStateProperty, Message};
-use crate::ui::properties::{lw_options, LwItem};
-use codec::{LayerState, LayerStateMask};
-use iced::widget::{
-    button, checkbox, column, container, row, scrollable, text, text_input, Space,
-};
-use iced::{Background, Border, Element, Fill, Length, Theme};
 use crate::t;
+use crate::ui::properties::{lw_options, LwItem};
+use crate::ui::style::form::{hdivider, LABEL_WIDTH};
+use codec::{LayerState, LayerStateMask};
+use iced::widget::{button, checkbox, column, container, row, scrollable, text, text_input, Space};
+use iced::{Background, Border, Element, Fill, Length, Theme};
 use std::borrow::Cow;
 use std::fmt;
 
@@ -39,24 +38,7 @@ fn transparency_options(current: Option<codec::types::Transparency>) -> Vec<Tran
 
 fn muted(theme: &Theme) -> iced::widget::text::Style {
     iced::widget::text::Style {
-        color: Some(
-            theme
-                .palette()
-                .background
-                .base
-                .text
-                .scale_alpha(0.65),
-        ),
-    }
-}
-
-fn button_style(accent: bool) -> impl Fn(&Theme, button::Status) -> button::Style {
-    move |theme, status| {
-        if accent {
-            button::primary(theme, status)
-        } else {
-            button::secondary(theme, status)
-        }
+        color: Some(theme.palette().background.base.text.scale_alpha(0.65)),
     }
 }
 
@@ -68,19 +50,6 @@ fn list_style(selected: bool) -> impl Fn(&Theme, button::Status) -> button::Styl
             button::subtle(theme, status)
         }
     }
-}
-
-fn divider<'a>(width: Length) -> Element<'a, Message> {
-    container(Space::new().width(width).height(1))
-        .width(width)
-        .height(1)
-        .style(|theme: &Theme| container::Style {
-            background: Some(Background::Color(
-                theme.palette().background.neutral.color,
-            )),
-            ..Default::default()
-        })
-        .into()
 }
 
 fn mask_summary(mask: LayerStateMask) -> String {
@@ -116,13 +85,17 @@ pub fn view_window<'a>(
             .iter()
             .find(|state| state.name.eq_ignore_ascii_case(selected))
     });
-    let query = filter.trim().to_lowercase();
+    let query: Cow<str> = if filter.trim().is_empty() {
+        Cow::Borrowed("")
+    } else {
+        Cow::Owned(filter.trim().to_lowercase())
+    };
     let rows: Vec<Element<'_, Message>> = states
         .iter()
         .filter(|state| {
             query.is_empty()
-                || state.name.to_lowercase().contains(&query)
-                || state.description.to_lowercase().contains(&query)
+                || state.name.to_lowercase().contains(query.as_ref())
+                || state.description.to_lowercase().contains(query.as_ref())
         })
         .map(|state| {
             let is_selected =
@@ -208,12 +181,15 @@ pub fn view_window<'a>(
         column![
             text(t!("Saved state details")).size(13),
             row![
-                text(t!("Layers")).size(10).style(muted).width(92),
+                text(t!("Layers")).size(10).style(muted).width(LABEL_WIDTH),
                 text(state.layers.len().to_string()).size(11),
             ]
             .spacing(8),
             row![
-                text(t!("Current layer")).size(10).style(muted).width(92),
+                text(t!("Current layer"))
+                    .size(10)
+                    .style(muted)
+                    .width(LABEL_WIDTH),
                 text(if state.current_layer.is_empty() {
                     "—".to_string()
                 } else {
@@ -229,9 +205,11 @@ pub fn view_window<'a>(
     } else {
         column![
             text(t!("New layer state")).size(13),
-            text(t!("Save captures the current settings of every layer in the drawing."))
-                .size(11)
-                .style(muted),
+            text(t!(
+                "Save captures the current settings of every layer in the drawing."
+            ))
+            .size(11)
+            .style(muted),
         ]
         .spacing(7)
     };
@@ -239,9 +217,9 @@ pub fn view_window<'a>(
     let restore = if selected_state.is_some() {
         button(text(t!("Restore")).size(11))
             .on_press(Message::LayerStateManagerRestore)
-            .style(button_style(true))
+            .style(button::primary)
     } else {
-        button(text(t!("Restore")).size(11)).style(button_style(true))
+        button(text(t!("Restore")).size(11)).style(button::primary)
     };
     let delete = if selected_state.is_some() {
         button(text(t!("Delete")).size(11))
@@ -253,9 +231,9 @@ pub fn view_window<'a>(
     let edit = if selected_state.is_some() {
         button(text(t!("Edit")).size(11))
             .on_press(Message::LayerStateManagerEdit)
-            .style(button_style(false))
+            .style(button::secondary)
     } else {
-        button(text(t!("Edit")).size(11)).style(button_style(false))
+        button(text(t!("Edit")).size(11)).style(button::secondary)
     };
 
     let right = container(
@@ -263,7 +241,7 @@ pub fn view_window<'a>(
             row![
                 button(text(t!("New")).size(11))
                     .on_press(Message::LayerStateManagerNew)
-                    .style(button_style(false))
+                    .style(button::secondary)
                     .padding([5, 12]),
                 edit.padding([5, 12]),
                 Space::new().width(sizing.width),
@@ -272,7 +250,7 @@ pub fn view_window<'a>(
             ]
             .spacing(6)
             .align_y(iced::Center),
-            divider(sizing.width),
+            hdivider(sizing.width),
             text(t!("Name")).size(10).style(muted),
             text_input(t!("Layer state name").as_ref(), name)
                 .on_input(Message::LayerStateManagerName)
@@ -297,7 +275,7 @@ pub fn view_window<'a>(
             })
             .size(11))
             .on_press(Message::LayerStateManagerSave)
-            .style(button_style(true))
+            .style(button::primary)
             .padding([6, 14]),
         ]
         .spacing(7)
@@ -367,26 +345,57 @@ fn bool_cell<'a>(
 fn editor_header<'a>() -> Element<'a, Message> {
     container(
         row![
-            text(t!("Layer")).size(10).style(muted).width(Length::Fixed(170.0)),
-            text(t!("On")).size(10).style(muted).width(Length::Fixed(44.0)),
-            text(t!("Freeze")).size(10).style(muted).width(Length::Fixed(54.0)),
-            text(t!("Lock")).size(10).style(muted).width(Length::Fixed(44.0)),
-            text(t!("Plot")).size(10).style(muted).width(Length::Fixed(44.0)),
-            text(t!("New VP")).size(10).style(muted).width(Length::Fixed(54.0)),
-            text(t!("Color")).size(10).style(muted).width(Length::Fixed(135.0)),
-            text(t!("Linetype")).size(10).style(muted).width(Length::Fixed(150.0)),
-            text(t!("Lineweight")).size(10).style(muted).width(Length::Fixed(115.0)),
-            text(t!("Plot style")).size(10).style(muted).width(Length::Fixed(135.0)),
-            text(t!("Transparency")).size(10).style(muted).width(Length::Fixed(105.0)),
+            text(t!("Layer"))
+                .size(10)
+                .style(muted)
+                .width(Length::Fixed(170.0)),
+            text(t!("On"))
+                .size(10)
+                .style(muted)
+                .width(Length::Fixed(44.0)),
+            text(t!("Freeze"))
+                .size(10)
+                .style(muted)
+                .width(Length::Fixed(54.0)),
+            text(t!("Lock"))
+                .size(10)
+                .style(muted)
+                .width(Length::Fixed(44.0)),
+            text(t!("Plot"))
+                .size(10)
+                .style(muted)
+                .width(Length::Fixed(44.0)),
+            text(t!("New VP"))
+                .size(10)
+                .style(muted)
+                .width(Length::Fixed(54.0)),
+            text(t!("Color"))
+                .size(10)
+                .style(muted)
+                .width(Length::Fixed(135.0)),
+            text(t!("Linetype"))
+                .size(10)
+                .style(muted)
+                .width(Length::Fixed(150.0)),
+            text(t!("Lineweight"))
+                .size(10)
+                .style(muted)
+                .width(Length::Fixed(115.0)),
+            text(t!("Plot style"))
+                .size(10)
+                .style(muted)
+                .width(Length::Fixed(135.0)),
+            text(t!("Transparency"))
+                .size(10)
+                .style(muted)
+                .width(Length::Fixed(105.0)),
         ]
         .spacing(4)
         .align_y(iced::Center),
     )
     .padding([5, 8])
     .style(|theme: &Theme| container::Style {
-        background: Some(Background::Color(
-            theme.palette().background.weak.color,
-        )),
+        background: Some(Background::Color(theme.palette().background.weak.color)),
         border: Border {
             color: theme.palette().background.neutral.color,
             width: 1.0,
@@ -402,7 +411,7 @@ fn editor_layer_row<'a>(
     index: usize,
     layer: &'a codec::LayerStateLayer,
     color_open: bool,
-    linetypes: Vec<String>,
+    linetypes: std::sync::Arc<[String]>,
 ) -> Element<'a, Message> {
     let current_linetype = Some(layer.line_type.clone());
     let current_lineweight = Some(LwItem(layer.line_weight));
@@ -416,10 +425,7 @@ fn editor_layer_row<'a>(
         },
         move |color| Message::LayerStateEditorLayerColor(index, color),
         Message::LayerStateEditorLayerColorToggle(index),
-        Message::OpenColorWindow(
-            crate::app::ColorPickTarget::LayerState(index),
-            layer.color,
-        ),
+        Message::OpenColorWindow(crate::app::ColorPickTarget::LayerState(index), layer.color),
     );
 
     container(
@@ -438,26 +444,18 @@ fn editor_layer_row<'a>(
                 54.0
             ),
             container(color).width(Length::Fixed(135.0)),
-            iced::widget::pick_list(
-                current_linetype,
-                linetypes,
-                |value| value.to_string(),
-            )
-            .on_select(move |value| Message::LayerStateEditorLayerLinetype(index, value))
-            .text_size(11)
-            .padding([3, 5])
-            .width(Length::Fixed(150.0)),
-            iced::widget::pick_list(
-                current_lineweight,
-                lw_options(),
-                |value| value.to_string(),
-            )
-            .on_select(move |item: LwItem| {
-                Message::LayerStateEditorLayerLineweight(index, item.0)
-            })
-            .text_size(11)
-            .padding([3, 5])
-            .width(Length::Fixed(115.0)),
+            iced::widget::pick_list(current_linetype, linetypes, |value| value.to_string(),)
+                .on_select(move |value| Message::LayerStateEditorLayerLinetype(index, value))
+                .text_size(11)
+                .padding([3, 5])
+                .width(Length::Fixed(150.0)),
+            iced::widget::pick_list(current_lineweight, lw_options(), |value| value.to_string(),)
+                .on_select(move |item: LwItem| {
+                    Message::LayerStateEditorLayerLineweight(index, item.0)
+                })
+                .text_size(11)
+                .padding([3, 5])
+                .width(Length::Fixed(115.0)),
             text_input(t!("Default").as_ref(), &layer.plot_style)
                 .on_input(move |value| Message::LayerStateEditorLayerPlotStyle(index, value))
                 .size(11)
@@ -478,9 +476,8 @@ fn editor_layer_row<'a>(
     )
     .padding([3, 8])
     .style(move |theme: &Theme| container::Style {
-        background: (index % 2 == 1).then_some(Background::Color(
-            theme.palette().background.weak.color,
-        )),
+        background: (index % 2 == 1)
+            .then_some(Background::Color(theme.palette().background.weak.color)),
         ..Default::default()
     })
     .width(Fill)
@@ -491,7 +488,7 @@ pub fn view_editor<'a>(
     state: &'a LayerState,
     filter: &'a str,
     color_open: Option<usize>,
-    linetypes: Vec<String>,
+    linetypes: std::sync::Arc<[String]>,
     sizing: crate::ui::modal::ModalSizing,
 ) -> Element<'a, Message> {
     let properties = [
@@ -517,20 +514,24 @@ pub fn view_editor<'a>(
         .iter()
         .map(|layer| layer.layer_name.clone())
         .collect();
-    let query = filter.trim().to_lowercase();
+    let query: Cow<str> = if filter.trim().is_empty() {
+        Cow::Borrowed("")
+    } else {
+        Cow::Owned(filter.trim().to_lowercase())
+    };
     let rows = state
         .layers
         .iter()
         .enumerate()
         .filter(|(_, layer)| {
-            query.is_empty() || layer.layer_name.to_lowercase().contains(&query)
+            query.is_empty() || layer.layer_name.to_lowercase().contains(query.as_ref())
         })
         .fold(column![].spacing(0), |rows, (index, layer)| {
             rows.push(editor_layer_row(
                 index,
                 layer,
                 color_open == Some(index),
-                linetypes.clone(),
+                std::sync::Arc::clone(&linetypes),
             ))
         });
 
@@ -558,11 +559,9 @@ pub fn view_editor<'a>(
                     .style(muted),
                 Space::new().width(sizing.width),
                 text(t!("Current layer")).size(10).style(muted),
-                iced::widget::pick_list(
-                    Some(state.current_layer.clone()),
-                    layer_names,
-                    |value| value.to_string(),
-                )
+                iced::widget::pick_list(Some(state.current_layer.clone()), layer_names, |value| {
+                    value.to_string()
+                },)
                 .on_select(Message::LayerStateEditorCurrentLayer)
                 .text_size(11)
                 .padding([3, 6])
@@ -570,8 +569,10 @@ pub fn view_editor<'a>(
             ]
             .spacing(8)
             .align_y(iced::Center),
-            divider(sizing.width),
-            text(t!("Properties restored by this state")).size(10).style(muted),
+            hdivider(sizing.width),
+            text(t!("Properties restored by this state"))
+                .size(10)
+                .style(muted),
             mask_controls,
             row![
                 text(t!("Saved layer values")).size(12),
@@ -598,17 +599,19 @@ pub fn view_editor<'a>(
                 ..Default::default()
             }),
             row![
-                text(t!("Changes affect the saved state only; the drawing is unchanged until Restore."))
-                    .size(10)
-                    .style(muted),
+                text(t!(
+                    "Changes affect the saved state only; the drawing is unchanged until Restore."
+                ))
+                .size(10)
+                .style(muted),
                 Space::new().width(sizing.width),
                 button(text(t!("Cancel")).size(11))
                     .on_press(Message::LayerStateEditorCancel)
-                    .style(button_style(false))
+                    .style(button::secondary)
                     .padding([5, 12]),
                 button(text(t!("Save Changes")).size(11))
                     .on_press(Message::LayerStateEditorSave)
-                    .style(button_style(true))
+                    .style(button::primary)
                     .padding([5, 12]),
             ]
             .spacing(7)
@@ -621,4 +624,34 @@ pub fn view_editor<'a>(
     .width(sizing.width)
     .height(sizing.height)
     .into()
+}
+
+#[cfg(test)]
+mod borrowed_linetypes_tests {
+    // #21 RED: view_editor must take shared ownership of the linetype list
+    // (a borrow cannot cross the twice-per-frame build closure) instead of
+    // cloning per row — this call fails to compile until the signatures take
+    // Arc<[String]>.
+    use super::view_editor;
+
+    #[test]
+    fn view_editor_accepts_shared_linetypes() {
+        let state = codec::LayerState {
+            name: String::new(),
+            description: String::new(),
+            mask: codec::LayerStateMask::default(),
+            hidden: false,
+            current_layer: String::new(),
+            layers: Vec::new(),
+        };
+        let linetypes: std::sync::Arc<[String]> =
+            std::sync::Arc::from(vec!["Continuous".to_string()]);
+        let sizing = crate::ui::modal::ModalSizing {
+            width: iced::Length::Fixed(1180.0),
+            height: iced::Length::Fixed(560.0),
+        };
+        let _ = view_editor(&state, "", None, std::sync::Arc::clone(&linetypes), sizing);
+        // Shared ownership: the source stays usable after the call.
+        assert_eq!(linetypes.len(), 1);
+    }
 }

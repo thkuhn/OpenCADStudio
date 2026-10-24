@@ -95,7 +95,7 @@ pub(crate) fn aligned_dimension_entity(
     crate::entities::dimension::reset_automatic_text_position(&mut dim.base);
     dim.base.actual_measurement = dim.measurement();
     crate::entities::dimension::set_dimension_text_override(&mut dim.base, text_override);
-    EntityType::Dimension(Dimension::Aligned(dim))
+    EntityType::Dimension(Box::new(Dimension::Aligned(dim)))
 }
 
 impl CadCommand for AlignedDimensionCommand {
@@ -127,9 +127,7 @@ impl CadCommand for AlignedDimensionCommand {
                 "DIMALIGNED  Specify first extension line origin or press Enter to select object:"
             )
             .into_owned(),
-            Step::Second(_) => {
-                t!("DIMALIGNED  Specify second extension line origin:").into_owned()
-            }
+            Step::Second(_) => t!("DIMALIGNED  Specify second extension line origin:").into_owned(),
             Step::DimLine { .. } => {
                 t!("DIMALIGNED  Specify dimension line location  [Mtext/Text/Angle]:").into_owned()
             }
@@ -149,14 +147,12 @@ impl CadCommand for AlignedDimensionCommand {
                 self.step = Step::DimLine { p1, p2: pt };
                 CmdResult::NeedPoint
             }
-            Step::DimLine { p1, p2 } => {
-                CmdResult::CommitDimension {
-                    entity: self.build_dimension(p1, p2, pt),
-                    association: DimensionAssociationInput::Infer(self.source_handle),
-                    preserve_base_style: false,
-                    continue_command: false,
-                }
-            }
+            Step::DimLine { p1, p2 } => CmdResult::CommitDimension {
+                entity: self.build_dimension(p1, p2, pt),
+                association: DimensionAssociationInput::Infer(self.source_handle),
+                preserve_base_style: false,
+                continue_command: false,
+            },
         }
     }
 
@@ -366,9 +362,9 @@ impl CadCommand for AlignedDimensionCommand {
             plinegen: true,
             fill_tris: vec![],
             fill_tris_low: Vec::new(),
-        
+
             ..Default::default()
-})
+        })
     }
 
     fn dyn_spec(&self) -> Option<crate::command::DynSpec> {
@@ -484,11 +480,12 @@ fn preview_aligned(p1: DVec3, p2: DVec3, dim_pt: DVec3) -> WireModel {
         plinegen: true,
         fill_tris: vec![],
         fill_tris_low: Vec::new(),
-    
-        ..Default::default()
-}
-}
 
+        ..Default::default()
+    }
+}
 
 // ── Autocomplete registry ─────────────────────────────────
-inventory::submit!(crate::command::CommandRegistration { names: &["DIMALIGNED"] });  // AlignedDimensionCommand
+inventory::submit!(crate::command::CommandRegistration {
+    names: &["DIMALIGNED"]
+}); // AlignedDimensionCommand

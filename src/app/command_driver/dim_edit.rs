@@ -29,14 +29,19 @@ impl OpenCADStudio {
         self.tabs[i].snap_result = None;
     }
 
-    pub(super) fn handle_edit_dimension_jog(&mut self, dimension: Handle, point: Option<glam::DVec3>) {
+    pub(super) fn handle_edit_dimension_jog(
+        &mut self,
+        dimension: Handle,
+        point: Option<glam::DVec3>,
+    ) {
         let i = self.active_tab;
         let valid = matches!(
-            self.tabs[i].scene.document.get_entity(dimension),
-            Some(codec::EntityType::Dimension(
-                codec::entities::Dimension::Linear(_)
-                    | codec::entities::Dimension::Aligned(_)
-            ))
+            self.tabs[i]
+                .scene
+                .document
+                .get_entity(dimension)
+                .and_then(crate::entities::dimension::as_dimension),
+            Some(codec::entities::Dimension::Linear(_) | codec::entities::Dimension::Aligned(_))
         );
         if !valid {
             self.command_line.push_error(
@@ -50,9 +55,7 @@ impl OpenCADStudio {
                     XDataValue::Integer16(387),
                     XDataValue::Integer16(3),
                     XDataValue::Integer16(389),
-                    XDataValue::Point3D(codec::types::Vector3::new(
-                        point.x, point.y, point.z,
-                    )),
+                    XDataValue::Point3D(codec::types::Vector3::new(point.x, point.y, point.z)),
                 ]
             });
             crate::scene::view::dispatch::set_entity_xdata(
@@ -79,7 +82,12 @@ impl OpenCADStudio {
         self.tabs[i].snap_result = None;
     }
 
-    pub(super) fn handle_space_dimensions(&mut self, base: Handle, others: Vec<Handle>, spacing: Option<f64>) {
+    pub(super) fn handle_space_dimensions(
+        &mut self,
+        base: Handle,
+        others: Vec<Handle>,
+        spacing: Option<f64>,
+    ) {
         let i = self.active_tab;
         self.push_undo_snapshot(i, "DIMSPACE");
         if apply_dimspace(&mut self.tabs[i].scene, base, &others, spacing) {
@@ -409,8 +417,12 @@ fn apply_dimspace(
     requested_spacing: Option<f64>,
 ) -> bool {
     use codec::entities::Dimension;
-    let (axis, normal, definition, auto_spacing) = match scene.document.get_entity(base_h) {
-        Some(codec::EntityType::Dimension(dimension @ Dimension::Linear(d))) => {
+    let base = scene
+        .document
+        .get_entity(base_h)
+        .and_then(crate::entities::dimension::as_dimension);
+    let (axis, normal, definition, auto_spacing) = match base {
+        Some(dimension @ Dimension::Linear(d)) => {
             let spacing = dimension_auto_spacing(
                 &scene.document,
                 dimension,
@@ -427,7 +439,7 @@ fn apply_dimspace(
                 spacing,
             )
         }
-        Some(codec::EntityType::Dimension(dimension @ Dimension::Aligned(d))) => {
+        Some(dimension @ Dimension::Aligned(d)) => {
             let spacing = dimension_auto_spacing(
                 &scene.document,
                 dimension,
@@ -465,7 +477,7 @@ fn apply_dimspace(
                     kernel::space::move_to_dimension_spacing([p.x, p.y, p.z], frame, target);
                 *p = codec::types::Vector3::new(point[0], point[1], point[2]);
             };
-            match dim {
+            match &mut **dim {
                 Dimension::Linear(d) => {
                     slide(&mut d.definition_point);
                     d.base.definition_point = d.definition_point;

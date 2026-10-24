@@ -3,6 +3,7 @@
 use crate::app::Message;
 use crate::t;
 use crate::ui::style::common::muted_style;
+use crate::ui::style::editor_table::{danger_input_style, danger_text_style, EDITOR_TABLE_GUTTER};
 use iced::widget::{button, column, container, row, scrollable, text, text_input, Space};
 use iced::{Background, Element, Length, Theme};
 
@@ -10,42 +11,6 @@ use iced::{Background, Element, Length, Theme};
 pub enum ShortcutField {
     Key,
     Command,
-}
-
-const GUTTER: f32 = 16.0;
-
-fn danger_text_style(theme: &Theme) -> iced::widget::text::Style {
-    iced::widget::text::Style {
-        color: Some(theme.palette().danger.base.color),
-    }
-}
-
-/// Text-input variant flagging an invalid value: danger border and value
-/// color on the theme's danger weak background.
-fn danger_input_style(
-    theme: &Theme,
-    status: iced::widget::text_input::Status,
-) -> iced::widget::text_input::Style {
-    let danger = theme.palette().danger.base;
-    iced::widget::text_input::Style {
-        background: Background::Color(theme.palette().danger.weak.color),
-        border: iced::border::rounded(4)
-            .color(danger.color)
-            .width(
-                if matches!(
-                    status,
-                    iced::widget::text_input::Status::Focused { is_hovered: _ }
-                ) {
-                    1.5
-                } else {
-                    1.0
-                },
-            ),
-        icon: danger.color,
-        placeholder: danger.color.scale_alpha(0.7),
-        value: danger.text,
-        selection: danger.color,
-    }
 }
 
 pub fn view_window<'a>(
@@ -67,15 +32,14 @@ pub fn view_window<'a>(
     .style(muted_style);
     let gutter = iced::Padding {
         top: 0.0,
-        right: GUTTER,
+        right: EDITOR_TABLE_GUTTER,
         bottom: 0.0,
         left: 0.0,
     };
 
     let head = container(
         row![
-            container(text(t!("Key")).size(11).style(muted_style))
-                .width(Length::Fixed(180.0)),
+            container(text(t!("Key")).size(11).style(muted_style)).width(Length::Fixed(180.0)),
             container(text(t!("Command")).size(11).style(muted_style)).width(sizing.width),
             Space::new().width(Length::Fixed(30.0)),
         ]
@@ -119,8 +83,7 @@ pub fn view_window<'a>(
                 .width(Length::Fixed(180.0))
                 .style(button::secondary)
         };
-        let unknown_command =
-            !command.is_empty() && unknown_commands.contains(command.trim());
+        let unknown_command = !command.is_empty() && unknown_commands.contains(command.trim());
         let command_box = text_input(t!("command").as_ref(), command)
             .on_input(move |value| Message::ShortcutEditorInput {
                 idx,
@@ -199,9 +162,11 @@ pub fn view_window<'a>(
     let stats = if reset_confirm {
         row![Space::new().width(Length::Fixed(0.0))]
     } else {
-        row![text(format!("{}: {}", t!("Number of shortcuts"), rows.len()))
-            .size(12)
-            .style(muted_style)]
+        row![
+            text(format!("{}: {}", t!("Number of shortcuts"), rows.len()))
+                .size(12)
+                .style(muted_style)
+        ]
     };
     // Reset asks for confirmation in place: the add/reset buttons are
     // replaced by the question with Yes / No.
@@ -284,9 +249,15 @@ pub fn view_window<'a>(
             Space::new().height(6),
             conflict_banner,
             Space::new().height(4),
-            row![stats, add_area, reset_area, Space::new().width(sizing.width), apply_area]
-                .spacing(8)
-                .align_y(iced::Center),
+            row![
+                stats,
+                add_area,
+                reset_area,
+                Space::new().width(sizing.width),
+                apply_area
+            ]
+            .spacing(8)
+            .align_y(iced::Center),
         ]
         .spacing(6)
         .width(sizing.width)
@@ -296,9 +267,7 @@ pub fn view_window<'a>(
     .width(sizing.width)
     .height(sizing.height)
     .style(|theme: &Theme| container::Style {
-        background: Some(Background::Color(
-            theme.palette().background.base.color,
-        )),
+        background: Some(Background::Color(theme.palette().background.base.color)),
         ..Default::default()
     });
 
@@ -313,12 +282,7 @@ pub fn view_window<'a>(
             .height(Length::Fill)
             .style(|theme: &Theme| container::Style {
                 background: Some(Background::Color(
-                    theme
-                        .palette()
-                        .background
-                        .strongest
-                        .color
-                        .scale_alpha(0.55),
+                    theme.palette().background.strongest.color.scale_alpha(0.55),
                 )),
                 ..Default::default()
             }),
@@ -346,9 +310,7 @@ pub fn view_window<'a>(
     .padding(16)
     .width(Length::Fixed(320.0))
     .style(|theme: &Theme| container::Style {
-        background: Some(Background::Color(
-            theme.palette().background.base.color,
-        )),
+        background: Some(Background::Color(theme.palette().background.base.color)),
         border: iced::Border {
             color: theme.palette().background.neutral.color,
             width: 1.0,

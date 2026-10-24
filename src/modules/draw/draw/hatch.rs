@@ -4,12 +4,12 @@ use crate::command::{CadCommand, CmdResult, WorkingPlane};
 use crate::modules::IconKind;
 use crate::scene::model::hatch_model::{HatchModel, HatchPattern, PatFamily};
 use crate::scene::model::wire_model::WireModel;
+use crate::t;
 use codec::Handle;
+use glam::DVec3;
 use kernel::geom2d::{
     bounded_faces, contains, ring_nesting_depths, signed_area, Circle, Curve, Line, Tolerance,
 };
-use glam::DVec3;
-use crate::t;
 
 // ── Icons ──────────────────────────────────────────────────────────────────
 
@@ -41,6 +41,18 @@ enum Mode {
     PickInside,
     /// Fallback: user manually picks polygon vertices (type "S" to enter).
     Manual,
+}
+
+/// The largest gap a boundary pick may bridge (HPGAPTOL range).
+pub const MAX_GAP_TOLERANCE: f64 = 5000.0;
+
+/// A typed gap tolerance, if it is a number in `0..=MAX_GAP_TOLERANCE`.
+fn parse_gap_tolerance(text: &str) -> Option<f64> {
+    text.trim()
+        .replace(',', ".")
+        .parse::<f64>()
+        .ok()
+        .filter(|value| (0.0..=MAX_GAP_TOLERANCE).contains(value))
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -102,10 +114,7 @@ fn polygon_contains_polygon(outer: &[[f64; 2]], inner: &[[f64; 2]]) -> bool {
 }
 
 /// Resolve the innermost clicked ring and its direct holes.
-fn resolve_hatch_rings(
-    outlines: &[Vec<[f64; 2]>],
-    p: [f64; 2],
-) -> Option<Vec<Vec<[f64; 2]>>> {
+fn resolve_hatch_rings(outlines: &[Vec<[f64; 2]>], p: [f64; 2]) -> Option<Vec<Vec<[f64; 2]>>> {
     let mut containing: Vec<(usize, f64)> = outlines
         .iter()
         .enumerate()
@@ -181,7 +190,6 @@ fn rte_boundary(pts: impl Iterator<Item = (f64, f64)>) -> (Vec<[f32; 2]>, [f64; 
 // ── HATCH command ──────────────────────────────────────────────────────────
 
 pub struct HatchCommand {
-    outlines: Vec<Vec<[f64; 2]>>,
     boundary_sources: rustc_hash::FxHashMap<Handle, crate::scene::BoundarySource>,
     point_regions: Vec<Vec<Vec<[f64; 2]>>>,
     object_regions: Vec<Vec<Vec<[f64; 2]>>>,
@@ -200,24 +208,19 @@ pub struct HatchCommand {
     associative: bool,
     separate_hatches: bool,
     island_style: codec::entities::HatchStyleType,
-    inherited: Option<(
-        HatchModel,
-        codec::types::Color,
-        codec::types::Transparency,
-    )>,
+    inherited: Option<(HatchModel, codec::types::Color, codec::types::Transparency)>,
     plane: WorkingPlane,
+    /// HPGAPTOL: gaps up to this size count as closed for a picked point.
+    gap_tolerance: f64,
+    /// The next typed value sets `gap_tolerance`.
+    gap_prompt: bool,
 }
 
 impl HatchCommand {
     pub fn new(
-        outlines: Vec<Vec<[f64; 2]>>,
         boundary_sources: rustc_hash::FxHashMap<Handle, crate::scene::BoundarySource>,
         selected_objects: Vec<Handle>,
-        inherited: Option<(
-            HatchModel,
-            codec::types::Color,
-            codec::types::Transparency,
-        )>,
+        inherited: Option<(HatchModel, codec::types::Color, codec::types::Transparency)>,
         plane: WorkingPlane,
     ) -> Self {
         let selected_objects: Vec<_> = selected_objects
@@ -226,7 +229,6 @@ impl HatchCommand {
             .collect();
         let has_selection = !selected_objects.is_empty();
         let mut command = Self {
-            outlines,
             boundary_sources,
             point_regions: Vec::new(),
             object_regions: Vec::new(),
@@ -254,12 +256,38 @@ impl HatchCommand {
                 .unwrap_or(codec::entities::HatchStyleType::Normal),
             inherited,
             plane,
+            gap_tolerance: 0.0,
+            gap_prompt: false,
         };
         command.set_object_selection(selected_objects);
         command
     }
 
-    pub fn with_origin(mut self, origin: [f64; 2]) -> Self { self.default_origin = origin; self }
+    /// HPASSOC: whether the hatch starts out associative.
+    pub fn with_associative(mut self, associative: bool) -> Self {
+        self.associative = associative;
+        self
+    }
+
+    /// HPGAPTOL: the largest gap a picked boundary may have.
+    pub fn with_gap_tolerance(mut self, gap_tolerance: f64) -> Self {
+        self.gap_tolerance = gap_tolerance;
+        self
+    }
+
+    pub fn with_origin(mut self, origin: [f64; 2]) -> Self {
+        self.default_origin = origin;
+        self
+    }
+
+    pub fn with_pattern(mut self, name: impl Into<String>, pattern: HatchPattern) -> Self {
+        self.pattern_override = Some((name.into(), pattern));
+        self
+    }
+
+    pub fn finish_selected(mut self) -> CmdResult {
+        self.on_enter()
+    }
 
     fn set_object_selection(&mut self, handles: Vec<Handle>) {
         let mut segments = Vec::new();
@@ -315,6 +343,14 @@ impl HatchCommand {
     }
 
     fn make_hatch(&self, rings: Vec<Vec<[f64; 2]>>) -> HatchModel {
+        let perf_build = crate::perf::enabled();
+        let build_started = perf_build.then(iced::time::Instant::now);
+        let ring_count = rings.len();
+        let input_vertices = if perf_build {
+            rings.iter().map(Vec::len).sum::<usize>()
+        } else {
+            0
+        };
         let world_rings: Vec<Vec<[f64; 2]>> = rings
             .iter()
             .map(|ring| {
@@ -343,16 +379,14 @@ impl HatchCommand {
             .into_iter()
             .map(|depth| depth == 0)
             .collect();
+        let near = crate::scene::sources_near_rings(&rings, &self.boundary_sources, 1.0e-6);
+        let near_source_count = near.len();
         let mut boundary_sources: Vec<Vec<Handle>> = rings
             .iter()
-            .map(|ring| crate::scene::ring_source_handles(ring, &self.boundary_sources))
+            .map(|ring| crate::scene::ring_source_handles(ring, &near))
             .collect();
-        let mut boundary_paths = crate::scene::exact_hatch_paths(
-            &rings,
-            &exterior,
-            &self.boundary_sources,
-            1.0e-6,
-        );
+        let mut boundary_paths = crate::scene::exact_hatch_paths(&rings, &exterior, &near, 1.0e-6);
+
         if !self.associative {
             for handles in &mut boundary_sources {
                 handles.clear();
@@ -373,18 +407,23 @@ impl HatchCommand {
                 let (sin, cos) = angle.sin_cos();
                 for family in families {
                     let base_x = source.world_origin[0]
-                        + (family.x0 as f64 * cos as f64
-                            - family.y0 as f64 * sin as f64)
+                        + (family.x0 as f64 * cos as f64 - family.y0 as f64 * sin as f64)
                             * scale as f64;
                     let base_y = source.world_origin[1]
-                        + (family.x0 as f64 * sin as f64
-                            + family.y0 as f64 * cos as f64)
+                        + (family.x0 as f64 * sin as f64 + family.y0 as f64 * cos as f64)
                             * scale as f64;
                     let dx = base_x - origin[0];
                     let dy = base_y - origin[1];
                     family.x0 = ((dx * cos as f64 + dy * sin as f64) / scale as f64) as f32;
                     family.y0 = ((-dx * sin as f64 + dy * cos as f64) / scale as f64) as f32;
                 }
+            }
+            let build_ms = crate::perf::elapsed_ms(build_started);
+            if perf_build && build_ms >= 1.0 {
+                crate::perf_record!(
+                    "[perf] hatch-build total={build_ms:.1}ms rings={ring_count} vertices={input_vertices} sources={} nearby_sources={near_source_count} inherited=true",
+                    self.boundary_sources.len(),
+                );
             }
             return HatchModel {
                 pattern_origin: source.pattern_origin,
@@ -436,7 +475,9 @@ impl HatchCommand {
             .unwrap_or_else(|| (pat_name.to_string(), default_pattern));
         let angle = self.angle_override.unwrap_or(0.0);
         let scale = self.scale_override.unwrap_or(1.0).max(1.0e-6);
-        if let (HatchPattern::Pattern(families), Some(anchor)) = (&mut pattern, local_boundary.first()) {
+        if let (HatchPattern::Pattern(families), Some(anchor)) =
+            (&mut pattern, local_boundary.first())
+        {
             let (sin, cos) = (angle as f64).sin_cos();
             let dx = self.default_origin[0] - anchor[0] as f64;
             let dy = self.default_origin[1] - anchor[1] as f64;
@@ -444,6 +485,13 @@ impl HatchCommand {
                 family.x0 += ((dx * cos + dy * sin) / scale as f64) as f32;
                 family.y0 += ((-dx * sin + dy * cos) / scale as f64) as f32;
             }
+        }
+        let build_ms = crate::perf::elapsed_ms(build_started);
+        if perf_build && build_ms >= 1.0 {
+            crate::perf_record!(
+                "[perf] hatch-build total={build_ms:.1}ms rings={ring_count} vertices={input_vertices} sources={} nearby_sources={near_source_count} inherited=false",
+                self.boundary_sources.len(),
+            );
         }
         HatchModel {
             pattern_origin: Some(self.default_origin),
@@ -527,6 +575,9 @@ impl CadCommand for HatchCommand {
     }
 
     fn prompt(&self) -> String {
+        if self.gap_prompt {
+            return format!("HATCH  {} <{}>:", t!("Gap tolerance"), self.gap_tolerance);
+        }
         match &self.mode {
             HatchMode::PickInside => {
                 let miss = if self.missed {
@@ -568,6 +619,9 @@ impl CadCommand for HatchCommand {
 
     fn options(&self) -> Vec<crate::command::CmdOption> {
         use crate::command::CmdOption;
+        if self.gap_prompt {
+            return Vec::new();
+        }
         match &self.mode {
             HatchMode::PickInside => {
                 let mut options = vec![
@@ -582,16 +636,28 @@ impl CadCommand for HatchCommand {
                         "B",
                     ),
                     CmdOption::new(
-                        if self.associative { "Associative: on" } else { "Associative: off" },
+                        if self.associative {
+                            "Associative: on"
+                        } else {
+                            "Associative: off"
+                        },
                         "N",
                     ),
                     CmdOption::new(
-                        if self.separate_hatches { "Separate hatches: on" } else { "Separate hatches: off" },
+                        if self.separate_hatches {
+                            "Separate hatches: on"
+                        } else {
+                            "Separate hatches: off"
+                        },
                         "D",
                     ),
                     CmdOption::new(
                         &crate::tf!("Island style: {}", self.island_style_label()),
                         "Y",
+                    ),
+                    CmdOption::new(
+                        &format!("{}: {}", t!("Gap tolerance"), self.gap_tolerance),
+                        "G",
                     ),
                 ];
                 if self.region_count() > 0 {
@@ -612,11 +678,19 @@ impl CadCommand for HatchCommand {
                         "B",
                     ),
                     CmdOption::new(
-                        if self.associative { "Associative: on" } else { "Associative: off" },
+                        if self.associative {
+                            "Associative: on"
+                        } else {
+                            "Associative: off"
+                        },
                         "N",
                     ),
                     CmdOption::new(
-                        if self.separate_hatches { "Separate hatches: on" } else { "Separate hatches: off" },
+                        if self.separate_hatches {
+                            "Separate hatches: on"
+                        } else {
+                            "Separate hatches: off"
+                        },
                         "D",
                     ),
                     CmdOption::new(
@@ -630,12 +704,10 @@ impl CadCommand for HatchCommand {
                 options
             }
             HatchMode::Manual => {
-                let mut options = vec![
-                    CmdOption::new(
-                        if self.manual_arc_mode { "Line" } else { "Arc" },
-                        if self.manual_arc_mode { "L" } else { "A" },
-                    ),
-                ];
+                let mut options = vec![CmdOption::new(
+                    if self.manual_arc_mode { "Line" } else { "Arc" },
+                    if self.manual_arc_mode { "L" } else { "A" },
+                )];
                 if self.manual_pts.len() >= 3 {
                     options.push(CmdOption::new("Close", "C"));
                     options.push(CmdOption::enter(t!("Accept").as_ref()));
@@ -646,11 +718,19 @@ impl CadCommand for HatchCommand {
     }
 
     fn on_point(&mut self, pt: DVec3) -> CmdResult {
+        if self.gap_prompt {
+            return CmdResult::NeedPoint;
+        }
         let pt = self.plane.to_local(pt);
         match &self.mode {
             HatchMode::PickInside => {
                 let xy = [pt.x, pt.y];
-                match resolve_hatch_rings(&self.outlines, xy) {
+                let faces = crate::scene::boundary_faces_around(
+                    &self.boundary_sources,
+                    xy,
+                    self.gap_tolerance,
+                );
+                match resolve_hatch_rings(&faces, xy) {
                     Some(rings) => {
                         self.missed = false;
                         self.add_point_region(rings);
@@ -683,6 +763,10 @@ impl CadCommand for HatchCommand {
     }
 
     fn on_enter(&mut self) -> CmdResult {
+        if self.gap_prompt {
+            self.gap_prompt = false;
+            return CmdResult::NeedPoint;
+        }
         if matches!(self.mode, HatchMode::Manual) && self.manual_arc_midpoint.is_some() {
             return CmdResult::NeedPoint;
         }
@@ -747,6 +831,26 @@ impl CadCommand for HatchCommand {
         }
     }
 
+    fn wants_raw_point(&self) -> bool {
+        self.mode == HatchMode::PickInside && !self.gap_prompt
+    }
+
+    fn hatch_gap_tolerance(&self) -> Option<f64> {
+        Some(self.gap_tolerance)
+    }
+
+    fn dyn_field(&self) -> crate::command::DynField {
+        if self.gap_prompt {
+            crate::command::DynField::Scalar
+        } else {
+            crate::command::DynField::Point
+        }
+    }
+
+    fn dyn_commit_as_text(&self) -> bool {
+        self.gap_prompt
+    }
+
     fn is_selection_gathering(&self) -> bool {
         matches!(self.mode, HatchMode::SelectObjects)
     }
@@ -784,7 +888,12 @@ impl CadCommand for HatchCommand {
     fn hatch_preview_models(&self) -> Option<Vec<HatchModel>> {
         let mut rings = self.combined_rings();
         if matches!(self.mode, HatchMode::Manual) && self.manual_pts.len() >= 3 {
-            rings.push(self.manual_pts.iter().map(|point| [point.x, point.y]).collect());
+            rings.push(
+                self.manual_pts
+                    .iter()
+                    .map(|point| [point.x, point.y])
+                    .collect(),
+            );
         }
         Some(if rings.is_empty() {
             Vec::new()
@@ -806,6 +915,18 @@ impl CadCommand for HatchCommand {
     fn on_text_input(&mut self, text: &str) -> Option<CmdResult> {
         let input = text.trim();
         let upper = input.to_ascii_uppercase();
+        if self.gap_prompt {
+            if let Some(value) = parse_gap_tolerance(input) {
+                self.gap_tolerance = value;
+                self.missed = false;
+            }
+            self.gap_prompt = false;
+            return Some(CmdResult::NeedPoint);
+        }
+        if matches!(self.mode, HatchMode::PickInside) && matches!(upper.as_str(), "G" | "GAP") {
+            self.gap_prompt = true;
+            return Some(CmdResult::NeedPoint);
+        }
         if matches!(self.mode, HatchMode::Manual) {
             return match upper.as_str() {
                 "A" | "ARC" => {
@@ -901,7 +1022,8 @@ impl CadCommand for HatchCommand {
         }
     }
 
-    fn on_mouse_move(&mut self, pt: DVec3) -> Option<WireModel> { let pt = pt.as_vec3();
+    fn on_mouse_move(&mut self, pt: DVec3) -> Option<WireModel> {
+        let pt = pt.as_vec3();
         if let HatchMode::Manual = &self.mode {
             if self.manual_pts.is_empty() {
                 return None;
@@ -927,7 +1049,6 @@ impl CadCommand for HatchCommand {
 // ── GRADIENT command ───────────────────────────────────────────────────────
 
 pub struct GradientCommand {
-    outlines: Vec<Vec<[f64; 2]>>,
     boundary_sources: rustc_hash::FxHashMap<Handle, crate::scene::BoundarySource>,
     mode: Mode,
     manual_pts: Vec<DVec3>,
@@ -936,22 +1057,29 @@ pub struct GradientCommand {
     kind: crate::scene::model::hatch_model::GradientKind,
     /// Swap the two colour stops.
     invert: bool,
+    /// HPGAPTOL: gaps up to this size count as closed for a picked point.
+    gap_tolerance: f64,
 }
 
 impl GradientCommand {
     pub fn new(
-        outlines: Vec<Vec<[f64; 2]>>,
         boundary_sources: rustc_hash::FxHashMap<Handle, crate::scene::BoundarySource>,
     ) -> Self {
         Self {
-            outlines,
             boundary_sources,
             mode: Mode::PickInside,
             manual_pts: vec![],
             missed: false,
             kind: crate::scene::model::hatch_model::GradientKind::Linear,
             invert: false,
+            gap_tolerance: 0.0,
         }
+    }
+
+    /// HPGAPTOL: the largest gap a picked boundary may have.
+    pub fn with_gap_tolerance(mut self, gap_tolerance: f64) -> Self {
+        self.gap_tolerance = gap_tolerance;
+        self
     }
 
     fn make_hatch(&self, rings: Vec<Vec<[f64; 2]>>) -> HatchModel {
@@ -960,16 +1088,12 @@ impl GradientCommand {
             .into_iter()
             .map(|depth| depth == 0)
             .collect();
+        let near = crate::scene::sources_near_rings(&rings, &self.boundary_sources, 1.0e-6);
         let boundary_sources = rings
             .iter()
-            .map(|ring| crate::scene::ring_source_handles(ring, &self.boundary_sources))
+            .map(|ring| crate::scene::ring_source_handles(ring, &near))
             .collect();
-        let boundary_paths = crate::scene::exact_hatch_paths(
-            &rings,
-            &exterior,
-            &self.boundary_sources,
-            1.0e-6,
-        );
+        let boundary_paths = crate::scene::exact_hatch_paths(&rings, &exterior, &near, 1.0e-6);
         HatchModel {
             pattern_origin: None,
             render_instance: None,
@@ -1036,9 +1160,7 @@ impl CadCommand for GradientCommand {
         match &self.mode {
             Mode::PickInside => {
                 let mut opts = vec![CmdOption::new("Draw manually", "S")];
-                for (kind, inverted) in
-                    crate::scene::model::hatch_model::GradientKind::CHOICES
-                {
+                for (kind, inverted) in crate::scene::model::hatch_model::GradientKind::CHOICES {
                     if kind != self.kind || inverted != self.invert {
                         let label = kind.choice_label(inverted);
                         opts.push(CmdOption::new(label, label));
@@ -1061,7 +1183,12 @@ impl CadCommand for GradientCommand {
         match &self.mode {
             Mode::PickInside => {
                 let xy = [pt.x, pt.y];
-                match resolve_hatch_rings(&self.outlines, xy) {
+                let faces = crate::scene::boundary_faces_around(
+                    &self.boundary_sources,
+                    xy,
+                    self.gap_tolerance,
+                );
+                match resolve_hatch_rings(&faces, xy) {
                     Some(rings) => {
                         self.missed = false;
                         return CmdResult::CommitHatch(self.make_hatch(rings));
@@ -1097,6 +1224,10 @@ impl CadCommand for GradientCommand {
         CmdResult::Cancel
     }
 
+    fn wants_raw_point(&self) -> bool {
+        matches!(self.mode, Mode::PickInside)
+    }
+
     fn wants_text_input(&self) -> bool {
         matches!(self.mode, Mode::PickInside)
     }
@@ -1118,7 +1249,8 @@ impl CadCommand for GradientCommand {
         None
     }
 
-    fn on_mouse_move(&mut self, pt: DVec3) -> Option<WireModel> { let pt = pt.as_vec3();
+    fn on_mouse_move(&mut self, pt: DVec3) -> Option<WireModel> {
+        let pt = pt.as_vec3();
         if let Mode::Manual = &self.mode {
             if self.manual_pts.is_empty() {
                 return None;
@@ -1151,7 +1283,6 @@ pub struct BoundaryCommand {
     sources: rustc_hash::FxHashMap<Handle, crate::scene::BoundarySource>,
     active_sources: rustc_hash::FxHashMap<Handle, crate::scene::BoundarySource>,
     restrict_sources: bool,
-    outlines: Vec<Vec<[f64; 2]>>,
     point_regions: Vec<Vec<Vec<[f64; 2]>>>,
     selected_objects: Vec<Handle>,
     mode: BoundaryMode,
@@ -1183,18 +1314,17 @@ impl BoundaryCommand {
         sources: rustc_hash::FxHashMap<Handle, crate::scene::BoundarySource>,
         selected_objects: Vec<Handle>,
         plane: WorkingPlane,
+        gap_tolerance: f64,
     ) -> Self {
-        let outlines = crate::scene::boundary_faces(&sources, 1.0e-6);
         let mut command = Self {
             sources,
             active_sources: rustc_hash::FxHashMap::default(),
             restrict_sources: false,
-            outlines,
             point_regions: Vec::new(),
             selected_objects: Vec::new(),
             mode: BoundaryMode::PickInside,
             island_style: BoundaryIslandStyle::Normal,
-            gap_tolerance: 1.0e-6,
+            gap_tolerance,
             plane,
             missed: false,
             output_region: false,
@@ -1209,17 +1339,19 @@ impl BoundaryCommand {
         let restrict_sources = !handles.is_empty();
         let selected_sources: rustc_hash::FxHashMap<_, _> = handles
             .iter()
-            .filter_map(|handle| self.sources.get(handle).cloned().map(|source| (*handle, source)))
+            .filter_map(|handle| {
+                self.sources
+                    .get(handle)
+                    .cloned()
+                    .map(|source| (*handle, source))
+            })
             .collect();
         self.active_sources = selected_sources;
         self.restrict_sources = restrict_sources;
-        let sources = if self.restrict_sources {
-            &self.active_sources
-        } else {
-            &self.sources
-        };
-        self.outlines = crate::scene::boundary_faces(sources, self.gap_tolerance);
-        self.missed = !handles.is_empty() && self.outlines.is_empty();
+        // Only a chosen boundary set is checked up front: it is small, while
+        // the whole drawing is resolved around each pick instead (#1869).
+        self.missed = restrict_sources
+            && crate::scene::boundary_faces(&self.active_sources, self.gap_tolerance).is_empty();
         self.selected_objects = handles;
         self.point_regions.clear();
     }
@@ -1241,7 +1373,13 @@ impl BoundaryCommand {
     }
 
     fn picked_region(&self, point: [f64; 2]) -> Option<Vec<Vec<[f64; 2]>>> {
-        let tolerance = Tolerance::new(self.gap_tolerance);
+        let sources = if self.restrict_sources {
+            &self.active_sources
+        } else {
+            &self.sources
+        };
+        let outlines = crate::scene::boundary_faces_around(sources, point, self.gap_tolerance);
+        let tolerance = Tolerance::new(1.0e-6);
         let curves = |outline: &Vec<[f64; 2]>| {
             outline
                 .iter()
@@ -1251,8 +1389,7 @@ impl BoundaryCommand {
                 .map(|(start, end)| Curve::Line(Line { start, end }))
                 .collect::<Vec<_>>()
         };
-        let mut containing: Vec<(usize, f64)> = self
-            .outlines
+        let mut containing: Vec<(usize, f64)> = outlines
             .iter()
             .enumerate()
             .filter(|(_, outline)| contains(&curves(outline), point, tolerance))
@@ -1260,15 +1397,15 @@ impl BoundaryCommand {
             .collect();
         containing.sort_by(|left, right| left.1.total_cmp(&right.1));
         let outer_index = containing.first()?.0;
-        let outer = &self.outlines[outer_index];
+        let outer = &outlines[outer_index];
         let outer_curves = curves(outer);
-        let depths = ring_nesting_depths(&self.outlines);
+        let depths = ring_nesting_depths(&outlines);
         let outer_depth = depths.get(outer_index).copied().unwrap_or(0);
         let mut rings = vec![outer.clone()];
         if self.island_style == BoundaryIslandStyle::Ignore {
             return Some(rings);
         }
-        for (index, candidate) in self.outlines.iter().enumerate() {
+        for (index, candidate) in outlines.iter().enumerate() {
             let Some(seed) = candidate.first().copied() else {
                 continue;
             };
@@ -1281,8 +1418,7 @@ impl BoundaryCommand {
             {
                 continue;
             }
-            if self.island_style == BoundaryIslandStyle::Outer
-                && candidate_depth != outer_depth + 1
+            if self.island_style == BoundaryIslandStyle::Outer && candidate_depth != outer_depth + 1
             {
                 continue;
             }
@@ -1292,7 +1428,11 @@ impl BoundaryCommand {
     }
 
     fn add_point_region(&mut self, region: Vec<Vec<[f64; 2]>>) {
-        if !self.point_regions.iter().any(|existing| existing == &region) {
+        if !self
+            .point_regions
+            .iter()
+            .any(|existing| existing == &region)
+        {
             self.point_regions.push(region);
         }
     }
@@ -1304,19 +1444,21 @@ impl BoundaryCommand {
             &self.sources
         };
         if self.output_region {
-            return self.point_regions.iter().filter_map(|rings| {
-                crate::scene::model::presspull_model::boundary_region(
-                    sources,
-                    rings,
-                    self.plane,
-                )
-            }).collect();
+            return self
+                .point_regions
+                .iter()
+                .filter_map(|rings| {
+                    crate::scene::model::presspull_model::boundary_region(
+                        sources, rings, self.plane,
+                    )
+                })
+                .collect();
         }
         crate::scene::boundary_polyline_entities(
             &self.point_regions,
             self.plane,
             sources,
-            self.gap_tolerance,
+            1.0e-6,
         )
     }
 }
@@ -1336,23 +1478,35 @@ impl CadCommand for BoundaryCommand {
             BoundaryMode::PickInside => {
                 format!("BOUNDARY  Specify internal point or [Advanced options]:{miss}")
             }
-            BoundaryMode::Advanced=>"BOUNDARY  Enter an option [Object type]:".into(),
-            BoundaryMode::ObjectType=>format!("BOUNDARY  Enter type of boundary object [Region/Polyline] <{}>:",if self.output_region{"Region"}else{"Polyline"}),
+            BoundaryMode::Advanced => "BOUNDARY  Enter an option [Object type]:".into(),
+            BoundaryMode::ObjectType => format!(
+                "BOUNDARY  Enter type of boundary object [Region/Polyline] <{}>:",
+                if self.output_region {
+                    "Region"
+                } else {
+                    "Polyline"
+                }
+            ),
             BoundaryMode::SelectObjects => {
                 t!("%{cmd}  Select objects:", cmd = self.name()).into_owned()
             }
-            BoundaryMode::GapTolerance { .. } => format!(
-                "BOUNDARY  {} <{}>:",
-                t!("Tolerance"),
-                self.gap_tolerance
-            ),
+            BoundaryMode::GapTolerance { .. } => {
+                format!("BOUNDARY  {} <{}>:", t!("Gap tolerance"), self.gap_tolerance)
+            }
         }
     }
 
     fn options(&self) -> Vec<crate::command::CmdOption> {
         use crate::command::CmdOption;
-        if self.mode==BoundaryMode::Advanced {return vec![CmdOption::new("Object type","O")];}
-        if self.mode==BoundaryMode::ObjectType {return vec![CmdOption::new("Region","R"),CmdOption::new("Polyline","P")];}
+        if self.mode == BoundaryMode::Advanced {
+            return vec![CmdOption::new("Object type", "O")];
+        }
+        if self.mode == BoundaryMode::ObjectType {
+            return vec![
+                CmdOption::new("Region", "R"),
+                CmdOption::new("Polyline", "P"),
+            ];
+        }
         if matches!(self.mode, BoundaryMode::GapTolerance { .. }) {
             return Vec::new();
         }
@@ -1368,7 +1522,10 @@ impl CadCommand for BoundaryCommand {
             CmdOption::new("Advanced options", "A"),
             CmdOption::new(t!("Boundary").as_ref(), "O"),
             CmdOption::new(&island, "S"),
-            CmdOption::new(t!("Tolerance").as_ref(), "G"),
+            CmdOption::new(
+                &format!("{}: {}", t!("Gap tolerance"), self.gap_tolerance),
+                "G",
+            ),
         ];
         if self.region_count() > 0 {
             options.push(CmdOption::enter("Accept"));
@@ -1391,9 +1548,18 @@ impl CadCommand for BoundaryCommand {
     }
 
     fn on_enter(&mut self) -> CmdResult {
-        if self.mode==BoundaryMode::ObjectType {self.mode=BoundaryMode::Advanced;return CmdResult::NeedPoint;}
-        if self.mode==BoundaryMode::Advanced {self.mode=BoundaryMode::PickInside;return CmdResult::NeedPoint;}
-        if let BoundaryMode::GapTolerance { return_to_selection } = self.mode {
+        if self.mode == BoundaryMode::ObjectType {
+            self.mode = BoundaryMode::Advanced;
+            return CmdResult::NeedPoint;
+        }
+        if self.mode == BoundaryMode::Advanced {
+            self.mode = BoundaryMode::PickInside;
+            return CmdResult::NeedPoint;
+        }
+        if let BoundaryMode::GapTolerance {
+            return_to_selection,
+        } = self.mode
+        {
             self.mode = if return_to_selection {
                 BoundaryMode::SelectObjects
             } else {
@@ -1434,24 +1600,31 @@ impl CadCommand for BoundaryCommand {
     }
 
     fn on_text_input(&mut self, text: &str) -> Option<CmdResult> {
-        if self.mode==BoundaryMode::Advanced {
-            if matches!(text.trim().to_ascii_uppercase().as_str(),"O"|"OBJECT"|"OBJECT TYPE") {self.mode=BoundaryMode::ObjectType;}
+        if self.mode == BoundaryMode::Advanced {
+            if matches!(
+                text.trim().to_ascii_uppercase().as_str(),
+                "O" | "OBJECT" | "OBJECT TYPE"
+            ) {
+                self.mode = BoundaryMode::ObjectType;
+            }
             return Some(CmdResult::NeedPoint);
         }
-        if self.mode==BoundaryMode::ObjectType {
-            match text.trim().to_ascii_uppercase().as_str(){
-                "R"|"REGION"=>self.output_region=true,
-                "P"|"POLYLINE"=>self.output_region=false,
-                _=>return Some(CmdResult::NeedPoint),
+        if self.mode == BoundaryMode::ObjectType {
+            match text.trim().to_ascii_uppercase().as_str() {
+                "R" | "REGION" => self.output_region = true,
+                "P" | "POLYLINE" => self.output_region = false,
+                _ => return Some(CmdResult::NeedPoint),
             }
-            self.mode=BoundaryMode::Advanced;return Some(CmdResult::NeedPoint);
+            self.mode = BoundaryMode::Advanced;
+            return Some(CmdResult::NeedPoint);
         }
-        if let BoundaryMode::GapTolerance { return_to_selection } = self.mode {
-            if let Ok(value) = text.trim().parse::<f64>() {
-                if value.is_finite() && value > 0.0 {
-                    self.gap_tolerance = value;
-                    self.rebuild_faces();
-                }
+        if let BoundaryMode::GapTolerance {
+            return_to_selection,
+        } = self.mode
+        {
+            if let Some(value) = parse_gap_tolerance(text) {
+                self.gap_tolerance = value;
+                self.rebuild_faces();
             }
             self.mode = if return_to_selection {
                 BoundaryMode::SelectObjects
@@ -1461,7 +1634,7 @@ impl CadCommand for BoundaryCommand {
             return Some(CmdResult::NeedPoint);
         }
         match text.trim().to_ascii_uppercase().as_str() {
-            "A"|"ADVANCED"=>self.mode=BoundaryMode::Advanced,
+            "A" | "ADVANCED" => self.mode = BoundaryMode::Advanced,
             "O" | "OBJECT" | "OBJECTS" => {
                 self.mode = BoundaryMode::SelectObjects;
                 self.missed = false;
@@ -1499,6 +1672,14 @@ impl CadCommand for BoundaryCommand {
             _ => return None,
         }
         Some(CmdResult::NeedPoint)
+    }
+
+    fn wants_raw_point(&self) -> bool {
+        self.mode == BoundaryMode::PickInside
+    }
+
+    fn hatch_gap_tolerance(&self) -> Option<f64> {
+        Some(self.gap_tolerance)
     }
 
     fn is_selection_gathering(&self) -> bool {
@@ -1570,9 +1751,13 @@ impl CadCommand for BoundaryCommand {
 }
 
 // ── Autocomplete registry ─────────────────────────────────
-inventory::submit!(crate::command::CommandRegistration { names: &["BOUNDARY"] });  // BoundaryCommand
-inventory::submit!(crate::command::CommandRegistration { names: &["GRADIENT"] });  // GradientCommand
-inventory::submit!(crate::command::CommandRegistration { names: &["HATCH"] });  // HatchCommand
+inventory::submit!(crate::command::CommandRegistration {
+    names: &["BOUNDARY"]
+}); // BoundaryCommand
+inventory::submit!(crate::command::CommandRegistration {
+    names: &["GRADIENT"]
+}); // GradientCommand
+inventory::submit!(crate::command::CommandRegistration { names: &["HATCH"] }); // HatchCommand
 
 #[cfg(test)]
 mod tests {
@@ -1625,6 +1810,50 @@ mod tests {
     }
 
     #[test]
+    fn hatch_pick_finds_region_and_island_among_far_clutter() {
+        let mut sources = rustc_hash::FxHashMap::default();
+        let mut add_ring = |base: u64, ring: &[[f64; 2]]| {
+            for (index, (start, end)) in ring
+                .iter()
+                .copied()
+                .zip(ring.iter().copied().cycle().skip(1))
+                .take(ring.len())
+                .enumerate()
+            {
+                let segment = Line { start, end };
+                sources.insert(
+                    Handle::new(base + index as u64),
+                    crate::scene::BoundarySource {
+                        segments: vec![segment],
+                        curves: vec![Curve::Line(segment)],
+                    },
+                );
+            }
+        };
+        add_ring(1, &rect(-10.0, -10.0, 10.0, 10.0));
+        add_ring(10, &rect(-2.0, -2.0, 2.0, 2.0));
+        for index in 0..64 {
+            let x = 100.0 + index as f64 * 4.0;
+            let segment = Line {
+                start: [x, 100.0],
+                end: [x + 1.0, 100.0],
+            };
+            sources.insert(
+                Handle::new(100 + index),
+                crate::scene::BoundarySource {
+                    segments: vec![segment],
+                    curves: Vec::new(),
+                },
+            );
+        }
+
+        let mut command = HatchCommand::new(sources, Vec::new(), None, WorkingPlane::default());
+        command.on_point(DVec3::new(5.0, 5.0, 0.0));
+        assert_eq!(command.point_regions.len(), 1);
+        assert_eq!(command.point_regions[0].len(), 2, "outer ring plus island");
+    }
+
+    #[test]
     fn three_nested_levels() {
         let a = rect(-30.0, -30.0, 30.0, 30.0);
         let b = rect(-15.0, -15.0, 15.0, 15.0);
@@ -1648,22 +1877,34 @@ mod tests {
         let rings = resolve_hatch_rings(&[a, b, c], [20.0, 0.0]).unwrap();
         assert_eq!(rings.len(), 2, "outer band = a with b as its only hole");
         assert!((rings[0][0][0] - (-30.0)).abs() < 1e-9, "outer ring is a");
-        assert!((rings[1][0][0] - (-15.0)).abs() < 1e-9, "hole is direct child b");
+        assert!(
+            (rings[1][0][0] - (-15.0)).abs() < 1e-9,
+            "hole is direct child b"
+        );
     }
 
     #[test]
     fn boundary_region_keeps_a_selected_hole_in_one_entity() {
         let rings = vec![rect(-10.0, -10.0, 10.0, 10.0), rect(-2.0, -2.0, 2.0, 2.0)];
-        let segments: Vec<Line> = rings.iter().flat_map(|ring| {
-            ring.iter().copied().zip(ring.iter().copied().cycle().skip(1))
-                .take(ring.len()).map(|(start, end)| Line { start, end })
-        }).collect();
+        let segments: Vec<Line> = rings
+            .iter()
+            .flat_map(|ring| {
+                ring.iter()
+                    .copied()
+                    .zip(ring.iter().copied().cycle().skip(1))
+                    .take(ring.len())
+                    .map(|(start, end)| Line { start, end })
+            })
+            .collect();
         let mut sources = rustc_hash::FxHashMap::default();
-        sources.insert(Handle::new(1), crate::scene::BoundarySource {
-            curves: segments.iter().cloned().map(Curve::Line).collect(),
-            segments,
-        });
-        let mut command = BoundaryCommand::new(sources, Vec::new(), WorkingPlane::default());
+        sources.insert(
+            Handle::new(1),
+            crate::scene::BoundarySource {
+                curves: segments.iter().cloned().map(Curve::Line).collect(),
+                segments,
+            },
+        );
+        let mut command = BoundaryCommand::new(sources, Vec::new(), WorkingPlane::default(), 0.0);
         command.point_regions = vec![rings];
         command.output_region = true;
 

@@ -17,6 +17,9 @@ pub struct MeshMaterial {
     pub name: String,
     pub description: String,
     pub diffuse: [f32; 4],
+    /// The diffuse colour is the object's own (no colour of its own stored):
+    /// a block child taking an inherited material keeps its own colour.
+    pub diffuse_by_object: bool,
     pub ambient: [f32; 3],
     pub specular: [f32; 3],
     pub gloss: f32,
@@ -89,8 +92,7 @@ impl MeshMaterialMapper {
                 + self.normal_basis[2][1] * normal[1] as f64
                 + self.normal_basis[2][2] * normal[2] as f64,
         ];
-        let length =
-            (mapped[0] * mapped[0] + mapped[1] * mapped[1] + mapped[2] * mapped[2]).sqrt();
+        let length = (mapped[0] * mapped[0] + mapped[1] * mapped[1] + mapped[2] * mapped[2]).sqrt();
         if length > f64::EPSILON {
             [
                 (mapped[0] / length) as f32,
@@ -183,14 +185,14 @@ impl MeshTextureMap {
             source: map.source,
             file_name: map.file_name.clone(),
             procedural: map.texture.is_some(),
-            image: load_map_image(map, base_dir)
-                .or_else(|| procedural_map_image(map)),
+            image: load_map_image(map, base_dir).or_else(|| procedural_map_image(map)),
         }
     }
 
     pub fn has_content(&self) -> bool {
-        (self.source == 1 && !self.file_name.trim().is_empty())
-            || (self.source == 2 && self.procedural)
+        // A procedural texture counts whatever the native source says: a
+        // checker asset attaches its texture without rewriting the source.
+        (self.source == 1 && !self.file_name.trim().is_empty()) || self.procedural
     }
 }
 
@@ -201,6 +203,7 @@ impl MeshMaterial {
             name: String::new(),
             description: String::new(),
             diffuse: color,
+            diffuse_by_object: true,
             ambient: [color[0], color[1], color[2]],
             specular: [0.08; 3],
             gloss: 0.5,
@@ -266,6 +269,7 @@ impl MeshMaterial {
                 diffuse[2],
                 entity_color[3] * opacity,
             ],
+            diffuse_by_object: material.diffuse_color.flag != 1 || material.diffuse_color.rgb.is_none(),
             ambient: [ambient[0], ambient[1], ambient[2]],
             specular: [specular[0], specular[1], specular[2]],
             gloss: material.specular_gloss_factor.clamp(0.0, 1.0) as f32,
@@ -301,6 +305,10 @@ impl MeshMaterial {
     }
 
     pub fn apply_to(&self, set: &mut super::mesh_model::MeshLodSet) {
+        // The material colours the faces; the edges keep the object's colour.
+        if set.edge_color.is_none() {
+            set.edge_color = set.display_color();
+        }
         if set.instance_source.is_some() {
             set.instance_color = Some(self.diffuse);
         } else {
@@ -325,8 +333,7 @@ impl MeshMaterial {
             .flat_map(|lod| lod.triangle_material_handles.iter().flatten().copied())
             .collect();
         for handle in handles {
-            let material =
-                resolve_material_handle_with_base(document, handle, self, base_dir);
+            let material = resolve_material_handle_with_base(document, handle, self, base_dir);
             set.face_materials.insert(handle, material);
         }
     }
@@ -368,9 +375,7 @@ fn procedural_map_image(map: &MaterialMap) -> Option<Arc<MaterialImage>> {
             } else {
                 color2
             };
-            rgba.extend(color.map(|channel| {
-                (channel.clamp(0.0, 1.0) * 255.0).round() as u8
-            }));
+            rgba.extend(color.map(|channel| (channel.clamp(0.0, 1.0) * 255.0).round() as u8));
         }
     }
     Some(Arc::new(MaterialImage {
@@ -443,21 +448,9 @@ fn entity_material_mapper(entity: &EntityType) -> Option<MeshMaterialMapper> {
     let y = positions.next()?;
     let z = positions.next()?;
     let basis = glam::DMat3::from_cols(
-        glam::DVec3::from_array([
-            x[0] - origin[0],
-            x[1] - origin[1],
-            x[2] - origin[2],
-        ]),
-        glam::DVec3::from_array([
-            y[0] - origin[0],
-            y[1] - origin[1],
-            y[2] - origin[2],
-        ]),
-        glam::DVec3::from_array([
-            z[0] - origin[0],
-            z[1] - origin[1],
-            z[2] - origin[2],
-        ]),
+        glam::DVec3::from_array([x[0] - origin[0], x[1] - origin[1], x[2] - origin[2]]),
+        glam::DVec3::from_array([y[0] - origin[0], y[1] - origin[1], y[2] - origin[2]]),
+        glam::DVec3::from_array([z[0] - origin[0], z[1] - origin[1], z[2] - origin[2]]),
     );
     if basis.determinant().abs() <= f64::EPSILON {
         return None;
@@ -627,6 +620,9 @@ mod tests {
         line.common.extended_data.add_record(record);
         let mapper = entity_material_mapper(&EntityType::Line(line)).expect("valid mapper");
 
-        assert_eq!(mapper.map_position([4.0, 22.0, 42.0], [0.0; 3]), [1.0, 2.0, 3.0]);
+        assert_eq!(
+            mapper.map_position([4.0, 22.0, 42.0], [0.0; 3]),
+            [1.0, 2.0, 3.0]
+        );
     }
 }

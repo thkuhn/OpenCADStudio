@@ -543,7 +543,7 @@ pub fn sync_carrier_primitives(
                     }
 
                     let hh = doc.allocate_handle();
-                    let mut hent = EntityType::Hatch(hatch);
+                    let mut hent = EntityType::Hatch(Box::new(hatch));
                     hent.common_mut().handle = hh;
                     apply_primitive_style_to_entity(&mut hent, prim, carrier.handle, layer_name, lt_scale);
                     attach_primitive_xdata(doc, &mut hent, prim, carrier.handle);
@@ -621,6 +621,7 @@ pub fn ensure_document_linetypes(doc: &mut CadDocument) {
         crate::io::linetypes::populate_document_from_source(
             doc,
             "*DASHED,Dashed __ __ __ __ __ __ __ __ __ __ __ __ __ _\nA, 12.7, -6.35\n",
+            None,
         );
     }
 }

@@ -41,7 +41,6 @@ impl OpenCADStudio {
         }
     }
 
-
     pub(super) fn handle_match_properties(
         &mut self,
         mut dest: Vec<Handle>,
@@ -151,6 +150,11 @@ impl OpenCADStudio {
                 .push_info(crate::tf!("Properties matched to {} object(s).", dest.len()).as_ref());
             // Clear the consumed target selection and keep prompting.
             self.tabs[i].scene.deselect_all();
+            self.tabs[i].scene.set_command_preview_hatches(Vec::new());
+            let source_glow = self.tabs[i]
+                .scene
+                .matchprop_source_highlight_wires(src);
+            self.tabs[i].scene.set_preview_wires(source_glow);
             if let Some(cmd) = &self.tabs[i].active_cmd {
                 self.command_line.push_info(&cmd.prompt());
             }
@@ -163,5 +167,4 @@ impl OpenCADStudio {
         }
         None
     }
-
 }

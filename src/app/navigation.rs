@@ -367,7 +367,8 @@ mod tests {
             .scene
             .selection
             .borrow_mut()
-            .view.vp_size = (800., 600.);
+            .view
+            .vp_size = (800., 600.);
         app.spacemouse_focused = true;
         app.spacemouse.test_connect();
         app.sync_spacemouse();
@@ -496,7 +497,7 @@ mod tests {
         vp.width = 200.;
         vp.height = 100.;
         vp.view_height = 50.;
-        let handle = scene.add_entity(codec::EntityType::Viewport(vp));
+        let handle = scene.add_entity(codec::EntityType::Viewport(Box::new(vp)));
         scene.active_viewport = Some(handle);
         let mut camera = scene.navigation_camera();
         camera.target = DVec3::new(120., 30., 8.);

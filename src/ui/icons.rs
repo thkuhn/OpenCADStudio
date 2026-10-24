@@ -62,6 +62,7 @@ static LAY_ULK: &[u8] = include_bytes!("../../assets/icons/layers/layulk.svg");
 // All are black-on-transparent; recolour them at the call site with [`tinted`].
 pub static CHECK: &[u8] = include_bytes!("../../assets/icons/ui/check.svg");
 pub static CLOSE: &[u8] = include_bytes!("../../assets/icons/ui/close.svg");
+pub static EYEDROPPER: &[u8] = include_bytes!("../../assets/icons/ui/eyedropper.svg");
 pub static PLUS: &[u8] = include_bytes!("../../assets/icons/ui/plus.svg");
 pub static REFRESH: &[u8] = include_bytes!("../../assets/icons/ui/refresh.svg");
 pub static SWAP: &[u8] = include_bytes!("../../assets/icons/ui/swap.svg");
@@ -73,9 +74,14 @@ pub static MENU: &[u8] = include_bytes!("../../assets/icons/ui/menu.svg");
 pub static MOVE: &[u8] = include_bytes!("../../assets/icons/ui/move.svg");
 pub static RESIZE: &[u8] = include_bytes!("../../assets/icons/ui/resize.svg");
 pub static PIN: &[u8] = include_bytes!("../../assets/icons/ui/pin.svg");
+/// `PIN` tilted 30°: the pin while auto-hide is on.
+pub static PIN_ACTIVE: &[u8] = include_bytes!("../../assets/icons/ui/pin_active.svg");
 pub static SPLIT_V: &[u8] = include_bytes!("../../assets/icons/ui/split_v.svg");
 pub static SPLIT_H: &[u8] = include_bytes!("../../assets/icons/ui/split_h.svg");
 pub static GRID: &[u8] = include_bytes!("../../assets/icons/ui/grid.svg");
+pub static LIST: &[u8] = include_bytes!("../../assets/icons/ui/list.svg");
+pub static SEARCH: &[u8] = include_bytes!("../../assets/icons/ui/search.svg");
+pub static PREVIEW: &[u8] = include_bytes!("../../assets/icons/ui/preview.svg");
 pub static SNAP: &[u8] = include_bytes!("../../assets/icons/ui/snap.svg");
 pub static DOC_NEW: &[u8] = include_bytes!("../../assets/icons/ui/doc_new.svg");
 pub static DOC: &[u8] = include_bytes!("../../assets/icons/ui/doc.svg");
@@ -91,6 +97,13 @@ pub static DIRTY_DOT: &[u8] = include_bytes!("../../assets/icons/ui/dirty_dot.sv
 pub static ARROW_LONG_RIGHT: &[u8] = include_bytes!("../../assets/icons/ui/arrow_long_right.svg");
 pub static MORE: &[u8] = include_bytes!("../../assets/icons/ui/more.svg");
 pub static INFO: &[u8] = include_bytes!("../../assets/icons/ui/info.svg");
+pub static MESH: &[u8] = include_bytes!("../../assets/icons/ui/mesh.svg");
+pub static ALERT: &[u8] = include_bytes!("../../assets/icons/ui/alert.svg");
+pub static WARNING: &[u8] = include_bytes!("../../assets/icons/ui/warning.svg");
+pub static IMAGE: &[u8] = include_bytes!("../../assets/icons/ui/image.svg");
+pub static LOCK: &[u8] = include_bytes!("../../assets/icons/ui/lock.svg");
+pub static EYE: &[u8] = include_bytes!("../../assets/icons/ui/eye.svg");
+pub static EYE_OFF: &[u8] = include_bytes!("../../assets/icons/ui/eye_off.svg");
 
 // ── Status-bar toggle icons (issue #216) ──────────────────────────────────
 pub static ST_ORTHO: &[u8] = include_bytes!("../../assets/icons/status/ortho.svg");
@@ -98,6 +111,7 @@ pub static ST_POLAR: &[u8] = include_bytes!("../../assets/icons/status/polar.svg
 pub static ST_OSNAP: &[u8] = include_bytes!("../../assets/icons/status/osnap.svg");
 pub static ST_OTRACK: &[u8] = include_bytes!("../../assets/icons/status/otrack.svg");
 pub static ST_DYN: &[u8] = include_bytes!("../../assets/icons/status/dyn.svg");
+pub static ST_DUCS: &[u8] = include_bytes!("../../assets/icons/status/ducs.svg");
 pub static ST_LWT: &[u8] = include_bytes!("../../assets/icons/status/lwt.svg");
 pub static ST_TRANSPARENCY: &[u8] = include_bytes!("../../assets/icons/status/transparency.svg");
 pub static ST_ISOLATE: &[u8] = include_bytes!("../../assets/icons/status/isolate.svg");
@@ -509,13 +523,16 @@ pub fn themed_secondary<'a, M: 'a>(bytes: &'static [u8], size: f32) -> Element<'
         .into()
 }
 
-/// Render disabled chrome with the active Iced theme's text color.
+/// Render disabled chrome with the active Iced theme's text color, faded
+/// like disabled text. The fade goes through the widget's opacity: an SVG
+/// tint only replaces RGB, so alpha on the style colour would be ignored.
 pub fn themed_disabled<'a, M: 'a>(bytes: &'static [u8], size: f32) -> Element<'a, M> {
     svg(themed_handle(bytes))
         .width(size)
         .height(size)
+        .opacity(0.42_f32)
         .style(|theme: &Theme, _| svg::Style {
-            color: Some(theme.palette().background.base.text.scale_alpha(0.42)),
+            color: Some(theme.palette().background.base.text),
         })
         .into()
 }

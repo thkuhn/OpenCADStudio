@@ -2,9 +2,12 @@
 
 use crate::app::{Message, StyleKind};
 use crate::t;
-use iced::widget::{button, canvas, checkbox, column, container, row, scrollable, text, text_input};
-use iced::{mouse, Background, Border, Element, Length, Point, Rectangle, Theme};
 use crate::ui::style::common::muted_style;
+use crate::ui::style::form::field_style;
+use iced::widget::{
+    button, canvas, checkbox, column, container, row, scrollable, text, text_input,
+};
+use iced::{mouse, Background, Element, Length, Point, Rectangle, Theme};
 use std::borrow::Cow;
 
 pub struct TextStyleView<'a> {
@@ -23,6 +26,9 @@ pub struct TextStyleView<'a> {
     pub height_buf: &'a str,
     pub bigfont_buf: &'a str,
     pub ttf_buf: &'a str,
+    /// The TrueType font style (typeface flags).
+    pub bold: bool,
+    pub italic: bool,
     pub backward: bool,
     pub upside_down: bool,
     pub vertical: bool,
@@ -32,34 +38,14 @@ pub struct TextStyleView<'a> {
 }
 
 const BUILTIN_FONTS: &[&str] = &[
-    "Standard", "ISO", "Simplex", "RomanS", "RomanD", "RomanC", "RomanT", "ItalicC",
-    "ItalicT", "ScriptS", "ScriptC", "GothGBT", "GothGRT", "GothITT", "GreekC",
-    "Symbol", "ISO3098", "Unicode",
+    "Standard", "ISO", "Simplex", "RomanS", "RomanD", "RomanC", "RomanT", "ItalicC", "ItalicT",
+    "ScriptS", "ScriptC", "GothGBT", "GothGRT", "GothITT", "GreekC", "Symbol", "ISO3098",
+    "Unicode",
 ];
 
 fn primary_style(theme: &Theme) -> iced::widget::text::Style {
     iced::widget::text::Style {
         color: Some(theme.palette().primary.base.color),
-    }
-}
-
-fn field_style(theme: &Theme, status: text_input::Status) -> text_input::Style {
-    let palette = theme.palette();
-    text_input::Style {
-        background: Background::Color(palette.background.base.color),
-        border: Border {
-            color: if matches!(status, text_input::Status::Focused { .. }) {
-                palette.primary.base.color
-            } else {
-                palette.background.neutral.color
-            },
-            width: 1.0,
-            radius: 3.0.into(),
-        },
-        icon: palette.background.base.text,
-        placeholder: palette.background.base.text.scale_alpha(0.48),
-        value: palette.background.base.text,
-        selection: palette.primary.base.color.scale_alpha(0.5),
     }
 }
 
@@ -85,6 +71,8 @@ fn list_item(active: bool) -> impl Fn(&Theme, button::Status) -> button::Style {
 
 struct TextPreviewCanvas {
     font: String,
+    /// `font` in the style's bold / italic face, when it has one.
+    face: String,
     big_font: String,
     width_factor: f32,
     oblique: f32,
@@ -126,7 +114,7 @@ impl canvas::Program<Message> for TextPreviewCanvas {
                     rotation,
                     self.width_factor,
                     self.oblique,
-                    &self.font,
+                    &self.face,
                     &character.to_string(),
                 );
                 result.append(&mut glyph);
@@ -139,7 +127,7 @@ impl canvas::Program<Message> for TextPreviewCanvas {
                 rotation,
                 self.width_factor,
                 self.oblique,
-                &self.font,
+                &self.face,
                 "AaBbCc 0123",
             )
             .0
@@ -275,10 +263,16 @@ fn font_list<'a>(
             }
         })
         .collect();
-    container(column![text(title).size(10).style(muted_style), scrollable(column(items).spacing(1)).height(250)].spacing(5))
-        .width(Length::FillPortion(1))
-        .padding(4)
-        .into()
+    container(
+        column![
+            text(title).size(10).style(muted_style),
+            scrollable(column(items).spacing(1)).height(250)
+        ]
+        .spacing(5),
+    )
+    .width(Length::FillPortion(1))
+    .padding(4)
+    .into()
 }
 
 pub fn view_window<'a>(
@@ -297,11 +291,23 @@ pub fn view_window<'a>(
         .unwrap_or(1.0)
         .abs()
         .clamp(0.01, 100.0);
+    let ttf = !v.ttf_buf.trim().is_empty();
     let preview = canvas(TextPreviewCanvas {
         font: effective_font.to_string(),
+        face: crate::entities::text_support::styled_font(
+            effective_font,
+            ttf && v.bold,
+            ttf && v.italic,
+        )
+        .unwrap_or_else(|| effective_font.to_string()),
         big_font: v.bigfont_buf.to_string(),
         width_factor: if v.backward { -width } else { width },
-        oblique: v.oblique_buf.trim().parse::<f32>().unwrap_or(0.0).to_radians(),
+        oblique: v
+            .oblique_buf
+            .trim()
+            .parse::<f32>()
+            .unwrap_or(0.0)
+            .to_radians(),
         height: v.height_buf.trim().parse::<f32>().unwrap_or(0.0).max(0.0),
         upside_down: v.upside_down,
         vertical: v.vertical,
@@ -312,17 +318,46 @@ pub fn view_window<'a>(
 
     let content: Element<'a, Message> = match v.tab {
         0 => {
-            let built_in = BUILTIN_FONTS.iter().map(|value| (*value).to_string()).collect();
-            let system = crate::scene::text::sysfont::families().to_vec();
+            let built_in = BUILTIN_FONTS
+                .iter()
+                .map(|value| (*value).to_string())
+                .collect();
+            // Web: the fetched Noto set plus the office/CAD family names it
+            // stands in for (Arial → Noto Sans, …); desktop: installed fonts.
+            let system = crate::scene::text::sysfont::picker_families();
             column![
                 row![
                     font_list(t!("Stroke fonts"), built_in, v.font_buf, false, v.read_only),
                     font_list(t!("System fonts"), system, v.ttf_buf, true, v.read_only),
                 ]
                 .spacing(10),
-                input_row(t!("Font file"), t!("font file…"), v.font_buf, "font", v.read_only),
-                input_row(t!("Big font"), t!("big-font file…"), v.bigfont_buf, "bigfont", v.read_only),
-                input_row(t!("System font"), t!("font family…"), v.ttf_buf, "ttf", v.read_only),
+                input_row(
+                    t!("Font file"),
+                    t!("font file…"),
+                    v.font_buf,
+                    "font",
+                    v.read_only
+                ),
+                input_row(
+                    t!("Big font"),
+                    t!("big-font file…"),
+                    v.bigfont_buf,
+                    "bigfont",
+                    v.read_only
+                ),
+                input_row(
+                    t!("System font"),
+                    t!("font family…"),
+                    v.ttf_buf,
+                    "ttf",
+                    v.read_only
+                ),
+                // A system font's style; stroke fonts have none.
+                row![
+                    toggle(t!("Bold"), v.bold, "bold", v.read_only || !ttf),
+                    toggle(t!("Italic"), v.italic, "italic", v.read_only || !ttf),
+                ]
+                .spacing(18),
             ]
             .spacing(8)
             .into()
@@ -330,15 +365,31 @@ pub fn view_window<'a>(
         _ => column![
             text(t!("Size")).size(11).style(primary_style),
             input_row(
-                if v.annotative { t!("Paper text height") } else { t!("Fixed height") },
+                if v.annotative {
+                    t!("Paper text height")
+                } else {
+                    t!("Fixed height")
+                },
                 t!("0 = variable"),
                 v.height_buf,
                 "height",
                 v.read_only,
             ),
             text(t!("Effects")).size(11).style(primary_style),
-            input_row(t!("Width factor"), "1.0".into(), v.width_buf, "width", v.read_only),
-            input_row(t!("Oblique angle"), "0.0".into(), v.oblique_buf, "oblique", v.read_only),
+            input_row(
+                t!("Width factor"),
+                "1.0".into(),
+                v.width_buf,
+                "width",
+                v.read_only
+            ),
+            input_row(
+                t!("Oblique angle"),
+                "0.0".into(),
+                v.oblique_buf,
+                "oblique",
+                v.read_only
+            ),
             row![
                 toggle(t!("Backward"), v.backward, "backward", v.read_only),
                 toggle(t!("Upside down"), v.upside_down, "upside_down", v.read_only),

@@ -200,7 +200,7 @@ impl Din1356SectionSymbol {
                 );
                 mtext.height = self.text_height;
                 mtext.value = self.label.clone();
-                entities.push(EntityType::MText(mtext));
+                entities.push(EntityType::MText(Box::new(mtext)));
             }
         }
 
@@ -242,7 +242,7 @@ impl Din1356SectionSymbol {
                 );
                 mtext.height = self.text_height;
                 mtext.value = self.label.clone();
-                entities.push(EntityType::MText(mtext));
+                entities.push(EntityType::MText(Box::new(mtext)));
             }
         }
 
@@ -314,7 +314,7 @@ pub fn generate_din1356_level_marker(
     mtext.insertion_point = CadVec3::new(origin.x_m + size * 1.2, origin.y_m + size * 0.5, 0.0);
     mtext.height = 0.25;
     mtext.value = text_val;
-    entities.push(EntityType::MText(mtext));
+    entities.push(EntityType::MText(Box::new(mtext)));
 
     entities
 }

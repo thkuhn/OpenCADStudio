@@ -89,7 +89,8 @@ pub fn set_fixed_text_heights(document: &codec::CadDocument) {
         let mut map = cell.borrow_mut();
         map.clear();
         for style in document.text_styles.iter() {
-            let font = crate::entities::text_support::resolve_text_style(&style.name, document).font_name;
+            let font =
+                crate::entities::text_support::resolve_text_style(&style.name, document).font_name;
             map.insert(style.name.to_ascii_lowercase(), font);
         }
     });
@@ -653,8 +654,8 @@ pub fn lineweight_options() -> Vec<String> {
         "Default".to_string(),
     ];
     for value in [
-        0, 5, 9, 13, 15, 18, 20, 25, 30, 35, 40, 50, 53, 60, 70, 80, 90, 100, 106, 120,
-        140, 158, 200, 211,
+        0, 5, 9, 13, 15, 18, 20, 25, 30, 35, 40, 50, 53, 60, 70, 80, 90, 100, 106, 120, 140, 158,
+        200, 211,
     ] {
         options.push(format!("{:.2} mm", value as f64 / 100.0));
     }
@@ -694,11 +695,7 @@ pub fn num_prop(label: &str, field: &'static str, value: f64, editable: bool) ->
 
 /// A ◀ / ▶ index navigator row (e.g. a polyline's Current Vertex). `display` is
 /// the label shown between the arrows (e.g. "2 / 7").
-pub fn stepper_prop(
-    label: &str,
-    field: &'static str,
-    display: impl Into<String>,
-) -> Property {
+pub fn stepper_prop(label: &str, field: &'static str, display: impl Into<String>) -> Property {
     Property {
         label: label.into(),
         field,
@@ -751,9 +748,7 @@ fn parse_angle_deg_unbounded(value: &str) -> Option<f64> {
     let i = rest.find(['°', 'd', 'D'])?;
     let d: f64 = rest[..i].trim().parse().ok()?;
     let mut total = d;
-    let tail = rest[i..]
-        .trim_start_matches(['°', 'd', 'D'])
-        .trim();
+    let tail = rest[i..].trim_start_matches(['°', 'd', 'D']).trim();
     if !tail.is_empty() {
         let (mpart, spart) = match tail.find('\'') {
             Some(j) => (&tail[..j], &tail[j + 1..]),
@@ -1103,10 +1098,7 @@ pub(crate) fn extrude_wide_band_outline(
     point_segments.extend_from_slice(&base_segments);
 
     let mut emitted = HashSet::new();
-    for ((&point, &station), &segment) in base_points
-        .iter()
-        .zip(&base_stations)
-        .zip(&base_segments)
+    for ((&point, &station), &segment) in base_points.iter().zip(&base_stations).zip(&base_segments)
     {
         if !point[0].is_finite() {
             continue;
@@ -1134,6 +1126,67 @@ pub(crate) fn extrude_wide_band_outline(
         point_segments,
         station_pieces: outline.station_pieces,
         source_length: outline.source_length,
+    }
+}
+
+/// One wide-polyline segment as `polyline_segment_fill` takes it:
+/// `(p0, p1, hw0, hw1, bulge)`.
+pub(crate) type WideSegment = ([f32; 2], [f32; 2], f32, f32, f32);
+
+/// Mitre the bands of consecutive straight segments of the same width:
+/// both corners where they meet move to the joint's bisector, so the outer
+/// side has no notch and the inner side no overlap. `bands[k]` is the
+/// `polyline_segment_fill` quad of `segments[k]`; `closed` also joins the
+/// last segment to the first. Turns sharper than the wire shaders' mitre
+/// limit keep their butt ends.
+pub(crate) fn mitre_wide_joins(
+    bands: &mut [Vec<[f32; 2]>],
+    segments: &[WideSegment],
+    closed: bool,
+) {
+    let n = segments.len().min(bands.len());
+    let joins = if closed { n } else { n.saturating_sub(1) };
+    for i in 0..joins {
+        let next = (i + 1) % n;
+        let (a0, a1, _, h, a_bulge) = segments[i];
+        let (b0, b1, b_h, _, b_bulge) = segments[next];
+        if a_bulge.abs() > 1e-9 || b_bulge.abs() > 1e-9 || h < 1e-6 {
+            continue;
+        }
+        if bands[i].len() != 4
+            || bands[next].len() != 4
+            || (b_h - h).abs() > 1e-4 * h.max(1.0)
+            || (a1[0] - b0[0]).abs() > 1e-4
+            || (a1[1] - b0[1]).abs() > 1e-4
+        {
+            continue;
+        }
+        let unit = |p: [f32; 2], q: [f32; 2]| {
+            let (dx, dy) = (q[0] - p[0], q[1] - p[1]);
+            let len = (dx * dx + dy * dy).sqrt();
+            (len > 1e-9).then(|| [dx / len, dy / len])
+        };
+        let (Some(d0), Some(d1)) = (unit(a0, a1), unit(b0, b1)) else {
+            continue;
+        };
+        let cos = d0[0] * d1[0] + d0[1] * d1[1];
+        let sin = d0[0] * d1[1] - d0[1] * d1[0];
+        if sin.abs() < 1e-6 || 1.0 + cos < 1e-6 {
+            continue;
+        }
+        let half_turn = (sin / (1.0 + cos)).abs() as f64;
+        if half_turn > crate::scene::pipeline::wire_gpu::MITER_LIMIT {
+            continue;
+        }
+        // Left normals; their sum over (1 + cos) reaches the bisector.
+        let k = h / (1.0 + cos);
+        let m = [k * (-d0[1] - d1[1]), k * (d0[0] + d1[0])];
+        let left = [a1[0] + m[0], a1[1] + m[1]];
+        let right = [a1[0] - m[0], a1[1] - m[1]];
+        bands[i][1] = left;
+        bands[i][2] = right;
+        bands[next][0] = left;
+        bands[next][3] = right;
     }
 }
 
@@ -1286,8 +1339,9 @@ mod length_format_tests {
         for lunits in [3, 4, 5] {
             for value in [0.995f64, 5.995, 11.999, 23.999, 66.5, 9.25] {
                 let shown = with_units(lunits, if lunits == 3 { 4 } else { 4 }, value);
-                let read = parse_length(&shown)
-                    .unwrap_or_else(|| panic!("lunits {lunits} wrote {shown:?}, which does not read back"));
+                let read = parse_length(&shown).unwrap_or_else(|| {
+                    panic!("lunits {lunits} wrote {shown:?}, which does not read back")
+                });
                 assert!(
                     (read - value).abs() < 0.02,
                     "lunits {lunits}: {value} wrote {shown:?}, read back as {read}"
@@ -1322,11 +1376,7 @@ mod length_format_tests {
             "format_angle produced {} chars",
             angle.len()
         );
-        assert!(
-            area.len() < 64,
-            "format_area produced {} chars",
-            area.len()
-        );
+        assert!(area.len() < 64, "format_area produced {} chars", area.len());
     }
 }
 
@@ -1360,7 +1410,9 @@ mod angle_format_tests {
         assert_eq!(shown(4, 0, 180.0), "W");
         assert_ne!(shown(4, 8, 0.0000000005), "E");
         for prec in [0, 2] {
-            for deg in [0.99999f64, 45.9999, 89.99999, 179.99999, 269.99999, 359.99999] {
+            for deg in [
+                0.99999f64, 45.9999, 89.99999, 179.99999, 269.99999, 359.99999,
+            ] {
                 let text = shown(4, prec, deg);
                 assert!(
                     !text.contains("90d"),
@@ -1377,7 +1429,9 @@ mod angle_format_tests {
                 for deg in [0.99999f64, 45.5, 45.9999, 89.99999, 200.25, 359.99999] {
                     let text = shown(aunits, prec, deg);
                     let read = parse_angle(&text).unwrap_or_else(|| {
-                        panic!("aunits {aunits} prec {prec} wrote {text:?}, which does not read back")
+                        panic!(
+                            "aunits {aunits} prec {prec} wrote {text:?}, which does not read back"
+                        )
                     });
                     let delta = (read.to_degrees().rem_euclid(360.0) - deg.rem_euclid(360.0))
                         .rem_euclid(360.0);

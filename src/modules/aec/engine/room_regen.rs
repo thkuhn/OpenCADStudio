@@ -237,7 +237,7 @@ pub fn regenerate_room_representation_with_display(
     scene.ensure_layer(AEC_ROOM_CARRIER_LAYER);
     scene.ensure_layer(AEC_ROOM_STAMP_LAYER);
 
-    let mut stamp_entity = EntityType::MText(mtext);
+    let mut stamp_entity = EntityType::MText(Box::new(mtext));
     stamp_entity.common_mut().layer = AEC_ROOM_STAMP_LAYER.to_string();
 
     if display.stamp {

@@ -96,14 +96,10 @@ impl InsertStyleSpec {
             transparency_bylayer: common.transparency.is_by_layer(),
             linetype_byblock: linetype.eq_ignore_ascii_case("byblock"),
             linetype_bylayer: linetype.is_empty() || linetype.eq_ignore_ascii_case("bylayer"),
-            lineweight_byblock: matches!(
-                common.line_weight,
-                codec::types::LineWeight::ByBlock
-            ),
+            lineweight_byblock: matches!(common.line_weight, codec::types::LineWeight::ByBlock),
             lineweight_bylayer: matches!(
                 common.line_weight,
-                codec::types::LineWeight::ByLayer
-                    | codec::types::LineWeight::Default
+                codec::types::LineWeight::ByLayer | codec::types::LineWeight::Default
             ),
             layer0: is_effective_layer_zero(&common.layer),
         }
@@ -259,6 +255,9 @@ impl InstanceContext {
     }
 
     pub fn style_for(&self, document: &CadDocument, entity: &EntityType) -> ResolvedStyle {
+        if self.insert_path.iter().any(|insert| crate::scene::block_construction::is_construction(&insert.common)) {
+            return crate::scene::block_construction::display_style();
+        }
         self.block_style
             .map(|style| style.resolve(document, entity, self.viewport))
             .unwrap_or_else(|| render_style_for_viewport(document, entity, self.viewport))
@@ -267,10 +266,7 @@ impl InstanceContext {
     pub fn draw_depth(&self, handle: Handle, depths: &FxHashMap<u64, [f32; 2]>) -> f32 {
         if self.is_instanced() {
             self.depth_base
-                + depths
-                    .get(&handle.value())
-                    .map_or(0.0, |depth| depth[0])
-                    * self.depth_scale
+                + depths.get(&handle.value()).map_or(0.0, |depth| depth[0]) * self.depth_scale
         } else {
             depths
                 .get(&handle.value())
@@ -287,6 +283,10 @@ pub struct RenderSceneGraph<'a> {
     all_visible: bool,
     depths: &'a FxHashMap<u64, [f32; 2]>,
     viewport: Option<Handle>,
+    visibility_reveal: Option<&'a FxHashSet<Handle>>,
+    /// Published on the first INSERT: every placement asks for its block's
+    /// base point.
+    dictionary_owners: std::sync::OnceLock<super::block_authoring::DictionaryOwners<'a>>,
 }
 
 impl<'a> RenderSceneGraph<'a> {
@@ -305,7 +305,14 @@ impl<'a> RenderSceneGraph<'a> {
             all_visible,
             depths,
             viewport: None,
+            visibility_reveal: None,
+            dictionary_owners: std::sync::OnceLock::new(),
         }
+    }
+
+    pub fn with_visibility_reveal(mut self, handles: &'a FxHashSet<Handle>) -> Self {
+        self.visibility_reveal = Some(handles);
+        self
     }
 
     pub fn with_viewport(mut self, viewport: Option<Handle>) -> Self {
@@ -354,7 +361,7 @@ impl<'a> RenderSceneGraph<'a> {
                 .get(&handle.value())
                 .map_or(0.0, |depth| depth[0]);
             let context = InstanceContext::direct(direct_depth, viewport);
-            if !self.document_visible(entity) || !visible(entity, &context) {
+            if !self.document_visible(entity, false) || !visible(entity, &context) {
                 continue;
             }
             if let EntityType::Insert(insert) = entity {
@@ -380,8 +387,7 @@ impl<'a> RenderSceneGraph<'a> {
         root_handle: Handle,
         mut visible: V,
         mut leaf: F,
-    )
-    where
+    ) where
         V: FnMut(&EntityType, &InstanceContext) -> bool,
         F: FnMut(&EntityType, &InstanceContext),
     {
@@ -413,17 +419,12 @@ impl<'a> RenderSceneGraph<'a> {
             .get(&root_handle.value())
             .map_or(0.0, |depth| depth[0]);
         let context = InstanceContext::direct(depth_base, self.viewport);
-        if self.document_visible(&entity) && visible(&entity, &context) {
-            self.walk_insert_instances(
-                &root_insert,
-                scale_policy,
-                &context,
-                visible,
-                leaf,
-            );
+        // The caller has already shown the owning object; the placement itself
+        // is often synthetic (an arrowhead on layer 0), so layer 0 defers.
+        if self.document_visible(&entity, true) && visible(&entity, &context) {
+            self.walk_insert_instances(&root_insert, scale_policy, &context, visible, leaf);
         }
     }
-
 
     fn walk_insert_instances<V, F>(
         &self,
@@ -436,11 +437,15 @@ impl<'a> RenderSceneGraph<'a> {
         V: FnMut(&EntityType, &InstanceContext) -> bool,
         F: FnMut(&EntityType, &InstanceContext),
     {
+        self.dictionary_owners
+            .get_or_init(|| super::block_authoring::DictionaryOwners::publish(self.document));
         let insert_entity = EntityType::Insert(insert.clone());
         let block_style = parent
             .block_style
             .map(|style| BlockStyle::for_nested(self.document, insert, style, self.viewport))
-            .unwrap_or_else(|| BlockStyle::for_entity(self.document, &insert_entity, self.viewport));
+            .unwrap_or_else(|| {
+                BlockStyle::for_entity(self.document, &insert_entity, self.viewport)
+            });
         let root_handle = if parent.root_handle.is_null() {
             insert.common.handle
         } else {
@@ -480,14 +485,11 @@ impl<'a> RenderSceneGraph<'a> {
             context.depth_scale = depth_scale;
             context.nesting_depth += 1;
             context.scale_policy = scale_policy;
-            if let Some(filter) = crate::scene::pick::xclip::insert_spatial_filter(
-                self.document,
-                insert,
-            ) {
-                let polygon = crate::scene::pick::xclip::world_clip_polygon_for_transform(
-                    filter,
-                    &transform,
-                );
+            if let Some(filter) =
+                crate::scene::pick::xclip::insert_spatial_filter(self.document, insert)
+            {
+                let polygon =
+                    crate::scene::pick::xclip::world_clip_polygon_for_transform(filter, &transform);
                 if polygon.len() >= 3 {
                     context.clips.push(polygon);
                 }
@@ -497,13 +499,7 @@ impl<'a> RenderSceneGraph<'a> {
                 .iter()
                 .map(|insert| insert.block_name.clone())
                 .collect();
-            self.walk_block(
-                &insert.block_name,
-                &context,
-                visible,
-                leaf,
-                &mut stack,
-            );
+            self.walk_block(&insert.block_name, &context, visible, leaf, &mut stack);
         }
     }
 
@@ -534,7 +530,7 @@ impl<'a> RenderSceneGraph<'a> {
                 self.annotation_scale_handle,
             );
             let entity = contextual.as_ref();
-            if !self.document_visible(entity) || !visible(entity, context) {
+            if !self.document_visible(entity, true) || !visible(entity, context) {
                 continue;
             }
             match entity {
@@ -599,15 +595,23 @@ impl<'a> RenderSceneGraph<'a> {
         }
     }
 
-    fn document_visible(&self, entity: &EntityType) -> bool {
+    /// `member`: the entity sits inside a block, where layer 0 defers to the
+    /// layer of the reference that places it.
+    fn document_visible(&self, entity: &EntityType, member: bool) -> bool {
         let common = entity.common();
-        if common.invisible {
+        if crate::scene::block_construction::is_construction(common) {
+            if member || !self.visibility_reveal.is_some_and(|handles| handles.contains(&common.handle)) { return false; }
+        }
+        if common.invisible
+            && !self
+                .visibility_reveal
+                .is_some_and(|handles| handles.contains(&common.handle))
+        {
             return false;
         }
         let layer = self.document.layers.get(&common.layer);
-        if layer
-            .map(|layer| layer.flags.off || layer.flags.frozen)
-            .unwrap_or(false)
+        if (member && block_member_layer_hidden(self.document, &common.layer))
+            || (!member && layer.is_some_and(|layer| layer.flags.off || layer.flags.frozen))
         {
             return false;
         }
@@ -626,12 +630,24 @@ impl<'a> RenderSceneGraph<'a> {
     }
 }
 
+/// Whether a block member on `layer` is hidden by its layer. Frozen layers
+/// hide it; layer 0 being off does not, since a member on layer 0 shows on the
+/// layer of the reference that places it, which the caller has checked.
+/// (#1916)
+pub(crate) fn block_member_layer_hidden(document: &CadDocument, layer: &str) -> bool {
+    document.layers.get(layer).is_some_and(|record| {
+        record.flags.frozen
+            || (record.flags.off && !crate::scene::view::render::is_effective_layer_zero(layer))
+    })
+}
+
 pub fn block_base_point(document: &CadDocument, block_name: &str) -> Vector3 {
-    document
-        .block_records
-        .iter()
-        .find(|record| record.name.eq_ignore_ascii_case(block_name))
+    block_record_by_name(document, block_name)
         .map(|record| {
+            if let Some((_, parameter)) = super::block_basepoint::parameter(document, record.handle)
+            {
+                return parameter.point;
+            }
             document
                 .get_entity(record.block_entity_handle)
                 .and_then(|entity| match entity {
@@ -643,8 +659,83 @@ pub fn block_base_point(document: &CadDocument, block_name: &str) -> Vector3 {
         .unwrap_or(Vector3::ZERO)
 }
 
+/// The block reference that places a dimension's picture block: at the
+/// dimension's insertion point, with its insertion rotation and scale. The
+/// point is stored in the dimension's OCS; the picture's sub-entities are in
+/// world coordinates, so only the point goes through the OCS. A zero scale
+/// component (an unread field) counts as 1 rather than collapsing the picture.
+pub(crate) fn dimension_picture_insert(
+    base: &codec::entities::dimension::DimensionBase,
+    block_name: String,
+) -> Insert {
+    let scale = |s: f64| if s.abs() < 1e-12 { 1.0 } else { s };
+    let point = Matrix3::arbitrary_axis(base.normal) * base.insertion_point;
+    Insert::new(block_name, point)
+        .with_scale(
+            scale(base.insertion_scale.x),
+            scale(base.insertion_scale.y),
+            scale(base.insertion_scale.z),
+        )
+        .with_rotation(base.insertion_rotation)
+}
+
+/// World transform of a dimension's picture placement, or None when it is
+/// the identity (the usual case: OCS bakes its pictures in place).
+pub(crate) fn dimension_picture_placement(
+    base: &codec::entities::dimension::DimensionBase,
+) -> Option<Transform> {
+    let insert = dimension_picture_insert(base, String::new());
+    let p = insert.insert_point;
+    let identity = p.x.abs() < 1e-9
+        && p.y.abs() < 1e-9
+        && p.z.abs() < 1e-9
+        && insert.rotation.abs() < 1e-12
+        && (insert.x_scale() - 1.0).abs() < 1e-12
+        && (insert.y_scale() - 1.0).abs() < 1e-12
+        && (insert.z_scale() - 1.0).abs() < 1e-12;
+    (!identity).then(|| insert.get_transform())
+}
+
+/// A dimension's picture placement as a world-space edit, or None when it is
+/// the identity. Edits move the picture's sub-entities in world space, so a
+/// placed picture has its placement folded into the subs and the dimension's
+/// own placement cleared (`clear_dim_picture_placement`); a placement left on
+/// the dimension would be applied again on top of the moved subs.
+pub(crate) fn dim_picture_placement(
+    entity: &EntityType,
+) -> Option<crate::command::EntityTransform> {
+    let EntityType::Dimension(d) = entity else {
+        return None;
+    };
+    if d.base().block_name.trim().is_empty() {
+        return None;
+    }
+    dimension_picture_placement(d.base()).map(crate::command::EntityTransform::Affine)
+}
+
+/// Reset a dimension's picture placement to the identity once its subs carry
+/// it. Also undoes the transform moving the placement point along with the
+/// dimension, which would offset a picture baked in place.
+pub(crate) fn clear_dim_picture_placement(entity: &mut EntityType) {
+    if let EntityType::Dimension(d) = entity {
+        let base = d.base_mut();
+        if !base.block_name.trim().is_empty() {
+            base.insertion_point = Vector3::ZERO;
+            base.insertion_rotation = 0.0;
+            base.insertion_scale = Vector3::new(1.0, 1.0, 1.0);
+        }
+    }
+}
+
 pub fn insert_transform(document: &CadDocument, insert: &Insert) -> Transform {
-    let base = block_base_point(document, &insert.block_name);
+    insert_transform_with_base(insert, block_base_point(document, &insert.block_name))
+}
+
+/// [`insert_transform`] for a caller that already resolved the block's base
+/// point (the `-INSERT` command builds the INSERT before the drawing is in
+/// scope), so the base-point convention lives in exactly one place:
+/// world = insert_point + Rot(rotation) * Scale * (P - base).
+pub fn insert_transform_with_base(insert: &Insert, base: Vector3) -> Transform {
     Transform::from_translation(Vector3::new(-base.x, -base.y, -base.z))
         .then(&insert.get_transform())
 }
@@ -733,11 +824,10 @@ fn block_use(
     replaces_host_wire: bool,
     suppress_root_points: bool,
 ) -> BlockUse {
-    let block =
-        block_record_by_name(document, &insert.block_name).map_or(Handle::NULL, |record| {
-            insert.block_name.clone_from(&record.name);
-            record.handle
-        });
+    let block = block_record_by_name(document, &insert.block_name).map_or(Handle::NULL, |record| {
+        insert.block_name.clone_from(&record.name);
+        record.handle
+    });
     BlockUse {
         block,
         insert,
@@ -783,9 +873,7 @@ fn push_dependency_use(
     {
         return;
     }
-    if let Some(mut block_use) =
-        block_use_from_handle(document, block, role, Vector3::ZERO)
-    {
+    if let Some(mut block_use) = block_use_from_handle(document, block, role, Vector3::ZERO) {
         block_use.active = false;
         uses.push(block_use);
     }
@@ -814,8 +902,9 @@ fn entity_owned_block_uses(
             if let Some(record) = block_record_by_name(document, name)
                 .filter(|record| !record.entity_handles.is_empty())
             {
-                let mut insert = Insert::new(record.name.clone(), Vector3::ZERO);
-                insert.common = dimension.base().common.clone();
+                let base = dimension.base();
+                let mut insert = dimension_picture_insert(base, record.name.clone());
+                insert.common = base.common.clone();
                 let picture = !crate::scene::annotative::is_annotative(document, entity);
                 vec![block_use(
                     document,
@@ -926,17 +1015,10 @@ pub fn entity_block_uses(
                     || (style_name.is_empty() && style.name.eq_ignore_ascii_case("Standard"))
             }) {
                 let style = crate::entities::dimension::resolved_dimension_style(
-                    style,
-                    dimension,
-                    document,
+                    style, dimension, document,
                 );
                 for handle in [style.dimblk, style.dimblk1, style.dimblk2, style.dimldrblk] {
-                    push_dependency_use(
-                        &mut uses,
-                        document,
-                        handle,
-                        BlockRole::ArrowHead,
-                    );
+                    push_dependency_use(&mut uses, document, handle, BlockRole::ArrowHead);
                 }
                 for name in [style.dimblk_name, style.dimblk1_name, style.dimblk2_name] {
                     if let Some(record) = block_record_by_name(document, &name) {
@@ -962,22 +1044,12 @@ pub fn entity_block_uses(
             )
             .or_else(|| style.map(|style| style.dimldrblk));
             if let Some(handle) = handle {
-                push_dependency_use(
-                    &mut uses,
-                    document,
-                    handle,
-                    BlockRole::ArrowHead,
-                );
+                push_dependency_use(&mut uses, document, handle, BlockRole::ArrowHead);
             }
         }
         EntityType::MultiLeader(multileader) => {
             if let Some(handle) = multileader.arrowhead_handle {
-                push_dependency_use(
-                    &mut uses,
-                    document,
-                    handle,
-                    BlockRole::ArrowHead,
-                );
+                push_dependency_use(&mut uses, document, handle, BlockRole::ArrowHead);
             }
             for line in multileader
                 .context
@@ -986,65 +1058,11 @@ pub fn entity_block_uses(
                 .flat_map(|root| &root.lines)
             {
                 if let Some(handle) = line.arrowhead_handle {
-                    push_dependency_use(
-                        &mut uses,
-                        document,
-                        handle,
-                        BlockRole::ArrowHead,
-                    );
+                    push_dependency_use(&mut uses, document, handle, BlockRole::ArrowHead);
                 }
             }
         }
         _ => {}
-    }
-    uses
-}
-
-/// Blocks referenced by document-level styles rather than a concrete entity.
-pub fn document_block_uses(document: &CadDocument) -> Vec<BlockUse> {
-    let mut uses = Vec::new();
-    for style in document.dim_styles.iter() {
-        for handle in [style.dimblk, style.dimblk1, style.dimblk2, style.dimldrblk] {
-            push_dependency_use(&mut uses, document, handle, BlockRole::ArrowHead);
-        }
-        for name in [&style.dimblk_name, &style.dimblk1_name, &style.dimblk2_name] {
-            if let Some(record) = block_record_by_name(document, name) {
-                push_dependency_use(
-                    &mut uses,
-                    document,
-                    record.handle,
-                    BlockRole::ArrowHead,
-                );
-            }
-        }
-    }
-    for object in document.objects.values() {
-        let codec::objects::ObjectType::MultiLeaderStyle(style) = object else {
-            continue;
-        };
-        if let Some(handle) = style.arrowhead_handle {
-            push_dependency_use(&mut uses, document, handle, BlockRole::ArrowHead);
-        }
-        if let Some(handle) = style.block_content_handle {
-            push_dependency_use(
-                &mut uses,
-                document,
-                handle,
-                BlockRole::MultiLeaderContent,
-            );
-        }
-    }
-    for line_type in document.line_types.iter() {
-        for symbol in
-            crate::scene::convert::dgn_linestyle::symbol_blocks(document, &line_type.name)
-        {
-            push_dependency_use(
-                &mut uses,
-                document,
-                symbol.block,
-                BlockRole::LineStyleSymbol,
-            );
-        }
     }
     uses
 }
@@ -1091,9 +1109,13 @@ pub fn insert_instance_transform(
     if offset == [0.0; 3] {
         transform
     } else {
-        let orientation = Transform::from_matrix(Matrix4::rotation_z(insert.rotation))
-            .then(&Transform::from_matrix(Matrix4::from_matrix3(Matrix3::arbitrary_axis(insert.normal))));
-        let world_offset = orientation.apply_rotation(Vector3::new(offset[0], offset[1], offset[2]));
+        let orientation = Transform::from_matrix(Matrix4::rotation_z(insert.rotation)).then(
+            &Transform::from_matrix(Matrix4::from_matrix3(Matrix3::arbitrary_axis(
+                insert.normal,
+            ))),
+        );
+        let world_offset =
+            orientation.apply_rotation(Vector3::new(offset[0], offset[1], offset[2]));
         transform.then(&Transform::from_translation(world_offset))
     }
 }
@@ -1105,22 +1127,12 @@ pub fn insert_instance_translation_delta(
     annotation_scale: f32,
     scale_policy: BlockScalePolicy,
 ) -> Vector3 {
-    let base = insert_instance_transform(
-        document,
-        insert,
-        [0.0; 3],
-        annotation_scale,
-        scale_policy,
-    )
-    .apply(Vector3::ZERO);
-    let instance = insert_instance_transform(
-        document,
-        insert,
-        offset,
-        annotation_scale,
-        scale_policy,
-    )
-    .apply(Vector3::ZERO);
+    let base =
+        insert_instance_transform(document, insert, [0.0; 3], annotation_scale, scale_policy)
+            .apply(Vector3::ZERO);
+    let instance =
+        insert_instance_transform(document, insert, offset, annotation_scale, scale_policy)
+            .apply(Vector3::ZERO);
     instance - base
 }
 
@@ -1168,23 +1180,44 @@ mod tests {
             .add_record(ExtendedDataRecord::new("AcAnnotativeData"));
         let point = Vector3::new(1.0, 0.0, 0.0);
 
-        let from_insert = insert_transform_with_policy(
-            &document,
-            &insert,
-            2.0,
-            BlockScalePolicy::FromInsert,
-        )
-        .apply(point);
-        let applied = insert_transform_with_policy(
-            &document,
-            &insert,
-            2.0,
-            BlockScalePolicy::Applied,
-        )
-        .apply(point);
+        let from_insert =
+            insert_transform_with_policy(&document, &insert, 2.0, BlockScalePolicy::FromInsert)
+                .apply(point);
+        let applied =
+            insert_transform_with_policy(&document, &insert, 2.0, BlockScalePolicy::Applied)
+                .apply(point);
 
         assert!((from_insert.x - 12.0).abs() < 1.0e-9);
         assert!((applied.x - 11.0).abs() < 1.0e-9);
+    }
+
+    #[test]
+    fn layer_zero_block_members_follow_the_reference_until_frozen() {
+        use codec::entities::Line;
+        use codec::tables::BlockRecord;
+        let mut document = CadDocument::new();
+        let mut record = BlockRecord::new("ARROW");
+        record.handle = document.allocate_handle();
+        let block = record.handle;
+        document.block_records.add(record).unwrap();
+        let mut line = Line::from_points(Vector3::ZERO, Vector3::new(1.0, 0.0, 0.0));
+        line.common.owner_handle = block;
+        document.add_entity(EntityType::Line(line)).unwrap();
+        let leaves = |document: &CadDocument| {
+            let depths = rustc_hash::FxHashMap::default();
+            let graph = RenderSceneGraph::new(document, None, None, true, &depths);
+            let arrow =
+                block_use_from_handle(document, block, BlockRole::ArrowHead, Vector3::ZERO)
+                    .unwrap();
+            let mut count = 0;
+            graph.walk_block_use(&arrow, block, |_, _| true, |_, _| count += 1);
+            count
+        };
+
+        document.layers.get_mut("0").unwrap().flags.off = true;
+        assert_eq!(leaves(&document), 1);
+        document.layers.get_mut("0").unwrap().flags.frozen = true;
+        assert_eq!(leaves(&document), 0);
     }
 
     #[test]
@@ -1195,7 +1228,11 @@ mod tests {
         insert.row_spacing = 1.0;
         insert.column_spacing = 1.0;
         let offsets = array_offsets(&insert);
-        assert_eq!(offsets, vec![[0.0; 3]], "pathological instance count must clamp to a single instance");
+        assert_eq!(
+            offsets,
+            vec![[0.0; 3]],
+            "pathological instance count must clamp to a single instance"
+        );
     }
 
     #[test]
@@ -1231,11 +1268,18 @@ mod tests {
         // The block's own origin (local point 0,0,0) placed at this instance
         // must land 10 units from the insert point, not 20.
         let world = transform.apply(Vector3::ZERO);
-        assert!((world.x - 110.0).abs() < 1.0e-9, "expected spacing 10, got offset {}", world.x - 100.0);
+        assert!(
+            (world.x - 110.0).abs() < 1.0e-9,
+            "expected spacing 10, got offset {}",
+            world.x - 100.0
+        );
 
         // Block-local geometry must still pick up the block scale normally.
         let block_point = transform.apply(Vector3::new(1.0, 0.0, 0.0));
-        assert!((block_point.x - 112.0).abs() < 1.0e-9, "block-local geometry should still be scaled by x_scale 2");
+        assert!(
+            (block_point.x - 112.0).abs() < 1.0e-9,
+            "block-local geometry should still be scaled by x_scale 2"
+        );
     }
 
     #[test]
@@ -1257,7 +1301,15 @@ mod tests {
             BlockScalePolicy::Applied,
         );
         let world = transform.apply(Vector3::ZERO);
-        assert!(world.x.abs() < 1.0e-9, "a 90deg rotation should turn column spacing into Y, got x={}", world.x);
-        assert!((world.y - 10.0).abs() < 1.0e-9, "expected the spacing rotated onto Y, got y={}", world.y);
+        assert!(
+            world.x.abs() < 1.0e-9,
+            "a 90deg rotation should turn column spacing into Y, got x={}",
+            world.x
+        );
+        assert!(
+            (world.y - 10.0).abs() < 1.0e-9,
+            "expected the spacing rotated onto Y, got y={}",
+            world.y
+        );
     }
 }

@@ -26,12 +26,13 @@ pub use ocs_plugin_api::ribbon::{
 
 pub mod aec;
 pub mod annotate;
+pub mod block_editor;
 pub mod draw;
 pub mod insert;
-pub mod parametric;
-pub mod model;
 pub mod layout;
 pub mod manage;
+pub mod model;
+pub mod parametric;
 pub mod view;
 
 // ── Core module registry ─────────────────────────────────────────────────

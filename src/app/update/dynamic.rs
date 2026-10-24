@@ -4,13 +4,12 @@
 use super::util::*;
 use super::{format_size, VIEWCUBE_HIT_SIZE};
 use crate::app::helpers::{
-    parse_coord, polar_constrain_near, ucs_rotate_vec, ucs_to_wcs, ucs_z_axis,
-    CoordKind,
+    parse_coord, ucs_rotate_vec, ucs_to_wcs, ucs_z_axis, CoordKind,
 };
 use crate::app::{Message, OpenCADStudio, POLY_START_DELAY_MS};
 use crate::modules::ModuleEvent;
-use crate::scene::pick::grip::{find_hit_grip, find_hit_grip_paper, find_hit_grip_rte, GripEdit};
 use crate::scene::model::object::GripApply;
+use crate::scene::pick::grip::{find_hit_grip, find_hit_grip_paper, find_hit_grip_rte, GripEdit};
 use crate::scene::{
     self, hover_id, CubeRegion, Scene, VIEWCUBE_DRAW_PX, VIEWCUBE_PAD, VIEWCUBE_PX,
 };
@@ -30,6 +29,10 @@ impl OpenCADStudio {
         &self,
         i: usize,
     ) -> Option<(glam::DVec3, glam::DVec3)> {
+        // A typed `<angle` locks the way from the last point.
+        if let (Some(dir), Some(base)) = (self.angle_override, self.last_point) {
+            return Some((base, dir));
+        }
         // OTRACK already exposes its acquired world-space ray.
         if let Some((base, dir)) = self.otrack_active {
             return Some((base, dir));
@@ -83,9 +86,7 @@ impl OpenCADStudio {
             .active_grip
             .as_ref()
             .map(|grip| match grip.mode {
-                crate::scene::pick::grip::GripEditMode::Stretch => {
-                    (grip.origin_world, None)
-                }
+                crate::scene::pick::grip::GripEditMode::Stretch => (grip.origin_world, None),
                 crate::scene::pick::grip::GripEditMode::Lengthen => {
                     (grip.origin_world, Some(crate::command::DynRole::Distance))
                 }
@@ -111,10 +112,18 @@ impl OpenCADStudio {
 
         if let Some((origin, scalar_role)) = grip_input {
             let wanted_roles: Vec<crate::command::DynRole> = if rectangle_frame.is_some() {
-                vec![crate::command::DynRole::Width, crate::command::DynRole::Height]
+                vec![
+                    crate::command::DynRole::Width,
+                    crate::command::DynRole::Height,
+                ]
             } else {
                 scalar_role.map_or_else(
-                    || vec![crate::command::DynRole::Distance, crate::command::DynRole::Angle],
+                    || {
+                        vec![
+                            crate::command::DynRole::Distance,
+                            crate::command::DynRole::Angle,
+                        ]
+                    },
                     |role| vec![role],
                 )
             };
@@ -259,8 +268,11 @@ impl OpenCADStudio {
         }
         // Derive the guide + anchor for the legacy field set so the overlay
         // draws the right construction without each command opting in.
-        let comps: Vec<DynComponent> =
-            self.tabs[i].dyn_fields.iter().map(|f| f.component).collect();
+        let comps: Vec<DynComponent> = self.tabs[i]
+            .dyn_fields
+            .iter()
+            .map(|f| f.component)
+            .collect();
         self.tabs[i].dyn_guide = match comps.as_slice() {
             [DynComponent::Distance, DynComponent::Angle] | [DynComponent::Angle] => {
                 crate::command::DynGuide::Polar
@@ -278,13 +290,15 @@ impl OpenCADStudio {
 
     pub(in crate::app) fn apply_dyn_spec(&mut self, i: usize, spec: crate::command::DynSpec) {
         use crate::app::document::DynFieldEntry;
-        let new_roles: Vec<crate::command::DynRole> =
-            spec.fields.iter().map(|f| f.role).collect();
+        let new_roles: Vec<crate::command::DynRole> = spec.fields.iter().map(|f| f.role).collect();
         let cur_roles: Vec<crate::command::DynRole> =
             self.tabs[i].dyn_fields.iter().map(|f| f.role).collect();
         if cur_roles != new_roles {
-            self.tabs[i].dyn_fields =
-                spec.fields.iter().map(|f| DynFieldEntry::from_role(f.role)).collect();
+            self.tabs[i].dyn_fields = spec
+                .fields
+                .iter()
+                .map(|f| DynFieldEntry::from_role(f.role))
+                .collect();
             self.tabs[i].dyn_active = 0;
         }
         self.tabs[i].dyn_guide = spec.guide;
@@ -394,12 +408,12 @@ impl OpenCADStudio {
         let dz = d_ucs.z;
         let live_d = (dx * dx + dy * dy).sqrt();
         let live_a = dy.atan2(dx); // radians, in the UCS plane
-        // A typed angle is shown unsigned (0..180); give it the sign of the
-        // cursor's current side so an entry made below the X axis sweeps
-        // downward to match the arc instead of mirroring up. An EXPLICIT
-        // `-`/`+` prefix keeps its literal sign though — "-30" must mean
-        // −30° (= 330°) regardless of where the cursor sits (#417).
-        // Untyped → live.
+                                   // A typed angle is shown unsigned (0..180); give it the sign of the
+                                   // cursor's current side so an entry made below the X axis sweeps
+                                   // downward to match the arc instead of mirroring up. An EXPLICIT
+                                   // `-`/`+` prefix keeps its literal sign though — "-30" must mean
+                                   // −30° (= 330°) regardless of where the cursor sits (#417).
+                                   // Untyped → live.
         let angle_rad = |idx: usize| -> f64 {
             let raw = fields[idx]
                 .buffer
@@ -420,9 +434,7 @@ impl OpenCADStudio {
         // perpendicular through the anchor at that offset; the command projects
         // it. Untyped tracks the cursor's signed offset; typed takes the
         // cursor's side.
-        if let (Some(ref_pt), [DynComponent::Distance]) =
-            (self.tabs[i].dyn_ref, comps.as_slice())
-        {
+        if let (Some(ref_pt), [DynComponent::Distance]) = (self.tabs[i].dyn_ref, comps.as_slice()) {
             let axis = (ref_pt - base).normalize_or_zero();
             let perp = glam::DVec3::new(-axis.y, axis.x, 0.0);
             let signed = (w - base).dot(perp);
@@ -449,22 +461,14 @@ impl OpenCADStudio {
                 Some(rel(glam::DVec3::new(val(0, dx), val(1, dy), 0.0)))
             }
             [DynComponent::X, DynComponent::Y] => {
-                Some(xf.to_wcs(glam::DVec3::new(
-                    val(0, w_ucs.x),
-                    val(1, w_ucs.y),
-                    0.0,
-                )))
+                Some(xf.to_wcs(glam::DVec3::new(val(0, w_ucs.x), val(1, w_ucs.y), 0.0)))
             }
             [DynComponent::X, DynComponent::Y, DynComponent::Z] if relative => {
                 Some(rel(glam::DVec3::new(val(0, dx), val(1, dy), val(2, dz))))
             }
-            [DynComponent::X, DynComponent::Y, DynComponent::Z] => {
-                Some(xf.to_wcs(glam::DVec3::new(
-                    val(0, w_ucs.x),
-                    val(1, w_ucs.y),
-                    val(2, w_ucs.z),
-                )))
-            }
+            [DynComponent::X, DynComponent::Y, DynComponent::Z] => Some(xf.to_wcs(
+                glam::DVec3::new(val(0, w_ucs.x), val(1, w_ucs.y), val(2, w_ucs.z)),
+            )),
             [DynComponent::Distance, DynComponent::Angle] => {
                 let d = val(0, live_d);
                 let a = angle_rad(1);
@@ -485,7 +489,11 @@ impl OpenCADStudio {
                     .as_deref()
                     .and_then(eval_dynamic_angle)
                     .unwrap_or(live_a);
-                Some(rel(glam::DVec3::new(live_d * a.cos(), live_d * a.sin(), 0.0)))
+                Some(rel(glam::DVec3::new(
+                    live_d * a.cos(),
+                    live_d * a.sin(),
+                    0.0,
+                )))
             }
             _ => None,
         }
@@ -641,7 +649,6 @@ impl OpenCADStudio {
         }
     }
 
-
     pub(in crate::app) fn try_dyn_commit(&mut self) -> Option<Task<Message>> {
         let i = self.active_tab;
         if !self.dyn_input
@@ -679,6 +686,7 @@ impl OpenCADStudio {
                         self.dyn_coord_absolute = false;
                         self.sync_dyn_fields();
                         self.reset_tracking_after_point();
+                        self.snapper.clear_override();
                         self.snapper.remember_distance_reference(dir);
                         self.push_ucs_to_cmd(i);
                         let result = self.tabs[i].active_cmd.as_mut().map(|c| c.on_point(pt));
@@ -752,6 +760,7 @@ impl OpenCADStudio {
         self.dyn_coord_absolute = false;
         self.sync_dyn_fields();
         self.reset_tracking_after_point();
+        self.snapper.clear_override();
         self.push_ucs_to_cmd(i);
         let result = self.tabs[i].active_cmd.as_mut().map(|c| c.on_point(pt));
         for f in self.tabs[i].dyn_fields.iter_mut() {
@@ -776,6 +785,9 @@ impl OpenCADStudio {
     /// dangling from the previous `last_point` until the user actually
     /// moves the mouse. See #32.
     pub(crate) fn refresh_active_cmd_preview(&mut self, i: usize) {
+        self.refresh_command_point_pick_context(i);
+        let perf_preview = crate::perf::enabled();
+        let preview_started = perf_preview.then(Instant::now);
         if self.tabs[i].active_cmd.is_none() {
             return;
         }
@@ -789,20 +801,103 @@ impl OpenCADStudio {
             }
         }
         let cur = self.tabs[i].last_cursor_world;
-        let previews = self.tabs[i]
-            .active_cmd
-            .as_mut()
-            .map(|c| c.on_preview_wires(cur))
-            .unwrap_or_default();
-        let preview_hidden = self.tabs[i]
+        let compute_started = perf_preview.then(Instant::now);
+        let tab = &mut self.tabs[i];
+        // Selection-hover previews are maintained by the viewport move path.
+        // A generic command refresh (for example SnapDwellTick) has no hovered
+        // entity and would replace MATCHPROP's persistent source glow with an
+        // empty rubber-band. Preserve the current overlay; seed the source glow
+        // only if phase 2 began before any move had produced one.
+        let selection_hover_preview = tab
             .active_cmd
             .as_ref()
-            .map(|command| command.preview_hidden_handles().to_vec())
-            .unwrap_or_default();
+            .is_some_and(|command| command.selection_hover_preview_enabled());
+        if selection_hover_preview {
+            if tab.scene.preview_wires.is_empty() {
+                if let Some(preview) = tab
+                    .active_cmd
+                    .as_ref()
+                    .and_then(|command| command.selection_hover_preview(&tab.scene, None))
+                {
+                    tab.scene.set_command_preview_hatches(preview.hatches);
+                    tab.scene.set_preview_wires(preview.wires);
+                }
+            }
+            return;
+        }
+        let parameter_preview = self.block_parameter_geometry_preview(i, cur);
+        let mut parameter_hidden = None;
+        let mut previews = if let Some(preview) = parameter_preview {
+            self.tabs[i].scene.set_command_preview_hatches(preview.hatches);
+            parameter_hidden = Some(preview.hidden);
+            preview.wires
+        } else if let Some(wires) = self.dimension_preview_wires(i, cur) {
+            wires
+        } else {
+            let tab = &mut self.tabs[i];
+            tab.active_cmd
+                .as_mut()
+                .map(|c| {
+                    let mut wires = c.on_preview_wires(cur);
+                    wires.extend(c.persistent_preview_wires());
+                    let entities = c.preview_entities(&tab.scene.document, cur);
+                    wires.extend(tab.scene.wires_for_entities(&entities));
+                    wires
+                })
+                .unwrap_or_default()
+        };
+        if self.polar_mode {
+            if let Some(base) = self.last_point {
+                let base = base.as_vec3();
+                let effective = cur.as_vec3();
+                let dx = effective.x - base.x;
+                let dy = effective.y - base.y;
+                let step = self.polar_increment_deg.to_radians();
+                let angle = dy.atan2(dx);
+                let snapped = step > 1e-6 && ((angle / step).round() * step - angle).abs() < 1e-3;
+                if snapped && (dx * dx + dy * dy).sqrt() > 1e-4 {
+                    let far = 1e5_f32;
+                    let dir = glam::Vec3::new(dx, dy, 0.0).normalize();
+                    let far_pos = base + dir * far;
+                    let far_neg = base - dir * far;
+                    previews.push(crate::scene::WireModel {
+                        display_visible: true,
+                        plot_visible: true,
+                        name: "__polar_guide__".into(),
+                        points: vec![
+                            [far_neg.x, far_neg.y, far_neg.z],
+                            [far_pos.x, far_pos.y, far_pos.z],
+                        ],
+                        color: [0.2, 0.7, 0.9, 0.6],
+                        pattern_length: 0.8,
+                        pattern: [0.5, -0.3, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+                        line_weight_px: 1.0,
+                        aabb: crate::scene::WireModel::UNBOUNDED_AABB,
+                        plinegen: true,
+                        ..Default::default()
+                    });
+                }
+            }
+        }
+        let preview_count = previews.len();
+        let compute_ms = crate::perf::elapsed_ms(compute_started);
+        let preview_hidden = parameter_hidden.unwrap_or_else(|| {
+            self.tabs[i]
+                .active_cmd
+                .as_ref()
+                .map(|command| command.preview_hidden_handles().to_vec())
+                .unwrap_or_default()
+        });
         self.tabs[i]
             .scene
             .set_command_preview_hidden(&preview_hidden);
         self.tabs[i].scene.set_preview_wires(previews);
+        let total_ms = crate::perf::elapsed_ms(preview_started);
+        if total_ms >= 1.0 || compute_ms >= 1.0 {
+            crate::perf_record!(
+                "[perf] command-preview total={total_ms:.2}ms compute={compute_ms:.2}ms wires={preview_count}",
+            );
+        }
     }
 }
 
@@ -819,16 +914,13 @@ mod tests {
         context.aunits = 2;
         set_unit_context(context);
         assert!(
-            (eval_dynamic_angle("2 * 50").unwrap() - std::f64::consts::FRAC_PI_2).abs()
-                < 1e-12
+            (eval_dynamic_angle("2 * 50").unwrap() - std::f64::consts::FRAC_PI_2).abs() < 1e-12
         );
 
         context.aunits = 3;
         set_unit_context(context);
         assert!(
-            (eval_dynamic_angle("1.5707963267948966").unwrap()
-                - std::f64::consts::FRAC_PI_2)
-                .abs()
+            (eval_dynamic_angle("1.5707963267948966").unwrap() - std::f64::consts::FRAC_PI_2).abs()
                 < 1e-12
         );
 

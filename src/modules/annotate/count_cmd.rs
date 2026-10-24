@@ -57,7 +57,11 @@ impl CountCommand {
 
     /// COUNT whose area is already answered (`COUNT _C`).
     pub fn with_area(area: &str) -> Self {
-        Self { area: area.to_string(), step: Step::Targets, ..Self::new(false) }
+        Self {
+            area: area.to_string(),
+            step: Step::Targets,
+            ..Self::new(false)
+        }
     }
 
     fn area_done(&mut self, area: String) -> CmdResult {
@@ -70,7 +74,12 @@ impl CountCommand {
     }
 
     fn area_keyword(&mut self, text: &str) -> CmdResult {
-        match text.trim().trim_start_matches('_').to_ascii_uppercase().as_str() {
+        match text
+            .trim()
+            .trim_start_matches('_')
+            .to_ascii_uppercase()
+            .as_str()
+        {
             "" | "C" | "CURRENT" | "CURRENT AREA" => self.area_done("C".into()),
             "E" | "ENTIRE" | "ENTIRE MODEL SPACE" => self.area_done("E".into()),
             "O" | "OBJECT" => {
@@ -90,7 +99,11 @@ impl CountCommand {
         if self.targets.is_empty() {
             return CmdResult::Dispatch(format!("_COUNTRUN {} L", self.area));
         }
-        let handles: Vec<String> = self.targets.iter().map(|h| format!("{:X}", h.value())).collect();
+        let handles: Vec<String> = self
+            .targets
+            .iter()
+            .map(|h| format!("{:X}", h.value()))
+            .collect();
         CmdResult::Dispatch(format!("_COUNTRUN {} T {}", self.area, handles.join(",")))
     }
 }
@@ -145,17 +158,10 @@ impl CadCommand for CountCommand {
     }
 
     fn on_selection_complete(&mut self, handles: Vec<Handle>) -> CmdResult {
-        // The selection arrives whole after every pick: `1 found`, then
-        // `1 found, 2 total`.
-        let found = handles.iter().filter(|h| !self.targets.contains(h)).count();
-        let first = self.targets.is_empty();
+        // The selection arrives whole after every pick; the driver reports
+        // what each pick found.
         self.targets = handles;
-        let total = self.targets.len();
-        CmdResult::ReportMeasurement(if first {
-            crate::tf!("{found} found").into_owned()
-        } else {
-            crate::tf!("{found} found, {total} total").into_owned()
-        })
+        CmdResult::NeedPoint
     }
 
     fn needs_entity_pick(&self) -> bool {
@@ -207,7 +213,12 @@ impl CadCommand for CountCommand {
     fn on_text_input(&mut self, text: &str) -> Option<CmdResult> {
         match self.step {
             Step::Area => Some(self.area_keyword(text)),
-            Step::Targets => match text.trim().trim_start_matches('_').to_ascii_uppercase().as_str() {
+            Step::Targets => match text
+                .trim()
+                .trim_start_matches('_')
+                .to_ascii_uppercase()
+                .as_str()
+            {
                 "L" | "LIST" | "LIST ALL BLOCKS" => {
                     self.targets.clear();
                     Some(self.finish_targets())
@@ -235,7 +246,12 @@ impl CadCommand for CountCommand {
         let ring: Vec<DVec3> = match self.step {
             Step::Corner => {
                 let a = self.points[0];
-                vec![a, DVec3::new(pt.x, a.y, a.z), pt, DVec3::new(a.x, pt.y, a.z)]
+                vec![
+                    a,
+                    DVec3::new(pt.x, a.y, a.z),
+                    pt,
+                    DVec3::new(a.x, pt.y, a.z),
+                ]
             }
             Step::PolyNext => {
                 let mut ring = self.points.clone();
@@ -246,7 +262,12 @@ impl CadCommand for CountCommand {
         };
         let mut points: Vec<[f64; 3]> = ring.iter().map(|p| p.to_array()).collect();
         points.push(points[0]);
-        Some(WireModel::solid_f64("count_area".into(), points, WireModel::CYAN, false))
+        Some(WireModel::solid_f64(
+            "count_area".into(),
+            points,
+            WireModel::CYAN,
+            false,
+        ))
     }
 }
 
@@ -272,27 +293,51 @@ enum TableStep {
 
 impl CountTableCommand {
     pub fn new(blocks: Vec<String>, others: [usize; 3]) -> Self {
-        Self { step: TableStep::Names, blocks, others, names: Vec::new(), pending: Vec::new() }
+        Self {
+            step: TableStep::Names,
+            blocks,
+            others,
+            names: Vec::new(),
+            pending: Vec::new(),
+        }
     }
 
     /// The palette's Create Table: the blocks are chosen, only the point is asked.
     pub fn placing(names: Vec<String>) -> Self {
-        Self { step: TableStep::Point, blocks: Vec::new(), others: [0; 3], names, pending: Vec::new() }
+        Self {
+            step: TableStep::Point,
+            blocks: Vec::new(),
+            others: [0; 3],
+            names,
+            pending: Vec::new(),
+        }
     }
 
     /// `?`: the defined blocks matching the pattern, paged by 22 lines
     /// (`Press ENTER to continue:` in between), then the summary.
     fn listing(&mut self, pattern: &str) -> CmdResult {
-        let pattern = if pattern.trim().is_empty() { "*" } else { pattern.trim() };
+        let pattern = if pattern.trim().is_empty() {
+            "*"
+        } else {
+            pattern.trim()
+        };
         let mut names: Vec<&String> = self
             .blocks
             .iter()
-            .filter(|name| pattern.split(',').any(|p| crate::io::xref_model::wildcard_match(name, p.trim())))
+            .filter(|name| {
+                pattern
+                    .split(',')
+                    .any(|p| crate::io::xref_model::wildcard_match(name, p.trim()))
+            })
             .collect();
         names.sort_by_key(|name| list_order(name));
         self.pending = std::iter::once(String::new())
             .chain(std::iter::once("Defined blocks.".to_string()))
-            .chain(names.iter().map(|name| format!("  {:<31}", format!("\"{name}\""))))
+            .chain(
+                names
+                    .iter()
+                    .map(|name| format!("  {:<31}", format!("\"{name}\""))),
+            )
             .collect();
         self.next_page()
     }
@@ -388,7 +433,13 @@ impl CadCommand for CountTableCommand {
         if self.step != TableStep::Point {
             return CmdResult::NeedPoint;
         }
-        CmdResult::Dispatch(format!("_COUNTTABLEPLACE {:?},{:?},{:?} {}", pt.x, pt.y, pt.z, self.names.join("|")))
+        CmdResult::Dispatch(format!(
+            "_COUNTTABLEPLACE {:?},{:?},{:?} {}",
+            pt.x,
+            pt.y,
+            pt.z,
+            self.names.join("|")
+        ))
     }
 
     fn on_enter(&mut self) -> CmdResult {
@@ -407,7 +458,9 @@ pub struct UpdateFieldCommand {
 
 impl UpdateFieldCommand {
     pub fn new() -> Self {
-        Self { selected: Vec::new() }
+        Self {
+            selected: Vec::new(),
+        }
     }
 }
 
@@ -417,7 +470,7 @@ impl CadCommand for UpdateFieldCommand {
     }
 
     fn prompt(&self) -> String {
-        "Select objects:".into()
+        crate::t!("Select objects:").into_owned()
     }
 
     fn is_selection_gathering(&self) -> bool {
@@ -435,11 +488,24 @@ impl CadCommand for UpdateFieldCommand {
 
     fn on_enter(&mut self) -> CmdResult {
         // An empty selection still runs (the reference keeps an undo step).
-        let handles: Vec<String> = self.selected.iter().map(|h| format!("{:X}", h.value())).collect();
+        let handles: Vec<String> = self
+            .selected
+            .iter()
+            .map(|h| format!("{:X}", h.value()))
+            .collect();
         CmdResult::Dispatch(format!("_UPDATEFIELDRUN {}", handles.join(",")))
     }
 }
 
 inventory::submit!(crate::command::CommandRegistration {
-    names: &["COUNT", "COUNTAREA", "COUNTCLOSE", "COUNTFIELD", "COUNTLIST", "COUNTLISTCLOSE", "COUNTTABLE", "UPDATEFIELD"]
+    names: &[
+        "COUNT",
+        "COUNTAREA",
+        "COUNTCLOSE",
+        "COUNTFIELD",
+        "COUNTLIST",
+        "COUNTLISTCLOSE",
+        "COUNTTABLE",
+        "UPDATEFIELD"
+    ]
 });

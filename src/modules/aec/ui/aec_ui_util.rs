@@ -294,9 +294,12 @@ pub fn hatch_pattern_field<'a>(
     .width(if selected_gpu.is_some() { 126 } else { 180 });
     let head: Element<'a, Message> = if let Some(pattern) = selected_gpu {
         row![
-            canvas(crate::ui::properties::HatchPatternPreview { pattern })
-                .width(48)
-                .height(22),
+            canvas(crate::ui::properties::HatchPatternPreview {
+                pattern,
+                padding: 0.5,
+            })
+            .width(48)
+            .height(22),
             head_btn,
         ]
         .spacing(6)
@@ -332,6 +335,7 @@ pub fn hatch_pattern_field<'a>(
             let name = entry.name.clone();
             let preview = canvas(crate::ui::properties::HatchPatternPreview {
                 pattern: entry.gpu.clone(),
+                padding: 0.5,
             })
             .width(70)
             .height(36);

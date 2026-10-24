@@ -7121,7 +7121,7 @@ fn add_example_note(scene: &mut Scene, x: f64, y: f64, value: &str) {
     use acadrust::entities::MText;
     let mut t = MText::with_value(value.to_string(), Vector3::new(x, y, 0.0));
     t.height = 0.28;
-    scene.add_entity(EntityType::MText(t));
+    scene.add_entity(EntityType::MText(Box::new(t)));
 }
 
 fn place_example_opening(
@@ -14223,7 +14223,7 @@ fn xref_full_integration_with_file_attachment_and_display_switching() {
 
     let mut keys = HashSet::default();
     keys.insert(br_handle);
-    let (infos, _) = crate::io::xref::resolve_xrefs_for_keys(&mut host_scene.document, &dir, &keys);
+    let infos = crate::io::xref::resolve_xrefs_for_keys(&mut host_scene.document, &dir, &keys);
     assert!(!infos.is_empty(), "XREF EG must resolve");
 
     // Add an INSERT in host scene model space

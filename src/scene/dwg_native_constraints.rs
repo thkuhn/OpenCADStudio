@@ -3,13 +3,14 @@
 use codec::objects::{
     Assoc2dConstraintGroup, AssocAction, AssocActionDependency, AssocConstraintNode,
     AssocConstraintNodeData, AssocDependency, AssocDimDependencyBody, AssocEvalValue,
-    AssocEvalVariant,
-    AssocGeomDependency, AssocNetwork, AssocPersistentSubentId, AssocValueDependency,
-    AssocVariable, AssociativeData, AssociativeObject, ObjectType,
+    AssocEvalVariant, AssocGeomDependency, AssocNetwork, AssocPersistentSubentId,
+    AssocValueDependency, AssocVariable, AssociativeData, AssociativeObject, ObjectType,
 };
 use codec::types::{Handle, Vector3};
 use codec::{CadDocument, EntityType};
-use rustc_hash::FxHashMap;
+use rustc_hash::{FxHashMap, FxHashSet};
+use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
 
 use super::named_parameters::{DrivingValue, ParameterTable};
 use super::parametric_constraints::{
@@ -625,11 +626,8 @@ impl<'a> GroupBuilder<'a> {
                 },
             );
         } else {
-            let arc = kernel::geom2d::BulgeArc::from_bulge(
-                [start.x, start.y],
-                [end.x, end.y],
-                bulge,
-            )?;
+            let arc =
+                kernel::geom2d::BulgeArc::from_bulge([start.x, start.y], [end.x, end.y], bulge)?;
             self.push_node(
                 node_id,
                 "AcConstrainedArc",
@@ -1204,8 +1202,18 @@ impl Allocator<'_> {
                 },
                 class_version: 0,
                 enabled: true,
-                // Point and curve addressing lives on constraint-node data.
-                persistent_subent: AssocPersistentSubentId::default(),
+                // Point and curve addressing lives on constraint-node data;
+                // the dependency names the whole curve, as single-edge
+                // subentities do in authored constraint groups. An empty id
+                // (no class) crashes strict readers loading the drawing.
+                // ponytail: polyline segments get the single-edge id too;
+                // authored files address them with an index subentity (class
+                // code 3) whose fields are not decoded yet.
+                persistent_subent: AssocPersistentSubentId {
+                    class_name: "AcDbAssocSingleEdgePersSubentId".to_string(),
+                    class_code: 1,
+                    ..Default::default()
+                },
             }),
         )
     }
@@ -1451,7 +1459,11 @@ const ASSOC_CLASSES: &[(&str, &str, i32)] = &[
     ("ACDBASSOCGEOMDEPENDENCY", "AcDbAssocGeomDependency", 29),
     ("ACDBASSOCVALUEDEPENDENCY", "AcDbAssocValueDependency", 29),
     ("ACDBASSOCDEPENDENCY", "AcDbAssocDependency", 29),
-    ("ACDBASSOCDIMDEPENDENCYBODY", "AcDbAssocDimDependencyBody", 45),
+    (
+        "ACDBASSOCDIMDEPENDENCYBODY",
+        "AcDbAssocDimDependencyBody",
+        45,
+    ),
 ];
 
 fn ensure_associative_classes_registered(document: &mut CadDocument) {
@@ -1561,16 +1573,25 @@ fn remove_owned_recursive(document: &mut CadDocument, root: Handle) {
     if root.is_null() {
         return;
     }
-    let children: Vec<Handle> = document
-        .objects
-        .keys()
-        .copied()
-        .filter(|&h| document.object_owner(h) == Some(root))
-        .collect();
-    for child in children {
-        remove_owned_recursive(document, child);
+    // One ownership pass for the whole tree: rescanning every object per
+    // removed node made a graph rebuild quadratic in the drawing's objects.
+    let mut children: FxHashMap<Handle, Vec<Handle>> = FxHashMap::default();
+    for &handle in document.objects.keys() {
+        if let Some(owner) = document.object_owner(handle) {
+            children.entry(owner).or_default().push(handle);
+        }
     }
-    document.objects.remove(&root);
+    let mut seen = FxHashSet::default();
+    let mut stack = vec![root];
+    while let Some(handle) = stack.pop() {
+        if !seen.insert(handle) {
+            continue;
+        }
+        document.objects.remove(&handle);
+        if let Some(owned) = children.get(&handle) {
+            stack.extend_from_slice(owned);
+        }
+    }
 }
 
 fn native_group_handles(document: &CadDocument, owner: Handle) -> Vec<Handle> {
@@ -1611,7 +1632,7 @@ fn native_group_handles(document: &CadDocument, owner: Handle) -> Vec<Handle> {
 }
 
 fn native_scope_network_handle(document: &CadDocument, owner: Handle) -> Option<Handle> {
-    let dictionary = document.extension_dictionary_handle(owner)?;
+    let dictionary = super::block_authoring::definition_dictionary(document, owner)?;
     let ObjectType::Dictionary(dictionary) = document.objects.get(&dictionary)? else {
         return None;
     };
@@ -1717,7 +1738,26 @@ fn dependency_entity(
 }
 
 fn group_requires_preservation(document: &CadDocument, group: &Assoc2dConstraintGroup) -> bool {
-    group.nodes.iter().any(|node| {
+    // Links the rebuild does not write: a dimensional constraint driving a
+    // dynamic block's constraint parameter rather than a dimension, and
+    // single edges of one polyline each held by a dependency of its own.
+    let mut curves = Vec::new();
+    let unmodelled = group.actions.iter().any(|handle| match document.objects.get(handle) {
+        Some(ObjectType::Associative(AssociativeObject { data, .. })) => match data {
+            AssociativeData::Dependency(dependency) => {
+                document.objects.contains_key(&dependency.dependent_on)
+            }
+            AssociativeData::GeomDependency(geometry) => {
+                let curve = geometry.dependency.dependent_on;
+                let repeated = curves.contains(&curve);
+                curves.push(curve);
+                repeated
+            }
+            _ => false,
+        },
+        _ => false,
+    });
+    unmodelled || group.nodes.iter().any(|node| {
         if matches!(node.data, AssocConstraintNodeData::RigidSet { .. }) {
             return true;
         }
@@ -1816,9 +1856,7 @@ fn directional_axis_reference(
         return None;
     };
     match document.get_entity(entity)? {
-        EntityType::Text(_) | EntityType::MText(_) => {
-            Some(ParametricRef::text_baseline(entity))
-        }
+        EntityType::Text(_) | EntityType::MText(_) => Some(ParametricRef::text_baseline(entity)),
         EntityType::Ellipse(ellipse) => {
             let [origin, axis_x, axis_y] = *work_plane;
             let normal = Vector3::new(
@@ -1826,9 +1864,8 @@ fn directional_axis_reference(
                 axis_x.z * axis_y.x - axis_x.x * axis_y.z,
                 axis_x.x * axis_y.y - axis_x.y * axis_y.x,
             );
-            let to_world = |point: Vector3| {
-                origin + axis_x * point.x + axis_y * point.y + normal * point.z
-            };
+            let to_world =
+                |point: Vector3| origin + axis_x * point.x + axis_y * point.y + normal * point.z;
             let direction = (to_world(*end_point) - to_world(*start_point)).normalize();
             let major = ellipse.major_axis.normalize();
             let ellipse_normal = ellipse.normal.normalize();
@@ -2124,15 +2161,34 @@ pub(super) fn native_constraint_set(
             _ => None,
         })
         .collect();
-    if groups.is_empty() {
-        return None;
-    }
     let scope = if owner == document.header.model_space_block_handle {
         ParametricScope::ModelSpace
     } else {
         ParametricScope::Block(owner)
     };
     let mut set = ParametricConstraintSet::new(scope);
+    if matches!(scope, ParametricScope::Block(_)) {
+        if let Some(network) = native_scope_network_handle(document, owner) {
+            let mut variables: Vec<_> = document.objects.iter().filter_map(|(handle, object)| {
+                match object {
+                    ObjectType::Associative(AssociativeObject { data: AssociativeData::Variable(variable), .. })
+                        if variable.action.owning_network == network => Some((*handle, variable)),
+                    _ => None,
+                }
+            }).collect();
+            variables.sort_by_key(|(handle, _)| *handle);
+            for (_, variable) in variables {
+                let source = if variable.expression.trim().is_empty() {
+                    numeric_value(&variable.value).map(|value| value.to_string())
+                } else { Some(variable.expression.clone()) };
+                if let Some(source) = source {
+                    if set.local_parameters.set(&variable.name, &source).is_ok() {
+                        set.local_parameters.set_description(&variable.name, &variable.description);
+                    }
+                }
+            }
+        }
+    }
     for (group_handle, group, retained) in groups {
         if retained {
             set.retained_standard_groups.push(group_handle);
@@ -2381,18 +2437,18 @@ pub(super) fn native_constraint_set(
                     };
                     let local_direction = datum_id.and_then(|datum_id| {
                         group.nodes.iter().find_map(|datum| {
-                            (datum.node_id == datum_id).then_some(&datum.data).and_then(|data| {
-                                match data {
+                            (datum.node_id == datum_id)
+                                .then_some(&datum.data)
+                                .and_then(|data| match data {
                                     AssocConstraintNodeData::Line { direction, .. } => {
                                         Some(*direction)
                                     }
                                     _ => None,
-                                }
-                            })
+                                })
                         })
                     });
-                    if let Some(world) =
-                        local_direction.and_then(|local| work_plane_vector(&group.work_plane, local))
+                    if let Some(world) = local_direction
+                        .and_then(|local| work_plane_vector(&group.work_plane, local))
                     {
                         constraint.axis_direction = Some(world);
                     }
@@ -2418,7 +2474,8 @@ pub(super) fn native_constraint_set(
             }
         }
     }
-    (!set.constraints.is_empty() || !set.retained_standard_groups.is_empty()).then_some(set)
+    (!set.constraints.is_empty() || !set.retained_standard_groups.is_empty()
+        || !set.local_parameters.is_empty()).then_some(set)
 }
 
 fn sync_retained_group_constraints(document: &mut CadDocument, set: &ParametricConstraintSet) {
@@ -2482,9 +2539,13 @@ fn detach_preserved_scope(
                 Some(ObjectType::Associative(object)) => match &object.data {
                     AssociativeData::ConstraintGroup(_) | AssociativeData::Network(_) => false,
                     AssociativeData::Variable(variable) => variable.name.trim().is_empty(),
-                    // A surface action whose surface was erased goes with it.
-                    AssociativeData::Action(_) => action_surface(document, *handle)
-                        .is_none_or(|surface| document.get_entity(surface).is_some()),
+                    // A surface action whose surface was erased goes with it,
+                    // and an array action whose array reference was.
+                    AssociativeData::Action(_) => {
+                        action_surface(document, *handle)
+                            .is_none_or(|surface| document.get_entity(surface).is_some())
+                            && !crate::scene::assoc_array::orphaned_array_action(document, *handle)
+                    }
                     _ => true,
                 },
                 _ => false,
@@ -2502,7 +2563,12 @@ fn detach_preserved_scope(
             })) => Some(action),
             _ => None,
         })
-        .flat_map(|action| action.values.iter().flat_map(|value| value.variables.iter().map(|variable| variable.handle)))
+        .flat_map(|action| {
+            action
+                .values
+                .iter()
+                .flat_map(|value| value.variables.iter().map(|variable| variable.handle))
+        })
         .filter_map(|handle| match document.objects.get(&handle) {
             Some(ObjectType::Associative(AssociativeObject {
                 data: AssociativeData::ValueDependency(value),
@@ -2583,6 +2649,27 @@ fn detach_preserved_scope(
         }
     }
 
+    // A retained variable can itself read other variables through owned value
+    // dependencies. Keep that transitive closure before removing the network.
+    let mut index = 0;
+    while index < variable_handles.len() {
+        let variable = variable_handles[index];
+        index += 1;
+        for object in document.objects.values() {
+            let ObjectType::Associative(AssociativeObject {
+                owner, data: AssociativeData::ValueDependency(value), ..
+            }) = object else { continue };
+            if *owner != variable { continue; }
+            let handle = value.dependency.dependent_on;
+            if matches!(document.objects.get(&handle), Some(ObjectType::Associative(AssociativeObject {
+                data: AssociativeData::Variable(value), ..
+            })) if value.action.owning_network == network_handle)
+                && !variable_handles.contains(&handle) {
+                variable_handles.push(handle);
+            }
+        }
+    }
+
     let dictionary = document
         .extension_dictionary_handle(owner)
         .unwrap_or(Handle::NULL);
@@ -2642,19 +2729,627 @@ fn pending_swept_surfaces(document: &CadDocument) -> Vec<(Handle, Handle, Handle
         .collect();
     let mut pending = document
         .entities()
-        .filter(|entity| matches!(entity, codec::EntityType::Surface(surface)
-            if matches!(surface.surface_data, codec::entities::SurfaceData::Swept { .. })))
+        .filter(|entity| {
+            matches!(entity, codec::EntityType::Surface(surface)
+            if matches!(surface.surface_data, codec::entities::SurfaceData::Swept { .. }))
+        })
         .filter_map(|entity| {
             let (profile, path) = sweep_model::sweep_sources(entity)?;
             let surface = entity.common().handle;
             (!carried.contains(&surface)
-                && document.get_entity(profile).is_some_and(|e| sweep_model::assoc_edge_curve(e).is_some())
-                && document.get_entity(path).is_some_and(|e| sweep_model::assoc_edge_curve(e).is_some()))
-                .then_some((surface, profile, path))
+                && document
+                    .get_entity(profile)
+                    .is_some_and(|e| sweep_model::assoc_source_supported(e))
+                && document
+                    .get_entity(path)
+                    .is_some_and(|e| sweep_model::assoc_source_supported(e)))
+            .then_some((surface, profile, path))
         })
         .collect::<Vec<_>>();
     pending.sort_by_key(|(surface, _, _)| surface.value());
     pending
+}
+
+/// Associative extruded, revolved and lofted surfaces made here that the
+/// drawing's network does not carry yet, with their sources.
+fn pending_source_surfaces(
+    document: &CadDocument,
+) -> Vec<(Handle, crate::scene::model::surface_sources::SurfaceSources)> {
+    use crate::scene::model::{surface_sources, sweep_model};
+    let carried: Vec<Handle> = document
+        .objects
+        .keys()
+        .filter_map(|handle| action_surface(document, *handle))
+        .collect();
+    let mut pending = document
+        .entities()
+        .filter(|entity| matches!(entity, codec::EntityType::Surface(_)))
+        .filter_map(|entity| {
+            let sources = surface_sources::surface_sources(entity)?;
+            let surface = entity.common().handle;
+            (!carried.contains(&surface)
+                && sources.handles().iter().all(|handle| {
+                    document
+                        .get_entity(*handle)
+                        .is_some_and(|e| sweep_model::assoc_source_supported(e))
+                }))
+            .then_some((surface, sources))
+        })
+        .collect::<Vec<_>>();
+    pending.sort_by_key(|(surface, _)| surface.value());
+    pending
+}
+
+/// Whether the drawing has associative surfaces its network has to carry.
+fn has_pending_surfaces(document: &CadDocument) -> bool {
+    !pending_swept_surfaces(document).is_empty() || !pending_source_surfaces(document).is_empty()
+}
+
+/// Named-objects dictionary key of the drawing's persistent subentity manager.
+const SUBENT_MANAGER_KEY: &str = "ACAD_ASSOCPERSSUBENTMANAGER";
+
+/// A read dependency of an action on `dependent_on`.
+fn read_dependency(dependent_on: Handle, id: i32) -> AssocDependency {
+    AssocDependency {
+        class_version: 2,
+        status: 0,
+        is_read_dependency: true,
+        is_write_dependency: false,
+        is_attached_to_object: true,
+        is_delegating_to_owning_action: true,
+        order: 0,
+        dependent_on,
+        name: None,
+        read_dependency: Handle::NULL,
+        node: Handle::NULL,
+        dependency_body: Handle::NULL,
+        dependency_body_id: id,
+    }
+}
+
+/// An edge action parameter reading `curve` through dependency `read`.
+fn edge_action_param(
+    read: Handle,
+    (action_type, subcurve_kind, curve): crate::scene::model::sweep_model::AssocCurve,
+) -> AssociativeData {
+    use codec::objects::{
+        AssocActionParam, AssocEdgeActionParam, AssocSingleDependencyActionParam,
+    };
+    AssociativeData::EdgeActionParam(AssocEdgeActionParam {
+        single_dependency: AssocSingleDependencyActionParam {
+            action_param: AssocActionParam {
+                is_r2013: 1,
+                version: 0,
+                name: String::new(),
+            },
+            dependency_class_version: 0,
+            dependency: read,
+            class_version: 0,
+        },
+        parameter: Handle::NULL,
+        has_action: true,
+        action_type,
+        subcurve_kind,
+        curve,
+    })
+}
+
+/// The subentity manager's record of a region's edges: one entry per edge
+/// id from `first_id`, in the order the region's dependencies read them,
+/// each naming the edge (and, between edges, its two vertices) by the
+/// region's face and edge numbers. `loops` holds each loop's edge count.
+fn region_subent_entries(loops: &[usize], step: i32, first_id: i32) -> Vec<i32> {
+    const BODY: i32 = 1_000_000_000;
+    const FACE: i32 = 1001;
+    let mut values = Vec::new();
+    let (mut id, mut offset) = (first_id, 0usize);
+    for &count in loops {
+        let edge = |index: usize| 51001 + 100_000 * (offset + index % count) as i32;
+        let vertex = |a: i32, b: i32| {
+            [
+                1, 3, 1, BODY, FACE, 1, BODY, a, 1, BODY, b, 0, 0, 0, 900, 0, 900, 0, 0,
+            ]
+        };
+        for read in 0..count {
+            if count == 1 {
+                values.extend([
+                    4,
+                    0,
+                    5,
+                    id,
+                    step,
+                    step,
+                    0,
+                    0,
+                    24,
+                    0,
+                    0,
+                    1,
+                    BODY,
+                    edge(0),
+                    0,
+                    0,
+                    1,
+                    1,
+                    BODY,
+                    FACE,
+                ]);
+                values.extend([0; 14]);
+            } else {
+                // The dependencies start at the loop's second edge.
+                let index = read + 1;
+                values.extend([
+                    4,
+                    0,
+                    11,
+                    id,
+                    step,
+                    step,
+                    0,
+                    2,
+                    2,
+                    2,
+                    0,
+                    2,
+                    2,
+                    2,
+                    54,
+                    0,
+                    0,
+                    1,
+                    BODY,
+                    edge(index),
+                ]);
+                values.extend([0, 0, 1, 1, BODY, FACE, 0, 0, 0, 0]);
+                values.extend(vertex(edge(index), edge(index + count - 1)));
+                values.extend([0, 0]);
+                values.extend(vertex(edge(index + 1), edge(index)));
+            }
+            id += 1;
+        }
+        offset += count;
+    }
+    values
+}
+
+/// Records a region read by an action in the drawing's persistent
+/// subentity manager (made when the drawing has none): a step for the
+/// action and one for the region, then one id per edge. The manager keeps
+/// the last id given, its edge entries and the list of every id given.
+/// Returns the edges' ids, or `None` when the drawing's manager has a form
+/// this cannot extend.
+fn register_region_subents(document: &mut CadDocument, loops: &[usize]) -> Option<Vec<i32>> {
+    use codec::objects::AssocPersSubentManager;
+    let root = document.header.named_objects_dict_handle;
+    let existing = match document.objects.get(&root) {
+        Some(ObjectType::Dictionary(dictionary)) => dictionary.get(SUBENT_MANAGER_KEY),
+        _ => return None,
+    };
+    let current = existing.and_then(|handle| match document.objects.get(&handle) {
+        Some(ObjectType::Associative(AssociativeObject {
+            data: AssociativeData::PersSubentManager(manager),
+            ..
+        })) => Some((handle, manager.values.clone())),
+        _ => None,
+    });
+    let (handle, last, count, mut entries) = match current {
+        Some((handle, values)) => {
+            let last = *values.first()?;
+            if values.len() == 4 && values[1..].iter().all(|value| *value == 0) {
+                (handle, last, 0, Vec::new())
+            } else {
+                let tail = usize::try_from(last).ok()? + 3;
+                if values.len() < tail + 2 || values[values.len() - tail] != last {
+                    return None;
+                }
+                (
+                    handle,
+                    last,
+                    values[1],
+                    values[2..values.len() - tail].to_vec(),
+                )
+            }
+        }
+        None => {
+            let handle = document.allocate_handle();
+            set_dictionary_entry(document, root, SUBENT_MANAGER_KEY, handle);
+            (handle, 0, 0, Vec::new())
+        }
+    };
+    let edges = loops.iter().sum::<usize>() as i32;
+    let first = last + 3;
+    entries.extend(region_subent_entries(loops, last + 2, first));
+    let last = last + 2 + edges;
+    let mut values = vec![last, count + edges];
+    values.extend(entries);
+    values.push(last);
+    values.extend(1..=last);
+    values.extend([0, 0]);
+    document.objects.insert(
+        handle,
+        ObjectType::Associative(AssociativeObject {
+            handle,
+            owner: root,
+            reactors: vec![root],
+            dxf_name: "ACDBASSOCPERSSUBENTMANAGER".to_string(),
+            cpp_class_name: "AcDbAssocPersSubentManager".to_string(),
+            data: AssociativeData::PersSubentManager(AssocPersSubentManager {
+                class_version: 2,
+                markers: [3, 0, 2],
+                values,
+                final_flag: false,
+            }),
+            ..Default::default()
+        }),
+    );
+    Some((first..first + edges).collect())
+}
+
+/// How an action reads one source through `parameter`: one read dependency
+/// on a curve; on a region one geometry dependency per edge, naming the
+/// edge by its persistent subentity id and chained on the region. Adds the
+/// dependencies (owned by `action`) and edge parameters to `objects` with
+/// ids from `first_id`; returns (edge parameter, dependency) pairs.
+fn source_reads(
+    document: &mut CadDocument,
+    action: Handle,
+    parameter: Handle,
+    source: Handle,
+    first_id: i32,
+    objects: &mut Vec<(Handle, Handle, &'static str, &'static str, AssociativeData)>,
+) -> Option<Vec<(Handle, Handle)>> {
+    use crate::scene::model::sweep_model;
+    let entity = document.get_entity(source)?;
+    let Some(loops) = sweep_model::region_edge_curves(entity) else {
+        let curve = sweep_model::assoc_edge_curve(entity)?;
+        let (edge, read) = (document.allocate_handle(), document.allocate_handle());
+        objects.push((
+            edge,
+            parameter,
+            "ACDBASSOCEDGEACTIONPARAM",
+            "AcDbAssocEdgeActionParam",
+            edge_action_param(read, curve),
+        ));
+        objects.push((
+            read,
+            action,
+            "ACDBASSOCDEPENDENCY",
+            "AcDbAssocDependency",
+            AssociativeData::Dependency(read_dependency(source, first_id)),
+        ));
+        return Some(vec![(edge, read)]);
+    };
+    let sizes = loops.iter().map(Vec::len).collect::<Vec<_>>();
+    let ids = register_region_subents(document, &sizes)?;
+    // The region carries the step its edge names belong to; without it (and
+    // without named edges in its modeler data) the reference cannot find
+    // the edges again.
+    crate::scene::view::dispatch::set_entity_xdata(
+        document,
+        source,
+        "ACAD_STEPID",
+        Some(vec![codec::xdata::XDataValue::Integer32(ids.first()? - 1)]),
+    );
+    let curves = loops.into_iter().flatten().collect::<Vec<_>>();
+    let pairs = curves
+        .iter()
+        .map(|_| (document.allocate_handle(), document.allocate_handle()))
+        .collect::<Vec<_>>();
+    for (index, (curve, (edge, read))) in curves.into_iter().zip(pairs.iter().copied()).enumerate()
+    {
+        let mut dependency = read_dependency(source, first_id + index as i32);
+        dependency.read_dependency = index
+            .checked_sub(1)
+            .map_or(Handle::NULL, |previous| pairs[previous].1);
+        dependency.node = pairs.get(index + 1).map_or(Handle::NULL, |next| next.1);
+        objects.push((
+            edge,
+            parameter,
+            "ACDBASSOCEDGEACTIONPARAM",
+            "AcDbAssocEdgeActionParam",
+            edge_action_param(read, curve),
+        ));
+        objects.push((
+            read,
+            action,
+            "ACDBASSOCGEOMDEPENDENCY",
+            "AcDbAssocGeomDependency",
+            AssociativeData::GeomDependency(AssocGeomDependency {
+                dependency,
+                class_version: 0,
+                enabled: true,
+                persistent_subent: AssocPersistentSubentId {
+                    class_name: "AcDbAssocAsmBasedEntityPersSubentId".to_string(),
+                    dependent_on_compound_object: false,
+                    class_code: 5,
+                    values: vec![0, 2, ids[index]],
+                    leading_flag: false,
+                },
+            }),
+        ));
+    }
+    Some(pairs)
+}
+
+/// The reference's associative network for each pending extruded, revolved
+/// or lofted surface: an action with the matching surface action body that
+/// writes the surface and reads its sources through path parameters (an
+/// empty one for a revolve axis given by points and for a loft without a
+/// path), with the surface's values as value parameters. Returns the
+/// network's new actions in order.
+fn materialize_source_surface_actions(
+    allocator: &mut Allocator,
+    network: Handle,
+    pending: &[(Handle, crate::scene::model::surface_sources::SurfaceSources)],
+    first_index: i32,
+) -> Vec<Handle> {
+    use crate::scene::model::surface_sources::SurfaceSources;
+    use codec::objects::*;
+    let mut added = Vec::new();
+    for (surface, sources) in pending.iter() {
+        let surface = *surface;
+        let document = &*allocator.document;
+        // The value parameters: name, unit type, values, and whether they
+        // control the surface.
+        let real = |value: f64| AssocEvalVariant {
+            code: 40,
+            value: AssocEvalValue::Real(value),
+        };
+        let short = |value: i32| AssocEvalVariant {
+            code: 70,
+            value: AssocEvalValue::Short(value as i16),
+        };
+        let (kind, class, dxf, values, params): (
+            AssocSurfaceActionKind,
+            &str,
+            &str,
+            Vec<(&str, i32, Vec<AssocEvalVariant>, bool)>,
+            Vec<(&str, Option<Handle>)>,
+        ) = match sources {
+            SurfaceSources::Extrude {
+                profile,
+                height,
+                taper,
+                ..
+            } => (
+                AssocSurfaceActionKind::Extruded,
+                "AcDbAssocExtrudedSurfaceActionBody",
+                "ACDBASSOCEXTRUDEDSURFACEACTIONBODY",
+                vec![
+                    ("ExtrusionHeight", 1, vec![real(*height)], true),
+                    ("ExtrusionTaperAngle", 2, vec![real(*taper)], true),
+                ],
+                vec![("ExtrudeProfile", Some(*profile))],
+            ),
+            SurfaceSources::Revolve {
+                profile,
+                axis,
+                angle,
+                ..
+            } => (
+                AssocSurfaceActionKind::Revolved,
+                "AcDbAssocRevolvedSurfaceActionBody",
+                "ACDBASSOCREVOLVEDSURFACEACTIONBODY",
+                vec![("RevolveAngle", 2, vec![real(*angle)], true)],
+                vec![("RevolveProfile", Some(*profile)), ("RevolvePath", *axis)],
+            ),
+            SurfaceSources::Loft { sections } => {
+                let loft = document
+                    .solid_history_operations(surface)
+                    .and_then(|operations| {
+                        operations
+                            .into_iter()
+                            .find_map(|operation| match operation {
+                                SolidHistoryOperation::Loft(record) => record.parameters,
+                                _ => None,
+                            })
+                    });
+                let (continuity, bulge) = loft.map_or(((1, 1), (0.5, 0.5)), |p| {
+                    (
+                        (p.start_continuity, p.end_continuity),
+                        (p.start_bulge, p.end_bulge),
+                    )
+                });
+                (
+                    AssocSurfaceActionKind::Lofted,
+                    "AcDbAssocLoftedSurfaceActionBody",
+                    "ACDBASSOCLOFTEDSURFACEACTIONBODY",
+                    // One value per cross section: the start and end
+                    // settings at the ends, the defaults between them.
+                    vec![
+                        (
+                            "Continuity",
+                            0,
+                            (0..sections.len())
+                                .map(|index| {
+                                    short(if index == 0 {
+                                        continuity.0
+                                    } else if index + 1 == sections.len() {
+                                        continuity.1
+                                    } else {
+                                        1
+                                    })
+                                })
+                                .collect(),
+                            false,
+                        ),
+                        (
+                            "Bulge",
+                            0,
+                            (0..sections.len())
+                                .map(|index| {
+                                    real(if index == 0 {
+                                        bulge.0
+                                    } else if index + 1 == sections.len() {
+                                        bulge.1
+                                    } else {
+                                        0.5
+                                    })
+                                })
+                                .collect(),
+                            false,
+                        ),
+                    ],
+                    sections
+                        .iter()
+                        .map(|section| ("CrossSection", Some(*section)))
+                        .chain(std::iter::once(("PathCurve", None)))
+                        .collect(),
+                )
+            }
+        };
+        let document = &mut *allocator.document;
+        let (action, body, written) = (
+            document.allocate_handle(),
+            document.allocate_handle(),
+            document.allocate_handle(),
+        );
+        let mut objects: Vec<(Handle, Handle, &'static str, &'static str, AssociativeData)> =
+            Vec::new();
+        let mut reactors: Vec<(Handle, Handle)> = vec![(surface, written)];
+        let mut dependencies = vec![written];
+        let mut owned = Vec::new();
+        let mut writes = read_dependency(surface, 1);
+        (
+            writes.is_read_dependency,
+            writes.is_write_dependency,
+            writes.order,
+        ) = (false, true, i32::MIN);
+        objects.push((
+            written,
+            action,
+            "ACDBASSOCDEPENDENCY",
+            "AcDbAssocDependency",
+            AssociativeData::Dependency(writes),
+        ));
+        let mut complete = true;
+        for (name, source) in params.iter() {
+            let parameter = document.allocate_handle();
+            let mut children = Vec::new();
+            if let Some(source) = source {
+                let Some(reads) = source_reads(
+                    document,
+                    action,
+                    parameter,
+                    *source,
+                    dependencies.len() as i32 + 1,
+                    &mut objects,
+                ) else {
+                    complete = false;
+                    break;
+                };
+                for (edge, read) in reads {
+                    reactors.push((*source, read));
+                    dependencies.push(read);
+                    children.push(edge);
+                }
+            }
+            objects.push((
+                parameter,
+                action,
+                "ACDBASSOCPATHACTIONPARAM",
+                "AcDbAssocPathActionParam",
+                AssociativeData::PathActionParam(AssocPathActionParam {
+                    compound: AssocCompoundActionParam {
+                        action_param: AssocActionParam {
+                            is_r2013: 1,
+                            version: 0,
+                            name: name.to_string(),
+                        },
+                        class_version: 0,
+                        status: 0,
+                        parameters: children,
+                        child_parameter: None,
+                    },
+                    version: 0,
+                }),
+            ));
+            owned.push(parameter);
+        }
+        if !complete {
+            continue;
+        }
+        objects.push((
+            action,
+            network,
+            "ACDBASSOCACTION",
+            "AcDbAssocAction",
+            AssociativeData::Action(AssocAction {
+                class_version: 2,
+                geometry_status: 0,
+                owning_network: network,
+                action_body: body,
+                action_index: 0,
+                max_dependency_index: dependencies.len() as i32,
+                dependencies: dependencies
+                    .iter()
+                    .map(|handle| AssocActionDependency {
+                        is_owned: true,
+                        dependency: *handle,
+                    })
+                    .collect(),
+                owned_parameters: owned,
+                values: values
+                    .into_iter()
+                    .map(|(name, unit_type, amounts, controls)| AssocValueParam {
+                        class_version: 0,
+                        name: name.to_string(),
+                        unit_type,
+                        variables: amounts
+                            .into_iter()
+                            .map(|value| AssocValueParamVariable {
+                                value,
+                                handle: Handle::NULL,
+                            })
+                            .collect(),
+                        controlled_object_dependency: if controls { written } else { Handle::NULL },
+                    })
+                    .collect(),
+            }),
+        ));
+        objects.push((
+            body,
+            action,
+            dxf,
+            class,
+            AssociativeData::SurfaceActionBody(AssocSurfaceActionBody {
+                kind,
+                action_body: AssocActionBody { version: 2 },
+                surface_body: AssocSurfaceBody {
+                    version: 0,
+                    dependency: written,
+                    is_semi_associative: false,
+                    marker: 1,
+                    is_semi_override: false,
+                    grip_status: 0,
+                },
+                ..Default::default()
+            }),
+        ));
+        for (handle, owner, dxf, class, data) in objects {
+            allocator.insert_associative_at(handle, owner, dxf, class, data);
+        }
+        for (target, reactor) in reactors {
+            let document = &mut *allocator.document;
+            if let Some(entity) = document.get_entity_mut(target) {
+                entity.common_mut().reactors.push(reactor);
+            } else if let Some(ObjectType::Associative(object)) = document.objects.get_mut(&target)
+            {
+                object.reactors.push(reactor);
+            }
+        }
+        added.push(action);
+    }
+    for (offset, handle) in added.iter().copied().enumerate() {
+        if let Some(ObjectType::Associative(AssociativeObject {
+            data: AssociativeData::Action(action),
+            ..
+        })) = allocator.document.objects.get_mut(&handle)
+        {
+            action.action_index = first_index + offset as i32 + 1;
+        }
+    }
+    added
 }
 
 /// The names an expression reads.
@@ -2665,7 +3360,9 @@ fn expression_names(expression: &str) -> Vec<String> {
         if character.is_alphanumeric() || character == '_' {
             current.push(character);
         } else if !current.is_empty() {
-            if current.chars().next().is_some_and(|c| c.is_alphabetic()) && !names.contains(&current) {
+            if current.chars().next().is_some_and(|c| c.is_alphabetic())
+                && !names.contains(&current)
+            {
                 names.push(current.clone());
             }
             current.clear();
@@ -2691,24 +3388,34 @@ fn materialize_swept_surface_actions(
     let mut added = Vec::new();
     for (surface, profile, path) in pending.iter().copied() {
         let document = &*allocator.document;
-        let Some(surface_entity) = document.get_entity(surface) else { continue };
-        let codec::EntityType::Surface(surface_value) = surface_entity else { continue };
-        let codec::entities::SurfaceData::Swept { options, .. } = &surface_value.surface_data else { continue };
-        let (rotation, scale, twist) = (options.align_angle, options.scale_factor, options.twist_angle);
+        let Some(surface_entity) = document.get_entity(surface) else {
+            continue;
+        };
+        let codec::EntityType::Surface(surface_value) = surface_entity else {
+            continue;
+        };
+        let codec::entities::SurfaceData::Swept { options, .. } = &surface_value.surface_data
+        else {
+            continue;
+        };
+        let (rotation, scale, twist) = (
+            options.align_angle,
+            options.scale_factor,
+            options.twist_angle,
+        );
         let expressions = sweep_model::sweep_expressions(surface_entity).unwrap_or([None, None]);
-        let (Some(profile_curve), Some(path_curve)) = (
-            document.get_entity(profile).and_then(sweep_model::assoc_edge_curve),
-            document.get_entity(path).and_then(sweep_model::assoc_edge_curve),
-        ) else { continue };
         let evaluate = |expression: &str| {
             let mut table = parameters.clone();
             table.set("sweepExpression", expression).ok()?;
-            table.resolve("sweepExpression").ok().filter(|value| value.is_finite())
+            table
+                .resolve("sweepExpression")
+                .ok()
+                .filter(|value| value.is_finite())
         };
         let document = &mut *allocator.document;
         let mut next = || document.allocate_handle();
-        let (action, body, written, profile_param, profile_edge, profile_read, path_param, path_edge, path_read) =
-            (next(), next(), next(), next(), next(), next(), next(), next(), next());
+        let (action, body, written, profile_param, path_param) =
+            (next(), next(), next(), next(), next());
         let dependency = |dependent_on: Handle, read: bool, id: i32, order: i32| AssocDependency {
             class_version: 2,
             status: 0,
@@ -2724,121 +3431,215 @@ fn materialize_swept_surface_actions(
             dependency_body: Handle::NULL,
             dependency_body_id: id,
         };
-        let mut objects: Vec<(Handle, Handle, &str, &str, AssociativeData)> = Vec::new();
-        let mut reactors: Vec<(Handle, Handle)> = vec![(surface, written), (profile, profile_read), (path, path_read)];
-        let mut dependencies = vec![written, profile_read, path_read];
+        let mut objects: Vec<(Handle, Handle, &'static str, &'static str, AssociativeData)> =
+            Vec::new();
+        // The profile (a region by its edges) and the path, read in that order.
+        let Some(profile_reads) =
+            source_reads(document, action, profile_param, profile, 2, &mut objects)
+        else {
+            continue;
+        };
+        let Some(path_reads) = source_reads(
+            document,
+            action,
+            path_param,
+            path,
+            profile_reads.len() as i32 + 2,
+            &mut objects,
+        ) else {
+            continue;
+        };
+        let mut reactors: Vec<(Handle, Handle)> = vec![(surface, written)];
+        reactors.extend(profile_reads.iter().map(|(_, read)| (profile, *read)));
+        reactors.extend(path_reads.iter().map(|(_, read)| (path, *read)));
+        let mut dependencies = vec![written];
+        dependencies.extend(
+            profile_reads
+                .iter()
+                .chain(&path_reads)
+                .map(|(_, read)| *read),
+        );
         let mut value_handles = [Handle::NULL, Handle::NULL];
         let mut network_actions = vec![action];
         // Scale (slot 0) and twist (slot 1) expressions.
         for (slot, expression) in expressions.iter().enumerate() {
-            let Some(expression) = expression else { continue };
-            let Some(value) = evaluate(expression) else { continue };
-            let (variable, read_by_action) = (document.allocate_handle(), document.allocate_handle());
+            let Some(expression) = expression else {
+                continue;
+            };
+            let Some(value) = evaluate(expression) else {
+                continue;
+            };
+            let (variable, read_by_action) =
+                (document.allocate_handle(), document.allocate_handle());
             let mut variable_dependencies = Vec::new();
             for (index, name) in expression_names(expression).iter().enumerate() {
-                let Some(named) = allocator.variables.get(name).copied() else { continue };
+                let Some(named) = allocator.variables.get(name).copied() else {
+                    continue;
+                };
                 let reads = document.allocate_handle();
                 let named_value = parameters.resolve(name).unwrap_or(0.0);
-                objects.push((reads, variable, "ACDBASSOCVALUEDEPENDENCY", "AcDbAssocValueDependency",
+                objects.push((
+                    reads,
+                    variable,
+                    "ACDBASSOCVALUEDEPENDENCY",
+                    "AcDbAssocValueDependency",
                     AssociativeData::ValueDependency(AssocValueDependency {
                         dependency: dependency(named, true, index as i32 + 1, 0),
                         class_version: 0,
                         name: String::new(),
                         value: Allocator::numeric_eval(named_value),
-                    })));
+                    }),
+                ));
                 reactors.push((named, reads));
-                variable_dependencies.push(AssocVariableDependency { dependency: reads, flags: 0 });
+                variable_dependencies.push(AssocVariableDependency {
+                    dependency: reads,
+                    flags: 0,
+                });
             }
-            objects.push((variable, network, "ACDBASSOCVARIABLE", "AcDbAssocVariable", AssociativeData::Variable(AssocVariable {
-                action: AssocAction {
+            objects.push((
+                variable,
+                network,
+                "ACDBASSOCVARIABLE",
+                "AcDbAssocVariable",
+                AssociativeData::Variable(AssocVariable {
+                    action: AssocAction {
+                        class_version: 2,
+                        owning_network: network,
+                        max_dependency_index: variable_dependencies.len() as i32,
+                        ..Default::default()
+                    },
                     class_version: 2,
-                    owning_network: network,
-                    max_dependency_index: variable_dependencies.len() as i32,
-                    ..Default::default()
-                },
-                class_version: 2,
-                name: String::new(),
-                expression: expression.clone(),
-                evaluator: "AcDbCalc:1.0".to_string(),
-                description: String::new(),
-                value: Allocator::numeric_eval(value),
-                has_cached_value: false,
-                cached_value: String::new(),
-                flag: false,
-                dependencies: variable_dependencies,
-            })));
-            objects.push((read_by_action, action, "ACDBASSOCVALUEDEPENDENCY", "AcDbAssocValueDependency",
+                    name: String::new(),
+                    expression: expression.clone(),
+                    evaluator: "AcDbCalc:1.0".to_string(),
+                    description: String::new(),
+                    value: Allocator::numeric_eval(value),
+                    has_cached_value: false,
+                    cached_value: String::new(),
+                    flag: false,
+                    dependencies: variable_dependencies,
+                }),
+            ));
+            objects.push((
+                read_by_action,
+                action,
+                "ACDBASSOCVALUEDEPENDENCY",
+                "AcDbAssocValueDependency",
                 AssociativeData::ValueDependency(AssocValueDependency {
                     dependency: dependency(variable, true, dependencies.len() as i32 + 1, 0),
                     class_version: 0,
                     name: String::new(),
                     value: Allocator::numeric_eval(value),
-                })));
+                }),
+            ));
             reactors.push((variable, read_by_action));
             dependencies.push(read_by_action);
             value_handles[slot] = read_by_action;
             network_actions.push(variable);
         }
-        let real = |value: f64| AssocEvalVariant { code: 40, value: AssocEvalValue::Real(value) };
+        let real = |value: f64| AssocEvalVariant {
+            code: 40,
+            value: AssocEvalValue::Real(value),
+        };
         let value = |name: &str, unit_type: i32, amount: f64, handle: Handle| AssocValueParam {
             class_version: 0,
             name: name.to_string(),
             unit_type,
-            variables: vec![AssocValueParamVariable { value: real(amount), handle }],
+            variables: vec![AssocValueParamVariable {
+                value: real(amount),
+                handle,
+            }],
             controlled_object_dependency: written,
         };
-        objects.push((action, network, "ACDBASSOCACTION", "AcDbAssocAction", AssociativeData::Action(AssocAction {
-            class_version: 2,
-            geometry_status: 0,
-            owning_network: network,
-            action_body: body,
-            action_index: 0,
-            max_dependency_index: dependencies.len() as i32,
-            dependencies: dependencies.iter().map(|handle| AssocActionDependency { is_owned: true, dependency: *handle }).collect(),
-            owned_parameters: vec![profile_param, path_param],
-            values: vec![
-                value("RotationAngle", 2, rotation, Handle::NULL),
-                value("ScaleFactor", 0, scale, value_handles[0]),
-                value("TwistAngle", 2, twist, value_handles[1]),
-            ],
-        })));
-        objects.push((body, action, "ACDBASSOCSWEPTSURFACEACTIONBODY", "AcDbAssocSweptSurfaceActionBody",
+        objects.push((
+            action,
+            network,
+            "ACDBASSOCACTION",
+            "AcDbAssocAction",
+            AssociativeData::Action(AssocAction {
+                class_version: 2,
+                geometry_status: 0,
+                owning_network: network,
+                action_body: body,
+                action_index: 0,
+                max_dependency_index: dependencies.len() as i32,
+                dependencies: dependencies
+                    .iter()
+                    .map(|handle| AssocActionDependency {
+                        is_owned: true,
+                        dependency: *handle,
+                    })
+                    .collect(),
+                owned_parameters: vec![profile_param, path_param],
+                values: vec![
+                    value("RotationAngle", 2, rotation, Handle::NULL),
+                    value("ScaleFactor", 0, scale, value_handles[0]),
+                    value("TwistAngle", 2, twist, value_handles[1]),
+                ],
+            }),
+        ));
+        objects.push((
+            body,
+            action,
+            "ACDBASSOCSWEPTSURFACEACTIONBODY",
+            "AcDbAssocSweptSurfaceActionBody",
             AssociativeData::SurfaceActionBody(AssocSurfaceActionBody {
                 kind: AssocSurfaceActionKind::Swept,
                 action_body: AssocActionBody { version: 2 },
-                surface_body: AssocSurfaceBody { version: 0, dependency: written, is_semi_associative: false, marker: 1, is_semi_override: false, grip_status: 0 },
+                surface_body: AssocSurfaceBody {
+                    version: 0,
+                    dependency: written,
+                    is_semi_associative: false,
+                    marker: 1,
+                    is_semi_override: false,
+                    grip_status: 0,
+                },
                 ..Default::default()
-            })));
-        objects.push((written, action, "ACDBASSOCDEPENDENCY", "AcDbAssocDependency", AssociativeData::Dependency(dependency(surface, false, 1, i32::MIN))));
-        let edge_param = |read: Handle, (kind, subcurve, curve): (i32, AssocSubcurveKind, Vec<AssocCurveValue>)| AssociativeData::EdgeActionParam(AssocEdgeActionParam {
-            single_dependency: AssocSingleDependencyActionParam {
-                action_param: AssocActionParam { is_r2013: 1, version: 0, name: String::new() },
-                dependency_class_version: 0,
-                dependency: read,
-                class_version: 0,
-            },
-            parameter: Handle::NULL,
-            has_action: true,
-            action_type: kind,
-            subcurve_kind: subcurve,
-            curve,
-        });
-        let path_parameter = |name: &str, child: Handle| AssociativeData::PathActionParam(AssocPathActionParam {
-            compound: AssocCompoundActionParam {
-                action_param: AssocActionParam { is_r2013: 1, version: 0, name: name.to_string() },
-                class_version: 0,
-                status: 0,
-                parameters: vec![child],
-                child_parameter: None,
-            },
-            version: 0,
-        });
-        objects.push((profile_param, action, "ACDBASSOCPATHACTIONPARAM", "AcDbAssocPathActionParam", path_parameter("SweepProfile", profile_edge)));
-        objects.push((profile_edge, profile_param, "ACDBASSOCEDGEACTIONPARAM", "AcDbAssocEdgeActionParam", edge_param(profile_read, profile_curve)));
-        objects.push((profile_read, action, "ACDBASSOCDEPENDENCY", "AcDbAssocDependency", AssociativeData::Dependency(dependency(profile, true, 2, 0))));
-        objects.push((path_param, action, "ACDBASSOCPATHACTIONPARAM", "AcDbAssocPathActionParam", path_parameter("SweepPath", path_edge)));
-        objects.push((path_edge, path_param, "ACDBASSOCEDGEACTIONPARAM", "AcDbAssocEdgeActionParam", edge_param(path_read, path_curve)));
-        objects.push((path_read, action, "ACDBASSOCDEPENDENCY", "AcDbAssocDependency", AssociativeData::Dependency(dependency(path, true, 3, 0))));
+            }),
+        ));
+        objects.push((
+            written,
+            action,
+            "ACDBASSOCDEPENDENCY",
+            "AcDbAssocDependency",
+            AssociativeData::Dependency(dependency(surface, false, 1, i32::MIN)),
+        ));
+        let path_parameter = |name: &str, children: Vec<Handle>| {
+            AssociativeData::PathActionParam(AssocPathActionParam {
+                compound: AssocCompoundActionParam {
+                    action_param: AssocActionParam {
+                        is_r2013: 1,
+                        version: 0,
+                        name: name.to_string(),
+                    },
+                    class_version: 0,
+                    status: 0,
+                    parameters: children,
+                    child_parameter: None,
+                },
+                version: 0,
+            })
+        };
+        objects.push((
+            profile_param,
+            action,
+            "ACDBASSOCPATHACTIONPARAM",
+            "AcDbAssocPathActionParam",
+            path_parameter(
+                "SweepProfile",
+                profile_reads.iter().map(|(edge, _)| *edge).collect(),
+            ),
+        ));
+        objects.push((
+            path_param,
+            action,
+            "ACDBASSOCPATHACTIONPARAM",
+            "AcDbAssocPathActionParam",
+            path_parameter(
+                "SweepPath",
+                path_reads.iter().map(|(edge, _)| *edge).collect(),
+            ),
+        ));
         for (handle, owner, dxf, class, data) in objects {
             allocator.insert_associative_at(handle, owner, dxf, class, data);
         }
@@ -2846,7 +3647,8 @@ fn materialize_swept_surface_actions(
             let document = &mut *allocator.document;
             if let Some(entity) = document.get_entity_mut(target) {
                 entity.common_mut().reactors.push(reactor);
-            } else if let Some(ObjectType::Associative(object)) = document.objects.get_mut(&target) {
+            } else if let Some(ObjectType::Associative(object)) = document.objects.get_mut(&target)
+            {
                 object.reactors.push(reactor);
             }
         }
@@ -2880,7 +3682,10 @@ fn refresh_foreign_values(
         })) => {
             let mut table = parameters.clone();
             table.set("foreignExpression", &variable.expression).ok()?;
-            table.resolve("foreignExpression").ok().filter(|value| value.is_finite())
+            table
+                .resolve("foreignExpression")
+                .ok()
+                .filter(|value| value.is_finite())
         }
         _ => None,
     };
@@ -2908,7 +3713,9 @@ fn refresh_foreign_values(
         }
     }
     for (dependency, source) in dependencies {
-        let Some(value) = value_of(document, source) else { continue };
+        let Some(value) = value_of(document, source) else {
+            continue;
+        };
         if let Some(ObjectType::Associative(AssociativeObject {
             data: AssociativeData::ValueDependency(dependency),
             ..
@@ -2939,7 +3746,11 @@ fn refresh_foreign_values(
                     continue;
                 };
                 // Angle parameters are cached in radians.
-                let value = if param.unit_type == 2 { value.to_radians() } else { value };
+                let value = if param.unit_type == 2 {
+                    value.to_radians()
+                } else {
+                    value
+                };
                 updates.push((index, slot, value));
             }
         }
@@ -3005,7 +3816,7 @@ fn materialize_scope(
         && existing_variables.is_empty()
         && preserved_groups.is_empty()
         && foreign_actions.is_empty()
-        && !(materialize_all_parameters && !pending_swept_surfaces(document).is_empty())
+        && !(materialize_all_parameters && has_pending_surfaces(document))
     {
         return None;
     }
@@ -3052,7 +3863,7 @@ fn materialize_scope(
         }
     }
 
-    if materialize_all_parameters {
+    if materialize_all_parameters || !set.local_parameters.is_empty() {
         for parameter in parameters.iter() {
             let resolved = parameters.resolve(&parameter.name).unwrap_or(0.0);
             allocator.variable(
@@ -3148,6 +3959,7 @@ fn materialize_scope(
             work_plane: [Vector3::ZERO, Vector3::UNIT_X, Vector3::UNIT_Y],
             dependency: Handle::NULL,
             actions: group_dependencies,
+            next_node_id: 0,
             nodes,
         };
         allocator.insert_associative_at(
@@ -3190,9 +4002,30 @@ fn materialize_scope(
         }
     }
     refresh_foreign_values(allocator.document, &foreign_actions, parameters);
-    let pending = if materialize_all_parameters { pending_swept_surfaces(allocator.document) } else { Vec::new() };
-    let surface_actions = materialize_swept_surface_actions(
-        &mut allocator, network_handle, parameters, &pending, first_foreign + foreign_actions.len() as i32);
+    let pending = if materialize_all_parameters {
+        pending_swept_surfaces(allocator.document)
+    } else {
+        Vec::new()
+    };
+    let mut surface_actions = materialize_swept_surface_actions(
+        &mut allocator,
+        network_handle,
+        parameters,
+        &pending,
+        first_foreign + foreign_actions.len() as i32,
+    );
+    let pending_sources = if materialize_all_parameters {
+        pending_source_surfaces(allocator.document)
+    } else {
+        Vec::new()
+    };
+    let source_actions = materialize_source_surface_actions(
+        &mut allocator,
+        network_handle,
+        &pending_sources,
+        first_foreign + (foreign_actions.len() + surface_actions.len()) as i32,
+    );
+    surface_actions.extend(source_actions);
 
     let network = AssocNetwork {
         action: AssocAction {
@@ -3202,7 +4035,8 @@ fn materialize_scope(
             ..Default::default()
         },
         network_version: 0,
-        network_action_index: first_foreign + (foreign_actions.len() + surface_actions.len()) as i32,
+        network_action_index: first_foreign
+            + (foreign_actions.len() + surface_actions.len()) as i32,
         actions: allocator
             .variable_actions
             .iter()
@@ -3255,6 +4089,62 @@ fn materialize_scope(
 }
 
 impl Scene {
+    /// Attach staged copied scope networks to this document's global network.
+    /// Existing scopes retain their objects and action indices.
+    pub(crate) fn register_copied_constraint_networks(
+        document: &mut CadDocument,
+        handles: &FxHashMap<Handle, Handle>,
+    ) -> Result<(), String> {
+        let mut scopes: Vec<_> = handles.values().copied().filter(|handle| {
+            matches!(document.objects.get(handle), Some(ObjectType::Associative(AssociativeObject {
+                data: AssociativeData::Network(network), ..
+            })) if network.action.owning_network.is_null())
+        }).collect();
+        if scopes.is_empty() { return Ok(()); }
+        scopes.sort();
+        let dictionary = ensure_global_network_dictionary(document);
+        let root = match document.objects.get(&dictionary) {
+            Some(ObjectType::Dictionary(value)) => value.get(NETWORK_DICTIONARY_KEY),
+            _ => unreachable!(),
+        };
+        let root = if let Some(root) = root {
+            if !matches!(document.objects.get(&root), Some(ObjectType::Associative(AssociativeObject {
+                data: AssociativeData::Network(_), ..
+            }))) {
+                return Err("The drawing's associative root network is invalid.".into());
+            }
+            root
+        } else {
+            let root = document.allocate_handle();
+            let mut object = AssociativeObject::new("ASSOCNETWORK", "AcDbAssocNetwork");
+            object.handle = root;
+            object.owner = dictionary;
+            object.reactors.push(dictionary);
+            object.data = AssociativeData::Network(AssocNetwork {
+                action: AssocAction { class_version: 2, ..Default::default() },
+                ..Default::default()
+            });
+            document.objects.insert(root, ObjectType::Associative(object));
+            set_dictionary_entry(document, dictionary, NETWORK_DICTIONARY_KEY, root);
+            root
+        };
+        for scope in scopes {
+            let Some(ObjectType::Associative(AssociativeObject {
+                data: AssociativeData::Network(network), ..
+            })) = document.objects.get_mut(&root) else { unreachable!() };
+            network.network_action_index = network.network_action_index.checked_add(1)
+                .ok_or("The drawing's associative action index is exhausted.")?;
+            let index = network.network_action_index;
+            network.actions.push(AssocActionDependency { is_owned: false, dependency: scope });
+            let Some(ObjectType::Associative(AssociativeObject {
+                data: AssociativeData::Network(network), ..
+            })) = document.objects.get_mut(&scope) else { unreachable!() };
+            network.action.owning_network = root;
+            network.action.action_index = index;
+        }
+        Ok(())
+    }
+
     pub(crate) fn load_named_parameters_from_document(&mut self) {
         self.named_parameters = ParameterTable::new();
         let mut variables: Vec<_> = self
@@ -3301,6 +4191,7 @@ impl Scene {
             .iter()
             .map(|record| record.handle)
             .collect();
+        let dictionary_owners = super::block_authoring::DictionaryOwners::publish(&self.document);
         for owner in owners {
             if let Some(set) =
                 native_constraint_set(&self.document, owner, &mut self.named_parameters)
@@ -3308,15 +4199,32 @@ impl Scene {
                 self.parametric_constraints.push(set);
             }
         }
+        drop(dictionary_owners);
         // Whole-set replace (file open / reload): covers the DWG-import
         // `enabled` / `axis_direction` / `distance_direction` / `angle_sector`
         // writes, which happen on the local set during decode.
         self.bump_constraints_epoch();
         self.import_sweep_expression_links();
+        self.refresh_hidden_dynamic_dimensions();
     }
 
     /// Makes the standard associative graph match the live command model.
-    pub(crate) fn sync_native_parametric_graph(&mut self) {
+    ///
+    /// Primary consumers flush with this call itself (save/export,
+    /// parameter and constraint commands, undo replay when the constraint
+    /// model changed); `bump_entities` also calls it whenever the stored
+    /// model fingerprint no longer matches.
+    /// `pub` so external benches can drive the same flush point.
+    pub fn sync_native_parametric_graph(&mut self) {
+        self.sync_native_parametric_graph_inner();
+        // Recorded after the rebuild, not before: the rebuild itself can
+        // adopt graph variables into `named_parameters`
+        // (`native_constraint_set` inside), so the stored hash must reflect
+        // the post-sync state to compare equal on the next unchanged edit.
+        self.native_graph_fingerprint = Some(self.constraint_model_fingerprint());
+    }
+
+    fn sync_native_parametric_graph_inner(&mut self) {
         let mut owners: Vec<_> = self
             .document
             .block_records
@@ -3352,7 +4260,7 @@ impl Scene {
             if set.is_none()
                 && !existing
                 && (owner != model_owner
-                    || (self.named_parameters.is_empty() && pending_swept_surfaces(&self.document).is_empty()))
+                    || (self.named_parameters.is_empty() && !has_pending_surfaces(&self.document)))
             {
                 continue;
             }
@@ -3449,6 +4357,98 @@ impl Scene {
             root_network_handle,
         );
     }
+
+    /// Content hash of everything `sync_native_parametric_graph_inner`
+    /// materializes the standard associative graph from: both parameter
+    /// tables plus, per scope, the constraints' complete state, the scope's
+    /// local parameters, its dimension links, and its retained groups.
+    ///
+    /// Geometry edits change none of these, so the per-edit path can skip
+    /// the rebuild when this hash still equals the one recorded by the last
+    /// sync, while any constraint add/remove/toggle/value edit or parameter
+    /// change diverges it and syncs on that same bump — which is what
+    /// keeps constraint commands (no explicit flush of their own) working.
+    /// Derived caches (`dof`, `conflicts`, the lazy indexes) are excluded:
+    /// the solver refreshes them every solve and they never feed the graph.
+    pub(super) fn constraint_model_fingerprint(&self) -> u64 {
+        let mut hasher = DefaultHasher::new();
+        hash_parameter_table(&self.named_parameters, &mut hasher);
+        for set in &self.parametric_constraints {
+            set.scope.hash(&mut hasher);
+            for constraint in &set.constraints {
+                constraint.id.hash(&mut hasher);
+                (constraint.kind as u16).hash(&mut hasher);
+                constraint.refs.hash(&mut hasher);
+                match &constraint.driving_param {
+                    None => 0u8.hash(&mut hasher),
+                    Some(DrivingValue::Literal(value)) => {
+                        1u8.hash(&mut hasher);
+                        value.to_bits().hash(&mut hasher);
+                    }
+                    Some(DrivingValue::Named(name)) => {
+                        2u8.hash(&mut hasher);
+                        name.hash(&mut hasher);
+                    }
+                }
+                constraint.enabled.hash(&mut hasher);
+                match constraint.native_origin {
+                    None => 0u8.hash(&mut hasher),
+                    Some(origin) => {
+                        1u8.hash(&mut hasher);
+                        origin.group.hash(&mut hasher);
+                        origin.node.hash(&mut hasher);
+                    }
+                }
+                constraint.rigid_points.len().hash(&mut hasher);
+                for (reference, point) in &constraint.rigid_points {
+                    reference.hash(&mut hasher);
+                    hash_vector(point, &mut hasher);
+                }
+                constraint.distance_direction_type.hash(&mut hasher);
+                match constraint.distance_direction {
+                    None => 0u8.hash(&mut hasher),
+                    Some(direction) => {
+                        1u8.hash(&mut hasher);
+                        hash_vector(&direction, &mut hasher);
+                    }
+                }
+                match constraint.axis_direction {
+                    None => 0u8.hash(&mut hasher),
+                    Some(direction) => {
+                        1u8.hash(&mut hasher);
+                        hash_vector(&direction, &mut hasher);
+                    }
+                }
+                constraint.angle_sector.hash(&mut hasher);
+            }
+            hash_parameter_table(&set.local_parameters, &mut hasher);
+            set.dimensions.len().hash(&mut hasher);
+            for (id, dimension) in &set.dimensions {
+                id.hash(&mut hasher);
+                dimension.hash(&mut hasher);
+            }
+            set.retained_standard_groups.hash(&mut hasher);
+        }
+        hasher.finish()
+    }
+}
+
+/// Hashes a parameter table in insertion order: each parameter's name,
+/// formula source, and description.
+fn hash_parameter_table(table: &ParameterTable, hasher: &mut DefaultHasher) {
+    for parameter in table.iter() {
+        parameter.name.hash(hasher);
+        parameter.source.hash(hasher);
+        table.description(&parameter.name).hash(hasher);
+    }
+}
+
+/// `Vector3` has no `Hash`; exact bits keep -0.0 distinct from 0.0 so a
+/// direction flip is still a change.
+fn hash_vector(vector: &Vector3, hasher: &mut DefaultHasher) {
+    vector.x.to_bits().hash(hasher);
+    vector.y.to_bits().hash(hasher);
+    vector.z.to_bits().hash(hasher);
 }
 
 #[cfg(test)]
@@ -3616,9 +4616,7 @@ mod tests {
                 .iter()
                 .find(|constraint| constraint.kind == ConstraintKind::Horizontal)
                 .unwrap();
-            assert!(
-                (horizontal.axis_direction.unwrap() - horizontal_direction).length() < 1.0e-12
-            );
+            assert!((horizontal.axis_direction.unwrap() - horizontal_direction).length() < 1.0e-12);
         }
     }
 
@@ -4052,9 +5050,9 @@ mod tests {
         let mut block = BlockRecord::new("fixture");
         block.handle = scene.document.allocate_handle();
         scene.document.block_records.add(block).unwrap();
-        let point = scene.add_entity(EntityType::Point(codec::entities::Point::at(
-            Vector3::new(1.0, 2.0, 0.0),
-        )));
+        let point = scene.add_entity(EntityType::Point(codec::entities::Point::at(Vector3::new(
+            1.0, 2.0, 0.0,
+        ))));
         let insert = scene.add_entity(EntityType::Insert(Insert::new(
             "fixture",
             Vector3::new(3.0, 4.0, 0.0),
@@ -4996,5 +5994,4 @@ mod tests {
             assert_eq!(restored_sectors, sectors);
         }
     }
-
 }

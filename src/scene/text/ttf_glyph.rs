@@ -588,14 +588,24 @@ pub struct ShapedRun {
 pub fn char_cells(run: &ShapedRun, text: &str) -> Vec<(f32, f32)> {
     text.char_indices()
         .map(|(byte, _)| {
-            let Some(&(start, end, x0, x1)) =
-                run.cells.iter().find(|(start, end, _, _)| (*start..(*end).max(start + 1)).contains(&byte))
+            let Some(&(start, end, x0, x1)) = run
+                .cells
+                .iter()
+                .find(|(start, end, _, _)| (*start..(*end).max(start + 1)).contains(&byte))
             else {
                 return (0.0, 0.0);
             };
-            let chars: Vec<usize> = text[start..end.min(text.len())].char_indices().map(|(i, _)| start + i).collect();
-            let (n, k) = (chars.len().max(1), chars.iter().position(|&b| b == byte).unwrap_or(0));
-            let rtl = text[start..end.min(text.len())].chars().any(crate::entities::text_support::is_rtl_char);
+            let chars: Vec<usize> = text[start..end.min(text.len())]
+                .char_indices()
+                .map(|(i, _)| start + i)
+                .collect();
+            let (n, k) = (
+                chars.len().max(1),
+                chars.iter().position(|&b| b == byte).unwrap_or(0),
+            );
+            let rtl = text[start..end.min(text.len())]
+                .chars()
+                .any(crate::entities::text_support::is_rtl_char);
             let slot = (x1 - x0) / n as f32;
             let k = if rtl { n - 1 - k } else { k };
             (x0 + slot * k as f32, x0 + slot * (k + 1) as f32)
@@ -682,6 +692,12 @@ pub fn fallback_glyph(ch: char) -> Option<Arc<Glyph>> {
 pub fn clear_fallback_cache() {
     fallback_cache().lock().unwrap().clear();
     shape_cache().lock().unwrap().clear();
+    // Web only: the per-family outline cache can also hold stale `None`s —
+    // the family only became resolvable when the font joined the sysfont
+    // database (`register_web_font`). On desktop the font set never changes,
+    // so the cache is kept.
+    #[cfg(target_arch = "wasm32")]
+    cache().lock().unwrap().clear();
     #[cfg(target_arch = "wasm32")]
     crate::scene::text::sdf_atlas::reset_font_entries();
 }
@@ -760,7 +776,9 @@ fn outline_char(
         advance,
         fill_tris,
     };
-    let source = with_source.then(|| source_for(data, index, face, gid, k)).flatten();
+    let source = with_source
+        .then(|| source_for(data, index, face, gid, k))
+        .flatten();
     Some((glyph, source))
 }
 
@@ -898,10 +916,8 @@ fn build_shaped(_family: &str, text: &str) -> Option<ShapedRun> {
         database.load_font_data((*bytes).clone());
     }
     database.set_sans_serif_family(crate::scene::text::web_font::primary_script().family());
-    let mut font_system = FontSystem::new_with_locale_and_db(
-        crate::i18n::active_language_tag(),
-        database,
-    );
+    let mut font_system =
+        FontSystem::new_with_locale_and_db(crate::i18n::active_language_tag(), database);
     let attrs = Attrs::new().family(Family::SansSerif);
     let mut buffer = Buffer::new(&mut font_system, Metrics::new(SHAPE_FS, SHAPE_FS));
     buffer.set_size(&mut font_system, None, None);
@@ -922,7 +938,12 @@ fn build_shaped(_family: &str, text: &str) -> Option<ShapedRun> {
             let m = LRM.len_utf8();
             if glyph.end > m {
                 let start = glyph.start.saturating_sub(m);
-                cells.push((start, glyph.end - m, glyph.x * px_to_9, (glyph.x + glyph.w) * px_to_9));
+                cells.push((
+                    start,
+                    glyph.end - m,
+                    glyph.x * px_to_9,
+                    (glyph.x + glyph.w) * px_to_9,
+                ));
             }
             let face_index = font_system
                 .db_mut()
@@ -962,7 +983,11 @@ fn build_shaped(_family: &str, text: &str) -> Option<ShapedRun> {
     if advance <= 0.0 && glyphs.is_empty() {
         None
     } else {
-        Some(ShapedRun { glyphs, advance, cells })
+        Some(ShapedRun {
+            glyphs,
+            advance,
+            cells,
+        })
     }
 }
 
@@ -983,10 +1008,22 @@ fn build_shaped(family: &str, text: &str) -> Option<ShapedRun> {
     .flatten();
 
     let mut fs = font_system().lock().unwrap();
-    let attrs = if family.is_empty() {
+    // A styled family shapes with the bold / italic face it names.
+    let (name, bold, italic) = sysfont::split_style(family);
+    let attrs = if name.is_empty() {
         Attrs::new()
     } else {
-        Attrs::new().family(Family::Name(family))
+        Attrs::new().family(Family::Name(name))
+    };
+    let attrs = if bold {
+        attrs.weight(cosmic_text::Weight::BOLD)
+    } else {
+        attrs
+    };
+    let attrs = if italic {
+        attrs.style(cosmic_text::Style::Italic)
+    } else {
+        attrs
     };
     let mut buf = Buffer::new(&mut fs, Metrics::new(SHAPE_FS, SHAPE_FS));
     // No wrapping: a run is a single line.
@@ -1037,7 +1074,12 @@ fn build_shaped(family: &str, text: &str) -> Option<ShapedRun> {
             // A cluster the shaper merged into the mark keeps its own part.
             let m = LRM.len_utf8();
             if g.end > m {
-                cells.push((g.start.saturating_sub(m), g.end - m, g.x * px_to_9, (g.x + g.w) * px_to_9));
+                cells.push((
+                    g.start.saturating_sub(m),
+                    g.end - m,
+                    g.x * px_to_9,
+                    (g.x + g.w) * px_to_9,
+                ));
             }
             let face_index = fs.db_mut().face(g.font_id).map(|f| f.index).unwrap_or(0);
             let Some(font) = fs.get_font(g.font_id, g.font_weight) else {
@@ -1077,13 +1119,16 @@ fn build_shaped(family: &str, text: &str) -> Option<ShapedRun> {
     if advance <= 0.0 && glyphs.is_empty() {
         return None;
     }
-    Some(ShapedRun { glyphs, advance, cells })
+    Some(ShapedRun {
+        glyphs,
+        advance,
+        cells,
+    })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
 
     #[test]
     fn shape_run_falls_back_for_missing_script() {
@@ -1140,18 +1185,36 @@ mod tests {
     #[test]
     fn shape_run_positions_glyphs() {
         let fams = sysfont::families();
-        if fams.is_empty() { eprintln!("no fonts; skip"); return; }
-        let fam = fams.iter().find(|f| glyph(f, 'A').is_some()).expect("family");
+        if fams.is_empty() {
+            eprintln!("no fonts; skip");
+            return;
+        }
+        let fam = fams
+            .iter()
+            .find(|f| glyph(f, 'A').is_some())
+            .expect("family");
         let run = shape_run(fam, "AVA").expect("shaped");
         eprintln!("glyphs={} advance={:.3}", run.glyphs.len(), run.advance);
         assert_eq!(run.glyphs.len(), 3);
         assert!(run.advance > 0.0);
         // glyphs must be laid out left-to-right: each glyph's strokes sit at a
         // greater x than the previous glyph's start.
-        let xs: Vec<f32> = run.glyphs.iter()
-            .filter_map(|g| g.strokes.iter().flatten().map(|p| p[0]).fold(None, |m,x| Some(m.map_or(x, |mm:f32| mm.min(x)))))
+        let xs: Vec<f32> = run
+            .glyphs
+            .iter()
+            .filter_map(|g| {
+                g.strokes
+                    .iter()
+                    .flatten()
+                    .map(|p| p[0])
+                    .fold(None, |m, x| Some(m.map_or(x, |mm: f32| mm.min(x))))
+            })
             .collect();
-        assert!(xs.windows(2).all(|w| w[1] >= w[0] - 1.0), "glyphs not L->R: {:?}", xs);
+        assert!(
+            xs.windows(2).all(|w| w[1] >= w[0] - 1.0),
+            "glyphs not L->R: {:?}",
+            xs
+        );
     }
 
     #[test]

@@ -1,9 +1,9 @@
 use codec::entities::MLine;
 use codec::objects::MLineStyle;
 use codec::{EntityType, Handle};
+use glam::DVec3;
 use kernel::geom2d::{Curve, Line};
 use kernel::space::{PlanarCurve, Plane, Vec3 as KernelVec3};
-use glam::DVec3;
 use rustc_hash::FxHashMap as HashMap;
 
 use crate::command::{CadCommand, CmdOption, CmdResult};
@@ -63,10 +63,7 @@ impl MlineEditCommand {
     }
 
     fn replace(handle: Handle, mline: MLine) -> CmdResult {
-        CmdResult::ReplaceMany(
-            vec![(handle, vec![EntityType::MLine(mline)])],
-            Vec::new(),
-        )
+        CmdResult::ReplaceMany(vec![(handle, vec![EntityType::MLine(mline)])], Vec::new())
     }
 
     fn edit_vertex(&self, tool: Tool, handle: Handle, point: DVec3) -> Option<CmdResult> {
@@ -85,8 +82,8 @@ impl MlineEditCommand {
                         let data = mline.vertices[segment].segments.get(element)?.clone();
                         let curve = segment_curve(start, end, normal)?;
                         let length = curve.length();
-                        let split = curve.parameter_at(projected.to_array())?.clamp(0.0, 1.0)
-                            * length;
+                        let split =
+                            curve.parameter_at(projected.to_array())?.clamp(0.0, 1.0) * length;
                         Some((data, length, split))
                     })
                     .collect();
@@ -95,11 +92,7 @@ impl MlineEditCommand {
                 }
                 let insert = segment + 1;
                 let mut vertex = mline.vertices[segment].clone();
-                vertex.position = codec::types::Vector3::new(
-                    projected.x,
-                    projected.y,
-                    projected.z,
-                );
+                vertex.position = codec::types::Vector3::new(projected.x, projected.y, projected.z);
                 mline.vertices.insert(insert, vertex);
                 crate::entities::mline::rebuild_mline_geometry(&mut mline);
                 crate::modules::draw::draw::mline::sync_mline_element_parameters(
@@ -171,9 +164,7 @@ impl MlineEditCommand {
             }
             Tool::DeleteVertex => {
                 let vertex = closest_vertex(&mline, point)?;
-                if mline.vertices.len() <= 2
-                    || (mline.is_closed() && mline.vertices.len() <= 3)
-                {
+                if mline.vertices.len() <= 2 || (mline.is_closed() && mline.vertices.len() <= 3) {
                     return None;
                 }
                 let count = mline.vertices.len();
@@ -263,46 +254,25 @@ impl MlineEditCommand {
                         drawn.extend(
                             drawn_ranges(&second.parameters, second_length)
                                 .into_iter()
-                                .map(|range| {
-                                    (range.0 + first_length, range.1 + first_length)
-                                }),
+                                .map(|range| (range.0 + first_length, range.1 + first_length)),
                         );
                         let mut cuts = cut_ranges(&first.area_fill_parameters, first_length);
                         cuts.extend(
                             cut_ranges(&second.area_fill_parameters, second_length)
                                 .into_iter()
-                                .map(|range| {
-                                    (range.0 + first_length, range.1 + first_length)
-                                }),
+                                .map(|range| (range.0 + first_length, range.1 + first_length)),
                         );
-                        let drawn = merge_ranges(remap_ranges(
-                            &drawn,
-                            0.0,
-                            total,
-                            target_length,
-                        ));
-                        let cuts = merge_ranges(remap_ranges(
-                            &cuts,
-                            0.0,
-                            total,
-                            target_length,
-                        ));
+                        let drawn = merge_ranges(remap_ranges(&drawn, 0.0, total, target_length));
+                        let cuts = merge_ranges(remap_ranges(&cuts, 0.0, total, target_length));
                         let target = &mut mline.vertices[previous].segments[element];
                         store_drawn_ranges(&mut target.parameters, target_length, &drawn);
-                        store_cut_ranges(
-                            &mut target.area_fill_parameters,
-                            target_length,
-                            &cuts,
-                        );
+                        store_cut_ranges(&mut target.area_fill_parameters, target_length, &cuts);
                     }
                 }
             }
             _ => return None,
         }
-        crate::modules::draw::draw::mline::sync_mline_element_parameters(
-            &mut mline,
-            &target.style,
-        );
+        crate::modules::draw::draw::mline::sync_mline_element_parameters(&mut mline, &target.style);
         Some(Self::replace(handle, mline))
     }
 
@@ -387,9 +357,7 @@ impl MlineEditCommand {
             Tool::ClosedCross | Tool::OpenCross | Tool::MergedCross => {
                 on_segment(first_fraction) && on_segment(second_fraction)
             }
-            Tool::ClosedTee | Tool::OpenTee | Tool::MergedTee => {
-                on_segment(second_fraction)
-            }
+            Tool::ClosedTee | Tool::OpenTee | Tool::MergedTee => on_segment(second_fraction),
             Tool::CornerJoint => true,
             _ => false,
         };
@@ -402,22 +370,10 @@ impl MlineEditCommand {
 
         match tool {
             Tool::ClosedCross => {
-                gap_elements(
-                    &mut first,
-                    first_segment,
-                    intersection,
-                    first_gap,
-                    None,
-                );
+                gap_elements(&mut first, first_segment, intersection, first_gap, None);
             }
             Tool::OpenCross => {
-                gap_elements(
-                    &mut first,
-                    first_segment,
-                    intersection,
-                    first_gap,
-                    None,
-                );
+                gap_elements(&mut first, first_segment, intersection, first_gap, None);
                 gap_elements(
                     &mut second,
                     second_segment,
@@ -443,12 +399,7 @@ impl MlineEditCommand {
                 );
             }
             Tool::ClosedTee | Tool::OpenTee | Tool::MergedTee => {
-                move_closest_end(
-                    &mut first,
-                    &first_target.style,
-                    first_end?,
-                    intersection,
-                );
+                move_closest_end(&mut first, &first_target.style, first_end?, intersection);
                 let elements = match tool {
                     Tool::ClosedTee => None,
                     Tool::OpenTee => Some(outer_element_indices(&second_target.style)),
@@ -464,18 +415,8 @@ impl MlineEditCommand {
                 );
             }
             Tool::CornerJoint => {
-                move_closest_end(
-                    &mut first,
-                    &first_target.style,
-                    first_end?,
-                    intersection,
-                );
-                move_closest_end(
-                    &mut second,
-                    &second_target.style,
-                    second_end?,
-                    intersection,
-                );
+                move_closest_end(&mut first, &first_target.style, first_end?, intersection);
+                move_closest_end(&mut second, &second_target.style, second_end?, intersection);
             }
             _ => return None,
         }
@@ -499,12 +440,11 @@ impl CadCommand for MlineEditCommand {
         match self.mode {
             Mode::Choose => crate::t!("MLEDIT  Choose an edit tool:").into_owned(),
             Mode::PickFirst(_) => crate::t!("MLEDIT  Select first multiline:").into_owned(),
-            Mode::PickSecond { .. } => {
-                crate::t!("MLEDIT  Select second multiline:").into_owned()
-            }
-            Mode::PickRangeEnd { tool: Tool::WeldAll, .. } => {
-                crate::t!("MLEDIT  Specify the end of the weld range:").into_owned()
-            }
+            Mode::PickSecond { .. } => crate::t!("MLEDIT  Select second multiline:").into_owned(),
+            Mode::PickRangeEnd {
+                tool: Tool::WeldAll,
+                ..
+            } => crate::t!("MLEDIT  Specify the end of the weld range:").into_owned(),
             Mode::PickRangeEnd { .. } => {
                 crate::t!("MLEDIT  Specify the second cut point:").into_owned()
             }
@@ -635,6 +575,45 @@ fn center_segment(mline: &MLine, index: usize) -> Option<(DVec3, DVec3)> {
     ))
 }
 
+/// TRIM on an MLINE: on the picked segment, every element loses the stretch
+/// around `pick` between its nearest cutting edges, or up to the segment's
+/// end on a side without one, as CUT ALL removes it. `cuts` gives the
+/// cutting fractions along an element from its start to its end point.
+pub(crate) fn trim_mline_at(
+    mline: &MLine,
+    pick: DVec3,
+    cuts: impl Fn(DVec3, DVec3) -> Vec<f64>,
+) -> Option<MLine> {
+    let mut mline = mline.clone();
+    let (segment, _, _, _) = closest_segment(&mline, pick)?;
+    let normal = DVec3::new(mline.normal.x, mline.normal.y, mline.normal.z);
+    let mut trimmed = false;
+    for element in 0..mline.style_element_count {
+        let Some((a, b)) = element_segment(&mline, segment, element) else {
+            continue;
+        };
+        let Some(curve) = segment_curve(a, b, normal) else {
+            continue;
+        };
+        let length = curve.length();
+        let edges = cuts(a, b);
+        let Some(at) = curve.parameter_at(pick.to_array()) else {
+            continue;
+        };
+        if length <= 1.0e-10 || edges.is_empty() {
+            continue;
+        }
+        let at = at.clamp(0.0, 1.0);
+        let low = edges.iter().copied().filter(|t| *t < at).fold(0.0, f64::max) * length;
+        let high = edges.iter().copied().filter(|t| *t > at).fold(1.0, f64::min) * length;
+        let data = &mut mline.vertices[segment].segments[element];
+        remove_drawn_range(&mut data.parameters, length, low, high);
+        add_cut_range(&mut data.area_fill_parameters, length, low, high);
+        trimmed = true;
+    }
+    trimmed.then_some(mline)
+}
+
 fn segment_curve(first: DVec3, second: DVec3, normal: DVec3) -> Option<PlanarCurve> {
     let direction = KernelVec3::from(second.to_array()) - KernelVec3::from(first.to_array());
     let length = direction.length();
@@ -733,8 +712,8 @@ fn restore_shifted_segment_data(
         let Some(endpoints) = element_segment(mline, segment, element) else {
             continue;
         };
-        let Some(target_length) = segment_curve(endpoints.0, endpoints.1, normal)
-            .map(|curve| curve.length())
+        let Some(target_length) =
+            segment_curve(endpoints.0, endpoints.1, normal).map(|curve| curve.length())
         else {
             continue;
         };
@@ -1032,12 +1011,7 @@ fn gap_elements(
     }
 }
 
-fn move_closest_end(
-    mline: &mut MLine,
-    style: &MLineStyle,
-    index: usize,
-    intersection: DVec3,
-) {
+fn move_closest_end(mline: &mut MLine, style: &MLineStyle, index: usize, intersection: DVec3) {
     if mline.vertices.is_empty() || mline.is_closed() || index >= mline.vertices.len() {
         return;
     }
@@ -1055,13 +1029,11 @@ fn move_closest_end(
     } else {
         (mline.vertices.len() > 2).then_some(last_index - 2)
     };
-    let peripheral = peripheral_segment
-        .and_then(|segment| snapshot_segment_data(mline, segment, normal).map(|data| (segment, data)));
-    mline.vertices[index].position = codec::types::Vector3::new(
-        intersection.x,
-        intersection.y,
-        intersection.z,
-    );
+    let peripheral = peripheral_segment.and_then(|segment| {
+        snapshot_segment_data(mline, segment, normal).map(|data| (segment, data))
+    });
+    mline.vertices[index].position =
+        codec::types::Vector3::new(intersection.x, intersection.y, intersection.z);
     crate::entities::mline::rebuild_mline_geometry(mline);
     crate::modules::draw::draw::mline::sync_mline_element_parameters(mline, style);
     restore_shifted_segment_data(mline, segment, normal, source, index == 0);
@@ -1083,7 +1055,11 @@ fn selected_terminal_end(mline: &MLine, segment: usize, pick: DVec3) -> Option<u
             let last = &mline.vertices[last_vertex].position;
             let first_distance = KernelVec3::new(first.x, first.y, first.z).distance_squared(pick);
             let last_distance = KernelVec3::new(last.x, last.y, last.z).distance_squared(pick);
-            Some(if first_distance <= last_distance { 0 } else { last_vertex })
+            Some(if first_distance <= last_distance {
+                0
+            } else {
+                last_vertex
+            })
         }
         (true, false) => Some(0),
         (false, true) => Some(last_vertex),
@@ -1100,11 +1076,7 @@ fn segment_intersection(
         - kernel::space::Vec3::from(first.0.to_array()))
     .normalize()?
     .to_array();
-    let plane = kernel::space::Plane::orthonormal(
-        first.0.to_array(),
-        axis,
-        normal.to_array(),
-    )?;
+    let plane = kernel::space::Plane::orthonormal(first.0.to_array(), axis, normal.to_array())?;
     let points = [
         first.0.to_array(),
         first.1.to_array(),
@@ -1131,3 +1103,38 @@ fn segment_intersection(
 }
 
 inventory::submit!(crate::command::CommandRegistration { names: &["MLEDIT"] });
+
+#[cfg(test)]
+mod trim_tests {
+    use super::*;
+
+    #[test]
+    fn trim_cuts_every_element_between_its_edges() {
+        let mut mline = MLine::new();
+        mline.style_element_count = 2;
+        mline.add_vertex(codec::types::Vector3::new(0.0, 0.0, 0.0));
+        mline.add_vertex(codec::types::Vector3::new(10.0, 0.0, 0.0));
+        for vertex in &mut mline.vertices {
+            for (element, offset) in [1.0, -1.0].into_iter().enumerate() {
+                vertex.segments[element].parameters = vec![offset, 0.0];
+            }
+        }
+        // Cutting edges at x = 3 and x = 7, whatever the element's offset.
+        let cuts = |a: DVec3, b: DVec3| vec![(3.0 - a.x) / (b.x - a.x), (7.0 - a.x) / (b.x - a.x)];
+        let trimmed = trim_mline_at(&mline, DVec3::new(5.0, 0.2, 0.0), cuts).unwrap();
+        for element in 0..2 {
+            let data = &trimmed.vertices[0].segments[element];
+            assert_eq!(drawn_ranges(&data.parameters, 10.0), vec![(0.0, 3.0), (7.0, 10.0)]);
+        }
+        // The fill between the outer lines leaves the same gap.
+        let mut style = codec::objects::MLineStyle::new("FILLED");
+        style.elements = vec![
+            codec::objects::MLineStyleElement::new(1.0),
+            codec::objects::MLineStyleElement::new(-1.0),
+        ];
+        style.flags.fill_on = true;
+        let fill = crate::entities::mline::mline_fill_triangles_with_style(&trimmed, &style);
+        assert!(!fill.is_empty());
+        assert!(fill.iter().all(|p| p[0] <= 3.0 + 1e-6 || p[0] >= 7.0 - 1e-6), "{fill:?}");
+    }
+}

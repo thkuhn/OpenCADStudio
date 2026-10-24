@@ -1828,7 +1828,7 @@ pub fn regenerate_opening_display(
             }
             mtext.rotation = rot;
             mtext.attachment_point = acadrust::entities::mtext::AttachmentPoint::MiddleCenter;
-            let mut entity = EntityType::MText(mtext);
+            let mut entity = EntityType::MText(Box::new(mtext));
             if !opening_owner_handle.is_null() && opening_owner_handle != scene.document.header.model_space_block_handle {
                 entity.common_mut().owner_handle = opening_owner_handle;
             }

@@ -1,4 +1,4 @@
-use super::{FindMatchKey, Message, OpenCADStudio};
+use super::{FindMatchKey, FindResult, Message, OpenCADStudio};
 use crate::entities::traits::EntityTypeOps;
 use codec::EntityType;
 use iced::Task;
@@ -19,6 +19,7 @@ impl OpenCADStudio {
         self.find_replace.search = value;
         self.find_replace.current_match = None;
         self.find_replace.status.clear();
+        self.find_replace.results.clear();
     }
 
     pub(super) fn find_replace_replacement_changed(&mut self, value: String) {
@@ -41,41 +42,87 @@ impl OpenCADStudio {
             .map_or(0, |current| (current + 1) % matches.len());
         for offset in 0..matches.len() {
             let index = (start + offset) % matches.len();
-            let target = matches[index];
-            let centered = match target {
-                FindMatchKey::Entity(handle) => {
-                    self.tabs[i].scene.center_camera_on_entity(handle)
-                }
-                FindMatchKey::BlockEntityInInsert { entity, insert } => self.tabs[i]
-                    .scene
-                    .center_camera_on_block_entity(insert, entity),
-                FindMatchKey::InsertAttribute { insert, index } => {
-                    self.tabs[i]
-                        .scene
-                        .center_camera_on_insert_attribute(insert, index)
-                }
-            };
-            if !centered {
-                continue;
+            if self.visit_match(i, matches[index], index, matches.len(), false) {
+                return;
             }
-
-            self.find_replace.current_match = Some(target);
-            self.find_replace.status = crate::tf!(
-                "{} of {} — {}",
-                index + 1,
-                matches.len(),
-                match_label(target)
-            ).into_owned();
-            self.tabs[i].scene.deselect_all();
-            self.tabs[i]
-                .scene
-                .select_entity(match_owner_handle(target), false);
-            self.refresh_properties();
-            return;
         }
 
         self.find_replace.current_match = None;
         self.find_replace.status = no_match_status(&self.find_replace.search);
+    }
+
+    /// Lists every visible match so the user can visit them in any order.
+    pub(super) fn find_replace_find_all(&mut self) {
+        let i = self.active_tab;
+        let scene = &self.tabs[i].scene;
+        let results: Vec<FindResult> = self
+            .find_navigation_matches(i)
+            .into_iter()
+            .map(|key| describe_match(&scene.document, key))
+            .collect();
+        self.find_replace.current_match = None;
+        self.find_replace.status = if results.is_empty() {
+            no_match_status(&self.find_replace.search)
+        } else {
+            crate::tf!("{} match(es) found.", results.len()).into_owned()
+        };
+        self.find_replace.results = results;
+    }
+
+    /// Zooms to one listed match and highlights it, without searching again.
+    pub(super) fn find_replace_select_result(&mut self, index: usize) {
+        let i = self.active_tab;
+        let total = self.find_replace.results.len();
+        let Some(target) = self.find_replace.results.get(index).map(|r| r.key) else {
+            return;
+        };
+        if !self.visit_match(i, target, index, total, true) {
+            self.find_replace.status =
+                crate::t!("The selected match is no longer in the drawing.").into_owned();
+        }
+    }
+
+    /// Brings `target` into view (centred, or zoomed around it with `zoom`),
+    /// selects its object as the highlight and reports the position.
+    fn visit_match(
+        &mut self,
+        i: usize,
+        target: FindMatchKey,
+        index: usize,
+        total: usize,
+        zoom: bool,
+    ) -> bool {
+        let scene = &mut self.tabs[i].scene;
+        let shown = match target {
+            FindMatchKey::Entity(handle) => scene.focus_camera_on_entity(handle, zoom),
+            FindMatchKey::BlockEntityInInsert { entity, insert } => {
+                scene.focus_camera_on_block_entity(insert, entity, zoom)
+            }
+            FindMatchKey::InsertAttribute { insert, index } => {
+                scene.focus_camera_on_insert_attribute(insert, index, zoom)
+            }
+        };
+        if !shown {
+            return false;
+        }
+        self.find_replace.current_match = Some(target);
+        self.find_replace.status =
+            crate::tf!("{} of {} — {}", index + 1, total, match_label(target)).into_owned();
+        self.tabs[i].scene.deselect_all();
+        self.tabs[i]
+            .scene
+            .select_entity(match_owner_handle(target), false);
+        self.refresh_properties();
+        true
+    }
+
+    /// Replacing text changes what matches; refresh an open result list.
+    fn refresh_find_results(&mut self) {
+        if !self.find_replace.results.is_empty() {
+            let status = std::mem::take(&mut self.find_replace.status);
+            self.find_replace_find_all();
+            self.find_replace.status = status;
+        }
     }
 
     pub(super) fn find_replace_one(&mut self) {
@@ -99,7 +146,8 @@ impl OpenCADStudio {
         let search = self.find_replace.search.clone();
         let replacement = self.find_replace.replacement.clone();
         if match_is_locked(&self.tabs[i].scene, target) {
-            self.find_replace.status = crate::t!("The matching object is on a locked layer.").into_owned();
+            self.find_replace.status =
+                crate::t!("The matching object is on a locked layer.").into_owned();
             return;
         }
         self.push_undo_snapshot(i, "FIND/REPLACE");
@@ -117,10 +165,7 @@ impl OpenCADStudio {
         }
 
         let handle = match_document_handle(target);
-        if self.tabs[i]
-            .scene
-            .entity_belongs_to_active_space(handle)
-        {
+        if self.tabs[i].scene.entity_belongs_to_active_space(handle) {
             self.invalidate_property_targets(i, &[handle]);
         } else {
             // A block-definition edit must rebuild the definition cache; an
@@ -134,10 +179,12 @@ impl OpenCADStudio {
         self.find_replace.status = crate::tf!(
             "Replaced 1 occurrence in {}; {remaining} matching object(s) remain.",
             match_label(target)
-        ).into_owned();
-        self.command_line.push_output(crate::tf!(
-            "FIND/REPLACE: replaced 1 occurrence of \"{search}\"."
-        ).as_ref());
+        )
+        .into_owned();
+        self.refresh_find_results();
+        self.command_line.push_output(
+            crate::tf!("FIND/REPLACE: replaced 1 occurrence of \"{search}\".").as_ref(),
+        );
         self.refresh_properties();
     }
 
@@ -171,9 +218,8 @@ impl OpenCADStudio {
             if count > 0 {
                 replaced += count;
                 let handle = match_document_handle(target);
-                changed_outside_active_space |= !self.tabs[i]
-                    .scene
-                    .entity_belongs_to_active_space(handle);
+                changed_outside_active_space |=
+                    !self.tabs[i].scene.entity_belongs_to_active_space(handle);
                 if !changed.contains(&handle) {
                     changed.push(handle);
                 }
@@ -195,10 +241,12 @@ impl OpenCADStudio {
         self.find_replace.status = crate::tf!(
             "Replaced {replaced} occurrence(s) in {} object(s).",
             changed.len()
-        ).into_owned();
-        self.command_line.push_output(crate::tf!(
-            "FIND/REPLACE: replaced {replaced} occurrence(s) of \"{search}\"."
-        ).as_ref());
+        )
+        .into_owned();
+        self.refresh_find_results();
+        self.command_line.push_output(
+            crate::tf!("FIND/REPLACE: replaced {replaced} occurrence(s) of \"{search}\".").as_ref(),
+        );
         self.refresh_properties();
     }
 
@@ -267,12 +315,8 @@ impl OpenCADStudio {
                     continue;
                 }
                 let mut visited = Vec::new();
-                if block_contains_entity(
-                    &scene.document,
-                    &insert.block_name,
-                    entity,
-                    &mut visited,
-                ) {
+                if block_contains_entity(&scene.document, &insert.block_name, entity, &mut visited)
+                {
                     matches.push(FindMatchKey::BlockEntityInInsert {
                         entity,
                         insert: insert.common.handle,
@@ -335,17 +379,53 @@ fn replace_match_text(
             let Some(attribute) = entity.attributes.get_mut(index) else {
                 return 0;
             };
-            let (value, count) = replace_case_insensitive(
-                attribute.get_value(),
-                search,
-                replacement,
-                replace_all,
-            );
+            let (value, count) =
+                replace_case_insensitive(attribute.get_value(), search, replacement, replace_all);
             if count > 0 {
                 attribute.set_value(value);
             }
             count
         }
+    }
+}
+
+/// Row context for a match: its (single-line, shortened) text, object type
+/// and layer.
+fn describe_match(document: &codec::CadDocument, key: FindMatchKey) -> FindResult {
+    let (text, kind, layer) = match key {
+        FindMatchKey::Entity(handle) | FindMatchKey::BlockEntityInInsert { entity: handle, .. } => {
+            document.get_entity(handle).map_or_else(Default::default, |entity| {
+                (
+                    entity.text_content().unwrap_or_default(),
+                    crate::entities::traits::entity_type_name(entity).to_string(),
+                    entity.common().layer.clone(),
+                )
+            })
+        }
+        FindMatchKey::InsertAttribute { insert, index } => match document.get_entity(insert) {
+            Some(EntityType::Insert(entity)) => entity.attributes.get(index).map_or_else(
+                Default::default,
+                |attribute| {
+                    (
+                        attribute.get_value().to_string(),
+                        "Attribute".to_string(),
+                        attribute.common.layer.clone(),
+                    )
+                },
+            ),
+            _ => Default::default(),
+        },
+    };
+    let mut text = text.replace("\\P", " ").replace(['\r', '\n'], " ");
+    if let Some((cut, _)) = text.char_indices().nth(80) {
+        text.truncate(cut);
+        text.push('…');
+    }
+    FindResult {
+        key,
+        text,
+        kind,
+        layer,
     }
 }
 
@@ -374,11 +454,7 @@ fn match_label(target: FindMatchKey) -> String {
     match target {
         FindMatchKey::Entity(handle) => crate::tf!("handle {:X}", handle.value()).into_owned(),
         FindMatchKey::BlockEntityInInsert { entity, insert } => {
-            crate::tf!(
-                "block {:X}, text {:X}",
-                insert.value(),
-                entity.value()
-            ).into_owned()
+            crate::tf!("block {:X}, text {:X}", insert.value(), entity.value()).into_owned()
         }
         FindMatchKey::InsertAttribute { insert, index } => {
             crate::tf!("block {:X}, attribute {}", insert.value(), index + 1).into_owned()

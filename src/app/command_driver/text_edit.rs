@@ -18,7 +18,12 @@ impl OpenCADStudio {
         self.open_mtext_editor(pos, handle, &initial, height, template.map(|m| *m));
     }
 
-    pub(super) fn handle_suspend_for_mtext_input(&mut self, pos: glam::DVec3, initial: String, height: f64) {
+    pub(super) fn handle_suspend_for_mtext_input(
+        &mut self,
+        pos: glam::DVec3,
+        initial: String,
+        height: f64,
+    ) {
         let i = self.active_tab;
         self.tabs[i].suspended_cmd = self.tabs[i].active_cmd.take();
         self.tabs[i].snap_result = None;
@@ -155,7 +160,7 @@ impl OpenCADStudio {
                         Operation::Rotate(degrees) => {
                             dimension.base_mut().text_rotation = degrees.to_radians();
                         }
-                        Operation::Oblique(degrees) => match dimension {
+                        Operation::Oblique(degrees) => match &mut **dimension {
                             codec::entities::Dimension::Linear(value) => {
                                 value.ext_line_rotation = degrees.to_radians();
                             }
@@ -185,7 +190,11 @@ impl OpenCADStudio {
         self.restore_pre_cmd_tangent();
     }
 
-    pub(super) fn handle_ddedit_entity(&mut self, handle: Handle, new_text: String) -> Option<Task<Message>> {
+    pub(super) fn handle_ddedit_entity(
+        &mut self,
+        handle: Handle,
+        new_text: String,
+    ) -> Option<Task<Message>> {
         let i = self.active_tab;
         if self.reject_locked_edit(i, handle) {
             self.tabs[i].active_cmd = None;
@@ -214,8 +223,10 @@ impl OpenCADStudio {
                 }
                 codec::EntityType::Dimension(d) => {
                     // Empty string resets to auto-measured value; otherwise set override.
-                    let base = d.base_mut();
-                    base.text = new_text;
+                    crate::entities::dimension::set_dimension_text_override(
+                        d.base_mut(),
+                        (!new_text.trim().is_empty()).then_some(new_text),
+                    );
                     updated = true;
                     is_dim = true;
                 }

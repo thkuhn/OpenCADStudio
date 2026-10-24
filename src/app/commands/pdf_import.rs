@@ -54,9 +54,13 @@ impl OpenCADStudio {
             PdfImportSource::Underlay(_) => self
                 .command_line
                 .push_output(&format!("Binding PDF file {shown}, page {page} ...")),
-            PdfImportSource::File(_) => self
-                .command_line
-                .push_output(&format!("Importing page {page} of PDF file: {shown}...")),
+            PdfImportSource::File(_) => {
+                self.command_line
+                    .push_output(&format!("Importing page {page} of PDF file: {shown}..."));
+                if let Some(notice) = crate::scene::model::pdf_password::reopened_notice(&path) {
+                    self.command_line.push_output(&notice);
+                }
+            }
         }
         // The underlay's own layer overrides leave those layers out.
         let hidden = crate::scene::model::pdf_layers::hidden_layers(&underlay);
@@ -79,6 +83,13 @@ impl OpenCADStudio {
             settings,
             prefix: import_prefix(),
             current: current_layer.clone(),
+            styles: self.tabs[i]
+                .scene
+                .document
+                .text_styles
+                .iter()
+                .map(|s| (s.name.clone(), s.font_file.clone()))
+                .collect(),
         };
         let mut result = pdf_import::convert(&content, &underlay, &area, &naming);
         let images = std::mem::take(&mut result.images);
@@ -86,7 +97,12 @@ impl OpenCADStudio {
 
         self.push_undo_snapshot(i, "PDFIMPORT");
         let scene = &mut self.tabs[i].scene;
-        if result.dashed && !scene.document.line_types.contains(pdf_import::DASH_LINETYPE) {
+        if result.dashed
+            && !scene
+                .document
+                .line_types
+                .contains(pdf_import::DASH_LINETYPE)
+        {
             let mut lt = codec::tables::LineType::new(pdf_import::DASH_LINETYPE);
             lt.handle = scene.document.allocate_handle();
             lt.add_element(codec::tables::LineTypeElement::dash(0.8));
@@ -106,8 +122,14 @@ impl OpenCADStudio {
                 break;
             }
             let file = dir.join(format!("{stem}{:08x}.png", image_file_id(&path, &page, n)));
-            if image::save_buffer(&file, &image.rgba, image.width, image.height, image::ColorType::Rgba8)
-                .is_err()
+            if image::save_buffer(
+                &file,
+                &image.rgba,
+                image.width,
+                image.height,
+                image::ColorType::Rgba8,
+            )
+            .is_err()
             {
                 continue;
             }
@@ -163,10 +185,8 @@ impl OpenCADStudio {
                 .define_block_from_owned_entities(result.entities, &name, glam::DVec3::ZERO)
                 .is_ok()
             {
-                let mut insert = codec::entities::Insert::new(
-                    name,
-                    codec::types::Vector3::new(0.0, 0.0, 0.0),
-                );
+                let mut insert =
+                    codec::entities::Insert::new(name, codec::types::Vector3::new(0.0, 0.0, 0.0));
                 insert.common.layer = current_layer;
                 scene.add_entity(codec::EntityType::Insert(insert));
             }
@@ -198,7 +218,9 @@ impl OpenCADStudio {
                         scene.document.objects.remove(&definition);
                         for object in scene.document.objects.values_mut() {
                             if let ObjectType::Dictionary(dictionary) = object {
-                                dictionary.entries.retain(|(_, target)| *target != definition);
+                                dictionary
+                                    .entries
+                                    .retain(|(_, target)| *target != definition);
                             }
                         }
                     }

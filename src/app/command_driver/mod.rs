@@ -80,22 +80,23 @@ use crate::command::{CmdResult, SelectionEntity, StepInput};
 use codec::Handle;
 use iced::Task;
 
-mod utilities;
-mod parameters;
-mod tests;
-mod property_match;
-mod entity_commit;
-mod solid3d;
-mod viewport;
-mod transform;
-mod clipboard;
-mod modify;
-mod text_edit;
+pub(super) mod clipboard;
 mod constraint;
 mod dim_edit;
+mod entity_commit;
+mod modify;
+mod parameters;
+mod property_match;
+mod solid3d;
+mod tests;
+mod text_edit;
+mod transform;
+mod utilities;
+mod viewport;
 
 pub(crate) use clipboard::{
-    copy_to_clipboard_kernel, paste_entities_kernel, remap_ext_subtree_reference, PasteSpace,
+    copy_to_clipboard_kernel, define_block_raw_doc, paste_entities_kernel,
+    remap_ext_subtree_reference, remap_object, PasteSpace,
 };
 
 impl OpenCADStudio {
@@ -144,6 +145,16 @@ impl OpenCADStudio {
                 tab.dirty = true;
             }
         }
+        let gap_tolerance = self.tabs[self.active_tab]
+            .active_cmd
+            .as_ref()
+            .and_then(|command| command.hatch_gap_tolerance());
+        if let Some(gap_tolerance) = gap_tolerance {
+            if gap_tolerance != self.hatch_gap_tolerance {
+                self.hatch_gap_tolerance = gap_tolerance;
+                self.persist_settings_if_changed();
+            }
+        }
         let mline_settings = self.tabs[self.active_tab]
             .active_cmd
             .as_ref()
@@ -169,6 +180,8 @@ impl OpenCADStudio {
             &result,
             CmdResult::Relaunch(..)
                 | CmdResult::Dispatch(..)
+                | CmdResult::Script(..)
+                | CmdResult::QSelectSample { .. }
                 | CmdResult::SolidEdgeBlend { .. }
                 | CmdResult::SolidSubtract { .. }
                 | CmdResult::SliceEntities { .. }
@@ -176,6 +189,10 @@ impl OpenCADStudio {
         );
         let task = self.apply_cmd_result_inner(result);
         let i = self.active_tab;
+        // A typed `<angle` does not outlive the command it was typed in.
+        if self.tabs[i].active_cmd.is_none() {
+            self.angle_override = None;
+        }
         // A transparent zoom that just finished hands control back to the
         // command it interrupted before the "command ended" bookkeeping below.
         self.resume_transparent_parent(i);
@@ -301,7 +318,11 @@ impl OpenCADStudio {
     /// Reports a refused command-line value and shows the prompt again.
     fn reprompt_active_command(&mut self, i: usize, message: &str) {
         self.command_line.push_error(message);
-        if let Some(prompt) = self.tabs[i].active_cmd.as_ref().map(|command| command.prompt()) {
+        if let Some(prompt) = self.tabs[i]
+            .active_cmd
+            .as_ref()
+            .map(|command| command.prompt())
+        {
             self.command_line.push_info(&prompt);
         }
     }
@@ -408,7 +429,6 @@ impl OpenCADStudio {
         handles
     }
 
-
     fn apply_cmd_result_inner(&mut self, result: CmdResult) -> Task<Message> {
         let i = self.active_tab;
         if let Some(bind) = self.tabs[i]
@@ -433,6 +453,23 @@ impl OpenCADStudio {
         // runtime or messages such as a chosen render mode are dropped.
         let mut dispatched = Task::none();
         match result {
+            CmdResult::QSelectSample {
+                state,
+                tab_id,
+                handle,
+            } => {
+                self.finish_qselect_sample(*state, tab_id, handle);
+            }
+            CmdResult::QuickCalcPick(value) => {
+                self.tabs[i].active_cmd = None;
+                self.tabs[i].snap_result = None;
+                self.tabs[i].scene.clear_preview_wire();
+                self.restore_pre_cmd_tangent();
+                dispatched = Task::done(Message::QuickCalc(
+                    crate::ui::window::quick_calc::QuickCalcMsg::Picked(value),
+                ));
+            }
+            CmdResult::OpenTxt2MtxtSettings => self.open_txt2mtxt_settings(),
             CmdResult::OpenAutoConstrainSettings => {
                 self.handle_open_auto_constrain_settings();
             }
@@ -481,7 +518,9 @@ impl OpenCADStudio {
             } => {
                 if !target.is_null() {
                     self.handle_vpclip(target, boundary, boundary_handle);
-                } else if let Some(task) = self.handle_mview_create_clipped(boundary, boundary_handle) {
+                } else if let Some(task) =
+                    self.handle_mview_create_clipped(boundary, boundary_handle)
+                {
                     return task;
                 }
             }
@@ -560,6 +599,48 @@ impl OpenCADStudio {
                     return task;
                 }
             }
+            result @ CmdResult::SetBlockParameterGrips { .. } => {
+                return self.set_block_parameter_grips(result);
+            }
+            result @ CmdResult::SetBlockConstruction { .. } => {
+                return self.set_block_construction(result);
+            }
+            result @ CmdResult::EditBlockAuthoring { .. } => {
+                return self.handle_authoring_edit(result);
+            }
+            CmdResult::SetBlockActionBars { document,definition,mode,parameters } => {
+                return self.set_action_bars(document,definition,mode,parameters);
+            }
+            result @ CmdResult::AlignBlockReference { .. } => { return self.handle_block_alignment(result); }
+            result @ (CmdResult::PlaceBlockAction { .. }
+            | CmdResult::EditBlockActionSet { .. }
+            | CmdResult::AssociateBlockAction { .. }
+            | CmdResult::EvaluateBlockParameter { .. }) => {
+                return self.handle_block_action_result(result);
+            }
+            result @ CmdResult::PlaceBlockSingleParameter { .. } => {
+                return self.handle_place_block_single_parameter(result);
+            }
+            result @ CmdResult::PlaceBlockOrientationParameter { .. } => {
+                return self.handle_place_block_orientation_parameter(result);
+            }
+            result @ CmdResult::PlaceBlockDistanceParameter { .. } => {
+                return self.handle_place_block_distance_parameter(result);
+            }
+            result @ CmdResult::PlaceBlockPointParameter { .. } => {
+                return self.handle_place_block_point_parameter(result);
+            }
+            CmdResult::PlaceBlockVisibilityParameter {
+                document_id,
+                definition,
+                location,
+            } => {
+                return self.handle_place_block_visibility_parameter(
+                    document_id,
+                    definition,
+                    location,
+                );
+            }
             CmdResult::CreateBlockWithOptions { options } => {
                 if let Some(task) = self.handle_create_block_with_options(options) {
                     return task;
@@ -593,6 +674,9 @@ impl OpenCADStudio {
                     return task;
                 }
             }
+            CmdResult::AssocArray { handles, spec } => {
+                self.handle_assoc_array(handles, spec);
+            }
             CmdResult::ReplaceMany(replacements, additions) => {
                 if let Some(task) = self.handle_replace_many(replacements, additions) {
                     return task;
@@ -610,6 +694,19 @@ impl OpenCADStudio {
                 self.apply_xclip(i, inserts, action);
             }
             CmdResult::OpenPdfImportSettings => self.open_pdf_import_settings(),
+            CmdResult::PdfPassword {
+                path,
+                input,
+                stage,
+                remembered,
+                attach,
+            } => return self.handle_pdf_password(path, input, stage, remembered, attach),
+            CmdResult::DgnImport(request) => {
+                self.tabs[i].scene.clear_preview_wire();
+                self.tabs[i].active_cmd = None;
+                self.tabs[i].snap_result = None;
+                return self.run_dgn_import(i, request);
+            }
             CmdResult::PdfImportFile(import) => {
                 self.tabs[i].scene.clear_preview_wire();
                 self.tabs[i].active_cmd = None;
@@ -824,6 +921,9 @@ impl OpenCADStudio {
             CmdResult::RemoveLiveEntity(handle) => {
                 self.handle_remove_live_entity(handle);
             }
+            CmdResult::Done => {
+                self.handle_done();
+            }
             cancel @ (CmdResult::Cancel | CmdResult::CancelForSpaceChange) => {
                 self.handle_cancel(cancel);
             }
@@ -837,6 +937,9 @@ impl OpenCADStudio {
             }
             CmdResult::Dispatch(cmd) => {
                 dispatched = self.handle_dispatch(cmd);
+            }
+            CmdResult::Script(script) => {
+                dispatched = self.handle_script(script);
             }
             CmdResult::EditTableCell { handle, point } => {
                 if let Some(task) = self.handle_edit_table_cell(handle, point) {
@@ -875,6 +978,23 @@ impl OpenCADStudio {
             CmdResult::ZoomToWindow { p1, p2 } => {
                 self.handle_zoom_to_window(p1, p2);
             }
+            CmdResult::Show { p1, p2 } => {
+                let i = self.active_tab;
+                self.tabs[i].scene.remember_current_view();
+                self.tabs[i]
+                    .scene
+                    .zoom_to_window(p1.as_vec3(), p2.as_vec3());
+            }
+            CmdResult::CommitAndZoom { entity, p1, p2 } => {
+                self.handle_commit_entities_and_exit(vec![entity], false, false);
+                self.handle_zoom_to_window(p1, p2);
+            }
+            CmdResult::ScaleViewports { handles, factor } => {
+                self.handle_scale_viewports(handles, factor);
+            }
+            CmdResult::TwistView(twist) => {
+                self.handle_twist_view(twist);
+            }
             CmdResult::Measurement(msg) => {
                 self.handle_measurement(msg);
             }
@@ -893,7 +1013,11 @@ impl OpenCADStudio {
             result @ CmdResult::AlignSelected { .. } => {
                 self.handle_align_selected(result);
             }
-            CmdResult::LengthenEntity { handle, pick_pt, mode } => {
+            CmdResult::LengthenEntity {
+                handle,
+                pick_pt,
+                mode,
+            } => {
                 if let Some(task) = self.handle_lengthen_entity(handle, pick_pt, mode) {
                     return task;
                 }
@@ -924,11 +1048,23 @@ impl OpenCADStudio {
                 self.handle_set_plot_window(p1, p2);
             }
             CmdResult::QuickPrint(handles) => return self.handle_quick_print(handles),
-            CmdResult::StretchWindow { handles, windows } => {
-                self.handle_stretch_window(handles, windows);
+            CmdResult::StretchWindow {
+                handles,
+                windows,
+                excluded_points,
+                subtract_window,
+            } => {
+                self.handle_stretch_window(handles, windows, excluded_points, subtract_window);
             }
-            CmdResult::StretchEntities { handles, windows, delta } => {
-                if let Some(task) = self.handle_stretch_entities(handles, windows, delta) {
+            CmdResult::StretchEntities {
+                handles,
+                windows,
+                excluded_points,
+                delta,
+            } => {
+                if let Some(task) =
+                    self.handle_stretch_entities(handles, windows, excluded_points, delta)
+                {
                     return task;
                 }
             }
@@ -948,7 +1084,11 @@ impl OpenCADStudio {
             result @ CmdResult::PresspullPick { .. } => {
                 self.handle_presspull_pick(result);
             }
-            CmdResult::PresspullApply { targets, distance, color: _ } => {
+            CmdResult::PresspullApply {
+                targets,
+                distance,
+                color: _,
+            } => {
                 self.handle_presspull_apply(targets, distance);
             }
 
@@ -970,15 +1110,33 @@ impl OpenCADStudio {
                 }
             }
 
-            result @ CmdResult::SolidEdgeBlend { .. } => return self.handle_solid_edge_blend(result),
+            result @ CmdResult::SolidEdgeBlend { .. } => {
+                return self.handle_solid_edge_blend(result)
+            }
 
-            CmdResult::SolidShell { handle, actions, distance } => return self.handle_solid_shell(handle, actions, distance),
+            CmdResult::SolidShell {
+                handle,
+                actions,
+                distance,
+            } => return self.handle_solid_shell(handle, actions, distance),
 
-            CmdResult::SolidSubtract { bases, cutters, convert_meshes } => return self.handle_solid_subtract(bases, cutters, convert_meshes),
+            CmdResult::SolidSubtract {
+                bases,
+                cutters,
+                convert_meshes,
+            } => return self.handle_solid_subtract(bases, cutters, convert_meshes),
 
-            CmdResult::SliceEntities { targets, plane, keep_point } => return self.handle_slice_entities(targets, plane, keep_point),
+            CmdResult::SliceEntities {
+                targets,
+                plane,
+                keep_point,
+            } => return self.handle_slice_entities(targets, plane, keep_point),
 
-            CmdResult::SliceSurfaceEntities { targets, cutter, keep_point } => return self.handle_slice_surface_entities(targets, cutter, keep_point),
+            CmdResult::SliceSurfaceEntities {
+                targets,
+                cutter,
+                keep_point,
+            } => return self.handle_slice_surface_entities(targets, cutter, keep_point),
 
             result @ CmdResult::HatcheditApply { .. } => {
                 if let Some(task) = self.handle_hatchedit_apply(result) {
@@ -1025,8 +1183,9 @@ impl OpenCADStudio {
         }
         // When no command is running the ribbon tool button still has to
         // visually deactivate. Keyboard focus is assigned below to whichever
-        // editor currently owns typed input.
-        if self.tabs[i].active_cmd.is_none() {
+        // editor currently owns typed input. Re-read the active tab: a
+        // dispatched command (CLOSE, an SDI open) may have closed tab `i`.
+        if self.tabs[self.active_tab].active_cmd.is_none() {
             self.ribbon.deactivate_tool();
         }
         // The rich text canvas owns keyboard editing itself. Leaving the
@@ -1105,8 +1264,36 @@ impl OpenCADStudio {
         }
     }
 
+    fn handle_done(&mut self) {
+        let i = self.active_tab;
+        self.tabs[i].scene.clear_preview_wire();
+        if self.tabs[i].suspended_cmd.is_some() {
+            self.tabs[i].active_cmd = self.tabs[i].suspended_cmd.take();
+            let prompt = self.tabs[i].active_cmd.as_ref().map(|c| c.prompt());
+            if let Some(p) = prompt {
+                self.command_line.push_info(&p);
+            }
+            let opts = self.tabs[i]
+                .active_cmd
+                .as_ref()
+                .map(|c| c.options())
+                .unwrap_or_default();
+            self.command_line.set_step_options(opts);
+            self.refresh_active_cmd_preview(i);
+        } else {
+            self.tabs[i].suspended_cmd = None;
+            self.tabs[i].active_cmd = None;
+            self.tabs[i].snap_result = None;
+            self.restore_pre_cmd_tangent();
+        }
+    }
+
     fn handle_cancel(&mut self, cancel: CmdResult) {
         let i = self.active_tab;
+        self.tabs[i].pending_parameter_set_follow_up = None;
+        self.tabs[i].pending_xy_box_set = None;
+        self.tabs[i].pending_action_pair = None;
+        self.tabs[i].measurement.clear();
         let space_changed = matches!(cancel, CmdResult::CancelForSpaceChange);
         self.tabs[i].scene.clear_preview_wire();
         if !space_changed && self.tabs[i].suspended_cmd.is_some() {
@@ -1188,6 +1375,7 @@ impl OpenCADStudio {
             bounds,
             |point| self.cursor_model_point(i, &edit_cam, point, bounds),
         );
+        self.last_pick = Some((handles.clone(), self.select_remove_mode));
         if self.select_remove_mode {
             for h in &handles {
                 self.tabs[i].scene.deselect_entity(*h);
@@ -1205,10 +1393,21 @@ impl OpenCADStudio {
             .into_iter()
             .map(|(h, _)| h)
             .collect();
-        let count = handles.len();
-        self.command_line
-            .push_info(crate::tf!("{count} object(s) found.").as_ref());
         self.feed_command(StepInput::SelectionComplete(selected))
+    }
+
+    #[inline(never)]
+    fn handle_pdf_password(
+        &mut self,
+        path: String,
+        input: String,
+        stage: crate::scene::model::pdf_password::Stage,
+        remembered: bool,
+        attach: bool,
+    ) -> Task<Message> {
+        use crate::ui::window::pdf_password_dialog::PdfPasswordThen;
+        let then = PdfPasswordThen::Command { input, attach };
+        self.open_pdf_password(&path, stage, remembered, then)
     }
 
     fn handle_relaunch(&mut self, cmd: String, handles: Vec<Handle>) -> Task<Message> {
@@ -1249,16 +1448,45 @@ impl OpenCADStudio {
         self.dispatch_command(&cmd)
     }
 
+    fn handle_script(&mut self, script: String) -> Task<Message> {
+        let i = self.active_tab;
+        // A plugin command's script starts from an empty selection.
+        if self.tabs[i]
+            .active_cmd
+            .as_ref()
+            .is_some_and(|c| c.name() == "PLUGIN")
+        {
+            self.tabs[i].scene.deselect_all();
+        }
+        self.tabs[i].active_cmd = None;
+        self.tabs[i].snap_result = None;
+        self.tabs[i].scene.clear_preview_wire();
+        self.restore_pre_cmd_tangent();
+        // Each line answers the prompts the previous one left open.
+        for line in script.lines() {
+            let line = line.trim();
+            if !line.is_empty() {
+                let task = self.run_command_line_streaming(line, true);
+                let _ = self.drive_headless_task(task);
+            }
+        }
+        Task::none()
+    }
+
     fn handle_measurement(&mut self, msg: String) {
+        self.remember_measurement(&msg);
         let i = self.active_tab;
         self.tabs[i].active_cmd = None;
         self.tabs[i].snap_result = None;
         self.tabs[i].scene.clear_preview_wire();
         self.restore_pre_cmd_tangent();
-        self.command_line.push_output(&msg);
+        if !msg.is_empty() {
+            self.command_line.push_output(&msg);
+        }
     }
 
     fn handle_report_measurement(&mut self, msg: String) {
+        self.remember_measurement(&msg);
         let i = self.active_tab;
         self.tabs[i].snap_result = None;
         self.tabs[i].scene.clear_preview_wire();
@@ -1280,6 +1508,7 @@ impl OpenCADStudio {
     }
 
     fn handle_report_measurement_and_deselect(&mut self, msg: String) {
+        self.remember_measurement(&msg);
         let i = self.active_tab;
         self.tabs[i].snap_result = None;
         self.tabs[i].scene.deselect_all();
@@ -1505,18 +1734,13 @@ impl OpenCADStudio {
     }
     // --- C2a handlers: property_match (thin-router targets, bodies moved verbatim) ---
 
-
     // --- C2a handlers: viewport (thin-router targets, bodies moved verbatim) ---
-
 
     // --- C2a handlers: text_edit (thin-router targets, bodies moved verbatim) ---
 
-
     // --- C2b handlers: entity_commit (thin-router targets, bodies moved verbatim) ---
 
-
     // --- C2b handlers: clipboard (thin-router targets, bodies moved verbatim) ---
-
 
     /// Restore the tangent-snap / ortho state that was in effect before the command started.
     /// Recreate clipboard-dependency records (layer / linetype / text + dim
@@ -1532,12 +1756,9 @@ impl OpenCADStudio {
         clipboard::merge_table_records(&mut self.tabs[i].scene.document, deps);
     }
 
-
     // --- C2d handlers: constraint (thin-router targets, bodies moved verbatim) ---
 
-
     // --- C2d handlers: dim_edit (thin-router targets, bodies moved verbatim) ---
-
 
     pub(super) fn restore_pre_cmd_tangent(&mut self) {
         if let Some(was_on) = self.pre_cmd_tangent.take() {
@@ -1577,23 +1798,28 @@ fn entity_at_typed_point(
         extent = extent
             .max((bounds.max.x - bounds.min.x).abs())
             .max((bounds.max.y - bounds.min.y).abs());
-        let distance = match crate::scene::viewport_dimension_pick::planar_pick_distance(entity, point) {
-            Some(distance) => distance,
-            // A text or an ellipse answers by its extent, the way a click
-            // inside it picks it.
-            None if matches!(
-                entity,
-                codec::EntityType::Text(_)
-                    | codec::EntityType::MText(_)
-                    | codec::EntityType::Ellipse(_)
-            ) =>
-            {
-                let dx = (bounds.min.x - point.x).max(point.x - bounds.max.x).max(0.0);
-                let dy = (bounds.min.y - point.y).max(point.y - bounds.max.y).max(0.0);
-                dx.hypot(dy)
-            }
-            None => continue,
-        };
+        let distance =
+            match crate::scene::viewport_dimension_pick::planar_pick_distance(entity, point) {
+                Some(distance) => distance,
+                // A text or an ellipse answers by its extent, the way a click
+                // inside it picks it.
+                None if matches!(
+                    entity,
+                    codec::EntityType::Text(_)
+                        | codec::EntityType::MText(_)
+                        | codec::EntityType::Ellipse(_)
+                ) =>
+                {
+                    let dx = (bounds.min.x - point.x)
+                        .max(point.x - bounds.max.x)
+                        .max(0.0);
+                    let dy = (bounds.min.y - point.y)
+                        .max(point.y - bounds.max.y)
+                        .max(0.0);
+                    dx.hypot(dy)
+                }
+                None => continue,
+            };
         if nearest.is_none_or(|(best, _)| distance < best) {
             nearest = Some((distance, common.handle));
         }
@@ -1604,9 +1830,7 @@ fn entity_at_typed_point(
         .map(|(_, handle)| handle)
 }
 
-
 // ── DIMSPACE helper ───────────────────────────────────────────────────────────
-
 
 fn apply_mleader_align(
     scene: &mut crate::scene::Scene,
@@ -1700,8 +1924,7 @@ fn apply_mleader_collect(
     }
     let px = point.x;
     let py = point.y;
-    let Some(codec::EntityType::MultiLeader(base)) = scene.document.get_entity(handles[0])
-    else {
+    let Some(codec::EntityType::MultiLeader(base)) = scene.document.get_entity(handles[0]) else {
         return false;
     };
     let base_block = base.block_content_handle;
@@ -1752,5 +1975,3 @@ fn apply_mleader_collect(
     scene.bump_entities(&[(handles[0], crate::scene::ChangeKind::Modified)]);
     true
 }
-
-

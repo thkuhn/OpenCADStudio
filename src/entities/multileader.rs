@@ -10,6 +10,33 @@ use crate::entities::text_support::{
 };
 use crate::t;
 
+/// How far an underlined text line sits above its underline, as a fraction of
+/// the text height. AutoCAD keeps the underlined line's baseline 0.2 × height
+/// above the landing that underlines it, whatever the landing gap.
+pub(crate) const MLEADER_UNDERLINE_GAP: f32 = 0.2;
+
+/// The text line the landing underlines, or `None` when the attachment draws
+/// no underline. The codec names values 5–8 one place off from AutoCAD's:
+///
+/// | value | codec variant                        | AutoCAD                |
+/// |-------|--------------------------------------|------------------------|
+/// | 5     | `BottomLine`                         | Underline bottom line  |
+/// | 6     | `BottomOfTopLineUnderlineBottomLine` | Underline top line     |
+/// | 7     | `BottomOfTopLineUnderlineTopLine`    | Bottom of top line     |
+/// | 8     | `BottomOfTopLineUnderlineAll`        | Underline all text     |
+///
+/// AutoCAD draws a single underline, the landing continued under the text.
+/// "Underline all text" underlines the remaining lines through `\L` in the
+/// text itself, not with extra rules.
+pub(crate) fn underlined_line(attach: TextAttachmentType, line_count: usize) -> Option<usize> {
+    match attach {
+        TextAttachmentType::BottomLine => Some(line_count.saturating_sub(1)),
+        TextAttachmentType::BottomOfTopLineUnderlineBottomLine
+        | TextAttachmentType::BottomOfTopLineUnderlineAll => Some(0),
+        _ => None,
+    }
+}
+
 /// Map MLEADER's vertical attachment enum onto the shared `MTextVAnchor`
 /// used by `layout_mtext`. Replaces the old `v_offset_for_attachment`
 /// (which inlined the offset math); the shared pipeline now derives the
@@ -33,8 +60,8 @@ pub(crate) fn mleader_v_anchor(attach: TextAttachmentType) -> MTextVAnchor {
 use glam::DVec3;
 
 /// The attachment that governs the text's flow axis: the top/bottom pair for
-/// vertically-attached leaders (picked by which side the leader comes from),
-/// the left attachment otherwise. Shared by the render and the grips.
+/// vertically-attached leaders, the left/right pair otherwise — each picked
+/// by which side the leader comes from. Shared by the render and the grips.
 pub(crate) fn active_vertical_attachment(ml: &MultiLeader) -> TextAttachmentType {
     use codec::entities::multileader::TextAttachmentDirectionType;
     match ml.text_attachment_direction {
@@ -51,13 +78,33 @@ pub(crate) fn active_vertical_attachment(ml: &MultiLeader) -> TextAttachmentType
                 ml.text_bottom_attachment
             }
         }
-        TextAttachmentDirectionType::Horizontal => ml.context.text_left_attachment,
+        TextAttachmentDirectionType::Horizontal => {
+            // A dogleg running along the reading direction reaches the
+            // text's left edge; one running against it, the right edge.
+            let ctx = &ml.context;
+            let td = ctx.text_direction;
+            let (tx, ty) = if td.x.abs() > 1e-9 || td.y.abs() > 1e-9 {
+                (td.x, td.y)
+            } else {
+                (ctx.text_rotation.cos(), ctx.text_rotation.sin())
+            };
+            let from_left = ctx
+                .leader_roots
+                .first()
+                .map_or(true, |r| r.direction.x * tx + r.direction.y * ty >= 0.0);
+            if from_left {
+                ctx.text_left_attachment
+            } else {
+                ctx.text_right_attachment
+            }
+        }
     }
 }
 
 use crate::command::EntityTransform;
 use crate::entities::common::{
-    center_grip, edit_angle_prop as edit_angle, edit_prop as edit, num_prop as num_row, ro_prop as ro, square_grip, triangle_grip,
+    center_grip, edit_angle_prop as edit_angle, edit_prop as edit, num_prop as num_row,
+    ro_prop as ro, square_grip, triangle_grip,
 };
 use crate::entities::traits::RenderConvertible;
 use crate::scene::convert::acad_to_render::{RenderEntity, RenderObject};
@@ -189,13 +236,11 @@ fn to_render(ml: &MultiLeader, document: &codec::CadDocument) -> Option<RenderEn
                     codec::entities::multileader::TextAttachmentPointType::Center => 0.5,
                     codec::entities::multileader::TextAttachmentPointType::Right => 1.0,
                 },
-                v_anchor: mleader_v_anchor(
-                    if text_sign >= 0.0 {
-                        ctx.text_left_attachment
-                    } else {
-                        ctx.text_right_attachment
-                    },
-                ),
+                v_anchor: mleader_v_anchor(if text_sign >= 0.0 {
+                    ctx.text_left_attachment
+                } else {
+                    ctx.text_right_attachment
+                }),
                 line_spacing_factor: ctx.line_spacing_factor as f32,
                 exact_line_spacing: matches!(
                     ctx.line_spacing_style,
@@ -250,14 +295,12 @@ fn to_render(ml: &MultiLeader, document: &codec::CadDocument) -> Option<RenderEn
                 first = false;
 
                 // Build the full control-point list: line.points + landing point
-                let mut ctrl: Vec<[f64; 3]> =
-                    line.points.iter().map(|p| p3(p)).collect();
+                let mut ctrl: Vec<[f64; 3]> = line.points.iter().map(|p| p3(p)).collect();
 
                 let last_f = *ctrl.last().unwrap_or(&elbow_pt);
 
-                let dist = ((last_f[0] - elbow_pt[0]).powi(2)
-                    + (last_f[1] - elbow_pt[1]).powi(2))
-                .sqrt();
+                let dist =
+                    ((last_f[0] - elbow_pt[0]).powi(2) + (last_f[1] - elbow_pt[1]).powi(2)).sqrt();
 
                 if dist > 1e-9 {
                     ctrl.push(elbow_pt);
@@ -454,20 +497,11 @@ fn text_box_geom(ml: &MultiLeader) -> ([f64; 2], [f64; 3]) {
     };
     (
         [dir[0] * k, dir[1] * k],
-        [
-            tl.x + dir[0] * k * extent,
-            tl.y + dir[1] * k * extent,
-            tl.z,
-        ],
+        [tl.x + dir[0] * k * extent, tl.y + dir[1] * k * extent, tl.z],
     )
 }
-fn mleader_landing_geom(
-    ml: &MultiLeader,
-) -> Option<(DVec3, DVec3, f64, f64, f64)> {
-    if ml.content_type != LeaderContentType::MText
-        || !ml.enable_landing
-        || !ml.enable_dogleg
-    {
+fn mleader_landing_geom(ml: &MultiLeader) -> Option<(DVec3, DVec3, f64, f64, f64)> {
+    if ml.content_type != LeaderContentType::MText || !ml.enable_landing || !ml.enable_dogleg {
         return None;
     }
 
@@ -546,10 +580,7 @@ fn grips(ml: &MultiLeader) -> Vec<GripDef> {
     for root in &ml.context.leader_roots {
         for line in &root.lines {
             for p in &line.points {
-                result.push(square_grip(
-                    id,
-                    DVec3::new(p.x, p.y, p.z),
-                ));
+                result.push(square_grip(id, DVec3::new(p.x, p.y, p.z)));
 
                 id += 1;
             }
@@ -557,35 +588,21 @@ fn grips(ml: &MultiLeader) -> Vec<GripDef> {
     }
 
     if ml.content_type == LeaderContentType::MText {
-        if let Some((elbow, _, _, _, _)) = mleader_landing_geom(ml)
-        {
-            result.push(square_grip(
-                id,
-                elbow,
-            ));
+        if let Some((elbow, _, _, _, _)) = mleader_landing_geom(ml) {
+            result.push(square_grip(id, elbow));
 
             id += 1;
         }
 
         let tl = &ml.context.text_location;
 
-        result.push(center_grip(
-            id,
-            DVec3::new(tl.x, tl.y, tl.z),
-        ));
+        result.push(center_grip(id, DVec3::new(tl.x, tl.y, tl.z)));
 
         id += 1;
 
         let (_, far) = text_box_geom(ml);
 
-        result.push(triangle_grip(
-            id,
-            DVec3::new(
-                far[0],
-                far[1],
-                far[2],
-            ),
-        ));
+        result.push(triangle_grip(id, DVec3::new(far[0], far[1], far[2])));
     }
 
     result
@@ -595,26 +612,15 @@ fn grips(ml: &MultiLeader) -> Vec<GripDef> {
 /// text grip's "Move with Leader" action so the leader follows the text.
 pub(crate) const MOVE_ALL_GRIP: usize = usize::MAX;
 
-fn apply_grip(
-    ml: &mut MultiLeader,
-    grip_id: usize,
-    apply: GripApply,
-) {
+fn apply_grip(ml: &mut MultiLeader, grip_id: usize, apply: GripApply) {
     if grip_id == MOVE_ALL_GRIP {
         let (dx, dy, dz) = match apply {
-            GripApply::Translate(d) => (
-                d.x as f64,
-                d.y as f64,
-                d.z as f64,
-            ),
+            GripApply::Translate(d) => (d.x as f64, d.y as f64, d.z as f64),
 
             GripApply::Absolute(a) => (
-                a.x as f64
-                    - ml.context.text_location.x,
-                a.y as f64
-                    - ml.context.text_location.y,
-                a.z as f64
-                    - ml.context.text_location.z,
+                a.x as f64 - ml.context.text_location.x,
+                a.y as f64 - ml.context.text_location.y,
+                a.z as f64 - ml.context.text_location.z,
             ),
         };
 
@@ -728,18 +734,13 @@ fn apply_grip(
         );
         let target = match apply {
             GripApply::Absolute(a) => DVec3::new(a.x as f64, a.y as f64, a.z as f64),
-            GripApply::Translate(d) => {
-                old_end + DVec3::new(d.x as f64, d.y as f64, d.z as f64)
-            }
+            GripApply::Translate(d) => old_end + DVec3::new(d.x as f64, d.y as f64, d.z as f64),
         };
 
         if let Some((elbow, axis, sign, _, gap)) = landing {
             let requested_total = (target - elbow).dot(axis) * sign;
             let new_length = (requested_total - gap).max(1.0e-6);
-            set_mleader_text_location(
-                ml,
-                elbow + axis * (sign * (new_length + gap)),
-            );
+            set_mleader_text_location(ml, elbow + axis * (sign * (new_length + gap)));
             ml.dogleg_length = new_length;
             for root in &mut ml.context.leader_roots {
                 root.landing_distance = new_length;
@@ -756,15 +757,9 @@ fn apply_grip(
         let (dir, far) = text_box_geom(ml);
 
         let (nx, ny) = match apply {
-            GripApply::Absolute(a) => (
-                a.x as f64,
-                a.y as f64,
-            ),
+            GripApply::Absolute(a) => (a.x as f64, a.y as f64),
 
-            GripApply::Translate(d) => (
-                far[0] + d.x as f64,
-                far[1] + d.y as f64,
-            ),
+            GripApply::Translate(d) => (far[0] + d.x as f64, far[1] + d.y as f64),
         };
 
         let tl = &ml.context.text_location;
@@ -782,17 +777,21 @@ fn apply_grip(
 // ── Properties ─────────────────────────────────────────────────────────────
 
 /// The nine horizontal text-attachment options, indexed 1:1 to
-/// `TextAttachmentType` values 0–8 (values 9/10 are the vertical set).
+/// `TextAttachmentType` values 0–8 (values 9/10 are the vertical set), named
+/// as AutoCAD names each stored value. The codec's variant names for 5–8 are
+/// one place off: 6 (`BottomOfTopLineUnderlineBottomLine`) is AutoCAD's
+/// "Underline top line" and 7 (`BottomOfTopLineUnderlineTopLine`) its
+/// "Bottom of top line".
 const ATTACH_LABELS: [&str; 9] = [
     "Top of top line",
     "Middle of top line",
     "Middle of text",
     "Middle of bottom line",
     "Bottom of bottom line",
-    "Bottom of top line",
     "Underline bottom line",
     "Underline top line",
-    "Underline all",
+    "Bottom of top line",
+    "Underline all text",
 ];
 
 fn attachment_str(a: &TextAttachmentType) -> &'static str {
@@ -890,7 +889,11 @@ fn properties(ml: &MultiLeader) -> Vec<PropSection> {
                 !ml.enable_annotation_scale,
             ),
             // Style name is resolved from style_handle by the panel builder (needs doc).
-            ro(t!("Multileader style").as_ref(), "mleader_style", "Standard"),
+            ro(
+                t!("Multileader style").as_ref(),
+                "mleader_style",
+                "Standard",
+            ),
             bool_toggle(
                 t!("Annotative").as_ref(),
                 "enable_annotation_scale",
@@ -903,46 +906,66 @@ fn properties(ml: &MultiLeader) -> Vec<PropSection> {
     // Landing rows are folded in here: the standalone "Leader Structure" group
     // is a style-dialog tab, not a palette group.
     let mut leader_props = vec![
-            choice(
-                t!("Leader type").as_ref(),
-                "path_type",
-                leader_type_str(&ml.path_type),
-                &["Straight", "Spline", "None"],
-            ),
-            Property {
-                label: t!("Leader color").into_owned(),
-                field: "line_color",
-                value: PropValue::ColorChoice(ml.line_color),
-            },
-            // Linetype name resolved from line_type_handle by the panel builder.
-            ro(t!("Leader linetype").as_ref(), "line_type_handle", "ByBlock"),
-            Property {
-                label: t!("Leader lineweight").into_owned(),
+        choice(
+            t!("Leader type").as_ref(),
+            "path_type",
+            leader_type_str(&ml.path_type),
+            &["Straight", "Spline", "None"],
+        ),
+        Property {
+            label: t!("Leader color").into_owned(),
+            field: "line_color",
+            value: PropValue::ColorChoice(ml.line_color),
+        },
+        // Linetype name resolved from line_type_handle by the panel builder.
+        ro(
+            t!("Leader linetype").as_ref(),
+            "line_type_handle",
+            "ByBlock",
+        ),
+        Property {
+            label: t!("Leader lineweight").into_owned(),
+            field: "line_weight",
+            value: PropValue::FieldLwChoice {
                 field: "line_weight",
-                value: PropValue::FieldLwChoice {
-                    field: "line_weight",
-                    value: ml.line_weight,
-                },
+                value: ml.line_weight,
             },
-            // Arrowhead block name resolved by the panel builder (default "Closed filled").
-            ro(t!("Arrowhead").as_ref(), "arrowhead_handle", "Closed filled"),
-            edit(t!("Arrowhead Size").as_ref(), "arrowhead_size", ml.arrowhead_size),
-            bool_toggle(t!("Horizontal Landing").as_ref(), "enable_dogleg", ml.enable_dogleg),
-            num_row(
-                t!("Landing distance").as_ref(),
-                "landing_distance",
-                if ml.enable_dogleg { ml.dogleg_length } else { 0.0 },
-                ml.enable_dogleg,
-            ),
-        ];
+        },
+        // Arrowhead block name resolved by the panel builder (default "Closed filled").
+        ro(
+            t!("Arrowhead").as_ref(),
+            "arrowhead_handle",
+            "Closed filled",
+        ),
+        edit(
+            t!("Arrowhead Size").as_ref(),
+            "arrowhead_size",
+            ml.arrowhead_size,
+        ),
+        bool_toggle(
+            t!("Horizontal Landing").as_ref(),
+            "enable_dogleg",
+            ml.enable_dogleg,
+        ),
+        num_row(
+            t!("Landing distance").as_ref(),
+            "landing_distance",
+            if ml.enable_dogleg {
+                ml.dogleg_length
+            } else {
+                0.0
+            },
+            ml.enable_dogleg,
+        ),
+    ];
     // The extension is an MText-only landing option. It is absent for block
     // content and whenever the horizontal landing itself is disabled.
     if ml.content_type == LeaderContentType::MText && ml.enable_dogleg {
         leader_props.push(bool_toggle(
-                t!("Leader extension").as_ref(),
-                "extend_leader_to_text",
-                ml.extend_leader_to_text,
-            ));
+            t!("Leader extension").as_ref(),
+            "extend_leader_to_text",
+            ml.extend_leader_to_text,
+        ));
     }
     let leaders = PropSection {
         title: t!("Leaders").into_owned(),
@@ -974,8 +997,16 @@ fn properties(ml: &MultiLeader) -> Vec<PropSection> {
             ),
             edit(t!("Width").as_ref(), "text_width", ctx.text_width),
             edit(t!("Height").as_ref(), "text_height", ml.text_height),
-            edit_angle(t!("Rotation").as_ref(), "text_rotation", ctx.text_rotation.to_degrees()),
-            edit(t!("Line space factor").as_ref(), "line_spacing", ctx.line_spacing_factor),
+            edit_angle(
+                t!("Rotation").as_ref(),
+                "text_rotation",
+                ctx.text_rotation.to_degrees(),
+            ),
+            edit(
+                t!("Line space factor").as_ref(),
+                "line_spacing",
+                ctx.line_spacing_factor,
+            ),
             edit(
                 t!("Line space distance").as_ref(),
                 "line_space_distance",
@@ -1038,7 +1069,8 @@ fn properties(ml: &MultiLeader) -> Vec<PropSection> {
             ),
         ],
     };
-    text.props.splice(attachment_insert..attachment_insert, attachment_rows);
+    text.props
+        .splice(attachment_insert..attachment_insert, attachment_rows);
 
     // ── Block ────────────────────────────────────────────────────────────
     let block = PropSection {
@@ -1130,9 +1162,8 @@ fn apply_geom_prop(ml: &mut MultiLeader, field: &str, value: &str) {
             for root in &mut ml.context.leader_roots {
                 for line in &mut root.lines {
                     line.path_type = ml.path_type;
-                    line.override_flags.insert(
-                        codec::entities::LeaderLinePropertyOverrideFlags::PATH_TYPE,
-                    );
+                    line.override_flags
+                        .insert(codec::entities::LeaderLinePropertyOverrideFlags::PATH_TYPE);
                 }
             }
             ml.property_override_flags
@@ -1446,10 +1477,11 @@ fn parse_attachment(s: &str) -> TextAttachmentType {
         "Middle of top line" => TextAttachmentType::MiddleOfTopLine,
         "Middle of bottom line" => TextAttachmentType::MiddleOfBottomLine,
         "Bottom of bottom line" => TextAttachmentType::BottomOfBottomLine,
-        "Bottom of top line" => TextAttachmentType::BottomLine,
-        "Underline bottom line" => TextAttachmentType::BottomOfTopLineUnderlineBottomLine,
-        "Underline top line" => TextAttachmentType::BottomOfTopLineUnderlineTopLine,
-        "Underline all" => TextAttachmentType::BottomOfTopLineUnderlineAll,
+        // Values 5–8 by AutoCAD's names; see `ATTACH_LABELS`.
+        "Underline bottom line" => TextAttachmentType::BottomLine,
+        "Underline top line" => TextAttachmentType::BottomOfTopLineUnderlineBottomLine,
+        "Bottom of top line" => TextAttachmentType::BottomOfTopLineUnderlineTopLine,
+        "Underline all text" | "Underline all" => TextAttachmentType::BottomOfTopLineUnderlineAll,
         _ => TextAttachmentType::MiddleOfText,
     }
 }
@@ -1554,14 +1586,8 @@ impl crate::entities::traits::Grippable for MultiLeader {
     fn apply_grip(&mut self, grip_id: usize, apply: GripApply) {
         apply_grip(self, grip_id, apply);
     }
-    fn grip_menu(
-        &self,
-        grip_id: usize,
-    ) -> Vec<crate::scene::model::object::GripMenuItem> {
-        use crate::scene::model::object::{
-            GripMenuAction,
-            GripMenuItem,
-        };
+    fn grip_menu(&self, grip_id: usize) -> Vec<crate::scene::model::object::GripMenuItem> {
+        use crate::scene::model::object::{GripMenuAction, GripMenuItem};
 
         let n_vertices: usize = self
             .context
@@ -1571,42 +1597,27 @@ impl crate::entities::traits::Grippable for MultiLeader {
             .map(|line| line.points.len())
             .sum();
 
-        if self.content_type
-            == LeaderContentType::MText
-        {
-            let has_elbow =
-                mleader_landing_geom(self).is_some();
+        if self.content_type == LeaderContentType::MText {
+            let has_elbow = mleader_landing_geom(self).is_some();
 
-            let elbow_id =
-                n_vertices;
+            let elbow_id = n_vertices;
 
-            let landing_id =
-                n_vertices
-                    + usize::from(has_elbow);
+            let landing_id = n_vertices + usize::from(has_elbow);
 
-            let width_id =
-                landing_id + 1;
+            let width_id = landing_id + 1;
 
-            if has_elbow
-                && grip_id == elbow_id
-            {
-                return vec![
-                    GripMenuItem {
-                        label: "Stretch",
-                        action:
-                            GripMenuAction::Stretch,
-                    },
-                ];
+            if has_elbow && grip_id == elbow_id {
+                return vec![GripMenuItem {
+                    label: "Stretch",
+                    action: GripMenuAction::Stretch,
+                }];
             }
 
             if grip_id == landing_id {
-                return vec![
-                    GripMenuItem {
-                        label: "Stretch",
-                        action:
-                            GripMenuAction::Stretch,
-                    },
-                ];
+                return vec![GripMenuItem {
+                    label: "Stretch",
+                    action: GripMenuAction::Stretch,
+                }];
             }
 
             if grip_id == width_id {
@@ -1617,22 +1628,23 @@ impl crate::entities::traits::Grippable for MultiLeader {
         vec![
             GripMenuItem {
                 label: "Stretch",
-                action:
-                    GripMenuAction::Stretch,
+                action: GripMenuAction::Stretch,
             },
             GripMenuItem {
                 label: "Add Leader",
-                action:
-                    GripMenuAction::AddLeader,
+                action: GripMenuAction::AddLeader,
             },
             GripMenuItem {
                 label: "Remove Leader",
-                action:
-                    GripMenuAction::RemoveLeader,
+                action: GripMenuAction::RemoveLeader,
             },
         ]
     }
-    fn apply_grip_menu(&mut self, grip_id: usize, action: crate::scene::model::object::GripMenuAction) {
+    fn apply_grip_menu(
+        &mut self,
+        grip_id: usize,
+        action: crate::scene::model::object::GripMenuAction,
+    ) {
         use crate::scene::model::object::GripMenuAction as A;
         // Locate the (root, line) and vertex position owning this grip id.
         let mut idx = 0usize;
@@ -1732,8 +1744,7 @@ pub(crate) fn block_content_insert(
             let anchor_y = ((bounds[1] + bounds[3]) * 0.5) as f64;
             let local_x = (anchor_x - record.base_point.x) * ml.block_scale.x;
             let local_y = (anchor_y - record.base_point.y) * ml.block_scale.y;
-            let rotated =
-                Transform::rotation(ml.block_rotation).apply_vector([local_x, local_y]);
+            let rotated = Transform::rotation(ml.block_rotation).apply_vector([local_x, local_y]);
             insertion.x -= rotated[0];
             insertion.y -= rotated[1];
         }
@@ -1820,9 +1831,11 @@ impl MultiLeaderTess for MultiLeader {
                     .find(|lt| lt.handle == h)
                     .map(|lt| lt.name.clone());
                 match name {
-                    Some(n) => {
-                        crate::scene::view::render::resolve_pattern(&document.line_types, &n, lt_scale)
-                    }
+                    Some(n) => crate::scene::view::render::resolve_pattern(
+                        &document.line_types,
+                        &n,
+                        lt_scale,
+                    ),
                     None => (0.0, [0.0; 8]),
                 }
             }
@@ -1831,14 +1844,12 @@ impl MultiLeaderTess for MultiLeader {
 
         let name = handle.value().to_string();
         let nan = [f32::NAN; 3];
-        let p3 = |v: &codec::types::Vector3| -> [f32; 3] {
-            [(v.x) as f32, (v.y) as f32, (v.z) as f32]
-        };
+        let p3 =
+            |v: &codec::types::Vector3| -> [f32; 3] { [(v.x) as f32, (v.y) as f32, (v.z) as f32] };
 
         // ── Scaling ──────────────────────────────────────────────────────────────
         // Used only when a context omits an already-resolved content size.
-        let annotative =
-            crate::scene::annotative::mleader_is_annotative(document, ml);
+        let annotative = crate::scene::annotative::mleader_is_annotative(document, ml);
 
         // Context sizes are resolved at their stored annotation scale.
         let base_scale = if ml.scale_factor.abs() > 1.0e-12 {
@@ -1849,28 +1860,25 @@ impl MultiLeaderTess for MultiLeader {
 
         let stored_context_scale = ml.context.scale_factor as f32;
 
-        let context_scale_correction =
-            if annotative && stored_context_scale.abs() > 1.0e-12 {
-                let correction =
-                    (base_scale * anno_scale) / stored_context_scale;
+        // An annotative MLEADER ignores its overall scale (greyed out in the
+        // properties panel); only the annotation scale resizes the context.
+        let context_scale_correction = if annotative && stored_context_scale.abs() > 1.0e-12 {
+            let correction = anno_scale / stored_context_scale;
 
-                if correction.is_finite() && correction > 0.0 {
-                    correction
-                } else {
-                    1.0
-                }
+            if correction.is_finite() && correction > 0.0 {
+                correction
             } else {
                 1.0
-            };
+            }
+        } else {
+            1.0
+        };
 
-        let fallback_content_scale =
-            base_scale * if annotative { anno_scale } else { 1.0 };
+        let fallback_content_scale = if annotative { anno_scale } else { base_scale };
 
         // The active context stores the resolved world-space arrow size.
         // Reapplying the entity scale here makes context-sized arrows grow twice.
-        let arrow_size =
-            ml.context.arrowhead_size as f32
-                * context_scale_correction;
+        let arrow_size = ml.context.arrowhead_size as f32 * context_scale_correction;
         let draw_arrow = arrow_size > 0.0;
         let invisible = ml.path_type == MultiLeaderPathType::Invisible;
         // arrowhead_handle resolves through the block records to a named arrow
@@ -1896,20 +1904,18 @@ impl MultiLeaderTess for MultiLeader {
         // Which side the text grip sits on, recomputed every frame so the text
         // alignment and the landing mirror live when the arrow or text moves.
         let mut text_loc_w = ml.context.text_location;
+        // Where the first root's landing (dogleg) ends; an underline starts here.
+        let mut landing_end_w: Option<[f32; 2]> = None;
 
         // Scale the annotation-side offset around the fixed elbow.
-        if annotative
-            && (context_scale_correction - 1.0).abs() > 1.0e-6
-        {
+        if annotative && (context_scale_correction - 1.0).abs() > 1.0e-6 {
             if let Some(root) = ml.context.leader_roots.first() {
                 let anchor = root.connection_point;
                 let k = context_scale_correction as f64;
 
                 text_loc_w = codec::types::Vector3::new(
-                    anchor.x
-                        + (text_loc_w.x - anchor.x) * k,
-                    anchor.y
-                        + (text_loc_w.y - anchor.y) * k,
+                    anchor.x + (text_loc_w.x - anchor.x) * k,
+                    anchor.y + (text_loc_w.y - anchor.y) * k,
                     text_loc_w.z,
                 );
             }
@@ -2025,9 +2031,7 @@ impl MultiLeaderTess for MultiLeader {
                 // stray line up the side of the text.
                 // Landing distance belongs to the selected leader-root context
                 // and is already resolved in world units.
-                let d =
-                    root.landing_distance
-                        * context_scale_correction as f64;
+                let d = root.landing_distance * context_scale_correction as f64;
                 // The dogleg runs along the leader root's stored direction —
                 // for a rotated leader that is the angled baseline, not world
                 // X. Roots without a usable direction keep the legacy
@@ -2039,22 +2043,26 @@ impl MultiLeaderTess for MultiLeader {
                         (x / l, y / l)
                     })
                     .unwrap_or((text_sign_w, 0.0));
-                let landing_end = [
-                    (cp.x + ux * d) as f32,
-                    (cp.y + uy * d) as f32,
-                    cp_f[2],
-                ];
+                let landing_end = [(cp.x + ux * d) as f32, (cp.y + uy * d) as f32, cp_f[2]];
+                landing_end_w.get_or_insert([landing_end[0], landing_end[1]]);
                 points.push(nan);
                 points.push(cp_f);
                 points.push(landing_end);
                 if ml.extend_leader_to_text {
-                    let gap = ml.context.landing_gap.max(0.0)
-                        * context_scale_correction as f64;
-                    points.push([
-                        (text_loc_w.x - ux * gap) as f32,
-                        (text_loc_w.y - uy * gap) as f32,
-                        text_loc_w.z as f32,
-                    ]);
+                    // Run on along the landing up to one gap short of the
+                    // text. text_location is the text block's corner, often
+                    // above the landing, so only its reach along the landing
+                    // counts — aiming at the corner itself drew a stray line
+                    // up the side of the text.
+                    let gap = ml.context.landing_gap.max(0.0) * context_scale_correction as f64;
+                    let reach = (text_loc_w.x - cp.x) * ux + (text_loc_w.y - cp.y) * uy - gap;
+                    if reach > d {
+                        points.push([
+                            (cp.x + ux * reach) as f32,
+                            (cp.y + uy * reach) as f32,
+                            cp_f[2],
+                        ]);
+                    }
                 }
             }
         }
@@ -2102,17 +2110,16 @@ impl MultiLeaderTess for MultiLeader {
             // error at UTM scale) — not a crash. Follow-up: double-single-split
             // via points_to_ds to match emit_wire's paired fill path.
             fill_tris_low: Vec::new(),
-        
+
             ..Default::default()
-});
+        });
 
         let host = codec::EntityType::MultiLeader(Box::new(ml.clone()));
         for block_use in crate::scene::render_graph::entity_render_block_uses(document, &host, 1.0)
             .into_iter()
             .filter(|block_use| {
                 block_use.active
-                    && block_use.role
-                        == crate::scene::render_graph::BlockRole::MultiLeaderContent
+                    && block_use.role == crate::scene::render_graph::BlockRole::MultiLeaderContent
             })
         {
             wires.extend(
@@ -2152,11 +2159,9 @@ impl MultiLeaderTess for MultiLeader {
             // Only the fallback path (file omits the context value) needs
             // scale_factor + annotation scale applied.
             let height = if ctx.text_height > 0.0 {
-                ctx.text_height as f32
-                    * context_scale_correction
+                ctx.text_height as f32 * context_scale_correction
             } else {
-                ml.text_height as f32
-                    * fallback_content_scale
+                ml.text_height as f32 * fallback_content_scale
             };
 
             let ins = &text_loc_w;
@@ -2177,6 +2182,12 @@ impl MultiLeaderTess for MultiLeader {
                 rot += std::f32::consts::PI;
             }
 
+            let vertical_attach = active_vertical_attachment(ml);
+            let underline_lift = if underlined_line(vertical_attach, 1).is_some() {
+                height * MLEADER_UNDERLINE_GAP
+            } else {
+                0.0
+            };
             // Horizontal leaders attach at the connection point: the dogleg runs
             // horizontally at connection_point.y, and the text's attachment line
             // (bottom/middle/top per text_left_attachment) sits there. Anchor the
@@ -2185,12 +2196,13 @@ impl MultiLeaderTess for MultiLeader {
             // few percent because our MText line height need not match the writer's.
             // Only for UNROTATED text: an angled context stores its true anchor in
             // text_location, and snapping Y alone would shear it off its baseline.
+            // An underlined line sits its underline gap above that connection.
             let local_ins_y = match ml.text_attachment_direction {
                 TextAttachmentDirectionType::Horizontal if rot.abs() < 1e-3 => ml
                     .context
                     .leader_roots
                     .first()
-                    .map(|r| r.connection_point.y as f32)
+                    .map(|r| r.connection_point.y as f32 + underline_lift)
                     .unwrap_or(ins.y as f32),
                 _ => ins.y as f32,
             };
@@ -2217,9 +2229,7 @@ impl MultiLeaderTess for MultiLeader {
             // The stored text attachment point is the insertion's horizontal
             // anchor within the text block (Left/Center/Right) — honour it
             // instead of guessing from the leader side.
-            use codec::entities::multileader::{
-                TextAttachmentDirectionType,
-            };
+            use codec::entities::multileader::TextAttachmentDirectionType;
             // The context's attachment point exists in every DWG version;
             // the entity-level copy only exists from R2010 on.
             let h_anchor: f32 = match ctx.text_attachment_point {
@@ -2234,7 +2244,6 @@ impl MultiLeaderTess for MultiLeader {
             //                or ml.text_bottom_attachment depending on which side
             //                the leader is coming from (chosen via the first
             //                root.direction.y sign).
-            let vertical_attach = active_vertical_attachment(ml);
             let v_anchor = mleader_v_anchor(vertical_attach);
 
             // Shared MText pipeline — every inline format code (`\f`, `\C`/`\c`,
@@ -2247,9 +2256,7 @@ impl MultiLeaderTess for MultiLeader {
                 value: &ctx.text_string,
                 insertion: [local_ins_x as f64, local_ins_y as f64, z as f64],
                 height,
-                rect_w:
-                    ctx.text_width as f32
-                        * context_scale_correction,
+                rect_w: ctx.text_width as f32 * context_scale_correction,
                 rotation: rot,
                 style: &style,
                 attach_h_anchor: h_anchor,
@@ -2301,10 +2308,9 @@ impl MultiLeaderTess for MultiLeader {
                     Vec::new();
                 if let Ok(mut atlas) = crate::scene::text::sdf_atlas::text_atlas().lock() {
                     for ts in &layout.strokes {
-                        let is_shaped = ts
-                            .run
-                            .as_ref()
-                            .is_some_and(|r| crate::scene::text::web_font::requires_shaping(&r.text));
+                        let is_shaped = ts.run.as_ref().is_some_and(|r| {
+                            crate::scene::text::web_font::requires_shaping(&r.text)
+                        });
                         if ts.run.is_none() || is_shaped {
                             for stroke in &ts.strokes {
                                 if stroke.len() < 2 {
@@ -2331,18 +2337,17 @@ impl MultiLeaderTess for MultiLeader {
                             continue;
                         }
                         let run = ts.run.as_ref().unwrap();
-                        let (quads, pen_adv) =
-                            crate::scene::text::glyph_quads::layout_glyph_quads(
-                                &mut atlas,
-                                run.height,
-                                run.rotation,
-                                run.width_factor,
-                                run.oblique,
-                                run.tracking,
-                                &run.font,
-                                run.bold,
-                                &run.text,
-                            );
+                        let (quads, pen_adv) = crate::scene::text::glyph_quads::layout_glyph_quads(
+                            &mut atlas,
+                            run.height,
+                            run.rotation,
+                            run.width_factor,
+                            run.oblique,
+                            run.tracking,
+                            &run.font,
+                            run.bold,
+                            &run.text,
+                        );
                         // Inline `\C` / `\c` colour wins over the entity text
                         // colour, matching the top-level Text arm.
                         let gcolor = ts
@@ -2379,8 +2384,7 @@ impl MultiLeaderTess for MultiLeader {
                 }
                 if !sdf_verts.is_empty() || !deco_pts.is_empty() || !deco_fill.is_empty() {
                     // Pick box from the glyph quads (f64 accumulate → f32).
-                    let (mut nx, mut ny, mut xx, mut xy) =
-                        (f64::MAX, f64::MAX, f64::MIN, f64::MIN);
+                    let (mut nx, mut ny, mut xx, mut xy) = (f64::MAX, f64::MAX, f64::MIN, f64::MIN);
                     for v in &sdf_verts {
                         let x = v.pos[0] as f64 + v.pos_low[0] as f64;
                         let y = v.pos[1] as f64 + v.pos_low[1] as f64;
@@ -2410,10 +2414,13 @@ impl MultiLeaderTess for MultiLeader {
                         depth_override: None,
                         display_visible: true,
                         snap_only: false,
+                        region_boundary_click: false,
+                        reference_only: false,
                         plot_visible: true,
                         fill_is_3d: false,
                         fill_is_2d_solid: false,
                         render_instance: None,
+                        stub: None,
                         pick_tris: Vec::new(),
                         pick_tris_low: Vec::new(),
                         dash_from_start: false,
@@ -2443,86 +2450,73 @@ impl MultiLeaderTess for MultiLeader {
                 }
             }
 
-            // Underline attachments (BottomLine / BottomOfTopLineUnderline…):
-            // the leader visually continues under the text, so draw a rule the
-            // full text width at the attached line, in the leader's colour.
-            {
-                use codec::entities::multileader::TextAttachmentType as TA;
-                let ul_lines: Option<Vec<usize>> = match vertical_attach {
-                    TA::BottomOfTopLineUnderlineTopLine => Some(vec![0]),
-                    TA::BottomOfTopLineUnderlineAll => {
-                        Some((0..layout.line_count).collect())
-                    }
-                    TA::BottomLine | TA::BottomOfTopLineUnderlineBottomLine => {
-                        Some(vec![layout.line_count.saturating_sub(1)])
-                    }
-                    _ => None,
-                };
-                if let Some(lines) = ul_lines {
-                    let mut pts: Vec<[f32; 3]> = Vec::new();
-                    let (x0, x1) =
-                        (-max_line_w * h_anchor, max_line_w * (1.0 - h_anchor));
-                    for li in lines {
-                        let y = v_offset - li as f32 * line_h - height * 0.15;
-                        let (ax, ay) = (
-                            local_ins_x + x0 * cos_r - y * sin_r,
-                            local_ins_y + x0 * sin_r + y * cos_r,
-                        );
-                        let (bx, by) = (
-                            local_ins_x + x1 * cos_r - y * sin_r,
-                            local_ins_y + x1 * sin_r + y * cos_r,
-                        );
-                        if !pts.is_empty() {
-                            pts.push([f32::NAN; 3]);
-                        }
-                        pts.push([ax, ay, z]);
-                        pts.push([bx, by, z]);
-                    }
-                    wires.push(WireModel {
-                        bg_adapt: None,
-                        point_marker: None,
-                        taper_widths: Vec::new(),
-                        pattern_stations: Vec::new(),
-                        world_width: 0.0,
-                        depth_override: None,
-                        display_visible: true,
-                        snap_only: false,
-                        plot_visible: true,
-                        fill_is_3d: false,
-                        fill_is_2d_solid: false,
-                        render_instance: None,
-                        pick_tris: Vec::new(),
-                        pick_tris_low: Vec::new(),
-                        dash_from_start: false,
-                        dash_align_end: None,
-                        text_verts: Vec::new(),
-                        name: name.clone(),
-                        points: pts,
-                        points_low: Vec::new(),
-                        color: line_color,
-                        selected,
-                        aci: 0,
-                        pattern_length: 0.0,
-                        pattern: [0.0; 8],
-                        line_weight_px,
-                        snap_pts: vec![],
-                        tangent_geoms: vec![],
-                        key_vertices: vec![],
-                        aabb: WireModel::UNBOUNDED_AABB,
-                        plinegen: true,
-                        fill_tris: vec![],
-                        fill_tris_low: Vec::new(),
-                    
-                        ..Default::default()
-});
+            // Underline attachments: the leader visually continues under the
+            // text, so draw the landing on under the underlined line, from the
+            // landing's end across the gap to the far end of the widest line,
+            // in the leader's colour.
+            if let Some(li) = underlined_line(vertical_attach, layout.line_count) {
+                let (mut x0, mut x1) = (-max_line_w * h_anchor, max_line_w * (1.0 - h_anchor));
+                if let Some([x, y]) = landing_end_w {
+                    let lx = (x - local_ins_x) * cos_r + (y - local_ins_y) * sin_r;
+                    x0 = x0.min(lx);
+                    x1 = x1.max(lx);
                 }
+                let y = v_offset - li as f32 * line_h - height * MLEADER_UNDERLINE_GAP;
+                let pts = vec![
+                    [
+                        local_ins_x + x0 * cos_r - y * sin_r,
+                        local_ins_y + x0 * sin_r + y * cos_r,
+                        z,
+                    ],
+                    [
+                        local_ins_x + x1 * cos_r - y * sin_r,
+                        local_ins_y + x1 * sin_r + y * cos_r,
+                        z,
+                    ],
+                ];
+                wires.push(WireModel {
+                    bg_adapt: None,
+                    point_marker: None,
+                    taper_widths: Vec::new(),
+                    pattern_stations: Vec::new(),
+                    world_width: 0.0,
+                    depth_override: None,
+                    display_visible: true,
+                    snap_only: false,
+                    plot_visible: true,
+                    fill_is_3d: false,
+                    fill_is_2d_solid: false,
+                    render_instance: None,
+                    pick_tris: Vec::new(),
+                    pick_tris_low: Vec::new(),
+                    dash_from_start: false,
+                    dash_align_end: None,
+                    text_verts: Vec::new(),
+                    name: name.clone(),
+                    points: pts,
+                    points_low: Vec::new(),
+                    color: line_color,
+                    selected,
+                    aci: 0,
+                    pattern_length: 0.0,
+                    pattern: [0.0; 8],
+                    line_weight_px,
+                    snap_pts: vec![],
+                    tangent_geoms: vec![],
+                    key_vertices: vec![],
+                    aabb: WireModel::UNBOUNDED_AABB,
+                    plinegen: true,
+                    fill_tris: vec![],
+                    fill_tris_low: Vec::new(),
+
+                    ..Default::default()
+                });
             }
 
             // Text frame / background-fill rectangle in local frame, then rotated to WCS.
             if ml.text_frame || ctx.background_fill_enabled {
                 // Border offset is a scale factor around the laid-out text box.
-                let pad = height
-                    * ((ctx.background_scale_factor.max(1.0) as f32 - 1.0) * 0.5);
+                let pad = height * ((ctx.background_scale_factor.max(1.0) as f32 - 1.0) * 0.5);
                 // Box the glyphs that were actually laid out (valid for
                 // vertical flow too); the metric-derived box is only the
                 // no-glyph fallback.
@@ -2560,9 +2554,9 @@ impl MultiLeaderTess for MultiLeader {
                     } else {
                         color_or_inherit(&ctx.background_fill_color, entity_color)
                     };
-                    fill_color[3] *=
-                        (1.0 - ctx.background_transparency.clamp(0, 90) as f32 / 100.0)
-                            .clamp(0.1, 1.0);
+                    fill_color[3] *= (1.0
+                        - ctx.background_transparency.clamp(0, 90) as f32 / 100.0)
+                        .clamp(0.1, 1.0);
                     let fill_tris: Vec<[f32; 3]> = vec![
                         wcs_corners[0],
                         wcs_corners[1],
@@ -2586,9 +2580,9 @@ impl MultiLeaderTess for MultiLeader {
                         render_instance: None,
                         pick_tris: Vec::new(),
                         pick_tris_low: Vec::new(),
-            dash_from_start: false,
-            dash_align_end: None,
-            text_verts: Vec::new(),
+                        dash_from_start: false,
+                        dash_align_end: None,
+                        text_verts: Vec::new(),
                         name: name.clone(),
                         points: vec![],
                         points_low: Vec::new(),
@@ -2605,9 +2599,9 @@ impl MultiLeaderTess for MultiLeader {
                         plinegen: true,
                         fill_tris,
                         fill_tris_low: Vec::new(),
-                    
-            ..Default::default()
-});
+
+                        ..Default::default()
+                    });
                 }
 
                 // Text frame — closed rectangle, matches text color.
@@ -2634,9 +2628,9 @@ impl MultiLeaderTess for MultiLeader {
                         render_instance: None,
                         pick_tris: Vec::new(),
                         pick_tris_low: Vec::new(),
-            dash_from_start: false,
-            dash_align_end: None,
-            text_verts: Vec::new(),
+                        dash_from_start: false,
+                        dash_align_end: None,
+                        text_verts: Vec::new(),
                         name,
                         points: frame_points,
                         points_low: Vec::new(),
@@ -2653,9 +2647,9 @@ impl MultiLeaderTess for MultiLeader {
                         plinegen: true,
                         fill_tris: vec![],
                         fill_tris_low: Vec::new(),
-                    
-            ..Default::default()
-});
+
+                        ..Default::default()
+                    });
                 }
             }
         }
@@ -2709,6 +2703,296 @@ mod tests {
             !text_wire.fill_tris.is_empty(),
             "Arabic text must emit shaped vector fill triangles"
         );
+    }
+
+    /// Vertical extent of everything a tessellated MLEADER draws.
+    fn drawn_height(wires: &[crate::scene::model::wire_model::WireModel]) -> f32 {
+        let ys = wires.iter().flat_map(|w| {
+            w.points
+                .iter()
+                .chain(w.fill_tris.iter())
+                .map(|p| p[1])
+                .chain(w.text_verts.iter().map(|v| v.pos[1]))
+                .filter(|y| y.is_finite())
+                .collect::<Vec<_>>()
+        });
+        let (lo, hi) = ys.fold((f32::MAX, f32::MIN), |(lo, hi), y| (lo.min(y), hi.max(y)));
+        hi - lo
+    }
+
+    #[test]
+    fn test_attachment_labels_follow_autocad() {
+        // A drawing made in AutoCAD 2025, one MLEADER per option picked by
+        // name in its Properties palette, stores these values.
+        use codec::entities::multileader::TextAttachmentType as TA;
+        let autocad = [
+            (TA::BottomLine, "Underline bottom line"), // 5
+            (TA::BottomOfTopLineUnderlineBottomLine, "Underline top line"), // 6
+            (TA::BottomOfTopLineUnderlineTopLine, "Bottom of top line"), // 7
+            (TA::BottomOfTopLineUnderlineAll, "Underline all text"), // 8
+        ];
+        for (value, name) in autocad {
+            assert_eq!(attachment_str(&value), name, "{value:?} shows as");
+            assert_eq!(parse_attachment(name), value, "{name:?} stores as");
+        }
+        for label in ATTACH_LABELS {
+            assert_eq!(
+                attachment_str(&parse_attachment(label)),
+                label,
+                "round trip"
+            );
+        }
+    }
+
+    #[test]
+    fn test_annotative_mleader_ignores_overall_scale() {
+        // AutoCAD greys out the overall scale of an annotative MLEADER and
+        // draws it at its context height. A file with overall scale 50 at a
+        // 1:50 annotation scale rendered its text 50× too large.
+        let doc = CadDocument::default();
+        let make = |overall: f64| {
+            let mut ml = MultiLeader::default();
+            ml.content_type = LeaderContentType::MText;
+            ml.context.text_string = "22x2.0".to_string();
+            ml.enable_annotation_scale = true;
+            ml.scale_factor = overall;
+            ml.context.scale_factor = 50.0;
+            ml.context.text_height = 250.0;
+            ml
+        };
+        let height = |ml: &MultiLeader| {
+            drawn_height(&ml.tessellate(
+                &doc,
+                codec::Handle::default(),
+                false,
+                [1.0, 1.0, 1.0, 1.0],
+                1.0,
+                50.0,
+                None,
+                None,
+                None,
+                None,
+                None,
+                [0.0, 0.0, 0.0, 1.0],
+            ))
+        };
+
+        let unit = height(&make(1.0));
+        let scaled = height(&make(50.0));
+        assert!(unit > 0.0, "the text must be drawn");
+        assert!(
+            (scaled - unit).abs() <= unit * 1.0e-3,
+            "overall scale must not resize an annotative MLEADER: {unit} vs {scaled}"
+        );
+    }
+
+    #[test]
+    fn test_mleader_right_underline_attachment_meets_landing() {
+        // Text left of its leader attaches with its RIGHT attachment
+        // ("underline bottom line" here, while the left one is "underline top
+        // line"): the underline must lie on the landing and run on to it, and
+        // extending the leader to the text must not climb to the text corner.
+        use codec::types::Vector3;
+        let doc = CadDocument::default();
+        let mut ml = MultiLeader::default();
+        ml.content_type = LeaderContentType::MText;
+        ml.path_type = MultiLeaderPathType::StraightLineSegments;
+        ml.enable_landing = true;
+        ml.enable_dogleg = true;
+        ml.extend_leader_to_text = true;
+        let ctx = &mut ml.context;
+        ctx.text_string = "MULTILEADER\\PTEST".to_string();
+        ctx.text_height = 1.0;
+        ctx.landing_gap = 0.5;
+        ctx.text_location = Vector3::new(7.5, 5.0, 0.0);
+        ctx.text_attachment_point = codec::entities::multileader::TextAttachmentPointType::Right;
+        ctx.text_left_attachment = TextAttachmentType::BottomOfTopLineUnderlineBottomLine;
+        ctx.text_right_attachment = TextAttachmentType::BottomLine;
+        let root = ctx.add_leader_root();
+        root.connection_point = Vector3::new(10.0, 0.0, 0.0);
+        root.direction = Vector3::new(-1.0, 0.0, 0.0);
+        root.landing_distance = 2.0;
+        root.create_line(vec![Vector3::new(15.0, -5.0, 0.0), Vector3::new(10.0, 0.0, 0.0)]);
+
+        let wires = ml.tessellate(
+            &doc,
+            codec::Handle::default(),
+            false,
+            [1.0, 1.0, 1.0, 1.0],
+            1.0,
+            1.0,
+            None,
+            None,
+            None,
+            None,
+            None,
+            [0.0, 0.0, 0.0, 1.0],
+        );
+        let leader_top = wires[0]
+            .points
+            .iter()
+            .filter(|p| p[0].is_finite())
+            .fold(f32::MIN, |m, p| m.max(p[1]));
+        assert!(leader_top <= 1.0e-4, "leader rises above the landing: {leader_top}");
+        let underline = wires
+            .iter()
+            .find(|w| w.points.len() == 2 && w.text_verts.is_empty())
+            .expect("an underline is drawn");
+        for p in &underline.points {
+            assert!(p[1].abs() < 1.0e-3, "underline off the landing: {p:?}");
+        }
+        let right = underline.points[0][0].max(underline.points[1][0]);
+        assert!((right - 8.0).abs() < 1.0e-3, "underline stops short of the landing: {right}");
+    }
+
+    use crate::scene::model::wire_model::WireModel;
+    use codec::entities::multileader::TextAttachmentType;
+
+    const H: f64 = 125.0;
+    const GAP: f64 = 25.0;
+    const DOGLEG: f64 = 18.0;
+
+    /// A text-right MLEADER whose landing runs from (0,0) to (DOGLEG,0).
+    fn landed_leader(text: &str, attach: TextAttachmentType) -> MultiLeader {
+        use codec::entities::multileader::{LeaderLine, LeaderRoot, TextAttachmentPointType};
+        use codec::types::Vector3;
+
+        let mut ml = MultiLeader::default();
+        ml.content_type = LeaderContentType::MText;
+        ml.path_type = MultiLeaderPathType::StraightLineSegments;
+        ml.context.text_string = text.to_string();
+        ml.context.text_height = H;
+        ml.context.landing_gap = GAP;
+        ml.context.text_attachment_point = TextAttachmentPointType::Left;
+        ml.context.text_left_attachment = attach;
+        ml.context.text_location = Vector3::new(DOGLEG + GAP, 1.2 * H, 0.0);
+        let mut line = LeaderLine::default();
+        line.points = vec![Vector3::new(-341.0, -387.0, 0.0)];
+        let mut root = LeaderRoot::default();
+        root.connection_point = Vector3::new(0.0, 0.0, 0.0);
+        root.direction = Vector3::new(1.0, 0.0, 0.0);
+        root.landing_distance = DOGLEG;
+        root.lines = vec![line];
+        ml.context.leader_roots = vec![root];
+        ml
+    }
+
+    fn tess(ml: &MultiLeader) -> Vec<WireModel> {
+        ml.tessellate(
+            &CadDocument::default(),
+            codec::Handle::default(),
+            false,
+            [1.0, 1.0, 1.0, 1.0],
+            1.0,
+            1.0,
+            None,
+            None,
+            None,
+            None,
+            None,
+            [0.0, 0.0, 0.0, 1.0],
+        )
+    }
+
+    fn text_bottom(wires: &[WireModel]) -> f32 {
+        wires
+            .iter()
+            .flat_map(|w| w.text_verts.iter().map(|v| v.pos[1]))
+            .fold(f32::MAX, f32::min)
+    }
+
+    /// The landing's underline: the only bare two-point rule.
+    fn underline(wires: &[WireModel]) -> Option<[[f32; 3]; 2]> {
+        wires
+            .iter()
+            .find(|w| w.points.len() == 2 && w.text_verts.is_empty() && w.fill_tris.is_empty())
+            .map(|w| [w.points[0], w.points[1]])
+    }
+
+    #[test]
+    fn test_underline_attachment_runs_from_landing_end() {
+        // Measured on AutoCAD 2025 by exploding an MLEADER with "underline"
+        // attachment: the underline is the landing continued under the text,
+        // from the dogleg's end to the far end of the text, and the text's
+        // baseline sits 0.2 × height above it.
+        let (h, gap, dogleg) = (H, GAP, DOGLEG);
+        let ml = landed_leader(
+            "fsfsdfs",
+            TextAttachmentType::BottomOfTopLineUnderlineBottomLine,
+        );
+        let wires = tess(&ml);
+
+        // Single-line text: "bottom of bottom line" puts the same baseline on
+        // the landing without an underline, so the lift is the difference.
+        let plain = landed_leader("fsfsdfs", TextAttachmentType::BottomOfBottomLine);
+        let lift = text_bottom(&wires) - text_bottom(&tess(&plain));
+        assert!(
+            (lift - 0.2 * h as f32).abs() < 1.0e-2,
+            "underlined text sits 0.2 × height above the landing, got {lift}"
+        );
+
+        let [a, b] = underline(&wires).expect("an underline rule");
+        assert!(
+            (a[0] - dogleg as f32).abs() < 1.0e-3,
+            "underline starts at the landing end, got x = {}",
+            a[0]
+        );
+        assert!(
+            a[1].abs() < 1.0e-3 && b[1].abs() < 1.0e-3,
+            "underline runs at the landing level, got y = {} / {}",
+            a[1],
+            b[1]
+        );
+        assert!(b[0] > (dogleg + gap) as f32, "underline spans the text");
+    }
+
+    #[test]
+    fn test_underline_attachment_values_match_autocad() {
+        // AutoCAD 2025, three-line text, one MLEADER per attachment value
+        // (see `underlined_line`): 5 underlines the bottom line, 6 and 8 the
+        // top line, 7 draws no underline. The underlined line meets the
+        // landing, so the text sits above it (5) or hangs below it (6, 8).
+        let text = "rand unu\\Prand doi\\Prand trei";
+        let cases = [
+            (TextAttachmentType::BottomLine, true, true),
+            (
+                TextAttachmentType::BottomOfTopLineUnderlineBottomLine,
+                true,
+                false,
+            ),
+            (
+                TextAttachmentType::BottomOfTopLineUnderlineTopLine,
+                false,
+                false,
+            ),
+            (TextAttachmentType::BottomOfTopLineUnderlineAll, true, false),
+        ];
+        for (attach, underlined, text_above) in cases {
+            let wires = tess(&landed_leader(text, attach));
+            match underline(&wires) {
+                Some([a, b]) => {
+                    assert!(underlined, "{attach:?} must not draw an underline");
+                    assert!(
+                        (a[0] - DOGLEG as f32).abs() < 1.0e-3 && a[1].abs() < 1.0e-3,
+                        "{attach:?}: underline starts at the landing end, got {a:?}"
+                    );
+                    assert!(b[1].abs() < 1.0e-3, "{attach:?}: underline stays level");
+                }
+                None => assert!(!underlined, "{attach:?} must draw an underline"),
+            }
+            let bottom = text_bottom(&wires);
+            if text_above {
+                assert!(
+                    bottom > 0.0,
+                    "{attach:?}: text sits above the landing, got {bottom}"
+                );
+            } else {
+                assert!(
+                    bottom < -H as f32,
+                    "{attach:?}: text hangs below the landing, got {bottom}"
+                );
+            }
+        }
     }
 }
 

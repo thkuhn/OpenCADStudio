@@ -79,29 +79,72 @@ impl TangentGeom {
     pub fn translated(&self, delta: glam::DVec3) -> Self {
         match self {
             Self::Line { p1, p2 } => Self::Line {
-                p1: [p1[0] + delta.x as f32, p1[1] + delta.y as f32, p1[2] + delta.z as f32],
-                p2: [p2[0] + delta.x as f32, p2[1] + delta.y as f32, p2[2] + delta.z as f32],
+                p1: [
+                    p1[0] + delta.x as f32,
+                    p1[1] + delta.y as f32,
+                    p1[2] + delta.z as f32,
+                ],
+                p2: [
+                    p2[0] + delta.x as f32,
+                    p2[1] + delta.y as f32,
+                    p2[2] + delta.z as f32,
+                ],
             },
             Self::Circle { center, radius } => Self::Circle {
-                center: [center[0] + delta.x as f32, center[1] + delta.y as f32, center[2] + delta.z as f32],
+                center: [
+                    center[0] + delta.x as f32,
+                    center[1] + delta.y as f32,
+                    center[2] + delta.z as f32,
+                ],
                 radius: *radius,
             },
-            Self::PlanarCircle { center, axis_x, axis_y, radius } => Self::PlanarCircle {
-                center: [center[0] + delta.x, center[1] + delta.y, center[2] + delta.z],
+            Self::PlanarCircle {
+                center,
+                axis_x,
+                axis_y,
+                radius,
+            } => Self::PlanarCircle {
+                center: [
+                    center[0] + delta.x,
+                    center[1] + delta.y,
+                    center[2] + delta.z,
+                ],
                 axis_x: *axis_x,
                 axis_y: *axis_y,
                 radius: *radius,
             },
-            Self::Arc { center, axis_x, axis_y, radius, start_angle, end_angle } => Self::Arc {
-                center: [center[0] + delta.x, center[1] + delta.y, center[2] + delta.z],
+            Self::Arc {
+                center,
+                axis_x,
+                axis_y,
+                radius,
+                start_angle,
+                end_angle,
+            } => Self::Arc {
+                center: [
+                    center[0] + delta.x,
+                    center[1] + delta.y,
+                    center[2] + delta.z,
+                ],
                 axis_x: *axis_x,
                 axis_y: *axis_y,
                 radius: *radius,
                 start_angle: *start_angle,
                 end_angle: *end_angle,
             },
-            Self::PlanarEllipse { center, major_axis, normal, minor_axis_ratio, start_param, end_param } => Self::PlanarEllipse {
-                center: [center[0] + delta.x, center[1] + delta.y, center[2] + delta.z],
+            Self::PlanarEllipse {
+                center,
+                major_axis,
+                normal,
+                minor_axis_ratio,
+                start_param,
+                end_param,
+            } => Self::PlanarEllipse {
+                center: [
+                    center[0] + delta.x,
+                    center[1] + delta.y,
+                    center[2] + delta.z,
+                ],
                 major_axis: *major_axis,
                 normal: *normal,
                 minor_axis_ratio: *minor_axis_ratio,
@@ -113,7 +156,8 @@ impl TangentGeom {
 
     pub fn rotated(&self, center: glam::DVec3, axis: glam::DVec3, angle_rad: f64) -> Self {
         let quat = glam::DQuat::from_axis_angle(axis.normalize_or(glam::DVec3::Z), angle_rad);
-        let rot_pt = |p: [f64; 3]| (center + quat * (glam::DVec3::from_array(p) - center)).to_array();
+        let rot_pt =
+            |p: [f64; 3]| (center + quat * (glam::DVec3::from_array(p) - center)).to_array();
         let rot_vec = |v: [f64; 3]| (quat * glam::DVec3::from_array(v)).to_array();
         match self {
             Self::Line { p1, p2 } => {
@@ -134,13 +178,25 @@ impl TangentGeom {
                     radius: *radius,
                 }
             }
-            Self::PlanarCircle { center: c, axis_x, axis_y, radius } => Self::PlanarCircle {
+            Self::PlanarCircle {
+                center: c,
+                axis_x,
+                axis_y,
+                radius,
+            } => Self::PlanarCircle {
                 center: rot_pt(*c),
                 axis_x: rot_vec(*axis_x),
                 axis_y: rot_vec(*axis_y),
                 radius: *radius,
             },
-            Self::Arc { center: c, axis_x, axis_y, radius, start_angle, end_angle } => Self::Arc {
+            Self::Arc {
+                center: c,
+                axis_x,
+                axis_y,
+                radius,
+                start_angle,
+                end_angle,
+            } => Self::Arc {
                 center: rot_pt(*c),
                 axis_x: rot_vec(*axis_x),
                 axis_y: rot_vec(*axis_y),
@@ -148,7 +204,14 @@ impl TangentGeom {
                 start_angle: *start_angle,
                 end_angle: *end_angle,
             },
-            Self::PlanarEllipse { center: c, major_axis, normal, minor_axis_ratio, start_param, end_param } => Self::PlanarEllipse {
+            Self::PlanarEllipse {
+                center: c,
+                major_axis,
+                normal,
+                minor_axis_ratio,
+                start_param,
+                end_param,
+            } => Self::PlanarEllipse {
                 center: rot_pt(*c),
                 major_axis: rot_vec(*major_axis),
                 normal: rot_vec(*normal),
@@ -160,7 +223,8 @@ impl TangentGeom {
     }
 
     pub fn scaled(&self, center: glam::DVec3, factor: f64) -> Self {
-        let scale_pt = |p: [f64; 3]| (center + (glam::DVec3::from_array(p) - center) * factor).to_array();
+        let scale_pt =
+            |p: [f64; 3]| (center + (glam::DVec3::from_array(p) - center) * factor).to_array();
         match self {
             Self::Line { p1, p2 } => {
                 let p1_d = [p1[0] as f64, p1[1] as f64, p1[2] as f64];
@@ -180,13 +244,25 @@ impl TangentGeom {
                     radius: *radius * factor.abs() as f32,
                 }
             }
-            Self::PlanarCircle { center: c, axis_x, axis_y, radius } => Self::PlanarCircle {
+            Self::PlanarCircle {
+                center: c,
+                axis_x,
+                axis_y,
+                radius,
+            } => Self::PlanarCircle {
                 center: scale_pt(*c),
                 axis_x: *axis_x,
                 axis_y: *axis_y,
                 radius: *radius * factor.abs(),
             },
-            Self::Arc { center: c, axis_x, axis_y, radius, start_angle, end_angle } => Self::Arc {
+            Self::Arc {
+                center: c,
+                axis_x,
+                axis_y,
+                radius,
+                start_angle,
+                end_angle,
+            } => Self::Arc {
                 center: scale_pt(*c),
                 axis_x: *axis_x,
                 axis_y: *axis_y,
@@ -194,7 +270,14 @@ impl TangentGeom {
                 start_angle: *start_angle,
                 end_angle: *end_angle,
             },
-            Self::PlanarEllipse { center: c, major_axis, normal, minor_axis_ratio, start_param, end_param } => Self::PlanarEllipse {
+            Self::PlanarEllipse {
+                center: c,
+                major_axis,
+                normal,
+                minor_axis_ratio,
+                start_param,
+                end_param,
+            } => Self::PlanarEllipse {
                 center: scale_pt(*c),
                 major_axis: (glam::DVec3::from_array(*major_axis) * factor.abs()).to_array(),
                 normal: *normal,
@@ -233,7 +316,12 @@ impl TangentGeom {
                     radius: *radius,
                 }
             }
-            Self::PlanarCircle { center: c, axis_x, axis_y, radius } => {
+            Self::PlanarCircle {
+                center: c,
+                axis_x,
+                axis_y,
+                radius,
+            } => {
                 let ax = refl_vec(*axis_x);
                 let ay = refl_vec(*axis_y);
                 Self::PlanarCircle {
@@ -243,7 +331,14 @@ impl TangentGeom {
                     radius: *radius,
                 }
             }
-            Self::Arc { center: c, axis_x, axis_y, radius, start_angle, end_angle } => {
+            Self::Arc {
+                center: c,
+                axis_x,
+                axis_y,
+                radius,
+                start_angle,
+                end_angle,
+            } => {
                 let ax = refl_vec(*axis_x);
                 let ay = refl_vec(*axis_y);
                 Self::Arc {
@@ -255,7 +350,14 @@ impl TangentGeom {
                     end_angle: -start_angle,
                 }
             }
-            Self::PlanarEllipse { center: c, major_axis, normal: n, minor_axis_ratio, start_param, end_param } => {
+            Self::PlanarEllipse {
+                center: c,
+                major_axis,
+                normal: n,
+                minor_axis_ratio,
+                start_param,
+                end_param,
+            } => {
                 let norm = refl_vec(*n);
                 Self::PlanarEllipse {
                     center: refl_pt(*c),
@@ -479,14 +581,13 @@ pub fn clean_searchable_text(raw: &str) -> String {
                             }
                         }
                     }
-                    i += 2 + (rest.len() - after_plus.len())
-                        + if pushed { digits.len() } else { 0 };
+                    i +=
+                        2 + (rest.len() - after_plus.len()) + if pushed { digits.len() } else { 0 };
                     continue;
                 }
                 // Decoration / format toggles: drop both the opener and closer.
-                b'L' | b'l' | b'O' | b'o' | b'K' | b'k' | b'C' | b'c' | b'F'
-                | b'f' | b'H' | b'h' | b'Q' | b'q' | b'T'
-                | b't' | b'W' | b'w' | b'A' | b'a' | b'M' | b'm' => {
+                b'L' | b'l' | b'O' | b'o' | b'K' | b'k' | b'C' | b'c' | b'F' | b'f' | b'H'
+                | b'h' | b'Q' | b'q' | b'T' | b't' | b'W' | b'w' | b'A' | b'a' | b'M' | b'm' => {
                     // `\C1;`, `\Farial;` etc. run to the next `;` — skip it.
                     if let Some(semi) = raw[i + 2..].find(';') {
                         i += 2 + semi + 1;
@@ -512,8 +613,7 @@ pub fn clean_searchable_text(raw: &str) -> String {
                     && bytes[i + 3].is_ascii_digit()
                     && bytes[i + 4].is_ascii_digit() =>
                 {
-                    let digits =
-                        std::str::from_utf8(&bytes[i + 2..i + 5]).unwrap_or("");
+                    let digits = std::str::from_utf8(&bytes[i + 2..i + 5]).unwrap_or("");
                     if let Ok(code) = digits.parse::<u32>() {
                         out.push(char::from_u32(code).unwrap_or('?'));
                     } else {
@@ -718,10 +818,19 @@ pub struct WireModel {
     pub depth_override: Option<f32>,
     /// Whether this wire is drawn in the normal viewport pass.
     pub display_visible: bool,
-    /// Geometry that is never picked: the content of an underlay. Hidden
-    /// (`display_visible` false) it is what object snaps find; drawn, it is
-    /// display only and snaps skip it too ([`Self::is_display_only`]).
+    /// Reference geometry excluded from ordinary picking, such as underlays.
+    /// Hidden (`display_visible` false) it is what object snaps find; drawn,
+    /// it is display only and snaps skip it too ([`Self::is_display_only`]).
+    /// REGION boundary edge clicks opt in separately below.
     pub snap_only: bool,
+    /// Exact decomposed REGION boundary: hidden snap geometry also eligible
+    /// for edge clicks. Does not enable surface hits or other snap-only wires.
+    pub region_boundary_click: bool,
+    /// Plugin-owned reference-only source (API v9): the entity is display
+    /// geometry the built-in edit paths must not pick — clicks fall through
+    /// to the editable entity underneath. Rendering and snapping are
+    /// unaffected.
+    pub reference_only: bool,
     /// Whether this wire is included in plotted output.
     pub plot_visible: bool,
     /// `true` when [`fill_tris`] is a real 3-D surface (PolyfaceMesh /
@@ -736,6 +845,9 @@ pub struct WireModel {
     pub fill_is_2d_solid: bool,
     /// Shared block-render source and this placement's translation.
     pub render_instance: Option<super::instance_model::RenderInstance>,
+    /// Set on a wire that stands for a translated copy of a nested block
+    /// expansion; its own geometry is empty (see `InstanceStub`).
+    pub stub: Option<std::sync::Arc<super::instance_model::InstanceStub>>,
 }
 
 impl WireModel {
@@ -809,10 +921,13 @@ impl WireModel {
             depth_override: None,
             display_visible: true,
             snap_only: false,
+            region_boundary_click: false,
+            reference_only: false,
             plot_visible: true,
             fill_is_3d: false,
             fill_is_2d_solid: false,
             render_instance: None,
+            stub: None,
             pick_tris: Vec::new(),
             pick_tris_low: Vec::new(),
             text_verts: Vec::new(),
@@ -893,12 +1008,7 @@ impl WireModel {
     }
 
     /// Return a clone rotated about an arbitrary world-space axis.
-    pub fn rotated_about_axis(
-        &self,
-        center: glam::Vec3,
-        axis: glam::Vec3,
-        angle_rad: f32,
-    ) -> Self {
+    pub fn rotated_about_axis(&self, center: glam::Vec3, axis: glam::Vec3, angle_rad: f32) -> Self {
         let rotation = glam::Quat::from_axis_angle(axis.normalize_or_zero(), angle_rad);
         let (s, c) = angle_rad.sin_cos();
         let mut out = self.clone();
@@ -929,10 +1039,7 @@ impl WireModel {
             let (s, c) = (s as f64, c as f64);
             out.text_verts = map_text_verts(&self.text_verts, |x, y, z| {
                 let v = glam::DVec3::new(x, y, z) - center;
-                let mapped = center
-                    + v * c
-                    + axis.cross(v) * s
-                    + axis * axis.dot(v) * (1.0 - c);
+                let mapped = center + v * c + axis.cross(v) * s + axis * axis.dot(v) * (1.0 - c);
                 (mapped.x, mapped.y, mapped.z)
             });
         }
@@ -985,84 +1092,6 @@ impl WireModel {
         out
     }
 
-    /// Return a clone for a stretch preview: every point whose XY lies inside
-    /// the crossing window `[win_min, win_max]` is translated by `delta`; points
-    /// outside stay put. Exact for line/polyline vertices (the primary stretch
-    /// targets); curve tessellation points may deform where a window edge cuts
-    /// through them, matching the per-vertex nature of the operation.
-    pub fn stretched(
-    &self,
-    win_min: glam::Vec3,
-    win_max: glam::Vec3,
-    delta: glam::Vec3,
-) -> Self {
-    self.stretched_windows(&[(win_min, win_max)], delta)
-}
-
-/// Return a clone for a multi-window STRETCH preview. A point moves exactly
-/// once when it lies inside any of the crossing windows.
-pub fn stretched_windows(
-    &self,
-    windows: &[(glam::Vec3, glam::Vec3)],
-    delta: glam::Vec3,
-) -> Self {
-        let mut out = self.clone();
-        out.name = format!("preview_{}", self.name);
-        out.color = Self::CYAN;
-        out.selected = false;
-
-        let inside = |x: f32, y: f32| {
-            windows.iter().any(|(win_min, win_max)| {
-                x >= win_min.x
-                    && x <= win_max.x
-                    && y >= win_min.y
-                    && y <= win_max.y
-            })
-        };
-
-        if let Some(marker) = out.point_marker {
-            if inside(marker.origin.x as f32, marker.origin.y as f32) {
-                map_points(&mut out.points, &mut out.points_low, |point| {
-                    point + delta.as_dvec3()
-                });
-                if let Some(target) = &mut out.point_marker {
-                    target.origin += delta.as_dvec3();
-                }
-            }
-        } else {
-            for p in &mut out.points {
-                if inside(p[0], p[1]) {
-                    p[0] += delta.x;
-                    p[1] += delta.y;
-                    p[2] += delta.z;
-                }
-            }
-        }
-
-        if !out.text_verts.is_empty() {
-            let (dx, dy, dz) =
-                (delta.x as f64, delta.y as f64, delta.z as f64);
-
-            out.text_verts = map_text_verts(&self.text_verts, |x, y, z| {
-                let inside = windows.iter().any(|(win_min, win_max)| {
-                    x >= win_min.x as f64
-                        && x <= win_max.x as f64
-                        && y >= win_min.y as f64
-                        && y <= win_max.y as f64
-                });
-
-                if inside {
-                    (x + dx, y + dy, z + dz)
-                } else {
-                    (x, y, z)
-                }
-            });
-        }
-        out.searchable_text.clear();
-
-        out
-    }
-
     /// Return a clone mirrored across the line through `p1`→`p2`.
     pub fn mirrored(&self, p1: glam::Vec3, p2: glam::Vec3) -> Self {
         self.mirrored_in_plane(p1, p2, glam::Vec3::Z)
@@ -1101,15 +1130,12 @@ pub fn stretched_windows(
             let p1 = p1.as_dvec3();
             let normal = plane_normal.as_dvec3();
             marker.origin -= 2.0 * normal.dot(marker.origin - p1) * normal;
-            marker.normal =
-                (marker.normal - 2.0 * normal.dot(marker.normal) * normal)
-                    .normalize_or(glam::DVec3::Z);
-            marker.axis_x =
-                (marker.axis_x - 2.0 * normal.dot(marker.axis_x) * normal)
-                    .normalize_or(glam::DVec3::X);
-            marker.axis_y =
-                (marker.axis_y - 2.0 * normal.dot(marker.axis_y) * normal)
-                    .normalize_or(glam::DVec3::Y);
+            marker.normal = (marker.normal - 2.0 * normal.dot(marker.normal) * normal)
+                .normalize_or(glam::DVec3::Z);
+            marker.axis_x = (marker.axis_x - 2.0 * normal.dot(marker.axis_x) * normal)
+                .normalize_or(glam::DVec3::X);
+            marker.axis_y = (marker.axis_y - 2.0 * normal.dot(marker.axis_y) * normal)
+                .normalize_or(glam::DVec3::Y);
         }
         // Glyph quads reflect wholesale (true mirror) — the caller only routes
         // text through here for MIRRTEXT-on; MIRRTEXT-off relocates via
@@ -1263,7 +1289,10 @@ pub fn run_rect_overlap(
     let (dx, dy) = (c as f64, s as f64);
     let (nx, ny) = (-dy, dx);
     let corners = [
-        [origin[0] + nx * -0.3 * height, origin[1] + ny * -0.3 * height],
+        [
+            origin[0] + nx * -0.3 * height,
+            origin[1] + ny * -0.3 * height,
+        ],
         [
             origin[0] + dx * adv_width + nx * -0.3 * height,
             origin[1] + dy * adv_width + ny * -0.3 * height,
@@ -1284,7 +1313,12 @@ pub fn run_rect_overlap(
             hi = hi.max(t);
         }
         let (mut rlo, mut rhi) = (f64::INFINITY, f64::NEG_INFINITY);
-        for p in [[rect[0], rect[1]], [rect[2], rect[1]], [rect[2], rect[3]], [rect[0], rect[3]]] {
+        for p in [
+            [rect[0], rect[1]],
+            [rect[2], rect[1]],
+            [rect[2], rect[3]],
+            [rect[0], rect[3]],
+        ] {
             let t = p[0] * ax + p[1] * ay;
             rlo = rlo.min(t);
             rhi = rhi.max(t);
@@ -1358,10 +1392,13 @@ impl Default for WireModel {
             depth_override: None,
             display_visible: true,
             snap_only: false,
+            region_boundary_click: false,
+            reference_only: false,
             plot_visible: true,
             fill_is_3d: false,
             fill_is_2d_solid: false,
             render_instance: None,
+            stub: None,
             pick_tris: Vec::new(),
             pick_tris_low: Vec::new(),
         }
@@ -1409,7 +1446,14 @@ mod tests {
         } else {
             panic!("Expected PlanarCircle");
         }
-        if let TangentGeom::Arc { center, radius, start_angle, end_angle, .. } = trans.tangent_geoms[1] {
+        if let TangentGeom::Arc {
+            center,
+            radius,
+            start_angle,
+            end_angle,
+            ..
+        } = trans.tangent_geoms[1]
+        {
             assert!((center[0] - 15.0).abs() < 1e-5);
             assert!((center[1] - 15.0).abs() < 1e-5);
             assert!((center[2] - 1.0).abs() < 1e-5);
@@ -1419,7 +1463,13 @@ mod tests {
         } else {
             panic!("Expected Arc");
         }
-        if let TangentGeom::PlanarEllipse { center, major_axis, minor_axis_ratio, .. } = trans.tangent_geoms[2] {
+        if let TangentGeom::PlanarEllipse {
+            center,
+            major_axis,
+            minor_axis_ratio,
+            ..
+        } = trans.tangent_geoms[2]
+        {
             assert!((center[0] - 15.0).abs() < 1e-5);
             assert!((center[1] - 15.0).abs() < 1e-5);
             assert!((center[2] - 1.0).abs() < 1e-5);
@@ -1449,7 +1499,13 @@ mod tests {
 
         // Test rotated
         let rot = wire.rotated(glam::Vec3::ZERO, std::f32::consts::FRAC_PI_2);
-        if let TangentGeom::PlanarCircle { center, axis_x, axis_y, .. } = rot.tangent_geoms[0] {
+        if let TangentGeom::PlanarCircle {
+            center,
+            axis_x,
+            axis_y,
+            ..
+        } = rot.tangent_geoms[0]
+        {
             assert!((center[0] - -20.0).abs() < 1e-4);
             assert!((center[1] - 10.0).abs() < 1e-4);
             assert!((axis_x[1] - 1.0).abs() < 1e-4);
@@ -1459,7 +1515,10 @@ mod tests {
         }
 
         // Test mirrored across Y=0 plane (normal = Y)
-        let mirr = wire.mirrored(glam::Vec3::new(0.0, 0.0, 0.0), glam::Vec3::new(1.0, 0.0, 0.0));
+        let mirr = wire.mirrored(
+            glam::Vec3::new(0.0, 0.0, 0.0),
+            glam::Vec3::new(1.0, 0.0, 0.0),
+        );
         if let TangentGeom::PlanarCircle { center, .. } = mirr.tangent_geoms[0] {
             assert!((center[0] - 10.0).abs() < 1e-4);
             assert!((center[1] - -20.0).abs() < 1e-4);
@@ -1493,8 +1552,20 @@ mod tests {
 
     #[test]
     fn run_rect_overlap_keeps_straddlers_drops_outsiders() {
-        assert!(run_rect_overlap([10.0, 20.0], 0.0, 8.0, 5.0, [0.0, 0.0, 30.0, 30.0]));
-        assert!(!run_rect_overlap([10.0, 20.0], 0.0, 8.0, 5.0, [100.0, 100.0, 130.0, 130.0]));
+        assert!(run_rect_overlap(
+            [10.0, 20.0],
+            0.0,
+            8.0,
+            5.0,
+            [0.0, 0.0, 30.0, 30.0]
+        ));
+        assert!(!run_rect_overlap(
+            [10.0, 20.0],
+            0.0,
+            8.0,
+            5.0,
+            [100.0, 100.0, 130.0, 130.0]
+        ));
         // A 90° run crossing the rect edge still counts (origin-only culling
         // would have dropped it).
         assert!(run_rect_overlap(
@@ -1505,7 +1576,13 @@ mod tests {
             [0.0, 0.0, 30.0, 30.0]
         ));
         // Degenerate runs never cull (conservative: searchability only).
-        assert!(run_rect_overlap([500.0, 500.0], 0.0, 0.0, 5.0, [0.0, 0.0, 30.0, 30.0]));
+        assert!(run_rect_overlap(
+            [500.0, 500.0],
+            0.0,
+            0.0,
+            5.0,
+            [0.0, 0.0, 30.0, 30.0]
+        ));
     }
 
     #[test]

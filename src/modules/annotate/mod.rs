@@ -1,14 +1,13 @@
 // Annotate module — dimension, text, leader, table, and markup tools.
 
 pub mod aligned_dim;
+pub mod angular_dim;
 pub mod annotation_scale;
 pub mod arc_length_dim;
-pub mod angular_dim;
+pub mod count_cmd;
 pub mod data_extract;
 pub mod data_link;
 pub mod ddedit;
-pub mod field_cmd;
-pub mod count_cmd;
 pub mod diameter_dim;
 pub mod dim_baseline;
 pub mod dim_continue;
@@ -17,9 +16,10 @@ pub mod dimedit;
 pub mod dimjogline;
 pub mod dimspace;
 pub mod dimtedit;
+pub mod field_cmd;
+pub mod jogged_radius_dim;
 pub mod leader_cmd;
 pub mod linear_dim;
-pub mod jogged_radius_dim;
 pub mod mleader_cmd;
 pub mod mleader_edit;
 pub mod mtext;
@@ -29,9 +29,30 @@ pub mod radius_dim;
 pub mod table_cmd;
 pub mod text;
 pub mod textedit;
+pub mod txt2mtxt;
 pub mod tolerance_cmd;
 
-use crate::modules::{CadModule, RibbonGroup, RibbonItem, StyleKey};
+use crate::modules::{CadModule, IconKind, RibbonGroup, RibbonItem, StyleKey};
+
+/// The dimension tools one ribbon dropdown offers — shared by the Annotate
+/// and Draw tabs so both list the same set.
+pub fn dimension_menu_items() -> Vec<(&'static str, &'static str, IconKind)> {
+    vec![
+        (linear_dim::tool().id, linear_dim::tool().label, linear_dim::tool().icon),
+        (aligned_dim::tool().id, aligned_dim::tool().label, aligned_dim::tool().icon),
+        (angular_dim::tool().id, angular_dim::tool().label, angular_dim::tool().icon),
+        (arc_length_dim::tool().id, arc_length_dim::tool().label, arc_length_dim::tool().icon),
+        (radius_dim::tool().id, radius_dim::tool().label, radius_dim::tool().icon),
+        (
+            jogged_radius_dim::tool().id,
+            jogged_radius_dim::tool().label,
+            jogged_radius_dim::tool().icon,
+        ),
+        (diameter_dim::tool().id, diameter_dim::tool().label, diameter_dim::tool().icon),
+        (ordinate_dim::tool().id, ordinate_dim::tool().label, ordinate_dim::tool().icon),
+        (qdim::tool().id, qdim::tool().label, qdim::tool().icon),
+    ]
+}
 
 pub struct AnnotateModule;
 
@@ -87,49 +108,7 @@ impl CadModule for AnnotateModule {
                             id: "ANNOTATE_DIM",
                             label: "Dimension",
                             icon: linear_dim::ICON,
-                            items: vec![
-                                (
-                                    linear_dim::tool().id,
-                                    linear_dim::tool().label,
-                                    linear_dim::tool().icon,
-                                ),
-                                (
-                                    aligned_dim::tool().id,
-                                    aligned_dim::tool().label,
-                                    aligned_dim::tool().icon,
-                                ),
-                                (
-                                    angular_dim::tool().id,
-                                    angular_dim::tool().label,
-                                    angular_dim::tool().icon,
-                                ),
-                                (
-                                    arc_length_dim::tool().id,
-                                    arc_length_dim::tool().label,
-                                    arc_length_dim::tool().icon,
-                                ),
-                                (
-                                    radius_dim::tool().id,
-                                    radius_dim::tool().label,
-                                    radius_dim::tool().icon,
-                                ),
-                                (
-                                    jogged_radius_dim::tool().id,
-                                    jogged_radius_dim::tool().label,
-                                    jogged_radius_dim::tool().icon,
-                                ),
-                                (
-                                    diameter_dim::tool().id,
-                                    diameter_dim::tool().label,
-                                    diameter_dim::tool().icon,
-                                ),
-                                (
-                                    ordinate_dim::tool().id,
-                                    ordinate_dim::tool().label,
-                                    ordinate_dim::tool().icon,
-                                ),
-                                (qdim::tool().id, qdim::tool().label, qdim::tool().icon),
-                            ],
+                            items: dimension_menu_items(),
                             default: "DIMLINEAR",
                         },
                         RibbonItem::StyleComboGroup {
@@ -286,9 +265,7 @@ impl CadModule for AnnotateModule {
                             icon: crate::modules::IconKind::Svg(include_bytes!(
                                 "../../../assets/icons/add_scale.svg"
                             )),
-                            event: crate::modules::ModuleEvent::Command(
-                                "OBJECTSCALE".to_string(),
-                            ),
+                            event: crate::modules::ModuleEvent::Command("OBJECTSCALE".to_string()),
                         }),
                         RibbonItem::Tool(crate::modules::ToolDef {
                             id: "ANNORESET",
@@ -296,9 +273,7 @@ impl CadModule for AnnotateModule {
                             icon: crate::modules::IconKind::Svg(include_bytes!(
                                 "../../../assets/icons/sync.svg"
                             )),
-                            event: crate::modules::ModuleEvent::Command(
-                                "ANNORESET".to_string(),
-                            ),
+                            event: crate::modules::ModuleEvent::Command("ANNORESET".to_string()),
                         }),
                     ],
                 },

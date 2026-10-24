@@ -6,8 +6,8 @@
 //! entity geometry continues through the normal render pipeline.
 
 use codec::objects::{
-    AssociativeData, BlockEvalValue, DynamicBlockData, ObjectType,
-    SolidHistoryNodeBase, SolidHistoryOperation,
+    AssociativeData, BlockEvalValue, DynamicBlockData, ObjectType, SolidHistoryNodeBase,
+    SolidHistoryOperation,
 };
 use codec::{CadDocument, EntityType, Handle};
 
@@ -107,11 +107,7 @@ pub fn render_settings(cache: &ObjectDataCache) -> &[Handle] {
     &cache.render_settings
 }
 
-pub fn update_light_entity(
-    cache: &mut ObjectDataCache,
-    handle: Handle,
-    exists: bool,
-) {
+pub fn update_light_entity(cache: &mut ObjectDataCache, handle: Handle, exists: bool) {
     let lights = std::sync::Arc::make_mut(&mut cache.light_entities);
     if exists {
         if !lights.contains(&handle) {
@@ -361,8 +357,7 @@ fn solid_history_sections(
     let Some(history_handle) = entity_history_handle(entity) else {
         return Vec::new();
     };
-    let Some(ObjectType::DynamicBlock(history_object)) =
-        document.objects.get(&history_handle)
+    let Some(ObjectType::DynamicBlock(history_object)) = document.objects.get(&history_handle)
     else {
         return vec![PropSection {
             title: "Solid History".to_string(),
@@ -537,6 +532,11 @@ fn dynamic_data_text(data: &DynamicBlockData) -> String {
             value.value_set.increment,
             value.value_set.values.len()
         ),
+        DynamicBlockData::PropertiesTable(value) => format!(
+            "{}; fields {}",
+            value.parameter.parameter.element.name,
+            value.fields.len()
+        ),
         DynamicBlockData::LookupParameter(value) => format!(
             "{}; {} index {}; description {}",
             value.parameter.parameter.element.name,
@@ -625,7 +625,7 @@ fn dynamic_data_text(data: &DynamicBlockData) -> String {
             "{}; dependencies {}; parameters {}; distance multiplier {:.6}; angle {:.6}",
             value.action.element.name,
             value.action.dependencies.len(),
-            value.action.parameter_ids.len(),
+            value.action.action_ids.len(),
             value.offsets.distance_multiplier,
             value.offsets.angle_offset
         ),
@@ -633,14 +633,14 @@ fn dynamic_data_text(data: &DynamicBlockData) -> String {
             "{}; dependencies {}; parameters {}; connections {}",
             value.action.element.name,
             value.action.dependencies.len(),
-            value.action.parameter_ids.len(),
+            value.action.action_ids.len(),
             value.connections.len()
         ),
         DynamicBlockData::RotateAction(value) | DynamicBlockData::ScaleAction(value) => format!(
             "{}; dependencies {}; parameters {}; base {:.6},{:.6},{:.6}; dependent {}",
             value.action.action.element.name,
             value.action.action.dependencies.len(),
-            value.action.action.parameter_ids.len(),
+            value.action.action.action_ids.len(),
             value.action.base_point.x,
             value.action.base_point.y,
             value.action.base_point.z,
@@ -771,8 +771,7 @@ fn dynamic_block_sections(
                 .filter(|object| {
                     !matches!(
                         object.data,
-                        DynamicBlockData::SolidHistory(_)
-                            | DynamicBlockData::SolidHistoryNode(_)
+                        DynamicBlockData::SolidHistory(_) | DynamicBlockData::SolidHistoryNode(_)
                     )
                 })
                 .map(|object| {
@@ -1028,9 +1027,7 @@ where
     result
 }
 
-fn class_object_section(
-    data: &codec::objects::ClassObjectData,
-) -> Option<PropSection> {
+fn class_object_section(data: &codec::objects::ClassObjectData) -> Option<PropSection> {
     use codec::objects::ClassObjectData;
 
     let section = match data {
@@ -2058,9 +2055,7 @@ fn class_object_section(
     Some(section)
 }
 
-fn semantic_property_text(
-    value: &codec::objects::SemanticPropertyValue,
-) -> String {
+fn semantic_property_text(value: &codec::objects::SemanticPropertyValue) -> String {
     use codec::objects::SemanticPropertyValue;
     match value {
         SemanticPropertyValue::Text(value) => preview_text(value, 512),
@@ -2075,9 +2070,7 @@ fn semantic_property_text(
     }
 }
 
-fn auxiliary_object_property(
-    object: &ObjectType,
-) -> Option<Property> {
+fn auxiliary_object_property(object: &ObjectType) -> Option<Property> {
     use codec::objects::DataObjectData;
 
     let (label, value) = match object {
@@ -2275,9 +2268,7 @@ fn build_document_sections(document: &CadDocument) -> Vec<PropSection> {
                             "Design Point",
                             format!(
                                 "{:.8}, {:.8}, {:.8}",
-                                value.design_point.x,
-                                value.design_point.y,
-                                value.design_point.z
+                                value.design_point.x, value.design_point.y, value.design_point.z
                             ),
                         ),
                         ro(
@@ -2300,9 +2291,7 @@ fn build_document_sections(document: &CadDocument) -> Vec<PropSection> {
                             "Up",
                             format!(
                                 "{:.8}, {:.8}, {:.8}",
-                                value.up_direction.x,
-                                value.up_direction.y,
-                                value.up_direction.z
+                                value.up_direction.x, value.up_direction.y, value.up_direction.z
                             ),
                         ),
                         ro(
@@ -2380,11 +2369,7 @@ fn build_document_sections(document: &CadDocument) -> Vec<PropSection> {
                                 "Entries",
                                 bounded_join(
                                     list.lights.iter().map(|light| {
-                                        format!(
-                                            "{}={}",
-                                            light.name,
-                                            handle_text(light.handle)
-                                        )
+                                        format!("{}={}", light.name, handle_text(light.handle))
                                     }),
                                     64,
                                 ),
@@ -2404,9 +2389,7 @@ fn build_document_sections(document: &CadDocument) -> Vec<PropSection> {
                                 "Date / Time",
                                 format!(
                                     "Julian {}; {} ms; DST {}",
-                                    sun.julian_day,
-                                    sun.milliseconds,
-                                    sun.is_daylight_savings_on
+                                    sun.julian_day, sun.milliseconds, sun.is_daylight_savings_on
                                 ),
                             ),
                             ro(
@@ -2651,8 +2634,7 @@ fn build_document_sections(document: &CadDocument) -> Vec<PropSection> {
                                 "Display",
                                 format!(
                                     "predefined first {}; high-level info {}",
-                                    global.predefined_presets_first,
-                                    global.high_level_info
+                                    global.predefined_presets_first, global.high_level_info
                                 ),
                             ),
                         ],
@@ -2669,10 +2651,7 @@ fn build_document_sections(document: &CadDocument) -> Vec<PropSection> {
     }
 
     if !document.dgn_ls_definitions.is_empty() {
-        let mut definitions = document
-            .dgn_ls_definitions
-            .values()
-            .collect::<Vec<_>>();
+        let mut definitions = document.dgn_ls_definitions.values().collect::<Vec<_>>();
         definitions.sort_by_key(|definition| definition.handle.value());
         let omitted = definitions.len().saturating_sub(128);
         let mut props = definitions

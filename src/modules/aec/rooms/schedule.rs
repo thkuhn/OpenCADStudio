@@ -272,6 +272,9 @@ impl RoomScheduleCommand {
             fill_tris_low: Vec::new(),
             searchable_text: Vec::new(),
             snap_only: false,
+            reference_only: false,
+            region_boundary_click: false,
+            stub: None,
         }
     }
 }

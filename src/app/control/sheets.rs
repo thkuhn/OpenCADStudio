@@ -20,7 +20,10 @@ impl OpenCADStudio {
             self.set_control_result(json!({ "closed": false, "reason": "start_page" }));
             return Ok(Task::none());
         }
-        if self.tabs[index].dirty && !req["discard"].as_bool().unwrap_or(false) {
+        if self.tabs[index].dirty
+            && self.tabs[index].block_test.is_none()
+            && !req["discard"].as_bool().unwrap_or(false)
+        {
             return Err(failure(
                 "document_dirty",
                 "Save the document or pass discard:true",
@@ -50,14 +53,38 @@ impl OpenCADStudio {
     /// "set":{"MIRRTEXT":0}}` writes (one undo step, validated per name).
     pub(super) fn control_sysvar(&mut self, req: &Value) -> Result<Task<Message>, Value> {
         if let Some(set) = req["set"].as_object() {
-            self.push_undo_snapshot(self.active_tab, "SYSVAR");
+            let i = self.active_tab;
+            // Validate the complete batch before opening history or changing the
+            // document. Apart from making the operation atomic, this keeps a
+            // later bad variable from leaving an earlier variable half-applied.
+            {
+                let document = &self.tabs[i].scene.document;
+                for (name, value) in set {
+                    validate_sysvar(document, name, value)?;
+                }
+            }
+
+            self.push_undo_snapshot(i, "SYSVAR");
             let mut applied = serde_json::Map::new();
             for (name, value) in set {
-                set_sysvar(&mut self.tabs[self.active_tab].scene.document, name, value)
-                    .map_err(|e| {
-                        // Nothing committed yet — the snapshot is empty.
-                        e
+                if name.eq_ignore_ascii_case("clayer") {
+                    let layer = value
+                        .as_str()
+                        .expect("validate_sysvar checked CLAYER as a string");
+                    self.set_current_layer_name(i, layer).map_err(|error| {
+                        failure(
+                            "invalid_sysvar_value",
+                            format!("Layer {layer:?} could not be made current: {error}"),
+                        )
                     })?;
+                } else {
+                    set_sysvar(&mut self.tabs[i].scene.document, name, value)?;
+                }
+                // System variables are persisted drawing state, not merely a
+                // UI preference. CLAYER is already marked dirty by the unified
+                // layer path; keeping this assignment for every variable makes
+                // mixed batches follow the same contract.
+                self.tabs[i].dirty = true;
                 applied.insert(name.to_ascii_lowercase(), value.clone());
             }
             self.set_control_result(json!({ "set": applied }));
@@ -92,16 +119,18 @@ impl OpenCADStudio {
     }
 
     /// `layout_create` — add a layout with the default A4 page setup.
-    pub(super) fn control_layout_create(
-        &mut self,
-        req: &Value,
-    ) -> Result<Task<Message>, Value> {
+    pub(super) fn control_layout_create(&mut self, req: &Value) -> Result<Task<Message>, Value> {
         let name = string(req, "name")?.to_owned();
         if name.is_empty() {
             return Err(failure("name_required", "Supply a layout name"));
         }
         let i = self.active_tab;
-        if self.tabs[i].scene.layout_names().iter().any(|n| n.eq_ignore_ascii_case(&name)) {
+        if self.tabs[i]
+            .scene
+            .layout_names()
+            .iter()
+            .any(|n| n.eq_ignore_ascii_case(&name))
+        {
             return Err(failure(
                 "layout_exists",
                 format!("Layout '{name}' already exists"),
@@ -110,7 +139,6 @@ impl OpenCADStudio {
         self.push_undo_snapshot(i, "LAYOUTCREATE");
         self.tabs[i]
             .scene
-            .document
             .add_layout(&name)
             .map_err(|e| failure("layout_failed", e))?;
         let plot_style = self
@@ -118,9 +146,14 @@ impl OpenCADStudio {
             .as_ref()
             .map(|style| style.name.clone())
             .unwrap_or_default();
-        let layout_flags = i16::from(
-            self.tabs[i].scene.document.header.paper_space_linetype_scaling,
-        ) | (i16::from(self.tabs[i].scene.document.header.paper_space_limit_check) << 1);
+        let layout_flags =
+            i16::from(
+                self.tabs[i]
+                    .scene
+                    .document
+                    .header
+                    .paper_space_linetype_scaling,
+            ) | (i16::from(self.tabs[i].scene.document.header.paper_space_limit_check) << 1);
         for obj in self.tabs[i].scene.document.objects.values_mut() {
             if let codec::objects::ObjectType::Layout(layout) = obj {
                 if layout.name == name {
@@ -141,20 +174,21 @@ impl OpenCADStudio {
     /// Explicit fields win; everything else
     /// keeps the layout's stored setup. Paper names resolve through the
     /// catalog; scales are `"fit"` or `"paper:drawing"` like `"1:100"`.
-    pub(super) fn control_page_setup_set(
-        &mut self,
-        req: &Value,
-    ) -> Result<Task<Message>, Value> {
+    pub(super) fn control_page_setup_set(&mut self, req: &Value) -> Result<Task<Message>, Value> {
         let layout = string(req, "layout")?.to_owned();
         let i = self.active_tab;
-        if !self.tabs[i].scene.layout_names().iter().any(|n| n.eq_ignore_ascii_case(&layout)) {
+        if !self.tabs[i]
+            .scene
+            .layout_names()
+            .iter()
+            .any(|n| n.eq_ignore_ascii_case(&layout))
+        {
             return Err(failure(
                 "layout_missing",
                 format!("Layout '{layout}' does not exist"),
             ));
         }
-        let mut ps = self
-            .tabs[i]
+        let mut ps = self.tabs[i]
             .scene
             .plot_settings_for(&layout)
             .unwrap_or_else(|| codec::objects::PlotSettings::new(String::new()));
@@ -165,7 +199,10 @@ impl OpenCADStudio {
             let (width, height) = resolved.portrait_mm();
             ps.paper_width = width;
             ps.paper_height = height;
-            ps.rotation = if req["orientation"].as_str().is_some_and(|o| o.eq_ignore_ascii_case("portrait")) {
+            ps.rotation = if req["orientation"]
+                .as_str()
+                .is_some_and(|o| o.eq_ignore_ascii_case("portrait"))
+            {
                 codec::objects::PlotRotation::None
             } else {
                 codec::objects::PlotRotation::Degrees90
@@ -210,7 +247,10 @@ impl OpenCADStudio {
         }
         self.push_undo_snapshot(i, "PAGESETUP");
         if !self.tabs[i].scene.set_layout_plot_settings(&layout, &ps) {
-            return Err(failure("layout_missing", format!("Layout '{layout}' vanished")));
+            return Err(failure(
+                "layout_missing",
+                format!("Layout '{layout}' vanished"),
+            ));
         }
         self.tabs[i].dirty = true;
         self.set_control_result(json!({
@@ -229,10 +269,7 @@ impl OpenCADStudio {
     /// `entities_copy_to` — copy entities into another open document
     /// Referenced layer definitions travel along;
     /// the new handles are returned.
-    pub(super) fn control_entities_copy_to(
-        &mut self,
-        req: &Value,
-    ) -> Result<Task<Message>, Value> {
+    pub(super) fn control_entities_copy_to(&mut self, req: &Value) -> Result<Task<Message>, Value> {
         let handles = crate::app::control::entities::hex_handles(req, "handles")?;
         let target = req["target_document_id"]
             .as_u64()
@@ -259,13 +296,21 @@ impl OpenCADStudio {
         // Copy the referenced layer definitions out of the source before the
         // target borrow starts (the two tabs never borrow together).
         let mut missing_layers: Vec<codec::tables::Layer> = Vec::new();
+        // The APPIDs their XDATA names, so it is re-pointed at the target's.
+        let deps = crate::app::ClipboardDeps {
+            app_ids: crate::app::ClipboardDeps::capture(
+                &self.tabs[source_index].scene.document,
+                &cloned,
+            )
+            .app_ids,
+            ..Default::default()
+        };
         {
             let source_document = &self.tabs[source_index].scene.document;
             for entity in &cloned {
                 let layer = entity.common().layer.clone();
                 if layer.is_empty()
                     || layer == "0"
-                    || source_document.layers.contains(&layer)
                     || missing_layers.iter().any(|l| l.name == layer)
                 {
                     continue;
@@ -280,7 +325,6 @@ impl OpenCADStudio {
         let mut created = Vec::new();
         {
             let scene = &mut self.tabs[target_index].scene;
-            crate::io::linetypes::populate_document(&mut scene.document);
             for layer_record in &missing_layers {
                 if !scene.document.layers.contains(&layer_record.name) {
                     let mut layer_record = layer_record.clone();
@@ -288,7 +332,13 @@ impl OpenCADStudio {
                     let _ = scene.document.layers.add(layer_record);
                 }
             }
-            for entity in cloned {
+            use crate::app::command_driver::clipboard::{eed_app_map, merge_app_ids, remap_eed_apps};
+            merge_app_ids(&mut scene.document, &deps);
+            let apps = eed_app_map(&scene.document, &deps);
+            for mut entity in cloned {
+                remap_eed_apps(&mut entity, &apps);
+                let linetype = entity.common().linetype.clone();
+                crate::io::linetypes::ensure_catalog_linetype(&mut scene.document, &linetype);
                 created.push(format!("{:X}", scene.add_entity_clone(entity).value()));
             }
         }
@@ -334,13 +384,8 @@ impl OpenCADStudio {
             return Err(failure("name_required", "Supply a set name"));
         }
         let handles = crate::app::control::entities::hex_handles(req, "handles")?;
-        let stored: Vec<String> = handles
-            .iter()
-            .map(|h| format!("{:X}", h.value()))
-            .collect();
-        self.control
-            .selection_sets
-            .insert(name.clone(), handles);
+        let stored: Vec<String> = handles.iter().map(|h| format!("{:X}", h.value())).collect();
+        self.control.selection_sets.insert(name.clone(), handles);
         let count = self
             .control
             .selection_sets
@@ -364,10 +409,7 @@ impl OpenCADStudio {
             .get(&name)
             .cloned()
             .ok_or_else(|| failure("selection_set_missing", format!("No set named '{name}'")))?;
-        let stored: Vec<String> = handles
-            .iter()
-            .map(|h| format!("{:X}", h.value()))
-            .collect();
+        let stored: Vec<String> = handles.iter().map(|h| format!("{:X}", h.value())).collect();
         let select = req["select"].as_bool().unwrap_or(true);
         let mut selected = 0;
         if select {
@@ -392,7 +434,7 @@ impl OpenCADStudio {
     /// `new` with `"template"` — the web build reads no files from a path, so
     /// a template is refused there rather than silently ignored.
     #[cfg(target_arch = "wasm32")]
-    pub(in crate::app) fn apply_template(&mut self, _template: &str) -> Result<usize, Value> {
+    pub(in crate::app) fn apply_template(&mut self, _template: &str) -> Result<(), Value> {
         Err(failure(
             "invalid_request",
             "starting from a template needs the desktop build",
@@ -403,7 +445,7 @@ impl OpenCADStudio {
     /// file. Tables and styles come from the template; the document keeps no
     /// source path.
     #[cfg(not(target_arch = "wasm32"))]
-    pub(in crate::app) fn apply_template(&mut self, template: &str) -> Result<usize, Value> {
+    pub(in crate::app) fn apply_template(&mut self, template: &str) -> Result<(), Value> {
         let path = std::path::PathBuf::from(template);
         let bytes = self
             .read_drawing(&path)
@@ -419,7 +461,7 @@ impl OpenCADStudio {
         } else {
             path.clone()
         };
-        let (mut document, purged) = crate::io::load_bytes_finalized(&load_path, bytes)
+        let mut document = crate::io::load_bytes_finalized(&load_path, bytes)
             .map_err(|e| failure("template_failed", e))?;
         document.source_path = Some(path.to_string_lossy().into_owned());
         let i = self.active_tab;
@@ -437,7 +479,10 @@ impl OpenCADStudio {
         self.tabs[i].current_path = None;
         self.tabs[i].is_start = false;
         self.tabs[i].dirty = true;
-        Ok(purged)
+        // A whole document just became resident in the tab (API v9): the
+        // boundary announces `DocumentOpened` once.
+        self.tabs[i].note_document_loaded();
+        Ok(())
     }
 
     /// `file_identity` — stable per-document GUID (the drawing's SPMDOCUNIQUE value,
@@ -541,8 +586,18 @@ pub(crate) fn new_guid_v4() -> String {
 
 /// The readable registry; `WRITABLE_SYSVARS` is the subset `set` accepts.
 const READABLE_SYSVARS: &[&str] = &[
-    "celtscale", "clayer", "ctextstyle", "extmax", "extmin", "filletrad",
-    "insunits", "ltscale", "mirrtext", "osmode", "pdmode", "pdsize",
+    "celtscale",
+    "clayer",
+    "ctextstyle",
+    "extmax",
+    "extmin",
+    "filletrad",
+    "insunits",
+    "ltscale",
+    "mirrtext",
+    "osmode",
+    "pdmode",
+    "pdsize",
     "textsize",
 ];
 
@@ -573,7 +628,79 @@ fn read_sysvar(scene: &crate::scene::Scene, name: &str) -> Option<Value> {
     Some(value)
 }
 
+fn validate_sysvar(document: &codec::CadDocument, name: &str, value: &Value) -> Result<(), Value> {
+    let failure = |message: &str| crate::app::control::failure("invalid_sysvar_value", message);
+    match name.to_ascii_lowercase().as_str() {
+        "ltscale" => {
+            positive(value, "ltscale", failure)?;
+        }
+        "pdmode" => {
+            integer(value, "pdmode", failure)?;
+        }
+        "pdsize" => {
+            value
+                .as_f64()
+                .filter(|v| v.is_finite())
+                .ok_or_else(|| failure("pdsize needs a finite number"))?;
+        }
+        "celtscale" => {
+            positive(value, "celtscale", failure)?;
+        }
+        "textsize" => {
+            positive(value, "textsize", failure)?;
+        }
+        "filletrad" => {
+            value
+                .as_f64()
+                .filter(|v| v.is_finite() && *v >= 0.0)
+                .ok_or_else(|| failure("filletrad needs a finite number >= 0"))?;
+        }
+        "mirrtext" => {
+            // Keep the historical coercion used by set_sysvar: omitted or
+            // non-integer values resolve to the enabled state.
+        }
+        "insunits" => {
+            integer(value, "insunits", failure)?;
+        }
+        "osmode" => {
+            value
+                .as_i64()
+                .and_then(|v| i32::try_from(v).ok())
+                .ok_or_else(|| failure("osmode needs an integer"))?;
+        }
+        "clayer" => {
+            let name = value
+                .as_str()
+                .filter(|s| !s.is_empty())
+                .ok_or_else(|| failure("clayer needs a layer name"))?;
+            if document.layers.get(name).is_none() {
+                return Err(failure(&format!("Layer '{name}' does not exist")));
+            }
+        }
+        "ctextstyle" => {
+            let name = value
+                .as_str()
+                .filter(|s| !s.is_empty())
+                .ok_or_else(|| failure("ctextstyle needs a text style name"))?;
+            if document.text_styles.get(name).is_none() {
+                return Err(failure(&format!("Text style '{name}' does not exist")));
+            }
+        }
+        other => {
+            return Err(crate::app::control::failure(
+                "unknown_sysvar",
+                format!(
+                    "System variable '{other}' is read-only or unknown. Writable: {}",
+                    "celtscale, clayer, ctextstyle, filletrad, insunits, ltscale, mirrtext, osmode, pdmode, pdsize, textsize"
+                ),
+            ))
+        }
+    }
+    Ok(())
+}
+
 fn set_sysvar(document: &mut codec::CadDocument, name: &str, value: &Value) -> Result<(), Value> {
+    validate_sysvar(document, name, value)?;
     let failure = |message: &str| crate::app::control::failure("invalid_sysvar_value", message);
     let header = &mut document.header;
     match name.to_ascii_lowercase().as_str() {
@@ -653,22 +780,14 @@ fn set_sysvar(document: &mut codec::CadDocument, name: &str, value: &Value) -> R
     Ok(())
 }
 
-fn positive(
-    value: &Value,
-    name: &str,
-    failure: impl Fn(&str) -> Value,
-) -> Result<f64, Value> {
+fn positive(value: &Value, name: &str, failure: impl Fn(&str) -> Value) -> Result<f64, Value> {
     value
         .as_f64()
         .filter(|v| v.is_finite() && *v > 0.0)
         .ok_or_else(|| failure(&format!("{name} needs a finite number > 0")))
 }
 
-fn integer(
-    value: &Value,
-    name: &str,
-    failure: impl Fn(&str) -> Value,
-) -> Result<i16, Value> {
+fn integer(value: &Value, name: &str, failure: impl Fn(&str) -> Value) -> Result<i16, Value> {
     value
         .as_i64()
         .and_then(|v| i16::try_from(v).ok())

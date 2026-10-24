@@ -11,7 +11,7 @@ fn tessellate_acis(
     facet_res: f64,
     chordal_deflection: Option<f64>,
     isolines: [usize; 2],
-    planar_isolines: bool,
+    planar_isolines: Option<bool>,
 ) -> Option<MeshLodSet> {
     crate::scene::convert::acis_kernel::tessellate_sat(
         sat,
@@ -59,9 +59,7 @@ pub(crate) fn body_transform(
             }
         }
     }
-    (values.len() >= 13
-        && values[..13].iter().all(|value| value.is_finite())
-        && values[12] > 0.0)
+    (values.len() >= 13 && values[..13].iter().all(|value| value.is_finite()) && values[12] > 0.0)
         .then(|| {
             (
                 [
@@ -170,11 +168,7 @@ pub fn kernel_surface_body(surface: &Surface) -> Option<KernelBody> {
 }
 
 pub(crate) fn kernel_acis_body(acis: &codec::entities::AcisData) -> Option<KernelBody> {
-    let sat = parse_acis(
-        || acis.parse(),
-        acis.is_binary,
-        &acis.sab_data,
-    )?;
+    let sat = parse_acis(|| acis.parse(), acis.is_binary, &acis.sab_data)?;
     let (mut bodies, loss) = kernel::acis::lift(&sat);
     if !loss.is_empty() || bodies.len() != 1 {
         return None;
@@ -183,10 +177,7 @@ pub(crate) fn kernel_acis_body(acis: &codec::entities::AcisData) -> Option<Kerne
     bodies.pop()
 }
 
-fn remap_acis_material_bindings(
-    set: &mut MeshLodSet,
-    acis: &codec::entities::AcisData,
-) {
+fn remap_acis_material_bindings(set: &mut MeshLodSet, acis: &codec::entities::AcisData) {
     for lod in &mut set.lods {
         for handle in lod.triangle_material_handles.iter_mut().flatten() {
             let reference = handle.value() as i32;
@@ -208,7 +199,7 @@ fn finish(
     facet_res: f64,
     chordal_deflection: Option<f64>,
     isolines: [usize; 2],
-    planar_isolines: bool,
+    planar_isolines: Option<bool>,
     acis: &codec::entities::AcisData,
 ) -> Option<MeshLodSet> {
     let mut set = tessellate_acis(
@@ -243,7 +234,7 @@ pub fn tessellate_region(
         facet_res,
         chordal_deflection,
         [isolines; 2],
-        false,
+        None,
         &region.acis_data,
     )
 }
@@ -267,7 +258,7 @@ pub fn tessellate_body(
         facet_res,
         chordal_deflection,
         [isolines; 2],
-        false,
+        None,
         &body.acis_data,
     )
 }
@@ -292,7 +283,7 @@ pub fn tessellate_surface(
         facet_res,
         chordal_deflection,
         isolines,
-        planar_isolines,
+        Some(planar_isolines),
         &surface.acis_data,
     )
 }
@@ -316,7 +307,7 @@ pub fn tessellate_solid3d(
         facet_res,
         chordal_deflection,
         [isolines; 2],
-        false,
+        None,
         &solid.acis_data,
     )
 }

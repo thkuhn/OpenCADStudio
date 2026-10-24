@@ -26,12 +26,9 @@ fn copy_dimension_duplicates_its_block() {
     scene.document.add_entity(sub_e).unwrap();
 
     // A linear dimension whose drawn geometry is that baked block.
-    let mut dim = DimensionLinear::new(
-        Vector3::new(0.0, 0.0, 0.0),
-        Vector3::new(10.0, 0.0, 0.0),
-    );
+    let mut dim = DimensionLinear::new(Vector3::new(0.0, 0.0, 0.0), Vector3::new(10.0, 0.0, 0.0));
     dim.base.block_name = "*D0".to_string();
-    let dim_h = scene.add_entity(EntityType::Dimension(Dimension::Linear(dim)));
+    let dim_h = scene.add_entity(EntityType::Dimension(Box::new(Dimension::Linear(dim))));
 
     // Copy the dimension by (0, 50).
     let copies = scene.copy_entities(
@@ -67,6 +64,9 @@ fn copy_dimension_duplicates_its_block() {
             (l.start.x, l.start.y),
             (l.end.x, l.end.y)
         ),
-        other => panic!("copy block sub is not a line: {:?}", other.map(std::mem::discriminant)),
+        other => panic!(
+            "copy block sub is not a line: {:?}",
+            other.map(std::mem::discriminant)
+        ),
     }
 }

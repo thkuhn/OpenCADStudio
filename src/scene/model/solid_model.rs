@@ -12,11 +12,24 @@ const TOL: f64 = 1e-9;
 fn tessellation(body: &Body) -> brep::mesh::BodyMesh {
     brep::mesh::tessellate(
         body,
-        brep::mesh::TessellationTolerance::new(
-            kernel::tessellation::DEFAULT_ANGLE,
-            TOL,
-        ),
+        brep::mesh::TessellationTolerance::new(kernel::tessellation::DEFAULT_ANGLE, TOL),
     )
+}
+
+/// `tolerance` with a body's isolines: a surface's own U/V counts and
+/// planar switch, or (`planar_isolines` `None`) a solid's, spaced as the
+/// drawing's isoline setting spaces them.
+pub(crate) fn with_isolines(
+    tolerance: brep::mesh::TessellationTolerance,
+    isolines: [usize; 2],
+    planar_isolines: Option<bool>,
+) -> brep::mesh::TessellationTolerance {
+    match planar_isolines {
+        None => tolerance.with_solid_isolines(isolines[0]),
+        Some(planar) => tolerance
+            .with_uv_isolines(isolines[0], isolines[1])
+            .with_planar_isolines(planar),
+    }
 }
 
 fn display_tessellation(
@@ -24,7 +37,7 @@ fn display_tessellation(
     facet_resolution: f64,
     chordal_deflection: Option<f64>,
     isolines: [usize; 2],
-    planar_isolines: bool,
+    planar_isolines: Option<bool>,
 ) -> brep::mesh::BodyMesh {
     let resolution = if facet_resolution.is_finite() && facet_resolution > 0.0 {
         facet_resolution.clamp(0.01, 10.0)
@@ -35,9 +48,11 @@ fn display_tessellation(
         || kernel::tessellation::angle_for_resolution(resolution),
         |_| kernel::tessellation::display_angle_for_resolution(resolution),
     );
-    let mut tolerance = brep::mesh::TessellationTolerance::new(max_angle, TOL)
-        .with_uv_isolines(isolines[0], isolines[1])
-        .with_planar_isolines(planar_isolines);
+    let mut tolerance = with_isolines(
+        brep::mesh::TessellationTolerance::new(max_angle, TOL),
+        isolines,
+        planar_isolines,
+    );
     if let Some(deflection) = chordal_deflection {
         tolerance = tolerance.with_chordal_deflection(deflection);
     }
@@ -75,13 +90,7 @@ pub fn cone_frustum_solid(
     top_radius: f64,
     height: f64,
 ) -> Option<Body> {
-    brep::make::frustum(
-        center,
-        base_x_radius,
-        base_y_radius,
-        top_radius,
-        height,
-    )
+    brep::make::frustum(center, base_x_radius, base_y_radius, top_radius, height)
 }
 
 /// Circular or elliptical cylinder standing on the local z = base plane.
@@ -284,12 +293,9 @@ pub fn grip_preview_wires(
 ) -> Vec<WireModel> {
     let tessellation = brep::mesh::tessellate(
         body,
-        brep::mesh::TessellationTolerance::new(
-            kernel::tessellation::DEFAULT_ANGLE,
-            TOL,
-        )
-        .with_uv_isolines(isolines[0], isolines[1])
-        .with_planar_isolines(planar_isolines),
+        brep::mesh::TessellationTolerance::new(kernel::tessellation::DEFAULT_ANGLE, TOL)
+            .with_uv_isolines(isolines[0], isolines[1])
+            .with_planar_isolines(planar_isolines),
     );
     tessellation
         .edges
@@ -377,11 +383,7 @@ pub fn planar_face_normal(body: &Body, face: FaceKey) -> Option<[f64; 3]> {
 /// - X-axis aligns along the boundary edge emanating from that vertex closest to the pick point.
 /// - Z-axis is the face's outward normal.
 /// - Y-axis is Z × X (in-plane, right-handed).
-pub fn planar_face_ucs(
-    body: &Body,
-    face: FaceKey,
-    pick: [f64; 3],
-) -> Option<codec::tables::Ucs> {
+pub fn planar_face_ucs(body: &Body, face: FaceKey, pick: [f64; 3]) -> Option<codec::tables::Ucs> {
     let normal = planar_face_normal(body, face)?;
     let z = DVec3::from_array(normal).normalize_or_zero();
     if z.length_squared() < 1e-12 {
@@ -626,7 +628,8 @@ fn mesh_from_tessellation(
         }
     }
     set.complete = tessellation.missing_faces.is_empty();
-    set.curved_gens.push(super::mesh_model::CurvedGen { source: silhouette });
+    set.curved_gens
+        .push(super::mesh_model::CurvedGen { source: silhouette });
     Some(set)
 }
 
@@ -636,7 +639,7 @@ pub fn display_from_solid(
     facet_resolution: f64,
     chordal_deflection: Option<f64>,
     isolines: [usize; 2],
-    planar_isolines: bool,
+    planar_isolines: Option<bool>,
 ) -> Option<(MeshLodSet, Vec<codec::entities::Wire>, [f64; 3])> {
     use codec::types::Vector3;
     let tessellation = display_tessellation(
@@ -725,7 +728,7 @@ mod tests {
     use super::*;
 
     fn tri_count(body: &Body) -> usize {
-        display_from_solid(body, [0.7, 0.7, 0.7, 1.0], 1.0, None, [0; 2], false)
+        display_from_solid(body, [0.7, 0.7, 0.7, 1.0], 1.0, None, [0; 2], None)
             .map(|(m, _, _)| m.lods[0].indices.len() / 3)
             .unwrap_or(0)
     }
@@ -733,20 +736,35 @@ mod tests {
     #[test]
     fn all_primitives_triangulate() {
         let c = [0.0, 0.0, 0.0];
-        assert!(tri_count(&box_solid(c, 10.0, 10.0, 10.0).unwrap()) >= 12, "box");
-        assert!(tri_count(&wedge_solid(c, 10.0, 10.0, 10.0).unwrap()) >= 6, "wedge");
-        assert!(tri_count(&cylinder_solid(c, 5.0, 12.0).unwrap()) > 20, "cylinder");
-        assert!(tri_count(&cone_frustum_solid(c, 5.0, 5.0, 0.0, 12.0).unwrap()) > 10, "cone");
+        assert!(
+            tri_count(&box_solid(c, 10.0, 10.0, 10.0).unwrap()) >= 12,
+            "box"
+        );
+        assert!(
+            tri_count(&wedge_solid(c, 10.0, 10.0, 10.0).unwrap()) >= 6,
+            "wedge"
+        );
+        assert!(
+            tri_count(&cylinder_solid(c, 5.0, 12.0).unwrap()) > 20,
+            "cylinder"
+        );
+        assert!(
+            tri_count(&cone_frustum_solid(c, 5.0, 5.0, 0.0, 12.0).unwrap()) > 10,
+            "cone"
+        );
         assert!(tri_count(&sphere_solid(c, 5.0).unwrap()) > 50, "sphere");
         assert!(tri_count(&torus_solid(c, 8.0, 2.0).unwrap()) > 50, "torus");
-        assert!(tri_count(&pyramid_solid(c, 5.0, 9.0, 6).unwrap()) >= 8, "pyramid");
+        assert!(
+            tri_count(&pyramid_solid(c, 5.0, 9.0, 6).unwrap()) >= 8,
+            "pyramid"
+        );
     }
 
     #[test]
     fn planar_display_uses_independent_isoline_counts() {
         let body = box_solid([0.0; 3], 10.0, 10.0, 10.0).unwrap();
         let display = |counts, planar| {
-            display_from_solid(&body, [0.7, 0.7, 0.7, 1.0], 1.0, None, counts, planar)
+            display_from_solid(&body, [0.7, 0.7, 0.7, 1.0], 1.0, None, counts, Some(planar))
                 .unwrap()
                 .0
                 .edge_verts

@@ -323,8 +323,7 @@ impl SpatialGrid {
             use crate::par::prelude::*;
             use std::sync::atomic::{AtomicU32, Ordering};
 
-            let counts: Vec<AtomicU32> =
-                (0..cell_count).map(|_| AtomicU32::new(0)).collect();
+            let counts: Vec<AtomicU32> = (0..cell_count).map(|_| AtomicU32::new(0)).collect();
             let oversized: Vec<u32> = entries
                 .par_iter()
                 .enumerate()
@@ -582,8 +581,7 @@ impl<T: Copy + Ord + Sync> SpatialSet<T> {
     }
 
     fn prepare_screen(&self) {
-        self.xyz
-            .get_or_init(|| SpatialBvh3::build(&self.entries));
+        self.xyz.get_or_init(|| SpatialBvh3::build(&self.entries));
     }
 
     fn query_screen(
@@ -642,6 +640,32 @@ struct WireIndexBatch {
     max_marker_radius_fraction: f32,
 }
 
+pub(crate) struct SnapCandidateParts {
+    wire_indices: Vec<u32>,
+    segments: Vec<SegmentRef>,
+    snap_points: Vec<SnapPointRef>,
+    key_vertices: Vec<KeyVertexRef>,
+    key_segments: Vec<KeySegmentRef>,
+}
+
+/// The live preview resolves only discrete snap features. Continuous modes
+/// still use the complete segment index after the cursor settles or on click.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum SnapQueryCategory {
+    DiscretePreview,
+    Full,
+}
+
+impl SnapQueryCategory {
+    fn includes_general_wires(self) -> bool {
+        matches!(self, Self::Full)
+    }
+
+    fn includes_continuous_segments(self) -> bool {
+        matches!(self, Self::Full)
+    }
+}
+
 impl WireIndexBatch {
     fn with_capacity_for_chunk(chunk: &[WireModel]) -> Self {
         let total_segs: usize = chunk.iter().map(|w| w.points.len().saturating_sub(1)).sum();
@@ -694,17 +718,15 @@ fn append_wire_index_entries(wire_idx: u32, wire: &WireModel, batch: &mut WireIn
             .max((wire.line_weight_px * 0.5).max(0.0));
     }
     if let Some(marker) = wire.point_marker {
-        batch.max_marker_radius_fraction = batch.max_marker_radius_fraction.max(
-            marker.viewport_percent.max(0.0) * 0.01 * std::f32::consts::SQRT_2,
-        );
+        batch.max_marker_radius_fraction = batch
+            .max_marker_radius_fraction
+            .max(marker.viewport_percent.max(0.0) * 0.01 * std::f32::consts::SQRT_2);
     }
 
     if wire.point_marker.is_none() && !wire.is_node_marker() {
         for start in 0..wire.points.len().saturating_sub(1) {
-            let Some(aabb) = points_aabb3([
-                wire_point(wire, start),
-                wire_point(wire, start + 1),
-            ]) else {
+            let Some(aabb) = points_aabb3([wire_point(wire, start), wire_point(wire, start + 1)])
+            else {
                 continue;
             };
             batch.segments.push(Entry3 {
@@ -739,8 +761,7 @@ fn append_wire_index_entries(wire_idx: u32, wire: &WireModel, batch: &mut WireIn
         }
     }
     for start in 0..wire.key_vertices.len().saturating_sub(1) {
-        let Some(aabb) =
-            points_aabb3([wire.key_vertices[start], wire.key_vertices[start + 1]])
+        let Some(aabb) = points_aabb3([wire.key_vertices[start], wire.key_vertices[start + 1]])
         else {
             continue;
         };
@@ -922,8 +943,7 @@ impl InteractionIndex {
         let mut max_marker_radius_fraction = 0.0f32;
 
         for mut batch in batches {
-            max_line_half_width_px =
-                max_line_half_width_px.max(batch.max_line_half_width_px);
+            max_line_half_width_px = max_line_half_width_px.max(batch.max_line_half_width_px);
             max_marker_radius_fraction =
                 max_marker_radius_fraction.max(batch.max_marker_radius_fraction);
             wire_entries.append(&mut batch.wire_entries);
@@ -1038,7 +1058,12 @@ impl InteractionIndex {
         crate::par::join(
             || {
                 crate::par::join(
-                    || crate::par::join(|| self.wires.prepare_screen(), || self.segments.prepare_screen()),
+                    || {
+                        crate::par::join(
+                            || self.wires.prepare_screen(),
+                            || self.segments.prepare_screen(),
+                        )
+                    },
                     || {
                         crate::par::join(
                             || self.snap_points.prepare_screen(),
@@ -1083,8 +1108,8 @@ impl InteractionIndex {
         viewport_height_px: f32,
         include_line_weight: bool,
     ) -> f32 {
-        let radius = base_radius_px
-            .max(self.max_marker_radius_fraction * viewport_height_px.max(0.0));
+        let radius =
+            base_radius_px.max(self.max_marker_radius_fraction * viewport_height_px.max(0.0));
         if include_line_weight {
             radius.max(self.max_line_half_width_px)
         } else {
@@ -1094,26 +1119,24 @@ impl InteractionIndex {
 
     fn queried_wire_keys(
         &self,
-        mut indices: Vec<u32>,
+        indices: impl IntoIterator<Item = u32>,
         include_screen_unbounded: bool,
     ) -> Vec<(u64, u32)> {
-        indices.extend_from_slice(&self.unbounded_wires);
-        if include_screen_unbounded {
-            indices.extend_from_slice(&self.screen_unbounded_wires);
-        }
+        let screen_unbounded: &[u32] = if include_screen_unbounded {
+            &self.screen_unbounded_wires
+        } else {
+            &[]
+        };
         let mut keys: Vec<(u64, u32)> = indices
             .into_iter()
+            .chain(self.unbounded_wires.iter().copied())
+            .chain(screen_unbounded.iter().copied())
             .filter_map(|index| {
                 self.wire_handles
                     .get(index as usize)
                     .copied()
                     .flatten()
-                    .zip(
-                        self.wire_ordinals
-                            .get(index as usize)
-                            .copied()
-                            .flatten(),
-                    )
+                    .zip(self.wire_ordinals.get(index as usize).copied().flatten())
             })
             .collect();
         keys.sort_unstable();
@@ -1138,21 +1161,255 @@ impl InteractionIndex {
         )
     }
 
+    pub(crate) fn snap_candidate_parts_xy(
+        &self,
+        aabb: [f64; 4],
+        category: SnapQueryCategory,
+    ) -> SnapCandidateParts {
+        let mut wire_indices = if category.includes_general_wires() {
+            self.wires.query_xy(aabb)
+        } else {
+            // The live preview consumes only the discrete feature indexes
+            // below. Querying the general wire BVH here also returns thousands
+            // of broad-phase wires that have no snap feature in the aperture.
+            Vec::new()
+        };
+        if category.includes_general_wires() {
+            wire_indices.extend_from_slice(&self.unbounded_wires);
+        }
+        let segments = if category.includes_continuous_segments() {
+            self.segments.query_xy(aabb)
+        } else {
+            Vec::new()
+        };
+        let snap_points = self.snap_points.query_xy(aabb);
+        let key_vertices = self.key_vertices.query_xy(aabb);
+        let key_segments = self.key_segments.query_xy(aabb);
+        wire_indices.extend(segments.iter().map(|reference| reference.wire));
+        wire_indices.extend(snap_points.iter().map(|reference| reference.wire));
+        wire_indices.extend(key_vertices.iter().map(|reference| reference.wire));
+        wire_indices.extend(key_segments.iter().map(|reference| reference.wire));
+        wire_indices.sort_unstable();
+        wire_indices.dedup();
+        SnapCandidateParts {
+            wire_indices,
+            segments,
+            snap_points,
+            key_vertices,
+            key_segments,
+        }
+    }
+
+    pub(crate) fn snap_candidate_parts_screen(
+        &self,
+        screen_rect: [f32; 4],
+        view_rot: Mat4,
+        eye: DVec3,
+        bounds: Rectangle,
+        category: SnapQueryCategory,
+    ) -> SnapCandidateParts {
+        let mut wire_indices = if category.includes_general_wires() {
+            self.wires.query_screen(screen_rect, view_rot, eye, bounds)
+        } else {
+            Vec::new()
+        };
+        // Screen-sized point markers are needed by entity picking, but adding
+        // every such marker to an OSNAP query turns a local cursor query into
+        // a scan of thousands of unrelated POINT entities. Their actual snap
+        // features are queried independently below.
+        if category.includes_general_wires() {
+            wire_indices.extend_from_slice(&self.unbounded_wires);
+        }
+        let segments = if category.includes_continuous_segments() {
+            self.segments
+                .query_screen(screen_rect, view_rot, eye, bounds)
+        } else {
+            Vec::new()
+        };
+        let snap_points = self
+            .snap_points
+            .query_screen(screen_rect, view_rot, eye, bounds);
+        let key_vertices = self
+            .key_vertices
+            .query_screen(screen_rect, view_rot, eye, bounds);
+        let key_segments = self
+            .key_segments
+            .query_screen(screen_rect, view_rot, eye, bounds);
+        wire_indices.extend(segments.iter().map(|reference| reference.wire));
+        wire_indices.extend(snap_points.iter().map(|reference| reference.wire));
+        wire_indices.extend(key_vertices.iter().map(|reference| reference.wire));
+        wire_indices.extend(key_segments.iter().map(|reference| reference.wire));
+        wire_indices.sort_unstable();
+        wire_indices.dedup();
+        SnapCandidateParts {
+            wire_indices,
+            segments,
+            snap_points,
+            key_vertices,
+            key_segments,
+        }
+    }
+
+    pub(crate) fn snap_candidate_keys(&self, parts: &SnapCandidateParts) -> Vec<(u64, u32)> {
+        // `parts.wire_indices` is already sorted and deduplicated, so read it
+        // in place and let `queried_wire_keys` merge the unbounded extension.
+        self.queried_wire_keys(parts.wire_indices.iter().copied(), false)
+    }
+
+    fn snap_candidates_from_parts(
+        wires: CandidateWires,
+        parts: SnapCandidateParts,
+        query_aabb: Option<[f64; 4]>,
+        screen: Option<([f32; 4], Mat4, DVec3, Rectangle)>,
+    ) -> InteractionCandidates {
+        InteractionCandidates {
+            wires,
+            wire_indices: Some(parts.wire_indices),
+            segments: Some(parts.segments),
+            snap_points: Some(parts.snap_points),
+            key_vertices: Some(parts.key_vertices),
+            key_segments: Some(parts.key_segments),
+            fill_triangles: None,
+            pick_triangles: None,
+            glyphs: None,
+            query_aabb,
+            screen_rect: screen.map(|value| value.0),
+            screen_view: screen.map(|(_, view, eye, bounds)| (view, eye, bounds)),
+        }
+    }
+
+    pub(crate) fn query_snap_xy_with_category(
+        &self,
+        wires: Arc<Vec<WireModel>>,
+        aabb: [f64; 4],
+        category: SnapQueryCategory,
+    ) -> InteractionCandidates {
+        Self::snap_candidates_from_parts(
+            CandidateWires::Snapshot(wires),
+            self.snap_candidate_parts_xy(aabb, category),
+            Some(aabb),
+            None,
+        )
+    }
+
+    pub(crate) fn query_remapped_snap_xy_from_parts_with_category(
+        &self,
+        wires: Arc<SharedWireRuns>,
+        slots: &rustc_hash::FxHashMap<(u64, u32), u32>,
+        parts: SnapCandidateParts,
+        aabb: [f64; 4],
+        category: SnapQueryCategory,
+    ) -> InteractionCandidates {
+        let parts = SnapCandidateParts {
+            wire_indices: self.remap_wire_indices(
+                parts.wire_indices,
+                slots,
+                category.includes_general_wires(),
+                false,
+            ),
+            segments: self.remap_refs(
+                parts.segments,
+                slots,
+                |value| value.wire,
+                |value, wire| value.wire = wire,
+            ),
+            snap_points: self.remap_refs(
+                parts.snap_points,
+                slots,
+                |value| value.wire,
+                |value, wire| value.wire = wire,
+            ),
+            key_vertices: self.remap_refs(
+                parts.key_vertices,
+                slots,
+                |value| value.wire,
+                |value, wire| value.wire = wire,
+            ),
+            key_segments: self.remap_refs(
+                parts.key_segments,
+                slots,
+                |value| value.wire,
+                |value, wire| value.wire = wire,
+            ),
+        };
+        Self::snap_candidates_from_parts(CandidateWires::Shared(wires), parts, Some(aabb), None)
+    }
+
+    pub(crate) fn query_snap_screen_with_category(
+        &self,
+        wires: Arc<Vec<WireModel>>,
+        screen_rect: [f32; 4],
+        view_rot: Mat4,
+        eye: DVec3,
+        bounds: Rectangle,
+        category: SnapQueryCategory,
+    ) -> InteractionCandidates {
+        Self::snap_candidates_from_parts(
+            CandidateWires::Snapshot(wires),
+            self.snap_candidate_parts_screen(screen_rect, view_rot, eye, bounds, category),
+            None,
+            Some((screen_rect, view_rot, eye, bounds)),
+        )
+    }
+
+    pub(crate) fn query_remapped_snap_screen_from_parts_with_category(
+        &self,
+        wires: Arc<SharedWireRuns>,
+        slots: &rustc_hash::FxHashMap<(u64, u32), u32>,
+        parts: SnapCandidateParts,
+        screen_rect: [f32; 4],
+        view_rot: Mat4,
+        eye: DVec3,
+        bounds: Rectangle,
+        category: SnapQueryCategory,
+    ) -> InteractionCandidates {
+        let parts = SnapCandidateParts {
+            wire_indices: self.remap_wire_indices(
+                parts.wire_indices,
+                slots,
+                category.includes_general_wires(),
+                category.includes_general_wires(),
+            ),
+            segments: self.remap_refs(
+                parts.segments,
+                slots,
+                |value| value.wire,
+                |value, wire| value.wire = wire,
+            ),
+            snap_points: self.remap_refs(
+                parts.snap_points,
+                slots,
+                |value| value.wire,
+                |value, wire| value.wire = wire,
+            ),
+            key_vertices: self.remap_refs(
+                parts.key_vertices,
+                slots,
+                |value| value.wire,
+                |value, wire| value.wire = wire,
+            ),
+            key_segments: self.remap_refs(
+                parts.key_segments,
+                slots,
+                |value| value.wire,
+                |value, wire| value.wire = wire,
+            ),
+        };
+        Self::snap_candidates_from_parts(
+            CandidateWires::Shared(wires),
+            parts,
+            None,
+            Some((screen_rect, view_rot, eye, bounds)),
+        )
+    }
+
     fn remap_wire_index(
         &self,
         index: u32,
         slots: &rustc_hash::FxHashMap<(u64, u32), u32>,
     ) -> Option<u32> {
-        let handle = self
-            .wire_handles
-            .get(index as usize)
-            .copied()
-            .flatten()?;
-        let ordinal = self
-            .wire_ordinals
-            .get(index as usize)
-            .copied()
-            .flatten()?;
+        let handle = self.wire_handles.get(index as usize).copied().flatten()?;
+        let ordinal = self.wire_ordinals.get(index as usize).copied().flatten()?;
         slots.get(&(handle, ordinal)).copied()
     }
 
@@ -1160,9 +1417,12 @@ impl InteractionIndex {
         &self,
         mut indices: Vec<u32>,
         slots: &rustc_hash::FxHashMap<(u64, u32), u32>,
+        include_unbounded: bool,
         include_screen_unbounded: bool,
     ) -> Vec<u32> {
-        indices.extend_from_slice(&self.unbounded_wires);
+        if include_unbounded {
+            indices.extend_from_slice(&self.unbounded_wires);
+        }
         if include_screen_unbounded {
             indices.extend_from_slice(&self.screen_unbounded_wires);
         }
@@ -1194,15 +1454,16 @@ impl InteractionIndex {
 
     pub(crate) fn query_remapped_xy_area(
         &self,
-        wires: Arc<Vec<WireModel>>,
+        wires: Arc<SharedWireRuns>,
         slots: &rustc_hash::FxHashMap<(u64, u32), u32>,
         aabb: [f64; 4],
     ) -> InteractionCandidates {
         InteractionCandidates {
-            wires,
+            wires: CandidateWires::Shared(wires),
             wire_indices: Some(self.remap_wire_indices(
                 self.wires.query_xy_unordered(aabb),
                 slots,
+                true,
                 false,
             )),
             segments: Some(self.remap_refs(
@@ -1240,15 +1501,16 @@ impl InteractionIndex {
 
     pub(crate) fn query_remapped_xy(
         &self,
-        wires: Arc<Vec<WireModel>>,
+        wires: Arc<SharedWireRuns>,
         slots: &rustc_hash::FxHashMap<(u64, u32), u32>,
         aabb: [f64; 4],
     ) -> InteractionCandidates {
         InteractionCandidates {
-            wires,
+            wires: CandidateWires::Shared(wires),
             wire_indices: Some(self.remap_wire_indices(
                 self.wires.query_xy(aabb),
                 slots,
+                true,
                 false,
             )),
             segments: Some(self.remap_refs(
@@ -1301,7 +1563,7 @@ impl InteractionIndex {
 
     pub(crate) fn query_remapped_screen(
         &self,
-        wires: Arc<Vec<WireModel>>,
+        wires: Arc<SharedWireRuns>,
         slots: &rustc_hash::FxHashMap<(u64, u32), u32>,
         screen_rect: [f32; 4],
         view_rot: Mat4,
@@ -1309,58 +1571,69 @@ impl InteractionIndex {
         bounds: Rectangle,
     ) -> InteractionCandidates {
         InteractionCandidates {
-            wires,
+            wires: CandidateWires::Shared(wires),
             wire_indices: Some(self.remap_wire_indices(
-                self.wires
-                    .query_screen(screen_rect, view_rot, eye, bounds),
+                self.wires.query_screen(screen_rect, view_rot, eye, bounds),
                 slots,
                 true,
+                true,
             )),
-            segments: Some(self.remap_refs(
-                self.segments
-                    .query_screen(screen_rect, view_rot, eye, bounds),
-                slots,
-                |value| value.wire,
-                |value, wire| value.wire = wire,
-            )),
-            snap_points: Some(self.remap_refs(
-                self.snap_points
-                    .query_screen(screen_rect, view_rot, eye, bounds),
-                slots,
-                |value| value.wire,
-                |value, wire| value.wire = wire,
-            )),
-            key_vertices: Some(self.remap_refs(
-                self.key_vertices
-                    .query_screen(screen_rect, view_rot, eye, bounds),
-                slots,
-                |value| value.wire,
-                |value, wire| value.wire = wire,
-            )),
-            key_segments: Some(self.remap_refs(
-                self.key_segments
-                    .query_screen(screen_rect, view_rot, eye, bounds),
-                slots,
-                |value| value.wire,
-                |value, wire| value.wire = wire,
-            )),
-            fill_triangles: Some(self.remap_refs(
-                self.fill_triangles
-                    .query_screen(screen_rect, view_rot, eye, bounds),
-                slots,
-                |value| value.wire,
-                |value, wire| value.wire = wire,
-            )),
-            pick_triangles: Some(self.remap_refs(
-                self.pick_triangles
-                    .query_screen(screen_rect, view_rot, eye, bounds),
-                slots,
-                |value| value.wire,
-                |value, wire| value.wire = wire,
-            )),
+            segments: Some(
+                self.remap_refs(
+                    self.segments
+                        .query_screen(screen_rect, view_rot, eye, bounds),
+                    slots,
+                    |value| value.wire,
+                    |value, wire| value.wire = wire,
+                ),
+            ),
+            snap_points: Some(
+                self.remap_refs(
+                    self.snap_points
+                        .query_screen(screen_rect, view_rot, eye, bounds),
+                    slots,
+                    |value| value.wire,
+                    |value, wire| value.wire = wire,
+                ),
+            ),
+            key_vertices: Some(
+                self.remap_refs(
+                    self.key_vertices
+                        .query_screen(screen_rect, view_rot, eye, bounds),
+                    slots,
+                    |value| value.wire,
+                    |value, wire| value.wire = wire,
+                ),
+            ),
+            key_segments: Some(
+                self.remap_refs(
+                    self.key_segments
+                        .query_screen(screen_rect, view_rot, eye, bounds),
+                    slots,
+                    |value| value.wire,
+                    |value, wire| value.wire = wire,
+                ),
+            ),
+            fill_triangles: Some(
+                self.remap_refs(
+                    self.fill_triangles
+                        .query_screen(screen_rect, view_rot, eye, bounds),
+                    slots,
+                    |value| value.wire,
+                    |value, wire| value.wire = wire,
+                ),
+            ),
+            pick_triangles: Some(
+                self.remap_refs(
+                    self.pick_triangles
+                        .query_screen(screen_rect, view_rot, eye, bounds),
+                    slots,
+                    |value| value.wire,
+                    |value, wire| value.wire = wire,
+                ),
+            ),
             glyphs: Some(self.remap_refs(
-                self.glyphs
-                    .query_screen(screen_rect, view_rot, eye, bounds),
+                self.glyphs.query_screen(screen_rect, view_rot, eye, bounds),
                 slots,
                 |value| value.wire,
                 |value, wire| value.wire = wire,
@@ -1403,7 +1676,7 @@ impl InteractionIndex {
                 },
             );
         InteractionCandidates {
-            wires,
+            wires: CandidateWires::Snapshot(wires),
             wire_indices: Some(wire_indices),
             segments: Some(segments),
             snap_points: None,
@@ -1424,7 +1697,7 @@ impl InteractionIndex {
         wire_indices.sort_unstable();
         wire_indices.dedup();
         InteractionCandidates {
-            wires,
+            wires: CandidateWires::Snapshot(wires),
             wire_indices: Some(wire_indices),
             segments: Some(self.segments.query_xy(aabb)),
             snap_points: Some(self.snap_points.query_xy(aabb)),
@@ -1453,7 +1726,7 @@ impl InteractionIndex {
         wire_indices.sort_unstable();
         wire_indices.dedup();
         InteractionCandidates {
-            wires,
+            wires: CandidateWires::Snapshot(wires),
             wire_indices: Some(wire_indices),
             segments: Some(
                 self.segments
@@ -1502,8 +1775,67 @@ impl std::fmt::Debug for InteractionIndex {
     }
 }
 
+/// Zero-copy wire backing for post-edit overlay candidate sets: slot `i`
+/// resolves through a shared memoized run at a stored offset instead of a
+/// private deep clone, so a query never copies candidate geometry.
+#[derive(Default)]
+pub struct SharedWireRuns(Vec<(Arc<Vec<WireModel>>, u32)>);
+
+impl SharedWireRuns {
+    pub(crate) fn push(&mut self, run: &Arc<Vec<WireModel>>, index: u32) {
+        self.0.push((Arc::clone(run), index));
+    }
+
+    pub(crate) fn len(&self) -> usize {
+        self.0.len()
+    }
+
+    pub(crate) fn get(&self, slot: u32) -> Option<&WireModel> {
+        let (run, index) = self.0.get(slot as usize)?;
+        run.get(*index as usize)
+    }
+}
+
+/// How an [`InteractionCandidates`] resolves its wire slots: a private
+/// snapshot copy, or a zero-copy overlay gather over shared runs.
+enum CandidateWires {
+    Snapshot(Arc<Vec<WireModel>>),
+    Shared(Arc<SharedWireRuns>),
+}
+
+impl CandidateWires {
+    fn same_source(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::Snapshot(a), Self::Snapshot(b)) => Arc::ptr_eq(a, b),
+            (Self::Shared(a), Self::Shared(b)) => Arc::ptr_eq(a, b),
+            (Self::Snapshot(_), Self::Shared(_)) | (Self::Shared(_), Self::Snapshot(_)) => false,
+        }
+    }
+
+    fn slot_count(&self) -> usize {
+        match self {
+            Self::Snapshot(wires) => wires.len(),
+            Self::Shared(runs) => runs.len(),
+        }
+    }
+
+    fn slot(&self, index: u32) -> Option<&WireModel> {
+        match self {
+            Self::Snapshot(wires) => wires.get(index as usize),
+            Self::Shared(runs) => runs.get(index),
+        }
+    }
+
+    fn clone_arc(&self) -> Self {
+        match self {
+            Self::Snapshot(wires) => Self::Snapshot(Arc::clone(wires)),
+            Self::Shared(runs) => Self::Shared(Arc::clone(runs)),
+        }
+    }
+}
+
 pub struct InteractionCandidates {
-    wires: Arc<Vec<WireModel>>,
+    wires: CandidateWires,
     wire_indices: Option<Vec<u32>>,
     segments: Option<Vec<SegmentRef>>,
     snap_points: Option<Vec<SnapPointRef>>,
@@ -1548,7 +1880,7 @@ pub trait WireSource {
 impl InteractionCandidates {
     pub fn all(wires: Arc<Vec<WireModel>>) -> Self {
         Self {
-            wires,
+            wires: CandidateWires::Snapshot(wires),
             wire_indices: None,
             segments: None,
             snap_points: None,
@@ -1568,7 +1900,7 @@ impl InteractionCandidates {
     /// full-scene scan.
     pub fn pending(wires: Arc<Vec<WireModel>>) -> Self {
         Self {
-            wires,
+            wires: CandidateWires::Snapshot(wires),
             wire_indices: Some(Vec::new()),
             segments: Some(Vec::new()),
             snap_points: Some(Vec::new()),
@@ -1588,27 +1920,30 @@ impl InteractionCandidates {
     }
 
     pub fn iter(&self) -> WireIter<'_> {
-        match &self.wire_indices {
-            Some(indices) => WireIter::Indexed {
-                wires: &self.wires,
+        match (&self.wires, &self.wire_indices) {
+            (CandidateWires::Snapshot(wires), Some(indices)) => WireIter::Indexed {
+                wires,
                 indices: indices.iter(),
             },
-            None => WireIter::All(self.wires.as_slice().iter()),
+            (CandidateWires::Snapshot(wires), None) => WireIter::All(wires.as_slice().iter()),
+            (CandidateWires::Shared(runs), indices) => WireIter::Shared {
+                runs,
+                indices: indices.as_ref().map(|indices| indices.iter()),
+                next: 0,
+            },
         }
     }
 
     pub fn len(&self) -> usize {
         self.wire_indices
             .as_ref()
-            .map_or(self.wires.len(), Vec::len)
+            .map_or(self.wires.slot_count(), Vec::len)
     }
 
     pub fn get(&self, index: usize) -> Option<&WireModel> {
         match &self.wire_indices {
-            Some(indices) => indices
-                .get(index)
-                .and_then(|&wire| self.wires.get(wire as usize)),
-            None => self.wires.get(index),
+            Some(indices) => indices.get(index).copied().and_then(|wire| self.wires.slot(wire)),
+            None => self.wires.slot(index as u32),
         }
     }
 
@@ -1641,7 +1976,7 @@ impl InteractionCandidates {
     }
 
     pub fn source_wire(&self, index: u32) -> Option<&WireModel> {
-        self.wires.get(index as usize)
+        self.wires.slot(index)
     }
 
     pub fn query_aabb(&self) -> Option<[f64; 4]> {
@@ -1654,8 +1989,64 @@ impl InteractionCandidates {
             .map(|(rect, (view, eye, bounds))| (rect, view, eye, bounds))
     }
 
+    /// The candidates with every block-copy stub among them expanded into
+    /// the wires it stands for, so snapping and picking see each copy. Only
+    /// the copies' wires near an XY query are kept.
+    pub(crate) fn materialize_stubs(self) -> Self {
+        if !self.iter().any(|wire| wire.stub.is_some()) {
+            return self;
+        }
+        let mut wires = Vec::new();
+        for wire in self.iter() {
+            crate::scene::model::instance_model::expand_stub_near_into(
+                wire,
+                self.query_aabb,
+                &mut wires,
+            );
+        }
+        Self {
+            query_aabb: self.query_aabb,
+            screen_rect: self.screen_rect,
+            screen_view: self.screen_view,
+            ..Self::all(Arc::new(wires))
+        }
+    }
+
+    /// Leave out every wire `drop` matches, with the segments, points and
+    /// triangles that belong to it.
+    pub(crate) fn exclude_wires(&mut self, drop: impl Fn(&WireModel) -> bool) {
+        let backing = self.wires.clone_arc();
+        let dropped = |wire: u32| backing.slot(wire).is_some_and(&drop);
+        match self.wire_indices.as_mut() {
+            Some(indices) => indices.retain(|&wire| !dropped(wire)),
+            None => {
+                self.wire_indices = Some(
+                    (0..backing.slot_count() as u32)
+                        .filter(|&wire| !dropped(wire))
+                        .collect(),
+                );
+            }
+        }
+        fn keep<T>(
+            refs: &mut Option<Vec<T>>,
+            wire: impl Fn(&T) -> u32,
+            dropped: impl Fn(u32) -> bool,
+        ) {
+            if let Some(refs) = refs.as_mut() {
+                refs.retain(|item| !dropped(wire(item)));
+            }
+        }
+        keep(&mut self.segments, |r| r.wire, dropped);
+        keep(&mut self.snap_points, |r| r.wire, dropped);
+        keep(&mut self.key_vertices, |r| r.wire, dropped);
+        keep(&mut self.key_segments, |r| r.wire, dropped);
+        keep(&mut self.fill_triangles, |r| r.wire, dropped);
+        keep(&mut self.pick_triangles, |r| r.wire, dropped);
+        keep(&mut self.glyphs, |r| r.wire, dropped);
+    }
+
     pub(crate) fn extend_indexed_area(&mut self, other: Self) {
-        debug_assert!(Arc::ptr_eq(&self.wires, &other.wires));
+        debug_assert!(self.wires.same_source(&other.wires));
 
         fn append<T>(target: &mut Option<Vec<T>>, incoming: Option<Vec<T>>) {
             let (Some(target), Some(incoming)) = (target.as_mut(), incoming) else {
@@ -1664,9 +2055,7 @@ impl InteractionCandidates {
             target.extend(incoming);
         }
 
-        if let (Some(target), Some(incoming)) =
-            (self.wire_indices.as_mut(), other.wire_indices)
-        {
+        if let (Some(target), Some(incoming)) = (self.wire_indices.as_mut(), other.wire_indices) {
             target.extend(incoming);
             target.sort_unstable();
             target.dedup();
@@ -1678,7 +2067,7 @@ impl InteractionCandidates {
     }
 
     pub(crate) fn extend_indexed(&mut self, other: Self) {
-        debug_assert!(Arc::ptr_eq(&self.wires, &other.wires));
+        debug_assert!(self.wires.same_source(&other.wires));
 
         fn extend<T: Ord>(target: &mut Option<Vec<T>>, incoming: Option<Vec<T>>) {
             let (Some(target), Some(incoming)) = (target.as_mut(), incoming) else {
@@ -1800,6 +2189,50 @@ impl<const N: usize> WireSource for [WireModel; N] {
     }
 }
 
+/// Two wire sources read back to back without copying either one's wires:
+/// `head` first (in its own index order), then `tail`. Produces the same wire
+/// sequence a `Vec` built by `extend` would have, so consumers that only walk
+/// `iter()` see identical geometry while the caller pays zero clones.
+///
+/// The optional indexed views (`segments`, `snap_points`, …) stay `None`:
+/// the tail has no parallel index, so an index-only walk over the head would
+/// silently drop the tail's wires. Consumers fall back to full iteration,
+/// exactly like a plain `Vec<WireModel>` source.
+pub struct ChainedWireSource<'a, H: WireSource + ?Sized, T: WireSource + ?Sized> {
+    head: &'a H,
+    tail: &'a T,
+}
+
+impl<'a, H: WireSource + ?Sized, T: WireSource + ?Sized> ChainedWireSource<'a, H, T> {
+    pub fn new(head: &'a H, tail: &'a T) -> Self {
+        Self { head, tail }
+    }
+}
+
+impl<H: WireSource + ?Sized, T: WireSource + ?Sized> WireSource for ChainedWireSource<'_, H, T> {
+    fn iter(&self) -> WireIter<'_> {
+        WireIter::Chain(Box::new(self.head.iter()), Box::new(self.tail.iter()))
+    }
+
+    fn len(&self) -> usize {
+        self.head.len() + self.tail.len()
+    }
+
+    fn get(&self, index: usize) -> Option<&WireModel> {
+        self.head.get(index).or_else(|| {
+            index
+                .checked_sub(self.head.len())
+                .and_then(|tail_index| self.tail.get(tail_index))
+        })
+    }
+
+    fn source_wire(&self, index: u32) -> Option<&WireModel> {
+        self.head
+            .source_wire(index)
+            .or_else(|| self.tail.source_wire(index))
+    }
+}
+
 #[derive(Clone)]
 pub enum WireIter<'a> {
     All(std::slice::Iter<'a, WireModel>),
@@ -1807,6 +2240,15 @@ pub enum WireIter<'a> {
         wires: &'a [WireModel],
         indices: std::slice::Iter<'a, u32>,
     },
+    /// Zero-copy walk over a shared overlay gather: slots resolve through
+    /// the runs without any wire being cloned. With no explicit indices the
+    /// full slot range is walked in order, mirroring `All`.
+    Shared {
+        runs: &'a SharedWireRuns,
+        indices: Option<std::slice::Iter<'a, u32>>,
+        next: u32,
+    },
+    Chain(Box<WireIter<'a>>, Box<WireIter<'a>>),
 }
 
 impl<'a> Iterator for WireIter<'a> {
@@ -1818,6 +2260,28 @@ impl<'a> Iterator for WireIter<'a> {
             Self::Indexed { wires, indices } => {
                 indices.next().and_then(|&idx| wires.get(idx as usize))
             }
+            Self::Shared {
+                runs,
+                indices,
+                next,
+            } => {
+                let slot = match indices {
+                    Some(indices) => *indices.next()?,
+                    None => {
+                        let slot = *next;
+                        if slot as usize >= runs.len() {
+                            return None;
+                        }
+                        *next += 1;
+                        slot
+                    }
+                };
+                runs.get(slot)
+            }
+            Self::Chain(head, tail) => match head.next() {
+                Some(wire) => Some(wire),
+                None => tail.next(),
+            },
         }
     }
 }
@@ -1888,6 +2352,14 @@ fn finite_wire_aabb3(wire: &WireModel) -> Option<[f64; 6]> {
             vertex.pos[1] as f64 + vertex.pos_low[1] as f64,
             vertex.pos[2] as f64 + vertex.pos_low[2] as f64,
         ]);
+    }
+    if let Some(stub) = &wire.stub {
+        for inner in stub.prototype.iter() {
+            if let Some(inner) = finite_wire_aabb3(inner) {
+                aabb[2] = aabb[2].min(inner[2] + stub.delta[2]);
+                aabb[5] = aabb[5].max(inner[5] + stub.delta[2]);
+            }
+        }
     }
     if !aabb[2].is_finite() {
         aabb[2] = 0.0;
@@ -2016,9 +2488,21 @@ mod area_query_tests {
 
     fn sample() -> Vec<WireModel> {
         vec![
-            wire("5", vec![[-0.5, -0.5, 0.0], [0.5, 0.5, 0.0]], [-0.5, -0.5, 0.5, 0.5]),
-            wire("9", vec![[0.1, -0.9, 0.0], [0.9, -0.1, 0.0]], [0.1, -0.9, 0.9, -0.1]),
-            wire("13", vec![[-0.9, 0.2, 0.0], [-0.2, 0.9, 0.0]], [-0.9, 0.2, -0.2, 0.9]),
+            wire(
+                "5",
+                vec![[-0.5, -0.5, 0.0], [0.5, 0.5, 0.0]],
+                [-0.5, -0.5, 0.5, 0.5],
+            ),
+            wire(
+                "9",
+                vec![[0.1, -0.9, 0.0], [0.9, -0.1, 0.0]],
+                [0.1, -0.9, 0.9, -0.1],
+            ),
+            wire(
+                "13",
+                vec![[-0.9, 0.2, 0.0], [-0.2, 0.9, 0.0]],
+                [-0.9, 0.2, -0.2, 0.9],
+            ),
         ]
     }
 
@@ -2067,10 +2551,244 @@ mod area_query_tests {
     }
 
     #[test]
+    fn snap_screen_query_omits_unrelated_viewport_sized_markers() {
+        use crate::scene::model::wire_model::{PointMarker, SnapHint};
+
+        let mut far = wire("5", vec![], [20.0, 20.0, 20.0, 20.0]);
+        far.point_marker = Some(PointMarker {
+            origin: glam::DVec3::new(20.0, 20.0, 0.0),
+            normal: glam::DVec3::Z,
+            axis_x: glam::DVec3::X,
+            axis_y: glam::DVec3::Y,
+            viewport_percent: 5.0,
+        });
+        far.snap_pts = vec![(glam::DVec3::new(20.0, 20.0, 0.0), SnapHint::Node)];
+
+        let mut near = wire("9", vec![], [20.0, 20.0, 20.0, 20.0]);
+        near.point_marker = Some(PointMarker {
+            origin: glam::DVec3::ZERO,
+            normal: glam::DVec3::Z,
+            axis_x: glam::DVec3::X,
+            axis_y: glam::DVec3::Y,
+            viewport_percent: 5.0,
+        });
+        near.snap_pts = vec![(glam::DVec3::ZERO, SnapHint::Node)];
+
+        let wires = Arc::new(vec![far, near]);
+        let index = InteractionIndex::build(&wires);
+        let bounds = Rectangle {
+            x: 0.0,
+            y: 0.0,
+            width: 200.0,
+            height: 200.0,
+        };
+        let screen_rect = [98.0, 98.0, 102.0, 102.0];
+        let full = index.query_screen(
+            Arc::clone(&wires),
+            screen_rect,
+            glam::Mat4::IDENTITY,
+            glam::DVec3::ZERO,
+            bounds,
+        );
+        let snap = index.query_snap_screen_with_category(
+            Arc::clone(&wires),
+            screen_rect,
+            glam::Mat4::IDENTITY,
+            glam::DVec3::ZERO,
+            bounds,
+            SnapQueryCategory::Full,
+        );
+
+        assert_eq!(full.len(), 2, "the general pick query includes markers");
+        assert_eq!(snap.len(), 1, "OSNAP includes only the nearby node");
+        assert_eq!(
+            snap.snap_points(),
+            Some(&[SnapPointRef { wire: 1, index: 0 }][..])
+        );
+        assert_eq!(
+            snap.source_wire(1).map(|wire| wire.name.as_str()),
+            Some("9")
+        );
+
+        let parts = || {
+            index.snap_candidate_parts_screen(
+                screen_rect,
+                glam::Mat4::IDENTITY,
+                glam::DVec3::ZERO,
+                bounds,
+                SnapQueryCategory::Full,
+            )
+        };
+        assert_eq!(index.snap_candidate_keys(&parts()), vec![(9, 0)]);
+        let local_wires = Arc::new(vec![wires[1].clone()]);
+        let mut local_runs = SharedWireRuns::default();
+        local_runs.push(&local_wires, 0);
+        let slots = rustc_hash::FxHashMap::from_iter([((9, 0), 0)]);
+        let remapped = index.query_remapped_snap_screen_from_parts_with_category(
+            Arc::new(local_runs),
+            &slots,
+            parts(),
+            screen_rect,
+            glam::Mat4::IDENTITY,
+            glam::DVec3::ZERO,
+            bounds,
+            SnapQueryCategory::Full,
+        );
+        assert_eq!(remapped.len(), 1);
+        assert_eq!(
+            remapped.snap_points(),
+            Some(&[SnapPointRef { wire: 0, index: 0 }][..])
+        );
+        assert_eq!(
+            remapped.source_wire(0).map(|wire| wire.name.as_str()),
+            Some("9")
+        );
+    }
+
+    #[test]
+    fn discrete_preview_query_keeps_snap_features_without_general_segments() {
+        use crate::scene::model::wire_model::SnapHint;
+
+        let mut line = wire(
+            "21",
+            vec![[-1.0, 0.0, 0.0], [1.0, 0.0, 0.0]],
+            [-1.0, 0.0, 1.0, 0.0],
+        );
+        line.snap_pts = vec![(glam::DVec3::ZERO, SnapHint::Node)];
+        line.key_vertices = vec![[-1.0, 0.0, 0.0], [1.0, 0.0, 0.0]];
+        let wires = Arc::new(vec![line]);
+        let index = InteractionIndex::build(&wires);
+        let aabb = [-0.1, -0.1, 0.1, 0.1];
+
+        let full_xy =
+            index.query_snap_xy_with_category(Arc::clone(&wires), aabb, SnapQueryCategory::Full);
+        let preview_xy = index.query_snap_xy_with_category(
+            Arc::clone(&wires),
+            aabb,
+            SnapQueryCategory::DiscretePreview,
+        );
+        assert_eq!(preview_xy.len(), full_xy.len());
+        assert_eq!(preview_xy.snap_points(), full_xy.snap_points());
+        assert_eq!(preview_xy.key_vertices(), full_xy.key_vertices());
+        assert_eq!(preview_xy.key_segments(), full_xy.key_segments());
+        assert_eq!(preview_xy.segments(), Some(&[][..]));
+        assert!(full_xy.segments().is_some_and(|items| !items.is_empty()));
+
+        let bounds = Rectangle {
+            x: 0.0,
+            y: 0.0,
+            width: 200.0,
+            height: 200.0,
+        };
+        let screen_rect = [99.0, 99.0, 101.0, 101.0];
+        let full_screen = index.query_snap_screen_with_category(
+            Arc::clone(&wires),
+            screen_rect,
+            glam::Mat4::IDENTITY,
+            glam::DVec3::ZERO,
+            bounds,
+            SnapQueryCategory::Full,
+        );
+        let preview_screen = index.query_snap_screen_with_category(
+            wires,
+            screen_rect,
+            glam::Mat4::IDENTITY,
+            glam::DVec3::ZERO,
+            bounds,
+            SnapQueryCategory::DiscretePreview,
+        );
+        assert_eq!(preview_screen.len(), full_screen.len());
+        assert_eq!(preview_screen.snap_points(), full_screen.snap_points());
+        assert_eq!(preview_screen.key_vertices(), full_screen.key_vertices());
+        assert_eq!(preview_screen.key_segments(), full_screen.key_segments());
+        assert_eq!(preview_screen.segments(), Some(&[][..]));
+        assert!(full_screen
+            .segments()
+            .is_some_and(|items| !items.is_empty()));
+    }
+
+    #[test]
+    fn discrete_preview_uses_feature_sources_without_general_wire_candidates() {
+        let mut indexed_endpoint = wire(
+            "indexed-endpoint",
+            vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]],
+            WireModel::UNBOUNDED_AABB,
+        );
+        indexed_endpoint.key_vertices = vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]];
+        let unindexed_wire = wire(
+            "unindexed",
+            vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]],
+            WireModel::UNBOUNDED_AABB,
+        );
+        let broad_finite_wire = wire(
+            "broad-finite",
+            vec![[-1.0, 0.0, 0.0], [1.0, 0.0, 0.0]],
+            [-1.0, -1.0, 1.0, 1.0],
+        );
+        let wires = Arc::new(vec![indexed_endpoint, unindexed_wire, broad_finite_wire]);
+        let index = InteractionIndex::build(&wires);
+        let aabb = [-0.1, -0.1, 0.1, 0.1];
+
+        let preview = index.query_snap_xy_with_category(
+            Arc::clone(&wires),
+            aabb,
+            SnapQueryCategory::DiscretePreview,
+        );
+        assert_eq!(preview.len(), 1);
+        assert_eq!(preview.key_vertices().unwrap().len(), 1);
+        assert_eq!(preview.source_wire(0).unwrap().name, "indexed-endpoint");
+
+        let full = index.query_snap_xy_with_category(wires, aabb, SnapQueryCategory::Full);
+        assert_eq!(full.len(), 3);
+    }
+
+    #[test]
+    fn remapped_discrete_preview_does_not_restore_unbounded_wire_candidates() {
+        let mut endpoint = wire(
+            "21",
+            vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]],
+            WireModel::UNBOUNDED_AABB,
+        );
+        endpoint.key_vertices = vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]];
+        let unrelated = wire(
+            "22",
+            vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]],
+            WireModel::UNBOUNDED_AABB,
+        );
+        let base_wires = Arc::new(vec![endpoint.clone(), unrelated.clone()]);
+        let local_wires = Arc::new(vec![endpoint, unrelated]);
+        let local_runs = || {
+            let mut runs = SharedWireRuns::default();
+            runs.push(&local_wires, 0);
+            runs.push(&local_wires, 1);
+            Arc::new(runs)
+        };
+        let slots = rustc_hash::FxHashMap::from_iter([((21, 0), 0), ((22, 0), 1)]);
+        let index = InteractionIndex::build(&base_wires);
+        let aabb = [-0.1, -0.1, 0.1, 0.1];
+
+        let remapped = |wires: Arc<SharedWireRuns>, category| {
+            index.query_remapped_snap_xy_from_parts_with_category(
+                wires,
+                &slots,
+                index.snap_candidate_parts_xy(aabb, category),
+                aabb,
+                category,
+            )
+        };
+        let preview = remapped(local_runs(), SnapQueryCategory::DiscretePreview);
+        assert_eq!(preview.len(), 1);
+        assert_eq!(preview.source_wire(0).unwrap().name, "21");
+
+        let full = remapped(local_runs(), SnapQueryCategory::Full);
+        assert_eq!(full.len(), 2, "full snap still includes unbounded wires");
+    }
+
+    #[test]
     fn the_area_merge_dedups_wire_indices_and_nothing_else() {
         let arc = Arc::new(sample());
         let base = |indices: Vec<u32>, segments: Vec<SegmentRef>| InteractionCandidates {
-            wires: Arc::clone(&arc),
+            wires: CandidateWires::Snapshot(Arc::clone(&arc)),
             wire_indices: Some(indices),
             segments: Some(segments),
             snap_points: None,

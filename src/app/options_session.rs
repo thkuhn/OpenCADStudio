@@ -178,7 +178,11 @@ mod tests {
         let _ = app.update(Message::ZoomFactorChanged(before + 9));
         let _ = app.update(Message::OptionsClose);
         let _ = app.update(Message::OptionsCloseDiscard);
-        assert_eq!(app.zoom_factor, before + 7, "back to the applied value, not the original");
+        assert_eq!(
+            app.zoom_factor,
+            before + 7,
+            "back to the applied value, not the original"
+        );
     }
 
     #[test]
@@ -232,8 +236,8 @@ mod tests {
     #[test]
     fn the_zoom_factor_field_reaches_past_the_system_variable() {
         let mut app = app();
-        let _ = app.update(Message::ZoomFactorInputChanged("250".into()));
-        assert_eq!(app.zoom_factor, 250);
+        let _ = app.update(Message::ZoomFactorInputChanged("150".into()));
+        assert_eq!(app.zoom_factor, 150);
 
         let _ = app.update(Message::ZoomFactorInputChanged("600".into()));
         assert_eq!(app.zoom_factor, settings::ZOOM_FACTOR_MAX);
@@ -250,7 +254,11 @@ mod tests {
         assert_eq!(app.zoom_factor, settings::ZOOM_FACTOR_MAX);
 
         let _ = app.update(Message::ZoomFactorInputChanged("1".into()));
-        assert_eq!(app.zoom_factor, settings::ZOOM_FACTOR_MIN, "the floor holds");
+        assert_eq!(
+            app.zoom_factor,
+            settings::ZOOM_FACTOR_MIN,
+            "the floor holds"
+        );
     }
 
     /// The slider and the field are two views of one setting: dragging the
