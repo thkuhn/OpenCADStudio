@@ -7074,6 +7074,11 @@ block-lookup =
     .invalid-table = جدول البحث غير صالح.
     .invalid-value = يحتوي صف البحث المحدد على قيمة معلمة غير صالحة.
     .incompatible-values = قيم صف البحث لا تتوافق مع مجموعات قيم المعلمات.
+    .quoted-help = ضع أسماء المسافات أو علامات الترقيم بين علامتي اقتباس: { $name }.
+
+block-array =
+    .limit-error = سيؤدي تقييم الكتلة إلى إنشاء أكثر من 100000 عنصر مصفوفة. قلّل المسافة أو زِد التباعد.
+
 
 project-explorer =
     .new-project = New Project

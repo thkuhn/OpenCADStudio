@@ -7062,6 +7062,11 @@ block-lookup =
     .invalid-table = A tabela de consulta é inválida.
     .invalid-value = A linha selecionada contém um valor de parâmetro inválido.
     .incompatible-values = Os valores da linha não atendem aos conjuntos de valores dos parâmetros.
+    .quoted-help = Delimite nomes com espaços ou pontuação: { $name }.
+
+block-array =
+    .limit-error = A avaliação do bloco geraria mais de 100000 objetos de matriz. Reduza a distância ou aumente o espaçamento.
+
 
 project-explorer =
     .new-project = New Project

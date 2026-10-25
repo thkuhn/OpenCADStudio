@@ -7063,6 +7063,11 @@ block-lookup =
     .invalid-table = ຕາຕະລາງຄົ້ນຫາບໍ່ຖືກຕ້ອງ.
     .invalid-value = ແຖວທີ່ເລືອກມີຄ່າພາຣາມິເຕີບໍ່ຖືກຕ້ອງ.
     .incompatible-values = ຄ່າໃນແຖວບໍ່ສອດຄ່ອງກັບຊຸດຄ່າພາຣາມິເຕີ.
+    .quoted-help = ໃສ່ເຄື່ອງໝາຍອ້ອມຊື່ທີ່ມີຍະຫວ່າງ ຫຼື ເຄື່ອງໝາຍວັກຕອນ: { $name }.
+
+block-array =
+    .limit-error = ການປະເມີນບລັອກຈະສ້າງວັດຖຸແຖວລຳດັບຫຼາຍກວ່າ 100000 ອັນ. ຫຼຸດໄລຍະທາງ ຫຼື ເພີ່ມໄລຍະຫ່າງ.
+
 
 project-explorer =
     .new-project = New Project

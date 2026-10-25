@@ -1532,6 +1532,7 @@ fn build_selection_overlay_element(
             is_hot: false,
             is_hovered: false,
             dir: None,
+            has_override: false,
             is_plugin: false,
             is_authoring: false,
             is_dynamic: false,

@@ -7050,6 +7050,11 @@ block-lookup =
     .invalid-table = लुकअप तालिका अमान्य है।
     .invalid-value = चयनित पंक्ति में पैरामीटर का मान अमान्य है।
     .incompatible-values = पंक्ति के मान पैरामीटर के मान समूहों के अनुरूप नहीं हैं।
+    .quoted-help = रिक्त स्थान या विराम चिह्न वाले नाम उद्धृत करें: { $name }।
+
+block-array =
+    .limit-error = ब्लॉक के मूल्यांकन से 100000 से अधिक ऐरे ऑब्जेक्ट बनेंगे। दूरी कम करें या अंतराल बढ़ाएँ।
+
 
 project-explorer =
     .new-project = New Project

@@ -7060,6 +7060,11 @@ block-lookup =
     .invalid-table = De opzoektabel is ongeldig.
     .invalid-value = De geselecteerde rij bevat een ongeldige parameterwaarde.
     .incompatible-values = De rijwaarden voldoen niet aan de waardeverzamelingen van de parameters.
+    .quoted-help = Zet namen met spaties of leestekens tussen aanhalingstekens: { $name }.
+
+block-array =
+    .limit-error = De blokevaluatie zou meer dan 100000 matrixobjecten genereren. Verklein de afstand of vergroot de tussenruimte.
+
 
 project-explorer =
     .new-project = New Project

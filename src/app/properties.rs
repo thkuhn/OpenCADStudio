@@ -2178,8 +2178,14 @@ impl OpenCADStudio {
                                     label: t!("Transparency").into_owned(),
                                     field: "transparency",
                                     value: PropValue::EditChoice {
-                                        value: "ByLayer".to_string(),
-                                        options: vec!["ByLayer".to_string(), "ByBlock".to_string()],
+                                        value:
+                                            crate::scene::creation_style::current_transparency_label(
+                                                self.tabs[i]
+                                                    .scene
+                                                    .document
+                                                    .current_entity_transparency(),
+                                            ),
+                                        options: crate::scene::creation_style::transparency_options(),
                                     },
                                 },
                                 read_only(t!("Thickness").as_ref(), format_length(header.thickness)),

@@ -7061,6 +7061,11 @@ block-lookup =
     .invalid-table = Tabela wyszukiwania jest nieprawidłowa.
     .invalid-value = Wybrany wiersz zawiera nieprawidłową wartość parametru.
     .incompatible-values = Wartości wiersza nie spełniają zbiorów wartości parametrów.
+    .quoted-help = Nazwy ze spacjami lub interpunkcją ujmij w znaki cytowania: { $name }.
+
+block-array =
+    .limit-error = Przeliczenie bloku utworzyłoby ponad 100000 obiektów szyku. Zmniejsz odległość lub zwiększ odstęp.
+
 
 project-explorer =
     .new-project = New Project

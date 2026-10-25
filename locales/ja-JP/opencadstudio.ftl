@@ -7050,6 +7050,11 @@ block-lookup =
     .invalid-table = ルックアップテーブルが無効です。
     .invalid-value = 選択した行に無効なパラメーター値があります。
     .incompatible-values = 行の値がパラメーターの値セットを満たしていません。
+    .quoted-help = 空白や句読点を含む名前を引用符で囲みます：{ $name }。
+
+block-array =
+    .limit-error = ブロックの評価により、配列オブジェクトが100000個を超えます。距離を短くするか、間隔を広げてください。
+
 
 project-explorer =
     .new-project = New Project

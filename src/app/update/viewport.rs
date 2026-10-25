@@ -185,17 +185,19 @@ enum ScrollIntent {
 /// still at the top of a drag strobes the glyph on every jittered pixel.
 const ZOOM_DIR_FLIP_PX: f32 = 2.0;
 
-/// A wheel notch zooms; a trackpad's two fingers pan.
+/// Scroll zooms unless the user has enabled touchpad panning.
 ///
-/// On macOS a wheel reports notches and a trackpad pixels, and that is the
-/// whole distinction. Elsewhere a touchpad's two-finger drag arrives as wheel
-/// notches (the browser build reports every wheel as pixels), so nothing tells
-/// it from a wheel: with `touchpad_pan` on, every scroll pans and Ctrl+scroll —
-/// what a pinch sends there — zooms.
+/// Delta units are not a reliable device identifier: smooth-scrolling mice
+/// can report pixels on macOS too. Honor the explicit touchpad option for
+/// both kinds of delta, with Ctrl+scroll always available for zooming.
 fn scroll_intent(delta: mouse::ScrollDelta, touchpad_pan: bool, ctrl: bool) -> ScrollIntent {
     /// Screen pixels one wheel line pans.
     const LINE_PX: f32 = 40.0;
-    if touchpad_pan && !ctrl {
+    // A notched wheel reports lines and a trackpad never does there, so on
+    // macOS a line delta zooms even with touchpad panning on.
+    let wheel_notch =
+        cfg!(target_os = "macos") && matches!(delta, mouse::ScrollDelta::Lines { .. });
+    if touchpad_pan && !ctrl && !wheel_notch {
         return match delta {
             mouse::ScrollDelta::Pixels { x, y } => ScrollIntent::Pan { dx: x, dy: y },
             mouse::ScrollDelta::Lines { x, y } => ScrollIntent::Pan {
@@ -205,12 +207,6 @@ fn scroll_intent(delta: mouse::ScrollDelta, touchpad_pan: bool, ctrl: bool) -> S
         };
     }
     match delta {
-        // Both axes go straight through: the two-finger gesture moves the
-        // drawing the same way the middle-button drag moves it. If a pan ever
-        // comes out mirrored, this is the line.
-        #[cfg(target_os = "macos")]
-        mouse::ScrollDelta::Pixels { x, y } => ScrollIntent::Pan { dx: x, dy: y },
-        #[cfg(not(target_os = "macos"))]
         mouse::ScrollDelta::Pixels { y, .. } => ScrollIntent::Zoom { notches: y * 0.01 },
         mouse::ScrollDelta::Lines { y, .. } => ScrollIntent::Zoom { notches: y },
     }
@@ -7069,8 +7065,10 @@ was_selected={}",
                 let candidate_handles = self.tabs[i]
                     .scene
                     .interaction_candidate_handles(&click_candidates);
-                // Resolve the double-clicked object — its wire, or (for a
-                // block/solid with no wire under the cursor) its shaded
+                // Resolve the double-clicked object the way a single click
+                // picks it — its wire, then a hatch by its fill (a hatch has
+                // no boundary wire), then a block's hatch (its INSERT), or
+                // for a block/solid with no wire under the cursor its shaded
                 // body, which maps to the parent INSERT.
                 let hit = scene::pick::hit_test::click_hit(
                     p,
@@ -7083,6 +7081,29 @@ was_selected={}",
                     &self.tabs[i].scene.draw_depth_map(),
                 )
                 .and_then(|s| Scene::handle_from_wire_name(s))
+                .or_else(|| {
+                    let hatches = self.tabs[i]
+                        .scene
+                        .visible_hatches_for_click(candidate_handles.as_ref());
+                    scene::pick::hit_test::click_hit_hatch(
+                        p,
+                        &hatches,
+                        view_rot,
+                        eye,
+                        bounds,
+                        candidate_handles.as_ref(),
+                    )
+                })
+                .or_else(|| {
+                    scene::pick::hit_test::click_hit_insert_hatch(
+                        p,
+                        self.tabs[i].scene.insert_hatches_for_click().as_ref(),
+                        view_rot,
+                        eye,
+                        bounds,
+                        candidate_handles.as_ref(),
+                    )
+                })
                 .or_else(|| {
                     self.tabs[i].scene.solid_edge_click_hit(
                         p,
@@ -7225,6 +7246,21 @@ was_selected={}",
                         });
                     if is_editable_text {
                         return self.begin_text_edit(handle);
+                    }
+                    // A hatch starts HATCHEDIT on itself; selected, the
+                    // command skips its pick. (The reference program's
+                    // default double-click action for a hatch is Quick
+                    // Properties, but Properties already follows a single
+                    // click here, so the double-click edits.)
+                    if matches!(
+                        self.tabs[i].scene.document.get_entity(handle),
+                        Some(AcadEntityType::Hatch(_))
+                    ) {
+                        self.tabs[i].scene.deselect_all();
+                        self.tabs[i].scene.select_entity(handle, true);
+                        self.tabs[i].selected_handle = Some(handle);
+                        self.refresh_properties();
+                        return self.dispatch_command("HATCHEDIT");
                     }
                     // Double-clicking a block with attributes opens the
                     // attribute editor (edit its values); a block with
@@ -7514,8 +7550,7 @@ was_selected={}",
         Task::none()
     }
 
-    /// A wheel notch zooms; a trackpad's two fingers pan. Which one a delta
-    /// means is `scroll_intent`'s call.
+    /// Apply the user's scroll navigation preference to either delta unit.
     pub(super) fn on_viewport_scroll(&mut self, delta: mouse::ScrollDelta) -> Task<Message> {
         match scroll_intent(delta, self.touchpad_pan, self.ctrl_down) {
             ScrollIntent::Zoom { notches } => {
@@ -8856,13 +8891,134 @@ was_selected={}",
 }
 
 #[cfg(test)]
+mod hatch_double_click_tests {
+    use crate::app::{Message, OpenCADStudio};
+    use codec::entities::{BoundaryEdge, BoundaryPath, Hatch, PolylineEdge};
+    use codec::types::Vector2;
+
+    /// A solid hatch over (0,0)–(10,10), and the window point at its centre.
+    fn app_with_hatch() -> (OpenCADStudio, codec::Handle, iced::Point, iced::Point) {
+        let mut app = OpenCADStudio::new_for_test();
+        let _ = app.automation_op(r#"{"op":"new"}"#);
+        let i = app.active_tab;
+        let mut hatch = Hatch::new();
+        hatch.is_solid = true;
+        let mut path = BoundaryPath::new();
+        path.add_edge(BoundaryEdge::Polyline(PolylineEdge::new(
+            [[0.0, 0.0], [10.0, 0.0], [10.0, 10.0], [0.0, 10.0]]
+                .into_iter()
+                .map(|p| Vector2::new(p[0], p[1]))
+                .collect(),
+            true,
+        )));
+        hatch.paths.push(path);
+        let handle = app.tabs[i]
+            .scene
+            .add_entity(codec::EntityType::Hatch(Box::new(hatch)));
+
+        app.tabs[i].scene.selection.borrow_mut().view.vp_size = (800.0, 600.0);
+        app.tabs[i].scene.camera.borrow_mut().fit_to_bounds_f64(
+            glam::DVec3::new(-5.0, -5.0, 0.0),
+            glam::DVec3::new(15.0, 15.0, 0.0),
+            800.0 / 600.0,
+        );
+        let tile = app.tabs[i].scene.active_model_tile_bounds(800.0, 600.0);
+        let bounds = iced::Rectangle {
+            x: 0.0,
+            y: 0.0,
+            width: tile.width,
+            height: tile.height,
+        };
+        let inside = app.tabs[i]
+            .scene
+            .camera
+            .borrow()
+            .project(glam::DVec3::new(5.0, 5.0, 0.0), bounds)
+            .unwrap();
+        let cursor_local = iced::Point::new(inside.x, inside.y);
+        let cursor = iced::Point::new(tile.x + cursor_local.x, tile.y + cursor_local.y);
+        (app, handle, cursor, cursor_local)
+    }
+
+    fn click(app: &mut OpenCADStudio, cursor: iced::Point) {
+        let _ = app.update(Message::ViewportMove(cursor));
+        let _ = app.update(Message::ViewportLeftPressAt(cursor));
+        let _ = app.update(Message::ViewportLeftRelease);
+    }
+
+    /// Double-clicking inside a hatch's fill selects it and starts HATCHEDIT
+    /// on it. A hatch has no boundary wire, so the double-click must pick it
+    /// by its fill, as a single click does; before, nothing happened.
+    #[test]
+    fn double_clicking_a_hatch_starts_hatchedit_on_it() {
+        let (mut app, handle, cursor, cursor_local) = app_with_hatch();
+        let i = app.active_tab;
+        // The first click of the pair, 100 ms ago at the same spot.
+        app.last_vp_click_time =
+            Some(std::time::Instant::now() - std::time::Duration::from_millis(100));
+        app.last_vp_click_pos = Some(cursor_local);
+        click(&mut app, cursor);
+
+        let command = app.tabs[i].active_cmd.as_ref().map(|cmd| cmd.name());
+        assert_eq!(command, Some("HATCHEDIT"));
+        assert_eq!(app.tabs[i].selected_handle, Some(handle));
+        // Selected first, HATCHEDIT skipped its pick and edits this hatch.
+        assert_eq!(
+            app.tabs[i]
+                .active_cmd
+                .as_ref()
+                .map(|cmd| cmd.needs_entity_pick()),
+            Some(false)
+        );
+    }
+
+    /// With the hatch selected, the right-click menu offers Edit Hatch.
+    #[test]
+    fn a_selected_hatch_gets_edit_hatch_in_the_context_menu() {
+        use crate::ui::popup::context_menu::MenuContext;
+        let (mut app, handle, _, _) = app_with_hatch();
+        let i = app.active_tab;
+        app.tabs[i].scene.select_entity(handle, true);
+        assert!(matches!(
+            app.context_menu_context(),
+            MenuContext::Idle {
+                single_hatch: true,
+                ..
+            }
+        ));
+    }
+
+    /// HATCHEDIT started with nothing selected picks a hatch by clicking
+    /// inside its fill; before, its pick only hit wires and no hatch could
+    /// be chosen.
+    #[test]
+    fn hatchedit_picks_a_hatch_by_its_fill() {
+        let (mut app, _handle, cursor, _) = app_with_hatch();
+        let i = app.active_tab;
+        let _ = app.dispatch_command("HATCHEDIT");
+        let picking = |app: &OpenCADStudio| {
+            app.tabs[i]
+                .active_cmd
+                .as_ref()
+                .map(|cmd| (cmd.name(), cmd.needs_entity_pick()))
+        };
+        assert_eq!(picking(&app), Some(("HATCHEDIT", true)));
+
+        click(&mut app, cursor);
+        assert_eq!(picking(&app), Some(("HATCHEDIT", false)), "hatch picked");
+    }
+}
+
+#[cfg(test)]
 mod scroll_intent_tests {
     use super::{pinch_zoom_steps, scroll_intent, ScrollIntent};
     use crate::scene::view::camera::Camera;
     use iced::mouse::ScrollDelta;
 
     /// With the touchpad option, a scroll pans (wheel lines as pixels) and
-    /// Ctrl+scroll — a pinch — still zooms.
+    /// Ctrl+scroll — a pinch — still zooms. On macOS lines come from a
+    /// notched wheel only, which zooms.
+    #[cfg(not(target_os = "macos"))]
     #[test]
     fn touchpad_pan_scrolls_pan_and_ctrl_zooms() {
         assert_eq!(
@@ -8886,15 +9042,56 @@ mod scroll_intent_tests {
         );
     }
 
-    /// Both axes of the gesture have to reach the pan, and the drawing has to
-    /// follow the fingers rather than run away from them.
-    #[cfg(target_os = "macos")]
     #[test]
-    fn two_finger_scroll_pans() {
+    fn smooth_mouse_scroll_zooms_without_touchpad_mode() {
+        for (y, notches) in [(100.0, 1.0), (-100.0, -1.0), (0.0, 0.0)] {
+            assert_eq!(
+                scroll_intent(ScrollDelta::Pixels { x: 4.0, y }, false, false),
+                ScrollIntent::Zoom { notches }
+            );
+        }
+    }
+
+    /// Preserve both axes when touchpad panning is explicitly enabled.
+    #[test]
+    fn two_finger_scroll_pans_in_touchpad_mode() {
         assert_eq!(
-            scroll_intent(ScrollDelta::Pixels { x: 4.0, y: 6.0 }, false, false),
+            scroll_intent(ScrollDelta::Pixels { x: 4.0, y: 6.0 }, true, false),
             ScrollIntent::Pan { dx: 4.0, dy: 6.0 }
         );
+    }
+
+    #[test]
+    fn ctrl_pixel_scroll_zooms_in_touchpad_mode() {
+        assert_eq!(
+            scroll_intent(ScrollDelta::Pixels { x: 4.0, y: 100.0 }, true, true),
+            ScrollIntent::Zoom { notches: 1.0 }
+        );
+    }
+
+    #[test]
+    fn smooth_mouse_scroll_changes_camera_zoom_and_honors_reverse() {
+        use crate::app::{Message, OpenCADStudio};
+
+        let mut app = OpenCADStudio::new_for_test();
+        app.automation_op(r#"{"op":"new"}"#);
+        app.touchpad_pan = false;
+        app.ctrl_down = false;
+        app.zoom_wheel_reversed = false;
+        let i = app.active_tab;
+        app.tabs[i].scene.selection.borrow_mut().view.vp_size = (800.0, 600.0);
+        let before = app.tabs[i].scene.camera.borrow().distance;
+        let scroll = ScrollDelta::Pixels { x: 0.0, y: 100.0 };
+
+        let _ = app.update(Message::ViewportScroll(scroll));
+        let zoomed = app.tabs[i].scene.camera.borrow().distance;
+        assert!(zoomed < before, "scroll must zoom instead of panning");
+
+        app.zoom_wheel_reversed = true;
+        let _ = app.update(Message::ViewportScroll(scroll));
+        let reversed = app.tabs[i].scene.camera.borrow().distance;
+        assert!(reversed > zoomed, "ZOOMWHEEL must reverse smooth scrolling");
+        assert!((reversed - before).abs() < before * 1e-5);
     }
 
     /// A pinch is a scale factor, so the view has to end up exactly that much

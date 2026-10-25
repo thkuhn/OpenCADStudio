@@ -7046,6 +7046,11 @@ block-lookup =
     .invalid-table = A keresési táblázat érvénytelen.
     .invalid-value = A kiválasztott sor érvénytelen paraméterértéket tartalmaz.
     .incompatible-values = A sor értékei nem felelnek meg a paraméterek értékkészleteinek.
+    .quoted-help = A szóközt vagy írásjelet tartalmazó neveket tegye idézőjelek közé: { $name }.
+
+block-array =
+    .limit-error = A blokk kiértékelése több mint 100000 kiosztási objektumot hozna létre. Csökkentse a távolságot vagy növelje a térközt.
+
 
 project-explorer =
     .new-project = New Project

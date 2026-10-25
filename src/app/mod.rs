@@ -986,6 +986,23 @@ pub(crate) struct OpenCADStudio {
     /// (and on cancel), never a history step of their own.
     #[cfg(not(target_arch = "wasm32"))]
     plugin_grip_live_originals: Vec<(codec::Handle, codec::EntityType)>,
+    /// The grip-settle watchdog floor: [`SETTLE_WATCHDOG`] in production;
+    /// tests lower it to exercise the strike ledger with millisecond
+    /// budgets instead of real seconds.
+    #[cfg(not(target_arch = "wasm32"))]
+    plugin_grip_settle_watchdog: std::time::Duration,
+    /// The grip-settle strike ledger: plugin -> the missed-delivery times.
+    /// Three misses inside the strike window tear the connection down (the
+    /// plugin is genuinely wedged under a live pump); a settle landing in
+    /// time clears the entry (one recovered settle resets the count).
+    #[cfg(not(target_arch = "wasm32"))]
+    plugin_grip_settle_strikes: rustc_hash::FxHashMap<String, Vec<std::time::Instant>>,
+    /// Grip-declaration re-arms queued by strike tear-downs: the reap tick
+    /// re-dispatches `SelectionChanged` (dedup cleared) once the plugin is
+    /// visible again, so its declared grips come back without human
+    /// intervention.
+    #[cfg(not(target_arch = "wasm32"))]
+    pending_plugin_grips_rearm: std::collections::BTreeSet<String>,
     /// Open multi-functional grip popup. Persists across mouse moves
     /// until dismissed (click outside, ESC, cursor leaves the grip).
     grip_popup: Option<GripPopup>,
@@ -2022,6 +2039,7 @@ pub struct ClipboardDeps {
     pub linetypes: Vec<codec::tables::LineType>,
     pub text_styles: Vec<codec::tables::TextStyle>,
     pub dim_styles: Vec<codec::tables::DimStyle>,
+    pub mleader_styles: Vec<codec::objects::MultiLeaderStyle>,
     /// The text and shape-file styles the captured linetypes' shape and text
     /// segments point to. Segments name their style by handle, and shape-file
     /// styles have no name, so a paste matches them by font file instead and
@@ -2057,6 +2075,11 @@ pub struct ClipboardDeps {
     /// application by APPID handle, so a paste into another drawing
     /// re-points it at that drawing's own record of the same name.
     pub app_ids: Vec<codec::tables::AppId>,
+    /// Names of the source records the captured dimension styles point to by
+    /// handle (text style, linetypes, arrow blocks), keyed by source handle.
+    /// A paste re-points each recreated style at this drawing's records of
+    /// the same name, so it never names an object of the source drawing.
+    pub dim_style_refs: rustc_hash::FxHashMap<codec::Handle, String>,
 }
 
 /// A captured block definition: its base point and the entities it owns
@@ -2134,6 +2157,88 @@ impl ClipboardDeps {
                     dstyles.insert(l.dimension_style.clone());
                 }
                 _ => {}
+            }
+        }
+        // A dimension style names its text style, linetypes and arrow blocks
+        // by handle: bring the records along (the arrow blocks come with the
+        // captured blocks) and remember their names for the paste.
+        let mut dim_style_refs = rustc_hash::FxHashMap::default();
+        let mut mleader_styles = Vec::new();
+        for entity in entities
+            .iter()
+            .chain(blocks.iter().flat_map(|d| d.entities.iter()))
+        {
+            let EntityType::MultiLeader(m) = entity else {
+                continue;
+            };
+            let mut m = m.clone();
+            if let Some(codec::objects::ObjectType::MultiLeaderStyle(style)) =
+                m.style_handle.and_then(|h| doc.objects.get(&h))
+            {
+                if !mleader_styles
+                    .iter()
+                    .any(|s: &codec::objects::MultiLeaderStyle| s.handle == style.handle)
+                {
+                    mleader_styles.push(style.clone());
+                }
+            }
+            for h in crate::app::command_driver::clipboard::mleader_handles(&mut m)
+                .into_iter()
+                .filter_map(|h| *h)
+                .chain(mleader_styles.iter().flat_map(|s| {
+                    [
+                        s.text_style_handle,
+                        s.line_type_handle,
+                        s.arrowhead_handle,
+                        s.block_content_handle,
+                    ]
+                    .into_iter()
+                    .flatten()
+                }))
+            {
+                // Blocks come through `capture_blocks`; the paste maps all by name.
+                if let Some(t) = doc.text_styles.iter().find(|t| t.handle == h) {
+                    tstyles.insert(t.name.clone());
+                } else if let Some(t) = doc.line_types.iter().find(|t| t.handle == h) {
+                    ltypes.insert(t.name.clone());
+                }
+            }
+        }
+        for style in dstyles.iter().filter_map(|n| doc.dim_styles.get(n)) {
+            let text = style.dimtxsty_handle;
+            if let Some(t) = doc
+                .text_styles
+                .iter()
+                .find(|t| !text.is_null() && t.handle == text)
+            {
+                tstyles.insert(t.name.clone());
+                dim_style_refs.insert(text, t.name.clone());
+            }
+            for h in [
+                style.dimltex_handle,
+                style.dimltex1_handle,
+                style.dimltex2_handle,
+            ] {
+                let Some(lt) = doc
+                    .line_types
+                    .iter()
+                    .find(|lt| !h.is_null() && lt.handle == h)
+                else {
+                    continue;
+                };
+                if !is_special(&lt.name) && !lt.name.eq_ignore_ascii_case("Continuous") {
+                    ltypes.insert(lt.name.clone());
+                }
+                dim_style_refs.insert(h, lt.name.clone());
+            }
+            for h in crate::app::command_driver::clipboard::dim_style_blocks(style) {
+                if let Some(r) = doc
+                    .block_records
+                    .iter()
+                    .find(|r| !h.is_null() && r.handle == h)
+                {
+                    dim_style_refs.insert(h, r.name.clone());
+                }
             }
         }
         // Extension-dictionary subtree per entity (XCLIP filters etc.).
@@ -2311,6 +2416,8 @@ impl ClipboardDeps {
             ext_objects,
             groups,
             app_ids,
+            dim_style_refs,
+            mleader_styles,
         }
     }
 
@@ -2386,6 +2493,7 @@ impl ClipboardDeps {
                 }
             }
             Self::queue_table_blocks(doc, e, &mut seen, &mut queue);
+            Self::queue_dim_style_blocks(doc, e, &mut seen, &mut queue);
         }
         let mut defs = Vec::new();
         while let Some(name) = queue.pop() {
@@ -2401,6 +2509,7 @@ impl ClipboardDeps {
                     }
                 }
                 Self::queue_table_blocks(doc, e, &mut seen, &mut queue);
+                Self::queue_dim_style_blocks(doc, e, &mut seen, &mut queue);
             }
             defs.push(def);
         }
@@ -2419,6 +2528,56 @@ impl ClipboardDeps {
             return;
         };
         for name in crate::app::command_driver::clipboard::table_cell_blocks(table)
+            .filter_map(|h| doc.block_records.iter().find(|r| r.handle == h))
+            .map(|record| record.name.clone())
+        {
+            if seen.insert(name.clone()) {
+                queue.push(name);
+            }
+        }
+    }
+
+    /// Queue the arrow blocks of a dimension's (or leader's) style.
+    fn queue_dim_style_blocks(
+        doc: &codec::CadDocument,
+        entity: &codec::EntityType,
+        seen: &mut rustc_hash::FxHashSet<String>,
+        queue: &mut Vec<String>,
+    ) {
+        if let codec::EntityType::MultiLeader(m) = entity {
+            let mut m = m.clone();
+            let style = m.style_handle.and_then(|h| doc.objects.get(&h));
+            let handles = crate::app::command_driver::clipboard::mleader_handles(&mut m);
+            let style_handles = match style {
+                Some(codec::objects::ObjectType::MultiLeaderStyle(s)) => {
+                    [s.arrowhead_handle, s.block_content_handle]
+                }
+                _ => [None, None],
+            };
+            for h in handles
+                .into_iter()
+                .filter_map(|h| *h)
+                .chain(style_handles.into_iter().flatten())
+            {
+                if let Some(r) = doc.block_records.iter().find(|r| r.handle == h) {
+                    if seen.insert(r.name.clone()) {
+                        queue.push(r.name.clone());
+                    }
+                }
+            }
+            return;
+        }
+        let style = match entity {
+            codec::EntityType::Dimension(d) => &d.base().style_name,
+            codec::EntityType::Leader(l) => &l.dimension_style,
+            _ => return,
+        };
+        let Some(style) = doc.dim_styles.get(style) else {
+            return;
+        };
+        for name in crate::app::command_driver::clipboard::dim_style_blocks(style)
+            .into_iter()
+            .filter(|h| !h.is_null())
             .filter_map(|h| doc.block_records.iter().find(|r| r.handle == h))
             .map(|record| record.name.clone())
         {
@@ -5079,7 +5238,8 @@ impl OpenCADStudio {
             nav_left_with_middle: false,
             dynamic_ucs: true,
             dynamic_ucs_restore: None,
-            touchpad_pan: false,
+            // A Mac's built-in trackpad is the common case there.
+            touchpad_pan: cfg!(target_os = "macos"),
             touch: Default::default(),
             touch_offset: None,
             ui_scale_percent: 100,
@@ -5189,6 +5349,12 @@ impl OpenCADStudio {
             plugin_grip_deliveries: Default::default(),
             #[cfg(not(target_arch = "wasm32"))]
             plugin_grip_live_originals: Vec::new(),
+            #[cfg(not(target_arch = "wasm32"))]
+            plugin_grip_settle_watchdog: crate::app::update::SETTLE_WATCHDOG,
+            #[cfg(not(target_arch = "wasm32"))]
+            plugin_grip_settle_strikes: Default::default(),
+            #[cfg(not(target_arch = "wasm32"))]
+            pending_plugin_grips_rearm: Default::default(),
             grip_popup: None,
             grip_pending: None,
             visibility_popup: None,

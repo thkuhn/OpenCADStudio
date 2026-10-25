@@ -741,9 +741,12 @@ impl shader::Primitive for Primitive {
                         self, PersistentWireArena as WireArena,
                     };
                     let const_bgl = inner.wire_const_bgl.as_ref();
-                    let base_ok = vp.wire_patch.as_ref().map_or(false, |(base, patch)| {
-                        inner.wire_arena_id == *base && !patch.changes.is_empty()
-                    });
+                    // A full draw-depth rebuild moves every label, which a patch
+                    // of the changed entities alone would leave stale.
+                    let base_ok = inner.wire_arena_depth_generation == vp.draw_depth_generation
+                        && vp.wire_patch.as_ref().map_or(false, |(base, patch)| {
+                            inner.wire_arena_id == *base && !patch.changes.is_empty()
+                        });
                     let patch = vp.wire_patch.as_ref().map(|(_, patch)| patch);
                     if _perf {
                         crate::perf_record!(
@@ -1004,6 +1007,7 @@ retained_contributors={}",
                             } else {
                                 u64::MAX
                             };
+                        inner.wire_arena_depth_generation = vp.draw_depth_generation;
                         arena_served = true;
                     } else {
                         inner.wire_arena = None;
@@ -3372,6 +3376,15 @@ impl Scene {
         (final_color, pl, pat, lw, aci)
     }
 
+    /// Whether lines are drawn at their lineweights on screen. `$LWDISPLAY`
+    /// decides it in model space and in every layout alike: a layout that
+    /// displays plot styles takes its lineweights from the style table, but
+    /// AutoCAD and DWG TrueView still draw them hairline while LWDISPLAY is
+    /// off.
+    pub(crate) fn lineweights_on_screen(&self) -> bool {
+        self.document.header.lineweight_display
+    }
+
     fn display_plot_style(&self) -> Option<Arc<crate::io::plot_style::PlotStyleTable>> {
         if self.current_layout == "Model" {
             return None;
@@ -4889,15 +4902,7 @@ impl Scene {
             width: full.width.max(1.0),
             height: full.height.max(1.0),
         };
-        let display_plot_lineweights = self.current_layout != "Model"
-            && self.effective_plot_settings().is_some_and(|settings| {
-                settings.flags.show_plot_styles && settings.flags.print_lineweights
-            });
-        let mut uniforms = Uniforms::new(
-            &inst.camera,
-            full_bounds,
-            self.document.header.lineweight_display || display_plot_lineweights,
-        );
+        let mut uniforms = Uniforms::new(&inst.camera, full_bounds, self.lineweights_on_screen());
         if self.current_layout == "Model" {
             uniforms.lineweight_scale = -self.model_lineweight_scale;
         } else {
@@ -5535,6 +5540,25 @@ mod layer0_inherit_tests {
         entity.common_mut().transparency = Transparency::OPAQUE;
         let color = resolve(&d, &entity, [0.2, 0.4, 0.6, 0.25]);
         assert_eq!(color[3], 1.0);
+    }
+
+    /// A layout that displays plot styles and plots lineweights still draws
+    /// hairlines while LWDISPLAY is off, as AutoCAD 2025 does on such a
+    /// drawing; turning LWDISPLAY on shows the lineweights.
+    #[test]
+    fn displayed_plot_styles_do_not_turn_lineweights_on() {
+        let mut scene = Scene::new();
+        scene.set_current_layout("Layout1".into());
+        let mut settings = scene.effective_plot_settings().expect("layout settings");
+        settings.current_style_sheet = crate::io::plot_style::MONOCHROME_PLOT_STYLE.into();
+        settings.flags.show_plot_styles = true;
+        settings.flags.print_lineweights = true;
+        assert!(scene.set_layout_plot_settings("Layout1", &settings));
+
+        scene.document.header.lineweight_display = false;
+        assert!(!scene.lineweights_on_screen());
+        scene.document.header.lineweight_display = true;
+        assert!(scene.lineweights_on_screen());
     }
 
     /// Displayed plot styles recolour a repeated block's stubbed copies too,

@@ -97,15 +97,16 @@ fn restore_text_orient(e: &mut EntityType, o: &TextOrient) {
 }
 
 /// MIRRTEXT on: a real MIRROR makes text a true glyph mirror. `apply_transform`
-/// already reflects the baseline rotation; toggling *both* group-71 bits
-/// (backward `0x2` + upside-down `0x4`) then renders the exact geometric
-/// reflection (the renderer XORs these flags into the effective width-factor
-/// sign / 180° flip). Toggling — not setting — keeps a double mirror an
-/// involution. Only single-line TEXT carries group 71; MTEXT / Shape keep the
-/// reflected rotation (readable-but-rotated), which is standard-conforming.
+/// already reflects the baseline rotation to `2·axis − rot`; the reflected glyph
+/// frame is that rotation plus 180° with the backward bit (`0x2`) toggled, which
+/// is what AutoCAD writes (upside-down `0x4` untouched). Toggling — not setting —
+/// keeps a double mirror an involution. Only single-line TEXT carries group 71;
+/// MTEXT / Shape keep the reflected rotation (readable-but-rotated), which is
+/// standard-conforming.
 fn mirror_true_text_flags(e: &mut EntityType) {
     if let EntityType::Text(t) = e {
-        t.generation_flags ^= 0x2 | 0x4;
+        t.generation_flags ^= 0x2;
+        t.rotation = (t.rotation + std::f64::consts::PI).rem_euclid(std::f64::consts::TAU);
     }
 }
 
@@ -716,6 +717,10 @@ impl Scene {
                         stack.push(xd);
                     }
                 }
+                // A text field's nested fields belong to the same tree.
+                codec::objects::ObjectType::Field(f) => {
+                    stack.extend(f.child_fields.iter().copied());
+                }
                 _ => {}
             }
         }
@@ -790,6 +795,18 @@ impl Scene {
                     }
                     if let Some(&definition) = doc.block_representations.get(&h) {
                         representations.push((new_h, definition));
+                    }
+                }
+                // A FIELD under ACAD_FIELD: the copy evaluates its own field
+                // tree, so its handle, owner and nested fields are remapped.
+                codec::objects::ObjectType::Field(f) => {
+                    f.handle = new_h;
+                    f.owner = rewrite(f.owner);
+                    for child in &mut f.child_fields {
+                        *child = rewrite(*child);
+                    }
+                    for r in &mut f.referenced_objects {
+                        *r = rewrite(*r);
                     }
                 }
                 _ => {}
@@ -1008,6 +1025,9 @@ impl Scene {
                             stack.push(xd);
                         }
                     }
+                    codec::objects::ObjectType::Field(f) => {
+                        stack.extend(f.child_fields.iter().copied());
+                    }
                     _ => {}
                 }
             }
@@ -1049,6 +1069,21 @@ impl Scene {
                     }
                 }
             }
+            // An attribute's own extension dictionary (a field ATTRIB keeps
+            // its FIELD there) is cloned for the copy like the entity's; the
+            // source handles are read before the attributes get new ones.
+            let attribute_xdicts: Vec<(usize, Handle, Handle)> = match &mut entity {
+                EntityType::Insert(ins) => ins
+                    .attributes
+                    .iter_mut()
+                    .enumerate()
+                    .filter_map(|(k, att)| {
+                        let root = att.common.xdictionary_handle.take()?;
+                        Some((k, att.common.handle, root))
+                    })
+                    .collect(),
+                _ => Vec::new(),
+            };
             Self::reset_clone_subhandles(&mut self.document, &mut entity);
 
             // The source root was captured above; the clone must never carry
@@ -1078,6 +1113,31 @@ impl Scene {
                         // a pure-entity delta; keep undo on the full snapshot.
                         self.poison_undo_recording();
                     }
+                }
+                for (k, src_attribute, src_root) in attribute_xdicts {
+                    let Some(new_attribute) = (match self.document.get_entity(h) {
+                        Some(EntityType::Insert(ins)) => {
+                            ins.attributes.get(k).map(|a| a.common.handle)
+                        }
+                        _ => None,
+                    }) else {
+                        continue;
+                    };
+                    let Some(new_root) = Self::clone_xdict_tree(
+                        &mut self.document,
+                        src_attribute,
+                        src_root,
+                        new_attribute,
+                        &cross,
+                        &owner_of,
+                        &mut created_objects,
+                    ) else {
+                        continue;
+                    };
+                    if let Some(EntityType::Insert(ins)) = self.document.get_entity_mut(h) {
+                        ins.attributes[k].common.xdictionary_handle = Some(new_root);
+                    }
+                    self.poison_undo_recording();
                 }
                 if !annotation_scales.is_empty() {
                     for scale_handle in annotation_scales {
@@ -1175,6 +1235,7 @@ impl Scene {
             let _ = self.sync_displayed_annotation_context(leader_handle);
         }
         remap_copied_reactors(&mut self.document, &handle_map);
+        remap_copied_viewport_clips(&mut self.document, &handle_map, false);
         // A tree cloned in one pass can hold refs to sibling copied entities;
         // only once every copy exists can those resolve.
         remap_copied_xdict_cross_refs(&mut self.document, &handle_map, &created_objects);
@@ -2696,6 +2757,32 @@ pub(crate) fn remap_copied_reactors(
     }
 }
 
+/// A copied clipped viewport is clipped by the copy of its boundary when that
+/// was copied with it, never by the source's boundary (which sits on the
+/// source viewport and would clip the copy somewhere else). With
+/// `drop_unmapped` (a paste, whose source handles may name anything in this
+/// drawing) a viewport whose boundary did not come along loses its clip.
+pub(crate) fn remap_copied_viewport_clips(
+    document: &mut codec::CadDocument,
+    handle_map: &rustc_hash::FxHashMap<Handle, Handle>,
+    drop_unmapped: bool,
+) {
+    for &copy in handle_map.values() {
+        let Some(EntityType::Viewport(viewport)) = document.get_entity_mut(copy) else {
+            continue;
+        };
+        if viewport.clip_boundary_handle.is_null() {
+            continue;
+        }
+        if let Some(&boundary) = handle_map.get(&viewport.clip_boundary_handle) {
+            viewport.clip_boundary_handle = boundary;
+        } else if drop_unmapped {
+            viewport.clip_boundary_handle = Handle::NULL;
+            viewport.status.non_rectangular_clipping = false;
+        }
+    }
+}
+
 /// Resolve entity-valued refs inside freshly cloned object trees through the
 /// completed copy map. Object-to-object cross-refs are already resolved
 /// against the shared prealloc map inside `clone_xdict_tree`; this pass only
@@ -2741,6 +2828,67 @@ fn remap_copied_xdict_cross_refs(
                 }
             }
             _ => {}
+        }
+    }
+}
+
+#[cfg(test)]
+mod mirror_text_tests {
+    use super::*;
+    use glam::DVec3;
+
+    fn mirror(p2: DVec3) -> EntityTransform {
+        EntityTransform::Mirror {
+            p1: DVec3::ZERO,
+            p2,
+            working_normal: DVec3::Z,
+        }
+    }
+
+    fn text(scene: &mut Scene, rotation_deg: f64) -> Handle {
+        let mut t = codec::entities::Text::new();
+        t.value = "ABC".to_string();
+        t.rotation = rotation_deg.to_radians();
+        scene.document.add_entity(EntityType::Text(t)).unwrap()
+    }
+
+    fn orient(scene: &Scene, handle: Handle) -> (f64, i16) {
+        match scene.document.get_entity(handle) {
+            Some(EntityType::Text(t)) => (t.rotation.to_degrees(), t.generation_flags),
+            other => panic!("expected a text, got {other:?}"),
+        }
+    }
+
+    /// MIRRTEXT on: rotation and group 71 as AutoCAD writes them, for a
+    /// vertical, horizontal and sloped axis through the origin.
+    #[test]
+    fn mirrtext_on_matches_autocad() {
+        let cases = [
+            (DVec3::Y, 0.0, 0.0),
+            (DVec3::Y, 30.0, 330.0),
+            (DVec3::X, 0.0, 180.0),
+            (DVec3::X, 30.0, 150.0),
+            (DVec3::new(1.0, 1.0, 0.0), 0.0, 270.0),
+            (DVec3::new(2.0, 1.0, 0.0), 90.0, 143.130),
+        ];
+        for (axis, rotation, expected) in cases {
+            let mut scene = Scene::new();
+            scene.document.header.mirror_text = true;
+            let moved = text(&mut scene, rotation);
+            scene.transform_entities(&[moved], &mirror(axis));
+            let source = text(&mut scene, rotation);
+            let copy = scene.copy_entities(&[source], &mirror(axis))[0];
+            for handle in [moved, copy] {
+                let (got, flags) = orient(&scene, handle);
+                assert!(
+                    (got - expected).abs() < 1e-3,
+                    "rot {rotation} about {axis:?}: got {got}, AutoCAD {expected}"
+                );
+                assert_eq!(
+                    flags, 2,
+                    "rot {rotation} about {axis:?}: only backward is set"
+                );
+            }
         }
     }
 }
@@ -3781,5 +3929,221 @@ mod copy_entities_subhandle_tests {
             .collect();
         first_x.sort_by(f64::total_cmp);
         assert_eq!(first_x, vec![20.0, 120.0, 220.0]);
+    }
+}
+
+#[cfg(test)]
+mod copy_viewport_clip_tests {
+    use super::*;
+    use crate::command::EntityTransform;
+    use codec::entities::{LwPolyline, Viewport};
+    use glam::DVec3;
+
+    fn clipped_viewport(scene: &mut Scene) -> (Handle, Handle) {
+        let mut boundary = LwPolyline::new();
+        boundary.add_point(codec::types::Vector2::new(0.0, 0.0));
+        boundary.add_point(codec::types::Vector2::new(10.0, 0.0));
+        boundary.add_point(codec::types::Vector2::new(5.0, 8.0));
+        boundary.is_closed = true;
+        let boundary = scene.add_entity(EntityType::LwPolyline(boundary));
+        let mut viewport = Viewport::new();
+        viewport.clip_boundary_handle = boundary;
+        viewport.status.non_rectangular_clipping = true;
+        let viewport = scene.add_entity(EntityType::Viewport(Box::new(viewport)));
+        (viewport, boundary)
+    }
+
+    fn clip_of(scene: &Scene, viewport: Handle) -> Handle {
+        match scene.document.get_entity(viewport) {
+            Some(EntityType::Viewport(v)) => v.clip_boundary_handle,
+            other => panic!("expected a viewport, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn copied_viewport_is_clipped_by_the_copied_boundary() {
+        let mut scene = Scene::new();
+        let (viewport, boundary) = clipped_viewport(&mut scene);
+        let copies = scene.copy_entities(
+            &[viewport, boundary],
+            &EntityTransform::Translate(DVec3::new(100.0, 0.0, 0.0)),
+        );
+        let copied_viewport = copies
+            .iter()
+            .copied()
+            .find(|&h| matches!(scene.document.get_entity(h), Some(EntityType::Viewport(_))))
+            .expect("copied viewport");
+        let copied_boundary = copies
+            .iter()
+            .copied()
+            .find(|&h| {
+                matches!(
+                    scene.document.get_entity(h),
+                    Some(EntityType::LwPolyline(_))
+                )
+            })
+            .expect("copied boundary");
+        assert_eq!(clip_of(&scene, copied_viewport), copied_boundary);
+        assert_eq!(clip_of(&scene, viewport), boundary);
+    }
+}
+
+#[cfg(test)]
+mod copy_field_tests {
+    use super::*;
+    use crate::command::EntityTransform;
+    use codec::objects::{Dictionary, Field, ObjectType};
+    use glam::DVec3;
+
+    /// `owner`'s extension dictionary: ACAD_FIELD { TEXT -> field(child) }.
+    /// Returns (root, text field, child field).
+    fn add_field_tree(doc: &mut codec::CadDocument, owner: Handle) -> (Handle, Handle, Handle) {
+        let root_h = doc.allocate_handle();
+        let fields_h = doc.allocate_handle();
+        let text_h = doc.allocate_handle();
+        let child_h = doc.allocate_handle();
+        let mut root = Dictionary::new();
+        root.handle = root_h;
+        root.owner = owner;
+        root.add_entry("ACAD_FIELD", fields_h);
+        let mut fields = Dictionary::new();
+        fields.handle = fields_h;
+        fields.owner = root_h;
+        fields.add_entry("TEXT", text_h);
+        let text = Field {
+            handle: text_h,
+            owner: fields_h,
+            evaluator_id: "_text".to_string(),
+            child_fields: vec![child_h],
+            ..Default::default()
+        };
+        let child = Field {
+            handle: child_h,
+            owner: text_h,
+            evaluator_id: "AcVar".to_string(),
+            code: r"\AcVar CustomDP.Client".to_string(),
+            ..Default::default()
+        };
+        doc.objects.insert(root_h, ObjectType::Dictionary(root));
+        doc.objects.insert(fields_h, ObjectType::Dictionary(fields));
+        doc.objects.insert(text_h, ObjectType::Field(text));
+        doc.objects.insert(child_h, ObjectType::Field(child));
+        (root_h, text_h, child_h)
+    }
+
+    fn entry(doc: &codec::CadDocument, dict: Handle, key: &str) -> Handle {
+        match doc.objects.get(&dict) {
+            Some(ObjectType::Dictionary(d)) => d
+                .entries
+                .iter()
+                .find(|(k, _)| k == key)
+                .map(|(_, h)| *h)
+                .expect("dictionary entry"),
+            other => panic!("expected a dictionary, got {other:?}"),
+        }
+    }
+
+    fn field(doc: &codec::CadDocument, h: Handle) -> &Field {
+        match doc.objects.get(&h) {
+            Some(ObjectType::Field(f)) => f,
+            other => panic!("expected a field, got {other:?}"),
+        }
+    }
+
+    /// The copy's ACAD_FIELD tree is its own: fresh handles stored on the
+    /// objects themselves, owners and child links inside the new tree.
+    fn assert_own_field_tree(
+        doc: &codec::CadDocument,
+        copy_root: Handle,
+        src_text: Handle,
+        src_child: Handle,
+    ) {
+        let fields = entry(doc, copy_root, "ACAD_FIELD");
+        let text_h = entry(doc, fields, "TEXT");
+        assert_ne!(text_h, src_text);
+        let text = field(doc, text_h);
+        assert_eq!(text.handle, text_h, "field object keeps its source handle");
+        assert_eq!(text.owner, fields);
+        assert_eq!(text.child_fields.len(), 1);
+        let child_h = text.child_fields[0];
+        assert_ne!(child_h, src_child, "copy shares the source's child field");
+        let child = field(doc, child_h);
+        assert_eq!(child.handle, child_h);
+        assert_eq!(child.owner, text_h);
+        assert_eq!(child.code, r"\AcVar CustomDP.Client");
+    }
+
+    #[test]
+    fn copied_text_gets_its_own_field_tree() {
+        let mut scene = Scene::new();
+        let src = scene
+            .document
+            .add_entity(EntityType::MText(Box::new(codec::entities::MText::new())))
+            .unwrap();
+        let (root, text, child) = add_field_tree(&mut scene.document, src);
+        scene
+            .document
+            .get_entity_mut(src)
+            .unwrap()
+            .common_mut()
+            .xdictionary_handle = Some(root);
+        let copies = scene.copy_entities(
+            &[src],
+            &EntityTransform::Translate(DVec3::new(100.0, 0.0, 0.0)),
+        );
+        let copy_root = scene
+            .document
+            .get_entity(copies[0])
+            .unwrap()
+            .common()
+            .xdictionary_handle
+            .expect("copy has an extension dictionary");
+        assert_ne!(copy_root, root);
+        assert_own_field_tree(&scene.document, copy_root, text, child);
+        assert_eq!(field(&scene.document, text).child_fields, vec![child]);
+    }
+
+    #[test]
+    fn copied_insert_attribute_gets_its_own_field_tree() {
+        let mut scene = Scene::new();
+        let mut insert = codec::entities::Insert::new(
+            "TITLE".to_string(),
+            codec::types::Vector3::ZERO,
+        );
+        insert.attributes.push(codec::entities::AttributeEntity::new(
+            "CLIENT".to_string(),
+            "ACME".to_string(),
+        ));
+        let src = scene.document.add_entity(EntityType::Insert(insert)).unwrap();
+        let src_attribute = match scene.document.get_entity(src) {
+            Some(EntityType::Insert(ins)) => ins.attributes[0].common.handle,
+            _ => unreachable!(),
+        };
+        let (root, text, child) = add_field_tree(&mut scene.document, src_attribute);
+        if let Some(EntityType::Insert(ins)) = scene.document.get_entity_mut(src) {
+            ins.attributes[0].common.xdictionary_handle = Some(root);
+        }
+        let copies = scene.copy_entities(
+            &[src],
+            &EntityTransform::Translate(DVec3::new(100.0, 0.0, 0.0)),
+        );
+        let (copy_attribute, copy_root) = match scene.document.get_entity(copies[0]) {
+            Some(EntityType::Insert(ins)) => (
+                ins.attributes[0].common.handle,
+                ins.attributes[0].common.xdictionary_handle,
+            ),
+            other => panic!("expected the copied insert, got {other:?}"),
+        };
+        let copy_root = copy_root.expect("copied attribute has an extension dictionary");
+        assert_ne!(copy_root, root, "copied attribute shares the source's dictionary");
+        match scene.document.objects.get(&copy_root) {
+            Some(ObjectType::Dictionary(d)) => assert_eq!(d.owner, copy_attribute),
+            other => panic!("expected a dictionary, got {other:?}"),
+        }
+        match scene.document.objects.get(&root) {
+            Some(ObjectType::Dictionary(d)) => assert_eq!(d.owner, src_attribute),
+            other => panic!("expected a dictionary, got {other:?}"),
+        }
+        assert_own_field_tree(&scene.document, copy_root, text, child);
     }
 }

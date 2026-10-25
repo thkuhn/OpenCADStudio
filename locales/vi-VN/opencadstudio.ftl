@@ -7069,6 +7069,11 @@ block-lookup =
     .invalid-table = Bảng tra cứu không hợp lệ.
     .invalid-value = Hàng được chọn có giá trị tham số không hợp lệ.
     .incompatible-values = Các giá trị trong hàng không đáp ứng tập giá trị tham số.
+    .quoted-help = Đặt tên có khoảng trắng hoặc dấu câu trong dấu trích dẫn: { $name }.
+
+block-array =
+    .limit-error = Việc tính toán khối sẽ tạo hơn 100000 đối tượng mảng. Giảm khoảng cách hoặc tăng bước mảng.
+
 
 project-explorer =
     .new-project = New Project

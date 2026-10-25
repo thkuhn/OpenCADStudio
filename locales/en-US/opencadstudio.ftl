@@ -7383,6 +7383,11 @@ block-lookup =
     .invalid-table = The Lookup table is invalid.
     .invalid-value = The selected Lookup row has an invalid parameter value.
     .incompatible-values = The Lookup row values do not satisfy the parameter value sets.
+    .quoted-help = Quote names with spaces or punctuation: { $name }.
+
+block-array =
+    .limit-error = Block evaluation would generate more than 100000 array objects. Reduce the distance or increase the spacing.
+
 
 aec-ui =
     .base-plane = Base plane
