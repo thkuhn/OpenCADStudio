@@ -274,6 +274,9 @@ pub struct Room {
     /// Optional room-specific ceiling finish / suspended ceiling layer stack.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ceiling_finish: Option<Vec<RoomFinish>>,
+    /// Optional attached parametric formulas for properties.
+    #[serde(default)]
+    pub formulas: crate::modules::aec::engine::formulas::AecFormulas,
 }
 
 fn default_room_factor() -> f64 {
@@ -314,6 +317,7 @@ impl Room {
             finish_style_id: None,
             floor_finish: None,
             ceiling_finish: None,
+            formulas: crate::modules::aec::engine::formulas::AecFormulas::default(),
         }
     }
 

@@ -466,6 +466,7 @@ fn slice_wall_horizontal(
                     sill_normal: [0.0, 0.0, 1.0],
                     head_origin: [0.0; 3],
                     head_normal: [0.0, 0.0, 1.0],
+                    formulas: crate::modules::aec::engine::formulas::AecFormulas::default(),
                 }
             })
             .collect();

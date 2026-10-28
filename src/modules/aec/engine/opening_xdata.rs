@@ -72,6 +72,12 @@ pub(crate) fn opening_record(opening: &engine::openings::Opening) -> ExtendedDat
     record.add_value(XDataValue::String(opening.niche_side.as_str().to_string()));
     record.add_value(XDataValue::String(opening.swing_side.as_str().to_string()));
     encode_opening_planes(&mut record.values, opening);
+    if !opening.formulas.is_empty() {
+        if let Ok(json) = serde_json::to_string(&opening.formulas) {
+            record.add_value(XDataValue::String("formulas".to_string()));
+            record.add_value(XDataValue::String(json));
+        }
+    }
     record
 }
 
@@ -310,6 +316,18 @@ pub fn opening_from_values(
         head_normal,
     ) = parse_opening_planes_trailer(v);
 
+    let mut formulas = crate::modules::aec::engine::formulas::AecFormulas::default();
+    if let Some(pos) = v
+        .iter()
+        .rposition(|x| matches!(x, XDataValue::String(s) if s == "formulas" || s == "FORMULAS"))
+    {
+        if let Some(XDataValue::String(json)) = v.get(pos + 1) {
+            if let Ok(f) = serde_json::from_str(json) {
+                formulas = f;
+            }
+        }
+    }
+
     Some(engine::openings::Opening {
         handle,
         host_wall,
@@ -337,6 +355,7 @@ pub fn opening_from_values(
         sill_normal,
         head_origin,
         head_normal,
+        formulas,
     })
 }
 
@@ -680,5 +699,16 @@ mod tests {
         let mut o_flip = back;
         o_flip.flip_swing();
         assert_eq!(o_flip.swing_side, engine::openings::SwingSide::Exterior);
+    }
+
+    #[test]
+    fn test_opening_xdata_roundtrip_with_formulas() {
+        let mut o = sample_opening();
+        o.formulas.set("opening_width", "1.0 + 0.2".to_string());
+        o.formulas.set("opening_sill", "_BRH".to_string());
+        let rec = opening_record(&o);
+        let back = opening_from_values(o.handle, &rec.values).expect("parse with formulas");
+        assert_eq!(back.formulas.get("opening_width"), Some("1.0 + 0.2"));
+        assert_eq!(back.formulas.get("opening_sill"), Some("_BRH"));
     }
 }

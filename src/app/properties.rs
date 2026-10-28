@@ -4221,6 +4221,11 @@ fn intersect_into(
             if prop.value != other.value {
                 prop.value = merge_prop_value(&prop.value, &other.value);
             }
+            if prop.label != other.label {
+                if let Some((base, _)) = prop.label.split_once(" (fx") {
+                    prop.label = base.to_string();
+                }
+            }
             true
         });
         !section.props.is_empty()

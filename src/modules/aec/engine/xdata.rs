@@ -806,6 +806,12 @@ pub fn wall_record_for_wall(wall: &Wall) -> Vec<XDataValue> {
         values.truncate(pos);
     }
     encode_wall_planes(&mut values, Some(wall));
+    if !wall.formulas.is_empty() {
+        if let Ok(json) = serde_json::to_string(&wall.formulas) {
+            values.push(XDataValue::String("formulas".to_string()));
+            values.push(XDataValue::String(json));
+        }
+    }
     values
 }
 
@@ -1134,6 +1140,18 @@ pub fn wall_from_entity(entity: &EntityType) -> Option<Wall> {
         top_origin = [base_origin[0], base_origin[1], base_origin[2] + height];
     }
 
+    let mut formulas = crate::modules::aec::engine::formulas::AecFormulas::default();
+    if let Some(pos) = v
+        .iter()
+        .rposition(|x| matches!(x, XDataValue::String(s) if s == "formulas" || s == "FORMULAS"))
+    {
+        if let Some(XDataValue::String(json)) = v.get(pos + 1) {
+            if let Ok(f) = serde_json::from_str(json) {
+                formulas = f;
+            }
+        }
+    }
+
     Some(Wall {
         style_id,
         height,
@@ -1155,6 +1173,7 @@ pub fn wall_from_entity(entity: &EntityType) -> Option<Wall> {
         top_normal,
         base_facets,
         top_facets,
+        formulas,
     })
 }
 
@@ -1383,4 +1402,28 @@ pub(crate) fn slugify(name: &str) -> String {
 pub(crate) fn unique_id(prefix: &str, name: &str) -> String {
     let suffix = uuid::Uuid::new_v4().simple().to_string();
     format!("{prefix}_{}_{}", slugify(name), &suffix[..8])
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use acadrust::entities::LwPolyline;
+
+    #[test]
+    fn test_wall_xdata_roundtrip_with_formulas() {
+        let mut wall = Wall::new("style_standard_24", 2.75, 1);
+        wall.formulas.set("wall_height", "_STORY_H - 0.25".to_string());
+        wall.formulas.set("wall_top_offset", "-0.05".to_string());
+
+        let values = wall_record_for_wall(&wall);
+        let mut entity = EntityType::LwPolyline(LwPolyline::new());
+        let mut record = ExtendedDataRecord::new(AEC_APPID);
+        record.values = values;
+        entity.common_mut().extended_data.add_record(record);
+
+        let parsed = wall_from_entity(&entity).expect("Should parse wall");
+        assert_eq!(parsed.height, 2.75);
+        assert_eq!(parsed.formulas.get("wall_height"), Some("_STORY_H - 0.25"));
+        assert_eq!(parsed.formulas.get("wall_top_offset"), Some("-0.05"));
+    }
 }

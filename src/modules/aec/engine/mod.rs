@@ -12,6 +12,7 @@ pub mod display_component;
 pub mod elevation_cut;
 pub mod expr;
 pub mod floor_transition;
+pub mod formulas;
 pub mod geometry;
 pub mod ifc;
 pub mod join;
@@ -60,6 +61,7 @@ mod wall_command_tests;
 
 pub use geometry::{create_solid3d_from_body, get_offset_directions};
 pub use floor_transition::{find_floor_transitions_for_room, total_transition_area, FloorTransitionZone};
+pub use formulas::AecFormulas;
 pub use ifc::Scene;
 pub use library::StyleLibrary;
 pub use loop_detection::find_closed_loop;

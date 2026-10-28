@@ -438,6 +438,7 @@ impl OpenCADStudio {
             self.tabs[i].scene.sync_native_parametric_graph();
         }
         self.tabs[i].scene.refresh_dynamic_dimension_texts();
+        self.aec_recompute_all_formulas(i);
         if let Some(pd) = pending {
             self.commit_undo_delta(i, pd);
         }
@@ -485,6 +486,7 @@ impl OpenCADStudio {
         self.tabs[i].dirty = true;
         if touched.is_empty() {
             self.tabs[i].scene.sync_native_parametric_graph();
+            self.aec_recompute_all_formulas(i);
             return;
         }
         let changes: Vec<(Handle, crate::scene::ChangeKind)> = touched
@@ -494,6 +496,7 @@ impl OpenCADStudio {
         self.tabs[i]
             .scene
             .bump_entities_with_parametric_policy(&changes, &anchors, false);
+        self.aec_recompute_all_formulas(i);
     }
 
     /// Commits one field of one Parameters-section row (Properties panel) —

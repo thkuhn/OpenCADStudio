@@ -4133,9 +4133,16 @@ impl OpenCADStudio {
                 .remove(&crate::ui::properties::FieldKey::Geom(field))
             {
                 let val = if evaluates_expression {
-                    crate::app::expr_eval::eval_to_string(&raw_val)
+                    match self.tabs[i]
+                        .scene
+                        .named_parameters()
+                        .evaluate_expression(&raw_val)
+                    {
+                        Ok(num) => num.to_string(),
+                        Err(_) => crate::app::expr_eval::eval_to_string(&raw_val),
+                    }
                 } else {
-                    raw_val
+                    raw_val.clone()
                 };
                 // Underlay rows: reject what the reference rejects, and
                 // write a Width / Height as the scale that produces it.
@@ -4342,7 +4349,7 @@ impl OpenCADStudio {
                         if self.tabs[i].scene.is_layer_locked(handle) {
                             continue;
                         }
-                        if self.aec_apply_property_field(i, handle, field, &val) {
+                        if self.aec_apply_property_field(i, handle, field, &raw_val) {
                             continue;
                         }
                         match field {

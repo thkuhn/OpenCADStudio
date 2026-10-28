@@ -227,6 +227,8 @@ pub struct Slab {
     pub base_facets: Vec<ControlPlaneFacet>,
     /// Baked top facet polygons for sloped/faceted control planes.
     pub top_facets: Vec<ControlPlaneFacet>,
+    /// Optional attached parametric formulas for properties.
+    pub formulas: crate::modules::aec::engine::formulas::AecFormulas,
 }
 
 impl Slab {
@@ -254,6 +256,7 @@ impl Slab {
             top_normal: [0.0, 0.0, 1.0],
             base_facets: Vec::new(),
             top_facets: Vec::new(),
+            formulas: crate::modules::aec::engine::formulas::AecFormulas::default(),
         }
     }
 

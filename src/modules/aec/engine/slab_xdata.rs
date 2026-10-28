@@ -108,6 +108,13 @@ pub fn slab_record_for_slab(slab: &Slab) -> Vec<XDataValue> {
         values.push(XDataValue::String(slab.finish_style_id.clone().unwrap_or_default()));
     }
 
+    if !slab.formulas.is_empty() {
+        if let Ok(json) = serde_json::to_string(&slab.formulas) {
+            values.push(XDataValue::String("formulas".to_string()));
+            values.push(XDataValue::String(json));
+        }
+    }
+
     values
 }
 
@@ -340,6 +347,18 @@ pub fn slab_from_values(v: &[XDataValue]) -> Option<Slab> {
         (None, None)
     };
 
+    let mut formulas = crate::modules::aec::engine::formulas::AecFormulas::default();
+    if let Some(pos) = v
+        .iter()
+        .rposition(|x| matches!(x, XDataValue::String(s) if s == "formulas" || s == "FORMULAS"))
+    {
+        if let Some(XDataValue::String(json)) = v.get(pos + 1) {
+            if let Ok(f) = serde_json::from_str(json) {
+                formulas = f;
+            }
+        }
+    }
+
     Some(Slab {
         style_id,
         storey_id,
@@ -363,6 +382,7 @@ pub fn slab_from_values(v: &[XDataValue]) -> Option<Slab> {
         top_normal,
         base_facets,
         top_facets,
+        formulas,
     })
 }
 
@@ -1083,5 +1103,17 @@ mod tests {
         assert_eq!(back.base_plane_id, Some(plane_id));
         assert_eq!(back.base_plane_name.as_deref(), Some("FFL"));
         assert_eq!(back.layers.len(), 1);
+    }
+
+    #[test]
+    fn test_slab_xdata_roundtrip_with_formulas() {
+        let mut slab = Slab::new("style_concrete", 1);
+        slab.formulas.set("slab_top_offset", "_FLOOR_FINISH + 0.05".to_string());
+        slab.formulas.set("slab_base_offset", "-0.10".to_string());
+
+        let values = slab_record_for_slab(&slab);
+        let back = slab_from_values(&values).expect("parse slab with formulas");
+        assert_eq!(back.formulas.get("slab_top_offset"), Some("_FLOOR_FINISH + 0.05"));
+        assert_eq!(back.formulas.get("slab_base_offset"), Some("-0.10"));
     }
 }

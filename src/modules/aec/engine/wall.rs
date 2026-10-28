@@ -47,6 +47,7 @@ pub struct Wall {
     pub top_normal: [f64; 3],
     pub base_facets: Vec<crate::modules::aec::engine::control_plane::ControlPlaneFacet>,
     pub top_facets: Vec<crate::modules::aec::engine::control_plane::ControlPlaneFacet>,
+    pub formulas: crate::modules::aec::engine::formulas::AecFormulas,
 }
 
 /// One material layer in a wall's cross-section snapshot.
@@ -133,6 +134,7 @@ impl Wall {
             top_normal: [0.0, 0.0, 1.0],
             base_facets: Vec::new(),
             top_facets: Vec::new(),
+            formulas: crate::modules::aec::engine::formulas::AecFormulas::default(),
         }
     }
 

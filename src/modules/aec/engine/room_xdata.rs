@@ -84,6 +84,13 @@ pub fn room_record(room: &Room) -> Vec<XDataValue> {
         values.push(XDataValue::String(String::new()));
     }
 
+    if !room.formulas.is_empty() {
+        if let Ok(json) = serde_json::to_string(&room.formulas) {
+            values.push(XDataValue::String("formulas".to_string()));
+            values.push(XDataValue::String(json));
+        }
+    }
+
     values
 }
 
@@ -244,6 +251,19 @@ pub fn room_from_entity(entity: &EntityType) -> Option<Room> {
         };
         let volume = area * factor * clear_height;
 
+        let mut formulas = crate::modules::aec::engine::formulas::AecFormulas::default();
+        if let Some(pos) = record
+            .values
+            .iter()
+            .rposition(|x| matches!(x, XDataValue::String(s) if s == "formulas" || s == "FORMULAS"))
+        {
+            if let Some(XDataValue::String(json)) = record.values.get(pos + 1) {
+                if let Ok(f) = serde_json::from_str(json) {
+                    formulas = f;
+                }
+            }
+        }
+
         return Some(Room {
             name,
             number,
@@ -260,6 +280,7 @@ pub fn room_from_entity(entity: &EntityType) -> Option<Room> {
             finish_style_id,
             floor_finish,
             ceiling_finish,
+            formulas,
         });
     }
     None
@@ -288,6 +309,7 @@ mod tests {
             finish_style_id: Some("finish_floor_tiles_80".to_string()),
             floor_finish: Some(vec![RoomFinish::new("Tiles", 0.015).with_hatch("SQUARE")]),
             ceiling_finish: Some(vec![RoomFinish::new("Plaster", 0.015)]),
+            formulas: crate::modules::aec::engine::formulas::AecFormulas::default(),
         };
 
         let values = room_record(&room);
@@ -303,5 +325,39 @@ mod tests {
         assert_eq!(parsed.floor_finish_summary(), "finish_floor_tiles_80");
         assert_eq!(parsed.ceiling_finish_summary(), "Plaster");
         assert_eq!(parsed.stamp_pos, Some((2.5, 3.0)));
+    }
+
+    #[test]
+    fn test_room_xdata_roundtrip_with_formulas() {
+        let mut room = Room {
+            name: "Living".to_string(),
+            number: "L-01".to_string(),
+            function: RoomFunction::Living,
+            area: 30.0,
+            factor: 1.0,
+            perimeter: 22.0,
+            clear_height: 2.8,
+            volume: 84.0,
+            storey_id: 1,
+            base_z: 0.0,
+            phase: PlanPhase::New,
+            stamp_pos: None,
+            finish_style_id: None,
+            floor_finish: None,
+            ceiling_finish: None,
+            formulas: crate::modules::aec::engine::formulas::AecFormulas::default(),
+        };
+        room.formulas.set("clear_height", "_STORY_H - 0.20".to_string());
+        room.formulas.set("factor", "1.0 / 2.0".to_string());
+
+        let values = room_record(&room);
+        let mut entity = EntityType::LwPolyline(LwPolyline::new());
+        let mut record = ExtendedDataRecord::new(AEC_APPID);
+        record.values = values;
+        entity.common_mut().extended_data.add_record(record);
+
+        let parsed = room_from_entity(&entity).expect("Should parse room");
+        assert_eq!(parsed.formulas.get("clear_height"), Some("_STORY_H - 0.20"));
+        assert_eq!(parsed.formulas.get("factor"), Some("1.0 / 2.0"));
     }
 }

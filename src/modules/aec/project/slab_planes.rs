@@ -42,9 +42,13 @@ pub fn apply_slab_plane_choice(
     if base {
         slab.base_plane_id = id;
         slab.base_plane_name = name;
+        slab.base_offset = 0.0;
+        slab.formulas.remove("slab_base_offset");
     } else {
         slab.top_plane_id = id;
         slab.top_plane_name = name;
+        slab.top_offset = 0.0;
+        slab.formulas.remove("slab_top_offset");
     }
     if slab.base_plane_id.is_some() || slab.top_plane_id.is_some() {
         if let Some(project) = project {

@@ -112,10 +112,14 @@ impl std::error::Error for ParamError {}
 /// `is_reserved_name` checks a parameter name against, so a formula
 /// like `sqrt(x)` is never ambiguous between "call the builtin" and
 /// "multiply by a parameter named sqrt".
-const BUILTIN_FUNCTIONS: &[&str] = &["sqrt", "abs", "pow", "min", "max"];
+const BUILTIN_FUNCTIONS: &[&str] = &[
+    "sqrt", "abs", "pow", "min", "max", "sin", "cos", "tan", "round", "floor", "ceil", "exp",
+    "log", "ln",
+];
 
 pub fn is_reserved_name(name: &str) -> bool {
-    BUILTIN_FUNCTIONS.contains(&name)
+    let lower = name.to_ascii_lowercase();
+    BUILTIN_FUNCTIONS.iter().any(|&f| f.eq_ignore_ascii_case(&lower)) || lower == "pi" || lower == "e"
 }
 
 /// A valid parameter name: starts with a letter or underscore, followed by
@@ -167,9 +171,13 @@ fn call_builtin(name: &str, args: &[f64]) -> Result<f64, ParamError> {
         }
         Ok(())
     }
-    match name {
+    let lower = name.to_ascii_lowercase();
+    match lower.as_str() {
         "sqrt" => {
             check_arity(name, args, 1)?;
+            if args[0] < 0.0 {
+                return Err(ParamError::Parse("sqrt of negative number".to_string()));
+            }
             Ok(args[0].sqrt())
         }
         "abs" => {
@@ -187,6 +195,41 @@ fn call_builtin(name: &str, args: &[f64]) -> Result<f64, ParamError> {
         "max" => {
             check_arity(name, args, 2)?;
             Ok(args[0].max(args[1]))
+        }
+        "sin" => {
+            check_arity(name, args, 1)?;
+            Ok(args[0].sin())
+        }
+        "cos" => {
+            check_arity(name, args, 1)?;
+            Ok(args[0].cos())
+        }
+        "tan" => {
+            check_arity(name, args, 1)?;
+            Ok(args[0].tan())
+        }
+        "round" => {
+            check_arity(name, args, 1)?;
+            Ok(args[0].round())
+        }
+        "floor" => {
+            check_arity(name, args, 1)?;
+            Ok(args[0].floor())
+        }
+        "ceil" => {
+            check_arity(name, args, 1)?;
+            Ok(args[0].ceil())
+        }
+        "exp" => {
+            check_arity(name, args, 1)?;
+            Ok(args[0].exp())
+        }
+        "log" | "ln" => {
+            check_arity(name, args, 1)?;
+            if args[0] <= 0.0 {
+                return Err(ParamError::Parse("log of non-positive number".to_string()));
+            }
+            Ok(args[0].ln())
         }
         _ => Err(ParamError::UnknownFunction(name.to_string())),
     }
@@ -526,7 +569,10 @@ impl ParameterTable {
     }
 
     pub fn description(&self, name: &str) -> &str {
-        self.descriptions.get(name).map_or("", String::as_str)
+        self.descriptions
+            .iter()
+            .find(|(k, _)| k.eq_ignore_ascii_case(name))
+            .map_or("", |(_, v)| v.as_str())
     }
 
     /// Stores `description` for an existing parameter; an empty text clears it.
@@ -534,11 +580,13 @@ impl ParameterTable {
         if !self.contains(name) {
             return;
         }
-        if description.trim().is_empty() {
-            self.descriptions.remove(name);
-        } else {
-            self.descriptions
-                .insert(name.to_string(), description.trim().to_string());
+        let key = self
+            .get(name)
+            .map(|p| p.name.clone())
+            .unwrap_or_else(|| name.to_string());
+        self.descriptions.retain(|k, _| !k.eq_ignore_ascii_case(name));
+        if !description.trim().is_empty() {
+            self.descriptions.insert(key, description.trim().to_string());
         }
     }
 
@@ -558,7 +606,9 @@ impl ParameterTable {
     }
 
     pub fn get(&self, name: &str) -> Option<&Parameter> {
-        self.parameters.iter().find(|p| p.name == name)
+        self.parameters
+            .iter()
+            .find(|p| p.name.eq_ignore_ascii_case(name))
     }
 
     pub fn contains(&self, name: &str) -> bool {
@@ -566,7 +616,9 @@ impl ParameterTable {
     }
 
     fn index_of(&self, name: &str) -> Option<usize> {
-        self.parameters.iter().position(|p| p.name == name)
+        self.parameters
+            .iter()
+            .position(|p| p.name.eq_ignore_ascii_case(name))
     }
 
     /// Defines a new parameter or redefines an existing one's formula (one
@@ -619,7 +671,7 @@ impl ParameterTable {
     /// need to invent (a future UI stage may still want to warn before
     /// deleting — that's a UI-layer decision, not a data-layer one).
     pub fn remove(&mut self, name: &str) -> bool {
-        self.descriptions.remove(name);
+        self.descriptions.retain(|k, _| !k.eq_ignore_ascii_case(name));
         match self.index_of(name) {
             Some(i) => {
                 self.parameters.remove(i);
@@ -658,10 +710,10 @@ impl ParameterTable {
         target: &str,
         visiting: &mut Vec<String>,
     ) -> Option<Vec<String>> {
-        if current == target {
+        if current.eq_ignore_ascii_case(target) {
             return Some(vec![current.to_string()]);
         }
-        if visiting.iter().any(|v| v == current) {
+        if visiting.iter().any(|v| v.eq_ignore_ascii_case(current)) {
             // A cycle that doesn't involve `target` shouldn't be reachable
             // (`set` refuses to create one), but bail out rather than loop
             // forever if that invariant is ever violated some other way
@@ -694,8 +746,12 @@ impl ParameterTable {
     }
 
     /// Evaluate an expression in this table's existing, cycle-checked namespace.
-    pub(crate) fn evaluate_expression(&self, source: &str) -> Result<f64, ParamError> {
-        let expr = parse(source)?;
+    pub fn evaluate_expression(&self, source: &str) -> Result<f64, ParamError> {
+        let trimmed = source.trim();
+        if let Ok(v) = trimmed.parse::<f64>() {
+            return Ok(v);
+        }
+        let expr = parse(trimmed)?;
         self.eval(&expr, &mut HashMap::new(), &mut Vec::new())
     }
 
@@ -718,10 +774,17 @@ impl ParameterTable {
         cache: &mut HashMap<String, f64>,
         stack: &mut Vec<String>,
     ) -> Result<f64, ParamError> {
-        if let Some(v) = cache.get(name) {
+        let lower = name.to_ascii_lowercase();
+        if lower == "pi" {
+            return Ok(std::f64::consts::PI);
+        }
+        if lower == "e" {
+            return Ok(std::f64::consts::E);
+        }
+        if let Some((_, v)) = cache.iter().find(|(k, _)| k.eq_ignore_ascii_case(name)) {
             return Ok(*v);
         }
-        if stack.iter().any(|s| s == name) {
+        if stack.iter().any(|s| s.eq_ignore_ascii_case(name)) {
             // Defense in depth only — `set` already refuses to create a
             // cycle; see `find_path`'s doc comment for how one could still
             // end up here.
@@ -732,10 +795,10 @@ impl ParameterTable {
         let param = self
             .get(name)
             .ok_or_else(|| ParamError::UndefinedReference(name.to_string()))?;
-        stack.push(name.to_string());
+        stack.push(param.name.clone());
         let value = self.eval(&param.expr, cache, stack)?;
         stack.pop();
-        cache.insert(name.to_string(), value);
+        cache.insert(param.name.clone(), value);
         Ok(value)
     }
 
@@ -1016,6 +1079,35 @@ mod tests {
         table.set("z", "3").unwrap(); // redefine, should not move to the end
         let names: Vec<&str> = table.iter().map(|p| p.name.as_str()).collect();
         assert_eq!(names, vec!["z", "a"]);
+    }
+
+    #[test]
+    fn evaluates_extended_math_functions_and_constants() {
+        let mut table = ParameterTable::new();
+        table.set("_STORY_H", "3.00").unwrap();
+        table.set("_BRH", "0.90").unwrap();
+
+        // Case-insensitive evaluation of parameters
+        assert_eq!(table.evaluate_expression("_story_h - 0.25").unwrap(), 2.75);
+        assert_eq!(table.evaluate_expression("_brh + 0.15 * 2").unwrap(), 1.20);
+
+        // Constants pi and e
+        assert!((table.evaluate_expression("pi").unwrap() - std::f64::consts::PI).abs() < 1e-12);
+        assert!((table.evaluate_expression("PI").unwrap() - std::f64::consts::PI).abs() < 1e-12);
+        assert!((table.evaluate_expression("e").unwrap() - std::f64::consts::E).abs() < 1e-12);
+        assert!((table.evaluate_expression("E").unwrap() - std::f64::consts::E).abs() < 1e-12);
+
+        // Extended math functions
+        assert_eq!(table.evaluate_expression("round(2.6)").unwrap(), 3.0);
+        assert_eq!(table.evaluate_expression("floor(2.6)").unwrap(), 2.0);
+        assert_eq!(table.evaluate_expression("ceil(2.2)").unwrap(), 3.0);
+        assert_eq!(table.evaluate_expression("abs(-4.5)").unwrap(), 4.5);
+        assert_eq!(table.evaluate_expression("sqrt(16)").unwrap(), 4.0);
+        assert!((table.evaluate_expression("sin(0)").unwrap()).abs() < 1e-12);
+        assert!((table.evaluate_expression("cos(0)").unwrap() - 1.0).abs() < 1e-12);
+        assert!((table.evaluate_expression("tan(0)").unwrap()).abs() < 1e-12);
+        assert!((table.evaluate_expression("exp(0)").unwrap() - 1.0).abs() < 1e-12);
+        assert!((table.evaluate_expression("ln(e)").unwrap() - 1.0).abs() < 1e-12);
     }
 }
 

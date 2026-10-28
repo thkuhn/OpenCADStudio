@@ -108,12 +108,16 @@ pub fn apply_opening_plane_choice(
         }
         opening.sill_plane_id = id;
         opening.sill_plane_name = name;
+        opening.sill_offset = 0.0;
+        opening.formulas.remove("opening_sill_offset");
     } else {
         if opening.head_plane_id == id {
             return false;
         }
         opening.head_plane_id = id;
         opening.head_plane_name = name;
+        opening.head_offset = 0.0;
+        opening.formulas.remove("opening_head_offset");
     }
     if opening.has_plane_binding() {
         let host_base_z = host_wall(scene, &opening)

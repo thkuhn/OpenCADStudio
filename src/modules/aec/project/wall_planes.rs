@@ -45,9 +45,13 @@ pub fn apply_wall_plane_choice(
     if base {
         wall.base_plane_id = id;
         wall.base_plane_name = name;
+        wall.base_offset = 0.0;
+        wall.formulas.remove("wall_base_offset");
     } else {
         wall.top_plane_id = id;
         wall.top_plane_name = name;
+        wall.top_offset = 0.0;
+        wall.formulas.remove("wall_top_offset");
     }
     if wall.base_plane_id.is_some() || wall.top_plane_id.is_some() {
         if let Some(project) = project {
@@ -105,7 +109,7 @@ pub(crate) fn parse_plane_choice(project: Option<&ProjectFile>, choice: &str) ->
     project.and_then(|p| {
         for b in &p.buildings {
             for s in &b.storeys {
-                if let Some(pl) = s.control_planes.iter().find(|pl| pl.name == choice) {
+                if let Some(pl) = s.control_planes.iter().find(|pl| pl.name.eq_ignore_ascii_case(choice)) {
                     return Some(pl.id);
                 }
             }
@@ -117,6 +121,7 @@ pub(crate) fn parse_plane_choice(project: Option<&ProjectFile>, choice: &str) ->
 
 #[cfg(test)]
 mod tests {
+    use super::*;
     use crate::modules::aec::engine::control_plane::resolve_wall_height;
     use crate::modules::aec::engine::project::StoreyRef;
     use crate::modules::aec::engine::wall::Wall;
@@ -175,5 +180,44 @@ mod tests {
         wall.rebake_planes(&storey, 0.0, 0.0);
         assert!((wall.height - 2.5).abs() < 1e-9);
         assert!((wall.base_origin[2] - 1.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn test_plane_choice_resets_offset_and_adapts_height() {
+        use acadrust::entities::{LwPolyline, LwVertex};
+        use acadrust::types::Vector2;
+        use crate::modules::aec::engine::project::{Building, ProjectFile};
+        let mut project = ProjectFile::default();
+        let mut building = Building::new("Haus");
+        let eg = StoreyRef::new_with_height("EG", 0.0, 2.80, "eg.dwg");
+        let og = StoreyRef::new_with_height("OG", 2.80, 3.10, "og.dwg");
+        building.storeys.push(eg);
+        building.storeys.push(og);
+        project.buildings.push(building);
+
+        let mut scene = Scene::new();
+        let mut wall = Wall::new("standard_wall", 2.50, 0);
+        wall.base_offset = 0.15;
+        wall.top_offset = -0.20;
+        let mut poly = LwPolyline::new();
+        poly.add_vertex(LwVertex::new(Vector2::new(0.0, 0.0)));
+        poly.add_vertex(LwVertex::new(Vector2::new(5.0, 0.0)));
+        let handle = scene.add_entity(acadrust::EntityType::LwPolyline(poly));
+        let mut rec = ExtendedDataRecord::new(AEC_APPID);
+        rec.values = wall_record_for_wall(&wall);
+        write_aec_record(&mut scene.document, handle, rec);
+
+        // Bind BasePlane to EG_ELEVATION
+        let ok_base = apply_wall_plane_choice(&mut scene, Some(&project), handle, true, "EG_ELEVATION", None);
+        assert!(ok_base);
+        let w_base = wall_from_entity(scene.document.get_entity(handle).unwrap()).unwrap();
+        assert_eq!(w_base.base_offset, 0.0);
+
+        // Bind TopPlane to OG_ELEVATION (Z=2.80) -> Height should automatically adapt to 2.80m
+        let ok_top = apply_wall_plane_choice(&mut scene, Some(&project), handle, false, "OG_ELEVATION", None);
+        assert!(ok_top);
+        let w_top = wall_from_entity(scene.document.get_entity(handle).unwrap()).unwrap();
+        assert_eq!(w_top.top_offset, 0.0);
+        assert!((w_top.height - 2.80).abs() < 1e-5);
     }
 }

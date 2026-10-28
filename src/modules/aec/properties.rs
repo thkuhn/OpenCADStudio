@@ -254,7 +254,7 @@ pub fn wall_prop_section(
         ensure_option(&mut plane_options, &base_label);
         ensure_option(&mut plane_options, &top_label);
         let mut props = vec![
-            crate::entities::common::edit_prop(t!("Height").as_ref(), "wall_height", wall.height),
+            formula_edit_prop(t!("Height").as_ref(), "wall_height", wall.height, &wall.formulas),
             crate::scene::model::object::Property {
                 label: t!("Base plane").into_owned(),
                 field: "wall_base_plane",
@@ -263,10 +263,11 @@ pub fn wall_prop_section(
                     options: plane_options.clone(),
                 },
             },
-            crate::entities::common::edit_prop(
+            formula_edit_prop(
                 t!("Base offset").as_ref(),
                 "wall_base_offset",
                 wall.base_offset,
+                &wall.formulas,
             ),
             crate::scene::model::object::Property {
                 label: t!("Top plane").into_owned(),
@@ -276,10 +277,11 @@ pub fn wall_prop_section(
                     options: plane_options,
                 },
             },
-            crate::entities::common::edit_prop(
+            formula_edit_prop(
                 t!("Top offset").as_ref(),
                 "wall_top_offset",
                 wall.top_offset,
+                &wall.formulas,
             ),
             crate::scene::model::object::Property {
                 label: t!("Style").into_owned(),
@@ -323,10 +325,11 @@ pub fn wall_prop_section(
         if !base_bound {
             props.insert(
                 1,
-                crate::entities::common::edit_prop(
+                formula_edit_prop(
                     crate::tr!("aec", "wall-base-z").as_ref(),
                     "wall_base_z",
                     wall.base_origin[2],
+                    &wall.formulas,
                 ),
             );
         }
@@ -875,12 +878,13 @@ pub fn opening_prop_section(
                 options: shape_options(),
             },
         },
-        crate::entities::common::edit_prop(t!("Width").as_ref(), "opening_width", opening.width),
-        crate::entities::common::edit_prop(t!("Height").as_ref(), "opening_height", opening.height),
-        crate::entities::common::edit_prop(
+        formula_edit_prop(t!("Width").as_ref(), "opening_width", opening.width, &opening.formulas),
+        formula_edit_prop(t!("Height").as_ref(), "opening_height", opening.height, &opening.formulas),
+        formula_edit_prop(
             crate::tr!("aec", "opening-sill").as_str(),
             "opening_sill",
             opening.sill_height,
+            &opening.formulas,
         ),
         crate::scene::model::object::Property {
             label: crate::tr!("aec", "opening-sill-plane"),
@@ -890,10 +894,11 @@ pub fn opening_prop_section(
                 options: plane_options.clone(),
             },
         },
-        crate::entities::common::edit_prop(
+        formula_edit_prop(
             crate::tr!("aec", "opening-sill-offset").as_str(),
             "opening_sill_offset",
             opening.sill_offset,
+            &opening.formulas,
         ),
         crate::scene::model::object::Property {
             label: crate::tr!("aec", "opening-head-plane"),
@@ -903,10 +908,11 @@ pub fn opening_prop_section(
                 options: plane_options,
             },
         },
-        crate::entities::common::edit_prop(
+        formula_edit_prop(
             crate::tr!("aec", "opening-head-offset").as_str(),
             "opening_head_offset",
             opening.head_offset,
+            &opening.formulas,
         ),
         crate::scene::model::object::Property {
             label: crate::tr!("aec", "opening-hinge"),
@@ -942,10 +948,11 @@ pub fn opening_prop_section(
                 ],
             },
         },
-        crate::entities::common::edit_prop(
+        formula_edit_prop(
             crate::tr!("aec", "opening-cross-offset").as_str(),
             "opening_cross_offset",
             opening.cross_axis_offset,
+            &opening.formulas,
         ),
         crate::scene::model::object::Property {
             label: crate::tr!("aec", "opening-flip"),
@@ -1638,10 +1645,11 @@ pub fn slab_prop_section(
                 options: plane_options.clone(),
             },
         },
-        crate::entities::common::edit_prop(
+        formula_edit_prop(
             crate::tr!("aec", "slab-base-offset").as_ref(),
             "slab_base_offset",
             slab.base_offset,
+            &slab.formulas,
         ),
         crate::scene::model::object::Property {
             label: crate::tr!("aec", "slab-top-plane"),
@@ -1651,10 +1659,11 @@ pub fn slab_prop_section(
                 options: plane_options,
             },
         },
-        crate::entities::common::edit_prop(
+        formula_edit_prop(
             crate::tr!("aec", "slab-top-offset").as_ref(),
             "slab_top_offset",
             slab.top_offset,
+            &slab.formulas,
         ),
         crate::entities::common::ro_prop(
             crate::tr!("aec", "slab-thickness").as_ref(),
@@ -1806,15 +1815,24 @@ pub fn room_prop_section(
                 .collect(),
         },
     });
-    props.push(crate::entities::common::edit_scalar_prop(
-        &crate::tr!("aec", "room-factor"),
-        "room_factor",
-        room.factor,
-    ));
-    props.push(crate::entities::common::edit_prop(
+    let (factor_label, factor_val) = if let Some(formula) = room.formulas.get("room_factor") {
+        (
+            format!("{} (fx = {:.4})", crate::tr!("aec", "room-factor"), room.factor),
+            formula.to_string(),
+        )
+    } else {
+        (crate::tr!("aec", "room-factor"), format!("{:.4}", room.factor))
+    };
+    props.push(crate::scene::model::object::Property {
+        label: factor_label,
+        field: "room_factor",
+        value: crate::scene::model::object::PropValue::EditText(factor_val),
+    });
+    props.push(formula_edit_prop(
         &crate::tr!("aec", "room-height"),
         "room_clear_height",
         room.clear_height,
+        &room.formulas,
     ));
 
     // Modular floor finish style choice
@@ -2747,6 +2765,45 @@ pub fn append_view_carrier_grips(
     }
 }
 
+/// Evaluates a numeric property expression using the drawing's named parameters and standard math functions.
+pub fn eval_aec_property_expression(
+    scene: &crate::scene::Scene,
+    raw_input: &str,
+) -> Result<f64, String> {
+    let trimmed = raw_input.trim();
+    if trimmed.is_empty() {
+        return Err("Empty expression".to_string());
+    }
+    if let Some(val) = crate::entities::common::parse_f64(trimmed) {
+        return Ok(val);
+    }
+    scene
+        .named_parameters()
+        .evaluate_expression(trimmed)
+        .map_err(|e| e.to_string())
+}
+
+pub(crate) fn formula_edit_prop(
+    label: &str,
+    field: &'static str,
+    value: f64,
+    formulas: &crate::modules::aec::engine::formulas::AecFormulas,
+) -> crate::scene::model::object::Property {
+    let (full_label, display_val) = if let Some(formula) = formulas.get(field) {
+        (
+            format!("{label} (fx = {})", crate::entities::common::format_length(value)),
+            formula.to_string(),
+        )
+    } else {
+        (label.to_string(), crate::entities::common::format_length(value))
+    };
+    crate::scene::model::object::Property {
+        label: full_label,
+        field,
+        value: crate::scene::model::object::PropValue::EditText(display_val),
+    }
+}
+
 impl crate::app::OpenCADStudio {
     /// Apply an AEC properties field. Returns `true` when `field` is AEC-owned
     /// so Core must skip the generic geom path.
@@ -2857,13 +2914,35 @@ impl crate::app::OpenCADStudio {
                     room.factor = room.function.default_factor();
                 }
                 "room_factor" => {
-                    if let Some(v) = crate::entities::common::parse_f64(val) {
-                        room.factor = v;
+                    match eval_aec_property_expression(&self.tabs[tab].scene, val) {
+                        Ok(v) => {
+                            room.factor = v;
+                            if crate::modules::aec::engine::formulas::is_formula_expression(val) {
+                                room.formulas.set("room_factor", val.to_string());
+                            } else {
+                                room.formulas.remove("room_factor");
+                            }
+                        }
+                        Err(e) => {
+                            self.command_line.push_error(&format!("AEC: {e}"));
+                            return true;
+                        }
                     }
                 }
                 "room_clear_height" => {
-                    if let Some(v) = crate::entities::common::parse_f64(val) {
-                        room.clear_height = v;
+                    match eval_aec_property_expression(&self.tabs[tab].scene, val) {
+                        Ok(v) => {
+                            room.clear_height = v;
+                            if crate::modules::aec::engine::formulas::is_formula_expression(val) {
+                                room.formulas.set("room_clear_height", val.to_string());
+                            } else {
+                                room.formulas.remove("room_clear_height");
+                            }
+                        }
+                        Err(e) => {
+                            self.command_line.push_error(&format!("AEC: {e}"));
+                            return true;
+                        }
                     }
                 }
                 "room_floor_finish_style" => {
@@ -2935,29 +3014,41 @@ impl crate::app::OpenCADStudio {
                     }
                 }
                 "room_stamp_x" => {
-                    if let Some(v) = crate::entities::common::parse_f64(val) {
-                        let (_, sy) = room.stamp_pos.unwrap_or_else(|| {
-                            let pts = room_boundary_points(entity);
-                            if pts.len() >= 3 {
-                                crate::modules::aec::engine::geometry::centroid(&pts)
-                            } else {
-                                (0.0, 0.0)
-                            }
-                        });
-                        room.stamp_pos = Some((v, sy));
+                    match eval_aec_property_expression(&self.tabs[tab].scene, val) {
+                        Ok(v) => {
+                            let (_, sy) = room.stamp_pos.unwrap_or_else(|| {
+                                let pts = room_boundary_points(entity);
+                                if pts.len() >= 3 {
+                                    crate::modules::aec::engine::geometry::centroid(&pts)
+                                } else {
+                                    (0.0, 0.0)
+                                }
+                            });
+                            room.stamp_pos = Some((v, sy));
+                        }
+                        Err(e) => {
+                            self.command_line.push_error(&format!("AEC: {e}"));
+                            return true;
+                        }
                     }
                 }
                 "room_stamp_y" => {
-                    if let Some(v) = crate::entities::common::parse_f64(val) {
-                        let (sx, _) = room.stamp_pos.unwrap_or_else(|| {
-                            let pts = room_boundary_points(entity);
-                            if pts.len() >= 3 {
-                                crate::modules::aec::engine::geometry::centroid(&pts)
-                            } else {
-                                (0.0, 0.0)
-                            }
-                        });
-                        room.stamp_pos = Some((sx, v));
+                    match eval_aec_property_expression(&self.tabs[tab].scene, val) {
+                        Ok(v) => {
+                            let (sx, _) = room.stamp_pos.unwrap_or_else(|| {
+                                let pts = room_boundary_points(entity);
+                                if pts.len() >= 3 {
+                                    crate::modules::aec::engine::geometry::centroid(&pts)
+                                } else {
+                                    (0.0, 0.0)
+                                }
+                            });
+                            room.stamp_pos = Some((sx, v));
+                        }
+                        Err(e) => {
+                            self.command_line.push_error(&format!("AEC: {e}"));
+                            return true;
+                        }
                     }
                 }
                 _ => return true,
@@ -3009,14 +3100,20 @@ impl crate::app::OpenCADStudio {
                     );
                 }
                 "slabopening_recess_depth" => {
-                    if let Some(v) = crate::entities::common::parse_f64(val) {
-                        if v >= 0.0 {
-                            opening.depth = SlabOpeningDepth::Recess(v);
-                            let _ = slab_xdata::write_slab_opening_model(
-                                &mut self.tabs[tab].scene,
-                                owner,
-                                &opening,
-                            );
+                    match eval_aec_property_expression(&self.tabs[tab].scene, val) {
+                        Ok(v) => {
+                            if v >= 0.0 {
+                                opening.depth = SlabOpeningDepth::Recess(v);
+                                let _ = slab_xdata::write_slab_opening_model(
+                                    &mut self.tabs[tab].scene,
+                                    owner,
+                                    &opening,
+                                );
+                            }
+                        }
+                        Err(e) => {
+                            self.command_line.push_error(&format!("AEC: {e}"));
+                            return true;
                         }
                     }
                 }
@@ -3068,20 +3165,35 @@ impl crate::app::OpenCADStudio {
                     }
                 }
                 "slab_base_offset" | "slab_top_offset" => {
-                    if let Some(v) = crate::entities::common::parse_f64(val) {
-                        let (base, top) = if field == "slab_base_offset" {
-                            (Some(v), None)
-                        } else {
-                            (None, Some(v))
-                        };
-                        if slab_xdata::write_slab_plane_offsets(
-                            &mut self.tabs[tab].scene,
-                            slab_owner,
-                            base,
-                            top,
-                        ) {
-                            let _ = self
-                                .regenerate_slab_respecting_active_display_config(tab, slab_owner);
+                    match eval_aec_property_expression(&self.tabs[tab].scene, val) {
+                        Ok(v) => {
+                            let (base, top) = if field == "slab_base_offset" {
+                                (Some(v), None)
+                            } else {
+                                (None, Some(v))
+                            };
+                            if slab_xdata::write_slab_plane_offsets(
+                                &mut self.tabs[tab].scene,
+                                slab_owner,
+                                base,
+                                top,
+                            ) {
+                                if let Some(entity) = self.tabs[tab].scene.document.get_entity(slab_owner) {
+                                    if let Some(mut slab) = slab_xdata::slab_from_entity(entity) {
+                                        if crate::modules::aec::engine::formulas::is_formula_expression(val) {
+                                            slab.formulas.set(field, val.to_string());
+                                        } else {
+                                            slab.formulas.remove(field);
+                                        }
+                                        let _ = slab_xdata::write_slab_record(&mut self.tabs[tab].scene.document, slab_owner, &slab);
+                                    }
+                                }
+                                let _ = self
+                                    .regenerate_slab_respecting_active_display_config(tab, slab_owner);
+                            }
+                        }
+                        Err(e) => {
+                            self.command_line.push_error(&format!("AEC: {e}"));
                         }
                     }
                 }
@@ -3198,27 +3310,56 @@ impl crate::app::OpenCADStudio {
                     return true;
                 }
                 "opening_sill_offset" | "opening_head_offset" => {
-                    if let Some(v) = crate::entities::common::parse_f64(val) {
-                        let (sill, head) = if field == "opening_sill_offset" {
-                            (Some(v), None)
-                        } else {
-                            (None, Some(v))
-                        };
-                        crate::modules::aec::project::opening_planes::apply_opening_plane_offsets(
-                            &mut self.tabs[tab].scene,
-                            self.aec.aec_project_explorer_file.as_ref(),
-                            owner,
-                            sill,
-                            head,
-                            Some(&style_library),
-                            rules.as_ref(),
-                        );
+                    match eval_aec_property_expression(&self.tabs[tab].scene, val) {
+                        Ok(v) => {
+                            let (sill, head) = if field == "opening_sill_offset" {
+                                (Some(v), None)
+                            } else {
+                                (None, Some(v))
+                            };
+                            crate::modules::aec::project::opening_planes::apply_opening_plane_offsets(
+                                &mut self.tabs[tab].scene,
+                                self.aec.aec_project_explorer_file.as_ref(),
+                                owner,
+                                sill,
+                                head,
+                                Some(&style_library),
+                                rules.as_ref(),
+                            );
+                            if let Some(entity) = self.tabs[tab].scene.document.get_entity(owner) {
+                                if let Some(mut op) = opening_xdata::opening_from_entity(entity, owner) {
+                                    if crate::modules::aec::engine::formulas::is_formula_expression(val) {
+                                        op.formulas.set(field, val.to_string());
+                                    } else {
+                                        op.formulas.remove(field);
+                                    }
+                                    let _ = opening_display::commit_opening_instance(
+                                        &mut self.tabs[tab].scene,
+                                        &op,
+                                        Some(&style_library),
+                                        rules.as_ref(),
+                                    );
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            self.command_line.push_error(&format!("AEC: {e}"));
+                        }
                     }
                     return true;
                 }
                 _ => {}
             }
-            if apply_opening_property(&mut opening, field, val, Some(&style_library)) {
+            let evaluated_val = match eval_aec_property_expression(&self.tabs[tab].scene, val) {
+                Ok(v) => v.to_string(),
+                Err(_) => val.to_string(),
+            };
+            if apply_opening_property(&mut opening, field, &evaluated_val, Some(&style_library)) {
+                if crate::modules::aec::engine::formulas::is_formula_expression(val) {
+                    opening.formulas.set(field, val.to_string());
+                } else {
+                    opening.formulas.remove(field);
+                }
                 let _ = opening_display::commit_opening_instance(
                     &mut self.tabs[tab].scene,
                     &opening,
@@ -3286,59 +3427,117 @@ impl crate::app::OpenCADStudio {
                 self.aec_project_explorer_persist_if_pathed();
             }
             "wall_height" => {
-                if let Some(v) = crate::entities::common::parse_f64(val) {
-                    if v > 0.0 {
-                        crate::modules::aec::engine::xdata::write_wall_height(
-                            &mut self.tabs[tab].scene,
-                            wall_owner,
-                            v,
-                        );
-                        let _ =
-                            self.regenerate_wall_respecting_active_display_config(tab, wall_owner);
+                match eval_aec_property_expression(&self.tabs[tab].scene, val) {
+                    Ok(v) => {
+                        if v > 0.0 {
+                            if let Some(entity) = self.tabs[tab].scene.document.get_entity(wall_owner) {
+                                if let Some(mut wall) = crate::modules::aec::engine::xdata::wall_from_entity(entity) {
+                                    if crate::modules::aec::engine::formulas::is_formula_expression(val) {
+                                        wall.formulas.set("wall_height", val.to_string());
+                                    } else {
+                                        wall.formulas.remove("wall_height");
+                                    }
+                                    wall.height = v;
+                                    let mut record = acadrust::xdata::ExtendedDataRecord::new(crate::modules::aec::engine::xdata::AEC_APPID);
+                                    record.values = crate::modules::aec::engine::xdata::wall_record_for_wall(&wall);
+                                    crate::modules::aec::engine::xdata::write_aec_record(&mut self.tabs[tab].scene.document, wall_owner, record);
+                                } else {
+                                    crate::modules::aec::engine::xdata::write_wall_height(
+                                        &mut self.tabs[tab].scene,
+                                        wall_owner,
+                                        v,
+                                    );
+                                }
+                            }
+                            let _ =
+                                self.regenerate_wall_respecting_active_display_config(tab, wall_owner);
+                        }
+                    }
+                    Err(e) => {
+                        self.command_line.push_error(&format!("AEC: {e}"));
                     }
                 }
             }
             "wall_base_z" => {
-                if let Some(v) = crate::entities::common::parse_f64(val) {
-                    crate::modules::aec::project::wall_planes::apply_wall_base_z(
-                        &mut self.tabs[tab].scene,
-                        wall_owner,
-                        v,
-                    );
+                match eval_aec_property_expression(&self.tabs[tab].scene, val) {
+                    Ok(v) => {
+                        crate::modules::aec::project::wall_planes::apply_wall_base_z(
+                            &mut self.tabs[tab].scene,
+                            wall_owner,
+                            v,
+                        );
+                        if let Some(entity) = self.tabs[tab].scene.document.get_entity(wall_owner) {
+                            if let Some(mut wall) = crate::modules::aec::engine::xdata::wall_from_entity(entity) {
+                                if crate::modules::aec::engine::formulas::is_formula_expression(val) {
+                                    wall.formulas.set("wall_base_z", val.to_string());
+                                } else {
+                                    wall.formulas.remove("wall_base_z");
+                                }
+                                let mut record = acadrust::xdata::ExtendedDataRecord::new(crate::modules::aec::engine::xdata::AEC_APPID);
+                                record.values = crate::modules::aec::engine::xdata::wall_record_for_wall(&wall);
+                                crate::modules::aec::engine::xdata::write_aec_record(&mut self.tabs[tab].scene.document, wall_owner, record);
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        self.command_line.push_error(&format!("AEC: {e}"));
+                    }
                 }
             }
             "wall_base_offset" | "wall_top_offset" => {
-                if let Some(v) = crate::entities::common::parse_f64(val) {
-                    let (base, top) = if field == "wall_base_offset" {
-                        (Some(v), None)
-                    } else {
-                        (None, Some(v))
-                    };
-                    crate::modules::aec::engine::xdata::write_wall_plane_offsets(
-                        &mut self.tabs[tab].scene,
-                        wall_owner,
-                        base,
-                        top,
-                    );
-                    let _ =
-                        self.regenerate_wall_respecting_active_display_config(tab, wall_owner);
+                match eval_aec_property_expression(&self.tabs[tab].scene, val) {
+                    Ok(v) => {
+                        let (base, top) = if field == "wall_base_offset" {
+                            (Some(v), None)
+                        } else {
+                            (None, Some(v))
+                        };
+                        crate::modules::aec::engine::xdata::write_wall_plane_offsets(
+                            &mut self.tabs[tab].scene,
+                            wall_owner,
+                            base,
+                            top,
+                        );
+                        if let Some(entity) = self.tabs[tab].scene.document.get_entity(wall_owner) {
+                            if let Some(mut wall) = crate::modules::aec::engine::xdata::wall_from_entity(entity) {
+                                if crate::modules::aec::engine::formulas::is_formula_expression(val) {
+                                    wall.formulas.set(field, val.to_string());
+                                } else {
+                                    wall.formulas.remove(field);
+                                }
+                                let mut record = acadrust::xdata::ExtendedDataRecord::new(crate::modules::aec::engine::xdata::AEC_APPID);
+                                record.values = crate::modules::aec::engine::xdata::wall_record_for_wall(&wall);
+                                crate::modules::aec::engine::xdata::write_aec_record(&mut self.tabs[tab].scene.document, wall_owner, record);
+                            }
+                        }
+                        let _ =
+                            self.regenerate_wall_respecting_active_display_config(tab, wall_owner);
+                    }
+                    Err(e) => {
+                        self.command_line.push_error(&format!("AEC: {e}"));
+                    }
                 }
             }
             "wall_hatch_angle" => {
-                if let Some(v) = crate::entities::common::parse_f64(val) {
-                    let existing_override = self.tabs[tab]
-                        .scene
-                        .document
-                        .get_entity(wall_owner)
-                        .and_then(crate::modules::aec::engine::xdata::wall_from_entity)
-                        .and_then(|wall| wall.hatch_override);
-                    if let Some(mut ov) = existing_override {
-                        ov.hatch_angle = Some(v);
-                        crate::modules::aec::engine::xdata::write_wall_hatch_override(
-                            &mut self.tabs[tab].scene,
-                            wall_owner,
-                            Some(ov),
-                        );
+                match eval_aec_property_expression(&self.tabs[tab].scene, val) {
+                    Ok(v) => {
+                        let existing_override = self.tabs[tab]
+                            .scene
+                            .document
+                            .get_entity(wall_owner)
+                            .and_then(crate::modules::aec::engine::xdata::wall_from_entity)
+                            .and_then(|wall| wall.hatch_override);
+                        if let Some(mut ov) = existing_override {
+                            ov.hatch_angle = Some(v);
+                            crate::modules::aec::engine::xdata::write_wall_hatch_override(
+                                &mut self.tabs[tab].scene,
+                                wall_owner,
+                                Some(ov),
+                            );
+                        }
+                    }
+                    Err(e) => {
+                        self.command_line.push_error(&format!("AEC: {e}"));
                     }
                 }
             }
@@ -3346,6 +3545,212 @@ impl crate::app::OpenCADStudio {
             _ => {}
         }
         true
+    }
+
+    /// Re-evaluates all stored formulas across all AEC entities (Walls, Slabs, Openings, Rooms)
+    /// in the specified tab after named drawing parameters have changed.
+    pub(crate) fn aec_recompute_all_formulas(&mut self, tab: usize) {
+        if tab >= self.tabs.len() {
+            return;
+        }
+        let style_library = crate::modules::aec::engine::project::resolve_style_library(
+            self.aec.aec_project_explorer_file.as_ref(),
+        );
+
+        let entities: Vec<Handle> = self.tabs[tab]
+            .scene
+            .document
+            .entities()
+            .map(|e| e.common().handle)
+            .collect();
+        let mut modified_walls = Vec::new();
+        let mut modified_slabs = Vec::new();
+        let mut modified_rooms = Vec::new();
+
+        for handle in entities {
+            let Some(entity) = self.tabs[tab].scene.document.get_entity(handle).cloned() else {
+                continue;
+            };
+
+            // 1. Walls
+            if let Some(mut wall) = xdata::wall_from_entity(&entity) {
+                if !wall.formulas.is_empty() {
+                    let mut changed = false;
+                    for (field, expr) in &wall.formulas.fields {
+                        if let Ok(val) = eval_aec_property_expression(&self.tabs[tab].scene, expr) {
+                            match field.as_str() {
+                                "wall_height" | "height" => {
+                                    if (wall.height - val).abs() > 1e-9 && val > 0.0 {
+                                        wall.height = val;
+                                        changed = true;
+                                    }
+                                }
+                                "wall_base_offset" | "base_offset" => {
+                                    if (wall.base_offset - val).abs() > 1e-9 {
+                                        wall.base_offset = val;
+                                        changed = true;
+                                    }
+                                }
+                                "wall_top_offset" | "top_offset" => {
+                                    if (wall.top_offset - val).abs() > 1e-9 {
+                                        wall.top_offset = val;
+                                        changed = true;
+                                    }
+                                }
+                                "wall_base_z" => {
+                                    if (wall.base_origin[2] - val).abs() > 1e-9 {
+                                        wall.base_origin[2] = val;
+                                        changed = true;
+                                    }
+                                }
+                                _ => {}
+                            }
+                        }
+                    }
+                    if changed {
+                        let mut record = acadrust::xdata::ExtendedDataRecord::new(xdata::AEC_APPID);
+                        record.values = xdata::wall_record_for_wall(&wall);
+                        xdata::write_aec_record(&mut self.tabs[tab].scene.document, handle, record);
+                        modified_walls.push(handle);
+                    }
+                }
+            }
+
+            // 2. Slabs
+            if let Some(mut slab) = slab_xdata::slab_from_entity(&entity) {
+                if !slab.formulas.is_empty() {
+                    let mut changed = false;
+                    for (field, expr) in &slab.formulas.fields {
+                        if let Ok(val) = eval_aec_property_expression(&self.tabs[tab].scene, expr) {
+                            match field.as_str() {
+                                "slab_base_offset" | "base_offset" => {
+                                    if (slab.base_offset - val).abs() > 1e-9 {
+                                        slab.base_offset = val;
+                                        changed = true;
+                                    }
+                                }
+                                "slab_top_offset" | "top_offset" => {
+                                    if (slab.top_offset - val).abs() > 1e-9 {
+                                        slab.top_offset = val;
+                                        changed = true;
+                                    }
+                                }
+                                _ => {}
+                            }
+                        }
+                    }
+                    if changed {
+                        slab_xdata::write_slab_record(&mut self.tabs[tab].scene.document, handle, &slab);
+                        modified_slabs.push(handle);
+                    }
+                }
+            }
+
+            // 3. Openings
+            if let Some(mut opening) = opening_xdata::opening_from_entity(&entity, handle) {
+                if !opening.formulas.is_empty() {
+                    let mut changed = false;
+                    for (field, expr) in &opening.formulas.fields {
+                        if let Ok(val) = eval_aec_property_expression(&self.tabs[tab].scene, expr) {
+                            match field.as_str() {
+                                "opening_width" | "width" => {
+                                    if (opening.width - val).abs() > 1e-9 && val > 0.0 {
+                                        opening.width = val;
+                                        changed = true;
+                                    }
+                                }
+                                "opening_height" | "height" => {
+                                    if (opening.height - val).abs() > 1e-9 && val > 0.0 {
+                                        opening.height = val;
+                                        changed = true;
+                                    }
+                                }
+                                "opening_sill" | "opening_sill_height" | "sill_height" => {
+                                    if (opening.sill_height - val).abs() > 1e-9 && val >= 0.0 {
+                                        opening.sill_height = val;
+                                        changed = true;
+                                    }
+                                }
+                                "opening_sill_offset" | "sill_offset" => {
+                                    if (opening.sill_offset - val).abs() > 1e-9 {
+                                        opening.sill_offset = val;
+                                        changed = true;
+                                    }
+                                }
+                                "opening_head_offset" | "head_offset" => {
+                                    if (opening.head_offset - val).abs() > 1e-9 {
+                                        opening.head_offset = val;
+                                        changed = true;
+                                    }
+                                }
+                                "opening_spring" | "spring_height" => {
+                                    if (opening.spring_height - val).abs() > 1e-9 {
+                                        opening.spring_height = val;
+                                        changed = true;
+                                    }
+                                }
+                                "opening_cross_offset" | "cross_axis_offset" => {
+                                    if (opening.cross_axis_offset - val).abs() > 1e-9 {
+                                        opening.cross_axis_offset = val;
+                                        changed = true;
+                                    }
+                                }
+                                _ => {}
+                            }
+                        }
+                    }
+                    if changed {
+                        let (rules, _) = self.resolve_active_display_config_wall_rules(tab, Some(opening.host_wall));
+                        let _ = opening_display::commit_opening_instance(
+                            &mut self.tabs[tab].scene,
+                            &opening,
+                            Some(&style_library),
+                            rules.as_ref(),
+                        );
+                    }
+                }
+            }
+
+            // 4. Rooms
+            if let Some(mut room) = room_xdata::room_from_entity(&entity) {
+                if !room.formulas.is_empty() {
+                    let mut changed = false;
+                    for (field, expr) in &room.formulas.fields {
+                        if let Ok(val) = eval_aec_property_expression(&self.tabs[tab].scene, expr) {
+                            match field.as_str() {
+                                "room_factor" | "factor" => {
+                                    if (room.factor - val).abs() > 1e-9 {
+                                        room.factor = val;
+                                        changed = true;
+                                    }
+                                }
+                                "room_clear_height" | "clear_height" => {
+                                    if (room.clear_height - val).abs() > 1e-9 {
+                                        room.clear_height = val;
+                                        changed = true;
+                                    }
+                                }
+                                _ => {}
+                            }
+                        }
+                    }
+                    if changed {
+                        room_xdata::write_room_record(&mut self.tabs[tab].scene.document, handle, &room);
+                        modified_rooms.push(handle);
+                    }
+                }
+            }
+        }
+
+        for wall_handle in modified_walls {
+            let _ = self.regenerate_wall_respecting_active_display_config(tab, wall_handle);
+        }
+        for slab_handle in modified_slabs {
+            let _ = self.regenerate_slab_respecting_active_display_config(tab, slab_handle);
+        }
+        for room_handle in modified_rooms {
+            let _ = self.regenerate_room_respecting_active_display_config(tab, room_handle);
+        }
     }
 }
 
@@ -5367,5 +5772,164 @@ mod tests {
             slab_grips.iter().any(|g| g.id == SLAB_BOTTOM_DROPDOWN_GRIP_ID && g.shape == crate::scene::model::object::GripShape::Dropdown),
             "Slab must have a SlabBottom dropdown grip"
         );
+    }
+
+    #[test]
+    fn test_eval_aec_property_expression() {
+        let mut scene = crate::scene::Scene::new();
+        scene.named_parameters_mut().set("_STORY_H", "3.00").unwrap();
+        scene.named_parameters_mut().set("_BRH", "0.90").unwrap();
+
+        // 1. Plain numeric literals
+        assert_eq!(eval_aec_property_expression(&scene, "2.75"), Ok(2.75));
+        assert_eq!(eval_aec_property_expression(&scene, " 3.20 "), Ok(3.20));
+
+        // 2. Pure arithmetic expressions
+        assert_eq!(eval_aec_property_expression(&scene, "2.80 - 0.25"), Ok(2.55));
+        assert_eq!(eval_aec_property_expression(&scene, "1.0 + 0.15 * 2"), Ok(1.30));
+        assert_eq!(eval_aec_property_expression(&scene, "(2.0 + 0.5) * 2"), Ok(5.0));
+
+        // 3. Named parameters with case-insensitivity
+        assert_eq!(eval_aec_property_expression(&scene, "_STORY_H - 0.25"), Ok(2.75));
+        assert_eq!(eval_aec_property_expression(&scene, "_story_h - 0.25"), Ok(2.75));
+        assert_eq!(eval_aec_property_expression(&scene, "_BRH + 0.125"), Ok(1.025));
+        assert_eq!(eval_aec_property_expression(&scene, "_brh + 0.125"), Ok(1.025));
+
+        // 4. Mathematical functions and constants
+        assert_eq!(eval_aec_property_expression(&scene, "round(2.75)"), Ok(3.0));
+        assert_eq!(eval_aec_property_expression(&scene, "sqrt(9)"), Ok(3.0));
+        assert!((eval_aec_property_expression(&scene, "pi").unwrap() - std::f64::consts::PI).abs() < 1e-12);
+
+        // 5. Invalid expressions
+        assert!(eval_aec_property_expression(&scene, "").is_err());
+        assert!(eval_aec_property_expression(&scene, "_UNKNOWN_VAR + 1").is_err());
+        assert!(eval_aec_property_expression(&scene, "1 / 0").is_err());
+    }
+
+    #[test]
+    fn test_associative_parameter_update_recomputes_aec_geometry() {
+        use crate::app::OpenCADStudio;
+        use crate::modules::aec::engine::wall::Wall;
+        use crate::modules::aec::engine::xdata::{wall_from_entity, wall_record_for_wall, write_aec_record, AEC_APPID};
+        use acadrust::entities::{LwPolyline, LwVertex};
+        use acadrust::types::Vector2;
+        use acadrust::xdata::ExtendedDataRecord;
+
+        let mut app = OpenCADStudio::new_for_test();
+        let tab = app.active_tab;
+
+        // 1. Set initial parameters
+        app.tabs[tab].scene.named_parameters_mut().set("_STORY_H", "3.00").unwrap();
+        app.tabs[tab].scene.named_parameters_mut().set("_BRH", "0.90").unwrap();
+
+        // 2. Create a wall with a formula for height
+        let mut wall = Wall::new("style_standard_24", 2.75, 1);
+        wall.formulas.set("wall_height", "_STORY_H - 0.25".to_string());
+
+        let mut poly = LwPolyline::new();
+        poly.add_vertex(LwVertex::new(Vector2::new(0.0, 0.0)));
+        poly.add_vertex(LwVertex::new(Vector2::new(6.0, 0.0)));
+        let wall_handle = app.tabs[tab].scene.add_entity(EntityType::LwPolyline(poly));
+        let mut rec = ExtendedDataRecord::new(AEC_APPID);
+        rec.values = wall_record_for_wall(&wall);
+        write_aec_record(&mut app.tabs[tab].scene.document, wall_handle, rec);
+
+        // 3. Mutate parameter _STORY_H to 3.40 and trigger recompute
+        app.tabs[tab].scene.named_parameters_mut().set("_STORY_H", "3.40").unwrap();
+        app.aec_recompute_all_formulas(tab);
+
+        // 4. Verify wall height automatically updated to 3.15 (3.40 - 0.25)
+        let ent = app.tabs[tab].scene.document.get_entity(wall_handle).unwrap();
+        let updated_wall = wall_from_entity(ent).expect("wall");
+        assert!((updated_wall.height - 3.15).abs() < 1e-6);
+        assert_eq!(updated_wall.formulas.get("wall_height"), Some("_STORY_H - 0.25"));
+    }
+
+    #[test]
+    fn test_property_commit_stores_formula_and_formats_label() {
+        use crate::app::OpenCADStudio;
+        use crate::modules::aec::engine::wall::Wall;
+        use crate::modules::aec::engine::xdata::{wall_from_entity, wall_record_for_wall, write_aec_record, AEC_APPID};
+        use acadrust::entities::{LwPolyline, LwVertex};
+        use acadrust::types::Vector2;
+        use acadrust::xdata::ExtendedDataRecord;
+
+        let mut app = OpenCADStudio::new_for_test();
+        let tab = app.active_tab;
+
+        app.tabs[tab].scene.named_parameters_mut().set("_STORY_H", "3.00").unwrap();
+
+        // Create a wall with plain height 2.80
+        let wall = Wall::new("style_standard_24", 2.80, 1);
+        let mut poly = LwPolyline::new();
+        poly.add_vertex(LwVertex::new(Vector2::new(0.0, 0.0)));
+        poly.add_vertex(LwVertex::new(Vector2::new(5.0, 0.0)));
+        let wall_handle = app.tabs[tab].scene.add_entity(EntityType::LwPolyline(poly));
+        let mut rec = ExtendedDataRecord::new(AEC_APPID);
+        rec.values = wall_record_for_wall(&wall);
+        write_aec_record(&mut app.tabs[tab].scene.document, wall_handle, rec);
+
+        // Select the wall
+        app.tabs[tab].scene.select_entity(wall_handle, true);
+        app.refresh_properties();
+
+        // 1. Initially, no formula attached -> label is "Height"
+        let ent = app.tabs[tab].scene.document.get_entity(wall_handle).unwrap();
+        let sec = wall_prop_section(ent, None, None).expect("wall section");
+        let height_prop = sec.props.iter().find(|p| p.field == "wall_height").unwrap();
+        assert_eq!(height_prop.label, "Height");
+
+        // 2. Type formula "_STORY_H - 0.25" and commit
+        let _ = app.update(crate::app::Message::PropGeomInput {
+            field: "wall_height",
+            value: "_STORY_H - 0.25".to_string(),
+        });
+        let _ = app.update(crate::app::Message::PropGeomCommit("wall_height"));
+
+        // 3. Verify wall entity now has calculated height 2.75 and stored formula
+        let ent = app.tabs[tab].scene.document.get_entity(wall_handle).unwrap();
+        let updated_wall = wall_from_entity(ent).expect("wall");
+        assert_eq!(updated_wall.height, 2.75);
+        assert_eq!(updated_wall.formulas.get("wall_height"), Some("_STORY_H - 0.25"));
+
+        // 4. Verify property section formats label with (fx = 2.7500) and value contains formula string
+        let sec = wall_prop_section(ent, None, None).expect("wall section");
+        let height_prop = sec.props.iter().find(|p| p.field == "wall_height").unwrap();
+        assert!(height_prop.label.contains("fx = 2.7500"));
+        assert_eq!(height_prop.value, crate::scene::model::object::PropValue::EditText("_STORY_H - 0.25".to_string()));
+
+        // 5. In-place edit of the formula string (e.g. adjust offset to -0.10)
+        let _ = app.update(crate::app::Message::PropGeomInput {
+            field: "wall_height",
+            value: "_STORY_H - 0.10".to_string(),
+        });
+        let _ = app.update(crate::app::Message::PropGeomCommit("wall_height"));
+
+        let ent = app.tabs[tab].scene.document.get_entity(wall_handle).unwrap();
+        let updated_wall = wall_from_entity(ent).expect("wall");
+        assert_eq!(updated_wall.height, 2.90);
+        assert_eq!(updated_wall.formulas.get("wall_height"), Some("_STORY_H - 0.10"));
+
+        let sec = wall_prop_section(ent, None, None).expect("wall section");
+        let height_prop = sec.props.iter().find(|p| p.field == "wall_height").unwrap();
+        assert!(height_prop.label.contains("fx = 2.9000"));
+        assert_eq!(height_prop.value, crate::scene::model::object::PropValue::EditText("_STORY_H - 0.10".to_string()));
+
+        // 6. Overwrite with plain number "3.10"
+        let _ = app.update(crate::app::Message::PropGeomInput {
+            field: "wall_height",
+            value: "3.10".to_string(),
+        });
+        let _ = app.update(crate::app::Message::PropGeomCommit("wall_height"));
+
+        let ent = app.tabs[tab].scene.document.get_entity(wall_handle).unwrap();
+        let updated_wall = wall_from_entity(ent).expect("wall");
+        assert_eq!(updated_wall.height, 3.10);
+        assert_eq!(updated_wall.formulas.get("wall_height"), None);
+
+        let sec = wall_prop_section(ent, None, None).expect("wall section");
+        let height_prop = sec.props.iter().find(|p| p.field == "wall_height").unwrap();
+        assert_eq!(height_prop.label, "Height");
+        assert_eq!(height_prop.value, crate::scene::model::object::PropValue::EditText("3.1000".to_string()));
     }
 }

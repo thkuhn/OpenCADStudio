@@ -221,6 +221,7 @@ pub struct Opening {
     pub sill_normal: [f64; 3],
     pub head_origin: [f64; 3],
     pub head_normal: [f64; 3],
+    pub formulas: crate::modules::aec::engine::formulas::AecFormulas,
 }
 
 /// Default window width (drawing units / metres).
@@ -280,6 +281,7 @@ impl Opening {
             sill_normal: [0.0, 0.0, 1.0],
             head_origin: [0.0, 0.0, 0.0],
             head_normal: [0.0, 0.0, 1.0],
+            formulas: crate::modules::aec::engine::formulas::AecFormulas::default(),
         }
     }
 
