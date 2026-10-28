@@ -700,44 +700,24 @@ impl OpenCADStudio {
     }
 
     /// When Face3D preview entities for control planes or facets are deleted in the drawing,
-    /// remove the corresponding facet assignments from the control plane in the project manager.
+    /// remove the corresponding facet assignments from the control plane in the project manager
+    /// while strictly keeping at least 1 facet per plane (no dangling empty control plane).
     pub(crate) fn aec_erase_control_planes_or_facets(
         &mut self,
         tab_index: usize,
         handles: &[acadrust::Handle],
     ) {
         let scene = &self.tabs[tab_index].scene;
-        let mut facets_to_remove: Vec<(uuid::Uuid, usize)> = Vec::new();
-        for &h in handles {
-            if let Some(entity) = scene.document.get_entity(h) {
-                if let Some((plane_id, _name, facet_idx)) =
-                    crate::modules::aec::project::preview::control_plane_facet_from_entity(entity)
-                {
-                    if let Some(idx) = facet_idx {
-                        facets_to_remove.push((plane_id, idx));
-                    }
-                }
-            }
-        }
-        if facets_to_remove.is_empty() {
-            return;
-        }
-        facets_to_remove.sort_by(|a, b| b.1.cmp(&a.1));
         if let Some(project) = self.aec.aec_project_explorer_file.as_mut() {
             let mut modified = false;
-            for (plane_id, idx) in facets_to_remove {
-                for building in &mut project.buildings {
-                    for storey in &mut building.storeys {
-                        if let Some(plane) = storey.plane_mut(plane_id) {
-                            if idx < plane.facets.len() {
-                                plane.facets.remove(idx);
-                                if let Some(first) = plane.facets.first() {
-                                    plane.origin = first.origin();
-                                    plane.normal = first.unit_normal();
-                                }
-                                modified = true;
-                            }
-                        }
+            for building in &mut project.buildings {
+                for storey in &mut building.storeys {
+                    if crate::modules::aec::project::preview::erase_control_plane_facets_for_storey(
+                        scene,
+                        storey,
+                        handles,
+                    ) {
+                        modified = true;
                     }
                 }
             }

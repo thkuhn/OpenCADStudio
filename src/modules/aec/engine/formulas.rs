@@ -32,6 +32,23 @@ impl AecFormulas {
         self.fields.remove(field)
     }
 
+    /// Finds the first matching formula amongst the provided keys (in priority order).
+    pub fn get_any<'a, 'b>(&'a self, keys: &'b [&'b str]) -> Option<(&'b str, &'a str)> {
+        for &k in keys {
+            if let Some(v) = self.get(k) {
+                return Some((k, v));
+            }
+        }
+        None
+    }
+
+    /// Removes all occurrences of the specified keys.
+    pub fn remove_all(&mut self, keys: &[&str]) {
+        for &k in keys {
+            self.remove(k);
+        }
+    }
+
     pub fn is_empty(&self) -> bool {
         self.fields.is_empty()
     }

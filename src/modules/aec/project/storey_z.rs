@@ -135,3 +135,109 @@ impl OpenCADStudio {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use acadrust::entities::{LwPolyline, LwVertex};
+    use acadrust::types::Vector2;
+    use crate::modules::aec::engine::control_plane::{ControlPlane, ControlPlaneFacet};
+    use crate::modules::aec::engine::project::Building;
+    use crate::modules::aec::engine::wall::Wall;
+
+    #[test]
+    fn rebake_bound_walls_preserves_sloped_top_after_plane_deletion_and_storey_z_change() {
+        let mut project = ProjectFile::default();
+        let mut building = Building::new("Haus");
+        let mut eg = StoreyRef::new_with_height("EG", 0.0, 2.80, "eg.dwg");
+        let floor_id = eg.floor_plane_id;
+
+        // Sloped roof plane: Z=4.0 at x=0, Z=6.0 at x=10
+        let f1 = ControlPlaneFacet::new(
+            "RoofSlope",
+            vec![
+                [0.0, -5.0, 4.0],
+                [10.0, -5.0, 6.0],
+                [10.0, 5.0, 6.0],
+                [0.0, 5.0, 4.0],
+            ],
+        );
+        let roof_cp = ControlPlane::from_facets("ShedRoof", vec![f1]);
+        let roof_id = roof_cp.id;
+        eg.control_planes.push(roof_cp);
+        building.storeys.push(eg);
+        project.buildings.push(building);
+
+        let mut scene = Scene::new();
+        let mut wall = Wall::new("standard_wall", 2.80, 0);
+        wall.base_plane_id = Some(floor_id);
+        wall.top_plane_id = Some(roof_id);
+        wall.formulas.set("wall_top_offset", "_STORY_H - 2.80".to_string());
+
+        let mut poly = LwPolyline::new();
+        poly.add_vertex(LwVertex::new(Vector2::new(0.0, 0.0)));
+        poly.add_vertex(LwVertex::new(Vector2::new(10.0, 0.0)));
+        let handle = scene.add_entity(acadrust::EntityType::LwPolyline(poly));
+
+        let mut rec = ExtendedDataRecord::new(AEC_APPID);
+        rec.values = wall_record_for_wall(&wall);
+        write_aec_record(&mut scene.document, handle, rec);
+
+        // Initial rebake
+        let storey = &project.buildings[0].storeys[0];
+        let mut storey_mut = storey.clone();
+        apply_storey_z_to_scene(&mut scene, &mut storey_mut, Some(&project), None);
+
+        let w_initial = wall_from_entity(scene.document.get_entity(handle).unwrap()).unwrap();
+        let top_z_p1 = w_initial.top_z_at_xy(0.0, 0.0);
+        let top_z_p2 = w_initial.top_z_at_xy(5.0, 0.0);
+        assert!((top_z_p1 - 4.0).abs() < 1e-9);
+        assert!((top_z_p2 - 5.0).abs() < 1e-9);
+        assert!(w_initial.is_sloped());
+        assert_eq!(w_initial.formulas.get("wall_top_offset"), Some("_STORY_H - 2.80"));
+
+        // Delete the custom roof plane from the project
+        project.buildings[0].storeys[0].control_planes.retain(|p| p.id != roof_id);
+        assert!(project.control_plane(roof_id).is_none());
+
+        // Change storey floor elevation (base moves from Z=0.0 to Z=1.0)
+        project.buildings[0].storeys[0].set_elevation(1.0);
+        let mut eg_storey = project.buildings[0].storeys[0].clone();
+
+        // Apply storey Z change to active scene
+        apply_storey_z_to_scene(&mut scene, &mut eg_storey, Some(&project), None);
+
+        // Verify wall geometry after plane deletion and storey elevation change
+        let w_after = wall_from_entity(scene.document.get_entity(handle).unwrap()).unwrap();
+
+        // Base moved to 1.0
+        assert!((w_after.base_origin[2] - 1.0).abs() < 1e-9);
+        // Baked top facets and sloped geometry remain exact at both points
+        assert_eq!(w_after.top_facets.len(), 1);
+        assert_eq!(w_after.top_facets[0].name, "RoofSlope");
+        assert!(w_after.is_sloped());
+        assert!((w_after.top_z_at_xy(0.0, 0.0) - top_z_p1).abs() < 1e-9);
+        assert!((w_after.top_z_at_xy(5.0, 0.0) - top_z_p2).abs() < 1e-9);
+
+        // Formula remains intact
+        assert_eq!(w_after.formulas.get("wall_top_offset"), Some("_STORY_H - 2.80"));
+
+        // Re-evaluate formula with a new parameter value (_STORY_H = 3.10 => offset = +0.30)
+        scene.named_parameters_mut().set("_STORY_H", "3.10").unwrap();
+        let expr = w_after.formulas.get("wall_top_offset").unwrap();
+        let new_offset = crate::modules::aec::properties::eval_aec_property_expression(&scene, expr).unwrap();
+        assert!((new_offset - 0.30).abs() < 1e-9);
+
+        let mut w_recomputed = w_after.clone();
+        w_recomputed.top_offset = new_offset;
+        // Verify sloped snapshot keeps exact slope (1.0m rise per 5m) and shifts top elevation along plane normal:
+        let top_z_recomputed_p1 = w_recomputed.top_z_at_xy(0.0, 0.0);
+        let top_z_recomputed_p2 = w_recomputed.top_z_at_xy(5.0, 0.0);
+        assert!((top_z_recomputed_p2 - top_z_recomputed_p1 - 1.0).abs() < 1e-9);
+        let normal_scale = 1.04_f64.sqrt(); // 1 / nz for facet unit normal [-2, 0, 10]/sqrt(104)
+        assert!((top_z_recomputed_p1 - (top_z_p1 + new_offset * normal_scale)).abs() < 1e-9);
+        assert!((top_z_recomputed_p2 - (top_z_p2 + new_offset * normal_scale)).abs() < 1e-9);
+        assert!((top_z_recomputed_p1 - (4.0 + 0.30 * normal_scale)).abs() < 1e-9);
+        assert!((top_z_recomputed_p2 - (5.0 + 0.30 * normal_scale)).abs() < 1e-9);
+    }
+}

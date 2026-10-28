@@ -16,6 +16,12 @@ use super::plan_view::PlanPhase;
 use super::project::{ProjectFile, StoreyRef};
 use super::wall_style::LayerFunction;
 
+/// Recognized property / formula keys for slab top / reference offset (canonical first).
+pub const SLAB_TOP_OFFSET_KEYS: &[&str] = &["slab_top_offset", "top_offset", "slab_offset", "offset"];
+
+/// Recognized property / formula keys for slab base offset (canonical first).
+pub const SLAB_BASE_OFFSET_KEYS: &[&str] = &["slab_base_offset", "base_offset"];
+
 /// Vertical reference justification for a slab.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
 pub enum SlabJustification {
@@ -358,6 +364,8 @@ impl Slab {
                     self.top_normal = facet.unit_normal();
                 }
             }
+        } else {
+            self.top_facets.clear();
         }
         if let Some(base_id) = self.base_plane_id {
             if let Some(cp) = lookup(base_id) {
@@ -368,13 +376,24 @@ impl Slab {
                     self.base_normal = facet.unit_normal();
                 }
             }
+        } else {
+            self.base_facets.clear();
         }
     }
 
     /// Evaluates top surface elevation Z at (x, y) taking planes and offsets into account.
     pub fn top_z_at_xy(&self, x: f64, y: f64, default_ref_z: f64) -> f64 {
         let plane_z = if let Some(z) = self.eval_facets_or_plane(&self.top_facets, self.top_origin, self.top_normal, x, y) {
-            z
+            if self.top_plane_id.is_none()
+                && self.top_facets.is_empty()
+                && self.top_origin == [0.0, 0.0, 0.0]
+                && self.top_normal == [0.0, 0.0, 1.0]
+                && default_ref_z.abs() > 1e-9
+            {
+                default_ref_z
+            } else {
+                z
+            }
         } else {
             default_ref_z
         };
@@ -401,7 +420,7 @@ impl Slab {
         self.top_z_at_xy(x, y, default_ref_z) - self.total_thickness() + self.base_offset
     }
 
-    fn eval_facets_or_plane(
+    pub fn eval_facets_or_plane(
         &self,
         facets: &[ControlPlaneFacet],
         origin: [f64; 3],
@@ -530,5 +549,120 @@ mod tests {
         assert_eq!(Slab::area(&pts), 50.0);
         assert_eq!(Slab::perimeter(&pts), 30.0);
         assert!((slab.volume(&pts) - 10.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn test_elevation_and_offsets_with_justifications() {
+        let mut slab = Slab::new("test_slab", 1);
+        slab.layers = test_layers(); // total = 0.33, structural_top_offset = 0.12
+        let ref_z = 2.80;
+
+        // 1. Horizontal slab without control plane (uses default_ref_z)
+        // -------------------------------------------------------------
+        // Top / OKFF (with top_offset = 0.10)
+        slab.justification = SlabJustification::Top;
+        slab.top_offset = 0.10;
+        assert!((slab.top_z_at_xy(0.0, 0.0, ref_z) - 2.90).abs() < 1e-6);
+        assert!((slab.structural_top_z_at_xy(0.0, 0.0, ref_z) - 2.78).abs() < 1e-6);
+        assert!((slab.bottom_z_at_xy(0.0, 0.0, ref_z) - 2.57).abs() < 1e-6);
+
+        // StructuralTop / OKRD (with top_offset = 0.10)
+        slab.justification = SlabJustification::StructuralTop;
+        slab.top_offset = 0.10;
+        // top is at ref_z + 0.10 + 0.12 = 3.02
+        assert!((slab.top_z_at_xy(0.0, 0.0, ref_z) - 3.02).abs() < 1e-6);
+        // structural top is at 3.02 - 0.12 = 2.90 (ref_z + offset)
+        assert!((slab.structural_top_z_at_xy(0.0, 0.0, ref_z) - 2.90).abs() < 1e-6);
+        // bottom is at 3.02 - 0.33 = 2.69
+        assert!((slab.bottom_z_at_xy(0.0, 0.0, ref_z) - 2.69).abs() < 1e-6);
+
+        // Bottom / UKD (with top_offset = 0.10)
+        slab.justification = SlabJustification::Bottom;
+        slab.top_offset = 0.10;
+        // top is at ref_z + 0.10 + 0.33 = 3.23
+        assert!((slab.top_z_at_xy(0.0, 0.0, ref_z) - 3.23).abs() < 1e-6);
+        assert!((slab.structural_top_z_at_xy(0.0, 0.0, ref_z) - 3.11).abs() < 1e-6);
+        // bottom is at 3.23 - 0.33 = 2.90 (ref_z + offset)
+        assert!((slab.bottom_z_at_xy(0.0, 0.0, ref_z) - 2.90).abs() < 1e-6);
+
+        // 2. Sloped Control Plane Facet binding
+        // -------------------------------------
+        let facet = ControlPlaneFacet::new(
+            "RoofSlope",
+            vec![
+                [0.0, 0.0, 3.0],
+                [10.0, 0.0, 5.0],
+                [10.0, 5.0, 5.0],
+                [0.0, 5.0, 3.0],
+            ],
+        );
+        let cp = ControlPlane::from_facets("Shed", vec![facet]);
+        slab.top_plane_id = Some(cp.id);
+        slab.top_facets = cp.facets.clone();
+        slab.top_origin = [0.0, 0.0, 3.0];
+        slab.top_normal = cp.facets[0].unit_normal();
+
+        // Sloped: Z = 3.0 at x=0, Z = 4.0 at x=5, Z = 5.0 at x=10
+        slab.justification = SlabJustification::Top;
+        slab.top_offset = 0.0;
+        assert!((slab.top_z_at_xy(0.0, 0.0, 0.0) - 3.00).abs() < 1e-6);
+        assert!((slab.top_z_at_xy(5.0, 0.0, 0.0) - 4.00).abs() < 1e-6);
+        assert!((slab.top_z_at_xy(10.0, 0.0, 0.0) - 5.00).abs() < 1e-6);
+        assert!((slab.structural_top_z_at_xy(5.0, 0.0, 0.0) - 3.88).abs() < 1e-6);
+        assert!((slab.bottom_z_at_xy(5.0, 0.0, 0.0) - 3.67).abs() < 1e-6);
+
+        // Sloped with OKRD:
+        slab.justification = SlabJustification::StructuralTop;
+        assert!((slab.top_z_at_xy(5.0, 0.0, 0.0) - 4.12).abs() < 1e-6);
+        assert!((slab.structural_top_z_at_xy(5.0, 0.0, 0.0) - 4.00).abs() < 1e-6);
+        assert!((slab.bottom_z_at_xy(5.0, 0.0, 0.0) - 3.79).abs() < 1e-6);
+    }
+
+    #[test]
+    fn test_legacy_dual_bound_slab_semantics() {
+        // Document and verify legacy DWG case where both top_plane_id and base_plane_id are set.
+        let mut slab = Slab::new("test_slab", 1);
+        slab.layers = test_layers(); // total thickness = 0.33, structural offset = 0.12
+
+        // Top plane at Z = 3.00
+        let top_cp = ControlPlane::horizontal("TopLevel", 3.00);
+        slab.top_plane_id = Some(top_cp.id);
+        slab.top_facets = top_cp.facets.clone();
+        slab.top_origin = top_cp.origin;
+        slab.top_normal = top_cp.normal;
+
+        // Base plane at Z = 2.40 (e.g. lower ceiling plane)
+        let base_cp = ControlPlane::horizontal("BaseLevel", 2.40);
+        slab.base_plane_id = Some(base_cp.id);
+        slab.base_facets = base_cp.facets.clone();
+        slab.base_origin = base_cp.origin;
+        slab.base_normal = base_cp.normal;
+
+        slab.top_offset = 0.0;
+        slab.base_offset = 0.05;
+
+        // With top justification = Top (OKFF):
+        slab.justification = SlabJustification::Top;
+        // top_z_at_xy is driven by top_plane + justification + top_offset: 3.00 + 0.0 + 0.0 = 3.00
+        assert!((slab.top_z_at_xy(0.0, 0.0, 0.0) - 3.00).abs() < 1e-6);
+        assert!((slab.structural_top_z_at_xy(0.0, 0.0, 0.0) - 2.88).abs() < 1e-6);
+        // bottom_z_at_xy is explicitly bound to base_plane + base_offset: 2.40 + 0.05 = 2.45
+        assert!((slab.bottom_z_at_xy(0.0, 0.0, 0.0) - 2.45).abs() < 1e-6);
+
+        // When justification changes to StructuralTop (OKRD):
+        slab.justification = SlabJustification::StructuralTop;
+        // top_z_at_xy shifts by +0.12: 3.00 + 0.12 = 3.12 (so structural core is at 3.00)
+        assert!((slab.top_z_at_xy(0.0, 0.0, 0.0) - 3.12).abs() < 1e-6);
+        assert!((slab.structural_top_z_at_xy(0.0, 0.0, 0.0) - 3.00).abs() < 1e-6);
+        // bottom_z_at_xy remains bound to base_plane (2.45)
+        assert!((slab.bottom_z_at_xy(0.0, 0.0, 0.0) - 2.45).abs() < 1e-6);
+
+        // 3D layers and layer_z_ranges are derived from the reference top plane
+        let ranges = slab.layer_z_ranges(3.00);
+        assert_eq!(ranges.len(), 5);
+        // Uppermost layer top in world Z: 3.00 + 0.12 = 3.12
+        assert!((ranges[0].0 - 3.12).abs() < 1e-6);
+        // Lowermost layer bottom in world Z: 3.12 - 0.33 = 2.79
+        assert!((ranges[4].1 - 2.79).abs() < 1e-6);
     }
 }

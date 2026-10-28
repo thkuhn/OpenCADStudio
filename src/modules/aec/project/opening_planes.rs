@@ -13,7 +13,9 @@ use crate::modules::aec::engine::openings::Opening;
 use crate::modules::aec::engine::project::{ProjectFile, StoreyRef};
 use crate::modules::aec::engine::wall::Wall;
 use crate::modules::aec::engine::xdata::wall_from_entity;
-use crate::modules::aec::project::wall_planes::{is_unbound_label, parse_plane_choice};
+use crate::modules::aec::project::wall_planes::{
+    parse_plane_choice, resolve_plane_stored_name,
+};
 use crate::scene::Scene;
 
 pub fn host_base_z_at_xy(
@@ -97,11 +99,7 @@ pub fn apply_opening_plane_choice(
         return false;
     };
     let id = parse_plane_choice(project, choice);
-    let name = if is_unbound_label(choice) || choice.trim().is_empty() {
-        None
-    } else {
-        Some(choice.trim().to_string())
-    };
+    let name = resolve_plane_stored_name(project, id, choice);
     if sill {
         if opening.sill_plane_id == id {
             return false;
@@ -110,6 +108,9 @@ pub fn apply_opening_plane_choice(
         opening.sill_plane_name = name;
         opening.sill_offset = 0.0;
         opening.formulas.remove("opening_sill_offset");
+        if id.is_none() {
+            opening.sill_normal = [0.0, 0.0, 1.0];
+        }
     } else {
         if opening.head_plane_id == id {
             return false;
@@ -118,6 +119,9 @@ pub fn apply_opening_plane_choice(
         opening.head_plane_name = name;
         opening.head_offset = 0.0;
         opening.formulas.remove("opening_head_offset");
+        if id.is_none() {
+            opening.head_normal = [0.0, 0.0, 1.0];
+        }
     }
     if opening.has_plane_binding() {
         let host_base_z = host_wall(scene, &opening)
@@ -511,5 +515,172 @@ mod tests {
         let baked = opening_from_entity(scene.document.get_entity(handle).unwrap(), handle).unwrap();
         assert!((baked.sill_height - 2.0).abs() < 1e-9);
         assert!((baked.height - 3.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn sloped_plane_unbind_resets_normal_and_keeps_sill_and_head_height() {
+        use crate::modules::aec::engine::control_plane::{ControlPlane, ControlPlaneFacet};
+
+        let mut project = ProjectFile::default();
+        let mut building = Building::new("B");
+        let mut storey = StoreyRef::new_with_height("EG", 0.0, 3.0, "eg.dwg");
+
+        // Sloped control plane: Z=1.0 at x=0, Z=3.0 at x=10
+        let f1 = ControlPlaneFacet::new(
+            "SlopedSillPlane",
+            vec![
+                [0.0, -5.0, 1.0],
+                [10.0, -5.0, 3.0],
+                [10.0, 5.0, 3.0],
+                [0.0, 5.0, 1.0],
+            ],
+        );
+        let sloped_cp = ControlPlane::from_facets("SlopedSillPlane", vec![f1]);
+        let sloped_id = sloped_cp.id;
+        storey.control_planes.push(sloped_cp);
+        building.storeys.push(storey);
+        project.buildings.push(building);
+
+        let mut scene = Scene::new();
+        let mut wall = Wall::new("s", 3.0, 0);
+        wall.justification = WallJustification::Center;
+        wall.layers = vec![WallLayer {
+            material: "Concrete".into(),
+            thickness: 0.3,
+            function: "Structural".into(),
+            axis_offset: -0.15,
+            ..WallLayer::default()
+        }];
+        let wall_h = add_test_wall(&mut scene, wall);
+
+        let mut opening = Opening::window(Handle::NULL, wall_h, 5.0);
+        let pt = EntityType::Point(Point::at(Vector3::new(5.0, 0.0, 0.0)));
+        let handle = scene.add_entity(pt);
+        opening.handle = handle;
+        write_opening_instance(&mut scene, &opening);
+
+        // 1. Bind sill to sloped plane (Z at x=5 is 2.0)
+        assert!(apply_opening_plane_choice(
+            &mut scene,
+            Some(&project),
+            handle,
+            true,
+            "SlopedSillPlane",
+            None,
+            None,
+        ));
+        let bound = opening_from_entity(scene.document.get_entity(handle).unwrap(), handle).unwrap();
+        assert_eq!(bound.sill_plane_id, Some(sloped_id));
+        assert!((bound.sill_height - 2.0).abs() < 1e-9);
+        assert!((bound.sill_normal[2] - 1.0).abs() > 1e-4);
+        let initial_height = bound.height;
+
+        // 2. Explicit unbind sill to (none)
+        assert!(apply_opening_plane_choice(
+            &mut scene,
+            Some(&project),
+            handle,
+            true,
+            UNBOUND_LABEL,
+            None,
+            None,
+        ));
+        let unbound = opening_from_entity(scene.document.get_entity(handle).unwrap(), handle).unwrap();
+        assert_eq!(unbound.sill_plane_id, None);
+        assert_eq!(unbound.sill_plane_name, None);
+        // Normal is reset to vertical [0, 0, 1]
+        assert_eq!(unbound.sill_normal, [0.0, 0.0, 1.0]);
+        // Sill height is numerically stable at 2.0
+        assert!((unbound.sill_height - 2.0).abs() < 1e-9);
+        assert!((unbound.height - initial_height).abs() < 1e-9);
+
+        // 3. Bind head to sloped plane and then unbind
+        assert!(apply_opening_plane_choice(
+            &mut scene,
+            Some(&project),
+            handle,
+            false,
+            "SlopedSillPlane",
+            None,
+            None,
+        ));
+        let bound_head = opening_from_entity(scene.document.get_entity(handle).unwrap(), handle).unwrap();
+        assert_eq!(bound_head.head_plane_id, Some(sloped_id));
+        assert!((bound_head.head_normal[2] - 1.0).abs() > 1e-4);
+
+        assert!(apply_opening_plane_choice(
+            &mut scene,
+            Some(&project),
+            handle,
+            false,
+            UNBOUND_LABEL,
+            None,
+            None,
+        ));
+        let unbound_head = opening_from_entity(scene.document.get_entity(handle).unwrap(), handle).unwrap();
+        assert_eq!(unbound_head.head_plane_id, None);
+        assert_eq!(unbound_head.head_plane_name, None);
+        assert_eq!(unbound_head.head_normal, [0.0, 0.0, 1.0]);
+        assert!((unbound_head.height - bound_head.height).abs() < 1e-9);
+        assert!((unbound_head.sill_height - bound_head.sill_height).abs() < 1e-9);
+    }
+
+    #[test]
+    fn test_apply_opening_plane_choice_stores_pure_name_in_xdata() {
+        use crate::modules::aec::engine::control_plane::{ControlPlane, ControlPlaneFacet};
+
+        let mut project = ProjectFile::default();
+        let mut building = Building::new("B");
+        let mut eg = StoreyRef::new_with_height("EG", 0.0, 3.0, "eg.dwg");
+        let mut og = StoreyRef::new_with_height("OG", 3.0, 3.0, "og.dwg");
+
+        let eg_custom_floor = ControlPlane::horizontal("Floor", 0.0);
+        eg.control_planes.push(eg_custom_floor);
+        let og_custom_floor = ControlPlane::horizontal("Floor", 3.0);
+        og.control_planes.push(og_custom_floor);
+
+        let f = ControlPlaneFacet::new("Facet", vec![[0.0, 0.0, 1.2], [10.0, 0.0, 1.2], [10.0, 10.0, 1.2], [0.0, 10.0, 1.2]]);
+        let cp = ControlPlane::from_facets("FensterBank (EG)", vec![f]);
+        eg.control_planes.push(cp);
+
+        building.storeys.push(eg);
+        building.storeys.push(og);
+        project.buildings.push(building);
+
+        let mut scene = Scene::new();
+        let wall = Wall::new("s", 3.0, 0);
+        let wall_h = add_test_wall(&mut scene, wall);
+
+        let mut opening = Opening::window(Handle::NULL, wall_h, 5.0);
+        let pt = EntityType::Point(Point::at(Vector3::new(5.0, 0.0, 0.0)));
+        let handle = scene.add_entity(pt);
+        opening.handle = handle;
+        write_opening_instance(&mut scene, &opening);
+
+        // Apply formatted choice with storey disambiguation
+        assert!(apply_opening_plane_choice(
+            &mut scene,
+            Some(&project),
+            handle,
+            true,
+            "Floor [EG] (Z = 0.000 m)",
+            None,
+            None,
+        ));
+        let o_bound = opening_from_entity(scene.document.get_entity(handle).unwrap(), handle).unwrap();
+        assert_eq!(o_bound.sill_plane_name, Some("Floor".to_string()));
+
+        // Apply formatted choice with bracketed name
+        assert!(apply_opening_plane_choice(
+            &mut scene,
+            Some(&project),
+            handle,
+            true,
+            "FensterBank (EG) (Z = 1.200 m)",
+            None,
+            None,
+        ));
+        let o_bound_bracket = opening_from_entity(scene.document.get_entity(handle).unwrap(), handle).unwrap();
+        assert_eq!(o_bound_bracket.sill_plane_name, Some("FensterBank (EG)".to_string()));
     }
 }

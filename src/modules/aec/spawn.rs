@@ -115,11 +115,16 @@ pub(crate) fn try_dispatch(
         "AEC_PLACE_VIEW" => Some(install_spawned(app, tab, cmd, "AEC_PLACE_VIEW")),
         "AEC_PLANE_SYNC" => {
             let path = app.tabs[tab].drawing_path().map(Path::to_path_buf);
+            let base_dir = app
+                .aec
+                .aec_project_explorer_path
+                .as_deref()
+                .and_then(|p| p.parent());
             let storey_ids = app
                 .aec
                 .aec_project_explorer_file
                 .as_ref()
-                .and_then(|p| resolve_control_plane_storey_ids(p, path.as_deref()));
+                .and_then(|p| resolve_control_plane_storey_ids(p, path.as_deref(), base_dir));
             if let Some((bid, sid)) = storey_ids {
                 app.sync_storey_from_active_drawing(bid, sid);
                 app.command_line.push_info(
@@ -303,11 +308,16 @@ pub(crate) fn try_dispatch(
         cmd if cmd.starts_with("AEC_PLANE_3POINT_DO ") => {
             let args = cmd["AEC_PLANE_3POINT_DO ".len()..].to_string();
             let path = app.tabs[tab].drawing_path().map(Path::to_path_buf);
+            let base_dir = app
+                .aec
+                .aec_project_explorer_path
+                .as_deref()
+                .and_then(|p| p.parent());
             let storey_ids = app
                 .aec
                 .aec_project_explorer_file
                 .as_ref()
-                .and_then(|p| resolve_control_plane_storey_ids(p, path.as_deref()));
+                .and_then(|p| resolve_control_plane_storey_ids(p, path.as_deref(), base_dir));
             let mut storey_opt = None;
             if let Some((bid, sid)) = storey_ids {
                 if let Some(project) = app.aec.aec_project_explorer_file.as_mut() {
@@ -358,92 +368,13 @@ pub(crate) fn try_dispatch(
             app.tabs[tab].dirty = true;
             Some(app.finish_dispatch(cmd))
         }
-        cmd if cmd.starts_with("AEC_PLANE_FACET_DO ") => {
-            let args = cmd["AEC_PLANE_FACET_DO ".len()..].to_string();
-            let path = app.tabs[tab].drawing_path().map(Path::to_path_buf);
-            let storey_ids = app
-                .aec
-                .aec_project_explorer_file
-                .as_ref()
-                .and_then(|p| resolve_control_plane_storey_ids(p, path.as_deref()));
-            let mut storey_opt = None;
-            if let Some((bid, sid)) = storey_ids {
-                if let Some(project) = app.aec.aec_project_explorer_file.as_mut() {
-                    storey_opt = project
-                        .buildings
-                        .iter_mut()
-                        .find(|b| b.id == bid)
-                        .and_then(|b| b.storeys.iter_mut().find(|s| s.id == sid));
-                }
-            }
-            crate::modules::aec::project::plane_facet::aec_plane_facet_do(
-                &mut app.tabs[tab].scene,
-                &mut app.command_line,
-                storey_opt,
-                &args,
-            );
-            app.aec_project_explorer_persist_if_pathed();
-            app.tabs[tab].dirty = true;
-            Some(app.finish_dispatch(cmd))
+        cmd if cmd == "AEC_PLANE_FACET_DO" || cmd.starts_with("AEC_PLANE_FACET_DO ") => {
+            let (_outcome, task) = dispatch_plane_facet_do_helper(app, tab, cmd);
+            Some(task)
         }
-        cmd if cmd.starts_with("AEC_PLANE_ASSIGN_DO ") => {
-            let rest = cmd["AEC_PLANE_ASSIGN_DO ".len()..].to_string();
-            let mut parts = rest.split_whitespace();
-            let target_str = parts.next().unwrap_or("_|_|_");
-            let mut target_plane_id = None;
-            let mut target_bid_sid = None;
-            if target_str != "_|_|_" {
-                let segs: Vec<&str> = target_str.split('|').collect();
-                if segs.len() == 3 {
-                    if let (Ok(bid), Ok(sid), Ok(pid)) = (
-                        segs[0].parse::<Uuid>(),
-                        segs[1].parse::<Uuid>(),
-                        segs[2].parse::<Uuid>(),
-                    ) {
-                        target_bid_sid = Some((bid, sid));
-                        target_plane_id = Some(pid);
-                    }
-                }
-            }
-            let handles: Vec<Handle> = parts
-                .filter_map(|s| s.parse::<u64>().ok())
-                .map(Handle::new)
-                .collect();
-
-            let path = app.tabs[tab].drawing_path().map(Path::to_path_buf);
-            let storey_ids = target_bid_sid.or_else(|| {
-                app.aec
-                    .aec_project_explorer_file
-                    .as_ref()
-                    .and_then(|p| resolve_control_plane_storey_ids(p, path.as_deref()))
-            });
-            let mut storey_opt = None;
-            if let Some((bid, sid)) = storey_ids {
-                if let Some(project) = app.aec.aec_project_explorer_file.as_mut() {
-                    storey_opt = project
-                        .buildings
-                        .iter_mut()
-                        .find(|b| b.id == bid)
-                        .and_then(|b| b.storeys.iter_mut().find(|s| s.id == sid));
-                }
-            }
-            if !handles.is_empty() {
-                crate::modules::aec::project::plane_assign::aec_plane_assign_do(
-                    &mut app.tabs[tab].scene,
-                    &mut app.command_line,
-                    storey_opt,
-                    target_plane_id,
-                    &handles,
-                );
-                app.aec_project_explorer_persist_if_pathed();
-                app.tabs[tab].dirty = true;
-            }
-            if let Some((bid, sid)) = target_bid_sid {
-                return Some(Task::done(crate::app::Message::Aec(
-                    crate::modules::aec::message::AecMessage::AecStoreySettingsOpen(bid, sid),
-                )));
-            }
-            Some(app.finish_dispatch(cmd))
+        cmd if cmd == "AEC_PLANE_ASSIGN_DO" || cmd.starts_with("AEC_PLANE_ASSIGN_DO ") => {
+            let (_outcome, task) = dispatch_plane_assign_do_helper(app, tab, cmd);
+            Some(task)
         }
         _ => None,
     }
@@ -453,11 +384,16 @@ fn dispatch_control_planes(app: &mut OpenCADStudio, tab: usize) -> Task<Message>
     let visible = toggle_controlplanes_layer(&mut app.tabs[tab].scene);
     if visible {
         let path = app.tabs[tab].drawing_path().map(Path::to_path_buf);
+        let base_dir = app
+            .aec
+            .aec_project_explorer_path
+            .as_deref()
+            .and_then(|p| p.parent());
         let storey_ids = app
             .aec
             .aec_project_explorer_file
             .as_ref()
-            .and_then(|p| resolve_control_plane_storey_ids(p, path.as_deref()));
+            .and_then(|p| resolve_control_plane_storey_ids(p, path.as_deref(), base_dir));
         if let Some((bid, sid)) = storey_ids {
             if let Some(project) = app.aec.aec_project_explorer_file.as_mut() {
                 if let Some(storey) = project
@@ -504,12 +440,17 @@ fn dispatch_wall(app: &mut OpenCADStudio, tab: usize, cmd: &str) -> Task<Message
             app.aec.aec_last_wall_style_id.as_deref(),
             app.aec.aec_last_wall_height,
         );
+    let base_dir = app
+        .aec
+        .aec_project_explorer_path
+        .as_deref()
+        .and_then(|p| p.parent());
     if let Some(storey) = app
         .aec
         .aec_project_explorer_file
         .as_ref()
         .and_then(|p| {
-            storey_matching_tab(p, app.tabs[tab].drawing_path())
+            storey_matching_tab(p, app.tabs[tab].drawing_path(), base_dir)
                 .or_else(|| {
                     app.aec
                         .aec_project_explorer_selected_storey
@@ -779,32 +720,263 @@ fn selected_wall_handles(app: &OpenCADStudio, tab: usize) -> Vec<Handle> {
     wall_handles
 }
 
-fn drawing_path_matches_storey(current: &Path, drawing_path: &str) -> bool {
-    if drawing_path.trim().is_empty() {
-        return false;
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum PlaneTargetDispatchOutcome {
+    ReopenStoreySettings(Uuid, Uuid),
+    Finished,
+    Error(String),
+}
+
+pub(crate) fn dispatch_plane_facet_do_helper(
+    app: &mut OpenCADStudio,
+    tab: usize,
+    cmd: &str,
+) -> (PlaneTargetDispatchOutcome, Task<Message>) {
+    let rest = if cmd.starts_with("AEC_PLANE_FACET_DO ") {
+        cmd["AEC_PLANE_FACET_DO ".len()..].trim()
+    } else {
+        ""
+    };
+    let mut parts = rest.split_whitespace();
+    let first_token = parts.clone().next().unwrap_or("");
+    let mut target_plane_id = None;
+    let mut target_bid_sid = None;
+    let coord_args: String;
+
+    if first_token.contains('|') {
+        match crate::modules::aec::project::plane_facet::parse_plane_target(first_token) {
+            Ok(Some((bid, sid, pid))) => {
+                target_bid_sid = Some((bid, sid));
+                target_plane_id = Some(pid);
+                let _ = parts.next();
+                coord_args = parts.collect::<Vec<_>>().join(" ");
+            }
+            Ok(None) => {
+                let _ = parts.next();
+                coord_args = parts.collect::<Vec<_>>().join(" ");
+            }
+            Err(e) => {
+                let msg = format!("AEC: {e}");
+                app.command_line.push_error(&msg);
+                return (PlaneTargetDispatchOutcome::Error(msg), app.finish_dispatch(cmd));
+            }
+        }
+    } else {
+        coord_args = rest.to_string();
     }
-    current.ends_with(drawing_path)
-        || current.file_name().and_then(|n| n.to_str())
-            == Path::new(drawing_path).file_name().and_then(|n| n.to_str())
+
+    let path = app.tabs[tab].drawing_path().map(Path::to_path_buf);
+    let base_dir = app
+        .aec
+        .aec_project_explorer_path
+        .as_deref()
+        .and_then(|p| p.parent());
+    let storey_ids = target_bid_sid.or_else(|| {
+        app.aec
+            .aec_project_explorer_file
+            .as_ref()
+            .and_then(|p| resolve_control_plane_storey_ids(p, path.as_deref(), base_dir))
+    });
+
+    let Some((bid, sid)) = storey_ids else {
+        let msg = crate::t!("AEC: Kein Geschoss im Projekt gefunden.").into_owned();
+        app.command_line.push_error(&msg);
+        return (PlaneTargetDispatchOutcome::Error(msg), app.finish_dispatch(cmd));
+    };
+
+    let Some(project) = app.aec.aec_project_explorer_file.as_mut() else {
+        let msg = crate::t!("AEC: Kein AEC-Projekt geladen.").into_owned();
+        app.command_line.push_error(&msg);
+        return (PlaneTargetDispatchOutcome::Error(msg), app.finish_dispatch(cmd));
+    };
+
+    let Some(bldg) = project.buildings.iter_mut().find(|b| b.id == bid) else {
+        let msg = crate::t!("AEC: Zielgebäude im Projekt nicht gefunden.").into_owned();
+        app.command_line.push_error(&msg);
+        return (PlaneTargetDispatchOutcome::Error(msg), app.finish_dispatch(cmd));
+    };
+
+    let Some(storey) = bldg.storeys.iter_mut().find(|s| s.id == sid) else {
+        let msg = crate::t!("AEC: Zielgeschoss im Projekt nicht gefunden.").into_owned();
+        app.command_line.push_error(&msg);
+        return (PlaneTargetDispatchOutcome::Error(msg), app.finish_dispatch(cmd));
+    };
+
+    if !coord_args.trim().is_empty() {
+        let matches_drawing = path
+            .as_deref()
+            .map(|p| drawing_path_matches_storey(p, &storey.drawing_path, base_dir))
+            .unwrap_or(false);
+
+        let preview_scene = if matches_drawing {
+            Some(&mut app.tabs[tab].scene)
+        } else {
+            None
+        };
+
+        let facet_opt = crate::modules::aec::project::plane_facet::aec_plane_facet_do(
+            preview_scene,
+            &mut app.command_line,
+            Some(storey),
+            target_plane_id,
+            &coord_args,
+        );
+
+        if facet_opt.is_some() {
+            app.aec_project_explorer_persist_if_pathed();
+            if matches_drawing {
+                app.tabs[tab].dirty = true;
+            }
+        }
+    }
+
+    if let Some((bid, sid)) = target_bid_sid {
+        return (
+            PlaneTargetDispatchOutcome::ReopenStoreySettings(bid, sid),
+            Task::done(crate::app::Message::Aec(
+                crate::modules::aec::message::AecMessage::AecStoreySettingsOpen(bid, sid),
+            )),
+        );
+    }
+    (PlaneTargetDispatchOutcome::Finished, app.finish_dispatch(cmd))
+}
+
+pub(crate) fn dispatch_plane_assign_do_helper(
+    app: &mut OpenCADStudio,
+    tab: usize,
+    cmd: &str,
+) -> (PlaneTargetDispatchOutcome, Task<Message>) {
+    let rest = if cmd.starts_with("AEC_PLANE_ASSIGN_DO ") {
+        cmd["AEC_PLANE_ASSIGN_DO ".len()..].trim()
+    } else {
+        ""
+    };
+    let mut parts = rest.split_whitespace();
+    let target_str = parts.clone().next().unwrap_or("_|_|_");
+    let mut target_plane_id = None;
+    let mut target_bid_sid = None;
+    if target_str.contains('|') {
+        match crate::modules::aec::project::plane_facet::parse_plane_target(target_str) {
+            Ok(Some((bid, sid, pid))) => {
+                target_bid_sid = Some((bid, sid));
+                target_plane_id = Some(pid);
+                let _ = parts.next();
+            }
+            Ok(None) => {
+                let _ = parts.next();
+            }
+            Err(e) => {
+                let msg = format!("AEC: {e}");
+                app.command_line.push_error(&msg);
+                return (PlaneTargetDispatchOutcome::Error(msg), app.finish_dispatch(cmd));
+            }
+        }
+    }
+    let handles: Vec<Handle> = parts
+        .filter_map(|s| s.parse::<u64>().ok())
+        .map(Handle::new)
+        .collect();
+
+    let path = app.tabs[tab].drawing_path().map(Path::to_path_buf);
+    let base_dir = app
+        .aec
+        .aec_project_explorer_path
+        .as_deref()
+        .and_then(|p| p.parent());
+    let storey_ids = target_bid_sid.or_else(|| {
+        app.aec
+            .aec_project_explorer_file
+            .as_ref()
+            .and_then(|p| resolve_control_plane_storey_ids(p, path.as_deref(), base_dir))
+    });
+
+    let Some((bid, sid)) = storey_ids else {
+        let msg = crate::t!("AEC: Kein Geschoss im Projekt gefunden.").into_owned();
+        app.command_line.push_error(&msg);
+        return (PlaneTargetDispatchOutcome::Error(msg), app.finish_dispatch(cmd));
+    };
+
+    let Some(project) = app.aec.aec_project_explorer_file.as_mut() else {
+        let msg = crate::t!("AEC: Kein AEC-Projekt geladen.").into_owned();
+        app.command_line.push_error(&msg);
+        return (PlaneTargetDispatchOutcome::Error(msg), app.finish_dispatch(cmd));
+    };
+
+    let Some(bldg) = project.buildings.iter_mut().find(|b| b.id == bid) else {
+        let msg = crate::t!("AEC: Zielgebäude im Projekt nicht gefunden.").into_owned();
+        app.command_line.push_error(&msg);
+        return (PlaneTargetDispatchOutcome::Error(msg), app.finish_dispatch(cmd));
+    };
+
+    let Some(storey) = bldg.storeys.iter_mut().find(|s| s.id == sid) else {
+        let msg = crate::t!("AEC: Zielgeschoss im Projekt nicht gefunden.").into_owned();
+        app.command_line.push_error(&msg);
+        return (PlaneTargetDispatchOutcome::Error(msg), app.finish_dispatch(cmd));
+    };
+
+    if !handles.is_empty() {
+        let matches_drawing = path
+            .as_deref()
+            .map(|p| drawing_path_matches_storey(p, &storey.drawing_path, base_dir))
+            .unwrap_or(false);
+
+        let count = crate::modules::aec::project::plane_assign::aec_plane_assign_do(
+            &mut app.tabs[tab].scene,
+            &mut app.command_line,
+            Some(storey),
+            target_plane_id,
+            &handles,
+            matches_drawing,
+        );
+
+        if count > 0 {
+            app.aec_project_explorer_persist_if_pathed();
+            if matches_drawing {
+                app.tabs[tab].dirty = true;
+            }
+        }
+    }
+
+    if let Some((bid, sid)) = target_bid_sid {
+        return (
+            PlaneTargetDispatchOutcome::ReopenStoreySettings(bid, sid),
+            Task::done(crate::app::Message::Aec(
+                crate::modules::aec::message::AecMessage::AecStoreySettingsOpen(bid, sid),
+            )),
+        );
+    }
+    (PlaneTargetDispatchOutcome::Finished, app.finish_dispatch(cmd))
+}
+
+fn drawing_path_matches_storey(
+    current: &Path,
+    drawing_path: &str,
+    base_dir: Option<&Path>,
+) -> bool {
+    crate::modules::aec::engine::project::storey_matches_drawing_path(
+        drawing_path,
+        base_dir,
+        current,
+    )
 }
 
 fn storey_matching_tab<'a>(
     project: &'a ProjectFile,
     current_path: Option<&Path>,
+    base_dir: Option<&Path>,
 ) -> Option<&'a StoreyRef> {
     let current = current_path?;
-    project.buildings.iter().find_map(|b| {
-        b.storeys
-            .iter()
-            .find(|s| drawing_path_matches_storey(current, &s.drawing_path))
-    })
+    project
+        .find_storey_by_drawing_path_with_base(base_dir, current)
+        .map(|(_, s)| s)
 }
 
 fn resolve_control_plane_storey_ids(
     project: &ProjectFile,
     current_path: Option<&Path>,
+    base_dir: Option<&Path>,
 ) -> Option<(uuid::Uuid, uuid::Uuid)> {
-    if let Some(storey) = storey_matching_tab(project, current_path) {
+    if let Some(storey) = storey_matching_tab(project, current_path, base_dir) {
         let bid = project
             .buildings
             .iter()
@@ -822,6 +994,47 @@ fn resolve_control_plane_storey_ids(
 mod tests {
     use super::*;
     use crate::modules::aec::engine::project::Building;
+    use std::path::PathBuf;
+    use acadrust::types::Vector3;
+    use acadrust::entities::EntityType;
+
+    struct TempProjectRoot {
+        path: PathBuf,
+    }
+
+    impl TempProjectRoot {
+        fn new(name: &str) -> Self {
+            let path = std::env::temp_dir().join(format!(
+                "opencadstudio_aec_spawn_{name}_{}",
+                Uuid::new_v4()
+            ));
+            std::fs::create_dir_all(&path).expect("create temporary AEC project directory");
+            Self { path }
+        }
+
+        fn project_path(&self) -> PathBuf {
+            self.path.join("project.ocsproj")
+        }
+    }
+
+    impl Drop for TempProjectRoot {
+        fn drop(&mut self) {
+            std::fs::remove_dir_all(&self.path).expect("remove temporary AEC project directory");
+        }
+    }
+
+    fn load_persisted_project(path: &std::path::Path) -> ProjectFile {
+        ProjectFile::load(path).expect("project should have been saved")
+    }
+
+    fn persisted_storey(project: &ProjectFile, bid: Uuid, sid: Uuid) -> &StoreyRef {
+        project
+            .buildings
+            .iter()
+            .find(|building| building.id == bid)
+            .and_then(|building| building.storeys.iter().find(|storey| storey.id == sid))
+            .expect("target storey should be persisted")
+    }
 
     #[test]
     fn spawn_command_known_interactive_verbs() {
@@ -855,12 +1068,27 @@ mod tests {
     }
 
     #[test]
-    fn drawing_path_matches_by_suffix_or_file_name() {
-        let cur = Path::new("/proj/storeys/eg.dwg");
-        assert!(drawing_path_matches_storey(cur, "storeys/eg.dwg"));
-        assert!(drawing_path_matches_storey(cur, "eg.dwg"));
-        assert!(!drawing_path_matches_storey(cur, "og.dwg"));
-        assert!(!drawing_path_matches_storey(cur, "   "));
+    fn test_drawing_path_matches_storey_base_dir_and_collision() {
+        let cur = Path::new("/proj/HausA/EG.dwg");
+        let base = Path::new("/proj");
+
+        // Matching relative path under base directory
+        assert!(drawing_path_matches_storey(cur, "HausA/EG.dwg", Some(base)));
+
+        // Foreign relative path with same filename under different folder must NOT match
+        assert!(!drawing_path_matches_storey(cur, "HausB/EG.dwg", Some(base)));
+
+        // Foreign relative path with different filename
+        assert!(!drawing_path_matches_storey(cur, "HausA/OG.dwg", Some(base)));
+
+        // Empty path
+        assert!(!drawing_path_matches_storey(cur, "   ", Some(base)));
+
+        // Base-dir pointing to HausA folder matching bare EG.dwg
+        assert!(drawing_path_matches_storey(cur, "EG.dwg", Some(Path::new("/proj/HausA"))));
+
+        // Base-dir pointing to HausB folder does NOT match /proj/HausA/EG.dwg
+        assert!(!drawing_path_matches_storey(cur, "EG.dwg", Some(Path::new("/proj/HausB"))));
     }
 
     #[test]
@@ -876,16 +1104,392 @@ mod tests {
         project.buildings.push(b);
 
         assert_eq!(
-            resolve_control_plane_storey_ids(&project, Some(Path::new("/tmp/eg.dwg"))),
+            resolve_control_plane_storey_ids(&project, Some(Path::new("/tmp/eg.dwg")), None),
             Some(expected)
         );
         assert_eq!(
-            resolve_control_plane_storey_ids(&project, Some(Path::new("/tmp/missing.dwg"))),
+            resolve_control_plane_storey_ids(&project, Some(Path::new("/tmp/missing.dwg")), None),
             Some(first)
         );
         assert_eq!(
-            resolve_control_plane_storey_ids(&project, None),
+            resolve_control_plane_storey_ids(&project, None, None),
             Some(first)
         );
+    }
+
+    #[test]
+    fn spawn_aec_plane_facet_do_targeted_happy_path_matching_tab() {
+        let mut app = OpenCADStudio::new_for_test();
+        app.automation_op(r#"{"op":"new"}"#);
+        let tab = app.active_tab;
+        let temp_project = TempProjectRoot::new("facet_matching_tab");
+        let project_path = temp_project.project_path();
+        app.tabs[tab].set_drawing_path_for_test(temp_project.path.join("storeys/eg.dwg"));
+        app.aec.aec_project_explorer_path = Some(project_path.clone());
+
+        let mut project = ProjectFile::default();
+        let mut b = Building::new("House");
+        let storey = StoreyRef::new("EG", 0.0, "storeys/eg.dwg");
+        let bid = b.id;
+        let sid = storey.id;
+        let pid = storey.floor_plane_id;
+        b.storeys.push(storey);
+        project.buildings.push(b);
+        app.aec.aec_project_explorer_file = Some(project);
+
+        let initial_entities_count = app.tabs[tab].scene.document.entities().count();
+
+        let cmd = format!("AEC_PLANE_FACET_DO {bid}|{sid}|{pid} 0.0 0.0 0.0 4.0 0.0 0.0 4.0 4.0 0.5");
+        let (outcome, _task) = dispatch_plane_facet_do_helper(&mut app, tab, &cmd);
+
+        assert_eq!(
+            outcome,
+            PlaneTargetDispatchOutcome::ReopenStoreySettings(bid, sid),
+            "outcome must be reopening storey dialog"
+        );
+        assert!(app.tabs[tab].dirty, "matching tab must be marked dirty");
+
+        let storey_after = app
+            .aec
+            .aec_project_explorer_file
+            .as_ref()
+            .unwrap()
+            .buildings[0]
+            .storeys[0]
+            .clone();
+        let floor = storey_after.plane(pid).unwrap();
+        assert_eq!(floor.facets.len(), 2, "facet should be added to existing target plane");
+
+        let new_facet = &floor.facets[1];
+        assert!(
+            new_facet.preview_handle.is_some(),
+            "preview handle should be assigned when tab matches"
+        );
+        assert!(
+            app.tabs[tab].scene.document.entities().count() > initial_entities_count,
+            "preview entity should be generated in scene"
+        );
+        let saved = load_persisted_project(&project_path);
+        assert_eq!(
+            persisted_storey(&saved, bid, sid).plane(pid).unwrap().facets.len(),
+            2,
+            "saved project should contain the added facet"
+        );
+    }
+
+    #[test]
+    fn spawn_aec_plane_facet_do_empty_targeted_reopens_dialog_without_changes() {
+        let mut app = OpenCADStudio::new_for_test();
+        app.automation_op(r#"{"op":"new"}"#);
+        let tab = app.active_tab;
+        let mut project = ProjectFile::default();
+        let mut b = Building::new("House");
+        let storey = StoreyRef::new("EG", 0.0, "eg.dwg");
+        let bid = b.id;
+        let sid = storey.id;
+        let pid = storey.floor_plane_id;
+        b.storeys.push(storey);
+        project.buildings.push(b);
+        app.aec.aec_project_explorer_file = Some(project);
+
+        let cmd = format!("AEC_PLANE_FACET_DO {bid}|{sid}|{pid}");
+        let (outcome, _task) = dispatch_plane_facet_do_helper(&mut app, tab, &cmd);
+
+        assert_eq!(
+            outcome,
+            PlaneTargetDispatchOutcome::ReopenStoreySettings(bid, sid),
+            "empty targeted dispatch should reopen storey dialog"
+        );
+        assert!(!app.tabs[tab].dirty, "cancel should not dirty tab");
+
+        let storey_after = app
+            .aec
+            .aec_project_explorer_file
+            .as_ref()
+            .unwrap()
+            .buildings[0]
+            .storeys[0]
+            .clone();
+        let floor = storey_after.plane(pid).unwrap();
+        assert_eq!(floor.facets.len(), 1, "no facets should be added on cancel");
+    }
+
+    #[test]
+    fn spawn_aec_plane_facet_do_malformed_target_reports_error() {
+        let mut app = OpenCADStudio::new_for_test();
+        app.automation_op(r#"{"op":"new"}"#);
+        let tab = app.active_tab;
+        let mut project = ProjectFile::default();
+        let mut b = Building::new("House");
+        let storey = StoreyRef::new("EG", 0.0, "eg.dwg");
+        b.storeys.push(storey);
+        project.buildings.push(b);
+        app.aec.aec_project_explorer_file = Some(project);
+
+        let cmd = "AEC_PLANE_FACET_DO invalid|target 0.0 0.0 0.0 4.0 0.0 0.0 4.0 4.0 0.5";
+        let (outcome, _task) = dispatch_plane_facet_do_helper(&mut app, tab, cmd);
+
+        assert!(
+            matches!(outcome, PlaneTargetDispatchOutcome::Error(_)),
+            "malformed target must produce error outcome"
+        );
+        assert!(app.command_line.last_error.is_some(), "command line should record error");
+        assert!(!app.tabs[tab].dirty, "error should not dirty tab");
+
+        let storey_after = app
+            .aec
+            .aec_project_explorer_file
+            .as_ref()
+            .unwrap()
+            .buildings[0]
+            .storeys[0]
+            .clone();
+        assert_eq!(storey_after.control_planes.len(), 2, "no plane should be created");
+    }
+
+    #[test]
+    fn spawn_aec_plane_facet_do_missing_storey_reports_error() {
+        let mut app = OpenCADStudio::new_for_test();
+        app.automation_op(r#"{"op":"new"}"#);
+        let tab = app.active_tab;
+        let mut project = ProjectFile::default();
+        let b = Building::new("House");
+        let bid = b.id;
+        let random_sid = Uuid::new_v4();
+        let random_pid = Uuid::new_v4();
+        project.buildings.push(b);
+        app.aec.aec_project_explorer_file = Some(project);
+
+        let cmd = format!("AEC_PLANE_FACET_DO {bid}|{random_sid}|{random_pid} 0.0 0.0 0.0 4.0 0.0 0.0 4.0 4.0 0.5");
+        let (outcome, _task) = dispatch_plane_facet_do_helper(&mut app, tab, &cmd);
+
+        assert!(
+            matches!(outcome, PlaneTargetDispatchOutcome::Error(_)),
+            "missing storey must yield error outcome"
+        );
+        assert!(
+            app.command_line
+                .last_error
+                .as_deref()
+                .unwrap_or("")
+                .contains("Zielgeschoss"),
+            "error message should indicate missing storey"
+        );
+        assert!(!app.tabs[tab].dirty, "missing storey error should not dirty tab");
+    }
+
+    #[test]
+    fn spawn_aec_plane_facet_do_missing_target_plane_reports_error_and_reopens() {
+        let mut app = OpenCADStudio::new_for_test();
+        app.automation_op(r#"{"op":"new"}"#);
+        let tab = app.active_tab;
+        let mut project = ProjectFile::default();
+        let mut b = Building::new("House");
+        let storey = StoreyRef::new("EG", 0.0, "eg.dwg");
+        let bid = b.id;
+        let sid = storey.id;
+        let random_pid = Uuid::new_v4();
+        b.storeys.push(storey);
+        project.buildings.push(b);
+        app.aec.aec_project_explorer_file = Some(project);
+
+        let cmd = format!("AEC_PLANE_FACET_DO {bid}|{sid}|{random_pid} 0.0 0.0 0.0 4.0 0.0 0.0 4.0 4.0 0.5");
+        let (outcome, _task) = dispatch_plane_facet_do_helper(&mut app, tab, &cmd);
+
+        assert_eq!(
+            outcome,
+            PlaneTargetDispatchOutcome::ReopenStoreySettings(bid, sid),
+            "missing target plane on valid storey should still reopen dialog"
+        );
+        assert!(
+            app.command_line
+                .last_error
+                .as_deref()
+                .unwrap_or("")
+                .contains("Zielebene"),
+            "error message should indicate missing plane"
+        );
+        assert!(!app.tabs[tab].dirty, "missing plane must not dirty tab");
+
+        let storey_after = app
+            .aec
+            .aec_project_explorer_file
+            .as_ref()
+            .unwrap()
+            .buildings[0]
+            .storeys[0]
+            .clone();
+        assert_eq!(storey_after.control_planes.len(), 2, "no plane or facet should be created on error");
+    }
+
+    #[test]
+    fn spawn_aec_plane_facet_do_foreign_tab_same_basename_does_not_modify_foreign_scene() {
+        let mut app = OpenCADStudio::new_for_test();
+        app.automation_op(r#"{"op":"new"}"#);
+        let tab = app.active_tab;
+        let temp_project = TempProjectRoot::new("facet_foreign_tab");
+        let project_path = temp_project.project_path();
+
+        // Active tab is HausA/EG.dwg
+        app.tabs[tab].set_drawing_path_for_test(temp_project.path.join("HausA/EG.dwg"));
+        app.aec.aec_project_explorer_path = Some(project_path.clone());
+
+        let mut project = ProjectFile::default();
+        let mut b_a = Building::new("HausA");
+        let storey_a = StoreyRef::new("EG", 0.0, "HausA/EG.dwg");
+        b_a.storeys.push(storey_a);
+
+        let mut b_b = Building::new("HausB");
+        let storey_b = StoreyRef::new("EG", 0.0, "HausB/EG.dwg");
+        let bid_b = b_b.id;
+        let sid_b = storey_b.id;
+        let pid_b = storey_b.floor_plane_id;
+        b_b.storeys.push(storey_b);
+
+        project.buildings.push(b_a);
+        project.buildings.push(b_b);
+        app.aec.aec_project_explorer_file = Some(project);
+
+        let initial_entities_count = app.tabs[tab].scene.document.entities().count();
+
+        let cmd = format!("AEC_PLANE_FACET_DO {bid_b}|{sid_b}|{pid_b} 0.0 0.0 0.0 4.0 0.0 0.0 4.0 4.0 0.5");
+        let (outcome, _task) = dispatch_plane_facet_do_helper(&mut app, tab, &cmd);
+
+        assert_eq!(
+            outcome,
+            PlaneTargetDispatchOutcome::ReopenStoreySettings(bid_b, sid_b),
+            "dialog should reopen for target storey"
+        );
+        assert!(
+            !app.tabs[tab].dirty,
+            "foreign tab must NOT be marked dirty even with identical filename"
+        );
+        assert_eq!(
+            app.tabs[tab].scene.document.entities().count(),
+            initial_entities_count,
+            "foreign tab scene must not have preview entities added"
+        );
+
+        let storey_b_after = app
+            .aec
+            .aec_project_explorer_file
+            .as_ref()
+            .unwrap()
+            .buildings[1]
+            .storeys[0]
+            .clone();
+        let floor_b = storey_b_after.plane(pid_b).unwrap();
+        assert_eq!(floor_b.facets.len(), 2, "storey in project should still be updated");
+        assert_eq!(
+            floor_b.facets[1].preview_handle,
+            None,
+            "new facet preview_handle must be None because tab was foreign"
+        );
+        let saved = load_persisted_project(&project_path);
+        assert_eq!(
+            persisted_storey(&saved, bid_b, sid_b)
+                .plane(pid_b)
+                .unwrap()
+                .facets
+                .len(),
+            2,
+            "saved project should contain the added facet for the foreign target"
+        );
+    }
+
+    #[test]
+    fn spawn_aec_plane_assign_do_matching_and_foreign_tab() {
+        let mut app = OpenCADStudio::new_for_test();
+        app.automation_op(r#"{"op":"new"}"#);
+        let tab = app.active_tab;
+        let temp_project = TempProjectRoot::new("plane_assign_tabs");
+        let project_path = temp_project.project_path();
+
+        // Create a 3D face entity in scene to assign
+        let face = acadrust::entities::Face3D::new(
+            Vector3::new(0.0, 0.0, 1.0),
+            Vector3::new(4.0, 0.0, 1.0),
+            Vector3::new(4.0, 4.0, 1.5),
+            Vector3::new(0.0, 4.0, 1.5),
+        );
+        let poly_handle = app.tabs[tab].scene.add_entity(EntityType::Face3D(face));
+
+        app.tabs[tab].set_drawing_path_for_test(temp_project.path.join("HausA/EG.dwg"));
+        app.aec.aec_project_explorer_path = Some(project_path.clone());
+
+        let mut project = ProjectFile::default();
+        let mut b_a = Building::new("HausA");
+        let storey_a = StoreyRef::new("EG", 0.0, "HausA/EG.dwg");
+        let bid_a = b_a.id;
+        let sid_a = storey_a.id;
+        let pid_a = storey_a.floor_plane_id;
+        b_a.storeys.push(storey_a);
+
+        let mut b_b = Building::new("HausB");
+        let storey_b = StoreyRef::new("EG", 0.0, "HausB/EG.dwg");
+        let bid_b = b_b.id;
+        let sid_b = storey_b.id;
+        let pid_b = storey_b.floor_plane_id;
+        b_b.storeys.push(storey_b);
+
+        project.buildings.push(b_a);
+        project.buildings.push(b_b);
+        app.aec.aec_project_explorer_file = Some(project);
+
+        // Case 1: Matching tab assignment
+        let cmd_matching = format!("AEC_PLANE_ASSIGN_DO {bid_a}|{sid_a}|{pid_a} {}", poly_handle.value());
+        let (outcome, _task) = dispatch_plane_assign_do_helper(&mut app, tab, &cmd_matching);
+        assert_eq!(outcome, PlaneTargetDispatchOutcome::ReopenStoreySettings(bid_a, sid_a));
+        assert!(app.tabs[tab].dirty, "matching tab must be dirty on assign");
+        let saved_matching = load_persisted_project(&project_path);
+        assert_eq!(
+            persisted_storey(&saved_matching, bid_a, sid_a)
+                .plane(pid_a)
+                .unwrap()
+                .facets[0]
+                .name,
+            "Facet_1_Face3D",
+            "saved project should contain the assigned polygon"
+        );
+
+        // Case 2: Foreign tab assignment (same filename EG.dwg in different folder HausB)
+        app.tabs[tab].dirty = false;
+        let initial_entities = app.tabs[tab].scene.document.entities().count();
+        let cmd_foreign = format!("AEC_PLANE_ASSIGN_DO {bid_b}|{sid_b}|{pid_b} {}", poly_handle.value());
+        let (outcome_f, _task) = dispatch_plane_assign_do_helper(&mut app, tab, &cmd_foreign);
+        assert_eq!(outcome_f, PlaneTargetDispatchOutcome::ReopenStoreySettings(bid_b, sid_b));
+        assert!(!app.tabs[tab].dirty, "foreign tab must NOT be dirty on assign");
+        assert_eq!(
+            app.tabs[tab].scene.document.entities().count(),
+            initial_entities,
+            "foreign tab scene must not have previews generated"
+        );
+        let saved_foreign = load_persisted_project(&project_path);
+        assert_eq!(
+            persisted_storey(&saved_foreign, bid_b, sid_b)
+                .plane(pid_b)
+                .unwrap()
+                .facets[0]
+                .name,
+            "Facet_1_Face3D",
+            "saved project should contain the foreign-tab assignment"
+        );
+
+        // Case 3: Missing pid on valid storey reports error and reopens
+        let random_pid = Uuid::new_v4();
+        let cmd_missing_pid = format!("AEC_PLANE_ASSIGN_DO {bid_a}|{sid_a}|{random_pid} {}", poly_handle.value());
+        let (outcome_m, _task) = dispatch_plane_assign_do_helper(&mut app, tab, &cmd_missing_pid);
+        assert_eq!(outcome_m, PlaneTargetDispatchOutcome::ReopenStoreySettings(bid_a, sid_a));
+        assert!(
+            app.command_line.last_error.as_deref().unwrap_or("").contains("Zielebene"),
+            "error should indicate missing plane"
+        );
+
+        // Case 4: Cancel / empty handles reopens dialog without dirtying
+        app.tabs[tab].dirty = false;
+        let cmd_cancel = format!("AEC_PLANE_ASSIGN_DO {bid_a}|{sid_a}|{pid_a}");
+        let (outcome_c, _task) = dispatch_plane_assign_do_helper(&mut app, tab, &cmd_cancel);
+        assert_eq!(outcome_c, PlaneTargetDispatchOutcome::ReopenStoreySettings(bid_a, sid_a));
+        assert!(!app.tabs[tab].dirty);
     }
 }

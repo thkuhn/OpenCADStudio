@@ -430,6 +430,7 @@ pub enum AecMessage {
     AecStoreySettingsPlaneZ(uuid::Uuid, uuid::Uuid, uuid::Uuid, String),
     AecStoreySettingsPlaneOrigin(uuid::Uuid, uuid::Uuid, uuid::Uuid, u8, String),
     AecStoreySettingsPlaneNormal(uuid::Uuid, uuid::Uuid, uuid::Uuid, u8, String),
+    AecStoreySettingsPickFacet(uuid::Uuid, uuid::Uuid, uuid::Uuid),
     AecStoreySettingsPickPolygons(uuid::Uuid, uuid::Uuid, uuid::Uuid),
     AecStoreySettingsShowPlaneInDrawing(uuid::Uuid, uuid::Uuid, uuid::Uuid),
     AecStoreySettingsFacetName(uuid::Uuid, uuid::Uuid, uuid::Uuid, usize, String),

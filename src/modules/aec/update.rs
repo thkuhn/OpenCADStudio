@@ -1314,12 +1314,19 @@ impl OpenCADStudio {
                 Task::none()
             }
             AecMessage::AecStoreySettingsDeletePlane(bid, sid, pid) => {
+                let tab = self.active_tab;
+                let mut deleted = false;
                 self.with_storey_mut(bid, sid, |s| {
-                    if pid == s.floor_plane_id || pid == s.ceiling_plane_id {
-                        return;
-                    }
-                    s.control_planes.retain(|p| p.id != pid);
+                    deleted = crate::modules::aec::project::wall_planes::delete_control_plane_from_storey(s, pid);
                 });
+                if deleted {
+                    crate::modules::aec::project::preview::erase_plane_previews_if_tagged(
+                        &mut self.tabs[tab].scene,
+                        pid,
+                    );
+                    self.aec.aec_storey_settings_plane_z.remove(&pid);
+                    self.aec.aec_storey_settings_facet_z.retain(|(p, _), _| *p != pid);
+                }
                 self.aec_project_explorer_persist_if_pathed();
                 Task::none()
             }
@@ -1389,6 +1396,16 @@ impl OpenCADStudio {
                     });
                     self.aec_project_explorer_persist_if_pathed();
                 }
+                Task::none()
+            }
+            AecMessage::AecStoreySettingsPickFacet(bid, sid, pid) => {
+                self.commit_storey_settings_buffers(bid, sid);
+                self.aec_project_explorer_persist_if_pathed();
+                self.active_modal = None;
+                let cmd = crate::modules::aec::project::plane_facet::PlaneFacetCommand::with_target(bid, sid, pid);
+                self.command_line.push_info(&cmd.prompt());
+                let tab = self.active_tab;
+                self.tabs[tab].active_cmd = Some(Box::new(cmd));
                 Task::none()
             }
             AecMessage::AecStoreySettingsPickPolygons(bid, sid, pid) => {
@@ -1469,7 +1486,11 @@ impl OpenCADStudio {
                     }
                 });
                 if let Some(h) = removed_handle {
-                    self.tabs[tab].scene.erase_entities(&[acadrust::Handle::new(h)]);
+                    crate::modules::aec::project::preview::erase_facet_preview_if_tagged(
+                        &mut self.tabs[tab].scene,
+                        pid,
+                        h,
+                    );
                 }
                 self.aec.aec_storey_settings_facet_z.remove(&(pid, f_idx));
                 self.aec_project_explorer_persist_if_pathed();

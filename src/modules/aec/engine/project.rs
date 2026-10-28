@@ -13,7 +13,8 @@
 //! drawings that are not (yet) part of a project.
 
 use crate::modules::aec::engine::control_plane::{
-    default_floor_ceiling, ControlPlane, intersect_vertical_at_xy,
+    default_floor_ceiling, preview_rectangle, ControlPlane, ControlPlaneFacet,
+    intersect_vertical_at_xy, DEFAULT_PREVIEW_SIZE,
 };
 use crate::modules::aec::engine::library::{DisplayConfigLibrary, StyleLibrary};
 use serde::{Deserialize, Serialize};
@@ -201,6 +202,14 @@ impl StoreyRef {
                 self.control_planes.push(extra);
             }
         }
+        for plane in &mut self.control_planes {
+            if plane.facets.is_empty() {
+                let corners = preview_rectangle(plane, DEFAULT_PREVIEW_SIZE);
+                plane
+                    .facets
+                    .push(ControlPlaneFacet::new(plane.name.clone(), corners.to_vec()));
+            }
+        }
         self.sync_derived_elevation_height();
     }
 
@@ -318,6 +327,17 @@ impl StoreyRef {
     /// Deletes a specific facet from a control plane.
     pub fn delete_facet(&mut self, id: Uuid, facet_idx: usize) -> Option<crate::modules::aec::engine::control_plane::ControlPlaneFacet> {
         self.plane_mut(id).and_then(|p| p.remove_facet(facet_idx))
+    }
+
+    /// Deletes a custom control plane from this storey.
+    /// Refuses to delete the main floor or ceiling plane, returning false.
+    pub fn delete_plane(&mut self, id: Uuid) -> bool {
+        if id == self.floor_plane_id || id == self.ceiling_plane_id {
+            return false;
+        }
+        let before = self.control_planes.len();
+        self.control_planes.retain(|p| p.id != id);
+        self.control_planes.len() < before
     }
 }
 
@@ -1067,6 +1087,94 @@ mod tests {
         assert_eq!(plane.facets.len(), 1);
         assert_eq!(plane.facets[0].name, "FacetB");
         assert_eq!(plane.origin[2], 3.2);
+
+        // Attempting to delete the last facet should fail and leave it intact
+        assert!(s.delete_facet(cp_id, 0).is_none());
+        assert_eq!(s.plane(cp_id).unwrap().facets.len(), 1);
+    }
+
+    #[test]
+    fn ensure_control_planes_heals_empty_facets_on_legacy_plane() {
+        let mut s = StoreyRef::new("EG", 0.0, "eg.dwg");
+        // Manually simulate a legacy plane with 0 facets
+        s.control_planes[0].facets.clear();
+        assert_eq!(s.control_planes[0].facets.len(), 0);
+
+        s.ensure_control_planes();
+
+        assert_eq!(s.control_planes[0].facets.len(), 1);
+        assert_eq!(s.control_planes[0].facets[0].vertices.len(), 4);
+        assert_eq!(s.control_planes[0].facets[0].name, s.control_planes[0].name);
+    }
+
+    #[test]
+    fn legacy_json_deserialization_with_empty_facets_and_sloped_plane_heals_facet_and_preserves_slope() {
+        let dir = temp_test_dir("legacy_json_sloped");
+        let proj_path = dir.join("legacy_sloped.ocsproj");
+
+        // Construct legacy JSON where a storey has control_planes with `"facets": []`
+        // and a sloped normal (e.g. 45-degree slope with normal [0.0, -0.7071067811865475, 0.7071067811865475]).
+        let json_str = r#"{
+  "version": 1,
+  "buildings": [
+    {
+      "id": "11111111-1111-1111-1111-111111111111",
+      "name": "Haus",
+      "storeys": [
+        {
+          "id": "22222222-2222-2222-2222-222222222222",
+          "name": "DG",
+          "elevation": 3.0,
+          "height": 2.8,
+          "drawing_path": "DG.dwg",
+          "floor_plane_id": "33333333-3333-3333-3333-333333333333",
+          "ceiling_plane_id": "44444444-4444-4444-4444-444444444444",
+          "control_planes": [
+            {
+              "id": "33333333-3333-3333-3333-333333333333",
+              "name": "DG_ELEVATION",
+              "origin": [0.0, 0.0, 3.0],
+              "normal": [0.0, 0.0, 1.0],
+              "facets": []
+            },
+            {
+              "id": "44444444-4444-4444-4444-444444444444",
+              "name": "DG_OKGH_Sloped",
+              "origin": [0.0, 0.0, 5.8],
+              "normal": [0.0, -0.7071067811865475, 0.7071067811865475],
+              "facets": []
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}"#;
+        fs::write(&proj_path, json_str).expect("write legacy json");
+
+        let loaded = ProjectFile::load(&proj_path).expect("load legacy project");
+        let storey = &loaded.buildings[0].storeys[0];
+
+        let floor = storey.plane(storey.floor_plane_id).expect("floor plane");
+        assert_eq!(floor.facets.len(), 1);
+        assert_eq!(floor.facets[0].vertices.len(), 4);
+        assert!(!floor.is_sloped());
+
+        let ceiling = storey.plane(storey.ceiling_plane_id).expect("ceiling plane");
+        assert_eq!(ceiling.facets.len(), 1);
+        assert_eq!(ceiling.facets[0].vertices.len(), 4);
+        assert!(ceiling.is_sloped(), "Ceiling must remain sloped");
+        assert!(
+            (ceiling.facets[0].unit_normal()[1] - (-0.7071067811865475)).abs() < 1e-4,
+            "Facet normal Y must match sloped normal"
+        );
+        assert!(
+            (ceiling.facets[0].unit_normal()[2] - 0.7071067811865475).abs() < 1e-4,
+            "Facet normal Z must match sloped normal"
+        );
+        assert!((ceiling.slope_degrees() - 45.0).abs() < 1.0);
+
+        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]

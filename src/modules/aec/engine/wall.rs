@@ -190,7 +190,7 @@ impl Wall {
             } else {
                 self.base_origin = offset_base.origin;
             }
-        } else {
+        } else if self.base_plane_id.is_none() {
             self.base_facets = Vec::new();
         }
 
@@ -205,7 +205,7 @@ impl Wall {
             } else {
                 self.top_origin = offset_top.origin;
             }
-        } else {
+        } else if self.top_plane_id.is_none() {
             self.top_facets = Vec::new();
         }
 
@@ -224,14 +224,30 @@ impl Wall {
                 }
             }
             (Some(_), None) => {
-                self.top_origin = [
-                    self.base_origin[0],
-                    self.base_origin[1],
-                    self.base_origin[2] + self.height,
-                ];
-                self.top_normal = self.base_normal;
+                if self.top_plane_id.is_none() {
+                    self.top_origin = [
+                        self.base_origin[0],
+                        self.base_origin[1],
+                        self.base_origin[2] + self.height,
+                    ];
+                    self.top_normal = self.base_normal;
+                } else {
+                    let h = self.top_origin[2] - self.base_origin[2];
+                    if h.abs() > 1e-9 {
+                        self.height = h.abs();
+                    }
+                }
             }
-            (None, None) => {}
+            (None, None) => {
+                if self.base_plane_id.is_some() && self.top_plane_id.is_none() {
+                    self.top_origin = [
+                        self.base_origin[0],
+                        self.base_origin[1],
+                        self.base_origin[2] + self.height,
+                    ];
+                    self.top_normal = self.base_normal;
+                }
+            }
         }
     }
 
@@ -725,5 +741,64 @@ mod tests {
         assert_eq!(wall2.top_facets[0].name, "Roof1");
         assert!(wall2.is_sloped());
         assert!((wall2.top_z_at_xy(2.0, 0.0) - 5.4).abs() < 1e-9);
+    }
+
+    #[test]
+    fn rebake_lookup_keeps_baked_snapshots_on_missing_lookup() {
+        use crate::modules::aec::engine::control_plane::{ControlPlane, ControlPlaneFacet};
+        use crate::modules::aec::engine::project::StoreyRef;
+
+        let mut storey = StoreyRef::new_with_height("EG", 0.0, 2.8, "eg.dwg");
+        let floor_id = storey.floor_plane_id;
+
+        // Sloped roof plane
+        let f1 = ControlPlaneFacet::new(
+            "RoofSlope",
+            vec![
+                [0.0, -5.0, 4.0],
+                [10.0, -5.0, 6.0],
+                [10.0, 5.0, 6.0],
+                [0.0, 5.0, 4.0],
+            ],
+        );
+        let roof_cp = ControlPlane::from_facets("ShedRoof", vec![f1]);
+        let roof_id = roof_cp.id;
+        storey.control_planes.push(roof_cp);
+
+        let mut wall = Wall::new("exterior_wall", 2.8, 0);
+        wall.base_plane_id = Some(floor_id);
+        wall.top_plane_id = Some(roof_id);
+        wall.rebake_planes(&storey, 0.0, 0.0);
+
+        let z_pt1 = wall.top_z_at_xy(0.0, 0.0);
+        let z_pt2 = wall.top_z_at_xy(5.0, 0.0);
+        assert!((z_pt1 - 4.0).abs() < 1e-9);
+        assert!((z_pt2 - 5.0).abs() < 1e-9);
+        assert!(wall.is_sloped());
+
+        // Now simulate deleting the roof plane from the storey (lookup miss / dangling ID)
+        storey.control_planes.retain(|p| p.id != roof_id);
+        assert!(storey.plane(roof_id).is_none());
+
+        // Rebake wall: the lookup for top_plane_id will return None
+        wall.rebake_planes(&storey, 0.0, 0.0);
+
+        // Wall must still retain its top facets, slope, and exact top Z heights
+        assert_eq!(wall.top_facets.len(), 1);
+        assert_eq!(wall.top_facets[0].name, "RoofSlope");
+        assert!(wall.is_sloped());
+        assert!((wall.top_z_at_xy(0.0, 0.0) - z_pt1).abs() < 1e-9);
+        assert!((wall.top_z_at_xy(5.0, 0.0) - z_pt2).abs() < 1e-9);
+
+        // Now move storey floor elevation (base plane moves to Z=1.0)
+        storey.set_elevation(1.0);
+        wall.rebake_planes(&storey, 0.0, 0.0);
+
+        // Base moves up to 1.0, but roof top remains geometrically at world Z 4.0 / 5.0
+        assert!((wall.base_origin[2] - 1.0).abs() < 1e-9);
+        assert!((wall.top_z_at_xy(0.0, 0.0) - z_pt1).abs() < 1e-9);
+        assert!((wall.top_z_at_xy(5.0, 0.0) - z_pt2).abs() < 1e-9);
+        assert!((wall.height_at_xy(0.0, 0.0) - 3.0).abs() < 1e-9);
+        assert!((wall.height_at_xy(5.0, 0.0) - 4.0).abs() < 1e-9);
     }
 }

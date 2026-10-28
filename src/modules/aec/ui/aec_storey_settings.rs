@@ -243,6 +243,10 @@ fn plane_row<'a>(
         .align_y(iced::Center)
         .into()
     };
+    let add_facet = button(text(crate::tr!("aec", "add-facet-btn")).size(10))
+        .style(button::secondary)
+        .padding([3, 6])
+        .on_press(Message::Aec(AecMessage::AecStoreySettingsPickFacet(bid, sid, pid)));
     let assign_poly = button(text(crate::tr!("aec", "assign-polygons-btn")).size(10))
         .style(button::secondary)
         .padding([3, 6])
@@ -266,6 +270,7 @@ fn plane_row<'a>(
             .padding([3, 6])
             .width(Fill),
         z_field,
+        add_facet,
         assign_poly,
         show_in_drawing,
         iced::widget::checkbox(plane.visible)
@@ -291,10 +296,18 @@ fn plane_row<'a>(
             "0.0°".to_string()
         };
         let facet_pts_label = format!("{} Pkt.", facet.vertices.len());
-        let facet_del = button(text(t!("Delete")).size(9))
-            .style(button::danger)
-            .padding([2, 6])
-            .on_press(Message::Aec(AecMessage::AecStoreySettingsDeleteFacet(bid, sid, pid, f_idx)));
+        let mut facet_del = button(text(t!("Delete")).size(9))
+            .style(if plane.facets.len() > 1 {
+                button::danger
+            } else {
+                button::secondary
+            })
+            .padding([2, 6]);
+        if plane.facets.len() > 1 {
+            facet_del = facet_del.on_press(Message::Aec(AecMessage::AecStoreySettingsDeleteFacet(
+                bid, sid, pid, f_idx,
+            )));
+        }
         let facet_show_btn = button(crate::ui::icons::semantic(SHOW_ICON, 11.0))
             .style(button::secondary)
             .padding([2, 4])

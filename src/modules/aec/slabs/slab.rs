@@ -610,7 +610,7 @@ impl CadCommand for SlabCommand {
         };
 
         Some(LiveCommandProperties {
-            title: crate::t!("Slab").into_owned(),
+            title: crate::tr!("aec", "slab-section"),
             fields: vec![
                 LiveCommandField {
                     label: crate::t!("Style").into_owned(),
@@ -618,14 +618,14 @@ impl CadCommand for SlabCommand {
                     value: LiveFieldValue::Picker(style_name),
                 },
                 LiveCommandField {
-                    label: crate::t!("Justification").into_owned(),
+                    label: crate::tr!("aec", "slab-justification"),
                     field_id: "slab_justification",
                     value: LiveFieldValue::Choice {
-                        selected: self.justification.as_str().to_string(),
+                        selected: self.justification.localized_name(),
                         options: vec![
-                            "Top".to_string(),
-                            "StructuralTop".to_string(),
-                            "Bottom".to_string(),
+                            SlabJustification::Top.localized_name(),
+                            SlabJustification::StructuralTop.localized_name(),
+                            SlabJustification::Bottom.localized_name(),
                         ],
                     },
                 },
@@ -635,9 +635,9 @@ impl CadCommand for SlabCommand {
                     value: LiveFieldValue::Number(self.storey_id as f64),
                 },
                 LiveCommandField {
-                    label: crate::t!("Base Offset").into_owned(),
-                    field_id: "slab_base_offset",
-                    value: LiveFieldValue::Number(self.base_offset),
+                    label: crate::tr!("aec", "slab-top-offset"),
+                    field_id: "slab_top_offset",
+                    value: LiveFieldValue::Number(self.top_offset),
                 },
             ],
         })
@@ -669,6 +669,10 @@ impl CadCommand for SlabCommand {
             }
             ("slab_storey", LiveFieldValue::Number(n)) => {
                 self.storey_id = n.max(0.0) as u32;
+                true
+            }
+            ("slab_top_offset" | "slab_offset", LiveFieldValue::Number(n)) => {
+                self.top_offset = n;
                 true
             }
             ("slab_base_offset", LiveFieldValue::Number(n)) => {
@@ -876,5 +880,39 @@ mod tests {
         let entity = scene.document.get_entity(handle).expect("get entity");
         let slab = slab_from_entity(entity).expect("parse slab xdata");
         assert_eq!(slab.justification, SlabJustification::Top);
+    }
+
+    #[test]
+    fn test_slab_command_live_properties() {
+        let mut cmd = SlabCommand::new();
+        let live = cmd.live_properties().expect("live properties");
+        assert_eq!(live.title, "Slab");
+        let fields = &live.fields;
+        assert_eq!(fields[0].field_id, "slab_style");
+        assert_eq!(fields[1].field_id, "slab_justification");
+        assert_eq!(fields[2].field_id, "slab_storey");
+        assert_eq!(fields[3].field_id, "slab_top_offset");
+
+        // Apply justification
+        cmd.apply_live_property(
+            "slab_justification",
+            LiveFieldValue::Choice {
+                selected: "OKRD (Top of structural slab)".to_string(),
+                options: vec![],
+            },
+        );
+        assert_eq!(cmd.justification, SlabJustification::StructuralTop);
+
+        // Apply top offset
+        cmd.apply_live_property("slab_top_offset", LiveFieldValue::Number(0.15));
+        assert!((cmd.top_offset - 0.15).abs() < 1e-9);
+
+        // Apply slab_offset alias
+        cmd.apply_live_property("slab_offset", LiveFieldValue::Number(0.20));
+        assert!((cmd.top_offset - 0.20).abs() < 1e-9);
+
+        // Apply slab_base_offset
+        cmd.apply_live_property("slab_base_offset", LiveFieldValue::Number(-0.05));
+        assert!((cmd.base_offset - (-0.05)).abs() < 1e-9);
     }
 }

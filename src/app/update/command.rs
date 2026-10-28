@@ -3607,6 +3607,12 @@ impl OpenCADStudio {
                     .filter(|annotative| *annotative)
                     .and_then(|_| self.tabs[i].scene.creation_annotation_scale_handle());
                 for &handle in &handles {
+                    if self.tabs[i].scene.is_layer_locked(handle) {
+                        continue;
+                    }
+                    if self.aec_apply_property_field(i, handle, field, &value) {
+                        continue;
+                    }
                     let mline_style =
                         self.tabs[i]
                             .scene

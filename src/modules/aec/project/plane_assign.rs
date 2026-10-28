@@ -200,6 +200,7 @@ pub fn aec_plane_assign_do(
     storey: Option<&mut StoreyRef>,
     target_plane_id: Option<Uuid>,
     handles: &[Handle],
+    regenerate_previews: bool,
 ) -> usize {
     if handles.is_empty() {
         return 0;
@@ -214,45 +215,60 @@ pub fn aec_plane_assign_do(
     }
 
     if extracted_facets.is_empty() {
-        command_line.push_error(crate::t!("AEC_PLANE_ASSIGN: Keine gültigen 3D-Flächen oder Polylinien gefunden.").as_ref());
+        command_line.push_error(
+            crate::t!("AEC_PLANE_ASSIGN: Keine gültigen 3D-Flächen oder Polylinien gefunden.")
+                .as_ref(),
+        );
         return 0;
     }
 
+    let Some(s) = storey else {
+        command_line.push_error(
+            crate::t!("AEC_PLANE_ASSIGN: Kein Geschoss für die Zuweisung gefunden.").as_ref(),
+        );
+        return 0;
+    };
+
+    if let Some(pid) = target_plane_id {
+        if s.plane(pid).is_none() {
+            command_line.push_error(
+                crate::t!("AEC_PLANE_ASSIGN: Zielebene im Geschoss nicht gefunden.").as_ref(),
+            );
+            return 0;
+        }
+    }
+
     let count = extracted_facets.len();
-    if let Some(s) = storey {
-        let plane_name;
-        if let Some(pid) = target_plane_id {
-            if let Some(plane) = s.plane_mut(pid) {
-                plane_name = plane.name.clone();
-                // If plane only had a single default facet (name matching plane.name), replace it; otherwise append
-                if plane.facets.len() == 1 && plane.facets[0].name == plane.name {
-                    plane.facets = extracted_facets;
-                    if let Some(first) = plane.facets.first() {
-                        plane.origin = first.origin();
-                        plane.normal = first.unit_normal();
-                    }
-                } else {
-                    for f in extracted_facets {
-                        plane.add_facet(f);
-                    }
-                }
-            } else {
-                plane_name = "AssignedPlane".to_string();
-                let comp = ControlPlane::from_facets(plane_name.clone(), extracted_facets);
-                s.control_planes.push(comp);
+    let plane_name: String;
+    if let Some(pid) = target_plane_id {
+        let plane = s.plane_mut(pid).expect("plane was validated above");
+        plane_name = plane.name.clone();
+        // If plane only had a single default facet (name matching plane.name), replace it; otherwise append
+        if plane.facets.len() == 1 && plane.facets[0].name == plane.name {
+            plane.facets = extracted_facets;
+            if let Some(first) = plane.facets.first() {
+                plane.origin = first.origin();
+                plane.normal = first.unit_normal();
             }
         } else {
-            plane_name = "CompositePlane".to_string();
-            let comp = ControlPlane::from_facets(plane_name.clone(), extracted_facets);
-            s.control_planes.push(comp);
+            for f in extracted_facets {
+                plane.add_facet(f);
+            }
         }
-
-        regenerate_control_plane_previews(scene, s);
-
-        command_line.push_info(&format!(
-            "AEC: {count} Polygon(e) der Kontrollebene '{plane_name}' zugewiesen."
-        ));
+    } else {
+        let comp_name = "CompositePlane".to_string();
+        plane_name = comp_name.clone();
+        let comp = ControlPlane::from_facets(comp_name, extracted_facets);
+        s.control_planes.push(comp);
     }
+
+    if regenerate_previews {
+        regenerate_control_plane_previews(scene, s);
+    }
+
+    command_line.push_info(&format!(
+        "AEC: {count} Polygon(e) der Kontrollebene '{plane_name}' zugewiesen."
+    ));
 
     count
 }
@@ -333,10 +349,96 @@ mod tests {
             Some(&mut storey),
             Some(ceiling_id),
             &[h],
+            true,
         );
         assert_eq!(count, 1);
         let plane = storey.plane(ceiling_id).unwrap();
         assert_eq!(plane.facets.len(), 1);
         assert_eq!(plane.facets[0].vertices.len(), 4);
+    }
+
+    #[test]
+    fn test_aec_plane_assign_do_without_target_creates_composite_plane() {
+        let mut scene = Scene::new();
+        let mut cl = CommandLine::new();
+        let mut storey = StoreyRef::new("EG", 0.0, "eg.dwg");
+        let initial_count = storey.control_planes.len();
+
+        let face = Face3D::new(
+            Vector3::new(0.0, 0.0, 3.0),
+            Vector3::new(5.0, 0.0, 3.0),
+            Vector3::new(5.0, 5.0, 4.0),
+            Vector3::new(0.0, 5.0, 4.0),
+        );
+        let h = scene.add_entity(EntityType::Face3D(face));
+
+        let count = aec_plane_assign_do(
+            &mut scene,
+            &mut cl,
+            Some(&mut storey),
+            None,
+            &[h],
+            true,
+        );
+        assert_eq!(count, 1);
+        assert_eq!(storey.control_planes.len(), initial_count + 1);
+        let new_plane = storey.control_planes.last().unwrap();
+        assert_eq!(new_plane.name, "CompositePlane");
+        assert_eq!(new_plane.facets.len(), 1);
+    }
+
+    #[test]
+    fn test_aec_plane_assign_do_target_miss_returns_zero_and_creates_no_plane() {
+        let mut scene = Scene::new();
+        let mut cl = CommandLine::new();
+        let mut storey = StoreyRef::new("EG", 0.0, "eg.dwg");
+        let initial_count = storey.control_planes.len();
+        let nonexistent_plane_id = Uuid::new_v4();
+
+        let face = Face3D::new(
+            Vector3::new(0.0, 0.0, 3.0),
+            Vector3::new(5.0, 0.0, 3.0),
+            Vector3::new(5.0, 5.0, 4.0),
+            Vector3::new(0.0, 5.0, 4.0),
+        );
+        let h = scene.add_entity(EntityType::Face3D(face));
+
+        let count = aec_plane_assign_do(
+            &mut scene,
+            &mut cl,
+            Some(&mut storey),
+            Some(nonexistent_plane_id),
+            &[h],
+            true,
+        );
+        assert_eq!(count, 0);
+        assert_eq!(storey.control_planes.len(), initial_count);
+    }
+
+    #[test]
+    fn test_aec_plane_assign_do_foreign_drawing_no_preview_scene() {
+        let mut scene = Scene::new();
+        let mut cl = CommandLine::new();
+        let mut storey = StoreyRef::new("EG", 0.0, "eg.dwg");
+        let ceiling_id = storey.ceiling_plane_id;
+
+        let face = Face3D::new(
+            Vector3::new(0.0, 0.0, 3.0),
+            Vector3::new(5.0, 0.0, 3.0),
+            Vector3::new(5.0, 5.0, 4.0),
+            Vector3::new(0.0, 5.0, 4.0),
+        );
+        let h = scene.add_entity(EntityType::Face3D(face));
+
+        let count = aec_plane_assign_do(
+            &mut scene,
+            &mut cl,
+            Some(&mut storey),
+            Some(ceiling_id),
+            &[h],
+            false,
+        );
+        assert_eq!(count, 1);
+        assert_eq!(storey.plane(ceiling_id).unwrap().facets.len(), 1);
     }
 }

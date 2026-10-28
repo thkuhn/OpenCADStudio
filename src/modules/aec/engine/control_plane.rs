@@ -214,6 +214,9 @@ impl ControlPlane {
     }
 
     pub fn remove_facet(&mut self, facet_idx: usize) -> Option<ControlPlaneFacet> {
+        if self.facets.len() <= 1 {
+            return None;
+        }
         if facet_idx < self.facets.len() {
             let removed = self.facets.remove(facet_idx);
             if let Some(first) = self.facets.first() {
@@ -721,5 +724,28 @@ mod tests {
 
         let min_facet = composite.min_facet_at_xy(5.0, 5.0).unwrap();
         assert_eq!(min_facet.name, "LowRoof");
+    }
+
+    #[test]
+    fn cannot_delete_last_facet() {
+        let mut plane = ControlPlane::horizontal("Floor", 0.0);
+        assert_eq!(plane.facets.len(), 1);
+
+        // Deleting when only 1 facet exists must return None and keep the facet
+        assert!(plane.remove_facet(0).is_none());
+        assert_eq!(plane.facets.len(), 1);
+
+        // Adding a second facet allows deletion of one facet, but not the last one
+        let f2 = ControlPlaneFacet::new("Facet2", vec![[0.0, 0.0, 1.0], [5.0, 0.0, 1.0], [5.0, 5.0, 1.0]]);
+        plane.add_facet(f2);
+        assert_eq!(plane.facets.len(), 2);
+
+        let removed = plane.remove_facet(0);
+        assert!(removed.is_some());
+        assert_eq!(plane.facets.len(), 1);
+
+        // Last facet cannot be removed
+        assert!(plane.remove_facet(0).is_none());
+        assert_eq!(plane.facets.len(), 1);
     }
 }

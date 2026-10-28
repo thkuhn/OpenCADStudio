@@ -15,7 +15,9 @@ use crate::modules::aec::engine::room::{RoomFinish, RoomFunction};
 use crate::modules::aec::engine::room_package;
 use crate::modules::aec::engine::room_regen::{self, room_boundary_points};
 use crate::modules::aec::engine::room_xdata;
-use crate::modules::aec::engine::slab::{Slab, SlabJustification};
+use crate::modules::aec::engine::slab::{
+    Slab, SlabJustification, SLAB_BASE_OFFSET_KEYS, SLAB_TOP_OFFSET_KEYS,
+};
 use crate::modules::aec::engine::slab_opening::{SlabOpening, SlabOpeningDepth, SlabOpeningKind};
 use crate::modules::aec::engine::slab_package;
 use crate::modules::aec::engine::slab_xdata;
@@ -212,45 +214,23 @@ pub fn wall_prop_section(
             .unwrap_or_else(|| wall.style_id.clone());
 
         let base_bound = wall.base_plane_id.is_some();
-        let none = t!("(none)").into_owned();
-        let mut plane_options = vec![none.clone()];
-        if let Some(project) = project {
-            for b in &project.buildings {
-                for s in &b.storeys {
-                    for p in &s.control_planes {
-                        if !plane_options.iter().any(|n| n == &p.name) {
-                            plane_options.push(p.name.clone());
-                        }
-                    }
-                }
-            }
-        }
-        let plane_label = |id: Option<uuid::Uuid>, stored_name: Option<&str>| {
-            id.and_then(|id| {
-                project.and_then(|proj| {
-                    proj.buildings.iter().find_map(|b| {
-                        b.storeys
-                            .iter()
-                            .find_map(|s| s.plane(id).map(|p| p.name.clone()))
-                    })
-                })
-            })
-            .or_else(|| {
-                stored_name
-                    .map(str::trim)
-                    .filter(|n| !n.is_empty())
-                    .map(|n| n.to_string())
-            })
-            .or_else(|| id.map(|id| id.to_string()))
-            .unwrap_or_else(|| none.clone())
-        };
+        let mut plane_options =
+            crate::modules::aec::project::wall_planes::build_project_plane_options(project);
+        let base_label = crate::modules::aec::project::wall_planes::resolve_plane_display_label(
+            project,
+            wall.base_plane_id,
+            wall.base_plane_name.as_deref(),
+        );
+        let top_label = crate::modules::aec::project::wall_planes::resolve_plane_display_label(
+            project,
+            wall.top_plane_id,
+            wall.top_plane_name.as_deref(),
+        );
         let ensure_option = |opts: &mut Vec<String>, label: &str| {
             if !opts.iter().any(|n| n == label) {
                 opts.push(label.to_string());
             }
         };
-        let base_label = plane_label(wall.base_plane_id, wall.base_plane_name.as_deref());
-        let top_label = plane_label(wall.top_plane_id, wall.top_plane_name.as_deref());
         ensure_option(&mut plane_options, &base_label);
         ensure_option(&mut plane_options, &top_label);
         let mut props = vec![
@@ -815,45 +795,23 @@ pub fn opening_prop_section(
                 .clone()
                 .unwrap_or_else(|| crate::tr!("aec", "opening-no-style"))
         });
-    let none = t!("(none)").into_owned();
-    let mut plane_options = vec![none.clone()];
-    if let Some(project) = project {
-        for b in &project.buildings {
-            for s in &b.storeys {
-                for p in &s.control_planes {
-                    if !plane_options.iter().any(|n| n == &p.name) {
-                        plane_options.push(p.name.clone());
-                    }
-                }
-            }
-        }
-    }
-    let plane_label = |id: Option<uuid::Uuid>, stored_name: Option<&str>| {
-        id.and_then(|id| {
-            project.and_then(|proj| {
-                proj.buildings.iter().find_map(|b| {
-                    b.storeys
-                        .iter()
-                        .find_map(|s| s.plane(id).map(|p| p.name.clone()))
-                })
-            })
-        })
-        .or_else(|| {
-            stored_name
-                .map(str::trim)
-                .filter(|n| !n.is_empty())
-                .map(|n| n.to_string())
-        })
-        .or_else(|| id.map(|id| id.to_string()))
-        .unwrap_or_else(|| none.clone())
-    };
+    let mut plane_options =
+        crate::modules::aec::project::wall_planes::build_project_plane_options(project);
+    let sill_label = crate::modules::aec::project::wall_planes::resolve_plane_display_label(
+        project,
+        opening.sill_plane_id,
+        opening.sill_plane_name.as_deref(),
+    );
+    let head_label = crate::modules::aec::project::wall_planes::resolve_plane_display_label(
+        project,
+        opening.head_plane_id,
+        opening.head_plane_name.as_deref(),
+    );
     let ensure_option = |opts: &mut Vec<String>, label: &str| {
         if !opts.iter().any(|n| n == label) {
             opts.push(label.to_string());
         }
     };
-    let sill_label = plane_label(opening.sill_plane_id, opening.sill_plane_name.as_deref());
-    let head_label = plane_label(opening.head_plane_id, opening.head_plane_name.as_deref());
     ensure_option(&mut plane_options, &sill_label);
     ensure_option(&mut plane_options, &head_label);
     let mut props = vec![
@@ -1451,45 +1409,23 @@ pub fn slab_prop_section(
         .map(|ss| ss.style.name.clone())
         .unwrap_or_else(|| slab.style_id.clone());
 
-    let none = t!("(none)").into_owned();
-    let mut plane_options = vec![none.clone()];
-    if let Some(project) = project {
-        for b in &project.buildings {
-            for s in &b.storeys {
-                for p in &s.control_planes {
-                    if !plane_options.iter().any(|n| n == &p.name) {
-                        plane_options.push(p.name.clone());
-                    }
-                }
-            }
-        }
-    }
-    let plane_label = |id: Option<uuid::Uuid>, stored_name: Option<&str>| {
-        id.and_then(|id| {
-            project.and_then(|proj| {
-                proj.buildings.iter().find_map(|b| {
-                    b.storeys
-                        .iter()
-                        .find_map(|s| s.plane(id).map(|p| p.name.clone()))
-                })
-            })
-        })
-        .or_else(|| {
-            stored_name
-                .map(str::trim)
-                .filter(|n| !n.is_empty())
-                .map(|n| n.to_string())
-        })
-        .or_else(|| id.map(|id| id.to_string()))
-        .unwrap_or_else(|| none.clone())
-    };
+    let mut plane_options =
+        crate::modules::aec::project::wall_planes::build_project_plane_options(project);
+    let base_label = crate::modules::aec::project::wall_planes::resolve_plane_display_label(
+        project,
+        slab.base_plane_id,
+        slab.base_plane_name.as_deref(),
+    );
+    let top_label = crate::modules::aec::project::wall_planes::resolve_plane_display_label(
+        project,
+        slab.top_plane_id,
+        slab.top_plane_name.as_deref(),
+    );
     let ensure_option = |opts: &mut Vec<String>, label: &str| {
         if !opts.iter().any(|n| n == label) {
             opts.push(label.to_string());
         }
     };
-    let base_label = plane_label(slab.base_plane_id, slab.base_plane_name.as_deref());
-    let top_label = plane_label(slab.top_plane_id, slab.top_plane_name.as_deref());
     ensure_option(&mut plane_options, &base_label);
     ensure_option(&mut plane_options, &top_label);
 
@@ -1620,6 +1556,21 @@ pub fn slab_prop_section(
             },
         },
         crate::scene::model::object::Property {
+            label: crate::tr!("aec", "slab-top-plane"),
+            field: "slab_top_plane",
+            value: crate::scene::model::object::PropValue::Choice {
+                selected: top_label,
+                options: plane_options.clone(),
+            },
+        },
+        formula_edit_prop_with_aliases(
+            crate::tr!("aec", "slab-top-offset").as_ref(),
+            "slab_top_offset",
+            SLAB_TOP_OFFSET_KEYS,
+            slab.top_offset,
+            &slab.formulas,
+        ),
+        crate::scene::model::object::Property {
             label: t!("Phase").into_owned(),
             field: "slab_phase",
             value: crate::scene::model::object::PropValue::Choice {
@@ -1642,27 +1593,14 @@ pub fn slab_prop_section(
             field: "slab_base_plane",
             value: crate::scene::model::object::PropValue::Choice {
                 selected: base_label,
-                options: plane_options.clone(),
-            },
-        },
-        formula_edit_prop(
-            crate::tr!("aec", "slab-base-offset").as_ref(),
-            "slab_base_offset",
-            slab.base_offset,
-            &slab.formulas,
-        ),
-        crate::scene::model::object::Property {
-            label: crate::tr!("aec", "slab-top-plane"),
-            field: "slab_top_plane",
-            value: crate::scene::model::object::PropValue::Choice {
-                selected: top_label,
                 options: plane_options,
             },
         },
-        formula_edit_prop(
-            crate::tr!("aec", "slab-top-offset").as_ref(),
-            "slab_top_offset",
-            slab.top_offset,
+        formula_edit_prop_with_aliases(
+            crate::tr!("aec", "slab-base-offset").as_ref(),
+            "slab_base_offset",
+            SLAB_BASE_OFFSET_KEYS,
+            slab.base_offset,
             &slab.formulas,
         ),
         crate::entities::common::ro_prop(
@@ -2789,7 +2727,17 @@ pub(crate) fn formula_edit_prop(
     value: f64,
     formulas: &crate::modules::aec::engine::formulas::AecFormulas,
 ) -> crate::scene::model::object::Property {
-    let (full_label, display_val) = if let Some(formula) = formulas.get(field) {
+    formula_edit_prop_with_aliases(label, field, &[field], value, formulas)
+}
+
+pub(crate) fn formula_edit_prop_with_aliases(
+    label: &str,
+    field: &'static str,
+    aliases: &[&str],
+    value: f64,
+    formulas: &crate::modules::aec::engine::formulas::AecFormulas,
+) -> crate::scene::model::object::Property {
+    let (full_label, display_val) = if let Some((_, formula)) = formulas.get_any(aliases) {
         (
             format!("{label} (fx = {})", crate::entities::common::format_length(value)),
             formula.to_string(),
@@ -3164,13 +3112,24 @@ impl crate::app::OpenCADStudio {
                         let _ = self.regenerate_slab_respecting_active_display_config(tab, slab_owner);
                     }
                 }
-                "slab_base_offset" | "slab_top_offset" => {
+                "slab_base_offset" | "slab_top_offset" | "slab_offset" | "top_offset" | "base_offset" | "offset" => {
                     match eval_aec_property_expression(&self.tabs[tab].scene, val) {
                         Ok(v) => {
-                            let (base, top) = if field == "slab_base_offset" {
+                            let is_base = field == "slab_base_offset" || field == "base_offset";
+                            let (base, top) = if is_base {
                                 (Some(v), None)
                             } else {
                                 (None, Some(v))
+                            };
+                            let canonical_field = if is_base {
+                                "slab_base_offset"
+                            } else {
+                                "slab_top_offset"
+                            };
+                            let alias_group = if is_base {
+                                SLAB_BASE_OFFSET_KEYS
+                            } else {
+                                SLAB_TOP_OFFSET_KEYS
                             };
                             if slab_xdata::write_slab_plane_offsets(
                                 &mut self.tabs[tab].scene,
@@ -3180,10 +3139,9 @@ impl crate::app::OpenCADStudio {
                             ) {
                                 if let Some(entity) = self.tabs[tab].scene.document.get_entity(slab_owner) {
                                     if let Some(mut slab) = slab_xdata::slab_from_entity(entity) {
+                                        slab.formulas.remove_all(alias_group);
                                         if crate::modules::aec::engine::formulas::is_formula_expression(val) {
-                                            slab.formulas.set(field, val.to_string());
-                                        } else {
-                                            slab.formulas.remove(field);
+                                            slab.formulas.set(canonical_field, val.to_string());
                                         }
                                         let _ = slab_xdata::write_slab_record(&mut self.tabs[tab].scene.document, slab_owner, &slab);
                                     }
@@ -3620,22 +3578,19 @@ impl crate::app::OpenCADStudio {
             if let Some(mut slab) = slab_xdata::slab_from_entity(&entity) {
                 if !slab.formulas.is_empty() {
                     let mut changed = false;
-                    for (field, expr) in &slab.formulas.fields {
+                    if let Some((_, expr)) = slab.formulas.get_any(SLAB_BASE_OFFSET_KEYS) {
                         if let Ok(val) = eval_aec_property_expression(&self.tabs[tab].scene, expr) {
-                            match field.as_str() {
-                                "slab_base_offset" | "base_offset" => {
-                                    if (slab.base_offset - val).abs() > 1e-9 {
-                                        slab.base_offset = val;
-                                        changed = true;
-                                    }
-                                }
-                                "slab_top_offset" | "top_offset" => {
-                                    if (slab.top_offset - val).abs() > 1e-9 {
-                                        slab.top_offset = val;
-                                        changed = true;
-                                    }
-                                }
-                                _ => {}
+                            if (slab.base_offset - val).abs() > 1e-9 {
+                                slab.base_offset = val;
+                                changed = true;
+                            }
+                        }
+                    }
+                    if let Some((_, expr)) = slab.formulas.get_any(SLAB_TOP_OFFSET_KEYS) {
+                        if let Ok(val) = eval_aec_property_expression(&self.tabs[tab].scene, expr) {
+                            if (slab.top_offset - val).abs() > 1e-9 {
+                                slab.top_offset = val;
+                                changed = true;
                             }
                         }
                     }
@@ -4052,6 +4007,107 @@ mod tests {
 
         // Keep write helper referenced for compile linkage in tests module.
         let _ = write_slab_record;
+    }
+
+    #[test]
+    fn test_property_section_plane_dropdown_formatting_and_disambiguation() {
+        use acadrust::entities::LwPolyline;
+        use crate::modules::aec::engine::control_plane::{ControlPlane, ControlPlaneFacet};
+        use crate::modules::aec::engine::openings::Opening;
+        use crate::modules::aec::engine::slab::Slab;
+        use crate::modules::aec::engine::slab_xdata::slab_record_for_slab;
+        use crate::modules::aec::engine::wall::Wall;
+        use crate::modules::aec::engine::xdata::{wall_record_for_wall, AEC_APPID};
+
+        let mut project = ProjectFile::default();
+        let mut building = Building::new("Hauptbau");
+        let mut eg = StoreyRef::new_with_height("EG", 0.0, 2.80, "eg.dwg");
+        let mut og = StoreyRef::new_with_height("OG", 2.80, 2.80, "og.dwg");
+
+        let eg_custom_floor = ControlPlane::horizontal("Floor", 0.0);
+        let eg_custom_floor_id = eg_custom_floor.id;
+        eg.control_planes.push(eg_custom_floor);
+
+        let og_custom_floor = ControlPlane::horizontal("Floor", 2.80);
+        og.control_planes.push(og_custom_floor);
+
+        let facet_roof = ControlPlaneFacet::new(
+            "Nord",
+            vec![
+                [0.0, 0.0, 6.0],
+                [10.0, 0.0, 6.0],
+                [10.0, 10.0, 10.0],
+                [0.0, 10.0, 10.0],
+            ],
+        );
+        let roof_cp = ControlPlane::from_facets("Dach (Nord)", vec![facet_roof]);
+        let roof_id = roof_cp.id;
+        og.control_planes.push(roof_cp);
+
+        let eg_ceiling_id = eg.ceiling_plane_id;
+
+        building.storeys.push(eg);
+        building.storeys.push(og);
+        project.buildings.push(building);
+
+        // 1. Wall Property Section
+        let mut wall = Wall::new("s", 2.80, 0);
+        wall.base_plane_id = Some(eg_custom_floor_id);
+        wall.top_plane_id = Some(roof_id);
+        let mut wall_entity = EntityType::LwPolyline(LwPolyline::new());
+        let mut rec = ExtendedDataRecord::new(AEC_APPID);
+        rec.values = wall_record_for_wall(&wall);
+        wall_entity.common_mut().extended_data.add_record(rec);
+
+        let wall_sec = wall_prop_section(&wall_entity, None, Some(&project)).expect("wall section");
+        let base_prop = wall_sec.props.iter().find(|p| p.field == "wall_base_plane").unwrap();
+        match &base_prop.value {
+            crate::scene::model::object::PropValue::Choice { selected, options } => {
+                assert_eq!(selected, "Floor [EG] (Z = 0.000 m)");
+                assert!(options.contains(&"Floor [EG] (Z = 0.000 m)".to_string()));
+                assert!(options.contains(&"Floor [OG] (Z = 2.800 m)".to_string()));
+                assert!(options.iter().any(|o| o.starts_with("Dach (Nord) (Z ≈ 6.000 m, ")));
+            }
+            _ => panic!("expected choice"),
+        }
+        let top_prop = wall_sec.props.iter().find(|p| p.field == "wall_top_plane").unwrap();
+        match &top_prop.value {
+            crate::scene::model::object::PropValue::Choice { selected, .. } => {
+                assert!(selected.starts_with("Dach (Nord) (Z ≈ 6.000 m, "));
+            }
+            _ => panic!("expected choice"),
+        }
+
+        // 2. Opening Property Section
+        let mut opening = Opening::window(Handle::new(10), Handle::new(20), 1.0);
+        opening.sill_plane_id = Some(eg_custom_floor_id);
+        opening.head_plane_id = Some(eg_ceiling_id);
+        let op_sec = opening_prop_section(&opening, Handle::new(10), None, Some(&project));
+        let sill_prop = op_sec.props.iter().find(|p| p.field == "opening_sill_plane").unwrap();
+        match &sill_prop.value {
+            crate::scene::model::object::PropValue::Choice { selected, .. } => {
+                assert_eq!(selected, "Floor [EG] (Z = 0.000 m)");
+            }
+            _ => panic!("expected choice"),
+        }
+
+        // 3. Slab Property Section
+        let mut slab = Slab::new("style_slab", 1);
+        slab.top_plane_id = Some(roof_id);
+        let mut slab_entity = EntityType::LwPolyline(LwPolyline::new());
+        let mut srec = ExtendedDataRecord::new(AEC_APPID);
+        srec.values = slab_record_for_slab(&slab);
+        slab_entity.common_mut().extended_data.add_record(srec);
+
+        let slab_sec = slab_prop_section(&slab_entity, None, Some(&project)).expect("slab section");
+        let slab_top_prop = slab_sec.props.iter().find(|p| p.field == "slab_top_plane").unwrap();
+        match &slab_top_prop.value {
+            crate::scene::model::object::PropValue::Choice { selected, options } => {
+                assert!(selected.starts_with("Dach (Nord) (Z ≈ 6.000 m, "));
+                assert!(options.contains(&"Floor [EG] (Z = 0.000 m)".to_string()));
+            }
+            _ => panic!("expected choice"),
+        }
     }
 
     #[test]
@@ -5931,5 +5987,361 @@ mod tests {
         let height_prop = sec.props.iter().find(|p| p.field == "wall_height").unwrap();
         assert_eq!(height_prop.label, "Height");
         assert_eq!(height_prop.value, crate::scene::model::object::PropValue::EditText("3.1000".to_string()));
+    }
+
+    #[test]
+    fn test_formula_recompute_wall_top_offset_with_dangling_plane() {
+        use crate::app::OpenCADStudio;
+        use crate::modules::aec::engine::control_plane::ControlPlaneFacet;
+        use crate::modules::aec::engine::wall::Wall;
+        use crate::modules::aec::engine::xdata::{wall_from_entity, wall_record_for_wall, write_aec_record, AEC_APPID};
+        use acadrust::entities::{LwPolyline, LwVertex};
+        use acadrust::types::Vector2;
+        use acadrust::xdata::ExtendedDataRecord;
+        use uuid::Uuid;
+
+        let mut app = OpenCADStudio::new_for_test();
+        let tab = app.active_tab;
+
+        app.tabs[tab].scene.named_parameters_mut().set("_ROOF_OFF", "0.20").unwrap();
+
+        let mut wall = Wall::new("style_standard_24", 2.80, 1);
+        let f1 = ControlPlaneFacet::new(
+            "RoofSlope",
+            vec![
+                [0.0, -5.0, 4.0],
+                [10.0, -5.0, 6.0],
+                [10.0, 5.0, 6.0],
+                [0.0, 5.0, 4.0],
+            ],
+        );
+        wall.top_plane_id = Some(Uuid::new_v4()); // Dangling plane ID
+        wall.top_facets = vec![f1];
+        wall.top_origin = [0.0, -5.0, 4.0];
+        wall.formulas.set("wall_top_offset", "_ROOF_OFF + 0.05".to_string());
+
+        let mut poly = LwPolyline::new();
+        poly.add_vertex(LwVertex::new(Vector2::new(0.0, 0.0)));
+        poly.add_vertex(LwVertex::new(Vector2::new(10.0, 0.0)));
+        let wall_handle = app.tabs[tab].scene.add_entity(EntityType::LwPolyline(poly));
+        let mut rec = ExtendedDataRecord::new(AEC_APPID);
+        rec.values = wall_record_for_wall(&wall);
+        write_aec_record(&mut app.tabs[tab].scene.document, wall_handle, rec);
+
+        // 1. Initial recompute
+        app.aec_recompute_all_formulas(tab);
+
+        let ent = app.tabs[tab].scene.document.get_entity(wall_handle).unwrap();
+        let updated_wall = wall_from_entity(ent).expect("wall");
+        assert!((updated_wall.top_offset - 0.25).abs() < 1e-6);
+        let normal_scale = 1.04_f64.sqrt();
+        let z0 = updated_wall.top_z_at_xy(0.0, 0.0);
+        let z5 = updated_wall.top_z_at_xy(5.0, 0.0);
+        let z10 = updated_wall.top_z_at_xy(10.0, 0.0);
+        assert!((z5 - z0 - 1.0).abs() < 1e-6);
+        assert!((z10 - z0 - 2.0).abs() < 1e-6);
+        assert!((z0 - (4.0 + 0.25 * normal_scale)).abs() < 1e-6);
+        assert!((z5 - (5.0 + 0.25 * normal_scale)).abs() < 1e-6);
+        assert!((z10 - (6.0 + 0.25 * normal_scale)).abs() < 1e-6);
+
+        // 2. Mutate parameter _ROOF_OFF and recompute
+        app.tabs[tab].scene.named_parameters_mut().set("_ROOF_OFF", "0.50").unwrap();
+        app.aec_recompute_all_formulas(tab);
+
+        let ent = app.tabs[tab].scene.document.get_entity(wall_handle).unwrap();
+        let updated_wall2 = wall_from_entity(ent).expect("wall");
+        assert!((updated_wall2.top_offset - 0.55).abs() < 1e-6);
+        let z0_2 = updated_wall2.top_z_at_xy(0.0, 0.0);
+        let z5_2 = updated_wall2.top_z_at_xy(5.0, 0.0);
+        let z10_2 = updated_wall2.top_z_at_xy(10.0, 0.0);
+        assert!((z5_2 - z0_2 - 1.0).abs() < 1e-6);
+        assert!((z10_2 - z0_2 - 2.0).abs() < 1e-6);
+        assert!((z0_2 - (4.0 + 0.55 * normal_scale)).abs() < 1e-6);
+        assert!((z5_2 - (5.0 + 0.55 * normal_scale)).abs() < 1e-6);
+        assert!((z10_2 - (6.0 + 0.55 * normal_scale)).abs() < 1e-6);
+        assert!((z0_2 - z0 - 0.30 * normal_scale).abs() < 1e-6);
+        assert!((z5_2 - z5 - 0.30 * normal_scale).abs() < 1e-6);
+        assert!((z10_2 - z10 - 0.30 * normal_scale).abs() < 1e-6);
+    }
+
+    #[test]
+    fn test_formula_recompute_slab_offsets_with_aliases() {
+        use crate::app::OpenCADStudio;
+        use crate::modules::aec::engine::slab::Slab;
+        use crate::modules::aec::engine::slab_xdata::{slab_from_entity, write_slab_record};
+        use acadrust::entities::{LwPolyline, LwVertex};
+        use acadrust::types::Vector2;
+
+        let mut app = OpenCADStudio::new_for_test();
+        let tab = app.active_tab;
+
+        app.tabs[tab].scene.named_parameters_mut().set("_SLAB_OFF", "0.15").unwrap();
+        app.tabs[tab].scene.named_parameters_mut().set("_BASE_OFF", "-0.05").unwrap();
+
+        // 1. Slab with slab_top_offset formula
+        let mut poly1 = LwPolyline::new();
+        poly1.add_vertex(LwVertex::new(Vector2::new(0.0, 0.0)));
+        poly1.add_vertex(LwVertex::new(Vector2::new(5.0, 0.0)));
+        let s1_handle = app.tabs[tab].scene.add_entity(EntityType::LwPolyline(poly1));
+        let mut s1 = Slab::new("style_slab_concrete_20", 1);
+        s1.formulas.set("slab_top_offset", "_SLAB_OFF + 0.10".to_string());
+        write_slab_record(&mut app.tabs[tab].scene.document, s1_handle, &s1);
+
+        // 2. Slab with slab_offset formula alias
+        let mut poly2 = LwPolyline::new();
+        poly2.add_vertex(LwVertex::new(Vector2::new(0.0, 0.0)));
+        poly2.add_vertex(LwVertex::new(Vector2::new(5.0, 0.0)));
+        let s2_handle = app.tabs[tab].scene.add_entity(EntityType::LwPolyline(poly2));
+        let mut s2 = Slab::new("style_slab_concrete_20", 1);
+        s2.formulas.set("slab_offset", "_SLAB_OFF + 0.05".to_string());
+        write_slab_record(&mut app.tabs[tab].scene.document, s2_handle, &s2);
+
+        // 3. Slab with slab_base_offset formula
+        let mut poly3 = LwPolyline::new();
+        poly3.add_vertex(LwVertex::new(Vector2::new(0.0, 0.0)));
+        poly3.add_vertex(LwVertex::new(Vector2::new(5.0, 0.0)));
+        let s3_handle = app.tabs[tab].scene.add_entity(EntityType::LwPolyline(poly3));
+        let mut s3 = Slab::new("style_slab_concrete_20", 1);
+        s3.formulas.set("slab_base_offset", "_BASE_OFF - 0.02".to_string());
+        write_slab_record(&mut app.tabs[tab].scene.document, s3_handle, &s3);
+
+        // Initial recompute
+        app.aec_recompute_all_formulas(tab);
+
+        let ent1 = app.tabs[tab].scene.document.get_entity(s1_handle).unwrap();
+        let slab1 = slab_from_entity(ent1).unwrap();
+        assert!((slab1.top_offset - 0.25).abs() < 1e-9);
+
+        let ent2 = app.tabs[tab].scene.document.get_entity(s2_handle).unwrap();
+        let slab2 = slab_from_entity(ent2).unwrap();
+        assert!((slab2.top_offset - 0.20).abs() < 1e-9);
+
+        let ent3 = app.tabs[tab].scene.document.get_entity(s3_handle).unwrap();
+        let slab3 = slab_from_entity(ent3).unwrap();
+        assert!((slab3.base_offset - (-0.07)).abs() < 1e-9);
+
+        // Verify property section displays (fx = ...) for alias formulas as well
+        let sec2 = slab_prop_section(ent2, None, None).expect("slab prop section");
+        let top_off_prop = sec2.props.iter().find(|p| p.field == "slab_top_offset").unwrap();
+        assert!(top_off_prop.label.contains("fx ="));
+        match &top_off_prop.value {
+            crate::scene::model::object::PropValue::EditText(txt) => {
+                assert_eq!(txt, "_SLAB_OFF + 0.05");
+            }
+            _ => panic!("expected EditText"),
+        }
+
+        // Mutate parameters and recompute
+        app.tabs[tab].scene.named_parameters_mut().set("_SLAB_OFF", "0.30").unwrap();
+        app.tabs[tab].scene.named_parameters_mut().set("_BASE_OFF", "0.10").unwrap();
+        app.aec_recompute_all_formulas(tab);
+
+        let ent1 = app.tabs[tab].scene.document.get_entity(s1_handle).unwrap();
+        let slab1 = slab_from_entity(ent1).unwrap();
+        assert!((slab1.top_offset - 0.40).abs() < 1e-9);
+
+        let ent2 = app.tabs[tab].scene.document.get_entity(s2_handle).unwrap();
+        let slab2 = slab_from_entity(ent2).unwrap();
+        assert!((slab2.top_offset - 0.35).abs() < 1e-9);
+
+        let ent3 = app.tabs[tab].scene.document.get_entity(s3_handle).unwrap();
+        let slab3 = slab_from_entity(ent3).unwrap();
+        assert!((slab3.base_offset - 0.08).abs() < 1e-9);
+
+        // Verify property section structure has slab_top_plane & slab_top_offset right after justification
+        let sec = slab_prop_section(ent1, None, None).expect("slab prop section");
+        let fields: Vec<&str> = sec.props.iter().map(|p| p.field).collect();
+        let just_idx = fields.iter().position(|&f| f == "slab_justification").unwrap();
+        let top_plane_idx = fields.iter().position(|&f| f == "slab_top_plane").unwrap();
+        let top_offset_idx = fields.iter().position(|&f| f == "slab_top_offset").unwrap();
+        assert_eq!(top_plane_idx, just_idx + 1);
+        assert_eq!(top_offset_idx, just_idx + 2);
+
+        // Apply a plain numeric value to s2 (which had alias formula `slab_offset`):
+        // All aliases must be cleared, and recompute must not resurrect the formula.
+        let ok = app.aec_apply_property_field(tab, s2_handle, "slab_top_offset", "0.80");
+        assert!(ok);
+        let ent2_after_num = app.tabs[tab].scene.document.get_entity(s2_handle).unwrap();
+        let s2_after_num = slab_from_entity(ent2_after_num).unwrap();
+        assert!((s2_after_num.top_offset - 0.80).abs() < 1e-9);
+        assert!(s2_after_num.formulas.is_empty());
+
+        // Recompute formulas should NOT overwrite the plain numeric value 0.80
+        app.aec_recompute_all_formulas(tab);
+        let ent2_after_recompute = app.tabs[tab].scene.document.get_entity(s2_handle).unwrap();
+        let s2_after_recompute = slab_from_entity(ent2_after_recompute).unwrap();
+        assert!((s2_after_recompute.top_offset - 0.80).abs() < 1e-9);
+        assert!(s2_after_recompute.formulas.is_empty());
+    }
+
+    #[test]
+    fn test_aec_apply_property_field_for_slab_offsets_and_justifications() {
+        use crate::app::OpenCADStudio;
+        use crate::modules::aec::engine::slab::{Slab, SlabJustification};
+        use crate::modules::aec::engine::slab_xdata::{slab_from_entity, write_slab_record};
+        use acadrust::entities::{LwPolyline, LwVertex};
+        use acadrust::types::Vector2;
+
+        let mut app = OpenCADStudio::new_for_test();
+        let tab = app.active_tab;
+
+        app.tabs[tab].scene.named_parameters_mut().set("_H", "2.80").unwrap();
+
+        let mut poly = LwPolyline::new();
+        poly.add_vertex(LwVertex::new(Vector2::new(0.0, 0.0)));
+        poly.add_vertex(LwVertex::new(Vector2::new(5.0, 0.0)));
+        poly.add_vertex(LwVertex::new(Vector2::new(5.0, 4.0)));
+        poly.add_vertex(LwVertex::new(Vector2::new(0.0, 4.0)));
+        poly.is_closed = true;
+        let handle = app.tabs[tab].scene.add_entity(EntityType::LwPolyline(poly));
+        let slab = Slab::new("style_slab_concrete_20", 1);
+        write_slab_record(&mut app.tabs[tab].scene.document, handle, &slab);
+
+        // 1. Change justification via panel apply
+        let ok = app.aec_apply_property_field(tab, handle, "slab_justification", "OKRD (Oberkante Rohdecke)");
+        assert!(ok);
+        let ent = app.tabs[tab].scene.document.get_entity(handle).unwrap();
+        let s = slab_from_entity(ent).unwrap();
+        assert_eq!(s.justification, SlabJustification::StructuralTop);
+
+        // 2. Set formula on slab_top_offset via panel apply
+        let ok = app.aec_apply_property_field(tab, handle, "slab_top_offset", "_H * 0.10");
+        assert!(ok);
+        let ent = app.tabs[tab].scene.document.get_entity(handle).unwrap();
+        let s = slab_from_entity(ent).unwrap();
+        assert!((s.top_offset - 0.28).abs() < 1e-9);
+        assert_eq!(s.formulas.get("slab_top_offset"), Some("_H * 0.10"));
+
+        // 3. Mutate parameter and recompute
+        app.tabs[tab].scene.named_parameters_mut().set("_H", "3.00").unwrap();
+        app.aec_recompute_all_formulas(tab);
+        let ent = app.tabs[tab].scene.document.get_entity(handle).unwrap();
+        let s = slab_from_entity(ent).unwrap();
+        assert!((s.top_offset - 0.30).abs() < 1e-9);
+
+        // 4. Overwrite formula with plain number
+        let ok = app.aec_apply_property_field(tab, handle, "slab_top_offset", "0.45");
+        assert!(ok);
+        let ent = app.tabs[tab].scene.document.get_entity(handle).unwrap();
+        let s = slab_from_entity(ent).unwrap();
+        assert!((s.top_offset - 0.45).abs() < 1e-9);
+        assert_eq!(s.formulas.get("slab_top_offset"), None);
+        assert!(s.formulas.is_empty());
+    }
+
+    #[test]
+    fn test_prop_geom_choice_changed_applies_aec_control_planes_and_justifications() {
+        use crate::app::{Message, OpenCADStudio};
+        use crate::modules::aec::engine::control_plane::ControlPlane;
+        use crate::modules::aec::engine::project::{Building, ProjectFile, StoreyRef};
+        use crate::modules::aec::engine::wall::Wall;
+        use crate::modules::aec::engine::xdata::{wall_from_entity, wall_record_for_wall, AEC_APPID};
+        use acadrust::entities::{LwPolyline, LwVertex};
+        use acadrust::types::Vector2;
+        use acadrust::xdata::ExtendedDataRecord;
+
+        let mut app = OpenCADStudio::new_for_test();
+        let tab = app.active_tab;
+
+        let mut project = ProjectFile::default();
+        let mut building = Building::new("Haus");
+        let mut eg = StoreyRef::new_with_height("EG", 0.0, 2.80, "eg.dwg");
+        let eg_elev_id = eg.floor_plane_id;
+        let eg_custom = ControlPlane::horizontal("Rohdecke", 0.15);
+        let eg_custom_id = eg_custom.id;
+        eg.control_planes.push(eg_custom);
+
+        let og = StoreyRef::new_with_height("OG", 2.80, 2.80, "og.dwg");
+        let og_elev_id = og.floor_plane_id;
+
+        building.storeys.push(eg);
+        building.storeys.push(og);
+        project.buildings.push(building);
+
+        app.aec.aec_project_explorer_file = Some(project.clone());
+
+        // Create a wall
+        let mut poly = LwPolyline::new();
+        poly.add_vertex(LwVertex::new(Vector2::new(0.0, 0.0)));
+        poly.add_vertex(LwVertex::new(Vector2::new(5.0, 0.0)));
+        let wall_handle = app.tabs[tab].scene.add_entity(EntityType::LwPolyline(poly));
+        let wall = Wall::new("standard_wall", 2.50, 0);
+        let mut record = ExtendedDataRecord::new(AEC_APPID);
+        record.values = wall_record_for_wall(&wall);
+        app.tabs[tab]
+            .scene
+            .document
+            .get_entity_mut(wall_handle)
+            .unwrap()
+            .common_mut()
+            .extended_data
+            .add_record(record);
+
+        // Select the wall for properties panel
+        app.tabs[tab].scene.select_entity(wall_handle, true);
+        app.refresh_properties();
+
+        // 1. Initial property section shows (none) for base plane
+        let ent = app.tabs[tab].scene.document.get_entity(wall_handle).unwrap();
+        let sec = wall_prop_section(ent, None, Some(&project)).unwrap();
+        let base_prop = sec.props.iter().find(|p| p.field == "wall_base_plane").unwrap();
+        match &base_prop.value {
+            crate::scene::model::object::PropValue::Choice { selected, .. } => {
+                assert_eq!(selected, "(none)");
+            }
+            _ => panic!("expected Choice"),
+        }
+
+        // 2. Select "EG_ELEVATION (Z = 0.000 m)" via PropGeomChoiceChanged
+        let _ = app.update(Message::PropGeomChoiceChanged {
+            field: "wall_base_plane",
+            value: "EG_ELEVATION (Z = 0.000 m)".into(),
+        });
+
+        // Verify wall has base_plane_id set
+        let ent_after = app.tabs[tab].scene.document.get_entity(wall_handle).unwrap();
+        let wall_after = wall_from_entity(ent_after).unwrap();
+        assert_eq!(wall_after.base_plane_id, Some(eg_elev_id));
+        assert_eq!(wall_after.base_plane_name.as_deref(), Some("EG_ELEVATION"));
+
+        // Verify property panel now reflects the chosen base plane
+        let sec_after = wall_prop_section(ent_after, None, Some(&project)).unwrap();
+        let base_prop_after = sec_after.props.iter().find(|p| p.field == "wall_base_plane").unwrap();
+        match &base_prop_after.value {
+            crate::scene::model::object::PropValue::Choice { selected, .. } => {
+                assert_eq!(selected, "EG_ELEVATION (Z = 0.000 m)");
+            }
+            _ => panic!("expected Choice"),
+        }
+
+        // 3. Select custom plane "Rohdecke (Z = 0.150 m)"
+        let _ = app.update(Message::PropGeomChoiceChanged {
+            field: "wall_base_plane",
+            value: "Rohdecke (Z = 0.150 m)".into(),
+        });
+        let ent_after2 = app.tabs[tab].scene.document.get_entity(wall_handle).unwrap();
+        let wall_after2 = wall_from_entity(ent_after2).unwrap();
+        assert_eq!(wall_after2.base_plane_id, Some(eg_custom_id));
+        assert_eq!(wall_after2.base_plane_name.as_deref(), Some("Rohdecke"));
+
+        // 4. Select top plane "OG_ELEVATION (Z = 2.800 m)"
+        let _ = app.update(Message::PropGeomChoiceChanged {
+            field: "wall_top_plane",
+            value: "OG_ELEVATION (Z = 2.800 m)".into(),
+        });
+        let ent_after3 = app.tabs[tab].scene.document.get_entity(wall_handle).unwrap();
+        let wall_after3 = wall_from_entity(ent_after3).unwrap();
+        assert_eq!(wall_after3.top_plane_id, Some(og_elev_id));
+        assert_eq!(wall_after3.top_plane_name.as_deref(), Some("OG_ELEVATION"));
+
+        // 5. Reset base plane to "(none)"
+        let _ = app.update(Message::PropGeomChoiceChanged {
+            field: "wall_base_plane",
+            value: "(none)".into(),
+        });
+        let ent_after4 = app.tabs[tab].scene.document.get_entity(wall_handle).unwrap();
+        let wall_after4 = wall_from_entity(ent_after4).unwrap();
+        assert_eq!(wall_after4.base_plane_id, None);
+        assert_eq!(wall_after4.base_plane_name, None);
     }
 }
