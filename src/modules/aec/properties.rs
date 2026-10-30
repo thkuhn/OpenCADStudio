@@ -1411,11 +1411,6 @@ pub fn slab_prop_section(
 
     let mut plane_options =
         crate::modules::aec::project::wall_planes::build_project_plane_options(project);
-    let base_label = crate::modules::aec::project::wall_planes::resolve_plane_display_label(
-        project,
-        slab.base_plane_id,
-        slab.base_plane_name.as_deref(),
-    );
     let top_label = crate::modules::aec::project::wall_planes::resolve_plane_display_label(
         project,
         slab.top_plane_id,
@@ -1426,7 +1421,6 @@ pub fn slab_prop_section(
             opts.push(label.to_string());
         }
     };
-    ensure_option(&mut plane_options, &base_label);
     ensure_option(&mut plane_options, &top_label);
 
     let boundary = entity_boundary_xy(entity);
@@ -1560,7 +1554,7 @@ pub fn slab_prop_section(
             field: "slab_top_plane",
             value: crate::scene::model::object::PropValue::Choice {
                 selected: top_label,
-                options: plane_options.clone(),
+                options: plane_options,
             },
         },
         formula_edit_prop_with_aliases(
@@ -1588,21 +1582,6 @@ pub fn slab_prop_section(
                 ],
             },
         },
-        crate::scene::model::object::Property {
-            label: crate::tr!("aec", "slab-base-plane"),
-            field: "slab_base_plane",
-            value: crate::scene::model::object::PropValue::Choice {
-                selected: base_label,
-                options: plane_options,
-            },
-        },
-        formula_edit_prop_with_aliases(
-            crate::tr!("aec", "slab-base-offset").as_ref(),
-            "slab_base_offset",
-            SLAB_BASE_OFFSET_KEYS,
-            slab.base_offset,
-            &slab.formulas,
-        ),
         crate::entities::common::ro_prop(
             crate::tr!("aec", "slab-thickness").as_ref(),
             "slab_thickness",
@@ -3155,7 +3134,7 @@ impl crate::app::OpenCADStudio {
                         }
                     }
                 }
-                "slab_base_plane" | "slab_top_plane" => {
+                "slab_base_plane" | "slab_top_plane" | "slab_plane" => {
                     let style_library =
                         crate::modules::aec::engine::project::resolve_style_library(
                             self.aec.aec_project_explorer_file.as_ref(),
@@ -3983,9 +3962,9 @@ mod tests {
         assert!(fields.contains(&"slab_style"));
         assert!(fields.contains(&"slab_justification"));
         assert!(fields.contains(&"slab_phase"));
-        assert!(fields.contains(&"slab_base_plane"));
+        assert!(!fields.contains(&"slab_base_plane"));
         assert!(fields.contains(&"slab_top_plane"));
-        assert!(fields.contains(&"slab_base_offset"));
+        assert!(!fields.contains(&"slab_base_offset"));
         assert!(fields.contains(&"slab_top_offset"));
         assert!(fields.contains(&"slab_thickness"));
         assert!(fields.contains(&"slab_area"));
@@ -6343,5 +6322,60 @@ mod tests {
         let wall_after4 = wall_from_entity(ent_after4).unwrap();
         assert_eq!(wall_after4.base_plane_id, None);
         assert_eq!(wall_after4.base_plane_name, None);
+
+        // 6. Test Slab Plane and Justification via PropGeomChoiceChanged
+        use crate::modules::aec::engine::slab::{Slab, SlabJustification};
+        use crate::modules::aec::engine::slab_xdata::{slab_from_entity, slab_record_for_slab};
+
+        let mut slab_poly = LwPolyline::new();
+        slab_poly.add_vertex(LwVertex::new(Vector2::new(0.0, 0.0)));
+        slab_poly.add_vertex(LwVertex::new(Vector2::new(4.0, 0.0)));
+        slab_poly.add_vertex(LwVertex::new(Vector2::new(4.0, 4.0)));
+        slab_poly.add_vertex(LwVertex::new(Vector2::new(0.0, 4.0)));
+        slab_poly.is_closed = true;
+        let slab_handle = app.tabs[tab].scene.add_entity(EntityType::LwPolyline(slab_poly));
+        let slab = Slab::new("style_slab_concrete_20", 1);
+        let mut srec = ExtendedDataRecord::new(AEC_APPID);
+        srec.values = slab_record_for_slab(&slab);
+        app.tabs[tab]
+            .scene
+            .document
+            .get_entity_mut(slab_handle)
+            .unwrap()
+            .common_mut()
+            .extended_data
+            .add_record(srec);
+
+        app.tabs[tab].scene.deselect_all();
+        app.tabs[tab].scene.select_entity(slab_handle, true);
+        app.refresh_properties();
+
+        // Slab initial property section exposes only slab_top_plane & slab_top_offset
+        let s_ent = app.tabs[tab].scene.document.get_entity(slab_handle).unwrap();
+        let s_sec = slab_prop_section(s_ent, None, Some(&project)).unwrap();
+        let s_fields: Vec<&str> = s_sec.props.iter().map(|p| p.field).collect();
+        assert!(s_fields.contains(&"slab_top_plane"));
+        assert!(s_fields.contains(&"slab_top_offset"));
+        assert!(!s_fields.contains(&"slab_base_plane"));
+        assert!(!s_fields.contains(&"slab_base_offset"));
+
+        // Choose "Rohdecke (Z = 0.150 m)" for slab_top_plane
+        let _ = app.update(Message::PropGeomChoiceChanged {
+            field: "slab_top_plane",
+            value: "Rohdecke (Z = 0.150 m)".into(),
+        });
+        let s_ent_after = app.tabs[tab].scene.document.get_entity(slab_handle).unwrap();
+        let slab_after = slab_from_entity(s_ent_after).unwrap();
+        assert_eq!(slab_after.top_plane_id, Some(eg_custom_id));
+        assert_eq!(slab_after.top_plane_name.as_deref(), Some("Rohdecke"));
+
+        // Change justification to OKRD
+        let _ = app.update(Message::PropGeomChoiceChanged {
+            field: "slab_justification",
+            value: "OKRD (Oberkante Rohdecke)".into(),
+        });
+        let s_ent_after2 = app.tabs[tab].scene.document.get_entity(slab_handle).unwrap();
+        let slab_after2 = slab_from_entity(s_ent_after2).unwrap();
+        assert_eq!(slab_after2.justification, SlabJustification::StructuralTop);
     }
 }
