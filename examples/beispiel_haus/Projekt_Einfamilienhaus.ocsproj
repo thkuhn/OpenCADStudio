@@ -1,18 +1,115 @@
 {
   "buildings": [
     {
-      "id": "823f0142-49a1-4478-8a94-85d8dc0ec63a",
+      "id": "017992a3-9bff-45eb-865f-acc2a170d2b3",
       "name": "Einfamilienhaus",
       "storeys": [
         {
-          "id": "e1f810e0-33f6-47e1-afc4-d3545d6309b9",
+          "id": "88ca01aa-1049-473e-affa-9d90e821f484",
+          "name": "UG",
+          "elevation": -2.8,
+          "height": 3.0,
+          "drawing_path": "UG.dwg",
+          "control_planes": [
+            {
+              "id": "a0b73fe6-171b-4237-9e85-aaa3e3f645e2",
+              "name": "UG_ELEVATION",
+              "origin": [
+                -5.0,
+                -5.0,
+                -2.8
+              ],
+              "normal": [
+                0.0,
+                0.0,
+                1.0
+              ],
+              "facets": [
+                {
+                  "name": "UG_ELEVATION",
+                  "vertices": [
+                    [
+                      -5.0,
+                      -5.0,
+                      -2.8
+                    ],
+                    [
+                      45.0,
+                      -5.0,
+                      -2.8
+                    ],
+                    [
+                      45.0,
+                      45.0,
+                      -2.8
+                    ],
+                    [
+                      -5.0,
+                      45.0,
+                      -2.8
+                    ]
+                  ]
+                }
+              ],
+              "face_handle": null,
+              "visible": true
+            },
+            {
+              "id": "d7254cb6-9ae1-4167-ae65-6b50f06522f9",
+              "name": "UG_OKGH",
+              "origin": [
+                -5.0,
+                -5.0,
+                0.20000000000000018
+              ],
+              "normal": [
+                0.0,
+                0.0,
+                1.0
+              ],
+              "facets": [
+                {
+                  "name": "UG_OKGH",
+                  "vertices": [
+                    [
+                      -5.0,
+                      -5.0,
+                      0.20000000000000018
+                    ],
+                    [
+                      45.0,
+                      -5.0,
+                      0.20000000000000018
+                    ],
+                    [
+                      45.0,
+                      45.0,
+                      0.20000000000000018
+                    ],
+                    [
+                      -5.0,
+                      45.0,
+                      0.20000000000000018
+                    ]
+                  ]
+                }
+              ],
+              "face_handle": null,
+              "visible": true
+            }
+          ],
+          "floor_plane_id": "a0b73fe6-171b-4237-9e85-aaa3e3f645e2",
+          "ceiling_plane_id": "d7254cb6-9ae1-4167-ae65-6b50f06522f9"
+        },
+        {
+          "id": "558a69f9-a437-4e93-a874-2a1024b2451d",
           "name": "EG",
           "elevation": 0.0,
           "height": 3.0,
           "drawing_path": "EG.dwg",
           "control_planes": [
             {
-              "id": "e961c61f-6648-4fe8-8686-f7e1936e358f",
+              "id": "42478750-4eac-437d-a430-2a1c9f97bbe5",
               "name": "EG_ELEVATION",
               "origin": [
                 -5.0,
@@ -55,7 +152,7 @@
               "visible": true
             },
             {
-              "id": "128ac013-6cc5-4451-be33-bef9f771cf00",
+              "id": "d38466e4-a379-496d-9086-7788464bb3c0",
               "name": "EG_OKGH",
               "origin": [
                 -5.0,
@@ -98,18 +195,18 @@
               "visible": true
             }
           ],
-          "floor_plane_id": "e961c61f-6648-4fe8-8686-f7e1936e358f",
-          "ceiling_plane_id": "128ac013-6cc5-4451-be33-bef9f771cf00"
+          "floor_plane_id": "42478750-4eac-437d-a430-2a1c9f97bbe5",
+          "ceiling_plane_id": "d38466e4-a379-496d-9086-7788464bb3c0"
         },
         {
-          "id": "8bae2d33-aa76-41f1-b94f-6e1848fb330b",
+          "id": "2aa25c7c-3463-4511-9603-8d521b9fd115",
           "name": "OG",
           "elevation": 2.8,
           "height": 3.0,
           "drawing_path": "OG.dwg",
           "control_planes": [
             {
-              "id": "69920b4f-b7a3-4d8b-8404-ad1741fc26f7",
+              "id": "3da52b42-c330-4a24-bfc6-f8a66f0039bc",
               "name": "OG_ELEVATION",
               "origin": [
                 -5.0,
@@ -152,7 +249,7 @@
               "visible": true
             },
             {
-              "id": "afb61a88-0f19-4f5f-9698-e984e72c7c5c",
+              "id": "1e24b534-5734-4792-8814-0bc1fe36dfba",
               "name": "OG_OKGH",
               "origin": [
                 -5.0,
@@ -195,18 +292,18 @@
               "visible": true
             }
           ],
-          "floor_plane_id": "69920b4f-b7a3-4d8b-8404-ad1741fc26f7",
-          "ceiling_plane_id": "afb61a88-0f19-4f5f-9698-e984e72c7c5c"
+          "floor_plane_id": "3da52b42-c330-4a24-bfc6-f8a66f0039bc",
+          "ceiling_plane_id": "1e24b534-5734-4792-8814-0bc1fe36dfba"
         },
         {
-          "id": "3a2f76d4-2730-4da2-915c-fbc7dbfafb9b",
+          "id": "d73480b6-74c3-4d1e-8a97-cec039c2f9f4",
           "name": "DG",
           "elevation": 5.6,
           "height": 3.0,
           "drawing_path": "DG.dwg",
           "control_planes": [
             {
-              "id": "cb96eebf-ad76-4048-a676-f928e8d9031d",
+              "id": "5a91030e-9188-48f7-9a6e-64700d5f1eed",
               "name": "DG_ELEVATION",
               "origin": [
                 -5.0,
@@ -249,7 +346,7 @@
               "visible": true
             },
             {
-              "id": "77452665-461c-4405-9af2-434add00771b",
+              "id": "4cb7acd0-703a-4f45-8bb5-8cc5b911edb8",
               "name": "DG_OKGH",
               "origin": [
                 -5.0,
@@ -292,15 +389,577 @@
               "visible": true
             }
           ],
-          "floor_plane_id": "cb96eebf-ad76-4048-a676-f928e8d9031d",
-          "ceiling_plane_id": "77452665-461c-4405-9af2-434add00771b"
+          "floor_plane_id": "5a91030e-9188-48f7-9a6e-64700d5f1eed",
+          "ceiling_plane_id": "4cb7acd0-703a-4f45-8bb5-8cc5b911edb8"
         }
       ]
     }
   ],
   "material_wall_style_library": {
-    "materials": [],
-    "wall_styles": [],
+    "materials": [
+      {
+        "id": "mat_masonry",
+        "name": "Mauerwerk",
+        "parent": null,
+        "category": "Material",
+        "hatch_pattern": "ANSI31",
+        "line_color": 9139029,
+        "line_type": "Continuous",
+        "render_material_ref": null,
+        "group": "Mauerwerk",
+        "hatch_color": null,
+        "hatch_scale": 0.0025,
+        "hatch_angle": 0.0,
+        "hatch_angle_relative": true
+      },
+      {
+        "id": "mat_concrete",
+        "name": "Stahlbeton",
+        "parent": null,
+        "category": "Material",
+        "hatch_pattern": "AR-CONC",
+        "line_color": 8947848,
+        "line_type": "Continuous",
+        "render_material_ref": null,
+        "group": "Beton",
+        "hatch_color": null,
+        "hatch_scale": 1.0,
+        "hatch_angle": 0.0,
+        "hatch_angle_relative": true
+      },
+      {
+        "id": "mat_insulation",
+        "name": "Daemmung",
+        "parent": null,
+        "category": "Material",
+        "hatch_pattern": "ANSI37",
+        "line_color": 16768392,
+        "line_type": "Continuous",
+        "render_material_ref": null,
+        "group": "Daemmung",
+        "hatch_color": null,
+        "hatch_scale": 0.75,
+        "hatch_angle": 0.0,
+        "hatch_angle_relative": true
+      },
+      {
+        "id": "mat_plaster",
+        "name": "Putz",
+        "parent": null,
+        "category": "Material",
+        "hatch_pattern": "DOTS",
+        "line_color": 13158596,
+        "line_type": "Continuous",
+        "render_material_ref": null,
+        "group": "Putz",
+        "hatch_color": {
+          "Rgb": {
+            "r": 180,
+            "g": 180,
+            "b": 176
+          }
+        },
+        "hatch_scale": 0.0012,
+        "hatch_angle": 0.0,
+        "hatch_angle_relative": true
+      },
+      {
+        "id": "mat_wood",
+        "name": "Holz",
+        "parent": null,
+        "category": "Material",
+        "hatch_pattern": "ANSI31",
+        "line_color": 12886874,
+        "line_type": "Continuous",
+        "render_material_ref": null,
+        "group": "Holz",
+        "hatch_color": {
+          "Rgb": {
+            "r": 166,
+            "g": 124,
+            "b": 82
+          }
+        },
+        "hatch_scale": 0.5,
+        "hatch_angle": 0.0,
+        "hatch_angle_relative": true
+      },
+      {
+        "id": "mat_drywall",
+        "name": "Gipskarton",
+        "parent": null,
+        "category": "Material",
+        "hatch_pattern": "ANSI31",
+        "line_color": 16119280,
+        "line_type": "Continuous",
+        "render_material_ref": null,
+        "group": "Trockenbau",
+        "hatch_color": {
+          "Rgb": {
+            "r": 232,
+            "g": 232,
+            "b": 224
+          }
+        },
+        "hatch_scale": 1.0,
+        "hatch_angle": 0.0,
+        "hatch_angle_relative": true
+      },
+      {
+        "id": "mat_steel",
+        "name": "Stahl",
+        "parent": null,
+        "category": "Material",
+        "hatch_pattern": "ANSI32",
+        "line_color": 7372944,
+        "line_type": "Continuous",
+        "render_material_ref": null,
+        "group": "Metall",
+        "hatch_color": {
+          "Rgb": {
+            "r": 74,
+            "g": 85,
+            "b": 104
+          }
+        },
+        "hatch_scale": 1.5,
+        "hatch_angle": 0.0,
+        "hatch_angle_relative": true
+      },
+      {
+        "id": "mat_glass",
+        "name": "Glas",
+        "parent": null,
+        "category": "Material",
+        "hatch_pattern": "ANSI33",
+        "line_color": 13166320,
+        "line_type": "Continuous",
+        "render_material_ref": null,
+        "group": "Verglasung",
+        "hatch_color": {
+          "Rgb": {
+            "r": 168,
+            "g": 212,
+            "b": 232
+          }
+        },
+        "hatch_scale": 2.0,
+        "hatch_angle": 0.0,
+        "hatch_angle_relative": true
+      },
+      {
+        "id": "mat_clinker",
+        "name": "Klinker / Verblender",
+        "parent": null,
+        "category": "Material",
+        "hatch_pattern": "ANSI31",
+        "line_color": 9118976,
+        "line_type": "Continuous",
+        "render_material_ref": null,
+        "group": "Mauerwerk",
+        "hatch_color": {
+          "Rgb": {
+            "r": 178,
+            "g": 34,
+            "b": 34
+          }
+        },
+        "hatch_scale": 0.002,
+        "hatch_angle": 0.0,
+        "hatch_angle_relative": true
+      },
+      {
+        "id": "mat_air",
+        "name": "Luftschicht",
+        "parent": null,
+        "category": "Material",
+        "hatch_pattern": "SOLID",
+        "line_color": 14737632,
+        "line_type": "Continuous",
+        "render_material_ref": null,
+        "group": "Daemmung",
+        "hatch_color": null,
+        "hatch_scale": 1.0,
+        "hatch_angle": 0.0,
+        "hatch_angle_relative": true
+      },
+      {
+        "id": "mat_screed",
+        "name": "Estrich",
+        "parent": null,
+        "category": "Material",
+        "hatch_pattern": "DOTS",
+        "line_color": 11579560,
+        "line_type": "Continuous",
+        "render_material_ref": null,
+        "group": "Bodenaufbau",
+        "hatch_color": {
+          "Rgb": {
+            "r": 160,
+            "g": 160,
+            "b": 155
+          }
+        },
+        "hatch_scale": 0.0015,
+        "hatch_angle": 0.0,
+        "hatch_angle_relative": true
+      },
+      {
+        "id": "mat_tile",
+        "name": "Fliesen / Belag",
+        "parent": null,
+        "category": "Material",
+        "hatch_pattern": "NET",
+        "line_color": 13808780,
+        "line_type": "Continuous",
+        "render_material_ref": null,
+        "group": "Bodenbelag",
+        "hatch_color": {
+          "Rgb": {
+            "r": 210,
+            "g": 180,
+            "b": 140
+          }
+        },
+        "hatch_scale": 0.05,
+        "hatch_angle": 0.0,
+        "hatch_angle_relative": true
+      },
+      {
+        "id": "mat_bitumen",
+        "name": "Bitumen / Abdichtung",
+        "parent": null,
+        "category": "Material",
+        "hatch_pattern": "SOLID",
+        "line_color": 3355443,
+        "line_type": "Continuous",
+        "render_material_ref": null,
+        "group": "Abdichtung",
+        "hatch_color": {
+          "Rgb": {
+            "r": 50,
+            "g": 50,
+            "b": 50
+          }
+        },
+        "hatch_scale": 0.5,
+        "hatch_angle": 0.0,
+        "hatch_angle_relative": true
+      }
+    ],
+    "wall_styles": [
+      {
+        "id": "style_masonry",
+        "name": "Wand Mauerwerk 24cm",
+        "parent": null,
+        "category": "Wall",
+        "layers": [
+          {
+            "material_id": "mat_masonry",
+            "thickness": 0.24,
+            "function": "Structural",
+            "axis_offset": -0.12,
+            "bottom_offset": 0.0,
+            "top_offset": 0.0,
+            "layer_override": null,
+            "hatch_override": null,
+            "role_tag": "Tragschale",
+            "layer_id": "bbca9787-c544-4a31-ac4c-44bb04a1f1f7"
+          }
+        ]
+      },
+      {
+        "id": "style_masonry_115",
+        "name": "Nichttragende Trennwand 11.5cm",
+        "parent": null,
+        "category": "Wall",
+        "layers": [
+          {
+            "material_id": "mat_masonry",
+            "thickness": 0.115,
+            "function": "Finish",
+            "axis_offset": -0.0575,
+            "bottom_offset": 0.0,
+            "top_offset": 0.0,
+            "layer_override": null,
+            "hatch_override": null,
+            "role_tag": "Trennwand",
+            "layer_id": "e5d859ea-bebb-4bfb-bb3e-b33e99854333"
+          }
+        ]
+      },
+      {
+        "id": "style_concrete_20",
+        "name": "Wand Stahlbeton 20cm",
+        "parent": null,
+        "category": "Wall",
+        "layers": [
+          {
+            "material_id": "mat_concrete",
+            "thickness": 0.2,
+            "function": "Structural",
+            "axis_offset": -0.1,
+            "bottom_offset": 0.0,
+            "top_offset": 0.0,
+            "layer_override": null,
+            "hatch_override": "AR-CONC",
+            "role_tag": "Tragschale",
+            "layer_id": "ac0f5fd3-03a9-4a16-983e-73b82547b8ca"
+          }
+        ]
+      },
+      {
+        "id": "style_concrete_25",
+        "name": "Wand Stahlbeton 25cm",
+        "parent": null,
+        "category": "Wall",
+        "layers": [
+          {
+            "material_id": "mat_concrete",
+            "thickness": 0.25,
+            "function": "Structural",
+            "axis_offset": -0.125,
+            "bottom_offset": 0.0,
+            "top_offset": 0.0,
+            "layer_override": null,
+            "hatch_override": "AR-CONC",
+            "role_tag": "Tragschale",
+            "layer_id": "af0b5a69-f753-470d-9a92-ef3bf79af388"
+          }
+        ]
+      },
+      {
+        "id": "style_drywall_10",
+        "name": "Trockenbauwand 10cm",
+        "parent": null,
+        "category": "Wall",
+        "layers": [
+          {
+            "material_id": "mat_drywall",
+            "thickness": 0.0125,
+            "function": "Finish",
+            "axis_offset": -0.05,
+            "bottom_offset": 0.0,
+            "top_offset": 0.0,
+            "layer_override": null,
+            "hatch_override": null,
+            "role_tag": "Beplankung",
+            "layer_id": "b4665aa7-6803-4d41-9c28-2c5d0d756669"
+          },
+          {
+            "material_id": "mat_insulation",
+            "thickness": 0.075,
+            "function": "Insulation",
+            "axis_offset": -0.0375,
+            "bottom_offset": 0.0,
+            "top_offset": 0.0,
+            "layer_override": null,
+            "hatch_override": "ANSI37",
+            "role_tag": "Daemmung / Staender",
+            "layer_id": "0dc159cb-316b-437f-82be-586136785942"
+          },
+          {
+            "material_id": "mat_drywall",
+            "thickness": 0.0125,
+            "function": "Finish",
+            "axis_offset": 0.0375,
+            "bottom_offset": 0.0,
+            "top_offset": 0.0,
+            "layer_override": null,
+            "hatch_override": null,
+            "role_tag": "Beplankung",
+            "layer_id": "f640faf0-1510-45f9-9f4b-9435ad41dd90"
+          }
+        ]
+      },
+      {
+        "id": "style_insulated_ext",
+        "name": "Aussenwand gedaemmt",
+        "parent": null,
+        "category": "Wall",
+        "layers": [
+          {
+            "material_id": "mat_plaster",
+            "thickness": 0.015,
+            "function": "Finish",
+            "axis_offset": -0.1725,
+            "bottom_offset": 0.0,
+            "top_offset": 0.0,
+            "layer_override": null,
+            "hatch_override": null,
+            "role_tag": "Innenputz",
+            "layer_id": "0b005433-b19a-41e6-9cc9-255715a3f6cc"
+          },
+          {
+            "material_id": "mat_masonry",
+            "thickness": 0.175,
+            "function": "Structural",
+            "axis_offset": -0.1575,
+            "bottom_offset": 0.0,
+            "top_offset": 0.0,
+            "layer_override": null,
+            "hatch_override": null,
+            "role_tag": "Tragschale",
+            "layer_id": "e0a1be1e-400a-4f7d-b65e-44a681765b0f"
+          },
+          {
+            "material_id": "mat_insulation",
+            "thickness": 0.14,
+            "function": "Insulation",
+            "axis_offset": 0.0175,
+            "bottom_offset": 0.0,
+            "top_offset": 0.0,
+            "layer_override": null,
+            "hatch_override": "ANSI37",
+            "role_tag": "Daemmschicht",
+            "layer_id": "a3a922cb-9195-460c-90fc-ab91b278f324"
+          },
+          {
+            "material_id": "mat_plaster",
+            "thickness": 0.015,
+            "function": "Finish",
+            "axis_offset": 0.1575,
+            "bottom_offset": 0.0,
+            "top_offset": 0.0,
+            "layer_override": "A-WALL-FINISH",
+            "hatch_override": null,
+            "role_tag": "Aussenputz",
+            "layer_id": "73642900-fa27-4876-bf4a-b5925ccd303b"
+          }
+        ]
+      },
+      {
+        "id": "style_insulated_ext_garden",
+        "name": "Aussenwand gedaemmt (Gartenseite)",
+        "parent": "style_insulated_ext",
+        "category": "Wall",
+        "layers": []
+      },
+      {
+        "id": "style_cavity_brick",
+        "name": "Zweischalige Verblendwand 42cm",
+        "parent": null,
+        "category": "Wall",
+        "layers": [
+          {
+            "material_id": "mat_plaster",
+            "thickness": 0.015,
+            "function": "Finish",
+            "axis_offset": -0.21,
+            "bottom_offset": 0.0,
+            "top_offset": 0.0,
+            "layer_override": null,
+            "hatch_override": null,
+            "role_tag": "Innenputz",
+            "layer_id": "ef886a06-205c-4d55-86d3-7911d3324612"
+          },
+          {
+            "material_id": "mat_masonry",
+            "thickness": 0.175,
+            "function": "Structural",
+            "axis_offset": -0.195,
+            "bottom_offset": 0.0,
+            "top_offset": 0.0,
+            "layer_override": null,
+            "hatch_override": null,
+            "role_tag": "Hintermauerwerk",
+            "layer_id": "71e87aef-9aee-43f1-a73b-c9daf0ceeb72"
+          },
+          {
+            "material_id": "mat_insulation",
+            "thickness": 0.12,
+            "function": "Insulation",
+            "axis_offset": -0.02,
+            "bottom_offset": 0.0,
+            "top_offset": 0.0,
+            "layer_override": null,
+            "hatch_override": "ANSI37",
+            "role_tag": "Kerndaemmung",
+            "layer_id": "8a8bc7dc-8605-47c0-b665-c4c3c3823c80"
+          },
+          {
+            "material_id": "mat_air",
+            "thickness": 0.02,
+            "function": "Insulation",
+            "axis_offset": 0.1,
+            "bottom_offset": 0.0,
+            "top_offset": 0.0,
+            "layer_override": null,
+            "hatch_override": null,
+            "role_tag": "Luftschicht",
+            "layer_id": "a3ecd1d8-541a-46b4-82c2-1cbfbc1e4b3f"
+          },
+          {
+            "material_id": "mat_clinker",
+            "thickness": 0.09,
+            "function": "Finish",
+            "axis_offset": 0.12,
+            "bottom_offset": 0.0,
+            "top_offset": 0.0,
+            "layer_override": "A-WALL-CLINKER",
+            "hatch_override": "ANSI31",
+            "role_tag": "Verblender",
+            "layer_id": "e5388088-0c18-4175-b450-823596a05a4d"
+          }
+        ]
+      },
+      {
+        "id": "style_timber_exterior",
+        "name": "Holzstaenderwand 28cm",
+        "parent": null,
+        "category": "Wall",
+        "layers": [
+          {
+            "material_id": "mat_drywall",
+            "thickness": 0.015,
+            "function": "Finish",
+            "axis_offset": -0.14,
+            "bottom_offset": 0.0,
+            "top_offset": 0.0,
+            "layer_override": null,
+            "hatch_override": null,
+            "role_tag": "Innenbeplankung",
+            "layer_id": "c5e33e2e-a659-4866-b445-7b0ca53c566f"
+          },
+          {
+            "material_id": "mat_air",
+            "thickness": 0.06,
+            "function": "Insulation",
+            "axis_offset": -0.125,
+            "bottom_offset": 0.0,
+            "top_offset": 0.0,
+            "layer_override": null,
+            "hatch_override": null,
+            "role_tag": "Installationsebene",
+            "layer_id": "42272969-9975-4606-9bf8-25cabc58c2b4"
+          },
+          {
+            "material_id": "mat_insulation",
+            "thickness": 0.16,
+            "function": "Structural",
+            "axis_offset": -0.065,
+            "bottom_offset": 0.0,
+            "top_offset": 0.0,
+            "layer_override": null,
+            "hatch_override": "ANSI37",
+            "role_tag": "Holzstaender / Daemmung",
+            "layer_id": "1e27abe3-f6b6-4cfb-a680-ee23ef980848"
+          },
+          {
+            "material_id": "mat_wood",
+            "thickness": 0.045,
+            "function": "Finish",
+            "axis_offset": 0.095,
+            "bottom_offset": 0.0,
+            "top_offset": 0.0,
+            "layer_override": "A-WALL-WOOD",
+            "hatch_override": "ANSI31",
+            "role_tag": "Holzverschalung",
+            "layer_id": "f8fb4072-e962-4230-b5b2-98cdbfbbd17c"
+          }
+        ]
+      }
+    ],
     "opening_styles": [
       {
         "style": {
@@ -319,25 +978,33 @@
         "shape": "Rectangle",
         "spring_height": 0.0,
         "slots": {
-          "OpeningLabel2D": {
+          "Frame2D": {
             "kind": "Generator",
-            "value": "OpeningLabel"
-          },
-          "Frame3D": {
-            "kind": "Generator",
-            "value": "SolidFrame"
-          },
-          "Leaf2D": {
-            "kind": "Generator",
-            "value": "LeafLine"
+            "value": "FrameRect"
           },
           "ElevationContour2D": {
             "kind": "Generator",
             "value": "ElevationFrameRect"
           },
-          "Frame2D": {
+          "Leaf2D": {
             "kind": "Generator",
-            "value": "FrameRect"
+            "value": "LeafLine"
+          },
+          "Sill2D": {
+            "kind": "Generator",
+            "value": "SillLines"
+          },
+          "OpeningLabel2D": {
+            "kind": "Generator",
+            "value": "OpeningLabel"
+          },
+          "ElevationSill2D": {
+            "kind": "Generator",
+            "value": "ElevationSillLine"
+          },
+          "Frame3D": {
+            "kind": "Generator",
+            "value": "SolidFrame"
           },
           "ElevationSwing2D": {
             "kind": "Generator",
@@ -347,17 +1014,233 @@
             "kind": "Generator",
             "value": "SolidGlazing"
           },
+          "Glazing2D": {
+            "kind": "Generator",
+            "value": "GlazingLine"
+          }
+        }
+      },
+      {
+        "style": {
+          "id": "style_window_double",
+          "name": "Zweiflügelfenster",
+          "parent": null,
+          "category": "Opening"
+        },
+        "kind": "Window",
+        "default_width": 1.6,
+        "default_height": 1.4,
+        "default_sill": 0.9,
+        "hinge": "Left",
+        "frame_thickness": 0.06,
+        "opening_angle_deg": 90.0,
+        "shape": "Rectangle",
+        "spring_height": 0.0,
+        "slots": {
+          "ElevationContour2D": {
+            "kind": "Generator",
+            "value": "ElevationFrameRect"
+          },
+          "Frame2D": {
+            "kind": "Generator",
+            "value": "FrameRect"
+          },
+          "Leaf2D": {
+            "kind": "Generator",
+            "value": "LeafLine"
+          },
+          "Glazing2D": {
+            "kind": "Generator",
+            "value": "GlazingLine"
+          },
           "Sill2D": {
             "kind": "Generator",
             "value": "SillLines"
+          },
+          "ElevationSwing2D": {
+            "kind": "Generator",
+            "value": "ElevationSwingTriangle"
+          },
+          "Frame3D": {
+            "kind": "Generator",
+            "value": "SolidFrame"
+          },
+          "ElevationMuntins2D": {
+            "kind": "Generator",
+            "value": "ElevationMuntinsDouble"
           },
           "ElevationSill2D": {
             "kind": "Generator",
             "value": "ElevationSillLine"
           },
+          "Glazing3D": {
+            "kind": "Generator",
+            "value": "SolidGlazing"
+          },
+          "OpeningLabel2D": {
+            "kind": "Generator",
+            "value": "OpeningLabel"
+          }
+        }
+      },
+      {
+        "style": {
+          "id": "style_window_arch",
+          "name": "Rundbogenfenster",
+          "parent": null,
+          "category": "Opening"
+        },
+        "kind": "Window",
+        "default_width": 1.0,
+        "default_height": 1.8,
+        "default_sill": 0.8,
+        "hinge": "Left",
+        "frame_thickness": 0.06,
+        "opening_angle_deg": 90.0,
+        "shape": "Arch",
+        "spring_height": 1.3,
+        "slots": {
           "Glazing2D": {
             "kind": "Generator",
             "value": "GlazingLine"
+          },
+          "ElevationSwing2D": {
+            "kind": "Generator",
+            "value": "ElevationSwingTriangle"
+          },
+          "Frame3D": {
+            "kind": "Generator",
+            "value": "SolidFrame"
+          },
+          "OpeningLabel2D": {
+            "kind": "Generator",
+            "value": "OpeningLabel"
+          },
+          "Glazing3D": {
+            "kind": "Generator",
+            "value": "SolidGlazing"
+          },
+          "Sill2D": {
+            "kind": "Generator",
+            "value": "SillLines"
+          },
+          "Leaf2D": {
+            "kind": "Generator",
+            "value": "LeafLine"
+          },
+          "ElevationSill2D": {
+            "kind": "Generator",
+            "value": "ElevationSillLine"
+          },
+          "Frame2D": {
+            "kind": "Generator",
+            "value": "FrameRect"
+          },
+          "ElevationContour2D": {
+            "kind": "Generator",
+            "value": "ElevationFrameArch"
+          }
+        }
+      },
+      {
+        "style": {
+          "id": "style_window_circle",
+          "name": "Rundfenster",
+          "parent": null,
+          "category": "Opening"
+        },
+        "kind": "Window",
+        "default_width": 0.9,
+        "default_height": 0.9,
+        "default_sill": 1.2,
+        "hinge": "Left",
+        "frame_thickness": 0.06,
+        "opening_angle_deg": 0.0,
+        "shape": "Circle",
+        "spring_height": 0.0,
+        "slots": {
+          "Frame2D": {
+            "kind": "Generator",
+            "value": "FrameRect"
+          },
+          "Glazing2D": {
+            "kind": "Generator",
+            "value": "GlazingLine"
+          },
+          "OpeningLabel2D": {
+            "kind": "Generator",
+            "value": "OpeningLabel"
+          },
+          "Frame3D": {
+            "kind": "Generator",
+            "value": "SolidFrame"
+          },
+          "ElevationContour2D": {
+            "kind": "Generator",
+            "value": "ElevationFrameArch"
+          },
+          "Glazing3D": {
+            "kind": "Generator",
+            "value": "SolidGlazing"
+          }
+        }
+      },
+      {
+        "style": {
+          "id": "style_window_floor",
+          "name": "Bodentiefes Fenster",
+          "parent": null,
+          "category": "Opening"
+        },
+        "kind": "Window",
+        "default_width": 1.0,
+        "default_height": 2.2,
+        "default_sill": 0.0,
+        "hinge": "Left",
+        "frame_thickness": 0.06,
+        "opening_angle_deg": 90.0,
+        "shape": "Rectangle",
+        "spring_height": 0.0,
+        "slots": {
+          "OpeningLabel2D": {
+            "kind": "Generator",
+            "value": "OpeningLabel"
+          },
+          "Glazing3D": {
+            "kind": "Generator",
+            "value": "SolidGlazing"
+          },
+          "ElevationSill2D": {
+            "kind": "Generator",
+            "value": "ElevationSillLine"
+          },
+          "Frame2D": {
+            "kind": "Generator",
+            "value": "FrameRect"
+          },
+          "Leaf2D": {
+            "kind": "Generator",
+            "value": "LeafLine"
+          },
+          "Threshold2D": {
+            "kind": "Generator",
+            "value": "ThresholdLine"
+          },
+          "ElevationContour2D": {
+            "kind": "Generator",
+            "value": "ElevationFrameRect"
+          },
+          "Frame3D": {
+            "kind": "Generator",
+            "value": "SolidFrame"
+          },
+          "Glazing2D": {
+            "kind": "Generator",
+            "value": "GlazingLine"
+          },
+          "ElevationSwing2D": {
+            "kind": "Generator",
+            "value": "ElevationSwingTriangle"
           }
         }
       },
@@ -378,13 +1261,178 @@
         "shape": "Rectangle",
         "spring_height": 0.0,
         "slots": {
-          "Leaf2D": {
+          "ElevationContour2D": {
             "kind": "Generator",
-            "value": "LeafLine"
+            "value": "ElevationFrameRect"
+          },
+          "Frame2D": {
+            "kind": "Generator",
+            "value": "FrameRect"
           },
           "Leaf3D": {
             "kind": "Generator",
             "value": "SolidLeaf"
+          },
+          "Swing2D": {
+            "kind": "Generator",
+            "value": "SwingArc"
+          },
+          "Leaf2D": {
+            "kind": "Generator",
+            "value": "LeafLine"
+          },
+          "ElevationSwing2D": {
+            "kind": "Generator",
+            "value": "ElevationSwingTriangle"
+          },
+          "Threshold2D": {
+            "kind": "Generator",
+            "value": "ThresholdLine"
+          },
+          "OpeningLabel2D": {
+            "kind": "Generator",
+            "value": "OpeningLabel"
+          },
+          "Frame3D": {
+            "kind": "Generator",
+            "value": "SolidFrame"
+          }
+        }
+      },
+      {
+        "style": {
+          "id": "style_door_right",
+          "name": "Innentür rechts",
+          "parent": null,
+          "category": "Opening"
+        },
+        "kind": "Door",
+        "default_width": 0.9,
+        "default_height": 2.1,
+        "default_sill": 0.0,
+        "hinge": "Right",
+        "frame_thickness": 0.06,
+        "opening_angle_deg": 90.0,
+        "shape": "Rectangle",
+        "spring_height": 0.0,
+        "slots": {
+          "ElevationSwing2D": {
+            "kind": "Generator",
+            "value": "ElevationSwingTriangle"
+          },
+          "Leaf3D": {
+            "kind": "Generator",
+            "value": "SolidLeaf"
+          },
+          "Leaf2D": {
+            "kind": "Generator",
+            "value": "LeafLine"
+          },
+          "Frame2D": {
+            "kind": "Generator",
+            "value": "FrameRect"
+          },
+          "Frame3D": {
+            "kind": "Generator",
+            "value": "SolidFrame"
+          },
+          "Threshold2D": {
+            "kind": "Generator",
+            "value": "ThresholdLine"
+          },
+          "ElevationContour2D": {
+            "kind": "Generator",
+            "value": "ElevationFrameRect"
+          },
+          "Swing2D": {
+            "kind": "Generator",
+            "value": "SwingArc"
+          },
+          "OpeningLabel2D": {
+            "kind": "Generator",
+            "value": "OpeningLabel"
+          }
+        }
+      },
+      {
+        "style": {
+          "id": "style_door_double",
+          "name": "Zweiflügelige Eingangstür",
+          "parent": null,
+          "category": "Opening"
+        },
+        "kind": "Door",
+        "default_width": 1.8,
+        "default_height": 2.2,
+        "default_sill": 0.0,
+        "hinge": "Left",
+        "frame_thickness": 0.06,
+        "opening_angle_deg": 90.0,
+        "shape": "Rectangle",
+        "spring_height": 0.0,
+        "slots": {
+          "ElevationContour2D": {
+            "kind": "Generator",
+            "value": "ElevationFrameRect"
+          },
+          "ElevationSwing2D": {
+            "kind": "Generator",
+            "value": "ElevationSwingTriangle"
+          },
+          "ElevationMuntins2D": {
+            "kind": "Generator",
+            "value": "ElevationMuntinsDouble"
+          },
+          "OpeningLabel2D": {
+            "kind": "Generator",
+            "value": "OpeningLabel"
+          },
+          "Leaf3D": {
+            "kind": "Generator",
+            "value": "SolidLeaf"
+          },
+          "Leaf2D": {
+            "kind": "Generator",
+            "value": "LeafLine"
+          },
+          "Swing2D": {
+            "kind": "Generator",
+            "value": "SwingArc"
+          },
+          "Threshold2D": {
+            "kind": "Generator",
+            "value": "ThresholdLine"
+          },
+          "Frame3D": {
+            "kind": "Generator",
+            "value": "SolidFrame"
+          },
+          "Frame2D": {
+            "kind": "Generator",
+            "value": "FrameRect"
+          }
+        }
+      },
+      {
+        "style": {
+          "id": "style_breakthrough_standard",
+          "name": "Standarddurchbruch",
+          "parent": null,
+          "category": "Opening"
+        },
+        "kind": "Breakthrough",
+        "default_width": 1.0,
+        "default_height": 2.0,
+        "default_sill": 0.1,
+        "hinge": "Left",
+        "frame_thickness": 0.0,
+        "opening_angle_deg": 0.0,
+        "shape": "Rectangle",
+        "spring_height": 0.0,
+        "slots": {
+          "Mark2D": {
+            "kind": "Generator",
+            "value": "Cross"
           },
           "ElevationContour2D": {
             "kind": "Generator",
@@ -394,35 +1442,701 @@
             "kind": "Generator",
             "value": "OpeningLabel"
           },
-          "Swing2D": {
+          "BreakthroughSymbol2D": {
             "kind": "Generator",
-            "value": "SwingArc"
+            "value": "Cross"
+          }
+        }
+      },
+      {
+        "style": {
+          "id": "style_breakthrough_pipe",
+          "name": "Installationsdurchbruch rund",
+          "parent": null,
+          "category": "Opening"
+        },
+        "kind": "Breakthrough",
+        "default_width": 0.4,
+        "default_height": 0.4,
+        "default_sill": 1.8,
+        "hinge": "Left",
+        "frame_thickness": 0.0,
+        "opening_angle_deg": 0.0,
+        "shape": "Circle",
+        "spring_height": 0.0,
+        "slots": {
+          "BreakthroughSymbol2D": {
+            "kind": "Generator",
+            "value": "DiagonalFill"
           },
-          "ElevationSwing2D": {
+          "ElevationContour2D": {
             "kind": "Generator",
-            "value": "ElevationSwingTriangle"
+            "value": "ElevationFrameArch"
           },
-          "Frame3D": {
+          "OpeningLabel2D": {
             "kind": "Generator",
-            "value": "SolidFrame"
-          },
-          "Frame2D": {
-            "kind": "Generator",
-            "value": "FrameRect"
-          },
-          "Threshold2D": {
-            "kind": "Generator",
-            "value": "ThresholdLine"
+            "value": "OpeningLabel"
           }
         }
       }
     ],
-    "slab_styles": [],
-    "slab_structural_styles": [],
-    "floor_finish_styles": []
+    "slab_styles": [
+      {
+        "id": "style_slab_concrete_20",
+        "name": "Stahlbetondecke 20cm",
+        "parent": null,
+        "category": "Slab",
+        "structural_style_id": "struct_slab_concrete_20",
+        "layers": []
+      },
+      {
+        "id": "style_slab_concrete_25",
+        "name": "Stahlbetondecke 25cm",
+        "parent": null,
+        "category": "Slab",
+        "structural_style_id": "struct_slab_concrete_25",
+        "layers": []
+      },
+      {
+        "id": "style_slab_concrete_30",
+        "name": "Stahlbetondecke 30cm",
+        "parent": null,
+        "category": "Slab",
+        "structural_style_id": "struct_slab_concrete_30",
+        "layers": []
+      },
+      {
+        "id": "style_slab_floor_eg_34",
+        "name": "Geschossdecke EG 28cm (Fliesen)",
+        "parent": null,
+        "category": "Slab",
+        "structural_style_id": "struct_slab_concrete_20",
+        "default_finish_style_id": "finish_floor_tiles_80",
+        "layers": []
+      },
+      {
+        "id": "style_slab_floor_og_32",
+        "name": "Geschossdecke OG 28cm (Parkett)",
+        "parent": null,
+        "category": "Slab",
+        "structural_style_id": "struct_slab_concrete_20",
+        "default_finish_style_id": "finish_floor_parquet_80",
+        "layers": []
+      },
+      {
+        "id": "style_slab_timber_24",
+        "name": "Holzbalkendecke 24cm",
+        "parent": null,
+        "category": "Slab",
+        "structural_style_id": "struct_slab_timber_24",
+        "layers": []
+      },
+      {
+        "id": "style_slab_flat_roof_40",
+        "name": "Flachdach warm gedaemmt 32cm",
+        "parent": null,
+        "category": "Slab",
+        "structural_style_id": "struct_slab_concrete_20",
+        "default_finish_style_id": "finish_floor_balcony_120",
+        "layers": []
+      },
+      {
+        "id": "style_slab_foundation_30",
+        "name": "Bodenplatte Stahlbeton 30cm",
+        "parent": null,
+        "category": "Slab",
+        "structural_style_id": "struct_slab_concrete_30",
+        "layers": []
+      },
+      {
+        "id": "style_slab_foundation_insulated_40",
+        "name": "Bodenplatte gedaemmt mit Estrich 30cm",
+        "parent": null,
+        "category": "Slab",
+        "structural_style_id": "struct_slab_concrete_25",
+        "default_finish_style_id": "finish_floor_screed_50",
+        "layers": []
+      },
+      {
+        "id": "style_slab_balcony_22",
+        "name": "Balkonplatte Stahlbeton 32cm",
+        "parent": null,
+        "category": "Slab",
+        "structural_style_id": "struct_slab_concrete_20",
+        "default_finish_style_id": "finish_floor_balcony_120",
+        "layers": []
+      }
+    ],
+    "slab_structural_styles": [
+      {
+        "id": "struct_slab_concrete_20",
+        "name": "Stahlbetondecke 20cm",
+        "parent": null,
+        "category": "SlabStructural",
+        "layers": [
+          {
+            "material_id": "mat_concrete",
+            "thickness": 0.2,
+            "function": "Structural",
+            "vertical_offset": 0.0,
+            "layer_override": "A-FLOR-STRC",
+            "hatch_override": "AR-CONC",
+            "role_tag": "Stahlbetonplatte",
+            "layer_id": "4297f67c-8ffa-4faa-adb1-68649f043c4b"
+          }
+        ]
+      },
+      {
+        "id": "struct_slab_concrete_25",
+        "name": "Stahlbetondecke 25cm",
+        "parent": null,
+        "category": "SlabStructural",
+        "layers": [
+          {
+            "material_id": "mat_concrete",
+            "thickness": 0.25,
+            "function": "Structural",
+            "vertical_offset": 0.0,
+            "layer_override": "A-FLOR-STRC",
+            "hatch_override": "AR-CONC",
+            "role_tag": "Stahlbetonplatte",
+            "layer_id": "30dcbac5-9ccc-4c61-9133-326d47b40298"
+          }
+        ]
+      },
+      {
+        "id": "struct_slab_concrete_30",
+        "name": "Stahlbetondecke 30cm",
+        "parent": null,
+        "category": "SlabStructural",
+        "layers": [
+          {
+            "material_id": "mat_concrete",
+            "thickness": 0.3,
+            "function": "Structural",
+            "vertical_offset": 0.0,
+            "layer_override": "A-FLOR-STRC",
+            "hatch_override": "AR-CONC",
+            "role_tag": "Stahlbetonplatte",
+            "layer_id": "ee19f0d2-8ad4-4905-b57a-8abb1e9ad790"
+          }
+        ]
+      },
+      {
+        "id": "struct_slab_timber_24",
+        "name": "Holzbalkendecke 24cm",
+        "parent": null,
+        "category": "SlabStructural",
+        "layers": [
+          {
+            "material_id": "mat_wood",
+            "thickness": 0.24,
+            "function": "Structural",
+            "vertical_offset": 0.0,
+            "layer_override": "A-FLOR-STRC",
+            "hatch_override": "ANSI31",
+            "role_tag": "Holzbalkenlage",
+            "layer_id": "0d82b24a-b185-4647-9c06-95f52817a79f"
+          }
+        ]
+      }
+    ],
+    "floor_finish_styles": [
+      {
+        "id": "finish_floor_parquet_80",
+        "name": "Standard Parkett (80mm)",
+        "parent": null,
+        "category": "FloorFinish",
+        "layers": [
+          {
+            "material_id": "mat_wood",
+            "thickness": 0.015,
+            "function": "Finish",
+            "vertical_offset": 0.0,
+            "layer_override": "A-FLOR-FINI",
+            "hatch_override": "ANSI31",
+            "role_tag": "Parkett",
+            "layer_id": "274ff891-12e1-4bfe-9b1f-818aeea8714a"
+          },
+          {
+            "material_id": "mat_screed",
+            "thickness": 0.045,
+            "function": {
+              "Other": "Screed"
+            },
+            "vertical_offset": 0.0,
+            "layer_override": "A-FLOR-SCREED",
+            "hatch_override": "DOTS",
+            "role_tag": "Heizestrich",
+            "layer_id": "c5a0d3fc-077d-40bc-99a9-e9790cb5fb01"
+          },
+          {
+            "material_id": "mat_insulation",
+            "thickness": 0.02,
+            "function": "Insulation",
+            "vertical_offset": 0.0,
+            "layer_override": "A-FLOR-INSU",
+            "hatch_override": "ANSI37",
+            "role_tag": "Trittschalldaemmung",
+            "layer_id": "ced1c5e6-2341-40cc-a84e-19eec26c87d5"
+          }
+        ]
+      },
+      {
+        "id": "finish_floor_tiles_80",
+        "name": "Fliesenaufbau Nass (80mm)",
+        "parent": null,
+        "category": "FloorFinish",
+        "layers": [
+          {
+            "material_id": "mat_tile",
+            "thickness": 0.015,
+            "function": "Finish",
+            "vertical_offset": 0.0,
+            "layer_override": "A-FLOR-FINI",
+            "hatch_override": "SQUARE",
+            "role_tag": "Fliesenbelag",
+            "layer_id": "090fc478-619c-4dc5-a9e0-3ede338d5982"
+          },
+          {
+            "material_id": "mat_screed",
+            "thickness": 0.045,
+            "function": {
+              "Other": "Screed"
+            },
+            "vertical_offset": 0.0,
+            "layer_override": "A-FLOR-SCREED",
+            "hatch_override": "DOTS",
+            "role_tag": "Zementestrich",
+            "layer_id": "a28cdac3-f6d2-4425-8f25-b06d8b5958a6"
+          },
+          {
+            "material_id": "mat_insulation",
+            "thickness": 0.02,
+            "function": "Insulation",
+            "vertical_offset": 0.0,
+            "layer_override": "A-FLOR-INSU",
+            "hatch_override": "ANSI37",
+            "role_tag": "Trittschalldaemmung",
+            "layer_id": "198caddd-028f-4a36-9393-eadfc1a389ff"
+          }
+        ]
+      },
+      {
+        "id": "finish_floor_screed_50",
+        "name": "Verbundestrich (50mm)",
+        "parent": null,
+        "category": "FloorFinish",
+        "layers": [
+          {
+            "material_id": "mat_screed",
+            "thickness": 0.05,
+            "function": "Finish",
+            "vertical_offset": 0.0,
+            "layer_override": "A-FLOR-SCREED",
+            "hatch_override": "DOTS",
+            "role_tag": "Industrieestrich",
+            "layer_id": "6b07ce4c-4f3f-4170-b8d7-6412992b147e"
+          }
+        ]
+      },
+      {
+        "id": "finish_floor_carpet_70",
+        "name": "Teppichboden (70mm)",
+        "parent": null,
+        "category": "FloorFinish",
+        "layers": [
+          {
+            "material_id": "mat_plaster",
+            "thickness": 0.01,
+            "function": "Finish",
+            "vertical_offset": 0.0,
+            "layer_override": "A-FLOR-FINI",
+            "hatch_override": "DOTS",
+            "role_tag": "Teppich",
+            "layer_id": "7f336db7-94a9-49a4-9576-0fb8b42bafed"
+          },
+          {
+            "material_id": "mat_screed",
+            "thickness": 0.04,
+            "function": {
+              "Other": "Screed"
+            },
+            "vertical_offset": 0.0,
+            "layer_override": "A-FLOR-SCREED",
+            "hatch_override": "DOTS",
+            "role_tag": "Estrich",
+            "layer_id": "0e97c792-9d12-42c3-9adc-8af3a7733152"
+          },
+          {
+            "material_id": "mat_insulation",
+            "thickness": 0.02,
+            "function": "Insulation",
+            "vertical_offset": 0.0,
+            "layer_override": "A-FLOR-INSU",
+            "hatch_override": "ANSI37",
+            "role_tag": "Trittschall",
+            "layer_id": "81e565bc-2f78-43cc-9806-cad9cfdfd297"
+          }
+        ]
+      },
+      {
+        "id": "finish_floor_balcony_120",
+        "name": "Balkonbelag Gefälle (120mm)",
+        "parent": null,
+        "category": "FloorFinish",
+        "layers": [
+          {
+            "material_id": "mat_tile",
+            "thickness": 0.02,
+            "function": "Finish",
+            "vertical_offset": 0.0,
+            "layer_override": "A-FLOR-FINI",
+            "hatch_override": "SQUARE",
+            "role_tag": "Plattenbelag",
+            "layer_id": "fb9a9407-2956-494b-9e2e-65116a88c8ef"
+          },
+          {
+            "material_id": "mat_bitumen",
+            "thickness": 0.01,
+            "function": {
+              "Other": "Sealing"
+            },
+            "vertical_offset": 0.0,
+            "layer_override": "A-FLOR-SEAL",
+            "hatch_override": "SOLID",
+            "role_tag": "Abdichtung",
+            "layer_id": "9f0ff11a-d115-4871-be9e-7d30751c9154"
+          },
+          {
+            "material_id": "mat_insulation",
+            "thickness": 0.09,
+            "function": "Insulation",
+            "vertical_offset": 0.0,
+            "layer_override": "A-FLOR-INSU",
+            "hatch_override": "ANSI37",
+            "role_tag": "Gefaelledaemmung",
+            "layer_id": "21f8973e-e4a3-4358-ba4c-619627ac9fd0"
+          }
+        ]
+      }
+    ]
   },
   "display_config_library": {
-    "configs": [],
+    "configs": [
+      {
+        "id": "c0c65ec6-e89e-4138-8d19-e6a4d5f868ac",
+        "name": "Architektur 1:50",
+        "discipline": "Architektur",
+        "scale": 50.0,
+        "planning_stage": "Execution",
+        "view_type": "FloorPlan",
+        "phase_filter": null,
+        "detail": {
+          "layers": "All",
+          "hatches": true,
+          "annotation": true,
+          "opening_symbols": true,
+          "ceiling_view": false,
+          "representation": "TwoD"
+        },
+        "preset": "werkplan-50",
+        "component_visibility": {},
+        "opening_visibility": {
+          "HostCut2D": true,
+          "Leaf2D": true,
+          "Threshold2D": true,
+          "Frame2D": true,
+          "Glazing2D": true,
+          "Sill2D": true,
+          "Swing2D": true,
+          "OpeningLabel2D": true
+        },
+        "style_overrides": {},
+        "contour_hatch": null
+      },
+      {
+        "id": "fe43e38e-84a1-4756-b78c-50c8f9268f85",
+        "name": "Statik 1:50",
+        "discipline": "Statik",
+        "scale": 50.0,
+        "planning_stage": "Execution",
+        "view_type": "FloorPlan",
+        "phase_filter": null,
+        "detail": {
+          "layers": "All",
+          "hatches": true,
+          "annotation": true,
+          "opening_symbols": true,
+          "ceiling_view": false,
+          "representation": "TwoD"
+        },
+        "preset": null,
+        "component_visibility": {},
+        "opening_visibility": {
+          "Sill2D": false,
+          "BreakthroughSymbol2D": true,
+          "Threshold2D": false,
+          "Glazing2D": false,
+          "Frame2D": false,
+          "OpeningLabel2D": true,
+          "Swing2D": false,
+          "HostCut2D": true,
+          "Leaf2D": false
+        },
+        "style_overrides": {},
+        "contour_hatch": null
+      },
+      {
+        "id": "e562bf0e-6b78-4ffb-af06-5e6e6080f5ba",
+        "name": "Entwurf 1:100",
+        "discipline": "Architektur",
+        "scale": 100.0,
+        "planning_stage": "Design",
+        "view_type": "FloorPlan",
+        "phase_filter": null,
+        "detail": {
+          "layers": "All",
+          "hatches": false,
+          "annotation": true,
+          "opening_symbols": true,
+          "ceiling_view": false,
+          "representation": "TwoD"
+        },
+        "preset": "entwurf-100",
+        "component_visibility": {},
+        "opening_visibility": {
+          "Swing2D": true,
+          "Frame2D": true,
+          "Threshold2D": false,
+          "HostCut2D": true,
+          "Glazing2D": false,
+          "Leaf2D": true,
+          "OpeningLabel2D": true,
+          "Sill2D": true
+        },
+        "style_overrides": {},
+        "contour_hatch": null
+      },
+      {
+        "id": "0d764954-d467-43e4-ae89-8ce0994a6e45",
+        "name": "Ansicht Fassade",
+        "discipline": "Architektur",
+        "scale": null,
+        "planning_stage": "Design",
+        "view_type": "Elevation",
+        "phase_filter": null,
+        "detail": {
+          "layers": "All",
+          "hatches": true,
+          "annotation": true,
+          "opening_symbols": true,
+          "ceiling_view": false,
+          "representation": "TwoD"
+        },
+        "preset": null,
+        "component_visibility": {},
+        "opening_visibility": {
+          "ElevationMuntins2D": true,
+          "ElevationSwing2D": true,
+          "ElevationSill2D": true,
+          "ElevationContour2D": true,
+          "Frame2D": false,
+          "Leaf2D": false,
+          "Swing2D": false
+        },
+        "style_overrides": {},
+        "contour_hatch": null
+      },
+      {
+        "id": "39fee783-f347-46e9-94f7-05e96e37a25c",
+        "name": "3D Modell / Visualisierung",
+        "discipline": "Visualisierung",
+        "scale": null,
+        "planning_stage": "Design",
+        "view_type": "FloorPlan",
+        "phase_filter": null,
+        "detail": {
+          "layers": "All",
+          "hatches": true,
+          "annotation": true,
+          "opening_symbols": true,
+          "ceiling_view": false,
+          "representation": "ThreeD"
+        },
+        "preset": null,
+        "component_visibility": {},
+        "opening_visibility": {
+          "Frame2D": false,
+          "Leaf3D": true,
+          "Glazing2D": false,
+          "Sill2D": false,
+          "Glazing3D": true,
+          "Frame3D": true,
+          "Swing2D": false,
+          "Threshold2D": false,
+          "OpeningLabel2D": false,
+          "Leaf2D": false
+        },
+        "style_overrides": {},
+        "contour_hatch": null
+      },
+      {
+        "id": "fa4ac330-b129-42f7-9096-b98b1843fc04",
+        "name": "Deckenspiegel",
+        "discipline": "Architektur",
+        "scale": 50.0,
+        "planning_stage": "Design",
+        "view_type": "FloorPlan",
+        "phase_filter": null,
+        "detail": {
+          "layers": "Off",
+          "hatches": false,
+          "annotation": true,
+          "opening_symbols": false,
+          "ceiling_view": true,
+          "representation": "TwoD"
+        },
+        "preset": "deckenspiegel",
+        "component_visibility": {},
+        "opening_visibility": {},
+        "style_overrides": {},
+        "contour_hatch": null
+      },
+      {
+        "id": "3606579c-c062-480b-9df1-334ad9d82423",
+        "name": "Genehmigungsplanung 1:100",
+        "discipline": "Architektur",
+        "scale": 100.0,
+        "planning_stage": "Permit",
+        "view_type": "FloorPlan",
+        "phase_filter": null,
+        "detail": {
+          "layers": "StructuralOnly",
+          "hatches": true,
+          "annotation": true,
+          "opening_symbols": true,
+          "ceiling_view": false,
+          "representation": "TwoD"
+        },
+        "preset": "entwurf-100",
+        "component_visibility": {},
+        "opening_visibility": {
+          "Swing2D": true,
+          "Threshold2D": false,
+          "Glazing2D": false,
+          "Sill2D": true,
+          "Leaf2D": true,
+          "OpeningLabel2D": true,
+          "Frame2D": true,
+          "HostCut2D": true
+        },
+        "style_overrides": {},
+        "contour_hatch": null
+      },
+      {
+        "id": "f916b6a7-1042-4a09-a262-9c1584402594",
+        "name": "Ausführungsplanung 1:50",
+        "discipline": "Architektur",
+        "scale": 50.0,
+        "planning_stage": "Execution",
+        "view_type": "FloorPlan",
+        "phase_filter": null,
+        "detail": {
+          "layers": "All",
+          "hatches": true,
+          "annotation": true,
+          "opening_symbols": true,
+          "ceiling_view": false,
+          "representation": "TwoD"
+        },
+        "preset": "werkplan-50",
+        "component_visibility": {},
+        "opening_visibility": {
+          "Frame2D": true,
+          "Sill2D": true,
+          "Leaf2D": true,
+          "Threshold2D": true,
+          "OpeningLabel2D": true,
+          "Swing2D": true,
+          "Glazing2D": true,
+          "HostCut2D": true
+        },
+        "style_overrides": {},
+        "contour_hatch": null
+      },
+      {
+        "id": "485358db-eb49-4c66-8e34-d20e702ebccd",
+        "name": "Genehmigungsplanung Schnitt 1:100",
+        "discipline": "Architektur",
+        "scale": 100.0,
+        "planning_stage": "Permit",
+        "view_type": "Section",
+        "phase_filter": null,
+        "detail": {
+          "layers": "All",
+          "hatches": true,
+          "annotation": true,
+          "opening_symbols": true,
+          "ceiling_view": false,
+          "representation": "All"
+        },
+        "preset": null,
+        "component_visibility": {},
+        "opening_visibility": {},
+        "style_overrides": {},
+        "contour_hatch": null
+      },
+      {
+        "id": "cfc0b27a-bcec-44e9-9a50-8551cf90d7d7",
+        "name": "Ausführungsplanung Schnitt 1:50",
+        "discipline": "Architektur",
+        "scale": 50.0,
+        "planning_stage": "Execution",
+        "view_type": "Section",
+        "phase_filter": null,
+        "detail": {
+          "layers": "All",
+          "hatches": true,
+          "annotation": true,
+          "opening_symbols": true,
+          "ceiling_view": false,
+          "representation": "All"
+        },
+        "preset": null,
+        "component_visibility": {},
+        "opening_visibility": {},
+        "style_overrides": {},
+        "contour_hatch": null
+      },
+      {
+        "id": "c3f35378-11e9-4712-9927-01d16a8947bf",
+        "name": "Genehmigungsplanung Ansichten 1:100",
+        "discipline": "Architektur",
+        "scale": 100.0,
+        "planning_stage": "Permit",
+        "view_type": "Elevation",
+        "phase_filter": null,
+        "detail": {
+          "layers": "All",
+          "hatches": true,
+          "annotation": true,
+          "opening_symbols": true,
+          "ceiling_view": false,
+          "representation": "TwoD"
+        },
+        "preset": null,
+        "component_visibility": {},
+        "opening_visibility": {
+          "ElevationSill2D": true,
+          "ElevationContour2D": true,
+          "ElevationSwing2D": true,
+          "ElevationMuntins2D": true
+        },
+        "style_overrides": {},
+        "contour_hatch": null
+      }
+    ],
     "scale_display_config_mappings": []
   },
   "ffl0_nn_m": null,
