@@ -1397,6 +1397,7 @@ mod tests {
                 CollectedSlabLayer {
                     material: "Estrich".into(),
                     thickness: 0.06,
+                    vertical_offset: 0.0,
                     function: "Finish".into(),
                     hatch_override: None,
                     layer_id: uuid::Uuid::new_v4(),
@@ -1406,6 +1407,7 @@ mod tests {
                 CollectedSlabLayer {
                     material: "Stahlbeton".into(),
                     thickness: 0.20,
+                    vertical_offset: 0.0,
                     function: "Structural".into(),
                     hatch_override: None,
                     layer_id: uuid::Uuid::new_v4(),
@@ -1415,6 +1417,7 @@ mod tests {
                 CollectedSlabLayer {
                     material: "Putz".into(),
                     thickness: 0.04,
+                    vertical_offset: 0.0,
                     function: "Substrate".into(),
                     hatch_override: None,
                     layer_id: uuid::Uuid::new_v4(),

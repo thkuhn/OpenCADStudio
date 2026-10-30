@@ -9,13 +9,16 @@ use uuid::Uuid;
 use crate::modules::aec::engine::opening_shape::OpeningShape;
 use crate::modules::aec::engine::opening_style::HingeSide;
 use crate::modules::aec::engine::opening_xdata::opening_from_entity;
+use crate::modules::aec::engine::join::JunctionOverride;
 use crate::modules::aec::engine::openings::{OpeningKind, OpeningReferenceSide};
 use crate::modules::aec::engine::owner_index::children_of;
 use crate::modules::aec::engine::plan_view::PlanPhase;
 use crate::modules::aec::engine::slab::SlabJustification;
 use crate::modules::aec::engine::slab_xdata::slab_from_entity;
 use crate::modules::aec::engine::wall::WallJustification;
-use crate::modules::aec::engine::xdata::wall_from_entity;
+use crate::modules::aec::engine::xdata::{
+    read_junction_override_from_entity, wall_from_entity, THROUGH_SPAN_OVERRIDE_END,
+};
 
 use super::{
     ComponentId, ElementId, ElementRef, ModelId, Point2, Point3, Vector2,
@@ -79,6 +82,14 @@ pub struct CollectedWall {
     pub phase: PlanPhase,
 }
 
+#[derive(Clone, Debug, Default, PartialEq)]
+pub(crate) struct CollectedWallJoinData {
+    pub bulges: Vec<f64>,
+    pub override_start: Option<JunctionOverride>,
+    pub override_end: Option<JunctionOverride>,
+    pub override_span: Option<JunctionOverride>,
+}
+
 impl CollectedWall {
     pub fn length(&self) -> f64 {
         if self.axis_points.len() < 2 {
@@ -130,6 +141,7 @@ impl CollectedWall {
 pub struct CollectedSlabLayer {
     pub material: String,
     pub thickness: f64,
+    pub vertical_offset: f64,
     pub function: String,
     pub hatch_override: Option<String>,
     pub layer_id: Uuid,
@@ -154,8 +166,33 @@ pub struct CollectedSlab {
 }
 
 impl CollectedSlab {
+    pub fn layer_z_ranges(&self) -> Vec<(f64, f64)> {
+        let mut current_top = self.base_z + self.total_thickness;
+        self.layers
+            .iter()
+            .map(|layer| {
+                let top = current_top + layer.vertical_offset;
+                let bottom = top - layer.thickness;
+                current_top -= layer.thickness;
+                (top, bottom)
+            })
+            .collect()
+    }
+
     pub fn z_range(&self) -> (f64, f64) {
-        (self.base_z, self.base_z + self.total_thickness)
+        let ranges = self.layer_z_ranges();
+        if ranges.is_empty() {
+            return (self.base_z, self.base_z + self.total_thickness);
+        }
+        let min_z = ranges
+            .iter()
+            .map(|(_, bottom)| *bottom)
+            .fold(f64::INFINITY, f64::min);
+        let max_z = ranges
+            .iter()
+            .map(|(top, _)| *top)
+            .fold(f64::NEG_INFINITY, f64::max);
+        (min_z, max_z)
     }
 
     pub fn bounding_box_2d(&self) -> (Point2, Point2) {
@@ -181,6 +218,7 @@ impl CollectedSlab {
 pub struct SceneGeometryCollector {
     pub walls: Vec<CollectedWall>,
     pub slabs: Vec<CollectedSlab>,
+    pub(crate) wall_join_data: Vec<Option<CollectedWallJoinData>>,
 }
 
 pub fn handle_to_element_id(handle: Handle) -> ElementId {
@@ -320,6 +358,21 @@ impl SceneGeometryCollector {
 
             if let Some(wall) = wall_from_entity(entity) {
                 if let EntityType::LwPolyline(pl) = entity {
+                    let last_vertex = pl.vertices.len().saturating_sub(1);
+                    let xy_determinant = xref_source.as_ref().map_or(1.0, |xref| {
+                        xref.transform[0] * xref.transform[5]
+                            - xref.transform[1] * xref.transform[4]
+                    });
+                    let bulge_sign = if xy_determinant < 0.0 { -1.0 } else { 1.0 };
+                    let join_data = CollectedWallJoinData {
+                        bulges: pl.vertices.iter().map(|v| v.bulge * bulge_sign).collect(),
+                        override_start: read_junction_override_from_entity(entity, 0),
+                        override_end: read_junction_override_from_entity(entity, last_vertex),
+                        override_span: read_junction_override_from_entity(
+                            entity,
+                            THROUGH_SPAN_OVERRIDE_END,
+                        ),
+                    };
                     let mut axis_points = Vec::new();
                     for v in &pl.vertices {
                         let p = Point2::new(v.location.x, v.location.y);
@@ -450,6 +503,7 @@ impl SceneGeometryCollector {
                             openings: collected_openings,
                             phase: wall.phase,
                         });
+                        self.wall_join_data.push(Some(join_data));
                     }
                 }
             } else if let Some(slab) = slab_from_entity(entity) {
@@ -489,6 +543,7 @@ impl SceneGeometryCollector {
                                 CollectedSlabLayer {
                                     material: l.material.clone(),
                                     thickness: l.thickness,
+                                    vertical_offset: l.vertical_offset,
                                     function: format!("{:?}", l.function),
                                     hatch_override: l.hatch_override.clone(),
                                     layer_id: l.layer_id,
@@ -541,19 +596,28 @@ impl SceneGeometryCollector {
 
     /// Filters collected geometry by vertical Z range.
     pub fn filter_by_z_range(&self, z_min: f64, z_max: f64) -> Self {
-        let walls = self
-            .walls
-            .iter()
-            .filter(|w| w.top_z >= z_min && w.base_z <= z_max)
-            .cloned()
-            .collect();
+        let mut walls = Vec::new();
+        let mut wall_join_data = Vec::new();
+        for (index, wall) in self.walls.iter().enumerate() {
+            if wall.top_z >= z_min && wall.base_z <= z_max {
+                walls.push(wall.clone());
+                wall_join_data.push(self.wall_join_data.get(index).cloned().unwrap_or(None));
+            }
+        }
         let slabs = self
             .slabs
             .iter()
-            .filter(|s| (s.base_z + s.total_thickness) >= z_min && s.base_z <= z_max)
+            .filter(|slab| {
+                let (slab_min, slab_max) = slab.z_range();
+                slab_max >= z_min && slab_min <= z_max
+            })
             .cloned()
             .collect();
-        Self { walls, slabs }
+        Self {
+            walls,
+            slabs,
+            wall_join_data,
+        }
     }
 }
 
@@ -564,7 +628,10 @@ mod tests {
     use acadrust::types::Vector2;
     use acadrust::xdata::ExtendedDataRecord;
     use crate::modules::aec::engine::control_plane::ControlPlaneFacet;
+    use crate::modules::aec::engine::slab::{Slab, SlabLayer};
+    use crate::modules::aec::engine::slab_xdata::slab_record_for_slab;
     use crate::modules::aec::engine::wall::Wall;
+    use crate::modules::aec::engine::wall_style::LayerFunction;
     use crate::modules::aec::engine::xdata::{wall_record_for_wall, AEC_APPID};
     use crate::scene::Scene;
 
@@ -626,8 +693,28 @@ mod tests {
         ent3.common_mut().extended_data.add_record(rec3);
         scene.add_entity(ent3);
 
+        let mut slab_poly = LwPolyline::new();
+        slab_poly.add_vertex(LwVertex::new(Vector2::new(0.0, 20.0)));
+        slab_poly.add_vertex(LwVertex::new(Vector2::new(10.0, 20.0)));
+        slab_poly.add_vertex(LwVertex::new(Vector2::new(10.0, 30.0)));
+        slab_poly.add_vertex(LwVertex::new(Vector2::new(0.0, 30.0)));
+        slab_poly.is_closed = true;
+        let mut slab = Slab::new("Floor", 0);
+        slab.layers = vec![
+            SlabLayer::new("Finish", 0.02, LayerFunction::Finish),
+            SlabLayer::new("Concrete", 0.28, LayerFunction::Structural),
+        ];
+        slab.layers[0].vertical_offset = 0.005;
+        let mut slab_entity = EntityType::LwPolyline(slab_poly);
+        let mut slab_record = ExtendedDataRecord::new(AEC_APPID);
+        slab_record.values = slab_record_for_slab(&slab);
+        slab_entity.common_mut().extended_data.add_record(slab_record);
+        scene.add_entity(slab_entity);
+
         let collector = SceneGeometryCollector::collect_from_document(&scene.document, model_id);
         assert_eq!(collector.walls.len(), 3);
+        assert_eq!(collector.slabs.len(), 1);
+        assert!((collector.slabs[0].layers[0].vertical_offset - 0.005).abs() < 1e-9);
 
         // Verify Wall 1: base = 2.80, top = 5.60
         let w1 = &collector.walls[0];
@@ -643,5 +730,141 @@ mod tests {
         let w3 = &collector.walls[2];
         assert!((w3.base_z - 0.0).abs() < 1e-6, "w3 base_z expected 0.0, got {}", w3.base_z);
         assert!((w3.top_z - 4.0).abs() < 1e-6, "w3 top_z expected 4.0, got {}", w3.top_z);
+    }
+
+    #[test]
+    fn test_collect_wall_join_data_from_mirrored_xref() {
+        let mut scene = Scene::new();
+        let model_id = ModelId::new();
+        let owner = Handle::new(900);
+
+        let mut pl = LwPolyline::new();
+        let mut v0 = LwVertex::new(Vector2::new(0.0, 0.0));
+        v0.bulge = 0.25;
+        pl.add_vertex(v0);
+        let mut v1 = LwVertex::new(Vector2::new(4.0, 0.0));
+        v1.bulge = -0.5;
+        pl.add_vertex(v1);
+        pl.add_vertex(LwVertex::new(Vector2::new(8.0, 0.0)));
+
+        let wall = Wall::new("Standard", 2.8, 0);
+        let mut entity = EntityType::LwPolyline(pl);
+        let mut record = ExtendedDataRecord::new(AEC_APPID);
+        record.values = wall_record_for_wall(&wall);
+        entity.common_mut().extended_data.add_record(record);
+        let handle = scene.add_entity(entity);
+        scene
+            .document
+            .get_entity_mut(handle)
+            .unwrap()
+            .common_mut()
+            .owner_handle = owner;
+
+        use crate::modules::aec::engine::join::{JoinOverrideStyle, JunctionOverride};
+        use crate::modules::aec::engine::xdata::write_junction_override;
+        let start_override = JunctionOverride {
+            default_style: Some(JoinOverrideStyle::FarFace),
+            ..Default::default()
+        };
+        let end_override = JunctionOverride {
+            default_style: Some(JoinOverrideStyle::NearFace),
+            ..Default::default()
+        };
+        let span_override = JunctionOverride {
+            default_style: Some(JoinOverrideStyle::NoExtend),
+            ..Default::default()
+        };
+        assert!(write_junction_override(&mut scene, handle, 0, &start_override));
+        assert!(write_junction_override(&mut scene, handle, 2, &end_override));
+        assert!(write_junction_override(
+            &mut scene,
+            handle,
+            THROUGH_SPAN_OVERRIDE_END,
+            &span_override,
+        ));
+
+        let xref = XrefSourceRef::from_insert_transform(
+            "MirroredStorey",
+            Some("storey.dwg".to_string()),
+            [20.0, 3.0, 2.0],
+            [-2.0, 2.0, 3.0],
+            0.0,
+        );
+        let mut collector = SceneGeometryCollector::new();
+        collector.collect_scope(&scene.document, model_id, Some(owner), Some(xref));
+
+        assert_eq!(collector.walls.len(), 1);
+        assert_eq!(
+            collector.walls[0].axis_points,
+            vec![Point2::new(20.0, 3.0), Point2::new(12.0, 3.0), Point2::new(4.0, 3.0)]
+        );
+        assert!((collector.walls[0].base_z - 2.0).abs() < 1e-9);
+
+        let join_data = collector.wall_join_data[0].as_ref().unwrap();
+        assert_eq!(join_data.bulges, vec![-0.25, 0.5, 0.0]);
+        assert_eq!(join_data.override_start, Some(start_override));
+        assert_eq!(join_data.override_end, Some(end_override));
+        assert_eq!(join_data.override_span, Some(span_override));
+    }
+
+    #[test]
+    fn test_xref_insert_shifts_slab_base_without_reversing_layers() {
+        let mut scene = Scene::new();
+        let model_id = ModelId::new();
+        let mut block = acadrust::BlockRecord::new("OG");
+        let owner = scene.document.allocate_handle();
+        block.handle = owner;
+        block.flags.is_xref = true;
+        block.xref_path = "OG.dwg".to_string();
+        let _ = scene.document.block_records.add(block);
+
+        let mut polygon = LwPolyline::new();
+        polygon.add_vertex(LwVertex::new(Vector2::new(1.0, 2.0)));
+        polygon.add_vertex(LwVertex::new(Vector2::new(6.0, 2.0)));
+        polygon.add_vertex(LwVertex::new(Vector2::new(6.0, 5.0)));
+        polygon.add_vertex(LwVertex::new(Vector2::new(1.0, 5.0)));
+        polygon.is_closed = true;
+        let mut slab = Slab::new("Floor", 1);
+        slab.layers = vec![
+            SlabLayer::new("Finish", 0.02, LayerFunction::Finish),
+            SlabLayer::new("Insulation", 0.08, LayerFunction::Insulation),
+            SlabLayer::new("Concrete", 0.20, LayerFunction::Structural),
+        ];
+        slab.layers[0].vertical_offset = -0.01;
+        slab.layers[2].vertical_offset = -0.02;
+        let mut entity = EntityType::LwPolyline(polygon);
+        let mut record = ExtendedDataRecord::new(AEC_APPID);
+        record.values = slab_record_for_slab(&slab);
+        entity.common_mut().extended_data.add_record(record);
+        let handle = scene.add_entity(entity);
+        scene
+            .document
+            .get_entity_mut(handle)
+            .unwrap()
+            .common_mut()
+            .owner_handle = owner;
+
+        let insert = acadrust::entities::Insert::new(
+            "OG",
+            acadrust::types::Vector3::new(10.0, 4.0, 2.80),
+        );
+        scene.add_entity(EntityType::Insert(insert));
+
+        let collector = SceneGeometryCollector::collect_from_document(&scene.document, model_id);
+        assert_eq!(collector.slabs.len(), 1);
+        let collected = &collector.slabs[0];
+        assert!((collected.base_z - 2.80).abs() < 1e-9);
+        assert!((collected.layers[0].vertical_offset + 0.01).abs() < 1e-9);
+        assert!((collected.layers[2].vertical_offset + 0.02).abs() < 1e-9);
+        assert_eq!(collected.polygon[0], Point2::new(11.0, 6.0));
+
+        let ranges = collected.layer_z_ranges();
+        assert!((ranges[0].0 - 3.09).abs() < 1e-9 && (ranges[0].1 - 3.07).abs() < 1e-9);
+        assert!((ranges[1].0 - 3.08).abs() < 1e-9 && (ranges[1].1 - 3.00).abs() < 1e-9);
+        assert!(
+            (ranges[2].0 - 2.98).abs() < 1e-9 && (ranges[2].1 - 2.78).abs() < 1e-9,
+            "XREF height must not reverse the stack or clamp the core to base_z"
+        );
+        assert!(ranges[0].1 > ranges[2].0);
     }
 }

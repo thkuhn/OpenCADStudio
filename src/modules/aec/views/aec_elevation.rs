@@ -138,13 +138,14 @@ impl ElevationCommand {
             if let Some(cur) = cursor {
                 let cp = Point2::new(cur.x, cur.y);
                 let sz_x = 10.0;
-                let sz_y = (self.z_max - self.z_min).max(3.0);
+                let y0 = cp.y_m + self.z_min;
+                let y1 = cp.y_m + self.z_max;
                 wires.push((Point2::new(cp.x_m - 2.0, cp.y_m), Point2::new(cp.x_m + 2.0, cp.y_m)));
                 wires.push((Point2::new(cp.x_m, cp.y_m - 2.0), Point2::new(cp.x_m, cp.y_m + 2.0)));
-                wires.push((cp, Point2::new(cp.x_m + sz_x, cp.y_m)));
-                wires.push((Point2::new(cp.x_m + sz_x, cp.y_m), Point2::new(cp.x_m + sz_x, cp.y_m + sz_y)));
-                wires.push((Point2::new(cp.x_m + sz_x, cp.y_m + sz_y), Point2::new(cp.x_m, cp.y_m + sz_y)));
-                wires.push((Point2::new(cp.x_m, cp.y_m + sz_y), cp));
+                wires.push((Point2::new(cp.x_m, y0), Point2::new(cp.x_m + sz_x, y0)));
+                wires.push((Point2::new(cp.x_m + sz_x, y0), Point2::new(cp.x_m + sz_x, y1)));
+                wires.push((Point2::new(cp.x_m + sz_x, y1), Point2::new(cp.x_m, y1)));
+                wires.push((Point2::new(cp.x_m, y1), Point2::new(cp.x_m, y0)));
             }
         }
 
@@ -164,7 +165,6 @@ impl ElevationCommand {
         let z_range = VerticalRange::new(z_min, z_max).ok()?;
 
         let width = ((p2.x - p1.x).powi(2) + (p2.y - p1.y).powi(2)).sqrt();
-        let height = self.z_max - self.z_min;
 
         let viewpoint = Viewpoint {
             id: ViewpointId::new(),
@@ -181,8 +181,8 @@ impl ElevationCommand {
             z_range,
             mapping: Default::default(),
             crop: Some(Rect2::new(
-                Point2::new(0.0, 0.0),
-                Point2::new(width.max(1.0), height.max(1.0)),
+                Point2::new(0.0, self.z_min),
+                Point2::new(width.max(1.0), self.z_max),
             )),
         };
 

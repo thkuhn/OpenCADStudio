@@ -721,6 +721,567 @@ mod tests {
     }
 
     #[test]
+    fn test_slab_layer_stack_order_in_section_and_elevation() {
+        fn component_y_range(
+            primitives: &[DerivedPrimitive],
+            role: PrimitiveRole,
+            component_id: ComponentId,
+        ) -> Option<(f64, f64)> {
+            let mut min_y = f64::INFINITY;
+            let mut max_y = f64::NEG_INFINITY;
+            for primitive in primitives.iter().filter(|primitive| {
+                primitive.role == role
+                    && primitive
+                        .sources
+                        .as_slice()
+                        .iter()
+                        .any(|source| source.component_id == Some(component_id))
+            }) {
+                if let Geometry2d::Region { outer, .. } = &primitive.geometry {
+                    for point in outer {
+                        min_y = min_y.min(point.y_m);
+                        max_y = max_y.max(point.y_m);
+                    }
+                }
+            }
+            min_y.is_finite().then_some((min_y, max_y))
+        }
+
+        let model_id = ModelId::new();
+        let slab_element = ElementRef::new(model_id, ElementId::new());
+        let finish_component = ComponentId::new();
+        let insulation_component = ComponentId::new();
+        let structure_component = ComponentId::new();
+        let slab = CollectedSlab {
+            handle: acadrust::Handle::new(70),
+            element_ref: slab_element,
+            xref_source: None,
+            style_id: "Slab".into(),
+            base_z: 0.0,
+            total_thickness: 0.30,
+            polygon: vec![
+                Point2::new(0.0, -1.0),
+                Point2::new(10.0, -1.0),
+                Point2::new(10.0, 1.0),
+                Point2::new(0.0, 1.0),
+            ],
+            layers: vec![
+                CollectedSlabLayer {
+                    material: "Finish".into(),
+                    thickness: 0.02,
+                    vertical_offset: 0.0,
+                    function: "Finish".into(),
+                    hatch_override: None,
+                    layer_id: Uuid::new_v4(),
+                    component_id: finish_component,
+                    is_structural: false,
+                },
+                CollectedSlabLayer {
+                    material: "Insulation".into(),
+                    thickness: 0.08,
+                    vertical_offset: 0.005,
+                    function: "Thermal".into(),
+                    hatch_override: None,
+                    layer_id: Uuid::new_v4(),
+                    component_id: insulation_component,
+                    is_structural: false,
+                },
+                CollectedSlabLayer {
+                    material: "Concrete".into(),
+                    thickness: 0.20,
+                    vertical_offset: 0.0,
+                    function: "Structural".into(),
+                    hatch_override: None,
+                    layer_id: Uuid::new_v4(),
+                    component_id: structure_component,
+                    is_structural: true,
+                },
+            ],
+            justification: crate::modules::aec::engine::slab::SlabJustification::default(),
+            openings: vec![],
+            phase: crate::modules::aec::engine::plan_view::PlanPhase::New,
+        };
+        let expected_ranges = slab.layer_z_ranges();
+        assert_eq!(expected_ranges.len(), 3);
+        assert!((expected_ranges[0].0 - 0.30).abs() < 1e-9);
+        assert!((expected_ranges[0].1 - 0.28).abs() < 1e-9);
+        assert!((expected_ranges[1].0 - 0.285).abs() < 1e-9);
+        assert!((expected_ranges[1].1 - 0.205).abs() < 1e-9);
+        assert!((expected_ranges[2].0 - 0.20).abs() < 1e-9);
+        assert!(expected_ranges[2].1.abs() < 1e-9);
+
+        let mut collector = SceneGeometryCollector::new();
+        collector.slabs.push(slab.clone());
+        let vp = Viewpoint {
+            id: ViewpointId::new(),
+            name: "Slab section".into(),
+            revision: Revision(1),
+            origin: ViewOrigin::World(Point3::new(5.0, -3.0, 0.0)),
+            axes: ViewAxes::section(Vector2::new(0.0, 1.0)).unwrap(),
+            kind: ViewKind::Section {
+                path: SectionPath::straight(Point2::new(5.0, -3.0), Point2::new(5.0, 3.0)),
+                far_depth: None,
+            },
+            z_range: VerticalRange::new(Metres::new(-1.0).unwrap(), Metres::new(1.0).unwrap())
+                .unwrap(),
+            mapping: ProjectionMapping::default(),
+            crop: None,
+        };
+        let mv = ModelView {
+            id: ModelViewId::new(),
+            name: "Slab section".into(),
+            viewpoint_id: vp.id,
+            profile_id: ViewProfileId::new(),
+            scale: ScaleDenominator::new(50.0).unwrap(),
+            detail: DetailPolicy::FromProfileAndScale,
+            excluded_elements: BTreeSet::new(),
+            graphic_overrides: vec![GraphicOverride {
+                id: OverrideId::new(),
+                selector: OverrideSelector::Component {
+                    element: slab_element,
+                    component_id: insulation_component,
+                },
+                patch: GraphicPatch {
+                    draw: Some(false),
+                    ..Default::default()
+                },
+                priority: 0,
+                enabled: true,
+            }],
+            annotation_ids: vec![],
+            update_policy: UpdatePolicy::Automatic,
+            revisions: ViewRevisions::default(),
+        };
+
+        let section_primitives =
+            derive_section_view(&vp, &mv, &collector, &CutEngineOptions::default()).unwrap();
+        for (component, expected) in [
+            (finish_component, expected_ranges[0]),
+            (structure_component, expected_ranges[2]),
+        ] {
+            let (min_y, max_y) = component_y_range(
+                &section_primitives,
+                PrimitiveRole::CutFill,
+                component,
+            )
+            .expect("section layer band");
+            assert!((max_y - expected.0).abs() < 1e-6);
+            assert!((min_y - expected.1).abs() < 1e-6);
+        }
+        assert!(component_y_range(
+            &section_primitives,
+            PrimitiveRole::CutFill,
+            insulation_component
+        )
+        .is_none());
+
+        let style_library = crate::modules::aec::engine::library::seed_default_library();
+        let style_ctx = style_resolver::ViewStyleContext::new(&mv, None, Some(&style_library), true);
+        let mut elevation_primitives = Vec::new();
+        let mut primitive_counter = 0;
+        elevation_engine::project_slab_elevation(
+            &slab,
+            &vp,
+            0.0,
+            f64::INFINITY,
+            &mv,
+            &elevation_engine::ElevationEngineOptions::default(),
+            &style_ctx,
+            &mut elevation_primitives,
+            &mut primitive_counter,
+        )
+        .unwrap();
+        for (component, expected) in [
+            (finish_component, expected_ranges[0]),
+            (structure_component, expected_ranges[2]),
+        ] {
+            let (min_y, max_y) = component_y_range(
+                &elevation_primitives,
+                PrimitiveRole::SurfaceFill,
+                component,
+            )
+            .expect("visible elevation layer band");
+            assert!((max_y - expected.0).abs() < 1e-6);
+            assert!((min_y - expected.1).abs() < 1e-6);
+        }
+        assert!(component_y_range(
+            &elevation_primitives,
+            PrimitiveRole::SurfaceFill,
+            insulation_component
+        )
+        .is_none());
+    }
+
+    fn component_band(
+        primitives: &[DerivedPrimitive],
+        role: PrimitiveRole,
+        component_id: ComponentId,
+    ) -> Option<(f64, f64)> {
+        let mut min_y = f64::INFINITY;
+        let mut max_y = f64::NEG_INFINITY;
+        for primitive in primitives.iter().filter(|primitive| {
+            primitive.role == role
+                && primitive
+                    .sources
+                    .as_slice()
+                    .iter()
+                    .any(|source| source.component_id == Some(component_id))
+        }) {
+            if let Geometry2d::Region { outer, .. } = &primitive.geometry {
+                for point in outer {
+                    min_y = min_y.min(point.y_m);
+                    max_y = max_y.max(point.y_m);
+                }
+            }
+        }
+        min_y.is_finite().then_some((min_y, max_y))
+    }
+
+    fn assert_band(
+        primitives: &[DerivedPrimitive],
+        role: PrimitiveRole,
+        component_id: ComponentId,
+        expected: (f64, f64),
+    ) {
+        let (min_y, max_y) = component_band(primitives, role, component_id)
+            .unwrap_or_else(|| panic!("missing {role:?} band"));
+        assert!((max_y - expected.0).abs() < 1e-6, "top {max_y} != {}", expected.0);
+        assert!((min_y - expected.1).abs() < 1e-6, "bottom {min_y} != {}", expected.1);
+    }
+
+    fn stacked_slab(
+        base_z: f64,
+        polygon: Vec<Point2>,
+        offsets: [f64; 3],
+    ) -> (CollectedSlab, [ComponentId; 3]) {
+        let components = [ComponentId::new(), ComponentId::new(), ComponentId::new()];
+        let slab = CollectedSlab {
+            handle: acadrust::Handle::new(71),
+            element_ref: ElementRef::new(ModelId::new(), ElementId::new()),
+            xref_source: Some(XrefSourceRef::with_translation("OG", Some("OG.dwg".into()), 0.0, 0.0, base_z)),
+            style_id: "Slab".into(),
+            base_z,
+            total_thickness: 0.30,
+            polygon,
+            layers: vec![
+                CollectedSlabLayer {
+                    material: "Finish".into(),
+                    thickness: 0.02,
+                    vertical_offset: offsets[0],
+                    function: "Finish".into(),
+                    hatch_override: None,
+                    layer_id: Uuid::new_v4(),
+                    component_id: components[0],
+                    is_structural: false,
+                },
+                CollectedSlabLayer {
+                    material: "Insulation".into(),
+                    thickness: 0.08,
+                    vertical_offset: offsets[1],
+                    function: "Thermal".into(),
+                    hatch_override: None,
+                    layer_id: Uuid::new_v4(),
+                    component_id: components[1],
+                    is_structural: false,
+                },
+                CollectedSlabLayer {
+                    material: "Concrete".into(),
+                    thickness: 0.20,
+                    vertical_offset: offsets[2],
+                    function: "Structural".into(),
+                    hatch_override: None,
+                    layer_id: Uuid::new_v4(),
+                    component_id: components[2],
+                    is_structural: true,
+                },
+            ],
+            justification: crate::modules::aec::engine::slab::SlabJustification::default(),
+            openings: vec![],
+            phase: crate::modules::aec::engine::plan_view::PlanPhase::New,
+        };
+        (slab, components)
+    }
+
+    fn section_view(name: &str, z_min: f64, z_max: f64) -> (Viewpoint, ModelView) {
+        let vp = Viewpoint {
+            id: ViewpointId::new(),
+            name: name.into(),
+            revision: Revision(1),
+            origin: ViewOrigin::World(Point3::new(5.0, -3.0, 0.0)),
+            axes: ViewAxes::section(Vector2::new(0.0, 1.0)).unwrap(),
+            kind: ViewKind::Section {
+                path: SectionPath::straight(Point2::new(5.0, -3.0), Point2::new(5.0, 3.0)),
+                far_depth: None,
+            },
+            z_range: VerticalRange::new(Metres::new(z_min).unwrap(), Metres::new(z_max).unwrap()).unwrap(),
+            mapping: ProjectionMapping::default(),
+            crop: None,
+        };
+        let mv = ModelView {
+            id: ModelViewId::new(),
+            name: name.into(),
+            viewpoint_id: vp.id,
+            profile_id: ViewProfileId::new(),
+            scale: ScaleDenominator::new(50.0).unwrap(),
+            detail: DetailPolicy::FromProfileAndScale,
+            excluded_elements: BTreeSet::new(),
+            graphic_overrides: vec![],
+            annotation_ids: vec![],
+            update_policy: UpdatePolicy::Automatic,
+            revisions: ViewRevisions::default(),
+        };
+        (vp, mv)
+    }
+
+    #[test]
+    fn test_slab_offsets_and_shifted_base_keep_top_down_stack() {
+        let polygon = vec![
+            Point2::new(0.0, -1.0),
+            Point2::new(10.0, -1.0),
+            Point2::new(10.0, 1.0),
+            Point2::new(0.0, 1.0),
+        ];
+        let (slab, components) = stacked_slab(2.80, polygon, [-0.01, 0.0, -0.02]);
+        let ranges = slab.layer_z_ranges();
+        assert!((ranges[2].1 - 2.78).abs() < 1e-9, "core may extend below base_z");
+
+        let mut collector = SceneGeometryCollector::new();
+        collector.slabs.push(slab);
+        let (vp, mv) = section_view("Shifted slab", 2.0, 4.0);
+        let section = derive_section_view(&vp, &mv, &collector, &CutEngineOptions::default()).unwrap();
+        for (index, component) in components.into_iter().enumerate() {
+            assert_band(&section, PrimitiveRole::CutFill, component, ranges[index]);
+        }
+        assert!(
+            section.iter().all(|primitive| primitive.edit_handles.is_empty()),
+            "derived slab edges stay non-associative"
+        );
+
+        let style_library = crate::modules::aec::engine::library::seed_default_library();
+        let style_ctx = style_resolver::ViewStyleContext::new(&mv, None, Some(&style_library), true);
+        let mut elevation = Vec::new();
+        let mut counter = 0;
+        elevation_engine::project_slab_elevation(
+            &collector.slabs[0],
+            &vp,
+            0.0,
+            f64::INFINITY,
+            &mv,
+            &elevation_engine::ElevationEngineOptions::default(),
+            &style_ctx,
+            &mut elevation,
+            &mut counter,
+        )
+        .unwrap();
+        for (index, component) in components.into_iter().enumerate() {
+            assert_band(&elevation, PrimitiveRole::SurfaceFill, component, ranges[index]);
+        }
+    }
+
+    #[test]
+    fn test_hidden_top_slab_layer_keeps_the_gap() {
+        let (slab, components) = stacked_slab(
+            0.0,
+            vec![
+                Point2::new(0.0, -1.0),
+                Point2::new(10.0, -1.0),
+                Point2::new(10.0, 1.0),
+                Point2::new(0.0, 1.0),
+            ],
+            [0.0, 0.0, 0.0],
+        );
+        let ranges = slab.layer_z_ranges();
+        let mut collector = SceneGeometryCollector::new();
+        collector.slabs.push(slab.clone());
+        let (vp, mut mv) = section_view("Hidden finish", -1.0, 1.0);
+        mv.graphic_overrides.push(GraphicOverride {
+            id: OverrideId::new(),
+            selector: OverrideSelector::Component {
+                element: slab.element_ref,
+                component_id: components[0],
+            },
+            patch: GraphicPatch {
+                draw: Some(false),
+                ..Default::default()
+            },
+            priority: 0,
+            enabled: true,
+        });
+
+        let section = derive_section_view(&vp, &mv, &collector, &CutEngineOptions::default()).unwrap();
+        assert!(component_band(&section, PrimitiveRole::CutFill, components[0]).is_none());
+        assert_band(&section, PrimitiveRole::CutFill, components[1], ranges[1]);
+        assert_band(&section, PrimitiveRole::CutFill, components[2], ranges[2]);
+        let (_, insulation_top) = component_band(&section, PrimitiveRole::CutFill, components[1]).unwrap();
+        assert!(
+            (insulation_top - (slab.base_z + slab.total_thickness)).abs() > 1e-3,
+            "hiding the finish must not promote the next layer to the slab top"
+        );
+    }
+
+    #[test]
+    fn test_structural_only_keeps_slab_core_at_its_height() {
+        let (slab, components) = stacked_slab(
+            0.0,
+            vec![
+                Point2::new(0.0, -1.0),
+                Point2::new(10.0, -1.0),
+                Point2::new(10.0, 1.0),
+                Point2::new(0.0, 1.0),
+            ],
+            [0.0, 0.0, 0.0],
+        );
+        let ranges = slab.layer_z_ranges();
+        let mut collector = SceneGeometryCollector::new();
+        collector.slabs.push(slab);
+        let (vp, mv) = section_view("Rohbau", -1.0, 1.0);
+        let section = derive_section_view(
+            &vp,
+            &mv,
+            &collector,
+            &CutEngineOptions {
+                structural_only: true,
+                ..CutEngineOptions::default()
+            },
+        )
+        .unwrap();
+
+        assert!(component_band(&section, PrimitiveRole::CutFill, components[0]).is_none());
+        assert!(component_band(&section, PrimitiveRole::CutFill, components[1]).is_none());
+        assert_band(&section, PrimitiveRole::CutFill, components[2], ranges[2]);
+    }
+
+    #[test]
+    fn test_section_background_slab_uses_the_same_stack() {
+        let (slab, components) = stacked_slab(
+            0.0,
+            vec![
+                Point2::new(0.0, -1.0),
+                Point2::new(4.0, -1.0),
+                Point2::new(4.0, 1.0),
+                Point2::new(0.0, 1.0),
+            ],
+            [0.0, 0.005, 0.0],
+        );
+        let ranges = slab.layer_z_ranges();
+        let mut collector = SceneGeometryCollector::new();
+        collector.slabs.push(slab);
+        let (vp, mv) = section_view("Background slab", -1.0, 1.0);
+        let section = derive_section_view(&vp, &mv, &collector, &CutEngineOptions::default()).unwrap();
+
+        assert!(
+            section.iter().all(|primitive| primitive.role != PrimitiveRole::CutFill),
+            "a slab behind the cut must not become a section hole or cut fill"
+        );
+        for (index, component) in components.into_iter().enumerate() {
+            assert_band(&section, PrimitiveRole::SurfaceFill, component, ranges[index]);
+        }
+    }
+
+    #[test]
+    fn test_empty_slab_layers_do_not_panic() {
+        let (mut slab, _) = stacked_slab(0.0, vec![
+            Point2::new(0.0, -1.0),
+            Point2::new(10.0, -1.0),
+            Point2::new(10.0, 1.0),
+            Point2::new(0.0, 1.0),
+        ], [0.0, 0.0, 0.0]);
+        slab.layers.clear();
+        let (z_min, z_max) = slab.z_range();
+        assert!((z_min - slab.base_z).abs() < 1e-9);
+        assert!((z_max - (slab.base_z + slab.total_thickness)).abs() < 1e-9);
+
+        let mut collector = SceneGeometryCollector::new();
+        collector.slabs.push(slab.clone());
+        let (vp, mv) = section_view("Empty layers", -1.0, 1.0);
+        let section = derive_section_view(&vp, &mv, &collector, &CutEngineOptions::default()).unwrap();
+        assert!(section.iter().all(|primitive| {
+            primitive.role != PrimitiveRole::CutFill && primitive.role != PrimitiveRole::SurfaceFill
+        }));
+        let style_library = crate::modules::aec::engine::library::seed_default_library();
+        let style_ctx = style_resolver::ViewStyleContext::new(&mv, None, Some(&style_library), true);
+        let mut elevation = Vec::new();
+        let mut counter = 0;
+        elevation_engine::project_slab_elevation(
+            &slab,
+            &vp,
+            0.0,
+            f64::INFINITY,
+            &mv,
+            &elevation_engine::ElevationEngineOptions::default(),
+            &style_ctx,
+            &mut elevation,
+            &mut counter,
+        )
+        .unwrap();
+        assert!(elevation.is_empty());
+    }
+
+    #[test]
+    fn test_floorplan_keeps_slab_as_plan_outline() {
+        let (slab, components) = stacked_slab(
+            0.0,
+            vec![
+                Point2::new(0.0, 5.0),
+                Point2::new(4.0, 5.0),
+                Point2::new(4.0, 8.0),
+                Point2::new(0.0, 8.0),
+            ],
+            [0.0, 0.0, 0.0],
+        );
+        let mut collector = SceneGeometryCollector::new();
+        collector.slabs.push(slab);
+        let vp = Viewpoint {
+            id: ViewpointId::new(),
+            name: "Plan".into(),
+            revision: Revision(1),
+            origin: ViewOrigin::World(Point3::new(0.0, 0.0, 0.0)),
+            axes: ViewAxes::floor_plan(),
+            kind: ViewKind::FloorPlan {
+                range: PlanRange {
+                    above_cut: NonNegativeMetres::new(1.5).unwrap(),
+                    below_cut: NonNegativeMetres::new(1.0).unwrap(),
+                    beyond_below: NonNegativeMetres::ZERO,
+                },
+            },
+            z_range: VerticalRange::new(Metres::new(0.0).unwrap(), Metres::new(4.0).unwrap()).unwrap(),
+            mapping: ProjectionMapping::default(),
+            crop: None,
+        };
+        let mv = ModelView {
+            id: ModelViewId::new(),
+            name: "Plan".into(),
+            viewpoint_id: vp.id,
+            profile_id: ViewProfileId::new(),
+            scale: ScaleDenominator::new(100.0).unwrap(),
+            detail: DetailPolicy::FromProfileAndScale,
+            excluded_elements: BTreeSet::new(),
+            graphic_overrides: vec![],
+            annotation_ids: vec![],
+            update_policy: UpdatePolicy::Automatic,
+            revisions: ViewRevisions::default(),
+        };
+
+        let primitives = derive_floorplan_view(&vp, &mv, &collector, &FloorPlanEngineOptions::default()).unwrap();
+        let outlines: Vec<_> = primitives
+            .iter()
+            .filter(|primitive| primitive.role == PrimitiveRole::ProjectedEdge)
+            .collect();
+        assert_eq!(outlines.len(), 1, "a slab plan is one outline, not one band per layer");
+        if let Geometry2d::Polyline { vertices, closed: true } = &outlines[0].geometry {
+            assert!(vertices.iter().all(|point| (5.0..=8.0).contains(&point.y_m)));
+        } else {
+            panic!("expected a closed plan outline");
+        }
+        assert!(primitives.iter().all(|primitive| {
+            primitive.role != PrimitiveRole::CutFill
+                && primitive.sources.as_slice().iter().all(|source| {
+                    !components.contains(&source.component_id.unwrap_or_else(ComponentId::new))
+                })
+        }));
+    }
+
+    #[test]
     fn test_jogged_section_cut() {
         let model_id = ModelId::new();
         let mut collector = SceneGeometryCollector::new();
@@ -825,10 +1386,14 @@ mod tests {
     fn test_section_cut_with_opening_and_handles() {
         let model_id = ModelId::new();
         let mut collector = SceneGeometryCollector::new();
+        let opening_element = ElementRef::new(model_id, ElementId::new());
+        let wall_element = ElementRef::new(model_id, ElementId::new());
+        let background_opening_element = ElementRef::new(model_id, ElementId::new());
+        let background_wall_element = ElementRef::new(model_id, ElementId::new());
 
         let opening = CollectedOpening {
             handle: acadrust::Handle::new(50),
-            element_ref: ElementRef::new(model_id, ElementId::new()),
+            element_ref: opening_element,
             xref_source: None,
             host_wall_handle: acadrust::Handle::new(10),
             kind: OpeningKind::Window,
@@ -851,7 +1416,7 @@ mod tests {
         // Wall from (0,0) to (10,0) with window centered at (5,0)
         let wall = CollectedWall {
             handle: acadrust::Handle::new(10),
-            element_ref: ElementRef::new(model_id, ElementId::new()),
+            element_ref: wall_element,
             xref_source: None,
             style_id: "Wall".into(),
             height: 3.0,
@@ -875,7 +1440,30 @@ mod tests {
             openings: vec![opening],
             phase: crate::modules::aec::engine::plan_view::PlanPhase::New,
         };
+        let mut background_opening = wall.openings[0].clone();
+        background_opening.handle = acadrust::Handle::new(51);
+        background_opening.element_ref = background_opening_element;
+        background_opening.host_wall_handle = acadrust::Handle::new(11);
+        background_opening.distance_along_axis = 3.0;
+        background_opening.world_center = Point3::new(4.0, 0.0, 1.6);
+        background_opening.axis_span_local = (2.4, 3.6);
+        let background_wall = CollectedWall {
+            handle: acadrust::Handle::new(11),
+            element_ref: background_wall_element,
+            xref_source: None,
+            style_id: "Wall".into(),
+            height: wall.height,
+            base_z: wall.base_z,
+            top_z: wall.top_z,
+            axis_points: vec![Point2::new(4.0, -3.0), Point2::new(4.0, 3.0)],
+            layers: wall.layers.clone(),
+            total_thickness: wall.total_thickness,
+            justification: wall.justification,
+            openings: vec![background_opening],
+            phase: wall.phase,
+        };
         collector.walls.push(wall);
+        collector.walls.push(background_wall);
 
         // Section cuts directly across the window at X = 5.0 (Y from -3 to 3)
         let vp = Viewpoint {
@@ -909,9 +1497,157 @@ mod tests {
 
         let primitives = derive_section_view(&vp, &mv, &collector, &CutEngineOptions::default()).unwrap();
 
+        let style_library = crate::modules::aec::engine::library::seed_default_library();
+        let style_ctx = style_resolver::ViewStyleContext::new(&mv, None, Some(&style_library), true);
+        let background_wall = collector
+            .walls
+            .iter()
+            .find(|wall| wall.element_ref == background_wall_element)
+            .unwrap();
+        let mut projected_wall_primitives = Vec::new();
+        let mut projected_wall_counter = 0;
+        elevation_engine::project_wall_elevation(
+            background_wall,
+            &vp,
+            0.0,
+            f64::INFINITY,
+            &mv,
+            &elevation_engine::ElevationEngineOptions::default(),
+            &style_ctx,
+            &mut projected_wall_primitives,
+            &mut projected_wall_counter,
+        )
+        .unwrap();
+
         // Check sill remnant and head remnant fills
         let fills: Vec<_> = primitives.iter().filter(|p| p.role == PrimitiveRole::CutFill).collect();
         assert_eq!(fills.len(), 2, "should produce sill remnant and head remnant fills");
+
+        let wall_surface = projected_wall_primitives
+            .iter()
+            .find(|p| {
+                p.role == PrimitiveRole::SurfaceFill
+                    && p.sources
+                        .as_slice()
+                        .iter()
+                        .any(|source| source.element == background_wall_element)
+            })
+            .expect("projected wall surface should remain continuous behind the opening");
+        match &wall_surface.geometry {
+            Geometry2d::Region { holes, .. } => assert!(holes.is_empty()),
+            _ => panic!("projected wall surface should be a region"),
+        }
+
+        let opening_surface = projected_wall_primitives
+            .iter()
+            .find(|p| {
+                p.role == PrimitiveRole::SurfaceFill
+                    && p.sources
+                        .as_slice()
+                        .iter()
+                        .any(|source| source.element == background_opening_element)
+            })
+            .expect("opening should emit an opaque projected surface");
+        assert!(
+            opening_surface.depth.max_m < wall_surface.depth.min_m,
+            "opening surface should be in front of the wall-axis surface"
+        );
+
+        let opening_swing = primitives
+            .iter()
+            .find(|p| {
+                p.role == PrimitiveRole::Symbol
+                    && p.sources
+                        .as_slice()
+                        .iter()
+                        .any(|source| source.element == background_opening_element)
+            })
+            .expect("projected opening should emit its swing symbol");
+        let Geometry2d::Polyline { vertices, .. } = &opening_swing.geometry else {
+            panic!("opening swing symbol should be a polyline");
+        };
+        let expected_hinge_tip = Point2::new(
+            vp.world_to_view(Point3::new(4.0, -0.6, 1.6)).0.x_m,
+            vp.paper_elevation(1.6),
+        );
+        assert!(
+            vertices[1].distance_to(expected_hinge_tip) < 1e-6,
+            "swing tip should sit on the hinge jamb, not the strike"
+        );
+
+        let mut reversed_collector = collector.clone();
+        let reversed_wall = reversed_collector
+            .walls
+            .iter_mut()
+            .find(|wall| wall.element_ref == background_wall_element)
+            .unwrap();
+        reversed_wall.axis_points.reverse();
+        reversed_wall.openings[0].hinge = HingeSide::Right;
+        reversed_wall.openings[0].swing_side =
+            crate::modules::aec::engine::openings::SwingSide::Interior;
+        let reversed_primitives =
+            derive_section_view(&vp, &mv, &reversed_collector, &CutEngineOptions::default())
+                .unwrap();
+        let reversed_swing = reversed_primitives
+            .iter()
+            .find(|p| {
+                p.role == PrimitiveRole::Symbol
+                    && p.sources
+                        .as_slice()
+                        .iter()
+                        .any(|source| source.element == background_opening_element)
+            })
+            .expect("reversed wall should still emit its swing symbol");
+        let Geometry2d::Polyline {
+            vertices: reversed_vertices,
+            ..
+        } = &reversed_swing.geometry
+        else {
+            panic!("reversed opening swing symbol should be a polyline");
+        };
+        assert_eq!(vertices.len(), reversed_vertices.len());
+        assert!(vertices
+            .iter()
+            .zip(reversed_vertices)
+            .all(|(left, right)| left.distance_to(*right) < 1e-6));
+
+        let mut opposite_collector = collector.clone();
+        let opposite_wall = opposite_collector
+            .walls
+            .iter_mut()
+            .find(|wall| wall.element_ref == background_wall_element)
+            .unwrap();
+        opposite_wall.axis_points = vec![Point2::new(6.0, -3.0), Point2::new(6.0, 3.0)];
+        let mut opposite_vp = vp.clone();
+        opposite_vp.axes = ViewAxes::section_with_side(Vector2::new(0.0, 1.0), true).unwrap();
+        let opposite_primitives =
+            derive_section_view(&opposite_vp, &mv, &opposite_collector, &CutEngineOptions::default())
+                .unwrap();
+        let opposite_swing = opposite_primitives
+            .iter()
+            .find(|p| {
+                p.role == PrimitiveRole::Symbol
+                    && p.sources
+                        .as_slice()
+                        .iter()
+                        .any(|source| source.element == background_opening_element)
+            })
+            .expect("opposite facade should emit its swing symbol");
+        let Geometry2d::Polyline {
+            vertices: opposite_vertices,
+            ..
+        } = &opposite_swing.geometry
+        else {
+            panic!("opposite swing symbol should be a polyline");
+        };
+        let expected_opposite_hinge_tip = Point2::new(
+            opposite_vp.world_to_view(Point3::new(6.0, -0.6, 1.6)).0.x_m,
+            opposite_vp.paper_elevation(1.6),
+        );
+        assert!(
+            opposite_vertices[1].distance_to(expected_opposite_hinge_tip) < 1e-6,
+            "opposite facade should keep the tip on the same world hinge"
+        );
 
         // Check opening cut sill and head lines with edit handles
         let opening_prims: Vec<_> = primitives
@@ -2415,10 +3151,9 @@ mod tests {
         );
 
         if let Geometry2d::Polyline { vertices, .. } = &swing_ext.geometry {
-            assert_eq!(vertices.len(), 3, "Swing triangle must have 3 vertices (hinge_top, apex, hinge_bot)");
-            // Hinge is Left, so apex (vertex 1) must be at the right side (strike side, x > 0)
+            assert_eq!(vertices.len(), 3, "Swing triangle must have 3 vertices (strike, hinge tip, strike)");
             let apex = vertices[1];
-            assert!(apex.x_m > vertices[0].x_m, "Apex must point towards strike edge (screen right)");
+            assert!(apex.x_m < vertices[0].x_m, "Apex must point at the left hinge, not the strike");
         } else {
             panic!("Expected polyline geometry for swing symbol");
         }
@@ -2450,6 +3185,120 @@ mod tests {
             Some("DASHED"),
             "Swing symbol on opposite side must be DASHED"
         );
+    }
+
+    #[test]
+    fn test_elevation_wall_shares_section_base_datum() {
+        let model_id = ModelId::new();
+        let mut collector = SceneGeometryCollector::new();
+        let wall = CollectedWall {
+            handle: acadrust::Handle::new(81),
+            element_ref: ElementRef::new(model_id, ElementId::new()),
+            xref_source: None,
+            style_id: "Wall".into(),
+            height: 2.6,
+            base_z: 2.8,
+            top_z: 5.4,
+            axis_points: vec![Point2::new(0.0, 0.0), Point2::new(8.0, 0.0)],
+            layers: vec![CollectedWallLayer {
+                material: "Concrete".into(),
+                thickness: 0.24,
+                function: "Structural".into(),
+                axis_offset: -0.12,
+                bottom_offset: 0.0,
+                top_offset: 0.0,
+                hatch_override: None,
+                layer_id: Uuid::new_v4(),
+                component_id: ComponentId::new(),
+                is_structural: true,
+            }],
+            total_thickness: 0.24,
+            justification: crate::modules::aec::engine::wall::WallJustification::Center,
+            openings: vec![],
+            phase: crate::modules::aec::engine::plan_view::PlanPhase::New,
+        };
+        collector.walls.push(wall);
+
+        let elev = Viewpoint {
+            id: ViewpointId::new(),
+            name: "South".into(),
+            revision: Revision(1),
+            origin: ViewOrigin::World(Point3::new(0.0, -2.0, -3.0)),
+            axes: ViewAxes::front_elevation(),
+            kind: ViewKind::Elevation {
+                depth: DepthRange {
+                    near: NonNegativeMetres::ZERO,
+                    far: Some(PositiveMetres::new(12.0).unwrap()),
+                },
+            },
+            z_range: VerticalRange::new(Metres::new(-3.0).unwrap(), Metres::new(9.0).unwrap()).unwrap(),
+            mapping: ProjectionMapping::default(),
+            crop: None,
+        };
+        let mv = ModelView {
+            id: ModelViewId::new(),
+            name: "South".into(),
+            viewpoint_id: elev.id,
+            profile_id: ViewProfileId::new(),
+            scale: ScaleDenominator::new(100.0).unwrap(),
+            detail: DetailPolicy::FromProfileAndScale,
+            excluded_elements: BTreeSet::new(),
+            graphic_overrides: vec![],
+            annotation_ids: vec![],
+            update_policy: UpdatePolicy::Automatic,
+            revisions: ViewRevisions::default(),
+        };
+        let elevation = derive_elevation_view(&elev, &mv, &collector, &ElevationEngineOptions::default()).unwrap();
+        let mut elev_ys = Vec::new();
+        for primitive in &elevation {
+            match &primitive.geometry {
+                Geometry2d::Line { start, end } => {
+                    elev_ys.push(start.y_m);
+                    elev_ys.push(end.y_m);
+                }
+                Geometry2d::Polyline { vertices, .. } | Geometry2d::Region { outer: vertices, .. } => {
+                    elev_ys.extend(vertices.iter().map(|point| point.y_m));
+                }
+                Geometry2d::CircularArc { .. } => {}
+            }
+        }
+        let elev_min = elev_ys.iter().copied().fold(f64::INFINITY, f64::min);
+        let elev_max = elev_ys.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+        assert!(elev_min.is_finite(), "elevation wall face");
+        assert!((elev_min - 2.8).abs() < 1e-6, "elevation base {elev_min} must ignore viewpoint origin Z");
+        assert!((elev_max - 5.4).abs() < 1e-6, "elevation top {elev_max} must stay on the wall top");
+
+        let section_vp = Viewpoint {
+            id: ViewpointId::new(),
+            name: "Cut".into(),
+            revision: Revision(1),
+            origin: ViewOrigin::World(Point3::new(4.0, -2.0, -3.0)),
+            axes: ViewAxes::section(Vector2::new(0.0, 1.0)).unwrap(),
+            kind: ViewKind::Section {
+                path: SectionPath::straight(Point2::new(4.0, -2.0), Point2::new(4.0, 2.0)),
+                far_depth: None,
+            },
+            z_range: VerticalRange::new(Metres::new(-3.0).unwrap(), Metres::new(9.0).unwrap()).unwrap(),
+            mapping: ProjectionMapping::default(),
+            crop: None,
+        };
+        let section = derive_section_view(&section_vp, &mv, &collector, &CutEngineOptions::default()).unwrap();
+        let (cut_min, cut_max) = section
+            .iter()
+            .find_map(|primitive| {
+                if primitive.role != PrimitiveRole::CutFill {
+                    return None;
+                }
+                if let Geometry2d::Region { outer, .. } = &primitive.geometry {
+                    let min_y = outer.iter().map(|point| point.y_m).fold(f64::INFINITY, f64::min);
+                    let max_y = outer.iter().map(|point| point.y_m).fold(f64::NEG_INFINITY, f64::max);
+                    Some((min_y, max_y))
+                } else {
+                    None
+                }
+            })
+            .expect("section wall cut");
+        assert!((cut_min - elev_min).abs() < 1e-6 && (cut_max - elev_max).abs() < 1e-6);
     }
 
     #[test]

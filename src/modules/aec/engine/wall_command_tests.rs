@@ -12428,7 +12428,7 @@ fn test_elevation_generators_contour_muntins_and_triangles() {
         .collect();
     assert_eq!(muntins.len(), 3, "ElevationMuntinsDouble must emit central mullion and two leaves");
 
-    // 3. ElevationSwing2D: DIN opening triangle pointing to opening side (handle side)
+    // 3. ElevationSwing2D: the tip marks the hinge, the base sits on the strike.
     let swing_left: Vec<_> = baked_left
         .iter()
         .filter(|p| p.slot == OpeningComponentSlot::ElevationSwing2D)
@@ -12436,10 +12436,9 @@ fn test_elevation_generators_contour_muntins_and_triangles() {
     assert_eq!(swing_left.len(), 1);
     let pts_left = &swing_left[0].points;
     assert_eq!(pts_left.len(), 3);
-    // Tip of triangle is the middle vertex (index 1) and must be on the right (opening side, positive u):
-    assert!(pts_left[1].0 > 0.0, "Left-hinged triangle tip must point to right opening jamb");
-    assert!(pts_left[0].0 < 0.0, "Left-hinged triangle base start must be on left hinge side");
-    assert!(pts_left[2].0 < 0.0, "Left-hinged triangle base end must be on left hinge side");
+    assert!(pts_left[1].0 < 0.0, "Left-hinged triangle tip must sit on the left hinge");
+    assert!(pts_left[0].0 > 0.0, "Left-hinged triangle base start must be on the strike");
+    assert!(pts_left[2].0 > 0.0, "Left-hinged triangle base end must be on the strike");
 
     // Right-hinged test:
     let mut p_right = p_left;
@@ -12450,10 +12449,9 @@ fn test_elevation_generators_contour_muntins_and_triangles() {
         .filter(|p| p.slot == OpeningComponentSlot::ElevationSwing2D)
         .collect();
     let pts_right = &swing_right[0].points;
-    // Tip of triangle is the middle vertex (index 1) and must be on the left (opening side, negative u):
-    assert!(pts_right[1].0 < 0.0, "Right-hinged triangle tip must point to left opening jamb");
-    assert!(pts_right[0].0 > 0.0, "Right-hinged triangle base start must be on right hinge side");
-    assert!(pts_right[2].0 > 0.0, "Right-hinged triangle base end must be on right hinge side");
+    assert!(pts_right[1].0 > 0.0, "Right-hinged triangle tip must sit on the right hinge");
+    assert!(pts_right[0].0 < 0.0, "Right-hinged triangle base start must be on the strike");
+    assert!(pts_right[2].0 < 0.0, "Right-hinged triangle base end must be on the strike");
 
     // 4. ElevationSill2D:
     let sill_elev: Vec<_> = baked_left

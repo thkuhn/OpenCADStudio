@@ -1139,6 +1139,7 @@ pub(crate) mod tests {
                 CollectedSlabLayer {
                     material: mat_name.to_string(),
                     thickness: 0.20,
+                    vertical_offset: 0.0,
                     function: "Structural".to_string(),
                     hatch_override: None,
                     layer_id: uuid::Uuid::new_v4(),
@@ -1148,6 +1149,7 @@ pub(crate) mod tests {
                 CollectedSlabLayer {
                     material: "Screed".to_string(),
                     thickness: 0.02,
+                    vertical_offset: 0.0,
                     function: "Finish".to_string(),
                     hatch_override: None,
                     layer_id: uuid::Uuid::new_v4(),
@@ -1244,6 +1246,23 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn test_relative_hatch_angle_uses_wall_axis_in_plan_and_material_angle_in_section() {
+        let mv = make_test_mv();
+        let mut lib = StyleLibrary::default();
+        lib.materials.push(material("Rotated", "ANSI31", 0.75, 30.0, true));
+        let mut wall = make_test_wall("Rotated");
+        wall.axis_points = vec![Point2::new(0.0, 0.0), Point2::new(0.0, 5.0)];
+
+        let plan_ctx = ViewStyleContext::new(&mv, None, Some(&lib), false);
+        let (_, plan_fill) = resolve_layer_cut_style(&plan_ctx, &wall, 0);
+        assert!((plan_fill.unwrap().hatch_angle_rad.unwrap() - 120f64.to_radians()).abs() < 1e-9);
+
+        let section_ctx = ViewStyleContext::new(&mv, None, Some(&lib), true);
+        let (_, section_fill) = resolve_layer_cut_style(&section_ctx, &wall, 0);
+        assert!((section_fill.unwrap().hatch_angle_rad.unwrap() - 30f64.to_radians()).abs() < 1e-9);
+    }
+
+    #[test]
     fn test_resolve_wall_style_overrides_material() {
         let mv = make_test_mv();
         let mut lib = StyleLibrary::default();
@@ -1300,8 +1319,12 @@ pub(crate) mod tests {
 
     #[test]
     fn test_resolve_display_config_overrides_wall_style() {
-        let mv = make_test_mv();
-        let wall = make_test_wall("Masonry");
+        let mut mv_50 = make_test_mv();
+        mv_50.scale = ScaleDenominator::new(50.0).unwrap();
+        let mut mv_100 = mv_50.clone();
+        mv_100.scale = ScaleDenominator::new(100.0).unwrap();
+        let mut wall = make_test_wall("Masonry");
+        wall.axis_points = vec![Point2::new(0.0, 0.0), Point2::new(0.0, 5.0)];
         let layer_id = wall.layers[0].layer_id;
 
         let mut dc = DisplayConfig::new(
@@ -1313,6 +1336,8 @@ pub(crate) mod tests {
         let lprops = ComponentStyleOverride {
             hatch_pattern: Some("EARTH".to_string()),
             hatch_scale: Some(0.25),
+            hatch_angle: Some(75.0),
+            hatch_angle_relative: Some(false),
             line_color: Some(Color::Rgb { r: 255, g: 128, b: 0 }),
             ..Default::default()
         };
@@ -1326,14 +1351,21 @@ pub(crate) mod tests {
         let mut lib = StyleLibrary::default();
         lib.wall_styles.push(wall_style_for(&wall));
 
-        let ctx = ViewStyleContext::new(&mv, Some(&dc), Some(&lib), false);
-        let (boundary, fill) = resolve_layer_cut_style(&ctx, &wall, 0);
+        let ctx_50 = ViewStyleContext::new(&mv_50, Some(&dc), Some(&lib), false);
+        let (boundary, fill_50) = resolve_layer_cut_style(&ctx_50, &wall, 0);
         let boundary = boundary.expect("boundary style");
 
         assert_eq!(boundary.line_color, Some(Rgba8::new(255, 128, 0, 255)));
-        let fill = fill.expect("fill style");
-        assert_eq!(fill.hatch_pattern.as_deref(), Some("EARTH"));
-        assert!((fill.hatch_scale.unwrap() - 0.25).abs() < 1e-4);
+        let fill_50 = fill_50.expect("fill style");
+        assert_eq!(fill_50.hatch_pattern.as_deref(), Some("EARTH"));
+        assert!((fill_50.hatch_scale.unwrap() - 0.25).abs() < 1e-4);
+        assert!((fill_50.hatch_angle_rad.unwrap() - 75f64.to_radians()).abs() < 1e-9);
+
+        let ctx_100 = ViewStyleContext::new(&mv_100, Some(&dc), Some(&lib), false);
+        let (_, fill_100) = resolve_layer_cut_style(&ctx_100, &wall, 0);
+        let fill_100 = fill_100.expect("fill style at 1:100");
+        assert!((fill_100.hatch_scale.unwrap() - fill_50.hatch_scale.unwrap()).abs() < 1e-9);
+        assert!((fill_100.hatch_angle_rad.unwrap() - fill_50.hatch_angle_rad.unwrap()).abs() < 1e-9);
     }
 
     #[test]

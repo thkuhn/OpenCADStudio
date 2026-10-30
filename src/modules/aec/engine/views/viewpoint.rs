@@ -430,7 +430,23 @@ impl Viewpoint {
         (xy, delta.dot(self.axes.forward))
     }
 
+    /// Paper elevation of a world Z, independent of the viewpoint origin.
+    ///
+    /// Sections already place cut fills at world Z. Elevations and section
+    /// backgrounds must use the same vertical datum, otherwise a viewpoint
+    /// parked below the model shifts every wall. `mapping.mirror_y` is the
+    /// only allowed paper-space flip.
+    pub fn paper_elevation(&self, world_z: f64) -> f64 {
+        if self.mapping.mirror_y {
+            -world_z
+        } else {
+            world_z
+        }
+    }
+
     /// Converts a 3D world coordinate into view-plane coordinates (Point2, depth) using the viewpoint's origin.
+    ///
+    /// The returned Y is origin-relative and must not be used as the architectural elevation of a facade.
     pub fn world_to_view(&self, point: Point3) -> (Point2, f64) {
         let origin = match self.origin {
             ViewOrigin::World(p) => p,

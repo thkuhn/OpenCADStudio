@@ -508,7 +508,7 @@ pub fn sync_carrier_primitives(
                     } else {
                         hatch.is_solid = false;
                         hatch.pattern = HatchPattern::new(&pat_name);
-                        hatch.pattern_scale = (prim.style.hatch_scale.unwrap_or(1.0) * carrier.scale).max(1e-4);
+                        hatch.pattern_scale = prim.style.hatch_scale.unwrap_or(1.0).max(1e-4);
                         hatch.pattern_angle = prim
                             .style
                             .hatch_angle_rad
@@ -1177,12 +1177,72 @@ mod tests {
         if let EntityType::Hatch(hatch) = hatch_ent {
             assert!(!hatch.is_solid);
             assert_eq!(hatch.pattern.name, "ANSI31");
-            // pattern_scale = hatch_scale * carrier.scale = 0.5 * 2.0 = 1.0
-            assert!((hatch.pattern_scale - 1.0).abs() < 1e-4);
+            // Placement scale does not change the model-space hatch scale.
+            assert!((hatch.pattern_scale - 0.5).abs() < 1e-4);
             // pattern_angle = hatch_angle_rad + carrier.rotation_rad = 0.785398 + 0.5 = 1.285398
             assert!((hatch.pattern_angle - (0.785398 + 0.5)).abs() < 1e-4);
         } else {
             panic!("Expected Hatch entity");
         }
+    }
+
+    #[test]
+    fn test_carrier_preserves_resolved_hatch_fill_color() {
+        let mut doc = CadDocument::new();
+        let mv_id = ModelViewId::new();
+        let mut carrier = create_view_carrier(
+            &mut doc,
+            ViewpointId::new(),
+            mv_id,
+            Point2::new(0.0, 0.0),
+            1.0,
+            0.0,
+            UpdatePolicy::Automatic,
+        )
+        .expect("create carrier");
+        let source = SourceReference {
+            element: ElementRef::new(ModelId::new(), ElementId::new()),
+            xref_source: None,
+            component_id: None,
+            feature: Some(FeatureKey::LayerFace),
+            display_component_id: None,
+        };
+        let prim = DerivedPrimitive {
+            id: super::super::provenance::PrimitiveId::new(mv_id, 1, 1),
+            role: PrimitiveRole::CutFill,
+            geometry: Geometry2d::Region {
+                outer: vec![
+                    Point2::new(0.0, 0.0),
+                    Point2::new(2.0, 0.0),
+                    Point2::new(2.0, 1.0),
+                    Point2::new(0.0, 1.0),
+                ],
+                holes: vec![],
+            },
+            sources: SourceSet::new(vec![source]).unwrap(),
+            depth: DepthInterval::cut_plane(),
+            style: ResolvedStyle {
+                line_weight_mm: PaperMm::new(0.18).unwrap(),
+                line_color: None,
+                line_type: None,
+                fill_color: Some(super::super::provenance::Rgba8::new(80, 100, 120, 255)),
+                hatch_pattern: Some("ANSI31".to_string()),
+                hatch_scale: Some(0.5),
+                hatch_angle_rad: Some(0.0),
+                layer_name: Some("AEC_WALL_HATCH".to_string()),
+            },
+            edit_handles: vec![],
+        };
+
+        sync_carrier_primitives(&mut doc, &mut carrier, &[prim]).expect("sync primitives");
+        let hatch = doc.get_entity(carrier.derived_handles[0]).expect("hatch exists");
+        assert_eq!(
+            hatch.common().color,
+            acadrust::types::Color::Rgb {
+                r: 80,
+                g: 100,
+                b: 120
+            }
+        );
     }
 }

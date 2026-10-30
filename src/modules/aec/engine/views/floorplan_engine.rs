@@ -9,7 +9,9 @@ use super::provenance::{
     DerivedPrimitive, FeatureKey, Geometry2d, PrimitiveId, PrimitiveRole, ResolvedStyle,
     SourceReference, SourceSet,
 };
-use super::scene_collector::{CollectedOpening, CollectedSlab, CollectedWall, SceneGeometryCollector};
+use super::scene_collector::{
+    CollectedOpening, CollectedSlab, CollectedWall, CollectedWallJoinData, SceneGeometryCollector,
+};
 use super::silhouette::{
     point_in_polygon, point_on_polygon_boundary, process_silhouette_and_depth,
     SilhouetteOptions, TRANSIENT_OCCLUDER_LAYER,
@@ -203,49 +205,34 @@ pub fn derive_floorplan_view(
     }
 
     // 2. Process Walls (Horizontally sliced at z_cut with mitered layer junctions)
-    let eligible_walls: Vec<&CollectedWall> = scene
+    let eligible_walls: Vec<(usize, &CollectedWall)> = scene
         .walls
         .iter()
-        .filter(|wall| {
+        .enumerate()
+        .filter(|(_, wall)| {
             !model_view.excluded_elements.contains(&wall.element_ref)
                 && wall.top_z >= z_cut - EPS
                 && wall.base_z <= z_cut + EPS
         })
         .collect();
 
-    let wall_join_inputs: Vec<crate::modules::aec::engine::junction_solver::WallJoinInput> = eligible_walls
-        .iter()
-        .map(|w| {
-            let axis: Vec<glam::DVec3> = w
-                .axis_points
-                .iter()
-                .map(|p| glam::DVec3::new(p.x_m, p.y_m, w.base_z))
-                .collect();
-            let layers: Vec<crate::modules::aec::engine::miter::MiterLayer> = w
-                .layers
-                .iter()
-                .map(|l| crate::modules::aec::engine::miter::MiterLayer {
-                    thickness: l.thickness,
-                    axis_offset: l.axis_offset,
-                    material: l.material.clone(),
-                    function: l.function.clone(),
-                    layer_id: l.layer_id,
-                })
-                .collect();
-            crate::modules::aec::engine::junction_solver::WallJoinInput {
-                axis,
-                bulges: vec![],
-                layers,
-                override_start: None,
-                override_end: None,
-                override_span: None,
-            }
-        })
-        .collect();
+    let wall_join_inputs: Vec<crate::modules::aec::engine::junction_solver::WallJoinInput> =
+        eligible_walls
+            .iter()
+            .map(|(scene_index, wall)| {
+                wall_join_input(
+                    wall,
+                    scene
+                        .wall_join_data
+                        .get(*scene_index)
+                        .and_then(Option::as_ref),
+                )
+            })
+            .collect();
 
     let solved_network = crate::modules::aec::engine::junction_solver::solve_network(&wall_join_inputs, 0.05);
 
-    for (w_idx, wall) in eligible_walls.iter().enumerate() {
+    for (w_idx, (_, wall)) in eligible_walls.iter().enumerate() {
         let wall_footprints = solved_network.footprints.get(w_idx);
 
         slice_wall_horizontal(
@@ -275,6 +262,37 @@ pub fn derive_floorplan_view(
     primitives.retain(|p| p.style.layer_name.as_deref() != Some(TRANSIENT_OCCLUDER_LAYER));
 
     Ok(primitives)
+}
+
+fn wall_join_input(
+    wall: &CollectedWall,
+    join_data: Option<&CollectedWallJoinData>,
+) -> crate::modules::aec::engine::junction_solver::WallJoinInput {
+    let axis = wall
+        .axis_points
+        .iter()
+        .map(|point| glam::DVec3::new(point.x_m, point.y_m, wall.base_z))
+        .collect();
+    let layers = wall
+        .layers
+        .iter()
+        .map(|layer| crate::modules::aec::engine::miter::MiterLayer {
+            thickness: layer.thickness,
+            axis_offset: layer.axis_offset,
+            material: layer.material.clone(),
+            function: layer.function.clone(),
+            layer_id: layer.layer_id,
+        })
+        .collect();
+
+    crate::modules::aec::engine::junction_solver::WallJoinInput {
+        axis,
+        bulges: join_data.map(|data| data.bulges.clone()).unwrap_or_default(),
+        layers,
+        override_start: join_data.and_then(|data| data.override_start.clone()),
+        override_end: join_data.and_then(|data| data.override_end.clone()),
+        override_span: join_data.and_then(|data| data.override_span.clone()),
+    }
 }
 
 /// Tests whether an overhead slab contains the opening head position along the wall axis,
@@ -944,7 +962,8 @@ mod tests {
     use crate::modules::aec::engine::openings::{OpeningKind, OpeningReferenceSide};
     use crate::modules::aec::engine::views::model_view::{DetailPolicy, ViewRevisions};
     use crate::modules::aec::engine::views::scene_collector::{
-        CollectedOpening, CollectedSlab, CollectedSlabLayer, CollectedWall, CollectedWallLayer,
+        CollectedOpening, CollectedSlab, CollectedSlabLayer, CollectedWall,
+        CollectedWallJoinData, CollectedWallLayer,
     };
     use crate::modules::aec::engine::views::viewpoint::{PlanRange, VerticalRange, ViewAxes, ViewOrigin};
     use crate::modules::aec::engine::views::{
@@ -1220,6 +1239,55 @@ mod tests {
         }
     }
 
+    #[test]
+    fn test_wall_join_input_preserves_bulges_overrides_and_l_footprint() {
+        use crate::modules::aec::engine::join::{JoinOverrideStyle, JunctionOverride};
+        use crate::modules::aec::engine::junction_solver::{self, SolvedJoinKind};
+        use crate::modules::aec::engine::join::JUNCTION_TOLERANCE;
+
+        let wall_a = style_wall(
+            vec![style_layer("core", 0.2, -0.1, true)],
+            [(0.0, 0.0), (10.0, 0.0)],
+        );
+        let wall_b = style_wall(
+            vec![style_layer("core", 0.2, -0.1, true)],
+            [(10.0, 0.0), (10.0, 10.0)],
+        );
+        let override_end = JunctionOverride {
+            default_style: Some(JoinOverrideStyle::FarFace),
+            ..Default::default()
+        };
+        let override_span = JunctionOverride {
+            default_style: Some(JoinOverrideStyle::NoExtend),
+            ..Default::default()
+        };
+        let join_data = CollectedWallJoinData {
+            bulges: vec![0.0, 0.0],
+            override_start: None,
+            override_end: Some(override_end.clone()),
+            override_span: Some(override_span.clone()),
+        };
+        let input_a = wall_join_input(&wall_a, Some(&join_data));
+        let input_b = wall_join_input(&wall_b, None);
+        assert_eq!(input_a.bulges, vec![0.0, 0.0]);
+        assert_eq!(input_a.override_end, Some(override_end));
+        assert_eq!(input_a.override_span, Some(override_span));
+
+        let automatic = junction_solver::solve_network(
+            &[wall_join_input(&wall_a, None), input_b.clone()],
+            JUNCTION_TOLERANCE,
+        );
+        let overridden = junction_solver::solve_network(
+            &[input_a, input_b],
+            JUNCTION_TOLERANCE,
+        );
+        assert_eq!(overridden.junctions[0].kind, SolvedJoinKind::L);
+        assert_ne!(
+            automatic.footprints[0][0], overridden.footprints[0][0],
+            "the collected endpoint override should reach the L-junction footprint"
+        );
+    }
+
     fn concrete_material() -> crate::modules::aec::engine::material::Material {
         let mut mat = crate::modules::aec::engine::material::Material::new(
             "Concrete".to_string(),
@@ -1427,6 +1495,7 @@ mod tests {
             layers: vec![CollectedSlabLayer {
                 material: "Concrete".into(),
                 thickness: 0.2,
+                vertical_offset: 0.0,
                 function: "Structural".into(),
                 hatch_override: None,
                 layer_id: uuid::Uuid::new_v4(),

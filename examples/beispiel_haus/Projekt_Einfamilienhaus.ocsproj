@@ -1,18 +1,18 @@
 {
   "buildings": [
     {
-      "id": "017992a3-9bff-45eb-865f-acc2a170d2b3",
+      "id": "3ade0b67-521f-46c3-9ec1-49b608d8c4a3",
       "name": "Einfamilienhaus",
       "storeys": [
         {
-          "id": "88ca01aa-1049-473e-affa-9d90e821f484",
+          "id": "fd467112-3719-44db-862a-f177c0fc7ee4",
           "name": "UG",
           "elevation": -2.8,
           "height": 3.0,
           "drawing_path": "UG.dwg",
           "control_planes": [
             {
-              "id": "a0b73fe6-171b-4237-9e85-aaa3e3f645e2",
+              "id": "3a3cd5c2-f4ab-46ed-a4ac-beca6c3de29b",
               "name": "UG_ELEVATION",
               "origin": [
                 -5.0,
@@ -55,7 +55,7 @@
               "visible": true
             },
             {
-              "id": "d7254cb6-9ae1-4167-ae65-6b50f06522f9",
+              "id": "8785fbab-b035-4540-96d8-ecdbcc73b972",
               "name": "UG_OKGH",
               "origin": [
                 -5.0,
@@ -98,18 +98,18 @@
               "visible": true
             }
           ],
-          "floor_plane_id": "a0b73fe6-171b-4237-9e85-aaa3e3f645e2",
-          "ceiling_plane_id": "d7254cb6-9ae1-4167-ae65-6b50f06522f9"
+          "floor_plane_id": "3a3cd5c2-f4ab-46ed-a4ac-beca6c3de29b",
+          "ceiling_plane_id": "8785fbab-b035-4540-96d8-ecdbcc73b972"
         },
         {
-          "id": "558a69f9-a437-4e93-a874-2a1024b2451d",
+          "id": "d58c6afc-0f5e-4f66-abeb-91dc3839ccba",
           "name": "EG",
           "elevation": 0.0,
           "height": 3.0,
           "drawing_path": "EG.dwg",
           "control_planes": [
             {
-              "id": "42478750-4eac-437d-a430-2a1c9f97bbe5",
+              "id": "a0b63723-8765-4919-b37a-0ada0e59e7f0",
               "name": "EG_ELEVATION",
               "origin": [
                 -5.0,
@@ -152,7 +152,7 @@
               "visible": true
             },
             {
-              "id": "d38466e4-a379-496d-9086-7788464bb3c0",
+              "id": "605e95db-5992-4285-b2f6-82606053ebb6",
               "name": "EG_OKGH",
               "origin": [
                 -5.0,
@@ -195,18 +195,18 @@
               "visible": true
             }
           ],
-          "floor_plane_id": "42478750-4eac-437d-a430-2a1c9f97bbe5",
-          "ceiling_plane_id": "d38466e4-a379-496d-9086-7788464bb3c0"
+          "floor_plane_id": "a0b63723-8765-4919-b37a-0ada0e59e7f0",
+          "ceiling_plane_id": "605e95db-5992-4285-b2f6-82606053ebb6"
         },
         {
-          "id": "2aa25c7c-3463-4511-9603-8d521b9fd115",
+          "id": "c4476513-fc61-4c79-8d99-221218a364cf",
           "name": "OG",
           "elevation": 2.8,
           "height": 3.0,
           "drawing_path": "OG.dwg",
           "control_planes": [
             {
-              "id": "3da52b42-c330-4a24-bfc6-f8a66f0039bc",
+              "id": "748220b3-7e44-418e-936c-ac777ecf2ea7",
               "name": "OG_ELEVATION",
               "origin": [
                 -5.0,
@@ -249,7 +249,7 @@
               "visible": true
             },
             {
-              "id": "1e24b534-5734-4792-8814-0bc1fe36dfba",
+              "id": "3d0f7bab-11b9-45cc-bed1-2479d490ec3a",
               "name": "OG_OKGH",
               "origin": [
                 -5.0,
@@ -292,18 +292,18 @@
               "visible": true
             }
           ],
-          "floor_plane_id": "3da52b42-c330-4a24-bfc6-f8a66f0039bc",
-          "ceiling_plane_id": "1e24b534-5734-4792-8814-0bc1fe36dfba"
+          "floor_plane_id": "748220b3-7e44-418e-936c-ac777ecf2ea7",
+          "ceiling_plane_id": "3d0f7bab-11b9-45cc-bed1-2479d490ec3a"
         },
         {
-          "id": "d73480b6-74c3-4d1e-8a97-cec039c2f9f4",
+          "id": "5c1c8f2f-c3a4-4bcb-860e-be9be79b66a5",
           "name": "DG",
           "elevation": 5.6,
           "height": 3.0,
           "drawing_path": "DG.dwg",
           "control_planes": [
             {
-              "id": "5a91030e-9188-48f7-9a6e-64700d5f1eed",
+              "id": "e92a15c5-f563-4a5f-89ae-0e7461e35256",
               "name": "DG_ELEVATION",
               "origin": [
                 -5.0,
@@ -346,7 +346,7 @@
               "visible": true
             },
             {
-              "id": "4cb7acd0-703a-4f45-8bb5-8cc5b911edb8",
+              "id": "5db8acd8-9bf2-458c-8c9e-6962812326c1",
               "name": "DG_OKGH",
               "origin": [
                 -5.0,
@@ -389,8 +389,8 @@
               "visible": true
             }
           ],
-          "floor_plane_id": "5a91030e-9188-48f7-9a6e-64700d5f1eed",
-          "ceiling_plane_id": "4cb7acd0-703a-4f45-8bb5-8cc5b911edb8"
+          "floor_plane_id": "e92a15c5-f563-4a5f-89ae-0e7461e35256",
+          "ceiling_plane_id": "5db8acd8-9bf2-458c-8c9e-6962812326c1"
         }
       ]
     }
@@ -664,7 +664,7 @@
             "layer_override": null,
             "hatch_override": null,
             "role_tag": "Tragschale",
-            "layer_id": "bbca9787-c544-4a31-ac4c-44bb04a1f1f7"
+            "layer_id": "a8dbb27e-232b-4f53-9e7f-04c5bda99114"
           }
         ]
       },
@@ -684,7 +684,7 @@
             "layer_override": null,
             "hatch_override": null,
             "role_tag": "Trennwand",
-            "layer_id": "e5d859ea-bebb-4bfb-bb3e-b33e99854333"
+            "layer_id": "deaed3d6-9b58-4178-8295-f8885d8edd3e"
           }
         ]
       },
@@ -704,7 +704,7 @@
             "layer_override": null,
             "hatch_override": "AR-CONC",
             "role_tag": "Tragschale",
-            "layer_id": "ac0f5fd3-03a9-4a16-983e-73b82547b8ca"
+            "layer_id": "bd54f950-e1c1-453d-839c-89021b2eb705"
           }
         ]
       },
@@ -724,7 +724,7 @@
             "layer_override": null,
             "hatch_override": "AR-CONC",
             "role_tag": "Tragschale",
-            "layer_id": "af0b5a69-f753-470d-9a92-ef3bf79af388"
+            "layer_id": "fa65441e-94c2-4813-975a-b8fe6f6913de"
           }
         ]
       },
@@ -744,7 +744,7 @@
             "layer_override": null,
             "hatch_override": null,
             "role_tag": "Beplankung",
-            "layer_id": "b4665aa7-6803-4d41-9c28-2c5d0d756669"
+            "layer_id": "ec338b30-ca88-43dc-9289-a1c73a331e6c"
           },
           {
             "material_id": "mat_insulation",
@@ -756,7 +756,7 @@
             "layer_override": null,
             "hatch_override": "ANSI37",
             "role_tag": "Daemmung / Staender",
-            "layer_id": "0dc159cb-316b-437f-82be-586136785942"
+            "layer_id": "010ef715-6fa8-4205-b6c0-7f96e04b7807"
           },
           {
             "material_id": "mat_drywall",
@@ -768,7 +768,7 @@
             "layer_override": null,
             "hatch_override": null,
             "role_tag": "Beplankung",
-            "layer_id": "f640faf0-1510-45f9-9f4b-9435ad41dd90"
+            "layer_id": "58c5a105-b0c2-4117-8018-778fa4bef846"
           }
         ]
       },
@@ -788,7 +788,7 @@
             "layer_override": null,
             "hatch_override": null,
             "role_tag": "Innenputz",
-            "layer_id": "0b005433-b19a-41e6-9cc9-255715a3f6cc"
+            "layer_id": "ef340ab1-0cc6-4dda-ba9e-149853487b1b"
           },
           {
             "material_id": "mat_masonry",
@@ -800,7 +800,7 @@
             "layer_override": null,
             "hatch_override": null,
             "role_tag": "Tragschale",
-            "layer_id": "e0a1be1e-400a-4f7d-b65e-44a681765b0f"
+            "layer_id": "b25fe1a0-264f-40fd-bbf7-d98ae10e567b"
           },
           {
             "material_id": "mat_insulation",
@@ -812,7 +812,7 @@
             "layer_override": null,
             "hatch_override": "ANSI37",
             "role_tag": "Daemmschicht",
-            "layer_id": "a3a922cb-9195-460c-90fc-ab91b278f324"
+            "layer_id": "9ec7d33a-2089-4517-b7a4-f0094d7dcbcf"
           },
           {
             "material_id": "mat_plaster",
@@ -824,7 +824,7 @@
             "layer_override": "A-WALL-FINISH",
             "hatch_override": null,
             "role_tag": "Aussenputz",
-            "layer_id": "73642900-fa27-4876-bf4a-b5925ccd303b"
+            "layer_id": "02d109d2-8d8b-4f18-b850-cd13c54f37a6"
           }
         ]
       },
@@ -851,7 +851,7 @@
             "layer_override": null,
             "hatch_override": null,
             "role_tag": "Innenputz",
-            "layer_id": "ef886a06-205c-4d55-86d3-7911d3324612"
+            "layer_id": "307a02f4-0e6f-45ca-8573-32dae2f7439a"
           },
           {
             "material_id": "mat_masonry",
@@ -863,7 +863,7 @@
             "layer_override": null,
             "hatch_override": null,
             "role_tag": "Hintermauerwerk",
-            "layer_id": "71e87aef-9aee-43f1-a73b-c9daf0ceeb72"
+            "layer_id": "ab5d6fa8-052d-4d8b-b6f1-cc25f09f3cb2"
           },
           {
             "material_id": "mat_insulation",
@@ -875,7 +875,7 @@
             "layer_override": null,
             "hatch_override": "ANSI37",
             "role_tag": "Kerndaemmung",
-            "layer_id": "8a8bc7dc-8605-47c0-b665-c4c3c3823c80"
+            "layer_id": "949c318d-0356-4566-958b-fbc3f603459e"
           },
           {
             "material_id": "mat_air",
@@ -887,7 +887,7 @@
             "layer_override": null,
             "hatch_override": null,
             "role_tag": "Luftschicht",
-            "layer_id": "a3ecd1d8-541a-46b4-82c2-1cbfbc1e4b3f"
+            "layer_id": "1f07ab6f-90ba-4aa2-82ca-8f127e9d8590"
           },
           {
             "material_id": "mat_clinker",
@@ -899,7 +899,7 @@
             "layer_override": "A-WALL-CLINKER",
             "hatch_override": "ANSI31",
             "role_tag": "Verblender",
-            "layer_id": "e5388088-0c18-4175-b450-823596a05a4d"
+            "layer_id": "f76ad24c-6d78-4dc8-9796-0db718254772"
           }
         ]
       },
@@ -919,7 +919,7 @@
             "layer_override": null,
             "hatch_override": null,
             "role_tag": "Innenbeplankung",
-            "layer_id": "c5e33e2e-a659-4866-b445-7b0ca53c566f"
+            "layer_id": "24bd3524-c115-4538-bf71-2c8b5558ddeb"
           },
           {
             "material_id": "mat_air",
@@ -931,7 +931,7 @@
             "layer_override": null,
             "hatch_override": null,
             "role_tag": "Installationsebene",
-            "layer_id": "42272969-9975-4606-9bf8-25cabc58c2b4"
+            "layer_id": "c2fc2d4b-16d2-4f15-8852-b26b34eaa5ad"
           },
           {
             "material_id": "mat_insulation",
@@ -943,7 +943,7 @@
             "layer_override": null,
             "hatch_override": "ANSI37",
             "role_tag": "Holzstaender / Daemmung",
-            "layer_id": "1e27abe3-f6b6-4cfb-a680-ee23ef980848"
+            "layer_id": "81beddcd-7789-4e42-926d-427342eee903"
           },
           {
             "material_id": "mat_wood",
@@ -955,7 +955,7 @@
             "layer_override": "A-WALL-WOOD",
             "hatch_override": "ANSI31",
             "role_tag": "Holzverschalung",
-            "layer_id": "f8fb4072-e962-4230-b5b2-98cdbfbbd17c"
+            "layer_id": "d1f8f4bf-90c1-45ae-860a-b281f72adcc8"
           }
         ]
       }
@@ -978,17 +978,13 @@
         "shape": "Rectangle",
         "spring_height": 0.0,
         "slots": {
-          "Frame2D": {
+          "ElevationSwing2D": {
             "kind": "Generator",
-            "value": "FrameRect"
+            "value": "ElevationSwingTriangle"
           },
-          "ElevationContour2D": {
+          "ElevationSill2D": {
             "kind": "Generator",
-            "value": "ElevationFrameRect"
-          },
-          "Leaf2D": {
-            "kind": "Generator",
-            "value": "LeafLine"
+            "value": "ElevationSillLine"
           },
           "Sill2D": {
             "kind": "Generator",
@@ -998,25 +994,29 @@
             "kind": "Generator",
             "value": "OpeningLabel"
           },
-          "ElevationSill2D": {
-            "kind": "Generator",
-            "value": "ElevationSillLine"
-          },
           "Frame3D": {
             "kind": "Generator",
             "value": "SolidFrame"
-          },
-          "ElevationSwing2D": {
-            "kind": "Generator",
-            "value": "ElevationSwingTriangle"
           },
           "Glazing3D": {
             "kind": "Generator",
             "value": "SolidGlazing"
           },
+          "Leaf2D": {
+            "kind": "Generator",
+            "value": "LeafLine"
+          },
+          "Frame2D": {
+            "kind": "Generator",
+            "value": "FrameRect"
+          },
           "Glazing2D": {
             "kind": "Generator",
             "value": "GlazingLine"
+          },
+          "ElevationContour2D": {
+            "kind": "Generator",
+            "value": "ElevationFrameRect"
           }
         }
       },
@@ -1037,49 +1037,49 @@
         "shape": "Rectangle",
         "spring_height": 0.0,
         "slots": {
-          "ElevationContour2D": {
-            "kind": "Generator",
-            "value": "ElevationFrameRect"
-          },
-          "Frame2D": {
-            "kind": "Generator",
-            "value": "FrameRect"
-          },
-          "Leaf2D": {
-            "kind": "Generator",
-            "value": "LeafLine"
-          },
-          "Glazing2D": {
-            "kind": "Generator",
-            "value": "GlazingLine"
-          },
-          "Sill2D": {
-            "kind": "Generator",
-            "value": "SillLines"
-          },
-          "ElevationSwing2D": {
-            "kind": "Generator",
-            "value": "ElevationSwingTriangle"
-          },
           "Frame3D": {
             "kind": "Generator",
             "value": "SolidFrame"
-          },
-          "ElevationMuntins2D": {
-            "kind": "Generator",
-            "value": "ElevationMuntinsDouble"
-          },
-          "ElevationSill2D": {
-            "kind": "Generator",
-            "value": "ElevationSillLine"
           },
           "Glazing3D": {
             "kind": "Generator",
             "value": "SolidGlazing"
           },
+          "Frame2D": {
+            "kind": "Generator",
+            "value": "FrameRect"
+          },
+          "ElevationContour2D": {
+            "kind": "Generator",
+            "value": "ElevationFrameRect"
+          },
+          "Leaf2D": {
+            "kind": "Generator",
+            "value": "LeafLine"
+          },
+          "Sill2D": {
+            "kind": "Generator",
+            "value": "SillLines"
+          },
+          "ElevationMuntins2D": {
+            "kind": "Generator",
+            "value": "ElevationMuntinsDouble"
+          },
+          "Glazing2D": {
+            "kind": "Generator",
+            "value": "GlazingLine"
+          },
           "OpeningLabel2D": {
             "kind": "Generator",
             "value": "OpeningLabel"
+          },
+          "ElevationSill2D": {
+            "kind": "Generator",
+            "value": "ElevationSillLine"
+          },
+          "ElevationSwing2D": {
+            "kind": "Generator",
+            "value": "ElevationSwingTriangle"
           }
         }
       },
@@ -1100,25 +1100,13 @@
         "shape": "Arch",
         "spring_height": 1.3,
         "slots": {
+          "Frame2D": {
+            "kind": "Generator",
+            "value": "FrameRect"
+          },
           "Glazing2D": {
             "kind": "Generator",
             "value": "GlazingLine"
-          },
-          "ElevationSwing2D": {
-            "kind": "Generator",
-            "value": "ElevationSwingTriangle"
-          },
-          "Frame3D": {
-            "kind": "Generator",
-            "value": "SolidFrame"
-          },
-          "OpeningLabel2D": {
-            "kind": "Generator",
-            "value": "OpeningLabel"
-          },
-          "Glazing3D": {
-            "kind": "Generator",
-            "value": "SolidGlazing"
           },
           "Sill2D": {
             "kind": "Generator",
@@ -1132,13 +1120,25 @@
             "kind": "Generator",
             "value": "ElevationSillLine"
           },
-          "Frame2D": {
+          "ElevationSwing2D": {
             "kind": "Generator",
-            "value": "FrameRect"
+            "value": "ElevationSwingTriangle"
+          },
+          "OpeningLabel2D": {
+            "kind": "Generator",
+            "value": "OpeningLabel"
           },
           "ElevationContour2D": {
             "kind": "Generator",
             "value": "ElevationFrameArch"
+          },
+          "Frame3D": {
+            "kind": "Generator",
+            "value": "SolidFrame"
+          },
+          "Glazing3D": {
+            "kind": "Generator",
+            "value": "SolidGlazing"
           }
         }
       },
@@ -1159,29 +1159,29 @@
         "shape": "Circle",
         "spring_height": 0.0,
         "slots": {
-          "Frame2D": {
+          "ElevationContour2D": {
             "kind": "Generator",
-            "value": "FrameRect"
-          },
-          "Glazing2D": {
-            "kind": "Generator",
-            "value": "GlazingLine"
+            "value": "ElevationFrameArch"
           },
           "OpeningLabel2D": {
             "kind": "Generator",
             "value": "OpeningLabel"
           },
+          "Glazing2D": {
+            "kind": "Generator",
+            "value": "GlazingLine"
+          },
           "Frame3D": {
             "kind": "Generator",
             "value": "SolidFrame"
           },
-          "ElevationContour2D": {
-            "kind": "Generator",
-            "value": "ElevationFrameArch"
-          },
           "Glazing3D": {
             "kind": "Generator",
             "value": "SolidGlazing"
+          },
+          "Frame2D": {
+            "kind": "Generator",
+            "value": "FrameRect"
           }
         }
       },
@@ -1202,22 +1202,6 @@
         "shape": "Rectangle",
         "spring_height": 0.0,
         "slots": {
-          "OpeningLabel2D": {
-            "kind": "Generator",
-            "value": "OpeningLabel"
-          },
-          "Glazing3D": {
-            "kind": "Generator",
-            "value": "SolidGlazing"
-          },
-          "ElevationSill2D": {
-            "kind": "Generator",
-            "value": "ElevationSillLine"
-          },
-          "Frame2D": {
-            "kind": "Generator",
-            "value": "FrameRect"
-          },
           "Leaf2D": {
             "kind": "Generator",
             "value": "LeafLine"
@@ -1226,6 +1210,26 @@
             "kind": "Generator",
             "value": "ThresholdLine"
           },
+          "OpeningLabel2D": {
+            "kind": "Generator",
+            "value": "OpeningLabel"
+          },
+          "Glazing2D": {
+            "kind": "Generator",
+            "value": "GlazingLine"
+          },
+          "ElevationSill2D": {
+            "kind": "Generator",
+            "value": "ElevationSillLine"
+          },
+          "Glazing3D": {
+            "kind": "Generator",
+            "value": "SolidGlazing"
+          },
+          "Frame2D": {
+            "kind": "Generator",
+            "value": "FrameRect"
+          },
           "ElevationContour2D": {
             "kind": "Generator",
             "value": "ElevationFrameRect"
@@ -1233,10 +1237,6 @@
           "Frame3D": {
             "kind": "Generator",
             "value": "SolidFrame"
-          },
-          "Glazing2D": {
-            "kind": "Generator",
-            "value": "GlazingLine"
           },
           "ElevationSwing2D": {
             "kind": "Generator",
@@ -1261,26 +1261,6 @@
         "shape": "Rectangle",
         "spring_height": 0.0,
         "slots": {
-          "ElevationContour2D": {
-            "kind": "Generator",
-            "value": "ElevationFrameRect"
-          },
-          "Frame2D": {
-            "kind": "Generator",
-            "value": "FrameRect"
-          },
-          "Leaf3D": {
-            "kind": "Generator",
-            "value": "SolidLeaf"
-          },
-          "Swing2D": {
-            "kind": "Generator",
-            "value": "SwingArc"
-          },
-          "Leaf2D": {
-            "kind": "Generator",
-            "value": "LeafLine"
-          },
           "ElevationSwing2D": {
             "kind": "Generator",
             "value": "ElevationSwingTriangle"
@@ -1293,9 +1273,29 @@
             "kind": "Generator",
             "value": "OpeningLabel"
           },
+          "Leaf2D": {
+            "kind": "Generator",
+            "value": "LeafLine"
+          },
+          "Swing2D": {
+            "kind": "Generator",
+            "value": "SwingArc"
+          },
+          "Frame2D": {
+            "kind": "Generator",
+            "value": "FrameRect"
+          },
+          "ElevationContour2D": {
+            "kind": "Generator",
+            "value": "ElevationFrameRect"
+          },
           "Frame3D": {
             "kind": "Generator",
             "value": "SolidFrame"
+          },
+          "Leaf3D": {
+            "kind": "Generator",
+            "value": "SolidLeaf"
           }
         }
       },
@@ -1316,41 +1316,41 @@
         "shape": "Rectangle",
         "spring_height": 0.0,
         "slots": {
+          "OpeningLabel2D": {
+            "kind": "Generator",
+            "value": "OpeningLabel"
+          },
           "ElevationSwing2D": {
             "kind": "Generator",
             "value": "ElevationSwingTriangle"
-          },
-          "Leaf3D": {
-            "kind": "Generator",
-            "value": "SolidLeaf"
-          },
-          "Leaf2D": {
-            "kind": "Generator",
-            "value": "LeafLine"
-          },
-          "Frame2D": {
-            "kind": "Generator",
-            "value": "FrameRect"
-          },
-          "Frame3D": {
-            "kind": "Generator",
-            "value": "SolidFrame"
           },
           "Threshold2D": {
             "kind": "Generator",
             "value": "ThresholdLine"
           },
+          "Frame3D": {
+            "kind": "Generator",
+            "value": "SolidFrame"
+          },
           "ElevationContour2D": {
             "kind": "Generator",
             "value": "ElevationFrameRect"
           },
+          "Leaf3D": {
+            "kind": "Generator",
+            "value": "SolidLeaf"
+          },
+          "Frame2D": {
+            "kind": "Generator",
+            "value": "FrameRect"
+          },
+          "Leaf2D": {
+            "kind": "Generator",
+            "value": "LeafLine"
+          },
           "Swing2D": {
             "kind": "Generator",
             "value": "SwingArc"
-          },
-          "OpeningLabel2D": {
-            "kind": "Generator",
-            "value": "OpeningLabel"
           }
         }
       },
@@ -1371,17 +1371,9 @@
         "shape": "Rectangle",
         "spring_height": 0.0,
         "slots": {
-          "ElevationContour2D": {
-            "kind": "Generator",
-            "value": "ElevationFrameRect"
-          },
           "ElevationSwing2D": {
             "kind": "Generator",
             "value": "ElevationSwingTriangle"
-          },
-          "ElevationMuntins2D": {
-            "kind": "Generator",
-            "value": "ElevationMuntinsDouble"
           },
           "OpeningLabel2D": {
             "kind": "Generator",
@@ -1391,25 +1383,33 @@
             "kind": "Generator",
             "value": "SolidLeaf"
           },
+          "Frame2D": {
+            "kind": "Generator",
+            "value": "FrameRect"
+          },
           "Leaf2D": {
             "kind": "Generator",
             "value": "LeafLine"
+          },
+          "ElevationContour2D": {
+            "kind": "Generator",
+            "value": "ElevationFrameRect"
           },
           "Swing2D": {
             "kind": "Generator",
             "value": "SwingArc"
           },
-          "Threshold2D": {
-            "kind": "Generator",
-            "value": "ThresholdLine"
-          },
           "Frame3D": {
             "kind": "Generator",
             "value": "SolidFrame"
           },
-          "Frame2D": {
+          "Threshold2D": {
             "kind": "Generator",
-            "value": "FrameRect"
+            "value": "ThresholdLine"
+          },
+          "ElevationMuntins2D": {
+            "kind": "Generator",
+            "value": "ElevationMuntinsDouble"
           }
         }
       },
@@ -1430,7 +1430,7 @@
         "shape": "Rectangle",
         "spring_height": 0.0,
         "slots": {
-          "Mark2D": {
+          "BreakthroughSymbol2D": {
             "kind": "Generator",
             "value": "Cross"
           },
@@ -1438,13 +1438,13 @@
             "kind": "Generator",
             "value": "ElevationFrameRect"
           },
+          "Mark2D": {
+            "kind": "Generator",
+            "value": "Cross"
+          },
           "OpeningLabel2D": {
             "kind": "Generator",
             "value": "OpeningLabel"
-          },
-          "BreakthroughSymbol2D": {
-            "kind": "Generator",
-            "value": "Cross"
           }
         }
       },
@@ -1465,17 +1465,17 @@
         "shape": "Circle",
         "spring_height": 0.0,
         "slots": {
-          "BreakthroughSymbol2D": {
+          "OpeningLabel2D": {
             "kind": "Generator",
-            "value": "DiagonalFill"
+            "value": "OpeningLabel"
           },
           "ElevationContour2D": {
             "kind": "Generator",
             "value": "ElevationFrameArch"
           },
-          "OpeningLabel2D": {
+          "BreakthroughSymbol2D": {
             "kind": "Generator",
-            "value": "OpeningLabel"
+            "value": "DiagonalFill"
           }
         }
       }
@@ -1582,7 +1582,7 @@
             "layer_override": "A-FLOR-STRC",
             "hatch_override": "AR-CONC",
             "role_tag": "Stahlbetonplatte",
-            "layer_id": "4297f67c-8ffa-4faa-adb1-68649f043c4b"
+            "layer_id": "2d87cc32-be48-4188-800b-4eea5dcee6bc"
           }
         ]
       },
@@ -1600,7 +1600,7 @@
             "layer_override": "A-FLOR-STRC",
             "hatch_override": "AR-CONC",
             "role_tag": "Stahlbetonplatte",
-            "layer_id": "30dcbac5-9ccc-4c61-9133-326d47b40298"
+            "layer_id": "60018070-8a12-408d-a70c-4216046c7e41"
           }
         ]
       },
@@ -1618,7 +1618,7 @@
             "layer_override": "A-FLOR-STRC",
             "hatch_override": "AR-CONC",
             "role_tag": "Stahlbetonplatte",
-            "layer_id": "ee19f0d2-8ad4-4905-b57a-8abb1e9ad790"
+            "layer_id": "213fe234-ed1c-4cd8-95ab-276941ea880a"
           }
         ]
       },
@@ -1636,7 +1636,7 @@
             "layer_override": "A-FLOR-STRC",
             "hatch_override": "ANSI31",
             "role_tag": "Holzbalkenlage",
-            "layer_id": "0d82b24a-b185-4647-9c06-95f52817a79f"
+            "layer_id": "8a4514dc-97f5-431e-8263-2a2b542403ac"
           }
         ]
       }
@@ -1656,7 +1656,7 @@
             "layer_override": "A-FLOR-FINI",
             "hatch_override": "ANSI31",
             "role_tag": "Parkett",
-            "layer_id": "274ff891-12e1-4bfe-9b1f-818aeea8714a"
+            "layer_id": "e212f293-54fb-4749-ab7c-e52cd323c0a9"
           },
           {
             "material_id": "mat_screed",
@@ -1668,7 +1668,7 @@
             "layer_override": "A-FLOR-SCREED",
             "hatch_override": "DOTS",
             "role_tag": "Heizestrich",
-            "layer_id": "c5a0d3fc-077d-40bc-99a9-e9790cb5fb01"
+            "layer_id": "13ca340f-664d-40f8-b60b-da9f2b029bc3"
           },
           {
             "material_id": "mat_insulation",
@@ -1678,7 +1678,7 @@
             "layer_override": "A-FLOR-INSU",
             "hatch_override": "ANSI37",
             "role_tag": "Trittschalldaemmung",
-            "layer_id": "ced1c5e6-2341-40cc-a84e-19eec26c87d5"
+            "layer_id": "509f1cd6-02be-4f44-8588-10c139ab0a2f"
           }
         ]
       },
@@ -1696,7 +1696,7 @@
             "layer_override": "A-FLOR-FINI",
             "hatch_override": "SQUARE",
             "role_tag": "Fliesenbelag",
-            "layer_id": "090fc478-619c-4dc5-a9e0-3ede338d5982"
+            "layer_id": "e33dbd3e-bbd1-437e-9f3c-8db1942912f0"
           },
           {
             "material_id": "mat_screed",
@@ -1708,7 +1708,7 @@
             "layer_override": "A-FLOR-SCREED",
             "hatch_override": "DOTS",
             "role_tag": "Zementestrich",
-            "layer_id": "a28cdac3-f6d2-4425-8f25-b06d8b5958a6"
+            "layer_id": "4a2edf88-f6b4-4054-aafd-37cfa7a1a868"
           },
           {
             "material_id": "mat_insulation",
@@ -1718,7 +1718,7 @@
             "layer_override": "A-FLOR-INSU",
             "hatch_override": "ANSI37",
             "role_tag": "Trittschalldaemmung",
-            "layer_id": "198caddd-028f-4a36-9393-eadfc1a389ff"
+            "layer_id": "1c274d36-d93d-4bfe-a221-39bab1bc5f64"
           }
         ]
       },
@@ -1736,7 +1736,7 @@
             "layer_override": "A-FLOR-SCREED",
             "hatch_override": "DOTS",
             "role_tag": "Industrieestrich",
-            "layer_id": "6b07ce4c-4f3f-4170-b8d7-6412992b147e"
+            "layer_id": "df5aa9c3-74d4-4bb5-a31d-4fc712446b5a"
           }
         ]
       },
@@ -1754,7 +1754,7 @@
             "layer_override": "A-FLOR-FINI",
             "hatch_override": "DOTS",
             "role_tag": "Teppich",
-            "layer_id": "7f336db7-94a9-49a4-9576-0fb8b42bafed"
+            "layer_id": "76d0e6c3-8c2f-43e4-ac22-caeaf915fa31"
           },
           {
             "material_id": "mat_screed",
@@ -1766,7 +1766,7 @@
             "layer_override": "A-FLOR-SCREED",
             "hatch_override": "DOTS",
             "role_tag": "Estrich",
-            "layer_id": "0e97c792-9d12-42c3-9adc-8af3a7733152"
+            "layer_id": "7ae63096-6a0c-416c-a7fd-a006d94e87b3"
           },
           {
             "material_id": "mat_insulation",
@@ -1776,7 +1776,7 @@
             "layer_override": "A-FLOR-INSU",
             "hatch_override": "ANSI37",
             "role_tag": "Trittschall",
-            "layer_id": "81e565bc-2f78-43cc-9806-cad9cfdfd297"
+            "layer_id": "384d1f9e-e89f-4449-9557-44a1be5e7fcb"
           }
         ]
       },
@@ -1794,7 +1794,7 @@
             "layer_override": "A-FLOR-FINI",
             "hatch_override": "SQUARE",
             "role_tag": "Plattenbelag",
-            "layer_id": "fb9a9407-2956-494b-9e2e-65116a88c8ef"
+            "layer_id": "112df158-8181-4759-b616-7f9daef51cc5"
           },
           {
             "material_id": "mat_bitumen",
@@ -1806,7 +1806,7 @@
             "layer_override": "A-FLOR-SEAL",
             "hatch_override": "SOLID",
             "role_tag": "Abdichtung",
-            "layer_id": "9f0ff11a-d115-4871-be9e-7d30751c9154"
+            "layer_id": "d13aebde-cd09-4e5e-849d-7ee115accce7"
           },
           {
             "material_id": "mat_insulation",
@@ -1816,7 +1816,7 @@
             "layer_override": "A-FLOR-INSU",
             "hatch_override": "ANSI37",
             "role_tag": "Gefaelledaemmung",
-            "layer_id": "21f8973e-e4a3-4358-ba4c-619627ac9fd0"
+            "layer_id": "95bd114d-9d28-4bd6-b117-c98742f004c5"
           }
         ]
       }
@@ -1825,7 +1825,7 @@
   "display_config_library": {
     "configs": [
       {
-        "id": "c0c65ec6-e89e-4138-8d19-e6a4d5f868ac",
+        "id": "23a644c7-ef7c-431c-a0ad-a6b4d7d8a52a",
         "name": "Architektur 1:50",
         "discipline": "Architektur",
         "scale": 50.0,
@@ -1843,20 +1843,20 @@
         "preset": "werkplan-50",
         "component_visibility": {},
         "opening_visibility": {
+          "Sill2D": true,
+          "Threshold2D": true,
+          "Glazing2D": true,
+          "Swing2D": true,
+          "Frame2D": true,
           "HostCut2D": true,
           "Leaf2D": true,
-          "Threshold2D": true,
-          "Frame2D": true,
-          "Glazing2D": true,
-          "Sill2D": true,
-          "Swing2D": true,
           "OpeningLabel2D": true
         },
         "style_overrides": {},
         "contour_hatch": null
       },
       {
-        "id": "fe43e38e-84a1-4756-b78c-50c8f9268f85",
+        "id": "34b6f15b-8756-4e99-a0ba-b48b8ebeb315",
         "name": "Statik 1:50",
         "discipline": "Statik",
         "scale": 50.0,
@@ -1874,21 +1874,21 @@
         "preset": null,
         "component_visibility": {},
         "opening_visibility": {
-          "Sill2D": false,
+          "HostCut2D": true,
           "BreakthroughSymbol2D": true,
-          "Threshold2D": false,
+          "Swing2D": false,
           "Glazing2D": false,
           "Frame2D": false,
-          "OpeningLabel2D": true,
-          "Swing2D": false,
-          "HostCut2D": true,
-          "Leaf2D": false
+          "Sill2D": false,
+          "Threshold2D": false,
+          "Leaf2D": false,
+          "OpeningLabel2D": true
         },
         "style_overrides": {},
         "contour_hatch": null
       },
       {
-        "id": "e562bf0e-6b78-4ffb-af06-5e6e6080f5ba",
+        "id": "014c773a-4d94-4a04-9645-f809a92647f3",
         "name": "Entwurf 1:100",
         "discipline": "Architektur",
         "scale": 100.0,
@@ -1907,19 +1907,19 @@
         "component_visibility": {},
         "opening_visibility": {
           "Swing2D": true,
-          "Frame2D": true,
-          "Threshold2D": false,
-          "HostCut2D": true,
-          "Glazing2D": false,
-          "Leaf2D": true,
           "OpeningLabel2D": true,
+          "Threshold2D": false,
+          "Glazing2D": false,
+          "Frame2D": true,
+          "HostCut2D": true,
+          "Leaf2D": true,
           "Sill2D": true
         },
         "style_overrides": {},
         "contour_hatch": null
       },
       {
-        "id": "0d764954-d467-43e4-ae89-8ce0994a6e45",
+        "id": "9f72cfa2-8299-4a18-9bee-8ab5c8fc9a72",
         "name": "Ansicht Fassade",
         "discipline": "Architektur",
         "scale": null,
@@ -1937,19 +1937,19 @@
         "preset": null,
         "component_visibility": {},
         "opening_visibility": {
+          "Swing2D": false,
           "ElevationMuntins2D": true,
-          "ElevationSwing2D": true,
-          "ElevationSill2D": true,
+          "Leaf2D": false,
           "ElevationContour2D": true,
           "Frame2D": false,
-          "Leaf2D": false,
-          "Swing2D": false
+          "ElevationSwing2D": true,
+          "ElevationSill2D": true
         },
         "style_overrides": {},
         "contour_hatch": null
       },
       {
-        "id": "39fee783-f347-46e9-94f7-05e96e37a25c",
+        "id": "7cb3b877-2970-47d2-9c20-13cf7519c97f",
         "name": "3D Modell / Visualisierung",
         "discipline": "Visualisierung",
         "scale": null,
@@ -1967,22 +1967,22 @@
         "preset": null,
         "component_visibility": {},
         "opening_visibility": {
-          "Frame2D": false,
-          "Leaf3D": true,
-          "Glazing2D": false,
-          "Sill2D": false,
-          "Glazing3D": true,
           "Frame3D": true,
-          "Swing2D": false,
+          "Glazing2D": false,
           "Threshold2D": false,
           "OpeningLabel2D": false,
-          "Leaf2D": false
+          "Sill2D": false,
+          "Swing2D": false,
+          "Glazing3D": true,
+          "Frame2D": false,
+          "Leaf2D": false,
+          "Leaf3D": true
         },
         "style_overrides": {},
         "contour_hatch": null
       },
       {
-        "id": "fa4ac330-b129-42f7-9096-b98b1843fc04",
+        "id": "b08c2b0e-ea65-4aa3-9888-8f476a25a4b9",
         "name": "Deckenspiegel",
         "discipline": "Architektur",
         "scale": 50.0,
@@ -2004,7 +2004,7 @@
         "contour_hatch": null
       },
       {
-        "id": "3606579c-c062-480b-9df1-334ad9d82423",
+        "id": "bd2d9d3f-7069-4b36-b491-994aa37f22c4",
         "name": "Genehmigungsplanung 1:100",
         "discipline": "Architektur",
         "scale": 100.0,
@@ -2022,20 +2022,20 @@
         "preset": "entwurf-100",
         "component_visibility": {},
         "opening_visibility": {
-          "Swing2D": true,
-          "Threshold2D": false,
-          "Glazing2D": false,
-          "Sill2D": true,
           "Leaf2D": true,
           "OpeningLabel2D": true,
+          "HostCut2D": true,
+          "Sill2D": true,
           "Frame2D": true,
-          "HostCut2D": true
+          "Threshold2D": false,
+          "Swing2D": true,
+          "Glazing2D": false
         },
         "style_overrides": {},
         "contour_hatch": null
       },
       {
-        "id": "f916b6a7-1042-4a09-a262-9c1584402594",
+        "id": "6c428d25-33cd-48ba-a1a1-0d50a7a64923",
         "name": "Ausführungsplanung 1:50",
         "discipline": "Architektur",
         "scale": 50.0,
@@ -2054,19 +2054,19 @@
         "component_visibility": {},
         "opening_visibility": {
           "Frame2D": true,
-          "Sill2D": true,
-          "Leaf2D": true,
-          "Threshold2D": true,
-          "OpeningLabel2D": true,
-          "Swing2D": true,
           "Glazing2D": true,
-          "HostCut2D": true
+          "Swing2D": true,
+          "Sill2D": true,
+          "HostCut2D": true,
+          "Threshold2D": true,
+          "Leaf2D": true,
+          "OpeningLabel2D": true
         },
         "style_overrides": {},
         "contour_hatch": null
       },
       {
-        "id": "485358db-eb49-4c66-8e34-d20e702ebccd",
+        "id": "0c9f2148-ad2c-4203-8793-65aacdbc3b44",
         "name": "Genehmigungsplanung Schnitt 1:100",
         "discipline": "Architektur",
         "scale": 100.0,
@@ -2088,7 +2088,7 @@
         "contour_hatch": null
       },
       {
-        "id": "cfc0b27a-bcec-44e9-9a50-8551cf90d7d7",
+        "id": "ed7aec29-1b20-40cd-b716-bf9d1f373513",
         "name": "Ausführungsplanung Schnitt 1:50",
         "discipline": "Architektur",
         "scale": 50.0,
@@ -2110,7 +2110,7 @@
         "contour_hatch": null
       },
       {
-        "id": "c3f35378-11e9-4712-9927-01d16a8947bf",
+        "id": "31032995-5fb3-4d88-a236-c4f6705c7c1e",
         "name": "Genehmigungsplanung Ansichten 1:100",
         "discipline": "Architektur",
         "scale": 100.0,
@@ -2128,9 +2128,9 @@
         "preset": null,
         "component_visibility": {},
         "opening_visibility": {
+          "ElevationSwing2D": true,
           "ElevationSill2D": true,
           "ElevationContour2D": true,
-          "ElevationSwing2D": true,
           "ElevationMuntins2D": true
         },
         "style_overrides": {},

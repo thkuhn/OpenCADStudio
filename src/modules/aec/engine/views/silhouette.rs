@@ -6,6 +6,7 @@
 
 use super::provenance::{
     DerivedPrimitive, FeatureKey, Geometry2d, PrimitiveId, PrimitiveRole, ResolvedStyle, Rgba8,
+    SourceSet,
 };
 use super::{PaperMm, Point2, ValidationError};
 
@@ -34,6 +35,7 @@ impl Default for SilhouetteOptions {
 
 struct OpaquePolygon {
     depth_max: f64,
+    sources: SourceSet,
     ring: Vec<Point2>,
     holes: Vec<Vec<Point2>>,
     min_x: f64,
@@ -43,7 +45,12 @@ struct OpaquePolygon {
 }
 
 impl OpaquePolygon {
-    fn new(depth_max: f64, ring: Vec<Point2>, holes: Vec<Vec<Point2>>) -> Self {
+    fn new(
+        depth_max: f64,
+        sources: SourceSet,
+        ring: Vec<Point2>,
+        holes: Vec<Vec<Point2>>,
+    ) -> Self {
         let mut min_x = f64::INFINITY;
         let mut min_y = f64::INFINITY;
         let mut max_x = f64::NEG_INFINITY;
@@ -56,6 +63,7 @@ impl OpaquePolygon {
         }
         Self {
             depth_max,
+            sources,
             ring,
             holes,
             min_x,
@@ -95,6 +103,7 @@ pub fn process_silhouette_and_depth(
                 Geometry2d::Region { outer, holes } if outer.len() >= 3 => {
                     opaque_polygons.push(OpaquePolygon::new(
                         prim.depth.max_m,
+                        prim.sources.clone(),
                         outer.clone(),
                         holes.clone(),
                     ));
@@ -102,6 +111,7 @@ pub fn process_silhouette_and_depth(
                 Geometry2d::Polyline { vertices, closed: true } if vertices.len() >= 3 => {
                     opaque_polygons.push(OpaquePolygon::new(
                         prim.depth.max_m,
+                        prim.sources.clone(),
                         vertices.clone(),
                         vec![],
                     ));
@@ -131,6 +141,7 @@ pub fn process_silhouette_and_depth(
                     start,
                     end,
                     prim_depth,
+                    &prim.sources,
                     &opaque_polygons,
                     options.emit_hidden_lines,
                 );
@@ -162,6 +173,7 @@ pub fn process_silhouette_and_depth(
                         p0,
                         p1,
                         prim_depth,
+                        &prim.sources,
                         &opaque_polygons,
                         options.emit_hidden_lines,
                     );
@@ -270,6 +282,7 @@ fn clip_segment_against_polygons(
     start: Point2,
     end: Point2,
     seg_depth: f64,
+    segment_sources: &SourceSet,
     polygons: &[OpaquePolygon],
     emit_hidden: bool,
 ) -> Vec<(Point2, Point2, bool)> {
@@ -288,8 +301,16 @@ fn clip_segment_against_polygons(
     let mut current_intervals: Vec<(f64, f64, SegmentState)> = vec![(0.0, 1.0, SegmentState::Visible)];
 
     for poly in polygons {
-        if poly.depth_max >= seg_depth - 1e-4 {
-            continue; // Polygon is behind or at the same depth as the segment
+        if poly.depth_max >= seg_depth - 1e-4
+            || poly.sources.as_slice().iter().any(|occluder_source| {
+                occluder_source.feature == Some(FeatureKey::OpeningSill)
+                    && segment_sources
+                        .as_slice()
+                        .iter()
+                        .any(|segment_source| segment_source.element == occluder_source.element)
+            })
+        {
+            continue; // An opening mask must not clip its own symbol.
         }
 
         if seg_max_x < poly.min_x || seg_min_x > poly.max_x || seg_max_y < poly.min_y || seg_min_y > poly.max_y {
@@ -974,7 +995,8 @@ mod tests {
     #[test]
     fn test_collinear_background_edge_on_boundary_dropped() {
         let mv_id = ModelViewId::new();
-        let sources = make_test_source();
+        let wall_sources = make_test_source();
+        let background_sources = make_test_source();
 
         // Foreground cut wall at depth 0.0 covering [0,0] to [4,4]
         let wall_cut = DerivedPrimitive {
@@ -989,7 +1011,7 @@ mod tests {
                 ],
                 holes: vec![],
             },
-            sources: sources.clone(),
+            sources: wall_sources,
             depth: DepthInterval::new(0.0, 0.0).unwrap(),
             style: ResolvedStyle::solid_stroke(PaperMm::new(0.25).unwrap()),
             edit_handles: vec![],
@@ -1003,7 +1025,7 @@ mod tests {
                 start: Point2::new(0.0, 0.0),
                 end: Point2::new(4.0, 0.0),
             },
-            sources,
+            sources: background_sources,
             depth: DepthInterval::new(1.0, 1.0).unwrap(),
             style: ResolvedStyle::solid_stroke(PaperMm::new(0.25).unwrap()),
             edit_handles: vec![],
@@ -1030,7 +1052,8 @@ mod tests {
     #[test]
     fn test_partially_occluded_segment_visible_and_hidden() {
         let mv_id = ModelViewId::new();
-        let sources = make_test_source();
+        let wall_sources = make_test_source();
+        let background_sources = make_test_source();
 
         // Foreground cut wall covering [2,0] to [6,4] at depth 0.0
         let wall_cut = DerivedPrimitive {
@@ -1045,7 +1068,7 @@ mod tests {
                 ],
                 holes: vec![],
             },
-            sources: sources.clone(),
+            sources: wall_sources,
             depth: DepthInterval::new(0.0, 0.0).unwrap(),
             style: ResolvedStyle::solid_stroke(PaperMm::new(0.25).unwrap()),
             edit_handles: vec![],
@@ -1059,7 +1082,7 @@ mod tests {
                 start: Point2::new(0.0, 2.0),
                 end: Point2::new(4.0, 2.0),
             },
-            sources,
+            sources: background_sources,
             depth: DepthInterval::new(1.0, 1.0).unwrap(),
             style: ResolvedStyle::solid_stroke(PaperMm::new(0.25).unwrap()),
             edit_handles: vec![],
@@ -1096,6 +1119,77 @@ mod tests {
         } else {
             panic!("Expected Line geometry");
         }
+    }
+
+    #[test]
+    fn test_opening_occluder_preserves_own_contour_and_hides_background() {
+        let mv_id = ModelViewId::new();
+        let opening_element = ElementRef::new(ModelId::new(), ElementId::new());
+        let opening_sources = SourceSet::new(vec![SourceReference {
+            element: opening_element,
+            xref_source: None,
+            component_id: None,
+            feature: Some(FeatureKey::OpeningSill),
+            display_component_id: None,
+        }])
+        .unwrap();
+        let wall_sources = make_test_source();
+
+        let opening_fill = DerivedPrimitive {
+            id: PrimitiveId::new(mv_id, 0, 1),
+            role: PrimitiveRole::SurfaceFill,
+            geometry: Geometry2d::Region {
+                outer: vec![
+                    Point2::new(0.0, 0.0),
+                    Point2::new(2.0, 0.0),
+                    Point2::new(2.0, 2.0),
+                    Point2::new(0.0, 2.0),
+                ],
+                holes: vec![],
+            },
+            sources: opening_sources.clone(),
+            depth: DepthInterval::new(0.0, 0.0).unwrap(),
+            style: ResolvedStyle::solid_stroke(PaperMm::new(0.25).unwrap()),
+            edit_handles: vec![],
+        };
+        let opening_contour = DerivedPrimitive {
+            id: PrimitiveId::new(mv_id, 0, 2),
+            role: PrimitiveRole::ProjectedEdge,
+            geometry: Geometry2d::Line {
+                start: Point2::new(0.5, 1.0),
+                end: Point2::new(1.5, 1.0),
+            },
+            sources: opening_sources,
+            depth: DepthInterval::new(0.001, 0.001).unwrap(),
+            style: ResolvedStyle::solid_stroke(PaperMm::new(0.25).unwrap()),
+            edit_handles: vec![],
+        };
+        let background_edge = DerivedPrimitive {
+            id: PrimitiveId::new(mv_id, 0, 3),
+            role: PrimitiveRole::ProjectedEdge,
+            geometry: Geometry2d::Line {
+                start: Point2::new(0.5, 1.5),
+                end: Point2::new(1.5, 1.5),
+            },
+            sources: wall_sources,
+            depth: DepthInterval::new(0.001, 0.001).unwrap(),
+            style: ResolvedStyle::solid_stroke(PaperMm::new(0.25).unwrap()),
+            edit_handles: vec![],
+        };
+
+        let mut prims = vec![opening_fill, opening_contour, background_edge];
+        process_silhouette_and_depth(&mut prims, &SilhouetteOptions::default()).unwrap();
+
+        let projected_edges: Vec<_> = prims
+            .iter()
+            .filter(|prim| prim.role == PrimitiveRole::ProjectedEdge)
+            .collect();
+        assert_eq!(projected_edges.len(), 1, "Only the opening's own contour should remain");
+        assert_eq!(
+            projected_edges[0].sources.primary_element(),
+            Some(opening_element),
+            "The opening contour must not be clipped by its own opaque fill"
+        );
     }
 
     #[test]

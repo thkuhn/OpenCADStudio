@@ -1042,7 +1042,7 @@ fn build_master_geometry(
         id: ViewpointId::new(),
         name: "Suedansicht".to_string(),
         revision: Revision(1),
-        origin: ViewOrigin::World(Point3::new(0.0, -2.0, -3.0)),
+        origin: ViewOrigin::World(Point3::new(0.0, -2.0, 0.0)),
         axes: ViewAxes::new(
             ViewVector3::new(1.0, 0.0, 0.0),
             ViewVector3::new(0.0, 0.0, 1.0),
@@ -1112,7 +1112,7 @@ fn build_master_geometry(
         id: ViewpointId::new(),
         name: "Nordansicht".to_string(),
         revision: Revision(1),
-        origin: ViewOrigin::World(Point3::new(10.0, 10.0, -3.0)),
+        origin: ViewOrigin::World(Point3::new(10.0, 10.0, 0.0)),
         axes: ViewAxes::new(
             ViewVector3::new(-1.0, 0.0, 0.0),
             ViewVector3::new(0.0, 0.0, 1.0),

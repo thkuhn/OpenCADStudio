@@ -230,6 +230,13 @@ pub fn read_junction_override(
     end_index: usize,
 ) -> Option<join::JunctionOverride> {
     let entity = scene.document.get_entity(axis_handle)?;
+    read_junction_override_from_entity(entity, end_index)
+}
+
+pub(crate) fn read_junction_override_from_entity(
+    entity: &EntityType,
+    end_index: usize,
+) -> Option<join::JunctionOverride> {
     let end_index = join_override_end_key(end_index);
     entity
         .common()

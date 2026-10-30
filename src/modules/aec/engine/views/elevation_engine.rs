@@ -20,11 +20,23 @@ use crate::modules::aec::engine::openings::{OpeningKind, SwingSide};
 use crate::modules::aec::engine::plan_view::DisplayConfig;
 use super::style_resolver::{
     is_draw_suppressed, is_opening_slot_visible, is_wall_phase_visible,
+    is_slab_layer_active, resolve_slab_layer_cut_style,
     resolve_opening_view_fill_style, resolve_opening_view_style,
     resolve_wall_elevation_contour_style, ViewStyleContext,
 };
 
 const EPS: f64 = 1e-6;
+const OPENING_SURFACE_DEPTH_OFFSET: f64 = 1e-3;
+
+/// Projects a facade point: horizontal station from the view axes, vertical
+/// station from world Z on the same datum as a section cut.
+fn project_facade_point(viewpoint: &Viewpoint, point: Point3) -> (Point2, f64) {
+    let (uv, depth) = viewpoint.world_to_view(point);
+    (
+        Point2::new(uv.x_m, viewpoint.paper_elevation(point.z_m)),
+        depth,
+    )
+}
 
 #[derive(Clone, Debug)]
 pub struct ElevationEngineOptions {
@@ -182,10 +194,10 @@ pub fn project_wall_elevation(
         let pt0_top = Point3::new(p0.x_m, p0.y_m, wall.top_z);
         let pt1_top = Point3::new(p1.x_m, p1.y_m, wall.top_z);
 
-        let (uv0_base, d0_base) = viewpoint.world_to_view(pt0_base);
-        let (uv1_base, d1_base) = viewpoint.world_to_view(pt1_base);
-        let (uv0_top, _) = viewpoint.world_to_view(pt0_top);
-        let (uv1_top, _) = viewpoint.world_to_view(pt1_top);
+        let (uv0_base, d0_base) = project_facade_point(viewpoint, pt0_base);
+        let (uv1_base, d1_base) = project_facade_point(viewpoint, pt1_base);
+        let (uv0_top, _) = project_facade_point(viewpoint, pt0_top);
+        let (uv1_top, _) = project_facade_point(viewpoint, pt1_top);
 
         let avg_depth = (d0_base + d1_base) * 0.5;
         if avg_depth < near_depth - EPS || avg_depth > far_depth + EPS {
@@ -272,31 +284,12 @@ pub fn project_wall_elevation(
         // Wall Opaque Surface Mask (used for 3D occlusion clipping)
         *counter += 1;
         let surface_poly = vec![uv0_base, uv1_base, uv1_top, uv0_top];
-        let seg_len = (p1.x_m - p0.x_m).hypot(p1.y_m - p0.y_m);
-        let mut opening_holes = Vec::new();
-        if options.include_opening_symbols && seg_len > EPS {
-            let dir = Vector2::new((p1.x_m - p0.x_m) / seg_len, (p1.y_m - p0.y_m) / seg_len);
-            for op in &wall.openings {
-                let (s_lo, s_hi) = op.axis_span_local;
-                let z_sill = wall.base_z + op.sill_height;
-                let z_head = z_sill + op.height;
-                let pt_bl = Point3::new(p0.x_m + dir.x * s_lo, p0.y_m + dir.y * s_lo, z_sill);
-                let pt_br = Point3::new(p0.x_m + dir.x * s_hi, p0.y_m + dir.y * s_hi, z_sill);
-                let pt_tl = Point3::new(p0.x_m + dir.x * s_lo, p0.y_m + dir.y * s_lo, z_head);
-                let pt_tr = Point3::new(p0.x_m + dir.x * s_hi, p0.y_m + dir.y * s_hi, z_head);
-                let (uv_bl, _) = viewpoint.world_to_view(pt_bl);
-                let (uv_br, _) = viewpoint.world_to_view(pt_br);
-                let (uv_tr, _) = viewpoint.world_to_view(pt_tr);
-                let (uv_tl, _) = viewpoint.world_to_view(pt_tl);
-                opening_holes.push(vec![uv_bl, uv_br, uv_tr, uv_tl]);
-            }
-        }
         primitives.push(DerivedPrimitive {
             id: PrimitiveId::new(model_view.id, 1, *counter),
             role: PrimitiveRole::SurfaceFill,
             geometry: Geometry2d::Region {
                 outer: surface_poly,
-                holes: opening_holes,
+                holes: vec![],
             },
             sources: SourceSet::new(vec![wall_source])?,
             depth: DepthInterval::new(avg_depth, avg_depth)?,
@@ -308,28 +301,27 @@ pub fn project_wall_elevation(
                 hatch_pattern: None,
                 hatch_scale: None,
                 hatch_angle_rad: None,
-                layer_name: Some("AEC_SECTION_SURFACE".to_string()),
+                layer_name: Some(super::silhouette::TRANSIENT_OCCLUDER_LAYER.to_string()),
             },
             edit_handles: vec![],
         });
 
-        // Openings on this wall
-        if options.include_opening_symbols {
-            for op in &wall.openings {
-                project_opening_elevation(
-                    op,
-                    wall,
-                    p0,
-                    p1,
-                    viewpoint,
-                    near_depth,
-                    far_depth,
-                    model_view,
-                    ctx,
-                    primitives,
-                    counter,
-                )?;
-            }
+        // Opening surfaces participate in occlusion independently of their visible symbols.
+        for op in &wall.openings {
+            project_opening_elevation(
+                op,
+                wall,
+                p0,
+                p1,
+                viewpoint,
+                near_depth,
+                far_depth,
+                model_view,
+                ctx,
+                options.include_opening_symbols,
+                primitives,
+                counter,
+            )?;
         }
     }
 
@@ -346,6 +338,7 @@ fn project_opening_elevation(
     far_depth: f64,
     model_view: &ModelView,
     ctx: &ViewStyleContext,
+    include_symbols: bool,
     primitives: &mut Vec<DerivedPrimitive>,
     counter: &mut u32,
 ) -> Result<(), ValidationError> {
@@ -370,10 +363,10 @@ fn project_opening_elevation(
     let pt_tl = Point3::new(w_p0.x_m + dir.x * s_lo, w_p0.y_m + dir.y * s_lo, z_head);
     let pt_tr = Point3::new(w_p0.x_m + dir.x * s_hi, w_p0.y_m + dir.y * s_hi, z_head);
 
-    let (uv_bl, d_bl) = viewpoint.world_to_view(pt_bl);
-    let (uv_br, d_br) = viewpoint.world_to_view(pt_br);
-    let (uv_tl, _) = viewpoint.world_to_view(pt_tl);
-    let (uv_tr, _) = viewpoint.world_to_view(pt_tr);
+    let (uv_bl, d_bl) = project_facade_point(viewpoint, pt_bl);
+    let (uv_br, d_br) = project_facade_point(viewpoint, pt_br);
+    let (uv_tl, _) = project_facade_point(viewpoint, pt_tl);
+    let (uv_tr, _) = project_facade_point(viewpoint, pt_tr);
 
     let avg_depth = (d_bl + d_br) * 0.5;
     if avg_depth < near_depth - EPS || avg_depth > far_depth + EPS {
@@ -405,7 +398,7 @@ fn project_opening_elevation(
             hatch_pattern: None,
             hatch_scale: None,
             hatch_angle_rad: None,
-            layer_name: Some("AEC_OPENING_SURFACE".to_string()),
+            layer_name: Some(super::silhouette::TRANSIENT_OCCLUDER_LAYER.to_string()),
         }
     });
 
@@ -418,10 +411,17 @@ fn project_opening_elevation(
             holes: vec![],
         },
         sources: SourceSet::new(vec![op_source.clone()])?,
-        depth: DepthInterval::new(avg_depth, avg_depth)?,
+        depth: DepthInterval::new(
+            avg_depth - OPENING_SURFACE_DEPTH_OFFSET,
+            avg_depth - OPENING_SURFACE_DEPTH_OFFSET,
+        )?,
         style: fill_style,
         edit_handles: vec![],
     });
+
+    if !include_symbols {
+        return Ok(());
+    }
 
     // 1. ElevationContour2D: Outer frame contour
     if is_opening_slot_visible(ctx, op, OpeningComponentSlot::ElevationContour2D) {
@@ -465,14 +465,7 @@ fn project_opening_elevation(
     if (op.kind == OpeningKind::Window || op.kind == OpeningKind::Door)
         && is_opening_slot_visible(ctx, op, OpeningComponentSlot::ElevationSwing2D)
     {
-        let wall_screen_ltr = uv_bl.x_m <= uv_br.x_m;
-        let (screen_left_bot, screen_left_top, screen_right_bot, screen_right_top) = if wall_screen_ltr {
-            (uv_bl, uv_tl, uv_br, uv_tr)
-        } else {
-            (uv_br, uv_tr, uv_bl, uv_tl)
-        };
-
-        let w_normal = Vector2::new(-seg_vec.y, seg_vec.x);
+        let w_normal = Vector2::new(-dir.y, dir.x);
         let view_dir = viewpoint.axes.forward;
         let dot_normal = view_dir.x * w_normal.x + view_dir.y * w_normal.y;
 
@@ -482,30 +475,17 @@ fn project_opening_elevation(
             op.swing_side == SwingSide::Interior
         };
 
-        let hinge_on_screen_left = if observer_on_swing_side {
-            op.hinge == HingeSide::Left
-        } else {
-            op.hinge == HingeSide::Right
+        let (hinge_top, hinge_bot, strike_top, strike_bot) = match op.hinge {
+            HingeSide::Left => (uv_tl, uv_bl, uv_tr, uv_br),
+            HingeSide::Right => (uv_tr, uv_br, uv_tl, uv_bl),
         };
 
-        let (hinge_top, hinge_bot, strike_x, strike_mid_y) = if hinge_on_screen_left {
-            (
-                screen_left_top,
-                screen_left_bot,
-                screen_right_top.x_m,
-                (screen_right_bot.y_m + screen_right_top.y_m) * 0.5,
-            )
-        } else {
-            (
-                screen_right_top,
-                screen_right_bot,
-                screen_left_top.x_m,
-                (screen_left_bot.y_m + screen_left_top.y_m) * 0.5,
-            )
-        };
-
-        let apex = Point2::new(strike_x, strike_mid_y);
-        let swing_pts = vec![hinge_top, apex, hinge_bot];
+        // The tip marks the hinge jamb. A tip on the strike reads as a mirrored leaf.
+        let apex = Point2::new(
+            (hinge_top.x_m + hinge_bot.x_m) * 0.5,
+            (hinge_top.y_m + hinge_bot.y_m) * 0.5,
+        );
+        let swing_pts = vec![strike_top, apex, strike_bot];
 
         let mut swing_style = resolve_opening_view_style(ctx, op, OpeningComponentSlot::ElevationSwing2D);
         if observer_on_swing_side && swing_style.line_type.as_deref() == Some("DASHED") {
@@ -574,93 +554,109 @@ pub fn project_slab_elevation(
         return Ok(());
     }
 
-    let z_bot = slab.base_z;
-    let z_top = slab.base_z + slab.total_thickness;
+    let active_layers: Vec<_> = slab
+        .layers
+        .iter()
+        .enumerate()
+        .filter(|(index, _)| is_slab_layer_active(ctx, slab, *index))
+        .collect();
+    if active_layers.is_empty() {
+        return Ok(());
+    }
+    let layer_ranges = slab.layer_z_ranges();
+    let contour_style =
+        crate::modules::aec::engine::views::style_resolver::resolve_slab_contour_style(ctx, slab, false);
 
     for i in 0..n {
         let p0 = slab.polygon[i];
         let p1 = slab.polygon[(i + 1) % n];
 
-        let pt0_bot = Point3::new(p0.x_m, p0.y_m, z_bot);
-        let pt1_bot = Point3::new(p1.x_m, p1.y_m, z_bot);
-        let pt0_top = Point3::new(p0.x_m, p0.y_m, z_top);
-        let pt1_top = Point3::new(p1.x_m, p1.y_m, z_top);
+        for (layer_idx, layer) in &active_layers {
+            let (z_top, z_bottom) = layer_ranges[*layer_idx];
+            let (uv0_top, d0_top) = project_facade_point(viewpoint, Point3::new(p0.x_m, p0.y_m, z_top));
+            let (uv1_top, d1_top) = project_facade_point(viewpoint, Point3::new(p1.x_m, p1.y_m, z_top));
+            let (uv0_bottom, d0_bottom) =
+                project_facade_point(viewpoint, Point3::new(p0.x_m, p0.y_m, z_bottom));
+            let (uv1_bottom, d1_bottom) =
+                project_facade_point(viewpoint, Point3::new(p1.x_m, p1.y_m, z_bottom));
+            let avg_depth = (d0_top + d1_top + d0_bottom + d1_bottom) * 0.25;
+            if avg_depth < near_depth - EPS || avg_depth > far_depth + EPS {
+                continue;
+            }
 
-        let (uv0_bot, d0) = viewpoint.world_to_view(pt0_bot);
-        let (uv1_bot, d1) = viewpoint.world_to_view(pt1_bot);
-        let (uv0_top, _) = viewpoint.world_to_view(pt0_top);
-        let (uv1_top, _) = viewpoint.world_to_view(pt1_top);
+            let (boundary_style, fill_style) = resolve_slab_layer_cut_style(ctx, slab, *layer_idx);
+            let layer_source = SourceReference {
+                element: slab.element_ref,
+                xref_source: slab.xref_source.clone(),
+                component_id: Some(layer.component_id),
+                feature: Some(FeatureKey::LayerFace),
+                display_component_id: None,
+            };
 
-        let avg_depth = (d0 + d1) * 0.5;
-        if avg_depth < near_depth - EPS || avg_depth > far_depth + EPS {
-            continue;
-        }
+            let previous_layer_active = *layer_idx > 0
+                && is_slab_layer_active(ctx, slab, *layer_idx - 1);
+            let next_layer_active = *layer_idx + 1 < slab.layers.len()
+                && is_slab_layer_active(ctx, slab, *layer_idx + 1);
+            if !previous_layer_active {
+                *counter += 1;
+                primitives.push(DerivedPrimitive {
+                    id: PrimitiveId::new(model_view.id, 1, *counter),
+                    role: PrimitiveRole::ProjectedEdge,
+                    geometry: Geometry2d::Line {
+                        start: uv0_top,
+                        end: uv1_top,
+                    },
+                    sources: SourceSet::new(vec![layer_source.clone()])?,
+                    depth: DepthInterval::new(avg_depth, avg_depth)?,
+                    style: boundary_style.clone().unwrap_or_else(|| contour_style.clone()),
+                    edit_handles: vec![],
+                });
+            }
+            let bottom_boundary_style = if next_layer_active {
+                boundary_style.clone()
+            } else {
+                boundary_style.clone().or_else(|| Some(contour_style.clone()))
+            };
+            if let Some(bottom_boundary_style) = bottom_boundary_style {
+                *counter += 1;
+                primitives.push(DerivedPrimitive {
+                    id: PrimitiveId::new(model_view.id, 1, *counter),
+                    role: PrimitiveRole::ProjectedEdge,
+                    geometry: Geometry2d::Line {
+                        start: uv0_bottom,
+                        end: uv1_bottom,
+                    },
+                    sources: SourceSet::new(vec![layer_source.clone()])?,
+                    depth: DepthInterval::new(avg_depth, avg_depth)?,
+                    style: bottom_boundary_style,
+                    edit_handles: vec![],
+                });
+            }
 
-        let slab_source = SourceReference {
-            element: slab.element_ref,
-            xref_source: slab.xref_source.clone(),
-            component_id: None,
-            feature: Some(FeatureKey::SlabTop),
-            display_component_id: None,
-        };
-
-        let style = crate::modules::aec::engine::views::style_resolver::resolve_slab_contour_style(ctx, slab, false);
-
-        *counter += 1;
-        primitives.push(DerivedPrimitive {
-            id: PrimitiveId::new(model_view.id, 1, *counter),
-            role: PrimitiveRole::ProjectedEdge,
-            geometry: Geometry2d::Line {
-                start: uv0_top,
-                end: uv1_top,
-            },
-            sources: SourceSet::new(vec![slab_source.clone()])?,
-            depth: DepthInterval::new(avg_depth, avg_depth)?,
-            style: style.clone(),
-            edit_handles: vec![],
-        });
-
-        let mut bot_source = slab_source.clone();
-        bot_source.feature = Some(FeatureKey::SlabBottom);
-        *counter += 1;
-        primitives.push(DerivedPrimitive {
-            id: PrimitiveId::new(model_view.id, 1, *counter),
-            role: PrimitiveRole::ProjectedEdge,
-            geometry: Geometry2d::Line {
-                start: uv0_bot,
-                end: uv1_bot,
-            },
-            sources: SourceSet::new(vec![bot_source])?,
-            depth: DepthInterval::new(avg_depth, avg_depth)?,
-            style,
-            edit_handles: vec![],
-        });
-
-        // Slab vertical face opaque surface mask
-        if (uv1_bot.x_m - uv0_bot.x_m).abs() > EPS || (uv1_bot.y_m - uv0_bot.y_m).abs() > EPS {
-            *counter += 1;
-            let slab_poly = vec![uv0_bot, uv1_bot, uv1_top, uv0_top];
-            primitives.push(DerivedPrimitive {
-                id: PrimitiveId::new(model_view.id, 1, *counter),
-                role: PrimitiveRole::SurfaceFill,
-                geometry: Geometry2d::Region {
-                    outer: slab_poly,
-                    holes: vec![],
-                },
-                sources: SourceSet::new(vec![slab_source])?,
-                depth: DepthInterval::new(avg_depth, avg_depth)?,
-                style: ResolvedStyle {
-                    line_weight_mm: PaperMm::new(0.18)?,
-                    line_color: None,
-                    line_type: None,
-                    fill_color: None,
-                    hatch_pattern: None,
-                    hatch_scale: None,
-                    hatch_angle_rad: None,
-                    layer_name: Some("AEC_SECTION_SURFACE".to_string()),
-                },
-                edit_handles: vec![],
-            });
+            if (uv1_bottom.x_m - uv0_bottom.x_m).hypot(uv1_bottom.y_m - uv0_bottom.y_m) > EPS {
+                *counter += 1;
+                primitives.push(DerivedPrimitive {
+                    id: PrimitiveId::new(model_view.id, 1, *counter),
+                    role: PrimitiveRole::SurfaceFill,
+                    geometry: Geometry2d::Region {
+                        outer: vec![uv0_bottom, uv1_bottom, uv1_top, uv0_top],
+                        holes: vec![],
+                    },
+                    sources: SourceSet::new(vec![layer_source])?,
+                    depth: DepthInterval::new(avg_depth, avg_depth)?,
+                    style: fill_style.unwrap_or(ResolvedStyle {
+                        line_weight_mm: PaperMm::new(0.18)?,
+                        line_color: None,
+                        line_type: None,
+                        fill_color: None,
+                        hatch_pattern: None,
+                        hatch_scale: None,
+                        hatch_angle_rad: None,
+                        layer_name: Some(super::silhouette::TRANSIENT_OCCLUDER_LAYER.to_string()),
+                    }),
+                    edit_handles: vec![],
+                });
+            }
         }
     }
 

@@ -679,11 +679,10 @@ fn cut_slab_with_segment(
         return Ok(());
     }
 
-    let mut current_z = slab.base_z;
-
-    for (layer_idx, layer) in slab.layers.iter().enumerate() {
+    for (layer_idx, (layer, (z_top, z_bottom))) in
+        slab.layers.iter().zip(slab.layer_z_ranges()).enumerate()
+    {
         if !is_slab_layer_active(ctx, slab, layer_idx) {
-            current_z += layer.thickness;
             continue;
         }
 
@@ -692,10 +691,6 @@ fn cut_slab_with_segment(
             boundary_style_opt = None;
             fill_style_opt = None;
         }
-
-        let z_bottom = current_z;
-        let z_top = current_z + layer.thickness;
-        current_z += layer.thickness;
 
         // For each entry/exit pair through the slab polygon
         for chunk in intersections.chunks_exact(2) {
