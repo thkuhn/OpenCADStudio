@@ -417,15 +417,21 @@
         "name": "Stahlbeton",
         "parent": null,
         "category": "Material",
-        "hatch_pattern": "AR-CONC",
-        "line_color": 8947848,
+        "hatch_pattern": "ANSI33",
+        "line_color": 65280,
         "line_type": "Continuous",
         "render_material_ref": null,
         "group": "Beton",
-        "hatch_color": null,
-        "hatch_scale": 1.0,
+        "hatch_color": {
+          "Rgb": {
+            "r": 255,
+            "g": 127,
+            "b": 191
+          }
+        },
+        "hatch_scale": 0.002,
         "hatch_angle": 0.0,
-        "hatch_angle_relative": true
+        "hatch_angle_relative": false
       },
       {
         "id": "mat_insulation",
@@ -651,7 +657,7 @@
         "name": "WU_Stahlbeton",
         "parent": null,
         "category": "Material",
-        "hatch_pattern": "JIS_STN_2.5",
+        "hatch_pattern": "ANSI34",
         "line_color": 65280,
         "line_type": "Continuous",
         "render_material_ref": null,
@@ -1300,45 +1306,45 @@
         "shape": "Rectangle",
         "spring_height": 0.0,
         "slots": {
-          "OpeningLabel2D": {
+          "Sill2D": {
             "kind": "Generator",
-            "value": "OpeningLabel"
-          },
-          "Leaf2D": {
-            "kind": "Generator",
-            "value": "LeafLine"
+            "value": "SillLines"
           },
           "Glazing3D": {
             "kind": "Generator",
             "value": "SolidGlazing"
           },
-          "Glazing2D": {
+          "OpeningLabel2D": {
             "kind": "Generator",
-            "value": "GlazingLine"
-          },
-          "ElevationContour2D": {
-            "kind": "Generator",
-            "value": "ElevationFrameRect"
-          },
-          "Sill2D": {
-            "kind": "Generator",
-            "value": "SillLines"
-          },
-          "ElevationSill2D": {
-            "kind": "Generator",
-            "value": "ElevationSillLine"
+            "value": "OpeningLabel"
           },
           "ElevationSwing2D": {
             "kind": "Generator",
             "value": "ElevationSwingTriangle"
           },
+          "Frame2D": {
+            "kind": "Generator",
+            "value": "FrameRect"
+          },
+          "Leaf2D": {
+            "kind": "Generator",
+            "value": "LeafLine"
+          },
           "Frame3D": {
             "kind": "Generator",
             "value": "SolidFrame"
           },
-          "Frame2D": {
+          "Glazing2D": {
             "kind": "Generator",
-            "value": "FrameRect"
+            "value": "GlazingLine"
+          },
+          "ElevationSill2D": {
+            "kind": "Generator",
+            "value": "ElevationSillLine"
+          },
+          "ElevationContour2D": {
+            "kind": "Generator",
+            "value": "ElevationFrameRect"
           }
         }
       },
@@ -1359,37 +1365,17 @@
         "shape": "Rectangle",
         "spring_height": 0.0,
         "slots": {
-          "Glazing2D": {
-            "kind": "Generator",
-            "value": "GlazingLine"
-          },
           "Frame2D": {
             "kind": "Generator",
             "value": "FrameRect"
           },
-          "Glazing3D": {
-            "kind": "Generator",
-            "value": "SolidGlazing"
-          },
-          "ElevationMuntins2D": {
-            "kind": "Generator",
-            "value": "ElevationMuntinsDouble"
-          },
-          "Leaf2D": {
-            "kind": "Generator",
-            "value": "LeafLine"
-          },
-          "ElevationSill2D": {
-            "kind": "Generator",
-            "value": "ElevationSillLine"
-          },
-          "OpeningLabel2D": {
-            "kind": "Generator",
-            "value": "OpeningLabel"
-          },
           "ElevationSwing2D": {
             "kind": "Generator",
             "value": "ElevationSwingTriangle"
+          },
+          "ElevationContour2D": {
+            "kind": "Generator",
+            "value": "ElevationFrameRect"
           },
           "Sill2D": {
             "kind": "Generator",
@@ -1399,9 +1385,29 @@
             "kind": "Generator",
             "value": "SolidFrame"
           },
-          "ElevationContour2D": {
+          "Glazing2D": {
             "kind": "Generator",
-            "value": "ElevationFrameRect"
+            "value": "GlazingLine"
+          },
+          "ElevationMuntins2D": {
+            "kind": "Generator",
+            "value": "ElevationMuntinsDouble"
+          },
+          "Leaf2D": {
+            "kind": "Generator",
+            "value": "LeafLine"
+          },
+          "Glazing3D": {
+            "kind": "Generator",
+            "value": "SolidGlazing"
+          },
+          "ElevationSill2D": {
+            "kind": "Generator",
+            "value": "ElevationSillLine"
+          },
+          "OpeningLabel2D": {
+            "kind": "Generator",
+            "value": "OpeningLabel"
           }
         }
       },
@@ -1426,22 +1432,6 @@
             "kind": "Generator",
             "value": "SolidFrame"
           },
-          "Leaf2D": {
-            "kind": "Generator",
-            "value": "LeafLine"
-          },
-          "Sill2D": {
-            "kind": "Generator",
-            "value": "SillLines"
-          },
-          "ElevationSwing2D": {
-            "kind": "Generator",
-            "value": "ElevationSwingTriangle"
-          },
-          "ElevationSill2D": {
-            "kind": "Generator",
-            "value": "ElevationSillLine"
-          },
           "Frame2D": {
             "kind": "Generator",
             "value": "FrameRect"
@@ -1450,17 +1440,33 @@
             "kind": "Generator",
             "value": "ElevationFrameArch"
           },
-          "OpeningLabel2D": {
+          "Sill2D": {
             "kind": "Generator",
-            "value": "OpeningLabel"
+            "value": "SillLines"
           },
           "Glazing3D": {
             "kind": "Generator",
             "value": "SolidGlazing"
           },
+          "Leaf2D": {
+            "kind": "Generator",
+            "value": "LeafLine"
+          },
+          "ElevationSill2D": {
+            "kind": "Generator",
+            "value": "ElevationSillLine"
+          },
           "Glazing2D": {
             "kind": "Generator",
             "value": "GlazingLine"
+          },
+          "ElevationSwing2D": {
+            "kind": "Generator",
+            "value": "ElevationSwingTriangle"
+          },
+          "OpeningLabel2D": {
+            "kind": "Generator",
+            "value": "OpeningLabel"
           }
         }
       },
@@ -1481,18 +1487,6 @@
         "shape": "Circle",
         "spring_height": 0.0,
         "slots": {
-          "Glazing2D": {
-            "kind": "Generator",
-            "value": "GlazingLine"
-          },
-          "ElevationContour2D": {
-            "kind": "Generator",
-            "value": "ElevationFrameArch"
-          },
-          "Glazing3D": {
-            "kind": "Generator",
-            "value": "SolidGlazing"
-          },
           "Frame2D": {
             "kind": "Generator",
             "value": "FrameRect"
@@ -1500,6 +1494,18 @@
           "OpeningLabel2D": {
             "kind": "Generator",
             "value": "OpeningLabel"
+          },
+          "ElevationContour2D": {
+            "kind": "Generator",
+            "value": "ElevationFrameArch"
+          },
+          "Glazing2D": {
+            "kind": "Generator",
+            "value": "GlazingLine"
+          },
+          "Glazing3D": {
+            "kind": "Generator",
+            "value": "SolidGlazing"
           },
           "Frame3D": {
             "kind": "Generator",
@@ -1524,45 +1530,45 @@
         "shape": "Rectangle",
         "spring_height": 0.0,
         "slots": {
-          "Glazing2D": {
-            "kind": "Generator",
-            "value": "GlazingLine"
-          },
           "Frame3D": {
             "kind": "Generator",
             "value": "SolidFrame"
-          },
-          "Leaf2D": {
-            "kind": "Generator",
-            "value": "LeafLine"
-          },
-          "Threshold2D": {
-            "kind": "Generator",
-            "value": "ThresholdLine"
           },
           "Glazing3D": {
             "kind": "Generator",
             "value": "SolidGlazing"
           },
-          "OpeningLabel2D": {
+          "Glazing2D": {
             "kind": "Generator",
-            "value": "OpeningLabel"
+            "value": "GlazingLine"
           },
-          "ElevationContour2D": {
+          "Threshold2D": {
             "kind": "Generator",
-            "value": "ElevationFrameRect"
-          },
-          "ElevationSill2D": {
-            "kind": "Generator",
-            "value": "ElevationSillLine"
+            "value": "ThresholdLine"
           },
           "ElevationSwing2D": {
             "kind": "Generator",
             "value": "ElevationSwingTriangle"
           },
+          "ElevationSill2D": {
+            "kind": "Generator",
+            "value": "ElevationSillLine"
+          },
           "Frame2D": {
             "kind": "Generator",
             "value": "FrameRect"
+          },
+          "ElevationContour2D": {
+            "kind": "Generator",
+            "value": "ElevationFrameRect"
+          },
+          "Leaf2D": {
+            "kind": "Generator",
+            "value": "LeafLine"
+          },
+          "OpeningLabel2D": {
+            "kind": "Generator",
+            "value": "OpeningLabel"
           }
         }
       },
@@ -1583,41 +1589,41 @@
         "shape": "Rectangle",
         "spring_height": 0.0,
         "slots": {
-          "Threshold2D": {
-            "kind": "Generator",
-            "value": "ThresholdLine"
-          },
-          "ElevationSwing2D": {
-            "kind": "Generator",
-            "value": "ElevationSwingTriangle"
-          },
-          "Frame2D": {
-            "kind": "Generator",
-            "value": "FrameRect"
-          },
           "OpeningLabel2D": {
             "kind": "Generator",
             "value": "OpeningLabel"
           },
-          "Leaf3D": {
+          "Threshold2D": {
             "kind": "Generator",
-            "value": "SolidLeaf"
+            "value": "ThresholdLine"
           },
           "Frame3D": {
             "kind": "Generator",
             "value": "SolidFrame"
           },
-          "Leaf2D": {
+          "Swing2D": {
             "kind": "Generator",
-            "value": "LeafLine"
+            "value": "SwingArc"
+          },
+          "Frame2D": {
+            "kind": "Generator",
+            "value": "FrameRect"
+          },
+          "ElevationSwing2D": {
+            "kind": "Generator",
+            "value": "ElevationSwingTriangle"
+          },
+          "Leaf3D": {
+            "kind": "Generator",
+            "value": "SolidLeaf"
           },
           "ElevationContour2D": {
             "kind": "Generator",
             "value": "ElevationFrameRect"
           },
-          "Swing2D": {
+          "Leaf2D": {
             "kind": "Generator",
-            "value": "SwingArc"
+            "value": "LeafLine"
           }
         }
       },
@@ -1638,33 +1644,29 @@
         "shape": "Rectangle",
         "spring_height": 0.0,
         "slots": {
+          "Leaf3D": {
+            "kind": "Generator",
+            "value": "SolidLeaf"
+          },
           "Leaf2D": {
             "kind": "Generator",
             "value": "LeafLine"
-          },
-          "Frame2D": {
-            "kind": "Generator",
-            "value": "FrameRect"
-          },
-          "Threshold2D": {
-            "kind": "Generator",
-            "value": "ThresholdLine"
-          },
-          "ElevationSwing2D": {
-            "kind": "Generator",
-            "value": "ElevationSwingTriangle"
           },
           "ElevationContour2D": {
             "kind": "Generator",
             "value": "ElevationFrameRect"
           },
-          "Frame3D": {
+          "Frame2D": {
             "kind": "Generator",
-            "value": "SolidFrame"
+            "value": "FrameRect"
           },
-          "Leaf3D": {
+          "ElevationSwing2D": {
             "kind": "Generator",
-            "value": "SolidLeaf"
+            "value": "ElevationSwingTriangle"
+          },
+          "Threshold2D": {
+            "kind": "Generator",
+            "value": "ThresholdLine"
           },
           "Swing2D": {
             "kind": "Generator",
@@ -1673,6 +1675,10 @@
           "OpeningLabel2D": {
             "kind": "Generator",
             "value": "OpeningLabel"
+          },
+          "Frame3D": {
+            "kind": "Generator",
+            "value": "SolidFrame"
           }
         }
       },
@@ -1693,21 +1699,9 @@
         "shape": "Rectangle",
         "spring_height": 0.0,
         "slots": {
-          "ElevationContour2D": {
-            "kind": "Generator",
-            "value": "ElevationFrameRect"
-          },
-          "ElevationSwing2D": {
-            "kind": "Generator",
-            "value": "ElevationSwingTriangle"
-          },
           "Frame2D": {
             "kind": "Generator",
             "value": "FrameRect"
-          },
-          "Swing2D": {
-            "kind": "Generator",
-            "value": "SwingArc"
           },
           "Frame3D": {
             "kind": "Generator",
@@ -1717,13 +1711,21 @@
             "kind": "Generator",
             "value": "OpeningLabel"
           },
+          "ElevationContour2D": {
+            "kind": "Generator",
+            "value": "ElevationFrameRect"
+          },
           "Leaf3D": {
             "kind": "Generator",
             "value": "SolidLeaf"
           },
-          "Threshold2D": {
+          "ElevationSwing2D": {
             "kind": "Generator",
-            "value": "ThresholdLine"
+            "value": "ElevationSwingTriangle"
+          },
+          "Swing2D": {
+            "kind": "Generator",
+            "value": "SwingArc"
           },
           "ElevationMuntins2D": {
             "kind": "Generator",
@@ -1732,6 +1734,10 @@
           "Leaf2D": {
             "kind": "Generator",
             "value": "LeafLine"
+          },
+          "Threshold2D": {
+            "kind": "Generator",
+            "value": "ThresholdLine"
           }
         }
       },
@@ -1756,17 +1762,17 @@
             "kind": "Generator",
             "value": "Cross"
           },
-          "ElevationContour2D": {
+          "BreakthroughSymbol2D": {
             "kind": "Generator",
-            "value": "ElevationFrameRect"
+            "value": "Cross"
           },
           "OpeningLabel2D": {
             "kind": "Generator",
             "value": "OpeningLabel"
           },
-          "BreakthroughSymbol2D": {
+          "ElevationContour2D": {
             "kind": "Generator",
-            "value": "Cross"
+            "value": "ElevationFrameRect"
           }
         }
       },
@@ -1787,6 +1793,10 @@
         "shape": "Circle",
         "spring_height": 0.0,
         "slots": {
+          "BreakthroughSymbol2D": {
+            "kind": "Generator",
+            "value": "DiagonalFill"
+          },
           "ElevationContour2D": {
             "kind": "Generator",
             "value": "ElevationFrameArch"
@@ -1794,10 +1804,6 @@
           "OpeningLabel2D": {
             "kind": "Generator",
             "value": "OpeningLabel"
-          },
-          "BreakthroughSymbol2D": {
-            "kind": "Generator",
-            "value": "DiagonalFill"
           }
         }
       }
@@ -1946,7 +1952,18 @@
             "role_tag": null,
             "layer_id": "ab18800c-bc42-43a1-aa63-dc0b0246ad2b"
           }
-        ]
+        ],
+        "default_profile": {
+          "visibility": {
+            "Solid3D": true,
+            "LayerHatch2D": true,
+            "Contour2D": true,
+            "SurfaceStyle3D": true
+          },
+          "style_override": {},
+          "layer_style_override": [],
+          "layer_filter": {}
+        }
       }
     ],
     "slab_structural_styles": [
@@ -2225,13 +2242,13 @@
         "preset": "werkplan-50",
         "component_visibility": {},
         "opening_visibility": {
-          "Glazing2D": true,
-          "Frame2D": true,
           "Sill2D": true,
-          "Leaf2D": true,
+          "Glazing2D": true,
           "OpeningLabel2D": true,
-          "Threshold2D": true,
+          "Frame2D": true,
           "Swing2D": true,
+          "Threshold2D": true,
+          "Leaf2D": true,
           "HostCut2D": true
         },
         "style_overrides": {},
@@ -2281,13 +2298,13 @@
         "component_visibility": {},
         "opening_visibility": {
           "OpeningLabel2D": true,
-          "Leaf2D": true,
-          "Frame2D": true,
           "Swing2D": true,
-          "HostCut2D": true,
+          "Leaf2D": true,
           "Sill2D": true,
           "Threshold2D": false,
-          "Glazing2D": false
+          "Glazing2D": false,
+          "HostCut2D": true,
+          "Frame2D": true
         },
         "style_overrides": {},
         "contour_hatch": null
@@ -2311,13 +2328,13 @@
         "preset": null,
         "component_visibility": {},
         "opening_visibility": {
-          "Leaf2D": false,
-          "Swing2D": false,
+          "ElevationMuntins2D": true,
           "ElevationSill2D": true,
-          "Frame2D": false,
+          "Swing2D": false,
           "ElevationContour2D": true,
           "ElevationSwing2D": true,
-          "ElevationMuntins2D": true
+          "Leaf2D": false,
+          "Frame2D": false
         },
         "style_overrides": {},
         "contour_hatch": null
@@ -2340,11 +2357,11 @@
         },
         "preset": null,
         "component_visibility": {
-          "Contour2D": false,
+          "Layers2D": false,
           "Axis": false,
           "LayerHatch2D": false,
           "ContourHatch2D": false,
-          "Layers2D": false
+          "Contour2D": false
         },
         "opening_visibility": {},
         "style_overrides": {},
@@ -2391,14 +2408,14 @@
         "preset": "entwurf-100",
         "component_visibility": {},
         "opening_visibility": {
-          "OpeningLabel2D": true,
-          "Swing2D": true,
-          "Frame2D": true,
           "HostCut2D": true,
           "Glazing2D": false,
-          "Threshold2D": false,
+          "Frame2D": true,
           "Sill2D": true,
-          "Leaf2D": true
+          "OpeningLabel2D": true,
+          "Swing2D": true,
+          "Leaf2D": true,
+          "Threshold2D": false
         },
         "style_overrides": {},
         "contour_hatch": null
@@ -2422,13 +2439,13 @@
         "preset": "werkplan-50",
         "component_visibility": {},
         "opening_visibility": {
-          "Glazing2D": true,
           "OpeningLabel2D": true,
-          "HostCut2D": true,
           "Sill2D": true,
-          "Frame2D": true,
-          "Threshold2D": true,
           "Leaf2D": true,
+          "HostCut2D": true,
+          "Frame2D": true,
+          "Glazing2D": true,
+          "Threshold2D": true,
           "Swing2D": true
         },
         "style_overrides": {},
@@ -2456,15 +2473,15 @@
         "style_overrides": {
           "Standard": {
             "layer_visibility": {
+              "c61f19c8-0ed8-4282-a7df-35ed3121fa3b": {
+                "visible_2d": false,
+                "visible_3d": false
+              },
               "36404cdc-8223-4faf-baed-9d27a960c0ba": {
                 "visible_2d": false,
                 "visible_3d": false
               },
               "0423abee-8f11-4dde-9511-21811f1dd531": {
-                "visible_2d": false,
-                "visible_3d": false
-              },
-              "c61f19c8-0ed8-4282-a7df-35ed3121fa3b": {
                 "visible_2d": false,
                 "visible_3d": false
               }
