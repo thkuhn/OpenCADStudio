@@ -196,7 +196,7 @@ pub fn wall_layer_extrusions(
     let mut extrusions = Vec::with_capacity(layers.len());
     for (i, footprint) in footprints.into_iter().enumerate() {
         let layer = &layers[i];
-        let effective_height = (height - layer.bottom_offset - layer.top_offset).max(0.0);
+        let effective_height = (height + layer.top_offset - layer.bottom_offset).max(0.0);
         let base_offset = layer.bottom_offset;
 
         extrusions.push(WallLayerExtrusion {
@@ -2337,7 +2337,7 @@ pub(crate) fn regenerate_wall_representation_inner(
         .iter()
         .map(|l| {
             (
-                (height - l.bottom_offset - l.top_offset).max(0.0),
+                (height + l.top_offset - l.bottom_offset).max(0.0),
                 l.bottom_offset,
             )
         })
@@ -3365,6 +3365,34 @@ pub fn change_wall_justification(
 mod tests {
     use super::*;
     use crate::modules::aec::engine::control_plane::ControlPlaneFacet;
+
+    #[test]
+    fn test_wall_layer_extrusions_apply_signed_top_offsets() {
+        let mut axis = LwPolyline::new();
+        axis.add_vertex(LwVertex::new(Vector2::new(0.0, 0.0)));
+        axis.add_vertex(LwVertex::new(Vector2::new(4.0, 0.0)));
+        let axis = EntityType::LwPolyline(axis);
+
+        let layers = [-0.20, 0.20]
+            .into_iter()
+            .map(|top_offset| WallLayer {
+                material: "test".into(),
+                thickness: 0.20,
+                function: "Structural".into(),
+                axis_offset: 0.0,
+                bottom_offset: 0.0,
+                top_offset,
+                layer_override: None,
+                hatch_override: None,
+                layer_id: Uuid::new_v4(),
+            })
+            .collect::<Vec<_>>();
+
+        let extrusions = wall_layer_extrusions(&axis, &layers, 3.0);
+        assert_eq!(extrusions.len(), 2);
+        assert!((extrusions[0].height - 2.80).abs() < 1e-9);
+        assert!((extrusions[1].height - 3.20).abs() < 1e-9);
+    }
 
     #[test]
     fn test_partition_footprint_by_facets() {

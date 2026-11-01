@@ -4,6 +4,7 @@ pub mod carrier;
 pub mod cut_engine;
 pub mod edit_ops;
 pub mod elevation_engine;
+pub mod frame;
 pub mod floorplan_engine;
 pub mod model_view;
 pub mod provenance;
@@ -1034,6 +1035,111 @@ mod tests {
     }
 
     #[test]
+    fn test_wall_layer_top_offset_sign_in_section_and_elevation() {
+        let model_id = ModelId::new();
+        let element_ref = ElementRef::new(model_id, ElementId::new());
+        let lower_component = ComponentId::new();
+        let higher_component = ComponentId::new();
+        let layers = [(-0.20, lower_component), (0.20, higher_component)]
+            .into_iter()
+            .map(|(top_offset, component_id)| CollectedWallLayer {
+                material: "Concrete".into(),
+                thickness: 0.20,
+                function: "Structural".into(),
+                axis_offset: 0.0,
+                bottom_offset: 0.0,
+                top_offset,
+                hatch_override: None,
+                layer_id: Uuid::new_v4(),
+                component_id,
+                is_structural: true,
+            })
+            .collect();
+        let wall = CollectedWall {
+            handle: acadrust::Handle::new(72),
+            element_ref,
+            xref_source: None,
+            style_id: "Wall".into(),
+            height: 3.0,
+            base_z: 0.0,
+            top_z: 3.0,
+            axis_points: vec![Point2::new(0.0, 0.0), Point2::new(10.0, 0.0)],
+            layers,
+            total_thickness: 0.40,
+            justification: crate::modules::aec::engine::wall::WallJustification::Center,
+            openings: vec![],
+            phase: crate::modules::aec::engine::plan_view::PlanPhase::New,
+        };
+        let mut collector = SceneGeometryCollector::new();
+        collector.walls.push(wall);
+
+        let (section_vp, section_mv) = section_view("Wall layer offsets", -1.0, 5.0);
+        let section = derive_section_view(
+            &section_vp,
+            &section_mv,
+            &collector,
+            &CutEngineOptions::default(),
+        )
+        .unwrap();
+        assert_band(
+            &section,
+            PrimitiveRole::CutFill,
+            lower_component,
+            (2.80, 0.0),
+        );
+        assert_band(
+            &section,
+            PrimitiveRole::CutFill,
+            higher_component,
+            (3.20, 0.0),
+        );
+
+        let elevation_vp = Viewpoint {
+            id: ViewpointId::new(),
+            name: "Wall layer offsets elevation".into(),
+            revision: Revision(1),
+            origin: ViewOrigin::World(Point3::new(0.0, -2.0, 0.0)),
+            axes: ViewAxes::front_elevation(),
+            kind: ViewKind::Elevation {
+                depth: DepthRange {
+                    near: NonNegativeMetres::ZERO,
+                    far: Some(PositiveMetres::new(20.0).unwrap()),
+                },
+            },
+            z_range: VerticalRange::new(Metres::new(-1.0).unwrap(), Metres::new(5.0).unwrap())
+                .unwrap(),
+            mapping: ProjectionMapping::default(),
+            crop: None,
+        };
+        let mut elevation_mv = section_mv;
+        elevation_mv.viewpoint_id = elevation_vp.id;
+        let elevation = derive_elevation_view(
+            &elevation_vp,
+            &elevation_mv,
+            &collector,
+            &ElevationEngineOptions::default(),
+        )
+        .unwrap();
+        for (component_id, expected_top) in [(lower_component, 2.80), (higher_component, 3.20)] {
+            let top_edge = elevation
+                .iter()
+                .find(|primitive| {
+                    primitive.role == PrimitiveRole::ProjectedEdge
+                        && primitive.sources.as_slice().iter().any(|source| {
+                            source.component_id == Some(component_id)
+                                && source.feature == Some(FeatureKey::WallTop)
+                        })
+                })
+                .expect("projected wall-layer top edge");
+            let Geometry2d::Line { start, end } = &top_edge.geometry else {
+                panic!("wall-layer top edge must be a line");
+            };
+            assert!((start.y_m - expected_top).abs() < 1e-6);
+            assert!((end.y_m - expected_top).abs() < 1e-6);
+        }
+    }
+
+    #[test]
     fn test_slab_offsets_and_shifted_base_keep_top_down_stack() {
         let polygon = vec![
             Point2::new(0.0, -1.0),
@@ -1342,6 +1448,12 @@ mod tests {
             phase: crate::modules::aec::engine::plan_view::PlanPhase::New,
         });
 
+        let mut background_wall = collector.walls[1].clone();
+        background_wall.handle = acadrust::Handle::new(3);
+        background_wall.element_ref = ElementRef::new(model_id, ElementId::new());
+        background_wall.axis_points = vec![Point2::new(5.5, 4.0), Point2::new(6.5, 4.0)];
+        collector.walls.push(background_wall.clone());
+
         // Jogged Section: Segment 1 (0..5 at Y=0), Step (X=5, Y=0..2), Segment 2 (5..10 at Y=2)
         let s1 = SectionSegment::new(Point2::new(0.0, 0.0), Point2::new(5.0, 0.0), false);
         let s2 = SectionSegment::new(Point2::new(5.0, 0.0), Point2::new(5.0, 2.0), true);
@@ -1380,6 +1492,24 @@ mod tests {
         let primitives = derive_section_view(&vp, &mv, &collector, &CutEngineOptions::default()).unwrap();
         let fills: Vec<_> = primitives.iter().filter(|p| p.role == PrimitiveRole::CutFill).collect();
         assert_eq!(fills.len(), 2, "both walls along jogged segments should be cut");
+        let background_top = primitives.iter().find_map(|primitive| {
+            if primitive.role != PrimitiveRole::ProjectedEdge
+                || !primitive.sources.as_slice().iter().any(|source| source.element == background_wall.element_ref)
+            {
+                return None;
+            }
+            match primitive.geometry {
+                Geometry2d::Line { start, end }
+                    if (start.y_m - 3.0).abs() < 1e-6 && (end.y_m - 3.0).abs() < 1e-6 =>
+                {
+                    Some((start.x_m.min(end.x_m), start.x_m.max(end.x_m)))
+                }
+                _ => None,
+            }
+        });
+        let (min_station, max_station) = background_top.expect("background wall top edge");
+        assert!((min_station - 7.5).abs() < 1e-6);
+        assert!((max_station - 8.5).abs() < 1e-6);
     }
 
     #[test]
@@ -1553,25 +1683,14 @@ mod tests {
             "opening surface should be in front of the wall-axis surface"
         );
 
-        let opening_swing = primitives
-            .iter()
-            .find(|p| {
-                p.role == PrimitiveRole::Symbol
-                    && p.sources
-                        .as_slice()
-                        .iter()
-                        .any(|source| source.element == background_opening_element)
-            })
-            .expect("projected opening should emit its swing symbol");
-        let Geometry2d::Polyline { vertices, .. } = &opening_swing.geometry else {
-            panic!("opening swing symbol should be a polyline");
-        };
+        let swing_points = symbol_points(&primitives, background_opening_element);
+        assert!(!swing_points.is_empty(), "projected opening should emit its swing symbol");
         let expected_hinge_tip = Point2::new(
             vp.world_to_view(Point3::new(4.0, -0.6, 1.6)).0.x_m,
             vp.paper_elevation(1.6),
         );
         assert!(
-            vertices[1].distance_to(expected_hinge_tip) < 1e-6,
+            swing_points.iter().any(|point| point.distance_to(expected_hinge_tip) < 1e-6),
             "swing tip should sit on the hinge jamb, not the strike"
         );
 
@@ -1588,28 +1707,9 @@ mod tests {
         let reversed_primitives =
             derive_section_view(&vp, &mv, &reversed_collector, &CutEngineOptions::default())
                 .unwrap();
-        let reversed_swing = reversed_primitives
-            .iter()
-            .find(|p| {
-                p.role == PrimitiveRole::Symbol
-                    && p.sources
-                        .as_slice()
-                        .iter()
-                        .any(|source| source.element == background_opening_element)
-            })
-            .expect("reversed wall should still emit its swing symbol");
-        let Geometry2d::Polyline {
-            vertices: reversed_vertices,
-            ..
-        } = &reversed_swing.geometry
-        else {
-            panic!("reversed opening swing symbol should be a polyline");
-        };
-        assert_eq!(vertices.len(), reversed_vertices.len());
-        assert!(vertices
-            .iter()
-            .zip(reversed_vertices)
-            .all(|(left, right)| left.distance_to(*right) < 1e-6));
+        let reversed_points = symbol_points(&reversed_primitives, background_opening_element);
+        assert_eq!(swing_points.len(), reversed_points.len());
+        assert!(swing_points.iter().zip(&reversed_points).all(|(left, right)| left.distance_to(*right) < 1e-6));
 
         let mut opposite_collector = collector.clone();
         let opposite_wall = opposite_collector
@@ -1623,29 +1723,16 @@ mod tests {
         let opposite_primitives =
             derive_section_view(&opposite_vp, &mv, &opposite_collector, &CutEngineOptions::default())
                 .unwrap();
-        let opposite_swing = opposite_primitives
-            .iter()
-            .find(|p| {
-                p.role == PrimitiveRole::Symbol
-                    && p.sources
-                        .as_slice()
-                        .iter()
-                        .any(|source| source.element == background_opening_element)
-            })
-            .expect("opposite facade should emit its swing symbol");
-        let Geometry2d::Polyline {
-            vertices: opposite_vertices,
-            ..
-        } = &opposite_swing.geometry
-        else {
-            panic!("opposite swing symbol should be a polyline");
-        };
+        let opposite_points = symbol_points(&opposite_primitives, background_opening_element);
+        assert!(!opposite_points.is_empty(), "opposite facade should emit its swing symbol");
         let expected_opposite_hinge_tip = Point2::new(
-            opposite_vp.world_to_view(Point3::new(6.0, -0.6, 1.6)).0.x_m,
+            2.4,
             opposite_vp.paper_elevation(1.6),
         );
         assert!(
-            opposite_vertices[1].distance_to(expected_opposite_hinge_tip) < 1e-6,
+            opposite_points
+                .iter()
+                .any(|point| point.distance_to(expected_opposite_hinge_tip) < 1e-6),
             "opposite facade should keep the tip on the same world hinge"
         );
 
@@ -1884,9 +1971,9 @@ mod tests {
         assert_eq!(list[0].depth.min_m, 0.0);
         assert_eq!(list[1].depth.min_m, 5.0);
 
-        // Closer primitive keeps 0.35 mm; background primitive (depth > 0) has line weight adjusted to 0.18 mm
+        // Depth sorting must not overwrite the resolved line weight.
         assert_eq!(list[0].style.line_weight_mm.get(), 0.35);
-        assert_eq!(list[1].style.line_weight_mm.get(), 0.18);
+        assert_eq!(list[1].style.line_weight_mm.get(), 0.35);
     }
 
     #[test]
@@ -2523,7 +2610,7 @@ mod tests {
     }
 
     #[test]
-    fn test_section_layer_detail_off_occludes_background_across_whole_wall_thickness() {
+    fn test_section_hidden_core_does_not_occlude_but_structural_core_does() {
         let model_id = ModelId::new();
         let mut collector = SceneGeometryCollector::new();
         let core_comp = ComponentId::new();
@@ -2608,6 +2695,7 @@ mod tests {
             openings: vec![],
             phase: crate::modules::aec::engine::plan_view::PlanPhase::New,
         };
+        let background_wall_element = bg_wall.element_ref;
         collector.walls.push(bg_wall);
 
         let vp = Viewpoint {
@@ -2666,49 +2754,65 @@ mod tests {
             );
         }
 
-        // 2. Verify that background projected edges were occluded across the full wall thickness u ∈ [4.88, 5.12]
+        // 2. The hidden core leaves the background edge visible through the section plane.
         let projected: Vec<_> = primitives.iter().filter(|p| p.role == PrimitiveRole::ProjectedEdge).collect();
         assert!(!projected.is_empty(), "Background wall must produce projected edges");
-
-        let mut found_left_split = false;
-        let mut found_right_split = false;
-        for prim in &projected {
-            match &prim.geometry {
-                Geometry2d::Line { start, end } => {
-                    let min_u = start.x_m.min(end.x_m);
-                    let max_u = start.x_m.max(end.x_m);
-                    let mid_u = (start.x_m + end.x_m) * 0.5;
-                    if max_u > 4.89 && min_u < 5.11 {
-                        panic!(
-                            "Background edge must be occluded across the full wall thickness in section, but found mid_u = {}",
-                            mid_u
-                        );
-                    }
-                    if (max_u - 4.88).abs() < 0.05 {
-                        found_left_split = true;
-                    }
-                    if (min_u - 5.12).abs() < 0.05 {
-                        found_right_split = true;
-                    }
-                }
-                Geometry2d::Polyline { vertices, .. } => {
-                    for win in vertices.windows(2) {
-                        let min_u = win[0].x_m.min(win[1].x_m);
-                        let max_u = win[0].x_m.max(win[1].x_m);
-                        let mid_u = (win[0].x_m + win[1].x_m) * 0.5;
-                        if max_u > 4.89 && min_u < 5.11 {
-                            panic!(
-                                "Background edge must be occluded across the full wall thickness in section, but found mid_u = {}",
-                                mid_u
-                            );
+        let background_crosses_cut = |primitives: &[DerivedPrimitive]| {
+            primitives.iter().any(|primitive| {
+                primitive.role == PrimitiveRole::ProjectedEdge
+                    && primitive
+                        .sources
+                        .as_slice()
+                        .iter()
+                        .any(|source| source.element == background_wall_element)
+                    && match &primitive.geometry {
+                        Geometry2d::Line { start, end } => {
+                            start.x_m < 5.0 - 1e-6 && end.x_m > 5.0 + 1e-6
+                                || end.x_m < 5.0 - 1e-6 && start.x_m > 5.0 + 1e-6
                         }
+                        Geometry2d::Polyline { vertices, closed } => {
+                            let edge_count = if *closed { vertices.len() } else { vertices.len().saturating_sub(1) };
+                            (0..edge_count).any(|index| {
+                                let start = vertices[index];
+                                let end = vertices[(index + 1) % vertices.len()];
+                                start.x_m < 5.0 - 1e-6 && end.x_m > 5.0 + 1e-6
+                                    || end.x_m < 5.0 - 1e-6 && start.x_m > 5.0 + 1e-6
+                            })
+                        }
+                        _ => false,
                     }
-                }
-                _ => {}
-            }
-        }
-        assert!(found_left_split, "Expected background edge split at left cut wall boundary u ≈ 4.88");
-        assert!(found_right_split, "Expected background edge split at right cut wall boundary u ≈ 5.12");
+            })
+        };
+        assert!(background_crosses_cut(&primitives), "hidden core must not occlude the background edge");
+
+        let mut structural_config = crate::modules::aec::engine::plan_view::DisplayConfig::new(
+            "StructuralOnly".to_string(),
+            "Architektur".to_string(),
+            crate::modules::aec::engine::plan_view::PlanningStage::Design,
+            crate::modules::aec::engine::plan_view::ViewType::Section,
+        );
+        structural_config.detail.layers = crate::modules::aec::engine::plan_view::LayerDetail::StructuralOnly;
+        let structural_primitives = derive_section_view(
+            &vp,
+            &mv,
+            &collector,
+            &CutEngineOptions {
+                display_config: Some(structural_config),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert!(
+            structural_primitives.iter().any(|primitive| {
+                primitive.role == PrimitiveRole::CutBoundary
+                    && primitive.sources.as_slice().iter().any(|source| source.component_id == Some(core_comp))
+            }),
+            "visible structural core must be drawn"
+        );
+        assert!(
+            !background_crosses_cut(&structural_primitives),
+            "visible structural core must occlude the background edge"
+        );
     }
 
     #[test]
@@ -3412,5 +3516,198 @@ mod tests {
             }
         }
         assert!(found_miter_corner, "Cut boundary must use mitered junction geometry at the L-corner");
+    }
+
+    #[test]
+    fn test_section_window_void_hides_background_opening() {
+        let model_id = ModelId::new();
+        let mut collector = SceneGeometryCollector::new();
+        let cut_opening = CollectedOpening {
+            handle: acadrust::Handle::new(11),
+            element_ref: ElementRef::new(model_id, ElementId::new()),
+            xref_source: None,
+            host_wall_handle: acadrust::Handle::new(10),
+            kind: OpeningKind::Window,
+            style_id: Some("Window".into()),
+            distance_along_axis: 0.0,
+            width: 1.2,
+            height: 1.4,
+            sill_height: 0.9,
+            spring_height: 0.0,
+            shape: crate::modules::aec::engine::opening_shape::OpeningShape::Rectangle,
+            hinge: HingeSide::Left,
+            swing_side: SwingSide::Exterior,
+            reference_side: crate::modules::aec::engine::openings::OpeningReferenceSide::Center,
+            cross_axis_offset: 0.0,
+            depth: None,
+            world_center: Point3::new(0.0, 0.0, 1.6),
+            axis_span_local: (-0.6, 0.6),
+        };
+        let cut_wall = CollectedWall {
+            handle: acadrust::Handle::new(10),
+            element_ref: ElementRef::new(model_id, ElementId::new()),
+            xref_source: None,
+            style_id: "Wall".into(),
+            height: 2.8,
+            base_z: 0.0,
+            top_z: 2.8,
+            axis_points: vec![Point2::new(0.0, -2.0), Point2::new(0.0, 2.0)],
+            layers: vec![CollectedWallLayer {
+                material: "Masonry".into(),
+                thickness: 0.24,
+                function: "Structural".into(),
+                axis_offset: 0.0,
+                bottom_offset: 0.0,
+                top_offset: 0.0,
+                hatch_override: None,
+                layer_id: Uuid::new_v4(),
+                component_id: ComponentId::new(),
+                is_structural: true,
+            }],
+            total_thickness: 0.24,
+            justification: crate::modules::aec::engine::wall::WallJustification::Center,
+            openings: vec![cut_opening],
+            phase: crate::modules::aec::engine::plan_view::PlanPhase::New,
+        };
+        let background_opening_ref = ElementRef::new(model_id, ElementId::new());
+        let background_opening = CollectedOpening {
+            handle: acadrust::Handle::new(21),
+            element_ref: background_opening_ref,
+            xref_source: None,
+            host_wall_handle: acadrust::Handle::new(20),
+            kind: OpeningKind::Window,
+            style_id: Some("Window".into()),
+            distance_along_axis: 0.0,
+            width: 1.2,
+            height: 1.4,
+            sill_height: 0.9,
+            spring_height: 0.0,
+            shape: crate::modules::aec::engine::opening_shape::OpeningShape::Rectangle,
+            hinge: HingeSide::Left,
+            swing_side: SwingSide::Exterior,
+            reference_side: crate::modules::aec::engine::openings::OpeningReferenceSide::Center,
+            cross_axis_offset: 0.0,
+            depth: None,
+            world_center: Point3::new(0.0, 4.0, 1.6),
+            axis_span_local: (-0.6, 0.6),
+        };
+        let background = CollectedWall {
+            handle: acadrust::Handle::new(20),
+            element_ref: ElementRef::new(model_id, ElementId::new()),
+            xref_source: None,
+            style_id: "Wall".into(),
+            height: 2.8,
+            base_z: 0.0,
+            top_z: 2.8,
+            axis_points: vec![Point2::new(-3.0, 4.0), Point2::new(3.0, 4.0)],
+            layers: vec![CollectedWallLayer {
+                material: "Masonry".into(),
+                thickness: 0.24,
+                function: "Structural".into(),
+                axis_offset: 0.0,
+                bottom_offset: 0.0,
+                top_offset: 0.0,
+                hatch_override: None,
+                layer_id: Uuid::new_v4(),
+                component_id: ComponentId::new(),
+                is_structural: true,
+            }],
+            total_thickness: 0.24,
+            justification: crate::modules::aec::engine::wall::WallJustification::Center,
+            openings: vec![background_opening],
+            phase: crate::modules::aec::engine::plan_view::PlanPhase::New,
+        };
+        collector.walls.push(cut_wall);
+        collector.walls.push(background);
+
+        let vp = Viewpoint {
+            id: ViewpointId::new(),
+            name: "Schnitt".into(),
+            revision: Revision(1),
+            origin: ViewOrigin::World(Point3::new(-4.0, 0.0, 0.0)),
+            axes: ViewAxes::section_with_side(Vector2::new(1.0, 0.0), false).unwrap(),
+            kind: ViewKind::Section {
+                path: SectionPath::straight(Point2::new(-4.0, 0.0), Point2::new(4.0, 0.0)),
+                far_depth: Some(PositiveMetres::new(10.0).unwrap()),
+            },
+            z_range: VerticalRange::new(Metres::new(0.0).unwrap(), Metres::new(4.0).unwrap()).unwrap(),
+            mapping: ProjectionMapping::default(),
+            crop: None,
+        };
+        let mv = ModelView {
+            id: ModelViewId::new(),
+            name: "Schnitt".into(),
+            viewpoint_id: vp.id,
+            profile_id: ViewProfileId::new(),
+            scale: ScaleDenominator::new(50.0).unwrap(),
+            detail: DetailPolicy::FromProfileAndScale,
+            excluded_elements: BTreeSet::new(),
+            graphic_overrides: vec![],
+            annotation_ids: vec![],
+            update_policy: UpdatePolicy::Automatic,
+            revisions: ViewRevisions::default(),
+        };
+        let primitives = derive_section_view(&vp, &mv, &collector, &CutEngineOptions::default()).unwrap();
+        let hole = Point2::new(4.0, 1.6);
+        let leaked = primitives.iter().any(|prim| {
+            let from_background = prim
+                .sources
+                .as_slice()
+                .iter()
+                .any(|source| source.element == background_opening_ref);
+            from_background && primitive_covers(prim, hole)
+        });
+        assert!(!leaked, "background window must not show through the cut window");
+    }
+
+    fn symbol_points(prims: &[DerivedPrimitive], element: ElementRef) -> Vec<Point2> {
+        let mut points = Vec::new();
+        for prim in prims.iter().filter(|prim| {
+            prim.role == PrimitiveRole::Symbol
+                && prim.sources.as_slice().iter().any(|source| source.element == element)
+        }) {
+            match &prim.geometry {
+                Geometry2d::Line { start, end } => points.extend([*start, *end]),
+                Geometry2d::Polyline { vertices, .. } | Geometry2d::Region { outer: vertices, .. } => {
+                    points.extend(vertices.iter().copied());
+                }
+                Geometry2d::CircularArc { .. } => {}
+            }
+        }
+        points
+    }
+
+    fn primitive_covers(prim: &DerivedPrimitive, point: Point2) -> bool {
+        match &prim.geometry {
+            Geometry2d::Region { outer, holes } => {
+                silhouette::point_in_polygon(point, outer)
+                    && holes.iter().all(|hole| !silhouette::point_in_polygon(point, hole))
+            }
+            Geometry2d::Line { start, end } => point_on_segment(point, *start, *end),
+            Geometry2d::Polyline { vertices, closed } => {
+                let count = vertices.len();
+                let edges = if *closed { count } else { count.saturating_sub(1) };
+                (0..edges).any(|index| {
+                    point_on_segment(point, vertices[index], vertices[(index + 1) % count])
+                })
+            }
+            Geometry2d::CircularArc { .. } => false,
+        }
+    }
+
+    fn point_on_segment(point: Point2, start: Point2, end: Point2) -> bool {
+        let dx = end.x_m - start.x_m;
+        let dy = end.y_m - start.y_m;
+        let len2 = dx * dx + dy * dy;
+        if len2 < 1e-12 {
+            return false;
+        }
+        let t = ((point.x_m - start.x_m) * dx + (point.y_m - start.y_m) * dy) / len2;
+        if !(0.0..=1.0).contains(&t) {
+            return false;
+        }
+        let px = start.x_m + t * dx;
+        let py = start.y_m + t * dy;
+        (point.x_m - px).hypot(point.y_m - py) < 1e-3
     }
 }

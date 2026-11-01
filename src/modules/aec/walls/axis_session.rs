@@ -349,6 +349,7 @@ impl OpenCADStudio {
         }
 
         let scene = &self.tabs[tab].scene;
+        let handle = crate::modules::aec::engine::views::carrier::resolve_carrier_handle(&scene.document, handle);
         let Some(entity) = scene.document.get_entity(handle) else {
             return false;
         };

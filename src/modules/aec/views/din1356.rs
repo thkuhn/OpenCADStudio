@@ -731,12 +731,30 @@ pub fn find_section_marker_by_carrier(
 /// If the carrier has `UpdatePolicy::Automatic`, regenerates its primitives immediately.
 /// If `UpdatePolicy::Manual`, marks the carrier as outdated.
 pub fn sync_marker_to_carrier(doc: &mut CadDocument, marker: &Din1356SectionMarker) -> bool {
+    let display_config_library = crate::modules::aec::engine::library::DisplayConfigLibrary::seed_default_configs();
+    let style_library = crate::modules::aec::engine::library::seed_default_library();
+    sync_marker_to_carrier_with_libraries(
+        doc,
+        marker,
+        &display_config_library,
+        &style_library,
+        None,
+    )
+}
+
+pub fn sync_marker_to_carrier_with_libraries(
+    doc: &mut CadDocument,
+    marker: &Din1356SectionMarker,
+    display_config_library: &crate::modules::aec::engine::library::DisplayConfigLibrary,
+    style_library: &crate::modules::aec::engine::library::StyleLibrary,
+    active_name: Option<&str>,
+) -> bool {
     use crate::modules::aec::engine::views::carrier::{
         find_view_carrier_by_handle, find_view_carrier_by_viewpoint,
         read_view_carrier_definitions, write_view_carrier, write_view_carrier_definitions,
     };
     use crate::modules::aec::engine::views::model_view::UpdatePolicy;
-    use crate::modules::aec::engine::views::update_ops::regenerate_or_mark_outdated;
+    use crate::modules::aec::engine::views::update_ops::regenerate_or_mark_outdated_with_libraries;
     use crate::modules::aec::engine::views::viewpoint::{VerticalRange, ViewAxes, ViewKind, ViewOrigin};
     use crate::modules::aec::engine::views::{Metres, Point3, PositiveMetres};
 
@@ -808,7 +826,15 @@ pub fn sync_marker_to_carrier(doc: &mut CadDocument, marker: &Din1356SectionMark
 
     match carrier.update_policy {
         UpdatePolicy::Automatic => {
-            regenerate_or_mark_outdated(doc, carrier_handle, &vp, &mv);
+            regenerate_or_mark_outdated_with_libraries(
+                doc,
+                carrier_handle,
+                &vp,
+                &mv,
+                display_config_library,
+                style_library,
+                active_name,
+            );
         }
         UpdatePolicy::Manual => {
             carrier.is_outdated = true;

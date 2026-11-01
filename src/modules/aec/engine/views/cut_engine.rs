@@ -13,8 +13,8 @@ use super::scene_collector::{
     CollectedOpening, CollectedSlab, CollectedWall, SceneGeometryCollector,
 };
 use super::style_resolver::{
-    is_draw_suppressed, is_opening_slot_visible, is_slab_layer_active, is_slab_phase_visible,
-    is_wall_layer_active, is_wall_phase_visible, resolve_layer_cut_style,
+    is_draw_suppressed, is_opening_slot_visible, is_slab_phase_visible, is_slab_layer_visible,
+    is_wall_layer_visible, is_wall_phase_visible, resolve_layer_cut_style,
     resolve_opening_view_style, resolve_slab_layer_cut_style, ViewStyleContext,
 };
 use super::viewpoint::{SectionSegment, ViewKind, Viewpoint};
@@ -166,7 +166,8 @@ pub fn derive_section_view(
         style_library: options.style_library.clone(),
     };
 
-    for wall in &scene.walls {
+    let wall_footprints = super::floorplan_engine::solve_wall_layer_footprints(scene);
+    for (wall_index, wall) in scene.walls.iter().enumerate() {
         if model_view.excluded_elements.contains(&wall.element_ref) {
             continue;
         }
@@ -176,7 +177,7 @@ pub fn derive_section_view(
         if wall.top_z < z_min || wall.base_z > z_max {
             continue;
         }
-        let _ = crate::modules::aec::engine::views::elevation_engine::project_wall_elevation(
+        let _ = crate::modules::aec::engine::views::elevation_engine::project_wall_elevation_with_footprints(
             wall,
             viewpoint,
             0.05,
@@ -184,6 +185,7 @@ pub fn derive_section_view(
             model_view,
             &elev_opts,
             &ctx,
+            wall_footprints.get(wall_index).map(Vec::as_slice),
             &mut primitives,
             &mut primitive_counter,
         );
@@ -216,9 +218,9 @@ pub fn derive_section_view(
     // 4. Deduplicate coincident cut boundary lines
     deduplicate_cut_boundaries(&mut primitives);
 
-    // 5. Perform Silhouette & Occlusion processing
-    super::silhouette::process_silhouette_and_depth(
-        &mut primitives,
+    // 5. Resolve all contributors in the shared section paper frame.
+    let mut primitives = super::frame::resolve_view_frame(
+        primitives,
         &super::silhouette::SilhouetteOptions {
             emit_hidden_lines: options.emit_hidden_lines,
             max_depth_distance: Some(forward_depth_max),
@@ -330,7 +332,7 @@ fn cut_wall_with_segment(
 
         // Process each wall layer
         for (i, layer) in wall.layers.iter().enumerate() {
-            if !is_wall_layer_active(ctx, wall, i) {
+            if !is_wall_layer_visible(ctx, wall, i) {
                 continue;
             }
 
@@ -412,7 +414,20 @@ fn cut_wall_with_segment(
                 }
                 z_intervals = split;
 
-                // Add opening cut frame & glazing details
+                // The cut removes the wall, so the void itself has to be opaque.
+                // Otherwise the section shows every opening and wall behind the glass.
+                emit_opening_void_occluder(
+                    op,
+                    wall,
+                    u_min,
+                    u_max,
+                    op_z_sill,
+                    op_z_head,
+                    model_view,
+                    primitives,
+                    counter,
+                )?;
+
                 if options.include_openings && (op.kind == OpeningKind::Window || op.kind == OpeningKind::Door) {
                     emit_opening_cut_details(
                         op,
@@ -576,6 +591,59 @@ fn cut_wall_with_segment(
     Ok(())
 }
 
+/// Opaque sheet in the cut void. The wall fill stops at the opening, so without
+/// this sheet every background edge and opening symbol shows through the glass.
+fn emit_opening_void_occluder(
+    op: &CollectedOpening,
+    wall: &CollectedWall,
+    u_min: f64,
+    u_max: f64,
+    z_sill: f64,
+    z_head: f64,
+    model_view: &ModelView,
+    primitives: &mut Vec<DerivedPrimitive>,
+    counter: &mut u32,
+) -> Result<(), ValidationError> {
+    if u_max - u_min < EPS || z_head - z_sill < EPS {
+        return Ok(());
+    }
+    *counter += 1;
+    primitives.push(DerivedPrimitive {
+        id: PrimitiveId::new(model_view.id, 1, *counter),
+        role: PrimitiveRole::SurfaceFill,
+        geometry: Geometry2d::Region {
+            outer: vec![
+                Point2::new(u_min, z_sill),
+                Point2::new(u_max, z_sill),
+                Point2::new(u_max, z_head),
+                Point2::new(u_min, z_head),
+            ],
+            holes: vec![],
+        },
+        sources: SourceSet::new(vec![SourceReference {
+            element: op.element_ref,
+            xref_source: wall.xref_source.clone(),
+            component_id: None,
+            feature: Some(FeatureKey::OpeningSill),
+            display_component_id: None,
+        }])?,
+        // Just behind the cut plane, in front of every background projection.
+        depth: super::DepthInterval::new(1.0e-4, 1.0e-4)?,
+        style: ResolvedStyle {
+            line_weight_mm: PaperMm::new(0.18)?,
+            line_color: None,
+            line_type: None,
+            fill_color: None,
+            hatch_pattern: None,
+            hatch_scale: None,
+            hatch_angle_rad: None,
+            layer_name: Some(super::silhouette::TRANSIENT_OCCLUDER_LAYER.to_string()),
+        },
+        edit_handles: vec![],
+    });
+    Ok(())
+}
+
 /// Emits opening cut components (frame profiles, sill/head lines) when a section passes through a window or door.
 fn emit_opening_cut_details(
     op: &CollectedOpening,
@@ -682,7 +750,7 @@ fn cut_slab_with_segment(
     for (layer_idx, (layer, (z_top, z_bottom))) in
         slab.layers.iter().zip(slab.layer_z_ranges()).enumerate()
     {
-        if !is_slab_layer_active(ctx, slab, layer_idx) {
+        if !is_slab_layer_visible(ctx, slab, layer_idx) {
             continue;
         }
 
@@ -890,5 +958,242 @@ fn line_segment_intersection(
         Some((t1.clamp(0.0, 1.0), t2.clamp(0.0, 1.0)))
     } else {
         None
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::modules::aec::engine::plan_view::PlanPhase;
+    use crate::modules::aec::engine::views::{
+        CollectedWallLayer, ComponentId, DetailPolicy, ElementId, ElementRef, Geometry2d, Metres,
+        ModelId, ModelView, ModelViewId, Point2, Point3, PrimitiveRole, ProjectionMapping, Revision,
+        ScaleDenominator, SectionPath, UpdatePolicy, Vector2, VerticalRange, ViewAxes, ViewKind,
+        ViewOrigin, ViewProfileId, ViewRevisions, Viewpoint, ViewpointId,
+    };
+    use crate::modules::aec::engine::wall::WallJustification;
+    use std::collections::BTreeSet;
+
+    fn layer(material: &str, thickness: f64, axis_offset: f64, structural: bool) -> CollectedWallLayer {
+        CollectedWallLayer {
+            material: material.into(),
+            thickness,
+            function: if structural { "Structural".into() } else { "Finish".into() },
+            axis_offset,
+            bottom_offset: 0.0,
+            top_offset: 0.0,
+            hatch_override: None,
+            layer_id: uuid::Uuid::new_v4(),
+            component_id: ComponentId::new(),
+            is_structural: structural,
+        }
+    }
+
+    #[test]
+    fn section_layers_keep_axis_offset_instead_of_restacking_from_the_axis() {
+        let mut collector = SceneGeometryCollector::new();
+        collector.walls.push(CollectedWall {
+            handle: acadrust::Handle::new(7),
+            element_ref: ElementRef::new(ModelId::new(), ElementId::new()),
+            xref_source: None,
+            style_id: "Asymmetric".into(),
+            height: 3.0,
+            base_z: 0.0,
+            top_z: 3.0,
+            axis_points: vec![Point2::new(5.0, -4.0), Point2::new(5.0, 4.0)],
+            layers: vec![
+                layer("Plaster", 0.02, -0.24, false),
+                layer("Concrete", 0.20, -0.08, true),
+                layer("Plaster", 0.02, 0.16, false),
+            ],
+            total_thickness: 0.42,
+            justification: WallJustification::Exterior,
+            openings: vec![],
+            phase: PlanPhase::New,
+        });
+        let viewpoint = Viewpoint {
+            id: ViewpointId::new(),
+            name: "Schnitt".into(),
+            revision: Revision(1),
+            origin: ViewOrigin::World(Point3::new(0.0, 0.0, 0.0)),
+            axes: ViewAxes::section(Vector2::new(1.0, 0.0)).unwrap(),
+            kind: ViewKind::Section {
+                path: SectionPath::straight(Point2::new(0.0, 0.0), Point2::new(10.0, 0.0)),
+                far_depth: None,
+            },
+            z_range: VerticalRange::new(Metres::new(-1.0).unwrap(), Metres::new(5.0).unwrap()).unwrap(),
+            mapping: ProjectionMapping::default(),
+            crop: None,
+        };
+        let model_view = ModelView {
+            id: ModelViewId::new(),
+            name: "Schnitt".into(),
+            viewpoint_id: viewpoint.id,
+            profile_id: ViewProfileId::new(),
+            scale: ScaleDenominator::new(50.0).unwrap(),
+            detail: DetailPolicy::FromProfileAndScale,
+            excluded_elements: BTreeSet::new(),
+            graphic_overrides: vec![],
+            annotation_ids: vec![],
+            update_policy: UpdatePolicy::Automatic,
+            revisions: ViewRevisions::default(),
+        };
+
+        let primitives = derive_section_view(
+            &viewpoint,
+            &model_view,
+            &collector,
+            &CutEngineOptions::default(),
+        )
+        .unwrap();
+        let mut spans: Vec<(f64, f64)> = primitives
+            .iter()
+            .filter(|primitive| primitive.role == PrimitiveRole::CutFill)
+            .filter_map(|primitive| match &primitive.geometry {
+                Geometry2d::Region { outer, .. } => {
+                    let min_x = outer.iter().map(|point| point.x_m).fold(f64::INFINITY, f64::min);
+                    let max_x = outer.iter().map(|point| point.x_m).fold(f64::NEG_INFINITY, f64::max);
+                    Some((min_x, max_x))
+                }
+                _ => None,
+            })
+            .collect();
+        spans.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
+
+        assert_eq!(spans.len(), 3, "each visible layer keeps its own station");
+        assert!((spans[0].0 - 4.82).abs() < 1e-4 && (spans[0].1 - 4.84).abs() < 1e-4, "{spans:?}");
+        assert!((spans[1].0 - 4.88).abs() < 1e-4 && (spans[1].1 - 5.08).abs() < 1e-4, "{spans:?}");
+        assert!((spans[2].0 - 5.22).abs() < 1e-4 && (spans[2].1 - 5.24).abs() < 1e-4, "{spans:?}");
+    }
+
+    #[test]
+    fn section_and_elevation_place_slab_layers_on_the_live_top() {
+        use crate::modules::aec::engine::slab::{Slab, SlabJustification, SlabLayer};
+        use crate::modules::aec::engine::slab_xdata::slab_record_for_slab;
+        use crate::modules::aec::engine::wall_style::LayerFunction;
+        use crate::modules::aec::engine::xdata::AEC_APPID;
+        use crate::scene::Scene;
+        use acadrust::entities::{LwPolyline, LwVertex};
+        use acadrust::types::Vector2 as AcadVector2;
+        use acadrust::xdata::ExtendedDataRecord;
+
+        let mut slab = Slab::new("Geschossdecke", 1);
+        slab.justification = SlabJustification::Top;
+        slab.layers = vec![
+            SlabLayer::new("Estrich", 0.06, LayerFunction::Finish),
+            SlabLayer::new("Stahlbeton", 0.20, LayerFunction::Structural),
+            SlabLayer::new("Putz", 0.015, LayerFunction::Finish),
+        ];
+        slab.base_origin = [0.0, 0.0, 2.80];
+        slab.top_origin = [0.0, 0.0, 2.80];
+        let mut polygon = LwPolyline::new();
+        for point in [(0.0, 0.0), (6.0, 0.0), (6.0, 4.0), (0.0, 4.0)] {
+            polygon.add_vertex(LwVertex::new(AcadVector2::new(point.0, point.1)));
+        }
+        polygon.is_closed = true;
+        polygon.elevation = 2.80;
+        let mut entity = acadrust::EntityType::LwPolyline(polygon);
+        let mut record = ExtendedDataRecord::new(AEC_APPID);
+        record.values = slab_record_for_slab(&slab);
+        entity.common_mut().extended_data.add_record(record);
+        let mut scene = Scene::new();
+        scene.add_entity(entity);
+
+        let collector = SceneGeometryCollector::collect_from_document(&scene.document, ModelId::new());
+        let expected = slab.layer_z_ranges(2.80);
+        assert!(
+            (collector.slabs[0].layer_z_ranges()[0].0 - 2.80).abs() < 1e-9,
+            "OKFF top stays on the reference, it is not lifted by the thickness"
+        );
+
+        let viewpoint = Viewpoint {
+            id: ViewpointId::new(),
+            name: "Schnitt".into(),
+            revision: Revision(1),
+            origin: ViewOrigin::World(Point3::new(0.0, 0.0, -1.0)),
+            axes: ViewAxes::section(Vector2::new(1.0, 0.0)).unwrap(),
+            kind: ViewKind::Section {
+                path: SectionPath::straight(Point2::new(-1.0, 2.0), Point2::new(8.0, 2.0)),
+                far_depth: None,
+            },
+            z_range: VerticalRange::new(Metres::new(0.0).unwrap(), Metres::new(4.0).unwrap()).unwrap(),
+            mapping: ProjectionMapping::default(),
+            crop: None,
+        };
+        let model_view = ModelView {
+            id: ModelViewId::new(),
+            name: "Schnitt".into(),
+            viewpoint_id: viewpoint.id,
+            profile_id: ViewProfileId::new(),
+            scale: ScaleDenominator::new(50.0).unwrap(),
+            detail: DetailPolicy::FromProfileAndScale,
+            excluded_elements: BTreeSet::new(),
+            graphic_overrides: vec![],
+            annotation_ids: vec![],
+            update_policy: UpdatePolicy::Automatic,
+            revisions: ViewRevisions::default(),
+        };
+        let section = derive_section_view(
+            &viewpoint,
+            &model_view,
+            &collector,
+            &CutEngineOptions::default(),
+        )
+        .unwrap();
+        let mut section_bands: Vec<(f64, f64)> = section
+            .iter()
+            .filter(|primitive| primitive.role == PrimitiveRole::CutFill)
+            .filter_map(|primitive| match &primitive.geometry {
+                Geometry2d::Region { outer, .. } => {
+                    let min_y = outer.iter().map(|point| point.y_m).fold(f64::INFINITY, f64::min);
+                    let max_y = outer.iter().map(|point| point.y_m).fold(f64::NEG_INFINITY, f64::max);
+                    Some((max_y, min_y))
+                }
+                _ => None,
+            })
+            .collect();
+        section_bands.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap());
+        assert_eq!(section_bands.len(), expected.len());
+        for (actual, live) in section_bands.iter().zip(expected.iter()) {
+            assert!((actual.0 - live.0).abs() < 1e-6 && (actual.1 - live.1).abs() < 1e-6, "{actual:?} {live:?}");
+        }
+
+        let mut elevation = Vec::new();
+        let mut counter = 0;
+        crate::modules::aec::engine::views::elevation_engine::project_slab_elevation(
+            &collector.slabs[0],
+            &viewpoint,
+            0.0,
+            f64::INFINITY,
+            &model_view,
+            &crate::modules::aec::engine::views::elevation_engine::ElevationEngineOptions::default(),
+            &crate::modules::aec::engine::views::style_resolver::ViewStyleContext::new(
+                &model_view,
+                None,
+                None,
+                true,
+            ),
+            &mut elevation,
+            &mut counter,
+        )
+        .unwrap();
+        let mut elevation_bands: Vec<(f64, f64)> = elevation
+            .iter()
+            .filter(|primitive| primitive.role == PrimitiveRole::SurfaceFill)
+            .filter_map(|primitive| match &primitive.geometry {
+                Geometry2d::Region { outer, .. } => {
+                    let min_y = outer.iter().map(|point| point.y_m).fold(f64::INFINITY, f64::min);
+                    let max_y = outer.iter().map(|point| point.y_m).fold(f64::NEG_INFINITY, f64::max);
+                    Some((max_y, min_y))
+                }
+                _ => None,
+            })
+            .collect();
+        elevation_bands.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap());
+        elevation_bands.dedup_by(|a, b| (a.0 - b.0).abs() < 1e-6 && (a.1 - b.1).abs() < 1e-6);
+        assert_eq!(elevation_bands.len(), expected.len(), "{elevation_bands:?}");
+        for (actual, live) in elevation_bands.iter().zip(expected.iter()) {
+            assert!((actual.0 - live.0).abs() < 1e-6 && (actual.1 - live.1).abs() < 1e-6, "{actual:?} {live:?}");
+        }
     }
 }

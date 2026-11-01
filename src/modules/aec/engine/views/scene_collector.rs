@@ -123,16 +123,15 @@ impl CollectedWall {
         (Point2::new(min_x, min_y), Point2::new(max_x, max_y))
     }
 
-    /// Returns the signed offset and thickness of each layer relative to the baseline axis.
+    /// Start and thickness of each layer on the same side of the axis as the live wall.
+    ///
+    /// `axis_offset` is already that position. Justification only moves the axis polyline
+    /// and must not be applied again, otherwise a section restacks every layer from the axis.
     pub fn layer_offsets(&self) -> Vec<(f64, f64)> {
-        let just_offset = self.justification.offset(self.total_thickness);
-        let mut current_offset = -self.total_thickness * 0.5 + just_offset;
-        let mut offsets = Vec::with_capacity(self.layers.len());
-        for layer in &self.layers {
-            offsets.push((current_offset, layer.thickness));
-            current_offset += layer.thickness;
-        }
-        offsets
+        self.layers
+            .iter()
+            .map(|layer| (layer.axis_offset, layer.thickness))
+            .collect()
     }
 }
 
@@ -156,6 +155,11 @@ pub struct CollectedSlab {
     pub element_ref: ElementRef,
     pub xref_source: Option<XrefSourceRef>,
     pub style_id: String,
+    /// Nominal underside of the stack in world Z.
+    ///
+    /// This is the live solid's top minus the total thickness. Justification
+    /// (OKFF, OKRD, UKD) and `top_offset` are already included and must not be
+    /// applied again when the layers are walked.
     pub base_z: f64,
     pub total_thickness: f64,
     pub polygon: Vec<Point2>,
@@ -166,6 +170,10 @@ pub struct CollectedSlab {
 }
 
 impl CollectedSlab {
+    /// `(top, bottom)` of each layer, walked down from the live top surface.
+    ///
+    /// `base_z` is already that top minus the total thickness. A layer
+    /// `vertical_offset` shifts only that layer; neighbours keep their station.
     pub fn layer_z_ranges(&self) -> Vec<(f64, f64)> {
         let mut current_top = self.base_z + self.total_thickness;
         self.layers
@@ -211,6 +219,17 @@ impl CollectedSlab {
         }
         (Point2::new(min_x, min_y), Point2::new(max_x, max_y))
     }
+}
+
+fn polygon_centroid(points: &[(f64, f64)]) -> (f64, f64) {
+    if points.is_empty() {
+        return (0.0, 0.0);
+    }
+    let (sum_x, sum_y) = points
+        .iter()
+        .fold((0.0, 0.0), |(sum_x, sum_y), (x, y)| (sum_x + x, sum_y + y));
+    let count = points.len() as f64;
+    (sum_x / count, sum_y / count)
 }
 
 /// Aggregator collecting all 3D AEC elements from model space and referenced XREF storeys.
@@ -520,18 +539,28 @@ impl SceneGeometryCollector {
                     }
 
                     if polygon.len() >= 3 {
-                        let raw_base = if slab.base_origin[2].abs() > 1e-6 {
+                        // The stored origin is the reference plane, not the underside.
+                        // OKFF hangs the stack below that plane; stacking upward from
+                        // the origin puts every layer one thickness too high.
+                        let local_pts: Vec<(f64, f64)> = pl
+                            .vertices
+                            .iter()
+                            .map(|vertex| (vertex.location.x, vertex.location.y))
+                            .collect();
+                        let (cx, cy) = polygon_centroid(&local_pts);
+                        let default_ref = if slab.base_origin[2].abs() > 1e-6 {
                             slab.base_origin[2]
                         } else if pl.elevation.abs() > 1e-6 {
-                            pl.elevation + slab.base_offset
+                            pl.elevation
                         } else {
-                            slab.base_offset
+                            0.0
                         };
+                        let local_bottom = slab.top_z_at_xy(cx, cy, default_ref) - slab.total_thickness();
                         let base_z = if let Some(xref) = &xref_source {
-                            let (_, _, z_t) = xref.transform_coords(0.0, 0.0, raw_base);
+                            let (_, _, z_t) = xref.transform_coords(cx, cy, local_bottom);
                             z_t
                         } else {
-                            raw_base
+                            local_bottom
                         };
 
                         let total_thickness = slab.total_thickness();
@@ -853,18 +882,71 @@ mod tests {
         let collector = SceneGeometryCollector::collect_from_document(&scene.document, model_id);
         assert_eq!(collector.slabs.len(), 1);
         let collected = &collector.slabs[0];
-        assert!((collected.base_z - 2.80).abs() < 1e-9);
+        assert!((collected.base_z - 2.50).abs() < 1e-9, "OKFF underside is reference minus thickness");
         assert!((collected.layers[0].vertical_offset + 0.01).abs() < 1e-9);
         assert!((collected.layers[2].vertical_offset + 0.02).abs() < 1e-9);
         assert_eq!(collected.polygon[0], Point2::new(11.0, 6.0));
 
         let ranges = collected.layer_z_ranges();
-        assert!((ranges[0].0 - 3.09).abs() < 1e-9 && (ranges[0].1 - 3.07).abs() < 1e-9);
-        assert!((ranges[1].0 - 3.08).abs() < 1e-9 && (ranges[1].1 - 3.00).abs() < 1e-9);
+        assert!((ranges[0].0 - 2.79).abs() < 1e-9 && (ranges[0].1 - 2.77).abs() < 1e-9);
+        assert!((ranges[1].0 - 2.78).abs() < 1e-9 && (ranges[1].1 - 2.70).abs() < 1e-9);
         assert!(
-            (ranges[2].0 - 2.98).abs() < 1e-9 && (ranges[2].1 - 2.78).abs() < 1e-9,
-            "XREF height must not reverse the stack or clamp the core to base_z"
+            (ranges[2].0 - 2.68).abs() < 1e-9 && (ranges[2].1 - 2.48).abs() < 1e-9,
+            "XREF height must not reverse the stack or restack it above the reference"
         );
         assert!(ranges[0].1 > ranges[2].0);
+    }
+
+    fn closed_slab_entity(slab: &Slab) -> EntityType {
+        let mut polygon = LwPolyline::new();
+        polygon.add_vertex(LwVertex::new(Vector2::new(0.0, 0.0)));
+        polygon.add_vertex(LwVertex::new(Vector2::new(4.0, 0.0)));
+        polygon.add_vertex(LwVertex::new(Vector2::new(4.0, 3.0)));
+        polygon.add_vertex(LwVertex::new(Vector2::new(0.0, 3.0)));
+        polygon.is_closed = true;
+        let mut entity = EntityType::LwPolyline(polygon);
+        let mut record = ExtendedDataRecord::new(AEC_APPID);
+        record.values = slab_record_for_slab(slab);
+        entity.common_mut().extended_data.add_record(record);
+        entity
+    }
+
+    #[test]
+    fn collected_slab_layers_use_the_live_top_not_the_reference_as_underside() {
+        use crate::modules::aec::engine::slab::SlabJustification;
+
+        let layers = vec![
+            SlabLayer::new("Finish", 0.02, LayerFunction::Finish),
+            SlabLayer::new("Insulation", 0.08, LayerFunction::Insulation),
+            SlabLayer::new("Concrete", 0.20, LayerFunction::Structural),
+        ];
+        let reference = 2.80;
+
+        for justification in [
+            SlabJustification::Top,
+            SlabJustification::StructuralTop,
+            SlabJustification::Bottom,
+        ] {
+            let mut scene = Scene::new();
+            let mut slab = Slab::new("Floor", 1);
+            slab.layers = layers.clone();
+            slab.layers[1].vertical_offset = 0.005;
+            slab.justification = justification;
+            slab.top_offset = 0.04;
+            slab.base_origin = [1.0, 1.0, reference];
+            slab.top_origin = [1.0, 1.0, reference];
+            scene.add_entity(closed_slab_entity(&slab));
+
+            let collected = SceneGeometryCollector::collect_from_document(&scene.document, ModelId::new());
+            let got = collected.slabs[0].layer_z_ranges();
+            let expected = slab.layer_z_ranges(reference + slab.top_offset);
+            assert_eq!(got.len(), expected.len(), "{justification:?}");
+            for (index, (actual, live)) in got.iter().zip(expected.iter()).enumerate() {
+                assert!(
+                    (actual.0 - live.0).abs() < 1e-9 && (actual.1 - live.1).abs() < 1e-9,
+                    "{justification:?} layer {index}: derived {actual:?}, live {live:?}"
+                );
+            }
+        }
     }
 }

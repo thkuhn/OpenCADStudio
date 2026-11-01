@@ -83,7 +83,14 @@ impl FloorPlanCommand {
         }
     }
 
-    pub fn commit_plan_view(&mut self, scene: &mut Scene, insertion_pt: Point2) -> Option<Handle> {
+    pub fn commit_plan_view(
+        &mut self,
+        scene: &mut Scene,
+        insertion_pt: Point2,
+        display_config_library: &crate::modules::aec::engine::library::DisplayConfigLibrary,
+        style_library: &crate::modules::aec::engine::library::StyleLibrary,
+        active_name: Option<&str>,
+    ) -> Option<Handle> {
         let (axes, view_kind) = match self.kind {
             PlanViewKind::FloorPlan => (
                 ViewAxes::floor_plan(),
@@ -143,42 +150,21 @@ impl FloorPlanCommand {
             revisions: Default::default(),
         };
 
-        let dc_lib = crate::modules::aec::engine::project::resolve_display_config_library(None);
-        let style_lib = crate::modules::aec::engine::project::resolve_style_library(None);
-        let display_config = dc_lib
-            .configs
-            .iter()
-            .find(|c| c.id == model_view.profile_id.as_uuid())
-            .or_else(|| {
-                dc_lib
-                    .configs
-                    .iter()
-                    .find(|c| model_view.name.contains(&c.name))
-            })
-            .or_else(|| {
-                dc_lib
-                    .configs
-                    .iter()
-                    .find(|c| c.view_type == crate::modules::aec::engine::plan_view::ViewType::FloorPlan)
-            })
-            .cloned();
-
-        if let Some(ref dc) = display_config {
-            model_view.profile_id = ViewProfileId::from_uuid(dc.id);
-            if let Some(scale) = dc.scale {
-                if let Ok(sd) = ScaleDenominator::new(scale) {
-                    model_view.scale = sd;
-                }
-            }
-        }
+        let display_config = crate::modules::aec::engine::views::style_resolver::resolve_view_display_config(
+            display_config_library,
+            crate::modules::aec::engine::plan_view::ViewType::FloorPlan,
+            Some(model_view.profile_id.as_uuid()),
+            active_name,
+        );
+        model_view.profile_id = ViewProfileId::from_uuid(display_config.id);
 
         let primitives = derive_floorplan_view(
             &viewpoint,
             &model_view,
             &collector,
             &FloorPlanEngineOptions {
-                display_config,
-                style_library: Some(style_lib),
+                display_config: Some(display_config),
+                style_library: Some(style_library.clone()),
                 ..FloorPlanEngineOptions::default()
             },
         ).unwrap_or_default();
@@ -311,7 +297,14 @@ impl CadCommand for FloorPlanCommand {
 }
 
 /// Dispatched non-interactive floor plan / ceiling plan creation handler.
-pub fn aec_floorplan_do(scene: &mut Scene, command_line: &mut CommandLine, args: &str) -> Option<Handle> {
+pub fn aec_floorplan_do(
+    scene: &mut Scene,
+    command_line: &mut CommandLine,
+    args: &str,
+    display_config_library: &crate::modules::aec::engine::library::DisplayConfigLibrary,
+    style_library: &crate::modules::aec::engine::library::StyleLibrary,
+    active_name: Option<&str>,
+) -> Option<Handle> {
     // Format: kind_code|name|cut_height|z_min|z_max|ins_x,ins_y
     let mut parts = args.split('|');
     let kind_code = parts.next()?.parse::<u8>().ok()?;
@@ -339,7 +332,13 @@ pub fn aec_floorplan_do(scene: &mut Scene, command_line: &mut CommandLine, args:
     cmd.z_min = z_min;
     cmd.z_max = z_max;
 
-    let handle = cmd.commit_plan_view(scene, Point2::new(ins_x, ins_y))?;
+    let handle = cmd.commit_plan_view(
+        scene,
+        Point2::new(ins_x, ins_y),
+        display_config_library,
+        style_library,
+        active_name,
+    )?;
     let kind_label = match kind {
         PlanViewKind::FloorPlan => "Grundriss",
         PlanViewKind::ReflectedCeilingPlan => "Deckenspiegel",
@@ -357,7 +356,15 @@ mod tests {
         let mut cmd = FloorPlanCommand::new_floorplan();
         let mut scene = Scene::new();
         cmd.on_point(DVec3::new(10.0, 10.0, 0.0));
-        let handle = cmd.commit_plan_view(&mut scene, Point2::new(10.0, 10.0));
+        let display_config_library = crate::modules::aec::engine::library::DisplayConfigLibrary::seed_default_configs();
+        let style_library = crate::modules::aec::engine::library::StyleLibrary::default();
+        let handle = cmd.commit_plan_view(
+            &mut scene,
+            Point2::new(10.0, 10.0),
+            &display_config_library,
+            &style_library,
+            Some("Architektur 1:50"),
+        );
         assert!(handle.is_some());
     }
 
@@ -366,7 +373,15 @@ mod tests {
         let mut cmd = FloorPlanCommand::new_rcp();
         let mut scene = Scene::new();
         cmd.on_point(DVec3::new(10.0, 10.0, 0.0));
-        let handle = cmd.commit_plan_view(&mut scene, Point2::new(10.0, 10.0));
+        let display_config_library = crate::modules::aec::engine::library::DisplayConfigLibrary::seed_default_configs();
+        let style_library = crate::modules::aec::engine::library::StyleLibrary::default();
+        let handle = cmd.commit_plan_view(
+            &mut scene,
+            Point2::new(10.0, 10.0),
+            &display_config_library,
+            &style_library,
+            Some("Architektur 1:50"),
+        );
         assert!(handle.is_some());
     }
 }

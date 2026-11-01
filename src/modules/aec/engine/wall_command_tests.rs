@@ -13516,11 +13516,13 @@ fn test_multilayer_wall_layer_offsets_during_storey_height_change() {
     assert!((wall.height - 3.50).abs() < 1e-6);
 
     // Effective heights of individual layers
-    let l1_eff_height = (wall.height - wall.layers[0].bottom_offset - wall.layers[0].top_offset).max(0.0);
-    let l2_eff_height = (wall.height - wall.layers[1].bottom_offset - wall.layers[1].top_offset).max(0.0);
+    let l1_eff_height =
+        (wall.height + wall.layers[0].top_offset - wall.layers[0].bottom_offset).max(0.0);
+    let l2_eff_height =
+        (wall.height + wall.layers[1].top_offset - wall.layers[1].bottom_offset).max(0.0);
     assert!((l1_eff_height - 3.50).abs() < 1e-6);
-    assert!((l2_eff_height - (3.50 - (-0.05) - 0.10)).abs() < 1e-6);
-    assert!((l2_eff_height - 3.45).abs() < 1e-6);
+    assert!((l2_eff_height - (3.50 + 0.10 - (-0.05))).abs() < 1e-6);
+    assert!((l2_eff_height - 3.65).abs() < 1e-6);
 }
 
 #[test]

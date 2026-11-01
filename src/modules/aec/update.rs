@@ -3695,7 +3695,7 @@ impl OpenCADStudio {
                             let _ = self.regenerate_wall_respecting_active_display_config(tab, host_wall);
                             if let Some(carrier_h) = crate::modules::aec::properties::carrier_handle_from_derived_primitive(&self.tabs[tab].scene.document, derived_handle) {
                                 if let Some((vp, mv)) = crate::modules::aec::engine::views::carrier::read_view_carrier_definitions(&self.tabs[tab].scene.document, carrier_h) {
-                                    crate::modules::aec::engine::views::update_ops::regenerate_or_mark_outdated(&mut self.tabs[tab].scene.document, carrier_h, &vp, &mv);
+                                    self.regenerate_derived_view_carrier(tab, carrier_h, &vp, &mv);
                                 }
                             }
                             self.tabs[tab].scene.bump_geometry();
@@ -3721,7 +3721,7 @@ impl OpenCADStudio {
                             let _ = self.regenerate_wall_respecting_active_display_config(tab, host_wall);
                             if let Some(carrier_h) = crate::modules::aec::properties::carrier_handle_from_derived_primitive(&self.tabs[tab].scene.document, derived_handle) {
                                 if let Some((vp, mv)) = crate::modules::aec::engine::views::carrier::read_view_carrier_definitions(&self.tabs[tab].scene.document, carrier_h) {
-                                    crate::modules::aec::engine::views::update_ops::regenerate_or_mark_outdated(&mut self.tabs[tab].scene.document, carrier_h, &vp, &mv);
+                                    self.regenerate_derived_view_carrier(tab, carrier_h, &vp, &mv);
                                 }
                             }
                             self.tabs[tab].scene.bump_geometry();
@@ -3747,7 +3747,7 @@ impl OpenCADStudio {
                             let _ = self.regenerate_wall_respecting_active_display_config(tab, host_wall);
                             if let Some(carrier_h) = crate::modules::aec::properties::carrier_handle_from_derived_primitive(&self.tabs[tab].scene.document, derived_handle) {
                                 if let Some((vp, mv)) = crate::modules::aec::engine::views::carrier::read_view_carrier_definitions(&self.tabs[tab].scene.document, carrier_h) {
-                                    crate::modules::aec::engine::views::update_ops::regenerate_or_mark_outdated(&mut self.tabs[tab].scene.document, carrier_h, &vp, &mv);
+                                    self.regenerate_derived_view_carrier(tab, carrier_h, &vp, &mv);
                                 }
                             }
                             self.tabs[tab].scene.bump_geometry();
@@ -3773,7 +3773,7 @@ impl OpenCADStudio {
                             let _ = self.regenerate_wall_respecting_active_display_config(tab, host_wall);
                             if let Some(carrier_h) = crate::modules::aec::properties::carrier_handle_from_derived_primitive(&self.tabs[tab].scene.document, derived_handle) {
                                 if let Some((vp, mv)) = crate::modules::aec::engine::views::carrier::read_view_carrier_definitions(&self.tabs[tab].scene.document, carrier_h) {
-                                    crate::modules::aec::engine::views::update_ops::regenerate_or_mark_outdated(&mut self.tabs[tab].scene.document, carrier_h, &vp, &mv);
+                                    self.regenerate_derived_view_carrier(tab, carrier_h, &vp, &mv);
                                 }
                             }
                             self.tabs[tab].scene.bump_geometry();
@@ -3902,7 +3902,7 @@ impl OpenCADStudio {
                             let _ = self.regenerate_wall_respecting_active_display_config(tab, wall_h);
                             if let Some(carrier_h) = crate::modules::aec::properties::carrier_handle_from_derived_primitive(&self.tabs[tab].scene.document, derived_handle) {
                                 if let Some((vp, mv)) = crate::modules::aec::engine::views::carrier::read_view_carrier_definitions(&self.tabs[tab].scene.document, carrier_h) {
-                                    crate::modules::aec::engine::views::update_ops::regenerate_or_mark_outdated(&mut self.tabs[tab].scene.document, carrier_h, &vp, &mv);
+                                    self.regenerate_derived_view_carrier(tab, carrier_h, &vp, &mv);
                                 }
                             }
                             self.tabs[tab].scene.bump_geometry();
@@ -3935,7 +3935,7 @@ impl OpenCADStudio {
                             let _ = self.regenerate_wall_respecting_active_display_config(tab, wall_h);
                             if let Some(carrier_h) = crate::modules::aec::properties::carrier_handle_from_derived_primitive(&self.tabs[tab].scene.document, derived_handle) {
                                 if let Some((vp, mv)) = crate::modules::aec::engine::views::carrier::read_view_carrier_definitions(&self.tabs[tab].scene.document, carrier_h) {
-                                    crate::modules::aec::engine::views::update_ops::regenerate_or_mark_outdated(&mut self.tabs[tab].scene.document, carrier_h, &vp, &mv);
+                                    self.regenerate_derived_view_carrier(tab, carrier_h, &vp, &mv);
                                 }
                             }
                             self.tabs[tab].scene.bump_geometry();
@@ -4048,7 +4048,7 @@ impl OpenCADStudio {
                             let _ = self.regenerate_slab_respecting_active_display_config(tab, slab_h);
                             if let Some(carrier_h) = crate::modules::aec::properties::carrier_handle_from_derived_primitive(&self.tabs[tab].scene.document, derived_handle) {
                                 if let Some((vp, mv)) = crate::modules::aec::engine::views::carrier::read_view_carrier_definitions(&self.tabs[tab].scene.document, carrier_h) {
-                                    crate::modules::aec::engine::views::update_ops::regenerate_or_mark_outdated(&mut self.tabs[tab].scene.document, carrier_h, &vp, &mv);
+                                    self.regenerate_derived_view_carrier(tab, carrier_h, &vp, &mv);
                                 }
                             }
                             self.tabs[tab].scene.bump_geometry();
@@ -4079,7 +4079,7 @@ impl OpenCADStudio {
                             let _ = self.regenerate_slab_respecting_active_display_config(tab, slab_h);
                             if let Some(carrier_h) = crate::modules::aec::properties::carrier_handle_from_derived_primitive(&self.tabs[tab].scene.document, derived_handle) {
                                 if let Some((vp, mv)) = crate::modules::aec::engine::views::carrier::read_view_carrier_definitions(&self.tabs[tab].scene.document, carrier_h) {
-                                    crate::modules::aec::engine::views::update_ops::regenerate_or_mark_outdated(&mut self.tabs[tab].scene.document, carrier_h, &vp, &mv);
+                                    self.regenerate_derived_view_carrier(tab, carrier_h, &vp, &mv);
                                 }
                             }
                             self.tabs[tab].scene.bump_geometry();

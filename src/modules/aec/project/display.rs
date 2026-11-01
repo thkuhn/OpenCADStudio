@@ -8,6 +8,30 @@ use crate::modules::aec::engine::wall_package;
 use crate::modules::aec::engine::xdata;
 
 impl OpenCADStudio {
+    pub(crate) fn regenerate_derived_view_carrier(
+        &mut self,
+        tab_index: usize,
+        carrier_handle: acadrust::Handle,
+        viewpoint: &crate::modules::aec::engine::views::Viewpoint,
+        model_view: &crate::modules::aec::engine::views::ModelView,
+    ) -> bool {
+        let display_config_library = crate::modules::aec::engine::project::resolve_display_config_library(
+            self.aec.aec_project_explorer_file.as_ref(),
+        );
+        let style_library = crate::modules::aec::engine::project::resolve_style_library(
+            self.aec.aec_project_explorer_file.as_ref(),
+        );
+        let active_name = self.tabs[tab_index].active_display_config.clone();
+        crate::modules::aec::engine::views::update_ops::regenerate_or_mark_outdated_with_libraries(
+            &mut self.tabs[tab_index].scene.document,
+            carrier_handle,
+            viewpoint,
+            model_view,
+            &display_config_library,
+            &style_library,
+            active_name.as_deref(),
+        )
+    }
     /// Persists `lib` as the effective `DisplayConfig` library, analogous
     /// to [`Self::aec_save_style_library_preferring_project`].
     pub(crate) fn aec_save_display_config_library_preferring_project(
@@ -446,9 +470,19 @@ impl OpenCADStudio {
                                 marker_h,
                                 &marker,
                             );
-                            crate::modules::aec::views::din1356::sync_marker_to_carrier(
+                            let display_config_library = crate::modules::aec::engine::project::resolve_display_config_library(
+                                self.aec.aec_project_explorer_file.as_ref(),
+                            );
+                            let style_library = crate::modules::aec::engine::project::resolve_style_library(
+                                self.aec.aec_project_explorer_file.as_ref(),
+                            );
+                            let active_name = self.tabs[tab_index].active_display_config.clone();
+                            crate::modules::aec::views::din1356::sync_marker_to_carrier_with_libraries(
                                 &mut self.tabs[tab_index].scene.document,
                                 &marker,
+                                &display_config_library,
+                                &style_library,
+                                active_name.as_deref(),
                             );
                             self.tabs[tab_index].scene.clear_preview_wire();
                             reselected.push(marker_h);
@@ -471,12 +505,7 @@ impl OpenCADStudio {
                     &self.tabs[tab_index].scene.document,
                     carrier_handle,
                 ) {
-                    crate::modules::aec::engine::views::update_ops::regenerate_or_mark_outdated(
-                        &mut self.tabs[tab_index].scene.document,
-                        carrier_handle,
-                        &vp,
-                        &mv,
-                    );
+                    self.regenerate_derived_view_carrier(tab_index, carrier_handle, &vp, &mv);
                 }
                 let mutated_handle = mutation.handle();
                 let is_wall = self.tabs[tab_index]
@@ -546,12 +575,7 @@ impl OpenCADStudio {
                     &vp,
                     &mv,
                 );
-                crate::modules::aec::engine::views::update_ops::regenerate_or_mark_outdated(
-                    &mut self.tabs[tab_index].scene.document,
-                    carrier_handle,
-                    &vp,
-                    &mv,
-                );
+                self.regenerate_derived_view_carrier(tab_index, carrier_handle, &vp, &mv);
                 self.tabs[tab_index].scene.clear_preview_wire();
                 marker_regenerated = true;
             }
@@ -567,20 +591,11 @@ impl OpenCADStudio {
                     &mut self.tabs[tab_index].scene.document,
                     &carrier,
                 );
-                if let Some(acadrust::EntityType::Point(ref mut pt)) = self.tabs[tab_index].scene.document.get_entity_mut(carrier_handle) {
-                    pt.location.x = new_ins_pt.x_m;
-                    pt.location.y = new_ins_pt.y_m;
-                }
                 if let Some((vp, mv)) = crate::modules::aec::engine::views::carrier::read_view_carrier_definitions(
                     &self.tabs[tab_index].scene.document,
                     carrier_handle,
                 ) {
-                    crate::modules::aec::engine::views::update_ops::regenerate_or_mark_outdated(
-                        &mut self.tabs[tab_index].scene.document,
-                        carrier_handle,
-                        &vp,
-                        &mv,
-                    );
+                    self.regenerate_derived_view_carrier(tab_index, carrier_handle, &vp, &mv);
                 }
                 self.tabs[tab_index].scene.clear_preview_wire();
                 marker_regenerated = true;

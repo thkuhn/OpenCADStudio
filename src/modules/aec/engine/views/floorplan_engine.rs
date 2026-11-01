@@ -13,12 +13,11 @@ use super::scene_collector::{
     CollectedOpening, CollectedSlab, CollectedWall, CollectedWallJoinData, SceneGeometryCollector,
 };
 use super::silhouette::{
-    point_in_polygon, point_on_polygon_boundary, process_silhouette_and_depth,
-    SilhouetteOptions, TRANSIENT_OCCLUDER_LAYER,
+    point_in_polygon, point_on_polygon_boundary, SilhouetteOptions, TRANSIENT_OCCLUDER_LAYER,
 };
 use super::style_resolver::{
-    is_draw_suppressed, is_opening_slot_visible, is_slab_contour_visible, is_slab_phase_visible,
-    is_wall_layer_active, is_wall_phase_visible, resolve_layer_cut_style,
+    is_draw_suppressed, is_opening_slot_visible, is_slab_contour_visible, is_slab_layer_visible,
+    is_slab_phase_visible, is_wall_layer_visible, is_wall_phase_visible, resolve_layer_cut_style,
     resolve_opening_view_style, resolve_overhead_lintel_style, resolve_slab_contour_style,
     ViewStyleContext,
 };
@@ -118,6 +117,15 @@ pub fn derive_floorplan_view(
         }
         let (slab_z_min, slab_z_max) = slab.z_range();
         if slab_z_max < z_min || slab_z_min > z_max {
+            continue;
+        }
+        if !slab.layers.is_empty()
+            && !slab
+                .layers
+                .iter()
+                .enumerate()
+                .any(|(index, _)| is_slab_layer_visible(&ctx, slab, index))
+        {
             continue;
         }
 
@@ -250,8 +258,8 @@ pub fn derive_floorplan_view(
         )?;
     }
 
-    process_silhouette_and_depth(
-        &mut primitives,
+    let mut primitives = super::frame::resolve_view_frame(
+        primitives,
         &SilhouetteOptions {
             emit_hidden_lines: options.emit_hidden_lines,
             max_depth_distance: None,
@@ -293,6 +301,26 @@ fn wall_join_input(
         override_end: join_data.and_then(|data| data.override_end.clone()),
         override_span: join_data.and_then(|data| data.override_span.clone()),
     }
+}
+
+pub(super) fn solve_wall_layer_footprints(
+    scene: &SceneGeometryCollector,
+) -> Vec<Vec<Option<Vec<(f64, f64)>>>> {
+    let inputs: Vec<_> = scene
+        .walls
+        .iter()
+        .enumerate()
+        .map(|(index, wall)| {
+            wall_join_input(
+                wall,
+                scene
+                    .wall_join_data
+                    .get(index)
+                    .and_then(Option::as_ref),
+            )
+        })
+        .collect();
+    crate::modules::aec::engine::junction_solver::solve_network(&inputs, 0.05).footprints
 }
 
 /// Tests whether an overhead slab contains the opening head position along the wall axis,
@@ -417,7 +445,7 @@ fn slice_wall_horizontal(
     let mut current_offset = -wall.total_thickness * 0.5;
 
     for (layer_idx, layer) in wall.layers.iter().enumerate() {
-        if !is_wall_layer_active(ctx, wall, layer_idx) {
+        if !is_wall_layer_visible(ctx, wall, layer_idx) {
             current_offset += layer.thickness;
             continue;
         }
@@ -1456,7 +1484,7 @@ mod tests {
     }
 
     #[test]
-    fn test_floorplan_layer_detail_off_occludes_background_across_whole_wall_thickness() {
+    fn test_floorplan_hidden_core_does_not_occlude_but_structural_core_does() {
         use crate::modules::aec::engine::plan_view::{LayerDetail, PlanningStage, ViewType};
         let (viewpoint, model_view) = plan_fixture();
 
@@ -1515,6 +1543,7 @@ mod tests {
         );
         dc.detail.layers = LayerDetail::Off;
 
+        let slab_element = slab.element_ref;
         let mut collector = SceneGeometryCollector::new();
         collector.walls.push(wall);
         collector.slabs.push(slab);
@@ -1524,57 +1553,67 @@ mod tests {
             &model_view,
             &collector,
             &FloorPlanEngineOptions {
-                display_config: Some(dc),
-                style_library: Some(lib),
+                display_config: Some(dc.clone()),
+                style_library: Some(lib.clone()),
                 ..FloorPlanEngineOptions::default()
             },
         )
         .unwrap();
 
-        // 1. Verify that no CutBoundary primitives were emitted for the middle layer
+        // LayerDetail::Off hides build-up layers, so the hidden core is not drawn or a mask.
         for p in primitives.iter().filter(|p| p.role == PrimitiveRole::CutBoundary) {
             assert!(
-                !p.sources.as_slice().iter().any(|s| s.component_id == Some(core_comp)),
+                !p.sources.as_slice().iter().any(|source| source.component_id == Some(core_comp)),
                 "Core build-up layer must have no CutBoundary when LayerDetail::Off"
             );
         }
 
-        // 2. Verify that background slab projected edges were clipped across the whole wall thickness
-        // (y ∈ [-0.12, 0.12] along x ∈ [1.0, 3.0])
-        let projected: Vec<_> = primitives.iter().filter(|p| p.role == PrimitiveRole::ProjectedEdge).collect();
-        assert!(!projected.is_empty(), "Background slab must produce projected edges");
-
-        for prim in &projected {
-            match &prim.geometry {
-                Geometry2d::Line { start, end } => {
-                    let min_x = start.x_m.min(end.x_m);
-                    let max_x = start.x_m.max(end.x_m);
-                    let mid_y = (start.y_m + end.y_m) * 0.5;
-                    if max_x > 0.05 && min_x < 3.95 {
-                        assert!(
-                            mid_y < -0.11 || mid_y > 0.11,
-                            "Background edge must be occluded across full wall thickness, but found mid_y = {}",
-                            mid_y
-                        );
-                    }
-                }
-                Geometry2d::Polyline { vertices, .. } => {
-                    for win in vertices.windows(2) {
-                        let min_x = win[0].x_m.min(win[1].x_m);
-                        let max_x = win[0].x_m.max(win[1].x_m);
-                        let mid_y = (win[0].y_m + win[1].y_m) * 0.5;
-                        if max_x > 0.05 && min_x < 3.95 {
-                            assert!(
-                                mid_y < -0.11 || mid_y > 0.11,
-                                "Background edge must be occluded across full wall thickness, but found mid_y = {}",
-                                mid_y
-                            );
+        let background_crosses_core = |primitives: &[DerivedPrimitive]| {
+            primitives.iter().any(|primitive| {
+                primitive.role == PrimitiveRole::ProjectedEdge
+                    && primitive.sources.as_slice().iter().any(|source| source.element == slab_element)
+                    && match &primitive.geometry {
+                        Geometry2d::Line { start, end } => {
+                            start.y_m < -1e-6 && end.y_m > 1e-6 || end.y_m < -1e-6 && start.y_m > 1e-6
                         }
+                        Geometry2d::Polyline { vertices, closed } => {
+                            let edge_count = if *closed { vertices.len() } else { vertices.len().saturating_sub(1) };
+                            (0..edge_count).any(|index| {
+                                let start = vertices[index];
+                                let end = vertices[(index + 1) % vertices.len()];
+                                start.y_m < -1e-6 && end.y_m > 1e-6 || end.y_m < -1e-6 && start.y_m > 1e-6
+                            })
+                        }
+                        _ => false,
                     }
-                }
-                _ => {}
-            }
-        }
+            })
+        };
+        assert!(background_crosses_core(&primitives), "hidden core must not occlude the slab edge");
+
+        let mut structural_config = dc;
+        structural_config.detail.layers = LayerDetail::StructuralOnly;
+        let structural_primitives = derive_floorplan_view(
+            &viewpoint,
+            &model_view,
+            &collector,
+            &FloorPlanEngineOptions {
+                display_config: Some(structural_config),
+                style_library: Some(lib),
+                ..FloorPlanEngineOptions::default()
+            },
+        )
+        .unwrap();
+        assert!(
+            structural_primitives.iter().any(|primitive| {
+                primitive.role == PrimitiveRole::CutBoundary
+                    && primitive.sources.as_slice().iter().any(|source| source.component_id == Some(core_comp))
+            }),
+            "visible structural core must still be drawn"
+        );
+        assert!(
+            !background_crosses_core(&structural_primitives),
+            "visible structural core must occlude the background slab edge"
+        );
     }
 
     #[test]

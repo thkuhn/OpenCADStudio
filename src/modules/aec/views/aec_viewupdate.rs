@@ -35,7 +35,13 @@ impl ViewUpdateCommand {
         }
     }
 
-    pub fn update_all(&mut self, scene: &mut Scene) -> usize {
+    pub fn update_all(
+        &mut self,
+        scene: &mut Scene,
+        display_config_library: &crate::modules::aec::engine::library::DisplayConfigLibrary,
+        style_library: &crate::modules::aec::engine::library::StyleLibrary,
+        active_name: Option<&str>,
+    ) -> usize {
         let carriers = all_view_carriers(&scene.document);
         let mut count = 0;
         let collector = SceneGeometryCollector::collect_from_document(&scene.document, ModelId::new());
@@ -48,6 +54,9 @@ impl ViewUpdateCommand {
                     &[],
                     &[],
                     &collector,
+                    display_config_library,
+                    style_library,
+                    active_name,
                 ) {
                     count += c;
                 }
@@ -108,7 +117,14 @@ mod tests {
     fn test_view_update_command() {
         let mut cmd = ViewUpdateCommand::new();
         let mut scene = Scene::new();
-        let count = cmd.update_all(&mut scene);
+        let display_config_library = crate::modules::aec::engine::library::DisplayConfigLibrary::seed_default_configs();
+        let style_library = crate::modules::aec::engine::library::seed_default_library();
+        let count = cmd.update_all(
+            &mut scene,
+            &display_config_library,
+            &style_library,
+            None,
+        );
         assert_eq!(count, 0); // No carriers in empty scene
     }
 }

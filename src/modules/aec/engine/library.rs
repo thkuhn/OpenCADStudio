@@ -2,7 +2,8 @@
 
 use crate::modules::aec::engine::display_component::{
     ComponentRuleSet, ComponentStyleOverride, LayerSelection, LayerStyleOverride,
-    RepresentationMode, StyleDisplayOverlay, WallComponentKind, WallComponentSlot,
+    RepresentationMode, SlabComponentSlot, StyleDisplayOverlay, WallComponentKind,
+    WallComponentSlot,
 };
 use crate::modules::aec::engine::join::LayerRef;
 use crate::modules::aec::engine::material::Material;
@@ -820,6 +821,11 @@ pub fn build_effective_slab_rule_set(
         }
     }
 
+    if let (Some(style), Some(overlay)) = (style, style.and_then(|style| config.style_overrides.get(&style.style.id))) {
+        merge_style_overlay_into_rules(&mut rules, overlay);
+        apply_overlay_slab_layer_visibility(&mut rules, overlay, style);
+    }
+
     attach_opening_profiles(&mut rules, config);
     rules
 }
@@ -943,6 +949,84 @@ fn apply_overlay_layer_visibility(
             WallComponentSlot::Solid3D.key().to_string(),
             LayerSelection::Explicit(refs_3d),
         );
+    }
+}
+
+fn apply_overlay_slab_layer_visibility(
+    rules: &mut ComponentRuleSet,
+    overlay: &StyleDisplayOverlay,
+    style: &SlabStyle,
+) {
+    if overlay.layer_visibility.is_empty() || style.layers.is_empty() {
+        return;
+    }
+    let make_layer_ref = |index: usize, layer: &SlabStyleLayer| LayerRef {
+        material_id: layer.material_id.clone(),
+        role_tag: None,
+        index,
+        layer_id: Some(layer.layer_id),
+    };
+
+    for slot in [
+        SlabComponentSlot::Contour2D,
+        SlabComponentSlot::CeilingOutline2D,
+        SlabComponentSlot::LayerHatch2D,
+    ] {
+        let existing = rules.slab_layer_filter_for(slot).clone();
+        let visible: Vec<LayerRef> = style
+            .layers
+            .iter()
+            .enumerate()
+            .filter_map(|(index, layer)| {
+                let visibility = overlay
+                    .layer_visibility
+                    .get(&layer.layer_id)
+                    .copied()
+                    .unwrap_or_default();
+                let layer_ref = make_layer_ref(index, layer);
+                let included_by_existing = match &existing {
+                    LayerSelection::All => true,
+                    LayerSelection::Explicit(refs) => {
+                        crate::modules::aec::engine::display_apply::layer_ref_matches(&layer_ref, refs)
+                    }
+                };
+                (visibility.visible_2d && included_by_existing).then_some(layer_ref)
+            })
+            .collect();
+        if visible.len() != style.layers.len() || matches!(existing, LayerSelection::Explicit(_)) {
+            rules
+                .layer_filter
+                .insert(slot.key().to_string(), LayerSelection::Explicit(visible));
+        }
+    }
+
+    for slot in [SlabComponentSlot::Solid3D, SlabComponentSlot::SurfaceStyle3D] {
+        let existing = rules.slab_layer_filter_for(slot).clone();
+        let visible: Vec<LayerRef> = style
+            .layers
+            .iter()
+            .enumerate()
+            .filter_map(|(index, layer)| {
+                let visibility = overlay
+                    .layer_visibility
+                    .get(&layer.layer_id)
+                    .copied()
+                    .unwrap_or_default();
+                let layer_ref = make_layer_ref(index, layer);
+                let included_by_existing = match &existing {
+                    LayerSelection::All => true,
+                    LayerSelection::Explicit(refs) => {
+                        crate::modules::aec::engine::display_apply::layer_ref_matches(&layer_ref, refs)
+                    }
+                };
+                (visibility.visible_3d && included_by_existing).then_some(layer_ref)
+            })
+            .collect();
+        if visible.len() != style.layers.len() || matches!(existing, LayerSelection::Explicit(_)) {
+            rules
+                .layer_filter
+                .insert(slot.key().to_string(), LayerSelection::Explicit(visible));
+        }
     }
 }
 

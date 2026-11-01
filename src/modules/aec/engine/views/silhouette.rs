@@ -87,14 +87,7 @@ pub fn process_silhouette_and_depth(
             .unwrap_or(std::cmp::Ordering::Equal)
     });
 
-    // 2. Adjust line weights according to depth tiers
-    for prim in primitives.iter_mut() {
-        if prim.depth.min_m > 1e-4 && prim.role == PrimitiveRole::ProjectedEdge {
-            prim.style.line_weight_mm = PaperMm::new(0.18)?;
-        }
-    }
-
-    // 3. Perform 2D Occlusion Clipping
+    // 2. Perform 2D Occlusion Clipping
     let mut opaque_polygons: Vec<OpaquePolygon> = Vec::new();
 
     for prim in primitives.iter() {
@@ -127,8 +120,26 @@ pub fn process_silhouette_and_depth(
     let mut next_id_index = primitives.len() as u32 + 1000;
 
     for prim in primitives.drain(..) {
-        // Only clip projected edges and background lines
-        if prim.role != PrimitiveRole::ProjectedEdge || opaque_polygons.is_empty() {
+        if opaque_polygons.is_empty() {
+            result_primitives.push(prim);
+            continue;
+        }
+
+        // Glass and leaf fills are surfaces. A closer wall must remove them,
+        // otherwise the hatch paints over the wall that should hide the opening.
+        if prim.role == PrimitiveRole::SurfaceFill {
+            push_occluded_surface(
+                &mut result_primitives,
+                prim,
+                &opaque_polygons,
+                &mut next_id_index,
+            )?;
+            continue;
+        }
+
+        // Frames are regions and swing marks are symbols. Both used to skip
+        // clipping, so an opening stayed visible through a nearer wall.
+        if prim.role != PrimitiveRole::ProjectedEdge && prim.role != PrimitiveRole::Symbol {
             result_primitives.push(prim);
             continue;
         }
@@ -159,37 +170,72 @@ pub fn process_silhouette_and_depth(
                 }
             }
             Geometry2d::Polyline { ref vertices, closed } => {
-                let count = vertices.len();
-                if count < 2 {
-                    continue;
+                let mut hidden = false;
+                let mut pieces = Vec::new();
+                if loop_fully_visible(
+                    vertices,
+                    closed,
+                    prim_depth,
+                    &prim.sources,
+                    &opaque_polygons,
+                    options.emit_hidden_lines,
+                    &mut pieces,
+                    &mut hidden,
+                ) {
+                    result_primitives.push(prim);
+                } else {
+                    for (p0, p1, is_hidden) in pieces {
+                        emit_clipped_segment(
+                            &mut result_primitives,
+                            &prim,
+                            p0,
+                            p1,
+                            is_hidden,
+                            options,
+                            &mut next_id_index,
+                        )?;
+                    }
                 }
-                let mut clipped_segments = Vec::new();
-                let num_edges = if closed { count } else { count - 1 };
-
-                for i in 0..num_edges {
-                    let p0 = vertices[i];
-                    let p1 = vertices[(i + 1) % count];
-                    let segs = clip_segment_against_polygons(
-                        p0,
-                        p1,
+            }
+            Geometry2d::Region { ref outer, ref holes } => {
+                let mut hidden = false;
+                let mut pieces = Vec::new();
+                let outer_ok = loop_fully_visible(
+                    outer,
+                    true,
+                    prim_depth,
+                    &prim.sources,
+                    &opaque_polygons,
+                    options.emit_hidden_lines,
+                    &mut pieces,
+                    &mut hidden,
+                );
+                let holes_ok = holes.iter().all(|hole| {
+                    loop_fully_visible(
+                        hole,
+                        true,
                         prim_depth,
                         &prim.sources,
                         &opaque_polygons,
                         options.emit_hidden_lines,
-                    );
-                    clipped_segments.extend(segs);
-                }
-
-                for (p0, p1, is_hidden) in clipped_segments {
-                    emit_clipped_segment(
-                        &mut result_primitives,
-                        &prim,
-                        p0,
-                        p1,
-                        is_hidden,
-                        options,
-                        &mut next_id_index,
-                    )?;
+                        &mut pieces,
+                        &mut hidden,
+                    )
+                });
+                if outer_ok && holes_ok {
+                    result_primitives.push(prim);
+                } else {
+                    for (p0, p1, is_hidden) in pieces {
+                        emit_clipped_segment(
+                            &mut result_primitives,
+                            &prim,
+                            p0,
+                            p1,
+                            is_hidden,
+                            options,
+                            &mut next_id_index,
+                        )?;
+                    }
                 }
             }
             other => {
@@ -278,6 +324,326 @@ fn emit_clipped_segment(
     Ok(())
 }
 
+/// Returns true when every edge stays a single visible piece.
+fn loop_fully_visible(
+    vertices: &[Point2],
+    closed: bool,
+    prim_depth: f64,
+    sources: &SourceSet,
+    polygons: &[OpaquePolygon],
+    emit_hidden: bool,
+    pieces: &mut Vec<(Point2, Point2, bool)>,
+    hidden: &mut bool,
+) -> bool {
+    let count = vertices.len();
+    if count < 2 {
+        return true;
+    }
+    let num_edges = if closed { count } else { count - 1 };
+    let mut intact = true;
+    for i in 0..num_edges {
+        let p0 = vertices[i];
+        let p1 = vertices[(i + 1) % count];
+        let segs = clip_segment_against_polygons(p0, p1, prim_depth, sources, polygons, emit_hidden);
+        if segs.len() != 1 || segs[0].2 {
+            intact = false;
+        } else if segs[0].0.distance_to(p0) > 1e-4 || segs[0].1.distance_to(p1) > 1e-4 {
+            intact = false;
+        }
+        if segs.iter().any(|seg| seg.2) {
+            *hidden = true;
+        }
+        pieces.extend(segs);
+    }
+    intact
+}
+
+fn occluder_hides_segment(poly: &OpaquePolygon, seg_depth: f64, segment_sources: &SourceSet) -> bool {
+    if poly.depth_max >= seg_depth - 1e-4 {
+        return false;
+    }
+    // The opening's own glass sits a millimetre in front of its symbol.
+    // A cut-plane glass sheet is much closer and must still hide that symbol.
+    let ahead = seg_depth - poly.depth_max;
+    if ahead <= 5.0e-3
+        && poly.sources.as_slice().iter().any(|occluder_source| {
+            occluder_source.feature == Some(FeatureKey::OpeningSill)
+                && segment_sources
+                    .as_slice()
+                    .iter()
+                    .any(|segment_source| segment_source.element == occluder_source.element)
+        })
+    {
+        return false;
+    }
+    true
+}
+
+fn polygon_area(ring: &[Point2]) -> f64 {
+    if ring.len() < 3 {
+        return 0.0;
+    }
+    ring.iter()
+        .zip(ring.iter().cycle().skip(1))
+        .take(ring.len())
+        .map(|(a, b)| a.x_m * b.y_m - b.x_m * a.y_m)
+        .sum::<f64>()
+        .abs()
+        * 0.5
+}
+
+fn signed_polygon_area(ring: &[Point2]) -> f64 {
+    if ring.len() < 3 {
+        return 0.0;
+    }
+    ring.iter()
+        .zip(ring.iter().cycle().skip(1))
+        .take(ring.len())
+        .map(|(a, b)| a.x_m * b.y_m - b.x_m * a.y_m)
+        .sum::<f64>()
+        * 0.5
+}
+
+fn cross(a: Point2, b: Point2, c: Point2) -> f64 {
+    (b.x_m - a.x_m) * (c.y_m - a.y_m) - (b.y_m - a.y_m) * (c.x_m - a.x_m)
+}
+
+fn point_in_triangle(point: Point2, a: Point2, b: Point2, c: Point2, orientation: f64) -> bool {
+    cross(a, b, point) * orientation >= -EPS
+        && cross(b, c, point) * orientation >= -EPS
+        && cross(c, a, point) * orientation >= -EPS
+}
+
+/// Triangulates a simple ring using ear clipping. Triangles are used as convex
+/// masks so both rotated rectangles and concave wall profiles can be clipped.
+fn triangulate_ring(ring: &[Point2]) -> Option<Vec<Vec<Point2>>> {
+    let mut vertices = ring.to_vec();
+    if vertices.len() > 1 && vertices[0].distance_to(*vertices.last()?) < EPS {
+        vertices.pop();
+    }
+    if vertices.len() < 3 {
+        return Some(Vec::new());
+    }
+    let orientation = signed_polygon_area(&vertices).signum();
+    if orientation == 0.0 {
+        return None;
+    }
+
+    let mut indices: Vec<usize> = (0..vertices.len()).collect();
+    let mut triangles = Vec::with_capacity(vertices.len() - 2);
+    while indices.len() > 3 {
+        let mut ear = None;
+        for i in 0..indices.len() {
+            let prev = indices[(i + indices.len() - 1) % indices.len()];
+            let curr = indices[i];
+            let next = indices[(i + 1) % indices.len()];
+            let (a, b, c) = (vertices[prev], vertices[curr], vertices[next]);
+            if cross(a, b, c) * orientation <= EPS {
+                continue;
+            }
+            if indices.iter().copied().any(|index| {
+                index != prev
+                    && index != curr
+                    && index != next
+                    && point_in_triangle(vertices[index], a, b, c, orientation)
+            }) {
+                continue;
+            }
+            ear = Some((i, vec![a, b, c]));
+            break;
+        }
+        let (index, triangle) = ear?;
+        triangles.push(triangle);
+        indices.remove(index);
+    }
+    triangles.push(indices.into_iter().map(|index| vertices[index]).collect());
+    Some(triangles)
+}
+
+fn clip_half_plane(
+    polygon: &[Point2],
+    edge_start: Point2,
+    edge_end: Point2,
+    orientation: f64,
+    keep_inside: bool,
+) -> Vec<Point2> {
+    if polygon.is_empty() {
+        return Vec::new();
+    }
+    let signed_distance = |point| cross(edge_start, edge_end, point) * orientation;
+    let is_kept = |distance: f64| {
+        if keep_inside { distance >= -EPS } else { distance <= EPS }
+    };
+    let mut clipped = Vec::new();
+    let mut previous = *polygon.last().unwrap();
+    let mut previous_distance = signed_distance(previous);
+    for current in polygon.iter().copied() {
+        let current_distance = signed_distance(current);
+        let previous_inside = is_kept(previous_distance);
+        let current_inside = is_kept(current_distance);
+        if previous_inside != current_inside {
+            let denominator = previous_distance - current_distance;
+            if denominator.abs() > EPS {
+                let t = (previous_distance / denominator).clamp(0.0, 1.0);
+                clipped.push(Point2::new(
+                    previous.x_m + (current.x_m - previous.x_m) * t,
+                    previous.y_m + (current.y_m - previous.y_m) * t,
+                ));
+            }
+        }
+        if current_inside {
+            clipped.push(current);
+        }
+        previous = current;
+        previous_distance = current_distance;
+    }
+    deduplicate_ring(&mut clipped);
+    clipped
+}
+
+fn deduplicate_ring(ring: &mut Vec<Point2>) {
+    ring.dedup_by(|a, b| a.distance_to(*b) < EPS);
+    if ring.len() > 1 && ring[0].distance_to(*ring.last().unwrap()) < EPS {
+        ring.pop();
+    }
+}
+
+fn subtract_convex(subject: &[Point2], cutter: &[Point2]) -> Vec<Vec<Point2>> {
+    if subject.len() < 3 || cutter.len() < 3 {
+        return vec![subject.to_vec()];
+    }
+    let orientation = signed_polygon_area(cutter).signum();
+    if orientation == 0.0 {
+        return vec![subject.to_vec()];
+    }
+    let mut intersection_candidates = vec![subject.to_vec()];
+    let mut visible = Vec::new();
+    for index in 0..cutter.len() {
+        let edge_start = cutter[index];
+        let edge_end = cutter[(index + 1) % cutter.len()];
+        let mut next_candidates = Vec::new();
+        for candidate in intersection_candidates {
+            let outside = clip_half_plane(&candidate, edge_start, edge_end, orientation, false);
+            if polygon_area(&outside) > EPS {
+                visible.push(outside);
+            }
+            let inside = clip_half_plane(&candidate, edge_start, edge_end, orientation, true);
+            if polygon_area(&inside) > EPS {
+                next_candidates.push(inside);
+            }
+        }
+        intersection_candidates = next_candidates;
+        if intersection_candidates.is_empty() {
+            break;
+        }
+    }
+    if visible.is_empty() && !intersection_candidates.is_empty() {
+        return Vec::new();
+    }
+    visible
+}
+
+fn intersect_convex(subject: &[Point2], cutter: &[Point2]) -> Vec<Vec<Point2>> {
+    if subject.len() < 3 || cutter.len() < 3 {
+        return Vec::new();
+    }
+    let orientation = signed_polygon_area(cutter).signum();
+    if orientation == 0.0 {
+        return Vec::new();
+    }
+    let mut intersections = vec![subject.to_vec()];
+    for index in 0..cutter.len() {
+        let edge_start = cutter[index];
+        let edge_end = cutter[(index + 1) % cutter.len()];
+        intersections = intersections
+            .iter()
+            .map(|polygon| clip_half_plane(polygon, edge_start, edge_end, orientation, true))
+            .filter(|polygon| polygon_area(polygon) > EPS)
+            .collect();
+        if intersections.is_empty() {
+            break;
+        }
+    }
+    intersections
+}
+
+fn subtract_ring(pieces: Vec<Vec<Point2>>, cutter_ring: &[Point2]) -> Vec<Vec<Point2>> {
+    let Some(cutter_triangles) = triangulate_ring(cutter_ring) else {
+        return pieces;
+    };
+    cutter_triangles.into_iter().fold(pieces, |pieces, triangle| {
+        pieces
+            .into_iter()
+            .flat_map(|piece| subtract_convex(&piece, &triangle))
+            .collect()
+    })
+}
+
+fn apply_occluder_to_pieces(pieces: Vec<Vec<Point2>>, poly: &OpaquePolygon) -> Vec<Vec<Point2>> {
+    let mut visible = subtract_ring(pieces.clone(), &poly.ring);
+    for hole in &poly.holes {
+        let Some(hole_triangles) = triangulate_ring(hole) else {
+            continue;
+        };
+        for piece in &pieces {
+            for triangle in &hole_triangles {
+                visible.extend(intersect_convex(piece, triangle));
+            }
+        }
+    }
+    visible
+}
+
+fn push_occluded_surface(
+    result_primitives: &mut Vec<DerivedPrimitive>,
+    prim: DerivedPrimitive,
+    polygons: &[OpaquePolygon],
+    next_id_index: &mut u32,
+) -> Result<(), ValidationError> {
+    let Geometry2d::Region { outer, holes } = &prim.geometry else {
+        result_primitives.push(prim);
+        return Ok(());
+    };
+    let depth = prim.depth.min_m;
+    let Some(mut remain) = triangulate_ring(outer) else {
+        result_primitives.push(prim);
+        return Ok(());
+    };
+    for hole in holes {
+        remain = subtract_ring(remain, hole);
+    }
+
+    for poly in polygons {
+        if !occluder_hides_segment(poly, depth, &prim.sources) {
+            continue;
+        }
+        remain = apply_occluder_to_pieces(remain, poly);
+        if remain.is_empty() {
+            return Ok(());
+        }
+    }
+
+    let original_area = polygon_area(outer) - holes.iter().map(|hole| polygon_area(hole)).sum::<f64>();
+    let visible_area = remain.iter().map(|piece| polygon_area(piece)).sum::<f64>();
+    if (visible_area - original_area).abs() < 1e-6 {
+        result_primitives.push(prim);
+        return Ok(());
+    }
+
+    for ring in remain {
+        *next_id_index += 1;
+        let mut piece = prim.clone();
+        piece.id = PrimitiveId::new(prim.id.view_id, 0, *next_id_index);
+        piece.geometry = Geometry2d::Region {
+            outer: ring,
+            holes: vec![],
+        };
+        piece.edit_handles.clear();
+        result_primitives.push(piece);
+    }
+    Ok(())
+}
+
 fn clip_segment_against_polygons(
     start: Point2,
     end: Point2,
@@ -301,16 +667,8 @@ fn clip_segment_against_polygons(
     let mut current_intervals: Vec<(f64, f64, SegmentState)> = vec![(0.0, 1.0, SegmentState::Visible)];
 
     for poly in polygons {
-        if poly.depth_max >= seg_depth - 1e-4
-            || poly.sources.as_slice().iter().any(|occluder_source| {
-                occluder_source.feature == Some(FeatureKey::OpeningSill)
-                    && segment_sources
-                        .as_slice()
-                        .iter()
-                        .any(|segment_source| segment_source.element == occluder_source.element)
-            })
-        {
-            continue; // An opening mask must not clip its own symbol.
+        if !occluder_hides_segment(poly, seg_depth, segment_sources) {
+            continue;
         }
 
         if seg_max_x < poly.min_x || seg_min_x > poly.max_x || seg_max_y < poly.min_y || seg_min_y > poly.max_y {
@@ -992,6 +1350,96 @@ mod tests {
         SourceSet::new(vec![src]).unwrap()
     }
 
+    fn region_area(outer: &[Point2]) -> f64 {
+        let twice_area: f64 = outer
+            .iter()
+            .zip(outer.iter().cycle().skip(1))
+            .take(outer.len())
+            .map(|(a, b)| a.x_m * b.y_m - b.x_m * a.y_m)
+            .sum();
+        twice_area.abs() * 0.5
+    }
+
+    #[test]
+    fn partially_occluded_skewed_surface_is_clipped() {
+        let model_view = ModelViewId::new();
+        let occluder = DerivedPrimitive {
+            id: PrimitiveId::new(model_view, 0, 1),
+            role: PrimitiveRole::CutFill,
+            geometry: Geometry2d::Region {
+                outer: vec![
+                    Point2::new(0.8, 0.2),
+                    Point2::new(1.4, 0.2),
+                    Point2::new(1.4, 0.8),
+                    Point2::new(0.8, 0.8),
+                ],
+                holes: vec![],
+            },
+            sources: make_test_source(),
+            depth: DepthInterval::new(0.0, 0.0).unwrap(),
+            style: ResolvedStyle::solid_stroke(PaperMm::new(0.25).unwrap()),
+            edit_handles: vec![],
+        };
+        let surface = DerivedPrimitive {
+            id: PrimitiveId::new(model_view, 0, 2),
+            role: PrimitiveRole::SurfaceFill,
+            geometry: Geometry2d::Region {
+                outer: vec![
+                    Point2::new(0.0, 0.0),
+                    Point2::new(2.0, 0.0),
+                    Point2::new(1.6, 1.0),
+                    Point2::new(0.0, 1.0),
+                ],
+                holes: vec![],
+            },
+            sources: make_test_source(),
+            depth: DepthInterval::new(1.0, 1.0).unwrap(),
+            style: ResolvedStyle::solid_stroke(PaperMm::new(0.25).unwrap()),
+            edit_handles: vec![],
+        };
+        let expected_area = region_area(match &surface.geometry {
+            Geometry2d::Region { outer, .. } => outer,
+            _ => unreachable!(),
+        });
+        let mut primitives = vec![occluder, surface];
+
+        process_silhouette_and_depth(&mut primitives, &SilhouetteOptions::default()).unwrap();
+
+        let visible_area: f64 = primitives
+            .iter()
+            .filter(|primitive| primitive.role == PrimitiveRole::SurfaceFill)
+            .map(|primitive| match &primitive.geometry {
+                Geometry2d::Region { outer, .. } => region_area(outer),
+                _ => 0.0,
+            })
+            .sum();
+        assert!(visible_area > 0.0);
+        assert!(visible_area < expected_area - 1e-6);
+    }
+
+    #[test]
+    fn silhouette_keeps_resolved_background_line_weight() {
+        let mut primitive = DerivedPrimitive {
+            id: PrimitiveId::new(ModelViewId::new(), 0, 1),
+            role: PrimitiveRole::ProjectedEdge,
+            geometry: Geometry2d::Line {
+                start: Point2::new(0.0, 0.0),
+                end: Point2::new(1.0, 0.0),
+            },
+            sources: make_test_source(),
+            depth: DepthInterval::new(1.0, 1.0).unwrap(),
+            style: ResolvedStyle::solid_stroke(PaperMm::new(0.35).unwrap()),
+            edit_handles: vec![],
+        };
+        let expected_weight = primitive.style.line_weight_mm;
+        let mut primitives = vec![primitive.clone()];
+
+        process_silhouette_and_depth(&mut primitives, &SilhouetteOptions::default()).unwrap();
+
+        primitive = primitives.pop().unwrap();
+        assert_eq!(primitive.style.line_weight_mm, expected_weight);
+    }
+
     #[test]
     fn test_collinear_background_edge_on_boundary_dropped() {
         let mv_id = ModelViewId::new();
@@ -1670,5 +2118,137 @@ mod tests {
             }
             _ => panic!("Expected Line geometry"),
         }
+    }
+
+    fn fill(id: u32, role: PrimitiveRole, outer: Vec<Point2>, sources: SourceSet, depth: f64) -> DerivedPrimitive {
+        DerivedPrimitive {
+            id: PrimitiveId::new(ModelViewId::new(), 0, id),
+            role,
+            geometry: Geometry2d::Region { outer, holes: vec![] },
+            sources,
+            depth: DepthInterval::new(depth, depth).unwrap(),
+            style: ResolvedStyle::solid_stroke(PaperMm::new(0.25).unwrap()),
+            edit_handles: vec![],
+        }
+    }
+
+    #[test]
+    fn nearer_wall_hides_opening_frame_swing_and_glass() {
+        let mv_id = ModelViewId::new();
+        let wall = make_test_source();
+        let opening = SourceSet::new(vec![SourceReference {
+            element: ElementRef::new(ModelId::new(), ElementId::new()),
+            xref_source: None,
+            component_id: None,
+            feature: Some(FeatureKey::OpeningSill),
+            display_component_id: None,
+        }])
+        .unwrap();
+        let wall_fill = fill(
+            1,
+            PrimitiveRole::SurfaceFill,
+            vec![
+                Point2::new(0.0, 0.0),
+                Point2::new(4.0, 0.0),
+                Point2::new(4.0, 3.0),
+                Point2::new(0.0, 3.0),
+            ],
+            wall.clone(),
+            1.0,
+        );
+        let glass = fill(
+            2,
+            PrimitiveRole::SurfaceFill,
+            vec![
+                Point2::new(1.0, 1.0),
+                Point2::new(2.0, 1.0),
+                Point2::new(2.0, 2.0),
+                Point2::new(1.0, 2.0),
+            ],
+            opening.clone(),
+            2.0,
+        );
+        let frame = DerivedPrimitive {
+            id: PrimitiveId::new(mv_id, 0, 3),
+            role: PrimitiveRole::ProjectedEdge,
+            geometry: Geometry2d::Region {
+                outer: vec![
+                    Point2::new(1.0, 1.0),
+                    Point2::new(2.0, 1.0),
+                    Point2::new(2.0, 2.0),
+                    Point2::new(1.0, 2.0),
+                ],
+                holes: vec![],
+            },
+            sources: opening.clone(),
+            depth: DepthInterval::new(2.0, 2.0).unwrap(),
+            style: ResolvedStyle::solid_stroke(PaperMm::new(0.25).unwrap()),
+            edit_handles: vec![],
+        };
+        let swing = DerivedPrimitive {
+            id: PrimitiveId::new(mv_id, 0, 4),
+            role: PrimitiveRole::Symbol,
+            geometry: Geometry2d::Polyline {
+                vertices: vec![
+                    Point2::new(1.1, 1.1),
+                    Point2::new(1.5, 1.8),
+                    Point2::new(1.1, 1.9),
+                ],
+                closed: false,
+            },
+            sources: opening,
+            depth: DepthInterval::new(2.0, 2.0).unwrap(),
+            style: ResolvedStyle::solid_stroke(PaperMm::new(0.25).unwrap()),
+            edit_handles: vec![],
+        };
+
+        let mut prims = vec![wall_fill, glass, frame, swing];
+        process_silhouette_and_depth(&mut prims, &SilhouetteOptions::default()).unwrap();
+        assert!(
+            prims.iter().all(|prim| prim.sources.primary_element() == wall.primary_element()),
+            "opening glass, frame and swing must not survive a nearer wall: {prims:?}"
+        );
+    }
+
+    #[test]
+    fn cut_plane_glass_hides_the_same_opening_symbol() {
+        let opening = SourceSet::new(vec![SourceReference {
+            element: ElementRef::new(ModelId::new(), ElementId::new()),
+            xref_source: None,
+            component_id: None,
+            feature: Some(FeatureKey::OpeningSill),
+            display_component_id: None,
+        }])
+        .unwrap();
+        let sheet = fill(
+            1,
+            PrimitiveRole::SurfaceFill,
+            vec![
+                Point2::new(0.0, 0.0),
+                Point2::new(2.0, 0.0),
+                Point2::new(2.0, 2.0),
+                Point2::new(0.0, 2.0),
+            ],
+            opening.clone(),
+            1.0e-4,
+        );
+        let symbol = DerivedPrimitive {
+            id: PrimitiveId::new(ModelViewId::new(), 0, 2),
+            role: PrimitiveRole::Symbol,
+            geometry: Geometry2d::Line {
+                start: Point2::new(0.2, 0.2),
+                end: Point2::new(1.8, 1.8),
+            },
+            sources: opening,
+            depth: DepthInterval::new(0.4, 0.4).unwrap(),
+            style: ResolvedStyle::solid_stroke(PaperMm::new(0.25).unwrap()),
+            edit_handles: vec![],
+        };
+        let mut prims = vec![sheet, symbol];
+        process_silhouette_and_depth(&mut prims, &SilhouetteOptions::default()).unwrap();
+        assert!(
+            prims.iter().all(|prim| prim.role != PrimitiveRole::Symbol),
+            "a cut-plane glass sheet must hide the elevation symbol of the same opening"
+        );
     }
 }

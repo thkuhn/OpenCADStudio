@@ -75,8 +75,22 @@ fn sl(name: &str, thick: f64, func: LayerFunction) -> SlabLayer {
 pub fn generate_sample_project(target_dir: &Path) -> Result<(), Box<dyn std::error::Error>> {
     fs::create_dir_all(target_dir)?;
 
-    let library = build_sample_library();
-    let display_lib = build_sample_display_library();
+    let proj_path = target_dir.join("Projekt_Einfamilienhaus.ocsproj");
+    let existing = if proj_path.exists() {
+        ProjectFile::load(&proj_path).ok()
+    } else {
+        None
+    };
+    let library = existing
+        .as_ref()
+        .map(|project| project.material_wall_style_library.clone())
+        .filter(|library| !library.materials.is_empty() || !library.wall_styles.is_empty())
+        .unwrap_or_else(build_sample_library);
+    let display_lib = existing
+        .as_ref()
+        .map(|project| project.display_config_library.clone())
+        .filter(|library| !library.configs.is_empty())
+        .unwrap_or_else(build_sample_display_library);
 
     // 1. Generate UG (Basement Floor, Z = -2.80m)
     let mut ug_scene = Scene::new();
@@ -100,13 +114,14 @@ pub fn generate_sample_project(target_dir: &Path) -> Result<(), Box<dyn std::err
 
     // 5. Generate Master Gesamtmodell (Haus_Gesamt, attaches UG, EG, OG, DG with Z-offsets)
     let mut master_scene = Scene::new();
-    build_master_geometry(&mut master_scene, target_dir, &library)?;
+    build_master_geometry(&mut master_scene, target_dir, &library, &display_lib)?;
     save_drawing_variants(&master_scene, &target_dir.join("Haus_Gesamt"))?;
 
-    // 6. Generate Project File (.ocsproj)
-    let project_file = build_project_file(&library, &display_lib);
-    let proj_path = target_dir.join("Projekt_Einfamilienhaus.ocsproj");
-    project_file.save(&proj_path)?;
+    // Keep an already edited project file. A fresh folder still gets the seed project.
+    if existing.is_none() {
+        let project_file = build_project_file(&library, &display_lib);
+        project_file.save(&proj_path)?;
+    }
 
     // 7. Generate README Documentation
     let readme_content = generate_readme_text();
@@ -125,12 +140,90 @@ fn save_drawing_variants(scene: &Scene, base_path: &Path) -> Result<(), Box<dyn 
     Ok(())
 }
 
+fn function_label(function: &LayerFunction) -> String {
+    match function {
+        LayerFunction::Structural => "Structural".to_string(),
+        LayerFunction::Insulation => "Insulation".to_string(),
+        LayerFunction::Finish => "Finish".to_string(),
+        LayerFunction::Other(name) => name.clone(),
+    }
+}
+
+fn layers_from_wall_style(
+    library: &StyleLibrary,
+    style_id: &str,
+    fallback: Vec<WallLayer>,
+) -> (String, Vec<WallLayer>) {
+    let Some(style) = library
+        .wall_styles
+        .iter()
+        .find(|style| style.style.id == style_id)
+    else {
+        return (style_id.to_string(), fallback);
+    };
+    if style.layers.is_empty() {
+        return (style.style.id.clone(), fallback);
+    }
+    let layers = style
+        .layers
+        .iter()
+        .map(|layer| WallLayer {
+            material: layer.material_id.clone(),
+            thickness: layer.thickness.as_fixed_or(0.0),
+            function: function_label(&layer.function),
+            axis_offset: layer.axis_offset.as_fixed_or(0.0),
+            bottom_offset: layer.bottom_offset,
+            top_offset: layer.top_offset,
+            layer_override: layer.layer_override.clone(),
+            hatch_override: layer.hatch_override.clone(),
+            layer_id: layer.layer_id,
+        })
+        .collect();
+    (style.style.id.clone(), layers)
+}
+
+fn layers_from_slab_style(
+    library: &StyleLibrary,
+    style_id: &str,
+    fallback: Vec<SlabLayer>,
+) -> (String, Vec<SlabLayer>) {
+    let Some(style) = library
+        .slab_styles
+        .iter()
+        .find(|style| style.style.id == style_id)
+    else {
+        return (style_id.to_string(), fallback);
+    };
+    if style.layers.is_empty() {
+        return (style.style.id.clone(), fallback);
+    }
+    let layers = style
+        .layers
+        .iter()
+        .map(|layer| {
+            let mut slab_layer = SlabLayer::new(
+                layer.material_id.clone(),
+                layer.thickness.as_fixed_or(0.0),
+                layer.function.clone(),
+            );
+            slab_layer.vertical_offset = layer.vertical_offset.as_fixed_or(0.0);
+            slab_layer.layer_override = layer.layer_override.clone();
+            slab_layer.hatch_override = layer.hatch_override.clone();
+            slab_layer.role_tag = layer.role_tag.clone();
+            slab_layer.layer_id = layer.layer_id;
+            slab_layer
+        })
+        .collect();
+    (style.style.id.clone(), layers)
+}
+
 fn add_wall(
     scene: &mut Scene,
     p1: (f64, f64),
     p2: (f64, f64),
     base_z: f64,
     height: f64,
+    style_id: &str,
     layers: Vec<WallLayer>,
 ) -> codec::Handle {
     let mut pl = LwPolyline::new();
@@ -138,7 +231,7 @@ fn add_wall(
     pl.add_vertex(LwVertex::new(Vector2::new(p2.0, p2.1)));
     pl.elevation = base_z;
 
-    let mut wall = Wall::new("Standard", height, 0);
+    let mut wall = Wall::new(style_id, height, 0);
     wall.base_origin = [p1.0, p1.1, base_z];
     wall.layers = layers;
     wall.justification = WallJustification::Exterior;
@@ -159,6 +252,7 @@ fn add_slab(
     points: &[(f64, f64)],
     base_z: f64,
     _thickness: f64,
+    style_id: &str,
     layers: Vec<SlabLayer>,
 ) -> codec::Handle {
     let mut pl = LwPolyline::new();
@@ -168,7 +262,7 @@ fn add_slab(
     pl.is_closed = true;
     pl.elevation = base_z;
 
-    let mut slab = Slab::new("Geschossdecke", 0);
+    let mut slab = Slab::new(style_id, 0);
     slab.base_origin = [points[0].0, points[0].1, base_z];
     slab.top_origin = [points[0].0, points[0].1, base_z];
     slab.justification = SlabJustification::Top;
@@ -259,28 +353,35 @@ fn build_ug_geometry(scene: &mut Scene, library: &StyleLibrary) {
     let z = 0.0;
     let h = 2.60;
 
-    // Floor slab (Bodenplatte WU-Beton)
-    add_slab(
-        scene,
-        &[(0.0, 0.0), (10.0, 0.0), (10.0, 8.0), (0.0, 8.0)],
-        z,
-        0.33,
+    let (slab_id, slab_layers) = layers_from_slab_style(
+        library,
+        "bodenplatte_ug",
         vec![
             sl("Estrich_Dämmung", 0.08, LayerFunction::Finish),
             sl("WU_Stahlbeton", 0.25, LayerFunction::Structural),
         ],
     );
+    add_slab(
+        scene,
+        &[(0.0, 0.0), (10.0, 0.0), (10.0, 8.0), (0.0, 8.0)],
+        z,
+        0.33,
+        &slab_id,
+        slab_layers,
+    );
 
-    // Exterior basement walls
-    let w_south = add_wall(scene, (0.0, 0.0), (10.0, 0.0), z, h, basement_exterior_layers());
-    let _w_east = add_wall(scene, (10.0, 0.0), (10.0, 8.0), z, h, basement_exterior_layers());
-    let w_north = add_wall(scene, (10.0, 8.0), (0.0, 8.0), z, h, basement_exterior_layers());
-    let _w_west = add_wall(scene, (0.0, 8.0), (0.0, 0.0), z, h, basement_exterior_layers());
+    let (ext_id, ext_layers) = layers_from_wall_style(library, "Standard", basement_exterior_layers());
+    let w_south = add_wall(scene, (0.0, 0.0), (10.0, 0.0), z, h, &ext_id, ext_layers.clone());
+    let _w_east = add_wall(scene, (10.0, 0.0), (10.0, 8.0), z, h, &ext_id, ext_layers.clone());
+    let w_north = add_wall(scene, (10.0, 8.0), (0.0, 8.0), z, h, &ext_id, ext_layers.clone());
+    let _w_west = add_wall(scene, (0.0, 8.0), (0.0, 0.0), z, h, &ext_id, ext_layers);
 
-    // Interior walls
-    let w_int_mid = add_wall(scene, (5.0, 0.0), (5.0, 8.0), z, h, interior_bearing_layers());
-    let w_int_tech = add_wall(scene, (0.0, 3.5), (5.0, 3.5), z, h, interior_basement_partition_layers());
-    let w_int_store = add_wall(scene, (5.0, 4.5), (10.0, 4.5), z, h, interior_basement_partition_layers());
+    let (bear_id, bear_layers) = layers_from_wall_style(library, "Standard#2", interior_bearing_layers());
+    let (part_id, part_layers) =
+        layers_from_wall_style(library, "Standard#4", interior_basement_partition_layers());
+    let w_int_mid = add_wall(scene, (5.0, 0.0), (5.0, 8.0), z, h, &bear_id, bear_layers);
+    let w_int_tech = add_wall(scene, (0.0, 3.5), (5.0, 3.5), z, h, &part_id, part_layers.clone());
+    let w_int_store = add_wall(scene, (5.0, 4.5), (10.0, 4.5), z, h, &part_id, part_layers);
 
     // Basement Openings (Windows & Doors)
     let _ = place_wall_opening(
@@ -395,28 +496,33 @@ fn build_eg_geometry(scene: &mut Scene, library: &StyleLibrary) {
     let z = 0.0;
     let h = 2.80;
 
-    // Floor slab over UG
-    add_slab(
-        scene,
-        &[(0.0, 0.0), (10.0, 0.0), (10.0, 8.0), (0.0, 8.0)],
-        z,
-        0.30,
+    let (slab_id, slab_layers) = layers_from_slab_style(
+        library,
+        "Geschossdecke",
         vec![
             sl("Parkett_Estrich", 0.10, LayerFunction::Finish),
             sl("Stahlbeton", 0.20, LayerFunction::Structural),
         ],
     );
+    add_slab(
+        scene,
+        &[(0.0, 0.0), (10.0, 0.0), (10.0, 8.0), (0.0, 8.0)],
+        z,
+        0.30,
+        &slab_id,
+        slab_layers,
+    );
 
-    // Exterior walls
-    let w_south = add_wall(scene, (0.0, 0.0), (10.0, 0.0), z, h, exterior_layers());
-    let w_east = add_wall(scene, (10.0, 0.0), (10.0, 8.0), z, h, exterior_layers());
-    let w_north = add_wall(scene, (10.0, 8.0), (0.0, 8.0), z, h, exterior_layers());
-    let w_west = add_wall(scene, (0.0, 8.0), (0.0, 0.0), z, h, exterior_layers());
-
-    // Interior walls
-    let w_int_mid = add_wall(scene, (5.0, 0.0), (5.0, 8.0), z, h, interior_bearing_layers());
-    let w_int_wc = add_wall(scene, (0.0, 3.0), (5.0, 3.0), z, h, interior_light_layers());
-    let w_int_hall = add_wall(scene, (2.5, 0.0), (2.5, 3.0), z, h, interior_light_layers());
+    let (ext_id, ext_layers) = layers_from_wall_style(library, "Aussenwand_WDVS", exterior_layers());
+    let w_south = add_wall(scene, (0.0, 0.0), (10.0, 0.0), z, h, &ext_id, ext_layers.clone());
+    let w_east = add_wall(scene, (10.0, 0.0), (10.0, 8.0), z, h, &ext_id, ext_layers.clone());
+    let w_north = add_wall(scene, (10.0, 8.0), (0.0, 8.0), z, h, &ext_id, ext_layers.clone());
+    let w_west = add_wall(scene, (0.0, 8.0), (0.0, 0.0), z, h, &ext_id, ext_layers);
+    let (bear_id, bear_layers) = layers_from_wall_style(library, "Standard#2", interior_bearing_layers());
+    let (light_id, light_layers) = layers_from_wall_style(library, "Standard#3", interior_light_layers());
+    let w_int_mid = add_wall(scene, (5.0, 0.0), (5.0, 8.0), z, h, &bear_id, bear_layers);
+    let w_int_wc = add_wall(scene, (0.0, 3.0), (5.0, 3.0), z, h, &light_id, light_layers.clone());
+    let w_int_hall = add_wall(scene, (2.5, 0.0), (2.5, 3.0), z, h, &light_id, light_layers);
 
     // Windows & Doors in EG
     let _ = place_wall_opening(
@@ -567,28 +673,33 @@ fn build_og_geometry(scene: &mut Scene, library: &StyleLibrary) {
     let z = 0.0;
     let h = 2.80;
 
-    // Ceiling / Slab over EG
-    add_slab(
-        scene,
-        &[(0.0, 0.0), (10.0, 0.0), (10.0, 8.0), (0.0, 8.0)],
-        z,
-        0.30,
+    let (slab_id, slab_layers) = layers_from_slab_style(
+        library,
+        "Geschossdecke",
         vec![
             sl("Parkett_Estrich", 0.10, LayerFunction::Finish),
             sl("Stahlbetondecke", 0.20, LayerFunction::Structural),
         ],
     );
+    add_slab(
+        scene,
+        &[(0.0, 0.0), (10.0, 0.0), (10.0, 8.0), (0.0, 8.0)],
+        z,
+        0.30,
+        &slab_id,
+        slab_layers,
+    );
 
-    // Exterior walls
-    let w_south = add_wall(scene, (0.0, 0.0), (10.0, 0.0), z, h, exterior_layers());
-    let w_east = add_wall(scene, (10.0, 0.0), (10.0, 8.0), z, h, exterior_layers());
-    let w_north = add_wall(scene, (10.0, 8.0), (0.0, 8.0), z, h, exterior_layers());
-    let w_west = add_wall(scene, (0.0, 8.0), (0.0, 0.0), z, h, exterior_layers());
-
-    // Interior walls
-    let w_int_mid = add_wall(scene, (5.0, 0.0), (5.0, 8.0), z, h, interior_bearing_layers());
-    let w_int_left = add_wall(scene, (0.0, 4.0), (5.0, 4.0), z, h, interior_light_layers());
-    let _w_int_right = add_wall(scene, (5.0, 4.0), (10.0, 4.0), z, h, interior_light_layers());
+    let (ext_id, ext_layers) = layers_from_wall_style(library, "Aussenwand_WDVS", exterior_layers());
+    let w_south = add_wall(scene, (0.0, 0.0), (10.0, 0.0), z, h, &ext_id, ext_layers.clone());
+    let w_east = add_wall(scene, (10.0, 0.0), (10.0, 8.0), z, h, &ext_id, ext_layers.clone());
+    let w_north = add_wall(scene, (10.0, 8.0), (0.0, 8.0), z, h, &ext_id, ext_layers.clone());
+    let w_west = add_wall(scene, (0.0, 8.0), (0.0, 0.0), z, h, &ext_id, ext_layers);
+    let (bear_id, bear_layers) = layers_from_wall_style(library, "Standard#2", interior_bearing_layers());
+    let (light_id, light_layers) = layers_from_wall_style(library, "Standard#3", interior_light_layers());
+    let w_int_mid = add_wall(scene, (5.0, 0.0), (5.0, 8.0), z, h, &bear_id, bear_layers);
+    let w_int_left = add_wall(scene, (0.0, 4.0), (5.0, 4.0), z, h, &light_id, light_layers.clone());
+    let _w_int_right = add_wall(scene, (5.0, 4.0), (10.0, 4.0), z, h, &light_id, light_layers);
 
     // Windows in OG
     let _ = place_wall_opening(
@@ -760,28 +871,30 @@ fn build_dg_geometry(scene: &mut Scene, library: &StyleLibrary) {
     let h_drempel = 1.20;
     let h_giebel = 3.50;
 
-    // Ceiling over OG (Holzbalkendecke)
-    add_slab(
-        scene,
-        &[(0.0, 0.0), (10.0, 0.0), (10.0, 8.0), (0.0, 8.0)],
-        z,
-        0.24,
+    let (slab_id, slab_layers) = layers_from_slab_style(
+        library,
+        "Holzbalkendecke",
         vec![
             sl("Dielen_Estrich", 0.04, LayerFunction::Finish),
             sl("Holzbalkendecke", 0.20, LayerFunction::Structural),
         ],
     );
+    add_slab(
+        scene,
+        &[(0.0, 0.0), (10.0, 0.0), (10.0, 8.0), (0.0, 8.0)],
+        z,
+        0.24,
+        &slab_id,
+        slab_layers,
+    );
 
-    // Drempel / Knee walls
-    let _w_south = add_wall(scene, (0.0, 0.0), (10.0, 0.0), z, h_drempel, exterior_layers());
-    let _w_north = add_wall(scene, (10.0, 8.0), (0.0, 8.0), z, h_drempel, exterior_layers());
-
-    // Gable walls
-    let w_east = add_wall(scene, (10.0, 0.0), (10.0, 8.0), z, h_giebel, exterior_layers());
-    let w_west = add_wall(scene, (0.0, 8.0), (0.0, 0.0), z, h_giebel, exterior_layers());
-
-    // Interior partition wall
-    let w_int_mid = add_wall(scene, (5.0, 0.0), (5.0, 8.0), z, 2.80, interior_light_layers());
+    let (ext_id, ext_layers) = layers_from_wall_style(library, "Aussenwand_WDVS", exterior_layers());
+    let _w_south = add_wall(scene, (0.0, 0.0), (10.0, 0.0), z, h_drempel, &ext_id, ext_layers.clone());
+    let _w_north = add_wall(scene, (10.0, 8.0), (0.0, 8.0), z, h_drempel, &ext_id, ext_layers.clone());
+    let w_east = add_wall(scene, (10.0, 0.0), (10.0, 8.0), z, h_giebel, &ext_id, ext_layers.clone());
+    let w_west = add_wall(scene, (0.0, 8.0), (0.0, 0.0), z, h_giebel, &ext_id, ext_layers);
+    let (light_id, light_layers) = layers_from_wall_style(library, "Standard#3", interior_light_layers());
+    let w_int_mid = add_wall(scene, (5.0, 0.0), (5.0, 8.0), z, 2.80, &light_id, light_layers);
 
     // Windows in DG (Giebelfenster)
     let _ = place_wall_opening(
@@ -836,10 +949,24 @@ fn build_dg_geometry(scene: &mut Scene, library: &StyleLibrary) {
     );
 }
 
+fn plan_art(library: &DisplayConfigLibrary, view_type: ViewType, name: &str) -> DisplayConfig {
+    crate::modules::aec::engine::views::style_resolver::resolve_view_display_config(
+        library,
+        view_type,
+        None,
+        Some(name),
+    )
+}
+
+fn bind_plan(model_view: &mut ModelView, config: &DisplayConfig) {
+    model_view.profile_id = ViewProfileId::from_uuid(config.id);
+}
+
 fn build_master_geometry(
     scene: &mut Scene,
     project_dir: &Path,
     library: &StyleLibrary,
+    display_lib: &DisplayConfigLibrary,
 ) -> Result<(), Box<dyn std::error::Error>> {
     // Add XREF Block records and INSERT entities for UG, EG, OG, DG
     let storeys = [
@@ -871,6 +998,7 @@ fn build_master_geometry(
         &[(-3.0, -3.0), (13.0, -3.0), (13.0, 11.0), (-3.0, 11.0)],
         -3.00,
         0.20,
+        "Gelaende",
         vec![sl("Gelaende_Erdreich", 0.20, LayerFunction::Other("Site".to_string()))],
     );
 
@@ -913,6 +1041,9 @@ fn build_master_geometry(
         update_policy: UpdatePolicy::Automatic,
         revisions: Default::default(),
     };
+    let section_a_plan = plan_art(display_lib, ViewType::Section, "Ausführungsplanung Schnitt 1:50");
+    let mut section_a_mv = section_a_mv;
+    bind_plan(&mut section_a_mv, &section_a_plan);
 
     let section_a_prims = derive_section_view(
         &section_a_vp,
@@ -923,6 +1054,7 @@ fn build_master_geometry(
             include_openings: true,
             detail_level: DetailLevel::Fine,
             emit_hidden_lines: false,
+            display_config: Some(section_a_plan),
             style_library: Some(library.clone()),
             ..Default::default()
         },
@@ -993,6 +1125,9 @@ fn build_master_geometry(
         update_policy: UpdatePolicy::Automatic,
         revisions: Default::default(),
     };
+    let section_b_plan = plan_art(display_lib, ViewType::Section, "Genehmigungsplanung Schnitt 1:100");
+    let mut section_b_mv = section_b_mv;
+    bind_plan(&mut section_b_mv, &section_b_plan);
 
     let section_b_prims = derive_section_view(
         &section_b_vp,
@@ -1003,6 +1138,7 @@ fn build_master_geometry(
             include_openings: true,
             detail_level: DetailLevel::Medium,
             emit_hidden_lines: false,
+            display_config: Some(section_b_plan),
             style_library: Some(library.clone()),
             ..Default::default()
         },
@@ -1073,11 +1209,18 @@ fn build_master_geometry(
         revisions: Default::default(),
     };
 
+    let elev_s_plan = plan_art(display_lib, ViewType::Elevation, "Genehmigungsplanung Ansichten 1:100");
+    let mut elev_s_mv = elev_s_mv;
+    bind_plan(&mut elev_s_mv, &elev_s_plan);
     let elev_s_prims = derive_elevation_view(
         &elev_s_vp,
         &elev_s_mv,
         &collector,
-        &ElevationEngineOptions::default(),
+        &ElevationEngineOptions {
+            display_config: Some(elev_s_plan),
+            style_library: Some(library.clone()),
+            ..ElevationEngineOptions::default()
+        },
     )
     .unwrap_or_default();
 
@@ -1143,11 +1286,18 @@ fn build_master_geometry(
         revisions: Default::default(),
     };
 
+    let elev_n_plan = plan_art(display_lib, ViewType::Elevation, "Genehmigungsplanung Ansichten 1:100");
+    let mut elev_n_mv = elev_n_mv;
+    bind_plan(&mut elev_n_mv, &elev_n_plan);
     let elev_n_prims = derive_elevation_view(
         &elev_n_vp,
         &elev_n_mv,
         &collector,
-        &ElevationEngineOptions::default(),
+        &ElevationEngineOptions {
+            display_config: Some(elev_n_plan),
+            style_library: Some(library.clone()),
+            ..ElevationEngineOptions::default()
+        },
     )
     .unwrap_or_default();
 
@@ -1210,11 +1360,15 @@ fn build_master_geometry(
         revisions: Default::default(),
     };
 
+    let fp_exec_plan = plan_art(display_lib, ViewType::FloorPlan, "Ausführungsplanung 1:50");
+    let mut fp_exec_mv = fp_exec_mv;
+    bind_plan(&mut fp_exec_mv, &fp_exec_plan);
     let fp_exec_prims = derive_floorplan_view(
         &fp_exec_vp,
         &fp_exec_mv,
         &collector,
         &FloorPlanEngineOptions {
+            display_config: Some(fp_exec_plan),
             style_library: Some(library.clone()),
             ..FloorPlanEngineOptions::default()
         },
@@ -1267,11 +1421,15 @@ fn build_master_geometry(
         revisions: Default::default(),
     };
 
+    let fp_perm_plan = plan_art(display_lib, ViewType::FloorPlan, "Genehmigungsplanung 1:100");
+    let mut fp_perm_mv = fp_perm_mv;
+    bind_plan(&mut fp_perm_mv, &fp_perm_plan);
     let fp_perm_prims = derive_floorplan_view(
         &fp_perm_vp,
         &fp_perm_mv,
         &collector,
         &FloorPlanEngineOptions {
+            display_config: Some(fp_perm_plan),
             style_library: Some(library.clone()),
             ..FloorPlanEngineOptions::default()
         },

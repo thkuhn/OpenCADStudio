@@ -93,7 +93,9 @@ pub fn aec_entity_title(
     if crate::modules::aec::project::preview::control_plane_from_entity(entity).is_some() {
         return Some(crate::tr!("aec", "control-plane"));
     }
-    if crate::modules::aec::engine::views::carrier::read_view_carrier(&scene.document, entity).is_some() {
+    if crate::modules::aec::engine::views::carrier::read_view_carrier(&scene.document, entity).is_some()
+        || crate::modules::aec::engine::views::carrier::badge_carrier_handle(entity).is_some()
+    {
         return Some(crate::tr!("aec", "view-carrier-title"));
     }
     if let Some(marker) = crate::modules::aec::views::din1356::read_section_marker(&scene.document, entity) {
@@ -1022,7 +1024,12 @@ pub fn extend_entity_sections(
     if let Some(plane_section) = control_plane_prop_section(entity) {
         sections.push(plane_section);
     }
-    if let Some(carrier_section) = carrier_prop_section(entity, &scene.document) {
+    let display_config_library = crate::modules::aec::engine::project::resolve_display_config_library(project);
+    if let Some(carrier_section) = carrier_prop_section_with_library(
+        entity,
+        &scene.document,
+        &display_config_library,
+    ) {
         sections.push(carrier_section);
     }
     let marker_handle = resolve_section_marker_package(scene, handle).unwrap_or(handle);
@@ -1038,6 +1045,15 @@ pub fn extend_entity_sections(
 pub fn carrier_prop_section(
     entity: &EntityType,
     doc: &CadDocument,
+) -> Option<crate::scene::model::object::PropSection> {
+    let display_config_library = crate::modules::aec::engine::project::resolve_display_config_library(None);
+    carrier_prop_section_with_library(entity, doc, &display_config_library)
+}
+
+pub fn carrier_prop_section_with_library(
+    entity: &EntityType,
+    doc: &CadDocument,
+    dc_lib: &crate::modules::aec::engine::library::DisplayConfigLibrary,
 ) -> Option<crate::scene::model::object::PropSection> {
     use crate::modules::aec::engine::views::carrier::{read_view_carrier, read_view_carrier_definitions};
     let carrier = read_view_carrier(doc, entity)?;
@@ -1075,43 +1091,17 @@ pub fn carrier_prop_section(
         scale_val,
     ));
 
-    let dc_lib = crate::modules::aec::engine::project::resolve_display_config_library(None);
-    let current_config_name = if let Some((ref vp, ref mv)) = defs {
+    // Show only the plan art stored on the view. A missing id must not look
+    // like the first section plan, or applying the inspector would rebind it.
+    let current_config_name = if let Some((_, ref mv)) = defs {
         dc_lib
             .configs
             .iter()
             .find(|c| c.id == mv.profile_id.as_uuid())
-            .or_else(|| {
-                dc_lib
-                    .configs
-                    .iter()
-                    .find(|c| mv.name.contains(&c.name))
-            })
-            .or_else(|| {
-                let target_view_type = match &vp.kind {
-                    crate::modules::aec::engine::views::viewpoint::ViewKind::Section { .. } => {
-                        crate::modules::aec::engine::plan_view::ViewType::Section
-                    }
-                    crate::modules::aec::engine::views::viewpoint::ViewKind::Elevation { .. } => {
-                        crate::modules::aec::engine::plan_view::ViewType::Elevation
-                    }
-                    crate::modules::aec::engine::views::viewpoint::ViewKind::FloorPlan { .. }
-                    | crate::modules::aec::engine::views::viewpoint::ViewKind::ReflectedCeilingPlan { .. } => {
-                        crate::modules::aec::engine::plan_view::ViewType::FloorPlan
-                    }
-                };
-                dc_lib.configs.iter().find(|c| c.view_type == target_view_type)
-            })
             .map(|c| c.name.clone())
-            .unwrap_or_else(|| {
-                if let Some(first) = dc_lib.configs.first() {
-                    first.name.clone()
-                } else {
-                    "Standard".to_string()
-                }
-            })
+            .unwrap_or_else(|| "—".to_string())
     } else {
-        "Standard".to_string()
+        "—".to_string()
     };
 
     let mut config_options: Vec<String> = dc_lib.configs.iter().map(|c| c.name.clone()).collect();
@@ -1961,6 +1951,9 @@ pub fn expand_handles_for_aec_packages(scene: &crate::scene::Scene, handles: &[H
 
 pub fn resolve_aec_package(scene: &crate::scene::Scene, handle: Handle) -> Handle {
     if let Some(ent) = scene.document.get_entity(handle) {
+        if let Some(owner) = crate::modules::aec::engine::views::carrier::badge_carrier_handle(ent) {
+            return owner;
+        }
         if crate::modules::aec::engine::views::carrier::read_derived_primitive_metadata(ent).is_some() {
             return handle;
         }
@@ -2083,8 +2076,31 @@ pub fn apply_marker_property(
     field: &str,
     val: &str,
 ) -> bool {
+    let display_config_library = crate::modules::aec::engine::library::DisplayConfigLibrary::seed_default_configs();
+    let style_library = crate::modules::aec::engine::library::seed_default_library();
+    apply_marker_property_with_libraries(
+        doc,
+        marker_handle,
+        field,
+        val,
+        &display_config_library,
+        &style_library,
+        None,
+    )
+}
+
+pub fn apply_marker_property_with_libraries(
+    doc: &mut CadDocument,
+    marker_handle: Handle,
+    field: &str,
+    val: &str,
+    display_config_library: &crate::modules::aec::engine::library::DisplayConfigLibrary,
+    style_library: &crate::modules::aec::engine::library::StyleLibrary,
+    active_name: Option<&str>,
+) -> bool {
     use crate::modules::aec::views::din1356::{
-        read_section_marker, sync_marker_to_carrier, sync_section_marker_cad_entities,
+        read_section_marker, sync_marker_to_carrier_with_libraries,
+        sync_section_marker_cad_entities,
     };
 
     let Some(entity) = doc.get_entity(marker_handle) else {
@@ -2139,7 +2155,13 @@ pub fn apply_marker_property(
     }
 
     sync_section_marker_cad_entities(doc, marker_handle, &marker);
-    sync_marker_to_carrier(doc, &marker);
+    sync_marker_to_carrier_with_libraries(
+        doc,
+        &marker,
+        display_config_library,
+        style_library,
+        active_name,
+    );
 
     true
 }
@@ -2152,12 +2174,34 @@ pub fn apply_carrier_property(
     field: &str,
     val: &str,
 ) -> bool {
+    let display_config_library = crate::modules::aec::engine::library::DisplayConfigLibrary::seed_default_configs();
+    let style_library = crate::modules::aec::engine::library::seed_default_library();
+    apply_carrier_property_with_libraries(
+        doc,
+        carrier_handle,
+        field,
+        val,
+        &display_config_library,
+        &style_library,
+        None,
+    )
+}
+
+pub fn apply_carrier_property_with_libraries(
+    doc: &mut CadDocument,
+    carrier_handle: Handle,
+    field: &str,
+    val: &str,
+    display_config_library: &crate::modules::aec::engine::library::DisplayConfigLibrary,
+    style_library: &crate::modules::aec::engine::library::StyleLibrary,
+    active_name: Option<&str>,
+) -> bool {
     use crate::modules::aec::engine::views::carrier::{
         find_view_carrier_by_handle, read_view_carrier_definitions, write_view_carrier,
         write_view_carrier_definitions,
     };
     use crate::modules::aec::engine::views::model_view::UpdatePolicy;
-    use crate::modules::aec::engine::views::update_ops::regenerate_or_mark_outdated;
+    use crate::modules::aec::engine::views::update_ops::regenerate_or_mark_outdated_with_libraries;
     use crate::modules::aec::engine::views::viewpoint::VerticalRange;
     use crate::modules::aec::engine::views::{Metres, PositiveMetres, ScaleDenominator};
     use crate::modules::aec::views::din1356::{
@@ -2213,19 +2257,13 @@ pub fn apply_carrier_property(
             }
         }
         "carrier_display_config" => {
-            let dc_lib = crate::modules::aec::engine::project::resolve_display_config_library(None);
-            let Some(matched_config) = dc_lib.configs.iter().find(|c| c.name == val) else {
+            let Some(matched_config) = display_config_library.configs.iter().find(|c| c.name == val) else {
                 return false;
             };
             let Some((_, ref mut mv)) = defs else {
                 return false;
             };
             mv.profile_id = crate::modules::aec::engine::views::ViewProfileId::from_uuid(matched_config.id);
-            if let Some(cfg_scale) = matched_config.scale {
-                if let Ok(denom) = ScaleDenominator::new(cfg_scale) {
-                    mv.scale = denom;
-                }
-            }
             if carrier.update_policy == UpdatePolicy::Automatic {
                 needs_regen = true;
             } else {
@@ -2370,7 +2408,15 @@ pub fn apply_carrier_property(
 
     if needs_regen {
         if let Some((ref vp, ref mv)) = defs {
-            regenerate_or_mark_outdated(doc, carrier_handle, vp, mv);
+            regenerate_or_mark_outdated_with_libraries(
+                doc,
+                carrier_handle,
+                vp,
+                mv,
+                display_config_library,
+                style_library,
+                active_name,
+            );
         }
     }
 
@@ -2646,6 +2692,7 @@ pub fn append_view_carrier_grips(
     handle: Handle,
     entity_grips: &mut Vec<crate::scene::model::object::GripDef>,
 ) {
+    let handle = crate::modules::aec::engine::views::carrier::resolve_carrier_handle(&scene.document, handle);
     let Some(entity) = scene.document.get_entity(handle) else {
         return;
     };
@@ -2779,7 +2826,22 @@ impl crate::app::OpenCADStudio {
             self.aec.aec_last_applied_property =
                 Some((marker_owner, field.to_string(), val.to_string()));
 
-            let ok = apply_marker_property(&mut self.tabs[tab].scene.document, marker_owner, field, val);
+            let display_config_library = crate::modules::aec::engine::project::resolve_display_config_library(
+                self.aec.aec_project_explorer_file.as_ref(),
+            );
+            let style_library = crate::modules::aec::engine::project::resolve_style_library(
+                self.aec.aec_project_explorer_file.as_ref(),
+            );
+            let active_name = self.tabs[tab].active_display_config.clone();
+            let ok = apply_marker_property_with_libraries(
+                &mut self.tabs[tab].scene.document,
+                marker_owner,
+                field,
+                val,
+                &display_config_library,
+                &style_library,
+                active_name.as_deref(),
+            );
             if ok {
                 self.tabs[tab].dirty = true;
                 self.tabs[tab].scene.bump_geometry();
@@ -2787,7 +2849,10 @@ impl crate::app::OpenCADStudio {
             return true;
         }
         if field.starts_with("carrier_") || field == "view_cut_height" {
-            let carrier_handle = handle;
+            let carrier_handle = crate::modules::aec::engine::views::carrier::resolve_carrier_handle(
+                &self.tabs[tab].scene.document,
+                handle,
+            );
             // `carrier_action` is a one-shot command; skip dedup so "Update now"
             // can be triggered repeatedly on the same carrier.
             let skip_dedup = field == "carrier_action";
@@ -2804,7 +2869,22 @@ impl crate::app::OpenCADStudio {
                     Some((carrier_handle, field.to_string(), val.to_string()));
             }
 
-            let ok = apply_carrier_property(&mut self.tabs[tab].scene.document, carrier_handle, field, val);
+            let display_config_library = crate::modules::aec::engine::project::resolve_display_config_library(
+                self.aec.aec_project_explorer_file.as_ref(),
+            );
+            let style_library = crate::modules::aec::engine::project::resolve_style_library(
+                self.aec.aec_project_explorer_file.as_ref(),
+            );
+            let active_name = self.tabs[tab].active_display_config.clone();
+            let ok = apply_carrier_property_with_libraries(
+                &mut self.tabs[tab].scene.document,
+                carrier_handle,
+                field,
+                val,
+                &display_config_library,
+                &style_library,
+                active_name.as_deref(),
+            );
             if ok {
                 self.tabs[tab].dirty = true;
                 self.tabs[tab].scene.bump_geometry();
@@ -5564,6 +5644,7 @@ mod tests {
         let path = SectionPath::straight(Point2::new(0.0, 0.0), Point2::new(10.0, 0.0));
         let vp = sample_section_viewpoint(vp_id, "Schnitt 1", path.clone(), Some(5.0), 0.0, 3.0, false);
         let mv = sample_model_view(mv_id, vp_id, "Section 1", UpdatePolicy::Automatic);
+        let original_scale = mv.scale;
         write_view_carrier_definitions(&mut scene.document, carrier.handle, &vp, &mv);
 
         let marker = Din1356SectionMarker::new_section("Schnitt 1", path, vp_id, Some(carrier.handle));
@@ -5573,12 +5654,19 @@ mod tests {
 
         // 1. Verify carrier property section has display config choice & marker entity ref
         let carrier_ent = scene.document.get_entity(carrier.handle).expect("carrier entity");
-        let carrier_section = carrier_prop_section(carrier_ent, &scene.document).expect("carrier prop section");
+        let dc_lib = crate::modules::aec::engine::project::resolve_display_config_library(None);
+        let carrier_section = carrier_prop_section_with_library(
+            carrier_ent,
+            &scene.document,
+            &dc_lib,
+        )
+        .expect("carrier prop section");
 
         let dc_prop = carrier_section.props.iter().find(|p| p.field == "carrier_display_config").expect("dc prop");
         match &dc_prop.value {
             crate::scene::model::object::PropValue::Choice { selected, options } => {
-                assert!(!selected.is_empty());
+                assert_eq!(selected, "—", "an unbound profile must not display the first section plan");
+                assert!(options.iter().any(|option| option == "—"));
                 assert!(!options.is_empty());
             }
             _ => panic!("Expected Choice for display config"),
@@ -5604,20 +5692,21 @@ mod tests {
         }
 
         // 3. Test changing display config via apply_carrier_property
-        let dc_lib = crate::modules::aec::engine::project::resolve_display_config_library(None);
         let first_cfg = &dc_lib.configs[0];
-        assert!(apply_carrier_property(
+        let style_lib = crate::modules::aec::engine::project::resolve_style_library(None);
+        assert!(apply_carrier_property_with_libraries(
             &mut scene.document,
             carrier.handle,
             "carrier_display_config",
             &first_cfg.name,
+            &dc_lib,
+            &style_lib,
+            None,
         ));
 
         let (_, mv_after) = read_view_carrier_definitions(&scene.document, carrier.handle).expect("defs after");
         assert_eq!(mv_after.profile_id.as_uuid(), first_cfg.id);
-        if let Some(scale) = first_cfg.scale {
-            assert_eq!(mv_after.scale.get(), scale);
-        }
+        assert_eq!(mv_after.scale, original_scale);
     }
 
     #[test]

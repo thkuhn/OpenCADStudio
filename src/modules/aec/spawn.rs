@@ -60,6 +60,22 @@ pub fn spawn_command(name: &str) -> Option<Box<dyn CadCommand>> {
     }
 }
 
+fn view_display_context(
+    app: &OpenCADStudio,
+    tab: usize,
+) -> (
+    crate::modules::aec::engine::library::DisplayConfigLibrary,
+    crate::modules::aec::engine::library::StyleLibrary,
+    Option<String>,
+) {
+    let project = app.aec.aec_project_explorer_file.as_ref();
+    (
+        crate::modules::aec::engine::project::resolve_display_config_library(project),
+        crate::modules::aec::engine::project::resolve_style_library(project),
+        app.tabs[tab].active_display_config.clone(),
+    )
+}
+
 /// One-shot / interactive AEC dispatch. `None` means core should keep looking.
 pub(crate) fn try_dispatch(
     app: &mut OpenCADStudio,
@@ -340,30 +356,42 @@ pub(crate) fn try_dispatch(
         }
         cmd if cmd.starts_with("AEC_SECTION_DO ") => {
             let args = cmd["AEC_SECTION_DO ".len()..].to_string();
+            let (display_config_library, style_library, active_name) = view_display_context(app, tab);
             crate::modules::aec::views::aec_section_do(
                 &mut app.tabs[tab].scene,
                 &mut app.command_line,
                 &args,
+                &display_config_library,
+                &style_library,
+                active_name.as_deref(),
             );
             app.tabs[tab].dirty = true;
             Some(app.finish_dispatch(cmd))
         }
         cmd if cmd.starts_with("AEC_ELEVATION_DO ") => {
             let args = cmd["AEC_ELEVATION_DO ".len()..].to_string();
+            let (display_config_library, style_library, active_name) = view_display_context(app, tab);
             crate::modules::aec::views::aec_elevation_do(
                 &mut app.tabs[tab].scene,
                 &mut app.command_line,
                 &args,
+                &display_config_library,
+                &style_library,
+                active_name.as_deref(),
             );
             app.tabs[tab].dirty = true;
             Some(app.finish_dispatch(cmd))
         }
         cmd if cmd.starts_with("AEC_FLOORPLAN_DO ") => {
             let args = cmd["AEC_FLOORPLAN_DO ".len()..].to_string();
+            let (display_config_library, style_library, active_name) = view_display_context(app, tab);
             crate::modules::aec::views::aec_floorplan_do(
                 &mut app.tabs[tab].scene,
                 &mut app.command_line,
                 &args,
+                &display_config_library,
+                &style_library,
+                active_name.as_deref(),
             );
             app.tabs[tab].dirty = true;
             Some(app.finish_dispatch(cmd))
@@ -574,7 +602,13 @@ fn dispatch_wallreverse(app: &mut OpenCADStudio, tab: usize, cmd: &str) -> Task<
 fn dispatch_viewupdate(app: &mut OpenCADStudio, tab: usize, cmd: &str) -> Task<Message> {
     let mut cmd_obj = crate::modules::aec::views::ViewUpdateCommand::new();
     cmd_obj.force_all = true;
-    let count = cmd_obj.update_all(&mut app.tabs[tab].scene);
+    let (display_config_library, style_library, active_name) = view_display_context(app, tab);
+    let count = cmd_obj.update_all(
+        &mut app.tabs[tab].scene,
+        &display_config_library,
+        &style_library,
+        active_name.as_deref(),
+    );
     app.command_line.push_info(&format!(
         "AEC: {} Ansicht(en) / Schnitte erfolgreich aktualisiert.",
         count

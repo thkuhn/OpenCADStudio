@@ -7,7 +7,7 @@
 use uuid::Uuid;
 
 use acadrust::entities::hatch::{BoundaryEdge, BoundaryPath, PolylineEdge};
-use acadrust::entities::{Hatch, HatchPattern, Line, LwPolyline, LwVertex, Point};
+use acadrust::entities::{Hatch, HatchPattern, Line, LwPolyline, LwVertex, MText, Point};
 use acadrust::types::{Vector2, Vector3};
 use acadrust::xdata::{ExtendedDataRecord, XDataValue};
 use acadrust::{CadDocument, EntityType, Handle};
@@ -16,7 +16,7 @@ use super::model_view::{ModelView, UpdatePolicy, ViewRevisions};
 use super::provenance::{
     DerivedPrimitive, ElementRef, FeatureKey, Geometry2d, PrimitiveRole,
 };
-use super::viewpoint::Viewpoint;
+use super::viewpoint::{ViewKind, Viewpoint};
 use super::{ElementId, ModelId, ModelViewId, Point2, Revision, ValidationError, ViewpointId};
 use crate::modules::aec::engine::owner_index;
 use crate::modules::aec::engine::xdata::{ensure_app_id, AEC_APPID};
@@ -25,6 +25,8 @@ pub const VIEW_CARRIER_TAG: &str = "VIEW_CARRIER";
 pub const VIEW_CARRIER_VP_TAG: &str = "VIEW_CARRIER_VP";
 pub const VIEW_CARRIER_MV_TAG: &str = "VIEW_CARRIER_MV";
 pub const DERIVED_PRIMITIVE_TAG: &str = "DERIVED_PRIMITIVE";
+pub const VIEW_CARRIER_BADGE_TAG: &str = "VIEW_CARRIER_BADGE";
+const BADGE_HALF: f64 = 0.40;
 
 /// An associative carrier entity in model space hosting derived 2D drawing primitives.
 #[derive(Clone, Debug, PartialEq)]
@@ -214,7 +216,162 @@ pub fn write_view_carrier(doc: &mut CadDocument, carrier: &DerivedViewCarrier) -
     if let Some(mh) = carrier.marker_handle {
         owner_index::link_peers(doc, carrier.handle, mh);
     }
+    sync_carrier_badge(doc, carrier);
     true
+}
+
+/// The carrier that owns a badge label, if `entity` is that label.
+pub fn badge_carrier_handle(entity: &EntityType) -> Option<Handle> {
+    for rec in entity.common().extended_data.records() {
+        if rec.application_name == AEC_APPID
+            && matches!(rec.values.first(), Some(XDataValue::String(s)) if s == VIEW_CARRIER_BADGE_TAG)
+        {
+            if let Some(XDataValue::String(raw)) = rec.values.get(1) {
+                return raw.parse::<u64>().ok().map(Handle::new);
+            }
+        }
+    }
+    None
+}
+
+/// Resolves a badge label to its carrier. Other handles are returned unchanged.
+pub fn resolve_carrier_handle(doc: &CadDocument, handle: Handle) -> Handle {
+    doc.get_entity(handle)
+        .and_then(badge_carrier_handle)
+        .unwrap_or(handle)
+}
+
+fn sync_carrier_badge(doc: &mut CadDocument, carrier: &DerivedViewCarrier) {
+    install_anchor(doc, carrier);
+    sync_badge_label(doc, carrier);
+}
+
+fn install_anchor(doc: &mut CadDocument, carrier: &DerivedViewCarrier) {
+    let Some(old) = doc.get_entity(carrier.handle) else {
+        return;
+    };
+    let mut common = old.common().clone();
+    common.layer = "AEC_VIEW_CARRIER".into();
+    common.color = acadrust::types::Color::Index(4);
+    common.line_weight = acadrust::types::LineWeight::from_value(50);
+
+    let mut pl = LwPolyline::new();
+    pl.is_closed = true;
+    let (cos_r, sin_r) = (carrier.rotation_rad.cos(), carrier.rotation_rad.sin());
+    let ox = carrier.insertion_point.x_m;
+    let oy = carrier.insertion_point.y_m;
+    for (x, y) in [
+        (0.0, BADGE_HALF),
+        (BADGE_HALF, 0.0),
+        (0.0, -BADGE_HALF),
+        (-BADGE_HALF, 0.0),
+    ] {
+        let rx = ox + x * cos_r - y * sin_r;
+        let ry = oy + x * sin_r + y * cos_r;
+        pl.add_vertex(LwVertex::new(Vector2::new(rx, ry)));
+    }
+    let mut entity = EntityType::LwPolyline(pl);
+    *entity.common_mut() = common;
+    if let Some(slot) = doc.get_entity_mut(carrier.handle) {
+        *slot = entity;
+    }
+}
+
+fn badge_caption(doc: &CadDocument, carrier: &DerivedViewCarrier) -> String {
+    let Some((vp, mv)) = read_view_carrier_definitions(doc, carrier.handle) else {
+        return "AEC".to_string();
+    };
+    let kind = match vp.kind {
+        ViewKind::Section { .. } => "Schnitt",
+        ViewKind::Elevation { .. } => "Ansicht",
+        ViewKind::FloorPlan { .. } => "Grundriss",
+        ViewKind::ReflectedCeilingPlan { .. } => "Deckenplan",
+    };
+    let scale = mv.scale.get();
+    let denom = if (scale - scale.round()).abs() < 1e-6 {
+        format!("{}", scale.round() as i64)
+    } else {
+        format!("{scale}")
+    };
+    let name = vp.name.trim();
+    if name.is_empty() {
+        format!("{kind}  1:{denom}")
+    } else {
+        format!("{kind} {name}  1:{denom}")
+    }
+}
+
+fn badge_text_point(carrier: &DerivedViewCarrier) -> (f64, f64) {
+    let (cos_r, sin_r) = (carrier.rotation_rad.cos(), carrier.rotation_rad.sin());
+    let lx = BADGE_HALF + 0.15;
+    let ly = 0.08;
+    (
+        carrier.insertion_point.x_m + lx * cos_r - ly * sin_r,
+        carrier.insertion_point.y_m + lx * sin_r + ly * cos_r,
+    )
+}
+
+fn find_badge_handle(doc: &CadDocument, carrier_handle: Handle) -> Option<Handle> {
+    let wanted = carrier_handle.value().to_string();
+    for entity in doc.entities() {
+        for rec in entity.common().extended_data.records() {
+            if rec.application_name == AEC_APPID
+                && matches!(rec.values.first(), Some(XDataValue::String(s)) if s == VIEW_CARRIER_BADGE_TAG)
+                && matches!(rec.values.get(1), Some(XDataValue::String(s)) if s == &wanted)
+            {
+                return Some(entity.common().handle);
+            }
+        }
+    }
+    None
+}
+
+fn write_badge_tag(entity: &mut EntityType, carrier_handle: Handle) {
+    let mut record = ExtendedDataRecord::new(AEC_APPID);
+    record.add_value(XDataValue::String(VIEW_CARRIER_BADGE_TAG.to_string()));
+    record.add_value(XDataValue::String(carrier_handle.value().to_string()));
+    let xd = &mut entity.common_mut().extended_data;
+    let kept: Vec<_> = xd
+        .records()
+        .iter()
+        .filter(|r| {
+            !(r.application_name == AEC_APPID
+                && matches!(r.values.first(), Some(XDataValue::String(s)) if s == VIEW_CARRIER_BADGE_TAG))
+        })
+        .cloned()
+        .collect();
+    xd.clear();
+    for kept_record in kept {
+        xd.add_record(kept_record);
+    }
+    xd.add_record(record);
+}
+
+fn sync_badge_label(doc: &mut CadDocument, carrier: &DerivedViewCarrier) {
+    ensure_app_id(doc);
+    let caption = badge_caption(doc, carrier);
+    let (tx, ty) = badge_text_point(carrier);
+    if let Some(handle) = find_badge_handle(doc, carrier.handle) {
+        if let Some(EntityType::MText(text)) = doc.get_entity_mut(handle) {
+            text.value = caption;
+            text.insertion_point = Vector3::new(tx, ty, 0.0);
+            text.rotation = carrier.rotation_rad;
+            text.height = 0.22;
+            return;
+        }
+    }
+
+    let mut text = MText::new();
+    text.value = caption;
+    text.insertion_point = Vector3::new(tx, ty, 0.0);
+    text.height = 0.22;
+    text.rotation = carrier.rotation_rad;
+    text.attachment_point = acadrust::entities::mtext::AttachmentPoint::MiddleLeft;
+    let mut entity = EntityType::MText(Box::new(text));
+    entity.common_mut().layer = "AEC_VIEW_CARRIER".into();
+    entity.common_mut().color = acadrust::types::Color::Index(4);
+    write_badge_tag(&mut entity, carrier.handle);
+    let _ = doc.add_entity(entity);
 }
 
 /// Creates a new `DerivedViewCarrier` in `doc` anchored at `insertion_point`.
@@ -339,31 +496,39 @@ pub fn write_view_carrier_definitions(
     mv_rec.add_value(XDataValue::String(VIEW_CARRIER_MV_TAG.to_string()));
     mv_rec.add_value(XDataValue::String(mv_json));
 
-    let Some(entity) = doc.get_entity_mut(carrier_handle) else {
-        return false;
-    };
+    {
+        let Some(entity) = doc.get_entity_mut(carrier_handle) else {
+            return false;
+        };
 
-    let xd = &mut entity.common_mut().extended_data;
-    let kept: Vec<_> = xd
-        .records()
-        .iter()
-        .filter(|r| {
-            if r.application_name != AEC_APPID {
-                return true;
-            }
-            !matches!(r.values.first(), Some(XDataValue::String(s)) if s == VIEW_CARRIER_VP_TAG || s == VIEW_CARRIER_MV_TAG)
-        })
-        .cloned()
-        .collect();
-    xd.clear();
-    for r in kept {
-        xd.add_record(r);
+        let xd = &mut entity.common_mut().extended_data;
+        let kept: Vec<_> = xd
+            .records()
+            .iter()
+            .filter(|r| {
+                if r.application_name != AEC_APPID {
+                    return true;
+                }
+                !matches!(r.values.first(), Some(XDataValue::String(s)) if s == VIEW_CARRIER_VP_TAG || s == VIEW_CARRIER_MV_TAG)
+            })
+            .cloned()
+            .collect();
+        xd.clear();
+        for r in kept {
+            xd.add_record(r);
+        }
+        xd.add_record(vp_rec);
+        xd.add_record(mv_rec);
+
+        if let Some(ah) = app_handle {
+            xd.raw_dwg_eed.retain(|(a, _)| *a != ah);
+        }
     }
-    xd.add_record(vp_rec);
-    xd.add_record(mv_rec);
-
-    if let Some(ah) = app_handle {
-        xd.raw_dwg_eed.retain(|(a, _)| *a != ah);
+    if let Some(carrier) = doc
+        .get_entity(carrier_handle)
+        .and_then(|entity| read_view_carrier(doc, entity))
+    {
+        sync_carrier_badge(doc, &carrier);
     }
     true
 }
@@ -1244,5 +1409,95 @@ mod tests {
                 b: 120
             }
         );
+    }
+
+    #[test]
+    fn carrier_anchor_is_a_labeled_diamond_that_moves_with_the_insertion() {
+        use super::super::model_view::{DetailPolicy, ModelView, ViewRevisions};
+        use super::super::viewpoint::{SectionPath, VerticalRange, ViewAxes, ViewKind, ViewOrigin};
+        use super::super::{Metres, Point3, ProjectionMapping, ScaleDenominator, Vector2};
+
+        let mut doc = CadDocument::new();
+        let vp_id = ViewpointId::new();
+        let mv_id = ModelViewId::new();
+        let mut carrier = create_view_carrier(
+            &mut doc,
+            vp_id,
+            mv_id,
+            Point2::new(4.0, 2.0),
+            1.0,
+            0.0,
+            UpdatePolicy::Automatic,
+        )
+        .expect("create carrier");
+
+        let anchor = doc.get_entity(carrier.handle).expect("anchor");
+        let EntityType::LwPolyline(pl) = anchor else {
+            panic!("carrier anchor must be a closed diamond, not a point");
+        };
+        assert!(pl.is_closed);
+        assert_eq!(pl.vertices.len(), 4);
+        let cx = pl.vertices.iter().map(|v| v.location.x).sum::<f64>() / 4.0;
+        let cy = pl.vertices.iter().map(|v| v.location.y).sum::<f64>() / 4.0;
+        assert!((cx - 4.0).abs() < 1e-6 && (cy - 2.0).abs() < 1e-6);
+
+        let vp = Viewpoint {
+            id: vp_id,
+            name: "Schnitt A".into(),
+            revision: Revision::default(),
+            origin: ViewOrigin::World(Point3::new(0.0, 0.0, 0.0)),
+            axes: ViewAxes::section(Vector2::new(1.0, 0.0)).unwrap(),
+            kind: ViewKind::Section {
+                path: SectionPath::straight(Point2::new(0.0, 0.0), Point2::new(8.0, 0.0)),
+                far_depth: None,
+            },
+            z_range: VerticalRange::new(Metres::new(0.0).unwrap(), Metres::new(3.0).unwrap()).unwrap(),
+            mapping: ProjectionMapping::default(),
+            crop: None,
+        };
+        let mv = ModelView {
+            id: mv_id,
+            name: "Schnitt A".into(),
+            viewpoint_id: vp_id,
+            profile_id: super::super::ViewProfileId::new(),
+            scale: ScaleDenominator::new(50.0).unwrap(),
+            detail: DetailPolicy::FromProfileAndScale,
+            excluded_elements: Default::default(),
+            graphic_overrides: vec![],
+            annotation_ids: vec![],
+            update_policy: UpdatePolicy::Automatic,
+            revisions: ViewRevisions::default(),
+        };
+        assert!(write_view_carrier_definitions(&mut doc, carrier.handle, &vp, &mv));
+
+        let label = doc
+            .entities()
+            .find_map(|entity| match entity {
+                EntityType::MText(text) if text.value.contains("Schnitt A") && text.value.contains("1:50") => {
+                    Some(text.insertion_point)
+                }
+                _ => None,
+            })
+            .expect("labeled badge");
+        assert!((label.x - (4.0 + BADGE_HALF + 0.15)).abs() < 1e-6);
+
+        carrier.insertion_point = Point2::new(9.0, 3.0);
+        assert!(write_view_carrier(&mut doc, &carrier));
+        let moved = doc.get_entity(carrier.handle).expect("moved anchor");
+        let EntityType::LwPolyline(pl) = moved else {
+            panic!("anchor stayed a polyline");
+        };
+        let cx = pl.vertices.iter().map(|v| v.location.x).sum::<f64>() / 4.0;
+        let cy = pl.vertices.iter().map(|v| v.location.y).sum::<f64>() / 4.0;
+        assert!((cx - 9.0).abs() < 1e-6 && (cy - 3.0).abs() < 1e-6);
+        let moved_label = doc
+            .entities()
+            .find_map(|entity| match entity {
+                EntityType::MText(text) if text.value.contains("1:50") => Some(text.insertion_point),
+                _ => None,
+            })
+            .expect("label moved");
+        assert!((moved_label.x - (9.0 + BADGE_HALF + 0.15)).abs() < 1e-6);
+        assert!((moved_label.y - (3.0 + 0.08)).abs() < 1e-6);
     }
 }

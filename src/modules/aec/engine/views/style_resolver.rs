@@ -27,7 +27,7 @@ use crate::modules::aec::engine::display_component::{
 use crate::modules::aec::engine::join::LayerRef;
 use crate::modules::aec::engine::library::{
     build_effective_rule_set, build_effective_slab_rule_set, effective_representation,
-    resolve_effective_rule_set, StyleLibrary,
+    resolve_effective_rule_set, DisplayConfigLibrary, StyleLibrary,
 };
 use crate::modules::aec::engine::material::Material;
 use crate::modules::aec::engine::opening_style::{apply_plan_visibility, OpeningStyle};
@@ -51,6 +51,40 @@ use super::PaperMm;
 /// material provides a pattern (mirrors `wall_regen` / `slab_regen`).
 const FALLBACK_WALL_HATCH: &str = "ANSI31";
 const FALLBACK_SLAB_HATCH: &str = "AR-CONC";
+
+/// Resolves the plan art used by a derived view without coupling its graphics to drawing scale.
+pub fn resolve_view_display_config(
+    library: &DisplayConfigLibrary,
+    view_type: ViewType,
+    stored_profile: Option<uuid::Uuid>,
+    active_name: Option<&str>,
+) -> DisplayConfig {
+    if let Some(config) = stored_profile.and_then(|id| library.configs.iter().find(|cfg| cfg.id == id)) {
+        return config.clone();
+    }
+
+    let active_config = active_name
+        .and_then(|name| library.configs.iter().find(|cfg| cfg.name == name));
+    if let Some(config) = active_config.filter(|cfg| cfg.view_type == view_type) {
+        return config.clone();
+    }
+
+    if let Some(active_config) = active_config {
+        if let Some(config) = library.configs.iter().find(|cfg| {
+            cfg.view_type == view_type && cfg.planning_stage == active_config.planning_stage
+        }) {
+            return config.clone();
+        }
+        return active_config.clone();
+    }
+
+    DisplayConfig::new(
+        "Neutral".to_string(),
+        "AEC".to_string(),
+        PlanningStage::Design,
+        view_type,
+    )
+}
 
 /// Converts an `acadrust::types::Color` into `Rgba8`.
 pub fn color_to_rgba8(c: &Color) -> Rgba8 {
@@ -990,6 +1024,7 @@ pub(crate) mod tests {
     };
     use crate::modules::aec::engine::join::LayerRef;
     use crate::modules::aec::engine::library::StyleLibrary;
+    use crate::modules::aec::engine::library::DisplayConfigLibrary;
     use crate::modules::aec::engine::material::Material;
     use crate::modules::aec::engine::openings::{OpeningKind, OpeningReferenceSide};
     use crate::modules::aec::engine::opening_shape::OpeningShape;
@@ -1028,6 +1063,69 @@ pub(crate) mod tests {
             update_policy: UpdatePolicy::Automatic,
             revisions: ViewRevisions::default(),
         }
+    }
+
+    #[test]
+    fn view_plan_resolution_prefers_stored_then_matching_stage_then_active() {
+        let active = DisplayConfig::new(
+            "Active Plan".to_string(),
+            "Architecture".to_string(),
+            PlanningStage::Design,
+            ViewType::FloorPlan,
+        );
+        let section_execution = DisplayConfig::new(
+            "Section Execution".to_string(),
+            "Architecture".to_string(),
+            PlanningStage::Execution,
+            ViewType::Section,
+        );
+        let section_design = DisplayConfig::new(
+            "Section Design".to_string(),
+            "Architecture".to_string(),
+            PlanningStage::Design,
+            ViewType::Section,
+        );
+        let library = DisplayConfigLibrary {
+            configs: vec![active.clone(), section_execution.clone(), section_design.clone()],
+            ..Default::default()
+        };
+
+        let selected = resolve_view_display_config(
+            &library,
+            ViewType::Section,
+            None,
+            Some("Active Plan"),
+        );
+        assert_eq!(selected.id, section_design.id);
+
+        let stored = resolve_view_display_config(
+            &library,
+            ViewType::Section,
+            Some(section_execution.id),
+            Some("Active Plan"),
+        );
+        assert_eq!(stored.name, "Section Execution");
+
+        let fallback = resolve_view_display_config(
+            &library,
+            ViewType::Elevation,
+            None,
+            Some("Active Plan"),
+        );
+        assert_eq!(fallback.id, active.id);
+    }
+
+    #[test]
+    fn view_plan_resolution_uses_neutral_config_when_no_active_plan_exists() {
+        let selected = resolve_view_display_config(
+            &DisplayConfigLibrary::empty(),
+            ViewType::Section,
+            None,
+            None,
+        );
+        assert_eq!(selected.name, "Neutral");
+        assert_eq!(selected.view_type, ViewType::Section);
+        assert_eq!(selected.scale, None);
     }
 
     fn make_test_wall(mat_name: &str) -> CollectedWall {
@@ -1819,6 +1917,50 @@ pub(crate) mod tests {
         let ctx = ViewStyleContext::new(&mv, Some(&dc), Some(&lib), true);
         assert!(is_slab_layer_visible(&ctx, &slab, 0));
         assert!(!is_slab_layer_visible(&ctx, &slab, 1));
+    }
+
+    #[test]
+    fn test_slab_style_overlay_layer_visibility_hides_layer() {
+        use crate::modules::aec::engine::display_component::LayerVis;
+
+        let mv = make_test_mv();
+        let slab = make_test_slab("Beton");
+        let mut lib = StyleLibrary::default();
+        lib.materials.push(material("Beton", "AR-CONC", 0.5, 0.0, true));
+        let mut slab_style = SlabStyle::new(slab.style_id.clone(), slab.style_id.clone());
+        slab_style.layers = slab
+            .layers
+            .iter()
+            .map(|layer| {
+                let mut style_layer = crate::modules::aec::engine::slab_style::SlabStyleLayer::new(
+                    layer.material.clone(),
+                    crate::modules::aec::engine::wall_style::LayerValue::Fixed(layer.thickness),
+                    if layer.is_structural {
+                        crate::modules::aec::engine::wall_style::LayerFunction::Structural
+                    } else {
+                        crate::modules::aec::engine::wall_style::LayerFunction::Finish
+                    },
+                );
+                style_layer.layer_id = layer.layer_id;
+                style_layer
+            })
+            .collect();
+        lib.slab_styles.push(slab_style);
+        let mut dc = plan_dc();
+        let mut overlay = crate::modules::aec::engine::display_component::StyleDisplayOverlay::default();
+        overlay.layer_visibility.insert(
+            slab.layers[0].layer_id,
+            LayerVis {
+                visible_2d: false,
+                visible_3d: true,
+            },
+        );
+        dc.style_overrides.insert(slab.style_id.clone(), overlay);
+
+        let ctx = ViewStyleContext::new(&mv, Some(&dc), Some(&lib), true);
+
+        assert!(!is_slab_layer_visible(&ctx, &slab, 0));
+        assert!(is_slab_layer_visible(&ctx, &slab, 1));
     }
 
     #[test]

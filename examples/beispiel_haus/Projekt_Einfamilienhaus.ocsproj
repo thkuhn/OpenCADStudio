@@ -8,7 +8,7 @@
           "id": "fd467112-3719-44db-862a-f177c0fc7ee4",
           "name": "UG",
           "elevation": -2.8,
-          "height": 3.0,
+          "height": 2.8,
           "drawing_path": "UG.dwg",
           "control_planes": [
             {
@@ -60,7 +60,7 @@
               "origin": [
                 -5.0,
                 -5.0,
-                0.20000000000000018
+                0.0
               ],
               "normal": [
                 0.0,
@@ -74,22 +74,22 @@
                     [
                       -5.0,
                       -5.0,
-                      0.20000000000000018
+                      0.0
                     ],
                     [
                       45.0,
                       -5.0,
-                      0.20000000000000018
+                      0.0
                     ],
                     [
                       45.0,
                       45.0,
-                      0.20000000000000018
+                      0.0
                     ],
                     [
                       -5.0,
                       45.0,
-                      0.20000000000000018
+                      0.0
                     ]
                   ]
                 }
@@ -448,20 +448,20 @@
         "parent": null,
         "category": "Material",
         "hatch_pattern": "DOTS",
-        "line_color": 13158596,
+        "line_color": 16777215,
         "line_type": "Continuous",
         "render_material_ref": null,
         "group": "Putz",
         "hatch_color": {
           "Rgb": {
-            "r": 180,
-            "g": 180,
-            "b": 176
+            "r": 128,
+            "g": 128,
+            "b": 128
           }
         },
-        "hatch_scale": 0.0012,
+        "hatch_scale": 0.002,
         "hatch_angle": 0.0,
-        "hatch_angle_relative": true
+        "hatch_angle_relative": false
       },
       {
         "id": "mat_wood",
@@ -643,6 +643,120 @@
           }
         },
         "hatch_scale": 0.5,
+        "hatch_angle": 0.0,
+        "hatch_angle_relative": true
+      },
+      {
+        "id": "WU_Stahlbeton",
+        "name": "WU_Stahlbeton",
+        "parent": null,
+        "category": "Material",
+        "hatch_pattern": "JIS_STN_2.5",
+        "line_color": 65280,
+        "line_type": "Continuous",
+        "render_material_ref": null,
+        "group": null,
+        "hatch_color": {
+          "Rgb": {
+            "r": 255,
+            "g": 0,
+            "b": 0
+          }
+        },
+        "hatch_scale": 0.02,
+        "hatch_angle": 0.0,
+        "hatch_angle_relative": false
+      },
+      {
+        "id": "Kalksandstein",
+        "name": "Kalksandstein",
+        "parent": null,
+        "category": "Material",
+        "hatch_pattern": "ANSI31",
+        "line_color": 16776960,
+        "line_type": "Continuous",
+        "render_material_ref": null,
+        "group": "Mauerwerk",
+        "hatch_color": {
+          "Rgb": {
+            "r": 255,
+            "g": 0,
+            "b": 0
+          }
+        },
+        "hatch_scale": 0.02,
+        "hatch_angle": 0.0,
+        "hatch_angle_relative": false
+      },
+      {
+        "id": "Bitumen_Abdichtung",
+        "name": "Bitumen_Abdichtung",
+        "parent": null,
+        "category": "Material",
+        "hatch_pattern": "SOLID",
+        "line_color": 8421504,
+        "line_type": "Continuous",
+        "render_material_ref": null,
+        "group": null,
+        "hatch_color": null,
+        "hatch_scale": 1.0,
+        "hatch_angle": 0.0,
+        "hatch_angle_relative": true
+      },
+      {
+        "id": "Perimeterdaemmung",
+        "name": "Perimeterdaemmung",
+        "parent": null,
+        "category": "Material",
+        "hatch_pattern": "HONEY",
+        "line_color": 16777215,
+        "line_type": "Continuous",
+        "render_material_ref": null,
+        "group": null,
+        "hatch_color": {
+          "Rgb": {
+            "r": 255,
+            "g": 0,
+            "b": 0
+          }
+        },
+        "hatch_scale": 0.01,
+        "hatch_angle": 0.0,
+        "hatch_angle_relative": false
+      },
+      {
+        "id": "Innenputz",
+        "name": "Innenputz",
+        "parent": null,
+        "category": "Material",
+        "hatch_pattern": "AR-SAND",
+        "line_color": 16777215,
+        "line_type": "Continuous",
+        "render_material_ref": null,
+        "group": null,
+        "hatch_color": {
+          "Rgb": {
+            "r": 128,
+            "g": 128,
+            "b": 128
+          }
+        },
+        "hatch_scale": 0.0005,
+        "hatch_angle": 0.0,
+        "hatch_angle_relative": false
+      },
+      {
+        "id": "Estrich_Dämmung",
+        "name": "Estrich_Dämmung",
+        "parent": null,
+        "category": "Material",
+        "hatch_pattern": "SOLID",
+        "line_color": 8421504,
+        "line_type": "Continuous",
+        "render_material_ref": null,
+        "group": null,
+        "hatch_color": null,
+        "hatch_scale": 1.0,
         "hatch_angle": 0.0,
         "hatch_angle_relative": true
       }
@@ -958,6 +1072,214 @@
             "layer_id": "d1f8f4bf-90c1-45ae-860a-b281f72adcc8"
           }
         ]
+      },
+      {
+        "id": "Standard#2",
+        "name": "Standard 24cm (Putz+Kalksandstein+Putz)",
+        "parent": null,
+        "category": "Wall",
+        "layers": [
+          {
+            "material_id": "mat_plaster",
+            "thickness": 0.015,
+            "function": {
+              "Other": "Substrate"
+            },
+            "axis_offset": -0.135,
+            "bottom_offset": 0.0,
+            "top_offset": 0.0,
+            "layer_override": null,
+            "hatch_override": null,
+            "role_tag": null,
+            "layer_id": "2f8cc6bf-81c6-41ad-bcb1-77155cedb9cc"
+          },
+          {
+            "material_id": "Kalksandstein",
+            "thickness": 0.24,
+            "function": "Structural",
+            "axis_offset": -0.12,
+            "bottom_offset": 0.0,
+            "top_offset": 0.0,
+            "layer_override": null,
+            "hatch_override": null,
+            "role_tag": null,
+            "layer_id": "5f3741cd-52d0-41e4-a68e-5ae4e07e2b8d"
+          },
+          {
+            "material_id": "mat_plaster",
+            "thickness": 0.015,
+            "function": {
+              "Other": "Substrate"
+            },
+            "axis_offset": 0.12,
+            "bottom_offset": 0.0,
+            "top_offset": 0.0,
+            "layer_override": null,
+            "hatch_override": null,
+            "role_tag": null,
+            "layer_id": "9c797057-d866-4e0a-bfbc-55c6e639244d"
+          }
+        ]
+      },
+      {
+        "id": "Standard",
+        "name": "Standard UG Aussenwand (4 Schalen)",
+        "parent": null,
+        "category": "Wall",
+        "layers": [
+          {
+            "material_id": "Bitumen_Abdichtung",
+            "thickness": 0.005,
+            "function": {
+              "Other": "Waterproofing"
+            },
+            "axis_offset": -0.245,
+            "bottom_offset": -0.25,
+            "top_offset": 0.8,
+            "layer_override": null,
+            "hatch_override": null,
+            "role_tag": null,
+            "layer_id": "36404cdc-8223-4faf-baed-9d27a960c0ba"
+          },
+          {
+            "material_id": "Perimeterdaemmung",
+            "thickness": 0.12,
+            "function": {
+              "Other": "Thermal"
+            },
+            "axis_offset": -0.24,
+            "bottom_offset": -0.25,
+            "top_offset": 0.0,
+            "layer_override": null,
+            "hatch_override": null,
+            "role_tag": null,
+            "layer_id": "c61f19c8-0ed8-4282-a7df-35ed3121fa3b"
+          },
+          {
+            "material_id": "WU_Stahlbeton",
+            "thickness": 0.24,
+            "function": "Structural",
+            "axis_offset": -0.12,
+            "bottom_offset": 0.0,
+            "top_offset": 0.0,
+            "layer_override": null,
+            "hatch_override": null,
+            "role_tag": null,
+            "layer_id": "506beeeb-b8b1-4ac7-8548-b35daf10bd71"
+          },
+          {
+            "material_id": "Innenputz",
+            "thickness": 0.01,
+            "function": {
+              "Other": "Substrate"
+            },
+            "axis_offset": 0.12,
+            "bottom_offset": 0.0,
+            "top_offset": 0.0,
+            "layer_override": null,
+            "hatch_override": null,
+            "role_tag": null,
+            "layer_id": "0423abee-8f11-4dde-9511-21811f1dd531"
+          }
+        ]
+      },
+      {
+        "id": "Standard#4",
+        "name": "Standard (Putz+Kalksandstein+Putz)",
+        "parent": null,
+        "category": "Wall",
+        "layers": [
+          {
+            "material_id": "Putz",
+            "thickness": 0.015,
+            "function": {
+              "Other": "Substrate"
+            },
+            "axis_offset": 0.0,
+            "bottom_offset": 0.0,
+            "top_offset": 0.0,
+            "layer_override": null,
+            "hatch_override": null,
+            "role_tag": null,
+            "layer_id": "4552deb9-8dce-4698-adcb-e597810099b5"
+          },
+          {
+            "material_id": "Kalksandstein",
+            "thickness": 0.115,
+            "function": "Structural",
+            "axis_offset": 0.0,
+            "bottom_offset": 0.0,
+            "top_offset": 0.0,
+            "layer_override": null,
+            "hatch_override": null,
+            "role_tag": null,
+            "layer_id": "0cde58e1-db78-40b9-9aed-71da73e5b73d"
+          },
+          {
+            "material_id": "Putz",
+            "thickness": 0.015,
+            "function": {
+              "Other": "Substrate"
+            },
+            "axis_offset": 0.0,
+            "bottom_offset": 0.0,
+            "top_offset": 0.0,
+            "layer_override": null,
+            "hatch_override": null,
+            "role_tag": null,
+            "layer_id": "36685cdb-bd3b-423a-aa3d-1f0a5c0a73d5"
+          }
+        ]
+      },
+      {
+        "id": "Standard#3",
+        "name": "Standard (Gipsfaser+Ständerwerk_Dämmung+Gipsfaser)",
+        "parent": null,
+        "category": "Wall",
+        "layers": [
+          {
+            "material_id": "Gipsfaser",
+            "thickness": 0.0125,
+            "function": {
+              "Other": "Substrate"
+            },
+            "axis_offset": -0.0625,
+            "bottom_offset": 0.0,
+            "top_offset": 0.0,
+            "layer_override": null,
+            "hatch_override": null,
+            "role_tag": null,
+            "layer_id": "ef3f16a1-0162-467e-b5c3-096a2aae2c6e"
+          },
+          {
+            "material_id": "Ständerwerk_Dämmung",
+            "thickness": 0.1,
+            "function": {
+              "Other": "Thermal"
+            },
+            "axis_offset": -0.05,
+            "bottom_offset": 0.0,
+            "top_offset": 0.0,
+            "layer_override": null,
+            "hatch_override": null,
+            "role_tag": null,
+            "layer_id": "e66bde00-bf69-471f-9613-676117009acf"
+          },
+          {
+            "material_id": "Gipsfaser",
+            "thickness": 0.0125,
+            "function": {
+              "Other": "Substrate"
+            },
+            "axis_offset": 0.05,
+            "bottom_offset": 0.0,
+            "top_offset": 0.0,
+            "layer_override": null,
+            "hatch_override": null,
+            "role_tag": null,
+            "layer_id": "b235c82f-d634-4f53-824e-e0a1ce90e359"
+          }
+        ]
       }
     ],
     "opening_styles": [
@@ -978,37 +1300,17 @@
         "shape": "Rectangle",
         "spring_height": 0.0,
         "slots": {
-          "ElevationSwing2D": {
-            "kind": "Generator",
-            "value": "ElevationSwingTriangle"
-          },
-          "ElevationSill2D": {
-            "kind": "Generator",
-            "value": "ElevationSillLine"
-          },
-          "Sill2D": {
-            "kind": "Generator",
-            "value": "SillLines"
-          },
           "OpeningLabel2D": {
             "kind": "Generator",
             "value": "OpeningLabel"
-          },
-          "Frame3D": {
-            "kind": "Generator",
-            "value": "SolidFrame"
-          },
-          "Glazing3D": {
-            "kind": "Generator",
-            "value": "SolidGlazing"
           },
           "Leaf2D": {
             "kind": "Generator",
             "value": "LeafLine"
           },
-          "Frame2D": {
+          "Glazing3D": {
             "kind": "Generator",
-            "value": "FrameRect"
+            "value": "SolidGlazing"
           },
           "Glazing2D": {
             "kind": "Generator",
@@ -1017,6 +1319,26 @@
           "ElevationContour2D": {
             "kind": "Generator",
             "value": "ElevationFrameRect"
+          },
+          "Sill2D": {
+            "kind": "Generator",
+            "value": "SillLines"
+          },
+          "ElevationSill2D": {
+            "kind": "Generator",
+            "value": "ElevationSillLine"
+          },
+          "ElevationSwing2D": {
+            "kind": "Generator",
+            "value": "ElevationSwingTriangle"
+          },
+          "Frame3D": {
+            "kind": "Generator",
+            "value": "SolidFrame"
+          },
+          "Frame2D": {
+            "kind": "Generator",
+            "value": "FrameRect"
           }
         }
       },
@@ -1037,49 +1359,49 @@
         "shape": "Rectangle",
         "spring_height": 0.0,
         "slots": {
-          "Frame3D": {
+          "Glazing2D": {
             "kind": "Generator",
-            "value": "SolidFrame"
-          },
-          "Glazing3D": {
-            "kind": "Generator",
-            "value": "SolidGlazing"
+            "value": "GlazingLine"
           },
           "Frame2D": {
             "kind": "Generator",
             "value": "FrameRect"
           },
-          "ElevationContour2D": {
+          "Glazing3D": {
             "kind": "Generator",
-            "value": "ElevationFrameRect"
-          },
-          "Leaf2D": {
-            "kind": "Generator",
-            "value": "LeafLine"
-          },
-          "Sill2D": {
-            "kind": "Generator",
-            "value": "SillLines"
+            "value": "SolidGlazing"
           },
           "ElevationMuntins2D": {
             "kind": "Generator",
             "value": "ElevationMuntinsDouble"
           },
-          "Glazing2D": {
+          "Leaf2D": {
             "kind": "Generator",
-            "value": "GlazingLine"
-          },
-          "OpeningLabel2D": {
-            "kind": "Generator",
-            "value": "OpeningLabel"
+            "value": "LeafLine"
           },
           "ElevationSill2D": {
             "kind": "Generator",
             "value": "ElevationSillLine"
           },
+          "OpeningLabel2D": {
+            "kind": "Generator",
+            "value": "OpeningLabel"
+          },
           "ElevationSwing2D": {
             "kind": "Generator",
             "value": "ElevationSwingTriangle"
+          },
+          "Sill2D": {
+            "kind": "Generator",
+            "value": "SillLines"
+          },
+          "Frame3D": {
+            "kind": "Generator",
+            "value": "SolidFrame"
+          },
+          "ElevationContour2D": {
+            "kind": "Generator",
+            "value": "ElevationFrameRect"
           }
         }
       },
@@ -1100,45 +1422,45 @@
         "shape": "Arch",
         "spring_height": 1.3,
         "slots": {
-          "Frame2D": {
+          "Frame3D": {
             "kind": "Generator",
-            "value": "FrameRect"
-          },
-          "Glazing2D": {
-            "kind": "Generator",
-            "value": "GlazingLine"
-          },
-          "Sill2D": {
-            "kind": "Generator",
-            "value": "SillLines"
+            "value": "SolidFrame"
           },
           "Leaf2D": {
             "kind": "Generator",
             "value": "LeafLine"
           },
-          "ElevationSill2D": {
+          "Sill2D": {
             "kind": "Generator",
-            "value": "ElevationSillLine"
+            "value": "SillLines"
           },
           "ElevationSwing2D": {
             "kind": "Generator",
             "value": "ElevationSwingTriangle"
           },
-          "OpeningLabel2D": {
+          "ElevationSill2D": {
             "kind": "Generator",
-            "value": "OpeningLabel"
+            "value": "ElevationSillLine"
+          },
+          "Frame2D": {
+            "kind": "Generator",
+            "value": "FrameRect"
           },
           "ElevationContour2D": {
             "kind": "Generator",
             "value": "ElevationFrameArch"
           },
-          "Frame3D": {
+          "OpeningLabel2D": {
             "kind": "Generator",
-            "value": "SolidFrame"
+            "value": "OpeningLabel"
           },
           "Glazing3D": {
             "kind": "Generator",
             "value": "SolidGlazing"
+          },
+          "Glazing2D": {
+            "kind": "Generator",
+            "value": "GlazingLine"
           }
         }
       },
@@ -1159,21 +1481,13 @@
         "shape": "Circle",
         "spring_height": 0.0,
         "slots": {
-          "ElevationContour2D": {
-            "kind": "Generator",
-            "value": "ElevationFrameArch"
-          },
-          "OpeningLabel2D": {
-            "kind": "Generator",
-            "value": "OpeningLabel"
-          },
           "Glazing2D": {
             "kind": "Generator",
             "value": "GlazingLine"
           },
-          "Frame3D": {
+          "ElevationContour2D": {
             "kind": "Generator",
-            "value": "SolidFrame"
+            "value": "ElevationFrameArch"
           },
           "Glazing3D": {
             "kind": "Generator",
@@ -1182,6 +1496,14 @@
           "Frame2D": {
             "kind": "Generator",
             "value": "FrameRect"
+          },
+          "OpeningLabel2D": {
+            "kind": "Generator",
+            "value": "OpeningLabel"
+          },
+          "Frame3D": {
+            "kind": "Generator",
+            "value": "SolidFrame"
           }
         }
       },
@@ -1202,6 +1524,14 @@
         "shape": "Rectangle",
         "spring_height": 0.0,
         "slots": {
+          "Glazing2D": {
+            "kind": "Generator",
+            "value": "GlazingLine"
+          },
+          "Frame3D": {
+            "kind": "Generator",
+            "value": "SolidFrame"
+          },
           "Leaf2D": {
             "kind": "Generator",
             "value": "LeafLine"
@@ -1210,37 +1540,29 @@
             "kind": "Generator",
             "value": "ThresholdLine"
           },
-          "OpeningLabel2D": {
-            "kind": "Generator",
-            "value": "OpeningLabel"
-          },
-          "Glazing2D": {
-            "kind": "Generator",
-            "value": "GlazingLine"
-          },
-          "ElevationSill2D": {
-            "kind": "Generator",
-            "value": "ElevationSillLine"
-          },
           "Glazing3D": {
             "kind": "Generator",
             "value": "SolidGlazing"
           },
-          "Frame2D": {
+          "OpeningLabel2D": {
             "kind": "Generator",
-            "value": "FrameRect"
+            "value": "OpeningLabel"
           },
           "ElevationContour2D": {
             "kind": "Generator",
             "value": "ElevationFrameRect"
           },
-          "Frame3D": {
+          "ElevationSill2D": {
             "kind": "Generator",
-            "value": "SolidFrame"
+            "value": "ElevationSillLine"
           },
           "ElevationSwing2D": {
             "kind": "Generator",
             "value": "ElevationSwingTriangle"
+          },
+          "Frame2D": {
+            "kind": "Generator",
+            "value": "FrameRect"
           }
         }
       },
@@ -1261,41 +1583,41 @@
         "shape": "Rectangle",
         "spring_height": 0.0,
         "slots": {
-          "ElevationSwing2D": {
-            "kind": "Generator",
-            "value": "ElevationSwingTriangle"
-          },
           "Threshold2D": {
             "kind": "Generator",
             "value": "ThresholdLine"
           },
-          "OpeningLabel2D": {
+          "ElevationSwing2D": {
             "kind": "Generator",
-            "value": "OpeningLabel"
-          },
-          "Leaf2D": {
-            "kind": "Generator",
-            "value": "LeafLine"
-          },
-          "Swing2D": {
-            "kind": "Generator",
-            "value": "SwingArc"
+            "value": "ElevationSwingTriangle"
           },
           "Frame2D": {
             "kind": "Generator",
             "value": "FrameRect"
           },
-          "ElevationContour2D": {
+          "OpeningLabel2D": {
             "kind": "Generator",
-            "value": "ElevationFrameRect"
+            "value": "OpeningLabel"
+          },
+          "Leaf3D": {
+            "kind": "Generator",
+            "value": "SolidLeaf"
           },
           "Frame3D": {
             "kind": "Generator",
             "value": "SolidFrame"
           },
-          "Leaf3D": {
+          "Leaf2D": {
             "kind": "Generator",
-            "value": "SolidLeaf"
+            "value": "LeafLine"
+          },
+          "ElevationContour2D": {
+            "kind": "Generator",
+            "value": "ElevationFrameRect"
+          },
+          "Swing2D": {
+            "kind": "Generator",
+            "value": "SwingArc"
           }
         }
       },
@@ -1316,41 +1638,41 @@
         "shape": "Rectangle",
         "spring_height": 0.0,
         "slots": {
-          "OpeningLabel2D": {
+          "Leaf2D": {
             "kind": "Generator",
-            "value": "OpeningLabel"
-          },
-          "ElevationSwing2D": {
-            "kind": "Generator",
-            "value": "ElevationSwingTriangle"
-          },
-          "Threshold2D": {
-            "kind": "Generator",
-            "value": "ThresholdLine"
-          },
-          "Frame3D": {
-            "kind": "Generator",
-            "value": "SolidFrame"
-          },
-          "ElevationContour2D": {
-            "kind": "Generator",
-            "value": "ElevationFrameRect"
-          },
-          "Leaf3D": {
-            "kind": "Generator",
-            "value": "SolidLeaf"
+            "value": "LeafLine"
           },
           "Frame2D": {
             "kind": "Generator",
             "value": "FrameRect"
           },
-          "Leaf2D": {
+          "Threshold2D": {
             "kind": "Generator",
-            "value": "LeafLine"
+            "value": "ThresholdLine"
+          },
+          "ElevationSwing2D": {
+            "kind": "Generator",
+            "value": "ElevationSwingTriangle"
+          },
+          "ElevationContour2D": {
+            "kind": "Generator",
+            "value": "ElevationFrameRect"
+          },
+          "Frame3D": {
+            "kind": "Generator",
+            "value": "SolidFrame"
+          },
+          "Leaf3D": {
+            "kind": "Generator",
+            "value": "SolidLeaf"
           },
           "Swing2D": {
             "kind": "Generator",
             "value": "SwingArc"
+          },
+          "OpeningLabel2D": {
+            "kind": "Generator",
+            "value": "OpeningLabel"
           }
         }
       },
@@ -1371,29 +1693,17 @@
         "shape": "Rectangle",
         "spring_height": 0.0,
         "slots": {
+          "ElevationContour2D": {
+            "kind": "Generator",
+            "value": "ElevationFrameRect"
+          },
           "ElevationSwing2D": {
             "kind": "Generator",
             "value": "ElevationSwingTriangle"
           },
-          "OpeningLabel2D": {
-            "kind": "Generator",
-            "value": "OpeningLabel"
-          },
-          "Leaf3D": {
-            "kind": "Generator",
-            "value": "SolidLeaf"
-          },
           "Frame2D": {
             "kind": "Generator",
             "value": "FrameRect"
-          },
-          "Leaf2D": {
-            "kind": "Generator",
-            "value": "LeafLine"
-          },
-          "ElevationContour2D": {
-            "kind": "Generator",
-            "value": "ElevationFrameRect"
           },
           "Swing2D": {
             "kind": "Generator",
@@ -1403,6 +1713,14 @@
             "kind": "Generator",
             "value": "SolidFrame"
           },
+          "OpeningLabel2D": {
+            "kind": "Generator",
+            "value": "OpeningLabel"
+          },
+          "Leaf3D": {
+            "kind": "Generator",
+            "value": "SolidLeaf"
+          },
           "Threshold2D": {
             "kind": "Generator",
             "value": "ThresholdLine"
@@ -1410,6 +1728,10 @@
           "ElevationMuntins2D": {
             "kind": "Generator",
             "value": "ElevationMuntinsDouble"
+          },
+          "Leaf2D": {
+            "kind": "Generator",
+            "value": "LeafLine"
           }
         }
       },
@@ -1430,7 +1752,7 @@
         "shape": "Rectangle",
         "spring_height": 0.0,
         "slots": {
-          "BreakthroughSymbol2D": {
+          "Mark2D": {
             "kind": "Generator",
             "value": "Cross"
           },
@@ -1438,13 +1760,13 @@
             "kind": "Generator",
             "value": "ElevationFrameRect"
           },
-          "Mark2D": {
-            "kind": "Generator",
-            "value": "Cross"
-          },
           "OpeningLabel2D": {
             "kind": "Generator",
             "value": "OpeningLabel"
+          },
+          "BreakthroughSymbol2D": {
+            "kind": "Generator",
+            "value": "Cross"
           }
         }
       },
@@ -1465,13 +1787,13 @@
         "shape": "Circle",
         "spring_height": 0.0,
         "slots": {
-          "OpeningLabel2D": {
-            "kind": "Generator",
-            "value": "OpeningLabel"
-          },
           "ElevationContour2D": {
             "kind": "Generator",
             "value": "ElevationFrameArch"
+          },
+          "OpeningLabel2D": {
+            "kind": "Generator",
+            "value": "OpeningLabel"
           },
           "BreakthroughSymbol2D": {
             "kind": "Generator",
@@ -1565,6 +1887,66 @@
         "structural_style_id": "struct_slab_concrete_20",
         "default_finish_style_id": "finish_floor_balcony_120",
         "layers": []
+      },
+      {
+        "id": "Geschossdecke",
+        "name": "Geschossdecke",
+        "parent": null,
+        "category": "Slab",
+        "structural_style_id": "struct_slab_concrete_20",
+        "default_finish_style_id": "finish_floor_screed_50",
+        "layers": [
+          {
+            "material_id": "Estrich_Dämmung",
+            "thickness": 0.08,
+            "function": "Finish",
+            "vertical_offset": 0.0,
+            "layer_override": null,
+            "hatch_override": null,
+            "role_tag": null,
+            "layer_id": "903edcad-ced6-4c01-854a-ac5f02318fb4"
+          },
+          {
+            "material_id": "WU_Stahlbeton",
+            "thickness": 0.25,
+            "function": "Structural",
+            "vertical_offset": 0.0,
+            "layer_override": null,
+            "hatch_override": null,
+            "role_tag": null,
+            "layer_id": "80fd5807-aefd-4823-aaee-420977051782"
+          }
+        ]
+      },
+      {
+        "id": "bodenplatte_ug",
+        "name": "Bodenplatte UG",
+        "parent": null,
+        "category": "Slab",
+        "structural_style_id": "struct_slab_concrete_20",
+        "default_finish_style_id": "finish_floor_screed_50",
+        "layers": [
+          {
+            "material_id": "Estrich_Dämmung",
+            "thickness": 0.08,
+            "function": "Finish",
+            "vertical_offset": 0.0,
+            "layer_override": null,
+            "hatch_override": null,
+            "role_tag": null,
+            "layer_id": "333e0e57-024a-4cf9-8e21-daf21d0a105c"
+          },
+          {
+            "material_id": "WU_Stahlbeton",
+            "thickness": 0.25,
+            "function": "Structural",
+            "vertical_offset": 0.0,
+            "layer_override": null,
+            "hatch_override": null,
+            "role_tag": null,
+            "layer_id": "ab18800c-bc42-43a1-aa63-dc0b0246ad2b"
+          }
+        ]
       }
     ],
     "slab_structural_styles": [
@@ -1843,14 +2225,14 @@
         "preset": "werkplan-50",
         "component_visibility": {},
         "opening_visibility": {
-          "Sill2D": true,
-          "Threshold2D": true,
           "Glazing2D": true,
-          "Swing2D": true,
           "Frame2D": true,
-          "HostCut2D": true,
+          "Sill2D": true,
           "Leaf2D": true,
-          "OpeningLabel2D": true
+          "OpeningLabel2D": true,
+          "Threshold2D": true,
+          "Swing2D": true,
+          "HostCut2D": true
         },
         "style_overrides": {},
         "contour_hatch": null
@@ -1869,21 +2251,13 @@
           "annotation": true,
           "opening_symbols": true,
           "ceiling_view": false,
-          "representation": "TwoD"
+          "representation": "All"
         },
         "preset": null,
-        "component_visibility": {},
-        "opening_visibility": {
-          "HostCut2D": true,
-          "BreakthroughSymbol2D": true,
-          "Swing2D": false,
-          "Glazing2D": false,
-          "Frame2D": false,
-          "Sill2D": false,
-          "Threshold2D": false,
-          "Leaf2D": false,
-          "OpeningLabel2D": true
+        "component_visibility": {
+          "ContourHatch2D": false
         },
+        "opening_visibility": {},
         "style_overrides": {},
         "contour_hatch": null
       },
@@ -1906,14 +2280,14 @@
         "preset": "entwurf-100",
         "component_visibility": {},
         "opening_visibility": {
-          "Swing2D": true,
           "OpeningLabel2D": true,
-          "Threshold2D": false,
-          "Glazing2D": false,
-          "Frame2D": true,
-          "HostCut2D": true,
           "Leaf2D": true,
-          "Sill2D": true
+          "Frame2D": true,
+          "Swing2D": true,
+          "HostCut2D": true,
+          "Sill2D": true,
+          "Threshold2D": false,
+          "Glazing2D": false
         },
         "style_overrides": {},
         "contour_hatch": null
@@ -1937,13 +2311,13 @@
         "preset": null,
         "component_visibility": {},
         "opening_visibility": {
-          "Swing2D": false,
-          "ElevationMuntins2D": true,
           "Leaf2D": false,
-          "ElevationContour2D": true,
+          "Swing2D": false,
+          "ElevationSill2D": true,
           "Frame2D": false,
+          "ElevationContour2D": true,
           "ElevationSwing2D": true,
-          "ElevationSill2D": true
+          "ElevationMuntins2D": true
         },
         "style_overrides": {},
         "contour_hatch": null
@@ -1958,26 +2332,21 @@
         "phase_filter": null,
         "detail": {
           "layers": "All",
-          "hatches": true,
+          "hatches": false,
           "annotation": true,
           "opening_symbols": true,
           "ceiling_view": false,
           "representation": "ThreeD"
         },
         "preset": null,
-        "component_visibility": {},
-        "opening_visibility": {
-          "Frame3D": true,
-          "Glazing2D": false,
-          "Threshold2D": false,
-          "OpeningLabel2D": false,
-          "Sill2D": false,
-          "Swing2D": false,
-          "Glazing3D": true,
-          "Frame2D": false,
-          "Leaf2D": false,
-          "Leaf3D": true
+        "component_visibility": {
+          "Contour2D": false,
+          "Axis": false,
+          "LayerHatch2D": false,
+          "ContourHatch2D": false,
+          "Layers2D": false
         },
+        "opening_visibility": {},
         "style_overrides": {},
         "contour_hatch": null
       },
@@ -2022,14 +2391,14 @@
         "preset": "entwurf-100",
         "component_visibility": {},
         "opening_visibility": {
-          "Leaf2D": true,
           "OpeningLabel2D": true,
-          "HostCut2D": true,
-          "Sill2D": true,
-          "Frame2D": true,
-          "Threshold2D": false,
           "Swing2D": true,
-          "Glazing2D": false
+          "Frame2D": true,
+          "HostCut2D": true,
+          "Glazing2D": false,
+          "Threshold2D": false,
+          "Sill2D": true,
+          "Leaf2D": true
         },
         "style_overrides": {},
         "contour_hatch": null
@@ -2053,14 +2422,14 @@
         "preset": "werkplan-50",
         "component_visibility": {},
         "opening_visibility": {
-          "Frame2D": true,
           "Glazing2D": true,
-          "Swing2D": true,
-          "Sill2D": true,
+          "OpeningLabel2D": true,
           "HostCut2D": true,
+          "Sill2D": true,
+          "Frame2D": true,
           "Threshold2D": true,
           "Leaf2D": true,
-          "OpeningLabel2D": true
+          "Swing2D": true
         },
         "style_overrides": {},
         "contour_hatch": null
@@ -2084,7 +2453,37 @@
         "preset": null,
         "component_visibility": {},
         "opening_visibility": {},
-        "style_overrides": {},
+        "style_overrides": {
+          "Standard": {
+            "layer_visibility": {
+              "36404cdc-8223-4faf-baed-9d27a960c0ba": {
+                "visible_2d": false,
+                "visible_3d": false
+              },
+              "0423abee-8f11-4dde-9511-21811f1dd531": {
+                "visible_2d": false,
+                "visible_3d": false
+              },
+              "c61f19c8-0ed8-4282-a7df-35ed3121fa3b": {
+                "visible_2d": false,
+                "visible_3d": false
+              }
+            },
+            "contour_layers": null,
+            "layer_props": {},
+            "contour_hatch": {
+              "line_type": null,
+              "line_color": null,
+              "hatch_pattern": "ANSI37",
+              "hatch_color": null,
+              "hatch_scale": 0.001,
+              "fill_color": null,
+              "hatch_angle": null,
+              "hatch_angle_relative": false,
+              "cad_layer": null
+            }
+          }
+        },
         "contour_hatch": null
       },
       {
@@ -2128,10 +2527,10 @@
         "preset": null,
         "component_visibility": {},
         "opening_visibility": {
-          "ElevationSwing2D": true,
-          "ElevationSill2D": true,
+          "ElevationMuntins2D": true,
           "ElevationContour2D": true,
-          "ElevationMuntins2D": true
+          "ElevationSwing2D": true,
+          "ElevationSill2D": true
         },
         "style_overrides": {},
         "contour_hatch": null

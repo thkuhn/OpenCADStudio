@@ -220,7 +220,14 @@ impl SectionCommand {
     }
 
     /// Commits the section cut and inserts both DIN 1356 annotations and the 2D View Carrier.
-    pub fn commit_section(&mut self, scene: &mut Scene, insertion_pt: Point2) -> Option<Handle> {
+    pub fn commit_section(
+        &mut self,
+        scene: &mut Scene,
+        insertion_pt: Point2,
+        display_config_library: &crate::modules::aec::engine::library::DisplayConfigLibrary,
+        style_library: &crate::modules::aec::engine::library::StyleLibrary,
+        active_name: Option<&str>,
+    ) -> Option<Handle> {
         let path = self.build_section_path()?;
 
         // 1. Build Viewpoint
@@ -267,49 +274,26 @@ impl SectionCommand {
         };
 
         // 3. Collect scene & derive 2D primitives
-        let dc_lib = crate::modules::aec::engine::project::resolve_display_config_library(None);
-        let style_lib = crate::modules::aec::engine::project::resolve_style_library(None);
-        let display_config = dc_lib
-            .configs
-            .iter()
-            .find(|c| c.id == model_view.profile_id.as_uuid())
-            .or_else(|| {
-                dc_lib
-                    .configs
-                    .iter()
-                    .find(|c| model_view.name.contains(&c.name))
-            })
-            .or_else(|| {
-                dc_lib
-                    .configs
-                    .iter()
-                    .find(|c| c.view_type == crate::modules::aec::engine::plan_view::ViewType::Section)
-            })
-            .cloned();
-
-        if let Some(ref dc) = display_config {
-            model_view.profile_id = ViewProfileId::from_uuid(dc.id);
-            if let Some(scale) = dc.scale {
-                if let Ok(sd) = ScaleDenominator::new(scale) {
-                    model_view.scale = sd;
-                }
-            }
-        }
+        let display_config = crate::modules::aec::engine::views::style_resolver::resolve_view_display_config(
+            display_config_library,
+            crate::modules::aec::engine::plan_view::ViewType::Section,
+            Some(model_view.profile_id.as_uuid()),
+            active_name,
+        );
+        model_view.profile_id = ViewProfileId::from_uuid(display_config.id);
 
         let collector = SceneGeometryCollector::collect_from_document(&scene.document, ModelId::new());
-        let mut primitives = derive_section_view(
+        let primitives = derive_section_view(
             &viewpoint,
             &model_view,
             &collector,
             &CutEngineOptions {
-                display_config,
-                style_library: Some(style_lib),
+                display_config: Some(display_config),
+                style_library: Some(style_library.clone()),
                 ..CutEngineOptions::default()
             },
         )
         .unwrap_or_default();
-
-        let _ = process_silhouette_and_depth(&mut primitives, &SilhouetteOptions::default());
 
         // 4. Create and sync DerivedViewCarrier in model space
         let mut carrier = create_view_carrier(
@@ -560,7 +544,14 @@ impl CadCommand for SectionCommand {
 }
 
 /// Dispatched non-interactive section creation handler.
-pub fn aec_section_do(scene: &mut Scene, command_line: &mut CommandLine, args: &str) -> Option<Handle> {
+pub fn aec_section_do(
+    scene: &mut Scene,
+    command_line: &mut CommandLine,
+    args: &str,
+    display_config_library: &crate::modules::aec::engine::library::DisplayConfigLibrary,
+    style_library: &crate::modules::aec::engine::library::StyleLibrary,
+    active_name: Option<&str>,
+) -> Option<Handle> {
     // Format: label|z_min|z_max|far_depth|flip_dir|ins_x,ins_y|pt0_x,pt0_y;pt1_x,pt1_y...|jog0,jog1...
     let mut parts = args.split('|');
     let label = parts.next()?.trim().to_string();
@@ -604,7 +595,13 @@ pub fn aec_section_do(scene: &mut Scene, command_line: &mut CommandLine, args: &
     cmd.points = points;
     cmd.is_jog_step = is_jog_step;
 
-    let handle = cmd.commit_section(scene, Point2::new(ins_x, ins_y))?;
+    let handle = cmd.commit_section(
+        scene,
+        Point2::new(ins_x, ins_y),
+        display_config_library,
+        style_library,
+        active_name,
+    )?;
     command_line.push_info(&format!("AEC: Schnitt '{}' an ({:.2}, {:.2}) erzeugt (Träger {}).", label, ins_x, ins_y, handle));
     Some(handle)
 }
@@ -628,7 +625,15 @@ mod tests {
         cmd.on_point(DVec3::new(10.0, 5.0, 0.0));
         assert_eq!(cmd.phase, SectionPhase::PlacementPoint);
 
-        let handle = cmd.commit_section(&mut scene, Point2::new(20.0, 0.0));
+        let display_config_library = crate::modules::aec::engine::library::DisplayConfigLibrary::seed_default_configs();
+        let style_library = crate::modules::aec::engine::library::StyleLibrary::default();
+        let handle = cmd.commit_section(
+            &mut scene,
+            Point2::new(20.0, 0.0),
+            &display_config_library,
+            &style_library,
+            Some("Architektur 1:50"),
+        );
         assert!(handle.is_some());
         let carrier_handle = handle.unwrap();
 

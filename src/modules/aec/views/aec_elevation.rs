@@ -153,7 +153,14 @@ impl ElevationCommand {
     }
 
     /// Commits the elevation and inserts the 2D View Carrier.
-    pub fn commit_elevation(&mut self, scene: &mut Scene, insertion_pt: Point2) -> Option<Handle> {
+    pub fn commit_elevation(
+        &mut self,
+        scene: &mut Scene,
+        insertion_pt: Point2,
+        display_config_library: &crate::modules::aec::engine::library::DisplayConfigLibrary,
+        style_library: &crate::modules::aec::engine::library::StyleLibrary,
+        active_name: Option<&str>,
+    ) -> Option<Handle> {
         let p1 = self.start_pt?;
         let p2 = self.end_pt?;
 
@@ -200,33 +207,26 @@ impl ElevationCommand {
             revisions: Default::default(),
         };
 
-        let style_lib = crate::modules::aec::engine::project::resolve_style_library(None);
-        let dc_lib = crate::modules::aec::engine::project::resolve_display_config_library(None);
-        let display_config = dc_lib.configs.iter().find(|c| c.view_type == crate::modules::aec::engine::plan_view::ViewType::Elevation).cloned();
-
-        if let Some(ref dc) = display_config {
-            model_view.profile_id = ViewProfileId::from_uuid(dc.id);
-            if let Some(scale) = dc.scale {
-                if let Ok(sd) = ScaleDenominator::new(scale) {
-                    model_view.scale = sd;
-                }
-            }
-        }
+        let display_config = crate::modules::aec::engine::views::style_resolver::resolve_view_display_config(
+            display_config_library,
+            crate::modules::aec::engine::plan_view::ViewType::Elevation,
+            Some(model_view.profile_id.as_uuid()),
+            active_name,
+        );
+        model_view.profile_id = ViewProfileId::from_uuid(display_config.id);
 
         let collector = SceneGeometryCollector::collect_from_document(&scene.document, ModelId::new());
-        let mut primitives = derive_elevation_view(
+        let primitives = derive_elevation_view(
             &viewpoint,
             &model_view,
             &collector,
             &ElevationEngineOptions {
-                display_config,
-                style_library: Some(style_lib),
+                display_config: Some(display_config),
+                style_library: Some(style_library.clone()),
                 ..ElevationEngineOptions::default()
             },
         )
         .unwrap_or_default();
-
-        let _ = process_silhouette_and_depth(&mut primitives, &SilhouetteOptions::default());
 
         let mut carrier = create_view_carrier(
             &mut scene.document,
@@ -421,7 +421,14 @@ impl CadCommand for ElevationCommand {
 }
 
 /// Dispatched non-interactive elevation creation handler.
-pub fn aec_elevation_do(scene: &mut Scene, command_line: &mut CommandLine, args: &str) -> Option<Handle> {
+pub fn aec_elevation_do(
+    scene: &mut Scene,
+    command_line: &mut CommandLine,
+    args: &str,
+    display_config_library: &crate::modules::aec::engine::library::DisplayConfigLibrary,
+    style_library: &crate::modules::aec::engine::library::StyleLibrary,
+    active_name: Option<&str>,
+) -> Option<Handle> {
     // Format: name|z_min|z_max|depth|flip_dir|ins_x,ins_y|start_x,start_y|end_x,end_y
     let mut parts = args.split('|');
     let name = parts.next()?.trim().to_string();
@@ -452,7 +459,13 @@ pub fn aec_elevation_do(scene: &mut Scene, command_line: &mut CommandLine, args:
     cmd.start_pt = Some(DVec3::new(start_x, start_y, 0.0));
     cmd.end_pt = Some(DVec3::new(end_x, end_y, 0.0));
 
-    let handle = cmd.commit_elevation(scene, Point2::new(ins_x, ins_y))?;
+    let handle = cmd.commit_elevation(
+        scene,
+        Point2::new(ins_x, ins_y),
+        display_config_library,
+        style_library,
+        active_name,
+    )?;
     command_line.push_info(&format!("AEC: Ansicht '{}' an ({:.2}, {:.2}) erzeugt (Träger {}).", name, ins_x, ins_y, handle));
     Some(handle)
 }
@@ -476,7 +489,15 @@ mod tests {
         cmd.on_point(DVec3::new(5.0, 5.0, 0.0));
         assert_eq!(cmd.phase, ElevationPhase::PlacementPoint);
 
-        let handle = cmd.commit_elevation(&mut scene, Point2::new(0.0, 20.0));
+        let display_config_library = crate::modules::aec::engine::library::DisplayConfigLibrary::seed_default_configs();
+        let style_library = crate::modules::aec::engine::library::StyleLibrary::default();
+        let handle = cmd.commit_elevation(
+            &mut scene,
+            Point2::new(0.0, 20.0),
+            &display_config_library,
+            &style_library,
+            Some("Ansicht Fassade"),
+        );
         assert!(handle.is_some());
         let carrier_handle = handle.unwrap();
 
