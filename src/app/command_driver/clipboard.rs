@@ -299,6 +299,7 @@ impl OpenCADStudio {
     ) -> std::collections::HashMap<Handle, Handle> {
         let deps = &self.clipboard_deps;
         let document = &mut self.tabs[i].scene.document;
+        let first_new_handle = document.next_handle();
         merge_app_ids(document, deps);
         let apps = eed_app_map(document, deps);
         let images = merge_image_definitions(document, deps);
@@ -306,6 +307,7 @@ impl OpenCADStudio {
         // rebuild instead of one per definition; same end state as the
         // per-definition bumps `Scene::define_block_raw` used to run.
         let (created, mleaders) = merge_blocks_and_mleader_styles(document, deps, &apps, &images);
+        ensure_pasted_image_reactors(&mut self.tabs[i].scene, &[], deps, first_new_handle);
         if created > 0 {
             self.tabs[i].scene.bump_geometry();
         }
@@ -327,7 +329,7 @@ impl OpenCADStudio {
         translate: Option<crate::command::EntityTransform>,
     ) -> Vec<Handle> {
         // Per-helper narrow/keep report (Task 4): the kernel ports what
-        // `&mut CadDocument` can do and this shell keeps the rest —
+        // `&mut Document` can do and this shell keeps the rest —
         //   merge_dependencies (table records) … KEEP in kernel (verbatim
         //     port; pure document-table work, no Document-level free fn existed)
         //   merge_clipboard_blocks / define_block_raw … KEEP in kernel minus
@@ -362,6 +364,7 @@ impl OpenCADStudio {
             }
             None => PasteSpace::Model,
         };
+        let first_new_handle = self.tabs[i].scene.document.next_handle();
         let (by_index, handle_map) = paste_entities_kernel(
             &mut self.tabs[i].scene.document,
             &clipboard,
@@ -369,6 +372,7 @@ impl OpenCADStudio {
             translate.as_ref(),
             space,
         );
+        ensure_pasted_image_reactors(&mut self.tabs[i].scene, &by_index, &deps, first_new_handle);
         // Batched equivalent of `add_entity`'s per-add bump (same pattern as
         // `Scene::add_entities`): fresh top-level solids tessellate once here
         // instead of once per entity. Block-definition merges (and pasted
@@ -490,7 +494,7 @@ impl OpenCADStudio {
 /// path) and `paste_entities_kernel` — one copy, not a port per caller.
 /// Returns the names of the dimension styles it added.
 pub(crate) fn merge_table_records(
-    doc: &mut codec::CadDocument,
+    doc: &mut codec::Document,
     deps: &crate::app::ClipboardDeps,
 ) -> Vec<String> {
     use codec::TableEntry;
@@ -609,7 +613,7 @@ pub(crate) fn remap_mleader(entity: &mut codec::EntityType, map: &std::collectio
 
 /// Merge named styles after blocks exist, keeping target definitions on a name conflict.
 fn merge_mleader_styles(
-    doc: &mut codec::CadDocument,
+    doc: &mut codec::Document,
     deps: &crate::app::ClipboardDeps,
 ) -> std::collections::HashMap<Handle, Handle> {
     use codec::objects::ObjectType;
@@ -684,8 +688,8 @@ fn dim_style_ref<T: codec::TableEntry>(
 /// same names (`refs` names each source handle). A record this drawing lacks
 /// is cleared, so the style falls back to the default instead of naming an
 /// object that is not there.
-fn repoint_dim_style(
-    doc: &codec::CadDocument,
+pub(crate) fn repoint_dim_style(
+    doc: &codec::Document,
     style: &mut codec::tables::DimStyle,
     refs: &rustc_hash::FxHashMap<Handle, String>,
 ) {
@@ -711,7 +715,7 @@ fn repoint_dim_style(
 /// the block merge has since recreated: the table merge ran first, while
 /// this drawing still lacked them.
 fn repoint_added_dim_style_blocks(
-    doc: &mut codec::CadDocument,
+    doc: &mut codec::Document,
     deps: &crate::app::ClipboardDeps,
     added: &[String],
 ) {
@@ -725,7 +729,7 @@ fn repoint_added_dim_style_blocks(
 }
 
 /// Register the copied XDATA's applications this drawing lacks.
-pub(crate) fn merge_app_ids(doc: &mut codec::CadDocument, deps: &crate::app::ClipboardDeps) {
+pub(crate) fn merge_app_ids(doc: &mut codec::Document, deps: &crate::app::ClipboardDeps) {
     for rec in &deps.app_ids {
         if !doc.app_ids.contains(&rec.name) {
             let mut r = rec.clone();
@@ -737,7 +741,7 @@ pub(crate) fn merge_app_ids(doc: &mut codec::CadDocument, deps: &crate::app::Cli
 
 /// The `ACAD_IMAGE_DICT` dictionary under the named-objects root, created
 /// when the drawing has none. `None` when the drawing has no root dictionary.
-fn ensure_image_dictionary(document: &mut codec::CadDocument) -> Option<Handle> {
+fn ensure_image_dictionary(document: &mut codec::Document) -> Option<Handle> {
     use codec::objects::{Dictionary, ObjectType};
     let root = document.header.named_objects_dict_handle;
     let Some(ObjectType::Dictionary(root_dictionary)) = document.objects.get(&root) else {
@@ -769,7 +773,7 @@ fn ensure_image_dictionary(document: &mut codec::CadDocument) -> Option<Handle> 
 /// which is to own the definition; `None` when the drawing has no root
 /// dictionary.
 pub(crate) fn register_image_definition(
-    document: &mut codec::CadDocument,
+    document: &mut codec::Document,
     definition: Handle,
     file_path: &str,
 ) -> Option<Handle> {
@@ -794,12 +798,46 @@ pub(crate) fn register_image_definition(
     Some(dictionary)
 }
 
+// The kernel has allocated the final entity handles. Register reactors in the
+// Scene shell so paste's existing undo scope captures objects and entity links.
+fn ensure_pasted_image_reactors(
+    scene: &mut crate::scene::Scene,
+    handles: &[Handle],
+    deps: &crate::app::ClipboardDeps,
+    first_new_handle: u64,
+) {
+    let mut images = handles.to_vec();
+    for block in &deps.blocks {
+        if let Some(record) = scene
+            .document
+            .block_records
+            .get(&block.name)
+            .filter(|record| record.handle.value() >= first_new_handle)
+        {
+            // Only newly imported members; existing definitions belong to the
+            // target drawing and COPY of an INSERT keeps their images intact.
+            images.extend(crate::scene::block_authoring::members(
+                &scene.document,
+                record.handle,
+            ));
+        }
+    }
+    for handle in images {
+        let Some(codec::EntityType::RasterImage(image)) = scene.document.get_entity(handle) else {
+            continue;
+        };
+        let mut entity = codec::EntityType::RasterImage(image.clone());
+        scene.ensure_image_definition(&mut entity);
+        *scene.document.get_entity_mut(handle).expect("pasted image") = entity;
+    }
+}
+
 /// Source image definition → this drawing's definition of the same file (one
 /// definition per file, as AutoCAD keeps it), recreated and registered in
 /// ACAD_IMAGE_DICT when the drawing has none. Pasting within the drawing
 /// finds the very same object.
 pub(crate) fn merge_image_definitions(
-    doc: &mut codec::CadDocument,
+    doc: &mut codec::Document,
     deps: &crate::app::ClipboardDeps,
 ) -> rustc_hash::FxHashMap<Handle, Handle> {
     use codec::objects::ObjectType;
@@ -888,7 +926,7 @@ fn remap_table_cell_blocks(
 /// Source APPID handle → this drawing's APPID of the same name, for the
 /// copied XDATA. Run after [`merge_app_ids`].
 pub(crate) fn eed_app_map(
-    doc: &codec::CadDocument,
+    doc: &codec::Document,
     deps: &crate::app::ClipboardDeps,
 ) -> rustc_hash::FxHashMap<u64, u64> {
     deps.app_ids
@@ -923,7 +961,7 @@ pub(crate) fn remap_eed_apps(entity: &mut codec::EntityType, apps: &rustc_hash::
 /// Returns how many blocks were added and the map the pasted multileaders are
 /// remapped with ([`remap_mleader`]).
 fn merge_blocks_and_mleader_styles(
-    doc: &mut codec::CadDocument,
+    doc: &mut codec::Document,
     deps: &crate::app::ClipboardDeps,
     apps: &rustc_hash::FxHashMap<u64, u64>,
     images: &rustc_hash::FxHashMap<Handle, Handle>,
@@ -954,7 +992,7 @@ fn merge_blocks_and_mleader_styles(
 /// `images` maps source image definitions to this drawing's (see
 /// [`merge_image_definitions`]), for raster images inside the blocks.
 pub(crate) fn merge_block_defs(
-    doc: &mut codec::CadDocument,
+    doc: &mut codec::Document,
     blocks: &[crate::app::BlockDef],
     apps: &rustc_hash::FxHashMap<u64, u64>,
     images: &rustc_hash::FxHashMap<Handle, Handle>,
@@ -990,7 +1028,7 @@ pub(crate) fn merge_block_defs(
 
 /// Source record → this drawing's record of the same name, per definition.
 pub(crate) fn block_record_map(
-    doc: &codec::CadDocument,
+    doc: &codec::Document,
     blocks: &[crate::app::BlockDef],
 ) -> std::collections::HashMap<Handle, Handle> {
     blocks
@@ -1003,7 +1041,7 @@ pub(crate) fn block_record_map(
 /// the record just defined from it here. `records` maps the source records
 /// the graph may name.
 pub(crate) fn import_block_def_graph(
-    doc: &mut codec::CadDocument,
+    doc: &mut codec::Document,
     def: &crate::app::BlockDef,
     records: &std::collections::HashMap<Handle, Handle>,
 ) {
@@ -1041,7 +1079,7 @@ pub(crate) enum PasteSpace<'a> {
 }
 
 pub(crate) fn paste_entities_kernel(
-    doc: &mut codec::CadDocument,
+    doc: &mut codec::Document,
     entities: &[codec::EntityType],
     deps: &crate::app::ClipboardDeps,
     translate: Option<&crate::command::EntityTransform>,
@@ -1168,20 +1206,20 @@ pub(crate) fn paste_entities_kernel(
     (by_index, handle_map)
 }
 
-/// Document-level clone-add: the `&mut CadDocument` half of
+/// Document-level clone-add: the `&mut Document` half of
 /// `Scene::add_entity_clone` — fresh inline sub-handles
 /// (`Scene::reset_clone_subhandles`), NULL top-level/owner handles, then
 /// adds it to `space`. Tessellation/render caching stays caller-side in the
 /// Scene shell.
 fn add_entity_clone_doc(
-    doc: &mut codec::CadDocument,
+    doc: &mut codec::Document,
     mut entity: codec::EntityType,
     space: PasteSpace,
 ) -> Handle {
     crate::scene::Scene::reset_clone_subhandles(doc, &mut entity);
     entity.common_mut().handle = Handle::NULL;
     entity.common_mut().owner_handle = Handle::NULL;
-    match space {
+    let handle = match space {
         PasteSpace::Model => doc.add_entity(entity),
         PasteSpace::Layout(layout) => doc.add_entity_to_layout(entity, layout),
         PasteSpace::Block(block) => {
@@ -1189,14 +1227,18 @@ fn add_entity_clone_doc(
             doc.add_entity(entity)
         }
     }
-    .unwrap_or(Handle::NULL)
+    .unwrap_or(Handle::NULL);
+    if !handle.is_null() {
+        crate::scene::Scene::adopt_attributes(doc, handle);
+    }
+    handle
 }
 
-/// Document-level verbatim block-definition recreate: the `&mut CadDocument`
+/// Document-level verbatim block-definition recreate: the `&mut Document`
 /// half of `Scene::define_block_raw` (no-op when the block exists). The
 /// trailing `bump_geometry` stays caller-side.
 pub(crate) fn define_block_raw_doc(
-    doc: &mut codec::CadDocument,
+    doc: &mut codec::Document,
     name: &str,
     base_point: codec::types::Vector3,
     entities: &[codec::EntityType],
@@ -1207,13 +1249,11 @@ pub(crate) fn define_block_raw_doc(
     let next = doc.next_handle();
     let br_handle = Handle::new(next);
     let block_handle = Handle::new(next + 1);
-    let end_handle = Handle::new(next + 2);
     let mut block_record = codec::tables::BlockRecord::new(name);
     block_record.flags.anonymous =
         name.starts_with('*') && !(block_record.is_model_space() || block_record.is_paper_space());
     block_record.handle = br_handle;
     block_record.block_entity_handle = block_handle;
-    block_record.block_end_handle = end_handle;
     if doc.block_records.add(block_record).is_err() {
         return;
     }
@@ -1221,19 +1261,26 @@ pub(crate) fn define_block_raw_doc(
     block.common.handle = block_handle;
     block.common.owner_handle = br_handle;
     let _ = doc.add_entity(codec::EntityType::Block(block));
-    let mut block_end = codec::entities::BlockEnd::new();
-    block_end.common.handle = end_handle;
-    block_end.common.owner_handle = br_handle;
-    let _ = doc.add_entity(codec::EntityType::BlockEnd(block_end));
     for mut entity in entities.iter().cloned() {
         add_entity_clone_doc_inner(doc, &mut entity, br_handle);
         let _ = doc.add_entity(entity);
     }
+    // The terminator is allocated after the body so handle order matches
+    // record order inside the definition.
+    let end_handle = doc.allocate_handle();
+    let mut block_end = codec::entities::BlockEnd::new();
+    block_end.common.handle = end_handle;
+    block_end.common.owner_handle = br_handle;
+    let _ = doc.add_entity(codec::EntityType::BlockEnd(block_end));
+    if let Some(record) = doc.block_records.get_mut(name) {
+        record.block_end_handle = end_handle;
+    }
+    crate::scene::Scene::sync_attribute_flag(doc, name);
 }
 
 /// Shared sub-handle reset + owner stamp for block-definition members.
 fn add_entity_clone_doc_inner(
-    doc: &mut codec::CadDocument,
+    doc: &mut codec::Document,
     entity: &mut codec::EntityType,
     owner: Handle,
 ) {
@@ -1247,12 +1294,12 @@ fn add_entity_clone_doc_inner(
     entity.common_mut().xdictionary_handle = None;
 }
 
-/// Document-level fresh `*D<n>` block from `subs`: the `&mut CadDocument`
+/// Document-level fresh `*D<n>` block from `subs`: the `&mut Document`
 /// half of `Scene::define_transformed_block` (which has no render-cache tail,
 /// so this is a verbatim port). Returns the new block name, or `None` when
 /// `subs` is empty.
 fn define_transformed_block_doc(
-    doc: &mut codec::CadDocument,
+    doc: &mut codec::Document,
     subs: &[codec::EntityType],
     t: &crate::command::EntityTransform,
 ) -> Option<String> {
@@ -1270,11 +1317,9 @@ fn define_transformed_block_doc(
     let next = doc.next_handle();
     let br_handle = Handle::new(next);
     let block_handle = Handle::new(next + 1);
-    let end_handle = Handle::new(next + 2);
     let mut br = codec::tables::BlockRecord::new(&new_name);
     br.handle = br_handle;
     br.block_entity_handle = block_handle;
-    br.block_end_handle = end_handle;
     // See `Scene::define_transformed_block`.
     br.flags.anonymous = true;
     doc.block_records.add(br).ok()?;
@@ -1282,16 +1327,20 @@ fn define_transformed_block_doc(
     block.common.handle = block_handle;
     block.common.owner_handle = br_handle;
     doc.add_entity(codec::EntityType::Block(block)).ok()?;
-    let mut block_end = codec::entities::BlockEnd::new();
-    block_end.common.handle = end_handle;
-    block_end.common.owner_handle = br_handle;
-    doc.add_entity(codec::EntityType::BlockEnd(block_end))
-        .ok()?;
     for sub in subs {
         let mut sub = sub.clone();
         crate::scene::view::dispatch::apply_transform(&mut sub, t);
         add_entity_clone_doc_inner(doc, &mut sub, br_handle);
         let _ = doc.add_entity(sub);
+    }
+    let end_handle = doc.allocate_handle();
+    let mut block_end = codec::entities::BlockEnd::new();
+    block_end.common.handle = end_handle;
+    block_end.common.owner_handle = br_handle;
+    doc.add_entity(codec::EntityType::BlockEnd(block_end))
+        .ok()?;
+    if let Some(record) = doc.block_records.get_mut(&new_name) {
+        record.block_end_handle = end_handle;
     }
     Some(new_name)
 }
@@ -1302,7 +1351,7 @@ fn define_transformed_block_doc(
 /// storage (`clipboard`, `clipboard_base`, `clipboard_deps`) and the echo stay
 /// caller-side in `copy_entities_to_clipboard` / `handle_copy_to_clipboard`.
 pub(crate) fn copy_to_clipboard_kernel(
-    doc: &codec::CadDocument,
+    doc: &codec::Document,
     handles: &[Handle],
 ) -> (Vec<codec::EntityType>, crate::app::ClipboardDeps) {
     let entities: Vec<_> = handles
@@ -1314,7 +1363,7 @@ pub(crate) fn copy_to_clipboard_kernel(
 }
 
 fn recreate_ext_subtree(
-    doc: &mut codec::CadDocument,
+    doc: &mut codec::Document,
     cap: &crate::app::ClipExtObjects,
     entity_handle: Option<Handle>,
     records: &std::collections::HashMap<Handle, Handle>,
@@ -1351,7 +1400,7 @@ fn recreate_ext_subtree(
 /// Replace references to a clipboard entity inside one recreated extension
 /// dictionary graph after its final block-owned handle becomes known.
 pub(crate) fn remap_ext_subtree_reference(
-    doc: &mut codec::CadDocument,
+    doc: &mut codec::Document,
     root: Handle,
     source_entity: Handle,
     target_entity: Handle,
@@ -1549,7 +1598,7 @@ mod clipboard_xdict_clone_tests {
     /// A dictionary root pointing at one XRecord leaf that references the
     /// source entity — the minimal shape of a captured XCLIP filter graph.
     fn xdict_capture_fixture() -> crate::app::ClipExtObjects {
-        let mut src = codec::CadDocument::new();
+        let mut src = codec::Document::new();
         let src_entity = src.allocate_handle();
         let src_root = src.allocate_handle();
         let src_leaf = src.allocate_handle();
@@ -1579,7 +1628,7 @@ mod clipboard_xdict_clone_tests {
         }
     }
 
-    fn leaf_of(doc: &codec::CadDocument, root: Handle) -> Handle {
+    fn leaf_of(doc: &codec::Document, root: Handle) -> Handle {
         match doc.objects.get(&root) {
             Some(ObjectType::Dictionary(d)) => {
                 assert_eq!(d.entries.len(), 1);
@@ -1594,7 +1643,7 @@ mod clipboard_xdict_clone_tests {
     #[test]
     fn cross_drawing_clone_remaps_xdict_handles() {
         let cap = xdict_capture_fixture();
-        let mut dst = codec::CadDocument::new();
+        let mut dst = codec::Document::new();
         let before: Vec<Handle> = dst.objects.keys().copied().collect();
         let dst_entity = dst.allocate_handle();
 
@@ -1627,12 +1676,46 @@ mod clipboard_xdict_clone_tests {
         }
     }
 
+    #[test]
+    fn a_pasted_block_definition_ends_after_its_body() {
+        let mut doc = codec::Document::new();
+        let line = codec::entities::Line::from_points(
+            codec::types::Vector3::ZERO,
+            codec::types::Vector3::new(1.0, 0.0, 0.0),
+        );
+        super::define_block_raw_doc(
+            &mut doc,
+            "PASTED_IN",
+            codec::types::Vector3::ZERO,
+            &[codec::EntityType::Line(line)],
+        );
+        let record = doc
+            .block_records
+            .get("PASTED_IN")
+            .expect("the record is added");
+        let marker = record.block_entity_handle.value();
+        let end = record.block_end_handle.value();
+        let body: Vec<_> = record
+            .entity_handles
+            .iter()
+            .map(|handle| handle.value())
+            .collect();
+        assert!(
+            body.iter().all(|handle| *handle > marker),
+            "body handles follow the BLOCK marker: {body:?}"
+        );
+        assert!(
+            end > *body.iter().max().expect("the body is not empty"),
+            "the ENDBLK handle follows the body: marker {marker}, body {body:?}, end {end}"
+        );
+    }
+
     /// PASTEBLOCK-style two-phase clone: recreate without a host entity, then
     /// re-point the subtree at the final block-owned handle.
     #[test]
     fn cross_drawing_clone_two_phase_remap_resolves_reference() {
         let cap = xdict_capture_fixture();
-        let mut dst = codec::CadDocument::new();
+        let mut dst = codec::Document::new();
         let before_len = dst.objects.len();
 
         let root = recreate_ext_subtree(&mut dst, &cap, None, &Default::default())
@@ -1663,7 +1746,7 @@ mod clipboard_xdict_clone_tests {
     #[test]
     fn remap_object_rewrites_dictionary_handles() {
         use std::collections::HashMap;
-        let mut scratch = codec::CadDocument::new();
+        let mut scratch = codec::Document::new();
         let old_self = scratch.allocate_handle();
         let old_owner = scratch.allocate_handle();
         let old_child = scratch.allocate_handle();
@@ -1701,7 +1784,7 @@ mod copy_to_clipboard_kernel_tests {
 
     #[test]
     fn clones_entities_and_captures_layer_deps() {
-        let mut doc = codec::CadDocument::new();
+        let mut doc = codec::Document::new();
         doc.layers
             .add(codec::tables::Layer::new("WALLS"))
             .expect("add layer");
@@ -1720,7 +1803,7 @@ mod copy_to_clipboard_kernel_tests {
 
     #[test]
     fn skips_handles_missing_from_the_document() {
-        let mut doc = codec::CadDocument::new();
+        let mut doc = codec::Document::new();
         let kept = doc.add_entity(line_on("0")).unwrap();
         let missing = doc.allocate_handle();
 
@@ -1732,7 +1815,7 @@ mod copy_to_clipboard_kernel_tests {
 
     #[test]
     fn empty_selection_yields_empty_payload() {
-        let doc = codec::CadDocument::new();
+        let doc = codec::Document::new();
 
         let (entities, deps) = copy_to_clipboard_kernel(&doc, &[]);
 
@@ -1758,7 +1841,7 @@ mod paste_entities_kernel_tests {
 
     #[test]
     fn pastes_with_fresh_handles_and_translate() {
-        let mut seed = codec::CadDocument::new();
+        let mut seed = codec::Document::new();
         seed.layers
             .add(codec::tables::Layer::new("WALLS"))
             .expect("add layer");
@@ -1771,7 +1854,7 @@ mod paste_entities_kernel_tests {
         let seed_handle = seed.add_entity(codec::EntityType::Line(seed_line)).unwrap();
         let (entities, deps) = copy_to_clipboard_kernel(&seed, &[seed_handle]);
 
-        let mut dst = codec::CadDocument::new();
+        let mut dst = codec::Document::new();
         let delta = glam::DVec3::new(5.0, 7.0, 0.0);
         let translate = crate::command::EntityTransform::Translate(delta);
         let (handles, handle_map) = paste_entities_kernel(
@@ -1813,7 +1896,7 @@ mod paste_entities_kernel_tests {
             LineTypeComplexContent, LineTypeComplexData, LineTypeElement,
         };
         // A shape-file style has no name; a linetype segment names it by handle.
-        let mut seed = codec::CadDocument::new();
+        let mut seed = codec::Document::new();
         let mut shapes = codec::tables::TextStyle::new("");
         shapes.handle = seed.allocate_handle();
         shapes.is_shape_file = true;
@@ -1836,7 +1919,7 @@ mod paste_entities_kernel_tests {
         let source = seed.add_entity(codec::EntityType::Line(line)).unwrap();
         let (entities, deps) = copy_to_clipboard_kernel(&seed, &[source]);
 
-        let segment_style = |doc: &codec::CadDocument| {
+        let segment_style = |doc: &codec::Document| {
             doc.line_types
                 .get("BATTING")
                 .expect("pasted linetype")
@@ -1846,7 +1929,7 @@ mod paste_entities_kernel_tests {
                 .expect("shape segment")
                 .style_handle
         };
-        let shape_styles = |doc: &codec::CadDocument| {
+        let shape_styles = |doc: &codec::Document| {
             doc.text_styles
                 .iter()
                 .filter(|s| s.is_shape_file && s.font_file == "ltypeshp.shx")
@@ -1854,7 +1937,7 @@ mod paste_entities_kernel_tests {
                 .collect::<Vec<_>>()
         };
 
-        let mut dst = codec::CadDocument::new();
+        let mut dst = codec::Document::new();
         paste_entities_kernel(
             &mut dst,
             &entities,
@@ -1882,7 +1965,7 @@ mod paste_entities_kernel_tests {
     #[test]
     fn pasted_image_points_at_the_targets_definition() {
         use codec::objects::{ImageDefinition, ImageDefinitionReactor, ObjectType};
-        let mut seed = codec::CadDocument::new();
+        let mut seed = codec::Document::new();
         let definition = seed.allocate_handle();
         let mut image_definition = ImageDefinition::with_dimensions("fx.bmp", 8, 8);
         image_definition.handle = definition;
@@ -1905,11 +1988,11 @@ mod paste_entities_kernel_tests {
         }
         let (entities, deps) = copy_to_clipboard_kernel(&seed, &[source]);
 
-        let pasted_image = |doc: &codec::CadDocument, handle: Handle| match doc.get_entity(handle) {
+        let pasted_image = |doc: &codec::Document, handle: Handle| match doc.get_entity(handle) {
             Some(codec::EntityType::RasterImage(image)) => image.clone(),
             other => panic!("expected pasted RasterImage, got {other:?}"),
         };
-        let definitions = |doc: &codec::CadDocument| {
+        let definitions = |doc: &codec::Document| {
             doc.objects
                 .iter()
                 .filter(
@@ -1919,7 +2002,7 @@ mod paste_entities_kernel_tests {
                 .collect::<Vec<_>>()
         };
 
-        let mut dst = codec::CadDocument::new();
+        let mut dst = codec::Document::new();
         let (handles, _) = paste_entities_kernel(
             &mut dst,
             &entities,
@@ -1974,10 +2057,129 @@ mod paste_entities_kernel_tests {
         );
     }
 
+    fn assert_pasted_image_reactor(doc: &codec::Document, handle: Handle) -> (Handle, Handle) {
+        use codec::objects::ObjectType;
+        let Some(codec::EntityType::RasterImage(image)) = doc.get_entity(handle) else {
+            panic!("missing pasted image");
+        };
+        let definition = image.definition_handle.expect("image definition link");
+        let reactor = image.definition_reactor_handle.expect("image reactor link");
+        let Some(ObjectType::ImageDefinitionReactor(object)) = doc.objects.get(&reactor) else {
+            panic!("missing image reactor");
+        };
+        assert_eq!(object.handle, reactor);
+        assert_eq!(object.owner, handle);
+        assert_eq!(object.image_handle, handle);
+        let Some(ObjectType::ImageDefinition(def)) = doc.objects.get(&definition) else {
+            panic!("missing image definition");
+        };
+        assert_eq!(def.reactors.iter().filter(|h| **h == reactor).count(), 1);
+        let root = doc.header.named_objects_dict_handle;
+        let Some(ObjectType::Dictionary(root)) = doc.objects.get(&root) else {
+            panic!("missing named object dictionary");
+        };
+        let dictionary = root.get("ACAD_IMAGE_DICT").expect("image dictionary entry");
+        let Some(ObjectType::Dictionary(entries)) = doc.objects.get(&dictionary) else {
+            panic!("missing image dictionary");
+        };
+        assert_eq!(entries.owner, doc.header.named_objects_dict_handle);
+        assert_eq!(entries.get("fx"), Some(definition));
+        assert_eq!(def.owner, dictionary);
+        assert_eq!(def.reactors.iter().filter(|h| **h == dictionary).count(), 1);
+        (definition, reactor)
+    }
+
+    fn check_pasted_image_owns_reactor(cross_drawing: bool) {
+        let mut app = crate::app::OpenCADStudio::new_for_test();
+        app.tabs
+            .push(crate::app::document::DocumentTab::new_drawing(99));
+        let source_tab = app.tabs.len() - 1;
+        let source = app.tabs[source_tab]
+            .scene
+            .add_entity(codec::EntityType::RasterImage(
+                codec::entities::RasterImage::new("fx.bmp", codec::types::Vector3::ZERO, 8.0, 8.0),
+            ));
+        let (source_definition, source_reactor) =
+            assert_pasted_image_reactor(&app.tabs[source_tab].scene.document, source);
+        let (entities, deps) =
+            copy_to_clipboard_kernel(&app.tabs[source_tab].scene.document, &[source]);
+        app.clipboard = entities;
+        app.clipboard_deps = deps;
+        let target = if cross_drawing {
+            app.tabs
+                .push(crate::app::document::DocumentTab::new_drawing(100));
+            let target = app.tabs.len() - 1;
+            // Handles are document-local; separate their numeric ranges so a
+            // reused source reactor link cannot accidentally pass this test.
+            while app.tabs[target].scene.document.next_handle() <= source_reactor.value() {
+                app.tabs[target].scene.document.allocate_handle();
+            }
+            target
+        } else {
+            source_tab
+        };
+        app.active_tab = target;
+        app.push_undo_snapshot(target, "PASTECLIP");
+        let handles = app.finalize_paste(
+            target,
+            Some(crate::command::EntityTransform::Translate(
+                glam::DVec3::new(50.0, 0.0, 0.0),
+            )),
+        );
+        assert_eq!(handles.len(), 1);
+        let pasted = handles[0];
+        let (definition, reactor) =
+            assert_pasted_image_reactor(&app.tabs[target].scene.document, pasted);
+        assert_ne!(reactor, source_reactor);
+        if !cross_drawing {
+            assert_ne!(pasted, source);
+            assert_eq!(definition, source_definition);
+        }
+        assert_eq!(
+            assert_pasted_image_reactor(&app.tabs[source_tab].scene.document, source),
+            (source_definition, source_reactor),
+        );
+
+        app.undo_active_tab();
+        assert!(app.tabs[target].scene.document.get_entity(pasted).is_none());
+        assert!(!app.tabs[target]
+            .scene
+            .document
+            .objects
+            .contains_key(&reactor));
+        if cross_drawing {
+            assert!(!app.tabs[target]
+                .scene
+                .document
+                .objects
+                .contains_key(&definition));
+        } else {
+            assert_eq!(
+                assert_pasted_image_reactor(&app.tabs[target].scene.document, source),
+                (source_definition, source_reactor),
+            );
+        }
+        app.redo_active_tab();
+        assert_eq!(
+            assert_pasted_image_reactor(&app.tabs[target].scene.document, pasted),
+            (definition, reactor),
+        );
+    }
+
+    #[test]
+    fn pasted_image_owns_reactor_in_same_drawing() {
+        check_pasted_image_owns_reactor(false);
+    }
+
+    #[test]
+    fn pasted_image_owns_reactor_in_another_drawing() {
+        check_pasted_image_owns_reactor(true);
+    }
+
     #[test]
     fn pasted_table_roundtrip_record_brings_its_table_content() {
         use codec::objects::{Dictionary, ObjectType, XRecord, XRecordEntry};
-        let mut seed = codec::CadDocument::new();
+        let mut seed = codec::Document::new();
         let table = seed
             .add_entity(codec::EntityType::Table(Box::new(
                 codec::entities::Table::new(codec::types::Vector3::ZERO, 2, 2),
@@ -2015,7 +2217,7 @@ mod paste_entities_kernel_tests {
         }
         let (entities, deps) = copy_to_clipboard_kernel(&seed, &[table]);
 
-        let mut dst = codec::CadDocument::new();
+        let mut dst = codec::Document::new();
         let (handles, _) = paste_entities_kernel(
             &mut dst,
             &entities,
@@ -2073,7 +2275,7 @@ mod paste_entities_kernel_tests {
             BlockAttribute, LeaderLine, MultiLeader, MultiLeaderArrowheadOverride,
         };
         use codec::objects::{MultiLeaderStyle, ObjectType};
-        let mut seed = codec::CadDocument::new();
+        let mut seed = codec::Document::new();
         let mut text = codec::tables::TextStyle::new("T1");
         text.handle = seed.allocate_handle();
         let text_handle = text.handle;
@@ -2141,7 +2343,7 @@ mod paste_entities_kernel_tests {
             )))
             .unwrap();
         let (entities, deps) = copy_to_clipboard_kernel(&seed, &[source, insert]);
-        let mut dst = codec::CadDocument::new();
+        let mut dst = codec::Document::new();
         for _ in 0..50 {
             dst.allocate_handle();
         }
@@ -2237,7 +2439,7 @@ mod paste_entities_kernel_tests {
     #[test]
     fn pasted_dim_style_points_at_the_targets_records() {
         use codec::TableEntry;
-        let mut seed = codec::CadDocument::new();
+        let mut seed = codec::Document::new();
         let mut text_style = codec::tables::TextStyle::new("DIMTXT");
         text_style.set_handle(seed.allocate_handle());
         let text_style = {
@@ -2278,7 +2480,7 @@ mod paste_entities_kernel_tests {
         let (entities, deps) = copy_to_clipboard_kernel(&seed, &[dim]);
 
         // The target's handles run differently from the source's.
-        let mut dst = codec::CadDocument::new();
+        let mut dst = codec::Document::new();
         for _ in 0..50 {
             dst.allocate_handle();
         }
@@ -2319,7 +2521,7 @@ mod paste_entities_kernel_tests {
     fn pasted_table_block_cell_points_at_the_targets_block() {
         use codec::objects::ObjectType;
         let circle = codec::EntityType::Circle(codec::entities::Circle::new());
-        let mut seed = codec::CadDocument::new();
+        let mut seed = codec::Document::new();
         define_block_raw_doc(
             &mut seed,
             "CELLBLK",
@@ -2335,7 +2537,7 @@ mod paste_entities_kernel_tests {
         let (entities, deps) = copy_to_clipboard_kernel(&seed, &[table]);
 
         // The target already uses the source block's handle for something else.
-        let mut dst = codec::CadDocument::new();
+        let mut dst = codec::Document::new();
         define_block_raw_doc(&mut dst, "OTHER", codec::types::Vector3::ZERO, &[circle]);
         let (handles, _) = paste_entities_kernel(
             &mut dst,
@@ -2374,7 +2576,7 @@ mod paste_entities_kernel_tests {
     fn pasted_block_repoints_its_tables_and_images() {
         use codec::objects::{ImageDefinition, ObjectType};
         let circle = codec::EntityType::Circle(codec::entities::Circle::new());
-        let mut seed = codec::CadDocument::new();
+        let mut seed = codec::Document::new();
         define_block_raw_doc(
             &mut seed,
             "CELLBLK",
@@ -2413,7 +2615,7 @@ mod paste_entities_kernel_tests {
 
         // The target's handles run ahead of the source's, so a kept source
         // handle names something else (or nothing) there.
-        let mut dst = codec::CadDocument::new();
+        let mut dst = codec::Document::new();
         for _ in 0..64 {
             dst.allocate_handle();
         }
@@ -2469,7 +2671,7 @@ mod paste_entities_kernel_tests {
 
     #[test]
     fn remaps_leader_annotation_link_to_pasted_handles() {
-        let mut seed = codec::CadDocument::new();
+        let mut seed = codec::Document::new();
         let note = seed
             .add_entity(codec::EntityType::MText(Box::new(codec::entities::MText::new())))
             .unwrap();
@@ -2478,7 +2680,7 @@ mod paste_entities_kernel_tests {
         let leader_handle = seed.add_entity(codec::EntityType::Leader(leader)).unwrap();
         let (entities, deps) = copy_to_clipboard_kernel(&seed, &[leader_handle, note]);
 
-        let mut dst = codec::CadDocument::new();
+        let mut dst = codec::Document::new();
         let (handles, _) = paste_entities_kernel(
             &mut dst,
             &entities,
@@ -2503,7 +2705,7 @@ mod paste_entities_kernel_tests {
         // Minimal XCLIP-shaped capture: a dictionary root over one XRecord leaf
         // that references the source entity (mirrors clipboard_xdict_clone_tests).
         use codec::objects::{Dictionary, ObjectType, XRecord, XRecordEntry, XRecordValue};
-        let mut seed = codec::CadDocument::new();
+        let mut seed = codec::Document::new();
         let seed_entity = seed.add_entity(line_on("0")).unwrap();
         let src_root = seed.allocate_handle();
         let src_leaf = seed.allocate_handle();
@@ -2524,7 +2726,7 @@ mod paste_entities_kernel_tests {
         let (entities, deps) = copy_to_clipboard_kernel(&seed, &[seed_entity]);
         assert_eq!(deps.ext_objects.len(), 1, "capture must snapshot the xdict");
 
-        let mut dst = codec::CadDocument::new();
+        let mut dst = codec::Document::new();
         let before: Vec<Handle> = dst.objects.keys().copied().collect();
         let (handles, _) = paste_entities_kernel(
             &mut dst,
@@ -2567,7 +2769,7 @@ mod paste_entities_kernel_tests {
 mod headless_reuse_proof_tests {
     // Task 5 reuse proof — headless only. This module constructs NO
     // `OpenCADStudio` value and touches no UI/scene state: only
-    // `codec::CadDocument`, entities, and the shared kernels
+    // `codec::Document`, entities, and the shared kernels
     // (`copy_to_clipboard_kernel`, `paste_entities_kernel`,
     // `match_layer_kernel`, `match_properties_kernel` + `MatchOpts`).
     use super::{copy_to_clipboard_kernel, paste_entities_kernel};
@@ -2576,7 +2778,7 @@ mod headless_reuse_proof_tests {
     #[test]
     fn headless_copy_paste_then_match_kernels_share_one_path() {
         // Phase 1: copy in doc A, paste into doc B with a translate.
-        let mut doc_a = codec::CadDocument::new();
+        let mut doc_a = codec::Document::new();
         doc_a
             .layers
             .add(codec::tables::Layer::new("WALLS"))
@@ -2594,7 +2796,7 @@ mod headless_reuse_proof_tests {
         assert_eq!(entities.len(), 1);
         assert_eq!(entities[0].common().layer, "WALLS");
 
-        let mut doc_b = codec::CadDocument::new();
+        let mut doc_b = codec::Document::new();
         let translate = crate::command::EntityTransform::Translate(glam::DVec3::new(5.0, 7.0, 0.0));
         let (handles, handle_map) = paste_entities_kernel(
             &mut doc_b,
@@ -2656,7 +2858,7 @@ mod headless_reuse_proof_tests {
     }
     #[test]
     fn paste_owner_override_routes_entity_into_block_record() {
-        let mut source = codec::CadDocument::new();
+        let mut source = codec::Document::new();
 
         let line = codec::entities::Line::from_points(
             codec::types::Vector3::new(0.0, 0.0, 0.0),
@@ -2668,7 +2870,7 @@ mod headless_reuse_proof_tests {
 
         let (entities, deps) = copy_to_clipboard_kernel(&source, &[source_handle]);
 
-        let mut target = codec::CadDocument::new();
+        let mut target = codec::Document::new();
 
         let block_handle = target.allocate_handle();
         let mut block = codec::tables::BlockRecord::new("BEDIT_TARGET");
@@ -2715,7 +2917,7 @@ mod define_transformed_block_doc_xdict_tests {
     use super::define_transformed_block_doc;
 
     /// No extension dictionary may be referenced by more than one entity.
-    fn assert_no_shared_xdicts(doc: &codec::CadDocument) {
+    fn assert_no_shared_xdicts(doc: &codec::Document) {
         use std::collections::HashMap;
         let mut owners: HashMap<codec::Handle, usize> = HashMap::new();
         for entity in doc.entities() {
@@ -2739,7 +2941,7 @@ mod define_transformed_block_doc_xdict_tests {
 
     #[test]
     fn clone_block_is_flagged_anonymous() {
-        let mut doc = codec::CadDocument::new();
+        let mut doc = codec::Document::new();
         let line = doc
             .add_entity(codec::EntityType::Line(codec::entities::Line::new()))
             .unwrap();
@@ -2760,7 +2962,7 @@ mod define_transformed_block_doc_xdict_tests {
     /// that handle would dangle into the source document.
     #[test]
     fn cloned_subs_do_not_share_source_xdict() {
-        let mut doc = codec::CadDocument::new();
+        let mut doc = codec::Document::new();
 
         let dict_handle = doc.allocate_handle();
         let mut dict = codec::objects::Dictionary::new();
@@ -2813,8 +3015,8 @@ mod define_transformed_block_doc_xdict_tests {
 mod define_block_raw_doc_anonymous_tests {
     use super::define_block_raw_doc;
 
-    fn defined(name: &str) -> codec::CadDocument {
-        let mut doc = codec::CadDocument::new();
+    fn defined(name: &str) -> codec::Document {
+        let mut doc = codec::Document::new();
         define_block_raw_doc(&mut doc, name, codec::types::Vector3::ZERO, &[]);
         doc
     }
@@ -2860,7 +3062,7 @@ mod paste_viewport_clip_tests {
     use super::{copy_to_clipboard_kernel, paste_entities_kernel};
     use codec::Handle;
 
-    fn clipped_viewport(doc: &mut codec::CadDocument) -> (Handle, Handle) {
+    fn clipped_viewport(doc: &mut codec::Document) -> (Handle, Handle) {
         let mut boundary = codec::entities::LwPolyline::new();
         boundary.add_point(codec::types::Vector2::new(0.0, 0.0));
         boundary.add_point(codec::types::Vector2::new(10.0, 0.0));
@@ -2878,9 +3080,9 @@ mod paste_viewport_clip_tests {
         (viewport, boundary)
     }
 
-    fn paste(seed: &codec::CadDocument, handles: &[Handle]) -> (codec::CadDocument, Vec<Handle>) {
+    fn paste(seed: &codec::Document, handles: &[Handle]) -> (codec::Document, Vec<Handle>) {
         let (entities, deps) = copy_to_clipboard_kernel(seed, handles);
-        let mut dst = codec::CadDocument::new();
+        let mut dst = codec::Document::new();
         let translate =
             crate::command::EntityTransform::Translate(glam::DVec3::new(100.0, 0.0, 0.0));
         let (pasted, _) = paste_entities_kernel(
@@ -2893,7 +3095,7 @@ mod paste_viewport_clip_tests {
         (dst, pasted)
     }
 
-    fn viewport_in(doc: &codec::CadDocument, handles: &[Handle]) -> codec::entities::Viewport {
+    fn viewport_in(doc: &codec::Document, handles: &[Handle]) -> codec::entities::Viewport {
         handles
             .iter()
             .find_map(|&h| match doc.get_entity(h) {
@@ -2905,7 +3107,7 @@ mod paste_viewport_clip_tests {
 
     #[test]
     fn pasted_viewport_is_clipped_by_the_pasted_boundary() {
-        let mut seed = codec::CadDocument::new();
+        let mut seed = codec::Document::new();
         let (viewport, boundary) = clipped_viewport(&mut seed);
         let (dst, pasted) = paste(&seed, &[viewport, boundary]);
         let copy = viewport_in(&dst, &pasted);
@@ -2920,7 +3122,7 @@ mod paste_viewport_clip_tests {
 
     #[test]
     fn pasted_viewport_without_its_boundary_is_not_clipped() {
-        let mut seed = codec::CadDocument::new();
+        let mut seed = codec::Document::new();
         let (viewport, _) = clipped_viewport(&mut seed);
         let (dst, pasted) = paste(&seed, &[viewport]);
         let copy = viewport_in(&dst, &pasted);

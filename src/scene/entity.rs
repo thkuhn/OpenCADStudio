@@ -297,6 +297,130 @@ impl Scene {
         handles
     }
 
+    /// Give a reference that arrived without attributes the ones its definition
+    /// declares. The routes that ask the operator for values build their own
+    /// list and keep it; an array copy or a scripted add commits the bare
+    /// reference, so the declaration is filled in here rather than by every
+    /// builder that could place one.
+    fn instantiate_attributes(document: &mut codec::Document, insert_handle: Handle) {
+        let Some(EntityType::Insert(insert)) = document.get_entity(insert_handle) else {
+            return;
+        };
+        if !insert.attributes.is_empty() {
+            return;
+        }
+        let name = insert.block_name.clone();
+        let base = crate::scene::render_graph::block_base_point(document, &name);
+        let place = crate::scene::render_graph::insert_transform_with_base(insert, base);
+        let definitions: Vec<codec::entities::AttributeDefinition> = document
+            .entities_in_block(&name)
+            .filter_map(|entity| match entity {
+                EntityType::AttributeDefinition(definition) => Some(definition.clone()),
+                _ => None,
+            })
+            .collect();
+        if definitions.is_empty() {
+            return;
+        }
+        Self::sync_attribute_flag(document, &name);
+        let attributes: Vec<codec::entities::AttributeEntity> = definitions
+            .iter()
+            .map(|definition| {
+                let mut attribute =
+                    codec::entities::AttributeEntity::from_definition(definition, None);
+                codec::Entity::apply_transform(&mut attribute, &place);
+                attribute
+            })
+            .collect();
+        let Some(EntityType::Insert(insert)) = document.get_entity_mut(insert_handle) else {
+            return;
+        };
+        insert.attributes = attributes;
+    }
+
+    /// Give the attributes a reference arrives with their own identity. Whoever
+    /// builds a reference cannot know its handle yet, so the attributes are
+    /// adopted here: one already carrying a handle keeps it, one without gets a
+    /// fresh handle, the reference always becomes their owner, and the set is
+    /// terminated once there is something to terminate.
+    pub(crate) fn adopt_attributes(document: &mut codec::Document, insert_handle: Handle) {
+        Self::instantiate_attributes(document, insert_handle);
+        let Some(EntityType::Insert(insert)) = document.get_entity(insert_handle) else {
+            return;
+        };
+        let unhandled: Vec<bool> = insert
+            .attributes
+            .iter()
+            .map(|attribute| attribute.common.handle.is_null())
+            .collect();
+        let text_count = insert
+            .attributes
+            .iter()
+            .filter(|attribute| attribute.common.handle.is_null())
+            .filter_map(|attribute| attribute.embedded_mtext.as_ref())
+            .filter(|model| model.common.handle.is_null())
+            .count();
+        let needs_owner = insert
+            .attributes
+            .iter()
+            .any(|attribute| attribute.common.owner_handle != insert_handle);
+        let needs_end = !insert.attributes.is_empty() && insert.seqend_handle.is_none();
+        if unhandled.iter().all(|null| !*null) && !needs_owner && !needs_end {
+            return;
+        }
+        let handles: Vec<Handle> = (0..unhandled.iter().filter(|null| **null).count())
+            .map(|_| document.allocate_handle())
+            .collect();
+        let text_handles: Vec<Handle> = (0..text_count)
+            .map(|_| document.allocate_handle())
+            .collect();
+        let end = if needs_end {
+            Some(document.allocate_handle())
+        } else {
+            None
+        };
+        let Some(EntityType::Insert(insert)) = document.get_entity_mut(insert_handle) else {
+            return;
+        };
+        let mut handles = handles.into_iter();
+        let mut text_handles = text_handles.into_iter();
+        for (attribute, was_null) in insert.attributes.iter_mut().zip(&unhandled) {
+            if *was_null {
+                attribute.common.handle = handles.next().unwrap_or(Handle::NULL);
+                // A multiline attribute brings its text object along, and two
+                // objects cannot share one handle.
+                if let Some(model) = &mut attribute.embedded_mtext {
+                    if model.common.handle.is_null() {
+                        model.common.handle = text_handles.next().unwrap_or(Handle::NULL);
+                    }
+                    model.common.owner_handle = attribute.common.handle;
+                    model.common.raw_record = None;
+                    model.common.xdictionary_handle = None;
+                    model.common.reactors.clear();
+                }
+            }
+            attribute.common.owner_handle = insert_handle;
+        }
+        if let Some(end) = end {
+            insert.seqend_handle = Some(end);
+        }
+    }
+
+    /// Say on the record whether its own body declares attribute definitions.
+    /// A DXF file writes the definition's "has attribute definitions" marker
+    /// from the record flag alone, so the record has to state what its body
+    /// actually holds: read back from the body every time a body is written —
+    /// by the block editor, by a definition replace, by a pasted definition's
+    /// twin — rather than left to whichever command set it first.
+    pub(crate) fn sync_attribute_flag(document: &mut codec::Document, name: &str) {
+        let holds_definitions = document
+            .entities_in_block(name)
+            .any(|entity| matches!(entity, EntityType::AttributeDefinition(_)));
+        if let Some(record) = document.block_records.get_mut(name) {
+            record.flags.has_attributes = holds_definitions;
+        }
+    }
+
     fn add_entity_internal(&mut self, mut entity: EntityType, bump: bool) -> Handle {
         // Only block sentinels mutate a block definition and require rebuilding
         // the block cache. A top-level INSERT merely references an existing
@@ -382,7 +506,22 @@ impl Scene {
         //   - MSPACE or model layout: model space (document default).
         let handle = if let Some(br) = self.block_edit_block {
             entity.common_mut().owner_handle = br;
-            self.document.add_entity(entity).unwrap_or(Handle::NULL)
+            let authored_definition = matches!(&entity, EntityType::AttributeDefinition(_));
+            let handle = self.document.add_entity(entity).unwrap_or(Handle::NULL);
+            // The definition is attributed from the moment it holds one, not
+            // only once the editor saves: a file writes the marker for the
+            // definition from this flag.
+            if authored_definition && !handle.is_null() {
+                if let Some(record) = self
+                    .document
+                    .block_records
+                    .iter_mut()
+                    .find(|entry| entry.handle == br)
+                {
+                    record.flags.has_attributes = true;
+                }
+            }
+            handle
         } else if self.current_layout != "Model" && self.active_viewport.is_none() {
             let layout_name = self.current_layout.clone();
             self.document
@@ -393,6 +532,7 @@ impl Scene {
         };
 
         if !handle.is_null() {
+            Self::adopt_attributes(&mut self.document, handle);
             if let Some(keep) = self.refedit_keep.as_mut() {
                 keep.insert(handle);
             }
@@ -1012,75 +1152,74 @@ impl Scene {
             .get(name)
             .map(|br| (br.handle, br.block_entity_handle));
 
-        let (br_handle, block_handle) = if let Some((existing_br_h, existing_blk_h)) = existing {
-            if !options.redefine {
-                return Err(format!("Block \"{name}\" already exists."));
-            }
-            // Redefining: remove all existing entities owned by this block record (except Block/BlockEnd)
-            let owned: Vec<Handle> = self
-                .document
-                .entities()
-                .filter(|e| {
-                    e.common().owner_handle == existing_br_h
-                        && !matches!(e, EntityType::Block(_) | EntityType::BlockEnd(_))
-                })
-                .map(|e| e.common().handle)
-                .collect();
-            for h in owned {
-                self.document.remove_entity(h);
-            }
-            // Update existing BlockRecord fields
-            if let Some(br) = self.document.block_records.get_mut(name) {
-                br.units = options.unit;
-                br.description = options.description.clone();
-                br.explodable = options.allow_exploding;
-                br.scale_uniformly = options.scale_uniformly || options.annotative;
-            }
-            // Update existing Block entity fields
-            if let Some(EntityType::Block(b)) = self.document.get_entity_mut(existing_blk_h) {
-                b.description = options.description.clone();
-                // The new contents are baked relative to the picked base (see
-                // the contract above), so the definition's base point has to
-                // go back to ZERO. Leaving an imported definition's non-zero
-                // base point here would subtract the picked base twice.
-                b.base_point = codec::types::Vector3::ZERO;
-            }
-            (existing_br_h, existing_blk_h)
-        } else {
-            let next = self.document.next_handle();
-            let br_handle = Handle::new(next);
-            let block_handle = Handle::new(next + 1);
-            let end_handle = Handle::new(next + 2);
+        let (br_handle, block_handle, stale_end) =
+            if let Some((existing_br_h, existing_blk_h)) = existing {
+                if !options.redefine {
+                    return Err(format!("Block \"{name}\" already exists."));
+                }
+                // Redefining: remove all existing entities owned by this block record (except Block/BlockEnd)
+                let owned: Vec<Handle> = self
+                    .document
+                    .entities()
+                    .filter(|e| {
+                        e.common().owner_handle == existing_br_h
+                            && !matches!(e, EntityType::Block(_) | EntityType::BlockEnd(_))
+                    })
+                    .map(|e| e.common().handle)
+                    .collect();
+                for h in owned {
+                    self.remove_image_definition_reactor(h);
+                    self.document.remove_entity(h);
+                }
+                // Update existing BlockRecord fields
+                if let Some(br) = self.document.block_records.get_mut(name) {
+                    br.units = options.unit;
+                    br.description = options.description.clone();
+                    br.explodable = options.allow_exploding;
+                    br.scale_uniformly = options.scale_uniformly || options.annotative;
+                }
+                // Update existing Block entity fields
+                if let Some(EntityType::Block(b)) = self.document.get_entity_mut(existing_blk_h) {
+                    b.description = options.description.clone();
+                    // The new contents are baked relative to the picked base (see
+                    // the contract above), so the definition's base point has to
+                    // go back to ZERO. Leaving an imported definition's non-zero
+                    // base point here would subtract the picked base twice.
+                    b.base_point = codec::types::Vector3::ZERO;
+                }
+                let stale_end = self
+                    .document
+                    .block_records
+                    .get(name)
+                    .map(|br| br.block_end_handle)
+                    .filter(|handle| !handle.is_null());
+                (existing_br_h, existing_blk_h, stale_end)
+            } else {
+                let next = self.document.next_handle();
+                let br_handle = Handle::new(next);
+                let block_handle = Handle::new(next + 1);
 
-            let mut block_record = codec::tables::BlockRecord::new(name);
-            block_record.handle = br_handle;
-            block_record.block_entity_handle = block_handle;
-            block_record.block_end_handle = end_handle;
-            block_record.units = options.unit;
-            block_record.description = options.description.clone();
-            block_record.explodable = options.allow_exploding;
-            block_record.scale_uniformly = options.scale_uniformly || options.annotative;
-            self.document
-                .block_records
-                .add(block_record)
-                .map_err(|e| e.to_string())?;
+                let mut block_record = codec::tables::BlockRecord::new(name);
+                block_record.handle = br_handle;
+                block_record.block_entity_handle = block_handle;
+                block_record.units = options.unit;
+                block_record.description = options.description.clone();
+                block_record.explodable = options.allow_exploding;
+                block_record.scale_uniformly = options.scale_uniformly || options.annotative;
+                self.document
+                    .block_records
+                    .add(block_record)
+                    .map_err(|e| e.to_string())?;
 
-            let mut block = Block::new(name, codec::types::Vector3::ZERO);
-            block.common.handle = block_handle;
-            block.common.owner_handle = br_handle;
-            block.description = options.description.clone();
-            self.document
-                .add_entity(EntityType::Block(block))
-                .map_err(|e| e.to_string())?;
-
-            let mut block_end = BlockEnd::new();
-            block_end.common.handle = end_handle;
-            block_end.common.owner_handle = br_handle;
-            self.document
-                .add_entity(EntityType::BlockEnd(block_end))
-                .map_err(|e| e.to_string())?;
-            (br_handle, block_handle)
-        };
+                let mut block = Block::new(name, codec::types::Vector3::ZERO);
+                block.common.handle = block_handle;
+                block.common.owner_handle = br_handle;
+                block.description = options.description.clone();
+                self.document
+                    .add_entity(EntityType::Block(block))
+                    .map_err(|e| e.to_string())?;
+                (br_handle, block_handle, None)
+            };
         self.write_block_definition_xdata(br_handle, block_handle, &options);
 
         let source_entities: Vec<_> = options
@@ -1092,6 +1231,8 @@ impl Scene {
         // "Continue" / an empty selection at -BLOCK); objects that all vanished
         // are an error.
         if source_entities.is_empty() && !options.handles.is_empty() {
+            // A rejected body still leaves a structurally complete definition.
+            let _ = self.close_block_definition(name, br_handle, stale_end);
             return Err("No valid entities selected for block creation.".into());
         }
 
@@ -1099,15 +1240,43 @@ impl Scene {
         for (old_handle, mut entity) in source_entities {
             view::dispatch::apply_transform(&mut entity, &local);
             entity = crate::modules::draw::modify::explode::normalize_entity_for_block(entity);
+            if matches!(&entity, EntityType::Table(_)) {
+                Self::reset_clone_subhandles(&mut self.document, &mut entity);
+            }
             entity.common_mut().handle = Handle::NULL;
             entity.common_mut().owner_handle = br_handle;
-            self.document
-                .add_entity(entity)
-                .map_err(|e| e.to_string())?;
+            self.ensure_image_definition(&mut entity);
+            let handle = match self.document.add_entity(entity) {
+                Ok(handle) => handle,
+                Err(error) => {
+                    let _ = self.close_block_definition(name, br_handle, stale_end);
+                    return Err(error.to_string());
+                }
+            };
+            // An image draws from its cached model, not the entity (#2149).
+            self.reseed_derived_caches(handle);
             if options.mode != crate::ui::window::block_definition::BlockObjectMode::Retain {
                 self.erase_entities(&[old_handle]);
             }
         }
+
+        self.close_block_definition(name, br_handle, stale_end)?;
+
+        // The record advertises an attributed block whenever its body holds
+        // attribute definitions, and those definitions are what the reference
+        // below is built from.
+        let definitions: Vec<codec::entities::AttributeDefinition> = {
+            let cloned: Vec<codec::entities::AttributeDefinition> = self
+                .document
+                .entities_in_block(name)
+                .filter_map(|entity| match entity {
+                    EntityType::AttributeDefinition(definition) => Some(definition.clone()),
+                    _ => None,
+                })
+                .collect();
+            Self::sync_attribute_flag(&mut self.document, name);
+            cloned
+        };
 
         let mut insert_handle = Handle::NULL;
         // An empty definition has nothing to convert into a reference.
@@ -1116,6 +1285,17 @@ impl Scene {
         {
             let mut insert = DxfInsert::new(name, codec::types::Vector3::ZERO);
             codec::Entity::apply_transform(&mut insert, &options.block_to_world);
+            // Each definition contributes a reference of its own, seeded from
+            // its default and placed where the definition draws it, so the
+            // converted objects read as the attributed block they became.
+            let base = crate::scene::render_graph::block_base_point(&self.document, name);
+            let place = crate::scene::render_graph::insert_transform_with_base(&insert, base);
+            for definition in &definitions {
+                let mut attribute =
+                    codec::entities::AttributeEntity::from_definition(definition, None);
+                codec::Entity::apply_transform(&mut attribute, &place);
+                insert.attributes.push(attribute);
+            }
             insert_handle = self.add_entity(EntityType::Insert(insert));
         }
 
@@ -1128,6 +1308,72 @@ impl Scene {
         // Advance the block epoch so all consumers and viewport renderers re-tessellate
         self.bump_geometry();
         Ok(insert_handle)
+    }
+
+    /// Finish the definition `name`: append an ENDBLK whose handle follows
+    /// every body entity, then point the record at it. `stale` — the ENDBLK a
+    /// redefine replaces — is dropped once the fresh terminator exists. A
+    /// definition whose body is rejected still gets its terminator, so the
+    /// record never names a missing object.
+    fn close_block_definition(
+        &mut self,
+        name: &str,
+        br_handle: Handle,
+        stale: Option<Handle>,
+    ) -> Result<(), String> {
+        let end_handle = self.document.allocate_handle();
+        let mut block_end = BlockEnd::new();
+        block_end.common.handle = end_handle;
+        block_end.common.owner_handle = br_handle;
+        self.document
+            .add_entity(EntityType::BlockEnd(block_end))
+            .map_err(|e| e.to_string())?;
+        if let Some(stale) = stale {
+            // A record can name body geometry as its terminator; removing it
+            // blindly would delete the drawing, so only a real ENDBLK owned by
+            // this record (or unowned) is replaced.
+            let removable = matches!(
+                self.document.get_entity(stale),
+                Some(EntityType::BlockEnd(block))
+                    if block.common.owner_handle.is_null()
+                        || block.common.owner_handle == br_handle
+            );
+            if removable {
+                self.document.remove_entity(stale);
+            }
+        }
+        if let Some(record) = self.document.block_records.get_mut(name) {
+            record.block_end_handle = end_handle;
+        }
+        Ok(())
+    }
+
+    /// Re-append the terminator of `name` after its current body — for a
+    /// definition whose contents grew after it was created (a block-editor
+    /// save, a reference-edit save). A definition already terminated after its
+    /// body is left untouched.
+    pub(crate) fn reterminate_block_definition(&mut self, name: &str) -> Result<(), String> {
+        let Some((br_handle, end, last_body)) =
+            self.document.block_records.get(name).map(|record| {
+                let last_body = record
+                    .entity_handles
+                    .iter()
+                    .map(|handle| handle.value())
+                    .max()
+                    .unwrap_or(0);
+                (record.handle, record.block_end_handle, last_body)
+            })
+        else {
+            return Err(format!("Block \"{name}\" does not exist."));
+        };
+        if !end.is_null()
+            && end.value() > last_body
+            && matches!(self.document.get_entity(end), Some(EntityType::BlockEnd(_)))
+        {
+            return Ok(());
+        }
+        let stale = (!end.is_null()).then_some(end);
+        self.close_block_definition(name, br_handle, stale)
     }
 
     /// A 40 × 40, 32-bit bottom-up DIB of the block's geometry: white strokes
@@ -1279,30 +1525,166 @@ impl Scene {
     /// caller starts an interactive insert so paste-as-block can prompt for the
     /// drop point. The geometry comes from the clipboard rather than live
     /// entities, so there is nothing to stage or erase. (#129)
-    /// Give a new RasterImage the ImageDefinition object it must reference,
-    /// unless it already names one.
-    fn ensure_image_definition(&mut self, entity: &mut EntityType) {
+    /// Register a new image's shared definition and exclusively owned reactor.
+    pub(crate) fn ensure_image_definition(&mut self, entity: &mut EntityType) {
         let EntityType::RasterImage(img) = entity else {
             return;
         };
-        if img.definition_handle.is_some() {
+        use codec::objects::{Dictionary, ImageDefinition, ImageDefinitionReactor, ObjectType};
+        let existing = img
+            .definition_handle
+            .filter(|h| {
+                matches!(
+                    self.document.objects.get(h),
+                    Some(ObjectType::ImageDefinition(_))
+                )
+            })
+            .or_else(|| {
+                self.document
+                    .objects
+                    .iter()
+                    .find_map(|(h, object)| match object {
+                        ObjectType::ImageDefinition(def)
+                            if def.file_name.eq_ignore_ascii_case(&img.file_path) =>
+                        {
+                            Some(*h)
+                        }
+                        _ => None,
+                    })
+            });
+        let def_handle = existing.unwrap_or_else(|| self.document.allocate_handle());
+        let root = self.document.header.named_objects_dict_handle;
+        let dictionary = match self.document.objects.get(&root) {
+            Some(ObjectType::Dictionary(entries)) => entries.get("ACAD_IMAGE_DICT").filter(|h| {
+                matches!(
+                    self.document.objects.get(h),
+                    Some(ObjectType::Dictionary(_))
+                )
+            }),
+            _ => None,
+        };
+        // First-touch object images cover both new objects and shared mutations.
+        if self.is_recording_undo() {
+            for h in [Some(root), dictionary, Some(def_handle)]
+                .into_iter()
+                .flatten()
+            {
+                let before = self.document.objects.get(&h).cloned();
+                self.record_undo_object_before(h, before);
+            }
+        }
+        let owner = dictionary.unwrap_or_else(|| {
+            let h = self.document.allocate_handle();
+            self.record_undo_object_before(h, None);
+            let mut entries = Dictionary::new();
+            entries.handle = h;
+            entries.owner = root;
+            self.document
+                .objects
+                .insert(h, ObjectType::Dictionary(entries));
+            if let Some(ObjectType::Dictionary(entries)) = self.document.objects.get_mut(&root) {
+                entries.add_entry("ACAD_IMAGE_DICT", h);
+            }
+            h
+        });
+        if let Some(ObjectType::Dictionary(entries)) = self.document.objects.get_mut(&owner) {
+            if !entries.entries.iter().any(|(_, h)| *h == def_handle) {
+                let stem = std::path::Path::new(&img.file_path)
+                    .file_stem()
+                    .and_then(|s| s.to_str())
+                    .filter(|s| !s.is_empty())
+                    .unwrap_or("IMAGE");
+                let mut key = stem.to_owned();
+                let mut suffix = 1;
+                while entries.get(&key).is_some() {
+                    suffix += 1;
+                    key = format!("{stem}_{suffix}");
+                }
+                entries.add_entry(key, def_handle);
+            }
+        }
+        if existing.is_none() {
+            let mut def = ImageDefinition::with_dimensions(
+                &img.file_path,
+                img.size.x as u32,
+                img.size.y as u32,
+            );
+            def.handle = def_handle;
+            def.is_loaded = true;
+            self.document
+                .objects
+                .insert(def_handle, ObjectType::ImageDefinition(def));
+        }
+        // An image that already owns a live reactor (re-added or moved into a
+        // block under its own handle) keeps it.
+        if let Some(own) = img.definition_reactor_handle.filter(|h| {
+            !img.common.handle.is_null()
+                && matches!(self.document.objects.get(h),
+                    Some(ObjectType::ImageDefinitionReactor(r)) if r.owner == img.common.handle)
+        }) {
+            if let Some(ObjectType::ImageDefinition(def)) =
+                self.document.objects.get_mut(&def_handle)
+            {
+                def.owner = owner;
+                for h in [owner, own] {
+                    if !def.reactors.contains(&h) {
+                        def.reactors.push(h);
+                    }
+                }
+            }
+            img.definition_handle = Some(def_handle);
             return;
         }
-        use codec::objects::{ImageDefinition, ObjectType};
-        // Allocate, not peek: a peeked handle is then handed to the image
-        // itself, and the DWG writer drops the definition that shares it. (#1421)
-        let def_handle = self.document.allocate_handle();
-        if self.is_recording_undo() {
-            self.record_undo_object_before(def_handle, None);
+        // Reserve the image's real handle before making its reactor. Copies
+        // arrive with a NULL handle and must never reuse the source's reactor.
+        if img.common.handle.is_null() {
+            img.common.handle = self.document.allocate_handle();
         }
-        let mut img_def =
-            ImageDefinition::with_dimensions(&img.file_path, img.size.x as u32, img.size.y as u32);
-        img_def.handle = def_handle;
-        img_def.is_loaded = true;
+        let reactor_handle = self.document.allocate_handle();
+        self.record_undo_object_before(reactor_handle, None);
+        let mut reactor = ImageDefinitionReactor::new(img.common.handle);
+        reactor.handle = reactor_handle;
+        reactor.owner = img.common.handle;
         self.document
             .objects
-            .insert(def_handle, ObjectType::ImageDefinition(img_def));
+            .insert(reactor_handle, ObjectType::ImageDefinitionReactor(reactor));
+        if let Some(ObjectType::ImageDefinition(def)) = self.document.objects.get_mut(&def_handle) {
+            def.owner = owner;
+            if !def.reactors.contains(&owner) {
+                def.reactors.push(owner);
+            }
+            def.reactors.push(reactor_handle);
+        }
         img.definition_handle = Some(def_handle);
+        img.definition_reactor_handle = Some(reactor_handle);
+    }
+
+    /// Remove an erased image's owned reactor, retaining its shared definition.
+    pub(super) fn remove_image_definition_reactor(&mut self, handle: Handle) {
+        let Some(EntityType::RasterImage(img)) = self.document.get_entity(handle) else {
+            return;
+        };
+        let Some(reactor) = img.definition_reactor_handle else {
+            return;
+        };
+        if !matches!(self.document.objects.get(&reactor),
+            Some(ObjectType::ImageDefinitionReactor(r)) if r.owner == handle)
+        {
+            return;
+        }
+        let definition = img.definition_handle;
+        if self.is_recording_undo() {
+            for h in [Some(reactor), definition].into_iter().flatten() {
+                let before = self.document.objects.get(&h).cloned();
+                self.record_undo_object_before(h, before);
+            }
+        }
+        self.document.objects.remove(&reactor);
+        if let Some(ObjectType::ImageDefinition(def)) =
+            definition.and_then(|h| self.document.objects.get_mut(&h))
+        {
+            def.reactors.retain(|h| *h != reactor);
+        }
     }
 
     pub fn define_block_from_owned_entities(
@@ -1328,12 +1710,10 @@ impl Scene {
         let next = self.document.next_handle();
         let br_handle = Handle::new(next);
         let block_handle = Handle::new(next + 1);
-        let end_handle = Handle::new(next + 2);
 
         let mut block_record = codec::tables::BlockRecord::new(name);
         block_record.handle = br_handle;
         block_record.block_entity_handle = block_handle;
-        block_record.block_end_handle = end_handle;
         self.document
             .block_records
             .add(block_record)
@@ -1344,13 +1724,6 @@ impl Scene {
         block.common.owner_handle = br_handle;
         self.document
             .add_entity(EntityType::Block(block))
-            .map_err(|e| e.to_string())?;
-
-        let mut block_end = BlockEnd::new();
-        block_end.common.handle = end_handle;
-        block_end.common.owner_handle = br_handle;
-        self.document
-            .add_entity(EntityType::BlockEnd(block_end))
             .map_err(|e| e.to_string())?;
 
         let local = EntityTransform::Translate(-base);
@@ -1368,6 +1741,19 @@ impl Scene {
                 .map_err(|e| e.to_string())?;
             entity_handles.push(handle);
         }
+        // The terminator is allocated after the body so handle order matches
+        // record order inside the definition.
+        let end_handle = self.document.allocate_handle();
+        let mut block_end = BlockEnd::new();
+        block_end.common.handle = end_handle;
+        block_end.common.owner_handle = br_handle;
+        self.document
+            .add_entity(EntityType::BlockEnd(block_end))
+            .map_err(|e| e.to_string())?;
+        if let Some(record) = self.document.block_records.get_mut(name) {
+            record.block_end_handle = end_handle;
+        }
+        Self::sync_attribute_flag(&mut self.document, name);
         // Solids, surfaces and meshes of a definition draw through their
         // instanced block meshes, which only a tessellation pass creates.
         self.refresh_meshes_for_handles(&entity_handles);
@@ -1393,14 +1779,12 @@ impl Scene {
         let next = self.document.next_handle();
         let br_handle = Handle::new(next);
         let block_handle = Handle::new(next + 1);
-        let end_handle = Handle::new(next + 2);
 
         let mut block_record = codec::tables::BlockRecord::new(name);
         block_record.flags.anonymous = name.starts_with('*')
             && !(block_record.is_model_space() || block_record.is_paper_space());
         block_record.handle = br_handle;
         block_record.block_entity_handle = block_handle;
-        block_record.block_end_handle = end_handle;
         if self.document.block_records.add(block_record).is_err() {
             return;
         }
@@ -1410,18 +1794,23 @@ impl Scene {
         block.common.owner_handle = br_handle;
         let _ = self.document.add_entity(EntityType::Block(block));
 
-        let mut block_end = BlockEnd::new();
-        block_end.common.handle = end_handle;
-        block_end.common.owner_handle = br_handle;
-        let _ = self.document.add_entity(EntityType::BlockEnd(block_end));
-
         let mut added = Vec::new();
         for mut entity in entities {
             Self::reset_clone_subhandles(&mut self.document, &mut entity);
             entity.common_mut().handle = Handle::NULL;
             entity.common_mut().owner_handle = br_handle;
+            self.ensure_image_definition(&mut entity);
             added.extend(self.document.add_entity(entity).ok());
         }
+        let end_handle = self.document.allocate_handle();
+        let mut block_end = BlockEnd::new();
+        block_end.common.handle = end_handle;
+        block_end.common.owner_handle = br_handle;
+        let _ = self.document.add_entity(EntityType::BlockEnd(block_end));
+        if let Some(record) = self.document.block_records.get_mut(name) {
+            record.block_end_handle = end_handle;
+        }
+        Self::sync_attribute_flag(&mut self.document, name);
         self.refresh_meshes_for_handles(&added);
         self.bump_geometry();
     }
@@ -1458,6 +1847,12 @@ impl Scene {
             self.define_block_raw(name, base_point, entities);
             return Ok(());
         };
+        let stale_end = self
+            .document
+            .block_records
+            .get(name)
+            .map(|br| br.block_end_handle)
+            .filter(|handle| !handle.is_null());
         if self.block_edit_block == Some(br_handle) {
             return Err(format!(
                 "block \"{name}\" is open in the Block Editor; close it before redefining"
@@ -1473,6 +1868,7 @@ impl Scene {
             .map(|e| e.common().handle)
             .collect();
         for h in &owned {
+            self.remove_image_definition_reactor(*h);
             self.document.remove_entity(*h);
         }
         if let Some(EntityType::Block(block)) = self.document.get_entity_mut(block_handle) {
@@ -1484,8 +1880,11 @@ impl Scene {
             Self::reset_clone_subhandles(&mut self.document, &mut entity);
             entity.common_mut().handle = Handle::NULL;
             entity.common_mut().owner_handle = br_handle;
+            self.ensure_image_definition(&mut entity);
             changed.extend(self.document.add_entity(entity).ok());
         }
+        self.close_block_definition(name, br_handle, stale_end)?;
+        Self::sync_attribute_flag(&mut self.document, name);
         self.refresh_meshes_for_handles(&changed);
         self.bump_geometry();
         Ok(())
@@ -1905,7 +2304,7 @@ impl Scene {
 
     pub(super) fn instanced_hatch_models_for_document(
         &self,
-        document: &CadDocument,
+        document: &Document,
         layout_block: Handle,
         hatch_bg: [f32; 4],
         tint_selected: bool,
@@ -1925,6 +2324,12 @@ impl Scene {
         } else {
             self.visibility_reveal_handles()
         };
+        // Plot passes draw the stored drawing; live renders of the walked
+        // space hide layers outside its visible set (foreign viewports
+        // resolve to `None` inside `render_space_layer_walk`).
+        let layer_walk = (!plot_only)
+            .then(|| self.render_space_layer_walk(layout_block, viewport))
+            .flatten();
         let graph = crate::scene::render_graph::RenderSceneGraph::new(
             document,
             frozen,
@@ -1933,6 +2338,7 @@ impl Scene {
             depth_map.as_ref(),
         )
         .with_visibility_reveal(&visibility_reveal)
+        .with_layer_walk(layer_walk)
         .with_annotation_scale(self.annotation_scale)
         .with_viewport(viewport);
         let mut hatch_block_memo = std::collections::HashMap::new();
@@ -2116,6 +2522,7 @@ impl Scene {
         frozen: Option<&rustc_hash::FxHashSet<Handle>>,
         annotation_scale_handle: Option<Handle>,
         all_visible: bool,
+        viewport: Option<Handle>,
     ) -> Vec<HatchModel> {
         let bg_color = if self.current_layout != "Model" {
             self.paper_bg_color
@@ -2130,6 +2537,7 @@ impl Scene {
             bg_color,
             false,
             false,
+            viewport,
         )
     }
 
@@ -2142,6 +2550,7 @@ impl Scene {
         bg_color: [f32; 4],
         tint_insert_selection: bool,
         plot_only: bool,
+        viewport: Option<Handle>,
     ) -> Vec<HatchModel> {
         let depth_map = self.draw_depth_map();
         let visibility_reveal = if plot_only {
@@ -2149,6 +2558,10 @@ impl Scene {
         } else {
             self.visibility_reveal_handles()
         };
+        // LAYWALK hides block-tree wipeouts only in the walked space itself.
+        let layer_walk = (!plot_only)
+            .then(|| self.render_space_layer_walk(target_block, viewport))
+            .flatten();
         let graph = crate::scene::render_graph::RenderSceneGraph::new(
             &self.document,
             frozen,
@@ -2157,6 +2570,7 @@ impl Scene {
             depth_map.as_ref(),
         )
         .with_visibility_reveal(&visibility_reveal)
+        .with_layer_walk(layer_walk)
         .with_annotation_scale(self.annotation_scale);
         let mut models = Vec::new();
         let mut wipeout_sources = rustc_hash::FxHashMap::default();
@@ -2405,6 +2819,13 @@ impl Scene {
             // never drawn or filled. Treating one as a fill boundary paints its
             // rectangle solid and creates a phantom bar.
             if path.flags.bits() & 8 != 0 {
+                continue;
+            }
+            // Skip loops flagged not closed (flag bit 5). AutoCAD leaves such a
+            // loop out of the hatch even when its edges meet: it neither fills
+            // it nor cuts it as an island. Filling it painted areas AutoCAD
+            // never shows.
+            if path.flags.is_not_closed() {
                 continue;
             }
             let mut edge_polys: Vec<Vec<[f64; 2]>> = Vec::new();
@@ -3339,7 +3760,7 @@ impl Scene {
 
     pub fn clear(&mut self) {
         self.document.record_all_entities_for_transaction();
-        self.document = CadDocument::new();
+        self.document = Document::new();
         self.replace_selection(HashSet::default());
         self.preview_wires = vec![];
         self.preview_text = vec![];
@@ -3387,6 +3808,7 @@ impl Scene {
         self.document.header.isolines = 8;
         let iso = crate::scene::creation_style::ensure_iso_dim_style(&mut self.document);
         self.document.header.current_dimstyle_name = "ISO-25".to_string();
+        crate::scene::creation_style::sync_header_dim_vars(&mut self.document);
         // The name alone leaves the header pointing at the previous style, and
         // a DWG writes the current style by handle only.
         self.document.header.current_dimstyle_handle = iso;
@@ -3413,8 +3835,638 @@ impl Scene {
                     s.landing_distance = 8.0;
                     s.break_gap_size = 3.75;
                 }
+                // Likewise the Standard table style: the metric template's
+                // cells are 4.5 high (title 6) with 1.5 margins, not 0.18.
+                codec::objects::ObjectType::TableStyle(s)
+                    if s.name.eq_ignore_ascii_case("Standard") =>
+                {
+                    s.set_margins(1.5);
+                    s.data_row_style.text_height = 4.5;
+                    s.header_row_style.text_height = 4.5;
+                    s.title_row_style.text_height = 6.0;
+                }
                 _ => {}
             }
         }
+    }
+}
+
+/// Move the terminator of every definition that grew in place. A path that
+/// appends entities into an existing definition — a reloaded external
+/// reference, a rebuilt representation — can leave the ENDBLK below them;
+/// records already terminated after their body are not touched. Model and
+/// paper space are laid out by the document layer and stay as they are.
+pub(crate) fn normalize_block_terminators(document: &mut codec::Document) {
+    let model_space = document.header.model_space_block_handle;
+    let paper_space = document.header.paper_space_block_handle;
+    let names: Vec<String> = document
+        .block_records
+        .iter()
+        .filter(|record| record.handle != model_space && record.handle != paper_space)
+        .filter(|record| {
+            let end = record.block_end_handle;
+            let last_body = record
+                .entity_handles
+                .iter()
+                .map(|handle| handle.value())
+                .max()
+                .unwrap_or(0);
+            !end.is_null()
+                && (end.value() <= last_body
+                    || !matches!(document.get_entity(end), Some(EntityType::BlockEnd(_))))
+        })
+        .map(|record| record.name.clone())
+        .collect();
+    for name in names {
+        let Some(br_handle) = document.block_records.get(&name).map(|br| br.handle) else {
+            continue;
+        };
+        let stale = document
+            .block_records
+            .get(&name)
+            .map(|br| br.block_end_handle)
+            .filter(|handle| {
+                matches!(
+                    document.get_entity(*handle),
+                    Some(EntityType::BlockEnd(block))
+                        if block.common.owner_handle.is_null()
+                            || block.common.owner_handle == br_handle
+                )
+            });
+        let end_handle = document.allocate_handle();
+        let mut block_end = BlockEnd::new();
+        block_end.common.handle = end_handle;
+        block_end.common.owner_handle = br_handle;
+        if document
+            .add_entity(EntityType::BlockEnd(block_end))
+            .is_err()
+        {
+            continue;
+        }
+        if let Some(stale) = stale {
+            document.remove_entity(stale);
+        }
+        if let Some(record) = document.block_records.get_mut(&name) {
+            record.block_end_handle = end_handle;
+        }
+    }
+}
+
+#[cfg(test)]
+mod image_definition_graph_tests {
+    use super::*;
+    use codec::entities::RasterImage;
+    use codec::objects::ObjectType;
+
+    fn image(path: &str) -> EntityType {
+        EntityType::RasterImage(RasterImage::with_size(
+            path,
+            codec::types::Vector3::ZERO,
+            4.0,
+            4.0,
+            40.0,
+            40.0,
+        ))
+    }
+
+    fn raster(scene: &Scene, handle: Handle) -> &RasterImage {
+        let Some(EntityType::RasterImage(image)) = scene.document.get_entity(handle) else {
+            panic!("expected image {handle:?}");
+        };
+        image
+    }
+
+    fn assert_reactor(scene: &Scene, handle: Handle, definition: Handle) -> Handle {
+        let image = raster(scene, handle);
+        assert_eq!(image.definition_handle, Some(definition));
+        let reactor_handle = image.definition_reactor_handle.expect("image reactor link");
+        let Some(ObjectType::ImageDefinitionReactor(reactor)) =
+            scene.document.objects.get(&reactor_handle)
+        else {
+            panic!("missing image reactor");
+        };
+        assert_eq!(reactor.handle, reactor_handle);
+        assert_eq!(reactor.owner, handle);
+        assert_eq!(reactor.image_handle, handle);
+        let Some(ObjectType::ImageDefinition(def)) = scene.document.objects.get(&definition) else {
+            panic!("missing image definition");
+        };
+        assert!(def.reactors.contains(&reactor_handle));
+        reactor_handle
+    }
+
+    #[test]
+    fn attach_same_file_shares_registered_definition_and_owns_reactors() {
+        let mut scene = Scene::new();
+        let first = scene.add_entity(image("shared.png"));
+        let second = scene.add_entity(image("shared.png"));
+        let definitions: Vec<_> = scene
+            .document
+            .objects
+            .iter()
+            .filter_map(|(h, o)| {
+                if let ObjectType::ImageDefinition(def) = o {
+                    Some((*h, def))
+                } else {
+                    None
+                }
+            })
+            .collect();
+        assert_eq!(definitions.len(), 1, "one definition per file");
+        let (definition, def) = definitions[0];
+        let root = scene.document.header.named_objects_dict_handle;
+        let Some(ObjectType::Dictionary(root)) = scene.document.objects.get(&root) else {
+            panic!("missing named object dictionary");
+        };
+        let dictionary = root.get("ACAD_IMAGE_DICT").expect("image dictionary entry");
+        let Some(ObjectType::Dictionary(entries)) = scene.document.objects.get(&dictionary) else {
+            panic!("missing image dictionary");
+        };
+        assert_eq!(
+            entries.owner,
+            scene.document.header.named_objects_dict_handle
+        );
+        assert_eq!(entries.get("shared"), Some(definition));
+        assert_eq!(def.owner, dictionary);
+        assert!(def.reactors.contains(&dictionary));
+        assert_ne!(
+            assert_reactor(&scene, first, definition),
+            assert_reactor(&scene, second, definition)
+        );
+        assert_eq!(def.reactors.len(), 3);
+    }
+
+    #[test]
+    fn copy_shares_definition_with_fresh_owned_reactor() {
+        let mut scene = Scene::new();
+        let source = scene.add_entity(image("shared.png"));
+        scene.begin_undo_recording();
+        let copies = scene.copy_entities(
+            &[source],
+            &crate::command::EntityTransform::Translate(glam::DVec3::new(20.0, 0.0, 0.0)),
+        );
+        assert_eq!(copies.len(), 1);
+        let copy = copies[0];
+        assert_ne!(
+            raster(&scene, copy).definition_reactor_handle,
+            raster(&scene, source).definition_reactor_handle
+        );
+        let definition = raster(&scene, source)
+            .definition_handle
+            .expect("source definition");
+        let source_reactor = assert_reactor(&scene, source, definition);
+        let copy_reactor = assert_reactor(&scene, copy, definition);
+        let recording = scene.take_undo_recording().expect("undo recording");
+        assert!(!recording.is_poisoned());
+        let (_, objects, _, _, _) = recording.into_recorded_images();
+        assert!(objects
+            .iter()
+            .any(|(h, before)| *h == copy_reactor && before.is_none()));
+        let before = objects
+            .iter()
+            .find(|(h, _)| *h == definition)
+            .expect("shared definition before-image");
+        let Some(ObjectType::ImageDefinition(def)) = &before.1 else {
+            panic!("missing definition before-image");
+        };
+        assert!(def.reactors.contains(&source_reactor));
+        assert!(!def.reactors.contains(&copy_reactor));
+    }
+
+    #[test]
+    fn erase_image_copy_removes_only_its_owned_reactor() {
+        let mut scene = Scene::new();
+        let source = scene.add_entity(image("shared.png"));
+        let copy = scene.copy_entities(
+            &[source],
+            &crate::command::EntityTransform::Translate(glam::DVec3::new(20.0, 0.0, 0.0)),
+        )[0];
+        let definition = raster(&scene, source).definition_handle.unwrap();
+        let source_reactor = assert_reactor(&scene, source, definition);
+        let copy_reactor = assert_reactor(&scene, copy, definition);
+
+        scene.erase_entities(&[copy]);
+
+        assert!(scene.document.get_entity(copy).is_none());
+        assert!(!scene.document.objects.contains_key(&copy_reactor));
+        assert_eq!(assert_reactor(&scene, source, definition), source_reactor);
+        let Some(ObjectType::ImageDefinition(def)) = scene.document.objects.get(&definition) else {
+            panic!("missing image definition");
+        };
+        assert!(!def.reactors.contains(&copy_reactor));
+        assert!(def.reactors.contains(&def.owner));
+
+        // Removing the final image keeps the definition and dictionary entry.
+        let dictionary = def.owner;
+        let source_image = scene.document.get_entity_arc(source).unwrap();
+        scene.erase_entities(&[source]);
+        assert!(!scene.document.objects.contains_key(&source_reactor));
+        let Some(ObjectType::ImageDefinition(def)) = scene.document.objects.get(&definition) else {
+            panic!("missing retained image definition");
+        };
+        assert_eq!(def.reactors, vec![dictionary]);
+        let Some(ObjectType::Dictionary(entries)) = scene.document.objects.get(&dictionary) else {
+            panic!("missing retained image dictionary");
+        };
+        assert_eq!(entries.get("shared"), Some(definition));
+
+        assert_eq!(
+            scene.restore_erased_entities(vec![source_image]),
+            vec![source]
+        );
+        let restored_reactor = assert_reactor(&scene, source, definition);
+        assert_ne!(restored_reactor, source_reactor);
+    }
+
+    #[test]
+    fn erase_image_copy_undo_restores_reactor_exactly_once() {
+        let mut scene = Scene::new();
+        let source = scene.add_entity(image("shared.png"));
+        let copy = scene.copy_entities(
+            &[source],
+            &crate::command::EntityTransform::Translate(glam::DVec3::new(20.0, 0.0, 0.0)),
+        )[0];
+        let definition = raster(&scene, source).definition_handle.unwrap();
+        let source_reactor = assert_reactor(&scene, source, definition);
+        let copy_reactor = assert_reactor(&scene, copy, definition);
+        scene.begin_undo_recording();
+        scene.erase_entities(&[copy]);
+        let recording = scene.take_undo_recording().expect("erase undo recording");
+        assert!(!recording.is_poisoned());
+        let (entities, objects, _, _, _) = recording.into_recorded_images();
+        assert_eq!(entities.len(), 1);
+        assert_eq!(entities[0].0, copy);
+        assert_eq!(
+            objects.len(),
+            2,
+            "definition and owned reactor before-images"
+        );
+        assert!(objects.iter().any(|(h, before)| *h == copy_reactor
+            && matches!(
+                before, Some(ObjectType::ImageDefinitionReactor(r)) if r.owner == copy
+            )));
+        assert!(objects.iter().any(|(h, before)| *h == definition && matches!(
+            before, Some(ObjectType::ImageDefinition(def)) if def.reactors.contains(&copy_reactor)
+        )));
+        let entities: Vec<_> = entities
+            .into_iter()
+            .map(|(h, before)| (h, before, scene.document.get_entity_arc(h)))
+            .collect();
+        let objects: Vec<_> = objects
+            .into_iter()
+            .map(|(h, before)| (h, before, scene.document.objects.get(&h).cloned()))
+            .collect();
+
+        for undo in [true, false, true] {
+            // Match history replay: object images first, then entity images.
+            for (h, before, after) in &objects {
+                if let Some(object) = if undo { before } else { after } {
+                    scene.document.objects.insert(*h, object.clone());
+                } else {
+                    scene.document.objects.remove(h);
+                }
+            }
+            scene.apply_entity_delta(&entities, undo);
+            assert_eq!(assert_reactor(&scene, source, definition), source_reactor);
+            if undo {
+                assert_eq!(assert_reactor(&scene, copy, definition), copy_reactor);
+                let mut restored = scene.document.get_entity(copy).unwrap().clone();
+                let object_count = scene.document.objects.len();
+                scene.ensure_image_definition(&mut restored);
+                scene.ensure_image_definition(&mut restored);
+                assert_eq!(scene.document.objects.len(), object_count);
+                let EntityType::RasterImage(restored) = restored else {
+                    panic!("expected restored image");
+                };
+                assert_eq!(restored.definition_reactor_handle, Some(copy_reactor));
+            } else {
+                assert!(scene.document.get_entity(copy).is_none());
+                assert!(!scene.document.objects.contains_key(&copy_reactor));
+            }
+            let Some(ObjectType::ImageDefinition(def)) = scene.document.objects.get(&definition)
+            else {
+                panic!("missing image definition");
+            };
+            assert_eq!(
+                def.reactors.iter().filter(|h| **h == copy_reactor).count(),
+                usize::from(undo)
+            );
+        }
+    }
+}
+
+#[cfg(test)]
+mod attribute_instantiation_tests {
+    use super::*;
+    use codec::entities::{AttributeDefinition, AttributeEntity, Insert};
+
+    fn definition(tag: &str, value: &str, at: codec::types::Vector3) -> AttributeDefinition {
+        let mut definition =
+            AttributeDefinition::new(tag.to_string(), format!("{tag}:"), value.to_string());
+        definition.insertion_point = at;
+        definition.height = 1.0;
+        definition
+    }
+
+    fn insert(scene: &Scene, handle: Handle) -> Insert {
+        let Some(EntityType::Insert(insert)) = scene.document.get_entity(handle) else {
+            panic!("expected the inserted reference {handle:?}");
+        };
+        insert.clone()
+    }
+
+    /// A reference placed without attributes of its own still has to show the
+    /// ones its definition declares: an array copy and a scripted add both
+    /// commit the bare reference, and the attributes belong to it.
+    #[test]
+    fn a_reference_placed_without_attributes_takes_them_from_its_definition() {
+        let mut scene = Scene::new();
+        scene.define_block_raw(
+            "ATTRIB_PLAIN",
+            codec::types::Vector3::ZERO,
+            vec![EntityType::AttributeDefinition(definition(
+                "WIDTH",
+                "100",
+                codec::types::Vector3::new(2.0, 3.0, 0.0),
+            ))],
+        );
+
+        let handle = scene.add_entity(EntityType::Insert(Insert::new(
+            "ATTRIB_PLAIN".to_string(),
+            codec::types::Vector3::new(10.0, 0.0, 0.0),
+        )));
+        let insert = insert(&scene, handle);
+        assert_eq!(
+            insert.attributes.len(),
+            1,
+            "the reference carries the attribute its definition declares"
+        );
+        let attribute = &insert.attributes[0];
+        assert_eq!(attribute.tag, "WIDTH");
+        assert_eq!(attribute.value, "100");
+        assert_eq!(
+            attribute.insertion_point,
+            codec::types::Vector3::new(12.0, 3.0, 0.0),
+            "the definition's place travels with the reference"
+        );
+        assert!(!attribute.common.handle.is_null());
+        assert_eq!(attribute.common.owner_handle, handle);
+        assert!(
+            insert.seqend_handle.is_some(),
+            "the attributes need a terminator"
+        );
+        assert_eq!(
+            scene
+                .document
+                .block_records
+                .get("ATTRIB_PLAIN")
+                .map(|record| record.flags.has_attributes),
+            Some(true),
+            "the definition is marked attributed"
+        );
+    }
+
+    /// A constant attribute belongs to the definition it is painted from, but
+    /// it is still part of the reference: a preset or constant value has to
+    /// exist on the instance so that saving the drawing writes it back.
+    #[test]
+    fn the_fill_carries_every_declared_attribute_in_definition_order() {
+        let mut scene = Scene::new();
+        let mut constant = definition("CONST", "fixed", codec::types::Vector3::new(0.0, 5.0, 0.0));
+        constant.flags.constant = true;
+        scene.define_block_raw(
+            "ATTRIB_MIXED",
+            codec::types::Vector3::ZERO,
+            vec![
+                EntityType::AttributeDefinition(definition(
+                    "WIDTH",
+                    "100",
+                    codec::types::Vector3::new(2.0, 3.0, 0.0),
+                )),
+                EntityType::AttributeDefinition(constant),
+            ],
+        );
+
+        let handle = scene.add_entity(EntityType::Insert(Insert::new(
+            "ATTRIB_MIXED".to_string(),
+            codec::types::Vector3::new(10.0, 0.0, 0.0),
+        )));
+        let tags: Vec<String> = insert(&scene, handle)
+            .attributes
+            .iter()
+            .map(|attribute| attribute.tag.clone())
+            .collect();
+        assert_eq!(tags, vec!["WIDTH".to_string(), "CONST".to_string()]);
+        let handles: Vec<Handle> = insert(&scene, handle)
+            .attributes
+            .iter()
+            .map(|attribute| attribute.common.handle)
+            .collect();
+        assert!(
+            handles.iter().all(|h| !h.is_null()),
+            "each carried attribute is its own object"
+        );
+        assert_ne!(handles[0], handles[1], "each attribute is its own");
+        assert_ne!(handles[0], handle, "not the reference's own handle");
+    }
+
+    /// The fill is a fallback for a bare reference. A route that asked the
+    /// operator for values commits a filled list, and that list is the
+    /// answer — replacing it would lose what was typed.
+    #[test]
+    fn a_reference_that_arrives_with_attributes_keeps_them() {
+        let mut scene = Scene::new();
+        scene.define_block_raw(
+            "ATTRIB_ASKED",
+            codec::types::Vector3::ZERO,
+            vec![EntityType::AttributeDefinition(definition(
+                "WIDTH",
+                "100",
+                codec::types::Vector3::new(2.0, 3.0, 0.0),
+            ))],
+        );
+        let mut answer = AttributeEntity::from_definition(
+            &definition("WIDTH", "100", codec::types::Vector3::new(2.0, 3.0, 0.0)),
+            Some("250".to_string()),
+        );
+        answer.common.handle = Handle::new(0x1234);
+        answer.insertion_point = codec::types::Vector3::new(12.0, 3.0, 0.0);
+        let mut bare = Insert::new(
+            "ATTRIB_ASKED".to_string(),
+            codec::types::Vector3::new(10.0, 0.0, 0.0),
+        );
+        bare.attributes = vec![answer];
+
+        let handle = scene.add_entity(EntityType::Insert(bare));
+        let insert = insert(&scene, handle);
+        assert_eq!(insert.attributes.len(), 1, "nothing was invented");
+        assert_eq!(insert.attributes[0].value, "250");
+        assert_eq!(
+            insert.attributes[0].common.handle,
+            Handle::new(0x1234),
+            "the placed attribute keeps its identity"
+        );
+    }
+
+    /// A definition with nothing to declare must not gain an attribute list or
+    /// a terminator, so the fill cannot invent records for every insert.
+    #[test]
+    fn a_reference_of_a_plain_definition_stays_without_attributes() {
+        let mut scene = Scene::new();
+        scene.define_block_raw(
+            "PLAIN_ONLY",
+            codec::types::Vector3::ZERO,
+            vec![EntityType::Line(codec::entities::Line::from_points(
+                codec::types::Vector3::ZERO,
+                codec::types::Vector3::new(4.0, 0.0, 0.0),
+            ))],
+        );
+        let handle = scene.add_entity(EntityType::Insert(Insert::new(
+            "PLAIN_ONLY".to_string(),
+            codec::types::Vector3::new(20.0, 0.0, 0.0),
+        )));
+        let insert = insert(&scene, handle);
+        assert!(insert.attributes.is_empty());
+        assert!(insert.seqend_handle.is_none());
+    }
+
+    /// A definition is attributed because of what its body holds, not because
+    /// a reference of it was placed. Writing the body out — from the editor,
+    /// from a paste, or from a file — has to say so on the record, and a body
+    /// that no longer holds a definition has to unsay it.
+    #[test]
+    fn a_written_definition_is_attributed_because_of_its_body() {
+        let mut scene = Scene::new();
+        scene.define_block_raw(
+            "WRITTEN",
+            codec::types::Vector3::ZERO,
+            vec![EntityType::AttributeDefinition(definition(
+                "TAG",
+                "value",
+                codec::types::Vector3::ZERO,
+            ))],
+        );
+        assert_eq!(
+            scene
+                .document
+                .block_records
+                .get("WRITTEN")
+                .map(|record| record.flags.has_attributes),
+            Some(true),
+            "a body that declares an attribute marks the record"
+        );
+        scene
+            .redefine_block_raw(
+                "WRITTEN",
+                codec::types::Vector3::ZERO,
+                vec![EntityType::Line(codec::entities::Line::from_points(
+                    codec::types::Vector3::ZERO,
+                    codec::types::Vector3::new(4.0, 0.0, 0.0),
+                ))],
+            )
+            .unwrap();
+        assert_eq!(
+            scene
+                .document
+                .block_records
+                .get("WRITTEN")
+                .map(|record| record.flags.has_attributes),
+            Some(false),
+            "a body without one leaves the record unmarked"
+        );
+    }
+}
+
+#[cfg(test)]
+mod attribute_identity_tests {
+    use super::*;
+    use codec::entities::{AttributeDefinition, AttributeEntity, Insert, MText};
+
+    fn attributed_scene() -> (Scene, Handle) {
+        let mut scene = Scene::new();
+        let mut definition =
+            AttributeDefinition::new("WIDTH".to_string(), "Width:".to_string(), "100".to_string());
+        definition.insertion_point = codec::types::Vector3::new(2.0, 3.0, 0.0);
+        definition.height = 1.0;
+        scene.define_block_raw(
+            "ATTRIB_ID",
+            codec::types::Vector3::ZERO,
+            vec![EntityType::AttributeDefinition(definition)],
+        );
+        let source = scene.add_entity(EntityType::Insert(Insert::new(
+            "ATTRIB_ID".to_string(),
+            codec::types::Vector3::ZERO,
+        )));
+        (scene, source)
+    }
+
+    fn copied(scene: &mut Scene, source: Handle) -> Handle {
+        scene.begin_undo_recording();
+        let copies = scene.copy_entities(
+            &[source],
+            &crate::command::EntityTransform::Translate(glam::DVec3::new(20.0, 0.0, 0.0)),
+        );
+        assert_eq!(copies.len(), 1);
+        copies[0]
+    }
+
+    fn attributes(scene: &Scene, handle: Handle) -> Vec<AttributeEntity> {
+        let Some(EntityType::Insert(insert)) = scene.document.get_entity(handle) else {
+            panic!("expected the reference {handle:?}");
+        };
+        insert.attributes.clone()
+    }
+
+    /// The reference is the owner of its attribute children, so a copy that
+    /// still names its source as owner writes two children under one owner.
+    #[test]
+    fn a_copied_reference_owns_its_attribute_children() {
+        let (mut scene, source) = attributed_scene();
+        let copy = copied(&mut scene, source);
+        let children = attributes(&scene, copy);
+        assert_eq!(children.len(), 1);
+        assert_ne!(
+            children[0].common.handle,
+            attributes(&scene, source)[0].common.handle
+        );
+        assert_eq!(
+            children[0].common.owner_handle, copy,
+            "the copy owns the attribute it was cloned with"
+        );
+    }
+
+    /// A multiline attribute carries its text object inside the reference. The
+    /// clone deep-copies it, so the text has to come out with a handle of its
+    /// own and the attribute as its owner — two objects cannot share one handle.
+    #[test]
+    fn a_copied_reference_rehandles_its_embedded_text() {
+        let (mut scene, source) = attributed_scene();
+        let mut text = MText::new();
+        text.value = "100".to_string();
+        text.common.handle = scene.document.allocate_handle();
+        let Some(EntityType::Insert(insert)) = scene.document.get_entity_mut(source) else {
+            panic!("expected the source reference");
+        };
+        insert.attributes[0].embedded_mtext = Some(Box::new(text));
+        let copy = copied(&mut scene, source);
+        let source_text = attributes(&scene, source)[0]
+            .embedded_mtext
+            .as_ref()
+            .expect("source text")
+            .common
+            .handle;
+        let child = &attributes(&scene, copy)[0];
+        let copy_text = child
+            .embedded_mtext
+            .as_ref()
+            .expect("the copy keeps its text");
+        assert_ne!(
+            copy_text.common.handle, source_text,
+            "the copy's text is a separate object"
+        );
+        assert_eq!(
+            copy_text.common.owner_handle, child.common.handle,
+            "and its attribute owns it"
+        );
     }
 }

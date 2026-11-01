@@ -26,10 +26,17 @@ pub const MENU_ROW_H: f32 = 22.0;
 pub const MENU_SEP_H: f32 = 7.0;
 /// Vertical padding inside the menu panel above the first row.
 pub const MENU_PAD_TOP: f32 = 4.0;
-/// Column width without keyword hints (the width the menu always had).
-pub const MENU_WIDTH: f32 = 200.0;
-/// Column width when any row carries a right-aligned keyword hint.
-pub const MENU_WIDTH_WITH_HINTS: f32 = 236.0;
+/// The row layout the renderer uses, for sizing the menu to its widest row:
+/// side padding, icon gutter, gap after it, indent of a submenu's items,
+/// least gap before a hint or check, and the check and caret.
+const ROW_PAD_LEFT: f32 = 6.0;
+const ROW_PAD_RIGHT: f32 = 12.0;
+const GUTTER_W: f32 = 18.0;
+const GUTTER_GAP: f32 = 4.0;
+const CHILD_INDENT: f32 = 14.0;
+const END_GAP: f32 = 16.0;
+const CHECK_W: f32 = 10.0;
+const CARET_W: f32 = 9.0;
 /// How many recent entries the Recent Input / Repeat lists show.
 pub const RECENT_LIMIT: usize = 10;
 
@@ -96,6 +103,8 @@ pub enum MenuAction {
     Command(String),
     /// One-shot "Mid Between 2 Points" snap override.
     Mtp,
+    /// One-shot base point and offset modifier.
+    From,
     /// One-shot object snap override for the next pick.
     SnapOverride(SnapType),
     /// Next pick ignores object snaps.
@@ -353,12 +362,37 @@ impl ContextMenu {
         h
     }
 
-    fn has_hints(&self) -> bool {
-        self.rows.iter().any(|row| match row {
-            MenuRow::Item(item) => item.hint.is_some(),
-            MenuRow::Separator => false,
-            MenuRow::Submenu { items, .. } => items.iter().any(|item| item.hint.is_some()),
-        })
+    /// As wide as the widest row, with its hint or check (a submenu's
+    /// items count even while it is closed, so opening it keeps the width).
+    fn fit_width(&self) -> f32 {
+        use crate::ui::style::text_metrics::width;
+        let item_w = |item: &MenuItem, indent: f32| {
+            let mut end = 0.0;
+            if let Some(hint) = &item.hint {
+                end += GUTTER_GAP + width(hint, 11.0, false);
+            }
+            if item.checked {
+                end += GUTTER_GAP + CHECK_W;
+            }
+            if end > 0.0 {
+                end += END_GAP - GUTTER_GAP;
+            }
+            indent + width(&item.label, 12.0, item.default) + end
+        };
+        let widest = self
+            .rows
+            .iter()
+            .map(|row| match row {
+                MenuRow::Item(item) => item_w(item, 0.0),
+                MenuRow::Separator => 0.0,
+                MenuRow::Submenu { label, items, .. } => items
+                    .iter()
+                    .map(|item| item_w(item, CHILD_INDENT))
+                    .fold(width(label, 12.0, false) + END_GAP + CARET_W, f32::max),
+            })
+            .fold(0.0, f32::max);
+        // The panel's border on both sides.
+        ROW_PAD_LEFT + GUTTER_W + GUTTER_GAP + widest + ROW_PAD_RIGHT + 2.0
     }
 }
 
@@ -387,6 +421,8 @@ pub enum MenuContext {
         has_selection: bool,
         /// Exactly one hatch is selected: its edit row is offered.
         single_hatch: bool,
+        /// Exactly one multileader is selected: its leader rows are offered.
+        single_mleader: bool,
         selected_constraint: Option<ConstraintId>,
         isolation_active: bool,
         /// Recently run commands, newest first.
@@ -416,6 +452,7 @@ pub fn build_context_menu(ctx: &MenuContext, open_submenu: Option<SubmenuId>) ->
         MenuContext::Idle {
             has_selection,
             single_hatch,
+            single_mleader,
             selected_constraint,
             isolation_active,
             recent_cmds,
@@ -428,6 +465,7 @@ pub fn build_context_menu(ctx: &MenuContext, open_submenu: Option<SubmenuId>) ->
             let mut rows = idle_rows(
                 *has_selection,
                 *single_hatch,
+                *single_mleader,
                 *selected_constraint,
                 *isolation_active,
                 recent_cmds,
@@ -439,16 +477,10 @@ pub fn build_context_menu(ctx: &MenuContext, open_submenu: Option<SubmenuId>) ->
             );
             aec_menu::extend_idle_rows(&mut rows, aec, open_submenu);
             rows
-        }
-        MenuContext::Grip(grip) => grip_rows(grip),
+        }        MenuContext::Grip(grip) => grip_rows(grip),
     };
-    let mut menu = ContextMenu {
-        rows,
-        width: MENU_WIDTH,
-    };
-    if menu.has_hints() {
-        menu.width = MENU_WIDTH_WITH_HINTS;
-    }
+    let mut menu = ContextMenu { rows, width: 0.0 };
+    menu.width = menu.fit_width();
     menu
 }
 
@@ -538,7 +570,7 @@ fn recent_input_submenu(items: Vec<MenuItem>, open_submenu: Option<SubmenuId>) -
 }
 
 /// Snap Overrides ▸: one-shot object snaps for the next pick, in the
-/// grouping (M2P, then the edge snaps, the curve snaps, the relation snaps,
+/// grouping (M2P / FROM, then the edge snaps, the curve snaps, the relation snaps,
 /// None) plus the settings dialog.
 fn snap_override_items() -> Vec<MenuItem> {
     let snap = |label: &str, t: SnapType| {
@@ -546,6 +578,8 @@ fn snap_override_items() -> Vec<MenuItem> {
     };
     vec![
         MenuItem::new(t!("Mid Between 2 Points").into_owned(), MenuAction::Mtp).icon(MenuIcon::Mtp),
+        MenuItem::new(t!("From").into_owned(), MenuAction::From)
+            .icon(MenuIcon::Chrome(crate::ui::icons::from_icon())),
         snap("Endpoint", SnapType::Endpoint),
         snap("Midpoint", SnapType::Midpoint),
         snap("Intersection", SnapType::Intersection),
@@ -594,6 +628,7 @@ fn navigation_rows(transparent: bool) -> Vec<MenuRow> {
 fn idle_rows(
     has_selection: bool,
     single_hatch: bool,
+    single_mleader: bool,
     selected_constraint: Option<ConstraintId>,
     isolation_active: bool,
     recent_cmds: &[String],
@@ -683,6 +718,16 @@ fn idle_rows(
             rows.push(MenuRow::Item(cmd(
                 t!("Edit Hatch").into_owned(),
                 "HATCHEDIT",
+            )));
+        }
+        if single_mleader {
+            rows.push(MenuRow::Item(cmd(
+                t!("Add Leader").into_owned(),
+                "AIMLEADEREDITADD",
+            )));
+            rows.push(MenuRow::Item(cmd(
+                t!("Remove Leader").into_owned(),
+                "AIMLEADEREDITREMOVE",
             )));
         }
         rows.push(MenuRow::Item(
@@ -910,7 +955,8 @@ mod tests {
         assert_eq!(close.action, MenuAction::Option("C".into()));
         assert!(item_at(&menu, 0).default);
         assert_eq!(menu.default_index(), 0);
-        assert_eq!(menu.width, MENU_WIDTH_WITH_HINTS);
+        // As wide as its widest row with that row's hint.
+        assert!(menu.width > 0.0 && menu.width == menu.fit_width());
     }
 
     #[test]
@@ -1008,6 +1054,7 @@ mod tests {
         let menu = build_context_menu(&ctx, Some(SubmenuId::SnapOverrides));
         let acts = actions(&menu);
         assert!(acts.contains(&MenuAction::Mtp));
+        assert!(acts.contains(&MenuAction::From));
         for &(t, _, _) in crate::snap::ALL_SNAP_MODES {
             assert!(acts.contains(&MenuAction::SnapOverride(t)), "missing {t:?}");
         }
@@ -1027,6 +1074,7 @@ mod tests {
         MenuContext::Idle {
             has_selection,
             single_hatch: false,
+            single_mleader: false,
             selected_constraint: None,
             isolation_active: false,
             recent_cmds: vec!["LINE".into(), "CIRCLE".into()],

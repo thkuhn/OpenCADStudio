@@ -45,6 +45,7 @@ use crate::modules::draw::modify::spline_ops::{
 };
 use crate::modules::IconKind;
 use crate::scene::model::wire_model::WireModel;
+use crate::scene::convert::tess::entity_world_aabb_f64;
 use crate::t;
 
 use super::entity_index::ModifyEntityIndex;
@@ -194,6 +195,47 @@ impl Geo {
         }
     }
 }
+
+fn geo_overlaps_aabb(geo: &Geo, target: [f64; 4]) -> bool {
+    let bounds = match geo {
+        Geo::Line { p1, p2, .. } => [
+            p1[0].min(p2[0]),
+            p1[1].min(p2[1]),
+            p1[0].max(p2[0]),
+            p1[1].max(p2[1]),
+        ],
+        Geo::Arc { cx, cy, r, .. } | Geo::Circle { cx, cy, r, .. } => {
+            [cx - r, cy - r, cx + r, cy + r]
+        }
+        Geo::Ellipse { cx, cy, a, b, .. } => {
+            let radius = a.abs() + b.abs();
+            [cx - radius, cy - radius, cx + radius, cy + radius]
+        }
+        Geo::Spline { curve, .. } => {
+            let samples = (0..=32).map(|i| curve.point_at(i as f64 / 32.0));
+            let mut bounds = [
+                f64::INFINITY,
+                f64::INFINITY,
+                f64::NEG_INFINITY,
+                f64::NEG_INFINITY,
+            ];
+            for point in samples {
+                bounds[0] = bounds[0].min(point[0]);
+                bounds[1] = bounds[1].min(point[1]);
+                bounds[2] = bounds[2].max(point[0]);
+                bounds[3] = bounds[3].max(point[1]);
+            }
+            bounds
+        }
+        // Unbounded boundaries are always retained in the nearby set.
+        Geo::Ray { .. } | Geo::InfLine { .. } => return true,
+    };
+    bounds[0] <= target[2]
+        && bounds[2] >= target[0]
+        && bounds[1] <= target[3]
+        && bounds[3] >= target[1]
+}
+
 pub fn is_trim_boundary_entity(entity: &EntityType) -> bool {
     matches!(
         entity,
@@ -211,9 +253,16 @@ pub fn is_trim_boundary_entity(entity: &EntityType) -> bool {
     )
 }
 fn build_geos(entities: &[EntityType]) -> Vec<Geo> {
+    build_geos_with_handle(entities, None)
+}
+
+/// Build boundary geometry while optionally attributing every segment to the
+/// owning INSERT. Block contents are virtual TRIM boundaries; the INSERT stays
+/// the real drawing entity and therefore remains untouched by the command.
+fn build_geos_with_handle(entities: &[EntityType], owner: Option<Handle>) -> Vec<Geo> {
     let mut out = Vec::new();
     for e in entities {
-        let h = e.common().handle;
+        let h = owner.unwrap_or_else(|| e.common().handle);
         match e {
             // A polyline acts as a boundary through its constituent edges, so
             // a Line/Arc/… can be trimmed against it. Explode into Line + Arc
@@ -2034,16 +2083,21 @@ fn crossing_trim_lwpolyline(
     };
     let seg_bulge = |i: usize| -> f64 { poly.vertices[i % n].bulge };
 
-    let mut removed = Vec::<(f64, f64)>::new();
-
-    // Compute the polyline's own non-adjacent segment intersections once.
-    // These global parameters will later be mapped back into each source segment.
-    let self_cuts = lwpoly_self_cut_params(poly, geos);
-
+    // Cuts along the whole polyline as global parameters (segment index +
+    // local parameter), as a single pick finds them: vertices are not cuts,
+    // and an open polyline's own ends are not either (#2130).
+    let mut cuts = lwpoly_self_cut_params(poly, geos);
+    // The parts of the polyline inside the crossing box.
+    let mut inside = Vec::<(f64, f64)>::new();
     for i in 0..seg_count {
         let a = vertex_xy(i);
         let b = vertex_xy(i + 1);
         let bulge = seg_bulge(i);
+        cuts.extend(
+            polyline_seg_ts(a, b, bulge, handle, geos)
+                .into_iter()
+                .map(|t| i as f64 + t),
+        );
         let window_range = if let Some(ba) = BulgeArc::from_bulge(a, b, bulge) {
             let steps = 32usize;
             let mut min_t: Option<f64> = None;
@@ -2067,54 +2121,73 @@ fn crossing_trim_lwpolyline(
         } else {
             segment_window_range(a, b, window)
         };
-        let Some((inside_lo, inside_hi)) = window_range else {
-            continue;
-        };
-        // External intersections on this segment.
-        let mut cuts = polyline_seg_ts(a, b, bulge, handle, geos);
-
-        // Also include self-intersections belonging to this source segment.
-        // `lwpoly_self_cut_params()` stores them as global polyline parameters:
-        //     segment_index + local_parameter
-        //
-        // Convert the ones belonging to segment `i` back to local 0..1.
-        let seg_start = i as f64;
-        let seg_end = seg_start + 1.0;
-
-        for global_t in self_cuts.iter().copied() {
-            if global_t > seg_start + 1e-6 && global_t < seg_end - 1e-6 {
-                cuts.push(global_t - seg_start);
-            }
-        }
-
-        // The source segment endpoints are also valid trim limits.
-        cuts.push(0.0);
-        cuts.push(1.0);
-
-        cuts.sort_by(f64::total_cmp);
-        cuts.dedup_by(|a, b| (*a - *b).abs() < 1e-6);
-
-        // Remove every trim span that is actually touched by the selection box.
-        //
-        // A single source segment may contain several sub-spans when external
-        // boundaries cross it. Only the sub-spans overlapping the window are removed.
-        for span in cuts.windows(2) {
-            let lo = span[0].clamp(0.0, 1.0);
-            let hi = span[1].clamp(0.0, 1.0);
-
-            if hi - lo <= 1e-6 {
-                continue;
-            }
-
-            // This trim span participates when its parameter interval overlaps the
-            // portion of the source segment lying inside the crossing rectangle.
-            let overlaps_window = hi >= inside_lo - 1e-6 && lo <= inside_hi + 1e-6;
-
-            if overlaps_window {
-                removed.push((i as f64 + lo, i as f64 + hi));
-            }
+        if let Some((lo, hi)) = window_range {
+            inside.push((i as f64 + lo, i as f64 + hi));
         }
     }
+    if inside.is_empty() {
+        return None;
+    }
+    if closed {
+        for t in &mut cuts {
+            *t = t.rem_euclid(total);
+        }
+    } else {
+        cuts.retain(|t| *t > 1e-6 && *t < total - 1e-6);
+    }
+    cuts.sort_by(f64::total_cmp);
+    cuts.dedup_by(|a, b| (*a - *b).abs() < 1e-6);
+    if closed && cuts.len() > 1 && cuts[0] + total - cuts[cuts.len() - 1] < 1e-6 {
+        cuts.pop();
+    }
+    // A piece that no cutting edge crosses stays whole: nothing to trim.
+    if cuts.is_empty() || (closed && cuts.len() < 2) {
+        return None;
+    }
+
+    // The pieces between consecutive cuts; a closed polyline's last piece
+    // runs past its start, split there.
+    let mut pieces = Vec::<(f64, f64)>::new();
+    if closed {
+        for pair in cuts.windows(2) {
+            pieces.push((pair[0], pair[1]));
+        }
+        let (last, first) = (cuts[cuts.len() - 1], cuts[0]);
+        pieces.push((last, total));
+        if first > 1e-6 {
+            pieces.push((0.0, first));
+        }
+    } else {
+        let mut bounds = vec![0.0];
+        bounds.extend(cuts.iter().copied());
+        bounds.push(total);
+        for pair in bounds.windows(2) {
+            pieces.push((pair[0], pair[1]));
+        }
+    }
+    let overlaps = |(lo, hi): (f64, f64)| {
+        inside
+            .iter()
+            .any(|&(a, b)| b >= lo - 1e-6 && a <= hi + 1e-6 && hi - lo > 1e-6)
+    };
+    let mut removed: Vec<(f64, f64)> = if closed {
+        // The wrapped piece counts as one: both of its halves go together.
+        let wrapped = (cuts[cuts.len() - 1], total);
+        let head = (0.0, cuts[0]);
+        let wrap_hit = overlaps(wrapped) || overlaps(head);
+        pieces
+            .into_iter()
+            .filter(|&piece| {
+                if piece == wrapped || piece == head {
+                    wrap_hit
+                } else {
+                    overlaps(piece)
+                }
+            })
+            .collect()
+    } else {
+        pieces.into_iter().filter(|&piece| overlaps(piece)).collect()
+    };
     if removed.is_empty() {
         return None;
     }
@@ -3756,6 +3829,8 @@ fn apply_pending_replacement(
 
 pub struct TrimCommand {
     all_entities: Vec<EntityType>,
+    /// Exploded block contents used only as virtual cutting geometry.
+    block_boundaries: Vec<(Handle, Vec<EntityType>)>,
     entity_index: ModifyEntityIndex,
     geos: Vec<Geo>,
     /// Replacements sent to the host, applied once their handles are known.
@@ -3796,13 +3871,34 @@ impl TrimCommand {
     }
 
     pub fn with_cutting_edges(all_entities: Vec<EntityType>, initial_edges: Vec<Handle>) -> Self {
+        Self::with_block_boundaries(all_entities, Vec::new(), initial_edges)
+    }
+
+    pub fn with_block_boundaries(
+        all_entities: Vec<EntityType>,
+        block_boundaries: Vec<(Handle, Vec<EntityType>)>,
+        initial_edges: Vec<Handle>,
+    ) -> Self {
         let all_entities: Vec<EntityType> = all_entities
             .into_iter()
             .map(entity_with_lwpolyline_world_xy_owned)
             .collect();
+        let block_boundaries = block_boundaries
+            .into_iter()
+            .map(|(handle, entities)| {
+                (
+                    handle,
+                    entities
+                        .into_iter()
+                        .map(entity_with_lwpolyline_world_xy_owned)
+                        .collect(),
+                )
+            })
+            .collect();
 
         let mut cmd = Self {
             all_entities,
+            block_boundaries,
             entity_index: ModifyEntityIndex::empty(),
             geos: Vec::new(),
             pending: Vec::new(),
@@ -3823,7 +3919,7 @@ impl TrimCommand {
     /// with the Edge option's implied extrapolation applied on top.
     fn rebuild_geos(&mut self) {
         self.entity_index = ModifyEntityIndex::build(&self.all_entities);
-        self.geos = if self.edge_set.is_empty() {
+        let mut geos = if self.edge_set.is_empty() {
             build_geos(&self.all_entities)
         } else {
             // A set, not the Vec: every trim rebuilds this, and a selection
@@ -3837,6 +3933,17 @@ impl TrimCommand {
                 .collect();
             build_geos(&picked)
         };
+        let selected_edges: Option<std::collections::HashSet<Handle>> = (!self.edge_set.is_empty())
+            .then(|| self.edge_set.iter().copied().collect());
+        for (insert_handle, entities) in &self.block_boundaries {
+            if selected_edges
+                .as_ref()
+                .is_none_or(|handles| handles.contains(insert_handle))
+            {
+                geos.extend(build_geos_with_handle(entities, Some(*insert_handle)));
+            }
+        }
+        self.geos = geos;
         if self.implied_edges {
             imply_edge_geos(&mut self.geos);
         }
@@ -3852,9 +3959,22 @@ impl TrimCommand {
         let Some(handles) = self.entity_index.nearby_handles(&self.all_entities, handle) else {
             return self.geos.clone();
         };
+        let Some(target_entity) = self.entity_index.get(&self.all_entities, handle) else {
+            return self.geos.clone();
+        };
+        let Some(target_bounds) = entity_world_aabb_f64(target_entity) else {
+            return self.geos.clone();
+        };
         self.geos
             .iter()
-            .filter(|geo| handles.contains(&geo.handle()))
+            .filter(|geo| {
+                handles.contains(&geo.handle())
+                    || self
+                        .block_boundaries
+                        .iter()
+                        .any(|(owner, _)| *owner == geo.handle()
+                            && geo_overlaps_aabb(geo, target_bounds))
+            })
             .cloned()
             .collect()
     }
@@ -4628,7 +4748,7 @@ pub struct ExtendCommand {
     /// Cached live box preview; rebuilding extensions on every raw pointer
     /// event can stall large drawings. Final commit always recalculates.
     box_preview_wires: Vec<WireModel>,
-    box_preview_at: Option<std::time::Instant>,
+    box_preview_at: Option<iced::time::Instant>,
 }
 
 impl ExtendCommand {
@@ -4928,7 +5048,7 @@ impl CadCommand for ExtendCommand {
             }
         }
         self.box_preview_wires = preview;
-        self.box_preview_at = Some(std::time::Instant::now());
+        self.box_preview_at = Some(iced::time::Instant::now());
         Some(self.box_preview_wires.clone())
     }
 
@@ -5811,6 +5931,47 @@ mod tests {
         }
         command.on_entity_replaced(Handle::new(1), &[]);
         assert!(command.all_entities.is_empty());
+    }
+
+    #[test]
+    fn trim_against_block_contents_keeps_only_the_clicked_block_interval() {
+        let target = xline_at(0.0, 5.0, 10.0, 5.0, 1);
+        let block_handle = Handle::new(90);
+        let triangle = vec![
+            xline_at(3.0, 3.0, 7.0, 5.0, 101),
+            xline_at(7.0, 5.0, 3.0, 7.0, 102),
+            xline_at(3.0, 7.0, 3.0, 3.0, 103),
+        ];
+
+        for (quick, initial_edges) in [(true, Vec::new()), (false, vec![block_handle])] {
+            let mut command = TrimCommand::with_block_boundaries(
+                vec![target.clone()],
+                vec![(block_handle, triangle.clone())],
+                initial_edges,
+            );
+            command.quick = quick;
+            command.mode = TrimMode::Pick;
+
+            let CmdResult::ReplaceEntity(handle, survivors) = command.on_entity_pick(
+                Handle::new(1),
+                DVec3::new(5.0, 5.0, 0.0),
+            ) else {
+                panic!("TRIM should cut against the block contents");
+            };
+            assert_eq!(handle, Handle::new(1));
+            assert_eq!(survivors.len(), 2);
+            let spans: Vec<_> = survivors
+                .iter()
+                .map(|entity| match entity {
+                    EntityType::Line(line) => (line.start.x, line.end.x),
+                    _ => panic!("expected line survivors"),
+                })
+                .collect();
+            assert!((spans[0].0 - 0.0).abs() < 1e-6);
+            assert!((spans[0].1 - 3.0).abs() < 1e-6);
+            assert!((spans[1].0 - 7.0).abs() < 1e-6);
+            assert!((spans[1].1 - 10.0).abs() < 1e-6);
+        }
     }
 
     #[test]

@@ -26,8 +26,8 @@ fn revision(handle: Handle, table: &BlockLookupAction) -> u64 {
 }
 
 pub(crate) fn reference_properties(
-    document: &CadDocument,
-    baseline: Option<&CadDocument>,
+    document: &Document,
+    baseline: Option<&Document>,
     document_id: u64,
     insert: Handle,
 ) -> Vec<Row> {
@@ -87,16 +87,12 @@ pub(crate) fn reference_properties(
                 }
             } else {
                 PropValue::ReadOnlyWithTooltip {
+                    // No single row applies, so there is nothing to show; the
+                    // name a column carries for itself is not a value.
                     value: selected
                         .and_then(|row| options.get(row))
                         .cloned()
-                        .unwrap_or_else(|| {
-                            if output.unmatched_name.is_empty() {
-                                "Custom".into()
-                            } else {
-                                output.unmatched_name.clone()
-                            }
-                        }),
+                        .unwrap_or_default(),
                     tooltip: parameter.lookup_description.clone(),
                 }
             };
@@ -111,13 +107,13 @@ pub(crate) fn reference_properties(
 }
 
 pub(crate) fn evaluate_property(
-    document: &CadDocument,
-    baseline: Option<&CadDocument>,
+    document: &Document,
+    baseline: Option<&Document>,
     key: Key,
     column: usize,
     expected: u64,
     input: Input,
-) -> Result<Option<CadDocument>, &'static str> {
+) -> Result<Option<Document>, &'static str> {
     let source = baseline.unwrap_or(document);
     let (handle, view) =
         table(source, key.definition, key.parameter)?.ok_or("The Lookup table is unavailable.")?;

@@ -15,7 +15,7 @@
 
 use crate::entities::leader::LeaderTess;
 use codec::types::Color as AcadColor;
-use codec::{CadDocument, EntityType, Handle};
+use codec::{Document, EntityType, Handle};
 use glam::Vec3;
 
 use crate::scene::convert::acad_to_render::{convert, RenderObject};
@@ -91,7 +91,7 @@ use crate::entities::field::{BOX_ABOVE as FIELD_BOX_ABOVE, BOX_BELOW as FIELD_BO
 /// FIELD_BOX_ABOVE across it. `None` when the host's fields cannot be
 /// located in its text (the whole text is boxed then).
 fn field_run_corner_groups(
-    document: &codec::CadDocument,
+    document: &codec::Document,
     entity: &EntityType,
     stroke_groups: &[crate::scene::convert::acad_to_render::TextStroke],
     anno: f64,
@@ -724,11 +724,118 @@ fn split_mixed_polyline(
         }
     }
 
+    // A dashed band leaves its joints open as the dashes fall.
+    if pattern_length <= 0.0 {
+        let bevels = arc_joint_bevels(tangent_geoms, key_vertices, seg_widths, global_world_width);
+        if !bevels.is_empty() {
+            let (fill_tris, fill_tris_low) = points_to_ds(bevels);
+            out.push(WireModel {
+                name: name.to_string(),
+                color,
+                selected,
+                line_weight_px,
+                fill_tris,
+                fill_tris_low,
+                aabb: WireModel::UNBOUNDED_AABB,
+                plinegen: true,
+                display_visible: true,
+                plot_visible: true,
+                ..Default::default()
+            });
+        }
+    }
+
     out
 }
 
+/// The bands of a line and an arc, or of two arcs, are separate wires that
+/// end square at their joint, so a turn there opens a notch on its outer side.
+/// A bevel triangle on each side of such a joint closes it (#2200).
+fn arc_joint_bevels(
+    tangent_geoms: &[TangentGeom],
+    key_vertices: &[[f64; 3]],
+    seg_widths: &[(f32, f32)],
+    global_world_width: f32,
+) -> Vec<[f64; 3]> {
+    use glam::DVec3;
+    let (n, m) = (tangent_geoms.len(), key_vertices.len());
+    if n < 2 || m < 2 {
+        return Vec::new();
+    }
+    let vertex = |k: usize| DVec3::from(key_vertices[k % m]);
+    let half = |i: usize| {
+        let (start, end) = seg_widths
+            .get(i)
+            .copied()
+            .unwrap_or((global_world_width, global_world_width));
+        (f64::from(start) * 0.5, f64::from(end) * 0.5)
+    };
+    // Segment `i`'s direction of travel at its start or end, and its plane
+    // normal when it is an arc.
+    let direction = |i: usize, at_end: bool| -> Option<(DVec3, Option<DVec3>)> {
+        let (a, b) = (vertex(i), vertex(i + 1));
+        match tangent_geoms[i] {
+            TangentGeom::Line { .. } => Some(((b - a).try_normalize()?, None)),
+            TangentGeom::Arc {
+                center,
+                axis_x,
+                axis_y,
+                radius,
+                start_angle,
+                ..
+            } => {
+                let (c, x, y) = (DVec3::from(center), DVec3::from(axis_x), DVec3::from(axis_y));
+                let normal = x.cross(y).try_normalize()?;
+                let (sin, cos) = start_angle.sin_cos();
+                let first = c + radius * (cos * x + sin * y);
+                // The polyline runs the arc clockwise when the arc's own
+                // start sits at the segment's end.
+                let reversed = first.distance_squared(b) < first.distance_squared(a);
+                let at = if at_end { b } else { a };
+                let ccw = normal.cross(at - c).try_normalize()?;
+                Some((if reversed { -ccw } else { ccw }, Some(normal)))
+            }
+            _ => None,
+        }
+    };
+    // Joints between consecutive segments, and the last segment to the first
+    // where the polyline comes back to its start.
+    // ponytail: an open polyline whose ends merely touch is joined there too;
+    // pass the closed flag in if that bevel ever shows.
+    let closed = m == n || vertex(n).distance_squared(vertex(0)) < 1e-18;
+    let joints = (1..n).chain(closed.then_some(n));
+    let mut tris = Vec::new();
+    for k in joints {
+        let (before, after) = (k - 1, k % n);
+        let either_arc = [before, after]
+            .iter()
+            .any(|&i| matches!(tangent_geoms[i], TangentGeom::Arc { .. }));
+        if !either_arc {
+            continue;
+        }
+        let (Some((d0, n0)), Some((d1, n1))) = (direction(before, true), direction(after, false))
+        else {
+            continue;
+        };
+        // A tangent joint has no notch to close.
+        let Some(normal) = n0.or(n1).filter(|_| d0.dot(d1) < 1.0 - 1e-9) else {
+            continue;
+        };
+        let (h0, h1) = (half(before).1, half(after).0);
+        if h0 <= 0.0 && h1 <= 0.0 {
+            continue;
+        }
+        let p = vertex(k);
+        let (left0, left1) = (normal.cross(d0), normal.cross(d1));
+        for side in [1.0, -1.0] {
+            tris.extend([p, p + left0 * h0 * side, p + left1 * h1 * side].map(|v| v.to_array()));
+        }
+    }
+    tris
+}
+
 fn point_cloud_wires(
-    document: &CadDocument,
+    document: &Document,
     handle: Handle,
     entity: &EntityType,
     selected: bool,
@@ -870,7 +977,7 @@ pub(crate) fn shift_wire_to_world(w: &mut WireModel, origin: [f64; 3]) {
 /// For Solid3D entities this returns an empty wire; mesh tessellation lives
 /// in `solid3d_tess` and is uploaded via the mesh pipeline instead.
 pub fn tessellate(
-    document: &CadDocument,
+    document: &Document,
     handle: Handle,
     entity: &EntityType,
     selected: bool,
@@ -1604,14 +1711,12 @@ pub fn tessellate(
                         });
                     }
                 }
-                // Empty input (no glyphs) → emit a single empty wire so the
-                // entity still has a hit-test target via snap_pts. With SDF on
-                // this is the normal path (strokes suppressed) and the wire
-                // also carries the glyph quads built above.
-                if bins.is_empty() {
+                // Built for both branches below: text with run-less strokes
+                // (underline, a fraction rule) takes the stroke route, and its
+                // mask and frame must not be lost there.
+                let mtext_chrome = || {
                     let mut wires: Vec<WireModel> = Vec::new();
-                    wires.extend(field_background.take());
-                    // MTEXT background and frame follow the glyph bounds.
+                    // MTEXT background mask and frame follow the glyph bounds.
                     if text_aabb != WireModel::UNBOUNDED_AABB {
                         if let EntityType::MText(m) = entity {
                             let has_fill = m.background_fill_flags & 0x03 != 0;
@@ -1747,6 +1852,16 @@ pub fn tessellate(
                             }
                         }
                     }
+                    wires
+                };
+                // Empty input (no glyphs) → emit a single empty wire so the
+                // entity still has a hit-test target via snap_pts. With SDF on
+                // this is the normal path (strokes suppressed) and the wire
+                // also carries the glyph quads built above.
+                if bins.is_empty() {
+                    let mut wires: Vec<WireModel> = Vec::new();
+                    wires.extend(field_background.take());
+                    wires.extend(mtext_chrome());
                     // Debug (env OCS_TEXT_BOX): draw a rectangle around the glyph
                     // bounds as a separate outline wire so the text box is
                     // visible for testing. The empty text wire below is left
@@ -1843,6 +1958,7 @@ pub fn tessellate(
 
                 let mut out: Vec<WireModel> = Vec::new();
                 out.extend(field_background);
+                out.extend(mtext_chrome());
                 let mut is_first = true;
                 for bin in bins {
                     let wire_color = match bin.color {
@@ -2381,6 +2497,8 @@ pub fn tessellate(
                 station_pieces,
                 source_length,
                 plinegen,
+                separate_runs,
+                solid,
             } => {
                 let (local_pts, local_pts_low) = points_to_ds(points);
                 let key_vertices = te
@@ -2394,7 +2512,7 @@ pub fn tessellate(
                     &point_segments,
                     &station_pieces,
                 );
-                return vec![WireModel {
+                let base = WireModel {
                     bg_adapt: None,
                     point_marker: None,
                     taper_widths: Vec::new(),
@@ -2430,7 +2548,57 @@ pub fn tessellate(
                     fill_tris_low: Vec::new(),
 
                     ..Default::default()
-                }];
+                };
+                let mut wires = Vec::new();
+                if separate_runs {
+                    let mut start = 0;
+                    while start < base.points.len() {
+                        let end = base.points[start..]
+                            .iter()
+                            .position(|point| point[0].is_nan())
+                            .map_or(base.points.len(), |offset| start + offset);
+                        if end > start + 1 {
+                            // Snap and pick data ride on one wire only.
+                            wires.push(WireModel {
+                                points: base.points[start..end].to_vec(),
+                                points_low: base.points_low[start..end].to_vec(),
+                                pattern_stations: Vec::new(),
+                                plinegen: true,
+                                snap_pts: Vec::new(),
+                                tangent_geoms: Vec::new(),
+                                key_vertices: Vec::new(),
+                                ..base.clone()
+                            });
+                        }
+                        start = end + 1;
+                    }
+                } else if !base.points.is_empty() {
+                    wires.push(base.clone());
+                }
+                if !solid.is_empty() || (separate_runs && wires.is_empty()) {
+                    let (solid_pts, solid_pts_low) = points_to_ds(solid);
+                    let mut solid_wire = WireModel {
+                        points: solid_pts,
+                        points_low: solid_pts_low,
+                        pattern_stations: Vec::new(),
+                        pattern_length: 0.0,
+                        pattern: [0.0; 8],
+                        ..base
+                    };
+                    if !separate_runs {
+                        solid_wire.snap_pts = Vec::new();
+                        solid_wire.tangent_geoms = Vec::new();
+                        solid_wire.key_vertices = Vec::new();
+                    }
+                    wires.push(solid_wire);
+                } else if separate_runs {
+                    if let Some(first) = wires.first_mut() {
+                        first.snap_pts = base.snap_pts;
+                        first.tangent_geoms = base.tangent_geoms;
+                        first.key_vertices = base.key_vertices;
+                    }
+                }
+                return wires;
             }
 
             RenderObject::SegmentedLines(points) => {
@@ -2794,7 +2962,7 @@ pub(crate) enum ArrowKind {
 }
 
 pub(crate) fn arrow_from_block(
-    doc: &CadDocument,
+    doc: &Document,
     handle: codec::types::Handle,
     dimasz: f32,
 ) -> ArrowKind {
@@ -2802,7 +2970,7 @@ pub(crate) fn arrow_from_block(
 }
 
 pub(crate) fn arrow_from_block_with_deferred_hatch(
-    doc: &CadDocument,
+    doc: &Document,
     handle: codec::types::Handle,
     dimasz: f32,
     defer_hatch: bool,
@@ -2931,7 +3099,7 @@ fn builtin_arrow_from_block_name(name: &str, dimasz: f32) -> Option<ArrowKind> {
 }
 
 fn custom_arrow_from_block(
-    doc: &CadDocument,
+    doc: &Document,
     record: &codec::tables::BlockRecord,
     dimasz: f32,
     defer_hatch: bool,
@@ -2983,7 +3151,7 @@ fn custom_arrow_from_block(
 }
 
 fn append_custom_arrow_leaf(
-    doc: &CadDocument,
+    doc: &Document,
     entity: &EntityType,
     lines: &mut Vec<[f32; 3]>,
     fill: &mut Vec<[f32; 3]>,
@@ -3221,6 +3389,13 @@ pub(crate) struct DimGeom {
     /// dimension line's dashes.
     pub(crate) arrow_lines: Vec<[f32; 3]>,
     pub(crate) arrow_fill: Vec<[f32; 3]>,
+    /// World-space point that `ext_lines` / `dim_lines` / `arrow_lines` /
+    /// `arrow_fill` were built relative to. Dimension tessellation shifts the
+    /// definition data to a nearby origin so its f32 geometry keeps
+    /// sub-millimetre precision at UTM scale; consumers that need world-space
+    /// points (explode) add this back. Zero for leader and multileader
+    /// arrowheads, whose points are already world-space f32.
+    pub(crate) origin: codec::types::Vector3,
 }
 
 impl DimGeom {
@@ -3230,6 +3405,7 @@ impl DimGeom {
             dim_lines: Vec::new(),
             arrow_lines: Vec::new(),
             arrow_fill: Vec::new(),
+            origin: codec::types::Vector3::ZERO,
         }
     }
 }
@@ -3514,7 +3690,7 @@ mod tests {
     #[test]
     fn none_arrow_draws_what_its_block_holds() {
         // A drawing's "_NONE" holding a 0.25 circle, which AutoCAD 2025 draws.
-        let mut doc = CadDocument::new();
+        let mut doc = Document::new();
         let circle = codec::entities::Circle::from_center_radius(codec::types::Vector3::ZERO, 0.25);
         crate::app::define_block_raw_doc(
             &mut doc,
@@ -3534,7 +3710,7 @@ mod tests {
         assert!((reach - 0.25).abs() < 1e-3, "circle radius {reach}");
 
         // AutoCAD's own "_None" is empty: no arrow.
-        let mut doc = CadDocument::new();
+        let mut doc = Document::new();
         crate::app::define_block_raw_doc(&mut doc, "_None", codec::types::Vector3::ZERO, &[]);
         let handle = doc.block_records.get("_None").unwrap().handle;
         assert!(matches!(
@@ -3896,5 +4072,46 @@ mod tests {
         assert_eq!(inst.start_width, 25.0);
         // params.w (end_width) is at end_angle (physical start, 5.0)
         assert_eq!(inst.params[3], 5.0);
+    }
+
+    #[test]
+    fn mtext_mask_and_frame_draw_on_text_with_run_less_strokes() {
+        // An underline or a fraction rule is a run-less stroke, which sends
+        // the text down the stroke route; its mask and frame are drawn there
+        // too, exactly as for plain text.
+        let wires = |value: &str, flags: i32| {
+            let mut text =
+                codec::entities::MText::with_value(value, codec::types::Vector3::new(0., 0., 0.));
+            text.height = 2.5;
+            text.background_fill_flags = flags;
+            text.background_color = codec::types::Color::Index(1);
+            tessellate(
+                &codec::Document::new(),
+                Handle::new(123),
+                &EntityType::MText(Box::new(text)),
+                false,
+                [1.0; 4],
+                0.0,
+                [0.0; 8],
+                1.0,
+                1.0,
+                None,
+                None,
+                [0.0; 4],
+                false,
+            )
+        };
+        for value in ["plain", r"\Lunder\l", r"a\S1/2;"] {
+            let bare = wires(value, 0);
+            let fill = wires(value, 0x01);
+            assert_eq!(fill.len(), bare.len() + 1, "{value}: fill");
+            assert!(
+                fill.iter()
+                    .any(|w| !w.fill_tris.is_empty() && w.points.is_empty()),
+                "{value}: the fill is a filled wire"
+            );
+            assert_eq!(wires(value, 0x02).len(), bare.len() + 1, "{value}: mask");
+            assert_eq!(wires(value, 0x10).len(), bare.len() + 1, "{value}: frame");
+        }
     }
 }

@@ -8,7 +8,7 @@ use codec::{
     EntityType,
 };
 
-fn fixture() -> (CadDocument, Handle) {
+fn fixture() -> (Document, Handle) {
     let mut scene = Scene::new();
     scene.define_block_raw(
         "LOOKUP",
@@ -21,7 +21,7 @@ fn fixture() -> (CadDocument, Handle) {
     let definition = scene.document.block_records.get("LOOKUP").unwrap().handle;
     (scene.document, definition)
 }
-fn add_distance(document: &mut CadDocument, definition: Handle) {
+fn add_distance(document: &mut Document, definition: Handle) {
     distance::create(
         document,
         definition,
@@ -32,7 +32,7 @@ fn add_distance(document: &mut CadDocument, definition: Handle) {
     )
     .unwrap();
 }
-fn draft(document: &CadDocument, definition: Handle, parameter: Handle) -> BlockLookupAction {
+fn draft(document: &Document, definition: Handle, parameter: Handle) -> BlockLookupAction {
     let p = parameters(document, definition)
         .into_iter()
         .find(|(h, _)| *h == parameter)
@@ -47,7 +47,7 @@ fn draft(document: &CadDocument, definition: Handle, parameter: Handle) -> Block
     table.expressions = vec!["2".into(), "Small".into(), "4".into(), "Large".into()];
     table
 }
-fn graph_data(document: &CadDocument, definition: Handle) -> codec::objects::BlockEvaluationGraph {
+fn graph_data(document: &Document, definition: Handle) -> codec::objects::BlockEvaluationGraph {
     let ObjectType::DynamicBlock(o) =
         &document.objects[&graph_handle(document, definition).unwrap()]
     else {
@@ -58,7 +58,7 @@ fn graph_data(document: &CadDocument, definition: Handle) -> codec::objects::Blo
     };
     g.clone()
 }
-fn assert_links(document: &CadDocument, definition: Handle) {
+fn assert_links(document: &Document, definition: Handle) {
     let g = graph_data(document, definition);
     for n in &g.nodes {
         assert!(graph::valid_lists(&g, n.id), "invalid node {}", n.id);
@@ -79,7 +79,7 @@ fn assert_links(document: &CadDocument, definition: Handle) {
         );
     }
 }
-fn roundtrip(document: &CadDocument, definition: Handle) {
+fn roundtrip(document: &Document, definition: Handle) {
     let graph = graph_handle(document, definition).unwrap();
     for extension in ["dwg", "dxf"] {
         let bytes = crate::io::save_to_bytes(document, extension, document.version).unwrap();
@@ -572,4 +572,51 @@ fn lookup_basepoint_existing_attributes_follow_anchor_and_editor_frame() {
         .length()
             < 1e-9
     );
+}
+
+#[test]
+fn a_lookup_output_that_matches_no_row_prints_nothing() {
+    let (mut document, definition) = fixture();
+    let line = document.block_records.get("LOOKUP").unwrap().entity_handles[0];
+    let distance_handle = distance::create(
+        &mut document,
+        definition,
+        distance::Kind::Linear,
+        Vector3::ZERO,
+        Vector3::new(2., 0., 0.),
+        Vector3::UNIT_Y,
+    )
+    .unwrap();
+    crate::scene::block_actions::create(
+        &mut document,
+        definition,
+        crate::scene::block_actions::Kind::Move,
+        distance_handle,
+        &[line],
+        glam::DVec3::ZERO,
+    )
+    .unwrap();
+    let lookup = create(&mut document, definition, Vector3::ZERO).unwrap();
+    let mut table = draft(&document, definition, lookup);
+    // The reference's input is 2; neither authored row reads that.
+    table.expressions = vec!["8".into(), "Small".into(), "16".into(), "Large".into()];
+    for column in &mut table.columns {
+        column.writable = false;
+    }
+    apply_table(&mut document, definition, lookup, table).unwrap();
+    let insert = document
+        .add_entity(EntityType::Insert(Insert::new("LOOKUP", Vector3::ZERO)))
+        .unwrap();
+    let rows = reference_properties(&document, None, 0, insert);
+    let value = rows
+        .iter()
+        .find(|row| row.field == "dyn_lookup")
+        .map(|row| match &row.value {
+            crate::scene::model::object::PropValue::ReadOnlyWithTooltip { value, .. } => {
+                value.clone()
+            }
+            other => panic!("expected a read-only lookup row, got {other:?}"),
+        })
+        .expect("the lookup output has a property row");
+    assert_eq!(value, "", "the cell shows the table's own column name: {value:?}");
 }

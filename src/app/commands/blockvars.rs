@@ -27,7 +27,7 @@ pub(super) fn setvar_listing() -> String {
 }
 
 /// EXPLMODE of the drawing (default 1).
-pub(crate) fn explmode(document: &codec::CadDocument) -> i16 {
+pub(crate) fn explmode(document: &codec::Document) -> i16 {
     crate::io::drawing_variable(document, "EXPLMODE")
         .and_then(|v| v.trim().parse().ok())
         .unwrap_or(1)
@@ -59,7 +59,7 @@ impl OpenCADStudio {
             }
             "INSNAME" | "BLOCKNAVIGATE" => {
                 let current = if name == "INSNAME" {
-                    self.insname.clone()
+                    self.tabs[i].insname.clone()
                 } else {
                     self.block_navigate.clone()
                 };
@@ -71,7 +71,7 @@ impl OpenCADStudio {
                             v.trim_matches('"').to_string()
                         };
                         if name == "INSNAME" {
-                            self.insname = v;
+                            self.tabs[i].insname = v;
                         } else {
                             self.block_navigate = if v.is_empty() { ".".to_string() } else { v };
                             self.persist_settings_if_changed();

@@ -8,7 +8,7 @@ use codec::objects::{
     DynamicBlockData, ObjectType,
 };
 use codec::types::{Transform, Vector3};
-use codec::{CadDocument, Handle};
+use codec::{Document, Handle};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Kind {
@@ -66,7 +66,7 @@ pub(crate) struct Parameter<'a> {
     pub offset: f64,
 }
 
-fn graph_handle(document: &CadDocument, definition: Handle) -> Option<Handle> {
+fn graph_handle(document: &Document, definition: Handle) -> Option<Handle> {
     match document
         .objects
         .get(&super::block_authoring::definition_dictionary(document, definition)?)?
@@ -76,7 +76,7 @@ fn graph_handle(document: &CadDocument, definition: Handle) -> Option<Handle> {
     }
 }
 
-pub(crate) fn parameters(document: &CadDocument, definition: Handle) -> Vec<Parameter<'_>> {
+pub(crate) fn parameters(document: &Document, definition: Handle) -> Vec<Parameter<'_>> {
     let Some(graph) = graph_handle(document, definition) else {
         return vec![];
     };
@@ -132,7 +132,7 @@ pub(crate) fn parameters(document: &CadDocument, definition: Handle) -> Vec<Para
 }
 
 pub(crate) fn set_alignment_type(
-    document: &mut CadDocument, definition: Handle, handle: Handle, perpendicular: bool,
+    document: &mut Document, definition: Handle, handle: Handle, perpendicular: bool,
 ) -> Result<bool, &'static str> {
     if !parameters(document, definition).iter().any(|p| p.handle == handle && p.kind == Kind::Alignment) {
         return Err("Select an Alignment parameter in the active block definition.");
@@ -145,7 +145,7 @@ pub(crate) fn set_alignment_type(
 }
 
 pub(crate) fn placement_error(
-    document: &CadDocument,
+    document: &Document,
     definition: Handle,
     kind: Kind,
 ) -> Option<&'static str> {
@@ -185,13 +185,26 @@ pub(crate) fn points_error(
     None
 }
 
+#[cfg(test)]
 pub(crate) fn create(
-    document: &mut CadDocument,
+    document: &mut Document,
     definition: Handle,
     kind: Kind,
     base: Vector3,
     end: Vector3,
     reference: Vector3,
+) -> Result<Handle, &'static str> {
+    create_with_label(document, definition, kind, base, end, reference, None)
+}
+
+pub(crate) fn create_with_label(
+    document: &mut Document,
+    definition: Handle,
+    kind: Kind,
+    base: Vector3,
+    end: Vector3,
+    reference: Vector3,
+    label_offset: Option<f64>,
 ) -> Result<Handle, &'static str> {
     if let Some(error) = points_error(kind, base, end, reference)
         .or_else(|| placement_error(document, definition, kind))
@@ -279,7 +292,7 @@ pub(crate) fn create(
             parameter: native,
             definition_base_angle_point: reference,
             angle_name: label,
-            angle: (end - base).length() * 0.15,
+            angle: label_offset.unwrap_or((end - base).length() * 0.15),
             value_set: BlockParameterValueSet {
                 flags: 3,
                 maximum: std::f64::consts::TAU,
@@ -382,6 +395,55 @@ pub(crate) fn create(
     Ok(handles[0])
 }
 
+/// Frame of the drawn rotation arc: in-plane axes `u` (base-angle direction) and
+/// `v`, the radius, and the counterclockwise sweep in radians (a zero default
+/// angle draws the full turn).
+pub(crate) fn rotation_arc(
+    base: Vector3,
+    end: Vector3,
+    reference: Vector3,
+) -> Option<(Vector3, Vector3, f64, f64)> {
+    let d = end - base;
+    let radius = d.x.hypot(d.y).hypot(d.z);
+    if !radius.is_finite() || radius <= 1e-10 {
+        return None;
+    }
+    let reference = reference - base;
+    let u = reference.normalize();
+    let mut v = if u.z.abs() < 1e-10 && d.z.abs() < 1e-10 {
+        Vector3::new(-u.y, u.x, 0.0)
+    } else {
+        d - u * d.dot(&u)
+    };
+    if v.length() <= 1e-10 {
+        v = Vector3::new(-u.y, u.x, 0.0);
+    }
+    if v.length() <= 1e-10 {
+        v = Vector3::UNIT_Y;
+    }
+    let v = v.normalize();
+    let mut sweep = d.dot(&v).atan2(d.dot(&u)).rem_euclid(std::f64::consts::TAU);
+    if sweep.abs() <= 1e-10 {
+        sweep = std::f64::consts::TAU;
+    }
+    Some((u, v, radius, sweep))
+}
+
+/// Distance from the arc midpoint to the picked label point, stored as the
+/// parameter's label offset.
+pub(crate) fn rotation_label_offset(
+    base: Vector3,
+    end: Vector3,
+    reference: Vector3,
+    label: Vector3,
+) -> Option<f64> {
+    let (u, v, radius, sweep) = rotation_arc(base, end, reference)?;
+    let middle = sweep * 0.5;
+    let anchor = base + (u * middle.cos() + v * middle.sin()) * radius;
+    let length = (label - anchor).length();
+    length.is_finite().then_some(length)
+}
+
 pub(crate) fn graphic(parameter: &Parameter<'_>) -> Graphic {
     let base = parameter.native.definition_base_point;
     let end = parameter.native.definition_end_point;
@@ -393,24 +455,9 @@ pub(crate) fn graphic(parameter: &Parameter<'_>) -> Graphic {
     }
     match parameter.kind {
         Kind::Rotation => {
-            let reference = parameter.reference - base;
-            let u = reference.normalize();
-            let mut v = if u.z.abs() < 1e-10 && d.z.abs() < 1e-10 {
-                Vector3::new(-u.y, u.x, 0.0)
-            } else {
-                d - u * d.dot(&u)
+            let Some((u, v, radius, angle)) = rotation_arc(base, end, parameter.reference) else {
+                return result;
             };
-            if v.length() <= 1e-10 {
-                v = Vector3::new(-u.y, u.x, 0.0);
-            }
-            if v.length() <= 1e-10 {
-                v = Vector3::UNIT_Y;
-            }
-            let v = v.normalize();
-            let mut angle = d.dot(&v).atan2(d.dot(&u)).rem_euclid(std::f64::consts::TAU);
-            if angle.abs() <= 1e-10 {
-                angle = std::f64::consts::TAU;
-            }
             let at = |angle: f64, r: f64| base + (u * angle.cos() + v * angle.sin()) * r;
             result
                 .lines
@@ -461,7 +508,7 @@ pub(crate) fn marker_tail(parameter: &Parameter<'_>) -> Vector3 {
 }
 
 pub(crate) fn reframe(
-    document: &mut CadDocument,
+    document: &mut Document,
     definition: Handle,
     transform: &Transform,
 ) -> usize {

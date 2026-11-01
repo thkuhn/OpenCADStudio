@@ -195,6 +195,7 @@ impl OpenCADStudio {
                 self.grip_pending = None;
                 self.visibility_popup = None;
                 self.table_popup = None;
+                self.flip_popup = None;
                 self.grip_popup = None;
                 self.grip_hover = None;
             }
@@ -370,6 +371,20 @@ impl OpenCADStudio {
                     self.command_line.input.push_str(&s);
                 }
             } else {
+                // A letter after digits typed into a field makes the whole
+                // entry an option keyword such as `2P` or `3P` (#2312).
+                if s.starts_with(|c: char| c.is_alphabetic())
+                    && self.command_line.input.is_empty()
+                    && self.dyn_input
+                    && !self.tabs[i].dyn_fields.is_empty()
+                {
+                    let a = self.tabs[i]
+                        .dyn_active
+                        .min(self.tabs[i].dyn_fields.len() - 1);
+                    if let Some(typed) = self.tabs[i].dyn_fields[a].buffer.take() {
+                        self.command_line.input = typed;
+                    }
+                }
                 // Preserve case while entering a command or literal/free-text
                 // value. Active single-token prompt keywords keep their
                 // established uppercase normalization.
@@ -874,20 +889,22 @@ impl OpenCADStudio {
                 .map(|c| c.is_free_text_step())
                 .unwrap_or(false);
             let raw = self.command_line.input.clone();
-            let toks: Vec<String> = raw.split_whitespace().map(String::from).collect();
-            if toks.len() > 1 && !wants_spaces {
-                self.command_line.input.clear();
-                if self.tabs[i].active_cmd.is_some() {
-                    let mut tasks = Vec::new();
-                    for tok in &toks {
-                        if self.tabs[i].active_cmd.is_none() {
-                            break;
+            if !raw.trim().starts_with('(') {
+                let toks: Vec<String> = raw.split_whitespace().map(String::from).collect();
+                if toks.len() > 1 && !wants_spaces {
+                    self.command_line.input.clear();
+                    if self.tabs[i].active_cmd.is_some() {
+                        let mut tasks = Vec::new();
+                        for tok in &toks {
+                            if self.tabs[i].active_cmd.is_none() {
+                                break;
+                            }
+                            tasks.push(self.feed_active_cmd(tok));
                         }
-                        tasks.push(self.feed_active_cmd(tok));
+                        return Task::batch(tasks);
                     }
-                    return Task::batch(tasks);
+                    return self.run_command_line(&raw);
                 }
-                return self.run_command_line(&raw);
             }
         }
         // With the command line empty, a typed dynamic-input value
@@ -907,6 +924,13 @@ impl OpenCADStudio {
                 .map(|c| c.is_free_text_step())
                 .unwrap_or(false);
             let raw = self.command_line.input.trim().to_string();
+            if raw.trim_start_matches('_').eq_ignore_ascii_case("FROM")
+                && self.point_modifier_step(i)
+            {
+                self.command_line.input.clear();
+                self.start_from_modifier(i);
+                return self.focus_cmd_input();
+            }
             let is_mtp = raw.trim_start_matches('_').eq_ignore_ascii_case("MTP")
                 || raw.trim_start_matches('_').eq_ignore_ascii_case("M2P");
             if is_mtp {
@@ -946,6 +970,13 @@ impl OpenCADStudio {
             // still work when dynamic input is off. See #97.
             // Selection keywords (P / L) at a Select objects prompt
             // consume the token before any other interpretation (#426).
+            // A typed window waiting for its opposite corner reads this
+            // entry first, Enter included.
+            if self.typed_window_corner.is_some() {
+                if let Some(task) = self.typed_object_pick(&text) {
+                    return task;
+                }
+            }
             if let Some(task) = self.try_selection_keyword(&text) {
                 return task;
             }
@@ -995,6 +1026,9 @@ impl OpenCADStudio {
                 }
             }
 
+            if let Some(task) = self.typed_object_pick(&text) {
+                return task;
+            }
             if let Some((coord, kind)) = parse_coord(&text) {
                 // Command-line coordinates are absolute by default,
                 // independent of DYN: `@` forces relative, `#` forces
@@ -1004,7 +1038,7 @@ impl OpenCADStudio {
                 // absolute regardless of the DYN setting.)
                 let want_relative = matches!(kind, CoordKind::Relative);
                 let ucs = self.tabs[i].active_ucs.clone();
-                let wcs_pt = match (want_relative, self.last_point) {
+                let wcs_pt = match (want_relative, self.relative_input_base(i)) {
                     (true, Some(base)) => {
                         // Offset from the last point, rotated by the
                         // UCS axes (no origin translation).
@@ -1312,7 +1346,12 @@ impl OpenCADStudio {
             self.resolve_user_select(false);
             return Task::none();
         }
-        if self.ribbon.escape_extension() {
+        if self.ribbon.escape_search()
+            || self.ribbon.close_menu()
+            || self.ribbon.close_app_menu()
+            || self.ribbon.escape_extension()
+            || self.ribbon.close_popup()
+        {
             return Task::none();
         }
         if self.aec.aec_layer_pair_draw.is_some() {
@@ -1330,8 +1369,12 @@ impl OpenCADStudio {
         self.snapper.clear_override();
         // Clear the deferred snap dwell — the command is being cancelled.
         self.snap_dwell = None;
-        // Open MText editor swallows Escape (cancel without committing).
-        if self.mtext_editor.is_some() {
+        // Open MText editor swallows Escape (cancel without committing). An
+        // open menu or the colour list closes first, one per Escape.
+        if let Some(ed) = self.mtext_editor.as_mut() {
+            if ed.menu.take().is_some() || std::mem::take(&mut ed.color_picker_open) {
+                return Task::none();
+            }
             self.mtext_cancel();
             return self.post_editor_closed(false);
         }
@@ -1403,6 +1446,9 @@ impl OpenCADStudio {
         if self.table_popup.take().is_some() {
             return Task::none();
         }
+        if self.flip_popup.take().is_some() {
+            return Task::none();
+        }
         if self.visibility_popup.take().is_some() {
             self.table_popup = None;
             return Task::none();
@@ -1445,6 +1491,17 @@ impl OpenCADStudio {
         if self.layout_rename_state.take().is_some() {
             return Task::none();
         }
+        // A palette cell holding typed text reverts first: the value goes
+        // back to the model's and the row keeps its focus and its
+        // reference selected. A second Esc then escalates as usual.
+        if self.tabs[i_e].active_cmd.is_none() {
+            let panel = &mut self.tabs[i_e].properties;
+            if let Some(key) = panel.active_field.clone() {
+                if panel.edit_buf.remove(&key).is_some() {
+                    return Task::none();
+                }
+            }
+        }
         // Typed text on the command line cancels first — one
         // Esc empties the buffer, a second Esc then escalates
         // to whatever the current mode would otherwise do
@@ -1468,6 +1525,7 @@ impl OpenCADStudio {
             self.tabs[i].selected_authoring = None;
             self.tabs[i].scene.deselect_all();
             self.refresh_properties();
+            self.tabs[i].scene.set_box_hover_highlights(&[]);
             let mut sel = self.tabs[i].scene.selection.borrow_mut();
             sel.gesture.box_anchor = None;
             // Also drop the world-space anchor, or the next pan/zoom
@@ -2616,6 +2674,9 @@ impl OpenCADStudio {
                 if let Some(h) = found {
                     self.tabs[i].scene.document.header.current_dimstyle_handle = h;
                     self.tabs[i].scene.document.header.current_dimstyle_name = name;
+                    crate::scene::creation_style::sync_header_dim_vars(
+                        &mut self.tabs[i].scene.document,
+                    );
                 }
             }
             StyleKey::MLeaderStyle => {
@@ -3587,9 +3648,17 @@ impl OpenCADStudio {
                 };
                 // A text taking a style takes what the style fixes: its height
                 // when the style sets one, its width factor and oblique angle.
+                // An annotative style's height is on paper: the text takes it
+                // at the current annotation scale.
                 let text_style = (field == "style")
                     .then(|| self.tabs[i].scene.document.text_styles.get(&value).cloned())
-                    .flatten();
+                    .flatten()
+                    .map(|mut style| {
+                        if style.annotative {
+                            style.height *= self.tabs[i].scene.creation_annotation_multiplier();
+                        }
+                        style
+                    });
                 // A dimension taking a style takes its annotative state, as a
                 // new dimension would. (#1917)
                 let dim_style_annotative = (field == "style_name")
@@ -4691,6 +4760,42 @@ impl OpenCADStudio {
         Task::none()
     }
 
+    /// Commit one plugin class parameter's edit (API v14): the stamped
+    /// selection writes through the session's class-parameter path — one
+    /// undo step inside the record update, the declaring plugin re-stages
+    /// from the record's dirty notification; a refusal (unknown or
+    /// non-editable parameter, unparseable value, unresolved record)
+    /// reports and changes nothing. The section binds to one entity and
+    /// exists only on the native build (the wasm build has no plugin
+    /// registry the section could bind to), so the wasm route stays inert.
+    pub(super) fn on_prop_plugin_param_commit(&mut self, name: String) -> Task<Message> {
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let i = self.active_tab;
+            self.tabs[i].properties.active_field = None;
+            let key = crate::ui::properties::plugin_param_edit_key(&name);
+            let handles = self.property_target_handles(i);
+            if handles.len() != 1 {
+                return Task::none();
+            }
+            let Some(value) = self.tabs[i].properties.edit_buf.remove(&key) else {
+                return Task::none();
+            };
+            let result;
+            {
+                let mut host = crate::app::plugin_host::HostSession::new(self, i);
+                result = host.update_plugin_class_instance_parameter(handles[0], &name, &value);
+            }
+            if let Err(err) = result {
+                self.command_line.push_error(&err);
+            }
+            self.refresh_properties();
+        }
+        #[cfg(target_arch = "wasm32")]
+        let _ = name;
+        Task::none()
+    }
+
     /// Open the attribute editor dialog for the given INSERT, loading a working
     /// copy of its attribute values. No-op (with a hint) when the block has no
     /// attributes. Entry points: double-clicking such a block, or ATTEDIT.
@@ -4812,7 +4917,7 @@ pub(crate) struct BlockAttrMeta {
 /// Map each attribute tag to the metadata (prompt text, constant flag) declared on
 /// the block's matching ATTDEF. Tags with no definition are absent.
 pub(crate) fn block_attr_meta(
-    doc: &codec::CadDocument,
+    doc: &codec::Document,
     block_name: &str,
 ) -> rustc_hash::FxHashMap<String, BlockAttrMeta> {
     let mut map = rustc_hash::FxHashMap::default();

@@ -70,6 +70,7 @@ impl OpenCADStudio {
             return MenuContext::Idle {
                 has_selection: false,
                 single_hatch: false,
+                single_mleader: false,
                 selected_constraint: None,
                 isolation_active: false,
                 recent_cmds: Vec::new(),
@@ -108,8 +109,15 @@ impl OpenCADStudio {
                         Some(codec::EntityType::Hatch(_))
                     )
                 }),
+            single_mleader: tab.scene.selected.len() == 1
+                && tab.scene.selected.iter().all(|handle| {
+                    matches!(
+                        tab.scene.document.get_entity(*handle),
+                        Some(codec::EntityType::MultiLeader(_))
+                    )
+                }),
             selected_constraint: tab.scene.selected_constraint,
-            isolation_active: tab.scene.is_isolation_active(),
+            isolation_active: tab.scene.has_hidden_objects(),
             recent_cmds: self
                 .command_line
                 .recent_commands
@@ -175,9 +183,9 @@ impl OpenCADStudio {
     }
 
     /// Run a picked row. The menu closes first so the action sees the same
-    /// state a typed keyword / shortcut would (no menu open, command line
-    /// focused), then the action is routed through the existing message for
-    /// that behaviour.
+    /// state a typed keyword / shortcut would (no menu open), then the action
+    /// is routed through the existing message for that behaviour. Prompts
+    /// focus the command line; a completed Select Similar returns to the canvas.
     pub(in crate::app) fn on_context_menu_pick(&mut self, action: MenuAction) -> Task<Message> {
         if let MenuAction::ToggleSubmenu(id) = action {
             return self.on_context_menu_submenu_toggle(id);
@@ -191,7 +199,13 @@ impl OpenCADStudio {
             // right-click cycle: the next right-click acts as Enter again.
             sel.input.right_click_entered = false;
         }
-        let focus = self.focus_cmd_input();
+        // Select Similar finishes a canvas selection, not a command prompt.
+        // An empty focused command input captures the following Ctrl+C.
+        let focus = if matches!(action, MenuAction::SelectSimilar) {
+            self.unfocus_widgets()
+        } else {
+            self.focus_cmd_input()
+        };
         let task = match action {
             MenuAction::Enter if self.tabs[i].active_grip.is_some() => {
                 self.commit_active_grip_edit()
@@ -208,6 +222,7 @@ impl OpenCADStudio {
             }
             MenuAction::Command(cmd) => self.update(Message::Command(cmd)),
             MenuAction::Mtp => self.update(Message::SnapOverrideMtp),
+            MenuAction::From => self.update(Message::SnapOverrideFrom),
             MenuAction::SnapOverride(t) => self.update(Message::SnapOverridePick(t)),
             MenuAction::SnapOverrideNone => self.update(Message::SnapOverrideNone),
             MenuAction::DeleteSelected => self.update(Message::DeleteSelected),
@@ -392,6 +407,55 @@ impl OpenCADStudio {
         }
     }
 
+    /// Keep Escape, Enter, Space and the arrows out of the command line and the
+    /// viewport while a dynamic-value list is open: they would otherwise
+    /// dismiss the selection the list was opened for. Escape closes the list.
+    pub(in crate::app) fn intercept_block_picker_key(
+        &mut self,
+        msg: &Message,
+    ) -> Option<Task<Message>> {
+        let base = match msg {
+            Message::ShortcutPressed(key) => key.rsplit('+').next(),
+            _ => None,
+        };
+        let escape = matches!(msg, Message::CommandEscape) || matches!(base, Some("ESCAPE"));
+        let consumed = escape
+            || matches!(
+                msg,
+                Message::ArrowKeyPressed { .. }
+                    | Message::CommandLineArrowProbe { .. }
+                    | Message::CommandLineSpaceProbe
+                    | Message::CommandFinalize
+                    | Message::CommandSubmit
+                    | Message::CommandSpace
+            )
+            || matches!(base, Some("ENTER" | "RETURN" | "SPACE"));
+        if !consumed {
+            self.block_picker_dismissed = false;
+            return None;
+        }
+        if self.tabs[self.active_tab]
+            .properties
+            .open_block_picker
+            .is_none()
+        {
+            // The overlay reported its own Escape a moment earlier; the global
+            // shortcut repeats the same keypress with the list already closed.
+            // Dropping that repeat keeps the selection; any other key ends the
+            // window without being swallowed.
+            if self.block_picker_dismissed && escape {
+                self.block_picker_dismissed = false;
+                return Some(Task::none());
+            }
+            self.block_picker_dismissed = false;
+            return None;
+        }
+        if escape {
+            self.tabs[self.active_tab].properties.open_block_picker = None;
+        }
+        Some(Task::none())
+    }
+
     /// A printable key while the menu is open: a mnemonic picks its row;
     /// anything else closes the menu and is typed into the command line.
     fn context_menu_typed(&mut self, ch: Option<char>) -> Option<Task<Message>> {
@@ -529,6 +593,111 @@ mod tests {
 
     fn active(app: &OpenCADStudio) -> Option<&'static str> {
         app.tabs[0].active_cmd.as_ref().map(|c| c.name())
+    }
+
+    fn mspace_zoom_app() -> (OpenCADStudio, Handle) {
+        let mut app = OpenCADStudio::new_for_test();
+        app.automation_op(r#"{"op":"new"}"#);
+        let scene = &mut app.tabs[0].scene;
+        scene.document.add_layout("Zoom").unwrap();
+        scene.set_current_layout("Zoom".into());
+        scene.selection.borrow_mut().view.vp_size = (800.0, 600.0);
+        let mut viewport = codec::entities::Viewport::new();
+        viewport.id = 2;
+        viewport.center = codec::types::Vector3::new(150.0, 100.0, 0.0);
+        viewport.width = 200.0;
+        viewport.height = 100.0;
+        viewport.view_height = 200.0;
+        viewport.custom_scale = 0.5;
+        viewport.view_direction = codec::types::Vector3::UNIT_Z;
+        viewport.turn_on();
+        let handle = scene.add_entity(codec::EntityType::Viewport(Box::new(viewport)));
+        scene.active_viewport = Some(handle);
+        scene.normalize_active_viewport_view();
+        (app, handle)
+    }
+
+    #[test]
+    fn mspace_zoom_window_preserves_paper_view() {
+        with_stack(|| {
+            // Bare ZOOM mouse corners, the Window prompt option, and the
+            // ribbon/context-menu command all reach the same result handler.
+            for command in ["ZOOM", "ZOOM W", "ZOOM WINDOW", "ZOOM prompt W"] {
+                let (mut app, handle) = mspace_zoom_app();
+                let paper = app.tabs[0].scene.camera.borrow().clone();
+                let _ = app.dispatch_command(if command == "ZOOM prompt W" {
+                    "ZOOM"
+                } else {
+                    command
+                });
+                if command == "ZOOM prompt W" {
+                    let _ = app.feed_active_cmd("W");
+                }
+                // A wide window must use the viewport's 2:1 aspect, not
+                // the canvas's 4:3 aspect: width 80 needs view height 40.
+                let _ = app.feed_command(StepInput::Point(DVec3::new(10.0, 20.0, 0.0)));
+                let _ = app.feed_command(StepInput::Point(DVec3::new(90.0, 40.0, 0.0)));
+                let scene = &app.tabs[0].scene;
+                let camera = scene.camera.borrow();
+                assert_eq!(camera.target, paper.target, "{command}: paper panned");
+                assert_eq!(camera.distance, paper.distance, "{command}: paper zoomed");
+                assert_eq!(camera.rotation, paper.rotation);
+                assert_eq!(camera.projection, paper.projection);
+                assert_eq!(camera.fov_y, paper.fov_y);
+                assert_eq!(camera.lens, paper.lens);
+                assert_eq!(camera.depth_half_range, paper.depth_half_range);
+                assert_eq!(camera.model_bounds, paper.model_bounds);
+                let Some(codec::EntityType::Viewport(viewport)) = scene.document.get_entity(handle)
+                else {
+                    panic!("missing viewport");
+                };
+                assert!((viewport.view_target.x - 50.0).abs() < 1e-5);
+                assert!((viewport.view_target.y - 30.0).abs() < 1e-5);
+                assert_eq!(viewport.view_center.x, 0.0);
+                assert_eq!(viewport.view_center.y, 0.0);
+                assert!((viewport.view_height - 40.0).abs() < 1e-4);
+                assert!((viewport.custom_scale - 2.5).abs() < 1e-5);
+                drop(camera);
+                let _ = app.dispatch_command("ZOOM PREVIOUS");
+                let camera = app.tabs[0].scene.camera.borrow();
+                assert_eq!(camera.target, paper.target);
+                assert_eq!(camera.distance, paper.distance);
+                let Some(codec::EntityType::Viewport(viewport)) =
+                    app.tabs[0].scene.document.get_entity(handle)
+                else {
+                    panic!("missing viewport");
+                };
+                assert!((viewport.view_height - 200.0).abs() < 1e-4);
+            }
+        });
+    }
+
+    #[test]
+    fn mspace_zoom_factors_preserve_paper_view() {
+        with_stack(|| {
+            for (command, height) in [
+                ("ZOOM SCALE 2", 100.0),
+                ("ZOOM SCALE 2X", 100.0),
+                ("ZOOM SCALE 100X", 2.0),
+                ("ZOOM SCALE 2XP", 50.0),
+                ("ZOOM IN", 200.0 / 1.5),
+                ("ZOOM OUT", 300.0),
+            ] {
+                let (mut app, handle) = mspace_zoom_app();
+                let paper = app.tabs[0].scene.camera.borrow().clone();
+                let _ = app.dispatch_command(command);
+                let scene = &app.tabs[0].scene;
+                let camera = scene.camera.borrow();
+                assert_eq!(camera.target, paper.target, "{command}: paper panned");
+                assert_eq!(camera.distance, paper.distance, "{command}: paper zoomed");
+                let Some(codec::EntityType::Viewport(viewport)) = scene.document.get_entity(handle)
+                else {
+                    panic!("missing viewport");
+                };
+                assert!((viewport.view_height - height).abs() < 1e-3, "{command}");
+                assert!((viewport.custom_scale - 100.0 / height).abs() < 1e-5);
+            }
+        });
     }
 
     fn menu_actions(app: &OpenCADStudio) -> Vec<MenuAction> {

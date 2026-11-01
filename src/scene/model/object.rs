@@ -107,7 +107,17 @@ pub enum PropValue {
     EntityRef { display: String, handle: Handle },
     /// Live property for the active command.
     Live(LiveFieldValue),
-    /// A clickable link to one or more entities — the Constraints section's
+    /// One plugin class parameter row (API v14): the declared name is the
+    /// routing key (the AttrText precedent) and routes the commit to the
+    /// class-parameter record path. `editable` decides between the text
+    /// input and a read-only rendering — a reference-only (host-staged)
+    /// selection renders read-only no matter the declaration, with the
+    /// owning record row named in the section's source line.
+    PluginParam {
+        name: String,
+        value: String,
+        editable: bool,
+    },    /// A clickable link to one or more entities — the Constraints section's
     /// row for one parametric constraint. Clicking it selects every
     /// entity in `handles` in the viewport. `conflicting` mirrors
     /// `ParametricConstraintSet::conflicts`, tinting the row the same danger

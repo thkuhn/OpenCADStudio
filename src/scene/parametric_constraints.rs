@@ -210,7 +210,7 @@ pub(crate) fn directional_axis_endpoints(
 /// axis end that moves, and for a polyline the vertex to move instead of
 /// turning the whole entity.
 pub(crate) fn axis_alignment_target(
-    document: &codec::CadDocument,
+    document: &codec::Document,
     refs: &[ParametricRef],
 ) -> Option<(Handle, Vector3, Vector3, Option<usize>)> {
     let (handle, start_marker, end_marker) = match refs {
@@ -281,7 +281,7 @@ pub(crate) enum EqualSize {
 }
 
 pub(crate) fn equal_size(
-    document: &codec::CadDocument,
+    document: &codec::Document,
     reference: ParametricRef,
 ) -> Option<EqualSize> {
     let entity = document.get_entity(reference.entity)?;
@@ -310,7 +310,7 @@ pub(crate) fn equal_size(
 /// a circle or arc keeps its center and takes the radius. `None` when the
 /// two do not share a size kind.
 pub(crate) fn equal_size_follower(
-    document: &codec::CadDocument,
+    document: &codec::Document,
     first: ParametricRef,
     follower: ParametricRef,
 ) -> Option<codec::EntityType> {
@@ -398,7 +398,7 @@ pub(crate) fn normalize_angle_display(degrees: f64) -> f64 {
 
 /// The angular precision (DIMADEC, or DIMDEC when unset) of a dimension
 /// style, by name or the drawing's current one.
-pub(crate) fn angle_decimals(document: &codec::CadDocument, style_name: Option<&str>) -> usize {
+pub(crate) fn angle_decimals(document: &codec::Document, style_name: Option<&str>) -> usize {
     let requested = style_name
         .map(str::trim)
         .filter(|name| !name.is_empty())
@@ -624,7 +624,7 @@ pub(crate) fn two_lines_placement(
 /// every click, and an `EntityType` held there is paid for on each of them.
 #[inline(never)]
 pub(crate) fn two_lines_placed_entity(
-    document: &codec::CadDocument,
+    document: &codec::Document,
     first_ends: [ParametricRef; 2],
     first_pick: glam::DVec3,
     second_line: ParametricRef,
@@ -717,7 +717,7 @@ fn line_ends(entity: &codec::EntityType, reference: ParametricRef) -> Option<(Ve
 /// Where an angular constraint's sides are now: both lines' ends for a
 /// two-line angle, `[vertex, first, second]` for a three-point one.
 fn angular_follow_points(
-    document: &codec::CadDocument,
+    document: &codec::Document,
     constraint: &ParametricConstraint,
 ) -> Option<Vec<Vector3>> {
     match (constraint.kind, constraint.refs.as_slice()) {
@@ -738,7 +738,7 @@ fn angular_follow_points(
 
 /// A radial constraint's circle or arc: its centre and radius now.
 fn radial_geometry(
-    document: &codec::CadDocument,
+    document: &codec::Document,
     constraint: &ParametricConstraint,
 ) -> Option<(glam::DVec3, f64)> {
     let reference = constraint.refs.first()?;
@@ -891,7 +891,7 @@ fn dynamic_dimension_follow_angle(
 /// other object moves, as in the reference. An angle keeps its first side
 /// (a two-line angle) or its vertex and first point (a three-point one).
 pub(crate) fn dimensional_anchor_refs(
-    document: &codec::CadDocument,
+    document: &codec::Document,
     refs: &[ParametricRef],
 ) -> Vec<ParametricRef> {
     let Some(&first) = refs.first() else {
@@ -1187,7 +1187,7 @@ pub enum ParametricScope {
 
 impl ParametricScope {
     /// The owner handle under which this scope is persisted.
-    pub fn owner_handle(&self, document: &codec::CadDocument) -> Handle {
+    pub fn owner_handle(&self, document: &codec::Document) -> Handle {
         match self {
             ParametricScope::ModelSpace => document.header.model_space_block_handle,
             ParametricScope::Block(handle) => *handle,
@@ -1227,14 +1227,16 @@ pub struct ParametricConstraintSet {
     /// persisted; a `ConflictResolverPanel` reads this rather than calling
     /// `kernel_constraints::diagnosis::classify_redundant` itself.
     pub conflicts: Vec<(ConstraintId, kernel_constraints::diagnosis::RedundancyKind)>,
-    /// Lazy reverse index for [`Self::constraints_touching`]: entity handle →
-    /// positions into `constraints`. `None` means "not built yet" and is
-    /// rebuilt unconditionally on the next query; a built index is rebuilt
-    /// whenever `constraints.len()` differs from the recorded length (the
-    /// `constraints` field is `pub`, so external pushes/removes are covered
-    /// by the length check; `enabled` is filtered at query time, so in-place
-    /// enable toggles never stale the recorded positions). The only known
-    /// in-place mutation of `refs` (and hence of the handle keys) is the
+    /// Lazy reverse index for [`Self::constraints_referencing`] and
+    /// [`Self::constraints_touching`]: entity handle → positions into
+    /// `constraints`, one entry per constraint however many of its refs name
+    /// the entity. `None` means "not built yet" and is rebuilt
+    /// unconditionally on the next query; a built index is rebuilt whenever
+    /// `constraints.len()` differs from the recorded length (the `constraints`
+    /// field is `pub`, so external pushes/removes are covered by the length
+    /// check; `constraints_touching` filters `enabled` at query time, so
+    /// in-place enable toggles never stale the recorded positions). The only
+    /// known in-place mutation of `refs` (and hence of the handle keys) is the
     /// Save Block As path in `app/block_editor.rs`, which rewrites
     /// `refs[].entity` on *clones* of live sets and then installs them; the
     /// manual `Clone` impl resets this field to `None` so a clone always
@@ -1412,6 +1414,16 @@ impl ParametricConstraintSet {
         &self,
         entity: Handle,
     ) -> impl Iterator<Item = &ParametricConstraint> {
+        self.constraints_referencing(entity)
+            .filter(|constraint| constraint.enabled)
+    }
+
+    /// Every constraint referencing `entity`, enabled or not — a read model
+    /// has to report a kept-but-suppressed constraint as well as a live one.
+    pub fn constraints_referencing(
+        &self,
+        entity: Handle,
+    ) -> impl Iterator<Item = &ParametricConstraint> {
         {
             let mut index = self.touch_index.borrow_mut();
             let stale = index
@@ -1422,10 +1434,13 @@ impl ParametricConstraintSet {
                     std::collections::HashMap::new();
                 for (position, constraint) in self.constraints.iter().enumerate() {
                     for reference in &constraint.refs {
-                        built
-                            .entry(reference.entity)
-                            .or_default()
-                            .push(position as u32);
+                        let positions = built.entry(reference.entity).or_default();
+                        // A constraint may name the same entity more than
+                        // once, adjacent or not; it is still one constraint
+                        // on that entity.
+                        if !positions.contains(&(position as u32)) {
+                            positions.push(position as u32);
+                        }
                     }
                 }
                 *index = Some((self.constraints.len(), built));
@@ -1441,7 +1456,6 @@ impl ParametricConstraintSet {
         positions
             .into_iter()
             .filter_map(move |position| self.constraints.get(position as usize))
-            .filter(|constraint| constraint.enabled)
     }
 
     /// Drops every constraint that references `entity` and returns the
@@ -1696,7 +1710,7 @@ pub(crate) fn is_parametric_point_near(entity: &codec::EntityType, point: Vector
 /// Returns `None` when no point in the scope is within the coincidence
 /// tolerance.
 pub(crate) fn nearest_parametric_point(
-    document: &codec::CadDocument,
+    document: &codec::Document,
     scope: ParametricScope,
     world_point: Vector3,
     exclude: Option<Handle>,
@@ -1727,7 +1741,7 @@ pub(crate) fn nearest_parametric_point(
 /// Resolve a point pick within one explicitly selected entity.  This keeps two
 /// different endpoints at the same world coordinate distinguishable.
 pub(crate) fn nearest_parametric_point_on_entity(
-    document: &codec::CadDocument,
+    document: &codec::Document,
     scope: ParametricScope,
     handle: Handle,
     world_point: Vector3,
@@ -1750,7 +1764,7 @@ pub(crate) fn nearest_parametric_point_on_entity(
 /// Resolve the whole curve or the picked polyline segment used by a
 /// point-to-curve Coincident relation.
 pub(crate) fn parametric_curve_ref_for_pick(
-    document: &codec::CadDocument,
+    document: &codec::Document,
     scope: ParametricScope,
     handle: Handle,
     world_point: Vector3,
@@ -1919,14 +1933,14 @@ pub(crate) fn glyph_label(constraint: &ParametricConstraint) -> String {
 
 /// World-space anchor and outward direction for a constraint glyph.
 pub(crate) fn glyph_placement(
-    document: &codec::CadDocument,
+    document: &codec::Document,
     constraint: &ParametricConstraint,
 ) -> Option<(Vector3, Vector3)> {
     glyph_placements(document, constraint).into_iter().next()
 }
 
 fn glyph_placement_for_reference(
-    document: &codec::CadDocument,
+    document: &codec::Document,
     r: ParametricRef,
 ) -> Option<(Vector3, Vector3)> {
     let entity = document.get_entity(r.entity)?;
@@ -2014,7 +2028,7 @@ fn glyph_placement_for_reference(
 }
 
 fn glyph_placements(
-    document: &codec::CadDocument,
+    document: &codec::Document,
     constraint: &ParametricConstraint,
 ) -> Vec<(Vector3, Vector3)> {
     // Relations the reference marks on every object they join.
@@ -2067,7 +2081,7 @@ fn glyph_placements(
 /// Point constraints expose their referenced point directly; curve relations
 /// expose the contact or intersection that makes the relation visible.
 fn constraint_segment_endpoints(
-    document: &codec::CadDocument,
+    document: &codec::Document,
     reference: ParametricRef,
 ) -> Option<[Vector3; 2]> {
     let segment = reference.segment_index()?;
@@ -2090,7 +2104,7 @@ fn constraint_segment_endpoints(
 }
 
 fn constraint_reference_curve_xy(
-    document: &codec::CadDocument,
+    document: &codec::Document,
     reference: ParametricRef,
 ) -> Option<kernel::geom2d::Curve> {
     let entity = document.get_entity(reference.entity)?;
@@ -2109,7 +2123,7 @@ fn constraint_reference_curve_xy(
 }
 
 pub(crate) fn constraint_hover_points(
-    document: &codec::CadDocument,
+    document: &codec::Document,
     constraint: &ParametricConstraint,
 ) -> Vec<Vector3> {
     let mut points = Vec::new();
@@ -2656,11 +2670,93 @@ impl super::Scene {
             .is_some_and(|entity| !is_dynamic_dimension_layer(&entity.common().layer))
     }
 
+    /// The form a dimensional constraint's dimension uses, or `None` when the
+    /// dimension no longer resolves.
+    pub(crate) fn dimension_form(&self, handle: Handle) -> Option<&'static str> {
+        self.document.get_entity(handle)?;
+        Some(if self.dimension_is_annotational(handle) {
+            "Annotational"
+        } else {
+            "Dynamic"
+        })
+    }
+
+    /// The dimensions of the selected dimensional constraints. A constraint
+    /// is selected through the dimension entity that draws it.
+    pub(crate) fn selected_dimensional_constraint_dimensions(&self) -> Vec<Handle> {
+        let selected = self.selected_handles_in_order();
+        let mut handles: Vec<Handle> = Vec::new();
+        for set in &self.parametric_constraints {
+            for dimension in set.dimensions.values() {
+                if selected.contains(dimension) && !handles.contains(dimension) {
+                    handles.push(*dimension);
+                }
+            }
+        }
+        handles.sort_by_key(|handle| handle.value());
+        handles
+    }
+
+    /// Switches a dimensional constraint's dimension between the dynamic and
+    /// annotational forms, placing an annotational one on `annotational_layer`.
+    /// Returns false when `handle` is not a dimensional constraint's dimension
+    /// or already uses the requested form.
+    pub(crate) fn set_dimensional_constraint_form(
+        &mut self,
+        handle: Handle,
+        annotational: bool,
+        annotational_layer: &str,
+    ) -> bool {
+        use crate::entities::dim_override as ov;
+        let is_dimensional = self
+            .parametric_constraints
+            .iter()
+            .any(|set| set.dimensions.values().any(|dimension| *dimension == handle));
+        if !is_dimensional || self.dimension_is_annotational(handle) == annotational {
+            return false;
+        }
+        let Some(mut entity) = self.document.get_entity(handle).cloned() else {
+            return false;
+        };
+        if !matches!(entity, codec::EntityType::Dimension(_)) {
+            return false;
+        }
+        if annotational {
+            entity.as_entity_mut().set_layer(annotational_layer.to_string());
+            entity.common_mut().color = codec::types::Color::ByLayer;
+            // The screen-size overrides belong to the dynamic form; an
+            // annotational dimension draws at its style's size.
+            for code in [
+                ov::DIMSCALE,
+                ov::DIMGAP,
+                ov::DIMEXO,
+                ov::DIMEXE,
+                ov::DIMASZ,
+                ov::DIMTAD,
+                ov::DIMTIH,
+                ov::DIMTOH,
+            ] {
+                ov::set_on_entity(&mut entity, code, None);
+            }
+        } else {
+            self.ensure_dynamic_dimension_layer();
+            entity
+                .as_entity_mut()
+                .set_layer(DYNAMIC_DIMENSION_LAYER.to_string());
+            entity.common_mut().color = codec::types::Color::Rgb {
+                r: 103,
+                g: 109,
+                b: 118,
+            };
+        }
+        self.update_entity(entity)
+    }
+
     /// The document as written to a file: a dynamic dimension's screen-size
     /// overrides are a display matter and stay out of the file, and so does
     /// what resolving an external reference merged in (its geometry, nested
     /// blocks and styles), which the file never stores.
-    pub(crate) fn document_for_save(&self) -> codec::CadDocument {
+    pub(crate) fn document_for_save(&self) -> codec::Document {
         use crate::entities::dim_override as ov;
         let mut document = self.document.clone();
         for set in &self.parametric_constraints {
@@ -2683,6 +2779,8 @@ impl super::Scene {
             }
         }
         crate::io::xref::strip_resolved_xref_content(&mut document);
+        // Centre marks and centre lines go out in their stored form.
+        crate::scene::center_native::export(&mut document);
         crate::entities::field::stamp_save_dates(&mut document);
         for name in &self.unopened_layouts {
             crate::scene::write_layout_unopened(&mut document, name);
@@ -3710,7 +3808,7 @@ mod tests {
 
     #[test]
     fn glyph_placement_points_away_from_its_geometry() {
-        let mut document = codec::CadDocument::new();
+        let mut document = codec::Document::new();
         let mut line = codec::entities::Line::from_points(
             Vector3::new(0.0, 0.0, 0.0),
             Vector3::new(10.0, 0.0, 0.0),
@@ -3943,6 +4041,43 @@ mod tests {
     }
 
     #[test]
+    fn constraints_referencing_counts_disabled_and_each_constraint_once() {
+        let mut set = ParametricConstraintSet::new(ParametricScope::ModelSpace);
+        let id = set.add(
+            ConstraintKind::Coincident,
+            vec![ParametricRef::whole(h(1)), ParametricRef::whole(h(1))],
+            None,
+        );
+        set.constraints
+            .iter_mut()
+            .find(|c| c.id == id)
+            .unwrap()
+            .enabled = false;
+        // One constraint may name an entity on both sides of a third ref.
+        set.add(
+            ConstraintKind::DistanceDirected,
+            vec![
+                ParametricRef::whole(h(1)),
+                ParametricRef::whole(h(2)),
+                ParametricRef::whole(h(1)),
+            ],
+            None,
+        );
+        let kinds: Vec<_> = set
+            .constraints_referencing(h(1))
+            .map(|constraint| constraint.kind)
+            .collect();
+        assert_eq!(
+            kinds,
+            vec![
+                ConstraintKind::Coincident,
+                ConstraintKind::DistanceDirected
+            ]
+        );
+        assert_eq!(set.constraints_touching(h(1)).count(), 1);
+    }
+
+    #[test]
     fn cloned_set_rebuilds_touch_index_after_refs_rewrite() {
         let mut set = ParametricConstraintSet::new(ParametricScope::ModelSpace);
         set.add(
@@ -4171,7 +4306,7 @@ mod tests {
     fn scope_owner_handle_resolves_block_directly() {
         let block_handle = h(42);
         let scope = ParametricScope::Block(block_handle);
-        let doc = codec::CadDocument::new();
+        let doc = codec::Document::new();
         assert_eq!(scope.owner_handle(&doc), block_handle);
     }
 
@@ -4473,7 +4608,7 @@ mod tests {
 
     #[test]
     fn hover_geometry_keeps_a_bulged_polyline_segment_curved() {
-        let mut document = codec::CadDocument::new();
+        let mut document = codec::Document::new();
         let mut polyline = codec::entities::LwPolyline::new();
         polyline.common.handle = h(1);
         polyline.vertices = vec![

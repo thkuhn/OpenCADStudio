@@ -783,11 +783,12 @@ pub fn sync_carrier_primitives(
 /// Ensures that standard linetypes including `"DASHED"` are populated in the CAD document.
 pub fn ensure_document_linetypes(doc: &mut CadDocument) {
     if !doc.line_types.iter().any(|lt| lt.name.eq_ignore_ascii_case("DASHED")) {
-        crate::io::linetypes::populate_document_from_source(
-            doc,
-            "*DASHED,Dashed __ __ __ __ __ __ __ __ __ __ __ __ __ _\nA, 12.7, -6.35\n",
-            None,
-        );
+        let mut lt = acadrust::tables::LineType::new("DASHED");
+        lt.handle = doc.allocate_handle();
+        lt.description = "Dashed __ __ __ __ __ __ __ __ __ __ __ __ __ _".to_string();
+        lt.add_element(acadrust::tables::LineTypeElement::dash(12.7));
+        lt.add_element(acadrust::tables::LineTypeElement::dash(-6.35));
+        let _ = doc.line_types.add(lt);
     }
 }
 

@@ -331,6 +331,8 @@ fn to_render(pline: &LwPolyline, fill_mode: bool) -> RenderEntity {
                     station_pieces: boundary.station_pieces,
                     source_length: boundary.source_length,
                     plinegen: pline.plinegen,
+                    separate_runs: false,
+                    solid: Vec::new(),
                 },
                 snap_pts: vec![],
                 tangent_geoms,
@@ -1219,7 +1221,7 @@ fn apply_transform(pline: &mut LwPolyline, t: &EntityTransform) {
 }
 
 impl RenderConvertible for LwPolyline {
-    fn to_render(&self, document: &codec::CadDocument) -> Option<RenderEntity> {
+    fn to_render(&self, document: &codec::Document) -> Option<RenderEntity> {
         let mut render = to_render(self, document.header.fill_mode);
         // Arc segments offer their centres and quadrants.
         if self.vertices.iter().any(|v| v.bulge != 0.0) {
