@@ -6,6 +6,7 @@ pub mod aec_section;
 pub mod aec_viewupdate;
 pub mod din1356;
 pub mod sheet_placement;
+pub mod title_block;
 
 pub use aec_elevation::{aec_elevation_do, tool as elevation_tool, ElevationCommand};
 pub use aec_floorplan::{
@@ -15,3 +16,4 @@ pub use aec_section::{aec_section_do, tool as section_tool, SectionCommand, Sect
 pub use aec_viewupdate::{tool as viewupdate_tool, ViewUpdateCommand};
 pub use din1356::{generate_din1356_level_marker, Din1356SectionSymbol};
 pub use sheet_placement::{tool as place_view_tool, PlaceViewCommand};
+pub use title_block::{tool as title_block_tool, TitleBlockCommand};

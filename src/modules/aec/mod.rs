@@ -54,7 +54,7 @@ impl CadModule for AecModule {
         };
         use views::{
             elevation_tool, floorplan_tool, place_view_tool, rcp_tool, section_tool,
-            viewupdate_tool,
+            title_block_tool, viewupdate_tool,
         };
         use walls::{door, extend, join, opening, refresh, wall, window};
 
@@ -80,6 +80,7 @@ impl CadModule for AecModule {
                         RibbonItem::LargeTool(rcp_tool()),
                         RibbonItem::LargeTool(viewupdate_tool()),
                         RibbonItem::LargeTool(place_view_tool()),
+                        RibbonItem::LargeTool(title_block_tool()),
                     ],
                 },
                 RibbonGroup {

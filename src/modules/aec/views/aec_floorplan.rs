@@ -180,6 +180,11 @@ impl FloorPlanCommand {
         ).ok()?;
 
         let _ = sync_carrier_primitives(&mut scene.document, &mut carrier, &primitives);
+        let _ = crate::modules::aec::engine::views::sheet_annotation::append_overall_dimensions(
+            &mut scene.document,
+            &mut carrier,
+            &primitives,
+        );
         write_view_carrier_definitions(&mut scene.document, carrier.handle, &viewpoint, &model_view);
         scene.bump_geometry();
 

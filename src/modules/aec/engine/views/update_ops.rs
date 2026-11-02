@@ -208,6 +208,7 @@ pub fn regenerate_carrier(
 
     crate::modules::aec::engine::views::carrier::write_view_carrier_definitions(doc, carrier_handle, &vp, &mv);
     sync_carrier_primitives(doc, &mut carrier, &primitives)?;
+    super::sheet_annotation::append_overall_dimensions(doc, &mut carrier, &primitives)?;
 
     Ok(1)
 }

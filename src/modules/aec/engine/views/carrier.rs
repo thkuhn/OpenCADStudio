@@ -1182,7 +1182,7 @@ mod tests {
         );
 
         let mut scene = crate::scene::Scene::new();
-        scene.document = doc.clone();
+        scene.document = doc.clone().into();
         assert!(
             scene.entity_belongs_to_current_layout(child_handle),
             "Derived entity must belong to current layout / visible block"

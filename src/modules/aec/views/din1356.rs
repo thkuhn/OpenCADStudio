@@ -7,6 +7,7 @@ use acadrust::entities::{Line, LwPolyline, LwVertex, MText};
 use acadrust::types::{Vector2 as CadVec2, Vector3 as CadVec3};
 use acadrust::xdata::{ExtendedDataRecord, XDataValue};
 use acadrust::{CadDocument, EntityType, Handle};
+use codec::entities::MultiLeader;
 use serde::{Deserialize, Serialize};
 
 use crate::modules::aec::engine::owner_index;
@@ -47,6 +48,22 @@ impl Din1356SectionSymbol {
     pub fn with_flip(mut self, flip: bool) -> Self {
         self.flip_direction = flip;
         self
+    }
+
+    fn label_leader(&self, layer: &str, arrow_tip: Point2, normal: Vector2) -> EntityType {
+        let arrow = CadVec3::new(arrow_tip.x_m, arrow_tip.y_m, 0.0);
+        let elbow = CadVec3::new(
+            arrow_tip.x_m + normal.x * 0.15,
+            arrow_tip.y_m + normal.y * 0.15,
+            0.0,
+        );
+        let mut leader = MultiLeader::with_text(&self.label, elbow, vec![arrow]);
+        leader.common.layer = layer.to_string();
+        leader.text_height = self.text_height;
+        leader.context.text_height = self.text_height;
+        leader.arrowhead_size = 0.0;
+        leader.context.arrowhead_size = 0.0;
+        EntityType::MultiLeader(Box::new(leader))
     }
 
     /// Generates wire preview segments for real-time viewport drawing.
@@ -190,17 +207,7 @@ impl Din1356SectionSymbol {
                 arr_line.end = CadVec3::new(arrow_tip.x_m, arrow_tip.y_m, 0.0);
                 entities.push(EntityType::Line(arr_line));
 
-                // Section Label MText
-                let mut mtext = MText::default();
-                mtext.common.layer = layer.to_string();
-                mtext.insertion_point = CadVec3::new(
-                    arrow_tip.x_m + normal.x * 0.15,
-                    arrow_tip.y_m + normal.y * 0.15,
-                    0.0,
-                );
-                mtext.height = self.text_height;
-                mtext.value = self.label.clone();
-                entities.push(EntityType::MText(Box::new(mtext)));
+                entities.push(self.label_leader(layer, arrow_tip, normal));
             }
         }
 
@@ -233,16 +240,7 @@ impl Din1356SectionSymbol {
                 arr_line.end = CadVec3::new(arrow_tip.x_m, arrow_tip.y_m, 0.0);
                 entities.push(EntityType::Line(arr_line));
 
-                let mut mtext = MText::default();
-                mtext.common.layer = layer.to_string();
-                mtext.insertion_point = CadVec3::new(
-                    arrow_tip.x_m + normal.x * 0.15,
-                    arrow_tip.y_m + normal.y * 0.15,
-                    0.0,
-                );
-                mtext.height = self.text_height;
-                mtext.value = self.label.clone();
-                entities.push(EntityType::MText(Box::new(mtext)));
+                entities.push(self.label_leader(layer, arrow_tip, normal));
             }
         }
 
@@ -1077,7 +1075,34 @@ mod tests {
         let symbol = Din1356SectionSymbol::new("B - B", path);
 
         let entities = symbol.generate_cad_entities("AEC_ANNOTATION");
-        assert!(entities.len() >= 5); // polyline + lines + text
+        assert_eq!(
+            entities
+                .iter()
+                .filter(|entity| matches!(entity, EntityType::MultiLeader(_)))
+                .count(),
+            2
+        );
+        assert!(!entities
+            .iter()
+            .any(|entity| matches!(entity, EntityType::MText(_))));
+        assert_eq!(
+            entities
+                .iter()
+                .filter(|entity| matches!(entity, EntityType::Line(_)))
+                .count(),
+            4,
+            "both section direction arrows and extension lines remain"
+        );
+        let cut_line = entities
+            .iter()
+            .find_map(|entity| match entity {
+                EntityType::LwPolyline(polyline) => Some(polyline),
+                _ => None,
+            })
+            .expect("section cut polyline remains");
+        assert_eq!(cut_line.vertices.len(), 2);
+        assert_eq!(cut_line.vertices[0].location, CadVec2::new(0.0, 0.0));
+        assert_eq!(cut_line.vertices[1].location, CadVec2::new(5.0, 5.0));
     }
 
     #[test]

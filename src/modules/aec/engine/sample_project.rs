@@ -1071,6 +1071,11 @@ fn build_master_geometry(
         UpdatePolicy::Automatic,
     ) {
         let _ = sync_carrier_primitives(&mut scene.document, &mut carrier, &section_a_prims);
+        let _ = crate::modules::aec::engine::views::sheet_annotation::append_overall_dimensions(
+            &mut scene.document,
+            &mut carrier,
+            &section_a_prims,
+        );
         write_view_carrier_definitions(&mut scene.document, carrier.handle, &section_a_vp, &section_a_mv);
 
         let section_marker = Din1356SectionMarker::new_section(
@@ -1155,6 +1160,11 @@ fn build_master_geometry(
         UpdatePolicy::Automatic,
     ) {
         let _ = sync_carrier_primitives(&mut scene.document, &mut carrier, &section_b_prims);
+        let _ = crate::modules::aec::engine::views::sheet_annotation::append_overall_dimensions(
+            &mut scene.document,
+            &mut carrier,
+            &section_b_prims,
+        );
         write_view_carrier_definitions(&mut scene.document, carrier.handle, &section_b_vp, &section_b_mv);
 
         let section_marker = Din1356SectionMarker::new_section(
@@ -1234,6 +1244,11 @@ fn build_master_geometry(
         UpdatePolicy::Automatic,
     ) {
         let _ = sync_carrier_primitives(&mut scene.document, &mut carrier, &elev_s_prims);
+        let _ = crate::modules::aec::engine::views::sheet_annotation::append_overall_dimensions(
+            &mut scene.document,
+            &mut carrier,
+            &elev_s_prims,
+        );
         write_view_carrier_definitions(&mut scene.document, carrier.handle, &elev_s_vp, &elev_s_mv);
 
         let elev_marker = Din1356SectionMarker::new_elevation(
@@ -1311,6 +1326,11 @@ fn build_master_geometry(
         UpdatePolicy::Automatic,
     ) {
         let _ = sync_carrier_primitives(&mut scene.document, &mut carrier, &elev_n_prims);
+        let _ = crate::modules::aec::engine::views::sheet_annotation::append_overall_dimensions(
+            &mut scene.document,
+            &mut carrier,
+            &elev_n_prims,
+        );
         write_view_carrier_definitions(&mut scene.document, carrier.handle, &elev_n_vp, &elev_n_mv);
 
         let elev_marker = Din1356SectionMarker::new_elevation(
@@ -1385,6 +1405,11 @@ fn build_master_geometry(
         UpdatePolicy::Automatic,
     ) {
         let _ = sync_carrier_primitives(&mut scene.document, &mut carrier, &fp_exec_prims);
+        let _ = crate::modules::aec::engine::views::sheet_annotation::append_overall_dimensions(
+            &mut scene.document,
+            &mut carrier,
+            &fp_exec_prims,
+        );
         write_view_carrier_definitions(&mut scene.document, carrier.handle, &fp_exec_vp, &fp_exec_mv);
     }
 
@@ -1446,6 +1471,11 @@ fn build_master_geometry(
         UpdatePolicy::Automatic,
     ) {
         let _ = sync_carrier_primitives(&mut scene.document, &mut carrier, &fp_perm_prims);
+        let _ = crate::modules::aec::engine::views::sheet_annotation::append_overall_dimensions(
+            &mut scene.document,
+            &mut carrier,
+            &fp_perm_prims,
+        );
         write_view_carrier_definitions(&mut scene.document, carrier.handle, &fp_perm_vp, &fp_perm_mv);
     }
 

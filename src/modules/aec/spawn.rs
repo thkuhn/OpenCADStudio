@@ -56,6 +56,7 @@ pub fn spawn_command(name: &str) -> Option<Box<dyn CadCommand>> {
         "AEC_RCP" => Some(Box::new(crate::modules::aec::views::FloorPlanCommand::new_rcp())),
         "AEC_VIEWUPDATE" => Some(Box::new(crate::modules::aec::views::ViewUpdateCommand::new())),
         "AEC_PLACE_VIEW" => Some(Box::new(crate::modules::aec::views::PlaceViewCommand::new())),
+        "AEC_TITLEBLOCK" => Some(Box::new(crate::modules::aec::views::TitleBlockCommand::new())),
         _ => None,
     }
 }
@@ -73,6 +74,16 @@ fn view_display_context(
         crate::modules::aec::engine::project::resolve_display_config_library(project),
         crate::modules::aec::engine::project::resolve_style_library(project),
         app.tabs[tab].active_display_config.clone(),
+    )
+}
+
+fn active_plan_stage_value(app: &OpenCADStudio, tab: usize) -> Option<String> {
+    let library = crate::modules::aec::engine::project::resolve_display_config_library(
+        app.aec.aec_project_explorer_file.as_ref(),
+    );
+    crate::modules::aec::views::title_block::active_stage_value(
+        &library,
+        app.tabs.get(tab)?.active_display_config.as_deref(),
     )
 }
 
@@ -129,6 +140,28 @@ pub(crate) fn try_dispatch(
         "AEC_VIEWUPDATE" | "AEC_VIEWUPDATE_DO" => Some(dispatch_viewupdate(app, tab, cmd)),
         cmd if cmd.starts_with("AEC_VIEWUPDATE_DO") => Some(dispatch_viewupdate(app, tab, cmd)),
         "AEC_PLACE_VIEW" => Some(install_spawned(app, tab, cmd, "AEC_PLACE_VIEW")),
+        "AEC_TITLEBLOCK" => Some(install_spawned(app, tab, cmd, "AEC_TITLEBLOCK")),
+        cmd if cmd.starts_with("AEC_TITLEBLOCK_DO ") => {
+            let args = cmd["AEC_TITLEBLOCK_DO ".len()..].to_string();
+            let mut values = args.split('|');
+            if let (Some(x), Some(y)) = (values.next(), values.next()) {
+                if let (Ok(x), Ok(y)) = (x.parse::<f64>(), y.parse::<f64>()) {
+                    let active_stage = active_plan_stage_value(app, tab);
+                    let handle = crate::modules::aec::views::title_block::aec_title_block_at_point(
+                        &mut app.tabs[tab].scene,
+                        acadrust::types::Vector3::new(x, y, 0.0),
+                        active_stage.as_deref(),
+                    );
+                    app.command_line.push_info(&crate::tr!(
+                        "aec",
+                        "title-block-created",
+                        handle = handle.to_string()
+                    ));
+                    app.tabs[tab].dirty = true;
+                }
+            }
+            Some(app.finish_dispatch(cmd))
+        }
         "AEC_PLANE_SYNC" => {
             let path = app.tabs[tab].drawing_path().map(Path::to_path_buf);
             let base_dir = app
@@ -178,7 +211,12 @@ pub(crate) fn try_dispatch(
                 (0.0, 0.0)
             };
             let at = acadrust::types::Vector3::new(x, y, 0.0);
-            if let Some(handle) = crate::modules::aec::rooms::schedule::aec_room_schedule_at_point(&mut app.tabs[tab].scene, at) {
+            let active_stage = active_plan_stage_value(app, tab);
+            if let Some(handle) = crate::modules::aec::rooms::schedule::aec_room_schedule_at_point_with_stage(
+                &mut app.tabs[tab].scene,
+                at,
+                active_stage.as_deref(),
+            ) {
                 let count = crate::modules::aec::rooms::schedule::collect_all_rooms(&app.tabs[tab].scene).len();
                 app.command_line.push_info(&crate::tr!(
                     "aec",

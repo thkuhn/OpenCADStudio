@@ -151,10 +151,21 @@ pub fn update_all_room_schedules(scene: &mut Scene) {
 
 /// Creates a new room schedule table at the specified coordinate.
 pub fn aec_room_schedule_at_point(scene: &mut Scene, pos: Vector3) -> Option<Handle> {
+    aec_room_schedule_at_point_with_stage(scene, pos, None)
+}
+
+/// Creates a room schedule and initializes shared title-block drawing properties when needed.
+pub fn aec_room_schedule_at_point_with_stage(
+    scene: &mut Scene,
+    pos: Vector3,
+    active_stage: Option<&str>,
+) -> Option<Handle> {
     let rooms = collect_all_rooms(scene);
     if rooms.is_empty() {
         return None;
     }
+
+    crate::modules::aec::views::title_block::ensure_aec_drawing_properties(scene, active_stage);
 
     scene.ensure_layer(AEC_ROOM_SCHEDULE_LAYER);
     let table = build_room_schedule_table(&rooms, pos);
@@ -358,9 +369,25 @@ mod tests {
             .expect("room 2");
 
         // Insert schedule table at (10, 10, 0)
-        let schedule_handle =
-            aec_room_schedule_at_point(&mut scene, Vector3::new(10.0, 10.0, 0.0))
-                .expect("schedule handle");
+        scene.document.summary_info.title = "Wohnhaus".to_string();
+        let schedule_handle = aec_room_schedule_at_point_with_stage(
+            &mut scene,
+            Vector3::new(10.0, 10.0, 0.0),
+            Some("Ausführung"),
+        )
+        .expect("schedule handle");
+        assert!(scene
+            .document
+            .summary_info
+            .custom_properties
+            .iter()
+            .any(|(key, value)| key == "AecProject" && value == "Wohnhaus"));
+        assert!(scene
+            .document
+            .summary_info
+            .custom_properties
+            .iter()
+            .any(|(key, value)| key == "AecStage" && value == "Ausführung"));
 
         let table_ent = scene
             .document
