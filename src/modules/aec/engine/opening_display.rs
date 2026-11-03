@@ -1670,6 +1670,15 @@ pub fn regenerate_opening_display(
         sync_opening_point_to_axis(scene, &opening, &axis, wall_base_z);
     }
     let stale = collect_opening_display_children(scene, opening_handle);
+    let retained_label_scale = stale.iter().find_map(|handle| {
+        let entity = scene.document.get_entity(*handle)?;
+        if !matches!(entity, EntityType::MText(_))
+            || opening_rep_slot_from_entity(entity) != Some(OpeningComponentSlot::OpeningLabel2D)
+        {
+            return None;
+        }
+        engine::annotative_label::native_annotation_scale(&scene.document, *handle)
+    });
     if !stale.is_empty() {
         scene.erase_entities(&stale);
         for h in &stale {
@@ -1836,6 +1845,11 @@ pub fn regenerate_opening_display(
                 entity.as_entity_mut().set_layer(l.clone());
             }
             let handle = scene.add_entity(entity);
+            let _ = engine::annotative_label::bind_annotative_mtext(
+                &mut scene.document,
+                handle,
+                retained_label_scale,
+            );
             write_opening_display_tag(
                 scene,
                 handle,
@@ -2363,6 +2377,19 @@ mod tests {
         slots
     }
 
+    fn opening_label_handle(scene: &Scene, opening: Handle) -> Option<Handle> {
+        collect_opening_display_children(scene, opening)
+            .into_iter()
+            .find(|handle| {
+                matches!(scene.document.get_entity(*handle), Some(EntityType::MText(_)))
+                    && scene
+                        .document
+                        .get_entity(*handle)
+                        .and_then(opening_rep_slot_from_entity)
+                        == Some(OpeningComponentSlot::OpeningLabel2D)
+            })
+    }
+
     #[test]
     fn place_window_emits_opening_rep_children_and_resolves_pick() {
         let mut scene = Scene::new();
@@ -2393,6 +2420,60 @@ mod tests {
             .unwrap();
         assert_eq!(parsed.style_id.as_deref(), Some(SEED_WINDOW_STYLE_ID));
         assert!((parsed.width - OpeningStyle::standard_window().default_width).abs() < 1e-12);
+    }
+
+    #[test]
+    fn opening_label_keeps_its_native_annotation_scale_after_regeneration() {
+        let mut scene = Scene::new();
+        scene.document.header.current_annotation_scale = "1:50".to_string();
+        let native_scale = crate::scene::annotative::ensure_scale_object(
+            &mut scene.document,
+            &codec::objects::Scale::new("1:50", 1.0, 50.0),
+        );
+        let wall = add_test_wall(&mut scene);
+        let lib = seed_default_library();
+        let (opening, _) = place_wall_opening(
+            &mut scene,
+            wall,
+            DVec3::new(1.5, 0.0, 0.0),
+            OpeningKind::Window,
+            Some(&lib),
+            None,
+            None,
+        )
+        .expect("place window");
+
+        let first_label = opening_label_handle(&scene, opening).expect("first opening label");
+        assert!(matches!(
+            scene.document.get_entity(first_label),
+            Some(EntityType::MText(mtext)) if mtext.is_annotative
+        ));
+        assert_eq!(
+            engine::annotative_label::native_annotation_scale(&scene.document, first_label),
+            Some(native_scale)
+        );
+
+        scene.document.header.current_annotation_scale = "1:20".to_string();
+        let _ = crate::scene::annotative::ensure_scale_object(
+            &mut scene.document,
+            &codec::objects::Scale::new("1:20", 1.0, 20.0),
+        );
+        regenerate_opening_display(&mut scene, opening, Some(&lib), None);
+
+        let second_label = opening_label_handle(&scene, opening).expect("regenerated opening label");
+        assert_eq!(
+            engine::annotative_label::native_annotation_scale(&scene.document, second_label),
+            Some(native_scale)
+        );
+        assert!(matches!(
+            scene.document.get_entity(second_label),
+            Some(EntityType::MText(mtext))
+                if mtext.is_annotative && (mtext.height - 0.15).abs() < 1.0e-9
+        ));
+        assert_eq!(
+            crate::scene::annotative::object_scale_memberships(&scene.document, second_label).len(),
+            1
+        );
     }
 
     #[test]

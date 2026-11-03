@@ -5,6 +5,7 @@
 //! unit-testable without UI or command-line coupling.
 
 pub mod arc;
+pub mod annotative_label;
 pub mod contour;
 pub mod control_plane;
 pub mod display_apply;

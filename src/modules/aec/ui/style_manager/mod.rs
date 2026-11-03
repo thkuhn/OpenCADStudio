@@ -6,6 +6,7 @@
 pub mod actions;
 pub mod forms;
 pub mod list;
+pub(crate) mod linetype_catalog;
 pub mod tree;
 pub mod ui_state;
 

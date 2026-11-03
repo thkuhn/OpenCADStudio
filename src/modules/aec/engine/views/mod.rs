@@ -9,7 +9,6 @@ pub mod floorplan_engine;
 pub mod model_view;
 pub mod provenance;
 pub mod scene_collector;
-pub mod sheet_annotation;
 pub mod silhouette;
 pub mod style_resolver;
 pub mod update_ops;

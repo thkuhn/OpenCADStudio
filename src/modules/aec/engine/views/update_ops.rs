@@ -208,7 +208,6 @@ pub fn regenerate_carrier(
 
     crate::modules::aec::engine::views::carrier::write_view_carrier_definitions(doc, carrier_handle, &vp, &mv);
     sync_carrier_primitives(doc, &mut carrier, &primitives)?;
-    super::sheet_annotation::append_overall_dimensions(doc, &mut carrier, &primitives)?;
 
     Ok(1)
 }
@@ -362,6 +361,9 @@ mod tests {
 
     #[test]
     fn test_mark_dirty_and_update_automatic_carrier() {
+        use codec::entities::{Dimension, DimensionLinear};
+        use codec::types::Vector3;
+
         let mut doc = CadDocument::new();
         let vp_id = ViewpointId::new();
         let mv_id = ModelViewId::new();
@@ -406,6 +408,23 @@ mod tests {
             UpdatePolicy::Automatic,
         )
         .expect("carrier created");
+
+        let legacy_dimension_handle = doc.allocate_handle();
+        let dimension = DimensionLinear::new(
+            Vector3::new(0.0, 0.0, 0.0),
+            Vector3::new(10.0, 0.0, 0.0),
+        );
+        let mut legacy_dimension = acadrust::EntityType::Dimension(Box::new(
+            Dimension::Linear(dimension),
+        ));
+        legacy_dimension.common_mut().handle = legacy_dimension_handle;
+        legacy_dimension.common_mut().layer = "AEC_VIEW_DIM".to_string();
+        doc.add_entity(legacy_dimension).unwrap();
+        crate::modules::aec::engine::owner_index::add_child(
+            &mut doc,
+            carrier.handle,
+            legacy_dimension_handle,
+        );
 
         assert!(!carrier.is_outdated);
 
@@ -455,6 +474,13 @@ mod tests {
         let c_read2 = find_view_carrier_by_handle(&doc, carrier.handle).unwrap();
         assert!(!c_read2.is_outdated);
         assert!(!c_read2.derived_handles.is_empty());
+        assert!(doc.get_entity(legacy_dimension_handle).is_none());
+        assert!(c_read2.derived_handles.iter().all(|handle| {
+            !matches!(
+                doc.get_entity(*handle),
+                Some(acadrust::EntityType::Dimension(_))
+            )
+        }));
     }
 
     #[test]

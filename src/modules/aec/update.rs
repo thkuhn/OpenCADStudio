@@ -85,6 +85,7 @@ impl OpenCADStudio {
                         self.aec.aec_project_explorer_file.as_ref(),
                     ),
                 );
+                self.refresh_aec_material_linetype_combo();
                 self.active_modal = Some(crate::app::ModalKind::Aec(AecModalKind::Styles));
                 Task::none()
             }
@@ -1619,6 +1620,7 @@ impl OpenCADStudio {
                 Task::none()
             }
             AecMessage::AecPlanManagerDemolitionStyleLineTypeChanged(value) => {
+                self.ensure_aec_catalog_linetype(&value);
                 self.aec.styles.plan_demolition_style_line_type = value;
                 Task::none()
             }
@@ -1660,6 +1662,7 @@ impl OpenCADStudio {
                 Task::none()
             }
             AecMessage::AecPlanManagerExistingStyleLineTypeChanged(value) => {
+                self.ensure_aec_catalog_linetype(&value);
                 self.aec.styles.plan_existing_style_line_type = value;
                 Task::none()
             }
@@ -1761,6 +1764,7 @@ impl OpenCADStudio {
                 Task::none()
             }
             AecMessage::AecPlanManagerOverlayLineTypeChanged(value) => {
+                self.ensure_aec_catalog_linetype(&value);
                 self.aec.styles.plan_overlay_line_type = value;
                 self.aec_plan_manager_write_overlay_buffers();
                 Task::none()
@@ -2503,6 +2507,7 @@ impl OpenCADStudio {
                 Task::none()
             }
             AecMessage::AecStyleManagerProfileSlotStyleLineTypeChanged(v) => {
+                self.ensure_aec_catalog_linetype(&v);
                 self.aec.styles.profile_slot_style_line_type = v;
                 Task::none()
             }
@@ -2997,6 +3002,7 @@ impl OpenCADStudio {
                 Task::none()
             }
             AecMessage::AecStyleManagerMaterialLineTypeChanged(value) => {
+                self.ensure_aec_catalog_linetype(&value);
                 self.aec.styles.material_line_type = value;
                 Task::none()
             }

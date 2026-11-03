@@ -176,6 +176,10 @@ pub fn regenerate_room_representation_with_display(
     // Update XDATA on carrier entity
     write_room_record(&mut scene.document, room_handle, &room);
 
+    let retained_stamp_scale = room_stamp_handle(scene, room_handle).and_then(|stamp_handle| {
+        super::annotative_label::native_annotation_scale(&scene.document, stamp_handle)
+    });
+
     // Remove old derived display children
     remove_room_display_children(scene, room_handle);
 
@@ -242,6 +246,11 @@ pub fn regenerate_room_representation_with_display(
 
     if display.stamp {
         let stamp_handle = scene.add_entity(stamp_entity);
+        let _ = super::annotative_label::bind_annotative_mtext(
+            &mut scene.document,
+            stamp_handle,
+            retained_stamp_scale,
+        );
         write_room_display_tag(scene, stamp_handle, room_handle, ROOM_REP_ROLE_STAMP);
         child_handles.push(stamp_handle);
     }
@@ -448,5 +457,54 @@ mod tests {
         } else {
             panic!("Expected MText stamp");
         }
+    }
+
+    #[test]
+    fn room_stamp_keeps_its_native_annotation_scale_after_regeneration() {
+        let mut scene = Scene::new();
+        scene.document.header.current_annotation_scale = "1:50".to_string();
+        let native_scale = crate::scene::annotative::ensure_scale_object(
+            &mut scene.document,
+            &codec::objects::Scale::new("1:50", 1.0, 50.0),
+        );
+
+        let points = [(0.0, 0.0), (6.0, 0.0), (6.0, 4.0), (0.0, 4.0)];
+        let mut boundary = LwPolyline::new();
+        for point in points {
+            boundary.add_vertex(LwVertex::new(Vector2::new(point.0, point.1)));
+        }
+        boundary.is_closed = true;
+        let room_handle = scene.add_entity(EntityType::LwPolyline(boundary));
+        let room = Room::from_polygon("Office", &points, 2.8, 0);
+        write_room_record(&mut scene.document, room_handle, &room);
+
+        assert!(regenerate_room_representation(&mut scene, room_handle, None).is_some());
+        let first_stamp = room_stamp_handle(&scene, room_handle).expect("first room stamp");
+        assert_eq!(
+            super::super::annotative_label::native_annotation_scale(&scene.document, first_stamp),
+            Some(native_scale)
+        );
+
+        scene.document.header.current_annotation_scale = "1:20".to_string();
+        let _ = crate::scene::annotative::ensure_scale_object(
+            &mut scene.document,
+            &codec::objects::Scale::new("1:20", 1.0, 20.0),
+        );
+        assert!(regenerate_room_representation(&mut scene, room_handle, None).is_some());
+
+        let second_stamp = room_stamp_handle(&scene, room_handle).expect("regenerated room stamp");
+        assert_eq!(
+            super::super::annotative_label::native_annotation_scale(&scene.document, second_stamp),
+            Some(native_scale)
+        );
+        assert!(matches!(
+            scene.document.get_entity(second_stamp),
+            Some(EntityType::MText(mtext))
+                if mtext.is_annotative && (mtext.height - 0.22).abs() < 1.0e-9
+        ));
+        assert_eq!(
+            crate::scene::annotative::object_scale_memberships(&scene.document, second_stamp).len(),
+            1
+        );
     }
 }
