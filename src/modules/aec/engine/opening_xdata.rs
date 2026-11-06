@@ -78,6 +78,12 @@ pub(crate) fn opening_record(opening: &engine::openings::Opening) -> ExtendedDat
             record.add_value(XDataValue::String(json));
         }
     }
+    if let Some(grid) = &opening.division_override {
+        if let Ok(json) = serde_json::to_string(grid) {
+            record.add_value(XDataValue::String("division_grid".to_string()));
+            record.add_value(XDataValue::String(json));
+        }
+    }
     record
 }
 
@@ -328,6 +334,17 @@ pub fn opening_from_values(
         }
     }
 
+    let mut division_override = None;
+    if let Some(pos) = v.iter().rposition(
+        |x| matches!(x, XDataValue::String(s) if s == "division_grid" || s == "DIVISION_GRID"),
+    ) {
+        if let Some(XDataValue::String(json)) = v.get(pos + 1) {
+            if let Ok(grid) = serde_json::from_str(json) {
+                division_override = Some(grid);
+            }
+        }
+    }
+
     Some(engine::openings::Opening {
         handle,
         host_wall,
@@ -337,6 +354,7 @@ pub fn opening_from_values(
         sill_height,
         kind: opening_kind,
         style_id,
+        division_override,
         hinge,
         shape,
         spring_height,
@@ -551,7 +569,9 @@ pub fn remove_wall_opening_with_rules_and_substitutions(
 mod tests {
     use super::*;
     use crate::modules::aec::engine::opening_shape::{OpeningShape, TriangleVariant};
-    use crate::modules::aec::engine::opening_style::HingeSide;
+    use crate::modules::aec::engine::opening_style::{
+        DivisionGrid, HingeSide, OpeningCell, OpeningCellKind,
+    };
     use crate::modules::aec::engine::openings::{Opening, OpeningKind};
 
     fn sample_opening() -> Opening {
@@ -582,6 +602,7 @@ mod tests {
         let o = opening_from_values(Handle::new(9), &v).expect("legacy");
         assert_eq!(o.kind, OpeningKind::Window);
         assert_eq!(o.style_id, None);
+        assert_eq!(o.division_override, None);
         assert_eq!(o.hinge, HingeSide::Left);
         assert_eq!(o.shape, OpeningShape::Rectangle);
         assert_eq!(o.spring_height, 0.0);
@@ -594,7 +615,23 @@ mod tests {
 
     #[test]
     fn new_record_roundtrips_style_hinge_shape_spring() {
-        let o = sample_opening();
+        let mut o = sample_opening();
+        o.division_override = Some(DivisionGrid {
+            vertical: vec![0.4, 0.6],
+            cells: vec![
+                OpeningCell {
+                    kind: OpeningCellKind::DoorLeaf,
+                    hinge: Some(HingeSide::Right),
+                    sill: 0.0,
+                },
+                OpeningCell {
+                    kind: OpeningCellKind::Glass,
+                    hinge: None,
+                    sill: 0.8,
+                },
+            ],
+            ..DivisionGrid::default()
+        });
         let rec = opening_record(&o);
         let back = opening_from_values(o.handle, &rec.values).expect("parse");
         assert_eq!(back.style_id.as_deref(), Some("style_door_standard"));
@@ -602,6 +639,7 @@ mod tests {
         assert_eq!(back.shape, OpeningShape::Arch);
         assert!((back.spring_height - 1.65).abs() < 1e-12);
         assert_eq!(back.kind, OpeningKind::Door);
+        assert_eq!(back.division_override, o.division_override);
     }
 
     #[test]

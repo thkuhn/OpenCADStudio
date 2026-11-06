@@ -7,7 +7,7 @@ use acadrust::{CadDocument, EntityType, Handle};
 use uuid::Uuid;
 
 use crate::modules::aec::engine::opening_shape::OpeningShape;
-use crate::modules::aec::engine::opening_style::HingeSide;
+use crate::modules::aec::engine::opening_style::{DivisionGrid, HingeSide};
 use crate::modules::aec::engine::opening_xdata::opening_from_entity;
 use crate::modules::aec::engine::join::JunctionOverride;
 use crate::modules::aec::engine::openings::{OpeningKind, OpeningReferenceSide};
@@ -34,6 +34,7 @@ pub struct CollectedOpening {
     pub host_wall_handle: Handle,
     pub kind: OpeningKind,
     pub style_id: Option<String>,
+    pub division_override: Option<DivisionGrid>,
     pub distance_along_axis: f64,
     pub width: f64,
     pub height: f64,
@@ -491,6 +492,7 @@ impl SceneGeometryCollector {
                                 host_wall_handle: handle,
                                 kind: op.kind,
                                 style_id: op.style_id.clone(),
+                                division_override: op.division_override.clone(),
                                 distance_along_axis: op.distance_along_axis,
                                 width: op.width,
                                 height: op.height,

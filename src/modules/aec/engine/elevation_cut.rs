@@ -11,7 +11,9 @@
 //! holes are united (interval union on each scanline) and subtracted once.
 
 use super::geometry::{area, signed_area};
+use super::opening_shape::OpeningShape;
 use super::openings::{Opening, OpeningKind};
+use super::opening_style::DivisionGrid;
 
 const EPS: f64 = 1e-9;
 const MIN_SPAN: f64 = 1e-6;
@@ -72,7 +74,7 @@ pub fn opening_zones(openings: &[Opening]) -> Vec<OpeningZone> {
 fn build_zone(s0: f64, s1: f64, members: &[usize], openings: &[Opening]) -> OpeningZone {
     let holes = members
         .iter()
-        .filter_map(|&i| openings.get(i).and_then(|o| hole_in_zone(o, s0)))
+        .flat_map(|&i| openings.get(i).map(|opening| holes_in_zone(opening, s0)).unwrap_or_default())
         .collect();
     OpeningZone { s0, s1, holes }
 }
@@ -103,6 +105,169 @@ fn hole_in_zone(opening: &Opening, zone_s0: f64) -> Option<Vec<(f64, f64)>> {
         return None;
     }
     Some(ensure_ccw(shifted))
+}
+
+fn holes_in_zone(opening: &Opening, zone_s0: f64) -> Vec<Vec<(f64, f64)>> {
+    let grid = opening
+        .division_override
+        .as_ref()
+        .cloned()
+        .unwrap_or_else(DivisionGrid::default);
+    if grid.is_implicit_single_cell() {
+        return hole_in_zone(opening, zone_s0).into_iter().collect();
+    }
+    let shape = opening.shape.elevation_polygon(
+        opening.width,
+        opening.height,
+        opening.spring_height,
+    );
+    let clip = ensure_ccw(shape);
+    let Ok(cells) = grid.layout(opening.width, opening.height, opening.kind) else {
+        return Vec::new();
+    };
+    cells
+        .into_iter()
+        .filter_map(|cell| {
+            let left = cell.left + opening.width * 0.5;
+            let right = cell.right + opening.width * 0.5;
+            let rect = vec![
+                (left, cell.bottom),
+                (right, cell.bottom),
+                (right, cell.top),
+                (left, cell.top),
+            ];
+            let mut polygon = clip_convex_polygon(rect, &clip);
+            if polygon.len() < 3 || area(&polygon) <= EPS {
+                return None;
+            }
+            for point in &mut polygon {
+                point.1 += opening.sill_height;
+            }
+            let left_jamb = opening.axis_span().0;
+            Some(ensure_ccw(
+                polygon
+                    .into_iter()
+                    .map(|(s, z)| (s + left_jamb - zone_s0, z))
+                    .collect(),
+            ))
+        })
+        .collect()
+}
+
+pub fn opening_cell_vertical_intervals_at_x(
+    width: f64,
+    height: f64,
+    sill_height: f64,
+    kind: OpeningKind,
+    shape: OpeningShape,
+    spring_height: f64,
+    grid: &DivisionGrid,
+    local_x: f64,
+) -> Vec<(f64, f64)> {
+    if local_x < -EPS || local_x > width + EPS {
+        return Vec::new();
+    }
+    let Ok(cells) = grid.layout(width, height, kind) else {
+        return Vec::new();
+    };
+    let shape_polygon = shape.elevation_polygon(width, height, spring_height);
+    let Some((shape_bottom, shape_top)) = polygon_vertical_interval(&shape_polygon, local_x) else {
+        return Vec::new();
+    };
+    let local_centered_x = local_x - width * 0.5;
+    let mut intervals: Vec<(f64, f64)> = cells
+        .into_iter()
+        .filter(|cell| {
+            local_centered_x >= cell.left - EPS && local_centered_x <= cell.right + EPS
+        })
+        .filter_map(|cell| {
+            let bottom = cell.bottom.max(shape_bottom);
+            let top = cell.top.min(shape_top);
+            (top > bottom + EPS).then_some((sill_height + bottom, sill_height + top))
+        })
+        .collect();
+    intervals.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+    intervals.dedup_by(|a, b| (a.0 - b.0).abs() <= EPS && (a.1 - b.1).abs() <= EPS);
+    intervals
+}
+
+fn polygon_vertical_interval(polygon: &[(f64, f64)], x: f64) -> Option<(f64, f64)> {
+    if polygon.len() < 3 {
+        return None;
+    }
+    let mut heights = Vec::new();
+    for index in 0..polygon.len() {
+        let a = polygon[index];
+        let b = polygon[(index + 1) % polygon.len()];
+        let dx = b.0 - a.0;
+        if dx.abs() <= EPS {
+            if (x - a.0).abs() <= EPS {
+                heights.push(a.1);
+                heights.push(b.1);
+            }
+            continue;
+        }
+        let t = (x - a.0) / dx;
+        if (-EPS..=1.0 + EPS).contains(&t) {
+            heights.push(a.1 + (b.1 - a.1) * t.clamp(0.0, 1.0));
+        }
+    }
+    heights.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    heights.dedup_by(|a, b| (*a - *b).abs() <= EPS);
+    Some((*heights.first()?, *heights.last()?))
+}
+
+fn clip_convex_polygon(subject: Vec<(f64, f64)>, clip: &[(f64, f64)]) -> Vec<(f64, f64)> {
+    let mut output = subject;
+    if clip.len() < 3 {
+        return Vec::new();
+    }
+    for index in 0..clip.len() {
+        let edge_start = clip[index];
+        let edge_end = clip[(index + 1) % clip.len()];
+        let edge = (edge_end.0 - edge_start.0, edge_end.1 - edge_start.1);
+        let input = std::mem::take(&mut output);
+        if input.is_empty() {
+            break;
+        }
+        let mut previous = *input.last().unwrap();
+        let mut previous_inside = cross(edge, (previous.0 - edge_start.0, previous.1 - edge_start.1)) >= -EPS;
+        for current in input {
+            let current_inside = cross(edge, (current.0 - edge_start.0, current.1 - edge_start.1)) >= -EPS;
+            if current_inside != previous_inside {
+                if let Some(intersection) = line_intersection(previous, current, edge_start, edge_end) {
+                    output.push(intersection);
+                }
+            }
+            if current_inside {
+                output.push(current);
+            }
+            previous = current;
+            previous_inside = current_inside;
+        }
+    }
+    output
+}
+
+fn line_intersection(
+    start: (f64, f64),
+    end: (f64, f64),
+    edge_start: (f64, f64),
+    edge_end: (f64, f64),
+) -> Option<(f64, f64)> {
+    let direction = (end.0 - start.0, end.1 - start.1);
+    let edge = (edge_end.0 - edge_start.0, edge_end.1 - edge_start.1);
+    let denominator = cross(direction, edge);
+    if denominator.abs() <= EPS {
+        return None;
+    }
+    let offset = (edge_start.0 - start.0, edge_start.1 - start.1);
+    let t = cross(offset, edge) / denominator;
+    Some((start.0 + direction.0 * t, start.1 + direction.1 * t))
+}
+
+fn cross(a: (f64, f64), b: (f64, f64)) -> f64 {
+    a.0 * b.1 - a.1 * b.0
 }
 
 /// Subtract `holes` from the elevation rectangle `[0, width] × [z_min, z_max]`.
@@ -632,6 +797,9 @@ where
 mod tests {
     use super::*;
     use crate::modules::aec::engine::opening_shape::{OpeningShape, TriangleVariant};
+    use crate::modules::aec::engine::opening_style::{
+        DivisionGrid, OpeningCell, OpeningCellKind,
+    };
     use crate::modules::aec::engine::openings::OpeningKind;
     use acadrust::Handle;
 
@@ -718,6 +886,39 @@ mod tests {
     }
 
     #[test]
+    fn heterogeneous_door_window_cells_cut_two_heights_not_one_rectangle() {
+        let width = 1.8;
+        let height = 2.2;
+        let wall_h = 2.7;
+        let mut opening = dummy(2.0, width, height, 0.0, OpeningShape::Rectangle, 0.0);
+        opening.division_override = Some(DivisionGrid {
+            vertical: vec![0.5, 0.5],
+            cells: vec![
+                OpeningCell {
+                    kind: OpeningCellKind::DoorLeaf,
+                    hinge: Some(crate::modules::aec::engine::opening_style::HingeSide::Left),
+                    sill: 0.0,
+                },
+                OpeningCell {
+                    kind: OpeningCellKind::Glass,
+                    hinge: None,
+                    sill: 1.0,
+                },
+            ],
+            ..DivisionGrid::default()
+        });
+        let zones = opening_zones(&[opening]);
+        assert_eq!(zones.len(), 1);
+        assert_eq!(zones[0].holes.len(), 2);
+        let got_open_area = hole_area(&zones[0].holes);
+        let expected_open_area = width * 0.5 * height + width * 0.5 * (height - 1.0);
+        assert!(approx(got_open_area, expected_open_area));
+        let rings = cut_elevation(width, 0.0, wall_h, &zones[0].holes);
+        assert!(approx(remaining_area(&rings), width * wall_h - expected_open_area));
+        assert!(rings.iter().any(|ring| point_in_polygon(ring, (width * 0.75, 0.5))));
+    }
+
+    #[test]
     fn circle_keeps_bounding_box_corners() {
         let width = 1.0;
         let height = 1.0;
@@ -766,7 +967,10 @@ mod tests {
         let rb = cut_elevation(width, 0.0, wall_h, &zb[0].holes);
         let hole_a = hole_area(&za[0].holes);
         let hole_b = hole_area(&zb[0].holes);
-        assert!(hole_b > hole_a + 1e-4, "lower kämfer must increase rise/area");
+        assert!(
+            hole_b > hole_a + 1e-4,
+            "lower kämfer must increase rise/area: default={hole_a}, lower={hole_b}"
+        );
         let got_a = remaining_area(&ra);
         let got_b = remaining_area(&rb);
         // Default Kämpfer is a semicircle on the jambs: hole stays inside the zone.

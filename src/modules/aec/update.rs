@@ -143,6 +143,10 @@ impl OpenCADStudio {
                 self.aec.styles.opening_preview_mode = mode;
                 Task::none()
             }
+            AecMessage::AecOpeningStyleManagerSetEditorTab(tab) => {
+                self.aec_opening_style_manager_set_editor_tab(tab);
+                Task::none()
+            }
             AecMessage::AecOpeningStyleManagerSlotSourceChanged(index, value) => {
                 self.aec_opening_style_manager_slot_source_changed(index, value)
             }
@@ -159,10 +163,7 @@ impl OpenCADStudio {
                 self.aec_opening_style_manager_profile_select(value)
             }
             AecMessage::AecOpeningStyleManagerPreviewSlotSelect(slot) => {
-                match self.aec.styles.opening_slots.iter().position(|b| b.slot == slot) {
-                    Some(index) => self.aec_opening_style_manager_sketch_slot_select(index),
-                    None => Task::none(),
-                }
+                self.aec_opening_style_manager_preview_slot_select(slot)
             }
             AecMessage::AecOpeningStyleManagerProfileRemove(name) => {
                 self.aec_opening_style_manager_profile_remove(name)
@@ -170,32 +171,53 @@ impl OpenCADStudio {
             AecMessage::AecOpeningStyleManagerSlotVisible(index, visible) => {
                 self.aec_opening_style_manager_slot_visible(index, visible)
             }
-            AecMessage::AecOpeningStyleManagerSketchSlotSelect(index) => {
-                self.aec_opening_style_manager_sketch_slot_select(index)
+            AecMessage::AecOpeningStyleManagerDimChanged(key, value) => {
+                self.aec_opening_style_manager_dim_changed(&key, value);
+                Task::none()
             }
-            AecMessage::AecOpeningStyleManagerSketchClick(x, y) => {
-                self.aec_opening_style_manager_sketch_click(x, y)
+            AecMessage::AecOpeningStyleManagerCellKindChanged(index, value) => {
+                self.aec_opening_style_manager_cell_kind(index, &value);
+                Task::none()
             }
-            AecMessage::AecOpeningStyleManagerSketchClosePath => {
-                self.aec_opening_style_manager_sketch_close_path()
+            AecMessage::AecOpeningStyleManagerCellHingeChanged(index, value) => {
+                self.aec_opening_style_manager_cell_hinge(index, &value);
+                Task::none()
             }
-            AecMessage::AecOpeningStyleManagerSketchFinishPath => {
-                self.aec_opening_style_manager_sketch_finish_path()
+            AecMessage::AecOpeningStyleManagerCellSillChanged(index, value) => {
+                self.aec_opening_style_manager_cell_sill(index, value);
+                Task::none()
             }
-            AecMessage::AecOpeningStyleManagerSketchUndo => {
-                self.aec_opening_style_manager_sketch_undo()
+            AecMessage::AecOpeningStyleManagerCellAdd => {
+                self.aec_opening_style_manager_cell_add();
+                Task::none()
             }
-            AecMessage::AecOpeningStyleManagerSketchDeletePath => {
-                self.aec_opening_style_manager_sketch_delete_path()
+            AecMessage::AecOpeningStyleManagerCellRemove(index) => {
+                self.aec_opening_style_manager_cell_remove(index);
+                Task::none()
             }
-            AecMessage::AecOpeningStyleManagerSketchClear => {
-                self.aec_opening_style_manager_sketch_clear()
+            AecMessage::AecOpeningStyleManagerFamilyBlockChanged(family, name) => {
+                self.aec_opening_style_manager_family_block(&family, name);
+                Task::none()
             }
-            AecMessage::AecOpeningStyleManagerSketchAddFrame => {
-                self.aec_opening_style_manager_sketch_add_frame()
+            AecMessage::AecOpeningStyleManagerFamilyPlacementChanged(family, placement) => {
+                self.aec_opening_style_manager_family_placement(&family, &placement);
+                Task::none()
             }
-            AecMessage::AecOpeningStyleManagerSketchArc => {
-                self.aec_opening_style_manager_sketch_arc()
+            AecMessage::AecOpeningStyleManagerLookLineTypeChanged(role, value) => {
+                self.aec_opening_style_manager_look_line_type_changed(role, value);
+                Task::none()
+            }
+            AecMessage::AecOpeningStyleManagerLookLineColorChanged(role, value) => {
+                self.aec_opening_style_manager_look_line_color_changed(role, value);
+                Task::none()
+            }
+            AecMessage::AecOpeningStyleManagerLookColorPickerToggle(role) => {
+                self.aec_opening_style_manager_look_color_picker_toggle(role);
+                Task::none()
+            }
+            AecMessage::AecOpeningStyleManagerLookMaterialClear(role) => {
+                self.aec_opening_style_manager_look_material_clear(role);
+                Task::none()
             }
             AecMessage::AecOpeningStyleManagerSave => self.aec_opening_style_manager_save(),
             AecMessage::AecOpeningStyleManagerSaveAndApply => {
@@ -1605,6 +1627,10 @@ impl OpenCADStudio {
                 self.aec.styles.plan_view_type = view_type;
                 Task::none()
             }
+            AecMessage::AecPlanManagerOpeningLevelChanged(key, value) => {
+                self.aec_plan_manager_opening_level_changed(&key, &value);
+                Task::none()
+            }
             AecMessage::AecPlanManagerPhaseVisibleToggle(phase, visible) => {
                 match phase {
                     crate::modules::aec::engine::plan_view::PlanPhase::Existing => {
@@ -2246,6 +2272,12 @@ impl OpenCADStudio {
                     crate::app::StylePickerTarget::OpeningStyleParent => {
                         self.aec.styles.opening_parent.clone()
                     }
+                    crate::app::StylePickerTarget::OpeningComponentMaterial(role) => self
+                        .aec
+                        .styles
+                        .opening_look_buffers
+                        .get(&role)
+                        .map(|buffer| buffer.material_id.clone()),
                     crate::app::StylePickerTarget::SlabStyleParent => {
                         self.aec.styles.slab_parent.clone()
                     }
@@ -2670,6 +2702,11 @@ impl OpenCADStudio {
                             return self.update(Message::Aec(
                                 AecMessage::AecOpeningStyleManagerParentChanged(id),
                             ));
+                        }
+                        crate::app::StylePickerTarget::OpeningComponentMaterial(role) => {
+                            self.active_modal = Some(crate::app::ModalKind::Aec(AecModalKind::Styles));
+                            self.aec_opening_style_manager_look_material_changed(role, selection);
+                            return Task::none();
                         }
                         crate::app::StylePickerTarget::OpeningPropertiesStyle => {
                             self.active_modal = None;

@@ -18,6 +18,7 @@ pub enum AecColorPickTarget {
     WallStyleSlotLineColor,
     WallStyleSlotHatchColor,
     WallStyleSlotFillColor,
+    OpeningComponent(crate::modules::aec::engine::opening_style::OpeningLookRole),
     PlanOverlayLineColor,
     PlanOverlayHatchColor,
     PlanOverlayFillColor,
@@ -92,6 +93,12 @@ pub fn message_for(
         )),
         AecColorPickTarget::WallStyleSlotFillColor => Some(Message::Aec(
             AecMessage::AecStyleManagerProfileSlotStyleFillColorChanged(
+                acad_color_to_editor_string(color),
+            ),
+        )),
+        AecColorPickTarget::OpeningComponent(role) => Some(Message::Aec(
+            AecMessage::AecOpeningStyleManagerLookLineColorChanged(
+                role,
                 acad_color_to_editor_string(color),
             ),
         )),

@@ -127,13 +127,30 @@ impl RoomDisplay {
         detail: &super::plan_view::DetailProfile,
         session: Option<super::display_component::RepresentationMode>,
     ) -> Self {
+        Self::from_config_parts(detail, None, session)
+    }
+
+    pub fn from_config(
+        config: &super::plan_view::DisplayConfig,
+        session: Option<super::display_component::RepresentationMode>,
+    ) -> Self {
+        Self::from_config_parts(&config.detail, Some(config.opening_levels.swing), session)
+    }
+
+    fn from_config_parts(
+        detail: &super::plan_view::DetailProfile,
+        swing: Option<Option<super::opening_style::SwingGlyph>>,
+        session: Option<super::display_component::RepresentationMode>,
+    ) -> Self {
         use super::display_component::RepresentationMode as R;
+        use super::opening_style::SwingGlyph;
         let rep = session.unwrap_or(detail.representation);
         let two_d = rep != R::ThreeD;
+        let swing_off = swing.is_some_and(|glyph| glyph == Some(SwingGlyph::Off));
         Self {
             stamp: two_d && detail.annotation,
             hatches: two_d && detail.hatches,
-            thresholds: two_d && detail.opening_symbols && !detail.ceiling_view,
+            thresholds: two_d && !detail.ceiling_view && !swing_off,
             floor: !detail.ceiling_view,
         }
     }

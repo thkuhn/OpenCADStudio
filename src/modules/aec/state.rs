@@ -102,7 +102,6 @@ pub struct AecSlabLayerBuffer {
 pub enum AecOpeningSlotSource {
     Generator,
     Block,
-    Sketch,
 }
 
 /// Preview mode in the Opening Style Manager canvas.
@@ -111,7 +110,33 @@ pub enum AecOpeningPreviewMode {
     #[default]
     Plan2D,
     Elevation2D,
+    Section,
     Model3D,
+}
+
+/// One grid cell in the opening style dialog.
+#[derive(Clone, Debug, PartialEq)]
+pub struct AecOpeningCellBuffer {
+    pub kind: crate::modules::aec::engine::opening_style::OpeningCellKind,
+    pub hinge: Option<crate::modules::aec::engine::opening_style::HingeSide>,
+    pub sill: String,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum AecOpeningEditorTab {
+    #[default]
+    Dimensions,
+    Graphics,
+    Materials,
+    Divisions,
+    Symbol,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct AecOpeningLookBuffer {
+    pub line_type: String,
+    pub line_color: String,
+    pub material_id: String,
 }
 
 /// Edit-buffer row for an opening-style display slot.
@@ -122,7 +147,6 @@ pub struct AecOpeningSlotBuffer {
     pub generator: crate::modules::aec::engine::opening_style::OpeningGenerator,
     pub block_name: String,
     pub block_placement: crate::modules::aec::engine::opening_style::BlockPlacementMode,
-    pub sketch: crate::modules::aec::engine::opening_style::OpeningSketch,
     pub visible: bool,
 }
 
@@ -165,6 +189,8 @@ pub enum StylePickerTarget {
     ActiveCommand,
     /// Selecting a parent style for an opening style being edited.
     OpeningStyleParent,
+    /// Selecting a material for one opening component role.
+    OpeningComponentMaterial(crate::modules::aec::engine::opening_style::OpeningLookRole),
     /// Selecting a new style for one or more opening entities in the
     /// properties panel. Handles live in `aec_style_picker_wall_handles`.
     OpeningPropertiesStyle,

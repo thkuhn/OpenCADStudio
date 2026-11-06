@@ -11,18 +11,18 @@ use crate::app::{AecModalKind, AecPendingCopy, Message, OpenCADStudio};
 use crate::modules::aec::engine::display_component::OpeningComponentSlot;
 use crate::modules::aec::engine::opening_display::{bake_opening_generators, BakedPath, OpeningBakeParams};
 use crate::modules::aec::engine::opening_shape::{clamp_spring, OpeningShape};
-use crate::modules::aec::engine::opening_sketch::{
-    commit_draft, draft_append, draft_set_last_arc, snap_ref_point, TwoRectBake,
-};
 use crate::modules::aec::engine::opening_style::{
-    default_slots_for_kind, BlockPlacementMode, OpeningDisplayProfile, OpeningGenerator,
-    OpeningSketch, OpeningStyle, SlotGeometry, HingeSide, DEFAULT_FRAME_THICKNESS,
+    default_slots_for_kind, BlockPlacementMode, DivisionGrid, FamilyPlacement,
+    FamilySymbol, OpeningDisplayProfile, OpeningFamilySymbols, OpeningGenerator, OpeningParts,
+    OpeningCell, OpeningLookRole, OpeningLooks, OpeningStyle, SlotGeometry,
+    HingeSide, DEFAULT_FRAME_THICKNESS,
     DEFAULT_OPENING_ANGLE_DEG,
 };
 use crate::modules::aec::engine::openings::{OpeningKind, SwingSide};
 use crate::modules::aec::engine::style::Style;
 use crate::modules::aec::state::{
-    AecOpeningPreviewMode, AecOpeningSlotBuffer, AecOpeningSlotSource,
+    AecOpeningCellBuffer, AecOpeningEditorTab, AecOpeningLookBuffer, AecOpeningPreviewMode,
+    AecOpeningSlotBuffer, AecOpeningSlotSource,
 };
 use crate::modules::{IconKind, ModuleEvent, ToolDef};
 
@@ -79,6 +79,212 @@ pub fn parse_dim(s: &str) -> Option<f64> {
     }
 }
 
+fn parse_list(s: &str) -> Vec<f64> {
+    s.split([',', ';', ' '])
+        .filter_map(parse_dim)
+        .collect()
+}
+
+fn format_list(values: &[f64]) -> String {
+    values.iter().map(|v| format_dim(*v)).collect::<Vec<_>>().join(", ")
+}
+
+fn dim_or(s: &str, fallback: f64) -> f64 {
+    parse_dim(s).unwrap_or(fallback)
+}
+
+fn symbol_from(name: &str, placement: FamilyPlacement) -> Option<FamilySymbol> {
+    let block_name = name.trim().to_string();
+    if block_name.is_empty() {
+        None
+    } else {
+        Some(FamilySymbol { block_name, placement })
+    }
+}
+
+fn load_part_buffers(app: &mut OpenCADStudio, style: &OpeningStyle) {
+    let parts = &style.parts;
+    app.aec.styles.opening_frame = format_dim(parts.fixed_frame.face_width);
+    app.aec.styles.opening_frame_depth = format_dim(parts.fixed_frame.wall_depth);
+    app.aec.styles.opening_frame_offset = format_dim(parts.fixed_frame.axis_offset);
+    app.aec.styles.opening_leaf_face = format_dim(parts.leaf_frame.face_width);
+    app.aec.styles.opening_leaf_depth = format_dim(parts.leaf_frame.depth);
+    app.aec.styles.opening_leaf_rebate = format_dim(parts.leaf_frame.rebate_overlap);
+    app.aec.styles.opening_glazing_thickness = format_dim(parts.glazing.thickness);
+    app.aec.styles.opening_glazing_inset = format_dim(parts.glazing.inset);
+    app.aec.styles.opening_ext_sill_thickness = format_dim(parts.exterior_sill.thickness);
+    app.aec.styles.opening_ext_sill_overhang = format_dim(parts.exterior_sill.overhang);
+    app.aec.styles.opening_ext_sill_upstand = format_dim(parts.exterior_sill.upstand);
+    app.aec.styles.opening_int_board_thickness = format_dim(parts.interior_board.thickness);
+    app.aec.styles.opening_int_board_overhang = format_dim(parts.interior_board.overhang);
+    app.aec.styles.opening_int_board_upstand = format_dim(parts.interior_board.upstand);
+    app.aec.styles.opening_threshold_height = format_dim(parts.threshold.height);
+    app.aec.styles.opening_threshold_width = format_dim(parts.threshold.width);
+    app.aec.styles.opening_shutter_height = format_dim(parts.shutter_box.height);
+    app.aec.styles.opening_shutter_depth = format_dim(parts.shutter_box.depth);
+    app.aec.styles.opening_shutter_seat = format_dim(parts.shutter_box.seat_above_frame);
+    app.aec.styles.opening_shutter_install = format_dim(parts.shutter_box.installation_depth);
+    app.aec.styles.opening_lintel_height = format_dim(parts.lintel.height);
+    app.aec.styles.opening_lintel_left = format_dim(parts.lintel.bearing_left);
+    app.aec.styles.opening_lintel_right = format_dim(parts.lintel.bearing_right);
+    app.aec.styles.opening_look_buffers = opening_look_buffers_from_style(style);
+    app.aec.styles.opening_editor_tab = AecOpeningEditorTab::Dimensions;
+    app.aec.styles.opening_look_color_picker_role = None;
+    app.aec.styles.opening_selected_look_role = None;
+    app.aec.styles.opening_vertical = format_list(&style.grid.vertical);
+    app.aec.styles.opening_horizontal = format_list(&style.grid.horizontal);
+    app.aec.styles.opening_vertical_muntins = format_list(&style.grid.vertical_muntins);
+    app.aec.styles.opening_horizontal_muntins = format_list(&style.grid.horizontal_muntins);
+    app.aec.styles.opening_cells = style
+        .grid
+        .cells
+        .iter()
+        .map(|cell| AecOpeningCellBuffer {
+            kind: cell.kind,
+            hinge: cell.hinge,
+            sill: format_dim(cell.sill),
+        })
+        .collect();
+    let symbols = &style.family_symbols;
+    app.aec.styles.opening_plan_block = symbols
+        .plan
+        .as_ref()
+        .map(|s| s.block_name.clone())
+        .unwrap_or_default();
+    app.aec.styles.opening_plan_placement = symbols
+        .plan
+        .as_ref()
+        .map(|s| s.placement)
+        .unwrap_or_default();
+    app.aec.styles.opening_section_block = symbols
+        .section
+        .as_ref()
+        .map(|s| s.block_name.clone())
+        .unwrap_or_default();
+    app.aec.styles.opening_section_placement = symbols
+        .section
+        .as_ref()
+        .map(|s| s.placement)
+        .unwrap_or_default();
+    app.aec.styles.opening_elevation_block = symbols
+        .elevation
+        .as_ref()
+        .map(|s| s.block_name.clone())
+        .unwrap_or_default();
+    app.aec.styles.opening_elevation_placement = symbols
+        .elevation
+        .as_ref()
+        .map(|s| s.placement)
+        .unwrap_or_default();
+}
+
+fn opening_look_buffers_from_style(
+    style: &OpeningStyle,
+) -> HashMap<OpeningLookRole, AecOpeningLookBuffer> {
+    OpeningLookRole::all()
+        .iter()
+        .copied()
+        .map(|role| {
+            let look = style.looks.get(role);
+            let material_id = style
+                .material_id_for_look(role)
+                .unwrap_or_default()
+                .to_string();
+            (
+                role,
+                AecOpeningLookBuffer {
+                    line_type: look.line_type.clone().unwrap_or_default(),
+                    line_color: look
+                        .line_color
+                        .as_ref()
+                        .map(|color| {
+                            crate::modules::aec::ui::aec_ui_util::acad_color_to_editor_string(
+                                color.clone(),
+                            )
+                        })
+                        .unwrap_or_default(),
+                    material_id,
+                },
+            )
+        })
+        .collect()
+}
+
+pub fn opening_looks_from_buffers(
+    buffers: &HashMap<OpeningLookRole, AecOpeningLookBuffer>,
+) -> OpeningLooks {
+    let mut looks = OpeningLooks::default();
+    for role in OpeningLookRole::all() {
+        let Some(buffer) = buffers.get(role) else {
+            continue;
+        };
+        let look = looks.get_mut(*role);
+        look.line_type = (!buffer.line_type.trim().is_empty())
+            .then(|| buffer.line_type.trim().to_string());
+        look.line_color = crate::modules::aec::ui::aec_ui_util::editor_string_to_acad_color(
+            &buffer.line_color,
+        );
+        look.material_id = (!buffer.material_id.trim().is_empty())
+            .then(|| buffer.material_id.trim().to_string());
+    }
+    looks
+}
+
+fn parts_from_buffers(app: &OpenCADStudio) -> OpeningParts {
+    let s = &app.aec.styles;
+    let mut parts = OpeningParts::default();
+    parts.fixed_frame.face_width = dim_or(&s.opening_frame, parts.fixed_frame.face_width);
+    parts.fixed_frame.wall_depth = dim_or(&s.opening_frame_depth, parts.fixed_frame.wall_depth);
+    parts.fixed_frame.axis_offset = dim_or(&s.opening_frame_offset, 0.0);
+    parts.leaf_frame.face_width = dim_or(&s.opening_leaf_face, parts.leaf_frame.face_width);
+    parts.leaf_frame.depth = dim_or(&s.opening_leaf_depth, parts.leaf_frame.depth);
+    parts.leaf_frame.rebate_overlap = dim_or(&s.opening_leaf_rebate, parts.leaf_frame.rebate_overlap);
+    parts.glazing.thickness = dim_or(&s.opening_glazing_thickness, parts.glazing.thickness);
+    parts.glazing.inset = dim_or(&s.opening_glazing_inset, parts.glazing.inset);
+    parts.exterior_sill.thickness = dim_or(&s.opening_ext_sill_thickness, 0.0);
+    parts.exterior_sill.overhang = dim_or(&s.opening_ext_sill_overhang, 0.0);
+    parts.exterior_sill.upstand = dim_or(&s.opening_ext_sill_upstand, 0.0);
+    parts.interior_board.thickness = dim_or(&s.opening_int_board_thickness, 0.0);
+    parts.interior_board.overhang = dim_or(&s.opening_int_board_overhang, 0.0);
+    parts.interior_board.upstand = dim_or(&s.opening_int_board_upstand, 0.0);
+    parts.threshold.height = dim_or(&s.opening_threshold_height, 0.0);
+    parts.threshold.width = dim_or(&s.opening_threshold_width, 0.0);
+    parts.shutter_box.height = dim_or(&s.opening_shutter_height, 0.0);
+    parts.shutter_box.depth = dim_or(&s.opening_shutter_depth, 0.0);
+    parts.shutter_box.seat_above_frame = dim_or(&s.opening_shutter_seat, 0.0);
+    parts.shutter_box.installation_depth = dim_or(&s.opening_shutter_install, 0.0);
+    parts.lintel.height = dim_or(&s.opening_lintel_height, 0.0);
+    parts.lintel.bearing_left = dim_or(&s.opening_lintel_left, 0.0);
+    parts.lintel.bearing_right = dim_or(&s.opening_lintel_right, 0.0);
+    parts
+}
+
+fn grid_from_buffers(app: &OpenCADStudio, height: f64) -> Result<DivisionGrid, String> {
+    let s = &app.aec.styles;
+    let cells = s
+        .opening_cells
+        .iter()
+        .map(|cell| OpeningCell {
+            kind: cell.kind,
+            hinge: if cell.kind.permits_hinge() {
+                cell.hinge
+            } else {
+                None
+            },
+            sill: parse_dim(&cell.sill).unwrap_or(0.0),
+        })
+        .collect();
+    let grid = DivisionGrid {
+        vertical: parse_list(&s.opening_vertical),
+        horizontal: parse_list(&s.opening_horizontal),
+        vertical_muntins: parse_list(&s.opening_vertical_muntins),
+        horizontal_muntins: parse_list(&s.opening_horizontal_muntins),
+        cells,
+    };
+    grid.validate(height)?;
+    Ok(grid)
+}
+
 pub fn slot_buffers_from_map(
     slots: &HashMap<OpeningComponentSlot, SlotGeometry>,
 ) -> Vec<AecOpeningSlotBuffer> {
@@ -91,7 +297,6 @@ pub fn slot_buffers_from_map(
                 generator: *gen,
                 block_name: String::new(),
                 block_placement: BlockPlacementMode::default(),
-                sketch: OpeningSketch::default(),
                 visible: true,
             },
             Some(SlotGeometry::Block {
@@ -103,16 +308,6 @@ pub fn slot_buffers_from_map(
                 generator: OpeningGenerator::None,
                 block_name: block_name.clone(),
                 block_placement: *placement,
-                sketch: OpeningSketch::default(),
-                visible: true,
-            },
-            Some(SlotGeometry::Sketch(sketch)) => AecOpeningSlotBuffer {
-                slot: *slot,
-                source: AecOpeningSlotSource::Sketch,
-                generator: OpeningGenerator::None,
-                block_name: String::new(),
-                block_placement: BlockPlacementMode::default(),
-                sketch: sketch.clone(),
                 visible: true,
             },
             None => AecOpeningSlotBuffer {
@@ -121,7 +316,6 @@ pub fn slot_buffers_from_map(
                 generator: OpeningGenerator::None,
                 block_name: String::new(),
                 block_placement: BlockPlacementMode::default(),
-                sketch: OpeningSketch::default(),
                 visible: true,
             },
         })
@@ -143,7 +337,6 @@ pub fn slots_from_buffers(
                 block_name: buf.block_name.clone(),
                 placement: buf.block_placement,
             },
-            AecOpeningSlotSource::Sketch => SlotGeometry::Sketch(buf.sketch.clone()),
         };
         slots.insert(buf.slot, geom);
     }
@@ -159,7 +352,6 @@ fn profile_from_buffers(buffers: &[AecOpeningSlotBuffer]) -> OpeningDisplayProfi
                 block_name: buf.block_name.clone(),
                 placement: buf.block_placement,
             },
-            AecOpeningSlotSource::Sketch => SlotGeometry::Sketch(buf.sketch.clone()),
         };
         profile.slots.insert(buf.slot, geom);
         profile.visibility.insert(buf.slot.key().to_string(), buf.visible);
@@ -190,7 +382,6 @@ fn buffers_for_profile(
 }
 
 fn apply_current_buffers_to_store(app: &mut OpenCADStudio) {
-    commit_sketch_draft(app, false);
     if let Some(name) = app.aec.styles.opening_profile_selected.clone() {
         let previous = buffers_for_profile(
             &app.aec.styles.opening_default_slots,
@@ -234,12 +425,6 @@ pub(super) fn detach_plan_profiles(app: &mut OpenCADStudio, keep_default_profile
         &app.aec.styles.opening_display_profiles,
         None,
     );
-    app.aec.styles.opening_sketch_slot = app
-        .aec
-        .styles
-        .opening_slots
-        .iter()
-        .position(|b| b.source == AecOpeningSlotSource::Sketch);
 }
 
 /// Flushes the visible buffers into the profile store (default or plan).
@@ -260,7 +445,6 @@ pub fn draft_opening_style(
     opening_angle_deg: f64,
     shape: OpeningShape,
     spring_height: f64,
-    slots: HashMap<OpeningComponentSlot, SlotGeometry>,
 ) -> Result<OpeningStyle, String> {
     let name = name.trim();
     if name.is_empty() {
@@ -296,17 +480,26 @@ pub fn draft_opening_style(
         default_height: height,
         default_sill: sill.max(0.0),
         hinge,
-        frame_thickness: frame_thickness.max(0.0),
+        parts: OpeningParts {
+            fixed_frame: crate::modules::aec::engine::opening_style::FixedFrameDimensions {
+                face_width: frame_thickness.max(0.0),
+                ..Default::default()
+            },
+            ..OpeningParts::default()
+        },
+        looks: crate::modules::aec::engine::opening_style::OpeningLooks::default(),
+        grid: Default::default(),
+        division_presets: Vec::new(),
         opening_angle_deg,
         shape,
         spring_height,
-        slots,
-        default_profile: None,
+        suggested_levels: crate::modules::aec::engine::opening_style::OpeningRepresentationLevels::suggested_for(kind),
+        suggested_section: crate::modules::aec::engine::opening_style::SectionRoleSwitches::default(),
+        family_symbols: OpeningFamilySymbols::default(),
     })
 }
 
-/// Bake generator and sketch primitives for the manager canvas.
-/// Empty sketches emit nothing (no generator fallback).
+/// Bake the kind-based symbol fallback for the manager canvas.
 pub fn preview_baked_paths(style: &OpeningStyle, preview_width: f64) -> Vec<BakedPath> {
     preview_baked_paths_for_mode(style, preview_width, AecOpeningPreviewMode::Plan2D)
 }
@@ -328,7 +521,7 @@ pub fn preview_baked_paths_for_mode(
         height: style.default_height,
         sill_height: style.default_sill,
         thickness: PREVIEW_WALL_THICKNESS,
-        frame_thickness: style.frame_thickness,
+        frame_thickness: style.parts.fixed_frame.face_width,
         cross_axis_offset: 0.0,
         wall_y_min: -PREVIEW_WALL_THICKNESS * 0.5,
         wall_y_max: PREVIEW_WALL_THICKNESS * 0.5,
@@ -342,42 +535,12 @@ pub fn preview_baked_paths_for_mode(
 
     match mode {
         AecOpeningPreviewMode::Plan2D => {
-            let plan_slots: HashMap<OpeningComponentSlot, SlotGeometry> = style
-                .slots
-                .iter()
-                .filter(|(slot, _)| {
-                    matches!(
-                        slot,
-                        OpeningComponentSlot::Frame2D
-                            | OpeningComponentSlot::Leaf2D
-                            | OpeningComponentSlot::Swing2D
-                            | OpeningComponentSlot::Glazing2D
-                            | OpeningComponentSlot::Sill2D
-                            | OpeningComponentSlot::Threshold2D
-                            | OpeningComponentSlot::BreakthroughSymbol2D
-                            | OpeningComponentSlot::OpeningLabel2D
-                            | OpeningComponentSlot::Mark2D
-                    )
-                })
-                .map(|(k, v)| (*k, v.clone()))
-                .collect();
+            let plan_slots = default_slots_for_kind(style.kind);
             bake_opening_generators(&plan_slots, params, None)
         }
+        AecOpeningPreviewMode::Section => section_preview_paths(style),
         AecOpeningPreviewMode::Elevation2D => {
-            let elev_slots: HashMap<OpeningComponentSlot, SlotGeometry> = style
-                .slots
-                .iter()
-                .filter(|(slot, _)| {
-                    matches!(
-                        slot,
-                        OpeningComponentSlot::ElevationContour2D
-                            | OpeningComponentSlot::ElevationMuntins2D
-                            | OpeningComponentSlot::ElevationSwing2D
-                            | OpeningComponentSlot::ElevationSill2D
-                    )
-                })
-                .map(|(k, v)| (*k, v.clone()))
-                .collect();
+            let elev_slots = default_slots_for_kind(style.kind);
             let mut paths = bake_opening_generators(&elev_slots, params, None);
             if paths.is_empty() {
                 let (outer, inner) =
@@ -386,11 +549,12 @@ pub fn preview_baked_paths_for_mode(
                         width,
                         style.default_height,
                         style.spring_height,
-                        style.frame_thickness,
+                        style.parts.fixed_frame.face_width,
                         style.kind == OpeningKind::Door,
                     );
                 paths.push(crate::modules::aec::engine::opening_display::BakedPath {
                     slot: OpeningComponentSlot::ElevationContour2D,
+                    look_role: None,
                     points: outer,
                     closed: true,
                     filled: false,
@@ -398,6 +562,7 @@ pub fn preview_baked_paths_for_mode(
                 if !inner.is_empty() {
                     paths.push(crate::modules::aec::engine::opening_display::BakedPath {
                         slot: OpeningComponentSlot::ElevationContour2D,
+                        look_role: None,
                         points: inner,
                         closed: true,
                         filled: false,
@@ -434,13 +599,14 @@ pub fn preview_baked_paths_for_mode(
                 let q1 = iso_proj(p1.0, p1.1, p1.2);
                 paths.push(crate::modules::aec::engine::opening_display::BakedPath {
                     slot: OpeningComponentSlot::HostCut2D,
+                    look_role: None,
                     points: vec![q0, q1],
                     closed: false,
                     filled: false,
                 });
             }
 
-            let ft = style.frame_thickness;
+            let ft = style.parts.fixed_frame.face_width;
             let h = style.default_height;
             let sh = style.spring_height;
             let shape = style.shape;
@@ -468,6 +634,7 @@ pub fn preview_baked_paths_for_mode(
                             let q1 = iso_proj(vb.point[0], vb.point[1], vb.point[2]);
                             paths.push(crate::modules::aec::engine::opening_display::BakedPath {
                                 slot: OpeningComponentSlot::Frame3D,
+                                look_role: None,
                                 points: vec![q0, q1],
                                 closed: false,
                                 filled: false,
@@ -491,6 +658,7 @@ pub fn preview_baked_paths_for_mode(
                             let q1 = iso_proj(vb.point[0], vb.point[1], vb.point[2]);
                             paths.push(crate::modules::aec::engine::opening_display::BakedPath {
                                 slot: OpeningComponentSlot::Glazing3D,
+                                look_role: None,
                                 points: vec![q0, q1],
                                 closed: false,
                                 filled: false,
@@ -514,6 +682,7 @@ pub fn preview_baked_paths_for_mode(
                             let q1 = iso_proj(vb.point[0], vb.point[1], vb.point[2]);
                             paths.push(crate::modules::aec::engine::opening_display::BakedPath {
                                 slot: OpeningComponentSlot::Leaf3D,
+                                look_role: None,
                                 points: vec![q0, q1],
                                 closed: false,
                                 filled: false,
@@ -528,6 +697,140 @@ pub fn preview_baked_paths_for_mode(
     }
 }
 
+fn section_preview_paths(style: &OpeningStyle) -> Vec<BakedPath> {
+    let wall_half = PREVIEW_WALL_THICKNESS * 0.5;
+    let sill_z = style.default_sill.max(0.0);
+    let head_z = sill_z + style.default_height.max(1e-6);
+    let fixed_frame = &style.parts.fixed_frame;
+    let frame_depth = fixed_frame.wall_depth.max(0.0).min(PREVIEW_WALL_THICKNESS);
+    let frame_center = fixed_frame.axis_offset;
+    let frame_x0 = (frame_center - frame_depth * 0.5).max(-wall_half);
+    let frame_x1 = (frame_center + frame_depth * 0.5).min(wall_half);
+    let frame_face = fixed_frame.face_width.max(0.0);
+    let shutter = &style.parts.shutter_box;
+    let top_z = head_z
+        + style
+            .parts
+            .lintel
+            .height
+            .max(shutter.seat_above_frame + shutter.height);
+
+    let mut paths = vec![BakedPath {
+        slot: OpeningComponentSlot::HostCut2D,
+        look_role: None,
+        points: vec![(-wall_half, 0.0), (-wall_half, top_z), (wall_half, top_z), (wall_half, 0.0)],
+        closed: false,
+        filled: false,
+    }];
+
+    let mut push_rect = |role: OpeningLookRole,
+                         slot: OpeningComponentSlot,
+                         x0: f64,
+                         z0: f64,
+                         x1: f64,
+                         z1: f64| {
+        if x1 - x0 > 1e-9 && z1 - z0 > 1e-9 {
+            paths.push(BakedPath {
+                slot,
+                look_role: Some(role),
+                points: vec![(x0, z0), (x1, z0), (x1, z1), (x0, z1)],
+                closed: true,
+                filled: true,
+            });
+        }
+    };
+
+    if frame_face > 0.0 {
+        push_rect(
+            OpeningLookRole::FixedFrame,
+            OpeningComponentSlot::Frame2D,
+            frame_x0,
+            sill_z - frame_face,
+            frame_x1,
+            sill_z,
+        );
+        push_rect(
+            OpeningLookRole::FixedFrame,
+            OpeningComponentSlot::Frame2D,
+            frame_x0,
+            head_z,
+            frame_x1,
+            head_z + frame_face,
+        );
+    }
+
+    let exterior_sill = &style.parts.exterior_sill;
+    if exterior_sill.thickness > 0.0 {
+        push_rect(
+            OpeningLookRole::ExteriorSill,
+            OpeningComponentSlot::Sill2D,
+            -wall_half - exterior_sill.overhang,
+            sill_z - exterior_sill.thickness,
+            -wall_half + exterior_sill.thickness,
+            sill_z,
+        );
+        if exterior_sill.upstand > 0.0 {
+            push_rect(
+                OpeningLookRole::ExteriorSill,
+                OpeningComponentSlot::Sill2D,
+                -wall_half,
+                sill_z,
+                -wall_half + exterior_sill.thickness,
+                sill_z + exterior_sill.upstand,
+            );
+        }
+    }
+
+    let interior_board = &style.parts.interior_board;
+    if interior_board.thickness > 0.0 {
+        push_rect(
+            OpeningLookRole::InteriorBoard,
+            OpeningComponentSlot::Sill2D,
+            wall_half - interior_board.thickness,
+            sill_z - interior_board.thickness,
+            wall_half + interior_board.overhang,
+            sill_z,
+        );
+    }
+
+    let threshold = &style.parts.threshold;
+    if style.kind == OpeningKind::Door && threshold.height > 0.0 && threshold.width > 0.0 {
+        push_rect(
+            OpeningLookRole::Threshold,
+            OpeningComponentSlot::Threshold2D,
+            frame_x0,
+            sill_z,
+            frame_x1,
+            sill_z + threshold.height,
+        );
+    }
+
+    if shutter.height > 0.0 && shutter.depth > 0.0 {
+        let x0 = -wall_half + shutter.installation_depth;
+        push_rect(
+            OpeningLookRole::ShutterBox,
+            OpeningComponentSlot::Frame2D,
+            x0,
+            head_z + shutter.seat_above_frame,
+            x0 + shutter.depth,
+            head_z + shutter.seat_above_frame + shutter.height,
+        );
+    }
+
+    if style.parts.lintel.height > 0.0 {
+        push_rect(
+            OpeningLookRole::Lintel,
+            OpeningComponentSlot::Frame2D,
+            -wall_half,
+            head_z,
+            wall_half,
+            head_z + style.parts.lintel.height,
+        );
+    }
+
+    paths
+}
+
 fn load_buffers_from_style(app: &mut OpenCADStudio, style: &OpeningStyle) {
     app.aec.styles.opening_editing_id = Some(style.style.id.clone());
     app.aec.styles.opening_name = style.style.name.clone();
@@ -536,7 +839,7 @@ fn load_buffers_from_style(app: &mut OpenCADStudio, style: &OpeningStyle) {
     app.aec.styles.opening_width = format_dim(style.default_width);
     app.aec.styles.opening_height = format_dim(style.default_height);
     app.aec.styles.opening_sill = format_dim(style.default_sill);
-    app.aec.styles.opening_frame = format_dim(style.frame_thickness);
+    load_part_buffers(app, style);
     app.aec.styles.opening_angle = format_dim(style.opening_angle_deg);
     app.aec.styles.opening_spring = if style.shape == OpeningShape::Arch {
         format_dim(style.spring_height)
@@ -545,8 +848,8 @@ fn load_buffers_from_style(app: &mut OpenCADStudio, style: &OpeningStyle) {
     };
     app.aec.styles.opening_hinge = style.hinge;
     app.aec.styles.opening_shape = style.shape;
-    app.aec.styles.opening_default_slots = style.slots.clone();
-    app.aec.styles.opening_default_profile = style.default_profile.clone();
+    app.aec.styles.opening_default_slots = default_slots_for_kind(style.kind);
+    app.aec.styles.opening_default_profile = None;
     app.aec.styles.opening_display_profiles = app
         .aec
         .aec_plan_library
@@ -565,56 +868,11 @@ fn load_buffers_from_style(app: &mut OpenCADStudio, style: &OpeningStyle) {
         .unwrap_or_default();
     app.aec.styles.opening_profile_selected = None;
     app.aec.styles.opening_slots = buffers_for_profile(
-        &style.slots, style.default_profile.as_ref(), &app.aec.styles.opening_display_profiles, None,
+        &app.aec.styles.opening_default_slots, None, &app.aec.styles.opening_display_profiles, None,
     );
-    reset_sketch_draft(app);
-    app.aec.styles.opening_sketch_slot = app
-        .aec
-        .styles.opening_slots
-        .iter()
-        .position(|b| b.source == AecOpeningSlotSource::Sketch);
     app.aec.styles.opening_form_open = true;
 }
 
-fn reset_sketch_draft(app: &mut OpenCADStudio) {
-    app.aec.styles.opening_sketch_draft.clear();
-    app.aec.styles.opening_sketch_draft_bulges.clear();
-}
-
-fn commit_sketch_draft(app: &mut OpenCADStudio, closed: bool) {
-    let Some(index) = app.aec.styles.opening_sketch_slot else {
-        reset_sketch_draft(app);
-        return;
-    };
-    if index >= app.aec.styles.opening_slots.len() {
-        reset_sketch_draft(app);
-        return;
-    }
-    let buf = &mut app.aec.styles.opening_slots[index];
-    if buf.source != AecOpeningSlotSource::Sketch {
-        reset_sketch_draft(app);
-        return;
-    }
-    commit_draft(
-        &mut buf.sketch,
-        &mut app.aec.styles.opening_sketch_draft,
-        &mut app.aec.styles.opening_sketch_draft_bulges,
-        closed,
-    );
-}
-
-fn ensure_sketch_ref_box(buf: &mut AecOpeningSlotBuffer, width: f64) {
-    if buf.sketch.paths.is_empty() {
-        buf.sketch.ref_width = width.max(1e-9);
-        buf.sketch.ref_thickness = PREVIEW_WALL_THICKNESS;
-    }
-    if buf.sketch.ref_width <= 1e-12 {
-        buf.sketch.ref_width = width.max(1e-9);
-    }
-    if buf.sketch.ref_thickness <= 1e-12 {
-        buf.sketch.ref_thickness = PREVIEW_WALL_THICKNESS;
-    }
-}
 
 fn apply_size_lock(app: &mut OpenCADStudio, prefer_width: bool) {
     let width = parse_dim(&app.aec.styles.opening_width);
@@ -733,8 +991,6 @@ impl OpenCADStudio {
             self.aec.styles.opening_display_profiles.clear();
             self.aec.styles.opening_default_profile = None;
             self.aec.styles.opening_profile_selected = None;
-            reset_sketch_draft(self);
-            self.aec.styles.opening_sketch_slot = None;
             apply_size_lock(self, true);
         }
         Task::none()
@@ -758,32 +1014,200 @@ impl OpenCADStudio {
         Task::none()
     }
 
+    pub(crate) fn aec_opening_style_manager_dim_changed(&mut self, key: &str, value: String) {
+        let field = match key {
+            "frame" => &mut self.aec.styles.opening_frame,
+            "frame_depth" => &mut self.aec.styles.opening_frame_depth,
+            "frame_offset" => &mut self.aec.styles.opening_frame_offset,
+            "leaf_face" => &mut self.aec.styles.opening_leaf_face,
+            "leaf_depth" => &mut self.aec.styles.opening_leaf_depth,
+            "leaf_rebate" => &mut self.aec.styles.opening_leaf_rebate,
+            "glazing_thickness" => &mut self.aec.styles.opening_glazing_thickness,
+            "glazing_inset" => &mut self.aec.styles.opening_glazing_inset,
+            "ext_sill_thickness" => &mut self.aec.styles.opening_ext_sill_thickness,
+            "ext_sill_overhang" => &mut self.aec.styles.opening_ext_sill_overhang,
+            "ext_sill_upstand" => &mut self.aec.styles.opening_ext_sill_upstand,
+            "int_board_thickness" => &mut self.aec.styles.opening_int_board_thickness,
+            "int_board_overhang" => &mut self.aec.styles.opening_int_board_overhang,
+            "int_board_upstand" => &mut self.aec.styles.opening_int_board_upstand,
+            "threshold_height" => &mut self.aec.styles.opening_threshold_height,
+            "threshold_width" => &mut self.aec.styles.opening_threshold_width,
+            "shutter_height" => &mut self.aec.styles.opening_shutter_height,
+            "shutter_depth" => &mut self.aec.styles.opening_shutter_depth,
+            "shutter_seat" => &mut self.aec.styles.opening_shutter_seat,
+            "shutter_install" => &mut self.aec.styles.opening_shutter_install,
+            "lintel_height" => &mut self.aec.styles.opening_lintel_height,
+            "lintel_left" => &mut self.aec.styles.opening_lintel_left,
+            "lintel_right" => &mut self.aec.styles.opening_lintel_right,
+            "vertical" => &mut self.aec.styles.opening_vertical,
+            "horizontal" => &mut self.aec.styles.opening_horizontal,
+            "vertical_muntins" => &mut self.aec.styles.opening_vertical_muntins,
+            "horizontal_muntins" => &mut self.aec.styles.opening_horizontal_muntins,
+            _ => return,
+        };
+        *field = value;
+    }
+
+    pub(crate) fn aec_opening_style_manager_set_editor_tab(
+        &mut self,
+        tab: AecOpeningEditorTab,
+    ) {
+        self.aec.styles.opening_editor_tab = tab;
+    }
+
+    pub(crate) fn aec_opening_style_manager_preview_slot_select(
+        &mut self,
+        role: Option<OpeningLookRole>,
+    ) -> Task<Message> {
+        self.aec.styles.opening_selected_look_role = role;
+        let Some(role) = role else {
+            return Task::none();
+        };
+
+        if self.aec.styles.opening_editor_tab != AecOpeningEditorTab::Materials {
+            self.aec.styles.opening_editor_tab = AecOpeningEditorTab::Graphics;
+        }
+        let row_index = OpeningLookRole::all()
+            .iter()
+            .position(|candidate| *candidate == role)
+            .unwrap_or_default();
+        iced::widget::operation::scroll_to(
+            iced::advanced::widget::Id::new(
+                crate::modules::aec::ui::style_manager::forms::opening::OPENING_EDITOR_SCROLL_ID,
+            ),
+            iced::widget::scrollable::AbsoluteOffset {
+                x: 0.0,
+                y: row_index as f32 * 36.0,
+            },
+        )
+    }
+
+    pub(crate) fn aec_opening_style_manager_look_line_type_changed(
+        &mut self,
+        role: OpeningLookRole,
+        value: String,
+    ) {
+        self.ensure_aec_catalog_linetype(&value);
+        self.aec
+            .styles
+            .opening_look_buffers
+            .entry(role)
+            .or_default()
+            .line_type = value;
+    }
+
+    pub(crate) fn aec_opening_style_manager_look_line_color_changed(
+        &mut self,
+        role: OpeningLookRole,
+        value: String,
+    ) {
+        self.aec
+            .styles
+            .opening_look_buffers
+            .entry(role)
+            .or_default()
+            .line_color = value;
+    }
+
+    pub(crate) fn aec_opening_style_manager_look_color_picker_toggle(
+        &mut self,
+        role: OpeningLookRole,
+    ) {
+        self.aec.styles.opening_look_color_picker_role =
+            (self.aec.styles.opening_look_color_picker_role != Some(role)).then_some(role);
+    }
+
+    pub(crate) fn aec_opening_style_manager_look_material_changed(
+        &mut self,
+        role: OpeningLookRole,
+        material_id: String,
+    ) {
+        self.aec
+            .styles
+            .opening_look_buffers
+            .entry(role)
+            .or_default()
+            .material_id = material_id;
+    }
+
+    pub(crate) fn aec_opening_style_manager_look_material_clear(
+        &mut self,
+        role: OpeningLookRole,
+    ) {
+        self.aec_opening_style_manager_look_material_changed(role, String::new());
+    }
+
+    pub(crate) fn aec_opening_style_manager_cell_kind(&mut self, index: usize, value: &str) {
+        use crate::modules::aec::engine::opening_style::OpeningCellKind;
+        if let Some(cell) = self.aec.styles.opening_cells.get_mut(index) {
+            cell.kind = OpeningCellKind::from_str(value);
+            if !cell.kind.permits_hinge() {
+                cell.hinge = None;
+            }
+        }
+    }
+
+    pub(crate) fn aec_opening_style_manager_cell_hinge(&mut self, index: usize, value: &str) {
+        if let Some(cell) = self.aec.styles.opening_cells.get_mut(index) {
+            cell.hinge = if value.is_empty() || value == "-" {
+                None
+            } else {
+                Some(HingeSide::from_str(value))
+            };
+        }
+    }
+
+    pub(crate) fn aec_opening_style_manager_cell_sill(&mut self, index: usize, value: String) {
+        if let Some(cell) = self.aec.styles.opening_cells.get_mut(index) {
+            cell.sill = value;
+        }
+    }
+
+    pub(crate) fn aec_opening_style_manager_cell_add(&mut self) {
+        use crate::modules::aec::engine::opening_style::OpeningCellKind;
+        self.aec.styles.opening_cells.push(AecOpeningCellBuffer {
+            kind: OpeningCellKind::Glass,
+            hinge: None,
+            sill: "0".to_string(),
+        });
+    }
+
+    pub(crate) fn aec_opening_style_manager_cell_remove(&mut self, index: usize) {
+        if index < self.aec.styles.opening_cells.len() {
+            self.aec.styles.opening_cells.remove(index);
+        }
+    }
+
+    pub(crate) fn aec_opening_style_manager_family_block(&mut self, family: &str, name: String) {
+        match family {
+            "plan" => self.aec.styles.opening_plan_block = name,
+            "section" => self.aec.styles.opening_section_block = name,
+            "elevation" => self.aec.styles.opening_elevation_block = name,
+            _ => {}
+        }
+    }
+
+    pub(crate) fn aec_opening_style_manager_family_placement(&mut self, family: &str, value: &str) {
+        let placement = FamilyPlacement::from_str(value);
+        match family {
+            "plan" => self.aec.styles.opening_plan_placement = placement,
+            "section" => self.aec.styles.opening_section_placement = placement,
+            "elevation" => self.aec.styles.opening_elevation_placement = placement,
+            _ => {}
+        }
+    }
+
     pub(crate) fn aec_opening_style_manager_slot_source_changed(
         &mut self,
         index: usize,
         value: String,
     ) -> Task<Message> {
-        commit_sketch_draft(self, false);
-        let width = parse_dim(&self.aec.styles.opening_width).unwrap_or(1.0);
         if let Some(slot) = self.aec.styles.opening_slots.get_mut(index) {
-            slot.source = if value.eq_ignore_ascii_case("Sketch") {
-                AecOpeningSlotSource::Sketch
-            } else if value.eq_ignore_ascii_case("Block") {
+            slot.source = if value.eq_ignore_ascii_case("Block") {
                 AecOpeningSlotSource::Block
             } else {
                 AecOpeningSlotSource::Generator
             };
-            if slot.source == AecOpeningSlotSource::Sketch {
-                ensure_sketch_ref_box(slot, width);
-            }
-        }
-        if self
-            .aec
-            .styles.opening_slots
-            .get(index)
-            .is_some_and(|s| s.source == AecOpeningSlotSource::Sketch)
-        {
-            self.aec.styles.opening_sketch_slot = Some(index);
         }
         Task::none()
     }
@@ -835,7 +1259,7 @@ impl OpenCADStudio {
         let frame = parse_dim(&self.aec.styles.opening_frame).unwrap_or(0.0);
         let angle = parse_dim(&self.aec.styles.opening_angle).unwrap_or(0.0);
         let spring = parse_dim(&self.aec.styles.opening_spring).unwrap_or(0.0);
-        let mut style = draft_opening_style(
+        let style = draft_opening_style(
             self.aec.styles.opening_editing_id.clone(),
             &self.aec.styles.opening_name,
             self.aec.styles.opening_parent.clone(),
@@ -848,9 +1272,25 @@ impl OpenCADStudio {
             angle,
             self.aec.styles.opening_shape,
             spring,
-            self.aec.styles.opening_default_slots.clone(),
         )?;
-        style.default_profile = self.aec.styles.opening_default_profile.clone();
+        let mut style = style;
+        style.parts = parts_from_buffers(self);
+        style.looks = opening_looks_from_buffers(&self.aec.styles.opening_look_buffers);
+        style.grid = grid_from_buffers(self, height)?;
+        style.family_symbols = OpeningFamilySymbols {
+            plan: symbol_from(
+                &self.aec.styles.opening_plan_block,
+                self.aec.styles.opening_plan_placement,
+            ),
+            section: symbol_from(
+                &self.aec.styles.opening_section_block,
+                self.aec.styles.opening_section_placement,
+            ),
+            elevation: symbol_from(
+                &self.aec.styles.opening_elevation_block,
+                self.aec.styles.opening_elevation_placement,
+            ),
+        };
         Ok(style)
     }
 
@@ -870,12 +1310,6 @@ impl OpenCADStudio {
             &self.aec.styles.opening_display_profiles,
             self.aec.styles.opening_profile_selected.as_deref(),
         );
-        reset_sketch_draft(self);
-        self.aec.styles.opening_sketch_slot = self
-            .aec
-            .styles.opening_slots
-            .iter()
-            .position(|b| b.source == AecOpeningSlotSource::Sketch);
         Task::none()
     }
 
@@ -893,12 +1327,6 @@ impl OpenCADStudio {
                 &self.aec.styles.opening_display_profiles,
                 None,
             );
-            reset_sketch_draft(self);
-            self.aec.styles.opening_sketch_slot = self
-                .aec
-                .styles.opening_slots
-                .iter()
-                .position(|b| b.source == AecOpeningSlotSource::Sketch);
         }
         Task::none()
     }
@@ -914,126 +1342,7 @@ impl OpenCADStudio {
         Task::none()
     }
 
-    pub(crate) fn aec_opening_style_manager_sketch_slot_select(
-        &mut self,
-        index: usize,
-    ) -> Task<Message> {
-        commit_sketch_draft(self, false);
-        let width = parse_dim(&self.aec.styles.opening_width).unwrap_or(1.0);
-        if let Some(slot) = self.aec.styles.opening_slots.get_mut(index) {
-            if slot.source == AecOpeningSlotSource::Sketch {
-                ensure_sketch_ref_box(slot, width);
-            }
-            self.aec.styles.opening_sketch_slot = Some(index);
-        }
-        Task::none()
-    }
 
-    pub(crate) fn aec_opening_style_manager_sketch_click(
-        &mut self,
-        inst_x: f64,
-        inst_y: f64,
-    ) -> Task<Message> {
-        let Some(index) = self.aec.styles.opening_sketch_slot else {
-            return Task::none();
-        };
-        let width = parse_dim(&self.aec.styles.opening_width).unwrap_or(1.0);
-        let frame = parse_dim(&self.aec.styles.opening_frame).unwrap_or(0.0);
-        let snapped = {
-            let Some(slot) = self.aec.styles.opening_slots.get_mut(index) else {
-                return Task::none();
-            };
-            if slot.source != AecOpeningSlotSource::Sketch {
-                return Task::none();
-            }
-            ensure_sketch_ref_box(slot, width);
-            let bake = TwoRectBake::from_sketch(
-                &slot.sketch,
-                width,
-                PREVIEW_WALL_THICKNESS,
-                frame.max(0.0),
-            );
-            let ref_pt = bake.unmap_point((inst_x, inst_y));
-            snap_ref_point(
-                ref_pt,
-                slot.sketch.ref_width,
-                slot.sketch.ref_thickness,
-                frame.max(0.0),
-                0.04,
-            )
-        };
-        draft_append(
-            &mut self.aec.styles.opening_sketch_draft,
-            &mut self.aec.styles.opening_sketch_draft_bulges,
-            snapped,
-        );
-        Task::none()
-    }
-
-    pub(crate) fn aec_opening_style_manager_sketch_close_path(&mut self) -> Task<Message> {
-        commit_sketch_draft(self, true);
-        Task::none()
-    }
-
-    pub(crate) fn aec_opening_style_manager_sketch_finish_path(&mut self) -> Task<Message> {
-        commit_sketch_draft(self, false);
-        Task::none()
-    }
-
-    pub(crate) fn aec_opening_style_manager_sketch_undo(&mut self) -> Task<Message> {
-        self.aec.styles.opening_sketch_draft.pop();
-        self.aec.styles.opening_sketch_draft_bulges.pop();
-        Task::none()
-    }
-
-    pub(crate) fn aec_opening_style_manager_sketch_delete_path(&mut self) -> Task<Message> {
-        reset_sketch_draft(self);
-        let Some(index) = self.aec.styles.opening_sketch_slot else {
-            return Task::none();
-        };
-        if let Some(slot) = self.aec.styles.opening_slots.get_mut(index) {
-            slot.sketch.paths.pop();
-        }
-        Task::none()
-    }
-
-    pub(crate) fn aec_opening_style_manager_sketch_clear(&mut self) -> Task<Message> {
-        reset_sketch_draft(self);
-        let Some(index) = self.aec.styles.opening_sketch_slot else {
-            return Task::none();
-        };
-        if let Some(slot) = self.aec.styles.opening_slots.get_mut(index) {
-            slot.sketch.paths.clear();
-        }
-        Task::none()
-    }
-
-    pub(crate) fn aec_opening_style_manager_sketch_add_frame(&mut self) -> Task<Message> {
-        reset_sketch_draft(self);
-        let Some(index) = self.aec.styles.opening_sketch_slot else {
-            return Task::none();
-        };
-        let width = parse_dim(&self.aec.styles.opening_width).unwrap_or(1.0);
-        let frame = parse_dim(&self.aec.styles.opening_frame).unwrap_or(DEFAULT_FRAME_THICKNESS);
-        if let Some(slot) = self.aec.styles.opening_slots.get_mut(index) {
-            ensure_sketch_ref_box(slot, width);
-            slot.source = AecOpeningSlotSource::Sketch;
-            slot.sketch = OpeningSketch::frame_ring(
-                slot.sketch.ref_width,
-                slot.sketch.ref_thickness,
-                frame.max(0.0),
-            );
-        }
-        Task::none()
-    }
-
-    pub(crate) fn aec_opening_style_manager_sketch_arc(&mut self) -> Task<Message> {
-        draft_set_last_arc(
-            &mut self.aec.styles.opening_sketch_draft_bulges,
-            true,
-        );
-        Task::none()
-    }
 
     pub(crate) fn aec_opening_style_manager_save(&mut self) -> Task<Message> {
         self.aec_opening_style_manager_save_internal();
@@ -1076,15 +1385,20 @@ impl OpenCADStudio {
     pub(crate) fn aec_opening_style_manager_save_internal(
         &mut self,
     ) -> Option<(String, crate::modules::aec::engine::library::StyleLibrary)> {
-        commit_sketch_draft(self, false);
         apply_current_buffers_to_store(self);
         let style = match self.aec_opening_style_from_form() {
             Ok(style) => style,
-            Err(_) => {
-                self.command_line.push_error(
-                    crate::t!("AEC Style Manager: opening style name cannot be empty.")
-                        .as_ref(),
-                );
+            Err(err) => {
+                if self.aec.styles.opening_name.trim().is_empty() {
+                    self.command_line.push_error(
+                        crate::t!("AEC Style Manager: opening style name cannot be empty.")
+                            .as_ref(),
+                    );
+                } else {
+                    self.command_line.push_error(
+                        crate::tf!("AEC Style Manager: opening grid is invalid: {err}").as_ref(),
+                    );
+                }
                 return None;
             }
         };
@@ -1293,53 +1607,165 @@ mod tests {
     use super::*;
 
     #[test]
-    fn default_and_plan_slot_profiles_persist_independently() {
+    fn parts_grid_and_family_block_persist() {
         use crate::app::{AecMessage, OpenCADStudio};
-        use crate::modules::aec::engine::library::DisplayConfigLibrary;
-        use crate::modules::aec::engine::plan_view::{DisplayConfig, PlanningStage, ViewType};
+        use crate::modules::aec::engine::opening_style::{FamilyPlacement, OpeningCellKind};
 
         let mut app = OpenCADStudio::new_for_test();
         app.automation_op(r#"{"op":"new"}"#);
         let mut style = OpeningStyle::standard_window();
-        style.style.id = "t_opening_profile".into();
-        let slot = OpeningComponentSlot::Frame2D;
-        let original = style.slots[&slot].clone();
-        let mut default = OpeningDisplayProfile::default();
-        default.slots.insert(slot, SlotGeometry::Generator(OpeningGenerator::DoorFrame));
-        default.visibility.insert(slot.key().into(), false);
-        style.default_profile = Some(default);
+        style.style.id = "t_opening_parts".into();
+        style.style.name = "T Parts".into();
         app.aec_upsert_opening_style_into_session(style.clone());
-        let mut plans = DisplayConfigLibrary::empty();
-        let mut plan = DisplayConfig::new("Opening plan".into(), "A".into(), PlanningStage::Execution, ViewType::FloorPlan);
-        let mut over = OpeningDisplayProfile::default();
-        over.visibility.insert(slot.key().into(), true);
-        plan.style_overrides.entry(style.style.id.clone()).or_default().opening = Some(over);
-        plans.configs.push(plan);
-        app.aec.aec_plan_library = Some(plans);
-
         let _ = app.aec_opening_style_manager_select(style.style.id.clone());
-        let index = app.aec.styles.opening_slots.iter().position(|s| s.slot == slot).unwrap();
-        assert_eq!(app.aec.styles.opening_slots[index].generator, OpeningGenerator::DoorFrame);
-        assert!(!app.aec.styles.opening_slots[index].visible);
-        let _ = app.update_aec(AecMessage::AecOpeningStyleManagerSlotGeneratorChanged(index, "LeafLine".into()));
-        let _ = app.update_aec(AecMessage::AecOpeningStyleManagerProfileSelect("Opening plan".into()));
-        assert!(app.aec.styles.opening_slots[index].visible);
-        let _ = app.update_aec(AecMessage::AecOpeningStyleManagerSlotGeneratorChanged(index, "FrameRect".into()));
+        let _ = app.update_aec(AecMessage::AecOpeningStyleManagerDimChanged(
+            "frame".into(),
+            "0.08".into(),
+        ));
+        let _ = app.update_aec(AecMessage::AecOpeningStyleManagerDimChanged(
+            "vertical".into(),
+            "0.333, 0.667".into(),
+        ));
+        let _ = app.update_aec(AecMessage::AecOpeningStyleManagerCellAdd);
+        let _ = app.update_aec(AecMessage::AecOpeningStyleManagerCellAdd);
+        let _ = app.update_aec(AecMessage::AecOpeningStyleManagerCellKindChanged(
+            0,
+            OpeningCellKind::DoorLeaf.as_str().into(),
+        ));
+        let _ = app.update_aec(AecMessage::AecOpeningStyleManagerFamilyBlockChanged(
+            "plan".into(),
+            "Fenster".into(),
+        ));
+        let _ = app.update_aec(AecMessage::AecOpeningStyleManagerFamilyPlacementChanged(
+            "plan".into(),
+            FamilyPlacement::JambPair.as_str().into(),
+        ));
+        app.aec_opening_style_manager_look_line_type_changed(
+            OpeningLookRole::FixedFrame,
+            "CENTER".into(),
+        );
+        app.aec_opening_style_manager_look_line_color_changed(
+            OpeningLookRole::FixedFrame,
+            crate::modules::aec::ui::aec_ui_util::acad_color_to_editor_string(
+                acadrust::types::Color::Index(3),
+            ),
+        );
+        app.aec_opening_style_manager_look_material_changed(
+            OpeningLookRole::FixedFrame,
+            "frame-material".into(),
+        );
         let _ = app.update_aec(AecMessage::AecOpeningStyleManagerSave);
 
-        let stored = app.aec.aec_style_library.as_ref().unwrap().find_opening_style(&style.style.id).unwrap();
-        assert_eq!(stored.slots[&slot], original);
-        assert_eq!(stored.default_profile.as_ref().unwrap().slots[&slot], SlotGeometry::Generator(OpeningGenerator::LeafLine));
-        assert_eq!(stored.default_profile.as_ref().unwrap().visibility[slot.key()], false);
-        let cfg = app.aec.aec_plan_library.as_ref().unwrap().find("Opening plan").unwrap();
-        let over = cfg.style_overrides[&style.style.id].opening.as_ref().unwrap();
-        assert_eq!(over.slots[&slot], SlotGeometry::Generator(OpeningGenerator::FrameRect));
-        assert_eq!(over.visibility[slot.key()], true);
-        let _ = app.aec_opening_style_manager_select(style.style.id.clone());
-        assert_eq!(app.aec.styles.opening_slots[index].generator, OpeningGenerator::LeafLine);
-        let _ = app.update_aec(AecMessage::AecOpeningStyleManagerProfileSelect("Opening plan".into()));
-        assert!(app.aec.styles.opening_slots[index].visible);
-        assert_eq!(app.aec.styles.opening_slots[index].generator, OpeningGenerator::FrameRect);
+        let stored = app
+            .aec
+            .aec_style_library
+            .as_ref()
+            .unwrap()
+            .find_opening_style(&style.style.id)
+            .unwrap();
+        assert!((stored.parts.fixed_frame.face_width - 0.08).abs() < 1e-9);
+        assert_eq!(stored.grid.vertical, vec![0.333, 0.667]);
+        assert_eq!(stored.grid.cells[0].kind, OpeningCellKind::DoorLeaf);
+        let symbol = stored.family_symbols.plan.as_ref().unwrap();
+        assert_eq!(symbol.block_name, "Fenster");
+        assert_eq!(symbol.placement, FamilyPlacement::JambPair);
+        assert_eq!(stored.looks.fixed_frame.line_type.as_deref(), Some("CENTER"));
+        assert_eq!(
+            stored.looks.fixed_frame.line_color,
+            Some(acadrust::types::Color::Index(3))
+        );
+        assert_eq!(
+            stored.looks.fixed_frame.material_id.as_deref(),
+            Some("frame-material")
+        );
+        assert!(stored.default_width != stored.parts.fixed_frame.face_width);
+    }
+
+    #[test]
+    fn opening_look_buffers_round_trip_without_changing_frame_dimensions() {
+        let mut style = OpeningStyle::standard_window();
+        style.parts.fixed_frame.face_width = 0.073;
+        style.looks.fixed_frame.line_type = Some("CENTER".to_string());
+        style.looks.fixed_frame.line_color = Some(acadrust::types::Color::Index(3));
+        style.looks.fixed_frame.material_id = Some("frame-material".to_string());
+        style.looks.swing.line_color = Some(acadrust::types::Color::ByLayer);
+
+        let buffers = opening_look_buffers_from_style(&style);
+        let round_tripped = opening_looks_from_buffers(&buffers);
+        assert_eq!(round_tripped, style.looks);
+
+        let mut saved = style.clone();
+        saved.looks = round_tripped;
+        assert_eq!(saved.parts.fixed_frame.face_width, 0.073);
+    }
+
+    #[test]
+    fn preview_role_select_switches_to_graphics_but_keeps_materials_tab() {
+        use crate::app::OpenCADStudio;
+
+        let mut app = OpenCADStudio::new_for_test();
+        app.aec.styles.opening_editor_tab = AecOpeningEditorTab::Dimensions;
+        let _ = app.aec_opening_style_manager_preview_slot_select(Some(OpeningLookRole::Swing));
+        assert_eq!(app.aec.styles.opening_editor_tab, AecOpeningEditorTab::Graphics);
+        assert_eq!(app.aec.styles.opening_selected_look_role, Some(OpeningLookRole::Swing));
+
+        app.aec.styles.opening_editor_tab = AecOpeningEditorTab::Materials;
+        let _ = app.aec_opening_style_manager_preview_slot_select(Some(OpeningLookRole::Lintel));
+        assert_eq!(app.aec.styles.opening_editor_tab, AecOpeningEditorTab::Materials);
+        assert_eq!(app.aec.styles.opening_selected_look_role, Some(OpeningLookRole::Lintel));
+
+        let _ = app.aec_opening_style_manager_preview_slot_select(None);
+        assert_eq!(app.aec.styles.opening_selected_look_role, None);
+        assert_eq!(app.aec.styles.opening_editor_tab, AecOpeningEditorTab::Materials);
+    }
+
+    #[test]
+    fn section_preview_contains_the_opening_component_roles() {
+        use crate::modules::aec::engine::opening_style::{
+            LintelDimensions, ShutterBoxDimensions, SillDimensions, ThresholdDimensions,
+        };
+
+        let mut style = OpeningStyle::standard_door();
+        style.parts.exterior_sill = SillDimensions {
+            thickness: 0.04,
+            overhang: 0.08,
+            upstand: 0.02,
+        };
+        style.parts.interior_board = SillDimensions {
+            thickness: 0.03,
+            overhang: 0.12,
+            upstand: 0.01,
+        };
+        style.parts.threshold = ThresholdDimensions {
+            height: 0.025,
+            width: 0.12,
+        };
+        style.parts.shutter_box = ShutterBoxDimensions {
+            height: 0.18,
+            depth: 0.22,
+            seat_above_frame: 0.03,
+            installation_depth: 0.01,
+        };
+        style.parts.lintel = LintelDimensions {
+            height: 0.20,
+            ..Default::default()
+        };
+
+        let paths = preview_baked_paths_for_mode(&style, style.default_width, AecOpeningPreviewMode::Section);
+        let roles: std::collections::HashSet<_> = paths
+            .iter()
+            .filter_map(BakedPath::resolved_look_role)
+            .collect();
+        for role in [
+            OpeningLookRole::FixedFrame,
+            OpeningLookRole::ExteriorSill,
+            OpeningLookRole::InteriorBoard,
+            OpeningLookRole::Threshold,
+            OpeningLookRole::ShutterBox,
+            OpeningLookRole::Lintel,
+        ] {
+            assert!(roles.contains(&role), "missing section preview role {role:?}");
+        }
     }
 
     #[test]
@@ -1365,17 +1791,10 @@ mod tests {
         app.aec.aec_plan_library = Some(plans);
 
         let _ = app.aec_opening_style_manager_select(style.style.id.clone());
-        let _ = app.update_aec(AecMessage::AecOpeningStyleManagerProfileSelect("Dup plan".into()));
-        let index = app.aec.styles.opening_slots.iter().position(|s| s.slot == slot).unwrap();
-        assert!(!app.aec.styles.opening_slots[index].visible);
         let _ = app.update_aec(AecMessage::AecOpeningStyleManagerDuplicate);
-        assert!(app.aec.styles.opening_slots[index].visible);
-        assert_ne!(app.aec.styles.opening_slots[index].generator, OpeningGenerator::DoorFrame);
         let _ = app.update_aec(AecMessage::AecOpeningStyleManagerSave);
         let lib = app.aec.aec_style_library.as_ref().unwrap();
         let copy = lib.opening_styles.iter().find(|s| s.style.name == "T Dup (Kopie)").unwrap();
-        assert!(copy.default_profile.is_none());
-        assert_eq!(copy.slots, style.slots);
         let copy_id = copy.style.id.clone();
         let cfg = app.aec.aec_plan_library.as_ref().unwrap().find("Dup plan").unwrap();
         assert!(cfg.style_overrides.get(&copy_id).and_then(|o| o.opening.as_ref()).is_none());
@@ -1390,7 +1809,7 @@ mod tests {
         let _ = app.update_aec(AecMessage::AecOpeningStyleManagerNew);
         assert!(app.aec.styles.opening_display_profiles.is_empty());
         assert!(app.aec.styles.opening_default_profile.is_none());
-        assert!(app.aec.styles.opening_slots.iter().all(|b| b.visible));
+        assert!(app.aec.styles.opening_plan_block.is_empty());
         app.aec.styles.opening_name = "T New".into();
         let _ = app.update_aec(AecMessage::AecOpeningStyleManagerSave);
         let new_id = app.aec.aec_style_library.as_ref().unwrap().opening_styles.iter()
@@ -1415,7 +1834,6 @@ mod tests {
             90.0,
             OpeningShape::Circle,
             0.0,
-            default_slots_for_kind(OpeningKind::Window),
         )
         .unwrap();
         assert!((style.default_width - 1.2).abs() < 1e-12);
@@ -1439,7 +1857,6 @@ mod tests {
                 crate::modules::aec::engine::opening_shape::TriangleVariant::Equilateral,
             ),
             0.0,
-            default_slots_for_kind(OpeningKind::Window),
         )
         .unwrap();
         let expected = OpeningShape::equilateral_height(2.0);
@@ -1449,7 +1866,7 @@ mod tests {
     #[test]
     fn frame_thickness_independent_of_preview_width() {
         let mut style = OpeningStyle::standard_window();
-        style.frame_thickness = DEFAULT_FRAME_THICKNESS;
+        style.parts.fixed_frame.face_width = DEFAULT_FRAME_THICKNESS;
         let narrow = preview_baked_paths(&style, 1.2);
         let wide = preview_baked_paths(&style, 1.8);
         let post_width = |paths: &[BakedPath]| {
@@ -1467,23 +1884,6 @@ mod tests {
         assert!((post_width(&wide) - DEFAULT_FRAME_THICKNESS).abs() < 1e-9);
     }
 
-    #[test]
-    fn sketch_slot_does_not_fall_back_to_generator() {
-        let mut slots = default_slots_for_kind(OpeningKind::Window);
-        slots.insert(
-            OpeningComponentSlot::Frame2D,
-            SlotGeometry::Sketch(OpeningSketch::default()),
-        );
-        let mut style = OpeningStyle::standard_window();
-        style.slots = slots;
-        let paths = preview_baked_paths(&style, 1.2);
-        assert!(paths
-            .iter()
-            .all(|p| p.slot != OpeningComponentSlot::Frame2D));
-        assert!(paths
-            .iter()
-            .any(|p| p.slot == OpeningComponentSlot::Leaf2D));
-    }
 
     #[test]
     fn empty_name_is_rejected() {
@@ -1500,63 +1900,10 @@ mod tests {
             90.0,
             OpeningShape::Rectangle,
             0.0,
-            HashMap::new(),
         )
         .is_err());
     }
 
-    #[test]
-    fn slot_roundtrip_preserves_sketch_source() {
-        let mut buffers = slot_buffers_for_kind(OpeningKind::Window);
-        let kept_gen = buffers[0].generator;
-        buffers[0].source = AecOpeningSlotSource::Sketch;
-        buffers[0].sketch = OpeningSketch {
-            ref_width: 1.0,
-            ref_thickness: 0.3,
-            paths: Vec::new(),
-        };
-        let map = slots_from_buffers(&buffers);
-        assert!(matches!(
-            map.get(&OpeningComponentSlot::Frame2D),
-            Some(SlotGeometry::Sketch(_))
-        ));
-        buffers[0].source = AecOpeningSlotSource::Generator;
-        let map = slots_from_buffers(&buffers);
-        assert_eq!(
-            map.get(&OpeningComponentSlot::Frame2D),
-            Some(&SlotGeometry::Generator(kept_gen))
-        );
-        assert!(!buffers[0].sketch.paths.is_empty() || buffers[0].sketch.ref_width == 1.0);
-    }
-
-    #[test]
-    fn sketch_frame_ring_preview_keeps_inset_when_width_changes() {
-        let mut slots = default_slots_for_kind(OpeningKind::Window);
-        slots.insert(
-            OpeningComponentSlot::Frame2D,
-            SlotGeometry::Sketch(OpeningSketch::frame_ring(1.0, 0.3, DEFAULT_FRAME_THICKNESS)),
-        );
-        let mut style = OpeningStyle::standard_window();
-        style.slots = slots;
-        style.frame_thickness = DEFAULT_FRAME_THICKNESS;
-        let inset = |paths: &[BakedPath], width: f64| {
-            let frame: Vec<_> = paths
-                .iter()
-                .filter(|p| p.slot == OpeningComponentSlot::Frame2D && p.closed)
-                .collect();
-            assert_eq!(frame.len(), 2);
-            let max_x = |pts: &[(f64, f64)]| {
-                pts.iter().map(|p| p.0).fold(f64::NEG_INFINITY, f64::max)
-            };
-            let inset_x = max_x(&frame[0].points) - max_x(&frame[1].points);
-            assert!((max_x(&frame[0].points) - width * 0.5).abs() < 1e-9);
-            inset_x
-        };
-        let a = preview_baked_paths(&style, 1.2);
-        let b = preview_baked_paths(&style, 1.8);
-        assert!((inset(&a, 1.2) - DEFAULT_FRAME_THICKNESS).abs() < 1e-9);
-        assert!((inset(&b, 1.8) - DEFAULT_FRAME_THICKNESS).abs() < 1e-9);
-    }
 
     #[test]
     fn plan_profile_buffers_preserve_hidden_sill() {

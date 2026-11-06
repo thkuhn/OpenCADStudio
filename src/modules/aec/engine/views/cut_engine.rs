@@ -7,22 +7,23 @@
 use super::model_view::{DetailLevel, ModelView};
 use super::provenance::{
     DerivedPrimitive, EditHandle, FeatureKey, Geometry2d, ModelEditAction, ModelParameter,
-    PrimitiveId, PrimitiveRole, ResolvedStyle, SourceReference, SourceSet,
+    PrimitiveId, PrimitiveRole, ResolvedStyle, Rgba8, SourceReference, SourceSet,
 };
 use super::scene_collector::{
     CollectedOpening, CollectedSlab, CollectedWall, SceneGeometryCollector,
 };
 use super::style_resolver::{
-    is_draw_suppressed, is_opening_slot_visible, is_slab_phase_visible, is_slab_layer_visible,
+    is_draw_suppressed, is_slab_phase_visible, is_slab_layer_visible,
     is_wall_layer_visible, is_wall_phase_visible, resolve_layer_cut_style,
-    resolve_opening_view_style, resolve_slab_layer_cut_style, ViewStyleContext,
+    color_to_rgba8_opt, resolve_opening_style, u32_to_rgba8,
+    resolve_slab_layer_cut_style, ViewStyleContext,
 };
 use super::viewpoint::{SectionSegment, ViewKind, Viewpoint};
 use super::{
     PaperMm, Point2, ValidationError, Vector2,
 };
-use crate::modules::aec::engine::display_component::OpeningComponentSlot;
 use crate::modules::aec::engine::library::StyleLibrary;
+use crate::modules::aec::engine::opening_style::OpeningLookRole;
 use crate::modules::aec::engine::openings::OpeningKind;
 use crate::modules::aec::engine::plan_view::DisplayConfig;
 
@@ -317,9 +318,17 @@ fn cut_wall_with_segment(
     }
 
     let layer_offsets = wall.layer_offsets();
+    let wall_offset_min = layer_offsets
+        .iter()
+        .map(|(offset, _)| *offset)
+        .fold(f64::INFINITY, f64::min);
+    let wall_offset_max = layer_offsets
+        .iter()
+        .map(|(offset, thickness)| offset + thickness)
+        .fold(f64::NEG_INFINITY, f64::max);
 
     // Iterate over wall baseline segments
-    for window in wall.axis_points.windows(2) {
+    for (axis_segment_index, window) in wall.axis_points.windows(2).enumerate() {
         let w_p0 = window[0];
         let w_p1 = window[1];
         let w_vec = Vector2::new(w_p1.x_m - w_p0.x_m, w_p1.y_m - w_p0.y_m);
@@ -329,6 +338,7 @@ fn cut_wall_with_segment(
         }
         let w_dir = w_vec.normalized()?;
         let w_norm = Vector2::new(-w_dir.y, w_dir.x);
+        let mut opening_details_emitted = false;
 
         // Process each wall layer
         for (i, layer) in wall.layers.iter().enumerate() {
@@ -388,7 +398,15 @@ fn cut_wall_with_segment(
                 segment.start.x_m + (segment.end.x_m - segment.start.x_m) * (hit_t / seg_len),
                 segment.start.y_m + (segment.end.y_m - segment.start.y_m) * (hit_t / seg_len),
             );
-            let s_along_wall = (hit_pt.x_m - w_p0.x_m) * w_dir.x + (hit_pt.y_m - w_p0.y_m) * w_dir.y;
+            let segment_s = (hit_pt.x_m - w_p0.x_m) * w_dir.x
+                + (hit_pt.y_m - w_p0.y_m) * w_dir.y;
+            let wall_s_prefix: f64 = wall.axis_points[..axis_segment_index]
+                .windows(2)
+                .map(|pair| {
+                    (pair[1].x_m - pair[0].x_m).hypot(pair[1].y_m - pair[0].y_m)
+                })
+                .sum();
+            let s_along_wall = wall_s_prefix + segment_s;
 
             // Check if cut passes through any opening in the wall
             let intersecting_opening = wall.openings.iter().find(|op| {
@@ -399,47 +417,94 @@ fn cut_wall_with_segment(
             let mut z_intervals = vec![(z_bottom, z_top)];
 
             if let Some(op) = intersecting_opening {
-                let op_z_sill = wall.base_z + op.sill_height;
-                let op_z_head = op_z_sill + op.height;
+                let style = resolve_opening_style(ctx, op);
+                let grid = op.division_override.as_ref().unwrap_or(&style.grid);
+                let (op_s0, _) = op.axis_span_local;
+                let local_x = s_along_wall - op_s0;
+                let section_dir = Vector2::new(
+                    (segment.end.x_m - segment.start.x_m) / seg_len,
+                    (segment.end.y_m - segment.start.y_m) / seg_len,
+                );
+                let wall_axis_point = Point2::new(
+                    w_p0.x_m + w_dir.x * segment_s,
+                    w_p0.y_m + w_dir.y * segment_s,
+                );
+                let project_wall_offset = |offset: f64| {
+                    let point = Point2::new(
+                        wall_axis_point.x_m + w_norm.x * offset,
+                        wall_axis_point.y_m + w_norm.y * offset,
+                    );
+                    accum_s
+                        + (point.x_m - segment.start.x_m) * section_dir.x
+                        + (point.y_m - segment.start.y_m) * section_dir.y
+                };
+                let exterior_u = project_wall_offset(wall_offset_max);
+                let interior_u = project_wall_offset(wall_offset_min);
+                let wall_u_min = exterior_u.min(interior_u);
+                let wall_u_max = exterior_u.max(interior_u);
+                let opening_center_u = project_wall_offset(op.cross_axis_offset);
+                let cell_intervals: Vec<(f64, f64)> =
+                    super::super::elevation_cut::opening_cell_vertical_intervals_at_x(
+                        op.width,
+                        op.height,
+                        op.sill_height,
+                        op.kind,
+                        op.shape,
+                        op.spring_height,
+                        grid,
+                        local_x,
+                    )
+                    .into_iter()
+                    .map(|(bottom, top)| (wall.base_z + bottom, wall.base_z + top))
+                    .collect();
+                z_intervals = subtract_vertical_intervals(&z_intervals, &cell_intervals);
 
-                // Split layer cut into sill remnant (below) and head remnant (above)
-                let mut split = Vec::new();
-                for (zb, zt) in z_intervals {
-                    if op_z_sill > zb + EPS {
-                        split.push((zb, zb.max(op_z_sill.min(zt))));
-                    }
-                    if op_z_head < zt - EPS {
-                        split.push((zt.min(op_z_head.max(zb)), zt));
-                    }
-                }
-                z_intervals = split;
-
-                // The cut removes the wall, so the void itself has to be opaque.
-                // Otherwise the section shows every opening and wall behind the glass.
-                emit_opening_void_occluder(
-                    op,
-                    wall,
-                    u_min,
-                    u_max,
-                    op_z_sill,
-                    op_z_head,
-                    model_view,
-                    primitives,
-                    counter,
-                )?;
-
-                if options.include_openings && (op.kind == OpeningKind::Window || op.kind == OpeningKind::Door) {
-                    emit_opening_cut_details(
+                for (cell_sill, cell_head) in &cell_intervals {
+                    emit_opening_void_occluder(
                         op,
                         wall,
                         u_min,
                         u_max,
-                        accum_s,
+                        *cell_sill,
+                        *cell_head,
+                        model_view,
+                        primitives,
+                        counter,
+                    )?;
+                }
+
+                let has_door_cell = grid
+                    .layout(op.width, op.height, op.kind)
+                    .is_ok_and(|cells| {
+                        cells.iter().any(|cell| {
+                            cell.cell.kind
+                                == crate::modules::aec::engine::opening_style::OpeningCellKind::DoorLeaf
+                                && local_x >= cell.left + op.width * 0.5 - EPS
+                                && local_x <= cell.right + op.width * 0.5 + EPS
+                        })
+                    });
+                if options.include_openings
+                    && (op.kind == OpeningKind::Window || op.kind == OpeningKind::Door)
+                    && !cell_intervals.is_empty()
+                    && !opening_details_emitted
+                {
+                    emit_opening_cut_details(
+                        op,
+                        wall,
+                        &cell_intervals,
+                        &style.parts,
+                        has_door_cell,
+                        opening_center_u,
+                        exterior_u,
+                        interior_u,
+                        wall_u_min,
+                        wall_u_max,
                         model_view,
                         ctx,
                         primitives,
                         counter,
                     )?;
+                    opening_details_emitted = true;
                 }
             }
 
@@ -644,83 +709,386 @@ fn emit_opening_void_occluder(
     Ok(())
 }
 
-/// Emits opening cut components (frame profiles, sill/head lines) when a section passes through a window or door.
+fn subtract_vertical_intervals(
+    source: &[(f64, f64)],
+    cuts: &[(f64, f64)],
+) -> Vec<(f64, f64)> {
+    let mut cuts = cuts.to_vec();
+    cuts.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+    let mut result = Vec::new();
+    for &(bottom, top) in source {
+        let mut remaining = vec![(bottom, top)];
+        for &(cut_bottom, cut_top) in &cuts {
+            let mut next = Vec::new();
+            for (low, high) in remaining {
+                if cut_top <= low + EPS || cut_bottom >= high - EPS {
+                    next.push((low, high));
+                    continue;
+                }
+                if cut_bottom > low + EPS {
+                    next.push((low, cut_bottom.min(high)));
+                }
+                if cut_top < high - EPS {
+                    next.push((cut_top.max(low), high));
+                }
+            }
+            remaining = next;
+        }
+        result.extend(
+            remaining
+                .into_iter()
+                .filter(|(low, high)| *high > *low + EPS),
+        );
+    }
+    result
+}
+
+fn opening_section_style() -> ResolvedStyle {
+    ResolvedStyle {
+        line_weight_mm: PaperMm::new(0.18).unwrap(),
+        line_color: None,
+        line_type: None,
+        fill_color: None,
+        hatch_pattern: None,
+        hatch_scale: None,
+        hatch_angle_rad: None,
+        layer_name: Some("AEC_OPENING_SECTION".to_string()),
+    }
+}
+
+fn resolve_opening_component_cut_style(
+    ctx: &ViewStyleContext,
+    op: &CollectedOpening,
+    role: OpeningLookRole,
+) -> ResolvedStyle {
+    let mut resolved = opening_section_style();
+    let opening_style = resolve_opening_style(ctx, op);
+    let look = opening_style.looks.get(role);
+    let material = opening_style
+        .material_id_for_look(role)
+        .and_then(|material_id| {
+            ctx.style_library.and_then(|library| {
+                library.materials.iter().find(|material| {
+                    material.id == material_id || material.name == material_id
+                })
+            })
+        });
+
+    resolved.line_color = match look.line_color.as_ref() {
+        Some(color) => color_to_rgba8_opt(color),
+        None => material.map(|material| u32_to_rgba8(material.line_color)),
+    };
+    resolved.line_type = look
+        .line_type
+        .as_deref()
+        .filter(|line_type| !line_type.trim().is_empty())
+        .map(str::to_string)
+        .or_else(|| {
+            material.and_then(|material| {
+                (!material.line_type.trim().is_empty()).then(|| material.line_type.clone())
+            })
+        });
+
+    if let Some(material) = material {
+        resolved.hatch_pattern = (!material.hatch_pattern.trim().is_empty())
+            .then(|| material.hatch_pattern.clone());
+        resolved.hatch_scale = Some(material.hatch_scale);
+        resolved.hatch_angle_rad = Some(material.hatch_angle.to_radians());
+        resolved.fill_color = material
+            .hatch_color
+            .as_ref()
+            .and_then(color_to_rgba8_opt)
+            .or_else(|| Some(u32_to_rgba8(material.line_color)));
+    }
+    resolved
+}
+
+fn emit_opening_section_region(
+    op: &CollectedOpening,
+    wall: &CollectedWall,
+    model_view: &ModelView,
+    primitives: &mut Vec<DerivedPrimitive>,
+    counter: &mut u32,
+    bounds: (f64, f64, f64, f64),
+    role: PrimitiveRole,
+    feature: FeatureKey,
+    style: ResolvedStyle,
+) -> Result<(), ValidationError> {
+    let (u_min, u_max, z_min, z_max) = bounds;
+    if u_max - u_min <= EPS || z_max - z_min <= EPS {
+        return Ok(());
+    }
+    *counter += 1;
+    primitives.push(DerivedPrimitive {
+        id: PrimitiveId::new(model_view.id, 1, *counter),
+        role,
+        geometry: Geometry2d::Region {
+            outer: vec![
+                Point2::new(u_min, z_min),
+                Point2::new(u_max, z_min),
+                Point2::new(u_max, z_max),
+                Point2::new(u_min, z_max),
+            ],
+            holes: vec![],
+        },
+        sources: SourceSet::new(vec![SourceReference {
+            element: op.element_ref,
+            xref_source: wall.xref_source.clone(),
+            component_id: None,
+            feature: Some(feature),
+            display_component_id: None,
+        }])?,
+        depth: super::DepthInterval::cut_plane(),
+        style,
+        edit_handles: vec![],
+    });
+    Ok(())
+}
+
+/// Emits section components from their absolute style dimensions.
 fn emit_opening_cut_details(
     op: &CollectedOpening,
     wall: &CollectedWall,
-    u_min: f64,
-    u_max: f64,
-    _accum_s: f64,
+    cell_intervals: &[(f64, f64)],
+    parts: &crate::modules::aec::engine::opening_style::OpeningParts,
+    has_door_cell: bool,
+    opening_center_u: f64,
+    exterior_u: f64,
+    interior_u: f64,
+    layer_u_min: f64,
+    layer_u_max: f64,
     model_view: &ModelView,
     ctx: &ViewStyleContext,
     primitives: &mut Vec<DerivedPrimitive>,
     counter: &mut u32,
 ) -> Result<(), ValidationError> {
-    let op_z_sill = wall.base_z + op.sill_height;
-    let op_z_head = op_z_sill + op.height;
-
-    let op_source = SourceReference {
-        element: op.element_ref,
-        xref_source: op.xref_source.clone(),
-        component_id: None,
-        feature: Some(FeatureKey::OpeningSill),
-        display_component_id: None,
+    let roles = super::style_resolver::resolve_opening_section_roles(ctx, op);
+    let frame_style = resolve_opening_component_cut_style(ctx, op, OpeningLookRole::FixedFrame);
+    let exterior_sill_style =
+        resolve_opening_component_cut_style(ctx, op, OpeningLookRole::ExteriorSill);
+    let interior_board_style =
+        resolve_opening_component_cut_style(ctx, op, OpeningLookRole::InteriorBoard);
+    let threshold_style = resolve_opening_component_cut_style(ctx, op, OpeningLookRole::Threshold);
+    let shutter_box_style =
+        resolve_opening_component_cut_style(ctx, op, OpeningLookRole::ShutterBox);
+    let lintel_style = resolve_opening_component_cut_style(ctx, op, OpeningLookRole::Lintel);
+    let wall_span = (layer_u_max - layer_u_min).max(0.0);
+    let frame_depth = parts.fixed_frame.wall_depth.max(0.0).min(wall_span);
+    let frame_center = opening_center_u + parts.fixed_frame.axis_offset;
+    let frame_u_min = (frame_center - frame_depth * 0.5).max(layer_u_min);
+    let frame_u_max = (frame_center + frame_depth * 0.5).min(layer_u_max);
+    let frame_face = parts.fixed_frame.face_width.max(0.0);
+    let sill_z = wall.base_z + op.sill_height;
+    let head_z = sill_z + op.height;
+    let inward = if interior_u >= exterior_u { 1.0 } else { -1.0 };
+    let clipped_region = |u0: f64, u1: f64, z0: f64, z1: f64| {
+        (u0.min(u1).max(layer_u_min), u0.max(u1).min(layer_u_max), z0, z1)
     };
 
-    // Sill line with interactive sill grip handle
-    if is_opening_slot_visible(ctx, op, OpeningComponentSlot::Sill2D) {
-        let sill_style = resolve_opening_view_style(ctx, op, OpeningComponentSlot::Sill2D);
-        *counter += 1;
-        let sill_anchor = Point2::new((u_min + u_max) * 0.5, op_z_sill);
-        primitives.push(DerivedPrimitive {
-            id: PrimitiveId::new(model_view.id, 1, *counter),
-            role: PrimitiveRole::CutBoundary,
-            geometry: Geometry2d::Line {
-                start: Point2::new(u_min, op_z_sill),
-                end: Point2::new(u_max, op_z_sill),
-            },
-            sources: SourceSet::new(vec![op_source.clone()])?,
-            depth: super::DepthInterval::cut_plane(),
-            style: sill_style,
-            edit_handles: vec![EditHandle {
-                id: format!("opening_sill_{}", counter),
-                position: sill_anchor,
-                action: ModelEditAction::ChangeParameter(ModelParameter::OpeningSillHeight),
-                direction_hint: Vector2::new(0.0, 1.0),
-                target_feature: Some(FeatureKey::OpeningSill),
-                source: op_source.clone(),
-            }],
-        });
+    for &(cell_sill, cell_head) in cell_intervals {
+        let rail_height = frame_face.min((cell_head - cell_sill) * 0.5);
+        let sill_region_start = primitives.len();
+        if roles.frame {
+        emit_opening_section_region(
+            op,
+            wall,
+            model_view,
+            primitives,
+            counter,
+            (frame_u_min, frame_u_max, cell_sill, cell_sill + rail_height),
+            PrimitiveRole::CutBoundary,
+            FeatureKey::OpeningSill,
+            frame_style.clone(),
+        )?;
+        if cell_sill <= cell_intervals
+            .iter()
+            .map(|(sill, _)| *sill)
+            .fold(f64::INFINITY, f64::min)
+            + EPS
+            && primitives.len() > sill_region_start
+        {
+            if let Some(primitive) = primitives.last_mut() {
+                let source = SourceReference {
+                    element: op.element_ref,
+                    xref_source: wall.xref_source.clone(),
+                    component_id: None,
+                    feature: Some(FeatureKey::OpeningSill),
+                    display_component_id: None,
+                };
+                primitive.edit_handles.push(EditHandle {
+                    id: format!("opening_sill_{}", counter),
+                    position: Point2::new(opening_center_u, cell_sill),
+                    action: ModelEditAction::ChangeParameter(ModelParameter::OpeningSillHeight),
+                    direction_hint: Vector2::new(0.0, 1.0),
+                    target_feature: Some(FeatureKey::OpeningSill),
+                    source,
+                });
+            }
+        }
+        emit_opening_section_region(
+            op,
+            wall,
+            model_view,
+            primitives,
+            counter,
+            (frame_u_min, frame_u_max, cell_head - rail_height, cell_head),
+            PrimitiveRole::CutBoundary,
+            FeatureKey::OpeningHead,
+            frame_style.clone(),
+        )?;
+        let head_region_emitted = primitives.len() > sill_region_start + 1;
+        if cell_head >= cell_intervals
+            .iter()
+            .map(|(_, head)| *head)
+            .fold(f64::NEG_INFINITY, f64::max)
+            - EPS
+            && head_region_emitted
+        {
+            if let Some(primitive) = primitives.last_mut() {
+                let source = SourceReference {
+                    element: op.element_ref,
+                    xref_source: wall.xref_source.clone(),
+                    component_id: None,
+                    feature: Some(FeatureKey::OpeningHead),
+                    display_component_id: None,
+                };
+                primitive.edit_handles.push(EditHandle {
+                    id: format!("opening_head_{}", counter),
+                    position: Point2::new(opening_center_u, cell_head),
+                    action: ModelEditAction::ChangeParameter(ModelParameter::OpeningHeadHeight),
+                    direction_hint: Vector2::new(0.0, 1.0),
+                    target_feature: Some(FeatureKey::OpeningHead),
+                    source,
+                });
+            }
+        }
+        }
+
+        if roles.exterior_sill && !(op.kind == OpeningKind::Door && cell_sill <= sill_z + EPS) {
+            let exterior_sill = &parts.exterior_sill;
+            if exterior_sill.thickness > 0.0 {
+                let ext_start = exterior_u - inward * exterior_sill.overhang;
+                let ext_end = exterior_u + inward * exterior_sill.thickness;
+                let bounds = (
+                    ext_start.min(ext_end),
+                    ext_start.max(ext_end),
+                    cell_sill - exterior_sill.thickness,
+                    cell_sill,
+                );
+                emit_opening_section_region(
+                    op,
+                    wall,
+                    model_view,
+                    primitives,
+                    counter,
+                    bounds,
+                    PrimitiveRole::CutBoundary,
+                    FeatureKey::OpeningSill,
+                    exterior_sill_style.clone(),
+                )?;
+                if exterior_sill.upstand > 0.0 {
+                    let u = exterior_u + inward * exterior_sill.thickness;
+                    let upstand_start = u - inward * exterior_sill.thickness.min(frame_depth);
+                    let bounds = (
+                        upstand_start.min(u),
+                        upstand_start.max(u),
+                        cell_sill,
+                        cell_sill + exterior_sill.upstand,
+                    );
+                    emit_opening_section_region(
+                        op,
+                        wall,
+                        model_view,
+                        primitives,
+                        counter,
+                        bounds,
+                        PrimitiveRole::CutBoundary,
+                        FeatureKey::OpeningSill,
+                        exterior_sill_style.clone(),
+                    )?;
+                }
+            }
+        }
+
+        if roles.interior_board && !(op.kind == OpeningKind::Door && cell_sill <= sill_z + EPS) {
+            let interior_board = &parts.interior_board;
+            if interior_board.thickness > 0.0 {
+                let board_start = interior_u - inward * interior_board.thickness;
+                let board_end = interior_u + inward * interior_board.overhang;
+                let bounds = (
+                    board_start.min(board_end),
+                    board_start.max(board_end),
+                    cell_sill - interior_board.thickness,
+                    cell_sill,
+                );
+                emit_opening_section_region(
+                    op,
+                    wall,
+                    model_view,
+                    primitives,
+                    counter,
+                    bounds,
+                    PrimitiveRole::CutBoundary,
+                    FeatureKey::OpeningSill,
+                    interior_board_style.clone(),
+                )?;
+            }
+        }
     }
 
-    // Head line with interactive head grip handle
-    if is_opening_slot_visible(ctx, op, OpeningComponentSlot::Frame2D) {
-        let head_style = resolve_opening_view_style(ctx, op, OpeningComponentSlot::Frame2D);
-        let mut head_source = op_source;
-        head_source.feature = Some(FeatureKey::OpeningHead);
-        *counter += 1;
-        let head_anchor = Point2::new((u_min + u_max) * 0.5, op_z_head);
-        primitives.push(DerivedPrimitive {
-            id: PrimitiveId::new(model_view.id, 1, *counter),
-            role: PrimitiveRole::CutBoundary,
-            geometry: Geometry2d::Line {
-                start: Point2::new(u_min, op_z_head),
-                end: Point2::new(u_max, op_z_head),
-            },
-            sources: SourceSet::new(vec![head_source.clone()])?,
-            depth: super::DepthInterval::cut_plane(),
-            style: head_style,
-            edit_handles: vec![EditHandle {
-                id: format!("opening_head_{}", counter),
-                position: head_anchor,
-                action: ModelEditAction::ChangeParameter(ModelParameter::OpeningHeadHeight),
-                direction_hint: Vector2::new(0.0, 1.0),
-                target_feature: Some(FeatureKey::OpeningHead),
-                source: head_source,
-            }],
-        });
+    if roles.threshold && has_door_cell && parts.threshold.height > 0.0 && parts.threshold.width > 0.0 {
+        let half_width = parts.threshold.width * 0.5;
+        let bounds = clipped_region(
+            opening_center_u - half_width,
+            opening_center_u + half_width,
+            sill_z,
+            sill_z + parts.threshold.height,
+        );
+        emit_opening_section_region(
+            op,
+            wall,
+            model_view,
+            primitives,
+            counter,
+            bounds,
+            PrimitiveRole::CutBoundary,
+            FeatureKey::OpeningSill,
+            threshold_style.clone(),
+        )?;
     }
 
+    let shutter = &parts.shutter_box;
+    if roles.shutter_box && shutter.height > 0.0 && shutter.depth > 0.0 {
+        let u0 = exterior_u + inward * shutter.installation_depth;
+        let u1 = u0 + inward * shutter.depth;
+        let z0 = head_z + shutter.seat_above_frame;
+        let bounds = clipped_region(u0, u1, z0, z0 + shutter.height);
+        emit_opening_section_region(
+            op,
+            wall,
+            model_view,
+            primitives,
+            counter,
+            bounds,
+            PrimitiveRole::CutBoundary,
+            FeatureKey::OpeningHead,
+            shutter_box_style.clone(),
+        )?;
+    }
+
+    if roles.lintel && parts.lintel.height > 0.0 {
+        emit_opening_section_region(
+            op,
+            wall,
+            model_view,
+            primitives,
+            counter,
+            (layer_u_min, layer_u_max, head_z, head_z + parts.lintel.height),
+            PrimitiveRole::CutFill,
+            FeatureKey::OpeningHead,
+            lintel_style,
+        )?;
+    }
     Ok(())
 }
 
@@ -990,6 +1358,127 @@ mod tests {
     }
 
     #[test]
+    fn section_cut_uses_heterogeneous_cell_heights() {
+        use crate::modules::aec::engine::opening_style::{
+            DivisionGrid, HingeSide, OpeningCell, OpeningCellKind, OpeningStyle,
+        };
+        use crate::modules::aec::engine::openings::{
+            OpeningKind, OpeningReferenceSide, SwingSide,
+        };
+        use crate::modules::aec::engine::views::scene_collector::{
+            CollectedOpening, CollectedWall,
+        };
+        use crate::modules::aec::engine::views::SectionSegment;
+
+        let mut style = OpeningStyle::standard_window();
+        style.style.id = "door_window_combo".into();
+        style.grid = DivisionGrid {
+            vertical: vec![0.5, 0.5],
+            cells: vec![
+                OpeningCell {
+                    kind: OpeningCellKind::DoorLeaf,
+                    hinge: Some(HingeSide::Left),
+                    sill: 0.0,
+                },
+                OpeningCell {
+                    kind: OpeningCellKind::Glass,
+                    hinge: None,
+                    sill: 1.0,
+                },
+            ],
+            ..DivisionGrid::default()
+        };
+        let mut library = StyleLibrary::default();
+        library.opening_styles.push(style.clone());
+
+        let opening_element = ElementRef::new(ModelId::new(), ElementId::new());
+        let opening = CollectedOpening {
+            handle: acadrust::Handle::new(20),
+            element_ref: opening_element,
+            xref_source: None,
+            host_wall_handle: acadrust::Handle::new(10),
+            kind: OpeningKind::Window,
+            style_id: Some(style.style.id.clone()),
+            division_override: None,
+            distance_along_axis: 5.0,
+            width: 1.8,
+            height: 2.2,
+            sill_height: 0.0,
+            spring_height: 0.0,
+            shape: crate::modules::aec::engine::opening_shape::OpeningShape::Rectangle,
+            hinge: HingeSide::Left,
+            swing_side: SwingSide::Exterior,
+            reference_side: OpeningReferenceSide::Center,
+            cross_axis_offset: 0.0,
+            depth: None,
+            world_center: Point3::new(5.0, 0.0, 1.1),
+            axis_span_local: (4.1, 5.9),
+        };
+        let wall = CollectedWall {
+            handle: acadrust::Handle::new(10),
+            element_ref: ElementRef::new(ModelId::new(), ElementId::new()),
+            xref_source: None,
+            style_id: "section_wall".into(),
+            height: 3.0,
+            base_z: 0.0,
+            top_z: 3.0,
+            axis_points: vec![Point2::new(0.0, 0.0), Point2::new(10.0, 0.0)],
+            layers: vec![layer("Core", 0.30, -0.15, true)],
+            total_thickness: 0.30,
+            justification: WallJustification::Center,
+            openings: vec![opening],
+            phase: PlanPhase::New,
+        };
+        let model_view = ModelView {
+            id: ModelViewId::new(),
+            name: "Door-window cut".into(),
+            viewpoint_id: ViewpointId::new(),
+            profile_id: ViewProfileId::new(),
+            scale: ScaleDenominator::new(50.0).unwrap(),
+            detail: DetailPolicy::FromProfileAndScale,
+            excluded_elements: BTreeSet::new(),
+            graphic_overrides: vec![],
+            annotation_ids: vec![],
+            update_policy: UpdatePolicy::Automatic,
+            revisions: ViewRevisions::default(),
+        };
+        let ctx = ViewStyleContext::new(&model_view, None, Some(&library), true);
+        let cut_at = |x| {
+            let segment = SectionSegment::new(Point2::new(x, -1.0), Point2::new(x, 1.0), false);
+            let mut primitives = Vec::new();
+            cut_wall_with_segment(
+                &wall,
+                &segment,
+                0.0,
+                &model_view,
+                &CutEngineOptions::default(),
+                &ctx,
+                &mut primitives,
+                &mut 0,
+            )
+            .unwrap();
+            primitives
+                .iter()
+                .filter(|primitive| primitive.role == PrimitiveRole::CutFill)
+                .filter_map(|primitive| match &primitive.geometry {
+                    Geometry2d::Region { outer, .. } => Some((
+                        outer.iter().map(|point| point.y_m).fold(f64::INFINITY, f64::min),
+                        outer.iter().map(|point| point.y_m).fold(f64::NEG_INFINITY, f64::max),
+                    )),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+        };
+        let door_section = cut_at(4.5);
+        let window_section = cut_at(5.5);
+        assert!(door_section.iter().all(|(bottom, _)| *bottom >= 2.2 - EPS));
+        assert!(window_section.iter().any(|(bottom, top)| {
+            bottom.abs() < EPS && (*top - 1.0).abs() < EPS
+        }));
+        assert!(window_section.iter().any(|(bottom, _)| *bottom >= 2.2 - EPS));
+    }
+
+    #[test]
     fn section_layers_keep_axis_offset_instead_of_restacking_from_the_axis() {
         let mut collector = SceneGeometryCollector::new();
         collector.walls.push(CollectedWall {
@@ -1064,6 +1553,199 @@ mod tests {
         assert!((spans[0].0 - 4.82).abs() < 1e-4 && (spans[0].1 - 4.84).abs() < 1e-4, "{spans:?}");
         assert!((spans[1].0 - 4.88).abs() < 1e-4 && (spans[1].1 - 5.08).abs() < 1e-4, "{spans:?}");
         assert!((spans[2].0 - 5.22).abs() < 1e-4 && (spans[2].1 - 5.24).abs() < 1e-4, "{spans:?}");
+    }
+
+    #[test]
+    fn opening_section_parts_keep_absolute_sizes_and_lintel_material() {
+        use crate::modules::aec::engine::library::StyleLibrary;
+        use crate::modules::aec::engine::material::Material;
+        use crate::modules::aec::engine::opening_style::{
+            HingeSide, LintelDimensions, OpeningStyle, ShutterBoxDimensions, SillDimensions,
+        };
+        use crate::modules::aec::engine::openings::{
+            OpeningKind, OpeningReferenceSide, SwingSide,
+        };
+        use crate::modules::aec::engine::views::scene_collector::{
+            CollectedOpening, CollectedWall,
+        };
+
+        let mut style = OpeningStyle::standard_window();
+        style.style.id = "section_window".into();
+        style.parts.fixed_frame.face_width = 0.07;
+        style.parts.fixed_frame.wall_depth = 0.12;
+        style.parts.exterior_sill = SillDimensions {
+            thickness: 0.10,
+            overhang: 0.20,
+            upstand: 0.03,
+        };
+        style.parts.interior_board = SillDimensions {
+            thickness: 0.08,
+            overhang: 0.15,
+            upstand: 0.0,
+        };
+        style.parts.shutter_box = ShutterBoxDimensions {
+            height: 0.20,
+            depth: 0.25,
+            seat_above_frame: 0.0,
+            installation_depth: 0.02,
+        };
+        style.parts.lintel = LintelDimensions {
+            height: 0.20,
+            bearing_left: 0.15,
+            bearing_right: 0.15,
+            material_id: Some("lintel_material".into()),
+        };
+        style.looks.exterior_sill.material_id = Some("sill_material".into());
+        style.looks.shutter_box.material_id = Some("missing_material".into());
+        let mut library = StyleLibrary::default();
+        let mut material = Material::new(
+            "lintel_material".into(),
+            "Lintel hatch".into(),
+            "ANSI32".into(),
+            0x804020,
+            "Continuous".into(),
+        );
+        material.hatch_scale = 1.7;
+        library.materials.push(material);
+        let mut sill_material = Material::new(
+            "sill_material".into(),
+            "Sill hatch".into(),
+            "ANSI33".into(),
+            0x0060c0,
+            "Continuous".into(),
+        );
+        sill_material.hatch_color = Some(acadrust::types::Color::Rgb {
+            r: 12,
+            g: 34,
+            b: 56,
+        });
+        sill_material.hatch_scale = 0.75;
+        library.materials.push(sill_material);
+        library.opening_styles.push(style.clone());
+
+        let opening_element = ElementRef::new(ModelId::new(), ElementId::new());
+        let opening = CollectedOpening {
+            handle: acadrust::Handle::new(20),
+            element_ref: opening_element,
+            xref_source: None,
+            host_wall_handle: acadrust::Handle::new(10),
+            kind: OpeningKind::Window,
+            style_id: Some(style.style.id.clone()),
+            division_override: None,
+            distance_along_axis: 5.0,
+            width: 1.2,
+            height: 1.4,
+            sill_height: 0.8,
+            spring_height: 0.0,
+            shape: crate::modules::aec::engine::opening_shape::OpeningShape::Rectangle,
+            hinge: HingeSide::Left,
+            swing_side: SwingSide::Exterior,
+            reference_side: OpeningReferenceSide::Center,
+            cross_axis_offset: 0.0,
+            depth: None,
+            world_center: Point3::new(5.0, 0.0, 1.5),
+            axis_span_local: (4.4, 5.6),
+        };
+        let wall = CollectedWall {
+            handle: acadrust::Handle::new(10),
+            element_ref: ElementRef::new(ModelId::new(), ElementId::new()),
+            xref_source: None,
+            style_id: "section_wall".into(),
+            height: 3.0,
+            base_z: 0.0,
+            top_z: 3.0,
+            axis_points: vec![Point2::new(0.0, 0.0), Point2::new(10.0, 0.0)],
+            layers: vec![layer("Core", 0.30, -0.15, true)],
+            total_thickness: 0.30,
+            justification: WallJustification::Center,
+            openings: vec![opening.clone()],
+            phase: PlanPhase::New,
+        };
+        let model_view = ModelView {
+            id: ModelViewId::new(),
+            name: "Section parts".into(),
+            viewpoint_id: ViewpointId::new(),
+            profile_id: ViewProfileId::new(),
+            scale: ScaleDenominator::new(50.0).unwrap(),
+            detail: DetailPolicy::FromProfileAndScale,
+            excluded_elements: BTreeSet::new(),
+            graphic_overrides: vec![],
+            annotation_ids: vec![],
+            update_policy: UpdatePolicy::Automatic,
+            revisions: ViewRevisions::default(),
+        };
+        let ctx = ViewStyleContext::new(&model_view, None, Some(&library), true);
+        let emit = |width| {
+            let mut opening = opening.clone();
+            opening.width = width;
+            let mut primitives = Vec::new();
+            let mut counter = 0;
+            emit_opening_cut_details(
+                &opening,
+                &wall,
+                &[(0.8, 2.2)],
+                &style.parts,
+                false,
+                1.0,
+                1.15,
+                0.85,
+                0.85,
+                1.15,
+                &model_view,
+                &ctx,
+                &mut primitives,
+                &mut counter,
+            )
+            .unwrap();
+            primitives
+        };
+        let standard = emit(1.2);
+        let wider = emit(2.4);
+        assert_eq!(standard, wider);
+
+        let bounds = |primitive: &DerivedPrimitive| {
+            let Geometry2d::Region { outer, .. } = &primitive.geometry else {
+                return None;
+            };
+            Some((
+                outer.iter().map(|point| point.x_m).fold(f64::INFINITY, f64::min),
+                outer.iter().map(|point| point.x_m).fold(f64::NEG_INFINITY, f64::max),
+                outer.iter().map(|point| point.y_m).fold(f64::INFINITY, f64::min),
+                outer.iter().map(|point| point.y_m).fold(f64::NEG_INFINITY, f64::max),
+            ))
+        };
+        assert!(standard.iter().any(|primitive| {
+            bounds(primitive).is_some_and(|(u0, u1, z0, z1)| {
+                (u1 - u0 - 0.12).abs() < 1e-9 && (z1 - z0 - 0.07).abs() < 1e-9
+            })
+        }));
+        assert!(standard.iter().any(|primitive| {
+            bounds(primitive).is_some_and(|(u0, u1, z0, z1)| {
+                (u1 - u0 - 0.25).abs() < 1e-9 && (z1 - z0 - 0.20).abs() < 1e-9
+            })
+        }));
+        let lintel = standard
+            .iter()
+            .find(|primitive| primitive.role == PrimitiveRole::CutFill)
+            .unwrap();
+        assert_eq!(lintel.style.hatch_pattern.as_deref(), Some("ANSI32"));
+        assert_eq!(lintel.style.hatch_scale, Some(1.7));
+        assert_eq!(lintel.style.fill_color, Some(Rgba8::new(0x80, 0x40, 0x20, 255)));
+
+        let sill = standard
+            .iter()
+            .find(|primitive| primitive.style.hatch_pattern.as_deref() == Some("ANSI33"))
+            .unwrap();
+        assert_eq!(sill.style.hatch_scale, Some(0.75));
+        assert_eq!(sill.style.fill_color, Some(Rgba8::new(12, 34, 56, 255)));
+
+        let unknown_material_style = resolve_opening_component_cut_style(
+            &ctx,
+            &opening,
+            OpeningLookRole::ShutterBox,
+        );
+        assert_eq!(unknown_material_style.hatch_pattern, None);
+        assert_eq!(unknown_material_style.line_color, None);
     }
 
     #[test]

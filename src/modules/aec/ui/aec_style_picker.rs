@@ -74,6 +74,7 @@ pub fn view_window<'a>(
     let title = match target {
         crate::app::StylePickerTarget::WallStyleParent => t!("Select Parent Style"),
         crate::app::StylePickerTarget::LayerMaterial(_) => t!("Select Material"),
+        crate::app::StylePickerTarget::OpeningComponentMaterial(_) => t!("Select Material"),
         crate::app::StylePickerTarget::LayerOverride(_) => t!("Select Layer Override"),
         crate::app::StylePickerTarget::WallPropertiesStyle => t!("Select Wall Style"),
         crate::app::StylePickerTarget::ActiveCommand => t!("Select Wall Style"),
@@ -335,6 +336,7 @@ pub fn view_window<'a>(
             scrollable(column(rows).spacing(2)).into()
         }
         crate::app::StylePickerTarget::LayerMaterial(_)
+        | crate::app::StylePickerTarget::OpeningComponentMaterial(_)
         | crate::app::StylePickerTarget::FloorFinishLayerMaterial(_)
         | crate::app::StylePickerTarget::SlabLayerMaterial(_)
         | crate::app::StylePickerTarget::SlabStructuralLayerMaterial(_) => {

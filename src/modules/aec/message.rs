@@ -151,6 +151,7 @@ pub enum AecMessage {
     AecOpeningStyleManagerSpringChanged(String),
     AecOpeningStyleManagerHingeChanged(String),
     AecOpeningStyleManagerSetPreviewMode(crate::modules::aec::state::AecOpeningPreviewMode),
+    AecOpeningStyleManagerSetEditorTab(crate::modules::aec::state::AecOpeningEditorTab),
     AecOpeningStyleManagerSlotSourceChanged(usize, String),
     AecOpeningStyleManagerSlotGeneratorChanged(usize, String),
     AecOpeningStyleManagerSlotBlockNameChanged(usize, String),
@@ -159,19 +160,35 @@ pub enum AecMessage {
     AecOpeningStyleManagerProfileSelect(String),
     /// Removes the named plan type's exception from the opening style form.
     AecOpeningStyleManagerProfileRemove(String),
-    /// Preview click: selects the opening slot row under the cursor.
-    AecOpeningStyleManagerPreviewSlotSelect(crate::modules::aec::engine::display_component::OpeningComponentSlot),
+    /// Preview click: selects the opening component role under the cursor; `None` clears it.
+    AecOpeningStyleManagerPreviewSlotSelect(
+        Option<crate::modules::aec::engine::opening_style::OpeningLookRole>,
+    ),
     AecOpeningStyleManagerSlotVisible(usize, bool),
-    AecOpeningStyleManagerSketchSlotSelect(usize),
-    /// Canvas click in instance-local coordinates (manager preview).
-    AecOpeningStyleManagerSketchClick(f64, f64),
-    AecOpeningStyleManagerSketchClosePath,
-    AecOpeningStyleManagerSketchFinishPath,
-    AecOpeningStyleManagerSketchUndo,
-    AecOpeningStyleManagerSketchDeletePath,
-    AecOpeningStyleManagerSketchClear,
-    AecOpeningStyleManagerSketchAddFrame,
-    AecOpeningStyleManagerSketchArc,
+    /// Absolute part, grid-list or material field. The key is a stable field id.
+    AecOpeningStyleManagerDimChanged(String, String),
+    AecOpeningStyleManagerCellKindChanged(usize, String),
+    AecOpeningStyleManagerCellHingeChanged(usize, String),
+    AecOpeningStyleManagerCellSillChanged(usize, String),
+    AecOpeningStyleManagerCellAdd,
+    AecOpeningStyleManagerCellRemove(usize),
+    /// Family id (`plan`, `section`, `elevation`) and block name.
+    AecOpeningStyleManagerFamilyBlockChanged(String, String),
+    AecOpeningStyleManagerFamilyPlacementChanged(String, String),
+    AecOpeningStyleManagerLookLineTypeChanged(
+        crate::modules::aec::engine::opening_style::OpeningLookRole,
+        String,
+    ),
+    AecOpeningStyleManagerLookLineColorChanged(
+        crate::modules::aec::engine::opening_style::OpeningLookRole,
+        String,
+    ),
+    AecOpeningStyleManagerLookColorPickerToggle(
+        crate::modules::aec::engine::opening_style::OpeningLookRole,
+    ),
+    AecOpeningStyleManagerLookMaterialClear(
+        crate::modules::aec::engine::opening_style::OpeningLookRole,
+    ),
     AecOpeningStyleManagerSave,
     AecOpeningStyleManagerSaveAndApply,
     AecOpeningStyleManagerDuplicate,
@@ -466,6 +483,8 @@ pub enum AecMessage {
     AecPlanManagerPlanningStageChanged(crate::modules::aec::engine::plan_view::PlanningStage),
     /// View-type field changed in the DisplayConfig edit form.
     AecPlanManagerViewTypeChanged(crate::modules::aec::engine::plan_view::ViewType),
+    /// Opening representation level of the current view family. Empty value means inherit.
+    AecPlanManagerOpeningLevelChanged(String, String),
     /// Two-stage phase-filter editor, Stage 1: a phase's visibility
     /// checkbox was toggled in the DisplayConfig edit form.
     AecPlanManagerPhaseVisibleToggle(crate::modules::aec::engine::plan_view::PlanPhase, bool),

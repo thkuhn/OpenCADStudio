@@ -399,8 +399,8 @@ pub fn apply_display_config_to_scene_with_representation(
     }
 
     // Rooms follow the plan kind's detail profile (stamp, hatches, thresholds).
-    let room_display = super::room_regen::RoomDisplay::from_detail(
-        &config.detail,
+    let room_display = super::room_regen::RoomDisplay::from_config(
+        config,
         representation_override,
     );
     for room_handle in super::room_package::all_room_carrier_handles(scene) {

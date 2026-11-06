@@ -2220,6 +2220,30 @@ pub(crate) fn find_crossing_span_footprints_seeded(
     any.then_some(merged)
 }
 
+fn fill_missing_opening_grids(
+    openings: &mut [engine::openings::Opening],
+    library: &StyleLibrary,
+) {
+    for opening in openings {
+        if opening.division_override.is_some() {
+            continue;
+        }
+        let fallback = engine::opening_style::default_style_for_kind(opening.kind);
+        let style_id = opening
+            .style_id
+            .as_deref()
+            .unwrap_or(&fallback.style.id);
+        let style = library
+            .find_opening_style(style_id)
+            .or_else(|| library.find_opening_style(&fallback.style.id));
+        opening.division_override = Some(
+            style
+                .map(|style| style.grid.clone())
+                .unwrap_or(fallback.grid),
+        );
+    }
+}
+
 pub(crate) fn regenerate_wall_representation_inner(
     scene: &mut Scene,
     wall_handle: Handle,
@@ -2319,17 +2343,27 @@ pub(crate) fn regenerate_wall_representation_inner(
         .map(|(_, b)| b.clone())
         .collect();
 
+    let owned_library;
+    let library: &StyleLibrary = match library_override {
+        Some(lib) => lib,
+        None => {
+            owned_library = load_or_seed();
+            &owned_library
+        }
+    };
+
     // Openings hosted by this wall — split 2D contours/hatches into
     // disconnected pieces. 3D rest-wall solids use those pieces; the opening
     // zone is an elevation-cut extrusion through each layer.
     let host_cut_visible = rules.map_or(true, |r| {
         r.is_opening_visible(engine::display_component::OpeningComponentSlot::HostCut2D)
     });
-    let wall_openings = if host_cut_visible {
+    let mut wall_openings = if host_cut_visible {
         openings_for_host_wall(scene, wall_handle)
     } else {
         Vec::new()
     };
+    fill_missing_opening_grids(&mut wall_openings, library);
     let (centerline, bulges) = wall_axis_points_and_bulges(&axis_entity);
     let layer_data: Vec<(f64, f64)> =
         layers.iter().map(|l| (l.thickness, l.axis_offset)).collect();
@@ -2591,17 +2625,6 @@ pub(crate) fn regenerate_wall_representation_inner(
         &axis_entity
     };
     let extrusions = wall_layer_extrusions(extrusion_axis, &layers, height);
-    // Prefer a caller-supplied (usually project-resolved) library so hatch
-    // scale/pattern/color and material lookups match the active project
-    // instead of always reading the global on-disk defaults.
-    let owned_library;
-    let library: &StyleLibrary = match library_override {
-        Some(lib) => lib,
-        None => {
-            owned_library = load_or_seed();
-            &owned_library
-        }
-    };
 
     // `StyleSubstitution`: when the wall's own style has a target entry,
     // the target wall style's layers become the *style* source (material,
@@ -3365,6 +3388,56 @@ pub fn change_wall_justification(
 mod tests {
     use super::*;
     use crate::modules::aec::engine::control_plane::ControlPlaneFacet;
+
+    #[test]
+    fn opening_grid_uses_style_template_and_preserves_instance_override() {
+        use crate::modules::aec::engine::opening_style::{
+            DivisionGrid, OpeningCell, OpeningStyle,
+        };
+        use crate::modules::aec::engine::openings::{Opening, OpeningKind};
+
+        let mut library = StyleLibrary::default();
+        let mut standard = OpeningStyle::standard_window();
+        standard.grid = DivisionGrid {
+            vertical: vec![0.25, 0.75],
+            cells: vec![OpeningCell::default(), OpeningCell::default()],
+            ..DivisionGrid::default()
+        };
+        library.opening_styles.push(standard.clone());
+
+        let mut custom = OpeningStyle::standard_window();
+        custom.style.id = "custom_window_grid".into();
+        custom.grid = DivisionGrid {
+            vertical: vec![0.4, 0.6],
+            cells: vec![OpeningCell::default(), OpeningCell::default()],
+            ..DivisionGrid::default()
+        };
+        library.opening_styles.push(custom.clone());
+
+        let mut unstyled = Opening::from_kind(
+            Handle::new(1),
+            Handle::new(2),
+            3.0,
+            OpeningKind::Window,
+        );
+        fill_missing_opening_grids(std::slice::from_mut(&mut unstyled), &library);
+        assert_eq!(unstyled.division_override, Some(standard.grid));
+
+        let mut selected = Opening::from_kind(
+            Handle::new(3),
+            Handle::new(2),
+            5.0,
+            OpeningKind::Window,
+        );
+        selected.style_id = Some(custom.style.id.clone());
+        fill_missing_opening_grids(std::slice::from_mut(&mut selected), &library);
+        assert_eq!(selected.division_override, Some(custom.grid.clone()));
+
+        let instance_grid = DivisionGrid::default();
+        selected.division_override = Some(instance_grid.clone());
+        fill_missing_opening_grids(std::slice::from_mut(&mut selected), &library);
+        assert_eq!(selected.division_override, Some(instance_grid));
+    }
 
     #[test]
     fn test_wall_layer_extrusions_apply_signed_top_offsets() {

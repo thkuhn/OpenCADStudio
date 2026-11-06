@@ -1,9 +1,7 @@
 //! Plan-view display children for wall openings (`OPENING_REP`).
 //!
 //! Parametric generators bake world geometry in the opening's local box
-//! (X along the host axis, Y along wall thickness). Sketch slots use the
-//! two-rectangle bake in [`super::opening_sketch`]; empty sketches emit no
-//! children (they do not fall back to a generator).
+//! (X along the host axis, Y across wall thickness).
 
 use std::collections::HashMap;
 
@@ -15,10 +13,11 @@ use glam::DVec3;
 
 use crate::modules::aec::engine::display_component::{ComponentRuleSet, OpeningComponentSlot};
 use crate::modules::aec::engine::opening_shape::OpeningShape;
-use crate::modules::aec::engine::opening_sketch::bake_sketch;
 use crate::modules::aec::engine::opening_style::{
-    apply_plan_visibility, default_slots_for_kind, effective_slots_for_plan, BlockPlacementMode,
-    OpeningPlanProfiles,
+    apply_plan_visibility, default_slots_for_kind, default_style_for_kind,
+    effective_slots_for_plan, BlockPlacementMode, DivisionGrid, DivisionLevel,
+    ElevationFrameLevel, OpeningParts, OpeningPlanProfiles, OpeningRepresentationLevels,
+    OpeningLookRole, PlanFrameLevel, SwingGlyph,
     OpeningGenerator, OpeningStyle, SlotGeometry, HingeSide, DEFAULT_FRAME_THICKNESS,
     DEFAULT_OPENING_ANGLE_DEG,
 };
@@ -47,10 +46,19 @@ const SWING_CHORD_COUNT: usize = 16;
 #[derive(Debug, Clone, PartialEq)]
 pub struct BakedPath {
     pub slot: OpeningComponentSlot,
+    /// Optional role override for view-specific preview geometry.
+    pub look_role: Option<OpeningLookRole>,
     pub points: Vec<(f64, f64)>,
     pub closed: bool,
     /// When true the closed path is also emitted as a solid hatch.
     pub filled: bool,
+}
+
+impl BakedPath {
+    pub fn resolved_look_role(&self) -> Option<OpeningLookRole> {
+        self.look_role
+            .or_else(|| OpeningLookRole::for_slot(self.slot))
+    }
 }
 
 /// Parameters that drive generator bake (instance box + absolute profile).
@@ -75,7 +83,7 @@ pub struct OpeningBakeParams {
 impl OpeningBakeParams {
     pub fn from_opening(opening: &Opening, thickness: f64, style: Option<&OpeningStyle>) -> Self {
         let (frame_thickness, angle) = if let Some(style) = style {
-            (style.frame_thickness, style.opening_angle_deg)
+            (style.parts.fixed_frame.face_width, style.opening_angle_deg)
         } else if opening.kind == OpeningKind::Breakthrough {
             (0.0, 0.0)
         } else {
@@ -107,7 +115,7 @@ impl OpeningBakeParams {
     }
 }
 
-/// Resolved slot map + profile for an instance (style, else kind defaults).
+/// Resolved symbol map and style for an instance (style, else kind defaults).
 pub fn resolved_slots(
     opening: &Opening,
     library: Option<&StyleLibrary>,
@@ -121,21 +129,30 @@ pub fn resolved_slots_for_plan(
     library: Option<&StyleLibrary>,
     plan_profiles: Option<&OpeningPlanProfiles>,
 ) -> (HashMap<OpeningComponentSlot, SlotGeometry>, Option<OpeningStyle>) {
-    if let Some(id) = opening.style_id.as_deref() {
-        if let Some(lib) = library {
-            if let Some(style) = lib.find_opening_style(id) {
-                let map: HashMap<_, _> = lib
-                    .opening_styles
-                    .iter()
-                    .map(|s| (s.style.id.clone(), s.clone()))
-                    .collect();
-                let slots = effective_slots_for_plan(&map, &id.to_string(), plan_profiles)
-                    .unwrap_or_else(|_| style.slots.clone());
-                return (slots, Some(style.clone()));
-            }
+    let fallback_style = default_style_for_kind(opening.kind);
+    let requested_id = opening.style_id.as_deref().unwrap_or(&fallback_style.style.id);
+    if let Some(lib) = library {
+        if let Some(style) = lib
+            .find_opening_style(requested_id)
+            .or_else(|| lib.find_opening_style(&fallback_style.style.id))
+        {
+            let map: HashMap<_, _> = lib
+                .opening_styles
+                .iter()
+                .map(|s| (s.style.id.clone(), s.clone()))
+                .collect();
+            let slots = effective_slots_for_plan(&map, &style.style.id, plan_profiles)
+                .unwrap_or_else(|_| default_slots_for_kind(style.kind));
+            return (slots, Some(style.clone()));
         }
     }
-    (default_slots_for_kind(opening.kind), None)
+    let mut slots = default_slots_for_kind(fallback_style.kind);
+    if let Some(profile) = plan_profiles.and_then(|profiles| profiles.get(&fallback_style.style.id)) {
+        for (slot, geometry) in &profile.slots {
+            slots.insert(*slot, geometry.clone());
+        }
+    }
+    (slots, Some(fallback_style))
 }
 
 fn rules_with_plan_visibility(
@@ -145,13 +162,17 @@ fn rules_with_plan_visibility(
 ) -> Option<ComponentRuleSet> {
     let mut merged = rules.cloned().unwrap_or_default();
     let plan = merged.opening_profiles.clone();
-    if let (Some(lib), Some(id)) = (library, opening.style_id.as_ref()) {
+    let style_id = opening
+        .style_id
+        .as_deref()
+        .unwrap_or_else(|| crate::modules::aec::engine::opening_style::seed_style_id_for_kind(opening.kind));
+    if let Some(lib) = library {
         let map: HashMap<_, _> = lib
             .opening_styles
             .iter()
             .map(|s| (s.style.id.clone(), s.clone()))
             .collect();
-        apply_plan_visibility(&map, id, Some(&plan), &mut merged.visibility);
+        apply_plan_visibility(&map, &style_id.to_string(), Some(&plan), &mut merged.visibility);
     }
     if rules.is_none() && merged.visibility.is_empty() {
         None
@@ -160,7 +181,7 @@ fn rules_with_plan_visibility(
     }
 }
 
-/// Bake generator and sketch primitives in the local opening box.
+/// Bake generator primitives in the local opening box.
 ///
 /// Origin is the insertion (axis point). X is along the wall, Y across
 /// thickness. Outer box is `width × thickness`, inner inset is
@@ -196,13 +217,536 @@ pub fn bake_opening_generators_with_doc(
             }) => {
                 out.extend(bake_block_slot(slot, block_name, *placement, params, doc));
             }
-            Some(SlotGeometry::Sketch(sketch)) => {
-                out.extend(bake_sketch_slot(slot, sketch, params));
-            }
             None => {}
         }
     }
     out
+}
+
+pub fn bake_opening_representation(
+    slots: &HashMap<OpeningComponentSlot, SlotGeometry>,
+    params: OpeningBakeParams,
+    parts: &OpeningParts,
+    grid: &DivisionGrid,
+    levels: OpeningRepresentationLevels,
+    rules: Option<&ComponentRuleSet>,
+    doc: Option<&acadrust::CadDocument>,
+) -> Vec<BakedPath> {
+    let replaced_slots = [
+        OpeningComponentSlot::Frame2D,
+        OpeningComponentSlot::Leaf2D,
+        OpeningComponentSlot::Swing2D,
+        OpeningComponentSlot::Glazing2D,
+        OpeningComponentSlot::ElevationContour2D,
+        OpeningComponentSlot::ElevationMuntins2D,
+    ];
+    let mut paths = bake_opening_generators_with_doc(slots, params, rules, doc);
+    for slot in replaced_slots {
+        if matches!(slots.get(&slot), Some(SlotGeometry::Generator(_))) {
+            paths.retain(|baked| baked.slot != slot);
+        }
+    }
+
+    let slot_enabled = |slot| {
+        matches!(slots.get(&slot), Some(SlotGeometry::Generator(_)))
+            && rules.is_none_or(|rules| rules.is_opening_visible(slot))
+    };
+
+    if slot_enabled(OpeningComponentSlot::Frame2D) {
+        paths.extend(bake_plan_frame_level(
+            params,
+            &parts.fixed_frame,
+            levels.plan_frame,
+        ));
+    }
+    if slot_enabled(OpeningComponentSlot::Leaf2D) {
+        paths.extend(bake_grid_leaf_lines(grid, params));
+    }
+    if slot_enabled(OpeningComponentSlot::Glazing2D) {
+        paths.extend(bake_grid_glazing_lines(grid, params));
+        paths.extend(bake_grid_plan_divisions(grid, params, levels.divisions));
+    }
+    if slot_enabled(OpeningComponentSlot::Swing2D) {
+        paths.extend(bake_grid_swing_glyphs(grid, params, levels.swing));
+    }
+    if slot_enabled(OpeningComponentSlot::ElevationContour2D) {
+        paths.extend(bake_elevation_frame_level(
+            params,
+            parts,
+            levels.elevation_frame,
+        ));
+    }
+    if slot_enabled(OpeningComponentSlot::ElevationMuntins2D) {
+        paths.extend(bake_grid_elevation_divisions(
+            grid,
+            params,
+            levels.divisions,
+        ));
+    }
+    paths
+}
+
+pub fn bake_opening_elevation_paths(
+    params: OpeningBakeParams,
+    parts: &OpeningParts,
+    grid: &DivisionGrid,
+    frame_level: ElevationFrameLevel,
+    division_level: DivisionLevel,
+) -> Vec<BakedPath> {
+    let mut paths = bake_elevation_frame_level(params, parts, frame_level);
+    paths.extend(bake_grid_elevation_divisions(grid, params, division_level));
+    paths
+}
+
+pub fn bake_opening_plan_paths(
+    params: OpeningBakeParams,
+    parts: &OpeningParts,
+    grid: &DivisionGrid,
+    frame_level: PlanFrameLevel,
+    swing_glyph: SwingGlyph,
+    division_level: DivisionLevel,
+) -> Vec<BakedPath> {
+    let slots = default_slots_for_kind(params.kind);
+    let levels = OpeningRepresentationLevels {
+        plan_frame: frame_level,
+        swing: swing_glyph,
+        elevation_frame: ElevationFrameLevel::Off,
+        divisions: division_level,
+    };
+    bake_opening_representation(&slots, params, parts, grid, levels, None, None)
+        .into_iter()
+        .filter(|path| !path.slot.is_elevation())
+        .collect()
+}
+
+fn representation_levels(
+    slots: &HashMap<OpeningComponentSlot, SlotGeometry>,
+    grid: &DivisionGrid,
+) -> OpeningRepresentationLevels {
+    OpeningRepresentationLevels {
+        plan_frame: if slots.contains_key(&OpeningComponentSlot::Frame2D) {
+            PlanFrameLevel::Profile
+        } else {
+            PlanFrameLevel::Off
+        },
+        swing: if slots.contains_key(&OpeningComponentSlot::Swing2D) {
+            SwingGlyph::Arc
+        } else {
+            SwingGlyph::Off
+        },
+        elevation_frame: if slots.contains_key(&OpeningComponentSlot::ElevationContour2D) {
+            ElevationFrameLevel::FixedAndLeaf
+        } else {
+            ElevationFrameLevel::Off
+        },
+        divisions: if !slots.contains_key(&OpeningComponentSlot::ElevationMuntins2D) {
+            DivisionLevel::Off
+        } else if grid.vertical_muntins.is_empty() && grid.horizontal_muntins.is_empty() {
+            DivisionLevel::Posts
+        } else {
+            DivisionLevel::PostsAndMuntins
+        },
+    }
+}
+
+fn bake_plan_frame_level(
+    params: OpeningBakeParams,
+    fixed_frame: &crate::modules::aec::engine::opening_style::FixedFrameDimensions,
+    level: PlanFrameLevel,
+) -> Vec<BakedPath> {
+    let slot = OpeningComponentSlot::Frame2D;
+    let half_width = params.width * 0.5;
+    match level {
+        PlanFrameLevel::Off => Vec::new(),
+        PlanFrameLevel::SingleLine => vec![path(
+            slot,
+            vec![(-half_width, 0.0), (half_width, 0.0)],
+            false,
+            false,
+        )],
+        PlanFrameLevel::DoubleLine => vec![
+            path(
+                slot,
+                vec![( -half_width, params.wall_y_min), (half_width, params.wall_y_min)],
+                false,
+                false,
+            ),
+            path(
+                slot,
+                vec![(-half_width, params.wall_y_max), (half_width, params.wall_y_max)],
+                false,
+                false,
+            ),
+        ],
+        PlanFrameLevel::Profile => {
+            let face_width = fixed_frame.face_width.min(params.width * 0.45).max(0.0);
+            let depth = fixed_frame.wall_depth.max(0.0);
+            if face_width <= 1e-8 || depth <= 1e-8 {
+                return Vec::new();
+            }
+            let y_min = fixed_frame.axis_offset - depth * 0.5;
+            let y_max = fixed_frame.axis_offset + depth * 0.5;
+            vec![
+                path(
+                    slot,
+                    vec![
+                        (-half_width, y_min),
+                        (-half_width + face_width, y_min),
+                        (-half_width + face_width, y_max),
+                        (-half_width, y_max),
+                    ],
+                    true,
+                    false,
+                ),
+                path(
+                    slot,
+                    vec![
+                        (half_width - face_width, y_min),
+                        (half_width, y_min),
+                        (half_width, y_max),
+                        (half_width - face_width, y_max),
+                    ],
+                    true,
+                    false,
+                ),
+            ]
+        }
+    }
+}
+
+fn bake_grid_leaf_lines(grid: &DivisionGrid, params: OpeningBakeParams) -> Vec<BakedPath> {
+    let Ok(cells) = grid.layout(params.width, params.height, params.kind) else {
+        return Vec::new();
+    };
+    let mut paths = Vec::new();
+    for cell in cells {
+        if !matches!(cell.cell.kind, crate::modules::aec::engine::opening_style::OpeningCellKind::DoorLeaf | crate::modules::aec::engine::opening_style::OpeningCellKind::Glass) {
+            continue;
+        }
+        let center_x = (cell.left + cell.right) * 0.5;
+        let cell_width = cell.right - cell.left;
+        if params.kind == OpeningKind::Door {
+            let hinge = cell.cell.hinge.unwrap_or(params.hinge);
+            let (_, end) = leaf_segment(
+                hinge,
+                params.swing_side,
+                cell_width * 0.5,
+                params.opening_angle_deg,
+                params.frame_thickness,
+            );
+            let start_x = match hinge {
+                HingeSide::Left => cell.left + params.frame_thickness * 0.5,
+                HingeSide::Right => cell.right - params.frame_thickness * 0.5,
+            };
+            paths.push(path(
+                OpeningComponentSlot::Leaf2D,
+                vec![(start_x, 0.0), (center_x + end.0, end.1)],
+                false,
+                false,
+            ));
+        } else {
+            paths.push(path(
+                OpeningComponentSlot::Leaf2D,
+                vec![(cell.left, 0.0), (cell.right, 0.0)],
+                false,
+                false,
+            ));
+        }
+    }
+    paths
+}
+
+fn bake_grid_glazing_lines(grid: &DivisionGrid, params: OpeningBakeParams) -> Vec<BakedPath> {
+    let Ok(cells) = grid.layout(params.width, params.height, params.kind) else {
+        return Vec::new();
+    };
+    cells
+        .into_iter()
+        .filter(|cell| {
+            matches!(
+                cell.cell.kind,
+                crate::modules::aec::engine::opening_style::OpeningCellKind::Glass
+                    | crate::modules::aec::engine::opening_style::OpeningCellKind::Fixed
+            )
+        })
+        .map(|cell| {
+            path(
+                OpeningComponentSlot::Glazing2D,
+                vec![(cell.left, 0.0), (cell.right, 0.0)],
+                false,
+                false,
+            )
+        })
+        .collect()
+}
+
+fn bake_grid_plan_divisions(
+    grid: &DivisionGrid,
+    params: OpeningBakeParams,
+    level: DivisionLevel,
+) -> Vec<BakedPath> {
+    if level == DivisionLevel::Off {
+        return Vec::new();
+    }
+    let Ok(cells) = grid.layout(params.width, params.height, params.kind) else {
+        return Vec::new();
+    };
+    let columns = grid.vertical.len().max(1);
+    let rows = grid.horizontal.len() + 1;
+    let mut paths = Vec::new();
+    for row in 0..rows {
+        for column in 0..columns.saturating_sub(1) {
+            let left = &cells[row * columns + column];
+            let right = &cells[row * columns + column + 1];
+            let x = (left.right + right.left) * 0.5;
+            paths.push(path(
+                OpeningComponentSlot::Glazing2D,
+                vec![(x, params.wall_y_min), (x, params.wall_y_max)],
+                false,
+                false,
+            ));
+        }
+    }
+    if level == DivisionLevel::PostsAndMuntins {
+        for cell in &cells {
+            if !matches!(
+                cell.cell.kind,
+                crate::modules::aec::engine::opening_style::OpeningCellKind::Glass
+                    | crate::modules::aec::engine::opening_style::OpeningCellKind::Fixed
+            ) {
+                continue;
+            }
+            for fraction in &grid.vertical_muntins {
+                let x = cell.left + (cell.right - cell.left) * fraction;
+                paths.push(path(
+                    OpeningComponentSlot::Glazing2D,
+                    vec![(x, params.wall_y_min), (x, params.wall_y_max)],
+                    false,
+                    false,
+                ));
+            }
+        }
+    }
+    paths
+}
+
+fn bake_grid_swing_glyphs(
+    grid: &DivisionGrid,
+    params: OpeningBakeParams,
+    glyph: SwingGlyph,
+) -> Vec<BakedPath> {
+    let Ok(cells) = grid.layout(params.width, params.height, params.kind) else {
+        return Vec::new();
+    };
+    let mut paths = Vec::new();
+    for cell in cells {
+        if cell.cell.kind != crate::modules::aec::engine::opening_style::OpeningCellKind::DoorLeaf {
+            continue;
+        }
+        let width = cell.right - cell.left;
+        let center_x = (cell.left + cell.right) * 0.5;
+        let hinge = cell.cell.hinge.unwrap_or(params.hinge);
+        match glyph {
+            SwingGlyph::Off => {}
+            SwingGlyph::Arc => {
+                let mut cell_params = params;
+                cell_params.width = width;
+                cell_params.hinge = hinge;
+                paths.extend(bake_swing_arc(
+                    OpeningComponentSlot::Swing2D,
+                    cell_params,
+                    width * 0.5,
+                    params.frame_thickness,
+                ).into_iter().map(|mut p| {
+                    for point in &mut p.points {
+                        point.0 += center_x;
+                    }
+                    p
+                }));
+            }
+            SwingGlyph::Triangle => {
+                let hinge_x = match hinge {
+                    HingeSide::Left => cell.left,
+                    HingeSide::Right => cell.right,
+                };
+                let strike_x = match hinge {
+                    HingeSide::Left => cell.right,
+                    HingeSide::Right => cell.left,
+                };
+                let free_y = match params.swing_side {
+                    SwingSide::Exterior => params.wall_y_max,
+                    SwingSide::Interior => params.wall_y_min,
+                };
+                paths.push(path(
+                    OpeningComponentSlot::Swing2D,
+                    vec![(hinge_x, 0.0), (strike_x, 0.0), (hinge_x, free_y)],
+                    true,
+                    false,
+                ));
+            }
+        }
+    }
+    paths
+}
+
+fn bake_elevation_frame_level(
+    params: OpeningBakeParams,
+    parts: &OpeningParts,
+    level: ElevationFrameLevel,
+) -> Vec<BakedPath> {
+    let slot = OpeningComponentSlot::ElevationContour2D;
+    let width_half = params.width * 0.5;
+    match level {
+        ElevationFrameLevel::Off => Vec::new(),
+        ElevationFrameLevel::Outline => {
+            bake_elevation_contour(slot, params, width_half, params.height, 0.0)
+                .into_iter()
+                .take(1)
+                .collect()
+        }
+        ElevationFrameLevel::FixedFrame => bake_elevation_contour(
+            slot,
+            params,
+            width_half,
+            params.height,
+            parts.fixed_frame.face_width,
+        )
+        .into_iter()
+        .nth(1)
+        .into_iter()
+        .collect(),
+        ElevationFrameLevel::FixedAndLeaf => {
+            let fixed = bake_elevation_contour(
+                slot,
+                params,
+                width_half,
+                params.height,
+                parts.fixed_frame.face_width,
+            );
+            let leaf = bake_elevation_contour(
+                slot,
+                params,
+                width_half,
+                params.height,
+                parts.fixed_frame.face_width + parts.leaf_frame.face_width,
+            );
+            fixed
+                .into_iter()
+                .nth(1)
+                .into_iter()
+                .chain(leaf.into_iter().nth(1))
+                .collect()
+        }
+    }
+}
+
+fn arch_height_at_x(params: OpeningBakeParams, x: f64) -> f64 {
+    if params.shape != OpeningShape::Arch {
+        return params.height;
+    }
+    let half_width = params.width * 0.5;
+    if half_width <= 0.0 {
+        return 0.0;
+    }
+    let spring = params.spring_height.min(params.height).max(0.0);
+    let t = (1.0 - (x / half_width).powi(2)).max(0.0).sqrt();
+    spring + (params.height - spring) * t
+}
+
+fn clipped_horizontal_span(params: OpeningBakeParams, y: f64, left: f64, right: f64) -> (f64, f64) {
+    if params.shape != OpeningShape::Arch || y <= params.spring_height {
+        return (left, right);
+    }
+    let half_width = params.width * 0.5;
+    let rise = (params.height - params.spring_height).max(1e-9);
+    let ratio = ((y - params.spring_height) / rise).clamp(0.0, 1.0);
+    let arch_x = half_width * (1.0 - ratio * ratio).sqrt();
+    (left.max(-arch_x), right.min(arch_x))
+}
+
+fn bake_grid_elevation_divisions(
+    grid: &DivisionGrid,
+    params: OpeningBakeParams,
+    level: DivisionLevel,
+) -> Vec<BakedPath> {
+    if level == DivisionLevel::Off {
+        return Vec::new();
+    }
+    let Ok(cells) = grid.layout(params.width, params.height, params.kind) else {
+        return Vec::new();
+    };
+    let columns = grid.vertical.len().max(1);
+    let rows = grid.horizontal.len() + 1;
+    let mut paths = Vec::new();
+    for row in 0..rows {
+        for column in 0..columns.saturating_sub(1) {
+            let left = &cells[row * columns + column];
+            let right = &cells[row * columns + column + 1];
+            let x = (left.right + right.left) * 0.5;
+            let bottom = left.bottom.max(right.bottom);
+            let top = left.top.min(right.top).min(arch_height_at_x(params, x));
+            if top > bottom {
+                paths.push(path(
+                    OpeningComponentSlot::ElevationMuntins2D,
+                    vec![(x, bottom), (x, top)],
+                    false,
+                    false,
+                ));
+            }
+        }
+    }
+    for row in 0..rows.saturating_sub(1) {
+        for column in 0..columns {
+            let lower = &cells[row * columns + column];
+            let upper = &cells[(row + 1) * columns + column];
+            let y = (lower.top + upper.bottom) * 0.5;
+            let (left, right) = clipped_horizontal_span(params, y, lower.left, lower.right);
+            if right > left {
+                paths.push(path(
+                    OpeningComponentSlot::ElevationMuntins2D,
+                    vec![(left, y), (right, y)],
+                    false,
+                    false,
+                ));
+            }
+        }
+    }
+    if level == DivisionLevel::PostsAndMuntins {
+        for cell in &cells {
+            if !matches!(
+                cell.cell.kind,
+                crate::modules::aec::engine::opening_style::OpeningCellKind::Glass
+                    | crate::modules::aec::engine::opening_style::OpeningCellKind::Fixed
+            ) {
+                continue;
+            }
+            for fraction in &grid.vertical_muntins {
+                let x = cell.left + (cell.right - cell.left) * fraction;
+                let top = cell.top.min(arch_height_at_x(params, x));
+                if top > cell.bottom {
+                    paths.push(path(
+                        OpeningComponentSlot::ElevationMuntins2D,
+                        vec![(x, cell.bottom), (x, top)],
+                        false,
+                        false,
+                    ));
+                }
+            }
+            for height in &grid.horizontal_muntins {
+                let y = cell.bottom + height;
+                let (left, right) = clipped_horizontal_span(params, y, cell.left, cell.right);
+                if y < cell.top && right > left {
+                    paths.push(path(
+                        OpeningComponentSlot::ElevationMuntins2D,
+                        vec![(left, y), (right, y)],
+                        false,
+                        false,
+                    ));
+                }
+            }
+        }
+    }
+    paths
 }
 
 pub fn extract_block_paths(
@@ -342,17 +886,6 @@ fn bake_block_slot(
     out
 }
 
-fn bake_sketch_slot(
-    slot: OpeningComponentSlot,
-    sketch: &crate::modules::aec::engine::opening_sketch::OpeningSketch,
-    p: OpeningBakeParams,
-) -> Vec<BakedPath> {
-    bake_sketch(sketch, p.width, p.thickness, p.frame_thickness)
-        .into_iter()
-        .map(|baked| path(slot, baked.points, baked.closed, false))
-        .collect()
-}
-
 fn bake_generator(
     slot: OpeningComponentSlot,
     gen: OpeningGenerator,
@@ -425,6 +958,7 @@ fn path(
 ) -> BakedPath {
     BakedPath {
         slot,
+        look_role: None,
         points,
         closed,
         filled,
@@ -1120,11 +1654,36 @@ pub fn build_opening_leaf_3d(
     shape: OpeningShape,
     spring_height: f64,
 ) -> Option<cadkernel::brep::Body> {
+    build_opening_leaf_3d_with_depth(
+        width,
+        height,
+        frame_thickness,
+        0.04,
+        opening_angle_deg,
+        hinge,
+        swing,
+        is_door,
+        shape,
+        spring_height,
+    )
+}
+
+pub fn build_opening_leaf_3d_with_depth(
+    width: f64,
+    height: f64,
+    frame_thickness: f64,
+    leaf_depth: f64,
+    opening_angle_deg: f64,
+    hinge: HingeSide,
+    swing: SwingSide,
+    is_door: bool,
+    shape: OpeningShape,
+    spring_height: f64,
+) -> Option<cadkernel::brep::Body> {
     let hw = width * 0.5;
     let ft = frame_thickness.max(0.02).min(hw * 0.45);
     let (_outer, inner) = opening_elevation_loops(shape, width, height, spring_height, ft, is_door);
-    let leaf_t = 0.04;
-    let leaf_ht = leaf_t * 0.5;
+    let leaf_ht = leaf_depth.max(0.001) * 0.5;
     let cub = build_faceted_prism(&inner, -leaf_ht, leaf_ht)?;
 
     let hinge_x = match hinge {
@@ -1144,6 +1703,140 @@ pub fn build_opening_leaf_3d(
     } else {
         Some(cub)
     }
+}
+
+fn build_opening_box_3d(
+    width: f64,
+    height: f64,
+    depth: f64,
+) -> Option<cadkernel::brep::Body> {
+    if width <= 0.0 || height <= 0.0 || depth <= 0.0 {
+        return None;
+    }
+    build_faceted_prism(
+        &[
+            (-width * 0.5, -height * 0.5),
+            (width * 0.5, -height * 0.5),
+            (width * 0.5, height * 0.5),
+            (-width * 0.5, height * 0.5),
+        ],
+        -depth * 0.5,
+        depth * 0.5,
+    )
+}
+
+fn build_opening_grid_bars_3d(
+    grid: &DivisionGrid,
+    params: OpeningBakeParams,
+    post_width: f64,
+    muntin_width: f64,
+    depth: f64,
+) -> Vec<(cadkernel::brep::Body, f64, f64)> {
+    let Ok(cells) = grid.layout(params.width, params.height, params.kind) else {
+        return Vec::new();
+    };
+    let columns = grid.vertical.len().max(1);
+    let rows = grid.horizontal.len() + 1;
+    let mut bars = Vec::new();
+    let mut add_bar = |left: f64, right: f64, bottom: f64, top: f64| {
+        if right <= left || top <= bottom || depth <= 0.0 {
+            return;
+        }
+        if let Some(body) = build_opening_box_3d(right - left, top - bottom, depth) {
+            bars.push((body, (left + right) * 0.5, (bottom + top) * 0.5));
+        }
+    };
+    for row in 0..rows {
+        for column in 0..columns.saturating_sub(1) {
+            let left = &cells[row * columns + column];
+            let right = &cells[row * columns + column + 1];
+            let x = (left.right + right.left) * 0.5;
+            let bottom = left.bottom.max(right.bottom);
+            let top = left.top.min(right.top).min(arch_height_at_x(params, x));
+            add_bar(x - post_width * 0.5, x + post_width * 0.5, bottom, top);
+        }
+    }
+    for row in 0..rows.saturating_sub(1) {
+        for column in 0..columns {
+            let lower = &cells[row * columns + column];
+            let upper = &cells[(row + 1) * columns + column];
+            let z = (lower.top + upper.bottom) * 0.5;
+            let (left, right) = clipped_horizontal_span(params, z, lower.left, lower.right);
+            add_bar(left, right, z - post_width * 0.5, z + post_width * 0.5);
+        }
+    }
+    for cell in &cells {
+        if !matches!(
+            cell.cell.kind,
+            crate::modules::aec::engine::opening_style::OpeningCellKind::Glass
+                | crate::modules::aec::engine::opening_style::OpeningCellKind::Fixed
+        ) {
+            continue;
+        }
+        for fraction in &grid.vertical_muntins {
+            let x = cell.left + (cell.right - cell.left) * fraction;
+            let top = cell.top.min(arch_height_at_x(params, x));
+            add_bar(
+                x - muntin_width * 0.5,
+                x + muntin_width * 0.5,
+                cell.bottom,
+                top,
+            );
+        }
+        for height in &grid.horizontal_muntins {
+            let z = cell.bottom + height;
+            let (left, right) = clipped_horizontal_span(params, z, cell.left, cell.right);
+            if z < cell.top {
+                add_bar(left, right, z - muntin_width * 0.5, z + muntin_width * 0.5);
+            }
+        }
+    }
+    bars
+}
+
+fn emit_opening_solid_3d(
+    scene: &mut Scene,
+    body: cadkernel::brep::Body,
+    opening_handle: Handle,
+    opening_owner_handle: Handle,
+    opening_layer: Option<&str>,
+    origin: (f64, f64),
+    tangent: (f64, f64),
+    normal: (f64, f64),
+    base_z: f64,
+    offset_x: f64,
+    offset_z: f64,
+    slot: OpeningComponentSlot,
+) {
+    let Some(world_body) = crate::scene::model::solid_model::placed(
+        &body,
+        [tangent.0, tangent.1, 0.0],
+        [normal.0, normal.1, 0.0],
+        [0.0, 0.0, 1.0],
+        [
+            origin.0 + tangent.0 * offset_x,
+            origin.1 + tangent.1 * offset_x,
+            base_z + offset_z,
+        ],
+    ) else {
+        return;
+    };
+    let solid = crate::modules::aec::engine::geometry::create_solid3d_from_body(&world_body);
+    let mut entity = EntityType::Solid3D(solid);
+    if !opening_owner_handle.is_null()
+        && opening_owner_handle != scene.document.header.model_space_block_handle
+    {
+        entity.common_mut().owner_handle = opening_owner_handle;
+    }
+    if let Some(layer) = opening_layer {
+        entity.as_entity_mut().set_layer(layer.to_string());
+    }
+    let handle = scene.add_entity(entity);
+    if let Some(display) = scene.prepare_solid_model_display(handle, &world_body) {
+        scene.register_prepared_solid_model(handle, world_body, display);
+    }
+    write_opening_display_tag(scene, handle, opening_handle, slot);
+    engine::owner_index::add_child(&mut scene.document, opening_handle, handle);
 }
 
 pub fn build_opening_glazing_3d(
@@ -1185,6 +1878,7 @@ fn transform_paths(
             if p.slot.is_elevation() {
                 BakedPath {
                     slot: p.slot,
+                    look_role: p.look_role,
                     closed: p.closed,
                     filled: p.filled,
                     points: p
@@ -1196,6 +1890,7 @@ fn transform_paths(
             } else {
                 BakedPath {
                     slot: p.slot,
+                    look_role: p.look_role,
                     closed: p.closed,
                     filled: p.filled,
                     points: p
@@ -1254,10 +1949,20 @@ pub fn bake_opening_world_with_doc(
         .unwrap_or((-thickness * 0.5, thickness * 0.5));
     let plan = rules.map(|r| &r.opening_profiles);
     let (slots, style) = resolved_slots_for_plan(opening, library, plan);
-    let params = OpeningBakeParams::from_opening(opening, thickness, style.as_ref())
+    let style = style.unwrap_or_else(|| default_style_for_kind(opening.kind));
+    let grid = opening.division_override.as_ref().unwrap_or(&style.grid);
+    let params = OpeningBakeParams::from_opening(opening, thickness, Some(&style))
         .with_wall_bounds(wall_y_min, wall_y_max);
     let merged = rules_with_plan_visibility(opening, library, rules);
-    let local = bake_opening_generators_with_doc(&slots, params, merged.as_ref(), doc);
+    let local = bake_opening_representation(
+        &slots,
+        params,
+        &style.parts,
+        grid,
+        representation_levels(&slots, grid),
+        merged.as_ref(),
+        doc,
+    );
     transform_paths(&local, origin, (tx, ty), normal)
 }
 
@@ -1703,12 +2408,17 @@ pub fn regenerate_opening_display(
         .unwrap_or((-thickness * 0.5, thickness * 0.5));
     let plan = rules.map(|r| &r.opening_profiles);
     let (slots, style) = resolved_slots_for_plan(&opening, library, plan);
-    let params = OpeningBakeParams::from_opening(&opening, thickness, style.as_ref())
+    let style = style.unwrap_or_else(|| default_style_for_kind(opening.kind));
+    let grid = opening.division_override.as_ref().unwrap_or(&style.grid);
+    let params = OpeningBakeParams::from_opening(&opening, thickness, Some(&style))
         .with_wall_bounds(wall_y_min, wall_y_max);
     let merged_rules = rules_with_plan_visibility(&opening, library, rules);
-    let local = bake_opening_generators_with_doc(
+    let local = bake_opening_representation(
         &slots,
         params,
+        &style.parts,
+        grid,
+        representation_levels(&slots, grid),
         merged_rules.as_ref(),
         Some(&scene.document),
     );
@@ -1860,7 +2570,6 @@ pub fn regenerate_opening_display(
         }
     }
 
-    let frame_depth = 0.08_f64.min(thickness * 0.8);
     let frame_3d_vis = merged_rules
         .as_ref()
         .map_or(true, |r| r.is_opening_visible(OpeningComponentSlot::Frame3D))
@@ -1871,39 +2580,47 @@ pub fn regenerate_opening_display(
         if let Some(body) = build_opening_frame_3d(
             opening.width,
             opening.height,
-            params.frame_thickness,
-            frame_depth,
+            style.parts.fixed_frame.face_width,
+            style.parts.fixed_frame.wall_depth,
             params.shape,
             params.spring_height,
         ) {
-            let world_body = crate::scene::model::solid_model::placed(
-                &body,
-                [tx, ty, 0.0],
-                [normal.0, normal.1, 0.0],
-                [0.0, 0.0, 1.0],
-                [origin.0, origin.1, wall_base_z + opening.sill_height],
+            emit_opening_solid_3d(
+                scene,
+                body,
+                opening_handle,
+                opening_owner_handle,
+                default_opening_layer.as_deref(),
+                origin,
+                (tx, ty),
+                normal,
+                wall_base_z + opening.sill_height,
+                0.0,
+                0.0,
+                OpeningComponentSlot::Frame3D,
             );
-            if let Some(body) = world_body {
-                let s3d = crate::modules::aec::engine::geometry::create_solid3d_from_body(&body);
-                let mut s3d_entity = EntityType::Solid3D(s3d);
-                if !opening_owner_handle.is_null() && opening_owner_handle != scene.document.header.model_space_block_handle {
-                    s3d_entity.common_mut().owner_handle = opening_owner_handle;
-                }
-                if let Some(ref l) = default_opening_layer {
-                    s3d_entity.as_entity_mut().set_layer(l.clone());
-                }
-                let solid_handle = scene.add_entity(s3d_entity);
-                if let Some(geom) = scene.prepare_solid_model_display(solid_handle, &body) {
-                    scene.register_prepared_solid_model(solid_handle, body, geom);
-                }
-                write_opening_display_tag(
-                    scene,
-                    solid_handle,
-                    opening_handle,
-                    OpeningComponentSlot::Frame3D,
-                );
-                engine::owner_index::add_child(&mut scene.document, opening_handle, solid_handle);
-            }
+        }
+        for (body, center_x, center_z) in build_opening_grid_bars_3d(
+            grid,
+            params,
+            style.parts.fixed_frame.face_width,
+            style.parts.leaf_frame.face_width,
+            style.parts.fixed_frame.wall_depth,
+        ) {
+            emit_opening_solid_3d(
+                scene,
+                body,
+                opening_handle,
+                opening_owner_handle,
+                default_opening_layer.as_deref(),
+                origin,
+                (tx, ty),
+                normal,
+                wall_base_z + opening.sill_height,
+                center_x,
+                center_z,
+                OpeningComponentSlot::Frame3D,
+            );
         }
     }
 
@@ -1914,44 +2631,53 @@ pub fn regenerate_opening_display(
             || slots.contains_key(&OpeningComponentSlot::Solid3D));
 
     if leaf_3d_vis && opening.kind != OpeningKind::Breakthrough {
-        if let Some(body) = build_opening_leaf_3d(
-            opening.width,
-            opening.height,
-            params.frame_thickness,
-            params.opening_angle_deg,
-            opening.hinge,
-            opening.swing_side,
-            opening.kind == OpeningKind::Door,
-            params.shape,
-            params.spring_height,
-        ) {
-            let world_body = crate::scene::model::solid_model::placed(
-                &body,
-                [tx, ty, 0.0],
-                [normal.0, normal.1, 0.0],
-                [0.0, 0.0, 1.0],
-                [origin.0, origin.1, wall_base_z + opening.sill_height],
-            );
-            if let Some(body) = world_body {
-                let s3d = crate::modules::aec::engine::geometry::create_solid3d_from_body(&body);
-                let mut s3d_entity = EntityType::Solid3D(s3d);
-                if !opening_owner_handle.is_null() && opening_owner_handle != scene.document.header.model_space_block_handle {
-                    s3d_entity.common_mut().owner_handle = opening_owner_handle;
+        if let Ok(cells) = grid.layout(opening.width, opening.height, opening.kind) {
+            for cell in cells {
+                if !matches!(
+                    cell.cell.kind,
+                    crate::modules::aec::engine::opening_style::OpeningCellKind::DoorLeaf
+                        | crate::modules::aec::engine::opening_style::OpeningCellKind::Glass
+                ) {
+                    continue;
                 }
-                if let Some(ref l) = default_opening_layer {
-                    s3d_entity.as_entity_mut().set_layer(l.clone());
+                let top = cell
+                    .top
+                    .min(arch_height_at_x(params, cell.left))
+                    .min(arch_height_at_x(params, cell.right));
+                let height = top - cell.bottom;
+                let width = cell.right - cell.left;
+                if width <= 0.0 || height <= 0.0 {
+                    continue;
                 }
-                let solid_handle = scene.add_entity(s3d_entity);
-                if let Some(geom) = scene.prepare_solid_model_display(solid_handle, &body) {
-                    scene.register_prepared_solid_model(solid_handle, body, geom);
+                let is_door =
+                    cell.cell.kind == crate::modules::aec::engine::opening_style::OpeningCellKind::DoorLeaf;
+                if let Some(body) = build_opening_leaf_3d_with_depth(
+                    width,
+                    height,
+                    style.parts.leaf_frame.face_width,
+                    style.parts.leaf_frame.depth,
+                    style.opening_angle_deg,
+                    cell.cell.hinge.unwrap_or(opening.hinge),
+                    opening.swing_side,
+                    is_door,
+                    OpeningShape::Rectangle,
+                    0.0,
+                ) {
+                    emit_opening_solid_3d(
+                        scene,
+                        body,
+                        opening_handle,
+                        opening_owner_handle,
+                        default_opening_layer.as_deref(),
+                        origin,
+                        (tx, ty),
+                        normal,
+                        wall_base_z + opening.sill_height,
+                        (cell.left + cell.right) * 0.5,
+                        cell.bottom,
+                        OpeningComponentSlot::Leaf3D,
+                    );
                 }
-                write_opening_display_tag(
-                    scene,
-                    solid_handle,
-                    opening_handle,
-                    OpeningComponentSlot::Leaf3D,
-                );
-                engine::owner_index::add_child(&mut scene.document, opening_handle, solid_handle);
             }
         }
     }
@@ -1962,41 +2688,50 @@ pub fn regenerate_opening_display(
         && (slots.contains_key(&OpeningComponentSlot::Glazing3D)
             || slots.contains_key(&OpeningComponentSlot::Solid3D));
 
-    if glazing_3d_vis && opening.kind == OpeningKind::Window {
-        if let Some(body) = build_opening_glazing_3d(
-            opening.width,
-            opening.height,
-            params.frame_thickness,
-            params.shape,
-            params.spring_height,
-        ) {
-            let world_body = crate::scene::model::solid_model::placed(
-                &body,
-                [tx, ty, 0.0],
-                [normal.0, normal.1, 0.0],
-                [0.0, 0.0, 1.0],
-                [origin.0, origin.1, wall_base_z + opening.sill_height],
-            );
-            if let Some(body) = world_body {
-                let s3d = crate::modules::aec::engine::geometry::create_solid3d_from_body(&body);
-                let mut s3d_entity = EntityType::Solid3D(s3d);
-                if !opening_owner_handle.is_null() && opening_owner_handle != scene.document.header.model_space_block_handle {
-                    s3d_entity.common_mut().owner_handle = opening_owner_handle;
+    if glazing_3d_vis && opening.kind != OpeningKind::Breakthrough {
+        if let Ok(cells) = grid.layout(opening.width, opening.height, opening.kind) {
+            for cell in cells {
+                if !matches!(
+                    cell.cell.kind,
+                    crate::modules::aec::engine::opening_style::OpeningCellKind::Glass
+                        | crate::modules::aec::engine::opening_style::OpeningCellKind::Fixed
+                ) {
+                    continue;
                 }
-                if let Some(ref l) = default_opening_layer {
-                    s3d_entity.as_entity_mut().set_layer(l.clone());
+                let inset = style.parts.glazing.inset.max(0.0);
+                let left = cell.left + inset;
+                let right = cell.right - inset;
+                let bottom = cell.bottom + inset;
+                let top = cell
+                    .top
+                    .min(arch_height_at_x(params, left))
+                    .min(arch_height_at_x(params, right))
+                    - inset;
+                let width = right - left;
+                let height = top - bottom;
+                if width <= 0.0 || height <= 0.0 {
+                    continue;
                 }
-                let solid_handle = scene.add_entity(s3d_entity);
-                if let Some(geom) = scene.prepare_solid_model_display(solid_handle, &body) {
-                    scene.register_prepared_solid_model(solid_handle, body, geom);
+                if let Some(body) = build_opening_box_3d(
+                    width,
+                    height,
+                    style.parts.glazing.thickness,
+                ) {
+                    emit_opening_solid_3d(
+                        scene,
+                        body,
+                        opening_handle,
+                        opening_owner_handle,
+                        default_opening_layer.as_deref(),
+                        origin,
+                        (tx, ty),
+                        normal,
+                        wall_base_z + opening.sill_height,
+                        (left + right) * 0.5,
+                        (bottom + top) * 0.5,
+                        OpeningComponentSlot::Glazing3D,
+                    );
                 }
-                write_opening_display_tag(
-                    scene,
-                    solid_handle,
-                    opening_handle,
-                    OpeningComponentSlot::Glazing3D,
-                );
-                engine::owner_index::add_child(&mut scene.document, opening_handle, solid_handle);
             }
         }
     }
@@ -2081,13 +2816,14 @@ mod tests {
     use acadrust::entities::LwVertex;
     use acadrust::types::Vector2;
     use crate::modules::aec::engine::library::seed_default_library;
-    use crate::modules::aec::engine::opening_sketch::OpeningSketch;
     use crate::modules::aec::engine::opening_style::{
-        OpeningStyle, SlotGeometry, DEFAULT_FRAME_THICKNESS, SEED_WINDOW_STYLE_ID,
+        DivisionGrid, DivisionLevel, ElevationFrameLevel, OpeningCell,
+        OpeningParts, OpeningStyle, PlanFrameLevel, SwingGlyph, DEFAULT_FRAME_THICKNESS,
+        SEED_WINDOW_STYLE_ID,
     };
     use crate::modules::aec::engine::opening_xdata::place_wall_opening;
     use crate::modules::aec::engine::openings::{
-        OpeningKind, DEFAULT_WINDOW_WIDTH, SwingSide,
+        Opening, OpeningKind, DEFAULT_WINDOW_WIDTH, SwingSide,
     };
     use crate::modules::aec::engine::wall::{Wall, WallJustification, WallLayer};
     use crate::modules::aec::engine::wall_regen::regenerate_wall_representation;
@@ -2163,6 +2899,145 @@ mod tests {
                 .fold(f64::NEG_INFINITY, f64::max);
             Some(max_x)
         }
+    }
+
+    #[test]
+    fn unstyled_opening_resolves_to_standard_style_parts() {
+        let opening = Opening::window(
+            acadrust::Handle::new(1),
+            acadrust::Handle::new(2),
+            1.2,
+        );
+        let (slots, style) = resolved_slots(&opening, None);
+        let style = style.expect("standard fallback style");
+        assert_eq!(style.style.id, SEED_WINDOW_STYLE_ID);
+        assert_eq!(style.parts.fixed_frame.face_width, DEFAULT_FRAME_THICKNESS);
+        assert!(slots.contains_key(&OpeningComponentSlot::Frame2D));
+    }
+
+    #[test]
+    fn plan_and_elevation_posts_share_the_same_grid_coordinates() {
+        let grid = DivisionGrid {
+            vertical: vec![1.0 / 3.0, 2.0 / 3.0],
+            cells: vec![OpeningCell::default(), OpeningCell::default()],
+            ..DivisionGrid::default()
+        };
+        let params = params(1.2, OpeningKind::Window, HingeSide::Left);
+        let parts = OpeningParts::default();
+        let plan = bake_opening_plan_paths(
+            params,
+            &parts,
+            &grid,
+            PlanFrameLevel::Off,
+            SwingGlyph::Off,
+            DivisionLevel::Posts,
+        );
+        let elevation = bake_opening_elevation_paths(
+            params,
+            &parts,
+            &grid,
+            ElevationFrameLevel::Off,
+            DivisionLevel::Posts,
+        );
+        let plan_post = plan
+            .iter()
+            .find(|path| {
+                path.slot == OpeningComponentSlot::Glazing2D
+                    && path.points[0].0 == path.points[1].0
+            })
+            .unwrap();
+        let elevation_post = elevation
+            .iter()
+            .find(|path| {
+                path.slot == OpeningComponentSlot::ElevationMuntins2D
+                    && path.points[0].0 == path.points[1].0
+            })
+            .unwrap();
+        let expected = -params.width * 0.5 + params.width / 3.0;
+        assert!((plan_post.points[0].0 - expected).abs() < 1e-12);
+        assert!((elevation_post.points[0].0 - expected).abs() < 1e-12);
+    }
+
+    #[test]
+    fn grid_bars_3d_are_built_at_primary_and_muntin_positions() {
+        let grid = DivisionGrid {
+            vertical: vec![0.4, 0.6],
+            vertical_muntins: vec![0.5],
+            cells: vec![OpeningCell::default(), OpeningCell::default()],
+            ..DivisionGrid::default()
+        };
+        let bars = build_opening_grid_bars_3d(
+            &grid,
+            params(2.0, OpeningKind::Window, HingeSide::Left),
+            0.06,
+            0.04,
+            0.06,
+        );
+        assert_eq!(bars.len(), 3);
+        assert!((bars[0].1 + 0.2).abs() < 1e-12);
+        assert!((bars[1].1 + 0.6).abs() < 1e-12);
+        assert!((bars[2].1 - 0.4).abs() < 1e-12);
+    }
+
+    #[test]
+    fn plan_frame_levels_draw_line_double_line_and_absolute_profile() {
+        let parts = OpeningParts::default();
+        let grid = DivisionGrid::default();
+        let params = params(1.2, OpeningKind::Window, HingeSide::Left);
+        let frame_paths = |level| {
+            bake_opening_plan_paths(
+                params,
+                &parts,
+                &grid,
+                level,
+                SwingGlyph::Off,
+                DivisionLevel::Off,
+            )
+            .into_iter()
+            .filter(|path| path.slot == OpeningComponentSlot::Frame2D)
+            .collect::<Vec<_>>()
+        };
+        let single = frame_paths(PlanFrameLevel::SingleLine);
+        assert_eq!(single.len(), 1);
+        assert_eq!(single[0].points.len(), 2);
+        let double = frame_paths(PlanFrameLevel::DoubleLine);
+        assert_eq!(double.len(), 2);
+        assert!(double.iter().all(|path| !path.closed));
+        let profile = frame_paths(PlanFrameLevel::Profile);
+        assert_eq!(profile.len(), 2);
+        assert!(profile.iter().all(|path| path.closed));
+        assert!((profile[0].points[1].0 - profile[0].points[0].0 - 0.06).abs() < 1e-12);
+    }
+
+    #[test]
+    fn plan_triangle_ignores_opening_angle_but_arc_uses_it() {
+        let parts = OpeningParts::default();
+        let grid = DivisionGrid::default();
+        let mut first_params = params(1.0, OpeningKind::Door, HingeSide::Left);
+        first_params.opening_angle_deg = 35.0;
+        let mut second_params = first_params;
+        second_params.opening_angle_deg = 120.0;
+        let glyph_paths = |p, glyph| {
+            bake_opening_plan_paths(
+                p,
+                &parts,
+                &grid,
+                PlanFrameLevel::Off,
+                glyph,
+                DivisionLevel::Off,
+            )
+            .into_iter()
+            .filter(|path| path.slot == OpeningComponentSlot::Swing2D)
+            .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            glyph_paths(first_params, SwingGlyph::Triangle),
+            glyph_paths(second_params, SwingGlyph::Triangle)
+        );
+        assert_ne!(
+            glyph_paths(first_params, SwingGlyph::Arc),
+            glyph_paths(second_params, SwingGlyph::Arc)
+        );
     }
 
     #[test]
@@ -2537,38 +3412,4 @@ mod tests {
         assert!((opening.width * 0.5 - inner - DEFAULT_FRAME_THICKNESS).abs() < 1e-9);
     }
 
-    #[test]
-    fn sketch_slot_emits_children_empty_does_not_fall_back() {
-        let mut slots = default_slots_for_kind(OpeningKind::Window);
-        slots.insert(
-            OpeningComponentSlot::Frame2D,
-            SlotGeometry::Sketch(OpeningSketch::default()),
-        );
-        let empty = bake_opening_generators(
-            &slots,
-            params(1.2, OpeningKind::Window, HingeSide::Left),
-            None,
-        );
-        assert!(empty
-            .iter()
-            .all(|p| p.slot != OpeningComponentSlot::Frame2D));
-        assert!(empty
-            .iter()
-            .any(|p| p.slot == OpeningComponentSlot::Leaf2D));
-
-        slots.insert(
-            OpeningComponentSlot::Frame2D,
-            SlotGeometry::Sketch(OpeningSketch::frame_ring(1.0, 0.3, DEFAULT_FRAME_THICKNESS)),
-        );
-        let mut p = params(1.2, OpeningKind::Window, HingeSide::Left);
-        p.thickness = 0.24;
-        let filled = bake_opening_generators(&slots, p, None);
-        let frames: Vec<_> = filled
-            .iter()
-            .filter(|b| b.slot == OpeningComponentSlot::Frame2D)
-            .collect();
-        assert_eq!(frames.len(), 2);
-        let inner = inner_frame_half_width(&filled).unwrap();
-        assert!((1.2 * 0.5 - inner - DEFAULT_FRAME_THICKNESS).abs() < 1e-9);
-    }
 }

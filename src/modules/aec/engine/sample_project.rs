@@ -15,7 +15,7 @@ use codec::{DxfVersion, EntityType};
 use glam::DVec3;
 
 use crate::io::save_as_version;
-use crate::modules::aec::engine::display_component::{OpeningComponentSlot, RepresentationMode};
+use crate::modules::aec::engine::display_component::RepresentationMode;
 use crate::modules::aec::engine::library::{
     seed_default_library, DisplayConfigLibrary, StyleLibrary, PRESET_ENTWURF_100,
     PRESET_WERKPLAN_50,
@@ -1478,14 +1478,7 @@ fn build_sample_display_library() -> DisplayConfigLibrary {
     permit_100.detail.hatches = true;
     permit_100.detail.layers = LayerDetail::StructuralOnly;
     permit_100.detail.representation = RepresentationMode::TwoD;
-    permit_100.opening_visibility.insert(OpeningComponentSlot::HostCut2D, true);
-    permit_100.opening_visibility.insert(OpeningComponentSlot::Frame2D, true);
-    permit_100.opening_visibility.insert(OpeningComponentSlot::Leaf2D, true);
-    permit_100.opening_visibility.insert(OpeningComponentSlot::Swing2D, true);
-    permit_100.opening_visibility.insert(OpeningComponentSlot::Glazing2D, false);
-    permit_100.opening_visibility.insert(OpeningComponentSlot::Sill2D, true);
-    permit_100.opening_visibility.insert(OpeningComponentSlot::Threshold2D, false);
-    permit_100.opening_visibility.insert(OpeningComponentSlot::OpeningLabel2D, true);
+    permit_100.opening_levels = crate::modules::aec::engine::opening_style::OpeningLevelOverride::coarse();
     lib.upsert(permit_100);
 
     // 2. Ausführungsplanung 1:50 (FloorPlan)
@@ -1500,14 +1493,7 @@ fn build_sample_display_library() -> DisplayConfigLibrary {
     exec_50.detail.hatches = true;
     exec_50.detail.layers = LayerDetail::All;
     exec_50.detail.representation = RepresentationMode::TwoD;
-    exec_50.opening_visibility.insert(OpeningComponentSlot::HostCut2D, true);
-    exec_50.opening_visibility.insert(OpeningComponentSlot::Frame2D, true);
-    exec_50.opening_visibility.insert(OpeningComponentSlot::Leaf2D, true);
-    exec_50.opening_visibility.insert(OpeningComponentSlot::Swing2D, true);
-    exec_50.opening_visibility.insert(OpeningComponentSlot::Glazing2D, true);
-    exec_50.opening_visibility.insert(OpeningComponentSlot::Sill2D, true);
-    exec_50.opening_visibility.insert(OpeningComponentSlot::Threshold2D, true);
-    exec_50.opening_visibility.insert(OpeningComponentSlot::OpeningLabel2D, true);
+    exec_50.opening_levels = crate::modules::aec::engine::opening_style::OpeningLevelOverride::detail();
     lib.upsert(exec_50);
 
     // 3. Genehmigungsplanung Schnitt 1:100
@@ -1518,6 +1504,8 @@ fn build_sample_display_library() -> DisplayConfigLibrary {
         ViewType::Section,
     );
     permit_sec_100.scale = Some(100.0);
+    permit_sec_100.opening_levels =
+        crate::modules::aec::engine::opening_style::OpeningLevelOverride::coarse();
     lib.upsert(permit_sec_100);
 
     // 4. Ausführungsplanung Schnitt 1:50
@@ -1528,6 +1516,8 @@ fn build_sample_display_library() -> DisplayConfigLibrary {
         ViewType::Section,
     );
     exec_sec_50.scale = Some(50.0);
+    exec_sec_50.opening_levels =
+        crate::modules::aec::engine::opening_style::OpeningLevelOverride::detail();
     lib.upsert(exec_sec_50);
 
     // 5. Genehmigungsplanung Ansichten 1:100
@@ -1539,10 +1529,8 @@ fn build_sample_display_library() -> DisplayConfigLibrary {
     );
     permit_elev_100.scale = Some(100.0);
     permit_elev_100.detail.representation = RepresentationMode::TwoD;
-    permit_elev_100.opening_visibility.insert(OpeningComponentSlot::ElevationContour2D, true);
-    permit_elev_100.opening_visibility.insert(OpeningComponentSlot::ElevationMuntins2D, true);
-    permit_elev_100.opening_visibility.insert(OpeningComponentSlot::ElevationSwing2D, true);
-    permit_elev_100.opening_visibility.insert(OpeningComponentSlot::ElevationSill2D, true);
+    permit_elev_100.opening_levels =
+        crate::modules::aec::engine::opening_style::OpeningLevelOverride::elevation();
     lib.upsert(permit_elev_100);
 
     lib

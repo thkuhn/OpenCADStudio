@@ -73,6 +73,7 @@ impl OpenCADStudio {
             self.aec.styles.plan_scale = cfg.scale.map(|s| s.to_string()).unwrap_or_default();
             self.aec.styles.plan_planning_stage = cfg.planning_stage;
             self.aec.styles.plan_view_type = cfg.view_type.clone();
+            self.aec.styles.plan_opening_levels = cfg.opening_levels;
             self.aec_plan_manager_load_phase_filter_buffers(cfg.phase_filter.as_ref());
             self.aec_plan_manager_load_display_buffers(&cfg);
             self.aec.styles.plan_form_open = true;
@@ -89,6 +90,7 @@ impl OpenCADStudio {
         self.aec.styles.plan_scale.clear();
         self.aec.styles.plan_planning_stage = PlanningStage::Design;
         self.aec.styles.plan_view_type = ViewType::FloorPlan;
+        self.aec.styles.plan_opening_levels = Default::default();
         self.aec_plan_manager_load_phase_filter_buffers(None);
         self.aec_plan_manager_reset_display_buffers();
         self.aec.styles.plan_form_open = true;
@@ -128,11 +130,57 @@ impl OpenCADStudio {
         self.aec_plan_manager_load_phase_filter_buffers(cfg.phase_filter.as_ref());
         self.aec.styles.plan_planning_stage = cfg.planning_stage;
         self.aec.styles.plan_view_type = cfg.view_type.clone();
+        self.aec.styles.plan_opening_levels = cfg.opening_levels;
         self.aec_plan_manager_load_display_buffers(&cfg);
         self.aec.styles.plan_editing_id = None;
         self.aec.styles.plan_preset = None;
         self.aec.styles.plan_form_open = true;
         Task::none()
+    }
+
+    pub(crate) fn aec_plan_manager_opening_level_changed(&mut self, key: &str, value: &str) {
+        use crate::modules::aec::engine::opening_style::{
+            DivisionLevel, ElevationFrameLevel, PlanFrameLevel, SwingGlyph,
+        };
+        let inherit = crate::tr!("aec", "opening-level-inherit");
+        let on = crate::tr!("aec", "opening-role-on");
+        let off = crate::tr!("aec", "opening-role-off");
+        let tri = |value: &str| -> Option<Option<bool>> {
+            if value == inherit || value.is_empty() || value == "-" {
+                Some(None)
+            } else if value == on || value == "on" || value == "true" {
+                Some(Some(true))
+            } else if value == off || value == "off" || value == "false" {
+                Some(Some(false))
+            } else {
+                None
+            }
+        };
+        let levels = &mut self.aec.styles.plan_opening_levels;
+        match key {
+            "plan_frame" => levels.plan_frame = PlanFrameLevel::from_str(value),
+            "swing" => levels.swing = SwingGlyph::from_str(value),
+            "elevation_frame" => levels.elevation_frame = ElevationFrameLevel::from_str(value),
+            "divisions" => levels.divisions = DivisionLevel::from_str(value),
+            "section_frame" => levels.section.frame = tri(value).unwrap_or(levels.section.frame),
+            "section_exterior_sill" => {
+                levels.section.exterior_sill = tri(value).unwrap_or(levels.section.exterior_sill)
+            }
+            "section_interior_board" => {
+                levels.section.interior_board = tri(value).unwrap_or(levels.section.interior_board)
+            }
+            "section_shutter_box" => {
+                levels.section.shutter_box = tri(value).unwrap_or(levels.section.shutter_box)
+            }
+            "section_threshold" => {
+                levels.section.threshold = tri(value).unwrap_or(levels.section.threshold)
+            }
+            "section_lintel" => levels.section.lintel = tri(value).unwrap_or(levels.section.lintel),
+            "section_glazing" => {
+                levels.section.glazing = tri(value).unwrap_or(levels.section.glazing)
+            }
+            _ => {}
+        }
     }
 }
 
@@ -242,7 +290,6 @@ mod tests {
         send(&mut app, AecMessage::AecPlanManagerNameChanged("Rohbau-Detail".into()));
         send(&mut app, AecMessage::AecPlanManagerDetailLayersChanged(LayerDetail::Off));
         send(&mut app, AecMessage::AecPlanManagerDetailToggle(DetailSwitch::Hatches, false));
-        send(&mut app, AecMessage::AecPlanManagerDetailToggle(DetailSwitch::OpeningSymbols, false));
         send(&mut app, AecMessage::AecPlanManagerDetailToggle(DetailSwitch::Annotation, false));
         send(&mut app, AecMessage::AecPlanManagerSave);
         let cfg = app.aec.aec_plan_library.as_ref().unwrap().find("Rohbau-Detail").cloned().unwrap();
@@ -251,7 +298,6 @@ mod tests {
         assert!(!wall.is_visible(WallComponentSlot::Layers2D));
         assert!(!wall.is_visible(WallComponentSlot::LayerHatch2D));
         assert!(!wall.is_visible(WallComponentSlot::ContourHatch2D));
-        assert!(!wall.visibility.get(OpeningComponentSlot::Swing2D.key()).copied().unwrap_or(true));
         assert!(!wall.visibility.get(OpeningComponentSlot::OpeningLabel2D.key()).copied().unwrap_or(true));
         let slab = build_effective_slab_rule_set(&cfg, None, None);
         assert!(!slab.is_slab_visible(SlabComponentSlot::LayerHatch2D));

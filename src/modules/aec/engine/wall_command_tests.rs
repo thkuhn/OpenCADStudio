@@ -5348,7 +5348,7 @@ fn wall_layer_extrusions_calculates_offsets_and_effective_height() {
     let height = 3.0;
     let extrusions = wall_layer_extrusions(&entity, &layers, height);
     assert_eq!(extrusions.len(), 1);
-    assert!((extrusions[0].height - 2.2).abs() < 1e-9); // 3.0 - 0.5 - 0.3 = 2.2
+    assert!((extrusions[0].height - 2.8).abs() < 1e-9); // 3.0 + 0.3 - 0.5 = 2.8
     assert!((extrusions[0].base_offset - 0.5).abs() < 1e-9);
 }
 
@@ -5384,7 +5384,7 @@ fn regenerate_wall_representation_respects_vertical_offsets() {
                     if (pt.z - 0.5).abs() < 1e-9 {
                         saw_bottom_z = true;
                     }
-                    if (pt.z - 2.7).abs() < 1e-9 {
+                    if (pt.z - 3.3).abs() < 1e-9 {
                         saw_top_z = true;
                     }
                 }
@@ -5392,7 +5392,7 @@ fn regenerate_wall_representation_respects_vertical_offsets() {
         }
     }
     assert!(saw_bottom_z, "solid should have wires at Z=0.5");
-    assert!(saw_top_z, "solid should have wires at Z=2.7");
+    assert!(saw_top_z, "solid should have wires at Z=3.3");
 }
 
 #[test]
@@ -12478,9 +12478,7 @@ fn test_elevation_generators_contour_muntins_and_triangles() {
 
 #[test]
 fn test_elevation_components_world_regeneration_creates_3d_polylines() {
-    use crate::modules::aec::engine::display_component::OpeningComponentSlot;
     use crate::modules::aec::engine::opening_display::collect_opening_display_children;
-    use crate::modules::aec::engine::opening_style::{OpeningGenerator, SlotGeometry};
     use crate::modules::aec::engine::opening_xdata::{
         openings_for_host_wall, place_wall_opening, write_opening_instance,
     };
@@ -12516,25 +12514,12 @@ fn test_elevation_components_world_regeneration_creates_3d_polylines() {
         None,
     ).expect("place window");
 
-    // Configure elevation slots on the opening:
     let mut opening = openings_for_host_wall(&scene, wall_h)
         .into_iter()
         .find(|o| o.handle == win_h)
         .expect("opening found");
 
-    let mut style = crate::modules::aec::engine::opening_style::OpeningStyle::standard_window();
-    style.slots.insert(
-        OpeningComponentSlot::ElevationContour2D,
-        SlotGeometry::Generator(OpeningGenerator::ElevationFrameRect),
-    );
-    style.slots.insert(
-        OpeningComponentSlot::ElevationSwing2D,
-        SlotGeometry::Generator(OpeningGenerator::ElevationSwingTriangle),
-    );
-    style.slots.insert(
-        OpeningComponentSlot::ElevationSill2D,
-        SlotGeometry::Generator(OpeningGenerator::ElevationSillLine),
-    );
+    let style = crate::modules::aec::engine::opening_style::OpeningStyle::standard_window();
 
     let mut lib = crate::modules::aec::engine::library::StyleLibrary::default();
     lib.opening_styles.push(style.clone());
@@ -12568,7 +12553,7 @@ fn test_elevation_components_world_regeneration_creates_3d_polylines() {
 
     // Elevation sill drop goes to sill - 0.05 = 0.85:
     assert!((min_z - 0.85).abs() < 1e-4, "Min Z must match elevation sill drop (0.85)");
-    assert!((max_z - (0.90 + 1.20)).abs() < 1e-4, "Max Z must match window head (2.10)");
+    assert!((max_z - (0.90 + 1.20 - 0.06)).abs() < 1e-4, "Max Z must match fixed-frame top (2.04): {max_z}");
 }
 
 #[test]
@@ -12663,53 +12648,36 @@ fn test_2d_3d_representation_filtering() {
 #[test]
 fn test_discipline_templates_slot_visibilities() {
     use crate::modules::aec::engine::display_component::OpeningComponentSlot;
-    use crate::modules::aec::engine::library::{build_effective_rule_set, DisplayConfigLibrary};
+    use crate::modules::aec::engine::library::DisplayConfigLibrary;
 
     let seed_lib = DisplayConfigLibrary::seed_default_configs();
 
-    // 1. Architektur 1:50
+    use crate::modules::aec::engine::opening_style::{
+        DivisionLevel, ElevationFrameLevel, PlanFrameLevel, SwingGlyph,
+    };
+
     let arch_50 = seed_lib.find("Architektur 1:50").expect("find Architektur 1:50");
-    let rules_arch = build_effective_rule_set(arch_50, None, None);
-    assert!(rules_arch.is_opening_visible(OpeningComponentSlot::HostCut2D));
-    assert!(rules_arch.is_opening_visible(OpeningComponentSlot::Frame2D));
-    assert!(rules_arch.is_opening_visible(OpeningComponentSlot::Leaf2D));
-    assert!(rules_arch.is_opening_visible(OpeningComponentSlot::Swing2D));
-    assert!(rules_arch.is_opening_visible(OpeningComponentSlot::Glazing2D));
-    assert!(rules_arch.is_opening_visible(OpeningComponentSlot::Sill2D));
-    assert!(rules_arch.is_opening_visible(OpeningComponentSlot::Threshold2D));
-    assert!(rules_arch.is_opening_visible(OpeningComponentSlot::OpeningLabel2D));
+    assert_eq!(arch_50.opening_levels.plan_frame, Some(PlanFrameLevel::Profile));
+    assert_eq!(arch_50.opening_levels.swing, Some(SwingGlyph::Arc));
+    assert_eq!(arch_50.opening_levels.divisions, Some(DivisionLevel::PostsAndMuntins));
+    assert_eq!(arch_50.opening_levels.section.lintel, Some(true));
 
-    // 2. Statik 1:50: only HostCut2D and OpeningLabel2D are visible, all architectural symbols hidden!
     let stat_50 = seed_lib.find("Statik 1:50").expect("find Statik 1:50");
-    let rules_stat = build_effective_rule_set(stat_50, None, None);
-    assert!(rules_stat.is_opening_visible(OpeningComponentSlot::HostCut2D));
-    assert!(rules_stat.is_opening_visible(OpeningComponentSlot::OpeningLabel2D));
-    assert!(!rules_stat.is_opening_visible(OpeningComponentSlot::Frame2D), "Statik must hide Frame2D");
-    assert!(!rules_stat.is_opening_visible(OpeningComponentSlot::Leaf2D), "Statik must hide Leaf2D");
-    assert!(!rules_stat.is_opening_visible(OpeningComponentSlot::Swing2D), "Statik must hide Swing2D");
-    assert!(!rules_stat.is_opening_visible(OpeningComponentSlot::Glazing2D), "Statik must hide Glazing2D");
-    assert!(!rules_stat.is_opening_visible(OpeningComponentSlot::Sill2D), "Statik must hide Sill2D");
-    assert!(!rules_stat.is_opening_visible(OpeningComponentSlot::Threshold2D), "Statik must hide Threshold2D");
+    assert_eq!(stat_50.opening_levels.swing, Some(SwingGlyph::Off));
+    assert_eq!(stat_50.opening_levels.section.glazing, Some(false));
+    assert_eq!(stat_50.opening_levels.section.lintel, Some(true));
+    assert_eq!(stat_50.opening_levels.section.frame, Some(false));
 
-    // 3. Entwurf 1:100: Glazing2D and Threshold2D inactive
     let entw_100 = seed_lib.find("Entwurf 1:100").expect("find Entwurf 1:100");
-    let rules_entw = build_effective_rule_set(entw_100, None, None);
-    assert!(rules_entw.is_opening_visible(OpeningComponentSlot::Frame2D));
-    assert!(rules_entw.is_opening_visible(OpeningComponentSlot::Leaf2D));
-    assert!(rules_entw.is_opening_visible(OpeningComponentSlot::Swing2D));
-    assert!(!rules_entw.is_opening_visible(OpeningComponentSlot::Glazing2D), "Entwurf 1:100 hides Glazing2D");
-    assert!(!rules_entw.is_opening_visible(OpeningComponentSlot::Threshold2D), "Entwurf 1:100 hides Threshold2D");
+    assert_eq!(entw_100.opening_levels.plan_frame, Some(PlanFrameLevel::SingleLine));
+    assert_eq!(entw_100.opening_levels.swing, Some(SwingGlyph::Off));
+    assert_eq!(entw_100.opening_levels.divisions, Some(DivisionLevel::Off));
 
-    // 4. Ansicht Fassade: all elevation slots active, floor plan slots inactive
     let elev = seed_lib.find("Ansicht Fassade").expect("find Ansicht Fassade");
-    let rules_elev = build_effective_rule_set(elev, None, None);
-    assert!(rules_elev.is_opening_visible(OpeningComponentSlot::ElevationContour2D));
-    assert!(rules_elev.is_opening_visible(OpeningComponentSlot::ElevationMuntins2D));
-    assert!(rules_elev.is_opening_visible(OpeningComponentSlot::ElevationSwing2D));
-    assert!(rules_elev.is_opening_visible(OpeningComponentSlot::ElevationSill2D));
-    assert!(!rules_elev.is_opening_visible(OpeningComponentSlot::Frame2D));
-    assert!(!rules_elev.is_opening_visible(OpeningComponentSlot::Leaf2D));
-    assert!(!rules_elev.is_opening_visible(OpeningComponentSlot::Swing2D));
+    assert_eq!(elev.opening_levels.plan_frame, Some(PlanFrameLevel::Off));
+    assert_eq!(elev.opening_levels.elevation_frame, Some(ElevationFrameLevel::FixedAndLeaf));
+    assert_eq!(elev.opening_levels.divisions, Some(DivisionLevel::PostsAndMuntins));
+    let _ = OpeningComponentSlot::Frame2D;
 }
 
 #[test]
@@ -13181,7 +13149,7 @@ fn test_manager_save_vs_save_and_apply_decoupling() {
     let mut win_style = OpeningStyle::standard_window();
     let win_style_id = "test_window_style".to_string();
     win_style.style.id = win_style_id.clone();
-    win_style.frame_thickness = DEFAULT_FRAME_THICKNESS;
+    win_style.parts.fixed_frame.face_width = DEFAULT_FRAME_THICKNESS;
     library.upsert_opening_style(win_style.clone());
 
     let mut pl = LwPolyline::new();
@@ -13250,11 +13218,11 @@ fn test_manager_save_vs_save_and_apply_decoupling() {
         assert_eq!(pl.elevation, new_elevation, "Wall elevation must update after Apply");
     }
 
-    // Case 2: Opening style modified (frame_thickness 0.06 -> 0.12), "Save" only.
+    // Case 2: Opening style modified (fixed-frame width 0.06 -> 0.12), "Save" only.
     // Library updates, but scene opening children still have the old geometry!
     let mut updated_style = win_style.clone();
     let new_frame_thickness = 0.12;
-    updated_style.frame_thickness = new_frame_thickness;
+    updated_style.parts.fixed_frame.face_width = new_frame_thickness;
     library.upsert_opening_style(updated_style);
 
     let old_children = collect_opening_display_children(&scene, win_h);
@@ -14503,7 +14471,6 @@ mod plan_scene_consistency {
             layers: LayerDetail::Off,
             hatches: false,
             annotation: false,
-            opening_symbols: false,
             ..DetailProfile::default()
         }
     }
@@ -14512,6 +14479,11 @@ mod plan_scene_consistency {
     fn user_plan_switch_changes_wall_opening_slab_and_room_by_role() {
         let mut f = fixture();
         put_plans(&mut f, vec![plan("Voll", DetailProfile::default()), plan("Grob", rough_detail())]);
+        if let Some(config) = f.app.aec.aec_plan_library.as_mut().and_then(|lib| {
+            lib.configs.iter_mut().find(|config| config.name == "Grob")
+        }) {
+            config.opening_levels.swing = Some(crate::modules::aec::engine::opening_style::SwingGlyph::Off);
+        }
 
         activate(&mut f, "Voll");
         let (w_full, win_full, door_full) =
@@ -14553,8 +14525,12 @@ mod plan_scene_consistency {
     #[test]
     fn opening_symbols_off_hides_thresholds_only() {
         let mut f = fixture();
-        let d = DetailProfile { opening_symbols: false, ..DetailProfile::default() };
-        put_plans(&mut f, vec![plan("OhneSymbole", d)]);
+        put_plans(&mut f, vec![plan("OhneSymbole", DetailProfile::default())]);
+        if let Some(config) = f.app.aec.aec_plan_library.as_mut().and_then(|lib| {
+            lib.configs.iter_mut().find(|config| config.name == "OhneSymbole")
+        }) {
+            config.opening_levels.swing = Some(crate::modules::aec::engine::opening_style::SwingGlyph::Off);
+        }
         activate(&mut f, "OhneSymbole");
         let r = room_layers(&f);
         assert_eq!(n(&r, AEC_ROOM_THRESHOLD_LAYER), 0);

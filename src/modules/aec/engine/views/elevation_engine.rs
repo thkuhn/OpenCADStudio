@@ -16,11 +16,15 @@ use super::{
 use crate::modules::aec::engine::display_component::OpeningComponentSlot;
 use crate::modules::aec::engine::library::StyleLibrary;
 use crate::modules::aec::engine::opening_style::HingeSide;
+use crate::modules::aec::engine::opening_display::{
+    bake_opening_elevation_paths, OpeningBakeParams,
+};
 use crate::modules::aec::engine::openings::{OpeningKind, SwingSide};
 use crate::modules::aec::engine::plan_view::DisplayConfig;
 use super::style_resolver::{
     is_draw_suppressed, is_opening_slot_visible, is_wall_layer_visible, is_wall_phase_visible,
     is_slab_layer_visible, resolve_slab_layer_cut_style,
+    resolve_opening_representation_levels, resolve_opening_style,
     resolve_opening_view_fill_style, resolve_opening_view_style,
     resolve_wall_elevation_contour_style, ViewStyleContext,
 };
@@ -923,41 +927,79 @@ fn project_opening_elevation(
         return Ok(());
     }
 
-    // 1. ElevationContour2D: Outer frame contour
-    if is_opening_slot_visible(ctx, op, OpeningComponentSlot::ElevationContour2D) {
-        let frame_style = resolve_opening_view_style(ctx, op, OpeningComponentSlot::ElevationContour2D);
+    let style = resolve_opening_style(ctx, op);
+    let grid = op.division_override.as_ref().unwrap_or(&style.grid);
+    let levels = resolve_opening_representation_levels(ctx, op, grid);
+    let wall_half_depth = wall.total_thickness * 0.5;
+    let bake_params = OpeningBakeParams {
+        width: op.width,
+        height: op.height,
+        sill_height: op.sill_height,
+        thickness: wall.total_thickness,
+        frame_thickness: style.parts.fixed_frame.face_width,
+        cross_axis_offset: op.cross_axis_offset,
+        wall_y_min: -wall_half_depth,
+        wall_y_max: wall_half_depth,
+        hinge: op.hinge,
+        swing_side: op.swing_side,
+        shape: op.shape,
+        spring_height: op.spring_height,
+        opening_angle_deg: style.opening_angle_deg,
+        kind: op.kind,
+    };
+    for baked in bake_opening_elevation_paths(
+        bake_params,
+        &style.parts,
+        grid,
+        levels.elevation_frame,
+        levels.divisions,
+    ) {
+        if !is_opening_slot_visible(ctx, op, baked.slot) || baked.points.len() < 2 {
+            continue;
+        }
+        let projected: Vec<Point2> = baked
+            .points
+            .iter()
+            .map(|&(x, z)| {
+                let t = ((x + op.width * 0.5) / op.width).clamp(0.0, 1.0);
+                let base = Point2::new(
+                    uv_bl.x_m + (uv_br.x_m - uv_bl.x_m) * t,
+                    uv_bl.y_m + (uv_br.y_m - uv_bl.y_m) * t,
+                );
+                let vertical_left = Point2::new(uv_tl.x_m - uv_bl.x_m, uv_tl.y_m - uv_bl.y_m);
+                let vertical_right = Point2::new(uv_tr.x_m - uv_br.x_m, uv_tr.y_m - uv_br.y_m);
+                Point2::new(
+                    base.x_m + (vertical_left.x_m + vertical_right.x_m) * 0.5 * (z / op.height),
+                    base.y_m + (vertical_left.y_m + vertical_right.y_m) * 0.5 * (z / op.height),
+                )
+            })
+            .collect();
+        let geometry = if baked.closed {
+            Geometry2d::Region {
+                outer: projected,
+                holes: vec![],
+            }
+        } else if projected.len() == 2 {
+            Geometry2d::Line {
+                start: projected[0],
+                end: projected[1],
+            }
+        } else {
+            Geometry2d::Polyline {
+                vertices: projected,
+                closed: false,
+            }
+        };
+        let symbol_style = resolve_opening_view_style(ctx, op, baked.slot);
         *counter += 1;
-        let sill_anchor = Point2::new((uv_bl.x_m + uv_br.x_m) * 0.5, (uv_bl.y_m + uv_br.y_m) * 0.5);
-        let head_anchor = Point2::new((uv_tl.x_m + uv_tr.x_m) * 0.5, (uv_tl.y_m + uv_tr.y_m) * 0.5);
-
         primitives.push(DerivedPrimitive {
             id: PrimitiveId::new(model_view.id, 1, *counter),
             role: PrimitiveRole::ProjectedEdge,
-            geometry: Geometry2d::Region {
-                outer: frame_poly.clone(),
-                holes: vec![],
-            },
+            geometry,
             sources: SourceSet::new(vec![op_source.clone()])?,
             depth: DepthInterval::new(avg_depth, avg_depth)?,
-            style: frame_style,
-            edit_handles: vec![
-                EditHandle {
-                    id: format!("op_sill_{}", counter),
-                    position: sill_anchor,
-                    action: ModelEditAction::ChangeParameter(ModelParameter::OpeningSillHeight),
-                    direction_hint: Vector2::new(0.0, 1.0),
-                    target_feature: Some(FeatureKey::OpeningSill),
-                    source: op_source.clone(),
-                },
-                EditHandle {
-                    id: format!("op_head_{}", counter),
-                    position: head_anchor,
-                    action: ModelEditAction::ChangeParameter(ModelParameter::OpeningHeadHeight),
-                    direction_hint: Vector2::new(0.0, 1.0),
-                    target_feature: Some(FeatureKey::OpeningHead),
-                    source: op_source.clone(),
-                },
-            ],
+            style: symbol_style,
+            edit_handles: vec![],
         });
     }
 

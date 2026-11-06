@@ -174,7 +174,7 @@ impl OpenCADStudio {
     ) -> crate::modules::aec::engine::room_regen::RoomDisplay {
         use crate::modules::aec::engine::room_regen::RoomDisplay;
         let session = self.tabs[tab_index].representation_override;
-        let detail = self.tabs[tab_index]
+        let config = self.tabs[tab_index]
             .active_display_config
             .clone()
             .and_then(|name| {
@@ -186,10 +186,12 @@ impl OpenCADStudio {
                         )
                     })
                     .find(&name)
-                    .map(|c| c.detail)
-            })
-            .unwrap_or_default();
-        RoomDisplay::from_detail(&detail, session)
+                    .cloned()
+            });
+        match config {
+            Some(config) => RoomDisplay::from_config(&config, session),
+            None => RoomDisplay::from_detail(&Default::default(), session),
+        }
     }
 
     /// Regenerates one room carrier honoring the active plan kind.

@@ -30,7 +30,9 @@ use crate::modules::aec::engine::library::{
     resolve_effective_rule_set, DisplayConfigLibrary, StyleLibrary,
 };
 use crate::modules::aec::engine::material::Material;
-use crate::modules::aec::engine::opening_style::{apply_plan_visibility, OpeningStyle};
+use crate::modules::aec::engine::opening_style::{
+    apply_plan_visibility, default_style_for_kind, OpeningLookRole, OpeningStyle,
+};
 use crate::modules::aec::engine::plan_view::{
     DisplayConfig, LayerDetail, PlanningStage, ViewType,
 };
@@ -205,16 +207,16 @@ impl<'a> ViewStyleContext<'a> {
     /// the opening style's inherited, hide-only visibility (as in opening display regeneration).
     /// Detail switches then force-hide their slots.
     fn opening_rules(&self, opening: &CollectedOpening) -> Rc<ComponentRuleSet> {
-        let style_id = opening.style_id.clone().unwrap_or_default();
+        let style_id = opening.style_id.clone().unwrap_or_else(|| {
+            crate::modules::aec::engine::opening_style::seed_style_id_for_kind(opening.kind)
+                .to_string()
+        });
         self.cached(format!("o:{style_id}"), || {
-            let mut rules = resolve_effective_rule_set(None, self.config(), opening.style_id.as_deref());
+            let mut rules = resolve_effective_rule_set(None, self.config(), Some(&style_id));
             for (id, overlay) in &self.config().style_overrides {
                 if let Some(profile) = &overlay.opening {
                     rules.opening_profiles.insert(id.clone(), profile.clone());
                 }
-            }
-            for (&slot, &vis) in &self.config().opening_visibility {
-                rules.visibility.insert(slot.key().to_string(), vis);
             }
             let mode = effective_representation(self.config(), None);
             for slot in OpeningComponentSlot::all() {
@@ -228,20 +230,16 @@ impl<'a> ViewStyleContext<'a> {
                     rules.visibility.insert(key, false);
                 }
             }
-            if let (Some(lib), Some(id)) = (self.style_library, opening.style_id.as_ref()) {
-                if lib.find_opening_style(id).is_some() {
+            if let Some(lib) = self.style_library {
+                if lib.find_opening_style(&style_id).is_some() {
                     let map: HashMap<String, OpeningStyle> = lib
                         .opening_styles
                         .iter()
                         .map(|s| (s.style.id.clone(), s.clone()))
                         .collect();
                     let plan = rules.opening_profiles.clone();
-                    apply_plan_visibility(&map, id, Some(&plan), &mut rules.visibility);
+                    apply_plan_visibility(&map, &style_id, Some(&plan), &mut rules.visibility);
                 }
-            }
-            if !self.config().detail.opening_symbols {
-                rules.visibility.insert(OpeningComponentSlot::Swing2D.key().to_string(), false);
-                rules.visibility.insert(OpeningComponentSlot::BreakthroughSymbol2D.key().to_string(), false);
             }
             if !self.config().detail.annotation {
                 rules.visibility.insert(OpeningComponentSlot::OpeningLabel2D.key().to_string(), false);
@@ -651,9 +649,9 @@ pub fn is_slab_contour_visible(ctx: &ViewStyleContext, slab: &CollectedSlab, is_
     }
 }
 
-/// Checks whether an opening slot (frame, leaf, swing arc, sill, etc.) should be rendered:
-/// `ModelView` `draw == false`, `DisplayConfig.detail.opening_symbols`, plan opening visibility,
-/// representation mode and the opening style's (inherited) plan visibility.
+/// Checks whether an opening slot should be rendered: model-view suppression,
+/// representation mode and the opening style's plan visibility. Representation
+/// levels are resolved separately and do not hide an unknown slot.
 pub fn is_opening_slot_visible(
     ctx: &ViewStyleContext,
     opening: &CollectedOpening,
@@ -663,6 +661,39 @@ pub fn is_opening_slot_visible(
         return false;
     }
     ctx.opening_rules(opening).is_opening_visible(slot)
+}
+
+pub fn resolve_opening_style(ctx: &ViewStyleContext, opening: &CollectedOpening) -> OpeningStyle {
+    ctx.style_library
+        .and_then(|library| {
+            let id = opening.style_id.as_deref().unwrap_or_else(|| {
+                crate::modules::aec::engine::opening_style::seed_style_id_for_kind(opening.kind)
+            });
+            library.find_opening_style(id)
+        })
+        .cloned()
+        .unwrap_or_else(|| default_style_for_kind(opening.kind))
+}
+
+pub fn resolve_opening_representation_levels(
+    ctx: &ViewStyleContext,
+    opening: &CollectedOpening,
+    _grid: &crate::modules::aec::engine::opening_style::DivisionGrid,
+) -> crate::modules::aec::engine::opening_style::OpeningRepresentationLevels {
+    let style = resolve_opening_style(ctx, opening);
+    let plan = ctx.config().opening_levels;
+    style.suggested_levels.resolve(plan)
+}
+
+pub fn resolve_opening_section_roles(
+    ctx: &ViewStyleContext,
+    opening: &CollectedOpening,
+) -> crate::modules::aec::engine::opening_style::SectionRoleSwitches {
+    let style = resolve_opening_style(ctx, opening);
+    ctx.config()
+        .opening_levels
+        .section
+        .resolve(style.suggested_section)
 }
 
 // ── Wall / slab layer styles ─────────────────────────────────────────────────
@@ -971,11 +1002,37 @@ pub fn resolve_opening_view_style(
 
     let rules = ctx.opening_rules(opening);
     let ov_opt = rules.style_override.get(slot.key());
+    let style = resolve_opening_style(ctx, opening);
+    let role = OpeningLookRole::for_slot(slot);
+    let look = role.map(|role| style.looks.get(role));
+    let material = role
+        .and_then(|role| style.material_id_for_look(role))
+        .and_then(|id| ctx.material(id));
+
+    let look_line_type = look
+        .and_then(|look| non_empty(&look.line_type))
+        .or_else(|| {
+            material.and_then(|material| {
+                (!material.line_type.is_empty()).then(|| material.line_type.clone())
+            })
+        })
+        .or(default_lt);
+    let look_line_color = match look.and_then(|look| look.line_color.as_ref()) {
+        Some(color) => color_to_rgba8_opt(color),
+        None => material.map(|material| u32_to_rgba8(material.line_color)),
+    };
+    let line_type = ov_opt
+        .and_then(|ov| non_empty(&ov.line_type))
+        .or(look_line_type);
+    let line_color = match ov_opt.and_then(|ov| ov.line_color.as_ref()) {
+        Some(color) => color_to_rgba8_opt(color),
+        None => look_line_color,
+    };
 
     let mut stroke = Stroke {
         weight: PaperMm::new(default_weight).unwrap(),
-        color: ov_opt.and_then(|ov| ov.line_color.as_ref()).and_then(color_to_rgba8_opt),
-        line_type: ov_opt.and_then(|ov| non_empty(&ov.line_type)).or(default_lt),
+        color: line_color,
+        line_type,
         layer: ov_opt.and_then(|ov| non_empty(&ov.cad_layer)).or_else(|| Some(default_layer.to_string())),
     };
 
@@ -1292,6 +1349,7 @@ pub(crate) mod tests {
             host_wall_handle: acadrust::Handle::from(10u64),
             kind: OpeningKind::Door,
             style_id: style_id.map(str::to_string),
+            division_override: None,
             sill_height: 0.0,
             spring_height: 0.0,
             shape: OpeningShape::Rectangle,
@@ -1553,6 +1611,7 @@ pub(crate) mod tests {
             host_wall_handle: acadrust::Handle::from(10u64),
             kind: OpeningKind::Door,
             style_id: None,
+            division_override: None,
             sill_height: 0.0,
             spring_height: 0.0,
             shape: OpeningShape::Rectangle,
@@ -1574,13 +1633,23 @@ pub(crate) mod tests {
             PlanningStage::Design,
             ViewType::FloorPlan,
         );
-        dc.detail.opening_symbols = false;
+        dc.opening_levels.swing = Some(crate::modules::aec::engine::opening_style::SwingGlyph::Off);
 
         let ctx = ViewStyleContext::new(&mv, Some(&dc), None, false);
-        assert!(!is_opening_slot_visible(&ctx, &op, OpeningComponentSlot::Swing2D));
-        assert!(!is_opening_slot_visible(&ctx, &op, OpeningComponentSlot::BreakthroughSymbol2D));
+        let levels = resolve_opening_representation_levels(
+            &ctx,
+            &op,
+            &crate::modules::aec::engine::opening_style::DivisionGrid::default(),
+        );
+        assert_eq!(levels.swing, crate::modules::aec::engine::opening_style::SwingGlyph::Off);
+        assert_eq!(
+            levels.plan_frame,
+            crate::modules::aec::engine::opening_style::OpeningRepresentationLevels::suggested_for(
+                OpeningKind::Door
+            )
+            .plan_frame
+        );
         assert!(is_opening_slot_visible(&ctx, &op, OpeningComponentSlot::Frame2D));
-        assert!(is_opening_slot_visible(&ctx, &op, OpeningComponentSlot::Sill2D));
     }
 
     #[test]
@@ -2019,7 +2088,7 @@ pub(crate) mod tests {
         let op = test_opening(Some("Door_Test"));
 
         let mut dc = plan_dc();
-        dc.opening_visibility.insert(OpeningComponentSlot::Sill2D, false);
+        dc.opening_levels.section.exterior_sill = Some(false);
         let mut overlay = StyleDisplayOverlay::default();
         let mut rules = ComponentRuleSet::default();
         rules.style_override.insert(
@@ -2034,7 +2103,7 @@ pub(crate) mod tests {
         dc.style_overrides.insert("Door_Test".to_string(), overlay);
 
         let ctx = ViewStyleContext::new(&mv, Some(&dc), None, false);
-        assert!(!is_opening_slot_visible(&ctx, &op, OpeningComponentSlot::Sill2D));
+        assert!(!resolve_opening_section_roles(&ctx, &op).exterior_sill);
         assert!(is_opening_slot_visible(&ctx, &op, OpeningComponentSlot::Frame2D));
         let swing = resolve_opening_view_style(&ctx, &op, OpeningComponentSlot::Swing2D);
         assert_eq!(swing.line_type.as_deref(), Some("DASHED"));
@@ -2043,6 +2112,116 @@ pub(crate) mod tests {
         let other = test_opening(Some("Window_Other"));
         let swing = resolve_opening_view_style(&ctx, &other, OpeningComponentSlot::Swing2D);
         assert_eq!(swing.layer_name.as_deref(), Some("AEC_OPENING"));
+    }
+
+    #[test]
+    fn opening_look_is_shared_by_plan_and_elevation_before_plan_override() {
+        let mv = make_test_mv();
+        let mut style = OpeningStyle::standard_window();
+        style.style.id = "Window_Looks".to_string();
+        style.looks.fixed_frame.line_type = Some("STYLE_FRAME".to_string());
+        style.looks.fixed_frame.line_color = Some(Color::Rgb {
+            r: 220,
+            g: 30,
+            b: 40,
+        });
+        let mut lib = StyleLibrary::default();
+        lib.opening_styles.push(style);
+
+        let mut dc = plan_dc();
+        let mut overlay = StyleDisplayOverlay::default();
+        let mut rules = ComponentRuleSet::default();
+        rules.style_override.insert(
+            OpeningComponentSlot::Frame2D.key().to_string(),
+            ComponentStyleOverride {
+                line_type: Some("PLAN_FRAME".to_string()),
+                cad_layer: Some("PLAN_FRAME_LAYER".to_string()),
+                ..Default::default()
+            },
+        );
+        overlay.rules = Some(rules);
+        dc.style_overrides.insert("Window_Looks".to_string(), overlay);
+
+        let opening = test_opening(Some("Window_Looks"));
+        let ctx = ViewStyleContext::new(&mv, Some(&dc), Some(&lib), false);
+        let plan_frame = resolve_opening_view_style(&ctx, &opening, OpeningComponentSlot::Frame2D);
+        assert_eq!(plan_frame.line_type.as_deref(), Some("PLAN_FRAME"));
+        assert_eq!(plan_frame.layer_name.as_deref(), Some("PLAN_FRAME_LAYER"));
+        assert_eq!(plan_frame.line_color, Some(Rgba8::new(220, 30, 40, 255)));
+
+        let elevation_frame = resolve_opening_view_style(
+            &ctx,
+            &opening,
+            OpeningComponentSlot::ElevationContour2D,
+        );
+        assert_eq!(elevation_frame.line_type.as_deref(), Some("STYLE_FRAME"));
+        assert_eq!(elevation_frame.line_color, Some(Rgba8::new(220, 30, 40, 255)));
+    }
+
+    #[test]
+    fn opening_look_inherits_material_line_and_unknown_material_keeps_defaults() {
+        let mv = make_test_mv();
+        let mut style = OpeningStyle::standard_window();
+        style.style.id = "Window_MaterialLook".to_string();
+        style.looks.fixed_frame.material_id = Some("Oak".to_string());
+        let mut lib = StyleLibrary::default();
+        let mut mat = material("Oak", "WOOD", 1.0, 0.0, true);
+        mat.line_color = 0x12_34_56;
+        mat.line_type = "DASHDOT".to_string();
+        lib.materials.push(mat);
+        lib.opening_styles.push(style);
+
+        let opening = test_opening(Some("Window_MaterialLook"));
+        let ctx = ViewStyleContext::new(&mv, None, Some(&lib), false);
+        let inherited = resolve_opening_view_style(&ctx, &opening, OpeningComponentSlot::Frame2D);
+        assert_eq!(inherited.line_type.as_deref(), Some("DASHDOT"));
+        assert_eq!(inherited.line_color, Some(Rgba8::new(0x12, 0x34, 0x56, 255)));
+        drop(ctx);
+
+        lib.opening_styles[0].looks.fixed_frame.material_id = Some("missing".to_string());
+        let ctx = ViewStyleContext::new(&mv, None, Some(&lib), false);
+        let fallback = resolve_opening_view_style(&ctx, &opening, OpeningComponentSlot::Frame2D);
+        assert_eq!(fallback.line_type, None);
+        assert_eq!(fallback.line_color, None);
+        assert_eq!(fallback.layer_name.as_deref(), Some("AEC_OPENING"));
+    }
+
+    #[test]
+    fn absent_plan_level_keeps_style_suggestion() {
+        let opening = test_opening(None);
+        let grid = crate::modules::aec::engine::opening_style::DivisionGrid::default();
+        let config = plan_dc();
+        let view = make_test_mv();
+        let ctx = ViewStyleContext::new(&view, Some(&config), None, false);
+        let resolved = resolve_opening_representation_levels(&ctx, &opening, &grid);
+        let suggested = crate::modules::aec::engine::opening_style::OpeningRepresentationLevels::suggested_for(
+            opening.kind,
+        );
+        assert_eq!(resolved, suggested);
+        assert_ne!(resolved.swing, crate::modules::aec::engine::opening_style::SwingGlyph::Off);
+    }
+
+    #[test]
+    fn opening_representation_levels_do_not_follow_model_view_scale() {
+        let opening = test_opening(None);
+        let grid = crate::modules::aec::engine::opening_style::DivisionGrid::default();
+        let config = plan_dc();
+        let mut fine_view = make_test_mv();
+        fine_view.scale = crate::modules::aec::engine::views::ScaleDenominator::new(
+            50.0,
+        )
+        .unwrap();
+        let mut coarse_view = fine_view.clone();
+        coarse_view.scale = crate::modules::aec::engine::views::ScaleDenominator::new(
+            200.0,
+        )
+        .unwrap();
+        let fine_context = ViewStyleContext::new(&fine_view, Some(&config), None, false);
+        let coarse_context = ViewStyleContext::new(&coarse_view, Some(&config), None, false);
+        assert_eq!(
+            resolve_opening_representation_levels(&fine_context, &opening, &grid),
+            resolve_opening_representation_levels(&coarse_context, &opening, &grid)
+        );
     }
 
     #[test]
@@ -2108,20 +2287,23 @@ pub(crate) mod tests {
         let op = test_opening(Some("Door_Test"));
 
         let mut dc = plan_dc();
-        // detail.opening_symbols is disabled
-        dc.detail.opening_symbols = false;
-        // but style override tries to turn Swing2D and BreakthroughSymbol2D on
+        dc.opening_levels.swing = Some(crate::modules::aec::engine::opening_style::SwingGlyph::Off);
         let mut overlay = StyleDisplayOverlay::default();
         let mut rules = ComponentRuleSet::default();
         rules.visibility.insert(OpeningComponentSlot::Swing2D.key().to_string(), true);
-        rules.visibility.insert(OpeningComponentSlot::BreakthroughSymbol2D.key().to_string(), true);
         overlay.rules = Some(rules);
         dc.style_overrides.insert("Door_Test".to_string(), overlay);
 
         let ctx = ViewStyleContext::new(&mv, Some(&dc), None, false);
-        // detail switch must win: swings and breakthrough symbols remain hidden
-        assert!(!is_opening_slot_visible(&ctx, &op, OpeningComponentSlot::Swing2D));
-        assert!(!is_opening_slot_visible(&ctx, &op, OpeningComponentSlot::BreakthroughSymbol2D));
+        assert_eq!(
+            resolve_opening_representation_levels(
+                &ctx,
+                &op,
+                &crate::modules::aec::engine::opening_style::DivisionGrid::default(),
+            )
+            .swing,
+            crate::modules::aec::engine::opening_style::SwingGlyph::Off
+        );
     }
 
     #[test]
@@ -2130,9 +2312,7 @@ pub(crate) mod tests {
         let op = test_opening(Some("Door_Test"));
 
         let mut dc = plan_dc();
-        // plan-level opening_visibility explicitly hides Sill2D
-        dc.opening_visibility.insert(OpeningComponentSlot::Sill2D, false);
-        // style override tries to set Sill2D to true
+        dc.opening_levels.section.exterior_sill = Some(false);
         let mut overlay = StyleDisplayOverlay::default();
         let mut rules = ComponentRuleSet::default();
         rules.visibility.insert(OpeningComponentSlot::Sill2D.key().to_string(), true);
@@ -2140,29 +2320,9 @@ pub(crate) mod tests {
         dc.style_overrides.insert("Door_Test".to_string(), overlay);
 
         let ctx = ViewStyleContext::new(&mv, Some(&dc), None, false);
-        // opening_visibility must win over style override
-        assert!(!is_opening_slot_visible(&ctx, &op, OpeningComponentSlot::Sill2D));
+        assert!(!resolve_opening_section_roles(&ctx, &op).exterior_sill);
     }
 
-    #[test]
-    fn test_opening_style_default_hide_survives_plan_visibility_true() {
-        let mv = make_test_mv();
-        let mut op = test_opening(Some("Window_Test"));
-        op.kind = OpeningKind::Window;
-        let mut style = OpeningStyle::standard_window();
-        style.style.id = "Window_Test".to_string();
-        let mut profile = OpeningDisplayProfile::default();
-        profile.visibility.insert(OpeningComponentSlot::Sill2D.key().to_string(), false);
-        style.default_profile = Some(profile);
-        let mut lib = StyleLibrary::default();
-        lib.opening_styles.push(style);
-        let mut dc = plan_dc();
-        dc.opening_visibility.insert(OpeningComponentSlot::Sill2D, true);
-
-        let ctx = ViewStyleContext::new(&mv, Some(&dc), Some(&lib), false);
-        assert!(!is_opening_slot_visible(&ctx, &op, OpeningComponentSlot::Sill2D));
-        assert!(is_opening_slot_visible(&ctx, &op, OpeningComponentSlot::Frame2D));
-    }
 
     #[test]
     fn test_plan_opening_profile_hide_survives_plan_visibility_true() {
@@ -2174,7 +2334,6 @@ pub(crate) mod tests {
         let mut lib = StyleLibrary::default();
         lib.opening_styles.push(style);
         let mut dc = plan_dc();
-        dc.opening_visibility.insert(OpeningComponentSlot::Sill2D, true);
         let mut profile = OpeningDisplayProfile::default();
         profile.visibility.insert(OpeningComponentSlot::Sill2D.key().to_string(), false);
         dc.style_overrides.insert(

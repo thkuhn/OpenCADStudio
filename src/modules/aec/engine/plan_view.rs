@@ -121,8 +121,6 @@ pub struct DetailProfile {
     pub hatches: bool,
     /// Labels / tags.
     pub annotation: bool,
-    /// Opening symbols (swing, breakthrough, ...).
-    pub opening_symbols: bool,
     /// Reflected ceiling plan: slabs show the ceiling outline instead of the
     /// floor contour.
     pub ceiling_view: bool,
@@ -135,7 +133,6 @@ pub struct DetailProfile {
 pub enum DetailSwitch {
     Hatches,
     Annotation,
-    OpeningSymbols,
     CeilingView,
 }
 
@@ -144,7 +141,6 @@ impl DetailProfile {
         match switch {
             DetailSwitch::Hatches => self.hatches = value,
             DetailSwitch::Annotation => self.annotation = value,
-            DetailSwitch::OpeningSymbols => self.opening_symbols = value,
             DetailSwitch::CeilingView => self.ceiling_view = value,
         }
     }
@@ -156,7 +152,6 @@ impl Default for DetailProfile {
             layers: LayerDetail::All,
             hatches: true,
             annotation: true,
-            opening_symbols: true,
             ceiling_view: false,
             representation: RepresentationMode::All,
         }
@@ -201,8 +196,9 @@ pub struct DisplayConfig {
     /// field existed.
     #[serde(default)]
     pub phase_filter: Option<PhaseFilter>,
-    /// Detail level (layers, hatches, annotation, opening symbols,
-    /// ceiling view, default 2D/3D/All; a session override wins).
+    /// Detail level (layers, hatches, annotation, ceiling view, default
+    /// 2D/3D/All; a session override wins). Opening representation lives in
+    /// [`Self::opening_levels`], not here.
     #[serde(default)]
     pub detail: DetailProfile,
     /// Id of the standard preset this config was created from, if any.
@@ -211,9 +207,10 @@ pub struct DisplayConfig {
     /// Global component visibility (absent key = visible).
     #[serde(default)]
     pub component_visibility: HashMap<WallComponentKind, bool>,
-    /// Opening slot visibility overrides per plan type (absent = default/visible).
+    /// Explicit opening representation levels. Absent fields stay at the
+    /// style suggestion and are not treated as hidden.
     #[serde(default)]
-    pub opening_visibility: HashMap<crate::modules::aec::engine::display_component::OpeningComponentSlot, bool>,
+    pub opening_levels: crate::modules::aec::engine::opening_style::OpeningLevelOverride,
     /// Sparse per-style overrides of this plan kind, keyed by `Style.id`.
     /// Precedence: session representation > these > style default profile.
     #[serde(default)]
@@ -280,9 +277,25 @@ impl DisplayConfig {
             detail: DetailProfile::default(),
             preset: None,
             component_visibility: HashMap::new(),
-            opening_visibility: HashMap::new(),
+            opening_levels: crate::modules::aec::engine::opening_style::OpeningLevelOverride::default(),
             style_overrides: HashMap::new(),
             contour_hatch: None,
+        }
+    }
+
+    /// Fills absent opening levels from a known preset id. Explicit levels
+    /// stay. Unknown or missing presets are left absent so resolution uses
+    /// the style suggestion instead of hiding the family.
+    pub fn apply_preset_defaults_if_unset(&mut self) {
+        if self.opening_levels.is_explicit() {
+            return;
+        }
+        if let Some(levels) = self
+            .preset
+            .as_deref()
+            .and_then(crate::modules::aec::engine::opening_style::preset_opening_levels)
+        {
+            self.opening_levels = levels;
         }
     }
 }
@@ -336,6 +349,25 @@ mod tests {
         assert!(!cfg.id.is_nil());
         assert!(cfg.style_overrides.is_empty());
         assert_eq!(cfg.detail, DetailProfile::default());
+    }
+
+    #[test]
+    fn absent_opening_level_stays_unset_for_unknown_preset() {
+        let mut config = DisplayConfig::new(
+            "Frei".to_string(),
+            "Architektur".to_string(),
+            PlanningStage::Design,
+            ViewType::FloorPlan,
+        );
+        config.preset = Some("unbekannt".to_string());
+        config.apply_preset_defaults_if_unset();
+        assert!(!config.opening_levels.is_explicit());
+        config.preset = Some("entwurf-100".to_string());
+        config.apply_preset_defaults_if_unset();
+        assert_eq!(
+            config.opening_levels.plan_frame,
+            Some(crate::modules::aec::engine::opening_style::PlanFrameLevel::SingleLine)
+        );
     }
 
     #[test]

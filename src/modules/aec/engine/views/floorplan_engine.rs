@@ -18,8 +18,8 @@ use super::silhouette::{
 use super::style_resolver::{
     is_draw_suppressed, is_opening_slot_visible, is_slab_contour_visible, is_slab_layer_visible,
     is_slab_phase_visible, is_wall_layer_visible, is_wall_phase_visible, resolve_layer_cut_style,
-    resolve_opening_view_style, resolve_overhead_lintel_style, resolve_slab_contour_style,
-    ViewStyleContext,
+    resolve_opening_representation_levels, resolve_opening_style, resolve_opening_view_style,
+    resolve_overhead_lintel_style, resolve_slab_contour_style, ViewStyleContext,
 };
 use super::viewpoint::{ViewKind, Viewpoint};
 use super::{
@@ -28,7 +28,7 @@ use super::{
 use crate::modules::aec::engine::display_component::OpeningComponentSlot;
 use crate::modules::aec::engine::library::StyleLibrary;
 use crate::modules::aec::engine::openings::OpeningKind;
-use crate::modules::aec::engine::opening_style::HingeSide;
+use crate::modules::aec::engine::opening_display::{bake_opening_plan_paths, OpeningBakeParams};
 use crate::modules::aec::engine::plan_view::DisplayConfig;
 
 const EPS: f64 = 1e-6;
@@ -494,6 +494,7 @@ fn slice_wall_horizontal(
                     sill_height: op.sill_height,
                     kind: op.kind,
                     style_id: op.style_id.clone(),
+                    division_override: None,
                     hinge: op.hinge,
                     shape: crate::modules::aec::engine::opening_shape::OpeningShape::Rectangle,
                     spring_height: 0.0,
@@ -720,50 +721,189 @@ fn slice_wall_horizontal(
                 xref_source: wall.xref_source.clone(),
             };
 
-            // Left & Right Jamb (Frame2D)
-            if is_opening_slot_visible(ctx, op, OpeningComponentSlot::Frame2D) {
-                let frame_style = resolve_opening_view_style(ctx, op, OpeningComponentSlot::Frame2D);
+            let op_sources = SourceSet::new(vec![op_source.clone()])?;
 
-                // Left Jamb
-                let mut left_source = op_source.clone();
-                left_source.feature = Some(FeatureKey::OpeningLeftJamb);
-                let left_sources = SourceSet::new(vec![left_source])?;
-
-                *primitive_counter += 1;
-                primitives.push(DerivedPrimitive {
-                    id: PrimitiveId::new(model_view.id, 0, *primitive_counter),
-                    role: PrimitiveRole::CutBoundary,
-                    geometry: Geometry2d::Line {
-                        start: uv_j_left_in,
-                        end: uv_j_left_out,
-                    },
-                    sources: left_sources,
-                    depth: DepthInterval::cut_plane(),
-                    style: frame_style.clone(),
-                    edit_handles: Vec::new(),
+            let style = resolve_opening_style(ctx, op);
+            let grid = op.division_override.as_ref().unwrap_or(&style.grid);
+            let mut levels = resolve_opening_representation_levels(ctx, op, grid);
+            if !options.show_door_swings {
+                levels.swing = crate::modules::aec::engine::opening_style::SwingGlyph::Off;
+            }
+            let half_t = wall.total_thickness * 0.5;
+            let bake_params = OpeningBakeParams {
+                width: op.width,
+                height: op.height,
+                sill_height: op.sill_height,
+                thickness: wall.total_thickness,
+                frame_thickness: style.parts.fixed_frame.face_width,
+                cross_axis_offset: op.cross_axis_offset,
+                wall_y_min: -half_t,
+                wall_y_max: half_t,
+                hinge: op.hinge,
+                swing_side: op.swing_side,
+                shape: op.shape,
+                spring_height: op.spring_height,
+                opening_angle_deg: style.opening_angle_deg,
+                kind: op.kind,
+            };
+            let opening_origin = axis_p0 + axis_dir * op.distance_along_axis
+                + normal * op.cross_axis_offset;
+            for baked in bake_opening_plan_paths(
+                bake_params,
+                &style.parts,
+                grid,
+                levels.plan_frame,
+                levels.swing,
+                levels.divisions,
+            ) {
+                if !is_opening_slot_visible(ctx, op, baked.slot) || baked.points.len() < 2 {
+                    continue;
+                }
+                if baked.slot == OpeningComponentSlot::Swing2D
+                    && levels.swing == crate::modules::aec::engine::opening_style::SwingGlyph::Arc
+                {
+                    continue;
+                }
+                let projected: Vec<Point2> = baked
+                    .points
+                    .iter()
+                    .map(|&(x, y)| {
+                        viewpoint
+                            .world_to_view(Point3::new(
+                                opening_origin.x + axis_dir.x * x + normal.x * y,
+                                opening_origin.y + axis_dir.y * x + normal.y * y,
+                                z_cut,
+                            ))
+                            .0
+                    })
+                    .collect();
+                let geometry = if baked.closed {
+                    Geometry2d::Region {
+                        outer: projected,
+                        holes: vec![],
+                    }
+                } else if projected.len() == 2 {
+                    Geometry2d::Line {
+                        start: projected[0],
+                        end: projected[1],
+                    }
+                } else {
+                    Geometry2d::Polyline {
+                        vertices: projected,
+                        closed: false,
+                    }
+                };
+                let mut source = op_source.clone();
+                source.feature = Some(match baked.slot {
+                    OpeningComponentSlot::Swing2D => FeatureKey::OpeningLeftJamb,
+                    OpeningComponentSlot::Frame2D => FeatureKey::OpeningLeftJamb,
+                    _ => FeatureKey::OpeningSill,
                 });
-
-                // Right Jamb
-                let mut right_source = op_source.clone();
-                right_source.feature = Some(FeatureKey::OpeningRightJamb);
-                let right_sources = SourceSet::new(vec![right_source])?;
-
                 *primitive_counter += 1;
                 primitives.push(DerivedPrimitive {
                     id: PrimitiveId::new(model_view.id, 0, *primitive_counter),
-                    role: PrimitiveRole::CutBoundary,
-                    geometry: Geometry2d::Line {
-                        start: uv_j_right_in,
-                        end: uv_j_right_out,
-                    },
-                    sources: right_sources,
+                    role: PrimitiveRole::Symbol,
+                    geometry,
+                    sources: SourceSet::new(vec![source])?,
                     depth: DepthInterval::cut_plane(),
-                    style: frame_style,
+                    style: resolve_opening_view_style(ctx, op, baked.slot),
                     edit_handles: Vec::new(),
                 });
             }
-
-            let op_sources = SourceSet::new(vec![op_source.clone()])?;
+            if levels.swing == crate::modules::aec::engine::opening_style::SwingGlyph::Arc
+                && is_opening_slot_visible(ctx, op, OpeningComponentSlot::Swing2D)
+            {
+                if let Ok(cells) = grid.layout(op.width, op.height, op.kind) {
+                    for cell in cells {
+                        if cell.cell.kind
+                            != crate::modules::aec::engine::opening_style::OpeningCellKind::DoorLeaf
+                        {
+                            continue;
+                        }
+                        let hinge = cell.cell.hinge.unwrap_or(op.hinge);
+                        let center_x = match hinge {
+                            crate::modules::aec::engine::opening_style::HingeSide::Left => cell.left,
+                            crate::modules::aec::engine::opening_style::HingeSide::Right => cell.right,
+                        };
+                        let radius = cell.right - cell.left;
+                        let angle = style.opening_angle_deg.abs().to_radians();
+                        let swing_sign = match op.swing_side {
+                            crate::modules::aec::engine::openings::SwingSide::Exterior => 1.0,
+                            crate::modules::aec::engine::openings::SwingSide::Interior => -1.0,
+                        };
+                        let local_arc_point = |theta: f64| {
+                            let x = match hinge {
+                                crate::modules::aec::engine::opening_style::HingeSide::Left => {
+                                    center_x + radius * theta.cos()
+                                }
+                                crate::modules::aec::engine::opening_style::HingeSide::Right => {
+                                    center_x - radius * theta.cos()
+                                }
+                            };
+                            (x, swing_sign * radius * theta.sin())
+                        };
+                        let project_local = |x: f64, y: f64| {
+                            viewpoint
+                                .world_to_view(Point3::new(
+                                    opening_origin.x + axis_dir.x * x + normal.x * y,
+                                    opening_origin.y + axis_dir.y * x + normal.y * y,
+                                    z_cut,
+                                ))
+                                .0
+                        };
+                        let center = project_local(center_x, 0.0);
+                        let (start_x, start_y) = local_arc_point(0.0);
+                        let (mid_x, mid_y) = local_arc_point(angle * 0.5);
+                        let (end_x, end_y) = local_arc_point(angle);
+                        let start = project_local(start_x, start_y);
+                        let mid = project_local(mid_x, mid_y);
+                        let end = project_local(end_x, end_y);
+                        let start_dx = start.x_m - center.x_m;
+                        let start_dy = start.y_m - center.y_m;
+                        let mid_dx = mid.x_m - center.x_m;
+                        let mid_dy = mid.y_m - center.y_m;
+                        let end_angle = (end.y_m - center.y_m).atan2(end.x_m - center.x_m);
+                        let start_angle = start_dy.atan2(start_dx);
+                        let mut sweep = end_angle - start_angle;
+                        while sweep > std::f64::consts::PI {
+                            sweep -= std::f64::consts::TAU;
+                        }
+                        while sweep < -std::f64::consts::PI {
+                            sweep += std::f64::consts::TAU;
+                        }
+                        let direction = start_dx * mid_dy - start_dy * mid_dx;
+                        if direction >= 0.0 && sweep < 0.0 {
+                            sweep += std::f64::consts::TAU;
+                        } else if direction < 0.0 && sweep > 0.0 {
+                            sweep -= std::f64::consts::TAU;
+                        }
+                        let mut source = op_source.clone();
+                        source.feature = Some(match hinge {
+                            crate::modules::aec::engine::opening_style::HingeSide::Left => {
+                                FeatureKey::OpeningLeftJamb
+                            }
+                            crate::modules::aec::engine::opening_style::HingeSide::Right => {
+                                FeatureKey::OpeningRightJamb
+                            }
+                        });
+                        *primitive_counter += 1;
+                        primitives.push(DerivedPrimitive {
+                            id: PrimitiveId::new(model_view.id, 0, *primitive_counter),
+                            role: PrimitiveRole::Symbol,
+                            geometry: Geometry2d::CircularArc {
+                                center,
+                                radius: super::PositiveMetres::new(radius)?,
+                                start_rad: start_angle,
+                                sweep_rad: sweep,
+                            },
+                            sources: SourceSet::new(vec![source])?,
+                            depth: DepthInterval::cut_plane(),
+                            style: resolve_opening_view_style(ctx, op, OpeningComponentSlot::Swing2D),
+                            edit_handles: Vec::new(),
+                        });
+                    }
+                }
+            }
 
             // Window Sill Lines (Sill2D)
             if options.show_window_sills && matches!(op.kind, OpeningKind::Window) && is_opening_slot_visible(ctx, op, OpeningComponentSlot::Sill2D) {
@@ -799,60 +939,6 @@ fn slice_wall_horizontal(
                 });
             }
 
-            // Door Swing Arc (Swing2D)
-            if options.show_door_swings && matches!(op.kind, OpeningKind::Door) && is_opening_slot_visible(ctx, op, OpeningComponentSlot::Swing2D) {
-                let swing_style = resolve_opening_view_style(ctx, op, OpeningComponentSlot::Swing2D);
-                let hinge_pt = match op.hinge {
-                    HingeSide::Left => j_left_in,
-                    HingeSide::Right => j_right_in,
-                };
-
-                let leaf_end = hinge_pt - normal * op.width;
-                let uv_hinge = viewpoint.world_to_view(Point3::new(hinge_pt.x, hinge_pt.y, z_cut)).0;
-                let uv_leaf_end = viewpoint.world_to_view(Point3::new(leaf_end.x, leaf_end.y, z_cut)).0;
-
-                // Leaf Line
-                *primitive_counter += 1;
-                primitives.push(DerivedPrimitive {
-                    id: PrimitiveId::new(model_view.id, 0, *primitive_counter),
-                    role: PrimitiveRole::Symbol,
-                    geometry: Geometry2d::Line {
-                        start: uv_hinge,
-                        end: uv_leaf_end,
-                    },
-                    sources: op_sources.clone(),
-                    depth: DepthInterval::cut_plane(),
-                    style: swing_style.clone(),
-                    edit_handles: Vec::new(),
-                });
-
-                // Swing Arc
-                let r = op.width;
-                if r > 0.1 {
-                    let leaf_dx = uv_leaf_end.x_m - uv_hinge.x_m;
-                    let leaf_dy = uv_leaf_end.y_m - uv_hinge.y_m;
-                    let start_ang = leaf_dy.atan2(leaf_dx);
-                    let sweep_rad = match op.hinge {
-                        HingeSide::Left => 1.5707963267948966,
-                        HingeSide::Right => -1.5707963267948966,
-                    };
-                    *primitive_counter += 1;
-                    primitives.push(DerivedPrimitive {
-                        id: PrimitiveId::new(model_view.id, 0, *primitive_counter),
-                        role: PrimitiveRole::Symbol,
-                        geometry: Geometry2d::CircularArc {
-                            center: uv_hinge,
-                            radius: super::PositiveMetres::new(r)?,
-                            start_rad: start_ang,
-                            sweep_rad,
-                        },
-                        sources: op_sources,
-                        depth: DepthInterval::cut_plane(),
-                        style: swing_style,
-                        edit_handles: Vec::new(),
-                    });
-                }
-            }
 
             // Overhead Opening Head (lintel/Sturz) if not full-height / headless
             if options.show_overhead_edges {
@@ -1687,6 +1773,7 @@ mod tests {
                     host_wall_handle: acadrust::Handle::from(101u64),
                     kind: OpeningKind::Door,
                     style_id: None,
+                    division_override: None,
                     distance_along_axis: 3.0, // center at world x = 13.0, relative x = 3.0
                     width: 1.0,
                     height: 2.1,
@@ -1850,6 +1937,7 @@ mod tests {
                 host_wall_handle: acadrust::Handle::from(100u64),
                 kind: OpeningKind::Door,
                 style_id: None,
+                division_override: None,
                 distance_along_axis: 3.0,
                 width: 1.0,
                 height: 2.1, // lintel head = 2.1 < 2.8
@@ -1954,6 +2042,7 @@ mod tests {
                 host_wall_handle: acadrust::Handle::from(100u64),
                 kind: OpeningKind::Door,
                 style_id: None,
+                division_override: None,
                 distance_along_axis: 3.0,
                 width: 1.0,
                 height: 2.8, // Full-height: op_head == 2.8 == wall.top_z
@@ -2053,6 +2142,7 @@ mod tests {
                 host_wall_handle: acadrust::Handle::from(100u64),
                 kind: OpeningKind::Door,
                 style_id: None,
+                division_override: None,
                 distance_along_axis: 3.0,
                 width: 1.0,
                 height: 2.1,
@@ -2155,6 +2245,7 @@ mod tests {
                 host_wall_handle: acadrust::Handle::from(100u64),
                 kind: OpeningKind::Window,
                 style_id: None,
+                division_override: None,
                 distance_along_axis: 3.0,
                 width: 1.0,
                 height: 0.8,
@@ -2564,6 +2655,7 @@ mod tests {
                 host_wall_handle: acadrust::Handle::from(100u64),
                 kind: OpeningKind::Door,
                 style_id: None,
+                division_override: None,
                 distance_along_axis: 2.0,
                 width: 1.0,
                 height: 2.1,
@@ -2679,6 +2771,7 @@ mod tests {
                     host_wall_handle: acadrust::Handle::from(100u64),
                     kind: OpeningKind::Window,
                     style_id: None,
+                    division_override: None,
                     distance_along_axis: 2.5,
                     width: 1.0,
                     height: 1.3,
@@ -2701,6 +2794,7 @@ mod tests {
                     host_wall_handle: acadrust::Handle::from(100u64),
                     kind: OpeningKind::Door,
                     style_id: None,
+                    division_override: None,
                     distance_along_axis: 7.5,
                     width: 1.0,
                     height: 2.1,
@@ -2936,6 +3030,7 @@ mod tests {
                     host_wall_handle: acadrust::Handle::from(100u64),
                     kind: OpeningKind::Window,
                     style_id: None,
+                    division_override: None,
                     distance_along_axis: 2.5,
                     width: 1.0,
                     height: 1.3,
@@ -2957,6 +3052,7 @@ mod tests {
                     host_wall_handle: acadrust::Handle::from(100u64),
                     kind: OpeningKind::Door,
                     style_id: None,
+                    division_override: None,
                     distance_along_axis: 7.5,
                     width: 1.0,
                     height: 2.1,
@@ -3163,6 +3259,7 @@ mod tests {
                     host_wall_handle: acadrust::Handle::from(100u64),
                     kind: OpeningKind::Door,
                     style_id: None,
+                    division_override: None,
                     distance_along_axis: 1.5,
                     width: 1.0,
                     height: 2.5,
@@ -3185,6 +3282,7 @@ mod tests {
                     host_wall_handle: acadrust::Handle::from(100u64),
                     kind: OpeningKind::Door,
                     style_id: None,
+                    division_override: None,
                     distance_along_axis: 3.5,
                     width: 1.0,
                     height: 2.1,
@@ -3323,6 +3421,7 @@ mod tests {
                     host_wall_handle: acadrust::Handle::from(100u64),
                     kind: OpeningKind::Window,
                     style_id: None,
+                    division_override: None,
                     distance_along_axis: 2.5,
                     width: 1.2,
                     height: 1.2,
@@ -3438,6 +3537,7 @@ mod tests {
                     host_wall_handle: acadrust::Handle::from(100u64),
                     kind: OpeningKind::Door,
                     style_id: None,
+                    division_override: None,
                     distance_along_axis: 4.5,
                     width: 1.0,
                     height: 2.1,
@@ -3571,6 +3671,7 @@ mod tests {
                     host_wall_handle: acadrust::Handle::from(100u64),
                     kind: OpeningKind::Breakthrough,
                     style_id: None,
+                    division_override: None,
                     distance_along_axis: 2.5,
                     width: 1.0,
                     height: 1.0,

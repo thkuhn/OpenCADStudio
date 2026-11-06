@@ -712,9 +712,6 @@ pub fn build_effective_rule_set(
         }
     }
 
-    for (&slot, &vis) in &config.opening_visibility {
-        rules.visibility.insert(slot.key().to_string(), vis);
-    }
     for slot in crate::modules::aec::engine::display_component::OpeningComponentSlot::all() {
         let key = slot.key().to_string();
         let allowed_by_mode = match mode {
@@ -734,7 +731,42 @@ pub fn build_effective_rule_set(
         }
     }
     attach_opening_profiles(&mut rules, config);
+    apply_opening_level_visibility(&mut rules, &config.opening_levels);
     rules
+}
+
+/// Explicit plan levels hide the matching scene slots. Absent levels stay
+/// visible so the style suggestion is not treated as hidden.
+fn apply_opening_level_visibility(
+    rules: &mut ComponentRuleSet,
+    levels: &crate::modules::aec::engine::opening_style::OpeningLevelOverride,
+) {
+    use crate::modules::aec::engine::display_component::OpeningComponentSlot;
+    use crate::modules::aec::engine::opening_style::{
+        DivisionLevel, ElevationFrameLevel, PlanFrameLevel, SwingGlyph,
+    };
+    let mut hide = |slot: OpeningComponentSlot| {
+        rules.visibility.insert(slot.key().to_string(), false);
+    };
+    if levels.swing == Some(SwingGlyph::Off) {
+        hide(OpeningComponentSlot::Swing2D);
+        hide(OpeningComponentSlot::ElevationSwing2D);
+        hide(OpeningComponentSlot::BreakthroughSymbol2D);
+    }
+    if levels.plan_frame == Some(PlanFrameLevel::Off) {
+        hide(OpeningComponentSlot::Frame2D);
+        hide(OpeningComponentSlot::Leaf2D);
+    }
+    if levels.elevation_frame == Some(ElevationFrameLevel::Off) {
+        hide(OpeningComponentSlot::ElevationContour2D);
+    }
+    if levels.divisions == Some(DivisionLevel::Off) {
+        hide(OpeningComponentSlot::ElevationMuntins2D);
+    }
+    if levels.section.glazing == Some(false) {
+        hide(OpeningComponentSlot::Glazing2D);
+        hide(OpeningComponentSlot::Glazing3D);
+    }
 }
 
 /// Plan-type + representation visibility for slab display slots, starting from
@@ -774,7 +806,7 @@ pub fn build_effective_slab_rule_set(
                 !is_rcp && detail.hatches && detail.layers != LayerDetail::Off
             }
             SlabComponentSlot::OpeningContour2D => true,
-            SlabComponentSlot::OpeningSymbol2D => !is_rcp && detail.opening_symbols,
+            SlabComponentSlot::OpeningSymbol2D => !is_rcp,
             SlabComponentSlot::Solid3D => true,
             SlabComponentSlot::SurfaceStyle3D => true,
         };
@@ -848,10 +880,6 @@ fn apply_wall_detail(rules: &mut ComponentRuleSet, detail: &DetailProfile, style
     }
     if !detail.annotation {
         hide(OpeningComponentSlot::OpeningLabel2D.key());
-    }
-    if !detail.opening_symbols {
-        hide(OpeningComponentSlot::Swing2D.key());
-        hide(OpeningComponentSlot::BreakthroughSymbol2D.key());
     }
     if detail.layers == LayerDetail::StructuralOnly {
         if let Some(style) = style {
@@ -3053,7 +3081,11 @@ fn library_source_missing_layer_ids(content: &str) -> bool {
 
 /// Standard preset ids stored in `DisplayConfig::preset`.
 pub const PRESET_ENTWURF_100: &str = "entwurf-100";
+pub const PRESET_NORMAL: &str = "normal";
 pub const PRESET_WERKPLAN_50: &str = "werkplan-50";
+pub const PRESET_STATIK_50: &str = "statik-50";
+pub const PRESET_FASSADE: &str = "fassade-100";
+pub const PRESET_MODEL_3D: &str = "model-3d";
 pub const PRESET_DECKENSPIEGEL: &str = "deckenspiegel";
 
 /// A collection of [`DisplayConfig`]s ("Plans"), persisted analogously to
@@ -3085,10 +3117,9 @@ impl DisplayConfigLibrary {
 
     /// Seed default discipline configurations: Architektur 1:50, Statik 1:50, Entwurf 1:100, Ansicht Fassade.
     pub fn seed_default_configs() -> Self {
-        use crate::modules::aec::engine::display_component::OpeningComponentSlot;
+        use crate::modules::aec::engine::opening_style::OpeningLevelOverride;
         use crate::modules::aec::engine::plan_view::{PlanningStage, ViewType};
 
-        // 1. "Architektur 1:50": all plan slots active
         let mut arch_50 = DisplayConfig::new(
             "Architektur 1:50".to_string(),
             "Architektur".to_string(),
@@ -3098,16 +3129,19 @@ impl DisplayConfigLibrary {
         arch_50.scale = Some(50.0);
         arch_50.preset = Some(PRESET_WERKPLAN_50.to_string());
         arch_50.detail.representation = RepresentationMode::TwoD;
-        arch_50.opening_visibility.insert(OpeningComponentSlot::HostCut2D, true);
-        arch_50.opening_visibility.insert(OpeningComponentSlot::Frame2D, true);
-        arch_50.opening_visibility.insert(OpeningComponentSlot::Leaf2D, true);
-        arch_50.opening_visibility.insert(OpeningComponentSlot::Swing2D, true);
-        arch_50.opening_visibility.insert(OpeningComponentSlot::Glazing2D, true);
-        arch_50.opening_visibility.insert(OpeningComponentSlot::Sill2D, true);
-        arch_50.opening_visibility.insert(OpeningComponentSlot::Threshold2D, true);
-        arch_50.opening_visibility.insert(OpeningComponentSlot::OpeningLabel2D, true);
+        arch_50.opening_levels = OpeningLevelOverride::detail();
 
-        // 2. "Statik 1:50": only HostCut2D and OpeningLabel2D active!
+        let mut normal = DisplayConfig::new(
+            "Architektur 1:100".to_string(),
+            "Architektur".to_string(),
+            PlanningStage::Design,
+            ViewType::FloorPlan,
+        );
+        normal.scale = Some(100.0);
+        normal.preset = Some(PRESET_NORMAL.to_string());
+        normal.detail.representation = RepresentationMode::TwoD;
+        normal.opening_levels = OpeningLevelOverride::normal();
+
         let mut stat_50 = DisplayConfig::new(
             "Statik 1:50".to_string(),
             "Statik".to_string(),
@@ -3115,18 +3149,10 @@ impl DisplayConfigLibrary {
             ViewType::FloorPlan,
         );
         stat_50.scale = Some(50.0);
+        stat_50.preset = Some(PRESET_STATIK_50.to_string());
         stat_50.detail.representation = RepresentationMode::TwoD;
-        stat_50.opening_visibility.insert(OpeningComponentSlot::HostCut2D, true);
-        stat_50.opening_visibility.insert(OpeningComponentSlot::Frame2D, false);
-        stat_50.opening_visibility.insert(OpeningComponentSlot::Leaf2D, false);
-        stat_50.opening_visibility.insert(OpeningComponentSlot::Swing2D, false);
-        stat_50.opening_visibility.insert(OpeningComponentSlot::Glazing2D, false);
-        stat_50.opening_visibility.insert(OpeningComponentSlot::Sill2D, false);
-        stat_50.opening_visibility.insert(OpeningComponentSlot::Threshold2D, false);
-        stat_50.opening_visibility.insert(OpeningComponentSlot::BreakthroughSymbol2D, true);
-        stat_50.opening_visibility.insert(OpeningComponentSlot::OpeningLabel2D, true);
+        stat_50.opening_levels = OpeningLevelOverride::structural();
 
-        // 3. "Entwurf 1:100": standard details without glazing line or threshold
         let mut entw_100 = DisplayConfig::new(
             "Entwurf 1:100".to_string(),
             "Architektur".to_string(),
@@ -3137,51 +3163,28 @@ impl DisplayConfigLibrary {
         entw_100.preset = Some(PRESET_ENTWURF_100.to_string());
         entw_100.detail.hatches = false;
         entw_100.detail.representation = RepresentationMode::TwoD;
-        entw_100.opening_visibility.insert(OpeningComponentSlot::HostCut2D, true);
-        entw_100.opening_visibility.insert(OpeningComponentSlot::Frame2D, true);
-        entw_100.opening_visibility.insert(OpeningComponentSlot::Leaf2D, true);
-        entw_100.opening_visibility.insert(OpeningComponentSlot::Swing2D, true);
-        entw_100.opening_visibility.insert(OpeningComponentSlot::Glazing2D, false);
-        entw_100.opening_visibility.insert(OpeningComponentSlot::Sill2D, true);
-        entw_100.opening_visibility.insert(OpeningComponentSlot::Threshold2D, false);
-        entw_100.opening_visibility.insert(OpeningComponentSlot::OpeningLabel2D, true);
+        entw_100.opening_levels = OpeningLevelOverride::coarse();
 
-        // 4. "Ansicht Fassade": all elevation slots active, plan slots inactive
         let mut elev = DisplayConfig::new(
             "Ansicht Fassade".to_string(),
             "Architektur".to_string(),
             PlanningStage::Design,
             ViewType::Elevation,
         );
+        elev.preset = Some(PRESET_FASSADE.to_string());
         elev.detail.representation = RepresentationMode::TwoD;
-        elev.opening_visibility.insert(OpeningComponentSlot::ElevationContour2D, true);
-        elev.opening_visibility.insert(OpeningComponentSlot::ElevationMuntins2D, true);
-        elev.opening_visibility.insert(OpeningComponentSlot::ElevationSwing2D, true);
-        elev.opening_visibility.insert(OpeningComponentSlot::ElevationSill2D, true);
-        elev.opening_visibility.insert(OpeningComponentSlot::Frame2D, false);
-        elev.opening_visibility.insert(OpeningComponentSlot::Leaf2D, false);
-        elev.opening_visibility.insert(OpeningComponentSlot::Swing2D, false);
+        elev.opening_levels = OpeningLevelOverride::elevation();
 
-        // 5. "3D Modell / Visualisierung": 3D solid representation, 2D plan slots inactive
         let mut model_3d = DisplayConfig::new(
             "3D Modell / Visualisierung".to_string(),
             "Visualisierung".to_string(),
             PlanningStage::Design,
             ViewType::FloorPlan,
         );
+        model_3d.preset = Some(PRESET_MODEL_3D.to_string());
         model_3d.detail.representation = RepresentationMode::ThreeD;
-        model_3d.opening_visibility.insert(OpeningComponentSlot::Frame3D, true);
-        model_3d.opening_visibility.insert(OpeningComponentSlot::Leaf3D, true);
-        model_3d.opening_visibility.insert(OpeningComponentSlot::Glazing3D, true);
-        model_3d.opening_visibility.insert(OpeningComponentSlot::Frame2D, false);
-        model_3d.opening_visibility.insert(OpeningComponentSlot::Leaf2D, false);
-        model_3d.opening_visibility.insert(OpeningComponentSlot::Swing2D, false);
-        model_3d.opening_visibility.insert(OpeningComponentSlot::Glazing2D, false);
-        model_3d.opening_visibility.insert(OpeningComponentSlot::Sill2D, false);
-        model_3d.opening_visibility.insert(OpeningComponentSlot::Threshold2D, false);
-        model_3d.opening_visibility.insert(OpeningComponentSlot::OpeningLabel2D, false);
+        model_3d.opening_levels = OpeningLevelOverride::model_3d();
 
-        // 6. "Deckenspiegel": reflected ceiling plan (ceiling outline, no floor hatches/symbols)
         let mut rcp = DisplayConfig::new(
             "Deckenspiegel".to_string(),
             "Architektur".to_string(),
@@ -3193,14 +3196,14 @@ impl DisplayConfigLibrary {
         rcp.detail = DetailProfile {
             layers: LayerDetail::Off,
             hatches: false,
-            opening_symbols: false,
             ceiling_view: true,
             representation: RepresentationMode::TwoD,
             ..DetailProfile::default()
         };
+        rcp.opening_levels = OpeningLevelOverride::coarse();
 
         Self {
-            configs: vec![arch_50, stat_50, entw_100, elev, model_3d, rcp],
+            configs: vec![arch_50, normal, stat_50, entw_100, elev, model_3d, rcp],
             scale_display_config_mappings: Vec::new(),
         }
     }
@@ -3235,7 +3238,11 @@ pub fn display_config_library_to_toml(lib: &DisplayConfigLibrary) -> Result<Stri
 
 /// Deserializes the display-config library from a string.
 pub fn display_config_library_from_toml(s: &str) -> Result<DisplayConfigLibrary, String> {
-    serde_json::from_str(s).map_err(|e| e.to_string())
+    let mut lib: DisplayConfigLibrary = serde_json::from_str(s).map_err(|e| e.to_string())?;
+    for config in &mut lib.configs {
+        config.apply_preset_defaults_if_unset();
+    }
+    Ok(lib)
 }
 
 /// Returns the default path for the AEC display-config ("Plan") library
@@ -3798,7 +3805,8 @@ mod tests {
     #[test]
     fn seed_default_library_includes_opening_styles() {
         use crate::modules::aec::engine::opening_style::{
-            OpeningGenerator, SlotGeometry, SEED_BREAKTHROUGH_STYLE_ID, SEED_DOOR_STYLE_ID,
+            default_slots_for_kind, OpeningStyle, DEFAULT_FRAME_THICKNESS,
+            SEED_BREAKTHROUGH_STYLE_ID, SEED_DOOR_STYLE_ID,
             SEED_WINDOW_STYLE_ID,
         };
         use crate::modules::aec::engine::display_component::OpeningComponentSlot;
@@ -3808,7 +3816,8 @@ mod tests {
         assert_eq!(lib.opening_styles.len(), 10);
         let window = lib.find_opening_style(SEED_WINDOW_STYLE_ID).expect("window seed");
         assert_eq!(window.kind, OpeningKind::Window);
-        assert!((window.frame_thickness - 0.06).abs() < 1e-12);
+        assert!((window.parts.fixed_frame.face_width - DEFAULT_FRAME_THICKNESS).abs() < 1e-12);
+        assert_eq!(window.grid, OpeningStyle::standard_window().grid);
         let door = lib.find_opening_style(SEED_DOOR_STYLE_ID).expect("door seed");
         assert_eq!(door.kind, OpeningKind::Door);
         let br = lib
@@ -3818,11 +3827,9 @@ mod tests {
         assert!((br.default_width - 1.0).abs() < 1e-12);
         assert!((br.default_height - 2.0).abs() < 1e-12);
         assert!((br.default_sill - 0.1).abs() < 1e-12);
-        assert_eq!(
-            br.slots.get(&OpeningComponentSlot::Mark2D),
-            Some(&SlotGeometry::Generator(OpeningGenerator::Cross))
-        );
-        assert!(!br.slots.contains_key(&OpeningComponentSlot::Swing2D));
+        let fallback = default_slots_for_kind(br.kind);
+        assert!(fallback.contains_key(&OpeningComponentSlot::Mark2D));
+        assert!(!fallback.contains_key(&OpeningComponentSlot::Swing2D));
     }
 
     #[test]
@@ -4718,6 +4725,23 @@ mod tests {
         assert!(rcp.detail.ceiling_view);
         let entwurf = lib.configs.iter().find(|c| c.preset.as_deref() == Some(PRESET_ENTWURF_100)).unwrap();
         assert!(!entwurf.detail.hatches);
+        assert_eq!(
+            entwurf.opening_levels.plan_frame,
+            Some(crate::modules::aec::engine::opening_style::PlanFrameLevel::SingleLine)
+        );
+        assert_eq!(
+            entwurf.opening_levels.swing,
+            Some(crate::modules::aec::engine::opening_style::SwingGlyph::Off)
+        );
+        let detail = lib.configs.iter().find(|c| c.preset.as_deref() == Some(PRESET_WERKPLAN_50)).unwrap();
+        assert_eq!(
+            detail.opening_levels.plan_frame,
+            Some(crate::modules::aec::engine::opening_style::PlanFrameLevel::Profile)
+        );
+        assert_eq!(
+            detail.opening_levels.divisions,
+            Some(crate::modules::aec::engine::opening_style::DivisionLevel::PostsAndMuntins)
+        );
         let json = display_config_library_to_toml(&lib).unwrap();
         assert_eq!(display_config_library_from_toml(&json).unwrap(), lib);
     }

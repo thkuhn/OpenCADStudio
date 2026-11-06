@@ -172,6 +172,7 @@ impl OpenCADStudio {
     }
 
     pub(crate) fn aec_plan_manager_reset_display_buffers(&mut self) {
+        self.aec.styles.plan_opening_levels = Default::default();
         self.aec.styles.plan_editing_id = None;
         self.aec.styles.plan_detail = Default::default();
         self.aec.styles.plan_preset = None;
@@ -189,6 +190,7 @@ impl OpenCADStudio {
         &mut self,
         cfg: &crate::modules::aec::engine::plan_view::DisplayConfig,
     ) {
+        self.aec.styles.plan_opening_levels = cfg.opening_levels;
         self.aec.styles.plan_editing_id = Some(cfg.id);
         self.aec.styles.plan_detail = cfg.detail;
         self.aec.styles.plan_preset = cfg.preset.clone();
@@ -357,6 +359,7 @@ impl OpenCADStudio {
             self.aec.styles.plan_view_type.clone(),
         );
         config.scale = scale;
+        config.opening_levels = self.aec.styles.plan_opening_levels;
         if let Some(id) = self.aec.styles.plan_editing_id {
             config.id = id;
         }

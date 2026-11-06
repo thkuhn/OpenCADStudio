@@ -98,6 +98,7 @@ pub struct PlanConfigFormState<'a> {
     pub scale: &'a str,
     pub planning_stage: PlanningStage,
     pub view_type: ViewType,
+    pub opening_levels: crate::modules::aec::engine::opening_style::OpeningLevelOverride,
     /// Two-stage phase-filter editor, Stage 1: which phases are currently
     /// checked as visible (`PhaseFilter::visible_phases`).
     pub phase_filter_visible_existing: bool,
@@ -220,6 +221,143 @@ fn layer_detail_label(d: LayerDetail) -> String {
 const LAYER_DETAILS: [LayerDetail; 3] = [LayerDetail::All, LayerDetail::StructuralOnly, LayerDetail::Off];
 
 /// Detail level of the plan kind (`DetailProfile` switches).
+fn plan_opening_label(key: &str) -> String {
+    match key {
+        "opening-levels" => tr!("aec", "opening-levels"),
+        "opening-level-frame" => tr!("aec", "opening-level-frame"),
+        "opening-level-swing" => tr!("aec", "opening-level-swing"),
+        "opening-level-elevation" => tr!("aec", "opening-level-elevation"),
+        "opening-level-divisions" => tr!("aec", "opening-level-divisions"),
+        "opening-role-frame" => tr!("aec", "opening-role-frame"),
+        "opening-role-sill" => tr!("aec", "opening-role-sill"),
+        "opening-role-board" => tr!("aec", "opening-role-board"),
+        "opening-role-shutter" => tr!("aec", "opening-role-shutter"),
+        "opening-role-threshold" => tr!("aec", "opening-role-threshold"),
+        "opening-role-lintel" => tr!("aec", "opening-role-lintel"),
+        "opening-role-glazing" => tr!("aec", "opening-role-glazing"),
+        _ => key.to_string(),
+    }
+}
+
+fn opening_levels_section<'a>(
+    view_type: ViewType,
+    levels: crate::modules::aec::engine::opening_style::OpeningLevelOverride,
+) -> Element<'a, Message> {
+    use crate::modules::aec::engine::opening_style::{
+        ElevationFrameLevel, PlanFrameLevel, SwingGlyph,
+    };
+    let inherit = tr!("aec", "opening-level-inherit");
+    let mut col = column![text(plan_opening_label("opening-levels")).size(11).style(muted)].spacing(4);
+    match view_type {
+        ViewType::FloorPlan => {
+            col = col
+                .push(level_row(
+                    "opening-level-frame",
+                    "plan_frame",
+                    levels.plan_frame.map(|v| v.as_str().to_string()),
+                    &[
+                        inherit.clone(),
+                        PlanFrameLevel::Off.as_str().into(),
+                        PlanFrameLevel::SingleLine.as_str().into(),
+                        PlanFrameLevel::DoubleLine.as_str().into(),
+                        PlanFrameLevel::Profile.as_str().into(),
+                    ],
+                ))
+                .push(level_row(
+                    "opening-level-swing",
+                    "swing",
+                    levels.swing.map(|v| v.as_str().to_string()),
+                    &[
+                        inherit.clone(),
+                        SwingGlyph::Off.as_str().into(),
+                        SwingGlyph::Arc.as_str().into(),
+                        SwingGlyph::Triangle.as_str().into(),
+                    ],
+                ))
+                .push(division_row(levels.divisions, &inherit));
+        }
+        ViewType::Elevation => {
+            col = col
+                .push(level_row(
+                    "opening-level-elevation",
+                    "elevation_frame",
+                    levels.elevation_frame.map(|v| v.as_str().to_string()),
+                    &[
+                        inherit.clone(),
+                        ElevationFrameLevel::Off.as_str().into(),
+                        ElevationFrameLevel::Outline.as_str().into(),
+                        ElevationFrameLevel::FixedFrame.as_str().into(),
+                        ElevationFrameLevel::FixedAndLeaf.as_str().into(),
+                    ],
+                ))
+                .push(division_row(levels.divisions, &inherit));
+        }
+        ViewType::Section => {
+            col = col
+                .push(role_row("opening-role-frame", "section_frame", levels.section.frame, &inherit))
+                .push(role_row("opening-role-sill", "section_exterior_sill", levels.section.exterior_sill, &inherit))
+                .push(role_row("opening-role-board", "section_interior_board", levels.section.interior_board, &inherit))
+                .push(role_row("opening-role-shutter", "section_shutter_box", levels.section.shutter_box, &inherit))
+                .push(role_row("opening-role-threshold", "section_threshold", levels.section.threshold, &inherit))
+                .push(role_row("opening-role-lintel", "section_lintel", levels.section.lintel, &inherit))
+                .push(role_row("opening-role-glazing", "section_glazing", levels.section.glazing, &inherit));
+        }
+    }
+    col.into()
+}
+
+fn division_row<'a>(
+    value: Option<crate::modules::aec::engine::opening_style::DivisionLevel>,
+    inherit: &str,
+) -> Element<'a, Message> {
+    use crate::modules::aec::engine::opening_style::DivisionLevel;
+    level_row(
+        "opening-level-divisions",
+        "divisions",
+        value.map(|v| v.as_str().to_string()),
+        &[
+            inherit.to_string(),
+            DivisionLevel::Off.as_str().into(),
+            DivisionLevel::Posts.as_str().into(),
+            DivisionLevel::PostsAndMuntins.as_str().into(),
+        ],
+    )
+}
+
+fn level_row<'a>(
+    label_key: &'static str,
+    field: &'static str,
+    selected: Option<String>,
+    options: &[String],
+) -> Element<'a, Message> {
+    let shown = selected.unwrap_or_else(|| options.first().cloned().unwrap_or_default());
+    row![
+        text(plan_opening_label(label_key)).size(10).style(muted).width(140),
+        pick_list(Some(shown), options.to_vec(), |v: &String| v.clone())
+            .on_select(move |v| Message::Aec(AecMessage::AecPlanManagerOpeningLevelChanged(field.into(), v)))
+            .text_size(11)
+            .width(160),
+    ]
+    .spacing(6)
+    .into()
+}
+
+fn role_row<'a>(
+    label_key: &'static str,
+    field: &'static str,
+    value: Option<bool>,
+    inherit: &str,
+) -> Element<'a, Message> {
+    let on = tr!("aec", "opening-role-on");
+    let off = tr!("aec", "opening-role-off");
+    let shown = match value {
+        Some(true) => on.clone(),
+        Some(false) => off.clone(),
+        None => inherit.to_string(),
+    };
+    level_row(label_key, field, Some(shown), &[inherit.to_string(), on, off])
+}
+
 fn detail_section<'a>(detail: DetailProfile) -> Element<'a, Message> {
     let toggle = |label: String, value: bool, switch: DetailSwitch| {
         iced::widget::checkbox(value)
@@ -245,7 +383,6 @@ fn detail_section<'a>(detail: DetailProfile) -> Element<'a, Message> {
             .spacing(8),
             toggle(t!("Schraffuren").into_owned(), detail.hatches, DetailSwitch::Hatches),
             toggle(t!("Beschriftung").into_owned(), detail.annotation, DetailSwitch::Annotation),
-            toggle(t!("Öffnungssymbole").into_owned(), detail.opening_symbols, DetailSwitch::OpeningSymbols),
             toggle(t!("Deckenspiegel").into_owned(), detail.ceiling_view, DetailSwitch::CeilingView),
         ]
         .spacing(6),
@@ -321,6 +458,8 @@ fn config_form_view<'a>(form: PlanConfigFormState<'a>) -> Element<'a, Message> {
             .width(160),
         ]
         .spacing(8),
+        Space::new().height(6),
+        opening_levels_section(form.view_type, form.opening_levels),
         Space::new().height(6),
         detail_section(form.detail),
         Space::new().height(6),

@@ -26,7 +26,6 @@ pub mod material;
 pub mod miter;
 pub mod opening_display;
 pub mod opening_shape;
-pub mod opening_sketch;
 pub mod opening_style;
 pub mod opening_xdata;
 pub mod openings;

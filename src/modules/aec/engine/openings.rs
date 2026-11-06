@@ -36,7 +36,7 @@ use serde::{Deserialize, Serialize};
 use super::contour::outer_contour;
 use super::geometry::area;
 use super::opening_shape::OpeningShape;
-use super::opening_style::HingeSide;
+use super::opening_style::{DivisionGrid, HingeSide};
 
 /// Window, door, or breakthrough (same POINT + XDATA host).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -198,6 +198,8 @@ pub struct Opening {
     pub kind: OpeningKind,
     /// Library style; `None` on legacy 7-value XDATA records.
     pub style_id: Option<String>,
+    /// Optional per-instance division template overriding the style grid.
+    pub division_override: Option<DivisionGrid>,
     pub hinge: HingeSide,
     pub shape: OpeningShape,
     /// Arch Kämpfer above the sill. Unused for other shapes; `0` on legacy records.
@@ -263,6 +265,7 @@ impl Opening {
             sill_height,
             kind,
             style_id: None,
+            division_override: None,
             hinge: HingeSide::Left,
             shape: OpeningShape::Rectangle,
             spring_height: 0.0,

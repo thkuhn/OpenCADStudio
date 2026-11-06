@@ -404,6 +404,9 @@ impl ProjectFile {
                 project
                     .material_wall_style_library
                     .stamp_origin(crate::modules::aec::engine::style_common::StyleOrigin::Project);
+                for config in &mut project.display_config_library.configs {
+                    config.apply_preset_defaults_if_unset();
+                }
                 Ok(project)
             }
             Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(ProjectFile::default()),
