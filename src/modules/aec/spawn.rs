@@ -9,6 +9,7 @@ use uuid::Uuid;
 use crate::app::{Message, OpenCADStudio};
 use crate::command::CadCommand;
 use crate::modules::aec::engine::join_ops::aec_walljoin_do;
+use crate::modules::aec::engine::storey_xdata::{linked_storey, write_storey_link};
 use crate::modules::aec::engine::xdata::ensure_wall_app_id;
 use crate::modules::aec::engine::wall_package::{is_wall_pick_target, resolve_wall_package};
 use crate::modules::aec::engine::wall_regen::toggle_controlplanes_layer;
@@ -104,6 +105,7 @@ pub(crate) fn try_dispatch(
             StylesNode::Materials,
         )))),
         "AEC_PROJECTEXPLORER" => Some(Task::done(Message::Aec(AecMessage::AecProjectExplorerOpen))),
+        "AEC_STOREY" => Some(dispatch_storey(app, tab, cmd)),
         "AEC_STYLEMANAGER" => Some(Task::done(Message::Aec(AecMessage::AecStylesOpen(
             StylesNode::Wall,
         )))),
@@ -231,6 +233,9 @@ pub(crate) fn try_dispatch(
             Some(app.finish_dispatch(cmd))
         }
         "AEC_IFCEXPORT" => {
+            if let Some(storey) = project_storey_for_tab(app, tab) {
+                let _ = sync_project_storey_link(app, tab, &storey);
+            }
             aec_ifc_export(&mut app.tabs[tab].scene, &mut app.command_line);
             Some(app.finish_dispatch(cmd))
         }
@@ -1043,6 +1048,61 @@ fn storey_matching_tab<'a>(
         .map(|(_, s)| s)
 }
 
+fn project_storey_for_tab(app: &OpenCADStudio, tab: usize) -> Option<StoreyRef> {
+    let drawing_path = app.tabs.get(tab)?.drawing_path()?;
+    let base_dir = app
+        .aec
+        .aec_project_explorer_path
+        .as_deref()
+        .and_then(Path::parent);
+    app.aec
+        .aec_project_explorer_file
+        .as_ref()
+        .and_then(|project| storey_matching_tab(project, Some(drawing_path), base_dir))
+        .cloned()
+}
+
+fn sync_project_storey_link(
+    app: &mut OpenCADStudio,
+    tab: usize,
+    storey: &StoreyRef,
+) -> Option<Handle> {
+    let cached_storey = crate::modules::aec::engine::Storey::new(
+        storey.name.clone(),
+        storey.derived_elevation(),
+        storey.derived_height(),
+    );
+    let link_is_current = linked_storey(&app.tabs.get(tab)?.scene.document)
+        .is_some_and(|(_, cached, id)| id == storey.id && cached == cached_storey);
+    let handle = write_storey_link(&mut app.tabs.get_mut(tab)?.scene, storey);
+    if !link_is_current {
+        app.tabs.get_mut(tab)?.dirty = true;
+    }
+    Some(handle)
+}
+
+fn dispatch_storey(app: &mut OpenCADStudio, tab: usize, cmd: &str) -> Task<Message> {
+    if let Some(storey) = project_storey_for_tab(app, tab) {
+        if let Some(handle) = sync_project_storey_link(app, tab, &storey) {
+            app.command_line.push_info(
+                &crate::tr!(
+                    "aec",
+                    "storey-link-synced",
+                    name = storey.name.as_str(),
+                    handle = handle.to_string()
+                ),
+            );
+        } else {
+            app.command_line
+                .push_info(&crate::tr!("aec", "storey-defined-in-project"));
+        }
+    } else {
+        app.command_line
+            .push_info(&crate::tr!("aec", "storey-defined-in-project"));
+    }
+    app.finish_dispatch(cmd)
+}
+
 fn resolve_control_plane_storey_ids(
     project: &ProjectFile,
     current_path: Option<&Path>,
@@ -1137,6 +1197,88 @@ mod tests {
         }
         assert!(spawn_command("AEC_WALL_REFRESH").is_none());
         assert!(spawn_command("LINE").is_none());
+    }
+
+    #[test]
+    fn aec_storey_links_the_matching_project_storey() {
+        let temp_project = TempProjectRoot::new("storey_link");
+        let drawing_path = temp_project.path.join("EG.dwg");
+        std::fs::write(&drawing_path, b"drawing").expect("write drawing");
+
+        let mut app = OpenCADStudio::new_for_test();
+        let tab = app.active_tab;
+        app.tabs[tab].set_drawing_path_for_test(drawing_path);
+        app.aec.aec_project_explorer_path = Some(temp_project.project_path());
+
+        let mut project = ProjectFile::default();
+        let mut building = Building::new("House");
+        let storey = StoreyRef::new_with_height("EG", 4.25, 2.85, "EG.dwg");
+        let storey_id = storey.id;
+        building.storeys.push(storey);
+        project.buildings.push(building);
+        app.aec.aec_project_explorer_file = Some(project);
+
+        assert!(try_dispatch(&mut app, "AEC_STOREY", tab).is_some());
+
+        let linked = linked_storey(&app.tabs[tab].scene.document).unwrap();
+        assert_eq!(linked.2, storey_id);
+        assert_eq!(linked.1.name, "EG");
+        assert!(app.tabs[tab].dirty);
+        assert_eq!(app.tabs[tab].scene.document.entities().count(), 1);
+    }
+
+    #[test]
+    fn aec_storey_without_project_binding_does_not_create_a_level() {
+        let mut app = OpenCADStudio::new_for_test();
+        let tab = app.active_tab;
+
+        assert!(try_dispatch(&mut app, "AEC_STOREY", tab).is_some());
+
+        assert!(linked_storey(&app.tabs[tab].scene.document).is_none());
+        assert_eq!(app.tabs[tab].scene.document.entities().count(), 0);
+    }
+
+    #[test]
+    fn project_storey_sync_refreshes_cache_for_ifc_export() {
+        let temp_project = TempProjectRoot::new("ifc_storey_sync");
+        let drawing_path = temp_project.path.join("EG.dwg");
+        std::fs::write(&drawing_path, b"drawing").expect("write drawing");
+
+        let mut app = OpenCADStudio::new_for_test();
+        let tab = app.active_tab;
+        app.tabs[tab].set_drawing_path_for_test(drawing_path);
+        app.aec.aec_project_explorer_path = Some(temp_project.project_path());
+
+        let mut live_storey = StoreyRef::new_with_height("Current", 0.0, 3.0, "EG.dwg");
+        let storey_id = live_storey.id;
+        let mut stale_storey = live_storey.clone();
+        stale_storey.name = "Stale cache".to_string();
+        stale_storey.set_elevation(-2.0);
+        stale_storey.set_height(2.0);
+        let stale_handle = write_storey_link(&mut app.tabs[tab].scene, &stale_storey);
+
+        live_storey.set_elevation(4.0);
+        live_storey.set_height(3.5);
+        let mut building = Building::new("House");
+        building.storeys.push(live_storey);
+        let mut project = ProjectFile::default();
+        project.buildings.push(building);
+        app.aec.aec_project_explorer_file = Some(project);
+
+        let matched_storey = project_storey_for_tab(&app, tab).expect("matching project storey");
+        assert_eq!(
+            sync_project_storey_link(&mut app, tab, &matched_storey),
+            Some(stale_handle)
+        );
+
+        let (storey_id_on_drawing, linked, linked_project_id) =
+            linked_storey(&app.tabs[tab].scene.document).unwrap();
+        assert_eq!(storey_id_on_drawing, 0);
+        assert_eq!(linked_project_id, storey_id);
+        assert_eq!(linked.name, "Current");
+        assert!((linked.elevation - 4.0).abs() < 1e-9);
+        assert!((linked.height - 3.5).abs() < 1e-9);
+        assert!(app.tabs[tab].dirty);
     }
 
     #[test]

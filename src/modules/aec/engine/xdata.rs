@@ -1245,7 +1245,6 @@ pub use crate::modules::aec::rooms::room::aec_room;
 pub use crate::modules::aec::rooms::schedule::aec_room_schedule;
 pub use crate::modules::aec::styles::material_manager::{MaterialCommand, aec_material_add};
 pub use crate::modules::aec::styles::wall_style_manager::{StyleCommand, aec_style_add};
-pub use crate::modules::aec::project::storeys::aec_storey;
 pub use crate::modules::aec::ifc::export::aec_ifc_export;
 pub use crate::modules::aec::walls::reverse::{WallReverseCommand, aec_wallreverse_do};
 

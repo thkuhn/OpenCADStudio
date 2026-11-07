@@ -209,28 +209,55 @@ impl OpenCADStudio {
         if tab_index >= self.tabs.len() || self.tabs[tab_index].is_start {
             return;
         }
-        let Some(drawing_path) = self.tabs[tab_index].drawing_path() else {
-            return;
-        };
-        let Some(project) = self.aec.aec_project_explorer_file.as_ref() else {
+        let Some(drawing_path) = self.tabs[tab_index]
+            .drawing_path()
+            .map(std::path::Path::to_path_buf)
+        else {
             return;
         };
         let base_dir = self
             .aec
             .aec_project_explorer_path
             .as_deref()
-            .and_then(|p| p.parent());
-        if let Some((building, storey)) =
-            project.find_storey_by_drawing_path_with_base(base_dir, drawing_path)
-        {
-            let bid = building.id;
-            let sid = storey.id;
-            self.aec.aec_project_explorer_selected_building = Some(bid);
-            self.aec.aec_project_explorer_selected_storey = Some((bid, sid));
-            self.aec.aec_project_explorer_edit_building_name = building.name.clone();
-            self.aec.aec_project_explorer_edit_storey_name = storey.name.clone();
-            self.aec.aec_project_explorer_edit_elevation = format!("{:.3}", storey.elevation);
-            self.aec.aec_project_explorer_edit_storey_drawing = storey.drawing_path.clone();
+            .and_then(|path| path.parent().map(std::path::Path::to_path_buf));
+        let matched = self
+            .aec
+            .aec_project_explorer_file
+            .as_ref()
+            .and_then(|project| {
+                project
+                    .find_storey_by_drawing_path_with_base(base_dir.as_deref(), &drawing_path)
+                    .map(|(building, storey)| {
+                        (building.id, building.name.clone(), storey.clone())
+                    })
+            });
+        let Some((bid, building_name, storey)) = matched else {
+            return;
+        };
+
+        self.aec.aec_project_explorer_selected_building = Some(bid);
+        self.aec.aec_project_explorer_selected_storey = Some((bid, storey.id));
+        self.aec.aec_project_explorer_edit_building_name = building_name;
+        self.aec.aec_project_explorer_edit_storey_name = storey.name.clone();
+        self.aec.aec_project_explorer_edit_elevation =
+            format!("{:.3}", storey.derived_elevation());
+        self.aec.aec_project_explorer_edit_storey_drawing = storey.drawing_path.clone();
+
+        let cached_storey = crate::modules::aec::engine::Storey::new(
+            storey.name.clone(),
+            storey.derived_elevation(),
+            storey.derived_height(),
+        );
+        let link_is_current = crate::modules::aec::engine::storey_xdata::linked_storey(
+            &self.tabs[tab_index].scene.document,
+        )
+        .is_some_and(|(_, cached, id)| id == storey.id && cached == cached_storey);
+        crate::modules::aec::engine::storey_xdata::write_storey_link(
+            &mut self.tabs[tab_index].scene,
+            &storey,
+        );
+        if !link_is_current {
+            self.tabs[tab_index].dirty = true;
         }
     }
 }
@@ -350,11 +377,29 @@ mod tests {
         app.aec_auto_open_project_for_tab(0);
         assert_eq!(app.aec.aec_project_explorer_edit_storey_name, "EG");
         assert_eq!(app.aec.aec_project_explorer_edit_elevation, "0.000");
+        let eg_id = app.aec.aec_project_explorer_file.as_ref().unwrap().buildings[0].storeys[0].id;
+        assert_eq!(
+            crate::modules::aec::engine::storey_xdata::linked_storey(
+                &app.tabs[0].scene.document
+            )
+            .unwrap()
+            .2,
+            eg_id
+        );
 
         // Switch to tab 1 (OG)
         app.aec_sync_active_storey_for_tab(1);
         assert_eq!(app.aec.aec_project_explorer_edit_storey_name, "OG");
         assert_eq!(app.aec.aec_project_explorer_edit_elevation, "3.200");
+        let og_id = app.aec.aec_project_explorer_file.as_ref().unwrap().buildings[0].storeys[1].id;
+        assert_eq!(
+            crate::modules::aec::engine::storey_xdata::linked_storey(
+                &app.tabs[1].scene.document
+            )
+            .unwrap()
+            .2,
+            og_id
+        );
 
         // Switch back to tab 0 (EG)
         app.aec_sync_active_storey_for_tab(0);

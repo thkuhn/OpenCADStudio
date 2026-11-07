@@ -112,6 +112,52 @@ impl OpenCADStudio {
                 });
             }
         }
+
+        let Some(storey) = self.with_storey(bid, sid, |storey| storey.clone()) else {
+            return;
+        };
+        let tab_index = self.active_tab;
+        let Some(drawing_path) = self
+            .tabs
+            .get(tab_index)
+            .and_then(|tab| tab.drawing_path())
+            .map(std::path::Path::to_path_buf)
+        else {
+            return;
+        };
+        let base_dir = self
+            .aec
+            .aec_project_explorer_path
+            .as_deref()
+            .and_then(|path| path.parent().map(std::path::Path::to_path_buf));
+        let matches_target = self
+            .aec
+            .aec_project_explorer_file
+            .as_ref()
+            .and_then(|project| {
+                project.find_storey_by_drawing_path_with_base(base_dir.as_deref(), &drawing_path)
+            })
+            .is_some_and(|(building, matched)| building.id == bid && matched.id == sid);
+        if !matches_target {
+            return;
+        }
+
+        let cached_storey = crate::modules::aec::engine::Storey::new(
+            storey.name.clone(),
+            storey.derived_elevation(),
+            storey.derived_height(),
+        );
+        let link_is_current = crate::modules::aec::engine::storey_xdata::linked_storey(
+            &self.tabs[tab_index].scene.document,
+        )
+        .is_some_and(|(_, cached, id)| id == sid && cached == cached_storey);
+        crate::modules::aec::engine::storey_xdata::write_storey_link(
+            &mut self.tabs[tab_index].scene,
+            &storey,
+        );
+        if !link_is_current {
+            self.tabs[tab_index].dirty = true;
+        }
     }
 
     pub(crate) fn apply_storey_z_to_active_scene(&mut self, bid: uuid::Uuid, sid: uuid::Uuid) {
@@ -144,6 +190,43 @@ mod tests {
     use crate::modules::aec::engine::control_plane::{ControlPlane, ControlPlaneFacet};
     use crate::modules::aec::engine::project::Building;
     use crate::modules::aec::engine::wall::Wall;
+
+    #[test]
+    fn commit_storey_settings_updates_link_for_matching_tab() {
+        let project_root = std::env::temp_dir().join(format!(
+            "opencadstudio_storey_settings_link_{}",
+            uuid::Uuid::new_v4()
+        ));
+        let drawing_path = project_root.join("EG.dwg");
+        let project_path = project_root.join("project.ocsproj");
+        let storey = StoreyRef::new("EG", 0.0, drawing_path.to_string_lossy());
+        let storey_id = storey.id;
+        let mut building = Building::new("House");
+        let building_id = building.id;
+        building.storeys.push(storey.clone());
+        let mut project = ProjectFile::default();
+        project.buildings.push(building);
+
+        let mut app = crate::app::OpenCADStudio::new_for_test();
+        let tab = app.active_tab;
+        app.tabs[tab].set_drawing_path_for_test(drawing_path);
+        app.aec.aec_project_explorer_path = Some(project_path);
+        app.aec.aec_project_explorer_file = Some(project);
+        app.aec.aec_storey_settings_elevation = "4.250".to_string();
+        app.aec.aec_storey_settings_height = "3.150".to_string();
+
+        app.commit_storey_settings_buffers(building_id, storey_id);
+
+        let (linked_id, linked_storey, linked_project_id) = crate::modules::aec::engine::storey_xdata::linked_storey(
+            &app.tabs[tab].scene.document,
+        )
+        .unwrap();
+        assert_eq!(linked_id, 0);
+        assert_eq!(linked_project_id, storey_id);
+        assert!((linked_storey.elevation - 4.25).abs() < 1e-9);
+        assert!((linked_storey.height - 3.15).abs() < 1e-9);
+        assert!(app.tabs[tab].dirty);
+    }
 
     #[test]
     fn rebake_bound_walls_preserves_sloped_top_after_plane_deletion_and_storey_z_change() {

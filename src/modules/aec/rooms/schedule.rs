@@ -11,6 +11,7 @@ use crate::modules::aec::engine::room_package::{
     is_room_schedule, write_room_schedule_tag, AEC_ROOM_SCHEDULE_LAYER,
 };
 use crate::modules::aec::engine::room_xdata::room_from_entity;
+use crate::modules::aec::engine::storey_xdata::linked_storey;
 use crate::modules::{IconKind, ModuleEvent, ToolDef};
 use crate::scene::model::wire_model::WireModel;
 use crate::scene::Scene;
@@ -45,7 +46,7 @@ pub fn collect_all_rooms(scene: &Scene) -> Vec<Room> {
 }
 
 /// Constructs a DIN 277 / WoFlV room schedule CAD table at the given coordinate.
-pub fn build_room_schedule_table(rooms: &[Room], at: Vector3) -> Table {
+pub fn build_room_schedule_table(rooms: &[Room], at: Vector3, storey_name: Option<&str>) -> Table {
     let col_count = 12;
     let row_count = rooms.len() + 2;
     let mut table = Table::new(at, row_count, col_count);
@@ -95,7 +96,10 @@ pub fn build_room_schedule_table(rooms: &[Room], at: Vector3) -> Table {
         table.set_cell_text(row, 8, &format!("{:.2}", r.effective_volume()));
         table.set_cell_text(row, 9, &r.floor_finish_summary());
         table.set_cell_text(row, 10, &r.ceiling_finish_summary());
-        table.set_cell_text(row, 11, &r.storey_id.to_string());
+        let storey_label = storey_name
+            .map(str::to_owned)
+            .unwrap_or_else(|| r.storey_id.to_string());
+        table.set_cell_text(row, 11, &storey_label);
     }
 
     // Total / Summary row
@@ -134,13 +138,14 @@ pub fn update_all_room_schedules(scene: &mut Scene) {
     }
 
     let rooms = collect_all_rooms(scene);
+    let storey_name = linked_storey(&scene.document).map(|(_, storey, _)| storey.name);
 
     for h in schedule_handles {
         let pt = match scene.document.get_entity(h) {
             Some(EntityType::Table(t)) => t.insertion_point,
             _ => Vector3::ZERO,
         };
-        let mut new_table = build_room_schedule_table(&rooms, pt);
+        let mut new_table = build_room_schedule_table(&rooms, pt, storey_name.as_deref());
         if let Some(EntityType::Table(tbl)) = scene.document.get_entity_mut(h) {
             new_table.common = tbl.common.clone();
             *tbl = Box::new(new_table);
@@ -168,7 +173,8 @@ pub fn aec_room_schedule_at_point_with_stage(
     crate::modules::aec::views::title_block::ensure_aec_drawing_properties(scene, active_stage);
 
     scene.ensure_layer(AEC_ROOM_SCHEDULE_LAYER);
-    let table = build_room_schedule_table(&rooms, pos);
+    let storey_name = linked_storey(&scene.document).map(|(_, storey, _)| storey.name);
+    let table = build_room_schedule_table(&rooms, pos, storey_name.as_deref());
     let mut table_entity = EntityType::Table(Box::new(table));
     table_entity.common_mut().layer = AEC_ROOM_SCHEDULE_LAYER.to_string();
 
@@ -346,7 +352,47 @@ inventory::submit!(crate::command::CommandRegistration {
 mod tests {
     use super::*;
     use crate::modules::aec::engine::room::RoomFunction;
+    use crate::modules::aec::engine::project::StoreyRef;
+    use crate::modules::aec::engine::room_xdata::write_room_record;
     use crate::modules::aec::rooms::room::RoomCommand;
+    use crate::modules::aec::engine::storey_xdata::write_storey_link;
+    use acadrust::entities::Point;
+
+    #[test]
+    fn schedule_uses_linked_name_or_numeric_storey_id_fallback() {
+        let room = Room::from_polygon("Meeting", &[(0.0, 0.0), (4.0, 0.0), (4.0, 3.0)], 2.8, 12);
+
+        let named = build_room_schedule_table(&[room.clone()], Vector3::ZERO, Some("First Floor"));
+        assert_eq!(named.cell(1, 11).map(|cell| cell.text_value()), Some("First Floor"));
+
+        let fallback = build_room_schedule_table(&[room], Vector3::ZERO, None);
+        assert_eq!(fallback.cell(1, 11).map(|cell| cell.text_value()), Some("12"));
+    }
+
+    #[test]
+    fn schedule_creation_and_refresh_read_linked_storey_cache() {
+        let mut scene = Scene::new();
+        let room_handle = scene.add_entity(EntityType::Point(Point::at(Vector3::ZERO)));
+        let room = Room::from_polygon("Office", &[(0.0, 0.0), (3.0, 0.0), (3.0, 2.0)], 2.8, 9);
+        assert!(write_room_record(&mut scene.document, room_handle, &room));
+        let storey_ref = StoreyRef::new("Upper Floor", 3.0, "upper.dwg");
+        write_storey_link(&mut scene, &storey_ref);
+
+        let schedule_handle = aec_room_schedule_at_point(&mut scene, Vector3::ZERO).unwrap();
+        let EntityType::Table(table) = scene.document.get_entity(schedule_handle).unwrap() else {
+            panic!("expected room schedule table");
+        };
+        assert_eq!(table.cell(1, 11).map(|cell| cell.text_value()), Some("Upper Floor"));
+
+        let mut refreshed_storey_ref = storey_ref.clone();
+        refreshed_storey_ref.name = "Renamed Floor".to_string();
+        write_storey_link(&mut scene, &refreshed_storey_ref);
+        update_all_room_schedules(&mut scene);
+        let EntityType::Table(table) = scene.document.get_entity(schedule_handle).unwrap() else {
+            panic!("expected room schedule table after refresh");
+        };
+        assert_eq!(table.cell(1, 11).map(|cell| cell.text_value()), Some("Renamed Floor"));
+    }
 
     #[test]
     fn schedule_creates_and_updates_din277_table() {

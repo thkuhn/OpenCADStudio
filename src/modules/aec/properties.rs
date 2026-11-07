@@ -478,7 +478,7 @@ pub fn storey_prop_section(
 ) -> Option<crate::scene::model::object::PropSection> {
     use crate::scene::model::object::{PropSection, PropValue, Property};
 
-    let (storey_id, storey) = storey_xdata::storey_from_entity(entity)?;
+    let (storey_id, storey, _) = storey_xdata::storey_from_entity(entity)?;
     let storey_handle = entity.common().handle;
     let members = storey_xdata::walls_for_storey(scene, storey_handle);
 
