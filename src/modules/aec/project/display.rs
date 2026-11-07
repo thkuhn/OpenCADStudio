@@ -21,7 +21,7 @@ impl OpenCADStudio {
         let style_library = crate::modules::aec::engine::project::resolve_style_library(
             self.aec.aec_project_explorer_file.as_ref(),
         );
-        let active_name = self.tabs[tab_index].active_display_config.clone();
+        let (active_name, _) = self.aec_tab_display_state(tab_index);
         crate::modules::aec::engine::views::update_ops::regenerate_or_mark_outdated_with_libraries(
             &mut self.tabs[tab_index].scene.document,
             carrier_handle,
@@ -79,8 +79,7 @@ impl OpenCADStudio {
         // resolving them requires knowing which style this particular wall
         // uses; `style_substitutions` has no successor concept (removed
         // without migration), so it's always `None` from here on.
-        let session = self.tabs[tab_index].representation_override;
-        let config_name = self.tabs[tab_index].active_display_config.clone();
+        let (config_name, session) = self.aec_tab_display_state(tab_index);
         let Some(wall_handle) = wall_handle else {
             return (None, None);
         };
@@ -173,11 +172,8 @@ impl OpenCADStudio {
         tab_index: usize,
     ) -> crate::modules::aec::engine::room_regen::RoomDisplay {
         use crate::modules::aec::engine::room_regen::RoomDisplay;
-        let session = self.tabs[tab_index].representation_override;
-        let config = self.tabs[tab_index]
-            .active_display_config
-            .clone()
-            .and_then(|name| {
+        let (active_name, session) = self.aec_tab_display_state(tab_index);
+        let config = active_name.and_then(|name| {
                 self.aec
                     .aec_plan_library
                     .get_or_insert_with(|| {
@@ -213,8 +209,7 @@ impl OpenCADStudio {
         if self.tabs[tab_index].is_start {
             return;
         }
-        let session = self.tabs[tab_index].representation_override;
-        let name = self.tabs[tab_index].active_display_config.clone();
+        let (name, session) = self.aec_tab_display_state(tab_index);
         let style_library = crate::modules::aec::engine::project::resolve_style_library(
             self.aec.aec_project_explorer_file.as_ref(),
         );
@@ -285,8 +280,7 @@ impl OpenCADStudio {
         tab_index: usize,
         slab_handle: Option<acadrust::Handle>,
     ) -> Option<crate::modules::aec::engine::display_component::ComponentRuleSet> {
-        let session = self.tabs[tab_index].representation_override;
-        let config_name = self.tabs[tab_index].active_display_config.clone();
+        let (config_name, session) = self.aec_tab_display_state(tab_index);
         let Some(slab_handle) = slab_handle else {
             return None;
         };
@@ -478,7 +472,7 @@ impl OpenCADStudio {
                             let style_library = crate::modules::aec::engine::project::resolve_style_library(
                                 self.aec.aec_project_explorer_file.as_ref(),
                             );
-                            let active_name = self.tabs[tab_index].active_display_config.clone();
+                            let (active_name, _) = self.aec_tab_display_state(tab_index);
                             crate::modules::aec::views::din1356::sync_marker_to_carrier_with_libraries(
                                 &mut self.tabs[tab_index].scene.document,
                                 &marker,

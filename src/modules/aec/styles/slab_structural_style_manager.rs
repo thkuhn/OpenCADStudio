@@ -324,14 +324,13 @@ impl OpenCADStudio {
         let has_project = self.aec.aec_project_explorer_file.is_some();
         let mut removed = false;
 
-        if let Some(session_lib) = self.tabs[self.active_tab]
-            .aec_session_style_library_mut()
-            .as_mut()
-        {
-            if session_lib.remove_slab_structural_style(&selected) {
-                removed = true;
-            }
-        }
+        removed |= self
+            .aec_edit_session_style_library(self.active_tab, |library| {
+                library
+                    .as_mut()
+                    .is_some_and(|session| session.remove_slab_structural_style(&selected))
+            })
+            .unwrap_or(false);
 
         if has_project {
             if let Some(project) = self.aec.aec_project_explorer_file.as_mut() {

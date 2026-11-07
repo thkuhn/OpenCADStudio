@@ -520,6 +520,12 @@ impl OpenCADStudio {
         };
 
         let i = self.active_tab;
+        let (
+            active_plan_name,
+            plan_names,
+            representation_override,
+            representation_mode,
+        ) = self.aec_status_bar_display_state(i);
         let tab = &self.tabs[i];
         // Dynamic input is built before the status bar and properties panel,
         // so seed its shared formatter here rather than relying on either of
@@ -2929,28 +2935,10 @@ bg={bg_ms:.1}ms n={view_count}"
                                 .map(|s| s.to_string_lossy().into_owned())
                                 .unwrap_or_else(|| t!("Unsaved Project").into_owned())
                         }),
-                        active_plan_name: tab.active_display_config.clone(),
-                        plan_names: self
-                            .aec.aec_plan_library
-                            .as_ref()
-                            .map(|lib| lib.configs.iter().map(|c| c.name.clone()).collect())
-                            .unwrap_or_default(),
-                        representation_override: tab.representation_override,
-                        representation_mode: {
-                            use crate::modules::aec::engine::display_component::RepresentationMode;
-                            use crate::modules::aec::engine::library::effective_representation;
-                            tab.representation_override.unwrap_or_else(|| {
-                                tab.active_display_config
-                                    .as_deref()
-                                    .and_then(|name| {
-                                        self.aec.aec_plan_library
-                                            .as_ref()
-                                            .and_then(|lib| lib.find(name))
-                                    })
-                                    .map(|cfg| effective_representation(cfg, None))
-                                    .unwrap_or(RepresentationMode::All)
-                            })
-                        },
+                        active_plan_name,
+                        plan_names,
+                        representation_override,
+                        representation_mode,
                     };
                     self.status_bar.view(
                         &self.snapper,

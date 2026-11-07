@@ -34,10 +34,7 @@ impl OpenCADStudio {
     }
 
     pub(crate) fn aec_refresh_combined_style_library(&mut self) {
-        let session = self
-            .tabs
-            .get(self.active_tab)
-            .and_then(|t| t.aec_session_style_library().cloned());
+        let session = self.aec_session_style_library(self.active_tab).cloned();
         self.aec.aec_session_style_library = session;
         self.aec.aec_style_library = Some(
             crate::modules::aec::engine::library::combined_style_library_with_session(
@@ -52,7 +49,7 @@ impl OpenCADStudio {
             &self.tabs[tab_index].scene,
             self.aec.aec_project_explorer_file.as_ref(),
         );
-        self.tabs[tab_index].set_aec_session_style_library(session);
+        self.aec_set_session_style_library(tab_index, session);
         if tab_index == self.active_tab {
             self.aec_refresh_combined_style_library();
         }
@@ -62,10 +59,11 @@ impl OpenCADStudio {
         &mut self,
         material: crate::modules::aec::engine::material::Material,
     ) {
-        let lib = self.tabs[self.active_tab]
-            .aec_session_style_library_mut()
-            .get_or_insert_with(crate::modules::aec::engine::library::StyleLibrary::empty);
-        lib.upsert_material(material);
+        self.aec_edit_session_style_library(self.active_tab, |library| {
+            library
+                .get_or_insert_with(crate::modules::aec::engine::library::StyleLibrary::empty)
+                .upsert_material(material);
+        });
         self.aec_refresh_combined_style_library();
         self.command_line.push_info(
             crate::t!(
@@ -79,10 +77,11 @@ impl OpenCADStudio {
         &mut self,
         wall_style: crate::modules::aec::engine::wall_style::WallStyle,
     ) {
-        let lib = self.tabs[self.active_tab]
-            .aec_session_style_library_mut()
-            .get_or_insert_with(crate::modules::aec::engine::library::StyleLibrary::empty);
-        lib.upsert_wall_style(wall_style);
+        self.aec_edit_session_style_library(self.active_tab, |library| {
+            library
+                .get_or_insert_with(crate::modules::aec::engine::library::StyleLibrary::empty)
+                .upsert_wall_style(wall_style);
+        });
         self.aec_refresh_combined_style_library();
         self.command_line.push_info(
             crate::t!(
@@ -96,10 +95,11 @@ impl OpenCADStudio {
         &mut self,
         opening_style: crate::modules::aec::engine::opening_style::OpeningStyle,
     ) {
-        let lib = self.tabs[self.active_tab]
-            .aec_session_style_library_mut()
-            .get_or_insert_with(crate::modules::aec::engine::library::StyleLibrary::empty);
-        lib.upsert_opening_style(opening_style);
+        self.aec_edit_session_style_library(self.active_tab, |library| {
+            library
+                .get_or_insert_with(crate::modules::aec::engine::library::StyleLibrary::empty)
+                .upsert_opening_style(opening_style);
+        });
         self.aec_refresh_combined_style_library();
         self.command_line.push_info(
             crate::t!(
@@ -113,10 +113,11 @@ impl OpenCADStudio {
         &mut self,
         slab_style: crate::modules::aec::engine::slab_style::SlabStyle,
     ) {
-        let lib = self.tabs[self.active_tab]
-            .aec_session_style_library_mut()
-            .get_or_insert_with(crate::modules::aec::engine::library::StyleLibrary::empty);
-        lib.upsert_slab_style(slab_style);
+        self.aec_edit_session_style_library(self.active_tab, |library| {
+            library
+                .get_or_insert_with(crate::modules::aec::engine::library::StyleLibrary::empty)
+                .upsert_slab_style(slab_style);
+        });
         self.aec_refresh_combined_style_library();
         self.command_line.push_info(
             crate::t!(
@@ -130,10 +131,11 @@ impl OpenCADStudio {
         &mut self,
         slab_structural_style: crate::modules::aec::engine::slab_style::SlabStructuralStyle,
     ) {
-        let lib = self.tabs[self.active_tab]
-            .aec_session_style_library_mut()
-            .get_or_insert_with(crate::modules::aec::engine::library::StyleLibrary::empty);
-        lib.upsert_slab_structural_style(slab_structural_style);
+        self.aec_edit_session_style_library(self.active_tab, |library| {
+            library
+                .get_or_insert_with(crate::modules::aec::engine::library::StyleLibrary::empty)
+                .upsert_slab_structural_style(slab_structural_style);
+        });
         self.aec_refresh_combined_style_library();
         self.command_line.push_info(
             crate::t!(
@@ -147,10 +149,11 @@ impl OpenCADStudio {
         &mut self,
         floor_finish_style: crate::modules::aec::engine::slab_style::FloorFinishStyle,
     ) {
-        let lib = self.tabs[self.active_tab]
-            .aec_session_style_library_mut()
-            .get_or_insert_with(crate::modules::aec::engine::library::StyleLibrary::empty);
-        lib.upsert_floor_finish_style(floor_finish_style);
+        self.aec_edit_session_style_library(self.active_tab, |library| {
+            library
+                .get_or_insert_with(crate::modules::aec::engine::library::StyleLibrary::empty)
+                .upsert_floor_finish_style(floor_finish_style);
+        });
         self.aec_refresh_combined_style_library();
         self.command_line.push_info(
             crate::t!(

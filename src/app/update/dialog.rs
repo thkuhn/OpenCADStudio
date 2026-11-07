@@ -233,6 +233,7 @@ impl OpenCADStudio {
                         });
                     }
                 }
+                self.aec_forget_tab_session(tab_id);
                 if self.tabs.len() == 1 {
                     self.tab_counter += 1;
                     self.tabs[0] = crate::app::document::DocumentTab::new_drawing(self.tab_counter);
@@ -244,6 +245,7 @@ impl OpenCADStudio {
                         self.active_tab = self.tabs.len() - 1;
                     }
                 }
+                self.aec_refresh_combined_style_library();
                 // The active tab is now a fresh blank or a
                 // different existing tab; sync ribbon chips so
                 // they don't keep showing the discarded tab's

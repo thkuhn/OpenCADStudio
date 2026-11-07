@@ -328,16 +328,6 @@ pub(crate) struct DocumentTab {
     pub(super) active_block_edit: Option<usize>,
     /// Currently active MLeader style name.
     pub(super) active_mleader_style: String,
-    /// Name of the `DisplayConfig` (AEC plan/display library) currently
-    /// active for this tab, if any (`AEC_PLANMANAGER` Step 5 — in-memory
-    /// only, not yet persisted to XDATA/project files; see Step 6).
-    pub(crate) active_display_config: Option<String>,
-    /// Session 2D/3D/All filter. `None` uses the plan-type default.
-    pub(crate) representation_override:
-        Option<crate::modules::aec::engine::display_component::RepresentationMode>,
-    /// Drawing-local AEC styles reconstructed from wall XDATA (not persisted).
-    pub(super) aec_session_style_library:
-        Option<crate::modules::aec::engine::library::StyleLibrary>,
     /// Last camera_generation value written back to the document.
     pub(super) last_synced_camera_gen: u64,
     /// Session set of unloaded reference keys (Task 8b). Owns the set that
@@ -392,27 +382,12 @@ pub(crate) struct DocumentTab {
 }
 
 impl DocumentTab {
+    pub(crate) fn id(&self) -> u64 {
+        self.id
+    }
+
     pub(crate) fn active_grip(&self) -> Option<&GripEdit> {
         self.active_grip.as_ref()
-    }
-
-    pub(crate) fn aec_session_style_library(
-        &self,
-    ) -> Option<&crate::modules::aec::engine::library::StyleLibrary> {
-        self.aec_session_style_library.as_ref()
-    }
-
-    pub(crate) fn aec_session_style_library_mut(
-        &mut self,
-    ) -> &mut Option<crate::modules::aec::engine::library::StyleLibrary> {
-        &mut self.aec_session_style_library
-    }
-
-    pub(crate) fn set_aec_session_style_library(
-        &mut self,
-        library: Option<crate::modules::aec::engine::library::StyleLibrary>,
-    ) {
-        self.aec_session_style_library = library;
     }
 
     pub(super) fn rename_layer(&mut self, old_name: &str, new_name: &str) -> bool {
@@ -867,9 +842,6 @@ impl DocumentTab {
             block_edit_history: None,
             block_test: None,
             active_layer: "0".to_string(),
-            active_display_config: None,
-            representation_override: None,
-            aec_session_style_library: None,
             props_asym_scale: std::collections::HashSet::new(),
             ole_frames: std::collections::HashMap::new(),
             graph: Default::default(),

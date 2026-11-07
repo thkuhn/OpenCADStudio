@@ -4096,9 +4096,11 @@ impl OpenCADStudio {
         self.close_active_modal();
         self.pending_close = None;
         self.tab_counter += 1;
+        self.aec_forget_tab_session(self.tabs[i].id());
         self.tabs[i] = crate::app::document::DocumentTab::new_drawing(self.tab_counter);
         self.active_tab = i;
         self.apply_display_defaults(i);
+        self.aec_refresh_combined_style_library();
         self.update(Message::OpenPathPicked(Some((
             conflict.path,
             metadata.len(),

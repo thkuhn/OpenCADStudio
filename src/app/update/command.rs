@@ -258,6 +258,7 @@ impl OpenCADStudio {
         // Only-tab case: when the lone non-start tab closes, fall
         // back to the Start tab if it exists; otherwise spawn a
         // fresh blank drawing (legacy behaviour).
+        self.aec_forget_tab_session(self.tabs[idx].id());
         if self.tabs.len() == 1 {
             self.tab_counter += 1;
             self.tabs[0] = crate::app::document::DocumentTab::new_drawing(self.tab_counter);
@@ -278,6 +279,7 @@ impl OpenCADStudio {
             self.active_tab = index;
             self.adopt_header_sysvars(index);
         }
+        self.aec_refresh_combined_style_library();
         self.ribbon
             .set_block_testing(self.tabs[self.active_tab].block_test.is_some());
         self.ribbon

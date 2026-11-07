@@ -2832,7 +2832,7 @@ impl crate::app::OpenCADStudio {
             let style_library = crate::modules::aec::engine::project::resolve_style_library(
                 self.aec.aec_project_explorer_file.as_ref(),
             );
-            let active_name = self.tabs[tab].active_display_config.clone();
+            let (active_name, _) = self.aec_tab_display_state(tab);
             let ok = apply_marker_property_with_libraries(
                 &mut self.tabs[tab].scene.document,
                 marker_owner,
@@ -2875,7 +2875,7 @@ impl crate::app::OpenCADStudio {
             let style_library = crate::modules::aec::engine::project::resolve_style_library(
                 self.aec.aec_project_explorer_file.as_ref(),
             );
-            let active_name = self.tabs[tab].active_display_config.clone();
+            let (active_name, _) = self.aec_tab_display_state(tab);
             let ok = apply_carrier_property_with_libraries(
                 &mut self.tabs[tab].scene.document,
                 carrier_handle,

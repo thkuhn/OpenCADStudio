@@ -1940,8 +1940,9 @@ impl OpenCADStudio {
             AecMessage::AecPlanManagerApply => {
                 if let Some(name) = self.aec_plan_manager_save_internal() {
                     let i = self.active_tab;
+                    let (active_name, _) = self.aec_tab_display_state(i);
                     if !self.tabs[i].is_start
-                        && self.tabs[i].active_display_config.as_deref() == Some(name.as_str())
+                        && active_name.as_deref() == Some(name.as_str())
                     {
                         self.apply_active_display_config_to_tab(i);
                     }
@@ -1953,7 +1954,7 @@ impl OpenCADStudio {
                 if self.tabs[i].is_start {
                     return Task::none();
                 }
-                self.tabs[i].active_display_config = name.clone();
+                self.aec_set_active_display_config(i, name.clone());
                 self.apply_active_display_config_to_tab(i);
                 Task::none()
             }
@@ -1962,7 +1963,7 @@ impl OpenCADStudio {
                 if self.tabs[i].is_start {
                     return Task::none();
                 }
-                self.tabs[i].representation_override = mode;
+                self.aec_set_representation_override(i, mode);
                 self.apply_active_display_config_to_tab(i);
                 Task::none()
             }

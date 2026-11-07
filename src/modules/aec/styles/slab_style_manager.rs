@@ -877,8 +877,12 @@ impl OpenCADStudio {
                     );
                 }
             }
-        } else if let Some(lib) = self.tabs[self.active_tab].aec_session_style_library_mut() {
-            lib.remove_slab_style(&selected_id);
+        } else {
+            self.aec_edit_session_style_library(self.active_tab, |library| {
+                if let Some(library) = library {
+                    library.remove_slab_style(&selected_id);
+                }
+            });
         }
 
         self.aec_refresh_combined_style_library();

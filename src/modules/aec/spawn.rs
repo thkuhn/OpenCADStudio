@@ -74,7 +74,7 @@ fn view_display_context(
     (
         crate::modules::aec::engine::project::resolve_display_config_library(project),
         crate::modules::aec::engine::project::resolve_style_library(project),
-        app.tabs[tab].active_display_config.clone(),
+        app.aec_tab_display_state(tab).0,
     )
 }
 
@@ -82,10 +82,8 @@ fn active_plan_stage_value(app: &OpenCADStudio, tab: usize) -> Option<String> {
     let library = crate::modules::aec::engine::project::resolve_display_config_library(
         app.aec.aec_project_explorer_file.as_ref(),
     );
-    crate::modules::aec::views::title_block::active_stage_value(
-        &library,
-        app.tabs.get(tab)?.active_display_config.as_deref(),
-    )
+    let active_name = app.aec_tab_display_state(tab).0;
+    crate::modules::aec::views::title_block::active_stage_value(&library, active_name.as_deref())
 }
 
 /// One-shot / interactive AEC dispatch. `None` means core should keep looking.

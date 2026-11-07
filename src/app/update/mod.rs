@@ -3321,6 +3321,7 @@ impl OpenCADStudio {
                 // 0 = no snaps); saving then persists them into the file.
                 self.stamp_header_sysvars(idx);
                 self.apply_display_defaults(idx);
+                self.aec_refresh_combined_style_library();
                 self.sync_ribbon_layers();
                 self.sync_ribbon_styles();
                 // #21: reset ribbon Color / Linetype / Lineweight to the

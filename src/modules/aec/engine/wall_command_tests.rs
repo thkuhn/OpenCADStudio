@@ -10193,7 +10193,7 @@ fn interactive_delete_opening_respects_active_display_config() {
     .expect("place window");
 
     // Set active plan configuration to "3D Modell / Visualisierung"
-    app.tabs[tab].active_display_config = Some("3D Modell / Visualisierung".to_string());
+    app.aec_set_active_display_config(tab, Some("3D Modell / Visualisierung".to_string()));
     app.apply_active_display_config_to_tab(tab);
 
     // Select the opening
@@ -14346,7 +14346,7 @@ mod plan_scene_consistency {
     }
 
     fn activate(f: &mut Fixture, name: &str) {
-        f.app.tabs[f.tab].active_display_config = Some(name.into());
+        f.app.aec_set_active_display_config(f.tab, Some(name.into()));
         f.app.apply_active_display_config_to_tab(f.tab);
     }
 
@@ -14603,18 +14603,18 @@ mod plan_scene_consistency {
         assert_eq!(polylines(&f), hidden, "plan override false beats visible default");
 
         // Session 2D beats the hiding plan override ...
-        f.app.tabs[f.tab].representation_override = Some(RepresentationMode::TwoD);
+        f.app.aec_set_representation_override(f.tab, Some(RepresentationMode::TwoD));
         reapply(&mut f);
         assert_eq!(polylines(&f), full, "session 2D beats plan override");
         // ... and session 3D hides the 2D layers although the override shows them.
         let mut p = plan("P", DetailProfile::default());
         p.style_overrides.insert("style1".into(), overlay(vis(&[(layers_key, true)])));
         put_plans(&mut f, vec![p]);
-        f.app.tabs[f.tab].representation_override = Some(RepresentationMode::ThreeD);
+        f.app.aec_set_representation_override(f.tab, Some(RepresentationMode::ThreeD));
         reapply(&mut f);
         assert!(polylines(&f) < full, "session 3D beats plan override");
         // Dropping the session override restores the plan override.
-        f.app.tabs[f.tab].representation_override = None;
+        f.app.aec_set_representation_override(f.tab, None);
         reapply(&mut f);
         assert_eq!(polylines(&f), full);
     }
@@ -14649,10 +14649,10 @@ mod plan_scene_consistency {
         reapply(&mut f);
         assert_eq!(hatch(&f), 0, "plan override false beats visible style default");
 
-        f.app.tabs[f.tab].representation_override = Some(RepresentationMode::TwoD);
+        f.app.aec_set_representation_override(f.tab, Some(RepresentationMode::TwoD));
         reapply(&mut f);
         assert_eq!(hatch(&f), 1, "session 2D beats plan override");
-        f.app.tabs[f.tab].representation_override = Some(RepresentationMode::ThreeD);
+        f.app.aec_set_representation_override(f.tab, Some(RepresentationMode::ThreeD));
         reapply(&mut f);
         assert_eq!(hatch(&f), 0, "session 3D hides 2D hatch");
     }
@@ -14664,10 +14664,10 @@ mod plan_scene_consistency {
         put_plans(&mut f, vec![plan("Zweid", d)]);
         activate(&mut f, "Zweid");
         assert_eq!(n(&room_layers(&f), AEC_ROOM_STAMP_LAYER), 1);
-        f.app.tabs[f.tab].representation_override = Some(RepresentationMode::ThreeD);
+        f.app.aec_set_representation_override(f.tab, Some(RepresentationMode::ThreeD));
         reapply(&mut f);
         assert!(room_layers(&f).is_empty());
-        f.app.tabs[f.tab].representation_override = Some(RepresentationMode::TwoD);
+        f.app.aec_set_representation_override(f.tab, Some(RepresentationMode::TwoD));
         reapply(&mut f);
         assert_eq!(n(&room_layers(&f), AEC_ROOM_STAMP_LAYER), 1);
     }
@@ -14679,7 +14679,7 @@ mod plan_scene_consistency {
         let snap = |f: &Fixture| (room_layers(f), wall_kinds(f), slab_layers(f), opening_slots(f, f.door));
         let before = snap(&f);
         reapply(&mut f);
-        f.app.tabs[f.tab].active_display_config = Some("Gibt es nicht".into());
+        f.app.aec_set_active_display_config(f.tab, Some("Gibt es nicht".into()));
         reapply(&mut f);
         assert_eq!(before, snap(&f));
     }
@@ -14689,15 +14689,15 @@ mod plan_scene_consistency {
         for unknown in [false, true] {
             let mut f = fixture();
             put_plans(&mut f, vec![plan("Voll", DetailProfile::default())]);
-            f.app.tabs[f.tab].active_display_config = unknown.then(|| "Gibt es nicht".to_string());
-            f.app.tabs[f.tab].representation_override = Some(RepresentationMode::ThreeD);
+            f.app.aec_set_active_display_config(f.tab, unknown.then(|| "Gibt es nicht".to_string()));
+            f.app.aec_set_representation_override(f.tab, Some(RepresentationMode::ThreeD));
             reapply(&mut f);
             assert!(room_layers(&f).is_empty(), "full apply hides rooms (unknown={unknown})");
             let (tab, room) = (f.tab, f.room);
             f.app.aec_regenerate_entity_packages(tab, &[room]);
             assert!(room_layers(&f).is_empty(), "entity regen keeps rooms hidden (unknown={unknown})");
             // 2D session override brings them back in both paths.
-            f.app.tabs[f.tab].representation_override = Some(RepresentationMode::TwoD);
+            f.app.aec_set_representation_override(f.tab, Some(RepresentationMode::TwoD));
             f.app.aec_regenerate_entity_packages(tab, &[room]);
             assert_eq!(n(&room_layers(&f), AEC_ROOM_STAMP_LAYER), 1);
         }

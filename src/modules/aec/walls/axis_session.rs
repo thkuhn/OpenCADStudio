@@ -550,8 +550,8 @@ impl OpenCADStudio {
             return;
         }
         let axis_kind = crate::modules::aec::engine::display_component::WallComponentKind::Axis;
-        let axis_visible = self.tabs.get(tab_index).and_then(|tab| {
-            let name = tab.active_display_config.as_deref()?;
+        let (active_name, _) = self.aec_tab_display_state(tab_index);
+        let axis_visible = active_name.as_deref().and_then(|name| {
             if let Some(config) = self.aec.aec_plan_library.as_ref().and_then(|lib| lib.find(name))
             {
                 return Some(

@@ -250,6 +250,15 @@ pub struct AecLayerGapDrawPick {
 }
 
 
+/// AEC state that belongs to one open drawing tab.
+#[derive(Debug, Default)]
+pub struct AecTabSession {
+    pub(crate) active_display_config: Option<String>,
+    pub(crate) representation_override:
+        Option<crate::modules::aec::engine::display_component::RepresentationMode>,
+    pub(crate) session_style_library: Option<crate::modules::aec::engine::library::StyleLibrary>,
+}
+
 /// All AEC-specific CadApp fields, grouped so core `OpenCADStudio` stays merge-stable.
 #[derive(Debug)]
 pub struct AecState {
@@ -265,6 +274,8 @@ pub struct AecState {
     /// Session overlay reconstructed from the active drawing (not written to
     /// `aec_styles.toml` or `.ocsproj` unless the user saves explicitly).
     pub aec_session_style_library: Option<crate::modules::aec::engine::library::StyleLibrary>,
+    /// Drawing-specific AEC display and style session state, keyed by stable tab id.
+    pub(crate) tab_sessions: std::collections::HashMap<u64, AecTabSession>,
     /// Style id of the last wall finished via `AEC_WALL` this session, used
     /// to pre-fill the live Properties-panel style field on the next call.
     pub aec_last_wall_style_id: Option<String>,
@@ -385,6 +396,7 @@ impl Default for AecState {
             aec_drop_count: 0,
             aec_style_library: None,
             aec_session_style_library: None,
+            tab_sessions: std::collections::HashMap::new(),
             aec_last_wall_style_id: None,
             aec_last_wall_height: None,
             styles: Default::default(),
