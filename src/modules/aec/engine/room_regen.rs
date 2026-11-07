@@ -59,10 +59,7 @@ fn create_polygon_hatch(
     }
     let rel: Vec<[f32; 2]> = poly_pts
         .iter()
-        .map(|p| [
-            (p.0 - origin.0) as f32,
-            (p.1 - origin.1) as f32,
-        ])
+        .map(|p| [(p.0 - origin.0) as f32, (p.1 - origin.1) as f32])
         .collect();
     let families = crate::scene::model::hatch_patterns::find(pat_name)
         .and_then(|e| {
@@ -115,7 +112,12 @@ pub struct RoomDisplay {
 
 impl Default for RoomDisplay {
     fn default() -> Self {
-        Self { stamp: true, hatches: true, thresholds: true, floor: true }
+        Self {
+            stamp: true,
+            hatches: true,
+            thresholds: true,
+            floor: true,
+        }
     }
 }
 
@@ -146,7 +148,10 @@ impl RoomDisplay {
         use super::opening_style::SwingGlyph;
         let rep = session.unwrap_or(detail.representation);
         let two_d = rep != R::ThreeD;
-        let swing_off = swing.is_some_and(|glyph| glyph == Some(SwingGlyph::Off));
+        let swing_off = match swing {
+            Some(glyph) => glyph == Some(SwingGlyph::Off),
+            None => detail.layers == super::plan_view::LayerDetail::Off && !detail.annotation,
+        };
         Self {
             stamp: two_d && detail.annotation,
             hatches: two_d && detail.hatches,
@@ -225,7 +230,11 @@ pub fn regenerate_room_representation_with_display(
     }
 
     // Perimeter and clear height
-    let ceiling_tag = if room.ceiling_finish_thickness() > 0.0 { " (UKD)" } else { "" };
+    let ceiling_tag = if room.ceiling_finish_thickness() > 0.0 {
+        " (UKD)"
+    } else {
+        ""
+    };
     text_lines.push(format!(
         "U: {:.2} m | RH: {:.2} m{}",
         room.perimeter,
@@ -298,7 +307,11 @@ pub fn regenerate_room_representation_with_display(
     }
 
     // 3. Build optional floor finish pattern hatch (main room + door transition zones)
-    if let Some(finishes) = room.floor_finish.as_ref().filter(|_| display.hatches && display.floor) {
+    if let Some(finishes) = room
+        .floor_finish
+        .as_ref()
+        .filter(|_| display.hatches && display.floor)
+    {
         if let Some(hatch_finish) = finishes.iter().find(|f| f.hatch_pattern.is_some()) {
             if let Some(pat_name) = &hatch_finish.hatch_pattern {
                 scene.ensure_layer(AEC_ROOM_HATCH_LAYER);
@@ -313,7 +326,8 @@ pub fn regenerate_room_representation_with_display(
                 ) {
                     let hatch_handle = scene.add_hatch(model, None, None);
                     if let Some(e) = scene.document.get_entity_mut(hatch_handle) {
-                        e.as_entity_mut().set_layer(AEC_ROOM_HATCH_LAYER.to_string());
+                        e.as_entity_mut()
+                            .set_layer(AEC_ROOM_HATCH_LAYER.to_string());
                         e.common_mut().owner_handle = room_handle;
                     }
                     write_room_display_tag(scene, hatch_handle, room_handle, ROOM_REP_ROLE_HATCH);
@@ -331,10 +345,16 @@ pub fn regenerate_room_representation_with_display(
                     ) {
                         let hatch_handle = scene.add_hatch(model, None, None);
                         if let Some(e) = scene.document.get_entity_mut(hatch_handle) {
-                            e.as_entity_mut().set_layer(AEC_ROOM_HATCH_LAYER.to_string());
+                            e.as_entity_mut()
+                                .set_layer(AEC_ROOM_HATCH_LAYER.to_string());
                             e.common_mut().owner_handle = room_handle;
                         }
-                        write_room_display_tag(scene, hatch_handle, room_handle, ROOM_REP_ROLE_HATCH);
+                        write_room_display_tag(
+                            scene,
+                            hatch_handle,
+                            room_handle,
+                            ROOM_REP_ROLE_HATCH,
+                        );
                         child_handles.push(hatch_handle);
                     }
                 }
@@ -356,7 +376,8 @@ pub fn regenerate_room_representation_with_display(
                 ) {
                     let hatch_handle = scene.add_hatch(model, None, None);
                     if let Some(e) = scene.document.get_entity_mut(hatch_handle) {
-                        e.as_entity_mut().set_layer(AEC_ROOM_CEILING_HATCH_LAYER.to_string());
+                        e.as_entity_mut()
+                            .set_layer(AEC_ROOM_CEILING_HATCH_LAYER.to_string());
                         e.common_mut().owner_handle = room_handle;
                     }
                     write_room_display_tag(
@@ -437,7 +458,8 @@ mod tests {
         assert_eq!(pl_after_remove.vertices.len(), 4);
 
         assert!(regenerate_room_representation(&mut scene, room_h, None).is_some());
-        let room_after_remove_entity = room_from_entity(scene.document.get_entity(room_h).unwrap()).unwrap();
+        let room_after_remove_entity =
+            room_from_entity(scene.document.get_entity(room_h).unwrap()).unwrap();
         assert!((room_after_remove_entity.area - 100.0).abs() < 1e-4);
     }
 
@@ -454,7 +476,9 @@ mod tests {
 
         let mut room = Room::from_polygon("Office", &pts, 3.0, 0).with_number("101");
         room.floor_finish = Some(vec![RoomFinish::new("Tiles", 0.015).with_hatch("SQUARE")]);
-        room.ceiling_finish = Some(vec![RoomFinish::new("Acoustic Grid", 0.20).with_hatch("ANSI31")]);
+        room.ceiling_finish = Some(vec![
+            RoomFinish::new("Acoustic Grid", 0.20).with_hatch("ANSI31")
+        ]);
         write_room_record(&mut scene.document, room_h, &room);
 
         assert!(regenerate_room_representation(&mut scene, room_h, None).is_some());
@@ -468,8 +492,12 @@ mod tests {
         if let Some(EntityType::MText(mtext)) = scene.document.get_entity(stamp_h) {
             assert!(mtext.value.contains("Office"));
             assert!(mtext.value.contains("101"));
-            assert!(mtext.value.contains(crate::tf!("Boden: {}", "Tiles").as_ref()));
-            assert!(mtext.value.contains(crate::tf!("Decke: {}", "Acoustic Grid").as_ref()));
+            assert!(mtext
+                .value
+                .contains(crate::tf!("Boden: {}", "Tiles").as_ref()));
+            assert!(mtext
+                .value
+                .contains(crate::tf!("Decke: {}", "Acoustic Grid").as_ref()));
             assert!(mtext.value.contains("UKD"));
         } else {
             panic!("Expected MText stamp");

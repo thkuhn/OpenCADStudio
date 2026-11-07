@@ -14350,7 +14350,10 @@ mod plan_scene_consistency {
         Fixture { app, tab, wall, opening, door, slab, room }
     }
 
-    fn put_plans(f: &mut Fixture, plans: Vec<DisplayConfig>) {
+    fn put_plans(f: &mut Fixture, mut plans: Vec<DisplayConfig>) {
+        for plan in &mut plans {
+            plan.apply_detail_defaults_if_unset();
+        }
         let mut lib = DisplayConfigLibrary::empty();
         lib.configs = plans;
         f.app.aec.aec_plan_library = Some(lib);

@@ -3241,6 +3241,7 @@ pub fn display_config_library_to_toml(lib: &DisplayConfigLibrary) -> Result<Stri
 pub fn display_config_library_from_toml(s: &str) -> Result<DisplayConfigLibrary, String> {
     let mut lib: DisplayConfigLibrary = serde_json::from_str(s).map_err(|e| e.to_string())?;
     for config in &mut lib.configs {
+        config.apply_detail_defaults_if_unset();
         config.apply_preset_defaults_if_unset();
     }
     Ok(lib)

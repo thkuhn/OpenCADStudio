@@ -277,9 +277,23 @@ impl DisplayConfig {
             detail: DetailProfile::default(),
             preset: None,
             component_visibility: HashMap::new(),
-            opening_levels: crate::modules::aec::engine::opening_style::OpeningLevelOverride::default(),
+            opening_levels:
+                crate::modules::aec::engine::opening_style::OpeningLevelOverride::default(),
             style_overrides: HashMap::new(),
             contour_hatch: None,
+        }
+    }
+
+    /// Fills the opening levels implied by a detail profile when no explicit
+    /// levels or preset were stored. A coarse profile uses the coarse opening
+    /// defaults, including hidden swing symbols.
+    pub fn apply_detail_defaults_if_unset(&mut self) {
+        if self.opening_levels.is_explicit() || self.preset.is_some() {
+            return;
+        }
+        if self.detail.layers == LayerDetail::Off && !self.detail.annotation {
+            self.opening_levels =
+                crate::modules::aec::engine::opening_style::OpeningLevelOverride::coarse();
         }
     }
 
@@ -425,7 +439,11 @@ mod tests {
                 ..Default::default()
             }),
             existing_style: Some(ComponentStyleOverride {
-                line_color: Some(acadrust::types::Color::Rgb { r: 136, g: 136, b: 136 }),
+                line_color: Some(acadrust::types::Color::Rgb {
+                    r: 136,
+                    g: 136,
+                    b: 136,
+                }),
                 ..Default::default()
             }),
         });

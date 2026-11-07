@@ -405,6 +405,7 @@ impl ProjectFile {
                     .material_wall_style_library
                     .stamp_origin(crate::modules::aec::engine::style_common::StyleOrigin::Project);
                 for config in &mut project.display_config_library.configs {
+                    config.apply_detail_defaults_if_unset();
                     config.apply_preset_defaults_if_unset();
                 }
                 Ok(project)

@@ -6017,9 +6017,14 @@ mod tests {
         assert_eq!(updated_wall.formulas.get("wall_height"), Some("_STORY_H - 0.25"));
 
         // 4. Verify property section formats label with (fx = 2.7500) and value contains formula string
+        crate::entities::common::set_unit_context(
+            crate::entities::common::UnitContext::from_header(
+                &app.tabs[tab].scene.document.header,
+            ),
+        );
         let sec = wall_prop_section(ent, None, None).expect("wall section");
         let height_prop = sec.props.iter().find(|p| p.field == "wall_height").unwrap();
-        assert!(height_prop.label.contains("fx = 2.7500"));
+        assert!(height_prop.label.contains("fx = 2.75"));
         assert_eq!(height_prop.value, crate::scene::model::object::PropValue::EditText("_STORY_H - 0.25".to_string()));
 
         // 5. In-place edit of the formula string (e.g. adjust offset to -0.10)
@@ -6034,9 +6039,14 @@ mod tests {
         assert_eq!(updated_wall.height, 2.90);
         assert_eq!(updated_wall.formulas.get("wall_height"), Some("_STORY_H - 0.10"));
 
+        crate::entities::common::set_unit_context(
+            crate::entities::common::UnitContext::from_header(
+                &app.tabs[tab].scene.document.header,
+            ),
+        );
         let sec = wall_prop_section(ent, None, None).expect("wall section");
         let height_prop = sec.props.iter().find(|p| p.field == "wall_height").unwrap();
-        assert!(height_prop.label.contains("fx = 2.9000"));
+        assert!(height_prop.label.contains("fx = 2.9"));
         assert_eq!(height_prop.value, crate::scene::model::object::PropValue::EditText("_STORY_H - 0.10".to_string()));
 
         // 6. Overwrite with plain number "3.10"
@@ -6054,7 +6064,7 @@ mod tests {
         let sec = wall_prop_section(ent, None, None).expect("wall section");
         let height_prop = sec.props.iter().find(|p| p.field == "wall_height").unwrap();
         assert_eq!(height_prop.label, "Height");
-        assert_eq!(height_prop.value, crate::scene::model::object::PropValue::EditText("3.1000".to_string()));
+        assert_eq!(height_prop.value, crate::scene::model::object::PropValue::EditText("3.1".to_string()));
     }
 
     #[test]
