@@ -147,6 +147,10 @@ impl OpenCADStudio {
                 self.aec_opening_style_manager_set_editor_tab(tab);
                 Task::none()
             }
+            AecMessage::AecOpeningStyleManagerComponentEnabledChanged(group, enabled) => {
+                self.aec_opening_style_manager_component_enabled_changed(group, enabled);
+                Task::none()
+            }
             AecMessage::AecOpeningStyleManagerSlotSourceChanged(index, value) => {
                 self.aec_opening_style_manager_slot_source_changed(index, value)
             }

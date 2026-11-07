@@ -12038,8 +12038,18 @@ fn test_opening_cross_axis_offset_shifts_geometry_and_sills() {
     let mut win = Opening::window(Handle::new(1), Handle::new(2), 5.0);
     win.width = 1.0;
     win.cross_axis_offset = 0.06; // shifted +6cm towards interior (+Y)
+    let mut library = crate::modules::aec::engine::library::seed_default_library();
+    let style = library
+        .opening_styles
+        .iter_mut()
+        .find(|style| {
+            style.style.id == crate::modules::aec::engine::opening_style::SEED_WINDOW_STYLE_ID
+        })
+        .expect("seed window style");
+    style.parts.exterior_sill.thickness = 0.035;
+    style.parts.interior_board.thickness = 0.025;
 
-    let paths = bake_opening_world(&axis, thickness, &win, None, None);
+    let paths = bake_opening_world(&axis, thickness, &win, Some(&library), None);
     assert!(!paths.is_empty());
 
     // Window frame posts should be centered around y = +0.06:
@@ -12519,7 +12529,8 @@ fn test_elevation_components_world_regeneration_creates_3d_polylines() {
         .find(|o| o.handle == win_h)
         .expect("opening found");
 
-    let style = crate::modules::aec::engine::opening_style::OpeningStyle::standard_window();
+    let mut style = crate::modules::aec::engine::opening_style::OpeningStyle::standard_window();
+    style.parts.exterior_sill.thickness = 0.05;
 
     let mut lib = crate::modules::aec::engine::library::StyleLibrary::default();
     lib.opening_styles.push(style.clone());

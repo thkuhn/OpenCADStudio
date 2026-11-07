@@ -17,7 +17,7 @@ use crate::modules::aec::engine::opening_style::{
     apply_plan_visibility, default_slots_for_kind, default_style_for_kind,
     effective_slots_for_plan, BlockPlacementMode, DivisionGrid, DivisionLevel,
     ElevationFrameLevel, OpeningParts, OpeningPlanProfiles, OpeningRepresentationLevels,
-    OpeningLookRole, PlanFrameLevel, SwingGlyph,
+    opening_component_should_render, OpeningLookRole, PlanFrameLevel, SwingGlyph,
     OpeningGenerator, OpeningStyle, SlotGeometry, HingeSide, DEFAULT_FRAME_THICKNESS,
     DEFAULT_OPENING_ANGLE_DEG,
 };
@@ -58,6 +58,11 @@ impl BakedPath {
     pub fn resolved_look_role(&self) -> Option<OpeningLookRole> {
         self.look_role
             .or_else(|| OpeningLookRole::for_slot(self.slot))
+    }
+
+    fn with_look_role(mut self, role: OpeningLookRole) -> Self {
+        self.look_role = Some(role);
+        self
     }
 }
 
@@ -264,8 +269,8 @@ pub fn bake_opening_representation(
     }
     if slot_enabled(OpeningComponentSlot::Glazing2D) {
         paths.extend(bake_grid_glazing_lines(grid, params));
-        paths.extend(bake_grid_plan_divisions(grid, params, levels.divisions));
     }
+    paths.extend(bake_grid_plan_divisions(grid, params, levels.divisions));
     if slot_enabled(OpeningComponentSlot::Swing2D) {
         paths.extend(bake_grid_swing_glyphs(grid, params, levels.swing));
     }
@@ -283,6 +288,11 @@ pub fn bake_opening_representation(
             levels.divisions,
         ));
     }
+    paths.retain(|path| {
+        path.resolved_look_role().map_or(true, |role| {
+            opening_component_should_render(parts, params.kind, role)
+        })
+    });
     paths
 }
 
@@ -295,6 +305,11 @@ pub fn bake_opening_elevation_paths(
 ) -> Vec<BakedPath> {
     let mut paths = bake_elevation_frame_level(params, parts, frame_level);
     paths.extend(bake_grid_elevation_divisions(grid, params, division_level));
+    paths.retain(|path| {
+        path.resolved_look_role().map_or(true, |role| {
+            opening_component_should_render(parts, params.kind, role)
+        })
+    });
     paths
 }
 
@@ -322,7 +337,24 @@ pub fn bake_opening_plan_paths(
 fn representation_levels(
     slots: &HashMap<OpeningComponentSlot, SlotGeometry>,
     grid: &DivisionGrid,
+    plan_division_level: Option<DivisionLevel>,
 ) -> OpeningRepresentationLevels {
+    let divisions = plan_division_level.unwrap_or_else(|| {
+        if grid.vertical.is_empty()
+            && grid.horizontal.is_empty()
+            && grid.vertical_muntins.is_empty()
+            && grid.horizontal_muntins.is_empty()
+        {
+            DivisionLevel::Off
+        } else if grid.horizontal.is_empty()
+            && grid.vertical_muntins.is_empty()
+            && grid.horizontal_muntins.is_empty()
+        {
+            DivisionLevel::Posts
+        } else {
+            DivisionLevel::PostsAndMuntins
+        }
+    });
     OpeningRepresentationLevels {
         plan_frame: if slots.contains_key(&OpeningComponentSlot::Frame2D) {
             PlanFrameLevel::Profile
@@ -339,13 +371,7 @@ fn representation_levels(
         } else {
             ElevationFrameLevel::Off
         },
-        divisions: if !slots.contains_key(&OpeningComponentSlot::ElevationMuntins2D) {
-            DivisionLevel::Off
-        } else if grid.vertical_muntins.is_empty() && grid.horizontal_muntins.is_empty() {
-            DivisionLevel::Posts
-        } else {
-            DivisionLevel::PostsAndMuntins
-        },
+        divisions,
     }
 }
 
@@ -504,7 +530,7 @@ fn bake_grid_plan_divisions(
                 vec![(x, params.wall_y_min), (x, params.wall_y_max)],
                 false,
                 false,
-            ));
+            ).with_look_role(OpeningLookRole::Division));
         }
     }
     if level == DivisionLevel::PostsAndMuntins {
@@ -523,7 +549,7 @@ fn bake_grid_plan_divisions(
                     vec![(x, params.wall_y_min), (x, params.wall_y_max)],
                     false,
                     false,
-                ));
+                ).with_look_role(OpeningLookRole::Division));
             }
         }
     }
@@ -1725,7 +1751,28 @@ fn build_opening_box_3d(
     )
 }
 
-fn build_opening_grid_bars_3d(
+fn build_opening_box_3d_with_bounds(
+    width: f64,
+    height: f64,
+    y_min: f64,
+    y_max: f64,
+) -> Option<cadkernel::brep::Body> {
+    if width <= 0.0 || height <= 0.0 || y_max <= y_min {
+        return None;
+    }
+    build_faceted_prism(
+        &[
+            (-width * 0.5, -height * 0.5),
+            (width * 0.5, -height * 0.5),
+            (width * 0.5, height * 0.5),
+            (-width * 0.5, height * 0.5),
+        ],
+        y_min,
+        y_max,
+    )
+}
+
+pub(crate) fn build_opening_grid_bars_3d(
     grid: &DivisionGrid,
     params: OpeningBakeParams,
     post_width: f64,
@@ -1794,6 +1841,87 @@ fn build_opening_grid_bars_3d(
     bars
 }
 
+fn opening_look_line_style(
+    style: &OpeningStyle,
+    library: Option<&StyleLibrary>,
+    rules: Option<&ComponentRuleSet>,
+    role: OpeningLookRole,
+    slot: OpeningComponentSlot,
+) -> (Option<String>, Option<acadrust::types::Color>) {
+    let look = style.looks.get(role);
+    let material = style
+        .material_id_for_look(role)
+        .and_then(|id| library?.materials.iter().find(|material| material.id == id));
+    let mut line_type = look
+        .line_type
+        .clone()
+        .or_else(|| material.map(|material| material.line_type.clone()));
+    let mut line_color = look.line_color.or_else(|| {
+        material.map(|material| {
+            let rgb = material.line_color;
+            acadrust::types::Color::Rgb {
+                r: ((rgb >> 16) & 0xff) as u8,
+                g: ((rgb >> 8) & 0xff) as u8,
+                b: (rgb & 0xff) as u8,
+            }
+        })
+    });
+    if let Some(override_style) = rules.and_then(|rules| rules.style_override.get(slot.key())) {
+        if override_style.line_type.is_some() {
+            line_type = override_style.line_type.clone();
+        }
+        if override_style.line_color.is_some() {
+            line_color = override_style.line_color;
+        }
+    }
+    (line_type, line_color)
+}
+
+fn apply_opening_look_to_entity(
+    entity: &mut EntityType,
+    style: &OpeningStyle,
+    library: Option<&StyleLibrary>,
+    rules: Option<&ComponentRuleSet>,
+    role: OpeningLookRole,
+    slot: OpeningComponentSlot,
+) {
+    let (line_type, line_color) = opening_look_line_style(style, library, rules, role, slot);
+    if let Some(line_type) = line_type {
+        entity.common_mut().linetype = line_type;
+    }
+    if let Some(line_color) = line_color {
+        entity.common_mut().color = line_color;
+    }
+}
+
+fn opening_native_material_handle(
+    style: &OpeningStyle,
+    library: Option<&StyleLibrary>,
+    role: OpeningLookRole,
+    scene: &Scene,
+) -> Option<Handle> {
+    let material_id = style.material_id_for_look(role)?;
+    let material = library?
+        .materials
+        .iter()
+        .find(|material| material.id == material_id)?;
+    let names = [
+        Some(material_id),
+        Some(material.name.as_str()),
+        material.render_material_ref.as_deref(),
+    ];
+    scene.document.objects.iter().find_map(|(handle, object)| {
+        let acadrust::objects::ObjectType::Material(native) = object else {
+            return None;
+        };
+        names
+            .iter()
+            .flatten()
+            .any(|name| native.name.eq_ignore_ascii_case(name))
+            .then_some(*handle)
+    })
+}
+
 fn emit_opening_solid_3d(
     scene: &mut Scene,
     body: cadkernel::brep::Body,
@@ -1807,6 +1935,10 @@ fn emit_opening_solid_3d(
     offset_x: f64,
     offset_z: f64,
     slot: OpeningComponentSlot,
+    look_role: OpeningLookRole,
+    style: &OpeningStyle,
+    library: Option<&StyleLibrary>,
+    rules: Option<&ComponentRuleSet>,
 ) {
     let Some(world_body) = crate::scene::model::solid_model::placed(
         &body,
@@ -1831,12 +1963,57 @@ fn emit_opening_solid_3d(
     if let Some(layer) = opening_layer {
         entity.as_entity_mut().set_layer(layer.to_string());
     }
+    apply_opening_look_to_entity(&mut entity, style, library, rules, look_role, slot);
+    if let Some(material_handle) = opening_native_material_handle(style, library, look_role, scene) {
+        let common = entity.common_mut();
+        common.material_flags = 3;
+        common.material_handle = Some(material_handle);
+    }
     let handle = scene.add_entity(entity);
     if let Some(display) = scene.prepare_solid_model_display(handle, &world_body) {
         scene.register_prepared_solid_model(handle, world_body, display);
     }
     write_opening_display_tag(scene, handle, opening_handle, slot);
     engine::owner_index::add_child(&mut scene.document, opening_handle, handle);
+}
+
+fn emit_opening_accessory_3d(
+    scene: &mut Scene,
+    body: Option<cadkernel::brep::Body>,
+    opening_handle: Handle,
+    opening_owner_handle: Handle,
+    opening_layer: Option<&str>,
+    origin: (f64, f64),
+    tangent: (f64, f64),
+    normal: (f64, f64),
+    base_z: f64,
+    offset_x: f64,
+    offset_z: f64,
+    role: OpeningLookRole,
+    style: &OpeningStyle,
+    library: Option<&StyleLibrary>,
+    rules: Option<&ComponentRuleSet>,
+) {
+    if let Some(body) = body {
+        emit_opening_solid_3d(
+            scene,
+            body,
+            opening_handle,
+            opening_owner_handle,
+            opening_layer,
+            origin,
+            tangent,
+            normal,
+            base_z,
+            offset_x,
+            offset_z,
+            OpeningComponentSlot::Solid3D,
+            role,
+            style,
+            library,
+            rules,
+        );
+    }
 }
 
 pub fn build_opening_glazing_3d(
@@ -1959,7 +2136,13 @@ pub fn bake_opening_world_with_doc(
         params,
         &style.parts,
         grid,
-        representation_levels(&slots, grid),
+        representation_levels(
+            &slots,
+            grid,
+            merged
+                .as_ref()
+                .and_then(|rules| rules.opening_division_level),
+        ),
         merged.as_ref(),
         doc,
     );
@@ -2413,12 +2596,19 @@ pub fn regenerate_opening_display(
     let params = OpeningBakeParams::from_opening(&opening, thickness, Some(&style))
         .with_wall_bounds(wall_y_min, wall_y_max);
     let merged_rules = rules_with_plan_visibility(&opening, library, rules);
+    let levels = representation_levels(
+        &slots,
+        grid,
+        merged_rules
+            .as_ref()
+            .and_then(|rules| rules.opening_division_level),
+    );
     let local = bake_opening_representation(
         &slots,
         params,
         &style.parts,
         grid,
-        representation_levels(&slots, grid),
+        levels,
         merged_rules.as_ref(),
         Some(&scene.document),
     );
@@ -2469,6 +2659,16 @@ pub fn regenerate_opening_display(
             if let Some(ref l) = default_opening_layer {
                 entity.as_entity_mut().set_layer(l.clone());
             }
+            if let Some(role) = baked.resolved_look_role() {
+                apply_opening_look_to_entity(
+                    &mut entity,
+                    &style,
+                    library,
+                    merged_rules.as_ref(),
+                    role,
+                    baked.slot,
+                );
+            }
             let handle = scene.add_entity(entity);
             write_opening_display_tag(scene, handle, opening_handle, baked.slot);
             engine::owner_index::add_child(&mut scene.document, opening_handle, handle);
@@ -2514,6 +2714,16 @@ pub fn regenerate_opening_display(
         }
         if let Some(ref l) = default_opening_layer {
             entity.as_entity_mut().set_layer(l.clone());
+        }
+        if let Some(role) = baked.resolved_look_role() {
+            apply_opening_look_to_entity(
+                &mut entity,
+                &style,
+                library,
+                merged_rules.as_ref(),
+                role,
+                baked.slot,
+            );
         }
         let handle = scene.add_entity(entity);
         write_opening_display_tag(scene, handle, opening_handle, baked.slot);
@@ -2598,29 +2808,41 @@ pub fn regenerate_opening_display(
                 0.0,
                 0.0,
                 OpeningComponentSlot::Frame3D,
+                OpeningLookRole::FixedFrame,
+                &style,
+                library,
+                merged_rules.as_ref(),
             );
         }
-        for (body, center_x, center_z) in build_opening_grid_bars_3d(
-            grid,
-            params,
-            style.parts.fixed_frame.face_width,
-            style.parts.leaf_frame.face_width,
-            style.parts.fixed_frame.wall_depth,
-        ) {
-            emit_opening_solid_3d(
-                scene,
-                body,
-                opening_handle,
-                opening_owner_handle,
-                default_opening_layer.as_deref(),
-                origin,
-                (tx, ty),
-                normal,
-                wall_base_z + opening.sill_height,
-                center_x,
-                center_z,
-                OpeningComponentSlot::Frame3D,
-            );
+        if levels.divisions != DivisionLevel::Off
+            && opening_component_should_render(&style.parts, opening.kind, OpeningLookRole::Division)
+        {
+            for (body, center_x, center_z) in build_opening_grid_bars_3d(
+                grid,
+                params,
+                style.parts.fixed_frame.face_width,
+                style.parts.leaf_frame.face_width,
+                style.parts.fixed_frame.wall_depth,
+            ) {
+                emit_opening_solid_3d(
+                    scene,
+                    body,
+                    opening_handle,
+                    opening_owner_handle,
+                    default_opening_layer.as_deref(),
+                    origin,
+                    (tx, ty),
+                    normal,
+                    wall_base_z + opening.sill_height,
+                    center_x,
+                    center_z,
+                    OpeningComponentSlot::Frame3D,
+                    OpeningLookRole::Division,
+                    &style,
+                    library,
+                    merged_rules.as_ref(),
+                );
+            }
         }
     }
 
@@ -2630,7 +2852,9 @@ pub fn regenerate_opening_display(
         && (slots.contains_key(&OpeningComponentSlot::Leaf3D)
             || slots.contains_key(&OpeningComponentSlot::Solid3D));
 
-    if leaf_3d_vis && opening.kind != OpeningKind::Breakthrough {
+    if leaf_3d_vis
+        && opening_component_should_render(&style.parts, opening.kind, OpeningLookRole::Leaf)
+    {
         if let Ok(cells) = grid.layout(opening.width, opening.height, opening.kind) {
             for cell in cells {
                 if !matches!(
@@ -2676,6 +2900,10 @@ pub fn regenerate_opening_display(
                         (cell.left + cell.right) * 0.5,
                         cell.bottom,
                         OpeningComponentSlot::Leaf3D,
+                        OpeningLookRole::Leaf,
+                        &style,
+                        library,
+                        merged_rules.as_ref(),
                     );
                 }
             }
@@ -2688,7 +2916,9 @@ pub fn regenerate_opening_display(
         && (slots.contains_key(&OpeningComponentSlot::Glazing3D)
             || slots.contains_key(&OpeningComponentSlot::Solid3D));
 
-    if glazing_3d_vis && opening.kind != OpeningKind::Breakthrough {
+    if glazing_3d_vis
+        && opening_component_should_render(&style.parts, opening.kind, OpeningLookRole::Glazing)
+    {
         if let Ok(cells) = grid.layout(opening.width, opening.height, opening.kind) {
             for cell in cells {
                 if !matches!(
@@ -2730,9 +2960,159 @@ pub fn regenerate_opening_display(
                         (left + right) * 0.5,
                         (bottom + top) * 0.5,
                         OpeningComponentSlot::Glazing3D,
+                        OpeningLookRole::Glazing,
+                        &style,
+                        library,
+                        merged_rules.as_ref(),
                     );
                 }
             }
+        }
+    }
+
+    let accessories_3d_vis = merged_rules
+        .as_ref()
+        .map_or(true, |r| r.is_opening_visible(OpeningComponentSlot::Solid3D));
+    if accessories_3d_vis {
+        let sill = &style.parts.exterior_sill;
+        if opening_component_should_render(&style.parts, opening.kind, OpeningLookRole::ExteriorSill)
+            && wall_y_max > wall_y_min
+        {
+            let overhang = sill.overhang.max(0.0);
+            let upstand = sill.upstand.max(0.0);
+            emit_opening_accessory_3d(
+                scene,
+                build_opening_box_3d_with_bounds(
+                    opening.width,
+                    sill.thickness + upstand,
+                    wall_y_min,
+                    wall_y_max + overhang,
+                ),
+                opening_handle,
+                opening_owner_handle,
+                default_opening_layer.as_deref(),
+                origin,
+                (tx, ty),
+                normal,
+                wall_base_z + opening.sill_height,
+                0.0,
+                (upstand - sill.thickness) * 0.5,
+                OpeningLookRole::ExteriorSill,
+                &style,
+                library,
+                merged_rules.as_ref(),
+            );
+        }
+
+        let board = &style.parts.interior_board;
+        if opening_component_should_render(&style.parts, opening.kind, OpeningLookRole::InteriorBoard)
+            && wall_y_max > wall_y_min
+        {
+            let overhang = board.overhang.max(0.0);
+            let upstand = board.upstand.max(0.0);
+            emit_opening_accessory_3d(
+                scene,
+                build_opening_box_3d_with_bounds(
+                    opening.width,
+                    board.thickness + upstand,
+                    wall_y_min - overhang,
+                    wall_y_max,
+                ),
+                opening_handle,
+                opening_owner_handle,
+                default_opening_layer.as_deref(),
+                origin,
+                (tx, ty),
+                normal,
+                wall_base_z + opening.sill_height,
+                0.0,
+                (upstand - board.thickness) * 0.5,
+                OpeningLookRole::InteriorBoard,
+                &style,
+                library,
+                merged_rules.as_ref(),
+            );
+        }
+
+        let threshold = &style.parts.threshold;
+        if opening_component_should_render(&style.parts, opening.kind, OpeningLookRole::Threshold) {
+            emit_opening_accessory_3d(
+                scene,
+                build_opening_box_3d_with_bounds(
+                    opening.width,
+                    threshold.height,
+                    -threshold.width * 0.5,
+                    threshold.width * 0.5,
+                ),
+                opening_handle,
+                opening_owner_handle,
+                default_opening_layer.as_deref(),
+                origin,
+                (tx, ty),
+                normal,
+                wall_base_z + opening.sill_height,
+                0.0,
+                threshold.height * 0.5,
+                OpeningLookRole::Threshold,
+                &style,
+                library,
+                merged_rules.as_ref(),
+            );
+        }
+
+        let shutter = &style.parts.shutter_box;
+        if opening_component_should_render(&style.parts, opening.kind, OpeningLookRole::ShutterBox) {
+            let y_min = wall_y_min + shutter.installation_depth;
+            emit_opening_accessory_3d(
+                scene,
+                build_opening_box_3d_with_bounds(
+                    opening.width,
+                    shutter.height,
+                    y_min,
+                    y_min + shutter.depth,
+                ),
+                opening_handle,
+                opening_owner_handle,
+                default_opening_layer.as_deref(),
+                origin,
+                (tx, ty),
+                normal,
+                wall_base_z + opening.sill_height,
+                0.0,
+                opening.height + shutter.seat_above_frame + shutter.height * 0.5,
+                OpeningLookRole::ShutterBox,
+                &style,
+                library,
+                merged_rules.as_ref(),
+            );
+        }
+
+        let lintel = &style.parts.lintel;
+        if opening_component_should_render(&style.parts, opening.kind, OpeningLookRole::Lintel) {
+            let bearing_left = lintel.bearing_left.max(0.0);
+            let bearing_right = lintel.bearing_right.max(0.0);
+            emit_opening_accessory_3d(
+                scene,
+                build_opening_box_3d_with_bounds(
+                    opening.width + bearing_left + bearing_right,
+                    lintel.height,
+                    wall_y_min,
+                    wall_y_max,
+                ),
+                opening_handle,
+                opening_owner_handle,
+                default_opening_layer.as_deref(),
+                origin,
+                (tx, ty),
+                normal,
+                wall_base_z + opening.sill_height,
+                (bearing_right - bearing_left) * 0.5,
+                opening.height + lintel.height * 0.5,
+                OpeningLookRole::Lintel,
+                &style,
+                library,
+                merged_rules.as_ref(),
+            );
         }
     }
 }
@@ -3266,6 +3646,302 @@ mod tests {
     }
 
     #[test]
+    fn opening_look_is_written_to_generated_frame_polyline() {
+        let mut scene = Scene::new();
+        let wall = add_test_wall(&mut scene);
+        let mut lib = seed_default_library();
+        let color = acadrust::types::Color::Rgb { r: 12, g: 34, b: 56 };
+        let style = lib
+            .opening_styles
+            .iter_mut()
+            .find(|style| style.style.id == SEED_WINDOW_STYLE_ID)
+            .expect("seed window style");
+        style.looks.fixed_frame.line_type = Some("DASHED".into());
+        style.looks.fixed_frame.line_color = Some(color);
+
+        let (opening, _) = place_wall_opening(
+            &mut scene,
+            wall,
+            DVec3::new(1.5, 0.0, 0.0),
+            OpeningKind::Window,
+            Some(&lib),
+            None,
+            None,
+        )
+        .expect("place window");
+        let frame = collect_opening_display_children(&scene, opening)
+            .into_iter()
+            .find(|handle| {
+                scene
+                    .document
+                    .get_entity(*handle)
+                    .and_then(opening_rep_slot_from_entity)
+                    == Some(OpeningComponentSlot::Frame2D)
+            })
+            .expect("frame polyline");
+        let entity = scene.document.get_entity(frame).expect("frame entity");
+
+        assert_eq!(entity.common().linetype, "DASHED");
+        assert_eq!(entity.common().color, color);
+    }
+
+    #[test]
+    fn opening_material_look_resolves_native_render_material_when_present() {
+        let mut scene = Scene::new();
+        let wall = add_test_wall(&mut scene);
+        let mut lib = seed_default_library();
+        let mut aec_material = crate::modules::aec::engine::material::Material::new(
+            "wood-look".into(),
+            "Oak finish".into(),
+            "ANSI31".into(),
+            0x123456,
+            "DASHED".into(),
+        );
+        aec_material.render_material_ref = Some("oak_native".into());
+        lib.materials.push(aec_material);
+        let style = lib
+            .opening_styles
+            .iter_mut()
+            .find(|style| style.style.id == SEED_WINDOW_STYLE_ID)
+            .expect("seed window style");
+        style.looks.fixed_frame.material_id = Some("wood-look".into());
+
+        let material_handle = scene.document.allocate_handle();
+        let mut native = codec::objects::Material::new();
+        native.handle = material_handle;
+        native.name = "oak_native".into();
+        scene.document.objects.insert(
+            material_handle,
+            codec::objects::ObjectType::Material(native),
+        );
+
+        let (opening, _) = place_wall_opening(
+            &mut scene,
+            wall,
+            DVec3::new(1.5, 0.0, 0.0),
+            OpeningKind::Window,
+            Some(&lib),
+            None,
+            None,
+        )
+        .expect("place window");
+        let children = collect_opening_display_children(&scene, opening);
+        let frame = children
+            .iter()
+            .find(|handle| {
+                scene
+                    .document
+                    .get_entity(**handle)
+                    .and_then(opening_rep_slot_from_entity)
+                    == Some(OpeningComponentSlot::Frame2D)
+            })
+            .copied()
+            .expect("frame polyline");
+        let frame_entity = scene.document.get_entity(frame).unwrap();
+        assert_eq!(frame_entity.common().linetype, "DASHED");
+        assert_eq!(
+            frame_entity.common().color,
+            acadrust::types::Color::Rgb {
+                r: 0x12,
+                g: 0x34,
+                b: 0x56,
+            }
+        );
+
+        let frame_solid = children
+            .into_iter()
+            .find(|handle| {
+                matches!(scene.document.get_entity(*handle), Some(EntityType::Solid3D(_)))
+                    && scene
+                        .document
+                        .get_entity(*handle)
+                        .and_then(opening_rep_slot_from_entity)
+                        == Some(OpeningComponentSlot::Frame3D)
+            })
+            .expect("frame solid");
+        let solid = scene.document.get_entity(frame_solid).unwrap();
+        assert_eq!(solid.common().material_flags, 3);
+        assert_eq!(solid.common().material_handle, Some(material_handle));
+    }
+
+    #[test]
+    fn plan_style_override_wins_over_opening_look() {
+        let mut scene = Scene::new();
+        let wall = add_test_wall(&mut scene);
+        let mut lib = seed_default_library();
+        let style = lib
+            .opening_styles
+            .iter_mut()
+            .find(|style| style.style.id == SEED_WINDOW_STYLE_ID)
+            .expect("seed window style");
+        style.looks.fixed_frame.line_type = Some("DASHED".into());
+        let override_color = acadrust::types::Color::Rgb { r: 200, g: 10, b: 20 };
+        let mut rules = ComponentRuleSet::default();
+        rules.style_override.insert(
+            OpeningComponentSlot::Frame2D.key().to_string(),
+            crate::modules::aec::engine::display_component::ComponentStyleOverride {
+                line_type: Some("HIDDEN".into()),
+                line_color: Some(override_color),
+                ..Default::default()
+            },
+        );
+
+        let (opening, _) = place_wall_opening(
+            &mut scene,
+            wall,
+            DVec3::new(1.5, 0.0, 0.0),
+            OpeningKind::Window,
+            Some(&lib),
+            Some(&rules),
+            None,
+        )
+        .expect("place window");
+        let frame = collect_opening_display_children(&scene, opening)
+            .into_iter()
+            .find(|handle| {
+                scene
+                    .document
+                    .get_entity(*handle)
+                    .and_then(opening_rep_slot_from_entity)
+                    == Some(OpeningComponentSlot::Frame2D)
+            })
+            .expect("frame polyline");
+        let entity = scene.document.get_entity(frame).expect("frame entity");
+
+        assert_eq!(entity.common().linetype, "HIDDEN");
+        assert_eq!(entity.common().color, override_color);
+    }
+
+    #[test]
+    fn opening_plan_mullions_do_not_depend_on_elevation_slot() {
+        let mut slots = default_slots_for_kind(OpeningKind::Window);
+        slots.remove(&OpeningComponentSlot::ElevationMuntins2D);
+        let grid = DivisionGrid {
+            vertical: vec![0.5, 0.5],
+            cells: vec![OpeningCell::default(), OpeningCell::default()],
+            ..DivisionGrid::default()
+        };
+
+        assert_eq!(
+            representation_levels(&slots, &grid, None).divisions,
+            DivisionLevel::Posts
+        );
+        assert_eq!(
+            representation_levels(&slots, &grid, Some(DivisionLevel::Off)).divisions,
+            DivisionLevel::Off
+        );
+    }
+
+    #[test]
+    fn positive_lintel_height_emits_a_solid3d_child() {
+        let mut scene = Scene::new();
+        let wall = add_test_wall(&mut scene);
+        let mut lib = seed_default_library();
+        let style = lib
+            .opening_styles
+            .iter_mut()
+            .find(|style| style.style.id == SEED_WINDOW_STYLE_ID)
+            .expect("seed window style");
+        style.parts.lintel.height = 0.2;
+        style.parts.lintel.bearing_left = 0.1;
+        style.parts.lintel.bearing_right = 0.1;
+        let lintel_color = acadrust::types::Color::Rgb { r: 90, g: 120, b: 150 };
+        style.looks.lintel.line_color = Some(lintel_color);
+
+        let (opening, _) = place_wall_opening(
+            &mut scene,
+            wall,
+            DVec3::new(1.5, 0.0, 0.0),
+            OpeningKind::Window,
+            Some(&lib),
+            None,
+            None,
+        )
+        .expect("place window");
+
+        let lintel = collect_opening_display_children(&scene, opening)
+            .into_iter()
+            .find(|handle| {
+                matches!(scene.document.get_entity(*handle), Some(EntityType::Solid3D(_)))
+                    && scene
+                        .document
+                        .get_entity(*handle)
+                        .and_then(opening_rep_slot_from_entity)
+                        == Some(OpeningComponentSlot::Solid3D)
+            })
+            .expect("lintel solid");
+        assert_eq!(
+            scene.document.get_entity(lintel).unwrap().common().color,
+            lintel_color
+        );
+    }
+
+    #[test]
+    fn zero_accessory_dimensions_emit_no_solid3d_child() {
+        let mut scene = Scene::new();
+        let wall = add_test_wall(&mut scene);
+        let lib = seed_default_library();
+
+        let (opening, _) = place_wall_opening(
+            &mut scene,
+            wall,
+            DVec3::new(1.5, 0.0, 0.0),
+            OpeningKind::Window,
+            Some(&lib),
+            None,
+            None,
+        )
+        .expect("place window");
+
+        assert!(!collect_opening_display_children(&scene, opening)
+            .into_iter()
+            .any(|handle| {
+                matches!(scene.document.get_entity(handle), Some(EntityType::Solid3D(_)))
+                    && scene
+                        .document
+                        .get_entity(handle)
+                        .and_then(opening_rep_slot_from_entity)
+                        == Some(OpeningComponentSlot::Solid3D)
+            }));
+    }
+
+    #[test]
+    fn disabled_lintel_emits_no_solid3d_child() {
+        let mut scene = Scene::new();
+        let wall = add_test_wall(&mut scene);
+        let mut lib = seed_default_library();
+        let style = lib
+            .opening_styles
+            .iter_mut()
+            .find(|style| style.style.id == SEED_WINDOW_STYLE_ID)
+            .expect("seed window style");
+        style.parts.lintel.height = 0.2;
+        style.parts.lintel.enabled = false;
+
+        let (opening, _) = place_wall_opening(
+            &mut scene,
+            wall,
+            DVec3::new(1.5, 0.0, 0.0),
+            OpeningKind::Window,
+            Some(&lib),
+            None,
+            None,
+        )
+        .expect("place window");
+
+        assert!(!collect_opening_display_children(&scene, opening)
+            .into_iter()
+            .any(|handle| {
+                matches!(scene.document.get_entity(handle), Some(EntityType::Solid3D(_)))
+                    && scene
+                        .document
+                        .get_entity(handle)
+                        .and_then(opening_rep_slot_from_entity)
+                        == Some(OpeningComponentSlot::Solid3D)
+            }));
+    }
+
+    #[test]
     fn place_window_emits_opening_rep_children_and_resolves_pick() {
         let mut scene = Scene::new();
         let wall = add_test_wall(&mut scene);
@@ -3283,7 +3959,7 @@ mod tests {
         let slots = child_slots(&scene, opening);
         assert!(slots.contains(&OpeningComponentSlot::Frame2D));
         assert!(slots.contains(&OpeningComponentSlot::Leaf2D));
-        assert!(slots.contains(&OpeningComponentSlot::Sill2D));
+        assert!(!slots.contains(&OpeningComponentSlot::Sill2D));
         assert!(!slots.contains(&OpeningComponentSlot::Swing2D));
         let child = collect_opening_display_children(&scene, opening)[0];
         assert_eq!(resolve_opening_package(&scene, child), opening);
@@ -3392,7 +4068,7 @@ mod tests {
         assert!((parsed.width - DEFAULT_WINDOW_WIDTH).abs() < 1e-12);
         let slots = child_slots(&scene, opening);
         assert!(slots.contains(&OpeningComponentSlot::Frame2D));
-        assert!(slots.contains(&OpeningComponentSlot::Sill2D));
+        assert!(!slots.contains(&OpeningComponentSlot::Sill2D));
     }
 
     #[test]

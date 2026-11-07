@@ -9,19 +9,21 @@ use iced::Task;
 
 use crate::app::{AecModalKind, AecPendingCopy, Message, OpenCADStudio};
 use crate::modules::aec::engine::display_component::OpeningComponentSlot;
-use crate::modules::aec::engine::opening_display::{bake_opening_generators, BakedPath, OpeningBakeParams};
+use crate::modules::aec::engine::opening_display::{
+    bake_opening_elevation_paths, bake_opening_plan_paths, BakedPath, OpeningBakeParams,
+};
 use crate::modules::aec::engine::opening_shape::{clamp_spring, OpeningShape};
 use crate::modules::aec::engine::opening_style::{
     default_slots_for_kind, BlockPlacementMode, DivisionGrid, FamilyPlacement,
     FamilySymbol, OpeningDisplayProfile, OpeningFamilySymbols, OpeningGenerator, OpeningParts,
-    OpeningCell, OpeningLookRole, OpeningLooks, OpeningStyle, SlotGeometry,
-    HingeSide, DEFAULT_FRAME_THICKNESS,
+    OpeningCell, OpeningEditorGroup, OpeningLookRole, OpeningLooks, OpeningStyle, SlotGeometry,
+    opening_component_should_render, HingeSide, DEFAULT_FRAME_THICKNESS,
     DEFAULT_OPENING_ANGLE_DEG,
 };
 use crate::modules::aec::engine::openings::{OpeningKind, SwingSide};
 use crate::modules::aec::engine::style::Style;
 use crate::modules::aec::state::{
-    AecOpeningCellBuffer, AecOpeningEditorTab, AecOpeningLookBuffer, AecOpeningPreviewMode,
+    AecOpeningCellBuffer, AecOpeningLookBuffer, AecOpeningPreviewMode,
     AecOpeningSlotBuffer, AecOpeningSlotSource,
 };
 use crate::modules::{IconKind, ModuleEvent, ToolDef};
@@ -93,6 +95,34 @@ fn dim_or(s: &str, fallback: f64) -> f64 {
     parse_dim(s).unwrap_or(fallback)
 }
 
+fn resize_opening_cells(
+    cells: &mut Vec<AecOpeningCellBuffer>,
+    old_columns: usize,
+    old_rows: usize,
+    columns: usize,
+    rows: usize,
+) {
+    let old_cells = std::mem::take(cells);
+    let mut resized = vec![
+        AecOpeningCellBuffer {
+            kind: crate::modules::aec::engine::opening_style::OpeningCellKind::Glass,
+            hinge: None,
+            sill: "0".to_string(),
+        };
+        columns * rows
+    ];
+    for row in 0..old_rows.min(rows) {
+        for column in 0..old_columns.min(columns) {
+            let old_index = row * old_columns + column;
+            let new_index = row * columns + column;
+            if let Some(cell) = old_cells.get(old_index) {
+                resized[new_index] = cell.clone();
+            }
+        }
+    }
+    *cells = resized;
+}
+
 fn symbol_from(name: &str, placement: FamilyPlacement) -> Option<FamilySymbol> {
     let block_name = name.trim().to_string();
     if block_name.is_empty() {
@@ -128,7 +158,16 @@ fn load_part_buffers(app: &mut OpenCADStudio, style: &OpeningStyle) {
     app.aec.styles.opening_lintel_left = format_dim(parts.lintel.bearing_left);
     app.aec.styles.opening_lintel_right = format_dim(parts.lintel.bearing_right);
     app.aec.styles.opening_look_buffers = opening_look_buffers_from_style(style);
-    app.aec.styles.opening_editor_tab = AecOpeningEditorTab::Dimensions;
+    app.aec.styles.opening_editor_tab = OpeningEditorGroup::FixedFrame;
+    app.aec.styles.opening_component_enabled = HashMap::from([
+        (OpeningEditorGroup::Leaf, parts.leaf_frame.enabled),
+        (OpeningEditorGroup::Glazing, parts.glazing.enabled),
+        (OpeningEditorGroup::ExteriorSill, parts.exterior_sill.enabled),
+        (OpeningEditorGroup::InteriorBoard, parts.interior_board.enabled),
+        (OpeningEditorGroup::Threshold, parts.threshold.enabled),
+        (OpeningEditorGroup::ShutterBox, parts.shutter_box.enabled),
+        (OpeningEditorGroup::Lintel, parts.lintel.enabled),
+    ]);
     app.aec.styles.opening_look_color_picker_role = None;
     app.aec.styles.opening_selected_look_role = None;
     app.aec.styles.opening_vertical = format_list(&style.grid.vertical);
@@ -256,7 +295,24 @@ fn parts_from_buffers(app: &OpenCADStudio) -> OpeningParts {
     parts.lintel.height = dim_or(&s.opening_lintel_height, 0.0);
     parts.lintel.bearing_left = dim_or(&s.opening_lintel_left, 0.0);
     parts.lintel.bearing_right = dim_or(&s.opening_lintel_right, 0.0);
+    parts.leaf_frame.enabled = enabled_buffer(&s.opening_component_enabled, OpeningEditorGroup::Leaf);
+    parts.glazing.enabled = enabled_buffer(&s.opening_component_enabled, OpeningEditorGroup::Glazing);
+    parts.exterior_sill.enabled = enabled_buffer(&s.opening_component_enabled, OpeningEditorGroup::ExteriorSill);
+    parts.interior_board.enabled = enabled_buffer(&s.opening_component_enabled, OpeningEditorGroup::InteriorBoard);
+    parts.threshold.enabled = enabled_buffer(&s.opening_component_enabled, OpeningEditorGroup::Threshold);
+    parts.shutter_box.enabled = enabled_buffer(&s.opening_component_enabled, OpeningEditorGroup::ShutterBox);
+    parts.lintel.enabled = enabled_buffer(&s.opening_component_enabled, OpeningEditorGroup::Lintel);
     parts
+}
+
+fn enabled_buffer(
+    enabled: &HashMap<OpeningEditorGroup, bool>,
+    group: OpeningEditorGroup,
+) -> bool {
+    enabled
+        .get(&group)
+        .copied()
+        .unwrap_or(true)
 }
 
 fn grid_from_buffers(app: &OpenCADStudio, height: f64) -> Result<DivisionGrid, String> {
@@ -504,6 +560,105 @@ pub fn preview_baked_paths(style: &OpeningStyle, preview_width: f64) -> Vec<Bake
     preview_baked_paths_for_mode(style, preview_width, AecOpeningPreviewMode::Plan2D)
 }
 
+fn push_preview_edge(
+    paths: &mut Vec<BakedPath>,
+    project: &impl Fn(f64, f64, f64) -> (f64, f64),
+    start: [f64; 3],
+    end: [f64; 3],
+    slot: OpeningComponentSlot,
+    look_role: Option<OpeningLookRole>,
+) {
+    paths.push(BakedPath {
+        slot,
+        look_role,
+        points: vec![
+            project(start[0], start[1], start[2]),
+            project(end[0], end[1], end[2]),
+        ],
+        closed: false,
+        filled: false,
+    });
+}
+
+fn push_preview_wire_box(
+    paths: &mut Vec<BakedPath>,
+    project: &impl Fn(f64, f64, f64) -> (f64, f64),
+    x_min: f64,
+    x_max: f64,
+    y_min: f64,
+    y_max: f64,
+    z_min: f64,
+    z_max: f64,
+    slot: OpeningComponentSlot,
+    look_role: Option<OpeningLookRole>,
+) {
+    if x_max <= x_min || y_max <= y_min || z_max <= z_min {
+        return;
+    }
+    let points = [
+        [x_min, y_min, z_min],
+        [x_max, y_min, z_min],
+        [x_max, y_max, z_min],
+        [x_min, y_max, z_min],
+        [x_min, y_min, z_max],
+        [x_max, y_min, z_max],
+        [x_max, y_max, z_max],
+        [x_min, y_max, z_max],
+    ];
+    for (a, b) in [
+        (0, 1),
+        (1, 2),
+        (2, 3),
+        (3, 0),
+        (4, 5),
+        (5, 6),
+        (6, 7),
+        (7, 4),
+        (0, 4),
+        (1, 5),
+        (2, 6),
+        (3, 7),
+    ] {
+        push_preview_edge(paths, project, points[a], points[b], slot, look_role);
+    }
+}
+
+fn push_preview_body_edges(
+    paths: &mut Vec<BakedPath>,
+    body: &cadkernel::brep::Body,
+    project: &impl Fn(f64, f64, f64) -> (f64, f64),
+    offset_x: f64,
+    offset_z: f64,
+    slot: OpeningComponentSlot,
+    look_role: OpeningLookRole,
+) {
+    for edge_key in body.edge_keys() {
+        if let Some(edge) = body.edges.get(edge_key) {
+            if let (Some(start), Some(end)) = (
+                body.vertices.get(edge.start),
+                body.vertices.get(edge.end),
+            ) {
+                push_preview_edge(
+                    paths,
+                    project,
+                    [
+                        start.point[0] + offset_x,
+                        start.point[1],
+                        start.point[2] + offset_z,
+                    ],
+                    [
+                        end.point[0] + offset_x,
+                        end.point[1],
+                        end.point[2] + offset_z,
+                    ],
+                    slot,
+                    Some(look_role),
+                );
+            }
+        }
+    }
+}
+
 /// Bake geometry for the requested preview mode (Plan2D, Elevation2D, Model3D).
 pub fn preview_baked_paths_for_mode(
     style: &OpeningStyle,
@@ -535,41 +690,24 @@ pub fn preview_baked_paths_for_mode(
 
     match mode {
         AecOpeningPreviewMode::Plan2D => {
-            let plan_slots = default_slots_for_kind(style.kind);
-            bake_opening_generators(&plan_slots, params, None)
+            bake_opening_plan_paths(
+                params,
+                &style.parts,
+                &style.grid,
+                style.suggested_levels.plan_frame,
+                style.suggested_levels.swing,
+                style.suggested_levels.divisions,
+            )
         }
         AecOpeningPreviewMode::Section => section_preview_paths(style),
         AecOpeningPreviewMode::Elevation2D => {
-            let elev_slots = default_slots_for_kind(style.kind);
-            let mut paths = bake_opening_generators(&elev_slots, params, None);
-            if paths.is_empty() {
-                let (outer, inner) =
-                    crate::modules::aec::engine::opening_display::opening_elevation_loops(
-                        style.shape,
-                        width,
-                        style.default_height,
-                        style.spring_height,
-                        style.parts.fixed_frame.face_width,
-                        style.kind == OpeningKind::Door,
-                    );
-                paths.push(crate::modules::aec::engine::opening_display::BakedPath {
-                    slot: OpeningComponentSlot::ElevationContour2D,
-                    look_role: None,
-                    points: outer,
-                    closed: true,
-                    filled: false,
-                });
-                if !inner.is_empty() {
-                    paths.push(crate::modules::aec::engine::opening_display::BakedPath {
-                        slot: OpeningComponentSlot::ElevationContour2D,
-                        look_role: None,
-                        points: inner,
-                        closed: true,
-                        filled: false,
-                    });
-                }
-            }
-            paths
+            bake_opening_elevation_paths(
+                params,
+                &style.parts,
+                &style.grid,
+                style.suggested_levels.elevation_frame,
+                style.suggested_levels.divisions,
+            )
         }
         AecOpeningPreviewMode::Model3D => {
             let iso_proj = |x: f64, y: f64, z: f64| -> (f64, f64) {
@@ -580,30 +718,140 @@ pub fn preview_baked_paths_for_mode(
             let hw = width * 0.5;
             let ht = PREVIEW_WALL_THICKNESS * 0.5;
             let h = style.default_height;
-            let wall_box_edges = vec![
-                ((-hw, -ht, 0.0), (hw, -ht, 0.0)),
-                ((hw, -ht, 0.0), (hw, ht, 0.0)),
-                ((hw, ht, 0.0), (-hw, ht, 0.0)),
-                ((-hw, ht, 0.0), (-hw, -ht, 0.0)),
-                ((-hw, -ht, h), (hw, -ht, h)),
-                ((hw, -ht, h), (hw, ht, h)),
-                ((hw, ht, h), (-hw, ht, h)),
-                ((-hw, ht, h), (-hw, -ht, h)),
-                ((-hw, -ht, 0.0), (-hw, -ht, h)),
-                ((hw, -ht, 0.0), (hw, -ht, h)),
-                ((hw, ht, 0.0), (hw, ht, h)),
-                ((-hw, ht, 0.0), (-hw, ht, h)),
-            ];
-            for (p0, p1) in wall_box_edges {
-                let q0 = iso_proj(p0.0, p0.1, p0.2);
-                let q1 = iso_proj(p1.0, p1.1, p1.2);
-                paths.push(crate::modules::aec::engine::opening_display::BakedPath {
-                    slot: OpeningComponentSlot::HostCut2D,
-                    look_role: None,
-                    points: vec![q0, q1],
-                    closed: false,
-                    filled: false,
-                });
+            let sill_z = style.default_sill.max(0.0);
+            let head_z = sill_z + h;
+            let shutter = &style.parts.shutter_box;
+            let lintel = &style.parts.lintel;
+            let wall_top = head_z
+                + lintel
+                    .height
+                    .max(shutter.seat_above_frame + shutter.height)
+                    .max(0.0)
+                + 0.4;
+            push_preview_wire_box(
+                &mut paths,
+                &iso_proj,
+                -hw - 0.3,
+                hw + 0.3,
+                -ht,
+                ht,
+                0.0,
+                wall_top,
+                OpeningComponentSlot::HostCut2D,
+                None,
+            );
+
+            for y in [-ht, ht] {
+                for (start, end) in [
+                    ([-hw, y, sill_z], [hw, y, sill_z]),
+                    ([hw, y, sill_z], [hw, y, head_z]),
+                    ([hw, y, head_z], [-hw, y, head_z]),
+                    ([-hw, y, head_z], [-hw, y, sill_z]),
+                ] {
+                    push_preview_edge(
+                        &mut paths,
+                        &iso_proj,
+                        start,
+                        end,
+                        OpeningComponentSlot::HostCut2D,
+                        None,
+                    );
+                }
+            }
+            for (x, z) in [(-hw, sill_z), (hw, sill_z), (-hw, head_z), (hw, head_z)] {
+                push_preview_edge(
+                    &mut paths,
+                    &iso_proj,
+                    [x, -ht, z],
+                    [x, ht, z],
+                    OpeningComponentSlot::HostCut2D,
+                    None,
+                );
+            }
+
+            if opening_component_should_render(
+                &style.parts,
+                style.kind,
+                OpeningLookRole::ExteriorSill,
+            ) {
+                let sill = &style.parts.exterior_sill;
+                push_preview_wire_box(
+                    &mut paths,
+                    &iso_proj,
+                    -hw,
+                    hw,
+                    -ht,
+                    ht + sill.overhang.max(0.0),
+                    sill_z - sill.thickness,
+                    sill_z + sill.upstand.max(0.0),
+                    OpeningComponentSlot::Solid3D,
+                    Some(OpeningLookRole::ExteriorSill),
+                );
+            }
+            if opening_component_should_render(
+                &style.parts,
+                style.kind,
+                OpeningLookRole::InteriorBoard,
+            ) {
+                let board = &style.parts.interior_board;
+                push_preview_wire_box(
+                    &mut paths,
+                    &iso_proj,
+                    -hw,
+                    hw,
+                    -ht - board.overhang.max(0.0),
+                    ht,
+                    sill_z - board.thickness,
+                    sill_z + board.upstand.max(0.0),
+                    OpeningComponentSlot::Solid3D,
+                    Some(OpeningLookRole::InteriorBoard),
+                );
+            }
+            if opening_component_should_render(&style.parts, style.kind, OpeningLookRole::Threshold) {
+                let threshold = &style.parts.threshold;
+                push_preview_wire_box(
+                    &mut paths,
+                    &iso_proj,
+                    -hw,
+                    hw,
+                    -threshold.width * 0.5,
+                    threshold.width * 0.5,
+                    sill_z,
+                    sill_z + threshold.height,
+                    OpeningComponentSlot::Solid3D,
+                    Some(OpeningLookRole::Threshold),
+                );
+            }
+            if opening_component_should_render(&style.parts, style.kind, OpeningLookRole::ShutterBox) {
+                let y_min = -ht + shutter.installation_depth;
+                push_preview_wire_box(
+                    &mut paths,
+                    &iso_proj,
+                    -hw,
+                    hw,
+                    y_min,
+                    y_min + shutter.depth,
+                    head_z + shutter.seat_above_frame,
+                    head_z + shutter.seat_above_frame + shutter.height,
+                    OpeningComponentSlot::Solid3D,
+                    Some(OpeningLookRole::ShutterBox),
+                );
+            }
+            if opening_component_should_render(&style.parts, style.kind, OpeningLookRole::Lintel) {
+                let left = lintel.bearing_left.max(0.0);
+                let right = lintel.bearing_right.max(0.0);
+                push_preview_wire_box(
+                    &mut paths,
+                    &iso_proj,
+                    -hw - left,
+                    hw + right,
+                    -ht,
+                    ht,
+                    head_z,
+                    head_z + lintel.height,
+                    OpeningComponentSlot::Solid3D,
+                    Some(OpeningLookRole::Lintel),
+                );
             }
 
             let ft = style.parts.fixed_frame.face_width;
@@ -613,6 +861,7 @@ pub fn preview_baked_paths_for_mode(
             let is_door = style.kind == OpeningKind::Door;
             let angle = style.opening_angle_deg;
             let hinge = style.hinge;
+            let project_opening = |x: f64, y: f64, z: f64| iso_proj(x, y, z + sill_z);
 
             if let Some(frame_solid) =
                 crate::modules::aec::engine::opening_display::build_opening_frame_3d(
@@ -624,74 +873,72 @@ pub fn preview_baked_paths_for_mode(
                     sh,
                 )
             {
-                for edge_key in frame_solid.edge_keys() {
-                    if let Some(edge) = frame_solid.edges.get(edge_key) {
-                        if let (Some(va), Some(vb)) = (
-                            frame_solid.vertices.get(edge.start),
-                            frame_solid.vertices.get(edge.end),
-                        ) {
-                            let q0 = iso_proj(va.point[0], va.point[1], va.point[2]);
-                            let q1 = iso_proj(vb.point[0], vb.point[1], vb.point[2]);
-                            paths.push(crate::modules::aec::engine::opening_display::BakedPath {
-                                slot: OpeningComponentSlot::Frame3D,
-                                look_role: None,
-                                points: vec![q0, q1],
-                                closed: false,
-                                filled: false,
-                            });
-                        }
-                    }
-                }
+                push_preview_body_edges(
+                    &mut paths,
+                    &frame_solid,
+                    &project_opening,
+                    0.0,
+                    0.0,
+                    OpeningComponentSlot::Frame3D,
+                    OpeningLookRole::FixedFrame,
+                );
             }
             if let Some(glazing_solid) =
                 crate::modules::aec::engine::opening_display::build_opening_glazing_3d(
                     width, h, ft, shape, sh,
                 )
             {
-                for edge_key in glazing_solid.edge_keys() {
-                    if let Some(edge) = glazing_solid.edges.get(edge_key) {
-                        if let (Some(va), Some(vb)) = (
-                            glazing_solid.vertices.get(edge.start),
-                            glazing_solid.vertices.get(edge.end),
-                        ) {
-                            let q0 = iso_proj(va.point[0], va.point[1], va.point[2]);
-                            let q1 = iso_proj(vb.point[0], vb.point[1], vb.point[2]);
-                            paths.push(crate::modules::aec::engine::opening_display::BakedPath {
-                                slot: OpeningComponentSlot::Glazing3D,
-                                look_role: None,
-                                points: vec![q0, q1],
-                                closed: false,
-                                filled: false,
-                            });
-                        }
-                    }
-                }
+                push_preview_body_edges(
+                    &mut paths,
+                    &glazing_solid,
+                    &project_opening,
+                    0.0,
+                    0.0,
+                    OpeningComponentSlot::Glazing3D,
+                    OpeningLookRole::Glazing,
+                );
             }
             if let Some(leaf_solid) =
                 crate::modules::aec::engine::opening_display::build_opening_leaf_3d(
                     width, h, ft, angle, hinge, SwingSide::Exterior, is_door, shape, sh,
                 )
             {
-                for edge_key in leaf_solid.edge_keys() {
-                    if let Some(edge) = leaf_solid.edges.get(edge_key) {
-                        if let (Some(va), Some(vb)) = (
-                            leaf_solid.vertices.get(edge.start),
-                            leaf_solid.vertices.get(edge.end),
-                        ) {
-                            let q0 = iso_proj(va.point[0], va.point[1], va.point[2]);
-                            let q1 = iso_proj(vb.point[0], vb.point[1], vb.point[2]);
-                            paths.push(crate::modules::aec::engine::opening_display::BakedPath {
-                                slot: OpeningComponentSlot::Leaf3D,
-                                look_role: None,
-                                points: vec![q0, q1],
-                                closed: false,
-                                filled: false,
-                            });
-                        }
-                    }
-                }
+                push_preview_body_edges(
+                    &mut paths,
+                    &leaf_solid,
+                    &project_opening,
+                    0.0,
+                    0.0,
+                    OpeningComponentSlot::Leaf3D,
+                    OpeningLookRole::Leaf,
+                );
             }
 
+            for (bar, center_x, center_z) in
+                crate::modules::aec::engine::opening_display::build_opening_grid_bars_3d(
+                    &style.grid,
+                    params,
+                    style.parts.fixed_frame.face_width,
+                    style.parts.leaf_frame.face_width,
+                    style.parts.fixed_frame.wall_depth,
+                )
+            {
+                push_preview_body_edges(
+                    &mut paths,
+                    &bar,
+                    &project_opening,
+                    center_x,
+                    center_z,
+                    OpeningComponentSlot::Frame3D,
+                    OpeningLookRole::Division,
+                );
+            }
+
+            paths.retain(|path| {
+                path.resolved_look_role().map_or(true, |role| {
+                    opening_component_should_render(&style.parts, style.kind, role)
+                })
+            });
             paths
         }
     }
@@ -713,15 +960,43 @@ fn section_preview_paths(style: &OpeningStyle) -> Vec<BakedPath> {
             .parts
             .lintel
             .height
-            .max(shutter.seat_above_frame + shutter.height);
+            .max(shutter.seat_above_frame + shutter.height)
+        + 0.3;
 
-    let mut paths = vec![BakedPath {
+    let mut paths = Vec::new();
+    if sill_z > 0.0 {
+        paths.push(BakedPath {
+            slot: OpeningComponentSlot::HostCut2D,
+            look_role: None,
+            points: vec![
+                (-wall_half, 0.0),
+                (wall_half, 0.0),
+                (wall_half, sill_z),
+                (-wall_half, sill_z),
+            ],
+            closed: true,
+            filled: true,
+        });
+    }
+    paths.push(BakedPath {
+        slot: OpeningComponentSlot::HostCut2D,
+        look_role: None,
+        points: vec![
+            (-wall_half, head_z),
+            (wall_half, head_z),
+            (wall_half, top_z),
+            (-wall_half, top_z),
+        ],
+        closed: true,
+        filled: true,
+    });
+    paths.push(BakedPath {
         slot: OpeningComponentSlot::HostCut2D,
         look_role: None,
         points: vec![(-wall_half, 0.0), (-wall_half, top_z), (wall_half, top_z), (wall_half, 0.0)],
         closed: false,
         filled: false,
-    }];
+    });
 
     let mut push_rect = |role: OpeningLookRole,
                          slot: OpeningComponentSlot,
@@ -740,7 +1015,9 @@ fn section_preview_paths(style: &OpeningStyle) -> Vec<BakedPath> {
         }
     };
 
-    if frame_face > 0.0 {
+    if frame_face > 0.0
+        && opening_component_should_render(&style.parts, style.kind, OpeningLookRole::FixedFrame)
+    {
         push_rect(
             OpeningLookRole::FixedFrame,
             OpeningComponentSlot::Frame2D,
@@ -760,7 +1037,11 @@ fn section_preview_paths(style: &OpeningStyle) -> Vec<BakedPath> {
     }
 
     let exterior_sill = &style.parts.exterior_sill;
-    if exterior_sill.thickness > 0.0 {
+    if opening_component_should_render(
+        &style.parts,
+        style.kind,
+        OpeningLookRole::ExteriorSill,
+    ) {
         push_rect(
             OpeningLookRole::ExteriorSill,
             OpeningComponentSlot::Sill2D,
@@ -782,7 +1063,11 @@ fn section_preview_paths(style: &OpeningStyle) -> Vec<BakedPath> {
     }
 
     let interior_board = &style.parts.interior_board;
-    if interior_board.thickness > 0.0 {
+    if opening_component_should_render(
+        &style.parts,
+        style.kind,
+        OpeningLookRole::InteriorBoard,
+    ) {
         push_rect(
             OpeningLookRole::InteriorBoard,
             OpeningComponentSlot::Sill2D,
@@ -794,7 +1079,7 @@ fn section_preview_paths(style: &OpeningStyle) -> Vec<BakedPath> {
     }
 
     let threshold = &style.parts.threshold;
-    if style.kind == OpeningKind::Door && threshold.height > 0.0 && threshold.width > 0.0 {
+    if opening_component_should_render(&style.parts, style.kind, OpeningLookRole::Threshold) {
         push_rect(
             OpeningLookRole::Threshold,
             OpeningComponentSlot::Threshold2D,
@@ -805,7 +1090,7 @@ fn section_preview_paths(style: &OpeningStyle) -> Vec<BakedPath> {
         );
     }
 
-    if shutter.height > 0.0 && shutter.depth > 0.0 {
+    if opening_component_should_render(&style.parts, style.kind, OpeningLookRole::ShutterBox) {
         let x0 = -wall_half + shutter.installation_depth;
         push_rect(
             OpeningLookRole::ShutterBox,
@@ -817,7 +1102,7 @@ fn section_preview_paths(style: &OpeningStyle) -> Vec<BakedPath> {
         );
     }
 
-    if style.parts.lintel.height > 0.0 {
+    if opening_component_should_render(&style.parts, style.kind, OpeningLookRole::Lintel) {
         push_rect(
             OpeningLookRole::Lintel,
             OpeningComponentSlot::Frame2D,
@@ -972,6 +1257,13 @@ impl OpenCADStudio {
         let kind = OpeningKind::from_str(&value);
         let was_new = self.aec.styles.opening_editing_id.is_none();
         self.aec.styles.opening_kind = kind;
+        if !self.aec.styles.opening_editor_tab.applies_to(kind) {
+            self.aec.styles.opening_editor_tab = OpeningEditorGroup::all()
+                .iter()
+                .copied()
+                .find(|group| group.applies_to(kind))
+                .unwrap_or(OpeningEditorGroup::FixedFrame);
+        }
         if was_new {
             let (w, h, sill) = kind.default_dimensions();
             self.aec.styles.opening_width = format_dim(w);
@@ -1015,6 +1307,8 @@ impl OpenCADStudio {
     }
 
     pub(crate) fn aec_opening_style_manager_dim_changed(&mut self, key: &str, value: String) {
+        let old_columns = parse_list(&self.aec.styles.opening_vertical).len().max(1);
+        let old_rows = parse_list(&self.aec.styles.opening_horizontal).len() + 1;
         let field = match key {
             "frame" => &mut self.aec.styles.opening_frame,
             "frame_depth" => &mut self.aec.styles.opening_frame_depth,
@@ -1046,13 +1340,45 @@ impl OpenCADStudio {
             _ => return,
         };
         *field = value;
+        if matches!(key, "vertical" | "horizontal") {
+            let columns = parse_list(&self.aec.styles.opening_vertical).len().max(1);
+            let rows = parse_list(&self.aec.styles.opening_horizontal).len() + 1;
+            resize_opening_cells(
+                &mut self.aec.styles.opening_cells,
+                old_columns,
+                old_rows,
+                columns,
+                rows,
+            );
+        }
     }
 
     pub(crate) fn aec_opening_style_manager_set_editor_tab(
         &mut self,
-        tab: AecOpeningEditorTab,
+        tab: OpeningEditorGroup,
     ) {
         self.aec.styles.opening_editor_tab = tab;
+    }
+
+    pub(crate) fn aec_opening_style_manager_component_enabled_changed(
+        &mut self,
+        group: OpeningEditorGroup,
+        enabled: bool,
+    ) {
+        if group.applies_to(self.aec.styles.opening_kind)
+            && !matches!(
+                group,
+                OpeningEditorGroup::FixedFrame
+                    | OpeningEditorGroup::Divisions
+                    | OpeningEditorGroup::Symbol
+                    | OpeningEditorGroup::Ratings
+            )
+        {
+            self.aec
+                .styles
+                .opening_component_enabled
+                .insert(group, enabled);
+        }
     }
 
     pub(crate) fn aec_opening_style_manager_preview_slot_select(
@@ -1064,22 +1390,18 @@ impl OpenCADStudio {
             return Task::none();
         };
 
-        if self.aec.styles.opening_editor_tab != AecOpeningEditorTab::Materials {
-            self.aec.styles.opening_editor_tab = AecOpeningEditorTab::Graphics;
-        }
-        let row_index = OpeningLookRole::all()
-            .iter()
-            .position(|candidate| *candidate == role)
-            .unwrap_or_default();
-        iced::widget::operation::scroll_to(
-            iced::advanced::widget::Id::new(
-                crate::modules::aec::ui::style_manager::forms::opening::OPENING_EDITOR_SCROLL_ID,
-            ),
-            iced::widget::scrollable::AbsoluteOffset {
-                x: 0.0,
-                y: row_index as f32 * 36.0,
-            },
-        )
+        self.aec.styles.opening_editor_tab = match role {
+            OpeningLookRole::FixedFrame => OpeningEditorGroup::FixedFrame,
+            OpeningLookRole::Leaf | OpeningLookRole::Swing => OpeningEditorGroup::Leaf,
+            OpeningLookRole::Glazing => OpeningEditorGroup::Glazing,
+            OpeningLookRole::ExteriorSill => OpeningEditorGroup::ExteriorSill,
+            OpeningLookRole::InteriorBoard => OpeningEditorGroup::InteriorBoard,
+            OpeningLookRole::Threshold => OpeningEditorGroup::Threshold,
+            OpeningLookRole::ShutterBox => OpeningEditorGroup::ShutterBox,
+            OpeningLookRole::Lintel => OpeningEditorGroup::Lintel,
+            OpeningLookRole::Division => OpeningEditorGroup::Divisions,
+        };
+        Task::none()
     }
 
     pub(crate) fn aec_opening_style_manager_look_line_type_changed(
@@ -1139,6 +1461,15 @@ impl OpenCADStudio {
 
     pub(crate) fn aec_opening_style_manager_cell_kind(&mut self, index: usize, value: &str) {
         use crate::modules::aec::engine::opening_style::OpeningCellKind;
+        if self.aec.styles.opening_cells.len() <= index {
+            self.aec.styles.opening_cells.resize_with(index + 1, || {
+                AecOpeningCellBuffer {
+                    kind: OpeningCellKind::Glass,
+                    hinge: None,
+                    sill: "0".to_string(),
+                }
+            });
+        }
         if let Some(cell) = self.aec.styles.opening_cells.get_mut(index) {
             cell.kind = OpeningCellKind::from_str(value);
             if !cell.kind.permits_hinge() {
@@ -1148,6 +1479,15 @@ impl OpenCADStudio {
     }
 
     pub(crate) fn aec_opening_style_manager_cell_hinge(&mut self, index: usize, value: &str) {
+        if self.aec.styles.opening_cells.len() <= index {
+            self.aec.styles.opening_cells.resize_with(index + 1, || {
+                AecOpeningCellBuffer {
+                    kind: crate::modules::aec::engine::opening_style::OpeningCellKind::Glass,
+                    hinge: None,
+                    sill: "0".to_string(),
+                }
+            });
+        }
         if let Some(cell) = self.aec.styles.opening_cells.get_mut(index) {
             cell.hinge = if value.is_empty() || value == "-" {
                 None
@@ -1626,8 +1966,6 @@ mod tests {
             "vertical".into(),
             "0.333, 0.667".into(),
         ));
-        let _ = app.update_aec(AecMessage::AecOpeningStyleManagerCellAdd);
-        let _ = app.update_aec(AecMessage::AecOpeningStyleManagerCellAdd);
         let _ = app.update_aec(AecMessage::AecOpeningStyleManagerCellKindChanged(
             0,
             OpeningCellKind::DoorLeaf.as_str().into(),
@@ -1665,6 +2003,7 @@ mod tests {
             .unwrap();
         assert!((stored.parts.fixed_frame.face_width - 0.08).abs() < 1e-9);
         assert_eq!(stored.grid.vertical, vec![0.333, 0.667]);
+        assert_eq!(stored.grid.cells.len(), 2);
         assert_eq!(stored.grid.cells[0].kind, OpeningCellKind::DoorLeaf);
         let symbol = stored.family_symbols.plan.as_ref().unwrap();
         assert_eq!(symbol.block_name, "Fenster");
@@ -1700,23 +2039,23 @@ mod tests {
     }
 
     #[test]
-    fn preview_role_select_switches_to_graphics_but_keeps_materials_tab() {
+    fn preview_role_select_switches_to_its_component_group() {
         use crate::app::OpenCADStudio;
 
         let mut app = OpenCADStudio::new_for_test();
-        app.aec.styles.opening_editor_tab = AecOpeningEditorTab::Dimensions;
+        app.aec.styles.opening_editor_tab = OpeningEditorGroup::FixedFrame;
         let _ = app.aec_opening_style_manager_preview_slot_select(Some(OpeningLookRole::Swing));
-        assert_eq!(app.aec.styles.opening_editor_tab, AecOpeningEditorTab::Graphics);
+        assert_eq!(app.aec.styles.opening_editor_tab, OpeningEditorGroup::Leaf);
         assert_eq!(app.aec.styles.opening_selected_look_role, Some(OpeningLookRole::Swing));
 
-        app.aec.styles.opening_editor_tab = AecOpeningEditorTab::Materials;
+        app.aec.styles.opening_editor_tab = OpeningEditorGroup::ShutterBox;
         let _ = app.aec_opening_style_manager_preview_slot_select(Some(OpeningLookRole::Lintel));
-        assert_eq!(app.aec.styles.opening_editor_tab, AecOpeningEditorTab::Materials);
+        assert_eq!(app.aec.styles.opening_editor_tab, OpeningEditorGroup::Lintel);
         assert_eq!(app.aec.styles.opening_selected_look_role, Some(OpeningLookRole::Lintel));
 
         let _ = app.aec_opening_style_manager_preview_slot_select(None);
         assert_eq!(app.aec.styles.opening_selected_look_role, None);
-        assert_eq!(app.aec.styles.opening_editor_tab, AecOpeningEditorTab::Materials);
+        assert_eq!(app.aec.styles.opening_editor_tab, OpeningEditorGroup::Lintel);
     }
 
     #[test]
@@ -1725,22 +2064,21 @@ mod tests {
             LintelDimensions, ShutterBoxDimensions, SillDimensions, ThresholdDimensions,
         };
 
-        let mut style = OpeningStyle::standard_door();
+        let mut style = OpeningStyle::standard_window();
         style.parts.exterior_sill = SillDimensions {
+            enabled: true,
             thickness: 0.04,
             overhang: 0.08,
             upstand: 0.02,
         };
         style.parts.interior_board = SillDimensions {
+            enabled: true,
             thickness: 0.03,
             overhang: 0.12,
             upstand: 0.01,
         };
-        style.parts.threshold = ThresholdDimensions {
-            height: 0.025,
-            width: 0.12,
-        };
         style.parts.shutter_box = ShutterBoxDimensions {
+            enabled: true,
             height: 0.18,
             depth: 0.22,
             seat_above_frame: 0.03,
@@ -1760,12 +2098,29 @@ mod tests {
             OpeningLookRole::FixedFrame,
             OpeningLookRole::ExteriorSill,
             OpeningLookRole::InteriorBoard,
-            OpeningLookRole::Threshold,
             OpeningLookRole::ShutterBox,
             OpeningLookRole::Lintel,
         ] {
             assert!(roles.contains(&role), "missing section preview role {role:?}");
         }
+
+        let mut door = OpeningStyle::standard_door();
+        door.parts.threshold = ThresholdDimensions {
+            enabled: true,
+            height: 0.025,
+            width: 0.12,
+        };
+        door.parts.interior_board.thickness = 0.03;
+        door.parts.lintel.height = 0.20;
+        let paths = preview_baked_paths_for_mode(&door, door.default_width, AecOpeningPreviewMode::Section);
+        let door_roles: std::collections::HashSet<_> = paths
+            .iter()
+            .filter_map(BakedPath::resolved_look_role)
+            .collect();
+        assert!(door_roles.contains(&OpeningLookRole::Threshold));
+        assert!(door_roles.contains(&OpeningLookRole::InteriorBoard));
+        assert!(!door_roles.contains(&OpeningLookRole::ExteriorSill));
+        assert!(!door_roles.contains(&OpeningLookRole::ShutterBox));
     }
 
     #[test]
@@ -1932,16 +2287,67 @@ mod tests {
 
     #[test]
     fn preview_baked_paths_for_mode_plan_elevation_and_3d() {
-        let style = OpeningStyle::standard_window();
+        let mut style = OpeningStyle::standard_window();
+        style.grid.vertical = vec![0.5, 0.5];
+        style.grid.vertical_muntins = vec![0.5];
+        style.grid.cells = vec![OpeningCell::default(), OpeningCell::default()];
+        style.suggested_levels.divisions =
+            crate::modules::aec::engine::opening_style::DivisionLevel::PostsAndMuntins;
+        assert_eq!(
+            style
+                .grid
+                .layout(1.2, style.default_height, style.kind)
+                .expect("valid grid")
+                .len(),
+            2
+        );
         let plan_paths = preview_baked_paths_for_mode(&style, 1.2, AecOpeningPreviewMode::Plan2D);
         assert!(plan_paths.iter().any(|p| p.slot == OpeningComponentSlot::Frame2D));
-        assert!(plan_paths.iter().any(|p| p.slot == OpeningComponentSlot::Leaf2D || p.slot == OpeningComponentSlot::Glazing2D));
+        assert!(plan_paths.iter().all(|path| !path.slot.is_elevation()));
+        assert!(plan_paths
+            .iter()
+            .any(|path| path.resolved_look_role() == Some(OpeningLookRole::Division)),
+            "{plan_paths:#?}"
+        );
 
         let elev_paths = preview_baked_paths_for_mode(&style, 1.2, AecOpeningPreviewMode::Elevation2D);
         assert!(elev_paths.iter().any(|p| p.slot == OpeningComponentSlot::ElevationContour2D || p.slot == OpeningComponentSlot::ElevationSwing2D));
+        assert!(elev_paths.iter().all(|path| path.slot.is_elevation()));
 
         let model_paths = preview_baked_paths_for_mode(&style, 1.2, AecOpeningPreviewMode::Model3D);
         assert!(model_paths.iter().any(|p| p.slot == OpeningComponentSlot::HostCut2D));
         assert!(model_paths.iter().any(|p| p.slot == OpeningComponentSlot::Frame3D || p.slot == OpeningComponentSlot::Glazing3D));
+        assert!(model_paths
+            .iter()
+            .any(|path| path.resolved_look_role() == Some(OpeningLookRole::Division)));
+    }
+
+    #[test]
+    fn section_and_model_previews_include_wall_and_sized_attachments() {
+        let mut style = OpeningStyle::standard_window();
+        style.parts.exterior_sill.thickness = 0.05;
+        style.parts.exterior_sill.overhang = 0.1;
+        style.parts.interior_board.thickness = 0.04;
+        style.parts.interior_board.overhang = 0.08;
+        style.parts.shutter_box.height = 0.2;
+        style.parts.shutter_box.depth = 0.25;
+        style.parts.lintel.height = 0.15;
+
+        let section = preview_baked_paths_for_mode(&style, 1.2, AecOpeningPreviewMode::Section);
+        assert!(section
+            .iter()
+            .any(|path| path.slot == OpeningComponentSlot::HostCut2D && path.filled));
+
+        let model = preview_baked_paths_for_mode(&style, 1.2, AecOpeningPreviewMode::Model3D);
+        for role in [
+            OpeningLookRole::ExteriorSill,
+            OpeningLookRole::InteriorBoard,
+            OpeningLookRole::ShutterBox,
+            OpeningLookRole::Lintel,
+        ] {
+            assert!(model
+                .iter()
+                .any(|path| path.resolved_look_role() == Some(role)));
+        }
     }
 }

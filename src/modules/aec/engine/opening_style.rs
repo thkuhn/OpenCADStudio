@@ -579,10 +579,16 @@ impl Default for FixedFrameDimensions {
     }
 }
 
+const fn default_opening_component_enabled() -> bool {
+    true
+}
+
 /// Absolute dimensions of an operable leaf frame.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct LeafFrameDimensions {
+    #[serde(default = "default_opening_component_enabled")]
+    pub enabled: bool,
     pub face_width: f64,
     pub depth: f64,
     pub rebate_overlap: f64,
@@ -591,6 +597,7 @@ pub struct LeafFrameDimensions {
 impl Default for LeafFrameDimensions {
     fn default() -> Self {
         Self {
+            enabled: true,
             face_width: 0.04,
             depth: 0.06,
             rebate_overlap: 0.01,
@@ -602,6 +609,8 @@ impl Default for LeafFrameDimensions {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct GlazingDimensions {
+    #[serde(default = "default_opening_component_enabled")]
+    pub enabled: bool,
     pub thickness: f64,
     pub inset: f64,
 }
@@ -609,6 +618,7 @@ pub struct GlazingDimensions {
 impl Default for GlazingDimensions {
     fn default() -> Self {
         Self {
+            enabled: true,
             thickness: 0.02,
             inset: 0.01,
         }
@@ -616,40 +626,93 @@ impl Default for GlazingDimensions {
 }
 
 /// Absolute dimensions shared by an exterior sill or interior board.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct SillDimensions {
+    #[serde(default = "default_opening_component_enabled")]
+    pub enabled: bool,
     pub thickness: f64,
     pub overhang: f64,
     pub upstand: f64,
 }
 
+impl Default for SillDimensions {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            thickness: 0.0,
+            overhang: 0.0,
+            upstand: 0.0,
+        }
+    }
+}
+
 /// Absolute dimensions of a door threshold.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ThresholdDimensions {
+    #[serde(default = "default_opening_component_enabled")]
+    pub enabled: bool,
     pub height: f64,
     pub width: f64,
 }
 
+impl Default for ThresholdDimensions {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            height: 0.0,
+            width: 0.0,
+        }
+    }
+}
+
 /// Absolute dimensions and position of a shutter box.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ShutterBoxDimensions {
+    #[serde(default = "default_opening_component_enabled")]
+    pub enabled: bool,
     pub height: f64,
     pub depth: f64,
     pub seat_above_frame: f64,
     pub installation_depth: f64,
 }
 
+impl Default for ShutterBoxDimensions {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            height: 0.0,
+            depth: 0.0,
+            seat_above_frame: 0.0,
+            installation_depth: 0.0,
+        }
+    }
+}
+
 /// Absolute dimensions and material of a host lintel.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct LintelDimensions {
+    #[serde(default = "default_opening_component_enabled")]
+    pub enabled: bool,
     pub height: f64,
     pub bearing_left: f64,
     pub bearing_right: f64,
     pub material_id: Option<String>,
+}
+
+impl Default for LintelDimensions {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            height: 0.0,
+            bearing_left: 0.0,
+            bearing_right: 0.0,
+            material_id: None,
+        }
+    }
 }
 
 /// Optional symbol source for one view family. The block does not own sizes.
@@ -734,6 +797,40 @@ pub struct OpeningParts {
     pub lintel: LintelDimensions,
 }
 
+pub fn opening_component_should_render(
+    parts: &OpeningParts,
+    kind: OpeningKind,
+    role: OpeningLookRole,
+) -> bool {
+    if !opening_component_applies(kind, role) {
+        return false;
+    }
+    match role {
+        OpeningLookRole::FixedFrame | OpeningLookRole::Division => true,
+        OpeningLookRole::Leaf | OpeningLookRole::Swing => {
+            parts.leaf_frame.enabled
+                && parts.leaf_frame.face_width > 0.0
+                && parts.leaf_frame.depth > 0.0
+        }
+        OpeningLookRole::Glazing => parts.glazing.enabled && parts.glazing.thickness > 0.0,
+        OpeningLookRole::ExteriorSill => {
+            parts.exterior_sill.enabled && parts.exterior_sill.thickness > 0.0
+        }
+        OpeningLookRole::InteriorBoard => {
+            parts.interior_board.enabled && parts.interior_board.thickness > 0.0
+        }
+        OpeningLookRole::Threshold => {
+            parts.threshold.enabled && parts.threshold.width > 0.0 && parts.threshold.height > 0.0
+        }
+        OpeningLookRole::ShutterBox => {
+            parts.shutter_box.enabled
+                && parts.shutter_box.height > 0.0
+                && parts.shutter_box.depth > 0.0
+        }
+        OpeningLookRole::Lintel => parts.lintel.enabled && parts.lintel.height > 0.0,
+    }
+}
+
 /// A shared optical role for one or more opening display slots.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum OpeningLookRole {
@@ -804,6 +901,88 @@ impl OpeningLookRole {
             | OpeningComponentSlot::OpeningLabel2D
             | OpeningComponentSlot::Mark2D
             | OpeningComponentSlot::Solid3D => None,
+        }
+    }
+}
+
+pub fn opening_component_applies(kind: OpeningKind, role: OpeningLookRole) -> bool {
+    match role {
+        OpeningLookRole::FixedFrame => matches!(kind, OpeningKind::Window | OpeningKind::Door),
+        OpeningLookRole::Leaf | OpeningLookRole::Glazing | OpeningLookRole::Swing => {
+            matches!(kind, OpeningKind::Window | OpeningKind::Door)
+        }
+        OpeningLookRole::Division => matches!(kind, OpeningKind::Window | OpeningKind::Door),
+        OpeningLookRole::ExteriorSill | OpeningLookRole::ShutterBox => {
+            kind == OpeningKind::Window
+        }
+        OpeningLookRole::InteriorBoard => matches!(kind, OpeningKind::Window | OpeningKind::Door),
+        OpeningLookRole::Threshold => kind == OpeningKind::Door,
+        OpeningLookRole::Lintel => true,
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub enum OpeningEditorGroup {
+    #[default]
+    FixedFrame,
+    Leaf,
+    Glazing,
+    ExteriorSill,
+    InteriorBoard,
+    Threshold,
+    ShutterBox,
+    Lintel,
+    Divisions,
+    Symbol,
+    Ratings,
+}
+
+impl OpeningEditorGroup {
+    pub fn all() -> &'static [OpeningEditorGroup] {
+        &[
+            OpeningEditorGroup::FixedFrame,
+            OpeningEditorGroup::Leaf,
+            OpeningEditorGroup::Glazing,
+            OpeningEditorGroup::ExteriorSill,
+            OpeningEditorGroup::InteriorBoard,
+            OpeningEditorGroup::Threshold,
+            OpeningEditorGroup::ShutterBox,
+            OpeningEditorGroup::Lintel,
+            OpeningEditorGroup::Divisions,
+            OpeningEditorGroup::Symbol,
+            OpeningEditorGroup::Ratings,
+        ]
+    }
+
+    pub fn applies_to(self, kind: OpeningKind) -> bool {
+        match self {
+            OpeningEditorGroup::FixedFrame => {
+                opening_component_applies(kind, OpeningLookRole::FixedFrame)
+            }
+            OpeningEditorGroup::Leaf => opening_component_applies(kind, OpeningLookRole::Leaf),
+            OpeningEditorGroup::Glazing => {
+                opening_component_applies(kind, OpeningLookRole::Glazing)
+            }
+            OpeningEditorGroup::ExteriorSill => {
+                opening_component_applies(kind, OpeningLookRole::ExteriorSill)
+            }
+            OpeningEditorGroup::InteriorBoard => {
+                opening_component_applies(kind, OpeningLookRole::InteriorBoard)
+            }
+            OpeningEditorGroup::Threshold => {
+                opening_component_applies(kind, OpeningLookRole::Threshold)
+            }
+            OpeningEditorGroup::ShutterBox => {
+                opening_component_applies(kind, OpeningLookRole::ShutterBox)
+            }
+            OpeningEditorGroup::Lintel => {
+                opening_component_applies(kind, OpeningLookRole::Lintel)
+            }
+            OpeningEditorGroup::Divisions => {
+                opening_component_applies(kind, OpeningLookRole::Division)
+            }
+            OpeningEditorGroup::Symbol => true,
+            OpeningEditorGroup::Ratings => false,
         }
     }
 }
@@ -1766,6 +1945,81 @@ mod tests {
 
         let restored: OpeningStyle = serde_json::from_value(value).unwrap();
         assert_eq!(restored.looks, OpeningLooks::default());
+    }
+
+    #[test]
+    fn optional_component_enabled_defaults_on_for_legacy_json() {
+        assert!(serde_json::from_str::<LeafFrameDimensions>(r#"{"face_width":0.04}"#)
+            .unwrap()
+            .enabled);
+        assert!(serde_json::from_str::<GlazingDimensions>(r#"{"thickness":0.02}"#)
+            .unwrap()
+            .enabled);
+        assert!(serde_json::from_str::<SillDimensions>(r#"{"thickness":0.1}"#)
+            .unwrap()
+            .enabled);
+        assert!(serde_json::from_str::<ThresholdDimensions>(r#"{"height":0.02}"#)
+            .unwrap()
+            .enabled);
+        assert!(serde_json::from_str::<ShutterBoxDimensions>(r#"{"height":0.2}"#)
+            .unwrap()
+            .enabled);
+        assert!(serde_json::from_str::<LintelDimensions>(r#"{"height":0.2}"#)
+            .unwrap()
+            .enabled);
+    }
+
+    #[test]
+    fn opening_components_are_limited_by_kind() {
+        assert!(opening_component_applies(
+            OpeningKind::Door,
+            OpeningLookRole::Threshold
+        ));
+        assert!(!opening_component_applies(
+            OpeningKind::Door,
+            OpeningLookRole::ShutterBox
+        ));
+        assert!(!opening_component_applies(
+            OpeningKind::Breakthrough,
+            OpeningLookRole::Leaf
+        ));
+        assert!(opening_component_applies(
+            OpeningKind::Breakthrough,
+            OpeningLookRole::Lintel
+        ));
+        assert!(!OpeningEditorGroup::Ratings.applies_to(OpeningKind::Window));
+        assert!(OpeningEditorGroup::Symbol.applies_to(OpeningKind::Breakthrough));
+    }
+
+    #[test]
+    fn optional_component_rendering_requires_enabled_positive_dimensions() {
+        let mut parts = OpeningParts::default();
+        parts.lintel.height = 0.2;
+        assert!(opening_component_should_render(
+            &parts,
+            OpeningKind::Window,
+            OpeningLookRole::Lintel
+        ));
+
+        parts.lintel.enabled = false;
+        assert!(!opening_component_should_render(
+            &parts,
+            OpeningKind::Window,
+            OpeningLookRole::Lintel
+        ));
+
+        parts.lintel.enabled = true;
+        parts.lintel.height = 0.0;
+        assert!(!opening_component_should_render(
+            &parts,
+            OpeningKind::Window,
+            OpeningLookRole::Lintel
+        ));
+        assert!(!opening_component_should_render(
+            &parts,
+            OpeningKind::Door,
+            OpeningLookRole::ShutterBox
+        ));
     }
 
     #[test]

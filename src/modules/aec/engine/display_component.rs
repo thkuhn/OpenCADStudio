@@ -631,6 +631,10 @@ pub struct ComponentRuleSet {
     /// opening style's default profile.
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub opening_profiles: HashMap<String, crate::modules::aec::engine::opening_style::OpeningDisplayProfile>,
+    /// Explicit plan-level opening division detail. Slot visibility remains
+    /// independent so 3D filters do not suppress plan-view posts.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub opening_division_level: Option<crate::modules::aec::engine::opening_style::DivisionLevel>,
 }
 
 impl ComponentRuleSet {

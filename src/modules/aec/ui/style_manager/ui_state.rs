@@ -119,7 +119,9 @@ pub struct AecStylesUiState {
     pub opening_editing_id: Option<String>,
     pub opening_form_open: bool,
     pub opening_preview_mode: AecOpeningPreviewMode,
-    pub opening_editor_tab: crate::modules::aec::state::AecOpeningEditorTab,
+    pub opening_editor_tab: crate::modules::aec::engine::opening_style::OpeningEditorGroup,
+    pub opening_component_enabled:
+        std::collections::HashMap<crate::modules::aec::engine::opening_style::OpeningEditorGroup, bool>,
     pub opening_look_buffers: std::collections::HashMap<
         crate::modules::aec::engine::opening_style::OpeningLookRole,
         crate::modules::aec::state::AecOpeningLookBuffer,
@@ -381,7 +383,8 @@ impl Default for AecStylesUiState {
             opening_editing_id: None,
             opening_form_open: false,
             opening_preview_mode: AecOpeningPreviewMode::Plan2D,
-            opening_editor_tab: crate::modules::aec::state::AecOpeningEditorTab::Dimensions,
+            opening_editor_tab: crate::modules::aec::engine::opening_style::OpeningEditorGroup::FixedFrame,
+            opening_component_enabled: std::collections::HashMap::new(),
             opening_look_buffers: std::collections::HashMap::new(),
             opening_look_color_picker_role: None,
             opening_selected_look_role: None,

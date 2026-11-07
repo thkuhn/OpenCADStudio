@@ -11,13 +11,13 @@ use crate::modules::aec::engine::library::{LibrarySource, StyleLibrary};
 use crate::modules::aec::engine::opening_display::BakedPath;
 use crate::modules::aec::engine::opening_shape::OpeningShape;
 use crate::modules::aec::engine::opening_style::{
-    FamilyPlacement, OpeningCellKind, OpeningLookRole, OpeningStyle, HingeSide,
+    FamilyPlacement, OpeningEditorGroup, OpeningLookRole, OpeningStyle, HingeSide,
 };
 use crate::modules::aec::engine::openings::OpeningKind;
 use crate::modules::aec::engine::project::ProjectFile;
 use crate::modules::aec::message::AecMessage;
 use crate::modules::aec::state::{
-    AecOpeningCellBuffer, AecOpeningEditorTab, AecOpeningLookBuffer, AecOpeningPreviewMode,
+    AecOpeningCellBuffer, AecOpeningLookBuffer, AecOpeningPreviewMode,
     StylePickerTarget,
 };
 use crate::modules::aec::styles::opening_style_manager::{
@@ -37,7 +37,8 @@ pub struct OpeningStyleFormState<'a> {
     pub open: bool,
     pub is_new: bool,
     pub preview_mode: AecOpeningPreviewMode,
-    pub editor_tab: AecOpeningEditorTab,
+    pub editor_tab: OpeningEditorGroup,
+    pub component_enabled: &'a HashMap<OpeningEditorGroup, bool>,
     pub look_buffers: &'a HashMap<OpeningLookRole, AecOpeningLookBuffer>,
     pub look_color_picker_role: Option<OpeningLookRole>,
     pub selected_look_role: Option<OpeningLookRole>,
@@ -269,28 +270,33 @@ fn form_view<'a>(library: &'a StyleLibrary, form: OpeningStyleFormState<'a>) -> 
                 .size(11)
                 .padding([4, 6])
                 .width(120),
-            text(tr!("aec", "opening-hinge")).size(10).style(muted).width(60),
-            pick_list(
-                Some(form.hinge.as_str().to_string()),
-                hinges,
-                |v: &String| v.clone(),
-            )
-            .on_select(|v| Message::Aec(AecMessage::AecOpeningStyleManagerHingeChanged(v)))
-            .text_size(11)
-            .width(120),
-        ]
-        .spacing(8),
-        row![
-            text(tr!("aec", "opening-angle")).size(10).style(muted).width(100),
-            text_input("", form.angle)
-                .on_input(|v| Message::Aec(AecMessage::AecOpeningStyleManagerAngleChanged(v)))
-                .size(11)
-                .padding([4, 6])
-                .width(120),
         ]
         .spacing(8),
     ]
     .spacing(7);
+
+    if form.kind != OpeningKind::Breakthrough {
+        detail_col = detail_col.push(
+            row![
+                text(tr!("aec", "opening-hinge")).size(10).style(muted).width(100),
+                pick_list(
+                    Some(form.hinge.as_str().to_string()),
+                    hinges,
+                    |v: &String| v.clone(),
+                )
+                .on_select(|v| Message::Aec(AecMessage::AecOpeningStyleManagerHingeChanged(v)))
+                .text_size(11)
+                .width(120),
+                text(tr!("aec", "opening-angle")).size(10).style(muted).width(70),
+                text_input("", form.angle)
+                    .on_input(|v| Message::Aec(AecMessage::AecOpeningStyleManagerAngleChanged(v)))
+                    .size(11)
+                    .padding([4, 6])
+                    .width(120),
+            ]
+            .spacing(8),
+        );
+    }
 
     if form.shape == OpeningShape::Arch {
         detail_col = detail_col.push(
@@ -343,24 +349,6 @@ fn form_view<'a>(library: &'a StyleLibrary, form: OpeningStyleFormState<'a>) -> 
             detail_col = detail_col.push(chain_row);
         }
     }
-
-    let editor_tabs = row![
-        editor_tab_button(form.editor_tab, AecOpeningEditorTab::Dimensions, "opening-tab-dimensions"),
-        editor_tab_button(form.editor_tab, AecOpeningEditorTab::Graphics, "opening-tab-graphics"),
-        editor_tab_button(form.editor_tab, AecOpeningEditorTab::Materials, "opening-tab-materials"),
-        editor_tab_button(form.editor_tab, AecOpeningEditorTab::Divisions, "opening-tab-divisions"),
-        editor_tab_button(form.editor_tab, AecOpeningEditorTab::Symbol, "opening-tab-symbol"),
-    ]
-    .spacing(4);
-    let tab_body = opening_editor_tab_content(&form, library);
-    detail_col = detail_col
-        .push(Space::new().height(6))
-        .push(editor_tabs)
-        .push(
-            scrollable(tab_body)
-                .id(iced::advanced::widget::Id::new(OPENING_EDITOR_SCROLL_ID))
-                .height(340),
-        );
 
     let preview_style = form_preview_style(&form);
     let preview_width = crate::modules::aec::styles::opening_style_manager::parse_dim(form.width)
@@ -446,15 +434,17 @@ fn form_view<'a>(library: &'a StyleLibrary, form: OpeningStyleFormState<'a>) -> 
         .width(360)
         .height(FillLen);
 
-    row![
-        container(column![detail_col].spacing(10).height(FillLen))
-            .width(FillLen)
-            .height(FillLen),
-        preview_col,
-    ]
-    .spacing(12)
-    .height(FillLen)
-    .into()
+    let properties = scrollable(opening_editor_tab_content(&form, library))
+        .id(iced::advanced::widget::Id::new(OPENING_EDITOR_SCROLL_ID))
+        .height(FillLen)
+        .width(FillLen);
+    let editor = row![component_group_list(&form), properties, preview_col]
+        .spacing(12)
+        .height(FillLen);
+    column![detail_col, editor]
+        .spacing(10)
+        .height(FillLen)
+        .into()
 }
 
 fn form_preview_style(form: &OpeningStyleFormState<'_>) -> OpeningStyle {
@@ -511,10 +501,21 @@ fn form_preview_style(form: &OpeningStyleFormState<'_>) -> OpeningStyle {
     style.parts.lintel.height = dim(form.lintel_height, 0.0);
     style.parts.lintel.bearing_left = dim(form.lintel_left, 0.0);
     style.parts.lintel.bearing_right = dim(form.lintel_right, 0.0);
+    style.parts.leaf_frame.enabled = component_enabled(form, OpeningEditorGroup::Leaf);
+    style.parts.glazing.enabled = component_enabled(form, OpeningEditorGroup::Glazing);
+    style.parts.exterior_sill.enabled = component_enabled(form, OpeningEditorGroup::ExteriorSill);
+    style.parts.interior_board.enabled = component_enabled(form, OpeningEditorGroup::InteriorBoard);
+    style.parts.threshold.enabled = component_enabled(form, OpeningEditorGroup::Threshold);
+    style.parts.shutter_box.enabled = component_enabled(form, OpeningEditorGroup::ShutterBox);
+    style.parts.lintel.enabled = component_enabled(form, OpeningEditorGroup::Lintel);
     style.looks = crate::modules::aec::styles::opening_style_manager::opening_looks_from_buffers(
         form.look_buffers,
     );
     style
+}
+
+fn component_enabled(form: &OpeningStyleFormState<'_>, group: OpeningEditorGroup) -> bool {
+    form.component_enabled.get(&group).copied().unwrap_or(true)
 }
 
 #[derive(Clone, Copy, Default)]
@@ -572,72 +573,165 @@ fn preview_look_styles(
     preview_look_colors(style, library)
 }
 
-fn editor_tab_button<'a>(
-    selected: AecOpeningEditorTab,
-    tab: AecOpeningEditorTab,
-    label_key: &'static str,
-) -> Element<'a, Message> {
-    button(text(opening_label(label_key)).size(11))
-        .style(if selected == tab {
-            button::primary
-        } else {
-            button::secondary
-        })
-        .padding([4, 10])
-        .on_press(Message::Aec(AecMessage::AecOpeningStyleManagerSetEditorTab(tab)))
-        .into()
+fn optional_group(group: OpeningEditorGroup) -> bool {
+    matches!(
+        group,
+        OpeningEditorGroup::Leaf
+            | OpeningEditorGroup::Glazing
+            | OpeningEditorGroup::ExteriorSill
+            | OpeningEditorGroup::InteriorBoard
+            | OpeningEditorGroup::Threshold
+            | OpeningEditorGroup::ShutterBox
+            | OpeningEditorGroup::Lintel
+    )
+}
+
+fn opening_group_label(group: OpeningEditorGroup) -> String {
+    let key = match group {
+        OpeningEditorGroup::FixedFrame => "opening-component-fixed-frame",
+        OpeningEditorGroup::Leaf => "opening-component-leaf",
+        OpeningEditorGroup::Glazing => "opening-component-glazing",
+        OpeningEditorGroup::ExteriorSill => "opening-component-exterior-sill",
+        OpeningEditorGroup::InteriorBoard => "opening-component-interior-board",
+        OpeningEditorGroup::Threshold => "opening-component-threshold",
+        OpeningEditorGroup::ShutterBox => "opening-component-shutter-box",
+        OpeningEditorGroup::Lintel => "opening-component-lintel",
+        OpeningEditorGroup::Divisions => "opening-component-divisions",
+        OpeningEditorGroup::Symbol => "opening-component-symbol",
+        OpeningEditorGroup::Ratings => "opening-component-ratings",
+    };
+    opening_label(key)
+}
+
+fn component_group_list<'a>(form: &OpeningStyleFormState<'a>) -> Element<'a, Message> {
+    let mut list = column![text(tr!("aec", "opening-components")).size(11).style(muted)]
+        .spacing(4);
+    for group in OpeningEditorGroup::all()
+        .iter()
+        .copied()
+        .filter(|group| *group != OpeningEditorGroup::Ratings && group.applies_to(form.kind))
+    {
+        let selected = form.editor_tab == group;
+        let mut item = row![
+            button(text(opening_group_label(group)).size(11))
+                .style(if selected { button::primary } else { button::secondary })
+                .padding([4, 7])
+                .on_press(Message::Aec(
+                    AecMessage::AecOpeningStyleManagerSetEditorTab(group),
+                )),
+        ]
+        .spacing(4)
+        .align_y(iced::Center);
+        if optional_group(group) {
+            let enabled = form.component_enabled.get(&group).copied().unwrap_or(true);
+            item = item.push(
+                iced::widget::checkbox(enabled)
+                    .on_toggle(move |value| {
+                        Message::Aec(
+                            AecMessage::AecOpeningStyleManagerComponentEnabledChanged(
+                                group, value,
+                            ),
+                        )
+                    })
+                    .size(13),
+            );
+        }
+        list = list.push(item);
+    }
+    scrollable(list).height(FillLen).width(160).into()
+}
+
+fn opening_group_roles(group: OpeningEditorGroup) -> &'static [OpeningLookRole] {
+    use OpeningLookRole as Role;
+    match group {
+        OpeningEditorGroup::FixedFrame => &[Role::FixedFrame],
+        OpeningEditorGroup::Leaf => &[Role::Leaf, Role::Swing],
+        OpeningEditorGroup::Glazing => &[Role::Glazing],
+        OpeningEditorGroup::ExteriorSill => &[Role::ExteriorSill],
+        OpeningEditorGroup::InteriorBoard => &[Role::InteriorBoard],
+        OpeningEditorGroup::Threshold => &[Role::Threshold],
+        OpeningEditorGroup::ShutterBox => &[Role::ShutterBox],
+        OpeningEditorGroup::Lintel => &[Role::Lintel],
+        OpeningEditorGroup::Divisions => &[Role::Division],
+        OpeningEditorGroup::Symbol | OpeningEditorGroup::Ratings => &[],
+    }
 }
 
 fn opening_editor_tab_content<'a>(
     form: &OpeningStyleFormState<'a>,
     library: &StyleLibrary,
 ) -> Element<'a, Message> {
-    match form.editor_tab {
-        AecOpeningEditorTab::Dimensions => dimensions_tab(form),
-        AecOpeningEditorTab::Graphics => graphics_tab(form),
-        AecOpeningEditorTab::Materials => materials_tab(form, library),
-        AecOpeningEditorTab::Divisions => divisions_tab(form),
-        AecOpeningEditorTab::Symbol => symbol_tab(form),
+    let group = form.editor_tab;
+    if optional_group(group) && !form.component_enabled.get(&group).copied().unwrap_or(true) {
+        return column![
+            text(opening_group_label(group)).size(12),
+            text(tr!("aec", "opening-component-disabled")).size(11).style(muted),
+        ]
+        .spacing(8)
+        .into();
     }
-}
+    let mut col = column![text(opening_group_label(group)).size(12)].spacing(6);
+    match group {
+        OpeningEditorGroup::FixedFrame => {
+            col = col
+                .push(dim_row("opening-frame-face", "frame", form.frame))
+                .push(dim_row("opening-frame-depth", "frame_depth", form.frame_depth))
+                .push(dim_row("opening-frame-offset", "frame_offset", form.frame_offset));
+        }
+        OpeningEditorGroup::Leaf => {
+            col = col
+                .push(dim_row("opening-leaf-face", "leaf_face", form.leaf_face))
+                .push(dim_row("opening-leaf-depth", "leaf_depth", form.leaf_depth))
+                .push(dim_row("opening-leaf-rebate", "leaf_rebate", form.leaf_rebate));
+        }
+        OpeningEditorGroup::Glazing => {
+            col = col
+                .push(dim_row("opening-glazing-thickness", "glazing_thickness", form.glazing_thickness))
+                .push(dim_row("opening-glazing-inset", "glazing_inset", form.glazing_inset));
+        }
+        OpeningEditorGroup::ExteriorSill => {
+            col = col
+                .push(dim_row("opening-ext-sill-thickness", "ext_sill_thickness", form.ext_sill_thickness))
+                .push(dim_row("opening-ext-sill-overhang", "ext_sill_overhang", form.ext_sill_overhang))
+                .push(dim_row("opening-ext-sill-upstand", "ext_sill_upstand", form.ext_sill_upstand));
+        }
+        OpeningEditorGroup::InteriorBoard => {
+            col = col
+                .push(dim_row("opening-int-board-thickness", "int_board_thickness", form.int_board_thickness))
+                .push(dim_row("opening-int-board-overhang", "int_board_overhang", form.int_board_overhang))
+                .push(dim_row("opening-int-board-upstand", "int_board_upstand", form.int_board_upstand));
+        }
+        OpeningEditorGroup::Threshold => {
+            col = col
+                .push(dim_row("opening-threshold-height", "threshold_height", form.threshold_height))
+                .push(dim_row("opening-threshold-width", "threshold_width", form.threshold_width));
+        }
+        OpeningEditorGroup::ShutterBox => {
+            col = col
+                .push(dim_row("opening-shutter-height", "shutter_height", form.shutter_height))
+                .push(dim_row("opening-shutter-depth", "shutter_depth", form.shutter_depth))
+                .push(dim_row("opening-shutter-seat", "shutter_seat", form.shutter_seat))
+                .push(dim_row("opening-shutter-install", "shutter_install", form.shutter_install));
+        }
+        OpeningEditorGroup::Lintel => {
+            col = col
+                .push(dim_row("opening-lintel-height", "lintel_height", form.lintel_height))
+                .push(dim_row("opening-lintel-left", "lintel_left", form.lintel_left))
+                .push(dim_row("opening-lintel-right", "lintel_right", form.lintel_right));
+        }
+        OpeningEditorGroup::Divisions => col = col.push(divisions_tab(form)),
+        OpeningEditorGroup::Symbol => col = col.push(symbol_tab(form)),
+        OpeningEditorGroup::Ratings => {}
+    }
 
-fn dimensions_tab<'a>(form: &OpeningStyleFormState<'a>) -> Element<'a, Message> {
-    column![
-        text(opening_label("opening-parts")).size(11).style(muted),
-        dim_row("opening-frame-face", "frame", form.frame),
-        dim_row("opening-frame-depth", "frame_depth", form.frame_depth),
-        dim_row("opening-frame-offset", "frame_offset", form.frame_offset),
-        dim_row("opening-leaf-face", "leaf_face", form.leaf_face),
-        dim_row("opening-leaf-depth", "leaf_depth", form.leaf_depth),
-        dim_row("opening-leaf-rebate", "leaf_rebate", form.leaf_rebate),
-        dim_row("opening-glazing-thickness", "glazing_thickness", form.glazing_thickness),
-        dim_row("opening-glazing-inset", "glazing_inset", form.glazing_inset),
-        dim_row("opening-ext-sill-thickness", "ext_sill_thickness", form.ext_sill_thickness),
-        dim_row("opening-ext-sill-overhang", "ext_sill_overhang", form.ext_sill_overhang),
-        dim_row("opening-ext-sill-upstand", "ext_sill_upstand", form.ext_sill_upstand),
-        dim_row("opening-int-board-thickness", "int_board_thickness", form.int_board_thickness),
-        dim_row("opening-int-board-overhang", "int_board_overhang", form.int_board_overhang),
-        dim_row("opening-int-board-upstand", "int_board_upstand", form.int_board_upstand),
-        dim_row("opening-threshold-height", "threshold_height", form.threshold_height),
-        dim_row("opening-threshold-width", "threshold_width", form.threshold_width),
-        dim_row("opening-shutter-height", "shutter_height", form.shutter_height),
-        dim_row("opening-shutter-depth", "shutter_depth", form.shutter_depth),
-        dim_row("opening-shutter-seat", "shutter_seat", form.shutter_seat),
-        dim_row("opening-shutter-install", "shutter_install", form.shutter_install),
-        dim_row("opening-lintel-height", "lintel_height", form.lintel_height),
-        dim_row("opening-lintel-left", "lintel_left", form.lintel_left),
-        dim_row("opening-lintel-right", "lintel_right", form.lintel_right),
-    ]
-    .spacing(4)
-    .into()
-}
-
-fn graphics_tab<'a>(form: &OpeningStyleFormState<'a>) -> Element<'a, Message> {
-    let mut col = column![text(opening_label("opening-graphics")).size(11).style(muted)]
-        .spacing(4);
-    for role in OpeningLookRole::all() {
+    for role in opening_group_roles(group) {
         if let Some(buffer) = form.look_buffers.get(role) {
-            col = col.push(graphics_row(form, *role, buffer));
+            col = col
+                .push(Space::new().height(4))
+                .push(text(opening_label("opening-graphics")).size(11).style(muted))
+                .push(graphics_row(form, *role, buffer))
+                .push(text(opening_label("opening-materials")).size(11).style(muted))
+                .push(material_row(form, library, *role, buffer));
         }
     }
     col.into()
@@ -710,99 +804,106 @@ fn graphics_row<'a>(
     }
 }
 
-fn materials_tab<'a>(
+fn material_row<'a>(
     form: &OpeningStyleFormState<'a>,
     library: &StyleLibrary,
+    role: OpeningLookRole,
+    buffer: &'a AecOpeningLookBuffer,
 ) -> Element<'a, Message> {
-    let mut col = column![text(opening_label("opening-materials")).size(11).style(muted)]
-        .spacing(4);
-    for role in OpeningLookRole::all() {
-        if let Some(buffer) = form.look_buffers.get(role) {
-            let material_name = library
-                .materials
-                .iter()
-                .find(|material| material.id == buffer.material_id)
-                .map(|material| material.name.as_str())
-                .unwrap_or_else(|| {
-                    if buffer.material_id.is_empty() {
-                        ""
-                    } else {
-                        buffer.material_id.as_str()
-                    }
-                });
-            let mut fields = row![
-                text(opening_look_role_label(*role)).size(10).style(muted).width(130),
-                button(text(if material_name.is_empty() {
-                    opening_label("opening-material-inherit")
-                } else {
-                    material_name.to_string()
-                }).size(11))
-                    .padding([3, 8])
-                    .on_press(Message::Aec(AecMessage::AecStylePickerOpen(
-                        StylePickerTarget::OpeningComponentMaterial(*role),
-                    ))),
-            ]
-            .spacing(6)
-            .align_y(iced::Center);
-            if !buffer.material_id.is_empty() {
-                fields = fields.push(
-                    button(text("×").size(11))
-                        .style(button::subtle)
-                        .padding([2, 6])
-                        .on_press(Message::Aec(
-                            AecMessage::AecOpeningStyleManagerLookMaterialClear(*role),
-                        )),
-                );
-            }
-            if form.selected_look_role == Some(*role) {
-                col = col.push(
-                    container(fields)
-                        .padding(4)
-                        .style(|theme: &Theme| container::Style {
-                            background: Some(
-                                theme
-                                    .palette()
-                                    .primary
-                                    .base
-                                    .color
-                                    .scale_alpha(0.16)
-                                    .into(),
-                            ),
-                            border: Border {
-                                color: theme.palette().primary.base.color,
-                                width: 1.0,
-                                radius: 3.0.into(),
-                            },
-                            ..Default::default()
-                        }),
-                );
+    let material_name = library
+        .materials
+        .iter()
+        .find(|material| material.id == buffer.material_id)
+        .map(|material| material.name.as_str())
+        .unwrap_or_else(|| {
+            if buffer.material_id.is_empty() {
+                ""
             } else {
-                col = col.push(fields);
+                buffer.material_id.as_str()
             }
-        }
+        });
+    let mut fields = row![
+        text(opening_look_role_label(role)).size(10).style(muted).width(130),
+        button(text(if material_name.is_empty() {
+            opening_label("opening-material-inherit")
+        } else {
+            material_name.to_string()
+        }).size(11))
+            .padding([3, 8])
+            .on_press(Message::Aec(AecMessage::AecStylePickerOpen(
+                StylePickerTarget::OpeningComponentMaterial(role),
+            ))),
+    ]
+    .spacing(6)
+    .align_y(iced::Center);
+    if !buffer.material_id.is_empty() {
+        fields = fields.push(
+            button(text("×").size(11))
+                .style(button::subtle)
+                .padding([2, 6])
+                .on_press(Message::Aec(
+                    AecMessage::AecOpeningStyleManagerLookMaterialClear(role),
+                )),
+        );
     }
-    col.into()
+    if form.selected_look_role == Some(role) {
+        container(fields)
+            .padding(4)
+            .style(|theme: &Theme| container::Style {
+                background: Some(
+                    theme
+                        .palette()
+                        .primary
+                        .base
+                        .color
+                        .scale_alpha(0.16)
+                        .into(),
+                ),
+                border: Border {
+                    color: theme.palette().primary.base.color,
+                    width: 1.0,
+                    radius: 3.0.into(),
+                },
+                ..Default::default()
+            })
+            .into()
+    } else {
+        fields.into()
+    }
 }
 
 fn divisions_tab<'a>(form: &OpeningStyleFormState<'a>) -> Element<'a, Message> {
-    let mut col = column![
+    let style = form_preview_style(form);
+    let width = crate::modules::aec::styles::opening_style_manager::parse_dim(form.width)
+        .unwrap_or(style.default_width);
+    let height = crate::modules::aec::styles::opening_style_manager::parse_dim(form.height)
+        .unwrap_or(style.default_height);
+    column![
         text(opening_label("opening-grid")).size(11).style(muted),
-        dim_row("opening-vertical", "vertical", form.vertical),
-        dim_row("opening-horizontal", "horizontal", form.horizontal),
-        dim_row("opening-vertical-muntins", "vertical_muntins", form.vertical_muntins),
-        dim_row("opening-horizontal-muntins", "horizontal_muntins", form.horizontal_muntins),
+        text(tr!("aec", "opening-division-sketch-hint")).size(10).style(muted),
+        crate::modules::aec::ui::style_manager::forms::opening_division_sketch::view(
+            &style.grid,
+            width,
+            height,
+            style.kind,
+        ),
+        division_readout("opening-vertical", form.vertical),
+        division_readout("opening-horizontal", form.horizontal),
+        division_readout("opening-vertical-muntins", form.vertical_muntins),
+        division_readout("opening-horizontal-muntins", form.horizontal_muntins),
     ]
-    .spacing(4);
-    for (index, cell) in form.cells.iter().enumerate() {
-        col = col.push(cell_row(index, cell));
-    }
-    col = col.push(
-        button(text(opening_label("opening-cell-add")).size(11))
-            .style(button::secondary)
-            .padding([2, 8])
-            .on_press(Message::Aec(AecMessage::AecOpeningStyleManagerCellAdd)),
-    );
-    col.into()
+    .spacing(6)
+    .into()
+}
+
+fn division_readout<'a>(label: &'static str, value: &'a str) -> Element<'a, Message> {
+    row![
+        text(opening_label(label)).size(10).style(muted).width(140),
+        text(if value.is_empty() { "—" } else { value }).size(11),
+    ]
+    .spacing(6)
+    .align_y(iced::Center)
+    .into()
 }
 
 fn symbol_tab<'a>(form: &OpeningStyleFormState<'a>) -> Element<'a, Message> {
@@ -828,6 +929,19 @@ fn symbol_tab<'a>(form: &OpeningStyleFormState<'a>) -> Element<'a, Message> {
 
 fn opening_label(key: &str) -> String {
     match key {
+        "opening-components" => tr!("aec", "opening-components"),
+        "opening-component-disabled" => tr!("aec", "opening-component-disabled"),
+        "opening-component-fixed-frame" => tr!("aec", "opening-component-fixed-frame"),
+        "opening-component-leaf" => tr!("aec", "opening-component-leaf"),
+        "opening-component-glazing" => tr!("aec", "opening-component-glazing"),
+        "opening-component-exterior-sill" => tr!("aec", "opening-component-exterior-sill"),
+        "opening-component-interior-board" => tr!("aec", "opening-component-interior-board"),
+        "opening-component-threshold" => tr!("aec", "opening-component-threshold"),
+        "opening-component-shutter-box" => tr!("aec", "opening-component-shutter-box"),
+        "opening-component-lintel" => tr!("aec", "opening-component-lintel"),
+        "opening-component-divisions" => tr!("aec", "opening-component-divisions"),
+        "opening-component-symbol" => tr!("aec", "opening-component-symbol"),
+        "opening-component-ratings" => tr!("aec", "opening-component-ratings"),
         "opening-parts" => tr!("aec", "opening-parts"),
         "opening-tab-dimensions" => tr!("aec", "opening-tab-dimensions"),
         "opening-tab-graphics" => tr!("aec", "opening-tab-graphics"),
@@ -901,35 +1015,6 @@ fn dim_row<'a>(label_key: &'static str, field: &'static str, value: &'a str) -> 
             .padding([2, 6]),
     ]
     .spacing(6)
-    .align_y(iced::Center)
-    .into()
-}
-
-fn cell_row<'a>(index: usize, cell: &'a AecOpeningCellBuffer) -> Element<'a, Message> {
-    let kinds: Vec<String> = OpeningCellKind::catalogue().iter().map(|k| k.as_str().to_string()).collect();
-    let hinges = vec!["-".to_string(), "Left".to_string(), "Right".to_string()];
-    let hinge = cell.hinge.map(|h| h.as_str().to_string()).unwrap_or_else(|| "-".into());
-    row![
-        text(opening_label("opening-cell")).size(10).style(muted).width(50),
-        pick_list(Some(cell.kind.as_str().to_string()), kinds, |v: &String| v.clone())
-            .on_select(move |v| Message::Aec(AecMessage::AecOpeningStyleManagerCellKindChanged(index, v)))
-            .text_size(11)
-            .width(100),
-        pick_list(Some(hinge), hinges, |v: &String| v.clone())
-            .on_select(move |v| Message::Aec(AecMessage::AecOpeningStyleManagerCellHingeChanged(index, v)))
-            .text_size(11)
-            .width(80),
-        text_input("0", &cell.sill)
-            .on_input(move |v| Message::Aec(AecMessage::AecOpeningStyleManagerCellSillChanged(index, v)))
-            .size(11)
-            .padding([2, 6])
-            .width(70),
-        button(text(opening_label("opening-cell-remove")).size(10))
-            .style(button::secondary)
-            .padding([2, 6])
-            .on_press(Message::Aec(AecMessage::AecOpeningStyleManagerCellRemove(index))),
-    ]
-    .spacing(4)
     .align_y(iced::Center)
     .into()
 }

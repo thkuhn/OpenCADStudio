@@ -122,16 +122,6 @@ pub struct AecOpeningCellBuffer {
     pub sill: String,
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum AecOpeningEditorTab {
-    #[default]
-    Dimensions,
-    Graphics,
-    Materials,
-    Divisions,
-    Symbol,
-}
-
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct AecOpeningLookBuffer {
     pub line_type: String,

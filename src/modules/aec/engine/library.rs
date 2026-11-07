@@ -745,6 +745,7 @@ fn apply_opening_level_visibility(
     use crate::modules::aec::engine::opening_style::{
         DivisionLevel, ElevationFrameLevel, PlanFrameLevel, SwingGlyph,
     };
+    rules.opening_division_level = levels.divisions;
     let mut hide = |slot: OpeningComponentSlot| {
         rules.visibility.insert(slot.key().to_string(), false);
     };

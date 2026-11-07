@@ -149,6 +149,7 @@ fn aec_opening_parts(&self) -> Option<crate::modules::aec::ui::style_manager::St
             is_new: self.aec.styles.opening_editing_id.is_none(),
             preview_mode: self.aec.styles.opening_preview_mode,
             editor_tab: self.aec.styles.opening_editor_tab,
+            component_enabled: &self.aec.styles.opening_component_enabled,
             look_buffers: &self.aec.styles.opening_look_buffers,
             look_color_picker_role: self.aec.styles.opening_look_color_picker_role,
             selected_look_role: self.aec.styles.opening_selected_look_role,

@@ -151,7 +151,13 @@ pub enum AecMessage {
     AecOpeningStyleManagerSpringChanged(String),
     AecOpeningStyleManagerHingeChanged(String),
     AecOpeningStyleManagerSetPreviewMode(crate::modules::aec::state::AecOpeningPreviewMode),
-    AecOpeningStyleManagerSetEditorTab(crate::modules::aec::state::AecOpeningEditorTab),
+    AecOpeningStyleManagerSetEditorTab(
+        crate::modules::aec::engine::opening_style::OpeningEditorGroup,
+    ),
+    AecOpeningStyleManagerComponentEnabledChanged(
+        crate::modules::aec::engine::opening_style::OpeningEditorGroup,
+        bool,
+    ),
     AecOpeningStyleManagerSlotSourceChanged(usize, String),
     AecOpeningStyleManagerSlotGeneratorChanged(usize, String),
     AecOpeningStyleManagerSlotBlockNameChanged(usize, String),

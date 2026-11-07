@@ -1574,22 +1574,26 @@ mod tests {
         style.parts.fixed_frame.face_width = 0.07;
         style.parts.fixed_frame.wall_depth = 0.12;
         style.parts.exterior_sill = SillDimensions {
+            enabled: true,
             thickness: 0.10,
             overhang: 0.20,
             upstand: 0.03,
         };
         style.parts.interior_board = SillDimensions {
+            enabled: true,
             thickness: 0.08,
             overhang: 0.15,
             upstand: 0.0,
         };
         style.parts.shutter_box = ShutterBoxDimensions {
+            enabled: true,
             height: 0.20,
             depth: 0.25,
             seat_above_frame: 0.0,
             installation_depth: 0.02,
         };
         style.parts.lintel = LintelDimensions {
+            enabled: true,
             height: 0.20,
             bearing_left: 0.15,
             bearing_right: 0.15,
