@@ -7,6 +7,7 @@ pub mod plan_manager;
 mod session;
 mod wall_profile_store;
 pub mod opening_style_manager;
+pub mod section_profile_manager;
 pub mod slab_style_manager;
 pub mod slab_structural_style_manager;
 pub mod wall_style_manager;

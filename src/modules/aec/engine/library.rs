@@ -11,6 +11,7 @@ use crate::modules::aec::engine::opening_style::OpeningStyle;
 use crate::modules::aec::engine::plan_view::{
     DetailProfile, DisplayConfig, LayerDetail, ScaleDisplayConfigMapping,
 };
+use crate::modules::aec::engine::section_profile::{SectionProfile, SectionShape};
 use crate::modules::aec::engine::slab::Slab;
 use crate::modules::aec::engine::slab_style::{
     FloorFinishStyle, SlabStructuralStyle, SlabStyle, SlabStyleLayer,
@@ -23,7 +24,7 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 use std::path::PathBuf;
 
-/// A collection of AEC materials, wall styles, opening styles, and slab styles.
+/// A collection of AEC materials, styles, and section profiles.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 pub struct StyleLibrary {
     /// List of available materials.
@@ -42,6 +43,9 @@ pub struct StyleLibrary {
     /// Floor finish styles (Fußbodenaufbauten). Absent in legacy files.
     #[serde(default)]
     pub floor_finish_styles: Vec<FloorFinishStyle>,
+    /// Reusable component cross-sections. Absent in legacy files.
+    #[serde(default)]
+    pub profiles: Vec<SectionProfile>,
 }
 
 impl StyleLibrary {
@@ -66,6 +70,9 @@ impl StyleLibrary {
         }
         for s in &mut self.floor_finish_styles {
             s.common_mut().origin = origin;
+        }
+        for profile in &mut self.profiles {
+            profile.style.origin = origin;
         }
     }
 }
@@ -151,6 +158,13 @@ pub struct CombinedSlabStructuralStyleEntry {
 #[derive(Debug, Clone, PartialEq)]
 pub struct CombinedFloorFinishStyleEntry {
     pub finish_style: FloorFinishStyle,
+    pub source: LibrarySource,
+}
+
+/// A section profile shown in the combined Standard+Project list, with provenance.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CombinedSectionProfileEntry {
+    pub profile: SectionProfile,
     pub source: LibrarySource,
 }
 
@@ -474,6 +488,59 @@ pub fn combined_floor_finish_style_entries_with_session(
     entries
 }
 
+/// Builds a combined section-profile list. Project wins, then session, then Standard.
+pub fn combined_section_profile_entries(
+    project: Option<&crate::modules::aec::engine::project::ProjectFile>,
+) -> Vec<CombinedSectionProfileEntry> {
+    combined_section_profile_entries_with_session(project, None)
+}
+
+/// Like [`combined_section_profile_entries`], with a session overlay after project
+/// and before Standard.
+pub fn combined_section_profile_entries_with_session(
+    project: Option<&crate::modules::aec::engine::project::ProjectFile>,
+    session: Option<&StyleLibrary>,
+) -> Vec<CombinedSectionProfileEntry> {
+    let standard = load_or_seed();
+    let mut entries = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+
+    if let Some(project) = project {
+        for profile in &project.material_wall_style_library.profiles {
+            seen.insert(profile.style.id.clone());
+            entries.push(CombinedSectionProfileEntry {
+                profile: profile.clone(),
+                source: LibrarySource::Project,
+            });
+        }
+    }
+
+    if let Some(session) = session {
+        for profile in &session.profiles {
+            if seen.insert(profile.style.id.clone()) {
+                entries.push(CombinedSectionProfileEntry {
+                    profile: profile.clone(),
+                    source: LibrarySource::Session,
+                });
+            }
+        }
+    }
+
+    for profile in standard.profiles {
+        if seen.insert(profile.style.id.clone()) {
+            entries.push(CombinedSectionProfileEntry {
+                profile,
+                source: LibrarySource::Standard,
+            });
+        }
+    }
+
+    for entry in &mut entries {
+        entry.profile.style.origin = entry.source.into();
+    }
+    entries
+}
+
 /// Merged Standard+Project style library for UI lookups (project wins on id).
 pub fn combined_style_library(
     project: Option<&crate::modules::aec::engine::project::ProjectFile>,
@@ -504,6 +571,9 @@ pub fn combined_style_library_with_session(
     }
     for entry in combined_floor_finish_style_entries_with_session(project, session) {
         lib.upsert_floor_finish_style(entry.finish_style);
+    }
+    for entry in combined_section_profile_entries_with_session(project, session) {
+        lib.upsert_section_profile(entry.profile);
     }
     lib
 }
@@ -1325,6 +1395,7 @@ impl StyleLibrary {
             slab_styles: Vec::new(),
             slab_structural_styles: Vec::new(),
             floor_finish_styles: Vec::new(),
+            profiles: Vec::new(),
         }
     }
 
@@ -1492,6 +1563,45 @@ impl StyleLibrary {
         let before = self.floor_finish_styles.len();
         self.floor_finish_styles.retain(|s| s.style.id != id);
         self.floor_finish_styles.len() != before
+    }
+
+    /// Inserts or replaces a valid section profile by `style.id`.
+    pub fn upsert_section_profile(&mut self, mut profile: SectionProfile) -> bool {
+        if !profile.close_custom_contour() {
+            return false;
+        }
+        if let Some(existing) = self
+            .profiles
+            .iter_mut()
+            .find(|existing| existing.style.id == profile.style.id)
+        {
+            *existing = profile;
+        } else {
+            self.profiles.push(profile);
+        }
+        true
+    }
+
+    /// Looks up a section profile by id.
+    pub fn find_section_profile(&self, id: &str) -> Option<&SectionProfile> {
+        self.profiles.iter().find(|profile| profile.style.id == id)
+    }
+
+    /// Looks up a section profile by name or id.
+    pub fn find_section_profile_by_name_or_id(&self, name_or_id: &str) -> Option<&SectionProfile> {
+        let trimmed = name_or_id.trim();
+        self.profiles.iter().find(|profile| {
+            profile.style.id == trimmed
+                || profile.style.name.eq_ignore_ascii_case(trimmed)
+                || trimmed.contains(&profile.style.name)
+        })
+    }
+
+    /// Removes a section profile by id. Returns `true` if one was removed.
+    pub fn remove_section_profile(&mut self, id: &str) -> bool {
+        let before = self.profiles.len();
+        self.profiles.retain(|profile| profile.style.id != id);
+        self.profiles.len() != before
     }
 
     /// Resolves effective slab layers from a slab style, composing layers from its
@@ -2496,6 +2606,29 @@ pub fn seed_default_library() -> StyleLibrary {
         slab_styles: seed_slab_styles(),
         slab_structural_styles: seed_slab_structural_styles(),
         floor_finish_styles: seed_floor_finish_styles(),
+        profiles: vec![
+            SectionProfile::new(
+                "section_frame_70_80",
+                "Zarge 70/80",
+                SectionShape::Rectangle {
+                    face: 0.07,
+                    depth: 0.08,
+                },
+            ),
+            SectionProfile::new(
+                "section_round_40",
+                "Rund 40",
+                SectionShape::Circle { diameter: 0.04 },
+            ),
+            SectionProfile::new(
+                "section_triangle_60_50",
+                "Blechdreieck",
+                SectionShape::Triangle {
+                    base: 0.06,
+                    height: 0.05,
+                },
+            ),
+        ],
     }
 }
 
@@ -3569,6 +3702,109 @@ mod tests {
         let deserialized = from_toml(&serialized).expect("Deserialization failed");
 
         assert_eq!(lib, deserialized);
+    }
+
+    #[test]
+    fn seeded_section_profiles_are_not_assigned_to_opening_styles() {
+        let library = seed_default_library();
+        assert_eq!(library.profiles.len(), 3);
+        assert!(library.opening_styles.iter().all(|style| {
+            style.parts.fixed_frame.profile_id.is_none()
+                && style.parts.leaf_frame.profile_id.is_none()
+                && style.grid.profile_id.is_none()
+        }));
+    }
+
+    #[test]
+    fn legacy_library_without_profiles_loads_with_an_empty_catalog() {
+        let lib = from_toml(r#"{"materials":[],"wall_styles":[]}"#)
+            .expect("legacy library without profiles must load");
+        assert!(lib.profiles.is_empty());
+    }
+
+    #[test]
+    fn section_profile_library_roundtrips() {
+        let mut library = StyleLibrary::empty();
+        let profile = SectionProfile::new(
+            "section_roundtrip",
+            "Roundtrip",
+            SectionShape::Custom {
+                points: vec![(0.0, 0.0), (0.07, 0.0), (0.05, 0.04)],
+            },
+        );
+        assert!(library.upsert_section_profile(profile));
+
+        let serialized = to_toml(&library).expect("serialize profile library");
+        let deserialized = from_toml(&serialized).expect("deserialize profile library");
+        assert_eq!(library, deserialized);
+    }
+
+    #[test]
+    fn project_section_profile_survives_combined_library_merge() {
+        let mut project = crate::modules::aec::engine::project::ProjectFile::default();
+        let mut project_profile = SectionProfile::new(
+            "project_frame",
+            "Project frame",
+            SectionShape::Rectangle {
+                face: 0.07,
+                depth: 0.08,
+            },
+        );
+        project_profile.style.origin = StyleOrigin::Project;
+        assert!(project
+            .material_wall_style_library
+            .upsert_section_profile(project_profile.clone()));
+
+        let empty_session = StyleLibrary::empty();
+        let combined = combined_style_library_with_session(Some(&project), Some(&empty_session));
+        assert_eq!(combined.find_section_profile("project_frame"), Some(&project_profile));
+        assert_eq!(
+            combined.find_section_profile("project_frame").unwrap().style.origin,
+            StyleOrigin::Project
+        );
+    }
+
+    #[test]
+    fn section_profile_upsert_search_and_remove_validate_custom_shapes() {
+        let mut library = StyleLibrary::empty();
+        let invalid = SectionProfile::new(
+            "invalid",
+            "Invalid profile",
+            SectionShape::Custom {
+                points: vec![(0.0, 0.0), (0.1, 0.0)],
+            },
+        );
+        assert!(!library.upsert_section_profile(invalid));
+        assert!(library.profiles.is_empty());
+
+        let zero_width = SectionProfile::new(
+            "zero_width",
+            "Zero width",
+            SectionShape::Rectangle {
+                face: 0.0,
+                depth: 0.08,
+            },
+        );
+        assert!(!library.upsert_section_profile(zero_width));
+        assert!(library.profiles.is_empty());
+
+        let profile = SectionProfile::new(
+            "custom",
+            "Custom profile",
+            SectionShape::Custom {
+                points: vec![(0.0, 0.0), (0.1, 0.0), (0.05, 0.04)],
+            },
+        );
+        assert!(library.upsert_section_profile(profile));
+        assert_eq!(library.profiles[0].shape, SectionShape::Custom {
+            points: vec![(0.0, 0.0), (0.1, 0.0), (0.05, 0.04), (0.0, 0.0)],
+        });
+        assert_eq!(
+            library.find_section_profile_by_name_or_id("Custom profile").unwrap().style.id,
+            "custom"
+        );
+        assert!(library.remove_section_profile("custom"));
+        assert!(!library.remove_section_profile("custom"));
     }
 
 

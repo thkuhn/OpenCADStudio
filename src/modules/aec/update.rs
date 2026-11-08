@@ -58,6 +58,50 @@ impl OpenCADStudio {
                 self.active_modal = Some(crate::app::ModalKind::Aec(AecModalKind::Styles));
                 Task::none()
             }
+            AecMessage::AecSectionProfileManagerOpen => self.aec_section_profile_manager_open(),
+            AecMessage::AecSectionProfileFilter(value) => {
+                self.aec.styles.section_profile_filter = value;
+                Task::none()
+            }
+            AecMessage::AecSectionProfileSelect(id) => self.aec_section_profile_select(id),
+            AecMessage::AecSectionProfileNew => self.aec_section_profile_new(),
+            AecMessage::AecSectionProfileNameChanged(value) => {
+                self.aec_section_profile_name_changed(value)
+            }
+            AecMessage::AecSectionProfileShapeChanged(value) => {
+                self.aec_section_profile_shape_changed(value)
+            }
+            AecMessage::AecSectionProfileDimensionChanged(field, value) => {
+                self.aec_section_profile_dimension_changed(&field, value);
+                Task::none()
+            }
+            AecMessage::AecSectionProfilePointAdd => {
+                self.aec_section_profile_point_add();
+                Task::none()
+            }
+            AecMessage::AecSectionProfilePointRemove(index) => {
+                self.aec_section_profile_point_remove(index);
+                Task::none()
+            }
+            AecMessage::AecSectionProfilePointXChanged(index, value) => {
+                self.aec_section_profile_point_changed(index, true, value);
+                Task::none()
+            }
+            AecMessage::AecSectionProfilePointYChanged(index, value) => {
+                self.aec_section_profile_point_changed(index, false, value);
+                Task::none()
+            }
+            AecMessage::AecSectionProfileSave => self.aec_section_profile_save(),
+            AecMessage::AecSectionProfileDuplicate => self.aec_section_profile_duplicate(),
+            AecMessage::AecSectionProfileDelete => self.aec_section_profile_delete(),
+            AecMessage::AecOpeningStyleProfileChanged(part, profile_id) => {
+                if let Some(profile_id) = profile_id.filter(|id| !id.trim().is_empty()) {
+                    self.aec.styles.opening_profile_ids.insert(part, profile_id);
+                } else {
+                    self.aec.styles.opening_profile_ids.remove(&part);
+                }
+                Task::none()
+            }
             AecMessage::AecWallStyleManagerOpen => {
                 self.ribbon.close_dropdown();
                 self.aec_refresh_combined_style_library();
@@ -187,6 +231,10 @@ impl OpenCADStudio {
                 self.aec_opening_style_manager_cell_hinge(index, &value);
                 Task::none()
             }
+            AecMessage::AecOpeningStyleManagerCellSelect(index) => {
+                self.aec_opening_style_manager_cell_select(index);
+                Task::none()
+            }
             AecMessage::AecOpeningStyleManagerCellSillChanged(index, value) => {
                 self.aec_opening_style_manager_cell_sill(index, value);
                 Task::none()
@@ -197,6 +245,14 @@ impl OpenCADStudio {
             }
             AecMessage::AecOpeningStyleManagerCellRemove(index) => {
                 self.aec_opening_style_manager_cell_remove(index);
+                Task::none()
+            }
+            AecMessage::AecOpeningStyleManagerDivisionAdd(axis) => {
+                self.aec_opening_style_manager_division_add(&axis);
+                Task::none()
+            }
+            AecMessage::AecOpeningStyleManagerDivisionRemove(axis, index) => {
+                self.aec_opening_style_manager_division_remove(&axis, index);
                 Task::none()
             }
             AecMessage::AecOpeningStyleManagerFamilyBlockChanged(family, name) => {

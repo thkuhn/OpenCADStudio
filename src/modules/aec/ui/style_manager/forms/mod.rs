@@ -2,6 +2,7 @@ pub mod floor_finish;
 pub mod material;
 pub mod opening;
 pub mod opening_division_sketch;
+pub mod section_profile;
 pub mod plan_overrides;
 pub mod slab;
 pub mod slab_structural;

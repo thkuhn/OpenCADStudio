@@ -38,6 +38,7 @@ pub mod room_package;
 pub mod room_regen;
 pub mod room_xdata;
 pub mod sample_project;
+pub mod section_profile;
 pub mod slab;
 pub mod slab_opening;
 pub mod slab_package;

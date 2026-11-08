@@ -12,6 +12,7 @@ use crate::tr;
 pub enum StylesNode {
     #[default]
     Materials,
+    Profiles,
     Wall,
     Opening,
     Slab,
@@ -26,6 +27,7 @@ pub const GROUPS: &[(Group, &[StylesNode])] = &[
     (
         Group::Components,
         &[
+            StylesNode::Profiles,
             StylesNode::Wall,
             StylesNode::Opening,
             StylesNode::Slab,
@@ -57,6 +59,7 @@ impl StylesNode {
     pub fn label(self) -> String {
         match self {
             StylesNode::Materials => tr!("aec", "styles-node-materials"),
+            StylesNode::Profiles => tr!("aec", "styles-node-profiles"),
             StylesNode::Wall => tr!("aec", "styles-node-wall"),
             StylesNode::Opening => tr!("aec", "styles-node-opening"),
             StylesNode::Slab => tr!("aec", "styles-node-slab"),
@@ -70,6 +73,7 @@ impl StylesNode {
     pub fn open_message(self) -> AecMessage {
         match self {
             StylesNode::Materials => AecMessage::AecMaterialManagerOpen,
+            StylesNode::Profiles => AecMessage::AecSectionProfileManagerOpen,
             StylesNode::Wall => AecMessage::AecWallStyleManagerOpen,
             StylesNode::Opening => AecMessage::AecOpeningStyleManagerOpen,
             StylesNode::Slab => AecMessage::AecSlabStyleManagerOpen,
@@ -116,6 +120,7 @@ mod tests {
     fn every_node_is_in_exactly_one_group() {
         let all = [
             StylesNode::Materials,
+            StylesNode::Profiles,
             StylesNode::Wall,
             StylesNode::Opening,
             StylesNode::Slab,

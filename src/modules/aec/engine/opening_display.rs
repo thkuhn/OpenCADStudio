@@ -17,10 +17,11 @@ use crate::modules::aec::engine::opening_style::{
     apply_plan_visibility, default_slots_for_kind, default_style_for_kind,
     effective_slots_for_plan, BlockPlacementMode, DivisionGrid, DivisionLevel,
     ElevationFrameLevel, OpeningParts, OpeningPlanProfiles, OpeningRepresentationLevels,
-    opening_component_should_render, OpeningLookRole, PlanFrameLevel, SwingGlyph,
+    opening_component_applies, opening_component_should_render, OpeningLookRole, PlanFrameLevel, SwingGlyph,
     OpeningGenerator, OpeningStyle, SlotGeometry, HingeSide, DEFAULT_FRAME_THICKNESS,
     DEFAULT_OPENING_ANGLE_DEG,
 };
+use crate::modules::aec::engine::section_profile::{resolve_section, ResolvedSection};
 use crate::modules::aec::engine::opening_xdata::{
     opening_from_entity, openings_for_host_wall, write_opening_instance,
 };
@@ -232,11 +233,49 @@ pub fn bake_opening_representation(
     slots: &HashMap<OpeningComponentSlot, SlotGeometry>,
     params: OpeningBakeParams,
     parts: &OpeningParts,
+    library: Option<&StyleLibrary>,
     grid: &DivisionGrid,
     levels: OpeningRepresentationLevels,
     rules: Option<&ComponentRuleSet>,
     doc: Option<&acadrust::CadDocument>,
 ) -> Vec<BakedPath> {
+    let fixed_frame_section = resolve_component_section(
+        library,
+        parts.fixed_frame.profile_id.as_deref(),
+        parts.fixed_frame.face_width,
+        parts.fixed_frame.wall_depth,
+    );
+    let leaf_frame_section = resolve_component_section(
+        library,
+        parts.leaf_frame.profile_id.as_deref(),
+        parts.leaf_frame.face_width,
+        parts.leaf_frame.depth,
+    );
+    let exterior_sill_section = resolve_component_section(
+        library,
+        parts.exterior_sill.profile_id.as_deref(),
+        parts.exterior_sill.thickness,
+        parts.exterior_sill.thickness,
+    );
+    let interior_board_section = resolve_component_section(
+        library,
+        parts.interior_board.profile_id.as_deref(),
+        parts.interior_board.thickness,
+        parts.interior_board.thickness,
+    );
+    let division_profile_section = grid
+        .profile_id
+        .as_deref()
+        .and_then(|id| library?.find_section_profile(id))
+        .filter(|profile| profile.is_valid())
+        .map(|_| {
+            resolve_component_section(
+                library,
+                grid.profile_id.as_deref(),
+                parts.fixed_frame.face_width,
+                parts.fixed_frame.wall_depth,
+            )
+        });
     let replaced_slots = [
         OpeningComponentSlot::Frame2D,
         OpeningComponentSlot::Leaf2D,
@@ -257,10 +296,29 @@ pub fn bake_opening_representation(
             && rules.is_none_or(|rules| rules.is_opening_visible(slot))
     };
 
+    if matches!(
+        slots.get(&OpeningComponentSlot::Sill2D),
+        Some(SlotGeometry::Generator(OpeningGenerator::SillLines))
+    ) {
+        paths.retain(|baked| baked.slot != OpeningComponentSlot::Sill2D);
+        if slot_enabled(OpeningComponentSlot::Sill2D) {
+            paths.extend(bake_sill_lines_from_parts(
+                OpeningComponentSlot::Sill2D,
+                params,
+                parts,
+                library,
+                &fixed_frame_section,
+                &exterior_sill_section,
+                &interior_board_section,
+            ));
+        }
+    }
+
     if slot_enabled(OpeningComponentSlot::Frame2D) {
         paths.extend(bake_plan_frame_level(
             params,
             &parts.fixed_frame,
+            &fixed_frame_section,
             levels.plan_frame,
         ));
     }
@@ -270,14 +328,20 @@ pub fn bake_opening_representation(
     if slot_enabled(OpeningComponentSlot::Glazing2D) {
         paths.extend(bake_grid_glazing_lines(grid, params));
     }
-    paths.extend(bake_grid_plan_divisions(grid, params, levels.divisions));
+    paths.extend(bake_grid_plan_divisions(
+        grid,
+        params,
+        levels.divisions,
+        division_profile_section.as_ref(),
+    ));
     if slot_enabled(OpeningComponentSlot::Swing2D) {
         paths.extend(bake_grid_swing_glyphs(grid, params, levels.swing));
     }
     if slot_enabled(OpeningComponentSlot::ElevationContour2D) {
         paths.extend(bake_elevation_frame_level(
             params,
-            parts,
+            fixed_frame_section.face,
+            leaf_frame_section.face,
             levels.elevation_frame,
         ));
     }
@@ -286,11 +350,12 @@ pub fn bake_opening_representation(
             grid,
             params,
             levels.divisions,
+            division_profile_section.as_ref(),
         ));
     }
     paths.retain(|path| {
         path.resolved_look_role().map_or(true, |role| {
-            opening_component_should_render(parts, params.kind, role)
+            opening_component_should_render_with_library(parts, params.kind, role, library)
         })
     });
     paths
@@ -299,15 +364,51 @@ pub fn bake_opening_representation(
 pub fn bake_opening_elevation_paths(
     params: OpeningBakeParams,
     parts: &OpeningParts,
+    library: Option<&StyleLibrary>,
     grid: &DivisionGrid,
     frame_level: ElevationFrameLevel,
     division_level: DivisionLevel,
 ) -> Vec<BakedPath> {
-    let mut paths = bake_elevation_frame_level(params, parts, frame_level);
-    paths.extend(bake_grid_elevation_divisions(grid, params, division_level));
+    let fixed_frame_section = resolve_component_section(
+        library,
+        parts.fixed_frame.profile_id.as_deref(),
+        parts.fixed_frame.face_width,
+        parts.fixed_frame.wall_depth,
+    );
+    let leaf_frame_section = resolve_component_section(
+        library,
+        parts.leaf_frame.profile_id.as_deref(),
+        parts.leaf_frame.face_width,
+        parts.leaf_frame.depth,
+    );
+    let division_profile_section = grid
+        .profile_id
+        .as_deref()
+        .and_then(|id| library?.find_section_profile(id))
+        .filter(|profile| profile.is_valid())
+        .map(|_| {
+            resolve_component_section(
+                library,
+                grid.profile_id.as_deref(),
+                parts.fixed_frame.face_width,
+                parts.fixed_frame.wall_depth,
+            )
+        });
+    let mut paths = bake_elevation_frame_level(
+        params,
+        fixed_frame_section.face,
+        leaf_frame_section.face,
+        frame_level,
+    );
+    paths.extend(bake_grid_elevation_divisions(
+        grid,
+        params,
+        division_level,
+        division_profile_section.as_ref(),
+    ));
     paths.retain(|path| {
         path.resolved_look_role().map_or(true, |role| {
-            opening_component_should_render(parts, params.kind, role)
+            opening_component_should_render_with_library(parts, params.kind, role, library)
         })
     });
     paths
@@ -316,6 +417,7 @@ pub fn bake_opening_elevation_paths(
 pub fn bake_opening_plan_paths(
     params: OpeningBakeParams,
     parts: &OpeningParts,
+    library: Option<&StyleLibrary>,
     grid: &DivisionGrid,
     frame_level: PlanFrameLevel,
     swing_glyph: SwingGlyph,
@@ -328,10 +430,56 @@ pub fn bake_opening_plan_paths(
         elevation_frame: ElevationFrameLevel::Off,
         divisions: division_level,
     };
-    bake_opening_representation(&slots, params, parts, grid, levels, None, None)
+    bake_opening_representation(&slots, params, parts, library, grid, levels, None, None)
         .into_iter()
         .filter(|path| !path.slot.is_elevation())
         .collect()
+}
+
+fn resolve_component_section(
+    library: Option<&StyleLibrary>,
+    profile_id: Option<&str>,
+    fallback_face: f64,
+    fallback_depth: f64,
+) -> ResolvedSection {
+    let profile = profile_id.and_then(|id| library?.find_section_profile(id));
+    resolve_section(profile, fallback_face, fallback_depth)
+}
+
+pub(crate) fn opening_component_should_render_with_library(
+    parts: &OpeningParts,
+    kind: OpeningKind,
+    role: OpeningLookRole,
+    library: Option<&StyleLibrary>,
+) -> bool {
+    if opening_component_should_render(parts, kind, role) {
+        return true;
+    }
+    if !opening_component_applies(kind, role) {
+        return false;
+    }
+    let (enabled, profile_id) = match role {
+        OpeningLookRole::FixedFrame => (parts.fixed_frame.enabled, parts.fixed_frame.profile_id.as_deref()),
+        OpeningLookRole::Leaf | OpeningLookRole::Swing => {
+            (parts.leaf_frame.enabled, parts.leaf_frame.profile_id.as_deref())
+        }
+        OpeningLookRole::ExteriorSill => (
+            parts.exterior_sill.enabled,
+            parts.exterior_sill.profile_id.as_deref(),
+        ),
+        OpeningLookRole::InteriorBoard => (
+            parts.interior_board.enabled,
+            parts.interior_board.profile_id.as_deref(),
+        ),
+        OpeningLookRole::Threshold => (parts.threshold.enabled, parts.threshold.profile_id.as_deref()),
+        OpeningLookRole::ShutterBox => (parts.shutter_box.enabled, parts.shutter_box.profile_id.as_deref()),
+        OpeningLookRole::Lintel => (parts.lintel.enabled, parts.lintel.profile_id.as_deref()),
+        OpeningLookRole::Glazing | OpeningLookRole::Division => return false,
+    };
+    enabled
+        && profile_id
+            .and_then(|id| library?.find_section_profile(id))
+            .is_some_and(|profile| profile.is_valid())
 }
 
 fn representation_levels(
@@ -378,6 +526,7 @@ fn representation_levels(
 fn bake_plan_frame_level(
     params: OpeningBakeParams,
     fixed_frame: &crate::modules::aec::engine::opening_style::FixedFrameDimensions,
+    section: &ResolvedSection,
     level: PlanFrameLevel,
 ) -> Vec<BakedPath> {
     let slot = OpeningComponentSlot::Frame2D;
@@ -405,38 +554,42 @@ fn bake_plan_frame_level(
             ),
         ],
         PlanFrameLevel::Profile => {
-            let face_width = fixed_frame.face_width.min(params.width * 0.45).max(0.0);
-            let depth = fixed_frame.wall_depth.max(0.0);
+            let face_width = section.face;
+            let depth = section.depth;
             if face_width <= 1e-8 || depth <= 1e-8 {
                 return Vec::new();
             }
             let y_min = fixed_frame.axis_offset - depth * 0.5;
-            let y_max = fixed_frame.axis_offset + depth * 0.5;
+            let outline = unclosed_section_outline(section);
             vec![
                 path(
                     slot,
-                    vec![
-                        (-half_width, y_min),
-                        (-half_width + face_width, y_min),
-                        (-half_width + face_width, y_max),
-                        (-half_width, y_max),
-                    ],
+                    outline
+                        .iter()
+                        .map(|(x, y)| (-half_width + x, y_min + y))
+                        .collect(),
                     true,
                     false,
                 ),
                 path(
                     slot,
-                    vec![
-                        (half_width - face_width, y_min),
-                        (half_width, y_min),
-                        (half_width, y_max),
-                        (half_width - face_width, y_max),
-                    ],
+                    outline
+                        .iter()
+                        .map(|(x, y)| (half_width - face_width + x, y_min + y))
+                        .collect(),
                     true,
                     false,
                 ),
             ]
         }
+    }
+}
+
+fn unclosed_section_outline(section: &ResolvedSection) -> &[(f64, f64)] {
+    if section.outline.len() > 1 && section.outline.first() == section.outline.last() {
+        &section.outline[..section.outline.len() - 1]
+    } else {
+        &section.outline
     }
 }
 
@@ -510,6 +663,7 @@ fn bake_grid_plan_divisions(
     grid: &DivisionGrid,
     params: OpeningBakeParams,
     level: DivisionLevel,
+    profile: Option<&ResolvedSection>,
 ) -> Vec<BakedPath> {
     if level == DivisionLevel::Off {
         return Vec::new();
@@ -525,12 +679,7 @@ fn bake_grid_plan_divisions(
             let left = &cells[row * columns + column];
             let right = &cells[row * columns + column + 1];
             let x = (left.right + right.left) * 0.5;
-            paths.push(path(
-                OpeningComponentSlot::Glazing2D,
-                vec![(x, params.wall_y_min), (x, params.wall_y_max)],
-                false,
-                false,
-            ).with_look_role(OpeningLookRole::Division));
+            paths.push(bake_plan_division_path(x, params, profile));
         }
     }
     if level == DivisionLevel::PostsAndMuntins {
@@ -544,16 +693,40 @@ fn bake_grid_plan_divisions(
             }
             for fraction in &grid.vertical_muntins {
                 let x = cell.left + (cell.right - cell.left) * fraction;
-                paths.push(path(
-                    OpeningComponentSlot::Glazing2D,
-                    vec![(x, params.wall_y_min), (x, params.wall_y_max)],
-                    false,
-                    false,
-                ).with_look_role(OpeningLookRole::Division));
+                paths.push(bake_plan_division_path(x, params, profile));
             }
         }
     }
     paths
+}
+
+fn bake_plan_division_path(
+    x: f64,
+    params: OpeningBakeParams,
+    profile: Option<&ResolvedSection>,
+) -> BakedPath {
+    if let Some(profile) = profile {
+        let y_center = (params.wall_y_min + params.wall_y_max) * 0.5;
+        let outline = unclosed_section_outline(profile)
+            .iter()
+            .map(|(face, depth)| {
+                (
+                    x - profile.face * 0.5 + face,
+                    y_center - profile.depth * 0.5 + depth,
+                )
+            })
+            .collect();
+        path(OpeningComponentSlot::Glazing2D, outline, true, false)
+            .with_look_role(OpeningLookRole::Division)
+    } else {
+        path(
+            OpeningComponentSlot::Glazing2D,
+            vec![(x, params.wall_y_min), (x, params.wall_y_max)],
+            false,
+            false,
+        )
+        .with_look_role(OpeningLookRole::Division)
+    }
 }
 
 fn bake_grid_swing_glyphs(
@@ -617,7 +790,8 @@ fn bake_grid_swing_glyphs(
 
 fn bake_elevation_frame_level(
     params: OpeningBakeParams,
-    parts: &OpeningParts,
+    fixed_face_width: f64,
+    leaf_face_width: f64,
     level: ElevationFrameLevel,
 ) -> Vec<BakedPath> {
     let slot = OpeningComponentSlot::ElevationContour2D;
@@ -635,7 +809,7 @@ fn bake_elevation_frame_level(
             params,
             width_half,
             params.height,
-            parts.fixed_frame.face_width,
+            fixed_face_width,
         )
         .into_iter()
         .nth(1)
@@ -647,14 +821,14 @@ fn bake_elevation_frame_level(
                 params,
                 width_half,
                 params.height,
-                parts.fixed_frame.face_width,
+                fixed_face_width,
             );
             let leaf = bake_elevation_contour(
                 slot,
                 params,
                 width_half,
                 params.height,
-                parts.fixed_frame.face_width + parts.leaf_frame.face_width,
+                fixed_face_width + leaf_face_width,
             );
             fixed
                 .into_iter()
@@ -694,6 +868,7 @@ fn bake_grid_elevation_divisions(
     grid: &DivisionGrid,
     params: OpeningBakeParams,
     level: DivisionLevel,
+    profile: Option<&ResolvedSection>,
 ) -> Vec<BakedPath> {
     if level == DivisionLevel::Off {
         return Vec::new();
@@ -712,12 +887,7 @@ fn bake_grid_elevation_divisions(
             let bottom = left.bottom.max(right.bottom);
             let top = left.top.min(right.top).min(arch_height_at_x(params, x));
             if top > bottom {
-                paths.push(path(
-                    OpeningComponentSlot::ElevationMuntins2D,
-                    vec![(x, bottom), (x, top)],
-                    false,
-                    false,
-                ));
+                paths.push(bake_elevation_vertical_division_path(x, bottom, top, profile));
             }
         }
     }
@@ -728,12 +898,7 @@ fn bake_grid_elevation_divisions(
             let y = (lower.top + upper.bottom) * 0.5;
             let (left, right) = clipped_horizontal_span(params, y, lower.left, lower.right);
             if right > left {
-                paths.push(path(
-                    OpeningComponentSlot::ElevationMuntins2D,
-                    vec![(left, y), (right, y)],
-                    false,
-                    false,
-                ));
+                paths.push(bake_elevation_horizontal_division_path(left, right, y, profile));
             }
         }
     }
@@ -750,11 +915,11 @@ fn bake_grid_elevation_divisions(
                 let x = cell.left + (cell.right - cell.left) * fraction;
                 let top = cell.top.min(arch_height_at_x(params, x));
                 if top > cell.bottom {
-                    paths.push(path(
-                        OpeningComponentSlot::ElevationMuntins2D,
-                        vec![(x, cell.bottom), (x, top)],
-                        false,
-                        false,
+                    paths.push(bake_elevation_vertical_division_path(
+                        x,
+                        cell.bottom,
+                        top,
+                        profile,
                     ));
                 }
             }
@@ -762,17 +927,70 @@ fn bake_grid_elevation_divisions(
                 let y = cell.bottom + height;
                 let (left, right) = clipped_horizontal_span(params, y, cell.left, cell.right);
                 if y < cell.top && right > left {
-                    paths.push(path(
-                        OpeningComponentSlot::ElevationMuntins2D,
-                        vec![(left, y), (right, y)],
-                        false,
-                        false,
-                    ));
+                    paths.push(bake_elevation_horizontal_division_path(left, right, y, profile));
                 }
             }
         }
     }
     paths
+}
+
+fn bake_elevation_vertical_division_path(
+    x: f64,
+    bottom: f64,
+    top: f64,
+    profile: Option<&ResolvedSection>,
+) -> BakedPath {
+    if let Some(profile) = profile {
+        let half_face = profile.face * 0.5;
+        path(
+            OpeningComponentSlot::ElevationMuntins2D,
+            vec![
+                (x - half_face, bottom),
+                (x + half_face, bottom),
+                (x + half_face, top),
+                (x - half_face, top),
+            ],
+            true,
+            false,
+        )
+    } else {
+        path(
+            OpeningComponentSlot::ElevationMuntins2D,
+            vec![(x, bottom), (x, top)],
+            false,
+            false,
+        )
+    }
+}
+
+fn bake_elevation_horizontal_division_path(
+    start: f64,
+    end: f64,
+    position: f64,
+    profile: Option<&ResolvedSection>,
+) -> BakedPath {
+    if let Some(profile) = profile {
+        let half_face = profile.face * 0.5;
+        path(
+            OpeningComponentSlot::ElevationMuntins2D,
+            vec![
+                (start, position - half_face),
+                (end, position - half_face),
+                (end, position + half_face),
+                (start, position + half_face),
+            ],
+            true,
+            false,
+        )
+    } else {
+        path(
+            OpeningComponentSlot::ElevationMuntins2D,
+            vec![(start, position), (end, position)],
+            false,
+            false,
+        )
+    }
 }
 
 pub fn extract_block_paths(
@@ -929,7 +1147,15 @@ fn bake_generator(
         OpeningGenerator::DoorFrame => bake_door_frame(slot, hw, ht, ft),
         OpeningGenerator::LeafLine => bake_leaf_line(slot, p, hw, ht, ft),
         OpeningGenerator::SwingArc => bake_swing_arc(slot, p, hw, ft),
-        OpeningGenerator::SillLines => bake_sill_lines(slot, hw, ht, ft, p.cross_axis_offset, p.wall_y_min, p.wall_y_max),
+        OpeningGenerator::SillLines => bake_sill_lines(
+            slot,
+            hw,
+            ht,
+            ft,
+            p.cross_axis_offset,
+            p.wall_y_min,
+            p.wall_y_max,
+        ),
         OpeningGenerator::Cross => {
             let y_ext = p.wall_y_min - p.cross_axis_offset;
             let y_int = p.wall_y_max - p.cross_axis_offset;
@@ -1183,39 +1409,51 @@ fn bake_sill_lines(
     let sill_ear = 0.02;
 
     // Exterior sill front nose
-    out.push(path(
-        slot,
-        vec![
-            (-hw - sill_ear, sill_y_outer),
-            (hw + sill_ear, sill_y_outer),
-            (hw + sill_ear, wall_ext_y),
-            (-hw - sill_ear, wall_ext_y),
-        ],
-        true,
-        false,
-    ));
+    out.push(
+        path(
+            slot,
+            vec![
+                (-hw - sill_ear, sill_y_outer),
+                (hw + sill_ear, sill_y_outer),
+                (hw + sill_ear, wall_ext_y),
+                (-hw - sill_ear, wall_ext_y),
+            ],
+            true,
+            false,
+        )
+        .with_look_role(OpeningLookRole::ExteriorSill),
+    );
     // Reveal line along exterior wall face
-    out.push(path(
-        slot,
-        vec![(-hw, wall_ext_y), (hw, wall_ext_y)],
-        false,
-        false,
-    ));
+    out.push(
+        path(
+            slot,
+            vec![(-hw, wall_ext_y), (hw, wall_ext_y)],
+            false,
+            false,
+        )
+        .with_look_role(OpeningLookRole::ExteriorSill),
+    );
 
     // Exterior reveal side lines (connecting frame to exterior wall)
     if -frame_half_d > wall_ext_y + 1e-4 {
-        out.push(path(
-            slot,
-            vec![(-hw, -frame_half_d), (-hw, wall_ext_y)],
-            false,
-            false,
-        ));
-        out.push(path(
-            slot,
-            vec![(hw, -frame_half_d), (hw, wall_ext_y)],
-            false,
-            false,
-        ));
+        out.push(
+            path(
+                slot,
+                vec![(-hw, -frame_half_d), (-hw, wall_ext_y)],
+                false,
+                false,
+            )
+            .with_look_role(OpeningLookRole::ExteriorSill),
+        );
+        out.push(
+            path(
+                slot,
+                vec![(hw, -frame_half_d), (hw, wall_ext_y)],
+                false,
+                false,
+            )
+            .with_look_role(OpeningLookRole::ExteriorSill),
+        );
     }
 
     let board_overhang = 0.025;
@@ -1223,41 +1461,169 @@ fn bake_sill_lines(
     let board_ear = 0.02;
 
     // Interior board front nose
-    out.push(path(
-        slot,
-        vec![
-            (-hw - board_ear, board_y_inner),
-            (hw + board_ear, board_y_inner),
-            (hw + board_ear, wall_int_y),
-            (-hw - board_ear, wall_int_y),
-        ],
-        true,
-        false,
-    ));
+    out.push(
+        path(
+            slot,
+            vec![
+                (-hw - board_ear, board_y_inner),
+                (hw + board_ear, board_y_inner),
+                (hw + board_ear, wall_int_y),
+                (-hw - board_ear, wall_int_y),
+            ],
+            true,
+            false,
+        )
+        .with_look_role(OpeningLookRole::InteriorBoard),
+    );
     // Reveal line along interior wall face
-    out.push(path(
-        slot,
-        vec![(-hw, wall_int_y), (hw, wall_int_y)],
-        false,
-        false,
-    ));
+    out.push(
+        path(
+            slot,
+            vec![(-hw, wall_int_y), (hw, wall_int_y)],
+            false,
+            false,
+        )
+        .with_look_role(OpeningLookRole::InteriorBoard),
+    );
 
     // Interior reveal side lines (connecting frame to interior wall)
     if frame_half_d < wall_int_y - 1e-4 {
-        out.push(path(
-            slot,
-            vec![(-hw, frame_half_d), (-hw, wall_int_y)],
-            false,
-            false,
-        ));
-        out.push(path(
-            slot,
-            vec![(hw, frame_half_d), (hw, wall_int_y)],
-            false,
-            false,
-        ));
+        out.push(
+            path(
+                slot,
+                vec![(-hw, frame_half_d), (-hw, wall_int_y)],
+                false,
+                false,
+            )
+            .with_look_role(OpeningLookRole::InteriorBoard),
+        );
+        out.push(
+            path(
+                slot,
+                vec![(hw, frame_half_d), (hw, wall_int_y)],
+                false,
+                false,
+            )
+            .with_look_role(OpeningLookRole::InteriorBoard),
+        );
     }
 
+    out
+}
+
+fn bake_sill_lines_from_parts(
+    slot: OpeningComponentSlot,
+    params: OpeningBakeParams,
+    parts: &OpeningParts,
+    library: Option<&StyleLibrary>,
+    fixed_frame: &ResolvedSection,
+    exterior_sill: &ResolvedSection,
+    interior_board: &ResolvedSection,
+) -> Vec<BakedPath> {
+    let hw = params.width * 0.5;
+    let cross_offset = params.cross_axis_offset;
+    let wall_ext_y = params.wall_y_min - cross_offset;
+    let wall_int_y = params.wall_y_max - cross_offset;
+    let frame_y_min = parts.fixed_frame.axis_offset - fixed_frame.depth * 0.5;
+    let frame_y_max = parts.fixed_frame.axis_offset + fixed_frame.depth * 0.5;
+    let mut out = Vec::new();
+    let edge_extension = 0.02;
+    let has_exterior_sill_profile = parts
+        .exterior_sill
+        .profile_id
+        .as_deref()
+        .and_then(|id| library?.find_section_profile(id))
+        .is_some_and(|profile| profile.is_valid());
+    let has_interior_board_profile = parts
+        .interior_board
+        .profile_id
+        .as_deref()
+        .and_then(|id| library?.find_section_profile(id))
+        .is_some_and(|profile| profile.is_valid());
+
+    if opening_component_should_render_with_library(
+        parts,
+        params.kind,
+        OpeningLookRole::ExteriorSill,
+        library,
+    ) && exterior_sill.depth > 0.0
+    {
+        let configured_overhang = parts.exterior_sill.overhang.max(0.0);
+        let overhang = if configured_overhang > 0.0 || has_exterior_sill_profile {
+            configured_overhang
+        } else {
+            0.035
+        };
+        let sill_outer_y = wall_ext_y - overhang;
+        out.push(
+            path(
+                slot,
+                vec![
+                    (-hw - edge_extension, sill_outer_y),
+                    (hw + edge_extension, sill_outer_y),
+                    (hw + edge_extension, wall_ext_y),
+                    (-hw - edge_extension, wall_ext_y),
+                ],
+                true,
+                false,
+            )
+            .with_look_role(OpeningLookRole::ExteriorSill),
+        );
+        out.push(
+            path(slot, vec![(-hw, wall_ext_y), (hw, wall_ext_y)], false, false)
+                .with_look_role(OpeningLookRole::ExteriorSill),
+        );
+        if frame_y_min > wall_ext_y + 1e-4 {
+            for x in [-hw, hw] {
+                out.push(
+                    path(slot, vec![(x, frame_y_min), (x, wall_ext_y)], false, false)
+                        .with_look_role(OpeningLookRole::ExteriorSill),
+                );
+            }
+        }
+    }
+
+    if opening_component_should_render_with_library(
+        parts,
+        params.kind,
+        OpeningLookRole::InteriorBoard,
+        library,
+    ) && interior_board.depth > 0.0
+    {
+        let configured_overhang = parts.interior_board.overhang.max(0.0);
+        let overhang = if configured_overhang > 0.0 || has_interior_board_profile {
+            configured_overhang
+        } else {
+            0.025
+        };
+        let board_inner_y = wall_int_y + overhang;
+        out.push(
+            path(
+                slot,
+                vec![
+                    (-hw - edge_extension, board_inner_y),
+                    (hw + edge_extension, board_inner_y),
+                    (hw + edge_extension, wall_int_y),
+                    (-hw - edge_extension, wall_int_y),
+                ],
+                true,
+                false,
+            )
+            .with_look_role(OpeningLookRole::InteriorBoard),
+        );
+        out.push(
+            path(slot, vec![(-hw, wall_int_y), (hw, wall_int_y)], false, false)
+                .with_look_role(OpeningLookRole::InteriorBoard),
+        );
+        if frame_y_max < wall_int_y - 1e-4 {
+            for x in [-hw, hw] {
+                out.push(
+                    path(slot, vec![(x, frame_y_max), (x, wall_int_y)], false, false)
+                        .with_look_role(OpeningLookRole::InteriorBoard),
+                );
+            }
+        }
+    }
     out
 }
 
@@ -2016,6 +2382,28 @@ fn emit_opening_accessory_3d(
     }
 }
 
+pub(crate) fn exterior_sill_y_bounds(
+    wall_y_min: f64,
+    wall_y_max: f64,
+    overhang: f64,
+    seat_depth: f64,
+) -> (f64, f64) {
+    let wall_depth = (wall_y_max - wall_y_min).max(0.0);
+    let seat_depth = seat_depth.max(0.0).min(wall_depth);
+    (wall_y_min - overhang.max(0.0), wall_y_min + seat_depth)
+}
+
+pub(crate) fn interior_board_y_bounds(
+    wall_y_min: f64,
+    wall_y_max: f64,
+    overhang: f64,
+    seat_depth: f64,
+) -> (f64, f64) {
+    let wall_depth = (wall_y_max - wall_y_min).max(0.0);
+    let seat_depth = seat_depth.max(0.0).min(wall_depth);
+    (wall_y_max - seat_depth, wall_y_max + overhang.max(0.0))
+}
+
 pub fn build_opening_glazing_3d(
     width: f64,
     height: f64,
@@ -2135,6 +2523,7 @@ pub fn bake_opening_world_with_doc(
         &slots,
         params,
         &style.parts,
+        library,
         grid,
         representation_levels(
             &slots,
@@ -2607,6 +2996,7 @@ pub fn regenerate_opening_display(
         &slots,
         params,
         &style.parts,
+        library,
         grid,
         levels,
         merged_rules.as_ref(),
@@ -2785,44 +3175,112 @@ pub fn regenerate_opening_display(
         .map_or(true, |r| r.is_opening_visible(OpeningComponentSlot::Frame3D))
         && (slots.contains_key(&OpeningComponentSlot::Frame3D)
             || slots.contains_key(&OpeningComponentSlot::Solid3D));
+    let fixed_frame_section = resolve_component_section(
+        library,
+        style.parts.fixed_frame.profile_id.as_deref(),
+        style.parts.fixed_frame.face_width,
+        style.parts.fixed_frame.wall_depth,
+    );
+    let leaf_frame_section = resolve_component_section(
+        library,
+        style.parts.leaf_frame.profile_id.as_deref(),
+        style.parts.leaf_frame.face_width,
+        style.parts.leaf_frame.depth,
+    );
+    let division_profile = grid
+        .profile_id
+        .as_deref()
+        .and_then(|id| library?.find_section_profile(id))
+        .filter(|profile| profile.is_valid());
+    let division_section = resolve_component_section(
+        library,
+        grid.profile_id.as_deref(),
+        style.parts.fixed_frame.face_width,
+        style.parts.fixed_frame.wall_depth,
+    );
+    let exterior_sill_section = resolve_component_section(
+        library,
+        style.parts.exterior_sill.profile_id.as_deref(),
+        style.parts.exterior_sill.thickness,
+        style.parts.exterior_sill.thickness,
+    );
+    let interior_board_section = resolve_component_section(
+        library,
+        style.parts.interior_board.profile_id.as_deref(),
+        style.parts.interior_board.thickness,
+        style.parts.interior_board.thickness,
+    );
+    let threshold_section = resolve_component_section(
+        library,
+        style.parts.threshold.profile_id.as_deref(),
+        style.parts.threshold.height,
+        style.parts.threshold.width,
+    );
+    let shutter_section = resolve_component_section(
+        library,
+        style.parts.shutter_box.profile_id.as_deref(),
+        style.parts.shutter_box.height,
+        style.parts.shutter_box.depth,
+    );
+    let lintel_section = resolve_component_section(
+        library,
+        style.parts.lintel.profile_id.as_deref(),
+        style.parts.lintel.height,
+        wall_y_max - wall_y_min,
+    );
+    let division_post_width = division_profile.map_or(fixed_frame_section.face, |_| division_section.face);
+    let division_muntin_width = division_profile.map_or(leaf_frame_section.face, |_| division_section.face);
+    let division_depth = division_profile.map_or(fixed_frame_section.depth, |_| division_section.depth);
 
     if frame_3d_vis && opening.kind != OpeningKind::Breakthrough {
-        if let Some(body) = build_opening_frame_3d(
-            opening.width,
-            opening.height,
-            style.parts.fixed_frame.face_width,
-            style.parts.fixed_frame.wall_depth,
-            params.shape,
-            params.spring_height,
+        if opening_component_should_render_with_library(
+            &style.parts,
+            opening.kind,
+            OpeningLookRole::FixedFrame,
+            library,
         ) {
-            emit_opening_solid_3d(
-                scene,
-                body,
-                opening_handle,
-                opening_owner_handle,
-                default_opening_layer.as_deref(),
-                origin,
-                (tx, ty),
-                normal,
-                wall_base_z + opening.sill_height,
-                0.0,
-                0.0,
-                OpeningComponentSlot::Frame3D,
-                OpeningLookRole::FixedFrame,
-                &style,
-                library,
-                merged_rules.as_ref(),
-            );
+            if let Some(body) = build_opening_frame_3d(
+                opening.width,
+                opening.height,
+                fixed_frame_section.face,
+                fixed_frame_section.depth,
+                params.shape,
+                params.spring_height,
+            ) {
+                emit_opening_solid_3d(
+                    scene,
+                    body,
+                    opening_handle,
+                    opening_owner_handle,
+                    default_opening_layer.as_deref(),
+                    origin,
+                    (tx, ty),
+                    normal,
+                    wall_base_z + opening.sill_height,
+                    0.0,
+                    0.0,
+                    OpeningComponentSlot::Frame3D,
+                    OpeningLookRole::FixedFrame,
+                    &style,
+                    library,
+                    merged_rules.as_ref(),
+                );
+            }
         }
         if levels.divisions != DivisionLevel::Off
-            && opening_component_should_render(&style.parts, opening.kind, OpeningLookRole::Division)
+            && opening_component_should_render_with_library(
+                &style.parts,
+                opening.kind,
+                OpeningLookRole::Division,
+                library,
+            )
         {
             for (body, center_x, center_z) in build_opening_grid_bars_3d(
                 grid,
                 params,
-                style.parts.fixed_frame.face_width,
-                style.parts.leaf_frame.face_width,
-                style.parts.fixed_frame.wall_depth,
+                division_post_width,
+                division_muntin_width,
+                division_depth,
             ) {
                 emit_opening_solid_3d(
                     scene,
@@ -2853,7 +3311,12 @@ pub fn regenerate_opening_display(
             || slots.contains_key(&OpeningComponentSlot::Solid3D));
 
     if leaf_3d_vis
-        && opening_component_should_render(&style.parts, opening.kind, OpeningLookRole::Leaf)
+        && opening_component_should_render_with_library(
+            &style.parts,
+            opening.kind,
+            OpeningLookRole::Leaf,
+            library,
+        )
     {
         if let Ok(cells) = grid.layout(opening.width, opening.height, opening.kind) {
             for cell in cells {
@@ -2878,8 +3341,8 @@ pub fn regenerate_opening_display(
                 if let Some(body) = build_opening_leaf_3d_with_depth(
                     width,
                     height,
-                    style.parts.leaf_frame.face_width,
-                    style.parts.leaf_frame.depth,
+                    leaf_frame_section.face,
+                    leaf_frame_section.depth,
                     style.opening_angle_deg,
                     cell.cell.hinge.unwrap_or(opening.hinge),
                     opening.swing_side,
@@ -2975,18 +3438,29 @@ pub fn regenerate_opening_display(
         .map_or(true, |r| r.is_opening_visible(OpeningComponentSlot::Solid3D));
     if accessories_3d_vis {
         let sill = &style.parts.exterior_sill;
-        if opening_component_should_render(&style.parts, opening.kind, OpeningLookRole::ExteriorSill)
+        if opening_component_should_render_with_library(
+            &style.parts,
+            opening.kind,
+            OpeningLookRole::ExteriorSill,
+            library,
+        )
             && wall_y_max > wall_y_min
         {
             let overhang = sill.overhang.max(0.0);
             let upstand = sill.upstand.max(0.0);
+            let (y_min, y_max) = exterior_sill_y_bounds(
+                wall_y_min,
+                wall_y_max,
+                overhang,
+                exterior_sill_section.depth,
+            );
             emit_opening_accessory_3d(
                 scene,
                 build_opening_box_3d_with_bounds(
                     opening.width,
-                    sill.thickness + upstand,
-                    wall_y_min,
-                    wall_y_max + overhang,
+                    exterior_sill_section.face + upstand,
+                    y_min,
+                    y_max,
                 ),
                 opening_handle,
                 opening_owner_handle,
@@ -2996,7 +3470,7 @@ pub fn regenerate_opening_display(
                 normal,
                 wall_base_z + opening.sill_height,
                 0.0,
-                (upstand - sill.thickness) * 0.5,
+                (upstand - exterior_sill_section.face) * 0.5,
                 OpeningLookRole::ExteriorSill,
                 &style,
                 library,
@@ -3005,18 +3479,29 @@ pub fn regenerate_opening_display(
         }
 
         let board = &style.parts.interior_board;
-        if opening_component_should_render(&style.parts, opening.kind, OpeningLookRole::InteriorBoard)
+        if opening_component_should_render_with_library(
+            &style.parts,
+            opening.kind,
+            OpeningLookRole::InteriorBoard,
+            library,
+        )
             && wall_y_max > wall_y_min
         {
             let overhang = board.overhang.max(0.0);
             let upstand = board.upstand.max(0.0);
+            let (y_min, y_max) = interior_board_y_bounds(
+                wall_y_min,
+                wall_y_max,
+                overhang,
+                interior_board_section.depth,
+            );
             emit_opening_accessory_3d(
                 scene,
                 build_opening_box_3d_with_bounds(
                     opening.width,
-                    board.thickness + upstand,
-                    wall_y_min - overhang,
-                    wall_y_max,
+                    interior_board_section.face + upstand,
+                    y_min,
+                    y_max,
                 ),
                 opening_handle,
                 opening_owner_handle,
@@ -3026,7 +3511,7 @@ pub fn regenerate_opening_display(
                 normal,
                 wall_base_z + opening.sill_height,
                 0.0,
-                (upstand - board.thickness) * 0.5,
+                (upstand - interior_board_section.face) * 0.5,
                 OpeningLookRole::InteriorBoard,
                 &style,
                 library,
@@ -3034,15 +3519,19 @@ pub fn regenerate_opening_display(
             );
         }
 
-        let threshold = &style.parts.threshold;
-        if opening_component_should_render(&style.parts, opening.kind, OpeningLookRole::Threshold) {
+        if opening_component_should_render_with_library(
+            &style.parts,
+            opening.kind,
+            OpeningLookRole::Threshold,
+            library,
+        ) {
             emit_opening_accessory_3d(
                 scene,
                 build_opening_box_3d_with_bounds(
                     opening.width,
-                    threshold.height,
-                    -threshold.width * 0.5,
-                    threshold.width * 0.5,
+                    threshold_section.face,
+                    -threshold_section.depth * 0.5,
+                    threshold_section.depth * 0.5,
                 ),
                 opening_handle,
                 opening_owner_handle,
@@ -3052,7 +3541,7 @@ pub fn regenerate_opening_display(
                 normal,
                 wall_base_z + opening.sill_height,
                 0.0,
-                threshold.height * 0.5,
+                threshold_section.face * 0.5,
                 OpeningLookRole::Threshold,
                 &style,
                 library,
@@ -3061,15 +3550,20 @@ pub fn regenerate_opening_display(
         }
 
         let shutter = &style.parts.shutter_box;
-        if opening_component_should_render(&style.parts, opening.kind, OpeningLookRole::ShutterBox) {
+        if opening_component_should_render_with_library(
+            &style.parts,
+            opening.kind,
+            OpeningLookRole::ShutterBox,
+            library,
+        ) {
             let y_min = wall_y_min + shutter.installation_depth;
             emit_opening_accessory_3d(
                 scene,
                 build_opening_box_3d_with_bounds(
                     opening.width,
-                    shutter.height,
+                    shutter_section.face,
                     y_min,
-                    y_min + shutter.depth,
+                    y_min + shutter_section.depth,
                 ),
                 opening_handle,
                 opening_owner_handle,
@@ -3079,7 +3573,7 @@ pub fn regenerate_opening_display(
                 normal,
                 wall_base_z + opening.sill_height,
                 0.0,
-                opening.height + shutter.seat_above_frame + shutter.height * 0.5,
+                opening.height + shutter.seat_above_frame + shutter_section.face * 0.5,
                 OpeningLookRole::ShutterBox,
                 &style,
                 library,
@@ -3088,16 +3582,22 @@ pub fn regenerate_opening_display(
         }
 
         let lintel = &style.parts.lintel;
-        if opening_component_should_render(&style.parts, opening.kind, OpeningLookRole::Lintel) {
+        if opening_component_should_render_with_library(
+            &style.parts,
+            opening.kind,
+            OpeningLookRole::Lintel,
+            library,
+        ) {
             let bearing_left = lintel.bearing_left.max(0.0);
             let bearing_right = lintel.bearing_right.max(0.0);
+            let lintel_y_center = (wall_y_min + wall_y_max) * 0.5;
             emit_opening_accessory_3d(
                 scene,
                 build_opening_box_3d_with_bounds(
                     opening.width + bearing_left + bearing_right,
-                    lintel.height,
-                    wall_y_min,
-                    wall_y_max,
+                    lintel_section.face,
+                    lintel_y_center - lintel_section.depth * 0.5,
+                    lintel_y_center + lintel_section.depth * 0.5,
                 ),
                 opening_handle,
                 opening_owner_handle,
@@ -3107,7 +3607,7 @@ pub fn regenerate_opening_display(
                 normal,
                 wall_base_z + opening.sill_height,
                 (bearing_right - bearing_left) * 0.5,
-                opening.height + lintel.height * 0.5,
+                opening.height + lintel_section.face * 0.5,
                 OpeningLookRole::Lintel,
                 &style,
                 library,
@@ -3307,6 +3807,7 @@ mod tests {
         let plan = bake_opening_plan_paths(
             params,
             &parts,
+            None,
             &grid,
             PlanFrameLevel::Off,
             SwingGlyph::Off,
@@ -3315,6 +3816,7 @@ mod tests {
         let elevation = bake_opening_elevation_paths(
             params,
             &parts,
+            None,
             &grid,
             ElevationFrameLevel::Off,
             DivisionLevel::Posts,
@@ -3360,6 +3862,87 @@ mod tests {
     }
 
     #[test]
+    fn section_profile_outline_drives_plan_frame_paths_and_hull_dimensions() {
+        use crate::modules::aec::engine::section_profile::{SectionProfile, SectionShape};
+
+        let mut library = StyleLibrary::empty();
+        assert!(library.upsert_section_profile(SectionProfile::new(
+            "triangle_frame",
+            "Triangle frame",
+            SectionShape::Triangle {
+                base: 0.06,
+                height: 0.05,
+            },
+        )));
+        let mut parts = OpeningParts::default();
+        parts.fixed_frame.profile_id = Some("triangle_frame".to_string());
+        parts.fixed_frame.face_width = 0.0;
+        parts.fixed_frame.wall_depth = 0.0;
+        let paths = bake_opening_plan_paths(
+            params(1.2, OpeningKind::Window, HingeSide::Left),
+            &parts,
+            Some(&library),
+            &DivisionGrid::default(),
+            PlanFrameLevel::Profile,
+            SwingGlyph::Off,
+            DivisionLevel::Off,
+        );
+        let frames: Vec<_> = paths
+            .iter()
+            .filter(|path| path.slot == OpeningComponentSlot::Frame2D)
+            .collect();
+        assert_eq!(frames.len(), 2);
+        assert!(frames.iter().all(|path| path.closed && path.points.len() == 3));
+        let first = frames[0];
+        let min_x = first.points.iter().map(|point| point.0).fold(f64::INFINITY, f64::min);
+        let max_x = first.points.iter().map(|point| point.0).fold(f64::NEG_INFINITY, f64::max);
+        let min_y = first.points.iter().map(|point| point.1).fold(f64::INFINITY, f64::min);
+        let max_y = first.points.iter().map(|point| point.1).fold(f64::NEG_INFINITY, f64::max);
+        assert!((max_x - min_x - 0.06).abs() < 1e-12);
+        assert!((max_y - min_y - 0.05).abs() < 1e-12);
+
+        let hull = resolve_component_section(Some(&library), Some("triangle_frame"), 1.0, 1.0);
+        assert_eq!((hull.face, hull.depth), (0.06, 0.05));
+
+        let grid = DivisionGrid {
+            vertical: vec![0.5, 0.5],
+            cells: vec![crate::modules::aec::engine::opening_style::OpeningCell::default(); 2],
+            profile_id: Some("triangle_frame".into()),
+            ..DivisionGrid::default()
+        };
+        let division_paths = bake_opening_plan_paths(
+            params(1.2, OpeningKind::Window, HingeSide::Left),
+            &OpeningParts::default(),
+            Some(&library),
+            &grid,
+            PlanFrameLevel::Off,
+            SwingGlyph::Off,
+            DivisionLevel::Posts,
+        );
+        let division = division_paths
+            .iter()
+            .find(|path| path.resolved_look_role() == Some(OpeningLookRole::Division))
+            .expect("division profile contour");
+        assert!(division.closed);
+        assert_eq!(division.points.len(), 3);
+
+        let elevation_paths = bake_opening_elevation_paths(
+            params(1.2, OpeningKind::Window, HingeSide::Left),
+            &OpeningParts::default(),
+            Some(&library),
+            &grid,
+            ElevationFrameLevel::Off,
+            DivisionLevel::Posts,
+        );
+        let elevation_division = elevation_paths
+            .iter()
+            .find(|path| path.slot == OpeningComponentSlot::ElevationMuntins2D)
+            .expect("elevation division profile");
+        assert!(elevation_division.closed);
+        assert_eq!(elevation_division.points.len(), 4);
+    }
+
+    #[test]
     fn plan_frame_levels_draw_line_double_line_and_absolute_profile() {
         let parts = OpeningParts::default();
         let grid = DivisionGrid::default();
@@ -3368,6 +3951,7 @@ mod tests {
             bake_opening_plan_paths(
                 params,
                 &parts,
+                None,
                 &grid,
                 level,
                 SwingGlyph::Off,
@@ -3401,6 +3985,7 @@ mod tests {
             bake_opening_plan_paths(
                 p,
                 &parts,
+                None,
                 &grid,
                 PlanFrameLevel::Off,
                 glyph,
@@ -3596,6 +4181,51 @@ mod tests {
             .any(|p| p.slot == OpeningComponentSlot::Frame2D));
     }
 
+    #[test]
+    fn disabled_interior_board_does_not_add_plan_sill_paths_on_inside_face() {
+        let mut parts = OpeningParts::default();
+        parts.exterior_sill.thickness = 0.05;
+        parts.interior_board.enabled = false;
+        parts.interior_board.thickness = 0.05;
+
+        let paths = bake_opening_plan_paths(
+            params(1.2, OpeningKind::Window, HingeSide::Left),
+            &parts,
+            None,
+            &DivisionGrid::default(),
+            PlanFrameLevel::Off,
+            SwingGlyph::Off,
+            DivisionLevel::Off,
+        );
+        let sill_paths: Vec<_> = paths
+            .iter()
+            .filter(|path| path.slot == OpeningComponentSlot::Sill2D)
+            .collect();
+
+        assert!(!sill_paths.is_empty());
+        assert!(sill_paths
+            .iter()
+            .flat_map(|path| &path.points)
+            .all(|(_, y)| *y <= 1e-9), "{sill_paths:#?}");
+    }
+
+    #[test]
+    fn sill_accessory_bounds_stay_on_their_wall_face_and_clamp_to_wall_depth() {
+        let wall_y_min = -0.15;
+        let wall_y_max = 0.15;
+        let exterior = exterior_sill_y_bounds(wall_y_min, wall_y_max, 0.04, 0.08);
+        let interior = interior_board_y_bounds(wall_y_min, wall_y_max, 0.03, 0.06);
+        assert!((exterior.0 + 0.19).abs() < 1e-12);
+        assert!((exterior.1 + 0.07).abs() < 1e-12);
+        assert!((interior.0 - 0.09).abs() < 1e-12);
+        assert!((interior.1 - 0.18).abs() < 1e-12);
+        assert!(exterior.1 < wall_y_max);
+        assert!(interior.0 > wall_y_min);
+
+        let oversized = exterior_sill_y_bounds(wall_y_min, wall_y_max, 0.0, 0.5);
+        assert_eq!(oversized, (wall_y_min, wall_y_max));
+    }
+
     fn add_test_wall(scene: &mut Scene) -> Handle {
         let mut pl = LwPolyline::new();
         pl.add_vertex(LwVertex::new(Vector2::new(0.0, 0.0)));
@@ -3643,6 +4273,36 @@ mod tests {
                         .and_then(opening_rep_slot_from_entity)
                         == Some(OpeningComponentSlot::OpeningLabel2D)
             })
+    }
+
+    #[test]
+    fn disabled_fixed_frame_keeps_glazing_and_removes_frame_children() {
+        let mut scene = Scene::new();
+        let wall = add_test_wall(&mut scene);
+        let mut lib = seed_default_library();
+        let style = lib
+            .opening_styles
+            .iter_mut()
+            .find(|style| style.style.id == SEED_WINDOW_STYLE_ID)
+            .expect("seed window style");
+        style.parts.fixed_frame.enabled = false;
+
+        let (opening, _) = place_wall_opening(
+            &mut scene,
+            wall,
+            DVec3::new(1.5, 0.0, 0.0),
+            OpeningKind::Window,
+            Some(&lib),
+            None,
+            None,
+        )
+        .expect("place window");
+        let slots = child_slots(&scene, opening);
+
+        assert!(!slots.contains(&OpeningComponentSlot::Frame2D));
+        assert!(!slots.contains(&OpeningComponentSlot::Frame3D));
+        assert!(slots.contains(&OpeningComponentSlot::Glazing2D));
+        assert!(slots.contains(&OpeningComponentSlot::Glazing3D));
     }
 
     #[test]

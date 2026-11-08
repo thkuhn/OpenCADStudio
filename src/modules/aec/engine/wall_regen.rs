@@ -2352,18 +2352,19 @@ pub(crate) fn regenerate_wall_representation_inner(
         }
     };
 
-    // Openings hosted by this wall — split 2D contours/hatches into
-    // disconnected pieces. 3D rest-wall solids use those pieces; the opening
-    // zone is an elevation-cut extrusion through each layer.
+    // Load host openings independently of the 2D cut slot: rest-wall solids
+    // and opening-zone solids always use them, while contours/hatches only
+    // split when `HostCut2D` is visible.
     let host_cut_visible = rules.map_or(true, |r| {
         r.is_opening_visible(engine::display_component::OpeningComponentSlot::HostCut2D)
     });
-    let mut wall_openings = if host_cut_visible {
-        openings_for_host_wall(scene, wall_handle)
-    } else {
-        Vec::new()
-    };
+    let mut wall_openings = openings_for_host_wall(scene, wall_handle);
     fill_missing_opening_grids(&mut wall_openings, library);
+    let contour_openings = if host_cut_visible {
+        wall_openings.as_slice()
+    } else {
+        &[]
+    };
     let (centerline, bulges) = wall_axis_points_and_bulges(&axis_entity);
     let layer_data: Vec<(f64, f64)> =
         layers.iter().map(|l| (l.thickness, l.axis_offset)).collect();
@@ -2702,44 +2703,51 @@ pub(crate) fn regenerate_wall_representation_inner(
                 )
             };
 
-        let pieces_2d: Vec<(Vec<(f64, f64)>, Vec<f64>)> = if !wall_openings.is_empty() {
-            let split_rings = engine::miter::split_mitered_footprint_by_openings(
-                &uncut_footprint.0,
-                &centerline,
-                &wall_openings,
-            );
-            split_rings
+        let pieces_for_openings = |openings: &[engine::openings::Opening]| {
+            if !openings.is_empty() {
+                engine::miter::split_mitered_footprint_by_openings(
+                    &uncut_footprint.0,
+                    &centerline,
+                    openings,
+                )
                 .into_iter()
-                .map(|p| {
-                    let b = if uncut_footprint.1.is_empty()
-                        || uncut_footprint.1.iter().all(|&x| x.abs() < 1e-12)
+                .map(|piece| {
+                    let bulges = if uncut_footprint.1.is_empty()
+                        || uncut_footprint.1.iter().all(|&bulge| bulge.abs() < 1e-12)
                     {
-                        vec![0.0; p.len()]
+                        vec![0.0; piece.len()]
                     } else {
                         retarget_closed_footprint_bulges(
                             &base_footprints[i],
                             base_footprint_bulges.get(i).map(|b| b.as_slice()).unwrap_or(&[]),
-                            &p,
+                            &piece,
                         )
                     };
-                    (p, b)
+                    (piece, bulges)
                 })
                 .collect()
-        } else {
-            let rings = engine::miter::split_footprint_rings(&uncut_footprint.0);
-            if rings.len() > 1 {
-                rings
-                    .into_iter()
-                    .map(|r| {
-                        let n = r.len();
-                        (r, vec![0.0; n])
-                    })
-                    .collect()
-            } else if !uncut_footprint.0.is_empty() {
-                vec![uncut_footprint.clone()]
             } else {
-                Vec::new()
+                let rings = engine::miter::split_footprint_rings(&uncut_footprint.0);
+                if rings.len() > 1 {
+                    rings
+                        .into_iter()
+                        .map(|ring| {
+                            let n = ring.len();
+                            (ring, vec![0.0; n])
+                        })
+                        .collect()
+                } else if !uncut_footprint.0.is_empty() {
+                    vec![uncut_footprint.clone()]
+                } else {
+                    Vec::new()
+                }
             }
+        };
+        let pieces_2d = pieces_for_openings(contour_openings);
+        let pieces_3d = if host_cut_visible {
+            pieces_2d.clone()
+        } else {
+            pieces_for_openings(&wall_openings)
         };
 
         // Stable per-layer identity, used to match `layer_filter` /
@@ -3122,12 +3130,12 @@ pub(crate) fn regenerate_wall_representation_inner(
             let mut all_facets = wall.top_facets.clone();
             all_facets.extend(wall.base_facets.clone());
             let mut partitioned = Vec::new();
-            for (fp, bulges) in &pieces_2d {
+            for (fp, bulges) in &pieces_3d {
                 partitioned.extend(partition_footprint_by_facets(fp, bulges, &all_facets));
             }
             partitioned
         } else {
-            pieces_2d.clone()
+            pieces_3d
         };
         if solid_visible && layer_included_solid && solid_height.abs() > 1e-9 {
             for (footprint, footprint_bulges) in &solid_rings {

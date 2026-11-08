@@ -8,6 +8,7 @@
 use crate::modules::aec::engine::library::LibrarySource;
 use crate::modules::aec::engine::material::Material;
 use crate::modules::aec::engine::opening_style::OpeningStyle;
+use crate::modules::aec::engine::section_profile::SectionProfile;
 use crate::modules::aec::engine::slab_style::{FloorFinishStyle, SlabStructuralStyle, SlabStyle};
 use crate::modules::aec::engine::wall_style::WallStyle;
 use serde::{Deserialize, Serialize};
@@ -40,6 +41,7 @@ pub const CATEGORY_OPENING: &str = "Opening";
 pub const CATEGORY_SLAB: &str = "Slab";
 pub const CATEGORY_STRUCTURAL_SLAB: &str = "SlabStructural";
 pub const CATEGORY_FLOOR_FINISH: &str = "FloorFinish";
+pub const CATEGORY_SECTION_PROFILE: &str = "SectionProfile";
 
 /// Uniform scaffold shared by all style kinds; embedded as the persisted
 /// `style` field (flattened) of every style type. `origin` is derived from the
@@ -137,6 +139,12 @@ impl_style_kind_ops!(
     FloorFinishStyle,
     CATEGORY_FLOOR_FINISH,
     "aec-styles-kind-finish",
+    |s| &s.style
+);
+impl_style_kind_ops!(
+    SectionProfile,
+    CATEGORY_SECTION_PROFILE,
+    "aec-styles-kind-section-profile",
     |s| &s.style
 );
 

@@ -434,6 +434,7 @@ fn style_library_is_empty(lib: &StyleLibrary) -> bool {
         && lib.wall_styles.is_empty()
         && lib.opening_styles.is_empty()
         && lib.slab_styles.is_empty()
+        && lib.profiles.is_empty()
 }
 
 /// Resolves the effective material/wall-style library: "project overrides
@@ -871,6 +872,27 @@ mod tests {
         let reloaded = ProjectFile::load(&path).expect("reload");
         assert_eq!(reloaded.material_wall_style_library, updated_lib);
         let _ = fs::remove_file(&path);
+    }
+
+    #[test]
+    fn project_library_containing_only_section_profiles_is_not_empty() {
+        let mut project = ProjectFile::default();
+        let profile = crate::modules::aec::engine::section_profile::SectionProfile::new(
+            "project_frame",
+            "Project frame",
+            crate::modules::aec::engine::section_profile::SectionShape::Rectangle {
+                face: 0.07,
+                depth: 0.08,
+            },
+        );
+        assert!(project
+            .material_wall_style_library
+            .upsert_section_profile(profile));
+
+        assert!(!style_library_is_empty(&project.material_wall_style_library));
+        assert!(resolve_style_library(Some(&project))
+            .find_section_profile("project_frame")
+            .is_some());
     }
 
     #[test]

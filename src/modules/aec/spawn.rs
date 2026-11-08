@@ -102,6 +102,9 @@ pub(crate) fn try_dispatch(
         "AEC_MATERIALMANAGER" => Some(Task::done(Message::Aec(AecMessage::AecStylesOpen(
             StylesNode::Materials,
         )))),
+        "AEC_SECTIONPROFILEMANAGER" => Some(Task::done(Message::Aec(
+            AecMessage::AecStylesOpen(StylesNode::Profiles),
+        ))),
         "AEC_PROJECTEXPLORER" => Some(Task::done(Message::Aec(AecMessage::AecProjectExplorerOpen))),
         "AEC_STOREY" => Some(dispatch_storey(app, tab, cmd)),
         "AEC_STYLEMANAGER" => Some(Task::done(Message::Aec(AecMessage::AecStylesOpen(

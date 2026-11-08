@@ -3759,6 +3759,51 @@ fn wall_from_entity_round_trips_layer_hatch_override() {
 }
 
 #[test]
+fn hidden_host_cut_keeps_closed_2d_contours_but_still_cuts_wall_solids() {
+    use engine::display_component::{ComponentRuleSet, OpeningComponentSlot};
+
+    let mut scene = Scene::new();
+    let wall_handle = add_multi_layer_wall(&mut scene);
+    regenerate_wall_representation(&mut scene, wall_handle, None).expect("initial regen");
+    let uncut_contours = wall_layer_contour_loops(&scene, wall_handle);
+    assert_eq!(uncut_contours.len(), 2);
+
+    place_wall_opening(
+        &mut scene,
+        wall_handle,
+        DVec3::new(2.5, 0.0, 0.0),
+        OpeningKind::Window,
+        None,
+        None,
+        None,
+    )
+    .expect("place window");
+    let cut_contours = wall_layer_contour_loops(&scene, wall_handle);
+    let cut_solids = wall_layer_solid_wire_base_points(&scene, wall_handle);
+    assert!(cut_contours.len() > uncut_contours.len());
+    assert!(!cut_solids.is_empty());
+
+    let mut rules = ComponentRuleSet::default();
+    rules
+        .visibility
+        .insert(OpeningComponentSlot::HostCut2D.key().to_string(), false);
+    regenerate_wall_representation_with_rules(&mut scene, wall_handle, Some(&rules), None)
+        .expect("regen with host cut hidden");
+
+    let hidden_cut_contours = wall_layer_contour_loops(&scene, wall_handle);
+    assert_eq!(hidden_cut_contours.len(), uncut_contours.len());
+    for (uncut, hidden) in uncut_contours.iter().zip(&hidden_cut_contours) {
+        assert_point_sets_match(uncut, hidden, 1e-4, "host-cut-hidden contour");
+    }
+
+    let hidden_cut_solids = wall_layer_solid_wire_base_points(&scene, wall_handle);
+    assert_eq!(hidden_cut_solids.len(), cut_solids.len());
+    for (cut, hidden) in cut_solids.iter().zip(&hidden_cut_solids) {
+        assert_point_sets_match(cut, hidden, 1e-4, "host-cut-hidden solid");
+    }
+}
+
+#[test]
 fn layer_filter_for_contour_and_solid_can_differ_within_one_profile() {
     use engine::display_component::{ComponentRuleSet, LayerSelection, WallComponentSlot};
     let mut scene = Scene::new();

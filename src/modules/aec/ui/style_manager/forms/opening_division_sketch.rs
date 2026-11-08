@@ -25,6 +25,7 @@ struct OpeningDivisionCanvas {
     width: f64,
     height: f64,
     kind: OpeningKind,
+    selected_cell: Option<usize>,
 }
 
 pub fn view<'a>(
@@ -32,12 +33,14 @@ pub fn view<'a>(
     width: f64,
     height: f64,
     kind: OpeningKind,
+    selected_cell: Option<usize>,
 ) -> Element<'a, Message> {
     canvas_widget(OpeningDivisionCanvas {
         grid: grid.clone(),
         width: width.max(1e-6),
         height: height.max(1e-6),
         kind,
+        selected_cell,
     })
     .width(Fill)
     .height(210)
@@ -307,13 +310,7 @@ impl Program<Message> for OpeningDivisionCanvas {
 
         let (index, kind, hinge) = self.cell_at(x, z)?;
         let message = if *button == mouse::Button::Left {
-            let kinds = OpeningCellKind::catalogue();
-            let next = kinds
-                .iter()
-                .position(|candidate| *candidate == kind)
-                .map(|index| kinds[(index + 1) % kinds.len()])
-                .unwrap_or(OpeningCellKind::Glass);
-            AecMessage::AecOpeningStyleManagerCellKindChanged(index, next.as_str().to_string())
+            AecMessage::AecOpeningStyleManagerCellSelect(index)
         } else if kind.permits_hinge() {
             let next = match hinge {
                 Some(crate::modules::aec::engine::opening_style::HingeSide::Left) => "Right",
@@ -351,7 +348,9 @@ impl Program<Message> for OpeningDivisionCanvas {
         let (scale, origin_x, origin_y) = self.transform(bounds);
         let cells = self.grid.layout(self.width, self.height, self.kind).ok();
         if let Some(cells) = cells {
+            let columns = self.grid.vertical.len().max(1);
             for cell in cells {
+                let cell_index = cell.row * columns + cell.column;
                 let x = origin_x + (cell.left + self.width * 0.5) as f32 * scale;
                 let y = origin_y + (self.height - cell.top) as f32 * scale;
                 let size = Size::new(
@@ -366,6 +365,14 @@ impl Program<Message> for OpeningDivisionCanvas {
                         .with_width(1.5)
                         .with_color(theme.palette().background.base.text),
                 );
+                if self.selected_cell == Some(cell_index) {
+                    frame.stroke(
+                        &rect,
+                        Stroke::default()
+                            .with_width(2.5)
+                            .with_color(theme.palette().primary.base.color),
+                    );
+                }
                 if let Some(hinge) = cell.cell.hinge {
                     let marker_x = match hinge {
                         crate::modules::aec::engine::opening_style::HingeSide::Left => x + 3.0,
@@ -423,6 +430,7 @@ mod tests {
             width: 1.2,
             height: 1.4,
             kind: OpeningKind::Window,
+            selected_cell: None,
         }
     }
 
@@ -469,5 +477,15 @@ mod tests {
             .map(|value| value.trim().parse().unwrap())
             .collect();
         assert!(values.windows(2).all(|pair| pair[0] < pair[1]));
+    }
+
+    #[test]
+    fn cell_at_returns_stable_row_major_index_for_selection() {
+        let canvas = sketch(DivisionGrid {
+            vertical: vec![0.5, 0.5],
+            cells: vec![Default::default(), Default::default()],
+            ..DivisionGrid::default()
+        });
+        assert_eq!(canvas.cell_at(0.3, 0.7).map(|cell| cell.0), Some(1));
     }
 }

@@ -950,6 +950,7 @@ fn project_opening_elevation(
     for baked in bake_opening_elevation_paths(
         bake_params,
         &style.parts,
+        ctx.style_library,
         grid,
         levels.elevation_frame,
         levels.divisions,

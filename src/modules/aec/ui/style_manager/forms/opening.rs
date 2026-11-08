@@ -11,7 +11,8 @@ use crate::modules::aec::engine::library::{LibrarySource, StyleLibrary};
 use crate::modules::aec::engine::opening_display::BakedPath;
 use crate::modules::aec::engine::opening_shape::OpeningShape;
 use crate::modules::aec::engine::opening_style::{
-    FamilyPlacement, OpeningEditorGroup, OpeningLookRole, OpeningStyle, HingeSide,
+    FamilyPlacement, OpeningCellKind, OpeningEditorGroup, OpeningLookRole, OpeningProfilePart,
+    OpeningStyle, HingeSide,
 };
 use crate::modules::aec::engine::openings::OpeningKind;
 use crate::modules::aec::engine::project::ProjectFile;
@@ -21,7 +22,7 @@ use crate::modules::aec::state::{
     StylePickerTarget,
 };
 use crate::modules::aec::styles::opening_style_manager::{
-    preview_baked_paths_for_mode, PREVIEW_WALL_THICKNESS,
+    preview_baked_paths_for_mode_with_library, PREVIEW_WALL_THICKNESS,
 };
 use crate::modules::aec::engine::style_common::StyleOrigin;
 use crate::modules::aec::ui::aec_ui_util::muted;
@@ -39,6 +40,7 @@ pub struct OpeningStyleFormState<'a> {
     pub preview_mode: AecOpeningPreviewMode,
     pub editor_tab: OpeningEditorGroup,
     pub component_enabled: &'a HashMap<OpeningEditorGroup, bool>,
+    pub profile_ids: &'a HashMap<OpeningProfilePart, String>,
     pub look_buffers: &'a HashMap<OpeningLookRole, AecOpeningLookBuffer>,
     pub look_color_picker_role: Option<OpeningLookRole>,
     pub selected_look_role: Option<OpeningLookRole>,
@@ -80,6 +82,11 @@ pub struct OpeningStyleFormState<'a> {
     pub vertical_muntins: &'a str,
     pub horizontal_muntins: &'a str,
     pub cells: &'a [AecOpeningCellBuffer],
+    pub selected_cell: Option<usize>,
+    pub vertical_positions: &'a [String],
+    pub horizontal_positions: &'a [String],
+    pub vertical_muntin_positions: &'a [String],
+    pub horizontal_muntin_positions: &'a [String],
     pub plan_block: &'a str,
     pub plan_placement: FamilyPlacement,
     pub section_block: &'a str,
@@ -357,7 +364,12 @@ fn form_view<'a>(library: &'a StyleLibrary, form: OpeningStyleFormState<'a>) -> 
         .unwrap_or(preview_style.default_height);
     let frame = crate::modules::aec::styles::opening_style_manager::parse_dim(form.frame)
         .unwrap_or(0.06);
-    let paths = preview_baked_paths_for_mode(&preview_style, preview_width, form.preview_mode);
+    let paths = preview_baked_paths_for_mode_with_library(
+        &preview_style,
+        preview_width,
+        form.preview_mode,
+        Some(library),
+    );
     let look_styles = preview_look_styles(&preview_style, library);
 
     let is_plan = form.preview_mode == AecOpeningPreviewMode::Plan2D;
@@ -474,31 +486,47 @@ fn form_preview_style(form: &OpeningStyleFormState<'_>) -> OpeningStyle {
         spring,
     )
     .unwrap_or_else(|_| OpeningStyle::standard_window());
+    style.grid = crate::modules::aec::styles::opening_style_manager::opening_grid_from_fields(
+        form.vertical,
+        form.horizontal,
+        form.vertical_muntins,
+        form.horizontal_muntins,
+        form.cells,
+    );
+    style.grid.profile_id = form.profile_ids.get(&OpeningProfilePart::Division).cloned();
     let dim = |value: &str, fallback: f64| {
         crate::modules::aec::styles::opening_style_manager::parse_dim(value).unwrap_or(fallback)
     };
     style.parts.fixed_frame.face_width = frame.max(0.0);
+    style.parts.fixed_frame.enabled = component_enabled(form, OpeningEditorGroup::FixedFrame);
+    style.parts.fixed_frame.profile_id = form.profile_ids.get(&OpeningProfilePart::FixedFrame).cloned();
     style.parts.fixed_frame.wall_depth = dim(form.frame_depth, style.parts.fixed_frame.wall_depth);
     style.parts.fixed_frame.axis_offset = dim(form.frame_offset, 0.0);
     style.parts.leaf_frame.face_width =
         dim(form.leaf_face, style.parts.leaf_frame.face_width);
+    style.parts.leaf_frame.profile_id = form.profile_ids.get(&OpeningProfilePart::LeafFrame).cloned();
     style.parts.leaf_frame.depth = dim(form.leaf_depth, style.parts.leaf_frame.depth);
     style.parts.leaf_frame.rebate_overlap = dim(form.leaf_rebate, style.parts.leaf_frame.rebate_overlap);
     style.parts.glazing.thickness = dim(form.glazing_thickness, style.parts.glazing.thickness);
     style.parts.glazing.inset = dim(form.glazing_inset, style.parts.glazing.inset);
     style.parts.exterior_sill.thickness = dim(form.ext_sill_thickness, 0.0);
+    style.parts.exterior_sill.profile_id = form.profile_ids.get(&OpeningProfilePart::ExteriorSill).cloned();
     style.parts.exterior_sill.overhang = dim(form.ext_sill_overhang, 0.0);
     style.parts.exterior_sill.upstand = dim(form.ext_sill_upstand, 0.0);
     style.parts.interior_board.thickness = dim(form.int_board_thickness, 0.0);
+    style.parts.interior_board.profile_id = form.profile_ids.get(&OpeningProfilePart::InteriorBoard).cloned();
     style.parts.interior_board.overhang = dim(form.int_board_overhang, 0.0);
     style.parts.interior_board.upstand = dim(form.int_board_upstand, 0.0);
     style.parts.threshold.height = dim(form.threshold_height, 0.0);
+    style.parts.threshold.profile_id = form.profile_ids.get(&OpeningProfilePart::Threshold).cloned();
     style.parts.threshold.width = dim(form.threshold_width, 0.0);
     style.parts.shutter_box.height = dim(form.shutter_height, 0.0);
+    style.parts.shutter_box.profile_id = form.profile_ids.get(&OpeningProfilePart::ShutterBox).cloned();
     style.parts.shutter_box.depth = dim(form.shutter_depth, 0.0);
     style.parts.shutter_box.seat_above_frame = dim(form.shutter_seat, 0.0);
     style.parts.shutter_box.installation_depth = dim(form.shutter_install, 0.0);
     style.parts.lintel.height = dim(form.lintel_height, 0.0);
+    style.parts.lintel.profile_id = form.profile_ids.get(&OpeningProfilePart::Lintel).cloned();
     style.parts.lintel.bearing_left = dim(form.lintel_left, 0.0);
     style.parts.lintel.bearing_right = dim(form.lintel_right, 0.0);
     style.parts.leaf_frame.enabled = component_enabled(form, OpeningEditorGroup::Leaf);
@@ -576,7 +604,8 @@ fn preview_look_styles(
 fn optional_group(group: OpeningEditorGroup) -> bool {
     matches!(
         group,
-        OpeningEditorGroup::Leaf
+        OpeningEditorGroup::FixedFrame
+            | OpeningEditorGroup::Leaf
             | OpeningEditorGroup::Glazing
             | OpeningEditorGroup::ExteriorSill
             | OpeningEditorGroup::InteriorBoard
@@ -657,9 +686,63 @@ fn opening_group_roles(group: OpeningEditorGroup) -> &'static [OpeningLookRole] 
     }
 }
 
+fn profile_is_valid(
+    form: &OpeningStyleFormState<'_>,
+    library: &StyleLibrary,
+    part: OpeningProfilePart,
+) -> bool {
+    form.profile_ids
+        .get(&part)
+        .and_then(|id| library.find_section_profile(id))
+        .is_some_and(|profile| profile.is_valid())
+}
+
+fn profile_picker<'a>(
+    form: &OpeningStyleFormState<'a>,
+    library: &'a StyleLibrary,
+    part: OpeningProfilePart,
+) -> Element<'a, Message> {
+    let selected_id = form.profile_ids.get(&part).cloned();
+    let mut options = vec![(String::new(), tr!("aec", "opening-profile-local"))];
+    options.extend(
+        library
+            .profiles
+            .iter()
+            .map(|profile| (profile.style.id.clone(), profile.style.name.clone())),
+    );
+    if let Some(id) = selected_id.as_ref() {
+        if !options.iter().any(|(option_id, _)| option_id == id) {
+            options.push((
+                id.clone(),
+                format!("{} · {}", id, tr!("aec", "opening-profile-missing")),
+            ));
+        }
+    }
+    let selected = selected_id
+        .as_ref()
+        .and_then(|id| options.iter().find(|(option_id, _)| option_id == id))
+        .cloned()
+        .or_else(|| options.first().cloned());
+
+    row![
+        text(tr!("aec", "opening-profile")).size(10).style(muted).width(100),
+        pick_list(selected, options, |option: &(String, String)| option.1.clone())
+            .on_select(move |(id, _)| {
+                Message::Aec(AecMessage::AecOpeningStyleProfileChanged(
+                    part,
+                    (!id.is_empty()).then_some(id),
+                ))
+            })
+            .text_size(11)
+            .width(240),
+    ]
+    .spacing(8)
+    .into()
+}
+
 fn opening_editor_tab_content<'a>(
     form: &OpeningStyleFormState<'a>,
-    library: &StyleLibrary,
+    library: &'a StyleLibrary,
 ) -> Element<'a, Message> {
     let group = form.editor_tab;
     if optional_group(group) && !form.component_enabled.get(&group).copied().unwrap_or(true) {
@@ -673,16 +756,22 @@ fn opening_editor_tab_content<'a>(
     let mut col = column![text(opening_group_label(group)).size(12)].spacing(6);
     match group {
         OpeningEditorGroup::FixedFrame => {
-            col = col
-                .push(dim_row("opening-frame-face", "frame", form.frame))
-                .push(dim_row("opening-frame-depth", "frame_depth", form.frame_depth))
-                .push(dim_row("opening-frame-offset", "frame_offset", form.frame_offset));
+            col = col.push(profile_picker(form, library, OpeningProfilePart::FixedFrame));
+            if !profile_is_valid(form, library, OpeningProfilePart::FixedFrame) {
+                col = col
+                    .push(dim_row("opening-frame-face", "frame", form.frame))
+                    .push(dim_row("opening-frame-depth", "frame_depth", form.frame_depth));
+            }
+            col = col.push(dim_row("opening-frame-offset", "frame_offset", form.frame_offset));
         }
         OpeningEditorGroup::Leaf => {
-            col = col
-                .push(dim_row("opening-leaf-face", "leaf_face", form.leaf_face))
-                .push(dim_row("opening-leaf-depth", "leaf_depth", form.leaf_depth))
-                .push(dim_row("opening-leaf-rebate", "leaf_rebate", form.leaf_rebate));
+            col = col.push(profile_picker(form, library, OpeningProfilePart::LeafFrame));
+            if !profile_is_valid(form, library, OpeningProfilePart::LeafFrame) {
+                col = col
+                    .push(dim_row("opening-leaf-face", "leaf_face", form.leaf_face))
+                    .push(dim_row("opening-leaf-depth", "leaf_depth", form.leaf_depth));
+            }
+            col = col.push(dim_row("opening-leaf-rebate", "leaf_rebate", form.leaf_rebate));
         }
         OpeningEditorGroup::Glazing => {
             col = col
@@ -690,36 +779,64 @@ fn opening_editor_tab_content<'a>(
                 .push(dim_row("opening-glazing-inset", "glazing_inset", form.glazing_inset));
         }
         OpeningEditorGroup::ExteriorSill => {
+            col = col.push(profile_picker(form, library, OpeningProfilePart::ExteriorSill));
+            if !profile_is_valid(form, library, OpeningProfilePart::ExteriorSill) {
+                col = col.push(dim_row(
+                    "opening-ext-sill-thickness",
+                    "ext_sill_thickness",
+                    form.ext_sill_thickness,
+                ));
+            }
             col = col
-                .push(dim_row("opening-ext-sill-thickness", "ext_sill_thickness", form.ext_sill_thickness))
                 .push(dim_row("opening-ext-sill-overhang", "ext_sill_overhang", form.ext_sill_overhang))
                 .push(dim_row("opening-ext-sill-upstand", "ext_sill_upstand", form.ext_sill_upstand));
         }
         OpeningEditorGroup::InteriorBoard => {
+            col = col.push(profile_picker(form, library, OpeningProfilePart::InteriorBoard));
+            if !profile_is_valid(form, library, OpeningProfilePart::InteriorBoard) {
+                col = col.push(dim_row(
+                    "opening-int-board-thickness",
+                    "int_board_thickness",
+                    form.int_board_thickness,
+                ));
+            }
             col = col
-                .push(dim_row("opening-int-board-thickness", "int_board_thickness", form.int_board_thickness))
                 .push(dim_row("opening-int-board-overhang", "int_board_overhang", form.int_board_overhang))
                 .push(dim_row("opening-int-board-upstand", "int_board_upstand", form.int_board_upstand));
         }
         OpeningEditorGroup::Threshold => {
-            col = col
-                .push(dim_row("opening-threshold-height", "threshold_height", form.threshold_height))
-                .push(dim_row("opening-threshold-width", "threshold_width", form.threshold_width));
+            col = col.push(profile_picker(form, library, OpeningProfilePart::Threshold));
+            if !profile_is_valid(form, library, OpeningProfilePart::Threshold) {
+                col = col
+                    .push(dim_row("opening-threshold-height", "threshold_height", form.threshold_height))
+                    .push(dim_row("opening-threshold-width", "threshold_width", form.threshold_width));
+            }
         }
         OpeningEditorGroup::ShutterBox => {
+            col = col.push(profile_picker(form, library, OpeningProfilePart::ShutterBox));
+            if !profile_is_valid(form, library, OpeningProfilePart::ShutterBox) {
+                col = col
+                    .push(dim_row("opening-shutter-height", "shutter_height", form.shutter_height))
+                    .push(dim_row("opening-shutter-depth", "shutter_depth", form.shutter_depth));
+            }
             col = col
-                .push(dim_row("opening-shutter-height", "shutter_height", form.shutter_height))
-                .push(dim_row("opening-shutter-depth", "shutter_depth", form.shutter_depth))
                 .push(dim_row("opening-shutter-seat", "shutter_seat", form.shutter_seat))
                 .push(dim_row("opening-shutter-install", "shutter_install", form.shutter_install));
         }
         OpeningEditorGroup::Lintel => {
+            col = col.push(profile_picker(form, library, OpeningProfilePart::Lintel));
+            if !profile_is_valid(form, library, OpeningProfilePart::Lintel) {
+                col = col.push(dim_row("opening-lintel-height", "lintel_height", form.lintel_height));
+            }
             col = col
-                .push(dim_row("opening-lintel-height", "lintel_height", form.lintel_height))
                 .push(dim_row("opening-lintel-left", "lintel_left", form.lintel_left))
                 .push(dim_row("opening-lintel-right", "lintel_right", form.lintel_right));
         }
-        OpeningEditorGroup::Divisions => col = col.push(divisions_tab(form)),
+        OpeningEditorGroup::Divisions => {
+            col = col
+                .push(profile_picker(form, library, OpeningProfilePart::Division))
+                .push(divisions_tab(form));
+        }
         OpeningEditorGroup::Symbol => col = col.push(symbol_tab(form)),
         OpeningEditorGroup::Ratings => {}
     }
@@ -878,31 +995,153 @@ fn divisions_tab<'a>(form: &OpeningStyleFormState<'a>) -> Element<'a, Message> {
         .unwrap_or(style.default_width);
     let height = crate::modules::aec::styles::opening_style_manager::parse_dim(form.height)
         .unwrap_or(style.default_height);
+    let selected_index = form.selected_cell.unwrap_or(0);
+    let selected_cell = style
+        .grid
+        .resolved_cells(style.kind)
+        .get(selected_index)
+        .cloned()
+        .unwrap_or_default();
+    let kind_options: Vec<String> = OpeningCellKind::catalogue()
+        .iter()
+        .map(|kind| kind.as_str().to_string())
+        .collect();
+    let kind_selector = pick_list(
+        Some(selected_cell.kind.as_str().to_string()),
+        kind_options,
+        |value: &String| value.clone(),
+    )
+    .on_select(move |value| {
+        Message::Aec(AecMessage::AecOpeningStyleManagerCellKindChanged(
+            selected_index,
+            value,
+        ))
+    })
+    .text_size(11)
+    .width(130);
+    let selected_hinge = selected_cell.hinge.unwrap_or(HingeSide::Left);
+    let hinge_selector: Element<'a, Message> = if selected_cell.kind.permits_hinge() {
+        pick_list(
+            Some(selected_hinge.as_str().to_string()),
+            vec!["Left".to_string(), "Right".to_string()],
+            |value: &String| value.clone(),
+        )
+        .on_select(move |value| {
+            Message::Aec(AecMessage::AecOpeningStyleManagerCellHingeChanged(
+                selected_index,
+                value,
+            ))
+        })
+        .text_size(11)
+        .width(130)
+        .into()
+    } else {
+        text(tr!("aec", "opening-cell-hinge-not-applicable"))
+            .size(11)
+            .style(muted)
+            .into()
+    };
+
     column![
         text(opening_label("opening-grid")).size(11).style(muted),
         text(tr!("aec", "opening-division-sketch-hint")).size(10).style(muted),
-        crate::modules::aec::ui::style_manager::forms::opening_division_sketch::view(
-            &style.grid,
-            width,
-            height,
-            style.kind,
-        ),
-        division_readout("opening-vertical", form.vertical),
-        division_readout("opening-horizontal", form.horizontal),
-        division_readout("opening-vertical-muntins", form.vertical_muntins),
-        division_readout("opening-horizontal-muntins", form.horizontal_muntins),
+        row![
+            crate::modules::aec::ui::style_manager::forms::opening_division_sketch::view(
+                &style.grid,
+                width,
+                height,
+                style.kind,
+                form.selected_cell,
+            ),
+            column![
+                text(tr!("aec", "opening-selected-cell")).size(10).style(muted),
+                row![text(opening_label("opening-cell-kind")).size(10).width(55), kind_selector]
+                    .spacing(4)
+                    .align_y(iced::Center),
+                row![text(opening_label("opening-cell-hinge")).size(10).width(55), hinge_selector]
+                    .spacing(4)
+                    .align_y(iced::Center),
+                meter_list_editor(
+                    "opening-vertical-from-left",
+                    "vertical",
+                    "vertical_position",
+                    form.vertical_positions,
+                ),
+                meter_list_editor(
+                    "opening-horizontal-above-sill",
+                    "horizontal",
+                    "horizontal_position",
+                    form.horizontal_positions,
+                ),
+            ]
+            .spacing(6)
+            .width(220)
+        ]
+        .spacing(8)
+        .height(210),
+        text(tr!("aec", "opening-muntins-every-cell")).size(10).style(muted),
+        row![
+            meter_list_editor(
+                "opening-vertical-muntin-in-cell",
+                "vertical_muntin",
+                "vertical_muntin_position",
+                form.vertical_muntin_positions,
+            ),
+            meter_list_editor(
+                "opening-horizontal-muntin-above-sill",
+                "horizontal_muntin",
+                "horizontal_muntin_position",
+                form.horizontal_muntin_positions,
+            ),
+        ]
+        .spacing(8),
     ]
     .spacing(6)
     .into()
 }
 
-fn division_readout<'a>(label: &'static str, value: &'a str) -> Element<'a, Message> {
-    row![
-        text(opening_label(label)).size(10).style(muted).width(140),
-        text(if value.is_empty() { "—" } else { value }).size(11),
-    ]
-    .spacing(6)
-    .align_y(iced::Center)
+fn meter_list_editor<'a>(
+    label: &'static str,
+    axis: &'static str,
+    field_prefix: &'static str,
+    values: &'a [String],
+) -> Element<'a, Message> {
+    let mut list = column![text(opening_label(label)).size(10).style(muted)].spacing(2);
+    for (index, value) in values.iter().enumerate() {
+        let field = format!("{field_prefix}:{index}");
+        let remove_axis = axis.to_string();
+        list = list.push(
+            row![
+                text_input("", value)
+                    .on_input(move |value| {
+                        Message::Aec(AecMessage::AecOpeningStyleManagerDimChanged(
+                            field.clone(),
+                            value,
+                        ))
+                    })
+                    .size(11)
+                    .padding([2, 5]),
+                text("m").size(10),
+                button(text("×").size(11))
+                    .padding([2, 5])
+                    .on_press(Message::Aec(
+                        AecMessage::AecOpeningStyleManagerDivisionRemove(
+                            remove_axis.clone(),
+                            index,
+                        ),
+                    )),
+            ]
+            .spacing(4)
+            .align_y(iced::Center),
+        );
+    }
+    list.push(
+        button(text("+").size(11))
+            .padding([3, 7])
+            .on_press(Message::Aec(AecMessage::AecOpeningStyleManagerDivisionAdd(
+                axis.to_string(),
+            ))),
+    )
     .into()
 }
 
@@ -979,6 +1218,15 @@ fn opening_label(key: &str) -> String {
         "opening-horizontal" => tr!("aec", "opening-horizontal"),
         "opening-vertical-muntins" => tr!("aec", "opening-vertical-muntins"),
         "opening-horizontal-muntins" => tr!("aec", "opening-horizontal-muntins"),
+        "opening-cell-kind" => tr!("aec", "opening-cell-kind"),
+        "opening-cell-hinge" => tr!("aec", "opening-cell-hinge"),
+        "opening-vertical-from-left" => tr!("aec", "opening-vertical-from-left"),
+        "opening-horizontal-above-sill" => tr!("aec", "opening-horizontal-above-sill"),
+        "opening-muntins-every-cell" => tr!("aec", "opening-muntins-every-cell"),
+        "opening-vertical-muntin-in-cell" => tr!("aec", "opening-vertical-muntin-in-cell"),
+        "opening-horizontal-muntin-above-sill" => {
+            tr!("aec", "opening-horizontal-muntin-above-sill")
+        }
         "opening-cell" => tr!("aec", "opening-cell"),
         "opening-cell-add" => tr!("aec", "opening-cell-add"),
         "opening-cell-remove" => tr!("aec", "opening-cell-remove"),

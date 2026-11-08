@@ -564,6 +564,10 @@ impl Default for SlotGeometry {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct FixedFrameDimensions {
+    #[serde(default = "default_opening_component_enabled")]
+    pub enabled: bool,
+    #[serde(default)]
+    pub profile_id: Option<String>,
     pub face_width: f64,
     pub wall_depth: f64,
     pub axis_offset: f64,
@@ -572,6 +576,8 @@ pub struct FixedFrameDimensions {
 impl Default for FixedFrameDimensions {
     fn default() -> Self {
         Self {
+            enabled: true,
+            profile_id: None,
             face_width: DEFAULT_FRAME_THICKNESS,
             wall_depth: DEFAULT_FRAME_THICKNESS,
             axis_offset: 0.0,
@@ -589,6 +595,8 @@ const fn default_opening_component_enabled() -> bool {
 pub struct LeafFrameDimensions {
     #[serde(default = "default_opening_component_enabled")]
     pub enabled: bool,
+    #[serde(default)]
+    pub profile_id: Option<String>,
     pub face_width: f64,
     pub depth: f64,
     pub rebate_overlap: f64,
@@ -598,6 +606,7 @@ impl Default for LeafFrameDimensions {
     fn default() -> Self {
         Self {
             enabled: true,
+            profile_id: None,
             face_width: 0.04,
             depth: 0.06,
             rebate_overlap: 0.01,
@@ -631,6 +640,8 @@ impl Default for GlazingDimensions {
 pub struct SillDimensions {
     #[serde(default = "default_opening_component_enabled")]
     pub enabled: bool,
+    #[serde(default)]
+    pub profile_id: Option<String>,
     pub thickness: f64,
     pub overhang: f64,
     pub upstand: f64,
@@ -640,6 +651,7 @@ impl Default for SillDimensions {
     fn default() -> Self {
         Self {
             enabled: true,
+            profile_id: None,
             thickness: 0.0,
             overhang: 0.0,
             upstand: 0.0,
@@ -653,6 +665,8 @@ impl Default for SillDimensions {
 pub struct ThresholdDimensions {
     #[serde(default = "default_opening_component_enabled")]
     pub enabled: bool,
+    #[serde(default)]
+    pub profile_id: Option<String>,
     pub height: f64,
     pub width: f64,
 }
@@ -661,6 +675,7 @@ impl Default for ThresholdDimensions {
     fn default() -> Self {
         Self {
             enabled: true,
+            profile_id: None,
             height: 0.0,
             width: 0.0,
         }
@@ -673,6 +688,8 @@ impl Default for ThresholdDimensions {
 pub struct ShutterBoxDimensions {
     #[serde(default = "default_opening_component_enabled")]
     pub enabled: bool,
+    #[serde(default)]
+    pub profile_id: Option<String>,
     pub height: f64,
     pub depth: f64,
     pub seat_above_frame: f64,
@@ -683,6 +700,7 @@ impl Default for ShutterBoxDimensions {
     fn default() -> Self {
         Self {
             enabled: true,
+            profile_id: None,
             height: 0.0,
             depth: 0.0,
             seat_above_frame: 0.0,
@@ -697,6 +715,8 @@ impl Default for ShutterBoxDimensions {
 pub struct LintelDimensions {
     #[serde(default = "default_opening_component_enabled")]
     pub enabled: bool,
+    #[serde(default)]
+    pub profile_id: Option<String>,
     pub height: f64,
     pub bearing_left: f64,
     pub bearing_right: f64,
@@ -707,6 +727,7 @@ impl Default for LintelDimensions {
     fn default() -> Self {
         Self {
             enabled: true,
+            profile_id: None,
             height: 0.0,
             bearing_left: 0.0,
             bearing_right: 0.0,
@@ -806,7 +827,8 @@ pub fn opening_component_should_render(
         return false;
     }
     match role {
-        OpeningLookRole::FixedFrame | OpeningLookRole::Division => true,
+        OpeningLookRole::FixedFrame => parts.fixed_frame.enabled,
+        OpeningLookRole::Division => true,
         OpeningLookRole::Leaf | OpeningLookRole::Swing => {
             parts.leaf_frame.enabled
                 && parts.leaf_frame.face_width > 0.0
@@ -935,6 +957,18 @@ pub enum OpeningEditorGroup {
     Divisions,
     Symbol,
     Ratings,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum OpeningProfilePart {
+    FixedFrame,
+    LeafFrame,
+    Division,
+    ExteriorSill,
+    InteriorBoard,
+    Threshold,
+    ShutterBox,
+    Lintel,
 }
 
 impl OpeningEditorGroup {
@@ -1144,6 +1178,8 @@ pub struct DivisionGrid {
     pub horizontal: Vec<f64>,
     pub vertical_muntins: Vec<f64>,
     pub horizontal_muntins: Vec<f64>,
+    #[serde(default)]
+    pub profile_id: Option<String>,
     /// Cells in row-major order (bottom row first, then left to right).
     pub cells: Vec<OpeningCell>,
 }
@@ -1627,6 +1663,8 @@ impl OpeningStyle {
             hinge: HingeSide::Left,
             parts: OpeningParts {
                 fixed_frame: FixedFrameDimensions {
+                    enabled: true,
+                    profile_id: None,
                     face_width: 0.0,
                     wall_depth: 0.0,
                     axis_offset: 0.0,
@@ -1661,6 +1699,8 @@ impl OpeningStyle {
             hinge: HingeSide::Left,
             parts: OpeningParts {
                 fixed_frame: FixedFrameDimensions {
+                    enabled: true,
+                    profile_id: None,
                     face_width: 0.0,
                     wall_depth: 0.0,
                     axis_offset: 0.0,
@@ -1949,24 +1989,33 @@ mod tests {
 
     #[test]
     fn optional_component_enabled_defaults_on_for_legacy_json() {
-        assert!(serde_json::from_str::<LeafFrameDimensions>(r#"{"face_width":0.04}"#)
-            .unwrap()
-            .enabled);
+        let legacy_frame: FixedFrameDimensions =
+            serde_json::from_str(r#"{"face_width":0.04}"#).unwrap();
+        assert!(legacy_frame.enabled);
+        assert_eq!(legacy_frame.profile_id, None);
+        let legacy_leaf: LeafFrameDimensions =
+            serde_json::from_str(r#"{"face_width":0.04}"#).unwrap();
+        assert!(legacy_leaf.enabled);
+        assert_eq!(legacy_leaf.profile_id, None);
         assert!(serde_json::from_str::<GlazingDimensions>(r#"{"thickness":0.02}"#)
             .unwrap()
             .enabled);
-        assert!(serde_json::from_str::<SillDimensions>(r#"{"thickness":0.1}"#)
-            .unwrap()
-            .enabled);
-        assert!(serde_json::from_str::<ThresholdDimensions>(r#"{"height":0.02}"#)
-            .unwrap()
-            .enabled);
-        assert!(serde_json::from_str::<ShutterBoxDimensions>(r#"{"height":0.2}"#)
-            .unwrap()
-            .enabled);
-        assert!(serde_json::from_str::<LintelDimensions>(r#"{"height":0.2}"#)
-            .unwrap()
-            .enabled);
+        let legacy_sill: SillDimensions = serde_json::from_str(r#"{"thickness":0.1}"#).unwrap();
+        assert!(legacy_sill.enabled);
+        assert_eq!(legacy_sill.profile_id, None);
+        let legacy_threshold: ThresholdDimensions =
+            serde_json::from_str(r#"{"height":0.02}"#).unwrap();
+        assert!(legacy_threshold.enabled);
+        assert_eq!(legacy_threshold.profile_id, None);
+        let legacy_shutter: ShutterBoxDimensions =
+            serde_json::from_str(r#"{"height":0.2}"#).unwrap();
+        assert!(legacy_shutter.enabled);
+        assert_eq!(legacy_shutter.profile_id, None);
+        let legacy_lintel: LintelDimensions = serde_json::from_str(r#"{"height":0.2}"#).unwrap();
+        assert!(legacy_lintel.enabled);
+        assert_eq!(legacy_lintel.profile_id, None);
+        let legacy_grid: DivisionGrid = serde_json::from_str(r#"{"vertical":[0.5]}"#).unwrap();
+        assert_eq!(legacy_grid.profile_id, None);
     }
 
     #[test]
@@ -1994,6 +2043,19 @@ mod tests {
     #[test]
     fn optional_component_rendering_requires_enabled_positive_dimensions() {
         let mut parts = OpeningParts::default();
+        assert!(opening_component_should_render(
+            &parts,
+            OpeningKind::Window,
+            OpeningLookRole::FixedFrame
+        ));
+        parts.fixed_frame.enabled = false;
+        assert!(!opening_component_should_render(
+            &parts,
+            OpeningKind::Window,
+            OpeningLookRole::FixedFrame
+        ));
+
+        parts.fixed_frame.enabled = true;
         parts.lintel.height = 0.2;
         assert!(opening_component_should_render(
             &parts,

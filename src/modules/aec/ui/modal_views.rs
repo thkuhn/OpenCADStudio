@@ -88,6 +88,7 @@ pub(in crate::modules::aec::ui) fn aec_styles_view(&self) -> Element<'_, Message
     let node = self.aec.styles.node;
     let parts = match node {
         StylesNode::Materials => self.aec_material_parts(),
+        StylesNode::Profiles => Some(self.aec_section_profile_parts()),
         StylesNode::FloorFinish => self.aec_floor_finish_parts(),
         StylesNode::Wall => self.aec_wall_parts(),
         StylesNode::Opening => self.aec_opening_parts(),
@@ -150,6 +151,7 @@ fn aec_opening_parts(&self) -> Option<crate::modules::aec::ui::style_manager::St
             preview_mode: self.aec.styles.opening_preview_mode,
             editor_tab: self.aec.styles.opening_editor_tab,
             component_enabled: &self.aec.styles.opening_component_enabled,
+            profile_ids: &self.aec.styles.opening_profile_ids,
             look_buffers: &self.aec.styles.opening_look_buffers,
             look_color_picker_role: self.aec.styles.opening_look_color_picker_role,
             selected_look_role: self.aec.styles.opening_selected_look_role,
@@ -191,6 +193,11 @@ fn aec_opening_parts(&self) -> Option<crate::modules::aec::ui::style_manager::St
             vertical_muntins: &self.aec.styles.opening_vertical_muntins,
             horizontal_muntins: &self.aec.styles.opening_horizontal_muntins,
             cells: &self.aec.styles.opening_cells,
+            selected_cell: self.aec.styles.opening_selected_cell,
+            vertical_positions: &self.aec.styles.opening_vertical_positions,
+            horizontal_positions: &self.aec.styles.opening_horizontal_positions,
+            vertical_muntin_positions: &self.aec.styles.opening_vertical_muntin_positions,
+            horizontal_muntin_positions: &self.aec.styles.opening_horizontal_muntin_positions,
             plan_block: &self.aec.styles.opening_plan_block,
             plan_placement: self.aec.styles.opening_plan_placement,
             section_block: &self.aec.styles.opening_section_block,

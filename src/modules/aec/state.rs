@@ -122,6 +122,21 @@ pub struct AecOpeningCellBuffer {
     pub sill: String,
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum AecSectionProfileShape {
+    #[default]
+    Rectangle,
+    Circle,
+    Triangle,
+    Custom,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AecSectionProfilePointBuffer {
+    pub x: String,
+    pub y: String,
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct AecOpeningLookBuffer {
     pub line_type: String,

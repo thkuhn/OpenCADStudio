@@ -751,6 +751,7 @@ fn slice_wall_horizontal(
             for baked in bake_opening_plan_paths(
                 bake_params,
                 &style.parts,
+                ctx.style_library,
                 grid,
                 levels.plan_frame,
                 levels.swing,
