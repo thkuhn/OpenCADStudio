@@ -86,32 +86,34 @@ graph TD
 - **Baum-Performance bei sehr vielen Stilen**: bei mehreren hundert Stilen könnte eine ungefilterte Baumdarstellung unübersichtlich werden — Mitigation: Suchfeld bleibt immer aktiv nutzbar, Standard-Ansicht kann bei Bedarf initial eingeklappt starten.
 - **Migrationsaufwand vom vorherigen `combo_box`-Plan**: da noch keine `combo_box`-Umsetzung existiert (nur geplant), entsteht kein Rückbauaufwand — dieser Plan ersetzt den vorherigen vollständig, ohne dass Code weggeworfen werden muss.
 
+> **Stand 2026-11-07:** Der Picker liegt in `src/modules/aec/ui/aec_style_picker.rs`, die Baumfunktion in `StyleLibrary::wall_style_tree`. Die Schritte sind nachgezogen.
+
 # Delivery Steps
 
-###   Step 1: Wiederverwendbare Stilbaum-Funktion und Modal-Grundgerüst schaffen
+### ✓ Step 1: Wiederverwendbare Stilbaum-Funktion und Modal-Grundgerüst schaffen
 Eine testbare Funktion liefert die hierarchische Stilstruktur, und ein leeres Modal kann geöffnet/geschlossen werden.
 - `ordered_wall_styles`-Hierarchie-Logik aus `aec_style_manager.rs` nach `src/modules/aec/engine/library.rs` als `wall_style_tree(&StyleLibrary) -> Vec<TreeNode>` extrahieren, mit Unit-Tests (Kette, verwaister Elternverweis, mehrere Geschwister).
 - Neuer `ModalKind::AecStylePicker { target: StylePickerTarget }` in `src/app/mod.rs` mit `StylePickerTarget`-Enum (WallStyleParent, LayerMaterial(usize), LayerOverride(usize), WallPropertiesStyle(Handle)).
 - Neue Datei `src/ui/window/aec_style_picker.rs` mit leerem `view_window(...)`-Grundgerüst; Registrierung in `src/app/view/modal.rs`; Escape-to-close analog zu bestehenden Modalen.
 
-###   Step 2: Baum-/Listen-Rendering mit Suchfeld implementieren
+### ✓ Step 2: Baum-/Listen-Rendering mit Suchfeld implementieren
 Der Picker zeigt Wandstile hierarchisch eingerückt (bzw. Materialien/Layer flach) an und filtert live per Suchfeld, ohne den Elternkontext zu verlieren.
 - Rendering der Baumknoten mit Einrückung je Ebene für `StylePickerTarget::WallStyleParent`; flache Liste für `LayerMaterial`/`LayerOverride`.
 - Suchfeld filtert per Teilstring (case-insensitive); Treffer-Elternkette (via `resolve_chain`) bleibt sichtbar/aufgeklappt.
 - Klick auf einen Knoten markiert ihn als aktuelle Auswahl (visuell hervorgehoben), Bestätigen-/Abbrechen-Buttons am unteren Rand.
 
-###   Step 3: Schichtaufbau-Vorschau für markierten Wandstil ergänzen
+### ✓ Step 3: Schichtaufbau-Vorschau für markierten Wandstil ergänzen
 Beim Markieren eines Wandstils im Picker wird dessen aufgelöster Schichtaufbau angezeigt, bevor der Nutzer bestätigt.
 - Vorschau-Bereich (z.B. rechte Spalte) zeigt `effective_layers()` des aktuell markierten Wandstils (Material, Dicke, Funktion, Gap/Offsets) unter Wiederverwendung der bereits vorhandenen Vorschau-Darstellung aus dem Style Manager.
 - Für `LayerMaterial`/`LayerOverride`-Target entfällt die Vorschau (keine Layer-Struktur) oder zeigt stattdessen die Material-Attribute (Schraffur/Farbe) analog zur bestehenden Material-Formular-Vorschau.
 
-###   Step 4: Picker in Style-Manager-Formular integrieren (Parent, Material, Layer Override)
+### ✓ Step 4: Picker in Style-Manager-Formular integrieren (Parent, Material, Layer Override)
 Die drei bestehenden Auswahlfelder im Wandstil-Formular öffnen den neuen Picker statt eines Dropdowns.
 - `aec_style_manager.rs`: "Based on"-Feld, Material-Feld je Schicht-Zeile und Layer-Override-Feld werden zu Buttons, die `ModalKind::AecStylePicker` mit passendem `target` öffnen.
 - Bestehende `Message`-Handler (`AecStyleManagerWallStyleParentChanged`/`LayerMaterialChanged`/`LayerOverrideChanged`) werden vom Picker-Bestätigen-Button ausgelöst statt von `on_select`.
 - Tests/Verifikation: Auswahl im Picker aktualisiert den erwarteten Formular-State korrekt für alle drei Zielkontexte.
 
-###   Step 5: Picker im Properties-Panel für Wandstil-Zuweisung anbinden und XDATA-Schreiblogik verdrahten
+### ✓ Step 5: Picker im Properties-Panel für Wandstil-Zuweisung anbinden und XDATA-Schreiblogik verdrahten
 Eine selektierte Wand kann über die Properties-Palette per Picker-Dialog einen neuen Stil erhalten, der sofort sichtbar angewendet wird.
 - `src/app/properties.rs`: bisheriges `ro_prop`-Feld für den Wandstil durch einen Button (aktueller Stilname + "Ändern...") ersetzt, der `ModalKind::AecStylePicker { target: WallPropertiesStyle(handle) }` öffnet.
 - Neuer Commit-Handler in `src/app/update/command.rs`: liest den im Picker bestätigten `style_id`, löst `effective_layers()` über die geladene `StyleLibrary` auf, schreibt Stil-ID + Schicht-Snapshot in die `WALL_V2`-XDATA (bestehende `wall_v2_record`-Logik) und ruft `regenerate_wall_representation` auf.

@@ -152,9 +152,11 @@ graph TD
 - Die Hatch-Override-Kette (Wand > Stil-Profil > Material) muss an der einzigen bestehenden Berechnungsstelle in `commands.rs` konsistent eingebaut werden, sonst wirkt der neue Override nur teilweise (z. B. nicht in allen `_corner_`/`_precomputed_miters_`-Varianten).
 - Die Umstellung auf `combo_box`/`color_selector` in mehreren AEC-Formularen erhöht die Anzahl der benötigten State-Felder (Combo-States, Picker-Toggle-Flags) an mehreren Stellen gleichzeitig; muss konsistent mit dem bereits etablierten Muster aus `aec_material_manager.rs`/`layers.rs` umgesetzt werden, um Divergenzen zu vermeiden.
 
+> **Stand 2026-11-07:** Dieser Entwurf ist durch `aec-style-centric-display-and-phase-4.md` ersetzt. Dessen Schritte sind erledigt. Die Markierungen hier sind nur nachgezogen, damit der Entwurf nicht mehr offen wirkt.
+
 # Delivery Steps
 
-###   Step 1: Bauteil-Phase am Wall-Element und Phasenfilter auf DisplayConfig
+### ✓ Step 1: Bauteil-Phase am Wall-Element und Phasenfilter auf DisplayConfig
 Wände tragen ein eigenes Neubau/Abbruch/Bestand-Attribut, das eine Planart automatisch berücksichtigen kann.
 - `PlanPhase` in `plan_view.rs` um `Default`-Impl (`New`) erweitern.
 - `Wall` in `wall.rs` um `#[serde(default)] pub phase: PlanPhase` erweitern, inkl. XDATA-Persistenz (Lesen/Schreiben in der `WALL`-Record).
@@ -162,46 +164,46 @@ Wände tragen ein eigenes Neubau/Abbruch/Bestand-Attribut, das eine Planart auto
 - Hilfsfunktion `apply_phase_filter` (rein, testbar) in `commands.rs`/`display_component.rs`, die Sichtbarkeit/Zusatzstil je Wand-Phase gegen einen `PhaseFilter` auflöst; `None`-Filter verhält sich wie heute (keine Regression).
 - Property-Panel-Eingabe für `Wall.phase` ergänzen: einfaches Dropdown (`pick_list`) neben den bestehenden Wand-Eigenschaften (Stil, Höhe, ...), konsistent mit bisherigen Property-Feldern, ohne farbiges Badge/Sonder-Rendering.
 
-###   Step 2: Stil-zentrierte Darstellungs-Overrides im Datenmodell und Resolver, alte Felder entfernen
+### ✓ Step 2: Stil-zentrierte Darstellungs-Overrides im Datenmodell und Resolver, alte Felder entfernen
 Darstellungs-Overrides sind ab jetzt ausschließlich am Wandstil gespeichert und werden über eine zentrale Resolver-Funktion aufgelöst; die alten Planart-Felder entfallen komplett.
 - `WallStyle` um `#[serde(default)] pub display_profiles: HashMap<String, ComponentRuleSet>` erweitern (Key = `DisplayConfig.name`).
 - `DisplayConfig.component_rules`/`style_substitutions` sowie ausschließlich darauf angewiesene Hilfsfunktionen entfernen — keine Migration, keine Fallback-Lesepfade.
 - `resolve_effective_rule_set(style: &WallStyle, display_config_name: &str) -> Option<&ComponentRuleSet>` in `library.rs` implementieren.
 - Unit-Tests, die bisher `component_rules`/`style_substitutions` direkt befüllt haben, auf `WallStyle.display_profiles` umstellen; Resolver liefert `None` für Stile ohne Profil.
 
-###   Step 3: commands.rs auf Resolver umstellen und Phasenfilter anwenden
+### ✓ Step 3: commands.rs auf Resolver umstellen und Phasenfilter anwenden
 Die Wand-Regenerierung nutzt die neue Datenquelle und den Phasenfilter, ohne bestehende Funktionssignaturen zu brechen.
 - Aufrufstellen in `src/app/update/mod.rs`/`src/app/commands/draw.rs`, die bisher `display_config.component_rules.get(WALL_ELEMENT_TYPE_ID)` an `regenerate_wall_representation_with_rules_and_substitutions`/-Varianten übergeben, auf `resolve_effective_rule_set(wall_style, display_config.name)` umstellen.
 - `apply_phase_filter` (aus Stage 1) an den relevanten Regenerierungspfaden einhängen, sodass die Wand-Phase zusammen mit dem stilbasierten Regelwerk in die effektive Darstellung einfließt.
 - Bestehende Tests für `regenerate_wall_representation_with_rules_and_substitutions` und verwandte Funktionen anpassen/erweitern, sodass sie weiterhin grün sind und zusätzlich die neue Phasenfilter-Logik abdecken.
 
-###   Step 3b: Hatch-Relative-Override-Kette (Material -> Stil-Profil -> Wand-Instanz)
+### ✓ Step 3b: Hatch-Relative-Override-Kette (Material -> Stil-Profil -> Wand-Instanz)
 Die Hatch-Winkel-Berechnung berücksichtigt zusätzlich zum Material-Default auch stil- und wandbezogene Overrides.
 - `ComponentStyleOverride` in `display_component.rs` um `hatch_angle: Option<f64>` und `hatch_angle_relative: Option<bool>` erweitern.
 - `Wall` in `wall.rs` um `#[serde(default)] pub hatch_override: Option<ComponentStyleOverride>` erweitern, inkl. XDATA-Persistenz.
 - Die bestehende Hatch-Winkel-Berechnung in `commands.rs` (aktuell `material.hatch_angle`/`hatch_angle_relative` direkt) auf die Vorrangkette `Wall.hatch_override` > `resolve_effective_rule_set(...).style_for(slot)` > `Material` umstellen, konsistent in allen betroffenen `_corner_`/`_precomputed_miters_`-Varianten.
 - Unit-Tests für die neue Vorrangkette (Wand-Override gewinnt, Stil-Profil-Override gewinnt bei fehlendem Wand-Override, Material-Default bei fehlenden Overrides).
 
-###   Step 4: Darstellungs-Profile-Editor im Wandstil-Manager
+### ✓ Step 4: Darstellungs-Profile-Editor im Wandstil-Manager
 Anwender pflegen "wie sieht dieser Stil in Planart X aus" direkt im Wandstil-Manager statt im Plan-Manager.
 - Neue Sektion `display_profile_section_view` in `aec_wall_style_manager.rs` nach dem Muster "Tabellenliste + Detailformular": oben eine Tabelle aller Planarten mit Status-Spalte ("Standard"/"Override"), Klick auf eine Zeile öffnet darunter das granulare Formular (Slot-Sichtbarkeit/Style-Override/Layer-Filter-Widgets wiederverwendet aus den bestehenden `aec_plan_manager.rs`-Helpern, ergänzt um "Relativ zur Wand"-Checkbox + Winkel-Feld für `hatch_angle`/`hatch_angle_relative`); "Speichern" im Formular aktualisiert die Statusspalte der Liste, ohne die Seite zu wechseln.
 - State/Message-Erweiterungen in `src/app/mod.rs`/`src/app/update/mod.rs` analog zum bestehenden `PlanConfigFormState`-Muster (Select/New/Duplicate/Apply befüllen bzw. schreiben `display_profiles`).
 - Speichern schreibt `WallStyle.display_profiles` über die kombinierte Standard-/Projektbibliothek-Logik (Copy-on-Write bei Bearbeitung eines Standard-Stils bleibt unverändert erhalten).
 
-###   Step 5: Plan-Manager verschlanken und Phasenfilter-Editor ergänzen
+### ✓ Step 5: Plan-Manager verschlanken und Phasenfilter-Editor ergänzen
 Der Plan-Manager verwaltet nur noch Stammdaten und den neuen Phasenfilter; die alte Slot-/Substitutions-Bearbeitung entfällt dort.
 - In `aec_plan_manager.rs`: Slot-Tabelle, Layer-Filter-Sektion und Style-Substitutions-Sektion entfernen (Funktionalität ist nach Stage 4 im Wandstil-Manager verfügbar).
 - Neuer Phasenfilter-Editor als Zwei-Stufen-Dialog: Schritt 1 zeigt drei Checkboxen je Phase (Neu/Abbruch/Bestand) für `visible_phases`; Schritt 2 (erreichbar, wenn "Abbruch" bzw. "Bestand" sichtbar ist) zeigt je Phase ein eigenes Formular für `demolition_style` bzw. `existing_style` (`ComponentStyleOverride`-Widgets wiederverwendet, Navigation "Zurück"/"Übernehmen" zwischen den Schritten) — damit ist die "Bestand"-Darstellung an derselben Stelle definierbar wie "Abbruch".
 - `AecPlanManagerApply` schreibt `phase_filter` aus dem neuen Edit-Buffer; die entfernten Felder `component_rules`/`style_substitutions` existieren ab Stage 2 nicht mehr im Datenmodell.
 - Hinweistext im Formular, dass Darstellungs-Overrides jetzt im Wandstil-Manager gepflegt werden.
 
-###   Step 6: Wand-Instanz-Override für "Schraffur relativ zum Bauteil" im Eigenschaften-Panel
+### ✓ Step 6: Wand-Instanz-Override für "Schraffur relativ zum Bauteil" im Eigenschaften-Panel
 Einzelne Wände können den Hatch-Winkel-Default aus Material/Stil-Profil gezielt überschreiben.
 - Neue optionale Sektion im Wand-Eigenschaften-Panel: "Relativ zur Wand"-Checkbox + Winkel-Feld, die `Wall.hatch_override` befüllt/leert (leer = kein Override, es gilt die Kette aus Stage 3b).
 - State/Message-Erweiterung in `src/app/mod.rs`/`src/app/update/mod.rs` analog zum bestehenden `phase`-Dropdown-Muster (aus Stage 1).
 - Property-Panel-Anzeige des aktuell effektiven Werts (aus welcher Ebene der Override-Kette er stammt), rein informativ, kein zusätzliches Badge/Rendering im Viewport.
 
-###   Step 7: Linienart-/Linienfarbe-Vorschau in allen AEC-Formularen vereinheitlichen
+### ✓ Step 7: Linienart-/Linienfarbe-Vorschau in allen AEC-Formularen vereinheitlichen
 Alle Linienart- und Linienfarbe-Auswahlfelder im AEC-Bereich zeigen dieselbe Vorschau wie der bestehende Layer-Manager, statt reiner Text-/Hex-Eingabe.
 - In `aec_plan_manager.rs` (Phasenfilter-Formulare für `demolition_style`/`existing_style`) das bisherige `text_input("z. B. Continuous", ...)`-Feld für `line_type` durch einen `combo_box` mit `crate::ui::properties::LinetypeItem` ersetzen (Muster aus `layers.rs::lt_cell` bzw. `aec_material_manager.rs::linetype_field`), inkl. neuem `linetype_combo`-State im zugehörigen Formular-State.
 - In denselben Formularen sowie im neuen Wandstil-Manager-Profil-Formular (Stage 4) und im Wand-Eigenschaften-Panel (Hatch-Override, Stage 6) das Linienfarbe-Feld durch `crate::ui::color_select::color_selector` ersetzen (Muster aus `layers.rs::color_cell`), inkl. neuem Picker-Open-Flag je Formular.

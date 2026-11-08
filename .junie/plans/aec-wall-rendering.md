@@ -121,42 +121,44 @@ graph TD
 - **Eckenverschneidung bei Wandkreuzungen**: `wall_layer_contour_polylines` nutzt bereits vereinfachte Miter-Ecken (aus früherem Plan bekannt) — bei spitzen Winkeln/T-Stößen können sich Konturen mehrerer Wände optisch überlappen/Lücken zeigen; das ist eine bekannte, bewusst nicht behobene Einschränkung dieser Iteration.
 - **Migrationskomplexität für Altbestand**: Wände aus vorherigen Sessions ohne `derived_handles`-Feld müssen zuverlässig als "noch nicht gerendert" erkannt werden, um nicht versehentlich mit einer leeren Liste "nichts zu löschen" zu interpretieren, obwohl bereits Darstellung fehlt — Mitigation: Feld-Präsenz statt Listenlänge prüfen, dediziertes `AEC_WALL_REFRESH`-Kommando für expliziten Nachzug.
 
+> **Stand 2026-11-07:** Schichtkontur, Schraffur, Volumenkörper und `AEC_WALL_REFRESH` sind umgesetzt (`engine/wall_regen.rs`, `walls/refresh.rs`). Die ursprünglichen Pfade (`commands.rs`, `sweep_model::extruded` je Schicht) gelten nicht mehr wörtlich.
+
 # Delivery Steps
 
-###   Step 1: WALL_V2-Schema um Handle-Referenzen für abgeleitete Entities erweitern
+### ✓ Step 1: WALL_V2-Schema um Handle-Referenzen für abgeleitete Entities erweitern
 Die Wand-XDATA kann eine Liste von Handles ihrer abgeleiteten Kontur-/Hatch-/Solid-Entities speichern und lesen, rückwärtskompatibel zu bestehenden Alt-Wänden.
 - `WALL_V2`-Record-Layout in `src/modules/aec/commands.rs` um ein Feld `derived_handles: Vec<Handle>` erweitern.
 - `wall_v2_from_entity`/`wall_record`-Helfer entsprechend anpassen; fehlt das Feld (Alt-Record), wird eine leere/„nicht initialisiert"-Markierung zurückgegeben statt eines Parse-Fehlers.
 - Dedizierter Hilfs-Layer `AEC_WALL_AXIS` wird bei Bedarf angelegt und die Mittellinien-Polylinie beim Erzeugen/Migrieren dorthin verschoben.
 - Unit-Tests: Schreiben/Lesen eines Records mit mehreren Handles; Lesen eines Alt-Records ohne das Feld liefert das erwartete Fallback-Verhalten.
 
-###   Step 2: Funktion zur Erzeugung der 2D-Schichtkontur mit Material-Hatch implementieren
+### ✓ Step 2: Funktion zur Erzeugung der 2D-Schichtkontur mit Material-Hatch implementieren
 Aus einer Wand mit Schichtdaten werden pro Schicht eine sichtbare Kontur-Polylinie und eine passend schraffierte Hatch-Entity erzeugt.
 - Neue Funktion (z.B. `create_wall_layer_2d(scene, doc, contour, material)`) in `src/modules/aec/commands.rs`, die aus den bereits vorhandenen `wall_layer_contour_polylines`-Daten je Schicht eine geschlossene, sichtbare `LwPolyline` erzeugt.
 - Für jede Kontur wird über die bestehende Hatch-Infrastruktur (`src/modules/draw/draw/hatch.rs`, `command_driver.rs::CommitHatch`) eine Hatch-Entity mit dem `hatch_pattern`/`line_color` des referenzierten `Material` erzeugt.
 - Rückgabe der erzeugten Handles (Kontur + Hatch je Schicht) zur weiteren Verknüpfung mit der Wand-XDATA.
 - Tests: für eine Beispielwand mit 3 Schichten werden die erwartete Anzahl Kontur-/Hatch-Entities mit korrekten Materialattributen erzeugt.
 
-###   Step 3: 3D-Solid-Extrusion je Schicht über sweep_model::extruded implementieren
+### ✓ Step 3: 3D-Solid-Extrusion je Schicht über sweep_model::extruded implementieren
 Aus derselben Wand werden pro Schicht echte Solid3D-Körper mit korrekter Höhe erzeugt.
 - Neue Funktion (z.B. `create_wall_layer_solid(scene, doc, contour, height)`) in `src/modules/aec/commands.rs`, die die bereits berechneten Footprint-Daten aus `wall_layer_extrusions` je Schicht über `sweep_model::extruded` zu einem eigenständigen `Solid3D` extrudiert.
 - Erzeugte Solids werden dem Dokument hinzugefügt und ihre Handles zurückgegeben.
 - Tests: für eine Beispielwand mit mehreren Schichten wird die erwartete Anzahl Solids mit der jeweils korrekten Extrusionshöhe erzeugt (Volumen-/Bounding-Box-Prüfung als Sanity-Check).
 
-###   Step 4: regenerate_wall_representation als zentrale Orchestrierungsfunktion implementieren
+### ✓ Step 4: regenerate_wall_representation als zentrale Orchestrierungsfunktion implementieren
 Eine einzelne Funktion entfernt die alte Darstellung einer Wand und erzeugt sie konsistent aus den aktuellen Werten neu.
 - Neue Funktion `regenerate_wall_representation(scene, doc, wall_handle)` in `src/modules/aec/commands.rs`: liest Mittellinie + `WALL_V2`-Daten, entfernt alle in `derived_handles` gelisteten Entities, ruft die Kontur/Hatch- und Solid-Erzeugungsfunktionen aus den vorherigen Schritten für jede Schicht auf, schreibt die neuen `derived_handles` zurück in die Wand-XDATA.
 - Fehlerbehandlung: fehlende/inkonsistente Wanddaten führen zu einer kontrollierten Fehlermeldung statt Panic.
 - Tests: Aufruf auf einer frisch erzeugten Wand liefert die erwartete Anzahl neuer Entities; ein zweiter Aufruf (Re-Regenerierung) entfernt zuvor erzeugte Entities korrekt, bevor neue erzeugt werden (keine Verdopplung).
 
-###   Step 5: Automatische Regenerierung bei Wand-Erstellung und Properties-Panel-Änderung verdrahten
+### ✓ Step 5: Automatische Regenerierung bei Wand-Erstellung und Properties-Panel-Änderung verdrahten
 Wände zeigen unmittelbar nach dem Zeichnen und nach jeder Properties-Panel-Änderung die aktuelle Schicht-Darstellung.
 - `WallCommand::finalize()` in `src/modules/aec/commands.rs` ruft nach dem Schreiben der Basis-XDATA `regenerate_wall_representation` auf.
 - Der Wand-Schreibpfad in `src/app/properties.rs` (Höhe/Dicke/Material/Stil-Änderung) ruft nach dem Zurückschreiben ebenfalls `regenerate_wall_representation` auf.
 - `AEC_ROOM`/`collect_wall_segments`/`find_closed_loop` werden gegen die neue Mittellinien-Layer-Verschiebung (`AEC_WALL_AXIS`) getestet, um sicherzustellen, dass die Raumerkennung unverändert funktioniert.
 - Tests: Zeichnen einer neuen Wand erzeugt sichtbare Kontur/Solids; Ändern der Höhe über die Properties-Sektion aktualisiert die Solid-Höhe ohne alte Geister-Entities zu hinterlassen; bestehende `AEC_ROOM`-Tests bleiben grün.
 
-###   Step 6: Migrationskommando für bestehende Alt-Wände ohne abgeleitete Darstellung ergänzen
+### ✓ Step 6: Migrationskommando für bestehende Alt-Wände ohne abgeleitete Darstellung ergänzen
 Wände aus früheren Sessions ohne Schicht-Darstellung können nachträglich sichtbar gemacht werden, und das Löschen einer Wand entfernt auch ihre abgeleitete Geometrie.
 - Neues Kommando `AEC_WALL_REFRESH`, das für alle Wand-Entities im Dokument ohne vorhandene `derived_handles` `regenerate_wall_representation` aufruft.
 - Lösch-Pfad für Wand-Entities (z.B. bestehendes `ERASE`/`DELETE`-Kommando) erweitert: beim Löschen einer Entity mit `WALL`/`WALL_V2`-XDATA werden zuvor auch ihre `derived_handles` entfernt.

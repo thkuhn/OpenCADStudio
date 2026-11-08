@@ -126,7 +126,9 @@ AEC-Befehle liegen in Gruppenordnern, eine Datei pro Tool wie draw/line.rs.
 - `aec/mod.rs` Ribbon wie `draw/mod.rs` über `wall::tool()` etc. verdrahten.
 - Engine-Aufrufe bleiben in den Tool-Dateien; `engine/` unverändert lassen außer nötiger `pub use`.
 
-### * Step 3: AEC-UI und Properties aus Core ziehen
+> **Stand 2026-11-07:** Fenster liegen unter `src/modules/aec/ui/`, Eigenschaften in `properties.rs`. Der Folgeplan `aec-core-split-step3.md` ist erledigt. Die drei letzten Sitzungsfelder am Tab sind seit `deae23132` in `AecState`. Dünne Core-Hooks bleiben absichtlich.
+
+### ✓ Step 3: AEC-UI und Properties aus Core ziehen
 Fenster und Property-Beiträge leben unter modules/aec; Core hat nur Aufrufe.
 
 - `src/ui/window/aec_*.rs` nach `src/modules/aec/ui/` verschieben; Modal/Overlay matchen `AecMessage`.

@@ -2,6 +2,8 @@
 sessionId: session-260826-184400-h1pj
 ---
 
+> **Stand 2026-11-07:** Umgesetzt im Folgeplan `document-style-library-copy-override-backlog-2.md`. Die zeichnungslokale Stilbibliothek hängt nicht mehr am Tab, sondern an `AecState.tab_sessions` (`deae23132`).
+
 # Requirements
 
 ### Overview & Goals

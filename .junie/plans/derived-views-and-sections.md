@@ -330,9 +330,11 @@ Die Validierung erfolgt mehrstufig:
 - Ergänzung von Unit-Tests in `src/modules/aec/engine/views/` für Marker-Grips, semantische Rückbearbeitung und lokalisierte Grundrisstransformation.
 - Testfälle in `properties.rs` zur Überprüfung aller `carrier_` und `marker_` Parameteränderungen.
 
+> **Stand 2026-11-07:** Markierungen, Modellgriffe und Grundriss liegen im Code. Die geführte Interaktion ist in `continue-derived-views-and-sections.md` abgeschlossen.
+
 # Delivery Steps
 
-### * Step 1: Assoziative Schnitt- und Ansichtsmarkierungen mit Viewport-Griffen & Properties
+### ✓ Step 1: Assoziative Schnitt- und Ansichtsmarkierungen mit Viewport-Griffen & Properties
 Die Schnitt- und Ansichtsmarkierungen im Grundriss (`Din1356SectionSymbol`) sind als parametrische AEC-Objekte persistiert und bieten interaktive Griffe für Schnittverlauf, Tiefe und Richtung sowie volle Eigenschaften-Unterstützung.
 
 - Persistierung der DIN 1356 Schnitt- und Ansichtsmarkierungen als Trägerobjekte mit `AEC_SECTION_MARKER` / `AEC_ELEVATION_MARKER` XDATA unter Koppelung an `Viewpoint` und `DerivedViewCarrier`.
@@ -340,7 +342,7 @@ Die Schnitt- und Ansichtsmarkierungen im Grundriss (`Din1356SectionSymbol`) sind
 - Integration der Viewport-Grip-Handler in `src/modules/aec/walls/axis_session.rs` / `viewport.rs` (`apply_aec_section_marker_grip`) mit automatischer Markierung des Carriers als veraltet bzw. Sofort-Neuberechnung.
 - Erweiterung des Eigenschaften-Panels (`marker_prop_section`, `carrier_prop_section`, `aec_apply_property_field`) zur direkten Änderung von Schnittname, Blicktiefe, Z-Bereich und Maßstab.
 
-###   Step 2: Viewport-Anbindung semantischer Modellgriffe an abgeleiteten Schnittkanten
+### ✓ Step 2: Viewport-Anbindung semantischer Modellgriffe an abgeleiteten Schnittkanten
 Ausgewählte abgeleitete Kanten im Schnitt (Wandoberkanten, Brüstungen, Stürze, Decken) bieten aktive Modellgriffe, deren Manipulation das 3D-BIM-Modell direkt verändert.
 
 - Erweiterung von `append_derived_view_grips` in `src/modules/aec/properties.rs`, um für ausgewählte `DerivedPrimitive`-Entitäten ihre `edit_handles` als interaktive Ziehgriffe anzuzeigen.
@@ -348,7 +350,7 @@ Ausgewählte abgeleitete Kanten im Schnitt (Wandoberkanten, Brüstungen, Stürze
 - Bereitstellung einer Live-Drahtvorschau während des Ziehens (z. B. Wandoberkantenlinie oder Brüstungsrechteck) ohne vorzeitiges Zerstören der bestehenden Schnittgrafik.
 - Vollständige Einbindung in das Undo/Redo-System und automatische Aktualisierung abhängiger Ansichten nach dem Commit.
 
-###   Step 3: Lokalisierte Koordinatentransformation & Korrektur der Grundriss-Engine
+### ✓ Step 3: Lokalisierte Koordinatentransformation & Korrektur der Grundriss-Engine
 `AEC_FLOORPLAN` und `AEC_RCP` generieren exakt positionierte 2D-Grundrisse und Deckenspiegel am gewählten Einfügepunkt mit nachträglich anpassbarer Schnitthöhe.
 
 - Anpassung von `floorplan_engine.rs` zur relativen Projektion aller Schnittpolygone, Leibungen und Öffnungssymbole in das lokale Koordinatensystem des Viewpoints (`p - origin`).
@@ -356,7 +358,7 @@ Ausgewählte abgeleitete Kanten im Schnitt (Wandoberkanten, Brüstungen, Stürze
 - Unterstützung der nachträglichen Höhenänderung der Schnittebene (`z_cut`, Z-Range) sowohl über Eigenschaften (`view_cut_height`) als auch über interaktive Griffe.
 - Validierung der Decken-, Wand- und Öffnungsdarstellung (inkl. Anschlagssymbole und Türöffnungswinkel) in 2D-Grundrissen.
 
-###   Step 4: Härtung der Verdeckungsberechnung, Schichtkonturen & XREF-Planartensynchronisation
+### ✓ Step 4: Härtung der Verdeckungsberechnung, Schichtkonturen & XREF-Planartensynchronisation
 Verdeckte Kanten werden sauber beschnitten, geschnittene Bauteile besitzen geschlossene Konturen und XREF-Geschosse bleiben bei Planartenwechseln stabil gerendert.
 
 - Präzisierung des 2D-Occlusion-Clippings in `silhouette.rs` und `cut_engine.rs` gegen opake Flächenmasken (`SurfaceFill` / `CutFill`) zur Vermeidung durchscheinender Hintergrundlinien.
@@ -364,7 +366,7 @@ Verdeckte Kanten werden sauber beschnitten, geschnittene Bauteile besitzen gesch
 - Härtung des XREF-Geometrie- und Tessellierungs-Caches im Gesamtmodell: Erhaltung von 3D-Meshes (ACIS SAT) und Schichtschraffuren beim Hin- und Herschalten zwischen Entwurf, Ausführung, Schalplan und 3D.
 - Aktualisierung des Generator- und Testmoduls (`sample_project.rs`) zur dauerhaften Absicherung aller Korrekturen im Multi-Geschoss-Szenario.
 
-###   Step 5: End-to-End-Validierung, Beispielprojekt-Aktualisierung & Dokumentation
+### ✓ Step 5: End-to-End-Validierung, Beispielprojekt-Aktualisierung & Dokumentation
 Das Gesamtsystem für Schnitte, Ansichten, Grundrisse und Modellrückbearbeitung ist vollständig integriert, getestet und im Beispielprojekt verifiziert.
 
 - Aktualisierung und Validierung aller automatisierten Unit- und Integrationstests in `modules::aec::views` und `modules::aec::engine::views`.

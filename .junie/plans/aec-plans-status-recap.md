@@ -5,8 +5,8 @@ sessionId: session-261002-194949-trwx
 # Requirements
 
 ### Overview & Goals
-**Stand (2026-10-24):** Gesamtrecap aller Pläne unter `.junie/plans/` und des aktuellen Entwicklungsstands in `src/modules/aec/`.
-Die Pläne dokumentieren die Konzeption und Historie; der Code unter `src/modules/aec/` und die **1047 automatisierten Modultests** bilden die verifizierte Quelle der Wahrheit.
+**Stand (2026-11-07):** Gesamtrecap aller Pläne unter `.junie/plans/` und des aktuellen Entwicklungsstands in `src/modules/aec/`.
+Die Pläne dokumentieren die Konzeption und Historie; der Code unter `src/modules/aec/` ist die Quelle der Wahrheit. Die Testzahl vom 24. Oktober wird hier nicht mehr als aktueller Stand zitiert.
 
 **Ergebnis:** Alle wesentlichen Kernbereiche (Wände, Schichten, Verschneidungen, Öffnungen, geneigte/mehrteilige Kontrollebenen, Geschossdecken mit modularer Referenzierung von Rohbaustilen und Fußbodenaufbau-Stilen, Deckenöffnungen, Räume, Raumstempel nach DIN 1356, Deckenbeläge/abgehängte Decken, Fußboden-Übergänge an Türöffnungen und Nischen, DIN 277 / WoFlV Flächenberechnung, Raumbuch-Tabellen, Scheitelpunktbearbeitung, Core-Entkopplung sowie **assoziative 2D-Schnitte und -Ansichten mit geführten Dropdown-Interaktionen und robuster Z-Höhenermittlung**) sind **vollständig implementiert, getestet und versioniert**.
 
@@ -77,6 +77,8 @@ Die Pläne dokumentieren die Konzeption und Historie; der Code unter `src/module
 - **Internationalisierung (i18n):** Alle Benutzeroberflächentexte, Menüs und Meldungen über Fluent-Dateien (`locales/de-DE` und `locales/en-US`).
 - **IFC4-Export:** Facettierte B-Rep-Volumenkörper (`IfcFacetedBrep`), Extrusionskörper, Decken und Geschossstrukturen.
 - **Verbindliche Agenten-Richtlinien:** Durchsetzung englischsprachiger Commit-Nachrichten (Conventional Commits) in `AGENTS.md` und `src/modules/aec/AGENTS.md`.
+- **Geschoss-Verknüpfung (`c10f8f228`):** Die `.ocsproj` bleibt die Definition. Eine Zeichnung speichert nur die UUID ihres `StoreyRef` am `STOREY`-Träger. Export und Raumbuch lesen diese eine Verknüpfung. Der Prozess-Mutex `STOREYS` ist entfernt. `AEC_STOREY` legt kein `Level N` mehr an.
+- **Sitzungswerte pro Tab (`deae23132`):** Planart, 2D/3D-Filter und zeichnungslokale Stilbibliothek liegen in `AecState.tab_sessions`, Schlüssel ist die stabile Tab-Id. `DocumentTab` trägt diese Felder nicht mehr.
 
 #### 9. Assoziative abgeleitete Ansichten, Schnitte & geführte Interaktionen
 - **Geometrie- und Schnitt-Engine (`cut_engine.rs`, `elevation_engine.rs`, `scene_collector.rs`):** Assoziative Generierung von 2D-Schnitt- und Ansichtselementen aus dem 3D-B-Rep-Modell (`AEC_SECTION`, `AEC_ELEVATION`), verdeckte Kanten (Hidden-Line Occlusion), Hintergrundprojektion und Schichtkonturen.
@@ -88,22 +90,24 @@ Die Pläne dokumentieren die Konzeption und Historie; der Code unter `src/module
 
 ### Offene Roadmap & Zukünftige Ausbaustufen (Backlog)
 
-1. **Ganzheitliche Planarten- und GUI-Konsolidierung:**
-   - *Status:* Übergreifende Benutzeroberfläche zur einheitlichen Konfiguration von Schichtenfiltern, Detaillierungsgraden (1:100, 1:50, Deckenspiegel, Rohbau, 3D) und Darstellungs-Overrides für Wände, Decken und Öffnungen.
+1. **Ganzheitliche Planarten-Oberfläche für Decken und Öffnungen:**
+   - *Status:* Wandseitige, stil-zentrierte Overrides sind erledigt (`aec-style-centric-display-and-phase-4.md`). Eine gemeinsame Oberfläche, die Schichtenfilter und Overrides für Wände, Decken und Öffnungen gleichartig pflegt, ist nicht als ein abgeschlossener Plan erfasst.
 2. **Assoziative DIN 1356 Bemaßungsketten (`AEC_DIMENSION`):**
-   - *Status:* Automatische Bemaßungsketten mit Erkennung von Wandachsen, Pfeilern, Rohbau- und lichten Öffnungsmaßen.
+   - *Status:* Im AEC-Modul gibt es keinen solchen Befehl. Annotative Beschriftungen und Ansichtsbemaßung sind ein anderes Produkt.
 3. **Erweiterte Wandöffnungs-Interaktion:**
-   - *Status:* Flip-Grip zur direkten Spiegelung von Fenstern/Türen quer zur Wandachse (Anschlagsebene / Aufschlagrichtung).
+   - *Status:* `SwingSide` ist persistiert, und das Öffnungsmenü der abgeleiteten Ansichten kann den Aufschlag spiegeln. Ein eigener Flip-Griff quer zur Wandachse, getrennt vom Flip-Griff der Schnittmarkierung, ist nicht vorhanden.
 4. **Erweiterte N-Wege-Wandverschneidungen:**
-   - *Status:* L- und T-Stöße greifen vollautomatisch. Manuelle Schichtaussparungen bei N-Wege-Kreuzungen (4+ Wände an einem Knoten) sind vorgemerkt.
+   - *Status:* L- und T-Stöße greifen. Manuelle Schichtaussparungen bei Kreuzungen mit vier und mehr Wänden bleiben vorgemerkt.
 5. **Dynamische In-Viewport-Eingabe (`dyn_spec` für `AEC_WALL`):**
-   - *Status:* Bemaßungseingaben erfolgen per Tastatur/Befehlszeile und Eigenschaften-Panel. Eine direkte Cursor-Bemaßung während des Zeichnens ist noch nicht verdrahtet.
-6. **IFC4 Room Boundaries & Space Export:**
-   - *Status:* Export von `IfcSpace` samt räumlichen Begrenzungsflächen (`IfcRelSpaceBoundary2ndLevel`) für thermische Simulationen und BIM-Datenaustausch.
+   - *Status:* `AEC_WALL` liefert kein `dyn_spec`. Die Cursor-Bemaßung während des Zeichnens ist nicht verdrahtet.
+6. **IFC4 Room Boundaries:**
+   - *Status:* `IfcSpace` wird exportiert. `IfcRelSpaceBoundary` fehlt.
+
+Nicht mehr offen, und bewusst kein Umbau: ein vollständiges AEC-Plugin. Ribbon, Dialoge und XDATA reichen; Paket-Semantik, Plan-Darstellung, Grip-Menüs und Eigenschaften bleiben Host-Hooks.
 
 ---
 
 ### Verifikation & Teststatus
-- **Testsuite:** Alle **1047 Komponententests** des AEC-Moduls (`cargo test --lib -- aec`) laufen fehlerfrei durch.
-- **Git-Status:** Branch `feature/aec-core-module` ist sauber committet (letzter Stand: Commit `af54a2b2`).
-- **Referenzzeichnungen:** `docs/examples/aec-wall-joins.dxf`, `docs/examples/aec-sloped-walls.dxf` und `examples/beispiel_haus/**` vorhanden und synchronisiert.
+- **Git-Status:** `origin/feature/aec-core-module` steht auf `deae23132` (`refactor(aec): move drawing session state off document tabs`). Davor `c10f8f228` (Geschoss-Verknüpfung).
+- **Pläne:** Liefer-Schritte, deren Funktion im Code oder in einem späteren abgeschlossenen Plan liegt, sind auf Stand 2026-11-07 nachgezogen. Ältere Entwürfe bleiben Historie; der Hinweis am jeweiligen Plan nennt den gültigen Nachfolger.
+- **Nicht erneut gezählt:** Die Testzahl 1047 vom 24. Oktober. Sie ist kein aktueller Nachweis.

@@ -2,6 +2,8 @@
 sessionId: session-260904-235310-s8lq
 ---
 
+> **Stand 2026-11-07:** Dieser Plan ist die ausgeführte Fassung. Die drei älteren Entwürfe (`aec-style-centric-display-and-phase.md`, `-2`, `-3`) sind nur noch Historie.
+
 # Requirements
 
 ### Overview & Goals
